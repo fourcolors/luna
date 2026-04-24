@@ -23,6 +23,7 @@ import {
   Layer,
   Option,
   Queue,
+  Redacted,
   Ref,
   Scope,
   Stream,
@@ -32,6 +33,8 @@ import {
   MESSAGE_ENVELOPE_VERSION,
   SDKError,
   SessionStore,
+  AccountBroker,
+  type AccountBrokerApi,
   type SessionOptions,
 } from "@experiment-agent/core"
 import { SDKClient, type QueryParams } from "./sdk-client.js"
@@ -53,6 +56,7 @@ import {
   sdkMessageSessionId,
 } from "./message-kind.js"
 import { mergeOptionsLogged } from "./merge-options.js"
+import { mergeEnvOverlayLogged } from "./merge-env.js"
 
 const DEFAULT_IDLE_TIMEOUT_MS = 120_000
 
@@ -62,6 +66,12 @@ export interface QueryRequest {
   readonly sessionOptions: SessionOptions
   /** If present, the SDK resumes this session id instead of starting fresh. */
   readonly resumeFromSessionId?: string
+  /**
+   * §0.2 sticky-pin. If set, the broker is asked to acquire this specific
+   * account (preserves SDK cache warmth). Only honored when the broker is
+   * bound via `SDKAdapter.WithBroker`; ignored by `SDKAdapter.Default`.
+   */
+  readonly boundAccountId?: string
 }
 
 interface HookRegistration {
@@ -100,17 +110,14 @@ export interface SDKAdapterService {
   ) => Effect.Effect<Query | null, never>
 }
 
-export class SDKAdapter extends Effect.Tag("experiment-agent/SDKAdapter")<
-  SDKAdapter,
-  SDKAdapterService
->() {
-  static readonly Default: Layer.Layer<
-    SDKAdapter,
-    never,
-    SDKClient | SessionStore
-  > = Layer.scoped(
-    SDKAdapter,
-    Effect.gen(function* () {
+/**
+ * Shared adapter body. The only thing that differs between `Default` and
+ * `WithBroker` is whether `AccountBroker` is acquired and whether the
+ * env-overlay step runs. We pass the optional broker handle in via the
+ * helper signature so the two layer factories share one implementation.
+ */
+const makeAdapter = (broker: AccountBrokerApi | null) =>
+  Effect.gen(function* () {
       const client = yield* SDKClient
       const store = yield* SessionStore
 
@@ -208,6 +215,62 @@ export class SDKAdapter extends Effect.Tag("experiment-agent/SDKAdapter")<
           if (req.resumeFromSessionId)
             overrides.resume = req.resumeFromSessionId
 
+          /**
+           * Broker integration (§0.2 / §3.1 / §6.1). Acquire the credential
+           * INSIDE this Effect.gen so the credential's inFlight finalizer
+           * attaches to the query Scope (§3.4 #1). Build the env overlay
+           * from the broker-owned token set and slot it into `overrides`.
+           *
+           * `acquiredAccountId` is captured so the producer below can emit
+           * `broker.report({kind: "success" | "error"})` per stream
+           * outcome — see lifecycle comment near `runProducer`.
+           */
+          let acquiredAccountId: string | null = null
+          if (broker !== null) {
+            // Model string is used for broker policy routing; SDK uses
+            // Options.model separately. Default when caller omitted it.
+            const brokerModel =
+              (req.sessionOptions.sdkOptions?.model as string | undefined) ??
+              "default"
+            const acquireOpts: {
+              model: string
+              boundAccountId?: string
+            } = { model: brokerModel }
+            if (req.boundAccountId !== undefined) {
+              acquireOpts.boundAccountId = req.boundAccountId
+            }
+            const cred = yield* broker
+              .acquireSession(acquireOpts)
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new SDKError({
+                      op: "acquire-session",
+                      sessionId: req.sessionId,
+                      cause,
+                    }),
+                ),
+              )
+            acquiredAccountId = cred.accountId
+            // SECRET HYGIENE: `Redacted.value(...)` is unwrapped at this
+            // single overlay-construction site only. The plaintext is
+            // immediately handed to the SDK Options object via merge —
+            // it is NEVER stored in a Ref, NEVER logged, NEVER passed to
+            // anything that stringifies. Any future change to this
+            // location must preserve this invariant.
+            const brokerOwnedEnv: Record<string, string> = {
+              CLAUDE_CODE_OAUTH_TOKEN: Redacted.value(cred.resolvedSecret),
+            }
+            const callerEnv = req.sessionOptions.sdkOptions?.env as
+              | Readonly<Record<string, string | undefined>>
+              | undefined
+            const mergedEnv = yield* mergeEnvOverlayLogged(
+              callerEnv,
+              brokerOwnedEnv,
+            )
+            overrides.env = mergedEnv
+          }
+
           const mergedOpts = yield* mergeOptionsLogged(
             req.sessionOptions.sdkOptions,
             overrides,
@@ -264,6 +327,29 @@ export class SDKAdapter extends Effect.Tag("experiment-agent/SDKAdapter")<
 
           const queue = yield* Queue.unbounded<Frame>()
 
+          /**
+           * `broker.report` is fire-and-forget at stream lifecycle edges.
+           * We do NOT attach it to the Scope finalizer because Scope close
+           * does not distinguish success from error; we want kind="success"
+           * on clean end and kind="error" on terminal stream error.
+           */
+          const reportSuccess = () => {
+            if (broker !== null && acquiredAccountId !== null) {
+              const id = acquiredAccountId
+              Effect.runPromise(
+                broker.report({ accountId: id, kind: "success" }),
+              ).catch(() => {})
+            }
+          }
+          const reportError = () => {
+            if (broker !== null && acquiredAccountId !== null) {
+              const id = acquiredAccountId
+              Effect.runPromise(
+                broker.report({ accountId: id, kind: "error" }),
+              ).catch(() => {})
+            }
+          }
+
           const runProducer = async () => {
             try {
               for await (const msg of handle as AsyncIterable<SDKMessage>) {
@@ -271,8 +357,10 @@ export class SDKAdapter extends Effect.Tag("experiment-agent/SDKAdapter")<
                   Queue.offer(queue, { _tag: "value", value: msg }),
                 )
               }
+              reportSuccess()
               await Effect.runPromise(Queue.offer(queue, { _tag: "end" }))
             } catch (cause) {
+              reportError()
               await Effect.runPromise(
                 Queue.offer(queue, {
                   _tag: "error",
@@ -344,6 +432,38 @@ export class SDKAdapter extends Effect.Tag("experiment-agent/SDKAdapter")<
         setPermissionCallback,
         getQueryHandle,
       } satisfies SDKAdapterService
+    })
+
+export class SDKAdapter extends Effect.Tag("experiment-agent/SDKAdapter")<
+  SDKAdapter,
+  SDKAdapterService
+>() {
+  /**
+   * Default layer — no broker integration. Preserves existing behavior:
+   * the caller is responsible for providing `CLAUDE_CODE_OAUTH_TOKEN`
+   * (or any other env) via `sessionOptions.sdkOptions.env` directly.
+   */
+  static readonly Default: Layer.Layer<
+    SDKAdapter,
+    never,
+    SDKClient | SessionStore
+  > = Layer.scoped(SDKAdapter, makeAdapter(null))
+
+  /**
+   * WithBroker layer — adds AccountBroker as a required dependency and
+   * wires per-query rotation via the env-overlay mechanism (§0.2). The
+   * credential's `inFlight` finalizer attaches to the query Scope
+   * (§3.1 / §3.4 #1).
+   */
+  static readonly WithBroker: Layer.Layer<
+    SDKAdapter,
+    never,
+    SDKClient | SessionStore | AccountBroker
+  > = Layer.scoped(
+    SDKAdapter,
+    Effect.gen(function* () {
+      const brokerApi = yield* AccountBroker
+      return yield* makeAdapter(brokerApi)
     }),
   )
 }

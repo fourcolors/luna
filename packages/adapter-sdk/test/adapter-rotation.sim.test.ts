@@ -1,0 +1,302 @@
+/**
+ * SDKAdapter rotation simulation (§8.2).
+ *
+ * Drives the broker-bound adapter through multiple sequential queries
+ * with a fake SDK that records the env tokens it sees. Validates:
+ *   - Round-robin spread across 3 accounts (per rotation-policy).
+ *   - All-exhausted → SDKError with AllAccountsExhaustedError cause.
+ *   - Scope alignment: open Scope ⇒ inFlight=1; close Scope ⇒ inFlight=0.
+ *   - Sticky-pin (boundAccountId) honored.
+ *   - broker.report({kind:"success"}) on clean stream end;
+ *     broker.report({kind:"error"}) on terminal stream error.
+ */
+import { describe, expect, it } from "vitest"
+import { Effect, Exit, Layer, Scope, Stream } from "effect"
+import {
+  SessionStore,
+  Clock as CoreClock,
+  AccountBroker,
+  AccountBrokerLayer,
+  EnvSecretProvider,
+  type AccountSeed,
+  type UsageReport,
+  AllAccountsExhaustedError,
+} from "@experiment-agent/core"
+import { SDKAdapter, SDKClient } from "../src/index.js"
+import type { Options, Query, SDKMessage, SDKUserMessage } from "../src/sdk-client.js"
+
+const sid = "s-rot"
+
+// Set up env tokens for the three test accounts.
+process.env.ROT_TOK_A1 = "tok-a1"
+process.env.ROT_TOK_A2 = "tok-a2"
+process.env.ROT_TOK_A3 = "tok-a3"
+
+const seeds: ReadonlyArray<AccountSeed> = [
+  { id: "a1", kind: "anthropic", secretRef: "env:ROT_TOK_A1" },
+  { id: "a2", kind: "anthropic", secretRef: "env:ROT_TOK_A2" },
+  { id: "a3", kind: "anthropic", secretRef: "env:ROT_TOK_A3" },
+]
+
+const tokenById: Record<string, string> = {
+  "tok-a1": "a1",
+  "tok-a2": "a2",
+  "tok-a3": "a3",
+}
+
+// Build a fake Query that closes immediately. Optionally throws.
+const makeFakeIterable = (throwOnIterate: boolean): Query => {
+  async function* gen(): AsyncGenerator<SDKMessage, void> {
+    if (throwOnIterate) throw new Error("fake-sdk: simulated terminal failure")
+    return
+  }
+  const iterator = gen()
+  return Object.assign(iterator, {
+    interrupt: async () => {},
+    setPermissionMode: async () => {},
+    setModel: async () => {},
+    setMaxThinkingTokens: async () => {},
+    supplyToolPermissionResponse: async () => {},
+    mcpServerStatus: async () => ({}),
+  } as Partial<Query>) as Query
+}
+
+interface FakeRecorder {
+  readonly tokensSeen: string[]
+  readonly layer: Layer.Layer<SDKClient>
+  setThrowOnIterate: (v: boolean) => void
+}
+const makeRecordingFake = (): FakeRecorder => {
+  const tokensSeen: string[] = []
+  const cfg = { throwOnIterate: false }
+  const layer = SDKClient.fake((params) => {
+    const env = (params.options as Options | undefined)?.env as
+      | Record<string, string | undefined>
+      | undefined
+    const tok = env?.CLAUDE_CODE_OAUTH_TOKEN
+    if (typeof tok === "string") tokensSeen.push(tok)
+    return makeFakeIterable(cfg.throwOnIterate)
+  })
+  return {
+    tokensSeen,
+    layer,
+    setThrowOnIterate: (v) => (cfg.throwOnIterate = v),
+  }
+}
+
+// Spy wrapper around AccountBroker that records `report` calls.
+interface BrokerSpy {
+  readonly reports: UsageReport[]
+}
+const reportSpyLayer = (
+  spy: BrokerSpy,
+): Layer.Layer<AccountBroker, never, AccountBroker> =>
+  Layer.effect(
+    AccountBroker,
+    Effect.gen(function* () {
+      const inner = yield* AccountBroker
+      return {
+        ...inner,
+        report: (usage: UsageReport) => {
+          spy.reports.push(usage)
+          return inner.report(usage)
+        },
+      }
+    }),
+  )
+
+const baseLayer = Layer.mergeAll(
+  SessionStore.Default,
+  CoreClock.Default,
+)
+
+const buildLayer = (recorder: FakeRecorder, spy: BrokerSpy) => {
+  const brokerL = AccountBrokerLayer.fromAccounts(seeds).pipe(
+    Layer.provide(Layer.mergeAll(EnvSecretProvider.Default, CoreClock.Default)),
+  )
+  const spiedBrokerL = reportSpyLayer(spy).pipe(Layer.provide(brokerL))
+  return Layer.provideMerge(
+    SDKAdapter.WithBroker,
+    Layer.mergeAll(recorder.layer, baseLayer, spiedBrokerL),
+  )
+}
+
+const emptyPrompt: Stream.Stream<SDKUserMessage> = Stream.empty
+
+let sidCounter = 0
+const runOneQuery = (
+  adapter: typeof SDKAdapter.Service,
+  store: typeof SessionStore.Service,
+  boundAccountId?: string,
+) =>
+  Effect.gen(function* () {
+    const localSid = `${sid}-${sidCounter++}`
+    yield* store.create({
+      id: localSid,
+      options: { model: "m" },
+      createdAt: 0,
+    })
+    const out = yield* adapter.query({
+      sessionId: localSid,
+      prompt: emptyPrompt,
+      sessionOptions: { model: "m", idleTimeoutMs: 5_000 },
+      ...(boundAccountId !== undefined ? { boundAccountId } : {}),
+    })
+    yield* Stream.runDrain(out)
+  })
+
+describe("SDKAdapter rotation simulation (WithBroker)", () => {
+  it("6 sequential queries → all 3 accounts used (round-robin)", async () => {
+    const recorder = makeRecordingFake()
+    const spy: BrokerSpy = { reports: [] }
+    const layer = buildLayer(recorder, spy)
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* SDKAdapter
+        const store = yield* SessionStore
+        for (let i = 0; i < 6; i++) {
+          // Reset session row each iteration to keep store happy.
+          yield* Effect.scoped(runOneQuery(adapter, store, undefined))
+        }
+      }).pipe(Effect.provide(layer)),
+    )
+
+    // Map each token back to its account id.
+    const accountsUsed = recorder.tokensSeen.map((t) => tokenById[t])
+    expect(new Set(accountsUsed)).toEqual(new Set(["a1", "a2", "a3"]))
+    // 6 queries, expected balanced load (2 each by round-robin).
+    expect(recorder.tokensSeen).toHaveLength(6)
+  })
+
+  it("all accounts in cooldown → SDKError(op:'acquire-session') wrapping AllAccountsExhausted", async () => {
+    const recorder = makeRecordingFake()
+    const spy: BrokerSpy = { reports: [] }
+    const layer = buildLayer(recorder, spy)
+
+    const exit = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const broker = yield* AccountBroker
+        const adapter = yield* SDKAdapter
+        const store = yield* SessionStore
+        // Place every account in cooldown.
+        for (const id of ["a1", "a2", "a3"]) {
+          yield* broker.report({
+            accountId: id,
+            kind: "rate_limit",
+            retryAfterMs: 60_000,
+          })
+        }
+        yield* Effect.scoped(runOneQuery(adapter, store, undefined))
+      }).pipe(Effect.provide(layer)),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      const j = JSON.stringify(exit.cause)
+      expect(j).toContain("SDKError")
+      expect(j).toContain("acquire-session")
+      expect(j).toContain("AllAccountsExhausted")
+    }
+    // Sanity: AllAccountsExhaustedError class still exists in core.
+    expect(AllAccountsExhaustedError).toBeDefined()
+  })
+
+  it("Scope alignment: open Scope → inFlight=1; close → inFlight=0", async () => {
+    const recorder = makeRecordingFake()
+    const spy: BrokerSpy = { reports: [] }
+    const layer = buildLayer(recorder, spy)
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* SDKAdapter
+        const store = yield* SessionStore
+        const broker = yield* AccountBroker
+        const localSid = `${sid}-scope-${sidCounter++}`
+        yield* store.create({ id: localSid, options: { model: "m" }, createdAt: 0 })
+
+        // Open a Scope manually. Don't drain the stream — just hold the
+        // credential lifetime open and inspect.
+        const scope = yield* Scope.make()
+        const out = yield* Scope.extend(
+          adapter.query({
+            sessionId: localSid,
+            prompt: emptyPrompt,
+            sessionOptions: { model: "m", idleTimeoutMs: 5_000 },
+          }),
+          scope,
+        )
+        // Touching the stream value to keep the lint quiet.
+        void out
+
+        const mid = yield* broker._inspect()
+        const sumInFlightMid = mid.reduce((s, a) => s + a.inFlight, 0)
+        // Close the Scope → finalizers run.
+        yield* Scope.close(scope, Exit.void)
+
+        const after = yield* broker._inspect()
+        const sumInFlightAfter = after.reduce((s, a) => s + a.inFlight, 0)
+        return { sumInFlightMid, sumInFlightAfter }
+      }).pipe(Effect.provide(layer)),
+    )
+    expect(result.sumInFlightMid).toBe(1)
+    expect(result.sumInFlightAfter).toBe(0)
+  })
+
+  it("sticky-pin: boundAccountId='a2' uses a2 regardless of rotation order", async () => {
+    const recorder = makeRecordingFake()
+    const spy: BrokerSpy = { reports: [] }
+    const layer = buildLayer(recorder, spy)
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* SDKAdapter
+        const store = yield* SessionStore
+        // First, run one normal query so a2 is NOT next in round-robin.
+        yield* Effect.scoped(runOneQuery(adapter, store, undefined))
+        // Reset recorder to focus only on the pinned query.
+        recorder.tokensSeen.length = 0
+        yield* Effect.scoped(runOneQuery(adapter, store, "a2"))
+      }).pipe(Effect.provide(layer)),
+    )
+    expect(recorder.tokensSeen).toEqual(["tok-a2"])
+  })
+
+  it("clean stream end → broker.report({kind:'success'}); error → kind:'error'", async () => {
+    // Clean end.
+    {
+      const recorder = makeRecordingFake()
+      const spy: BrokerSpy = { reports: [] }
+      const layer = buildLayer(recorder, spy)
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const adapter = yield* SDKAdapter
+          const store = yield* SessionStore
+          yield* Effect.scoped(runOneQuery(adapter, store, undefined))
+        }).pipe(Effect.provide(layer)),
+      )
+      // Producer is fire-and-forget; give it a tick to flush the report.
+      await new Promise((r) => setTimeout(r, 20))
+      const successReports = spy.reports.filter((r) => r.kind === "success")
+      expect(successReports.length).toBeGreaterThanOrEqual(1)
+    }
+
+    // Error end — fake SDK throws on iterate.
+    {
+      const recorder = makeRecordingFake()
+      recorder.setThrowOnIterate(true)
+      const spy: BrokerSpy = { reports: [] }
+      const layer = buildLayer(recorder, spy)
+      const exit = await Effect.runPromiseExit(
+        Effect.gen(function* () {
+          const adapter = yield* SDKAdapter
+          const store = yield* SessionStore
+          yield* Effect.scoped(runOneQuery(adapter, store, undefined))
+        }).pipe(Effect.provide(layer)),
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+      await new Promise((r) => setTimeout(r, 20))
+      const errorReports = spy.reports.filter((r) => r.kind === "error")
+      expect(errorReports.length).toBeGreaterThanOrEqual(1)
+    }
+  })
+})
