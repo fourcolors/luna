@@ -34,17 +34,31 @@ Frozen sections are the contract between architecture and implementation. Revisa
 
 Three decisions that drive everything downstream. Dated, with rationale.
 
-### 0.1 Effect version — **v3 stable (pinned `^3.21`)**
+### 0.1 Effect version — **v3 stable (pinned `^3.21`)** — verified 2026-04-24
 - **Chosen**: Effect v3 stable.
-- **Rejected**: Effect v4 beta (April 2026 release).
-- **Rationale**: `@effect/workflow` 0.18 and `@effect/cluster` are alpha; shipping on alpha-on-beta-on-new-framework is three moving targets. v3 is current-doc-example compatible. v4 migration is a scheduled task at M4, not a prerequisite.
-- **Consequence**: Uses `Effect.Service<Self>()(...)` pattern, `Context.Tag`, Schema v3 variadic signatures. When v4 lands GA, migration is a single breaking-change PR with automated codemods.
+- **Rejected**: Effect v4 beta.
+- **Verified evidence (npm registry, 2026-04-24)**:
+  ```
+  Package                      │ v4 beta on npm?    │ Latest
+  ─────────────────────────────┼────────────────────┼───────────────
+  effect                       │ ✅ 4.0.0-beta.57   │ (57 betas/3wk)
+  @effect/sql-sqlite-bun       │ ✅ 4.0.0-beta.57   │
+  @effect/opentelemetry        │ ✅ 4.0.0-beta.57   │
+  @effect/workflow             │ ❌ v3 only         │ 0.18.1
+  @effect/cluster              │ ❌ v3 only         │ 0.58.2
+  @effect/schema               │ ❌ v3 only         │ 0.75.5
+  ```
+- **Rationale**: Three flagship packages we require (`@effect/workflow`, `@effect/cluster`, `@effect/schema`) are not yet v4-published. Mixing v4 core with v3 ecosystem is unsupported. 57 betas in ~3 weeks indicates active API churn incompatible with a days-long build. Staying on v3 stable until those packages publish v4 betas.
+- **v4 migration**: remains scheduled at M5.
+- **Consequence**: Uses `Effect.Service<Self>()(...)` pattern, `Context.Tag`, Schema v3 variadic signatures. When all three blocking packages publish v4 betas, migration is scheduled with automated codemods per the [Effect v4 migration guide](https://github.com/Effect-TS/effect-smol/blob/main/MIGRATION.md).
 
-### 0.2 Account Rotation — **Narrowed scope (Option A)**
-- **Chosen**: Rotate credentials for MCP servers + custom tools we own. Model-credential rotation is coarse-grained — one `ANTHROPIC_API_KEY` per subprocess spawn; rotating requires respawn and loses in-flight stream state.
-- **Rejected**: Custom `Transport` reimplementing the Claude Code wire protocol. That's a separate large project; re-evaluate post-M4.
-- **Rationale**: The SDK spawns the Claude Code CLI as a subprocess that owns the Anthropic HTTP client. We cannot transparently intercept model calls without reimplementing the subprocess. Respawn-per-rotation is acceptable for coarse budgeting (Training Labs hour-long runs, Workflow multi-step) but not per-call.
-- **Consequence**: §9.2 `AccountBroker` has two acquire modes: `acquireTool(name)` (fine-grained, transparent) and `acquireSession({ model })` (returns a subprocess-level credential, scoped to a session; rotation only at session boundaries).
+### 0.2 Account Rotation — **Per-query model rotation via SDK env overlay** — verified 2026-04-24
+- **Chosen**: Dual-mode `AccountBroker`:
+  - `acquireSession()` — rotates the Anthropic OAuth subscription token per `query()` call via SDK's `options.env.CLAUDE_CODE_OAUTH_TOKEN`. Per-query granularity, no subprocess respawn needed.
+  - `acquireTool(name)` — rotates credentials for MCP servers + custom tools we own. Per-invocation, transparent wrap.
+- **Verified evidence**: sol-agent production uses this pattern at `~/sol-agent/lib/agent.ts:306-316`. The Claude Agent SDK respects `options.env` overlays per-query; the subprocess honors the injected token without restart. Our earlier concern ("subprocess owns HTTP, can't rotate without respawn") was wrong in practice.
+- **Consequence**: `AccountBroker` is truly transparent. Rotation strategies (round-robin, LRU, least-used-with-429-awareness) ported from sol-agent as a spec (not as code — see §9.3). Sticky-pin on session resume (`boundAccountId`) preserves prompt-cache warmth.
+- **Token type**: OAuth subscription tokens (1-year TTL, from `claude setup-token`), not API keys. Pool stored at `~/.experiment-agent/accounts.db` (SQLite per §5.1) via `SecretProvider`, never as plaintext env vars.
 
 ### 0.3 "One-shot" reinterpretation — **Frozen architecture + revisable implementation + named checkpoints**
 - **Chosen**: One architecture doc freezes decisions in §0–§6, §12, §13, §15. Implementation specifics (§7–§11, §14) revise as real code informs them. Two explicit **architecture re-evaluate checkpoints** at M1 and M3.
