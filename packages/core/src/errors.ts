@@ -51,3 +51,13 @@ export class SDKError extends Data.TaggedError("SDKError")<{
   readonly sessionId?: string
   readonly cause: unknown
 }> {}
+
+// §6.2 — MemoryBackend leaf errors. Raised by concrete backends
+// (sqlite/file/in-memory/vector) and composed by MemoryRouter.
+export class MemoryBackendError extends Data.TaggedError("MemoryBackendError")<{
+  readonly backend: string
+  readonly op: string
+  readonly namespace?: string
+  readonly id?: string
+  readonly cause: unknown
+}> {}
