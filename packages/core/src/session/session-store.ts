@@ -15,7 +15,11 @@ import type {
   SessionStatus,
   SessionSummary,
 } from "./types.js"
-import type { SDKMessage, StoredMessage } from "../messages.js"
+import {
+  MESSAGE_ENVELOPE_VERSION,
+  type MessageKind,
+  type StoredMessage,
+} from "../messages.js"
 import { IntegrityError } from "../errors.js"
 
 interface SessionRow {
@@ -146,7 +150,8 @@ export class SessionStore extends Effect.Service<SessionStore>()(
         readonly messageId: string
         readonly ts: number
         readonly parentId: string | null
-        readonly payload: SDKMessage
+        readonly kind: MessageKind
+        readonly payload: unknown
       }): Effect.Effect<StoredMessage, IntegrityError> =>
         Ref.modify(ref, (state) => {
           if (!state.sessions.has(input.sessionId)) {
@@ -168,7 +173,8 @@ export class SessionStore extends Effect.Service<SessionStore>()(
             seq,
             ts: input.ts,
             parentId: input.parentId,
-            kind: input.payload.type,
+            kind: input.kind,
+            schemaVersion: MESSAGE_ENVELOPE_VERSION,
             payload: input.payload,
           }
           const prev = state.messages.get(input.sessionId) ?? []

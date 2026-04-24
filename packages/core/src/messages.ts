@@ -1,149 +1,47 @@
 /**
- * SDK message types — tagged unions matching the Claude Agent SDK shapes per
- * DESIGN.md §12 (SDK Adapter Contract). Kept deliberately minimal here: the
- * adapter package will refine/extend these when Phase 3 lands, but the core
- * shapes are stable enough that every downstream service (SessionStore, Hooks,
- * Teams) can import them today.
+ * Core message types — the minimum every downstream service needs.
  *
- * We import *only* types from the SDK — no runtime dependency — to keep
- * `@experiment-agent/core` dependency-free at runtime.
+ * Per DESIGN.md §12.2 invariant #6: core is SDK-dependency-free at runtime.
+ * The full `SDKMessage` tagged union lives in `@experiment-agent/adapter-sdk`
+ * (which imports it from `@anthropic-ai/claude-agent-sdk` via `import type`).
+ * Core stores SDK payloads as an opaque `unknown` inside a versioned envelope
+ * (`StoredMessage`) so at-rest data is insulated from SDK shape drift.
+ *
+ * The five-case tagged union we hand-modeled previously (`user | assistant |
+ * system | result | stream_event`) was an incomplete subset — the SDK ships
+ * ~28 variants (hook messages, plugin/task/tool/auth/notification/memory/
+ * rate-limit/elicitation events, etc.). Rather than chase drift in core, we
+ * treat the payload as opaque here and let the adapter own the typed surface.
  */
 
-// ── Content block shapes ─────────────────────────────────────────────────────
-
-export interface TextBlock {
-  readonly type: "text"
-  readonly text: string
-}
-
-export interface ImageBlockSource {
-  readonly type: "base64" | "url"
-  readonly media_type?: string
-  readonly data?: string
-  readonly url?: string
-}
-
-export interface ImageBlock {
-  readonly type: "image"
-  readonly source: ImageBlockSource
-}
-
-export interface ToolUseBlock {
-  readonly type: "tool_use"
-  readonly id: string
-  readonly name: string
-  readonly input: unknown
-}
-
-export interface ToolResultBlock {
-  readonly type: "tool_result"
-  readonly tool_use_id: string
-  readonly content: string | ReadonlyArray<TextBlock | ImageBlock>
-  readonly is_error?: boolean
-}
-
-export interface ThinkingBlock {
-  readonly type: "thinking"
-  readonly thinking: string
-  readonly signature?: string
-}
-
-export type ContentBlock =
-  | TextBlock
-  | ImageBlock
-  | ToolUseBlock
-  | ToolResultBlock
-  | ThinkingBlock
-
-// ── Top-level message tagged union ───────────────────────────────────────────
-
-export interface SDKUserMessage {
-  readonly type: "user"
-  readonly session_id: string
-  readonly parent_tool_use_id?: string | null
-  readonly message: {
-    readonly role: "user"
-    readonly content: string | ReadonlyArray<ContentBlock>
-  }
-}
-
-export interface SDKAssistantMessage {
-  readonly type: "assistant"
-  readonly session_id: string
-  readonly parent_tool_use_id?: string | null
-  readonly message: {
-    readonly id: string
-    readonly role: "assistant"
-    readonly model: string
-    readonly content: ReadonlyArray<ContentBlock>
-    readonly stop_reason?: string | null
-    readonly stop_sequence?: string | null
-    readonly usage?: {
-      readonly input_tokens: number
-      readonly output_tokens: number
-      readonly cache_creation_input_tokens?: number
-      readonly cache_read_input_tokens?: number
-    }
-  }
-}
-
-export interface SDKSystemMessage {
-  readonly type: "system"
-  readonly subtype: string
-  readonly session_id: string
-  readonly data?: unknown
-}
-
-export interface SDKResultMessage {
-  readonly type: "result"
-  readonly subtype: "success" | "error_max_turns" | "error_during_execution"
-  readonly session_id: string
-  readonly is_error: boolean
-  readonly duration_ms: number
-  readonly duration_api_ms: number
-  readonly num_turns: number
-  readonly total_cost_usd?: number
-  readonly result?: string
-  readonly usage?: {
-    readonly input_tokens: number
-    readonly output_tokens: number
-    readonly cache_creation_input_tokens?: number
-    readonly cache_read_input_tokens?: number
-  }
-}
-
-export interface SDKPartialAssistantMessage {
-  readonly type: "stream_event"
-  readonly session_id: string
-  readonly parent_tool_use_id?: string | null
-  readonly event: unknown // Anthropic RawMessageStreamEvent — opaque here
-}
-
-export type SDKMessage =
-  | SDKUserMessage
-  | SDKAssistantMessage
-  | SDKSystemMessage
-  | SDKResultMessage
-  | SDKPartialAssistantMessage
-
-// ── Narrowing helpers ────────────────────────────────────────────────────────
-
-export const isUserMessage = (m: SDKMessage): m is SDKUserMessage =>
-  m.type === "user"
-export const isAssistantMessage = (m: SDKMessage): m is SDKAssistantMessage =>
-  m.type === "assistant"
-export const isSystemMessage = (m: SDKMessage): m is SDKSystemMessage =>
-  m.type === "system"
-export const isResultMessage = (m: SDKMessage): m is SDKResultMessage =>
-  m.type === "result"
-export const isPartialAssistantMessage = (
-  m: SDKMessage,
-): m is SDKPartialAssistantMessage => m.type === "stream_event"
+/**
+ * Current on-disk envelope version. Bump when the envelope shape changes
+ * (not when the SDK changes — that's what the `payload` opaque bag is for).
+ */
+export const MESSAGE_ENVELOPE_VERSION = 1 as const
 
 /**
- * Monotonic sequence-numbered envelope we store in SessionStore.
- * Unlike raw SDK messages, this guarantees an ordering we control —
- * one of the §12.2 invariants (we don't trust the SDK's transcript view).
+ * Universal message-kind tag we do control — used for fast filtering without
+ * decoding the opaque payload. Mirrors the top-level `type` discriminator of
+ * the SDK's SDKMessage union at the coarse level we care about in core.
+ *
+ * Adapters are free to record a finer-grained subtype inside `payload` or
+ * alongside it; this is the "what's in the envelope?" summary for indexing.
+ */
+export type MessageKind =
+  | "user"
+  | "assistant"
+  | "system"
+  | "result"
+  | "stream_event"
+  | "hook"
+  | "status"
+  | "other"
+
+/**
+ * Persisted envelope. `payload` is an opaque record of the adapter's native
+ * message shape; readers MUST validate with a schema appropriate to their
+ * adapter version before acting on its contents. See DESIGN.md §12.2 #6.
  */
 export interface StoredMessage {
   readonly id: string
@@ -151,6 +49,8 @@ export interface StoredMessage {
   readonly seq: number
   readonly ts: number
   readonly parentId: string | null
-  readonly kind: SDKMessage["type"]
-  readonly payload: SDKMessage
+  readonly kind: MessageKind
+  readonly schemaVersion: typeof MESSAGE_ENVELOPE_VERSION
+  /** Adapter-owned payload. Opaque to core. */
+  readonly payload: unknown
 }

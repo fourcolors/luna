@@ -5,12 +5,11 @@
 import { describe, expect, it } from "vitest"
 import { Effect, Stream } from "effect"
 import { SessionStore } from "../src/session/session-store.js"
-import type { SDKUserMessage } from "../src/messages.js"
 
-const makeMsg = (sid: string, text: string): SDKUserMessage => ({
-  type: "user",
+const makeMsg = (sid: string, text: string) => ({
+  type: "user" as const,
   session_id: sid,
-  message: { role: "user", content: text },
+  message: { role: "user" as const, content: text },
 })
 
 const program = <A, E>(eff: Effect.Effect<A, E, SessionStore>) =>
@@ -69,6 +68,7 @@ describe("SessionStore (in-memory)", () => {
           messageId: "m1",
           ts: 1,
           parentId: null,
+          kind: "user" as const,
           payload: makeMsg("s", "a"),
         })
         const b = yield* store.appendMessage({
@@ -76,6 +76,7 @@ describe("SessionStore (in-memory)", () => {
           messageId: "m2",
           ts: 2,
           parentId: null,
+          kind: "user" as const,
           payload: makeMsg("s", "b"),
         })
         return [a.seq, b.seq]
@@ -99,6 +100,7 @@ describe("SessionStore (in-memory)", () => {
             messageId: `m${i}`,
             ts: i,
             parentId: null,
+          kind: "user" as const,
             payload: makeMsg("s", `t${i}`),
           })
         }
@@ -140,6 +142,7 @@ describe("SessionStore (in-memory)", () => {
           messageId: "m",
           ts: 0,
           parentId: null,
+          kind: "user" as const,
           payload: makeMsg("nope", "x"),
         })
       }).pipe(Effect.provide(SessionStore.Default)),
