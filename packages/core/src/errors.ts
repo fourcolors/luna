@@ -61,3 +61,8 @@ export class MemoryBackendError extends Data.TaggedError("MemoryBackendError")<{
   readonly id?: string
   readonly cause: unknown
 }> {}
+
+// §6.2 — Account rotation exhaustion (all accounts in cooldown or unavailable).
+export class AllAccountsExhaustedError extends Data.TaggedError("AllAccountsExhaustedError")<{
+  readonly kind: string
+}> {}
