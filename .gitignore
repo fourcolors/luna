@@ -4,3 +4,4 @@ dist/
 *.tsbuildinfo
 coverage/
 .vitest-temp/
+tsconfig.tsbuildinfo
