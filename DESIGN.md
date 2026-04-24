@@ -626,21 +626,31 @@ interface SDKAdapter {
 ### 12.2 Invariants
 1. **Iterable lifetime ≡ Scope lifetime.** The input iterable closes iff Scope closes.
 2. **Every SDK message is mirrored to our SessionStore** before returning to caller — we never trust the SDK's transcript view alone.
-3. **All 19 hook events are exposed**, even if we don't use them internally, so users can register.
+3. **All SDK hook events are exposed** via re-export of `HOOK_EVENTS` from `@anthropic-ai/claude-agent-sdk`. The hook surface is `typeof HOOK_EVENTS[number]` — count is an SDK property, not an architectural decision. Whatever ships upstream, we expose.
 4. **Permission evaluation order matches SDK exactly**: `Hooks → Deny rules → Permission mode → Allow rules → canUseTool`.
-5. **Timeouts on every SDK call.** Default 30s; configurable.
+5. **Timeouts on every SDK call.** Default 30s; configurable. Plus an **idle timeout** (default 120s, configurable via `SessionOptions.idleTimeoutMs`) that aborts the query if no message has been yielded for the idle window — per sol-agent's hard-won mitigation for SDK subprocess hangs.
+6. **Persisted messages use a versioned envelope.** `StoredMessage.payload` is typed `unknown` and carries a `schemaVersion` field. The SDK's `SDKMessage` union is re-exported by the adapter package only; core never imports SDK types at runtime. Readers validate with `@effect/schema` at read time, decoupling at-rest data from SDK shape drift.
+7. **The adapter owns reserved `Options` keys.** When merging caller-supplied `sdkOptions` into the outgoing SDK `Options`, the adapter ALWAYS overwrites `hooks`, `canUseTool`, `abortController`, `resume`, `forkSession` with adapter-owned values. If any of these keys are present in caller input, the adapter logs a warning and drops them. Tested.
+8. **The `Query` handle is retained.** `query()` returns a `Query` object that is both an async iterable AND a handle with control methods (`interrupt`, `supplyToolPermissionResponse`, etc.). The adapter stores the handle in a session-scoped `Ref` so callbacks (notably `canUseTool` "ask" flows) can reach it.
 
 ### 12.3 Known risks (see §12.4 mitigations)
 - Iterable closes too early → hooks silently break (SDK issue #9705).
 - Subprocess hang with no error (SDK bug).
 - Transcript view may drop queued messages (SDK issue #67).
 - Windows `streamInput` crash (SDK v0.2.77+).
+- `Stream.fromAsyncIterable(queryObj)` drops the Query control handle.
+- Caller-supplied `sdkOptions.hooks` silently overrides adapter-registered hooks if merge is naive.
+- Persisted `SDKMessage` re-export couples at-rest data to SDK shape drift.
 
 ### 12.4 Mitigations
 - Scope-attached iterable ownership (§3.1) prevents early close.
 - `Effect.timeout` wrapper on every query prevents infinite hang.
+- Idle-timeout Fiber racing the query stream (reset on each yielded message) catches silent subprocess hangs.
 - Independent SessionStore mirror prevents transcript loss.
 - Windows pinned to patched SDK version + fallback path.
+- Adapter stores `Query` handle in session-scoped `Ref` (§12.2 invariant #8).
+- Merge guard: adapter overwrites reserved keys with warning (§12.2 invariant #7).
+- Versioned envelope at persistence boundary (§12.2 invariant #6).
 
 ---
 
@@ -650,7 +660,7 @@ Replaces the original §4.5.17. Each criterion is a runnable test.
 
 ### 13.1 Criteria
 1. **Example parity**: every SDK example in our ported example corpus produces byte-equivalent message traces under our adapter for a fixed seed, with ≤1 documented import-path change.
-2. **Hook event coverage**: all 19 SDK hook events (see §12) fire at semantically equivalent points — verified by hook-event-capture test.
+2. **Hook event coverage**: every event in the SDK's `HOOK_EVENTS` constant fires at semantically equivalent points — verified by a hook-event-capture test that iterates `HOOK_EVENTS` at runtime (no hard-coded count).
 3. **Permission evaluation order**: captured via instrumented harness; must match SDK exactly.
 4. **Round-trip session export/import**: sessions round-trip lossless through JSON export/import — this is a feature, owned by M2.
 

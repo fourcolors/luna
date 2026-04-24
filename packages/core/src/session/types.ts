@@ -16,9 +16,37 @@ export interface SessionOptions {
   readonly title?: string
   readonly tags?: ReadonlyArray<string>
   readonly parentSessionId?: string
-  /** Full SDK-shape options snapshot. Typed loosely here; schema'd in Phase 4. */
+  /**
+   * Idle-timeout ceiling in ms. The SDK adapter races every query against
+   * this watchdog, reset on each yielded message. Catches silent subprocess
+   * hangs (DESIGN.md §12.2 invariant #5). Default 120_000 in the adapter.
+   */
+  readonly idleTimeoutMs?: number
+  /**
+   * Full SDK-shape options snapshot. Typed loosely here; schema'd in Phase 4.
+   *
+   * **Reserved keys — adapter-owned (DESIGN.md §12.2 invariant #7):**
+   * The adapter ALWAYS overwrites these with adapter-managed values, and
+   * will log a warning if the caller supplies them:
+   *   - `hooks` — registered via `SDKAdapter.registerHook()`
+   *   - `canUseTool` — registered via `SDKAdapter.setPermissionCallback()`
+   *   - `abortController` — Scope-owned
+   *   - `resume` / `forkSession` — lifecycle-owned
+   *
+   * All other keys pass through unchanged.
+   */
   readonly sdkOptions?: Readonly<Record<string, unknown>>
 }
+
+/** Keys the SDK adapter claims exclusive ownership of. See SessionOptions docs. */
+export const RESERVED_SDK_OPTION_KEYS = [
+  "hooks",
+  "canUseTool",
+  "abortController",
+  "resume",
+  "forkSession",
+] as const
+export type ReservedSdkOptionKey = (typeof RESERVED_SDK_OPTION_KEYS)[number]
 
 export interface SessionSummary {
   readonly id: string

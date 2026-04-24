@@ -1,79 +1,16 @@
 /**
- * Message tagged-union narrowing — ensure the helpers and tagged shape
- * are stable for downstream services (SessionStore, HookRegistry, TeamBroker).
+ * Envelope shape test — core only knows the versioned envelope. The SDK
+ * message union is owned by the adapter package; see DESIGN.md §12.2 #6.
  */
 import { describe, expect, it } from "vitest"
 import {
-  isAssistantMessage,
-  isPartialAssistantMessage,
-  isResultMessage,
-  isSystemMessage,
-  isUserMessage,
-  type SDKAssistantMessage,
-  type SDKMessage,
-  type SDKResultMessage,
-  type SDKSystemMessage,
-  type SDKUserMessage,
+  MESSAGE_ENVELOPE_VERSION,
   type StoredMessage,
+  type MessageKind,
 } from "../src/messages.js"
 
-const user: SDKUserMessage = {
-  type: "user",
-  session_id: "s1",
-  message: { role: "user", content: "hello" },
-}
-
-const assistant: SDKAssistantMessage = {
-  type: "assistant",
-  session_id: "s1",
-  message: {
-    id: "m1",
-    role: "assistant",
-    model: "claude-sonnet-4-5",
-    content: [{ type: "text", text: "hi" }],
-  },
-}
-
-const system: SDKSystemMessage = {
-  type: "system",
-  subtype: "init",
-  session_id: "s1",
-}
-
-const result: SDKResultMessage = {
-  type: "result",
-  subtype: "success",
-  session_id: "s1",
-  is_error: false,
-  duration_ms: 10,
-  duration_api_ms: 5,
-  num_turns: 1,
-}
-
-describe("SDKMessage narrowing", () => {
-  it("user guard matches only user messages", () => {
-    expect(isUserMessage(user)).toBe(true)
-    expect(isUserMessage(assistant)).toBe(false)
-  })
-
-  it("assistant guard matches only assistant messages", () => {
-    expect(isAssistantMessage(assistant)).toBe(true)
-    expect(isAssistantMessage(user)).toBe(false)
-  })
-
-  it("system/result/partial guards are disjoint", () => {
-    expect(isSystemMessage(system)).toBe(true)
-    expect(isResultMessage(result)).toBe(true)
-    expect(isPartialAssistantMessage(system)).toBe(false)
-  })
-
-  it("exhaustive switch over SDKMessage compiles", () => {
-    const kinds: SDKMessage[] = [user, assistant, system, result]
-    const tags = kinds.map((m) => m.type).sort()
-    expect(tags).toEqual(["assistant", "result", "system", "user"])
-  })
-
-  it("StoredMessage carries monotonic seq", () => {
+describe("StoredMessage envelope", () => {
+  it("carries schemaVersion and opaque payload", () => {
     const stored: StoredMessage = {
       id: "m1",
       sessionId: "s1",
@@ -81,9 +18,30 @@ describe("SDKMessage narrowing", () => {
       ts: 1,
       parentId: null,
       kind: "user",
-      payload: user,
+      schemaVersion: MESSAGE_ENVELOPE_VERSION,
+      payload: { anything: "the adapter wants" },
     }
+    expect(stored.schemaVersion).toBe(1)
     expect(stored.seq).toBe(0)
     expect(stored.kind).toBe("user")
+    expect(stored.payload).toEqual({ anything: "the adapter wants" })
+  })
+
+  it("envelope version is currently 1", () => {
+    expect(MESSAGE_ENVELOPE_VERSION).toBe(1)
+  })
+
+  it("MessageKind enumerates expected coarse tags", () => {
+    const kinds: MessageKind[] = [
+      "user",
+      "assistant",
+      "system",
+      "result",
+      "stream_event",
+      "hook",
+      "status",
+      "other",
+    ]
+    expect(kinds).toHaveLength(8)
   })
 })
