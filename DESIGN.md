@@ -46,9 +46,9 @@ Three decisions that drive everything downstream. Dated, with rationale.
   @effect/opentelemetry        │ ✅ 4.0.0-beta.57   │
   @effect/workflow             │ ❌ v3 only         │ 0.18.1
   @effect/cluster              │ ❌ v3 only         │ 0.58.2
-  @effect/schema               │ ❌ v3 only         │ 0.75.5
+  effect/Schema (bundled)      │ ✅ v3 ≥3.10 native │ n/a
   ```
-- **Rationale**: Three flagship packages we require (`@effect/workflow`, `@effect/cluster`, `@effect/schema`) are not yet v4-published. Mixing v4 core with v3 ecosystem is unsupported. 57 betas in ~3 weeks indicates active API churn incompatible with a days-long build. Staying on v3 stable until those packages publish v4 betas.
+- **Rationale**: Two flagship packages we require (`@effect/workflow`, `@effect/cluster`) are not yet v4-published. Schema is bundled into `effect` itself as `effect/Schema` in v3 — no separate package needed. Mixing v4 core with v3 ecosystem is unsupported. 57 betas in ~3 weeks indicates active API churn incompatible with a days-long build. Staying on v3 stable until those packages publish v4 betas.
 - **v4 migration**: remains scheduled at M5.
 - **Consequence**: Uses `Effect.Service<Self>()(...)` pattern, `Context.Tag`, Schema v3 variadic signatures. When all three blocking packages publish v4 betas, migration is scheduled with automated codemods per the [Effect v4 migration guide](https://github.com/Effect-TS/effect-smol/blob/main/MIGRATION.md).
 
@@ -108,7 +108,7 @@ Two planes: **Feature Modules** (capabilities) and **Runtime Systems** (cross-cu
 ──────┼────────────────────────┼────────────────────────────────────────────────
 2.2.1 │ Memory                 │ Plug-and-play backends (sqlite/file/vector/…)
 2.2.2 │ Hooks                  │ All 19 SDK hook events + matchers + decisions
-2.2.3 │ Configuration          │ Typed config via @effect/schema, layered sources
+2.2.3 │ Configuration          │ Typed config via effect/Schema, layered sources
 2.2.4 │ Sandbox                │ Isolated execution for untrusted scripts/skills
 2.2.5 │ Workflows              │ @effect/workflow + @effect/cluster wrapper
 2.2.6 │ UI                     │ Tauri+React; consumes observability stream
@@ -629,7 +629,7 @@ interface SDKAdapter {
 3. **All SDK hook events are exposed** via re-export of `HOOK_EVENTS` from `@anthropic-ai/claude-agent-sdk`. The hook surface is `typeof HOOK_EVENTS[number]` — count is an SDK property, not an architectural decision. Whatever ships upstream, we expose.
 4. **Permission evaluation order matches SDK exactly**: `Hooks → Deny rules → Permission mode → Allow rules → canUseTool`.
 5. **Timeouts on every SDK call.** Default 30s; configurable. Plus an **idle timeout** (default 120s, configurable via `SessionOptions.idleTimeoutMs`) that aborts the query if no message has been yielded for the idle window — per sol-agent's hard-won mitigation for SDK subprocess hangs.
-6. **Persisted messages use a versioned envelope.** `StoredMessage.payload` is typed `unknown` and carries a `schemaVersion` field. The SDK's `SDKMessage` union is re-exported by the adapter package only; core never imports SDK types at runtime. Readers validate with `@effect/schema` at read time, decoupling at-rest data from SDK shape drift.
+6. **Persisted messages use a versioned envelope.** `StoredMessage.payload` is typed `unknown` and carries a `schemaVersion` field. The SDK's `SDKMessage` union is re-exported by the adapter package only; core never imports SDK types at runtime. Readers validate with `effect/Schema` at read time, decoupling at-rest data from SDK shape drift.
 7. **The adapter owns reserved `Options` keys.** When merging caller-supplied `sdkOptions` into the outgoing SDK `Options`, the adapter ALWAYS overwrites `hooks`, `canUseTool`, `abortController`, `resume`, `forkSession` with adapter-owned values. If any of these keys are present in caller input, the adapter logs a warning and drops them. Tested.
 8. **The `Query` handle is retained.** `query()` returns a `Query` object that is both an async iterable AND a handle with control methods (`interrupt`, `supplyToolPermissionResponse`, etc.). The adapter stores the handle in a session-scoped `Ref` so callbacks (notably `canUseTool` "ask" flows) can reach it.
 
