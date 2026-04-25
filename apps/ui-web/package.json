@@ -7,6 +7,7 @@
     "dev": "vite",
     "dev:server": "bun run scripts/dev-server.ts",
     "dev:server:real": "bun run scripts/dev-server-real.ts",
+    "dev:server:chat": "bun run scripts/dev-server-chat.ts",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run"
@@ -17,6 +18,7 @@
   },
   "devDependencies": {
     "@experiment-agent/adapter-sdk": "workspace:*",
+    "@experiment-agent/chat-service": "workspace:*",
     "@experiment-agent/core": "workspace:*",
     "@experiment-agent/ui-ws": "workspace:*",
     "@types/react": "^18.3.12",
