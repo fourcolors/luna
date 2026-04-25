@@ -361,3 +361,98 @@ Required reading for Phase 11:
 **Context hygiene:** orchestrator C completed Phases 9.5 + 10 with full
 verification cycles. Context still workable but the 2-phase budget is
 consumed. STOP HERE — hand off to a fresh orchestrator for Phase 11.
+
+### Session 2026-04-25 (orchestrator D — Phase 11a only)
+
+**Phase 11 decomposition (Sterling approved):** The §7.2 TeamBroker signature
+depends on `TaskList` + `SessionService`, neither of which exist. Phase 11 is
+split into four sub-phases, one per orchestrator session:
+
+| Sub-phase | Deliverable                                | Frozen-edit  |
+|-----------|--------------------------------------------|--------------|
+| 11a       | TaskList (in-memory persistence-tier)      | no           |
+| 11b       | SessionService minimum (open/close/list)   | no           |
+| 11.5      | Extract `_supervised-pool/` helper         | no           |
+| 11c       | TeamBroker (FiberSet + LIFO template)      | **YES** — §6.2 |
+
+**Frozen-file edit pre-approved for 11c** (Sterling gave advance ✅): append
+`TeammateOrphanedError` + `TaskCompletionLagError` byte-exact per DESIGN §6.2
+lines 414–419 to `packages/core/src/errors.ts`. Still requires re-confirmation
+at 11c dispatch time to mirror Phase 9 pattern.
+
+**Shipped this session:** Phase 11a — `e443e6e`
+
+| Phase | Commit    | Title                                    | Tests delta |
+|-------|-----------|------------------------------------------|-------------|
+| 11a   | `e443e6e` | TaskList (in-memory persistence-tier)    | 193 / 3 sk  |
+
+**Pattern learnings from 11a:**
+- **Clock service wraps `Date.now()` directly**, so `effect/TestClock` cannot
+  drive it. For tests that need deterministic timestamps, build a custom
+  advancing-Clock layer: `Layer.succeed(Clock, advancingClockWithRef)`.
+  Consider factoring into `test/helpers/advancing-clock.ts` if 11b/11c need
+  it (advisor follow-up).
+- **`PubSub.unbounded` + `Stream.fromPubSub`** is the canonical "passive
+  event channel" pattern for persistence-tier services. Register
+  `PubSub.shutdown` finalizer on Layer close. Private — only expose the
+  Stream. Drop policy swap: `PubSub.sliding(N)` if memory becomes a concern.
+- **Atomic state transitions via single `Ref.modify`** returning a
+  discriminated outcome union (not-found | already-claimed | idempotent |
+  claimed). Handles three observable paths in one transaction; no TOCTOU.
+- **Same-assignee idempotent claim** — returning current task (not a fresh
+  clone) preserves status/updatedAt → genuine idempotence. Caller can
+  distinguish re-claim via `task.status !== "created"` if needed.
+- **Live-only subscribe semantics** (no replay). Consumers that need
+  history call `list()` first then `subscribe()`. Phase 11c TeamBroker
+  MUST subscribe BEFORE first task publish.
+
+**Advisor follow-ups (non-blocking):**
+1. Tighten sim scenario 4 with time-delta bound (prove slow subscriber
+   doesn't slow fast path by more than X ms).
+2. Factor advancing-Clock helper if 11b/11c need it again.
+3. **Phase 11b brief must decide**: teammate-to-teammate mailbox delivery
+   happens via (a) new TaskList method (e.g. `message(from, to, payload)`),
+   (b) sibling persistence-tier service (`Mailbox`), or (c) in-memory Hub
+   inside SessionService. Pre-advise before dispatch.
+4. **Phase 11c brief must state explicitly**: TeamBroker subscribes BEFORE
+   first submit — relies on TaskList's live-only semantics.
+
+### Session 2026-04-25 (end of orchestrator D)
+
+**Next pending phase: 11b — SessionService minimum (open/close/list)**
+
+Scope (per DESIGN §7.1):
+1. `SessionService` Tag in `packages/core/src/session-service/` (NOT in
+   `session/` — that namespace already has `types.ts`).
+2. Surface: `open(opts: SessionOptions)` → scoped session with `send` /
+   `replies` / `close`; `close(id)`; `list(q?)`.
+3. **Defer**: `resume(id)` (needs durable SessionStore replay — coming with
+   SQL persistence phase) and `fork(id, opts?)` (needs resume). Phase 11b
+   ships open/close/list only.
+4. Deps: SDKAdapter (already built), SessionStore Tag (check if it exists
+   as a stub or needs creation — ALSO in-memory for 11b).
+
+Required reading for Phase 11b:
+- `DESIGN.md` §7.1 (SessionService signature), §3.1 (Layer.scoped at session
+  boundary), §3.5 (reference implementation sketch lines 165–184), §5.1
+  sessions/messages tables (informs SessionStore shape).
+- `packages/adapter-sdk/src/adapter.ts` — QueryRequest surface that
+  SessionService will wrap.
+- `packages/core/src/session/types.ts` — existing session-related types.
+- `packages/core/src/task-list/task-list.ts` — persistence-tier pattern.
+
+**How to resume (concrete):**
+1. Read this file end-to-end.
+2. `git log --oneline -10` from `/Users/USER/Projects/experiment-agent`.
+3. Check whether `SessionStore` Tag exists in core or needs to be built in
+   11b alongside SessionService (`grep -r "SessionStore" packages/core/src`).
+4. Invoke advisor on Phase 11b scope (cite §7.1, §3.1, §3.5). Risk-checks:
+   mailbox mechanism for 11c (advisor follow-up #3 above), SessionStore
+   co-build decision, iterable prompt lifetime semantics.
+5. Fill BRIEF_TEMPLATE.md.
+6. Dispatch subagent. Advisor review diff. Commit.
+
+**Context hygiene:** orchestrator D ran ONE phase (11a, ~420s subagent +
+~70s advisor). Context very healthy — could continue to 11b in-session,
+but per HANDOFF guidance Fiber-supervision / session-boundary phases are
+budgeted 1-per-session. STOP HERE — fresh orchestrator for 11b.
