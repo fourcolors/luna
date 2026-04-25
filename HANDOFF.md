@@ -456,3 +456,66 @@ Required reading for Phase 11b:
 ~70s advisor). Context very healthy — could continue to 11b in-session,
 but per HANDOFF guidance Fiber-supervision / session-boundary phases are
 budgeted 1-per-session. STOP HERE — fresh orchestrator for 11b.
+
+---
+
+### Session 2026-04-25 (orchestrator E — Phase 11b-gap)
+
+**Scope discovery:** on resume, `SessionService` + `SessionStore` ALREADY
+existed in `packages/core/src/session/` with full §7.1 record-level surface
+(`open/resume/fork/list/close` + `create/get/setStatus/appendMessage/
+readMessages/list`). The original 11b brief was obsolete. Advisor audit
+verdict: **MODIFY** — 60% shipped, but missing the `Scope`-returning variant
+that 11c depends on.
+
+**Phase 11b-gap shipped (commit `c0d461f`):**
+- `SessionService.openScoped(opts) → Effect<ScopedSession, IntegrityError,
+  SDKAdapter | Scope>` where `ScopedSession = {id, send, replies, close}`
+- `Scope.addFinalizer` flips session to closed on Scope drop (§3.1 ownership)
+- No `Effect.fork` — composes adapter's own Stream + Scope (§3.4 #1, #4)
+- `genId` now Clock-driven: `Ref<number>` counter + `clock.nowMs()`
+  (removes module-level `let _seq` and `Date.now()`)
+- +5 tests (openScoped happy, cascade-cancel, store mirror, genId
+  determinism under fixed Clock, fork-parent-not-found)
+- Core: 94/94 pass · Full repo: 198 pass / 3 skip · Typecheck clean
+
+**Pattern learned — SDKAdapter Tag identifier aliasing:**
+`packages/core` cannot depend on `packages/adapter-sdk` (§4 topology + §12.2
+#6 core-is-SDK-free; would also be a cycle since adapter-sdk → core). But
+core's `openScoped` needs `SDKAdapter` in its requirements. Solution: core
+declares a **local Tag with the identical identifier string**
+`"experiment-agent/SDKAdapter"` via `Context.GenericTag<SDKAdapterLike>(...)`,
+with a structural `SDKAdapterLike` interface mirroring `SDKAdapterService`.
+Effect v3 keys Context slots by identifier string, so any layer providing
+the adapter-sdk `SDKAdapter` Tag (e.g. `SDKAdapter.Default`) satisfies core's
+requirement at runtime. Documented in `session-service.ts:14-22, 56-65`.
+
+Auditor SHIP, with 2 follow-up nits: (1) brief said +6 tests, reality +5;
+(2) consider adding a §4/§12 DESIGN note explaining the Tag-alias trick so
+future contributors don't "fix" it by adding the dep.
+
+**Next pending phase: 11.5 — extract `_supervised-pool` helper**
+
+The FiberSet + LIFO finalizer supervision primitive has shipped twice now
+(JobScheduler in Phase 10, and will ship a third time in 11c TeamBroker).
+Before 11c, extract the pattern into `packages/core/src/_supervised-pool/`
+(underscore-prefixed = internal helper). Scope:
+1. `SupervisedPool.make<Job>({capacity, onJobDone?})` — returns `{offer, size,
+   shutdown}` with FiberSet + LIFO Queue.shutdown finalizer + capacity
+   semaphore + Ref-based shadow size.
+2. Reuse in `JobScheduler` (refactor — keep test suite green) and use in 11c.
+3. No new errors; reuses whatever the consuming module raises.
+
+After 11.5: **Phase 11c — TeamBroker** (frozen-edit to `errors.ts` pre-approved
+for `TeammateOrphanedError` + `TaskCompletionLagError` per DESIGN §6.2
+lines 414–419).
+
+**How to resume (concrete):**
+1. Read this file end-to-end.
+2. `git log --oneline -10` from `/Users/USER/Projects/experiment-agent`.
+3. Read `packages/core/src/jobs/job-scheduler.ts` (the current supervision
+   template).
+4. Invoke advisor on Phase 11.5 scope — verify the extraction shape before
+   touching JobScheduler.
+5. Fill BRIEF_TEMPLATE.md for 11.5. Dispatch subagent. Review. Commit.
+6. Only then advance to 11c.
