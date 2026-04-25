@@ -278,3 +278,86 @@ Required reading for Phase 10:
 Phase 10 is the heavy Fiber-supervision phase; recommend dispatching it to
 a fresh subagent at session start to keep orchestrator context lean for
 advisor cycles.
+
+### Session 2026-04-25 (orchestrator C, continued — Phase 10)
+
+**Shipped:** Phase 10 — `9a6acbc`
+
+| Phase | Commit    | Title                                            | Tests delta |
+|-------|-----------|--------------------------------------------------|-------------|
+| 10    | `9a6acbc` | Jobs & Schedule + Trigger Agents + backpressure  | 174 / 3 sk  |
+
+**Pattern learnings — FIBER SUPERVISION TEMPLATE (use for Phase 11 Teams):**
+- **Supervisor primitive:** `FiberSet.make()` yielded inside `Layer.scoped`.
+  Scope close auto-interrupts every member. Do NOT compose `Effect.fork` +
+  manual Scope; FiberSet IS the canonical supervised pool.
+- **LIFO finalizer ordering for cascade-cancel:** register the result-queue
+  shutdown finalizer BEFORE creating the FiberSet. LIFO means on Scope close:
+  (1) FiberSet interrupts fibers FIRST, (2) fibers' onExit hooks publish
+  final `Exit.isInterrupted` results into the still-open queue, (3) queue
+  shuts down LAST. Reversing this order silently drops final results.
+- **Public API exposes IDs only, never `Fiber.RuntimeFiber` refs** — §3.4 #1.
+  Internal `RunningEntry { jobId, fiber }` is fine; never return `fiber` from
+  any public method.
+- **Per-effect Scope wrapping:** `Effect.scoped(userEffect)` for each forked
+  job/team-member effect so caller's resources (broker creds, etc.) attach
+  to the per-effect Scope, not the supervisor's Layer Scope.
+- **Backpressure pattern:** `Queue.bounded` + `Effect.Semaphore` + a `Ref` for
+  in-flight count + a `submitMutex` for atomic check-and-mutate across
+  concurrent submits. Effect.Semaphore lacks a sync `available` accessor, so
+  the Ref shadow is required for drop-newest / drop-oldest decisions.
+- **Cron:** `effect/Cron` is bundled in effect@3.21. Use `Cron.next(cron, date)`
+  + `Effect.sleep(Duration.millis(...))` for TestClock-determinism. Avoid
+  `Schedule.cron` if you need to inspect tick counts in sims.
+- **Tier-2 sim mandate for Fiber-supervision modules:** at minimum (a) backpressure
+  block-then-drain, (b) supervisor cascade-cancel using REAL `Layer.buildWithScope`
+  + `Scope.close` (not `Effect.scoped` sleight-of-hand), (c) determinism via
+  `TestClock`, (d) failure-no-auto-restart.
+
+**Phase 10 advisor follow-ups (carry into Phase 11+ or address opportunistically):**
+1. Tighten cron sim assertion `>= 4` → `=== 4` (could mask double-fire regression)
+2. Strengthen FIFO claim in backpressure scenario 1 (currently only proves "all ran")
+3. `JobInterruptedError` exported but unused — wire into drop-oldest eviction or drop
+4. Document `slots.take(1)` after `Fiber.interruptFork` is interrupt-latency-bound
+5. Consider extracting the FiberSet+LIFO pattern into a shared helper if Phase 11
+   re-implements it byte-for-byte (premature now; revisit after Teams ships)
+
+### Session 2026-04-25 (end of orchestrator C)
+
+**Next pending phase: 11 — Teams module with supervisor Fiber + TeamBroker**
+
+Per HANDOFF.md guidance + advisor pre-review for Phase 10: Phases 10 and 11
+should NOT be paired in one orchestrator session. Phase 11 deserves a fresh
+session.
+
+Scope (per DESIGN.md §15 M3 + §2.1.x for Teams — verify exact §-anchor before
+dispatch; advisor should pre-review):
+1. `TeamBroker` / `Team` service — supervised group of cooperating sub-agents
+   running concurrently with bounded message-passing.
+2. Reuse FiberSet + LIFO finalizer pattern from Phase 10 (template above).
+3. Inter-member message passing (likely via `Queue` or `PubSub` per member).
+4. Team-level lifecycle: spawn → run → cleanup with cascading interruption.
+5. Integration with AccountBroker so each member's queries acquire credentials
+   via the per-member Scope (Phase 9.5 pattern).
+
+Required reading for Phase 11:
+- `DESIGN.md` Teams section (verify §-anchor — likely §2.1.x; not yet read by
+  this orchestrator), §3 (concurrency invariants), §6.1+§6.3 (errors), §15 M3.
+- `packages/core/src/jobs/job-scheduler.ts` — FiberSet + LIFO template.
+- `packages/core/src/jobs/trigger-agent.ts` — multi-fiber lifecycle pattern.
+- Effect docs: `PubSub`, `Mailbox` (effect@3.21 bundled), `FiberSet`.
+
+**How to resume (concrete):**
+1. Read this file end-to-end.
+2. `git log --oneline -10` from `/Users/sol/Projects/experiment-agent`.
+3. Read DESIGN.md Teams section + verify §-anchor numbers.
+4. Invoke advisor on Phase 11 scope (cite §3.4 invariants, §6.1+§6.3 errors,
+   the Phase 10 template above). Risk-checks: PubSub vs Mailbox vs Queue
+   for member messaging, supervisor failure semantics (one member down →
+   whole team or just that member?), broker integration scope.
+5. Fill BRIEF_TEMPLATE.md with narrowed Phase 11 scope.
+6. Dispatch general-purpose subagent. Advisor review diff. Commit.
+
+**Context hygiene:** orchestrator C completed Phases 9.5 + 10 with full
+verification cycles. Context still workable but the 2-phase budget is
+consumed. STOP HERE — hand off to a fresh orchestrator for Phase 11.
