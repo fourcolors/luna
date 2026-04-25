@@ -641,3 +641,82 @@ lines 414–419).
    touching JobScheduler.
 5. Fill BRIEF_TEMPLATE.md for 11.5. Dispatch subagent. Review. Commit.
 6. Only then advance to 11c.
+
+### Session 2026-04-25 (autonomous run — Phases 14–18 shipped)
+
+**Shipped this session (5 phases):**
+
+```
+Phase  Commit    Title                                       Tests delta
+─────  ────────  ──────────────────────────────────────────  ──────────
+14     fedf0a9   ObservabilityService + WorkflowRuntime fix  +6
+15     72dcef1   CostAccountingService                       +7
+16     61ecff9   NetSecClient                                +7
+17     e999e14   GatewayService + stdio/http adapters        +6
+18     23051db   TelemetryService (Counter primitive)        +8
+```
+
+Repo state: **229 tests passing**, no skips relevant to these phases.
+
+**Key pattern learnings (carry into next session):**
+
+1. **Effect v3 has NO `Hub` — use `PubSub`.** `Stream.fromHub` does not
+   exist either; use `Stream.fromPubSub`.
+
+2. **`Stream.fromPubSub` is LAZY.** Subscribers register only when the
+   stream is consumed, so events emitted before the consumer's `runForEach`
+   reaches steady-state are LOST. Fix: expose an eager-subscribe API:
+   ```ts
+   subscribeEvents: Effect.Effect<Stream<T>, never, Scope>
+   ```
+   Implementation calls `PubSub.subscribe(hub)` (eager) then returns
+   `Stream.fromQueue(sub)`. All §16 consumers (CostAccounting, future
+   subscribers) MUST use `subscribeEvents`, not raw `events`. Pattern
+   established in `observability/observability.ts` and
+   `cost-accounting/cost-accounting.ts`.
+
+3. **`exactOptionalPropertyTypes: true` requires conditional spread**
+   when forwarding optional fields to external types (e.g., `RequestInit`):
+   ```ts
+   const init: RequestInit = {
+     method,
+     ...(opts.headers !== undefined ? { headers: opts.headers } : {}),
+     ...(opts.body !== undefined ? { body: opts.body } : {}),
+   }
+   ```
+   Hit this 3× this session (NetSec, Gateway, Telemetry).
+
+4. **`override` modifier required on `cause` field** when extending Error
+   subclasses (`override readonly cause: unknown`).
+
+5. **`Queue.unsafeMake` and `Queue.Strategy.Unbounded` don't exist** in
+   Effect v3 — construct queues inside `Effect.gen` via
+   `yield* Queue.unbounded<T>()`.
+
+6. **Telemetry stays storage-agnostic per advisor (Phase 18 verdict
+   MODIFY):** Counter only (no Gauge/Histogram), pull-based `snapshot()`
+   only (no periodic ObsEvent emission), no DuckDB script in framework.
+   External persistence is a separate ops adapter that polls `snapshot()`.
+
+**Next pending phases (Feature/Runtime layer remainder per DESIGN §7.6):**
+- TriggerService (separate from `jobs/trigger-agent.ts` — needs design clarification)
+- UIService
+- LabsService
+- TrainingHarness
+
+These were not started in this session — context budget consumed (5
+phases shipped, the stretch limit per HANDOFF's own guidance). Hand off
+to a fresh session.
+
+**How to resume:**
+1. Read this file tail.
+2. `git log --oneline -10` — `23051db` should be top.
+3. Re-read `DESIGN.md` §7.6+ for the remaining 4 services' contracts.
+4. Pick TriggerService first (smallest, builds on existing
+   `jobs/trigger-agent.ts`); advisor-gate the scope.
+5. Standard cycle: advisor → BRIEF → implement → test → typecheck →
+   advisor → commit → HANDOFF append.
+
+**Sterling's standing directive:** "do all the phases without bothering me"
+— continue autonomous through the remaining 4 phases unless an
+irreversible / high-blast-radius decision arises.
