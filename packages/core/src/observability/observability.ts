@@ -25,6 +25,7 @@
  */
 import {
   Effect,
+  Either,
   Layer,
   PubSub,
   Queue,
@@ -34,8 +35,10 @@ import { appendFile, mkdir } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { Clock } from "../clock.js"
+import { decodeObsEvent } from "./schema.js"
 import type {
   CostAccruedEvent,
+  ErrorEvent,
   ObservabilityApi,
   ObservabilityConfig,
   ObsEvent,
@@ -107,7 +110,35 @@ export class ObservabilityService extends Effect.Tag(
           )
 
         const emit: ObservabilityApi["emit"] = (event) =>
-          PubSub.publish(hub, event).pipe(Effect.asVoid, Effect.ignore)
+          Effect.gen(function* () {
+            // Validate at the boundary — catches producer drift (e.g. wrong
+            // field names) before events reach the JSONL sink or any wire
+            // protocol. On failure: drop the malformed event, publish a
+            // synthetic Error event so the violation is observable.
+            const decoded = decodeObsEvent(event as unknown)
+            if (Either.isRight(decoded)) {
+              yield* PubSub.publish(hub, decoded.right).pipe(
+                Effect.asVoid,
+                Effect.ignore,
+              )
+              return
+            }
+            const ts = yield* clock.nowIso()
+            const violation: ErrorEvent = {
+              ts,
+              kind: "Error",
+              level: "error",
+              errorTag: "ObsSchemaViolation",
+              message: `Malformed ObsEvent dropped: ${decoded.left.message}`,
+              context: {
+                offendingKind: (event as { kind?: unknown })?.kind ?? null,
+              },
+            }
+            yield* PubSub.publish(hub, violation).pipe(
+              Effect.asVoid,
+              Effect.ignore,
+            )
+          })
 
         const recordCost: ObservabilityApi["recordCost"] = (opts) =>
           Effect.gen(function* () {

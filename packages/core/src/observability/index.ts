@@ -1,4 +1,20 @@
 export { ObservabilityService } from "./observability.js"
+export {
+  ObsEventSchema,
+  decodeObsEvent,
+  SessionStartSchema,
+  SessionEndSchema,
+  ToolCallSchema,
+  HookFireSchema,
+  PermissionDecisionSchema,
+  TeammateStartSchema,
+  TeammateIdleSchema,
+  TeammateStopSchema,
+  WorkflowTransitionSchema,
+  AccountSwitchSchema,
+  CostAccruedSchema,
+  ErrorEventSchema,
+} from "./schema.js"
 export type {
   AccountSwitchEvent,
   CostAccruedEvent,
