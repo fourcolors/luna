@@ -530,6 +530,73 @@ Advisor (session 2026-04-25) recommended **MODIFY** on four points:
 - Per-job `Effect.scoped(run)` so caller resources attach to per-job Scope
   not pool Scope (`:159`) — critical for AccountBroker per Phase 9.5
 
+---
+
+### Session 2026-04-25 (orchestrator F-attempt + recovery, then 11.5a)
+
+**Tooling discovery:** spawned subagents do NOT have access to the `Agent`
+tool — they cannot dispatch sub-subagents. Orchestrator F (a spawned agent)
+correctly stopped on tool-availability rather than playing all four roles
+(orchestrator + advisor + subagent + auditor) single-handed.
+
+**Workflow rule learned:** the orchestrator/advisor/subagent/auditor pattern
+must run from the **top-level session**, not from a spawned orchestrator.
+Top-level session can spawn each role in turn; can't delegate the whole
+dispatch tree. Update mental model: HANDOFF + new top-level session is the
+unit of progress, not "spawn an orchestrator."
+
+**Phase 11.5a shipped (commit `170b0bb`):**
+- New: `packages/core/src/supervised-pool/{types.ts, supervised-pool.ts, index.ts}`
+- New: `packages/core/test/supervised-pool.test.ts` — 9 Tier-2 sims (capacity,
+  block, drop-newest, drop-oldest, cascade-cancel, failure-no-restart,
+  post-shutdown-submit, LIFO ordering, per-job Scope)
+- Public API (internal-only — not re-exported from `packages/core` root):
+  `makeSupervisedPool(config) → Effect<SupervisedPool, never, Scope>`,
+  `SubmitOutcome` discriminated union, `results: Stream<PoolResult>`
+- All 5 advisor-locked invariants preserved with `file:line` mapping to
+  `job-scheduler.ts` template
+- Repo: 210 pass / 3 skip / typecheck clean
+
+**Deviation flagged:** API named `SupervisedPoolNs.make(...)` instead of
+`SupervisedPool.make(...)` due to TS2323 type/value declaration-merge
+collision (re-exported type alias + locally-declared const). Direct factory
+`makeSupervisedPool` is available alongside. For 11.5b refactor, prefer
+calling `makeSupervisedPool` directly. If 11.5b needs to expose this from
+the root barrel later, consider `SupervisedPoolApi` or `SupervisedPoolModule`
+naming over `Ns` suffix.
+
+**Non-blocking follow-ups:**
+- `Deferred` import at `packages/core/test/supervised-pool.test.ts:18` is
+  unused — drop it on next touch
+- `JobScheduler` itself is untouched — 11.5b will refactor it
+
+**Next pending phase: 11.5b — refactor JobScheduler to consume the pool**
+
+Scope:
+1. Replace JobScheduler's internal FiberSet+LIFO+semaphore+Ref-shadow+
+   submitMutex plumbing with `makeSupervisedPool({capacity, policy})`
+2. Map `SubmitOutcome` → existing `JobSubmitError` ("queue-full" /
+   "shutting-down") at the JobScheduler boundary — preserves the error
+   surface other modules import from `packages/core/src/jobs/errors.ts`
+3. Map pool's `results: Stream<PoolResult>` → JobScheduler's existing
+   `JobResult` Stream surface (id + exit + status enum + maybe more)
+4. Phase-10 Tier-2 sims must stay green WITHOUT MODIFICATION — they prove
+   the refactor is behavior-preserving
+5. Do not change any public API of JobScheduler
+
+**How to resume (concrete):**
+1. Read this file end-to-end.
+2. `git log --oneline -10` — should show `170b0bb` (11.5a) at the top.
+3. Read `packages/core/src/supervised-pool/{supervised-pool.ts, types.ts}`
+4. Read `packages/core/src/jobs/job-scheduler.ts` (the file being refactored)
+5. Read `packages/core/test/job-scheduler.test.ts` (sims that must stay green)
+6. Invoke advisor — verify the SubmitOutcome→JobSubmitError mapping doesn't
+   leak pool internals (drop-oldest eviction creates an `evicted` outcome
+   that doesn't have a 1:1 JobScheduler error today — decide whether to
+   surface it as a new `JobInterruptedError` reason or fold into existing).
+7. Fill BRIEF_TEMPLATE.md. Dispatch subagent. Auditor. Commit. Update HANDOFF.
+8. Then advance to 11c.
+
 After 11.5: **Phase 11c — TeamBroker** (frozen-edit to `errors.ts` pre-approved
 for `TeammateOrphanedError` + `TaskCompletionLagError` per DESIGN §6.2
 lines 414–419).
