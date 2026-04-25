@@ -146,6 +146,24 @@ describe("UIWebSocketServer", () => {
     ).rejects.toThrow(/401|unexpected|unexpected-response/i)
   })
 
+  it("accepts ?token= query-string auth (browser-compatible path)", async () => {
+    rig = await startRig()
+    // Browsers can't set Authorization on WS upgrades; the query-string
+    // form is the only way for them to authenticate. Verify it works
+    // end-to-end (no headers passed; ws lib will send no Authorization).
+    const url = `${rig.url}?token=${encodeURIComponent(TOKEN)}`
+    const frames = await collectFrames(url, {}, 1)
+    expect(frames[0]?.type).toBe("hello")
+  })
+
+  it("rejects ?token= with wrong value (401)", async () => {
+    rig = await startRig()
+    const url = `${rig.url}?token=wrongtoken1234567`
+    await expect(collectFrames(url, {}, 1, 1000)).rejects.toThrow(
+      /401|unexpected/i,
+    )
+  })
+
   it("rejects upgrade with wrong bearer (401)", async () => {
     rig = await startRig()
     await expect(
