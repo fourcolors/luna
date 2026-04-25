@@ -67,6 +67,19 @@ export interface SessionSummary {
   readonly endedAt: number | null
   readonly model: string
   readonly status: SessionStatus
+  /**
+   * Wall-clock ts of the most recently appended message, or null if none yet.
+   * Updated by SessionStore.appendMessage. Powers the chat sidebar's
+   * recent-first ordering without requiring callers to scan the message log.
+   */
+  readonly lastMessageAt: number | null
+  /**
+   * Short text excerpt derived from the most recently appended message
+   * (assistant text or user text, truncated). Null if the latest message is
+   * not text-bearing (system/result/stream_event/etc.) or none exists yet.
+   * Best-effort — adapters that store opaque payloads may produce nulls.
+   */
+  readonly lastMessagePreview: string | null
 }
 
 export interface SessionQuery {
@@ -74,6 +87,12 @@ export interface SessionQuery {
   readonly tag?: string
   readonly parentId?: string
   readonly limit?: number
+  /**
+   * Sort order. Default "createdAt" (newest-first). Use "lastMessageAt" for
+   * the chat sidebar's recent-activity-first list — sessions with no messages
+   * fall back to createdAt to keep brand-new threads visible.
+   */
+  readonly orderBy?: "createdAt" | "lastMessageAt"
 }
 
 /**

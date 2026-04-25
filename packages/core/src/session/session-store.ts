@@ -21,6 +21,7 @@ import {
   type StoredMessage,
 } from "../messages.js"
 import { IntegrityError } from "../errors.js"
+import { extractTextPreview } from "./projection.js"
 
 interface SessionRow {
   readonly id: string
@@ -32,6 +33,8 @@ interface SessionRow {
   readonly model: string
   readonly options: SessionOptions
   readonly status: SessionStatus
+  readonly lastMessageAt: number | null
+  readonly lastMessagePreview: string | null
 }
 
 interface StoreState {
@@ -55,6 +58,8 @@ const toSummary = (row: SessionRow): SessionSummary => ({
   endedAt: row.endedAt,
   model: row.model,
   status: row.status,
+  lastMessageAt: row.lastMessageAt,
+  lastMessagePreview: row.lastMessagePreview,
 })
 
 export class SessionStore extends Effect.Service<SessionStore>()(
@@ -91,6 +96,8 @@ export class SessionStore extends Effect.Service<SessionStore>()(
             model: input.options.model,
             options: input.options,
             status: "active",
+            lastMessageAt: null,
+            lastMessagePreview: null,
           }
           const sessions = new Map(state.sessions)
           sessions.set(input.id, row)
@@ -182,12 +189,29 @@ export class SessionStore extends Effect.Service<SessionStore>()(
           messages.set(input.sessionId, [...prev, stored])
           const nextSeq = new Map(state.nextSeq)
           nextSeq.set(input.sessionId, seq + 1)
+
+          // Maintain sidebar metadata: every append bumps lastMessageAt;
+          // text-bearing kinds (user/assistant) refresh the preview, others
+          // (result/system/stream_event/hook/status) leave preview untouched
+          // so the sidebar shows real conversation excerpts, not "tool ran".
+          const sessionRow = state.sessions.get(input.sessionId)!
+          const sessions = new Map(state.sessions)
+          const newPreview =
+            input.kind === "user" || input.kind === "assistant"
+              ? extractTextPreview(input.payload) ?? sessionRow.lastMessagePreview
+              : sessionRow.lastMessagePreview
+          sessions.set(input.sessionId, {
+            ...sessionRow,
+            lastMessageAt: input.ts,
+            lastMessagePreview: newPreview,
+          })
+
           return [
             Effect.succeed(stored) as Effect.Effect<
               StoredMessage,
               IntegrityError
             >,
-            { ...state, messages, nextSeq },
+            { ...state, messages, nextSeq, sessions },
           ]
         }).pipe(Effect.flatten)
 
@@ -223,7 +247,15 @@ export class SessionStore extends Effect.Service<SessionStore>()(
               if (q.parentId)
                 rows = rows.filter((r) => r.parentId === q.parentId)
               if (q.tag) rows = rows.filter((r) => r.tags.includes(q.tag!))
-              rows.sort((a, b) => b.createdAt - a.createdAt)
+              if (q.orderBy === "lastMessageAt") {
+                rows.sort(
+                  (a, b) =>
+                    (b.lastMessageAt ?? b.createdAt) -
+                    (a.lastMessageAt ?? a.createdAt),
+                )
+              } else {
+                rows.sort((a, b) => b.createdAt - a.createdAt)
+              }
               if (q.limit !== undefined) rows = rows.slice(0, q.limit)
               return Stream.fromIterable(rows.map(toSummary))
             }),
