@@ -33,20 +33,33 @@ All frames are JSON objects with a `type` discriminant:
 { type: "bye",    reason: <string> }                   // either direction
 ```
 
+`hello.kinds` is the list of ObsEvent kinds the server advertises as
+forwardable. It is purely informational — pass `advertisedKinds` to
+`startUIWebSocketServer` to populate it (typically the same array you
+passed to `UIService.makeLayer({ kinds: ... })`).
+
 ### Drop semantics
 
-The server keeps a per-connection bounded buffer
-(`perConnectionCapacity`, default 256, drop-oldest). If a client is
-slow, oldest events are silently dropped from its buffer; the next
-event delivered carries a leading `drop` frame so the client knows it
-missed events. The shared `UIService` PubSub is never back-pressured,
-so one slow client can never starve the others.
+The server is a single-fiber forwarder per connection. If the
+underlying socket buffer (`ws.bufferedAmount`) exceeds
+`perConnectionCapacity * 4096` bytes, the next event is dropped and a
+counter is incremented. The next successful send carries a leading
+`{type:"drop", n, since}` frame so the client knows exactly how many
+events it missed and the timestamp of the oldest. The shared
+`UIService` PubSub is never back-pressured, so one slow client can
+never starve the others. Drop counting is exact (single-fiber design;
+no producer/consumer race).
 
 ## Usage
 
 ```ts
 import { Effect, Layer, ManagedRuntime } from "effect"
-import { Clock, ObservabilityService, UIService } from "@experiment-agent/core"
+import {
+  Clock,
+  DEFAULT_UI_KINDS,
+  ObservabilityService,
+  UIService,
+} from "@experiment-agent/core"
 import { startUIWebSocketServer } from "@experiment-agent/ui-ws"
 
 const baseLayer = Layer.mergeAll(
@@ -65,6 +78,7 @@ const program = Effect.gen(function* () {
     port: 4753,
     token: process.env["UI_WS_TOKEN"]!, // 1Password-injected
     perConnectionCapacity: 256,
+    advertisedKinds: DEFAULT_UI_KINDS,
   })
   console.log(`UI WS listening on ws://${handle.host}:${handle.port}/ui`)
   yield* Effect.never // hold the scope open
