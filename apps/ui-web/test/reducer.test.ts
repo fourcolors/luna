@@ -1,18 +1,49 @@
 import { describe, expect, it } from "vitest"
 import { filterEvents, initialState, reduce } from "../src/reducer.js"
-import type { ObsEvent, ServerFrame } from "../src/wire.js"
+import type {
+  ChatMessage,
+  ObsEvent,
+  ServerFrame,
+  SessionSummary,
+} from "../src/wire.js"
 
 const ev = (kind: string, ts = "2026-04-25T00:00:00.000Z"): ObsEvent =>
   ({ kind, ts, level: "info" }) as unknown as ObsEvent
+
+const summary = (id: string, title = "t"): SessionSummary => ({
+  id,
+  parentId: null,
+  title,
+  tags: [],
+  createdAt: 0,
+  endedAt: null,
+  model: "m",
+  status: "active",
+  lastMessageAt: null,
+  lastMessagePreview: null,
+})
+
+const chatMsg = (
+  id: string,
+  seq: number,
+  role: "user" | "assistant",
+  text: string,
+): ChatMessage => ({ id, seq, ts: 0, role, text, toolUses: [] })
 
 describe("reducer", () => {
   it("hello sets advertisedKinds and clears closeReason", () => {
     const s1 = reduce(
       { ...initialState, closeReason: "stale" },
-      { type: "hello", protocolVersion: 1, kinds: ["ToolCall", "Error"] } as ServerFrame,
+      {
+        type: "hello",
+        protocolVersion: 2,
+        kinds: ["ToolCall", "Error"],
+        capabilities: { chat: true, streamingDeltas: true },
+      } as ServerFrame,
     )
     expect(s1.advertisedKinds).toEqual(["ToolCall", "Error"])
     expect(s1.closeReason).toBeNull()
+    expect(s1.capabilities).toEqual({ chat: true, streamingDeltas: true })
   })
 
   it("event prepends and tracks seenKinds (dedup)", () => {
@@ -62,5 +93,124 @@ describe("reducer", () => {
     const events = [ev("ToolCall"), ev("Error"), ev("CostAccrued")]
     const out = filterEvents(events, new Set(["Error", "CostAccrued"]))
     expect(out.map((e) => e.kind)).toEqual(["Error", "CostAccrued"])
+  })
+
+  /* ── chat ────────────────────────────────────────────────────────── */
+
+  it("thread-list populates the sidebar projection", () => {
+    const s = reduce(initialState, {
+      type: "thread-list",
+      threads: [summary("a"), summary("b")],
+    })
+    expect(s.threadList.map((t) => t.id)).toEqual(["a", "b"])
+  })
+
+  it("thread-created inserts thread, selects it, prepends to list", () => {
+    const s = reduce(
+      { ...initialState, threadList: [summary("old")] },
+      { type: "thread-created", thread: summary("new") },
+    )
+    expect(s.selectedThreadId).toBe("new")
+    expect(s.threadList[0]!.id).toBe("new")
+    expect(s.threads.has("new")).toBe(true)
+  })
+
+  it("thread-snapshot installs messages + throughSeq watermark", () => {
+    let s = reduce(initialState, {
+      type: "thread-created",
+      thread: summary("x"),
+    })
+    s = reduce(s, {
+      type: "thread-snapshot",
+      threadId: "x",
+      throughSeq: 5,
+      messages: [chatMsg("u1", 0, "user", "hi"), chatMsg("a1", 1, "assistant", "hey")],
+    })
+    const t = s.threads.get("x")!
+    expect(t.messages).toHaveLength(2)
+    expect(t.throughSeq).toBe(5)
+  })
+
+  it("user-accepted appends; duplicate seq <= throughSeq is deduped", () => {
+    let s = reduce(initialState, { type: "thread-created", thread: summary("x") })
+    s = reduce(s, {
+      type: "thread-snapshot",
+      threadId: "x",
+      throughSeq: 3,
+      messages: [],
+    })
+    s = reduce(s, {
+      type: "user-accepted",
+      threadId: "x",
+      seq: 2,
+      message: chatMsg("u-old", 2, "user", "stale"),
+    })
+    expect(s.threads.get("x")!.messages).toHaveLength(0) // deduped
+    s = reduce(s, {
+      type: "user-accepted",
+      threadId: "x",
+      seq: 4,
+      message: chatMsg("u-new", 4, "user", "fresh"),
+    })
+    expect(s.threads.get("x")!.messages).toHaveLength(1)
+    expect(s.threads.get("x")!.throughSeq).toBe(4)
+  })
+
+  it("assistant-delta sets in-flight; assistant-done clears it and appends", () => {
+    let s = reduce(initialState, { type: "thread-created", thread: summary("x") })
+    s = reduce(s, {
+      type: "thread-snapshot",
+      threadId: "x",
+      throughSeq: -1,
+      messages: [],
+    })
+    s = reduce(s, {
+      type: "assistant-delta",
+      threadId: "x",
+      turnId: "t1",
+      text: "hello wor",
+    })
+    expect(s.threads.get("x")!.inFlight?.text).toBe("hello wor")
+    s = reduce(s, {
+      type: "assistant-done",
+      threadId: "x",
+      turnId: "t1",
+      seq: 0,
+      message: chatMsg("a1", 0, "assistant", "hello world"),
+    })
+    expect(s.threads.get("x")!.inFlight).toBeNull()
+    expect(s.threads.get("x")!.messages).toHaveLength(1)
+  })
+
+  it("assistant-error captures lastError and clears in-flight", () => {
+    let s = reduce(initialState, { type: "thread-created", thread: summary("x") })
+    s = reduce(s, {
+      type: "thread-snapshot",
+      threadId: "x",
+      throughSeq: -1,
+      messages: [],
+    })
+    s = reduce(s, {
+      type: "assistant-delta",
+      threadId: "x",
+      turnId: "t1",
+      text: "partial",
+    })
+    s = reduce(s, {
+      type: "assistant-error",
+      threadId: "x",
+      turnId: "t1",
+      error: { kind: "interrupted", message: "stopped" },
+    })
+    expect(s.threads.get("x")!.inFlight).toBeNull()
+    expect(s.threads.get("x")!.lastError).toEqual({
+      kind: "interrupted",
+      message: "stopped",
+    })
+  })
+
+  it("select-thread local action sets selectedThreadId", () => {
+    const s = reduce(initialState, { tag: "select-thread", threadId: "xyz" })
+    expect(s.selectedThreadId).toBe("xyz")
   })
 })
