@@ -180,7 +180,12 @@ describe("UIWebSocketServer", () => {
     )
     expect(frames[0]?.type).toBe("hello")
     if (frames[0]?.type === "hello") {
-      expect(frames[0].protocolVersion).toBe(1)
+      expect(frames[0].protocolVersion).toBe(2)
+      // v2 added capability flags; base server (no chat router bound)
+      // advertises chat: false. Commit 2b will flip this for the
+      // chat-enabled startup path.
+      expect(frames[0].capabilities.chat).toBe(false)
+      expect(frames[0].capabilities.streamingDeltas).toBe(false)
     }
   })
 
