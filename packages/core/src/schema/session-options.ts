@@ -28,6 +28,7 @@ export type SystemPromptSpec = typeof SystemPromptSchema.Type
 export const SessionOptionsSchema = S.Struct({
   model: S.String.pipe(S.minLength(1)),
   idleTimeoutMs: S.optional(S.Number.pipe(S.int(), S.positive())),
+  disableIdleTimeout: S.optional(S.Boolean),
   systemPrompt: S.optional(SystemPromptSchema),
   title: S.optional(S.String),
   tags: S.optional(S.Array(S.String)),

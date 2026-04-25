@@ -305,6 +305,8 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
 
           const idleMs =
             req.sessionOptions.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
+          const idleTimeoutDisabled =
+            req.sessionOptions.disableIdleTimeout === true
           const sessionIdForErr = req.sessionId
 
           /**
@@ -379,19 +381,26 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
           void runProducer()
 
           // Consumer stream: repeatEffectOption to signal `done` via None.
+          // When `disableIdleTimeout` is true (chat threads), we omit the
+          // timeoutFail wrapper so user think-time between turns does not
+          // trip §12.2 #5 — Queue.take just blocks until the next message.
+          const takeFrame = idleTimeoutDisabled
+            ? Queue.take(queue)
+            : Queue.take(queue).pipe(
+                Effect.timeoutFail({
+                  onTimeout: (): Option.Option<SDKError> =>
+                    Option.some(
+                      new SDKError({
+                        op: "idle-timeout",
+                        sessionId: sessionIdForErr,
+                        cause: `no message for ${idleMs}ms`,
+                      }),
+                    ),
+                  duration: idleMs,
+                }),
+              )
           const pullOne: Effect.Effect<SDKMessage, Option.Option<SDKError>> =
-            Queue.take(queue).pipe(
-              Effect.timeoutFail({
-                onTimeout: (): Option.Option<SDKError> =>
-                  Option.some(
-                    new SDKError({
-                      op: "idle-timeout",
-                      sessionId: sessionIdForErr,
-                      cause: `no message for ${idleMs}ms`,
-                    }),
-                  ),
-                duration: idleMs,
-              }),
+            takeFrame.pipe(
               Effect.flatMap((frame) => {
                 switch (frame._tag) {
                   case "value":
