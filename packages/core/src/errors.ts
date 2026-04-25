@@ -66,3 +66,15 @@ export class MemoryBackendError extends Data.TaggedError("MemoryBackendError")<{
 export class AllAccountsExhaustedError extends Data.TaggedError("AllAccountsExhaustedError")<{
   readonly kind: string
 }> {}
+
+// §6.2 — Teams (TeamBroker, Phase 11c). Per DESIGN.md §6.2 lines 414-419.
+export class TeammateOrphanedError extends Data.TaggedError("TeammateOrphanedError")<{
+  readonly teamName: string
+  readonly teammate: string
+  readonly reason: "lead_exited" | "scope_closed"
+}> {}
+
+export class TaskCompletionLagError extends Data.TaggedError("TaskCompletionLagError")<{
+  readonly taskId: string
+  readonly stuckMs: number
+}> {}
