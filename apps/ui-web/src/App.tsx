@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
+import { lazy, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
 import { initialState, reduce, filterEvents, type Action } from "./reducer.js"
+
+const MarkdownView = lazy(() => import("./MarkdownView.js"))
 import {
   browserWebSocketTransport,
   type ConnectionStatus,
@@ -421,10 +423,22 @@ function ChatPanel({
 }
 
 function MessageBubble({ message }: { message: ChatMessage }) {
+  // Assistant messages get GFM markdown + Shiki-highlighted fences. User
+  // bubbles stay as plain text — they're never markdown anyway and we
+  // skip the Shiki cost. Suspense fallback keeps text visible while the
+  // MarkdownView chunk is loading on first assistant turn.
+  const body =
+    message.role === "assistant" ? (
+      <Suspense fallback={<div className="bubble-text">{message.text}</div>}>
+        <MarkdownView text={message.text} />
+      </Suspense>
+    ) : (
+      <div className="bubble-text">{message.text}</div>
+    )
   return (
     <div className={`bubble ${message.role}`}>
       <div className="bubble-role">{message.role}</div>
-      <div className="bubble-text">{message.text}</div>
+      {body}
       {message.toolUses.length > 0 && (
         <div className="tool-uses">
           {message.toolUses.map((tu) => (
