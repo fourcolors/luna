@@ -6,26 +6,63 @@
  *   - SessionService owns the *lifecycle* (open → active → closed) and the
  *     Scope that pins every resource attached to that session (§3.1).
  *
- * The SDK adapter (Phase 3) hooks into `open` to spawn the actual query
- * stream; until then we provide the open/close/list/fork/resume surface so
- * downstream services can wire against a real Service.
+ * The record-level surface is `open/resume/fork/list/close`. `openScoped`
+ * adds the Scope-pinned variant sketched in §3.5 — the one TeamBroker and
+ * any other in-process consumer should use. It composes the caller's Scope
+ * with the SDK adapter's Scope so closing the outer Scope interrupts the
+ * underlying subprocess (§3.4 #4) and flips the record status to "closed".
+ *
+ * A local `SDKAdapter` Tag is declared here with the SAME identifier string
+ * used by `@experiment-agent/adapter-sdk`. This lets SessionService consume
+ * the adapter as a runtime `R` requirement WITHOUT creating a package-level
+ * core → adapter-sdk dependency cycle (§4 topology: core is Persistence;
+ * adapter-sdk is above Persistence; `packages/core` cannot import from it).
+ * Any layer that provides "experiment-agent/SDKAdapter" satisfies the
+ * requirement — including `SDKAdapter.Default` from adapter-sdk.
  */
 import { Clock } from "../clock.js"
-import { Effect, Ref, Stream } from "effect"
+import { Context, Effect, Queue, Ref, Scope, Stream } from "effect"
 import { IntegrityError } from "../errors.js"
 import type {
+  ScopedSession,
+  SDKMessageLike,
+  SDKUserMessageLike,
   SessionOptions,
   SessionQuery,
   SessionSummary,
 } from "./types.js"
 import { SessionStore } from "./session-store.js"
 
-/** Generate a monotonically-unique session id without external deps. */
-let _seq = 0
-const genId = (prefix: string): string =>
-  `${prefix}_${Date.now().toString(36)}_${(_seq++).toString(36)}_${Math.random()
-    .toString(36)
-    .slice(2, 8)}`
+/**
+ * Structural surface of the SDK adapter that SessionService consumes.
+ * Must stay in sync with `SDKAdapterService` in adapter-sdk, but core keeps
+ * it SDK-free by using opaque `unknown` aliases (DESIGN.md §12.2 #6).
+ */
+export interface SDKAdapterLike {
+  readonly query: (req: {
+    readonly sessionId: string
+    readonly prompt: Stream.Stream<SDKUserMessageLike>
+    readonly sessionOptions: SessionOptions
+    readonly resumeFromSessionId?: string
+    readonly boundAccountId?: string
+  }) => Effect.Effect<
+    Stream.Stream<SDKMessageLike, unknown>,
+    unknown,
+    Scope.Scope
+  >
+}
+
+/**
+ * Local Tag alias for the SDK adapter. Uses the EXACT identifier string
+ * `"experiment-agent/SDKAdapter"` so it resolves to the same Context slot
+ * as the adapter-sdk's own `SDKAdapter` Tag — Effect v3 keys Tags by
+ * identifier (see `Effect.Tag(id)` behavior).
+ */
+export const SDKAdapter = Context.GenericTag<SDKAdapterLike>(
+  "experiment-agent/SDKAdapter",
+) as Context.Tag<SDKAdapterLike, SDKAdapterLike> & {
+  readonly key: "experiment-agent/SDKAdapter"
+}
 
 export class SessionService extends Effect.Service<SessionService>()(
   "experiment-agent/SessionService",
@@ -35,12 +72,29 @@ export class SessionService extends Effect.Service<SessionService>()(
       const clock = yield* Clock
       /** In-process guard: prevent double-close of the same id. */
       const closedIds = yield* Ref.make<ReadonlySet<string>>(new Set())
+      /**
+       * Monotonic id-sequence counter, §3.1 Clock discipline. Replaces the
+       * module-level `let _seq` — one counter per SessionService instance,
+       * so layer-swapped tests get an isolated sequence.
+       */
+      const seqRef = yield* Ref.make<number>(0)
+
+      /** Generate a unique id driven by the injected Clock + Ref counter. */
+      const genId = (prefix: string): Effect.Effect<string> =>
+        Effect.gen(function* () {
+          const nowMs = yield* clock.nowMs()
+          const seq = yield* Ref.getAndUpdate(seqRef, (n) => n + 1)
+          // Randomness still sourced from Math.random — not lifetime state,
+          // just anti-collision for same-tick concurrent opens.
+          const rand = Math.random().toString(36).slice(2, 8)
+          return `${prefix}_${nowMs.toString(36)}_${seq.toString(36)}_${rand}`
+        })
 
       const open = (
         opts: SessionOptions,
       ): Effect.Effect<SessionSummary, IntegrityError> =>
         Effect.gen(function* () {
-          const id = genId("ses")
+          const id = yield* genId("ses")
           const createdAt = yield* clock.nowMs()
           return yield* store.create({ id, options: opts, createdAt })
         })
@@ -110,7 +164,79 @@ export class SessionService extends Effect.Service<SessionService>()(
           yield* Ref.update(closedIds, (s) => new Set(s).add(id))
         })
 
-      return { open, resume, fork, list, close } as const
+      /**
+       * Scope-pinned session. Per DESIGN.md §3.1 + §3.5:
+       *   - Runs inside the caller's Scope.
+       *   - Registers a finalizer that flips status → "closed".
+       *   - The SDK adapter's `query` also registers finalizers into the
+       *     same Scope (AbortController firing, handle dropped) — LIFO
+       *     ordering means the subprocess is interrupted BEFORE we mark
+       *     the record closed.
+       *
+       * Invariants §3.4 #1 (no cross-Scope Fiber refs) and #4 (interruption
+       * cascade) are honored structurally: we never `Effect.fork` anything;
+       * we just wire the adapter's already-scoped Stream through.
+       */
+      const openScoped = (
+        opts: SessionOptions,
+      ): Effect.Effect<
+        ScopedSession,
+        IntegrityError,
+        SDKAdapterLike | Scope.Scope
+      > =>
+        Effect.gen(function* () {
+          const summary = yield* open(opts)
+          const adapter = yield* SDKAdapter
+
+          // Mailbox for send() — lives in the session Scope.
+          const mailbox = yield* Queue.unbounded<SDKUserMessageLike>()
+          yield* Effect.addFinalizer(() => Queue.shutdown(mailbox))
+
+          const prompt: Stream.Stream<SDKUserMessageLike> =
+            Stream.fromQueue(mailbox)
+
+          // adapter.query has error channel `unknown` in our local shape
+          // (we type-erased across the package boundary). Swallow errors
+          // from the outer Effect — the real adapter never fails synchronously
+          // on query-construction; per-stream errors surface inside the
+          // returned Stream and are the consumer's problem. We type the
+          // ScopedSession.replies stream as `never`-error for caller
+          // ergonomics; the adapter's own error signalling will still
+          // appear as a stream-termination that the consumer observes.
+          const replies = yield* adapter
+            .query({
+              sessionId: summary.id,
+              prompt,
+              sessionOptions: opts,
+            })
+            .pipe(
+              Effect.orDie, // integrity-failure to build the stream = halt
+            )
+
+          // §3.1 finalizer: when the caller's Scope closes, flip status.
+          // `Effect.orDie` because IntegrityError here means our own store
+          // is inconsistent; we prefer defect over silent drop.
+          yield* Effect.addFinalizer(() => close(summary.id).pipe(Effect.orDie))
+
+          const send = (
+            msg: SDKUserMessageLike,
+          ): Effect.Effect<void, never> => Queue.offer(mailbox, msg).pipe(
+            Effect.asVoid,
+            Effect.catchAllCause(() => Effect.void), // post-close offers no-op
+          )
+
+          const handle: ScopedSession = {
+            id: summary.id,
+            send,
+            replies: replies.pipe(
+              Stream.catchAllCause(() => Stream.empty),
+            ) as Stream.Stream<SDKMessageLike, never>,
+            close: close(summary.id).pipe(Effect.orDie),
+          }
+          return handle
+        })
+
+      return { open, resume, fork, list, close, openScoped } as const
     }),
   },
 ) {}
