@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "dev:server": "bun run scripts/dev-server.ts",
+    "dev:server:real": "bun run scripts/dev-server-real.ts",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run"
@@ -15,6 +16,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@experiment-agent/adapter-sdk": "workspace:*",
     "@experiment-agent/core": "workspace:*",
     "@experiment-agent/ui-ws": "workspace:*",
     "@types/react": "^18.3.12",
