@@ -141,19 +141,50 @@ export const startUIWebSocketServer = (
 
     const wss = new WebSocketServer({ noServer: true })
 
+    // Constant-time string compare for the auth check. The token is short
+    // (≥16 chars) and the listener is 127.0.0.1-bound, so timing-attack
+    // exposure is small — but free to add and avoids the early-exit `===`
+    // pattern in case of future remote-binding mistakes.
+    const tokenEq = (a: string, b: string): boolean => {
+      if (a.length !== b.length) return false
+      let diff = 0
+      for (let i = 0; i < a.length; i++) {
+        diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+      }
+      return diff === 0
+    }
+
     // Auth + upgrade gate.
+    // Browsers can't set custom headers on WebSocket upgrades, so we accept
+    // EITHER `Authorization: Bearer <token>` (Node clients) OR a `?token=`
+    // query-string parameter (browser clients). Same token, both forms.
     httpServer.on("upgrade", (req, socket, head) => {
-      // URL match.
-      const url = req.url ?? ""
-      if (!url.startsWith(path)) {
+      const rawUrl = req.url ?? ""
+      // Strip query string for path match.
+      const qIdx = rawUrl.indexOf("?")
+      const pathOnly = qIdx === -1 ? rawUrl : rawUrl.slice(0, qIdx)
+      if (pathOnly !== path) {
         socket.write("HTTP/1.1 404 Not Found\r\n\r\n")
         socket.destroy()
         return
       }
-      // Bearer auth.
+      // Try header first (Node clients).
       const auth = req.headers["authorization"]
-      const expected = `Bearer ${config.token}`
-      if (auth !== expected) {
+      let ok = typeof auth === "string" && auth.startsWith("Bearer ") &&
+        tokenEq(auth.slice(7), config.token)
+      if (!ok) {
+        // Fall back to query-string token (browser clients).
+        try {
+          const u = new URL(rawUrl, "http://placeholder")
+          const qToken = u.searchParams.get("token")
+          if (qToken !== null && tokenEq(qToken, config.token)) {
+            ok = true
+          }
+        } catch {
+          // ignore — invalid URL → fail closed
+        }
+      }
+      if (!ok) {
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n")
         socket.destroy()
         return
