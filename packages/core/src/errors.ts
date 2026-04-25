@@ -85,3 +85,18 @@ export class WorkflowCompensationError extends Data.TaggedError("WorkflowCompens
   readonly stepId: string
   readonly cause: unknown
 }> {}
+
+// §6.2 — Labs (LabsService, Phase 21). Scientist-loop budget + scoring boundaries.
+export class ExperimentBudgetExceededError extends Data.TaggedError(
+  "ExperimentBudgetExceededError",
+)<{
+  readonly experimentName: string
+  readonly bucketKey: string
+  readonly limitUsd: number
+}> {}
+
+export class ScoringError extends Data.TaggedError("ScoringError")<{
+  readonly experimentName: string
+  readonly iteration: number
+  readonly cause: unknown
+}> {}
