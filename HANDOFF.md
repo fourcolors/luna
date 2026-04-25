@@ -494,17 +494,41 @@ Auditor SHIP, with 2 follow-up nits: (1) brief said +6 tests, reality +5;
 (2) consider adding a §4/§12 DESIGN note explaining the Tag-alias trick so
 future contributors don't "fix" it by adding the dep.
 
-**Next pending phase: 11.5 — extract `_supervised-pool` helper**
+**Next pending phase: 11.5 — extract `supervised-pool` helper** (advisor-locked plan)
 
-The FiberSet + LIFO finalizer supervision primitive has shipped twice now
-(JobScheduler in Phase 10, and will ship a third time in 11c TeamBroker).
-Before 11c, extract the pattern into `packages/core/src/_supervised-pool/`
-(underscore-prefixed = internal helper). Scope:
-1. `SupervisedPool.make<Job>({capacity, onJobDone?})` — returns `{offer, size,
-   shutdown}` with FiberSet + LIFO Queue.shutdown finalizer + capacity
-   semaphore + Ref-based shadow size.
-2. Reuse in `JobScheduler` (refactor — keep test suite green) and use in 11c.
-3. No new errors; reuses whatever the consuming module raises.
+Advisor (session 2026-04-25) recommended **MODIFY** on four points:
+
+1. **Split into 11.5a + 11.5b**:
+   - 11.5a: create `packages/core/src/supervised-pool/` helper + standalone
+     Tier-2 sims (cascade-cancel, capacity, drop-oldest eviction,
+     failure-no-restart) that mirror JobScheduler's sims against the new
+     helper directly. **No JobScheduler touches.**
+   - 11.5b: refactor JobScheduler to consume the helper; existing Phase-10
+     sims stay green unchanged.
+2. **API shape locked**:
+   `make<J>({capacity, policy}) → {submit, size, shutdown, results: Stream}`
+   — jobs carry their own `.run: Effect<unknown, unknown, Scope>` (matches
+   current JobSpec at `job-scheduler.ts:56-65`); `policy: "block" |
+   "drop-newest" | "drop-oldest"` constructor arg; replace `onJobDone?`
+   callback with `results: Stream<{id, exit}>` (consumer filters).
+3. **Do NOT target TeamBroker (11c)** — per §3.3 teammates are long-lived,
+   named, externally-addressable supervisors; a different primitive. Ship
+   11.5 as JobScheduler-refactor-only extraction. Brief for 11c must warn:
+   do NOT retrofit teammate supervision onto supervised-pool without a
+   fresh §3.3 review.
+4. **Drop the `_` prefix** — no such convention exists in the repo.
+   Use `supervised-pool/` with a `// @internal` header comment;
+   barrel exports in `packages/core/src/index.ts` enforce visibility.
+
+**Invariants to preserve verbatim** (advisor cited with `file:line`):
+- LIFO: queue-shutdown finalizer registered BEFORE `FiberSet.make`
+  (`job-scheduler.ts:108` before `:113` — §3.4 #4)
+- Ref shadow for capacity (Effect.Semaphore has no sync `available`)
+  (`job-scheduler.ts:121-124`)
+- Submit-mutex serializes drop-policy decisions (`:128, :215`)
+- Public API NEVER returns `Fiber.RuntimeFiber` — §3.4 #1 (`:89` internal)
+- Per-job `Effect.scoped(run)` so caller resources attach to per-job Scope
+  not pool Scope (`:159`) — critical for AccountBroker per Phase 9.5
 
 After 11.5: **Phase 11c — TeamBroker** (frozen-edit to `errors.ts` pre-approved
 for `TeammateOrphanedError` + `TaskCompletionLagError` per DESIGN §6.2
