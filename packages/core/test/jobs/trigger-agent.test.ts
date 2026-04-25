@@ -12,12 +12,6 @@ import {
 } from "../../src/jobs/index.js"
 import { Clock } from "../../src/clock.js"
 
-const fullLayer = (capacity: number) =>
-  TriggerAgentLayer.Default.pipe(
-    // wire JobScheduler + Clock under it
-    (l) => l, // identity, just for readability
-  )
-
 const program = <A>(prog: Effect.Effect<A, unknown, JobScheduler | TriggerAgent | Clock>) =>
   Effect.scoped(
     prog.pipe(
@@ -71,6 +65,42 @@ describe("TriggerAgent — Tier 1", () => {
     expect(insideCount).toBe(2)
   })
 
+  it("list() shrinks when an inner Scope (registration) closes", async () => {
+    // Use a nested Scope: register inside it, close it, then assert
+    // the registry has shrunk back. Locks the addFinalizer-cleanup
+    // contract (per advisor + auditor follow-up).
+    const result = await Effect.runPromise(
+      program(
+        Effect.gen(function* () {
+          const trig = yield* TriggerAgent
+          // Always-alive registration in the outer scope.
+          yield* trig.register({
+            kind: "stream",
+            source: Stream.empty,
+            build: () => ({ run: Effect.succeed(0) }),
+          })
+          // Register a second one in a child scope; close it.
+          const innerCount = yield* Effect.scoped(
+            Effect.gen(function* () {
+              yield* trig.register({
+                kind: "stream",
+                source: Stream.empty,
+                build: () => ({ run: Effect.succeed(0) }),
+              })
+              const inside = yield* trig.list
+              return inside.length
+            }),
+          )
+          // After child scope closes, inner registration is dropped.
+          const outerAfter = yield* trig.list
+          return { innerCount, outerAfter: outerAfter.length }
+        }),
+      ),
+    )
+    expect(result.innerCount).toBe(2)
+    expect(result.outerAfter).toBe(1)
+  })
+
   it("list() summary includes cron expr for cron triggers", async () => {
     const summary = await Effect.runPromise(
       program(
@@ -121,6 +151,5 @@ describe("TriggerAgent — Tier 1", () => {
   })
 })
 
-void fullLayer
 const _t: TriggerError | null = null
 void _t

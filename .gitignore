@@ -5,3 +5,4 @@ dist/
 coverage/
 .vitest-temp/
 tsconfig.tsbuildinfo
+pnpm-lock.yaml
