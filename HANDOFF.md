@@ -156,3 +156,99 @@ workable at session end. A 4-phase session is reliably achievable; 5 is the
 stretch. Phases 10/11 (Jobs + Teams) touch Fiber supervision and are
 materially heavier than the registry-pattern phases — budget them as 1-per-
 session, not paired.
+
+### Session 2026-04-24 (orchestrator C — Phase 9.5 only)
+
+**Shipped:** Phase 9.5/10a — `b938361`
+
+| Phase | Commit    | Title                                                    | Tests delta |
+|-------|-----------|----------------------------------------------------------|-------------|
+| 9.5   | `b938361` | adapter env-overlay wiring + OnePasswordSecretProvider   | 162 / 3 sk  |
+
+**Frozen-file edit authorized this session** (approved by Sterling, one-time):
+- `packages/adapter-sdk/src/adapter.ts` — split into `SDKAdapter.Default` +
+  `SDKAdapter.WithBroker` via shared `makeAdapter(broker | null)` helper.
+  `boundAccountId?: string` added to QueryRequest (NOT SessionOptions).
+  Adapter remains frozen for any further edits.
+
+**Merge policy locked: Option A.** `merge-env.ts` overlay where caller env
+passes through; only broker-owned keys (`CLAUDE_CODE_OAUTH_TOKEN`) overwrite
+with warn log. `env` is NOT in `RESERVED_SDK_OPTION_KEYS` — Option A overlay
+is the parallel mechanism. §12.2 #7 unchanged.
+
+**Pattern learnings for adapter integration:**
+- Single `Redacted.value()` unwrap site (adapter.ts:262) with hygiene comment.
+  Token never enters Refs/logs/stringification. Locked-down by comment.
+- `broker.acquireSession` invoked INSIDE the query Effect.gen so the
+  inFlight finalizer attaches to query Scope (§3.4 #1) — not session Scope.
+- `Effect.mapError` wraps broker's `AllAccountsExhaustedError | ConfigError`
+  → `SDKError({op:"acquire-session"})` so adapter error channel stays
+  §6.1/§12.1-pure.
+- `broker.report` is fire-and-forget at stream lifecycle edges (success on
+  end, error on terminal). NOT attached to Scope finalizer because Scope
+  close doesn't distinguish success from error. Rate-limit parsing deferred
+  to Phase 16.
+- OnePassword backend: native `op://VAULT/ITEM/FIELD only; non-`op://` refs
+  → ConfigError so `firstOf` falls through to next provider. 5min TTL cache
+  via Layer-scoped Ref<Map>, Clock-driven (Tier-2 friendly).
+
+**Advisor follow-ups for future phases (none blocking, recorded for next-up):**
+1. Producer-orphan + report: if Phase 16 telemetry begins persisting
+   non-rate-limit reports, guard `reportSuccess` with an "aborted" flag —
+   currently benign because `report` no-ops on success/error kinds.
+2. `broker.report` failures swallowed via `Effect.runPromise(...).catch(()=>{})`
+   — Phase 16 should add an observability counter.
+3. Sim test uses `await new Promise(r => setTimeout(r, 20))` for producer
+   flush — replace with explicit "report received" signal when convenient.
+4. OnePassword `vault` opt is currently diagnostic-only (`void opts.vault`).
+   Could enrich ConfigError messages later.
+
+### Session 2026-04-24 (end of orchestrator C)
+
+**Full transcript of this session:**
+Find via `~/.claude/projects/-Users-sol/` newest jsonl after timestamp
+2026-04-24T19:00Z.
+
+**Next pending phase: 10 — Jobs & Schedule + Trigger Agents + backpressure**
+
+This is the FIRST Fiber-supervision phase. HANDOFF.md guidance: budget
+1-per-session, not paired with Phase 11 (Teams).
+
+Scope (per DESIGN.md §15 M2 + §2.1.10):
+1. `JobScheduler` service in `packages/core/src/jobs/` — submit work items
+   that run as supervised Fibers with backpressure (bounded queue).
+2. `TriggerAgent` mechanism — agents that fire on cron / event signals.
+3. Backpressure policy: bounded inbox (`Queue.bounded`), `offer` strategy
+   (drop / block / sliding) configurable per-job.
+4. Lifecycle: each Job runs in its own Scope under a supervisor Fiber;
+   parent supervisor cancels cascade-down on shutdown (§3.4 #4).
+5. Failure semantics: per-job retry policy (use `Effect.retry` + Schedule);
+   exhaustion surfaces a tagged error; job results land in a result Ref or
+   Stream depending on shape.
+6. Interaction with AccountBroker: jobs that issue queries must acquire via
+   broker like normal — Scope alignment carries naturally.
+
+Required reading for Phase 10:
+- `DESIGN.md` §2.1.10 (Jobs/Schedule), §3 (concurrency invariants — esp.
+  §3.4 #1, #4), §6.1 (error taxonomy for new tagged errors), §15 M2.
+- `packages/core/src/account-broker/account-broker.ts` — Scoped credential
+  pattern is the reference for supervised resources.
+- Effect docs: `Effect.fork`, `Effect.forkScoped`, `Fiber`, `Supervisor`,
+  `Schedule`, `Queue.bounded` with `Queue.offer`/`Queue.take`.
+- `@effect/cron` if needed for cron parsing (or roll our own minimal —
+  decide in advisor pre-review).
+
+**How to resume (concrete):**
+1. Read this file end-to-end.
+2. `git log --oneline -10` from `/Users/USER/Projects/experiment-agent`.
+3. Read DESIGN.md §2.1.10 + §15 M2 + §3.4.
+4. Invoke advisor on Phase 10 scope (cite §3.4 invariants, §6.1 errors).
+   Specific risk-checks: cron lib choice, backpressure default policy,
+   per-job vs per-scheduler error channels, supervisor restart semantics.
+5. Fill BRIEF_TEMPLATE.md with narrowed Phase 10 scope + invariants.
+6. Dispatch general-purpose subagent. Advisor review diff. Commit.
+
+**Context hygiene:** orchestrator C ran ONE phase (9.5) — context healthy.
+Phase 10 is the heavy Fiber-supervision phase; recommend dispatching it to
+a fresh subagent at session start to keep orchestrator context lean for
+advisor cycles.
