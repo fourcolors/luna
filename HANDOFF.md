@@ -570,32 +570,63 @@ naming over `Ns` suffix.
   unused — drop it on next touch
 - `JobScheduler` itself is untouched — 11.5b will refactor it
 
-**Next pending phase: 11.5b — refactor JobScheduler to consume the pool**
+### Session 2026-04-25 (autonomous run — 11.5b shipped)
 
-Scope:
-1. Replace JobScheduler's internal FiberSet+LIFO+semaphore+Ref-shadow+
-   submitMutex plumbing with `makeSupervisedPool({capacity, policy})`
-2. Map `SubmitOutcome` → existing `JobSubmitError` ("queue-full" /
-   "shutting-down") at the JobScheduler boundary — preserves the error
-   surface other modules import from `packages/core/src/jobs/errors.ts`
-3. Map pool's `results: Stream<PoolResult>` → JobScheduler's existing
-   `JobResult` Stream surface (id + exit + status enum + maybe more)
-4. Phase-10 Tier-2 sims must stay green WITHOUT MODIFICATION — they prove
-   the refactor is behavior-preserving
-5. Do not change any public API of JobScheduler
+**Phase 11.5b shipped (commit `a9eba35`):**
+- 1 file modified: `packages/core/src/jobs/job-scheduler.ts`
+- Net: -24 lines (162 deletions, 138 insertions)
+- Public API byte-identical; Phase-10 tests (10/10) pass UNMODIFIED
+- 207 tests pass repo-wide, typecheck clean
 
-**How to resume (concrete):**
-1. Read this file end-to-end.
-2. `git log --oneline -10` — should show `170b0bb` (11.5a) at the top.
-3. Read `packages/core/src/supervised-pool/{supervised-pool.ts, types.ts}`
-4. Read `packages/core/src/jobs/job-scheduler.ts` (the file being refactored)
-5. Read `packages/core/test/job-scheduler.test.ts` (sims that must stay green)
-6. Invoke advisor — verify the SubmitOutcome→JobSubmitError mapping doesn't
-   leak pool internals (drop-oldest eviction creates an `evicted` outcome
-   that doesn't have a 1:1 JobScheduler error today — decide whether to
-   surface it as a new `JobInterruptedError` reason or fold into existing).
-7. Fill BRIEF_TEMPLATE.md. Dispatch subagent. Auditor. Commit. Update HANDOFF.
-8. Then advance to 11c.
+**Key design decision learned — `forkDaemon` vs `forkScoped` for the relay:**
+Pool emits `PoolResult` via its own queue; scheduler renames `id`→`jobId`
+and re-broadcasts via its own queue. The relay fiber that drives this
+MUST be `Effect.forkDaemon`, NOT `forkScoped`. With `forkScoped` the relay
+would be interrupted on Scope close BEFORE the pool's queue drained final
+exits, dropping interrupted-job results. Pattern: register relay-join
+finalizer EXPLICITLY before makeSupervisedPool so LIFO close runs:
+FiberSet interrupts members → pool queue closes → relay drains → relay-join
+awaits relay → scheduler queue closes.
+
+**Cumulative state (this session):**
+- 11b-gap (`c0d461f`) — SessionService.openScoped + Clock-driven genId
+- 11.5a (`170b0bb`) — supervised-pool helper standalone
+- 11.5b (`a9eba35`) — JobScheduler refactor onto pool
+
+**Next pending phase: 11c — TeamBroker**
+
+Frozen-edit pre-approved by Sterling: append `TeammateOrphanedError` +
+`TaskCompletionLagError` to `packages/core/src/errors.ts` per DESIGN §6.2
+lines 414–419 (byte-exact additions only).
+
+Scope (per DESIGN §7.2 + §3.3):
+1. `TeamBroker` Tag with `spawn(teammates)`, `dispatch(taskId)`,
+   `members()` surface
+2. Teammate supervisor — long-lived per-teammate fiber attached to the
+   session Scope (NOT supervised-pool — teammates are named/addressable,
+   not job-shaped)
+3. TaskList integration — broker calls `taskList.claim(taskId, teammate)`
+   atomically; subscribes to TaskList events for orphan detection
+4. Orphan detection: if claimed task has no in-flight teammate fiber after
+   N seconds, emit `TeammateOrphanedError`
+5. Lag detection: if teammate hasn't completed a claimed task within
+   configured timeout, emit `TaskCompletionLagError`
+
+Required reading:
+- DESIGN.md §3.3, §6.2 (lines 414-419 for the frozen-edit shape), §7.2
+- packages/core/src/task-list/task-list.ts
+- packages/core/src/session/session-service.ts (openScoped)
+- packages/core/src/errors.ts (frozen — for the additive edit)
+
+How to resume:
+1. Read HANDOFF tail.
+2. `git log --oneline -10` — `a9eba35` should be top.
+3. Append the two TaggedErrors to errors.ts FIRST (smallest possible diff),
+   commit separately.
+4. Advisor on TeamBroker scope — biggest open question is teammate
+   supervisor primitive shape. Pool is wrong shape; need a `Map<name,
+   supervisedFiber>` with per-member events.
+5. Fill BRIEF. Dispatch. Auditor. Commit. HANDOFF update.
 
 After 11.5: **Phase 11c — TeamBroker** (frozen-edit to `errors.ts` pre-approved
 for `TeammateOrphanedError` + `TaskCompletionLagError` per DESIGN §6.2
