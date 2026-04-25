@@ -73,6 +73,10 @@ export class WorkflowRuntime extends Effect.Tag(
       const running = yield* Ref.make<
         ReadonlyMap<WorkflowId, RunningEntry>
       >(new Map())
+      /** Def+input retained for suspended workflows so resume can re-run. */
+      const suspended = yield* Ref.make<
+        ReadonlyMap<WorkflowId, { def: RunningEntry["def"]; input: RunningEntry["input"] }>
+      >(new Map())
 
       // On scope close: interrupt all in-flight fibers and mark them
       // "compensated" (they were not given a chance to complete cleanly).
@@ -179,6 +183,12 @@ export class WorkflowRuntime extends Effect.Tag(
           yield* state.setStatus(id, "suspended")
           yield* state.appendEvent(id, "suspended", { reason })
           yield* Fiber.interrupt(entry.fiber).pipe(Effect.ignore)
+          // Retain def+input in suspended map for resume
+          yield* Ref.update(suspended, (m) => {
+            const next = new Map(m)
+            next.set(id, { def: entry.def, input: entry.input })
+            return next
+          })
           yield* Ref.update(running, (m) => {
             const next = new Map(m)
             next.delete(id)
@@ -207,12 +217,12 @@ export class WorkflowRuntime extends Effect.Tag(
               }),
             )
           }
-          const m = yield* Ref.get(running)
-          const existingDef = m.get(id)
-          if (existingDef === undefined) {
-            // Workflow definition not in running map — we can't re-run without
-            // the original def. In Phase 12 this means the runtime was restarted.
-            // Future phases will serialize/deserialize the def from the event log.
+          // Look up def+input from the suspended map (populated by suspend())
+          const suspendedMap = yield* Ref.get(suspended)
+          const suspendedEntry = suspendedMap.get(id)
+          if (suspendedEntry === undefined) {
+            // Def not found — runtime restarted or workflow was never suspended
+            // via this runtime instance.
             return yield* Effect.fail(
               new WorkflowCompensationError({
                 workflowId: id,
@@ -221,8 +231,14 @@ export class WorkflowRuntime extends Effect.Tag(
               }),
             )
           }
+          // Clear from suspended map — it's back to running
+          yield* Ref.update(suspended, (m) => {
+            const next = new Map(m)
+            next.delete(id)
+            return next
+          })
           yield* state.appendEvent(id, "resume", { signal })
-          yield* forkWorkflow(id, existingDef.def, existingDef.input)
+          yield* forkWorkflow(id, suspendedEntry.def, suspendedEntry.input)
         })
 
       const list: WorkflowRuntimeApi["list"] = (q) => state.list(q)
