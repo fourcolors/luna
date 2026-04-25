@@ -44,6 +44,21 @@
         "@anthropic-ai/claude-agent-sdk": ">=0.2.0 <1",
       },
     },
+    "packages/chat-service": {
+      "name": "@experiment-agent/chat-service",
+      "version": "0.0.1",
+      "dependencies": {
+        "@experiment-agent/adapter-sdk": "workspace:*",
+        "@experiment-agent/core": "workspace:*",
+        "effect": "^3.21.0",
+      },
+      "devDependencies": {
+        "@anthropic-ai/claude-agent-sdk": "^0.2.119",
+      },
+      "peerDependencies": {
+        "@anthropic-ai/claude-agent-sdk": ">=0.2.0 <1",
+      },
+    },
     "packages/core": {
       "name": "@experiment-agent/core",
       "version": "0.0.1",
@@ -195,6 +210,8 @@
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.21.5", "", { "os": "win32", "cpu": "x64" }, "sha512-tQd/1efJuzPC6rCFwEvLtci/xNFcTZknmXs98FYDfGE4wP9ClFV98nyKrzJKVPMhdDnjzLhdUyMX4PsQAPjwIw=="],
 
     "@experiment-agent/adapter-sdk": ["@experiment-agent/adapter-sdk@workspace:packages/adapter-sdk"],
+
+    "@experiment-agent/chat-service": ["@experiment-agent/chat-service@workspace:packages/chat-service"],
 
     "@experiment-agent/core": ["@experiment-agent/core@workspace:packages/core"],
 

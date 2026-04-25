@@ -223,6 +223,10 @@ export const startUIWebSocketServer = (
           type: "hello",
           protocolVersion: UI_WS_PROTOCOL_VERSION,
           kinds: kindsList,
+          // Chat is wired in by `withChatService` (Commit 2b). The base
+          // server is obs-only; flip these to true when the chat router
+          // is bound on top.
+          capabilities: { chat: false, streamingDeltas: false },
         })
 
         // Single-fiber forwarder. The pattern is: take ONE event from the
