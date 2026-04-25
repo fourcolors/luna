@@ -1,3 +1,5 @@
+import type { Effect, Stream } from "effect"
+
 /**
  * Session types — the options/summary/query shapes SessionService operates on.
  *
@@ -64,4 +66,32 @@ export interface SessionQuery {
   readonly tag?: string
   readonly parentId?: string
   readonly limit?: number
+}
+
+/**
+ * Opaque stand-ins for SDK message types. Core stays SDK-dependency-free at
+ * runtime (see messages.ts + DESIGN.md §12.2 #6); the real SDK types live in
+ * `@experiment-agent/adapter-sdk`. Callers who have the real types can pass
+ * them through structurally — `unknown` is a supertype of every concrete
+ * SDK message shape.
+ */
+export type SDKUserMessageLike = unknown
+export type SDKMessageLike = unknown
+
+/**
+ * Scoped session handle returned by `SessionService.openScoped`.
+ *
+ * Per DESIGN.md §3.1 + §3.4 #4: this handle is pinned to the caller's Scope.
+ * When the Scope closes, the underlying SDK query is interrupted and the
+ * session's status is flipped to `closed` via a Scope finalizer.
+ *
+ * The `replies` stream is the adapter's own Stream — we do NOT fork a fiber
+ * (§3.4 #1 — no cross-Scope Fiber references); the Stream's internal Scope
+ * management composes with the caller's Scope for proper LIFO finalization.
+ */
+export interface ScopedSession {
+  readonly id: string
+  readonly send: (msg: SDKUserMessageLike) => Effect.Effect<void, never>
+  readonly replies: Stream.Stream<SDKMessageLike, never>
+  readonly close: Effect.Effect<void, never>
 }
