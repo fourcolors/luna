@@ -117,7 +117,10 @@ export class ObservabilityService extends Effect.Tag(
             // synthetic Error event so the violation is observable.
             const decoded = decodeObsEvent(event as unknown)
             if (Either.isRight(decoded)) {
-              yield* PubSub.publish(hub, decoded.right).pipe(
+              // Schema.optional decodes to `field?: T | undefined`, but our
+              // domain types use `field?: T` (exactOptionalPropertyTypes).
+              // The shapes are equivalent at runtime; cast through unknown.
+              yield* PubSub.publish(hub, decoded.right as unknown as ObsEvent).pipe(
                 Effect.asVoid,
                 Effect.ignore,
               )
