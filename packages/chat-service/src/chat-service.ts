@@ -62,6 +62,7 @@ import {
   type ChatErrorKind,
   type CreateThreadOptions,
 } from "./types.js"
+import { extractArtifacts } from "./artifacts.js"
 
 /* -------------------------------------------------------------------------- */
 /* Internal per-thread state                                                  */
@@ -313,6 +314,20 @@ export class ChatService extends Effect.Service<ChatService>()(
               seq: stored.seq,
               message: projected,
             })
+            // Post-completion: extract artifacts (substantial code fences,
+            // file-write tool uses) and publish a follow-up frame so the
+            // UI can pin them into a side panel. Pure function — safe to
+            // run inline; no extra fork needed.
+            const artifacts = extractArtifacts(projected)
+            if (artifacts.length > 0) {
+              yield* PubSub.publish(args.pubsub, {
+                type: "artifacts-extracted",
+                threadId: args.threadId,
+                messageId: projected.id,
+                messageSeq: stored.seq,
+                artifacts,
+              })
+            }
             return
           }
           // result / system / hook / status / stream_event-other /  user

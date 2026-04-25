@@ -143,6 +143,25 @@ export interface AssistantErrorFrame {
   readonly error: { readonly kind: ChatErrorKind; readonly message: string }
 }
 
+export type ArtifactSource = "code-fence" | "tool-write"
+
+export interface Artifact {
+  readonly id: string
+  readonly source: ArtifactSource
+  readonly path: string | null
+  readonly lang: string | null
+  readonly title: string
+  readonly content: string
+}
+
+export interface ArtifactsExtractedFrame {
+  readonly type: "artifacts-extracted"
+  readonly threadId: string
+  readonly messageId: string
+  readonly messageSeq: number
+  readonly artifacts: ReadonlyArray<Artifact>
+}
+
 export type ServerFrame =
   | HelloFrame
   | EventFrame
@@ -156,6 +175,7 @@ export type ServerFrame =
   | AssistantDeltaFrame
   | AssistantDoneFrame
   | AssistantErrorFrame
+  | ArtifactsExtractedFrame
 
 /* Client → server frames */
 

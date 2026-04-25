@@ -9,6 +9,7 @@
  * stream without depending on ui-ws.
  */
 import type { ChatMessage, SessionSummary } from "@experiment-agent/core"
+import type { Artifact } from "./artifacts.js"
 
 /**
  * Tagged error kind. UI renders different visuals for each; persistence
@@ -88,6 +89,20 @@ export interface ChatSnapshot {
 export type ChatThreadList = ReadonlyArray<SessionSummary>
 
 /**
+ * Emitted after `assistant-done` whenever the finalized turn carries
+ * artifact-worthy payloads (substantial code fences or filesystem-write
+ * tool uses). Always tied to a specific assistant message via `messageSeq`
+ * so the UI can pin them to the right bubble.
+ */
+export interface ChatArtifactsExtracted {
+  readonly type: "artifacts-extracted"
+  readonly threadId: string
+  readonly messageId: string
+  readonly messageSeq: number
+  readonly artifacts: ReadonlyArray<Artifact>
+}
+
+/**
  * Union of every frame the per-thread subscribe Stream emits. ui-ws maps
  * this 1:1 to its ServerFrame chat variants.
  */
@@ -97,6 +112,7 @@ export type ChatFrame =
   | ChatAssistantDone
   | ChatAssistantError
   | ChatUserAccepted
+  | ChatArtifactsExtracted
 
 /** Options accepted by `createThread`. Mirrors the subset of SessionOptions
  *  a chat caller cares about; ChatService overlays the chat-required fields

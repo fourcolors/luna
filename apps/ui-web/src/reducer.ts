@@ -10,6 +10,7 @@
  * additive and lives on a separate slice of state.
  */
 import type {
+  Artifact,
   ChatErrorKind,
   ChatMessage,
   ObsEvent,
@@ -33,6 +34,8 @@ export interface ThreadView {
     readonly kind: ChatErrorKind
     readonly message: string
   } | null
+  /** Artifacts extracted from finalized assistant turns, oldest-first. */
+  readonly artifacts: ReadonlyArray<Artifact>
 }
 
 export interface UIState {
@@ -131,6 +134,7 @@ export const reduce = (state: UIState, action: Action): UIState => {
           throughSeq: -1,
           inFlight: null,
           lastError: null,
+          artifacts: [],
         })
         const list = [
           action.summary,
@@ -183,6 +187,7 @@ export const reduce = (state: UIState, action: Action): UIState => {
         throughSeq: -1,
         inFlight: null,
         lastError: null,
+        artifacts: [],
       })
       const list = [
         frame.thread,
@@ -217,6 +222,7 @@ export const reduce = (state: UIState, action: Action): UIState => {
         throughSeq: frame.throughSeq,
         inFlight: cur?.inFlight ?? null,
         lastError: cur?.lastError ?? null,
+        artifacts: cur?.artifacts ?? [],
       })
       return { ...state, threads: next }
     }
@@ -253,6 +259,15 @@ export const reduce = (state: UIState, action: Action): UIState => {
         inFlight: null,
         lastError: frame.error,
       }))
+    case "artifacts-extracted":
+      return updateThread(state, frame.threadId, (t) => {
+        // Replace any prior artifacts for this messageId (idempotent
+        // under reconnect-during-extraction) and append new ones.
+        const filtered = t.artifacts.filter(
+          (a) => !a.id.startsWith(frame.messageId + ":"),
+        )
+        return { ...t, artifacts: [...filtered, ...frame.artifacts] }
+      })
   }
 }
 
