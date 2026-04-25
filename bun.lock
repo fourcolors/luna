@@ -93,11 +93,14 @@
       "name": "@experiment-agent/ui-ws",
       "version": "0.0.1",
       "dependencies": {
+        "@experiment-agent/chat-service": "workspace:*",
         "@experiment-agent/core": "workspace:*",
         "effect": "^3.21.0",
         "ws": "^8.18.0",
       },
       "devDependencies": {
+        "@anthropic-ai/claude-agent-sdk": "^0.2.119",
+        "@experiment-agent/adapter-sdk": "workspace:*",
         "@types/ws": "^8.5.13",
       },
     },
