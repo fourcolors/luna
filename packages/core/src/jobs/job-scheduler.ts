@@ -1,45 +1,62 @@
 /**
  * JobScheduler — supervised job pool with bounded backpressure (DESIGN §2.1.2,
- * M3 §15). FIRST Fiber-supervision module in the codebase.
+ * M3 §15). Phase 11.5b: refactored to delegate fiber/capacity supervision to
+ * `makeSupervisedPool` (`../supervised-pool/`); JobScheduler now adds the
+ * Job-domain concerns on top of the generic helper:
+ *   - JobId generation via `Clock`
+ *   - status tracking (queued / running / completed)
+ *   - mapping `SubmitOutcome` → `JobSubmitError`
+ *   - re-broadcasting pool results as `JobResult` (id → jobId rename)
  *
  * Invariants honored (cite §-anchor):
- *   - §3.4 #1 iterable lifetime ≡ Scope: jobs run as FiberSet members; the
- *     FiberSet is owned by the Layer Scope. JobIds are plain strings —
- *     callers never receive a `Fiber.RuntimeFiber` reference.
- *   - §3.4 #4 interruption cascades top-down: closing the scheduler's Scope
- *     interrupts the FiberSet, every member fiber receives Exit.isInterrupted,
- *     and per-job Scopes (used by `acquireSession` etc.) finalize cleanly.
+ *   - §3.4 #1 iterable lifetime ≡ Scope: jobs run inside the SupervisedPool's
+ *     FiberSet (owned by the scheduler's Layer Scope). JobIds are plain
+ *     strings — callers never receive a `Fiber.RuntimeFiber` reference.
+ *   - §3.4 #4 interruption cascades top-down: scheduler's Scope contains the
+ *     pool's Scope (built via `yield* makeSupervisedPool`); closing the
+ *     scheduler closes the pool, which interrupts every member fiber and
+ *     finalizes per-job Scopes.
  *   - §6.3 additive errors: `JobSubmitError` raised on submit; per-job
  *     failures surface inside `JobResult.exit` (never thrown to caller).
  *   - §7 service signature: `Effect.Tag` with namespaced key, Layer factory
- *     under `JobSchedulerLayer.make`.
+ *     under `JobSchedulerLayer.make`. `JobSchedulerApi` shape unchanged.
  *
- * Backpressure model:
- *   In-flight slot count == `capacity`. A `Semaphore` enforces this. The
- *   `OfferPolicy` chooses what `submit` does when no slot is available:
- *     - `block`     — suspend the caller until a slot frees (FIFO via
- *                     Semaphore's internal queue).
- *     - `drop-newest` — fail with `JobSubmitError({reason:"queue-full"})`.
- *     - `drop-oldest` — interrupt the oldest in-flight job and take its
- *                       slot. The evicted job's JobResult carries
- *                       `Exit.isInterrupted`.
+ * Backpressure model (delegated to SupervisedPool):
+ *   - `block` — submit suspends until a slot frees.
+ *   - `drop-newest` — pool returns `rejected-full` → mapped to `JobSubmitError`.
+ *   - `drop-oldest` — pool returns `evicted` (carries `evictedId`+`acceptedId`);
+ *     evicted job's `Exit.isInterrupted` flows via the results stream.
  *
- * Per-job Scope alignment:
- *   Each `JobSpec.run` is invoked under `Effect.scoped`, giving it its own
- *   Scope. Resources acquired inside (e.g. `AccountBroker.acquireSession`)
- *   release on job completion — exactly mirroring the Phase 9.5 adapter
- *   pattern.
+ * LIFO finalizer ordering (critical for cascade-cancel sim, test (2)):
+ *   Registration order inside this scoped effect:
+ *     1. `Queue.shutdown(schedulerResultsQueue)` finalizer
+ *     2. (relay-fiber-join finalizer)
+ *     3. `makeSupervisedPool` — internally registers pool's queue-shutdown
+ *        then FiberSet finalizers
+ *     4. `Effect.forkDaemon(relay)` — relay fiber tracked via Ref
+ *   LIFO close runs:
+ *     a. FiberSet finalizer → interrupts member fibers; each `onExit` pushes
+ *        its (interrupted) PoolResult into the pool's results queue.
+ *     b. Pool queue shutdown → pool.results stream completes naturally.
+ *     c. Relay fiber drains the rest of pool.results, forwards every
+ *        PoolResult to the scheduler queue, then exits naturally.
+ *     d. Relay-fiber-join finalizer awaits the relay (no-op since it's
+ *        already done).
+ *     e. Scheduler queue shutdown → consumers of `JobScheduler.results`
+ *        observe end-of-stream having received every final exit.
+ *   Note: we use `Effect.forkDaemon` (not `forkScoped`) for the relay so
+ *   Scope close does NOT interrupt the relay before the pool drains. The
+ *   relay-fiber-join finalizer (registered before the pool) provides the
+ *   "terminates with scheduler scope" guarantee asked for by §3.4 #1.
  *
  * Restart policy: NONE. Per-advisor: callers embed `Effect.retry` inside
- * `JobSpec.run` if they want retries. Trigger agents naturally re-fire on
- * the next cron tick.
+ * `JobSpec.run` if they want retries.
  */
 import {
   Cause,
   Effect,
   Exit,
   Fiber,
-  FiberSet,
   Layer,
   Queue,
   Ref,
@@ -47,6 +64,11 @@ import {
 } from "effect"
 import type * as Scope from "effect/Scope"
 import { Clock } from "../clock.js"
+import { makeSupervisedPool } from "../supervised-pool/supervised-pool.js"
+import type {
+  PoolPolicy,
+  SubmitOutcome,
+} from "../supervised-pool/types.js"
 import { JobSubmitError } from "./errors.js"
 
 export type JobId = string
@@ -57,9 +79,9 @@ export interface JobSpec {
   /** Optional caller-supplied id; if absent, scheduler generates one. */
   readonly id?: string
   /**
-   * The job effect. Runs under its own Scope (provided by scheduler) so
-   * any `Effect.addFinalizer` / `acquireSession` inside finalizes when
-   * the job ends — success, failure, or interruption.
+   * The job effect. Runs under its own Scope (provided by the underlying
+   * SupervisedPool) so any `Effect.addFinalizer` / `acquireSession` inside
+   * finalizes when the job ends — success, failure, or interruption.
    */
   readonly run: Effect.Effect<unknown, unknown, Scope.Scope>
 }
@@ -84,52 +106,19 @@ export class JobScheduler extends Effect.Tag(
   "experiment-agent/JobScheduler",
 )<JobScheduler, JobSchedulerApi>() {}
 
-interface RunningEntry {
-  readonly jobId: JobId
-  readonly fiber: Fiber.RuntimeFiber<unknown, unknown>
-}
-
 const make = (
   opts: JobSchedulerOptions,
 ): Effect.Effect<JobSchedulerApi, never, Clock | Scope.Scope> =>
   Effect.gen(function* () {
     const clock = yield* Clock
-    const policy: OfferPolicy = opts.offerPolicy ?? "block"
-    const capacity = Math.max(1, opts.capacity)
+    const policy: PoolPolicy = opts.offerPolicy ?? "block"
 
-    // Outbound results channel. Unbounded so producers (job-finalizer)
-    // never block on slow Stream consumers.
-    const resultsQueue = yield* Queue.unbounded<JobResult>()
-    // Register the queue-shutdown finalizer FIRST so LIFO ordering causes
-    // it to run AFTER the FiberSet interrupts every member fiber; each
-    // fiber's onExit pushes its final JobResult while the queue is still
-    // open. Without this ordering the queue would close before
-    // interrupted fibers could surface their JobResult.
-    yield* Effect.addFinalizer(() => Queue.shutdown(resultsQueue))
+    // Scheduler-owned outbound results channel. Unbounded so the relay
+    // fiber never blocks on slow Stream consumers.
+    const schedulerResultsQueue = yield* Queue.unbounded<JobResult>()
 
-    // Supervised pool — Scope-attached. Closing this Scope interrupts every
-    // member (§3.4 #4). Registered AFTER the queue-shutdown finalizer so
-    // its own finalizer runs FIRST.
-    const fiberSet = yield* FiberSet.make<unknown, unknown>()
-
-    // Per-job slot accounting. Tracks insertion order (FIFO) for drop-oldest.
-    const running = yield* Ref.make<ReadonlyArray<RunningEntry>>([])
+    // Status map — JobScheduler concern, not pool concern.
     const statuses = yield* Ref.make<ReadonlyMap<JobId, JobStatus>>(new Map())
-
-    // Backpressure permit. `take()` returns an Effect that suspends until a
-    // permit is available — perfect for the `block` policy. Effect's
-    // Semaphore lacks a sync `available` accessor, so we mirror the
-    // in-flight count in a Ref for policy decisions.
-    const slots = yield* Effect.makeSemaphore(capacity)
-    const inFlightCount = yield* Ref.make(0)
-
-    // Submit-mutex: serializes drop-newest / drop-oldest decisions so that
-    // size checks + state mutation are atomic w.r.t. other submits.
-    const submitMutex = yield* Effect.makeSemaphore(1)
-
-    // Shutdown flag — set on Scope close so late submits fail cleanly.
-    const shuttingDown = yield* Ref.make(false)
-    yield* Effect.addFinalizer(() => Ref.set(shuttingDown, true))
 
     const setStatus = (id: JobId, s: JobStatus | null) =>
       Ref.update(statuses, (m) => {
@@ -139,6 +128,57 @@ const make = (
         return next
       })
 
+    // Relay-fiber handle. Set after forkDaemon below; drained in finalizer.
+    const relayRef = yield* Ref.make<Fiber.RuntimeFiber<
+      unknown,
+      unknown
+    > | null>(null)
+
+    // Finalizer #1 registered: scheduler queue shutdown. By LIFO this runs
+    // LAST, after pool finalizers AND after the relay-join finalizer below.
+    yield* Effect.addFinalizer(() => Queue.shutdown(schedulerResultsQueue))
+
+    // Finalizer #2 registered: await relay completion. Runs BEFORE the
+    // queue-shutdown finalizer (registered earlier) but AFTER the pool's
+    // own finalizers (registered later, run earlier in LIFO). The relay
+    // exits naturally once the pool queue closes — this finalizer simply
+    // ensures we don't close the scheduler queue until forwarding is done.
+    yield* Effect.addFinalizer(() =>
+      Ref.get(relayRef).pipe(
+        Effect.flatMap((f) =>
+          f === null ? Effect.void : Fiber.join(f).pipe(Effect.ignore),
+        ),
+      ),
+    )
+
+    // Underlying supervised pool. Its finalizers (pool-queue-shutdown,
+    // FiberSet) are registered NOW — they will run FIRST on close.
+    const pool = yield* makeSupervisedPool({
+      capacity: opts.capacity,
+      policy,
+    })
+
+    // Relay: drain pool.results, update statuses, re-emit as JobResult.
+    // Uses forkDaemon (not forkScoped) so Scope close does not interrupt
+    // the relay before the pool queue shuts down — the relay terminates
+    // naturally when pool.results ends, and the finalizer above awaits it.
+    const relay = yield* Effect.forkDaemon(
+      pool.results.pipe(
+        Stream.runForEach((r) =>
+          Effect.gen(function* () {
+            yield* setStatus(r.id, "completed")
+            // Best-effort offer: if the scheduler queue is already shut
+            // down, offer resolves false rather than throwing.
+            yield* Queue.offer(schedulerResultsQueue, {
+              jobId: r.id,
+              exit: r.exit,
+            })
+          }),
+        ),
+      ),
+    )
+    yield* Ref.set(relayRef, relay)
+
     const genId = (): Effect.Effect<JobId> =>
       clock.nowMs().pipe(
         Effect.map(
@@ -147,110 +187,46 @@ const make = (
         ),
       )
 
-    /**
-     * Wraps user's `JobSpec.run` so on exit we (a) emit a JobResult,
-     * (b) release the in-flight slot, (c) drop from runningOrder.
-     * Wrapped in Effect.scoped so the per-job Scope finalizes on exit.
-     */
-    const wrappedRun = (
-      jobId: JobId,
-      run: Effect.Effect<unknown, unknown, Scope.Scope>,
-    ): Effect.Effect<unknown, unknown> =>
-      Effect.scoped(run).pipe(
-        Effect.onExit((exit) =>
-          Effect.gen(function* () {
-            // Best-effort: if the queue is shutdown, offer just resolves
-            // false — never throws. Surface JobResult before slot release
-            // so consumers see the result even if a new submit immediately
-            // takes the freed slot.
-            yield* Queue.offer(resultsQueue, { jobId, exit })
-            yield* Ref.update(running, (xs) =>
-              xs.filter((e) => e.jobId !== jobId),
-            )
-            yield* setStatus(jobId, "completed")
-            yield* Ref.update(inFlightCount, (n) => Math.max(0, n - 1))
-            yield* slots.release(1)
-          }),
-        ),
-      )
-
-    /** Fork the wrapped job into the FiberSet. Returns the fiber handle so
-     *  drop-oldest can interrupt it; callers MUST NOT leak this fiber. */
-    const forkJob = (
-      jobId: JobId,
-      run: Effect.Effect<unknown, unknown, Scope.Scope>,
-    ): Effect.Effect<Fiber.RuntimeFiber<unknown, unknown>> =>
-      Effect.gen(function* () {
-        yield* Ref.update(inFlightCount, (n) => n + 1)
-        const fiber = yield* FiberSet.run(fiberSet, wrappedRun(jobId, run))
-        yield* Ref.update(running, (xs) => [...xs, { jobId, fiber }])
-        yield* setStatus(jobId, "running")
-        return fiber
-      })
-
     const submit: JobSchedulerApi["submit"] = (job) =>
       Effect.gen(function* () {
-        const down = yield* Ref.get(shuttingDown)
-        if (down) {
-          return yield* Effect.fail(
-            job.id !== undefined
-              ? new JobSubmitError({
-                  reason: "shutting-down",
-                  jobId: job.id,
-                })
-              : new JobSubmitError({ reason: "shutting-down" }),
-          )
-        }
+        // Generate jobId BEFORE pool.submit so every SubmitOutcome carries
+        // a real id (advisor §3.b — slight tighten: rejected JobSubmitError
+        // always has jobId set).
         const jobId: JobId = job.id ?? (yield* genId())
 
-        if (policy === "block") {
-          // Acquire suspends until a slot is free — FIFO suspend order.
-          yield* setStatus(jobId, "queued")
-          yield* slots.take(1)
-          yield* forkJob(jobId, job.run)
-          return jobId
-        }
+        // Provisionally mark queued. On rejection paths we revert.
+        yield* setStatus(jobId, "queued")
 
-        // drop-newest / drop-oldest must be atomic w.r.t. other submits.
-        return yield* submitMutex.withPermits(1)(
-          Effect.gen(function* () {
-            // Try to grab a slot non-blockingly using mirrored counter.
-            const live = yield* Ref.get(inFlightCount)
-            if (live < capacity) {
-              yield* slots.take(1)
-              yield* forkJob(jobId, job.run)
-              return jobId
-            }
-            if (policy === "drop-newest") {
-              return yield* Effect.fail(
-                new JobSubmitError({
-                  reason: "queue-full",
-                  jobId,
-                }),
-              )
-            }
-            // drop-oldest: interrupt the oldest in-flight job. Its onExit
-            // hook will release the slot AND emit an interrupted JobResult.
-            const xs = yield* Ref.get(running)
-            if (xs.length === 0) {
-              // Should not happen — capacity was full but no running.
-              // Fall back to acquiring (will block briefly).
-              yield* slots.take(1)
-              yield* forkJob(jobId, job.run)
-              return jobId
-            }
-            const oldest = xs[0]!
-            // Interrupt without awaiting — its onExit will release.
-            yield* Fiber.interruptFork(oldest.fiber)
-            // Wait for slot to free.
-            yield* slots.take(1)
-            yield* forkJob(jobId, job.run)
+        const outcome: SubmitOutcome = yield* pool.submit({
+          id: jobId,
+          run: job.run,
+        })
+
+        switch (outcome._tag) {
+          case "accepted":
+            yield* setStatus(jobId, "running")
             return jobId
-          }),
-        )
+          case "evicted":
+            // The pool already accepted us and evicted the oldest. The
+            // evicted fiber's interrupted Exit will flow through
+            // pool.results → relay → scheduler queue.
+            yield* setStatus(jobId, "running")
+            return jobId
+          case "rejected-full":
+            yield* setStatus(jobId, null)
+            return yield* Effect.fail(
+              new JobSubmitError({ reason: "queue-full", jobId }),
+            )
+          case "rejected-shutdown":
+            yield* setStatus(jobId, null)
+            return yield* Effect.fail(
+              new JobSubmitError({ reason: "shutting-down", jobId }),
+            )
+        }
       })
 
-    const results: JobSchedulerApi["results"] = Stream.fromQueue(resultsQueue)
+    const results: JobSchedulerApi["results"] =
+      Stream.fromQueue(schedulerResultsQueue)
 
     const status: JobSchedulerApi["status"] = (id) =>
       Ref.get(statuses).pipe(Effect.map((m) => m.get(id) ?? null))
