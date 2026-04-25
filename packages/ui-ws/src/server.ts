@@ -31,6 +31,7 @@ import {
   Effect,
   Fiber,
   Layer,
+  Option,
   Ref,
   Runtime,
   Stream,
@@ -40,8 +41,10 @@ import * as http from "node:http"
 import { WebSocketServer, type WebSocket } from "ws"
 import { UIService } from "@experiment-agent/core"
 import type { ObsEvent } from "@experiment-agent/core"
+import type { ChatService, ChatFrame } from "@experiment-agent/chat-service"
 import {
   UI_WS_PROTOCOL_VERSION,
+  type ClientFrame,
   type ServerFrame,
 } from "./protocol.js"
 
@@ -79,6 +82,21 @@ export interface UIWebSocketServerConfig {
    * Default: empty.
    */
   readonly advertisedKinds?: ReadonlyArray<string>
+  /**
+   * Optional ChatService binding. When provided, the server:
+   *   - flips `capabilities.chat` and `capabilities.streamingDeltas` to
+   *     `true` in the hello frame
+   *   - parses inbound ClientFrames and routes chat ops (subscribe /
+   *     unsubscribe / list-threads / new-thread / user-message /
+   *     interrupt) to the supplied ChatService
+   *   - per connection, forks one forwarder fiber per subscribed thread,
+   *     translating ChatFrame → ServerFrame on the wire
+   *
+   * The base obs path (event/drop/ping) keeps working unchanged when
+   * this is unset. Pass the resolved service handle (not the Tag) so
+   * the server's environment doesn't grow a `ChatService` dependency.
+   */
+  readonly chatService?: ChatService
 }
 
 export interface UIWebSocketServerHandle {
@@ -122,6 +140,7 @@ export const startUIWebSocketServer = (
     const cap = config.perConnectionCapacity ?? 256
     const pingMs = config.pingIntervalMs ?? 30_000
     const kindsList: ReadonlyArray<string> = config.advertisedKinds ?? []
+    const chat = config.chatService ?? null
 
     const httpServer = http.createServer((req, res) => {
       if (req.url === "/healthz") {
@@ -139,7 +158,11 @@ export const startUIWebSocketServer = (
       res.end()
     })
 
-    const wss = new WebSocketServer({ noServer: true })
+    // Cap inbound message size. ClientFrames are tiny (subscribe / new-thread
+    // / user-message text rarely > 4KB); 64KB is a generous cushion. The ws
+    // library's default is 100MB, which is a footgun if a token ever leaks
+    // or we relax the 127.0.0.1 bind. Oversize frames close with code 1009.
+    const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 })
 
     // Constant-time string compare for the auth check. The token is short
     // (≥16 chars) and the listener is 127.0.0.1-bound, so timing-attack
@@ -210,6 +233,11 @@ export const startUIWebSocketServer = (
     ): Effect.Effect<void, never, UIService | Scope.Scope> =>
       Effect.gen(function* () {
         const closed = yield* Deferred.make<void>()
+        // Capture the connection scope so chat-router fibers can be
+        // forked into it (NOT the per-message handler's transient
+        // scope). When the connection closes, the connection scope
+        // closes, and every chat forwarder fiber is interrupted with it.
+        const connectionScope = yield* Effect.scope
 
         // Track for shutdown.
         yield* Ref.update(activeSockets, (xs) => [...xs, ws])
@@ -223,11 +251,35 @@ export const startUIWebSocketServer = (
           type: "hello",
           protocolVersion: UI_WS_PROTOCOL_VERSION,
           kinds: kindsList,
-          // Chat is wired in by `withChatService` (Commit 2b). The base
-          // server is obs-only; flip these to true when the chat router
-          // is bound on top.
-          capabilities: { chat: false, streamingDeltas: false },
+          // Capabilities reflect what was bound at startup. When a
+          // ChatService is passed in `config.chatService`, the inbound
+          // router below handles subscribe/send/interrupt and translates
+          // ChatFrame → ServerFrame. Without it, the server is obs-only.
+          capabilities: {
+            chat: chat !== null,
+            streamingDeltas: chat !== null,
+          },
         })
+
+        // Per-connection chat state.
+        //   - `chatFibers`: forwarder fibers, one per subscribed threadId.
+        //     Interrupting the fiber releases the underlying PubSub
+        //     subscription via Stream.unwrapScoped (chat-service.ts:444).
+        //   - The connection's Effect.scoped wrapper owns these fibers,
+        //     and we install a finalizer that interrupts the lot on
+        //     close — belt-and-suspenders against any case where an
+        //     individual fiber misses its cancel signal.
+        const chatFibers = yield* Ref.make<
+          ReadonlyMap<string, Fiber.RuntimeFiber<unknown, unknown>>
+        >(new Map())
+        if (chat !== null) {
+          yield* Effect.addFinalizer(() =>
+            Effect.gen(function* () {
+              const m = yield* Ref.get(chatFibers)
+              yield* Fiber.interruptAll(Array.from(m.values()))
+            }),
+          )
+        }
 
         // Single-fiber forwarder. The pattern is: take ONE event from the
         // UIService stream, send it to the ws synchronously, repeat. ws.send
@@ -276,6 +328,185 @@ export const startUIWebSocketServer = (
                 }),
               )
             : Effect.never
+
+        // ── chat router ────────────────────────────────────────────────
+        // Translate one ChatFrame to its ServerFrame wire shape. The only
+        // rename is `snapshot` → `thread-snapshot` (advisor flagged the
+        // mismatch); all other types are 1:1.
+        const chatFrameToWire = (f: ChatFrame): ServerFrame => {
+          if (f.type === "snapshot") {
+            return {
+              type: "thread-snapshot",
+              threadId: f.threadId,
+              throughSeq: f.throughSeq,
+              messages: f.messages,
+            }
+          }
+          return f
+        }
+
+        // Fork a forwarder fiber that subscribes to a thread and sends
+        // every ChatFrame as a ServerFrame. Idempotent — a duplicate
+        // subscribe to the same threadId is a no-op so we don't double
+        // up snapshots or fan-out fibers.
+        //
+        // Snapshot frames bypass the obs drop budget intentionally:
+        // they're one fat JSON blob (per advisor §E1), not a stream of
+        // events, and dropping the snapshot leaves the client with
+        // deltas against an empty transcript. We trust the OS-level
+        // socket buffer for snapshots and accept that on a saturated
+        // link a snapshot may take a moment to flush.
+        const subscribeChatThread = (
+          threadId: string,
+        ): Effect.Effect<void, never> =>
+          Effect.gen(function* () {
+            if (chat === null) return
+            const m = yield* Ref.get(chatFibers)
+            if (m.has(threadId)) return // idempotent
+
+            const stream = chat.subscribe(threadId)
+            // Fork into the CONNECTION scope (not the per-message handler
+            // scope) so the forwarder lives until the ws closes.
+            const fiber = yield* stream.pipe(
+              Stream.runForEach((f) =>
+                Effect.sync(() => {
+                  if (ws.readyState !== ws.OPEN) return
+                  send(ws, chatFrameToWire(f))
+                }),
+              ),
+              Effect.catchAllCause(() => Effect.void),
+              Effect.forkIn(connectionScope),
+            )
+            yield* Ref.update(chatFibers, (mm) => {
+              const next = new Map(mm)
+              next.set(threadId, fiber as Fiber.RuntimeFiber<unknown, unknown>)
+              return next
+            })
+            // When the fiber finishes naturally (e.g. ChatService.subscribe
+            // returned Stream.empty for an unknown thread), drop it from
+            // the map so future subscribe attempts re-fork. CAS by fiber
+            // identity: the observer for fiber A might fire AFTER the client
+            // unsubscribed and re-subscribed under the same threadId,
+            // installing a new fiber B. Without the identity check, A's
+            // observer would evict B and leave it orphaned (still alive in
+            // the connection scope, but unreachable from the map and from
+            // unsubscribe()).
+            fiber.addObserver(() => {
+              Effect.runFork(
+                Ref.update(chatFibers, (mm) => {
+                  if (mm.get(threadId) !== fiber) return mm
+                  const next = new Map(mm)
+                  next.delete(threadId)
+                  return next
+                }),
+              )
+            })
+          })
+
+        const unsubscribeChatThread = (
+          threadId: string,
+        ): Effect.Effect<void, never> =>
+          Effect.gen(function* () {
+            const m = yield* Ref.get(chatFibers)
+            const fiber = m.get(threadId)
+            if (fiber === undefined) return
+            yield* Ref.update(chatFibers, (mm) => {
+              const next = new Map(mm)
+              next.delete(threadId)
+              return next
+            })
+            yield* Fiber.interrupt(fiber)
+          })
+
+        // Inbound message handler. Runs as a sync ws callback; we
+        // runFork into the captured runtime so Effect ops don't block
+        // the event loop.
+        //
+        // Bad JSON / unknown frame types are LOGGED server-side and
+        // ignored — no error frame is sent (we don't have a generic
+        // malformed-client-frame type, and replying could DoS-amplify
+        // a buggy client). Pong is an explicit no-op so the unknown-
+        // frame branch doesn't spam future protocol bumps.
+        if (chat !== null) {
+          ws.on("message", (raw) => {
+            let frame: ClientFrame
+            try {
+              const parsed = JSON.parse(raw.toString())
+              if (
+                typeof parsed !== "object" ||
+                parsed === null ||
+                typeof (parsed as { type?: unknown }).type !== "string"
+              ) {
+                return
+              }
+              frame = parsed as ClientFrame
+            } catch {
+              return
+            }
+
+            const handle = (): Effect.Effect<void, never> =>
+              Effect.gen(function* () {
+                switch (frame.type) {
+                  case "pong":
+                  case "bye":
+                    return
+                  case "subscribe": {
+                    yield* subscribeChatThread(frame.threadId)
+                    return
+                  }
+                  case "unsubscribe": {
+                    yield* unsubscribeChatThread(frame.threadId)
+                    return
+                  }
+                  case "list-threads": {
+                    const threads = yield* chat.listThreads(frame.limit ?? 50)
+                    send(ws, { type: "thread-list", threads })
+                    return
+                  }
+                  case "new-thread": {
+                    const summary = yield* chat.createThread({
+                      model: frame.model,
+                      ...(frame.title !== undefined ? { title: frame.title } : {}),
+                      ...(frame.tags !== undefined ? { tags: frame.tags } : {}),
+                      ...(frame.systemPrompt !== undefined
+                        ? { systemPrompt: frame.systemPrompt }
+                        : {}),
+                    })
+                    send(ws, { type: "thread-created", thread: summary })
+                    // Auto-subscribe so the client doesn't need a
+                    // subscribe round-trip before sending the first
+                    // user-message — a common ChatGPT-style pattern.
+                    yield* subscribeChatThread(summary.id)
+                    return
+                  }
+                  case "user-message": {
+                    const result = yield* chat.send(frame.threadId, frame.text)
+                    if (Option.isNone(result)) {
+                      // Unknown thread — surface explicitly so the
+                      // client doesn't sit waiting for a delta that
+                      // will never come.
+                      send(ws, {
+                        type: "assistant-error",
+                        threadId: frame.threadId,
+                        turnId: null,
+                        error: {
+                          kind: "unknown-thread",
+                          message: `unknown thread: ${frame.threadId}`,
+                        },
+                      })
+                    }
+                    return
+                  }
+                  case "interrupt": {
+                    yield* chat.interrupt(frame.threadId)
+                    return
+                  }
+                }
+              })
+
+            Runtime.runFork(runtime)(handle())
+          })
+        }
 
         // Wire ws close → resolve the close deferred.
         ws.on("close", () => {
