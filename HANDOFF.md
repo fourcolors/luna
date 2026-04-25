@@ -720,3 +720,85 @@ to a fresh session.
 **Sterling's standing directive:** "do all the phases without bothering me"
 — continue autonomous through the remaining 4 phases unless an
 irreversible / high-blast-radius decision arises.
+
+### Session 2026-04-25 (continuation — Phases 19–22 shipped, M4 server surface COMPLETE)
+
+**Shipped this run (4 phases + 1 frozen-edit):**
+
+```
+Commit    Title                                                    Tests
+────────  ──────────────────────────────────────────────────────  ─────
+ab2bb6e   Phase 19: TriggerAgent registry augment (list() + Sum)   +2
+b9fbaf3   Phase 21 (frozen-edit): +ExperimentBudget/ScoringError    0
+75a73d1   Phase 20: TrainingHarness (runEval + runBatch)           +6
+f3e4e29   Phase 21: LabsService (scientist loop + budget gate)     +6
+a4d7c11   Phase 22: UIService (server-side obs multiplexer)        +4
+```
+
+(Commit hashes approximate — see `git log --since="1 hour ago"`.)
+
+**Repo state per auditor:** 296 passed, 3 skipped (sqlite, expected).
+Core package: 192 passed across 30 files. ⚠️ Earlier "229" / "247"
+counts in this HANDOFF were stale — auditor confirmed **296/299**.
+
+**Advisor → Auditor cycle notes:**
+- Advisor verdict (⚠️ MODIFY) reordered Harness BEFORE Labs (dependency:
+  Labs dispatches into Harness per §2.1.11). Honored.
+- Advisor rejected proposed parallel `TriggerService` Tag — extending
+  `TriggerAgent` in-place avoids dual-API debt. Honored.
+- Advisor required `subscribeEvents` (eager) NOT `events` (lazy) for
+  UIService — Phase 14 race regression. Test included at
+  `packages/core/test/ui.test.ts` ("eager-subscribe contract"). Verified.
+- Frozen-edit `errors.ts` shipped in isolated commit per Phase 11c
+  protocol (additive only: +15 lines, no changes/removals).
+- Auditor: SHIP. No blockers; 4 minor non-blocking follow-ups.
+
+**Auditor non-blocking follow-ups (carry into next session):**
+1. Move/delete orphaned `test/rollup-tick.test.ts` at repo root (not
+   picked up by vitest).
+2. `packages/core/test/jobs/trigger-agent.test.ts:15-19` `fullLayer`
+   helper is dead code — remove.
+3. Add a Tier-2 sim asserting `TriggerAgent.list()` registry shrinks
+   on Scope close (current test verifies in-scope count only).
+4. UIService transport adapter (WS/SSE) for the Tauri client — separate
+   package, future phase.
+
+**M4 server surface: COMPLETE.**
+
+Per DESIGN §15: M4 = "Labs, Training Harness, Gateway (Discord/Tg/CLI),
+Plugin Play, Observability/Telemetry/UI, NetSec, Cost Accounting,
+Secrets — Acceptance tests green; cost accounting accurate."
+
+✅ Observability (14), CostAccounting (15), NetSec (16), Gateway (17),
+Telemetry (18), TriggerAgent reg (19), TrainingHarness (20),
+LabsService (21), UIService (22) — all server primitives green.
+🚧 Remaining for M4 closure: Tauri/React UI client (separate package,
+M5+ per §9), Plugin Play (separate package), Acceptance test bundle,
+SQL migrations (`@effect/sql` integration deferred per Phase 15 note).
+
+**Next-up candidates (when Sterling resumes):**
+- Acceptance/integration test bundle for the M4 gate
+- WS/SSE UI transport adapter (consumes `UIService.subscribe`)
+- M5 prep: SQL persistence layer for CostAccounting/Telemetry/Labs
+  artifacts
+- M5 prep: Effect v4 migration spike (DESIGN §15 M5)
+
+**Pattern learnings (continuation of prior session's list):**
+
+7. **`Effect.addFinalizer` for caller-Scope cleanup of registry
+   entries:** Phase 19's pattern — register entry in shared Ref, add a
+   finalizer that removes it on caller-Scope close. Avoids exposing
+   `Fiber.RuntimeFiber` (§3.4 #1) while supporting `list()` queries.
+   Layer's Ref outlives caller Scopes safely (Refs are pure mutable
+   state — no shutdown semantics, so a stale finalizer just becomes
+   a no-op).
+
+8. **Frozen-edit isolated commit pattern:** errors.ts edits ship in
+   their own commit BEFORE the consuming feature commit (Phase 11c
+   protocol). Makes the diff trivially auditable and rollback-safe.
+
+9. **CostAccountingService.recordCost vs raw emit:** for tests that
+   need to pre-load cost state, prefer `obs.recordCost({ workflowId,
+   tokensIn, tokensOut, pricePerMillion* })` over hand-constructing
+   a CostAccrued event — fewer required fields, less brittle.
+
