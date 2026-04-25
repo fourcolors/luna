@@ -133,6 +133,111 @@ describe("SessionStore (in-memory)", () => {
     expect(ids).toEqual(["b"])
   })
 
+  it("sidebar metadata: append updates lastMessageAt + preview for text turns", async () => {
+    const summary = await program(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        yield* store.create({
+          id: "side",
+          options: { model: "m" },
+          createdAt: 0,
+        })
+        yield* store.appendMessage({
+          sessionId: "side",
+          messageId: "u1",
+          ts: 1000,
+          parentId: null,
+          kind: "user" as const,
+          payload: makeMsg("side", "hello   sidebar"),
+        })
+        yield* store.appendMessage({
+          sessionId: "side",
+          messageId: "a1",
+          ts: 2000,
+          parentId: null,
+          kind: "assistant" as const,
+          payload: {
+            type: "assistant",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "hi back" }],
+            },
+          },
+        })
+        const got = yield* store.get("side")
+        return got!
+      }),
+    )
+    expect(summary.lastMessageAt).toBe(2000)
+    expect(summary.lastMessagePreview).toBe("hi back")
+  })
+
+  it("sidebar metadata: result/system messages bump ts but not preview", async () => {
+    const summary = await program(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        yield* store.create({
+          id: "side2",
+          options: { model: "m" },
+          createdAt: 0,
+        })
+        yield* store.appendMessage({
+          sessionId: "side2",
+          messageId: "u1",
+          ts: 1000,
+          parentId: null,
+          kind: "user" as const,
+          payload: makeMsg("side2", "ask"),
+        })
+        yield* store.appendMessage({
+          sessionId: "side2",
+          messageId: "r1",
+          ts: 5000,
+          parentId: null,
+          kind: "result" as const,
+          payload: { result: "ok" },
+        })
+        const got = yield* store.get("side2")
+        return got!
+      }),
+    )
+    expect(summary.lastMessageAt).toBe(5000)
+    expect(summary.lastMessagePreview).toBe("ask")
+  })
+
+  it("orderBy: lastMessageAt sorts active threads ahead of older-but-fresh-created", async () => {
+    const ids = await program(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        // older session, but it gets a recent message
+        yield* store.create({
+          id: "old-active",
+          options: { model: "m" },
+          createdAt: 100,
+        })
+        // newer session, no messages
+        yield* store.create({
+          id: "new-quiet",
+          options: { model: "m" },
+          createdAt: 500,
+        })
+        yield* store.appendMessage({
+          sessionId: "old-active",
+          messageId: "u",
+          ts: 1000,
+          parentId: null,
+          kind: "user" as const,
+          payload: makeMsg("old-active", "fresh"),
+        })
+        const chunk = yield* Stream.runCollect(
+          store.list({ orderBy: "lastMessageAt" }),
+        )
+        return Array.from(chunk).map((s) => s.id)
+      }),
+    )
+    expect(ids).toEqual(["old-active", "new-quiet"])
+  })
+
   it("appendMessage fails for unknown session", async () => {
     const exit = await Effect.runPromiseExit(
       Effect.gen(function* () {
