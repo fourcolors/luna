@@ -277,3 +277,59 @@ button:hover:not(:disabled) { background: #2780f5; }
   align-items: center;
   justify-content: center;
 }
+
+/* ── markdown rendering ─────────────────────────────────────────────── */
+.markdown {
+  font-size: 13px;
+  line-height: 1.55;
+  color: #e6e6e6;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown p { margin: 0.5em 0; white-space: pre-wrap; }
+.markdown h1, .markdown h2, .markdown h3, .markdown h4 {
+  margin: 0.8em 0 0.4em; font-weight: 600;
+}
+.markdown h1 { font-size: 1.3em; }
+.markdown h2 { font-size: 1.18em; }
+.markdown h3 { font-size: 1.08em; }
+.markdown ul, .markdown ol { margin: 0.4em 0; padding-left: 1.4em; }
+.markdown li { margin: 0.15em 0; }
+.markdown a { color: #6cb6ff; text-decoration: none; }
+.markdown a:hover { text-decoration: underline; }
+.markdown blockquote {
+  margin: 0.5em 0; padding: 4px 10px;
+  border-left: 3px solid #2a4a85; color: #aaa;
+}
+.markdown code {
+  background: #0a0b0e; border: 1px solid #1a1c20;
+  padding: 1px 5px; border-radius: 3px;
+  font-family: "SF Mono", Menlo, monospace; font-size: 12px;
+}
+.markdown table {
+  border-collapse: collapse; margin: 0.5em 0; font-size: 12px;
+}
+.markdown th, .markdown td {
+  border: 1px solid #2a2d33; padding: 4px 8px;
+}
+.markdown th { background: #181a1e; }
+
+.shiki-wrap, .code-fallback {
+  margin: 0.5em 0;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-size: 12px;
+  background: #0a0b0e;
+  border: 1px solid #1a1c20;
+}
+.shiki-wrap pre, .code-fallback {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: "SF Mono", Menlo, monospace;
+  white-space: pre;
+}
+.code-fallback code {
+  background: transparent; border: 0; padding: 0;
+  color: #c8d3e0;
+}
