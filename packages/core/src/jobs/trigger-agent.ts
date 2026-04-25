@@ -27,7 +27,7 @@
  *   computed at exactly the boundary yields the NEXT match (so no
  *   double-fire at boundary).
  */
-import { Cron, Duration, Effect, Either, Layer, Stream } from "effect"
+import { Cron, Duration, Effect, Either, Layer, Ref, Stream } from "effect"
 import * as EffectClock from "effect/Clock"
 import type * as Scope from "effect/Scope"
 import {
@@ -38,6 +38,8 @@ import {
 import { TriggerError } from "./errors.js"
 
 export type TriggerId = string
+
+export type TriggerKind = "cron" | "stream"
 
 export type TriggerSpec =
   | {
@@ -51,10 +53,27 @@ export type TriggerSpec =
       readonly build: (event: unknown) => JobSpec
     }
 
+/** Public summary of a registered trigger. */
+export interface TriggerSummary {
+  readonly id: TriggerId
+  readonly kind: TriggerKind
+  /** Cron expression if kind === "cron", undefined otherwise. */
+  readonly expr?: string
+  readonly registeredAt: string
+}
+
 export interface TriggerAgentApi {
   readonly register: (
     spec: TriggerSpec,
   ) => Effect.Effect<TriggerId, TriggerError, Scope.Scope>
+
+  /**
+   * List all currently-active triggers. Returns a snapshot of the
+   * registry — callers cannot mutate. Lifetime is governed by the
+   * caller's Scope (per §3.1); when a registration's Scope closes,
+   * the entry is removed from the registry.
+   */
+  readonly list: Effect.Effect<ReadonlyArray<TriggerSummary>>
 }
 
 export class TriggerAgent extends Effect.Tag(
@@ -65,7 +84,37 @@ let triggerCounter = 0
 const nextTriggerId = (): TriggerId =>
   `trigger-${++triggerCounter}-${Math.random().toString(36).slice(2, 8)}`
 
-const make = (scheduler: JobSchedulerApi): TriggerAgentApi => {
+const make = (
+  scheduler: JobSchedulerApi,
+  registry: Ref.Ref<Map<TriggerId, TriggerSummary>>,
+): TriggerAgentApi => {
+  const trackEntry = (
+    id: TriggerId,
+    kind: TriggerKind,
+    expr?: string,
+  ): Effect.Effect<void, never, Scope.Scope> =>
+    Effect.gen(function* () {
+      const summary: TriggerSummary = {
+        id,
+        kind,
+        ...(expr !== undefined ? { expr } : {}),
+        registeredAt: new Date().toISOString(),
+      }
+      yield* Ref.update(registry, (m) => {
+        const next = new Map(m)
+        next.set(id, summary)
+        return next
+      })
+      // Remove from registry when caller's Scope closes.
+      yield* Effect.addFinalizer(() =>
+        Ref.update(registry, (m) => {
+          const next = new Map(m)
+          next.delete(id)
+          return next
+        }),
+      )
+    })
+
   const register: TriggerAgentApi["register"] = (spec) =>
     Effect.gen(function* () {
       const id = nextTriggerId()
@@ -116,6 +165,7 @@ const make = (scheduler: JobSchedulerApi): TriggerAgentApi => {
         }).pipe(Effect.forever)
         // Fork into caller's Scope — Scope.close interrupts the loop.
         yield* Effect.forkScoped(loop)
+        yield* trackEntry(id, "cron", spec.expr)
         return id
       }
       if (spec.kind === "stream") {
@@ -132,6 +182,7 @@ const make = (scheduler: JobSchedulerApi): TriggerAgentApi => {
           ),
         )
         yield* Effect.forkScoped(consume)
+        yield* trackEntry(id, "stream")
         return id
       }
       // Exhaustiveness — TS already narrows, but defensive.
@@ -143,7 +194,13 @@ const make = (scheduler: JobSchedulerApi): TriggerAgentApi => {
         }),
       )
     })
-  return { register }
+
+  const list: TriggerAgentApi["list"] = Effect.gen(function* () {
+    const m = yield* Ref.get(registry)
+    return Array.from(m.values())
+  })
+
+  return { register, list }
 }
 
 export const TriggerAgentLayer = {
@@ -151,7 +208,8 @@ export const TriggerAgentLayer = {
     TriggerAgent,
     Effect.gen(function* () {
       const scheduler = yield* JobScheduler
-      return make(scheduler)
+      const registry = yield* Ref.make<Map<TriggerId, TriggerSummary>>(new Map())
+      return make(scheduler, registry)
     }),
   ),
 } as const
