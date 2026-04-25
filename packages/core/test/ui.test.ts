@@ -65,10 +65,10 @@ describe("UIService", () => {
           ts: new Date().toISOString(),
           level: "info",
           sessionId: "s1",
-          tool: "bash",
+          toolName: "bash",
           inputDigest: "x",
           durationMs: 1,
-          status: "ok",
+          status: "success",
         })
         yield* obs.emit({
           kind: "CostAccrued",
@@ -141,10 +141,10 @@ describe("UIService", () => {
           ts: new Date().toISOString(),
           level: "info",
           sessionId: "s",
-          tool: "bash",
+          toolName: "bash",
           inputDigest: "x",
           durationMs: 1,
-          status: "ok",
+          status: "success",
         })
         // Emit Error (whitelisted) — should pass.
         yield* obs.emit({
