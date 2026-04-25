@@ -78,3 +78,10 @@ export class TaskCompletionLagError extends Data.TaggedError("TaskCompletionLagE
   readonly taskId: string
   readonly stuckMs: number
 }> {}
+
+// §6.2 — Workflows (WorkflowRuntime, Phase 12). Per DESIGN.md §6.2 lines 421-424.
+export class WorkflowCompensationError extends Data.TaggedError("WorkflowCompensationError")<{
+  readonly workflowId: string
+  readonly stepId: string
+  readonly cause: unknown
+}> {}
