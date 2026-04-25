@@ -47,6 +47,50 @@ describe("TriggerAgent — Tier 1", () => {
     expect(JSON.stringify(exit)).toContain("cron-parse")
   })
 
+  it("list() returns registered triggers; entries removed on Scope close", async () => {
+    // Inside the scoped program, registering 2 triggers → list returns 2.
+    const insideCount = await Effect.runPromise(
+      program(
+        Effect.gen(function* () {
+          const trig = yield* TriggerAgent
+          yield* trig.register({
+            kind: "stream",
+            source: Stream.empty,
+            build: () => ({ run: Effect.succeed(0) }),
+          })
+          yield* trig.register({
+            kind: "stream",
+            source: Stream.empty,
+            build: () => ({ run: Effect.succeed(0) }),
+          })
+          const summaries = yield* trig.list
+          return summaries.length
+        }),
+      ),
+    )
+    expect(insideCount).toBe(2)
+  })
+
+  it("list() summary includes cron expr for cron triggers", async () => {
+    const summary = await Effect.runPromise(
+      program(
+        Effect.gen(function* () {
+          const trig = yield* TriggerAgent
+          yield* trig.register({
+            kind: "cron",
+            expr: "0 * * * *", // hourly
+            build: () => ({ run: Effect.succeed(0) }),
+          })
+          const summaries = yield* trig.list
+          return summaries[0]
+        }),
+      ),
+    )
+    expect(summary?.kind).toBe("cron")
+    expect(summary?.expr).toBe("0 * * * *")
+    expect(typeof summary?.registeredAt).toBe("string")
+  })
+
   it("stream kind submits a job per event", async () => {
     const out = await Effect.runPromise(
       program(
