@@ -3,11 +3,18 @@
  *
  * Real http + real ws client; in-process. Coverage:
  *   - 401 on missing/wrong bearer
- *   - hello frame on connect with correct bearer
- *   - event frames forwarded for each whitelisted ObsEvent kind
+ *   - hello frame on connect (incl. advertisedKinds)
+ *   - one whitelisted ObsEvent kind round-trips end-to-end
+ *   - parametrized round-trip across every member of DEFAULT_UI_KINDS
+ *     (locks the layer's kind-shape indifference)
  *   - fan-out: two clients each receive every event independently
- *   - slow-consumer drop: events beyond capacity emit a `drop` frame
- *   - scope-leak: closing the server scope closes active sockets
+ *   - path routing (404 on unknown, 200 on /healthz)
+ *   - startup validation: refuses short token
+ *
+ * Slow-consumer drop and scope-leak shutdown are covered indirectly by
+ * the bounded-buffer + Layer.scoped finalizer; an explicit drop test is
+ * left as a follow-up because reliably stalling a localhost ws send
+ * buffer in a unit test is flaky.
  */
 import { afterEach, describe, expect, it } from "vitest"
 import {
@@ -17,7 +24,12 @@ import {
 } from "effect"
 import { WebSocket } from "ws"
 import { Clock } from "@experiment-agent/core"
-import { ObservabilityService, UIService } from "@experiment-agent/core"
+import {
+  DEFAULT_UI_KINDS,
+  ObservabilityService,
+  UIService,
+} from "@experiment-agent/core"
+import type { ObsEvent } from "@experiment-agent/core"
 import { startUIWebSocketServer } from "../src/server.js"
 import type { ServerFrame } from "../src/protocol.js"
 
@@ -154,6 +166,22 @@ describe("UIWebSocketServer", () => {
     }
   })
 
+  it("hello frame advertises configured kinds", async () => {
+    rig = await startRig(undefined, {
+      advertisedKinds: ["SessionStart", "Error"],
+    })
+    const frames = await collectFrames(
+      rig.url,
+      { authorization: `Bearer ${TOKEN}` },
+      1,
+    )
+    if (frames[0]?.type === "hello") {
+      expect([...frames[0].kinds]).toEqual(["SessionStart", "Error"])
+    } else {
+      throw new Error("expected hello frame")
+    }
+  })
+
   it("forwards a whitelisted event after subscribe", async () => {
     rig = await startRig()
     const url = rig.url
@@ -179,6 +207,61 @@ describe("UIWebSocketServer", () => {
       expect(frames[1].event.kind).toBe("SessionStart")
     }
   })
+
+  // Locks the WS layer's indifference to event shape: every kind in
+  // DEFAULT_UI_KINDS round-trips end-to-end. Auditor follow-up.
+  const minimalEventFor = (kind: (typeof DEFAULT_UI_KINDS)[number]): ObsEvent => {
+    const ts = new Date().toISOString()
+    switch (kind) {
+      case "SessionStart":
+        return { ts, kind, level: "info", sessionId: "s", model: "m" }
+      case "SessionEnd":
+        return { ts, kind, level: "info", sessionId: "s", durationMs: 1 }
+      case "ToolCall":
+        return {
+          ts, kind, level: "info", sessionId: "s",
+          toolName: "bash", durationMs: 1, status: "success",
+        }
+      case "TeammateStart":
+        return { ts, kind, level: "info", team: "t", teammate: "tm" }
+      case "TeammateIdle":
+        return { ts, kind, level: "info", team: "t", teammate: "tm", idleMs: 100 }
+      case "TeammateStop":
+        return { ts, kind, level: "info", team: "t", teammate: "tm", reason: "done" }
+      case "WorkflowTransition":
+        return { ts, kind, level: "info", workflowId: "w", from: "a", to: "b" }
+      case "CostAccrued":
+        return {
+          ts, kind, level: "info",
+          tokensIn: 1, tokensOut: 1, cacheRead: 0, cacheWrite: 0, estimatedUsd: 0.001,
+        }
+      case "Error":
+        return { ts, kind, level: "error", errorTag: "X", message: "y" }
+      default: {
+        const _exhaust: never = kind
+        throw new Error(`unhandled kind: ${String(_exhaust)}`)
+      }
+    }
+  }
+
+  for (const kind of DEFAULT_UI_KINDS) {
+    it(`round-trips ${kind} events`, async () => {
+      rig = await startRig()
+      const collectorP = collectFrames(
+        rig.url,
+        { authorization: `Bearer ${TOKEN}` },
+        2,
+        3000,
+      )
+      await new Promise((r) => setTimeout(r, 100))
+      await rig.obsEmit(minimalEventFor(kind))
+      const frames = await collectorP
+      expect(frames[1]?.type).toBe("event")
+      if (frames[1]?.type === "event") {
+        expect(frames[1].event.kind).toBe(kind)
+      }
+    })
+  }
 
   it("fan-out: two clients each receive the same event", async () => {
     rig = await startRig()

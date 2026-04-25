@@ -31,7 +31,6 @@ import {
   Effect,
   Fiber,
   Layer,
-  Queue,
   Ref,
   Runtime,
   Stream,
@@ -72,6 +71,14 @@ export interface UIWebSocketServerConfig {
    * Keep-alive ping interval (ms). 0 disables. Default: 30_000.
    */
   readonly pingIntervalMs?: number
+  /**
+   * Kinds advertised in the `hello` frame. Should match the kind
+   * whitelist configured on `UIService.makeLayer`. The server itself
+   * does not filter — UIService already filtered upstream — this is
+   * purely informational so clients know what to expect.
+   * Default: empty.
+   */
+  readonly advertisedKinds?: ReadonlyArray<string>
 }
 
 export interface UIWebSocketServerHandle {
@@ -114,6 +121,7 @@ export const startUIWebSocketServer = (
     const path = config.path ?? "/ui"
     const cap = config.perConnectionCapacity ?? 256
     const pingMs = config.pingIntervalMs ?? 30_000
+    const kindsList: ReadonlyArray<string> = config.advertisedKinds ?? []
 
     const httpServer = http.createServer((req, res) => {
       if (req.url === "/healthz") {
@@ -172,10 +180,6 @@ export const startUIWebSocketServer = (
       Effect.gen(function* () {
         const closed = yield* Deferred.make<void>()
 
-        // Per-connection bounded queue (drop-oldest).
-        const q = yield* Queue.sliding<ObsEvent>(cap)
-        yield* Effect.addFinalizer(() => Queue.shutdown(q))
-
         // Track for shutdown.
         yield* Ref.update(activeSockets, (xs) => [...xs, ws])
         yield* Effect.addFinalizer(() =>
@@ -187,36 +191,46 @@ export const startUIWebSocketServer = (
         send(ws, {
           type: "hello",
           protocolVersion: UI_WS_PROTOCOL_VERSION,
-          kinds: [],
+          kinds: kindsList,
         })
 
+        // Single-fiber forwarder. The pattern is: take ONE event from the
+        // UIService stream, send it to the ws synchronously, repeat. ws.send
+        // is fire-and-forget at the protocol level (the underlying socket
+        // has its own OS-level send buffer), so we never block the upstream
+        // stream more than briefly.
+        //
+        // Drop semantics: if ws.send fails because the socket buffer is full
+        // (`ws.bufferedAmount > maxBufferedBytes`), we count the drop in a
+        // local counter and skip the send. The next successful send carries
+        // a leading `drop` frame. Because there's a single fiber doing both
+        // accounting and sending, the count is exact — no race.
+        const maxBufferedBytes = cap * 4096 // ~4KB/event budget
         let droppedSinceLast = 0
         let firstDropTs: string | null = null
-        const producer = stream.pipe(
+
+        const forwarder = stream.pipe(
           Stream.runForEach((ev) =>
-            Effect.gen(function* () {
-              const before = yield* Queue.size(q)
-              yield* Queue.offer(q, ev)
-              const after = yield* Queue.size(q)
-              if (after <= before && before === cap) {
+            Effect.sync(() => {
+              if (ws.readyState !== ws.OPEN) return
+              if (ws.bufferedAmount > maxBufferedBytes) {
                 droppedSinceLast += 1
                 if (firstDropTs === null) firstDropTs = ev.ts
+                return
               }
+              if (droppedSinceLast > 0 && firstDropTs !== null) {
+                send(ws, {
+                  type: "drop",
+                  n: droppedSinceLast,
+                  since: firstDropTs,
+                })
+                droppedSinceLast = 0
+                firstDropTs = null
+              }
+              send(ws, { type: "event", event: ev })
             }),
           ),
         )
-
-        const consumer = Effect.gen(function* () {
-          while (true) {
-            const ev = yield* Queue.take(q)
-            if (droppedSinceLast > 0 && firstDropTs !== null) {
-              send(ws, { type: "drop", n: droppedSinceLast, since: firstDropTs })
-              droppedSinceLast = 0
-              firstDropTs = null
-            }
-            send(ws, { type: "event", event: ev })
-          }
-        })
 
         const pinger =
           pingMs > 0
@@ -240,9 +254,9 @@ export const startUIWebSocketServer = (
           }
         })
 
-        // Run forwarders until the ws closes (or any forwarder dies).
+        // Run forwarder + pinger until the ws closes (or forwarder dies).
         yield* Effect.race(
-          Effect.race(producer, consumer),
+          forwarder,
           Effect.race(pinger, Deferred.await(closed)),
         ).pipe(Effect.catchAllCause(() => Effect.void))
       })
@@ -250,12 +264,14 @@ export const startUIWebSocketServer = (
     const runFork = Runtime.runFork(runtime)
     wss.on("connection", (ws) => {
       const fiber = runFork(Effect.scoped(handleConnection(ws)))
-      runFork(
-        Ref.update(activeFibers, (xs) => [
-          ...xs,
-          fiber as Fiber.RuntimeFiber<unknown, unknown>,
-        ]),
-      )
+      const typed = fiber as Fiber.RuntimeFiber<unknown, unknown>
+      runFork(Ref.update(activeFibers, (xs) => [...xs, typed]))
+      // Remove from activeFibers when the fiber finishes (natural close,
+      // forwarder error, etc.) — otherwise long-lived servers leak completed
+      // fiber references in the Ref (auditor finding).
+      fiber.addObserver(() => {
+        runFork(Ref.update(activeFibers, (xs) => xs.filter((x) => x !== typed)))
+      })
     })
 
     // Listen.
