@@ -214,7 +214,32 @@ Find via `~/.claude/projects/-Users-sol/` newest jsonl after timestamp
 This is the FIRST Fiber-supervision phase. HANDOFF.md guidance: budget
 1-per-session, not paired with Phase 11 (Teams).
 
-Scope (per DESIGN.md §15 M2 + §2.1.10):
+Scope (per DESIGN.md §15 M3 + §2.1.2 Jobs + §2.1.8 Triggers):
+
+**Locked design choices (advisor pre-review 2026-04-24):**
+- Cron: `effect/Cron` (bundled in effect@3.21, no new deps).
+- Supervisor primitive: `effect/FiberSet` (Scope-close auto-interrupts every
+  member; canonical "supervised pool with cascading interruption").
+- Backpressure: `Queue.bounded(N)` default `block`; per-scheduler
+  `OfferPolicy = "block" | "drop-newest" | "drop-oldest"` configurable.
+- Result channel: outbound `Stream<JobResult>` where each item is
+  `{jobId, exit: Exit<A,E>}`. Submit returns `Effect<JobId>`.
+- Restart: NO auto-restart at scheduler. Failures surface; callers re-submit.
+  Retry-with-`Effect.retry` belongs INSIDE the job effect (caller-chosen).
+  Trigger agents naturally re-fire on next cron tick.
+- New tagged errors via §6.3 boundary rule (additive), NOT §6.2 frozen-list.
+- Per-job acquireSession MUST be inside the job's own Effect.gen so broker
+  finalizer attaches to job Scope (mirrors Phase 9.5 adapter pattern).
+
+**Mandated Tier-2 sims (§8.2 conformance gate, all four required):**
+1. Backpressure-block-then-drain (bounded(2), submit 5, FIFO, all complete)
+2. Supervisor cascade-cancel (scheduler Scope close → all jobs Exit.isInterrupted,
+   broker inFlight returns to 0)
+3. Cron-tick determinism via fake Clock (advance N windows, exactly N firings)
+4. Failure surfaces, no auto-restart (failing job → JobResult tagged error,
+   no re-fire, scheduler not poisoned)
+
+**Original scope items:
 1. `JobScheduler` service in `packages/core/src/jobs/` — submit work items
    that run as supervised Fibers with backpressure (bounded queue).
 2. `TriggerAgent` mechanism — agents that fire on cron / event signals.
@@ -229,8 +254,9 @@ Scope (per DESIGN.md §15 M2 + §2.1.10):
    broker like normal — Scope alignment carries naturally.
 
 Required reading for Phase 10:
-- `DESIGN.md` §2.1.10 (Jobs/Schedule), §3 (concurrency invariants — esp.
-  §3.4 #1, #4), §6.1 (error taxonomy for new tagged errors), §15 M2.
+- `DESIGN.md` §2.1.2 (Jobs/Schedule), §2.1.8 (Trigger Agents), §3
+  (concurrency invariants — esp. §3.4 #1, #4), §6.1+§6.3 (error taxonomy +
+  additive boundary rule), §5.1 jobs table, §15 M3.
 - `packages/core/src/account-broker/account-broker.ts` — Scoped credential
   pattern is the reference for supervised resources.
 - Effect docs: `Effect.fork`, `Effect.forkScoped`, `Fiber`, `Supervisor`,
