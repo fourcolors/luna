@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Experiment Agent",
+  "version": "0.0.1",
+  "identifier": "com.experiment-agent.ui",
+  "build": {
+    "beforeDevCommand": "bun --filter @experiment-agent/ui-web dev",
+    "beforeBuildCommand": "bun --filter @experiment-agent/ui-web build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../../ui-web/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Experiment Agent",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 500,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://localhost:4753 ws://127.0.0.1:4753 http://localhost:4753 http://127.0.0.1:4753 ws://localhost:5173 http://localhost:5173; img-src 'self' data:; font-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png"
+    ]
+  }
+}
