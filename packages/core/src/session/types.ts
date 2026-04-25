@@ -25,6 +25,14 @@ export interface SessionOptions {
    */
   readonly idleTimeoutMs?: number
   /**
+   * If true, the adapter does NOT race the message Queue against an
+   * idle-timeout watchdog. Use ONLY for long-lived interactive sessions
+   * (chat threads) where user think-time legitimately exceeds any sane
+   * timeout. Trades the silent-hang safety net (§12.2 #5) for survivability
+   * across multi-minute pauses. Default: false.
+   */
+  readonly disableIdleTimeout?: boolean
+  /**
    * Full SDK-shape options snapshot. Typed loosely here; schema'd in Phase 4.
    *
    * **Reserved keys — adapter-owned (DESIGN.md §12.2 invariant #7):**

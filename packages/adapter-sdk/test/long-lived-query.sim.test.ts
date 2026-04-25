@@ -184,6 +184,66 @@ describe("SDKAdapter long-lived Query simulation (Tier-2 architecture proof)", (
   )
 
   it(
+    "with disableIdleTimeout: true, survives a starve-then-resume gap longer than DEFAULT_IDLE_TIMEOUT_MS would allow",
+    async () => {
+      const fakeLayer = SDKClient.fake((p) =>
+        makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: sid,
+          responseFor: (t) => `re: ${t}`,
+        }),
+      )
+
+      const total = await runScoped(
+        Effect.gen(function* () {
+          const store = yield* SessionStore
+          yield* store.create({
+            id: sid,
+            options: { model: "claude-test" },
+            createdAt: 0,
+          })
+          const inbox = yield* Queue.unbounded<SDKUserMessage>()
+          const promptStream = Stream.fromQueue(inbox)
+
+          const adapter = yield* SDKAdapter
+          const out = yield* adapter.query({
+            sessionId: sid,
+            prompt: promptStream,
+            sessionOptions: {
+              model: "claude-test",
+              // 100ms timeout would normally trip in the 300ms gap below.
+              idleTimeoutMs: 100,
+              // …but disabled, so the Queue is allowed to starve.
+              disableIdleTimeout: true,
+            },
+          })
+
+          const consumer = out.pipe(Stream.take(4), Stream.runCollect)
+
+          const producer = Effect.gen(function* () {
+            yield* Queue.offer(inbox, userMsg("first"))
+            // Long pause — far exceeds idleTimeoutMs:100. With opt-out
+            // engaged, no SDKError fires.
+            yield* Effect.sleep("300 millis")
+            yield* Queue.offer(inbox, userMsg("second"))
+            yield* Effect.sleep("50 millis")
+            yield* Queue.shutdown(inbox)
+          })
+
+          const [collected] = yield* Effect.all([consumer, producer], {
+            concurrency: 2,
+          })
+          return Array.from(collected).length
+        }),
+        fakeLayer,
+      )
+
+      expect(total).toBe(4)
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
     "remains responsive when user turns arrive with idle gaps shorter than the timeout",
     async () => {
       const fakeLayer = SDKClient.fake((p) =>

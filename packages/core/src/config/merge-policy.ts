@@ -30,6 +30,7 @@ export const MERGE_POLICIES: Readonly<Record<string, MergePolicy>> = {
   // Top-level SessionOptions
   model: "replace",
   idleTimeoutMs: "replace",
+  disableIdleTimeout: "replace",
   systemPrompt: "replace",
   title: "replace",
   tags: "concat-unique",
