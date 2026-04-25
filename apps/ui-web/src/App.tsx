@@ -7,7 +7,7 @@ import {
   type ConnectionStatus,
   type TransportHandle,
 } from "./transport.js"
-import type { ChatMessage, ClientFrame, SessionSummary } from "./wire.js"
+import type { Artifact, ChatMessage, ClientFrame, SessionSummary } from "./wire.js"
 
 const STORAGE_KEY = "ui-ws.config"
 const DEFAULT_URL = "ws://127.0.0.1:4753/ui"
@@ -224,7 +224,14 @@ export function App() {
       </header>
 
       {pane === "chat" ? (
-        <div className="chat-layout">
+        <div
+          className={
+            "chat-layout" +
+            (selectedThread && selectedThread.artifacts.length > 0
+              ? " with-artifacts"
+              : "")
+          }
+        >
           <Sidebar
             threads={state.threadList}
             selectedId={state.selectedThreadId}
@@ -237,6 +244,9 @@ export function App() {
             onInterrupt={interrupt}
             disabled={!chatEnabled}
           />
+          {selectedThread && selectedThread.artifacts.length > 0 && (
+            <ArtifactPanel artifacts={selectedThread.artifacts} />
+          )}
         </div>
       ) : (
         <ObsPanel
@@ -449,6 +459,80 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         </div>
       )}
     </div>
+  )
+}
+
+/* -------------------------------------------------------------------- */
+/* Artifact panel — files & substantial code blocks pinned beside chat  */
+/* -------------------------------------------------------------------- */
+
+function ArtifactPanel({
+  artifacts,
+}: {
+  artifacts: ReadonlyArray<Artifact>
+}) {
+  const [selectedId, setSelectedId] = useState<string | null>(
+    artifacts[0]?.id ?? null,
+  )
+  // Auto-select newest when artifacts grow.
+  useEffect(() => {
+    if (artifacts.length > 0) {
+      const last = artifacts[artifacts.length - 1]!
+      setSelectedId((cur) => cur ?? last.id)
+    }
+  }, [artifacts.length])
+
+  const selected =
+    artifacts.find((a) => a.id === selectedId) ??
+    artifacts[artifacts.length - 1] ??
+    null
+
+  return (
+    <aside className="artifact-panel">
+      <div className="artifact-head">
+        <span>Artifacts</span>
+        <span className="muted small">{artifacts.length}</span>
+      </div>
+      <div className="artifact-list">
+        {artifacts.map((a) => (
+          <button
+            key={a.id}
+            className={
+              "artifact-row" + (a.id === selected?.id ? " selected" : "")
+            }
+            onClick={() => setSelectedId(a.id)}
+          >
+            <div className="artifact-title">
+              {a.source === "tool-write" ? "📄" : "📝"} {a.title}
+            </div>
+            <div className="artifact-meta muted small">
+              {a.source === "tool-write" ? a.path : a.lang ?? "code"} ·{" "}
+              {a.content.length} chars
+            </div>
+          </button>
+        ))}
+      </div>
+      {selected && (
+        <div className="artifact-view">
+          <div className="artifact-view-head">
+            <span className="small">{selected.path ?? selected.title}</span>
+            <button
+              className="chip clear"
+              onClick={() => {
+                navigator.clipboard?.writeText(selected.content).catch(() => {
+                  // ignore
+                })
+              }}
+            >
+              copy
+            </button>
+          </div>
+          <pre className="artifact-content">
+            <code>{selected.content}</code>
+          </pre>
+        </div>
+      )}
+    </aside>
   )
 }
 

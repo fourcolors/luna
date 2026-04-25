@@ -18,6 +18,7 @@
  * Tagged-union error kind matches `ChatErrorKind` in @experiment-agent/chat-service.
  */
 import type { ObsEvent, ChatMessage, SessionSummary } from "@experiment-agent/core"
+import type { Artifact } from "@experiment-agent/chat-service"
 
 export const UI_WS_PROTOCOL_VERSION = 2 as const
 
@@ -115,6 +116,14 @@ export interface AssistantErrorFrame {
   }
 }
 
+export interface ArtifactsExtractedFrame {
+  readonly type: "artifacts-extracted"
+  readonly threadId: string
+  readonly messageId: string
+  readonly messageSeq: number
+  readonly artifacts: ReadonlyArray<Artifact>
+}
+
 export type ServerFrame =
   | HelloFrame
   | EventFrame
@@ -128,6 +137,7 @@ export type ServerFrame =
   | AssistantDeltaFrame
   | AssistantDoneFrame
   | AssistantErrorFrame
+  | ArtifactsExtractedFrame
 
 /* -------------------------------------------------------------------------- */
 /* Client → server                                                            */

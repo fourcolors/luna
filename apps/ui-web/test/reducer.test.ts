@@ -213,4 +213,76 @@ describe("reducer", () => {
     const s = reduce(initialState, { tag: "select-thread", threadId: "xyz" })
     expect(s.selectedThreadId).toBe("xyz")
   })
+
+  it("artifacts-extracted appends; same messageId replaces prior set", () => {
+    let s = reduce(initialState, {
+      type: "thread-created",
+      thread: summary("x"),
+    })
+    s = reduce(s, {
+      type: "artifacts-extracted",
+      threadId: "x",
+      messageId: "m1",
+      messageSeq: 0,
+      artifacts: [
+        {
+          id: "m1:0",
+          source: "code-fence",
+          path: null,
+          lang: "ts",
+          title: "code (ts)",
+          content: "x",
+        },
+      ],
+    })
+    expect(s.threads.get("x")!.artifacts).toHaveLength(1)
+    // Re-extraction for the same message replaces (idempotent)
+    s = reduce(s, {
+      type: "artifacts-extracted",
+      threadId: "x",
+      messageId: "m1",
+      messageSeq: 0,
+      artifacts: [
+        {
+          id: "m1:0",
+          source: "code-fence",
+          path: null,
+          lang: "ts",
+          title: "code (ts)",
+          content: "x",
+        },
+        {
+          id: "m1:1",
+          source: "tool-write",
+          path: "/a.ts",
+          lang: "ts",
+          title: "a.ts",
+          content: "y",
+        },
+      ],
+    })
+    expect(s.threads.get("x")!.artifacts).toHaveLength(2)
+    // A different messageId appends
+    s = reduce(s, {
+      type: "artifacts-extracted",
+      threadId: "x",
+      messageId: "m2",
+      messageSeq: 1,
+      artifacts: [
+        {
+          id: "m2:0",
+          source: "code-fence",
+          path: null,
+          lang: "go",
+          title: "code (go)",
+          content: "z",
+        },
+      ],
+    })
+    expect(s.threads.get("x")!.artifacts.map((a) => a.id)).toEqual([
+      "m1:0",
+      "m1:1",
+      "m2:0",
+    ])
+  })
 })
