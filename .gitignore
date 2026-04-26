@@ -6,3 +6,5 @@ coverage/
 .vitest-temp/
 tsconfig.tsbuildinfo
 pnpm-lock.yaml
+.env.local
+.env.*.local
