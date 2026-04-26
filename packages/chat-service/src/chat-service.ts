@@ -149,6 +149,14 @@ export class ChatService extends Effect.Service<ChatService>()(
       ): SessionOptions => {
         const sdkOptions: Record<string, unknown> = {
           includePartialMessages: true,
+          cwd:
+            opts.cwd ??
+            process.env["EXPERIMENT_AGENT_REPO_ROOT"] ??
+            process.cwd(),
+          // Filesystem setting sources: load skills, plugins, MCP servers,
+          // CLAUDE.md, and hooks from ~/.claude/ + <cwd>/.claude/. Caller
+          // can opt out with `settingSources: []`.
+          settingSources: opts.settingSources ?? ["user", "project"],
         }
         return {
           model: opts.model,
