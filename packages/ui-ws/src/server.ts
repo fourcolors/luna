@@ -39,9 +39,9 @@ import {
 import type * as Scope from "effect/Scope"
 import * as http from "node:http"
 import { WebSocketServer, type WebSocket } from "ws"
-import { UIService } from "@experiment-agent/core"
-import type { ObsEvent } from "@experiment-agent/core"
-import type { ChatService, ChatFrame } from "@experiment-agent/chat-service"
+import { UIService } from "@luna/core"
+import type { ObsEvent } from "@luna/core"
+import type { ChatService, ChatFrame } from "@luna/chat-service"
 import {
   UI_WS_PROTOCOL_VERSION,
   type ClientFrame,

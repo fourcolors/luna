@@ -14,7 +14,7 @@
  * same artifacts in the same order. Source-of-truth for the UI's side
  * panel; the panel never re-parses the message text itself.
  */
-import type { ChatMessage, ChatToolUse } from "@experiment-agent/core"
+import type { ChatMessage, ChatToolUse } from "@luna/core"
 
 export type ArtifactSource = "code-fence" | "tool-write"
 

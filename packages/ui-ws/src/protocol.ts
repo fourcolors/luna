@@ -15,10 +15,10 @@
  * Dedupe model: `thread-snapshot` carries `throughSeq`. Live chat frames
  * carry their own `seq`. Clients drop `seq <= throughSeq` after reconnect.
  *
- * Tagged-union error kind matches `ChatErrorKind` in @experiment-agent/chat-service.
+ * Tagged-union error kind matches `ChatErrorKind` in @luna/chat-service.
  */
-import type { ObsEvent, ChatMessage, SessionSummary } from "@experiment-agent/core"
-import type { Artifact } from "@experiment-agent/chat-service"
+import type { ObsEvent, ChatMessage, SessionSummary } from "@luna/core"
+import type { Artifact } from "@luna/chat-service"
 
 export const UI_WS_PROTOCOL_VERSION = 2 as const
 

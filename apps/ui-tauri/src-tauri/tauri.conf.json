@@ -2,10 +2,10 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Luna",
   "version": "0.0.1",
-  "identifier": "com.experiment-agent.ui",
+  "identifier": "com.luna.ui",
   "build": {
-    "beforeDevCommand": "bun --filter @experiment-agent/ui-web dev",
-    "beforeBuildCommand": "bun --filter @experiment-agent/ui-web build",
+    "beforeDevCommand": "bun --filter @luna/ui-web dev",
+    "beforeBuildCommand": "bun --filter @luna/ui-web build",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../../ui-web/dist"
   },

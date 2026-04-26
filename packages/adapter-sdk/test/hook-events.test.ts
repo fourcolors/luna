@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from "vitest"
 import { Effect, Layer, Scope } from "effect"
-import { SessionStore } from "@experiment-agent/core"
+import { SessionStore } from "@luna/core"
 import { SDKAdapter, SDKClient, HOOK_EVENTS } from "../src/index.js"
 import { makeFakeQuery, makeResultMessage } from "./fake-sdk.js"
 

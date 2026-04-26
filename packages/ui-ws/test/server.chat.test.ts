@@ -26,9 +26,9 @@ import {
   ObservabilityService,
   SessionStore,
   UIService,
-} from "@experiment-agent/core"
-import { SDKAdapter, SDKClient } from "@experiment-agent/adapter-sdk"
-import { ChatService } from "@experiment-agent/chat-service"
+} from "@luna/core"
+import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
+import { ChatService } from "@luna/chat-service"
 import type {
   Query,
   SDKMessage,

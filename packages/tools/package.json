@@ -1,5 +1,5 @@
 {
-  "name": "@experiment-agent/tools",
+  "name": "@luna/tools",
   "version": "0.0.1",
   "type": "module",
   "main": "src/index.ts",
@@ -11,8 +11,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@experiment-agent/core": "workspace:*",
-    "@experiment-agent/adapter-sdk": "workspace:*",
+    "@luna/core": "workspace:*",
+    "@luna/adapter-sdk": "workspace:*",
     "effect": "^3.21.0"
   },
   "peerDependencies": {

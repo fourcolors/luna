@@ -1,5 +1,5 @@
 /**
- * @experiment-agent/ui-shared — chat-app-agnostic React building blocks
+ * @luna/ui-shared — chat-app-agnostic React building blocks
  * used by apps/ui-web (and any future surface that wants the same chrome).
  *
  * Everything in here is pure UI plumbing: WebSocket transport, the chat

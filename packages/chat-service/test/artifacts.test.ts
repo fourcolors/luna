@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { ChatMessage, ChatToolUse } from "@experiment-agent/core"
+import type { ChatMessage, ChatToolUse } from "@luna/core"
 import { extractArtifacts } from "../src/artifacts.js"
 
 const msg = (

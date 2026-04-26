@@ -14,7 +14,7 @@
  * dispatch time.
  */
 import type { Effect, Stream } from "effect"
-import type { MemoryBackendError } from "@experiment-agent/core"
+import type { MemoryBackendError } from "@luna/core"
 import type {
   MemoryExport,
   MemoryQuery,

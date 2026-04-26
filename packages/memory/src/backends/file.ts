@@ -16,7 +16,7 @@ import { Effect, Layer, Stream } from "effect"
 import * as fs from "node:fs"
 import * as fsp from "node:fs/promises"
 import * as path from "node:path"
-import { MemoryBackendError } from "@experiment-agent/core"
+import { MemoryBackendError } from "@luna/core"
 import {
   MEMORY_ENVELOPE_VERSION,
   matchesQuery,

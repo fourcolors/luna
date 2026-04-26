@@ -15,7 +15,7 @@
  * Default (all interceptors return "pass"): allow with unchanged input.
  */
 import { Effect } from "effect"
-import type { PermissionResult } from "@experiment-agent/adapter-sdk"
+import type { PermissionResult } from "@luna/adapter-sdk"
 
 /** Interceptor verdict: concrete `PermissionResult`, or "pass" to defer. */
 export type InterceptorVerdict = PermissionResult | "pass"

@@ -16,8 +16,8 @@ import {
   DEFAULT_UI_KINDS,
   ObservabilityService,
   UIService,
-} from "@experiment-agent/core"
-import { startUIWebSocketServer } from "@experiment-agent/ui-ws"
+} from "@luna/core"
+import { startUIWebSocketServer } from "@luna/ui-ws"
 
 const TOKEN = "dev-ui-ws-token-do-not-ship"
 

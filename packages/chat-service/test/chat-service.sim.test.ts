@@ -30,8 +30,8 @@ import {
   SessionStore,
   Clock as CoreClock,
   type ChatMessage,
-} from "@experiment-agent/core"
-import { SDKAdapter, SDKClient } from "@experiment-agent/adapter-sdk"
+} from "@luna/core"
+import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
 import type {
   Query,
   SDKMessage,

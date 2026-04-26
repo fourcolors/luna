@@ -1,4 +1,4 @@
-# @experiment-agent/ui-web
+# @luna/ui-web
 
 ChatGPT-style chat UI over the ui-ws v2 protocol. Same Vite bundle runs
 in the browser and inside the Tauri shell at `apps/ui-tauri`.
@@ -7,11 +7,11 @@ in the browser and inside the Tauri shell at `apps/ui-tauri`.
 
 ```bash
 # Terminal 1 — real-SDK chat backend (ws://127.0.0.1:4753)
-bun run --filter @experiment-agent/ui-web dev:server:chat
+bun run --filter @luna/ui-web dev:server:chat
 
 # Terminal 2 — pick one:
-bun run --filter @experiment-agent/ui-web dev          # browser → http://localhost:5173
-bun run --filter @experiment-agent/ui-tauri dev        # native window
+bun run --filter @luna/ui-web dev          # browser → http://localhost:5173
+bun run --filter @luna/ui-tauri dev        # native window
 ```
 
 The first time you connect, paste any non-empty token (the dev server

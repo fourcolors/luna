@@ -218,13 +218,13 @@ flowchart LR
 flowchart TB
   EFFECT["effect ^3.21<br/>(external)"]:::ext
 
-  CORE["@experiment-agent/core<br/>Schema · Service patterns · primitives"]:::pkg
-  ADAPTER["@experiment-agent/adapter-sdk<br/>Effect ↔ Claude Agent SDK"]:::pkg
-  TOOLS["@experiment-agent/tools<br/>tool registry + override"]:::pkg
-  MEMORY["@experiment-agent/memory<br/>plug-and-play backends"]:::pkg
-  CHAT["@experiment-agent/chat-service<br/>per-thread queue + pubsub"]:::pkg
-  UIWS["@experiment-agent/ui-ws<br/>WebSocket protocol"]:::pkg
-  UISH["@experiment-agent/ui-shared<br/>react-markdown + shiki"]:::pkg
+  CORE["@luna/core<br/>Schema · Service patterns · primitives"]:::pkg
+  ADAPTER["@luna/adapter-sdk<br/>Effect ↔ Claude Agent SDK"]:::pkg
+  TOOLS["@luna/tools<br/>tool registry + override"]:::pkg
+  MEMORY["@luna/memory<br/>plug-and-play backends"]:::pkg
+  CHAT["@luna/chat-service<br/>per-thread queue + pubsub"]:::pkg
+  UIWS["@luna/ui-ws<br/>WebSocket protocol"]:::pkg
+  UISH["@luna/ui-shared<br/>react-markdown + shiki"]:::pkg
 
   UIWEB["apps/ui-web"]:::app
   UITAU["apps/ui-tauri"]:::app
@@ -528,13 +528,13 @@ const RUNTIMES = [
 ];
 
 const WORKSPACE = [
-  ["pkg",  "@experiment-agent/core",        "Schema, Service patterns, session primitives, merge-policy.", "packages/core/"],
-  ["pkg",  "@experiment-agent/adapter-sdk", "Effect ↔ Claude Agent SDK bridge. Owns the subprocess.",      "packages/adapter-sdk/"],
-  ["pkg",  "@experiment-agent/tools",       "Tool registry + override tools.",                              "packages/tools/"],
-  ["pkg",  "@experiment-agent/memory",      "Memory backends + migrations.",                                 "packages/memory/"],
-  ["pkg",  "@experiment-agent/chat-service","Per-thread queue + pubsub + adapter.query lifecycle.",          "packages/chat-service/"],
-  ["pkg",  "@experiment-agent/ui-ws",       "WebSocket server + protocol.",                                  "packages/ui-ws/"],
-  ["pkg",  "@experiment-agent/ui-shared",   "react-markdown + Shiki — shared across UIs.",                   "packages/ui-shared/"],
+  ["pkg",  "@luna/core",        "Schema, Service patterns, session primitives, merge-policy.", "packages/core/"],
+  ["pkg",  "@luna/adapter-sdk", "Effect ↔ Claude Agent SDK bridge. Owns the subprocess.",      "packages/adapter-sdk/"],
+  ["pkg",  "@luna/tools",       "Tool registry + override tools.",                              "packages/tools/"],
+  ["pkg",  "@luna/memory",      "Memory backends + migrations.",                                 "packages/memory/"],
+  ["pkg",  "@luna/chat-service","Per-thread queue + pubsub + adapter.query lifecycle.",          "packages/chat-service/"],
+  ["pkg",  "@luna/ui-ws",       "WebSocket server + protocol.",                                  "packages/ui-ws/"],
+  ["pkg",  "@luna/ui-shared",   "react-markdown + Shiki — shared across UIs.",                   "packages/ui-shared/"],
   ["app",  "apps/ui-web",                   "Chat UI on :5173 + dev-server-chat (WebSocket :4753).",         "apps/ui-web/"],
   ["app",  "apps/ui-tauri",                 "Tauri 2 native shell wrapping the Vite bundle.",                "apps/ui-tauri/"],
   ["app",  "apps/agent-cli",                "CLI client for the agent.",                                     "apps/agent-cli/"],

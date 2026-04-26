@@ -36,7 +36,7 @@ import {
   AccountBroker,
   type AccountBrokerApi,
   type SessionOptions,
-} from "@experiment-agent/core"
+} from "@luna/core"
 import { SDKClient, type QueryParams } from "./sdk-client.js"
 import type {
   SDKMessage,

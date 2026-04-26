@@ -8,7 +8,7 @@
  * frame shape here means Tauri (and any future transport) gets the same
  * stream without depending on ui-ws.
  */
-import type { ChatMessage, SessionSummary } from "@experiment-agent/core"
+import type { ChatMessage, SessionSummary } from "@luna/core"
 import type { Artifact } from "./artifacts.js"
 
 /**
@@ -123,7 +123,7 @@ export interface CreateThreadOptions {
   readonly tags?: ReadonlyArray<string>
   readonly systemPrompt?: string
   /** Working directory for the agent's filesystem tools. Defaults to
-   *  `EXPERIMENT_AGENT_REPO_ROOT` env var if set, else `process.cwd()`. */
+   *  `LUNA_REPO_ROOT` env var if set, else `process.cwd()`. */
   readonly cwd?: string
   /** Which filesystem setting sources the SDK should load (skills, plugins,
    *  MCP servers, CLAUDE.md, hooks). Defaults to `["user", "project"]` so

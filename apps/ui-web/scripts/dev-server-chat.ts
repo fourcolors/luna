@@ -37,19 +37,19 @@ import {
   ObservabilityService,
   SessionStore,
   UIService,
-} from "@experiment-agent/core"
-import { SDKAdapter, SDKClient } from "@experiment-agent/adapter-sdk"
-import { ChatService } from "@experiment-agent/chat-service"
-import { startUIWebSocketServer } from "@experiment-agent/ui-ws"
+} from "@luna/core"
+import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
+import { ChatService } from "@luna/chat-service"
+import { startUIWebSocketServer } from "@luna/ui-ws"
 
 // Derive repo root from this script's location so the chat agent's cwd is
 // the monorepo regardless of where bun is launched. Script lives at
 // apps/ui-web/scripts/dev-server-chat.ts → ../../.. = repo root.
 const REPO_ROOT = path.resolve(fileURLToPath(import.meta.url), "../../../..")
-if (!process.env["EXPERIMENT_AGENT_REPO_ROOT"]) {
-  process.env["EXPERIMENT_AGENT_REPO_ROOT"] = REPO_ROOT
+if (!process.env["LUNA_REPO_ROOT"]) {
+  process.env["LUNA_REPO_ROOT"] = REPO_ROOT
 }
-console.log(`📂 Agent cwd: ${process.env["EXPERIMENT_AGENT_REPO_ROOT"]}`)
+console.log(`📂 Agent cwd: ${process.env["LUNA_REPO_ROOT"]}`)
 
 const TOKEN = "dev-ui-ws-token-do-not-ship"
 

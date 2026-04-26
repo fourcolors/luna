@@ -1,6 +1,6 @@
 # Luna — Architecture
 
-> _(repo name remains `experiment-agent`; npm scope remains `@experiment-agent/*`. "Luna" is the user-facing agent name.)_
+> _(repo name remains `experiment-agent`; npm scope remains `@luna/*`. "Luna" is the user-facing agent name.)_
 
 > A modular agent framework with full Claude Agent SDK feature parity, built on **Effect (TypeScript v3)**, extending the SDK with Teams (experimental→first-class), durable Workflows, a Training Center, plug-and-play Memory, Account Rotation, Screen Capture, and a Plugin-Play Gateway.
 

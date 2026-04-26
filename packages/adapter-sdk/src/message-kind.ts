@@ -4,7 +4,7 @@
  * union.
  */
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk"
-import type { MessageKind } from "@experiment-agent/core"
+import type { MessageKind } from "@luna/core"
 
 export const sdkMessageKind = (m: SDKMessage): MessageKind => {
   // SDK messages all have a `type` discriminator, but some variants use

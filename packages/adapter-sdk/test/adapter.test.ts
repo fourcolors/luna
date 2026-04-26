@@ -12,8 +12,8 @@
  */
 import { describe, expect, it } from "vitest"
 import { Effect, Layer, Scope, Stream } from "effect"
-import { SessionStore, SessionService } from "@experiment-agent/core"
-import { Clock as CoreClock } from "@experiment-agent/core"
+import { SessionStore, SessionService } from "@luna/core"
+import { Clock as CoreClock } from "@luna/core"
 import { SDKAdapter, SDKClient } from "../src/index.js"
 import type { SDKUserMessage } from "../src/sdk-client.js"
 import {
