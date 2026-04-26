@@ -103,7 +103,7 @@ export interface JobSchedulerApi {
 }
 
 export class JobScheduler extends Effect.Tag(
-  "experiment-agent/JobScheduler",
+  "luna/JobScheduler",
 )<JobScheduler, JobSchedulerApi>() {}
 
 const make = (

@@ -114,7 +114,7 @@ function captureImpl(opts: CaptureOptions = {}): Effect.Effect<CaptureResult, Sc
 }
 
 export class ScreenCapture extends Effect.Tag(
-  "experiment-agent/ScreenCapture",
+  "luna/ScreenCapture",
 )<ScreenCapture, ScreenCaptureApi>() {
   static readonly Default: Layer.Layer<ScreenCapture> = Layer.succeed(
     ScreenCapture,

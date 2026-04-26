@@ -50,7 +50,7 @@ const DEFAULT_PRICE_PER_M_INPUT = 3.0  // $3/M tokens
 const DEFAULT_PRICE_PER_M_OUTPUT = 15.0 // $15/M tokens
 
 export class ObservabilityService extends Effect.Tag(
-  "experiment-agent/ObservabilityService",
+  "luna/ObservabilityService",
 )<ObservabilityService, ObservabilityApi>() {
   static readonly Default: Layer.Layer<ObservabilityService, never, Clock> =
     ObservabilityService.makeLayer({})

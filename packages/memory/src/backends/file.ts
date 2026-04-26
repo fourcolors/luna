@@ -52,7 +52,7 @@ function asBackendError(op: string, cause: unknown): MemoryBackendError {
   return new MemoryBackendError({ backend: "file", op, cause })
 }
 
-export class FileBackend extends Effect.Tag("experiment-agent/FileBackend")<
+export class FileBackend extends Effect.Tag("luna/FileBackend")<
   FileBackend,
   FileBackendApi
 >() {

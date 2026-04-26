@@ -6,8 +6,8 @@ the bottom so the next orchestrator can read the tail and resume.
 ## How to resume (for the next orchestrator)
 
 1. Read this file end-to-end.
-2. `cd /Users/USER/Projects/experiment-agent && git log --oneline -10`
-3. Read `/Users/USER/Projects/experiment-agent/DESIGN.md` §15 (milestones) and
+2. `cd /Users/USER/Projects/luna && git log --oneline -10`
+3. Read `/Users/USER/Projects/luna/DESIGN.md` §15 (milestones) and
    the §-anchors noted under "Next phase required reading" below.
 4. Read `BRIEF_TEMPLATE.md` — every subagent dispatch fills this template.
 5. Resume with the next pending phase per TodoWrite.
@@ -142,7 +142,7 @@ Required reading for Phase 9.5/10a:
 
 **How to resume (concrete):**
 1. Read this file end-to-end.
-2. `git log --oneline -10` from `/Users/USER/Projects/experiment-agent`.
+2. `git log --oneline -10` from `/Users/USER/Projects/luna`.
 3. Ask Sterling for explicit ✅/❌ on the adapter.ts frozen-file edit — the
    merge policy choice in particular. Do not dispatch without approval.
 4. Once approved, invoke the advisor on scope (cite §12.2 invariants + §0.2).
@@ -266,7 +266,7 @@ Required reading for Phase 10:
 
 **How to resume (concrete):**
 1. Read this file end-to-end.
-2. `git log --oneline -10` from `/Users/USER/Projects/experiment-agent`.
+2. `git log --oneline -10` from `/Users/USER/Projects/luna`.
 3. Read DESIGN.md §2.1.10 + §15 M2 + §3.4.
 4. Invoke advisor on Phase 10 scope (cite §3.4 invariants, §6.1 errors).
    Specific risk-checks: cron lib choice, backpressure default policy,
@@ -349,7 +349,7 @@ Required reading for Phase 11:
 
 **How to resume (concrete):**
 1. Read this file end-to-end.
-2. `git log --oneline -10` from `/Users/USER/Projects/experiment-agent`.
+2. `git log --oneline -10` from `/Users/USER/Projects/luna`.
 3. Read DESIGN.md Teams section + verify §-anchor numbers.
 4. Invoke advisor on Phase 11 scope (cite §3.4 invariants, §6.1+§6.3 errors,
    the Phase 10 template above). Risk-checks: PubSub vs Mailbox vs Queue
@@ -443,7 +443,7 @@ Required reading for Phase 11b:
 
 **How to resume (concrete):**
 1. Read this file end-to-end.
-2. `git log --oneline -10` from `/Users/USER/Projects/experiment-agent`.
+2. `git log --oneline -10` from `/Users/USER/Projects/luna`.
 3. Check whether `SessionStore` Tag exists in core or needs to be built in
    11b alongside SessionService (`grep -r "SessionStore" packages/core/src`).
 4. Invoke advisor on Phase 11b scope (cite §7.1, §3.1, §3.5). Risk-checks:
@@ -484,7 +484,7 @@ that 11c depends on.
 #6 core-is-SDK-free; would also be a cycle since adapter-sdk → core). But
 core's `openScoped` needs `SDKAdapter` in its requirements. Solution: core
 declares a **local Tag with the identical identifier string**
-`"experiment-agent/SDKAdapter"` via `Context.GenericTag<SDKAdapterLike>(...)`,
+`"luna/SDKAdapter"` via `Context.GenericTag<SDKAdapterLike>(...)`,
 with a structural `SDKAdapterLike` interface mirroring `SDKAdapterService`.
 Effect v3 keys Context slots by identifier string, so any layer providing
 the adapter-sdk `SDKAdapter` Tag (e.g. `SDKAdapter.Default`) satisfies core's
@@ -634,7 +634,7 @@ lines 414–419).
 
 **How to resume (concrete):**
 1. Read this file end-to-end.
-2. `git log --oneline -10` from `/Users/USER/Projects/experiment-agent`.
+2. `git log --oneline -10` from `/Users/USER/Projects/luna`.
 3. Read `packages/core/src/jobs/job-scheduler.ts` (the current supervision
    template).
 4. Invoke advisor on Phase 11.5 scope — verify the extraction shape before

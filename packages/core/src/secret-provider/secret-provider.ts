@@ -35,7 +35,7 @@ export interface SecretProviderApi {
 }
 
 export class SecretProvider extends Effect.Tag(
-  "experiment-agent/SecretProvider",
+  "luna/SecretProvider",
 )<SecretProvider, SecretProviderApi>() {}
 
 /**

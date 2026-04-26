@@ -82,7 +82,7 @@ export interface AccountBrokerApi {
 }
 
 export class AccountBroker extends Effect.Tag(
-  "experiment-agent/AccountBroker",
+  "luna/AccountBroker",
 )<AccountBroker, AccountBrokerApi>() {}
 
 const DEFAULT_COOLDOWN_MS = 60_000

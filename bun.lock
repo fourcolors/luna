@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "experiment-agent",
+      "name": "luna",
       "devDependencies": {
         "@types/node": "^22.9.0",
         "typescript": "^5.6.3",

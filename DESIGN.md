@@ -450,7 +450,7 @@ Implementation sketch per module — these signatures will evolve as real code i
 ### 7.1 SessionService
 ```ts
 class SessionService extends Effect.Service<SessionService>()(
-  "experiment-agent/SessionService",
+  "luna/SessionService",
   {
     effect: Effect.gen(function* () {
       const store = yield* SessionStore
@@ -470,7 +470,7 @@ class SessionService extends Effect.Service<SessionService>()(
 ### 7.2 TeamBroker
 ```ts
 class TeamBroker extends Effect.Service<TeamBroker>()(
-  "experiment-agent/TeamBroker",
+  "luna/TeamBroker",
   {
     effect: Effect.gen(function* () {
       const tasks = yield* TaskList
@@ -491,7 +491,7 @@ class TeamBroker extends Effect.Service<TeamBroker>()(
 ```ts
 // Wraps @effect/workflow; no public DSL until 2+ real workflows exist.
 class WorkflowRuntime extends Effect.Service<WorkflowRuntime>()(
-  "experiment-agent/WorkflowRuntime",
+  "luna/WorkflowRuntime",
   {
     effect: Effect.gen(function* () {
       const state = yield* WorkflowState
@@ -511,7 +511,7 @@ class WorkflowRuntime extends Effect.Service<WorkflowRuntime>()(
 // DO NOT FREEZE THIS SIGNATURE. Extract after memory-sqlite + memory-file both work.
 // Placeholder:
 class MemoryRouter extends Effect.Service<MemoryRouter>()(
-  "experiment-agent/MemoryRouter",
+  "luna/MemoryRouter",
   {
     effect: Effect.gen(function* () {
       // Shape TBD — comes out of Phase 5 (ship sqlite + file, then extract).
@@ -524,7 +524,7 @@ class MemoryRouter extends Effect.Service<MemoryRouter>()(
 ### 7.5 AccountBroker (narrowed scope — §0.2)
 ```ts
 class AccountBroker extends Effect.Service<AccountBroker>()(
-  "experiment-agent/AccountBroker",
+  "luna/AccountBroker",
   {
     effect: Effect.gen(function* () {
       const secrets = yield* SecretProvider
@@ -733,7 +733,7 @@ Sinks:
 ## §17. Repo Layout (revisable)
 
 ```
-experiment-agent/
+luna/
 ├── DESIGN.md                              ← this document
 ├── package.json                           ← Bun workspace root
 ├── bun.lock

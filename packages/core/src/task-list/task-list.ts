@@ -19,7 +19,7 @@
  *   - §6.1 + §6.3 additive errors: `TaskNotFoundError`, `TaskAlreadyClaimed`,
  *     `TaskValidationError` live in `./errors.ts`. The frozen
  *     `packages/core/src/errors.ts` is NOT modified.
- *   - §7 service signature: `Effect.Tag("experiment-agent/TaskList")` with
+ *   - §7 service signature: `Effect.Tag("luna/TaskList")` with
  *     `TaskList.Default: Layer<TaskList, never, Clock>` — mirrors AgentRegistry.
  *   - Atomic claim: implemented via a single `Ref.modify` so concurrent
  *     claimers race deterministically — exactly one wins, others see the
@@ -143,7 +143,7 @@ const validateTransition = (from: TaskStatus, to: TaskStatus): boolean => {
 
 // ─── Service Tag + Layer ────────────────────────────────────────────────────
 
-export class TaskList extends Effect.Tag("experiment-agent/TaskList")<
+export class TaskList extends Effect.Tag("luna/TaskList")<
   TaskList,
   TaskListApi
 >() {

@@ -96,7 +96,7 @@ const MIGRATION = `
   CREATE INDEX IF NOT EXISTS idx_memory_updated ON memory_keyed(updated_at);
 `
 
-export class SqliteBackend extends Effect.Tag("experiment-agent/SqliteBackend")<
+export class SqliteBackend extends Effect.Tag("luna/SqliteBackend")<
   SqliteBackend,
   SqliteBackendApi
 >() {

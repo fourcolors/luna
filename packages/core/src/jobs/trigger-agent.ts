@@ -77,7 +77,7 @@ export interface TriggerAgentApi {
 }
 
 export class TriggerAgent extends Effect.Tag(
-  "experiment-agent/TriggerAgent",
+  "luna/TriggerAgent",
 )<TriggerAgent, TriggerAgentApi>() {}
 
 let triggerCounter = 0

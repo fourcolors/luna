@@ -40,7 +40,7 @@ import type {
 } from "./types.js"
 
 export class GatewayService extends Effect.Tag(
-  "experiment-agent/GatewayService",
+  "luna/GatewayService",
 )<GatewayService, GatewayApi>() {
   static readonly Default: Layer.Layer<GatewayService, never, Clock> =
     GatewayService.makeLayer({})

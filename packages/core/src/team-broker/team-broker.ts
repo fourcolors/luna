@@ -93,7 +93,7 @@ interface TeamRecord {
 const DEFAULT_LAG_MS = 60_000
 const DEFAULT_TICK_MS = 5_000
 
-export class TeamBroker extends Effect.Tag("experiment-agent/TeamBroker")<
+export class TeamBroker extends Effect.Tag("luna/TeamBroker")<
   TeamBroker,
   TeamBrokerApi
 >() {
