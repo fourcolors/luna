@@ -10,6 +10,23 @@
         "vitest": "^2.1.5",
       },
     },
+    "apps/ui-canvas": {
+      "name": "@experiment-agent/ui-canvas",
+      "version": "0.0.1",
+      "dependencies": {
+        "react": "^18.3.1",
+        "react-dom": "^18.3.1",
+      },
+      "devDependencies": {
+        "@experiment-agent/ui-shared": "workspace:*",
+        "@types/react": "^18.3.12",
+        "@types/react-dom": "^18.3.1",
+        "@vitejs/plugin-react": "^4.3.3",
+        "typescript": "^5.6.3",
+        "vite": "^5.4.10",
+        "vitest": "^2.1.5",
+      },
+    },
     "apps/ui-tauri": {
       "name": "@experiment-agent/ui-tauri",
       "version": "0.0.1",
@@ -31,6 +48,7 @@
         "@experiment-agent/adapter-sdk": "workspace:*",
         "@experiment-agent/chat-service": "workspace:*",
         "@experiment-agent/core": "workspace:*",
+        "@experiment-agent/ui-shared": "workspace:*",
         "@experiment-agent/ui-ws": "workspace:*",
         "@types/react": "^18.3.12",
         "@types/react-dom": "^18.3.1",
@@ -98,6 +116,24 @@
       },
       "peerDependencies": {
         "@anthropic-ai/claude-agent-sdk": ">=0.2.0 <1",
+      },
+    },
+    "packages/ui-shared": {
+      "name": "@experiment-agent/ui-shared",
+      "version": "0.0.1",
+      "dependencies": {
+        "react-markdown": "^10.1.0",
+        "remark-gfm": "^4.0.1",
+        "shiki": "^4.0.2",
+      },
+      "devDependencies": {
+        "@types/react": "^18.3.12",
+        "react": "^18.3.1",
+        "typescript": "^5.6.3",
+        "vitest": "^2.1.5",
+      },
+      "peerDependencies": {
+        "react": "^18.3.1",
       },
     },
     "packages/ui-ws": {
@@ -232,6 +268,10 @@
     "@experiment-agent/memory": ["@experiment-agent/memory@workspace:packages/memory"],
 
     "@experiment-agent/tools": ["@experiment-agent/tools@workspace:packages/tools"],
+
+    "@experiment-agent/ui-canvas": ["@experiment-agent/ui-canvas@workspace:apps/ui-canvas"],
+
+    "@experiment-agent/ui-shared": ["@experiment-agent/ui-shared@workspace:packages/ui-shared"],
 
     "@experiment-agent/ui-tauri": ["@experiment-agent/ui-tauri@workspace:apps/ui-tauri"],
 
