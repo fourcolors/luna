@@ -13,7 +13,7 @@
  * underlying subprocess (§3.4 #4) and flips the record status to "closed".
  *
  * A local `SDKAdapter` Tag is declared here with the SAME identifier string
- * used by `@experiment-agent/adapter-sdk`. This lets SessionService consume
+ * used by `@luna/adapter-sdk`. This lets SessionService consume
  * the adapter as a runtime `R` requirement WITHOUT creating a package-level
  * core → adapter-sdk dependency cycle (§4 topology: core is Persistence;
  * adapter-sdk is above Persistence; `packages/core` cannot import from it).

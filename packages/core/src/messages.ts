@@ -2,7 +2,7 @@
  * Core message types — the minimum every downstream service needs.
  *
  * Per DESIGN.md §12.2 invariant #6: core is SDK-dependency-free at runtime.
- * The full `SDKMessage` tagged union lives in `@experiment-agent/adapter-sdk`
+ * The full `SDKMessage` tagged union lives in `@luna/adapter-sdk`
  * (which imports it from `@anthropic-ai/claude-agent-sdk` via `import type`).
  * Core stores SDK payloads as an opaque `unknown` inside a versioned envelope
  * (`StoredMessage`) so at-rest data is insulated from SDK shape drift.

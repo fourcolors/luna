@@ -1,5 +1,5 @@
 {
-  "name": "@experiment-agent/memory",
+  "name": "@luna/memory",
   "version": "0.0.1",
   "type": "module",
   "main": "src/index.ts",
@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@experiment-agent/core": "workspace:*",
+    "@luna/core": "workspace:*",
     "effect": "^3.21.0"
   }
 }

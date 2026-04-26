@@ -18,8 +18,8 @@
  */
 import { describe, expect, it } from "vitest"
 import { Chunk, Effect, Layer, Queue, Scope, Stream } from "effect"
-import { SessionStore } from "@experiment-agent/core"
-import { Clock as CoreClock } from "@experiment-agent/core"
+import { SessionStore } from "@luna/core"
+import { Clock as CoreClock } from "@luna/core"
 import { SDKAdapter, SDKClient } from "../src/index.js"
 import type {
   Query,

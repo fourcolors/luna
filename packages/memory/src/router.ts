@@ -11,7 +11,7 @@
  * to avoid collisions, but the router is tolerant).
  */
 import { Effect, Stream } from "effect"
-import { MemoryBackendError } from "@experiment-agent/core"
+import { MemoryBackendError } from "@luna/core"
 import type { MemoryBackend } from "./backend.js"
 import type {
   MemoryExport,

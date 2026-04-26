@@ -98,7 +98,7 @@ export interface SessionQuery {
 /**
  * Opaque stand-ins for SDK message types. Core stays SDK-dependency-free at
  * runtime (see messages.ts + DESIGN.md §12.2 #6); the real SDK types live in
- * `@experiment-agent/adapter-sdk`. Callers who have the real types can pass
+ * `@luna/adapter-sdk`. Callers who have the real types can pass
  * them through structurally — `unknown` is a supertype of every concrete
  * SDK message shape.
  */

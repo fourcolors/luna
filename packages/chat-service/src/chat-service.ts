@@ -55,8 +55,8 @@ import {
   type SessionSummary,
   type SessionOptions,
   type StoredMessage,
-} from "@experiment-agent/core"
-import { SDKAdapter } from "@experiment-agent/adapter-sdk"
+} from "@luna/core"
+import { SDKAdapter } from "@luna/adapter-sdk"
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
 import {
   type ChatFrame,
@@ -151,7 +151,7 @@ export class ChatService extends Effect.Service<ChatService>()(
           includePartialMessages: true,
           cwd:
             opts.cwd ??
-            process.env["EXPERIMENT_AGENT_REPO_ROOT"] ??
+            process.env["LUNA_REPO_ROOT"] ??
             process.cwd(),
           // Filesystem setting sources: load skills, plugins, MCP servers,
           // CLAUDE.md, and hooks from ~/.claude/ + <cwd>/.claude/. Caller
@@ -535,4 +535,4 @@ export class ChatService extends Effect.Service<ChatService>()(
 
 /** Re-export the chat-shaped projection helper from core for downstream
  *  consumers (ui-ws server, Tauri shell) that don't otherwise pull core. */
-export { projectChatMessages, projectOne } from "@experiment-agent/core"
+export { projectChatMessages, projectOne } from "@luna/core"

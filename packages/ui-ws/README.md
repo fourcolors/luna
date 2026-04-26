@@ -1,11 +1,11 @@
-# @experiment-agent/ui-ws
+# @luna/ui-ws
 
 WebSocket transport adapter for `UIService`. Streams whitelisted
 `ObsEvent`s to UI clients (Tauri, web, CLI dashboards).
 
 ## Why a separate package
 
-`UIService` (in `@experiment-agent/core`) is transport-agnostic — it
+`UIService` (in `@luna/core`) is transport-agnostic — it
 exposes a filtered `Stream<ObsEvent>` and nothing else. A real client
 needs a wire protocol. This package adds that wire protocol over
 WebSockets without baking it into the core.
@@ -94,8 +94,8 @@ import {
   DEFAULT_UI_KINDS,
   ObservabilityService,
   UIService,
-} from "@experiment-agent/core"
-import { startUIWebSocketServer } from "@experiment-agent/ui-ws"
+} from "@luna/core"
+import { startUIWebSocketServer } from "@luna/ui-ws"
 
 const baseLayer = Layer.mergeAll(
   Clock.Default,

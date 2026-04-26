@@ -6,7 +6,7 @@
  *   - packages/ui-ws/src/protocol.ts (ServerFrame / ClientFrame)
  *   - packages/chat-service/src/types.ts (ChatFrame, ChatMessage)
  *
- * We DON'T import from `@experiment-agent/core` directly: its package
+ * We DON'T import from `@luna/core` directly: its package
  * barrel pulls node-only deps (fs, path, etc.) that would explode a Vite
  * browser bundle. Mirroring the wire types here is the standard solve;
  * the server-side Schema validator catches drift at the emit boundary.

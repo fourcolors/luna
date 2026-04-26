@@ -21,7 +21,7 @@ import {
   type AccountSeed,
   type UsageReport,
   AllAccountsExhaustedError,
-} from "@experiment-agent/core"
+} from "@luna/core"
 import { SDKAdapter, SDKClient } from "../src/index.js"
 import type { Options, Query, SDKMessage, SDKUserMessage } from "../src/sdk-client.js"
 

@@ -28,7 +28,7 @@
  * through without error.
  */
 import { Effect, Layer, Stream } from "effect"
-import { MemoryBackendError } from "@experiment-agent/core"
+import { MemoryBackendError } from "@luna/core"
 import {
   MEMORY_ENVELOPE_VERSION,
   matchesQuery,

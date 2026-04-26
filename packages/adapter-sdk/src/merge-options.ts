@@ -15,7 +15,7 @@
  */
 import { Effect } from "effect"
 import type { Options } from "@anthropic-ai/claude-agent-sdk"
-import { RESERVED_SDK_OPTION_KEYS } from "@experiment-agent/core"
+import { RESERVED_SDK_OPTION_KEYS } from "@luna/core"
 
 export interface MergeWarning {
   readonly key: string

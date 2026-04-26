@@ -47,8 +47,8 @@ packages/<name>/test/<...>.test.ts
 ### 6. Constraints
 - Do NOT modify files outside `packages/<name>/` and the single root `index` exports
   you are given permission for. If you think you need to, STOP and say why.
-- Do NOT add dependencies outside the approved set: `effect`, `@experiment-agent/core`,
-  `@experiment-agent/memory` (if relevant). Ask before adding anything else.
+- Do NOT add dependencies outside the approved set: `effect`, `@luna/core`,
+  `@luna/memory` (if relevant). Ask before adding anything else.
 - Do NOT reformat/refactor existing code — only add new code.
 - Typecheck must pass: `bun run typecheck` with zero errors.
 

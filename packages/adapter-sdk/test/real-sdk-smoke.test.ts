@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from "vitest"
 import { Effect, Layer, Stream } from "effect"
-import { SessionStore } from "@experiment-agent/core"
+import { SessionStore } from "@luna/core"
 import { SDKAdapter, SDKClient } from "../src/index.js"
 import type { SDKUserMessage } from "../src/sdk-client.js"
 

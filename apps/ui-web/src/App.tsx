@@ -18,10 +18,10 @@ import {
   type SessionSummary,
   type ThreadView,
   type TransportHandle,
-} from "@experiment-agent/ui-shared"
+} from "@luna/ui-shared"
 
 const MarkdownView = lazy(() =>
-  import("@experiment-agent/ui-shared").then((m) => ({ default: m.MarkdownView })),
+  import("@luna/ui-shared").then((m) => ({ default: m.MarkdownView })),
 )
 
 const STORAGE_KEY = "ui-ws.config"
@@ -830,7 +830,7 @@ function ObsPanel({
   selectedKinds: ReadonlySet<string>
   toggleKind: (k: string) => void
   clearKinds: () => void
-  filtered: ReadonlyArray<import("@experiment-agent/ui-shared").ObsEvent>
+  filtered: ReadonlyArray<import("@luna/ui-shared").ObsEvent>
   totalEvents: number
   lastDrop: { n: number; since: string } | null
   droppedTotal: number
@@ -883,7 +883,7 @@ function ObsPanel({
   )
 }
 
-function EventRow({ event }: { event: import("@experiment-agent/ui-shared").ObsEvent }) {
+function EventRow({ event }: { event: import("@luna/ui-shared").ObsEvent }) {
   const [open, setOpen] = useState(false)
   const summary = useMemo(() => {
     const { ts, kind, level, ...rest } = event

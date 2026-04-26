@@ -1,5 +1,5 @@
 {
-  "name": "@experiment-agent/adapter-sdk",
+  "name": "@luna/adapter-sdk",
   "version": "0.0.1",
   "type": "module",
   "main": "src/index.ts",
@@ -10,7 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@experiment-agent/core": "workspace:*",
+    "@luna/core": "workspace:*",
     "effect": "^3.21.0"
   },
   "peerDependencies": {

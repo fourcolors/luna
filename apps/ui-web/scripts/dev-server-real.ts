@@ -22,14 +22,14 @@ import {
   ObservabilityService,
   SessionStore,
   UIService,
-} from "@experiment-agent/core"
+} from "@luna/core"
 import {
   SDKAdapter,
   SDKClient,
   type SDKMessage,
   type SDKUserMessage,
-} from "@experiment-agent/adapter-sdk"
-import { startUIWebSocketServer } from "@experiment-agent/ui-ws"
+} from "@luna/adapter-sdk"
+import { startUIWebSocketServer } from "@luna/ui-ws"
 
 const TOKEN = "dev-ui-ws-token-do-not-ship"
 const SESSION_ID = "real-dev"

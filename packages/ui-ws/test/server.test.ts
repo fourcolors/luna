@@ -23,13 +23,13 @@ import {
   ManagedRuntime,
 } from "effect"
 import { WebSocket } from "ws"
-import { Clock } from "@experiment-agent/core"
+import { Clock } from "@luna/core"
 import {
   DEFAULT_UI_KINDS,
   ObservabilityService,
   UIService,
-} from "@experiment-agent/core"
-import type { ObsEvent } from "@experiment-agent/core"
+} from "@luna/core"
+import type { ObsEvent } from "@luna/core"
 import { startUIWebSocketServer } from "../src/server.js"
 import type { ServerFrame } from "../src/protocol.js"
 
