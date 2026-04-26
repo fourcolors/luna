@@ -75,7 +75,20 @@ export function App() {
     handleRef.current = browserWebSocketTransport.connect({
       url,
       token,
-      onFrame: dispatch,
+      onFrame: (f) => {
+        dispatch(f)
+        // Sidebar freshness: any frame that mutates a thread's
+        // last-message metadata (created, accepted user msg, finalized
+        // assistant turn) should refresh the list. Server orders by
+        // lastMessageAt, so the active thread bubbles to the top.
+        if (
+          f.type === "thread-created" ||
+          f.type === "assistant-done" ||
+          f.type === "user-accepted"
+        ) {
+          handleRef.current?.send({ type: "list-threads" })
+        }
+      },
       onStatus: (s) => {
         setStatus(s)
         // On open, request the thread list immediately so the sidebar

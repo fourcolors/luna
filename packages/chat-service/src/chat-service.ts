@@ -37,6 +37,7 @@
 import {
   Chunk,
   Effect,
+  Exit,
   Layer,
   Option,
   PubSub,
@@ -506,7 +507,7 @@ export class ChatService extends Effect.Service<ChatService>()(
           const m = yield* Ref.get(threads)
           const entry = m.get(threadId)
           if (!entry) return
-          yield* Scope.close(entry.scope, undefined as never as never)
+          yield* Scope.close(entry.scope, Exit.void)
           yield* store
             .setStatus(threadId, "closed", yield* clock.nowMs())
             .pipe(Effect.catchAll(() => Effect.void))

@@ -367,4 +367,32 @@ describe("ChatService (Tier-2 sim)", () => {
     },
     { timeout: 10_000 },
   )
+
+  it(
+    "closeThread interrupts the per-thread Scope without dying on Exit",
+    async () => {
+      const fakeLayer = SDKClient.fake(async function* () {
+        // Park; closing the scope should interrupt this generator.
+        yield await new Promise<never>(() => {})
+      })
+      await runScoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const t = yield* chat.createThread({
+            model: "claude-test",
+            title: "close-test",
+          })
+          // Should resolve without throwing — regression for the
+          // `undefined as never` Exit bug.
+          yield* chat.closeThread(t.id)
+          // After close, send() to the same threadId returns Option.none
+          // because the entry was removed from the map.
+          const out = yield* chat.send(t.id, "ping")
+          expect(Option.isNone(out)).toBe(true)
+        }),
+        fakeLayer,
+      )
+    },
+    { timeout: 10_000 },
+  )
 })
