@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Experiment Agent — Architecture Visualizer</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #14181d;
+    --panel-2: #1b2027;
+    --border: #2a313b;
+    --fg: #e6edf3;
+    --fg-dim: #8b949e;
+    --accent: #f5b84a;       /* sun gold */
+    --accent-2: #6ad0ff;     /* effect blue */
+    --good: #4ade80;
+    --warn: #f59e0b;
+    --bad:  #f87171;
+    --feature: #6ad0ff;
+    --runtime: #c792ea;
+    --app: #f5b84a;
+    --pkg: #4ade80;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+    line-height: 1.5;
+  }
+  header {
+    padding: 24px 32px 16px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, #14181d, #0b0d10);
+    position: sticky; top: 0; z-index: 10;
+    backdrop-filter: blur(8px);
+  }
+  header h1 {
+    margin: 0 0 4px;
+    font-size: 22px; font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  header .sub {
+    color: var(--fg-dim); font-size: 13px;
+  }
+  header .badge {
+    display: inline-block; padding: 2px 8px; margin-left: 8px;
+    background: var(--accent); color: #1a1208;
+    border-radius: 999px; font-size: 11px; font-weight: 600;
+  }
+  main { max-width: 1280px; margin: 0 auto; padding: 24px 32px 80px; }
+  section { margin-bottom: 48px; }
+  section > h2 {
+    font-size: 16px; font-weight: 600;
+    color: var(--accent); margin: 0 0 4px;
+    text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  section > .lede {
+    color: var(--fg-dim); margin: 0 0 20px; font-size: 14px;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    overflow-x: auto;
+  }
+  .panel + .panel { margin-top: 16px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 12px;
+  }
+  .card {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    cursor: pointer;
+    transition: all 0.15s;
+    position: relative;
+  }
+  .card:hover {
+    border-color: var(--accent);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(245, 184, 74, 0.08);
+  }
+  .card .tag {
+    display: inline-block; font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    padding: 2px 6px; border-radius: 4px; margin-bottom: 6px;
+  }
+  .card .tag.feature { background: rgba(106,208,255,0.15); color: var(--feature); }
+  .card .tag.runtime { background: rgba(199,146,234,0.15); color: var(--runtime); }
+  .card .tag.app     { background: rgba(245,184,74,0.15); color: var(--app); }
+  .card .tag.pkg     { background: rgba(74,222,128,0.15); color: var(--pkg); }
+  .card h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
+  .card p  { margin: 0; font-size: 12px; color: var(--fg-dim); }
+  .card .id { position: absolute; top: 12px; right: 12px; font-size: 10px; color: var(--fg-dim); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .stats {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 8px; margin-bottom: 24px;
+  }
+  .stat {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 14px;
+  }
+  .stat .v { font-size: 22px; font-weight: 600; color: var(--accent); }
+  .stat .l { font-size: 11px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.08em; }
+  pre, code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 12px;
+  }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; font-size: 12px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-dim); }
+  .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  /* mermaid container */
+  .mermaid { font-family: inherit !important; }
+  /* modal */
+  .modal-bg {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.7); z-index: 100;
+    align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .modal-bg.open { display: flex; }
+  .modal {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px;
+    max-width: 560px; width: 100%; max-height: 80vh;
+    overflow-y: auto;
+  }
+  .modal h3 { margin: 0 0 4px; }
+  .modal .meta { color: var(--fg-dim); font-size: 12px; margin-bottom: 16px; }
+  .modal pre { background: var(--panel-2); padding: 12px; border-radius: 8px; overflow-x: auto; }
+  .modal .close {
+    float: right; background: transparent; color: var(--fg-dim);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 10px; cursor: pointer; font-size: 12px;
+  }
+  .modal .close:hover { color: var(--fg); border-color: var(--accent); }
+  footer { color: var(--fg-dim); font-size: 12px; text-align: center; padding: 32px 0; }
+  a { color: var(--accent-2); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🧪 Experiment Agent <span class="badge">Architecture v1</span></h1>
+  <div class="sub">An EffectJS-based wrapper around the Claude Agent SDK · 7 packages · 3 apps · click any component for details</div>
+</header>
+
+<main>
+
+<!-- ── Stats row ── -->
+<section>
+  <div class="stats">
+    <div class="stat"><div class="v">7</div><div class="l">Packages</div></div>
+    <div class="stat"><div class="v">3</div><div class="l">Apps</div></div>
+    <div class="stat"><div class="v">13</div><div class="l">Feature modules</div></div>
+    <div class="stat"><div class="v">13</div><div class="l">Runtime systems</div></div>
+    <div class="stat"><div class="v">Effect 3.21</div><div class="l">Substrate</div></div>
+  </div>
+</section>
+
+<!-- ── 1. Runtime topology ── -->
+<section>
+  <h2>① Runtime Topology — what runs and how it connects</h2>
+  <p class="lede">The actual running processes today. Browser → WebSocket → Effect runtime → Claude Agent SDK subprocess.</p>
+  <div class="panel">
+    <div class="mermaid">
+flowchart LR
+  subgraph BROWSER["🌐 Browser (you)"]
+    UIW["ui-web<br/>:5173"]
+  end
+
+  subgraph HOST["💻 macOS host"]
+    direction TB
+    WS["ui-ws WebSocket<br/>:4753"]
+    CHAT["ChatService<br/>(Effect Layer)"]
+    ADAPT["SDKAdapter<br/>(Effect→SDK bridge)"]
+    SDK["Claude Agent SDK<br/>subprocess (bun)"]
+    STORE[("SessionStore<br/>in-memory*")]
+    OBS["ObservabilityService<br/>(structured events)"]
+  end
+
+  subgraph CLOUD["☁️ Anthropic"]
+    API["Claude API<br/>(Opus / Sonnet / Haiku)"]
+  end
+
+  UIW -.->|WebSocket| WS
+  WS -->|frames| CHAT
+  CHAT -->|adapter.query| ADAPT
+  CHAT -->|persist| STORE
+  CHAT -->|publish| OBS
+  ADAPT -->|spawn + stdio| SDK
+  SDK -->|HTTPS| API
+
+  classDef browser fill:#1b2027,stroke:#6ad0ff,color:#e6edf3
+  classDef host    fill:#14181d,stroke:#f5b84a,color:#e6edf3
+  classDef cloud   fill:#1b2027,stroke:#c792ea,color:#e6edf3
+  class UIW browser
+  class WS,CHAT,ADAPT,SDK,STORE,OBS host
+  class API cloud
+    </div>
+    <p style="color:var(--fg-dim); font-size:12px; margin: 12px 0 0;">* SessionStore is in-memory today — threads vanish on restart. SQLite backend lands in M2.</p>
+  </div>
+</section>
+
+<!-- ── 2. Package dependency graph ── -->
+<section>
+  <h2>② Package Dependency Graph — real workspace topology</h2>
+  <p class="lede">Derived from each package's <code>package.json</code>. Lower layers have fewer deps; higher layers compose them.</p>
+  <div class="panel">
+    <div class="mermaid">
+flowchart TB
+  EFFECT["effect ^3.21<br/>(external)"]:::ext
+
+  CORE["@experiment-agent/core<br/>Schema · Service patterns · primitives"]:::pkg
+  ADAPTER["@experiment-agent/adapter-sdk<br/>Effect ↔ Claude Agent SDK"]:::pkg
+  TOOLS["@experiment-agent/tools<br/>tool registry + override"]:::pkg
+  MEMORY["@experiment-agent/memory<br/>plug-and-play backends"]:::pkg
+  CHAT["@experiment-agent/chat-service<br/>per-thread queue + pubsub"]:::pkg
+  UIWS["@experiment-agent/ui-ws<br/>WebSocket protocol"]:::pkg
+  UISH["@experiment-agent/ui-shared<br/>react-markdown + shiki"]:::pkg
+
+  UIWEB["apps/ui-web"]:::app
+  UITAU["apps/ui-tauri"]:::app
+  CLI["apps/agent-cli"]:::app
+
+  CORE --> EFFECT
+  ADAPTER --> CORE
+  ADAPTER --> EFFECT
+  TOOLS --> ADAPTER
+  TOOLS --> CORE
+  MEMORY --> CORE
+  CHAT --> ADAPTER
+  CHAT --> CORE
+  UIWS --> CHAT
+  UIWS --> CORE
+  UIWEB --> UIWS
+  UIWEB --> UISH
+  UITAU --> UIWEB
+  CLI --> ADAPTER
+
+  classDef ext fill:#1b2027,stroke:#8b949e,color:#8b949e,stroke-dasharray:3 3
+  classDef pkg fill:#14181d,stroke:#4ade80,color:#e6edf3
+  classDef app fill:#1b2027,stroke:#f5b84a,color:#e6edf3
+    </div>
+  </div>
+</section>
+
+<!-- ── 3. Feature modules ── -->
+<section>
+  <h2>③ Feature Modules — capabilities (per DESIGN.md §2.1)</h2>
+  <p class="lede">The 13 capabilities the agent ships. Each is a swappable Effect <code>Layer</code>. Click for what it does.</p>
+  <div class="grid" id="features"></div>
+</section>
+
+<!-- ── 4. Runtime systems ── -->
+<section>
+  <h2>④ Runtime Systems — cross-cutting infra (per DESIGN.md §2.2)</h2>
+  <p class="lede">The plumbing every feature module relies on. Memory, hooks, sandbox, observability.</p>
+  <div class="grid" id="runtimes"></div>
+</section>
+
+<!-- ── 5. Workspace ── -->
+<section>
+  <h2>⑤ Workspace — packages & apps (real)</h2>
+  <p class="lede">What's on disk right now under <code>~/Projects/experiment-agent</code>.</p>
+  <div class="grid" id="workspace"></div>
+</section>
+
+<!-- ── 6. Lifetime model ── -->
+<section>
+  <h2>⑥ Concurrency & Lifetime — how scopes own resources</h2>
+  <p class="lede">Per DESIGN.md §3 — every session owns a <code>Scope</code>; closing the scope finalizes everything attached.</p>
+  <div class="panel">
+    <div class="mermaid">
+flowchart TD
+  ROOT["Root Runtime<br/>(process)"]
+  SVC["Service Scope<br/>(ChatService.Default)"]
+  T1["Thread Scope #1<br/>(Scope.fork)"]
+  T2["Thread Scope #2"]
+  T3["Thread Scope #N"]
+
+  ROOT --> SVC
+  SVC --> T1
+  SVC --> T2
+  SVC --> T3
+
+  T1 --> Q1["Queue<br/>(inbox)"]
+  T1 --> P1["PubSub<br/>(frames out)"]
+  T1 --> F1["Fiber:<br/>adapter.query loop"]
+  T1 --> AB1["AbortController<br/>(SDK teardown)"]
+
+  T2 --> Q2["..."]
+  T3 --> Q3["..."]
+
+  classDef root fill:#1b2027,stroke:#f5b84a,color:#e6edf3
+  classDef scope fill:#14181d,stroke:#6ad0ff,color:#e6edf3
+  classDef leaf fill:#0b0d10,stroke:#2a313b,color:#8b949e
+  class ROOT root
+  class SVC,T1,T2,T3 scope
+  class Q1,P1,F1,AB1,Q2,Q3 leaf
+    </div>
+    <p style="color:var(--fg-dim); font-size:12px; margin: 12px 0 0;">Closing a thread scope tears down the queue, pubsub, fiber, and SDK subprocess in LIFO order — without touching siblings. Service shutdown closes everything transitively.</p>
+  </div>
+</section>
+
+<!-- ── 7. How a message flows ── -->
+<section>
+  <h2>⑦ Message Flow — what happens when you hit Enter</h2>
+  <div class="panel">
+    <div class="mermaid">
+sequenceDiagram
+  autonumber
+  participant U as You (browser)
+  participant W as ui-ws
+  participant C as ChatService
+  participant A as SDKAdapter
+  participant S as Claude SDK
+  participant API as Claude API
+
+  U->>W: text frame (user message)
+  W->>C: enqueue(threadId, msg)
+  C->>C: push to thread inbox Queue
+  C->>A: adapter.query({sessionId, prompt: stream, sessionOptions})
+  A->>S: spawn subprocess + stdin stream
+  S->>API: HTTPS request
+  API-->>S: SSE deltas
+  S-->>A: SDK messages
+  A-->>C: Stream<SDKMessage>
+  C->>C: handleSdkMessage → ChatFrame
+  C->>W: PubSub publish (frame)
+  W->>U: WebSocket broadcast
+  Note over U,API: AbortController in thread scope = clean teardown on close
+    </div>
+  </div>
+</section>
+
+<!-- ── 9. SDK Interaction (the heart of the agent) ── -->
+<section>
+  <h2>⑨ SDK Interaction — how Effect talks to the Claude Agent SDK</h2>
+  <p class="lede">The bridge lives in <code>packages/adapter-sdk</code>. Two files: <code>sdk-client.ts</code> (the swappable seam) and <code>adapter.ts</code> (484 lines of Effect that owns 8 invariants).</p>
+
+  <div class="panel">
+    <div style="font-size: 13px; color: var(--fg-dim); margin-bottom: 12px;">
+      <strong style="color:var(--accent);">Key insight:</strong> the SDK's <code>query()</code> returns a <strong>Query</strong> that is BOTH an async-iterable (messages flow out) AND a control handle (<code>interrupt()</code>, <code>setModel()</code>, <code>setPermissionMode()</code>, <code>supplyToolPermissionResponse()</code>). The adapter stashes it in a <code>Ref</code> so anyone in the session scope can drive the live subprocess without restarting it.
+    </div>
+    <div class="mermaid">
+sequenceDiagram
+  autonumber
+  participant CS as ChatService
+  participant AD as SDKAdapter (Effect)
+  participant BR as AccountBroker
+  participant CL as SDKClient (seam)
+  participant SDK as Claude Agent SDK
+  participant SUB as bun subprocess
+  participant API as Claude API
+
+  CS->>AD: query({sessionId, prompt: Stream, sessionOptions})
+  AD->>AD: new AbortController() + addFinalizer(abort)
+  AD->>BR: acquireSession({model, boundAccountId?})
+  BR-->>AD: Redacted<OAuth token>
+  AD->>AD: build env overlay (CLAUDE_CODE_OAUTH_TOKEN)
+  AD->>AD: mergeOptions (caller + adapter-owned guarded)
+  AD->>AD: Stream→AsyncIterable (inside Scope)
+  AD->>CL: query({prompt, options})
+  CL->>SDK: realQuery(params)
+  SDK->>SUB: spawn (lazy, first call)
+  SDK-->>CL: Query handle (iter + control)
+  CL-->>AD: Query
+  AD->>AD: Ref.set(handleFor[sessionId])  ⟵ for interrupt/setModel
+  AD->>AD: tap stream → SessionStore (mirror)
+  AD->>AD: race(stream, idleTimer 120s)
+  AD-->>CS: Stream<SDKMessage>
+
+  loop Per user message
+    CS->>SUB: SDKUserMessage (over stdin via AsyncIter)
+    SUB->>API: HTTPS request
+    API-->>SUB: SSE deltas
+    SUB-->>AD: SDKMessage events
+    AD-->>CS: Stream emit (frame)
+  end
+
+  Note over CS,API: Control plane (anytime):<br/>UI → ChatService → SDKAdapter.handleFor(id) →<br/>query.interrupt() / setModel() / setPermissionMode()
+
+  CS->>AD: Scope close
+  AD->>AD: finalizer fires → abortController.abort()
+  AD->>SUB: SIGTERM via abort signal
+  AD->>AD: Ref.set(handleFor[sessionId] = null)
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top: 16px;">
+    <h3 style="margin: 0 0 12px; font-size: 14px; color: var(--accent-2);">The 8 Invariants the Adapter Owns (DESIGN.md §12)</h3>
+    <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+      <thead>
+        <tr style="border-bottom: 1px solid var(--border); color: var(--fg-dim);">
+          <th style="text-align:left; padding: 6px 8px;">#</th>
+          <th style="text-align:left; padding: 6px 8px;">Invariant</th>
+          <th style="text-align:left; padding: 6px 8px;">Where it lives</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom: 1px solid var(--border);"><td style="padding:8px; color:var(--accent);">1</td><td style="padding:8px;">Stream→AsyncIter conversion happens INSIDE the calling Scope</td><td style="padding:8px;"><code>adapter.ts:280</code></td></tr>
+        <tr style="border-bottom: 1px solid var(--border);"><td style="padding:8px; color:var(--accent);">2</td><td style="padding:8px;">Every SDKMessage mirrored to SessionStore</td><td style="padding:8px;">tap on produced Stream</td></tr>
+        <tr style="border-bottom: 1px solid var(--border);"><td style="padding:8px; color:var(--accent);">3</td><td style="padding:8px;">Hooks registered via Ref, fired on matching events</td><td style="padding:8px;"><code>buildHooksField()</code></td></tr>
+        <tr style="border-bottom: 1px solid var(--border);"><td style="padding:8px; color:var(--accent);">4</td><td style="padding:8px;">canUseTool callback bridged Effect → Promise for SDK</td><td style="padding:8px;"><code>buildCanUseTool()</code></td></tr>
+        <tr style="border-bottom: 1px solid var(--border);"><td style="padding:8px; color:var(--accent);">5</td><td style="padding:8px;">Idle timeout races against Queue.take (default 120s, off for chat)</td><td style="padding:8px;"><code>adapter.ts:387</code></td></tr>
+        <tr style="border-bottom: 1px solid var(--border);"><td style="padding:8px; color:var(--accent);">6</td><td style="padding:8px;">OAuth token unwrapped at ONE site, never logged or stored</td><td style="padding:8px;"><code>adapter.ts:262</code></td></tr>
+        <tr style="border-bottom: 1px solid var(--border);"><td style="padding:8px; color:var(--accent);">7</td><td style="padding:8px;">Adapter-owned options can't be overridden by caller (merge-policy)</td><td style="padding:8px;"><code>mergeOptionsLogged</code></td></tr>
+        <tr><td style="padding:8px; color:var(--accent);">8</td><td style="padding:8px;">Query handle stashed in Ref for interrupt/setModel/setPermissionMode</td><td style="padding:8px;"><code>handleFor(sessionId)</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="panel" style="margin-top: 16px;">
+    <h3 style="margin: 0 0 12px; font-size: 14px; color: var(--accent-2);">Two-layer split — why?</h3>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; font-size: 13px;">
+      <div>
+        <div style="color: var(--pkg); font-weight: 600; margin-bottom: 4px;">SDKClient (70 lines)</div>
+        <div style="color: var(--fg-dim);">A 1-method service: <code>query(params) → Query</code>. Default uses real <code>@anthropic-ai/claude-agent-sdk</code>. <code>SDKClient.fake(build)</code> returns whatever <code>Query</code> stub you hand it — chat-service tests pass with zero network and no OAuth token.</div>
+      </div>
+      <div>
+        <div style="color: var(--feature); font-weight: 600; margin-bottom: 4px;">SDKAdapter (484 lines)</div>
+        <div style="color: var(--fg-dim);">All Effect-flavored work on top of the seam: AbortController, broker token rotation, env overlay, options merge, Stream bridging, idle timer race, hooks dispatch, Ref-based handle retention. This is where the invariants live.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top: 16px;">
+    <h3 style="margin: 0 0 12px; font-size: 14px; color: var(--accent-2);">Subprocess lifetime — one per thread, not per query</h3>
+    <div style="font-size: 13px; color: var(--fg-dim);">
+      The SDK lazily spawns its bun subprocess on the first <code>query()</code> call. User messages stream in over stdin (the <code>AsyncIterable&lt;SDKUserMessage&gt;</code>); SDK responses come back as the <code>Query</code>'s async-iterable face. The subprocess <strong>stays alive for the entire thread</strong> — that's why ChatService forces <code>disableIdleTimeout: true</code>. The thread Scope's AbortController is the ONLY thing that kills it. When you close a thread in the UI: scope closes → finalizer fires → <code>abortController.abort()</code> → SDK receives the signal → subprocess exits cleanly.
+    </div>
+  </div>
+</section>
+
+<!-- ── 8. Tech stack ── -->
+<section>
+  <h2>⑧ Tech Stack</h2>
+  <div class="panel">
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px;">
+      <div>
+        <div style="color:var(--accent); font-size:11px; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px;">Substrate</div>
+        <div><strong>Effect 3.21</strong> — async, concurrency, DI, Layers, Scopes</div>
+        <div><strong>Bun</strong> — runtime + workspaces + test runner</div>
+        <div><strong>TypeScript 5.6</strong> — strict</div>
+      </div>
+      <div>
+        <div style="color:var(--accent); font-size:11px; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px;">Agent</div>
+        <div><strong>@anthropic-ai/claude-agent-sdk</strong> — the brain</div>
+        <div><strong>OAuth subscription tokens</strong> — per-query rotation</div>
+      </div>
+      <div>
+        <div style="color:var(--accent); font-size:11px; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px;">Persistence</div>
+        <div><strong>SQLite</strong> (via @effect/sql, M2) — sessions + accounts</div>
+        <div><strong>In-memory</strong> (current) — vanishes on restart</div>
+      </div>
+      <div>
+        <div style="color:var(--accent); font-size:11px; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px;">Transport</div>
+        <div><strong>ws</strong> — WebSocket between UI ↔ host</div>
+        <div><strong>stdio</strong> — Effect ↔ SDK subprocess</div>
+      </div>
+      <div>
+        <div style="color:var(--accent); font-size:11px; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px;">UI</div>
+        <div><strong>React 18 + Vite</strong> — both UIs</div>
+        <div><strong>react-markdown + Shiki</strong> — render + highlight</div>
+        <div><strong>Tauri 2</strong> — native shell (ui-tauri)</div>
+      </div>
+      <div>
+        <div style="color:var(--accent); font-size:11px; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px;">Future (per DESIGN.md)</div>
+        <div><strong>@effect/workflow</strong> — durable state machines</div>
+        <div><strong>@effect/cluster</strong> — distributed agents</div>
+        <div><strong>@effect/opentelemetry</strong> — distributed traces</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  Generated <span id="ts"></span> · source: <code>~/Projects/experiment-agent/DESIGN.md</code> + workspace introspection
+</footer>
+
+</main>
+
+<!-- ── Modal ── -->
+<div class="modal-bg" id="modal-bg" onclick="if(event.target===this) closeModal()">
+  <div class="modal" id="modal"></div>
+</div>
+
+<script>
+// ── Data ──────────────────────────────────────────────────────────────
+const FEATURES = [
+  ["2.1.1",  "MCP Tool List",         "Registry of MCP servers; per-tool scoping/auth.",      "MCP servers exposed via the SDK with policy-based access. Each tool entry binds a server, an exposed surface, and credentials sourced from SecretProvider."],
+  ["2.1.2",  "Jobs & Schedule",       "Cron + one-shot + file-watch triggers; durable.",       "Persistent job graph: cron schedules, one-shot delays, FS WatchPaths. Survives restart via SQLite. Wakes the agent on event."],
+  ["2.1.3",  "Option Configurations", "Per-agent/session option packs (model/effort/…).",      "Named bundles of SDK options (model, effort, max-turns, system-prompt). Composable via merge-policy. Stored in core/config/."],
+  ["2.1.4",  "Override Tools",        "Intercept/wrap tool calls (mock, redact, policy).",     "Decorator pattern — wrap any tool invocation to mock for tests, redact secrets, or enforce policy. Layered via Effect."],
+  ["2.1.5",  "Base Prompt",           "Composable system prompt fragments.",                   "System prompt is built from named fragments (identity, rules, tools, memory). Skills can append. Versioned for repro."],
+  ["2.1.6",  "Agents (subagents)",    "Full AgentDefinition parity; parallel spawn.",          "Same surface as the SDK's subagent feature: name, description, prompt, tools. Spawned in parallel; isolated context."],
+  ["2.1.7",  "Teams",                 "Out-of-process peer workers; long-lived lead.",         "Multiple agents collaborating with a long-lived lead. SDK Teams promoted to first-class. Cluster-aware via @effect/cluster."],
+  ["2.1.8",  "Trigger Agents",        "Event-driven agents bound to Streams.",                 "An agent that wakes on an Effect Stream — webhook, file change, schedule tick, observability event."],
+  ["2.1.9",  "Skills + Scripts",      "Markdown skills + sandboxed scripts.",                  "Same shape as Claude Code skills: SKILL.md frontmatter + scripts. Loaded by trigger phrase. Scripts run in Sandbox."],
+  ["2.1.10", "Labs / Dojo",           "Training Center: scientist loop over artifacts.",       "Curriculum-learning harness: define eval, run agent variants, score, mutate prompt/options, repeat. Cost-governed."],
+  ["2.1.11", "Training Harness",      "Execution substrate for Labs + ad-hoc evals.",          "The runtime under Labs: parallel runs, golden-dataset comparison, Effect-based checkpointing."],
+  ["2.1.12", "Gateway",               "Discord/Telegram/CLI/HTTP + Plugin Play.",              "Channel adapters that translate external messages → Effect events. Plugin-Play loads new channels at runtime."],
+  ["2.1.13", "Screen Capture",        "Visual context pipeline with redaction.",               "Pulls visual context (screenshot stream), redacts PII, feeds into the prompt as image attachments."],
+];
+
+const RUNTIMES = [
+  ["2.2.1",  "Memory",         "Plug-and-play backends (sqlite/file/vector/…).",  "Provider abstraction over backends. SQLite + JSONL today; vector + Supermemory planned. Per-session + cross-session."],
+  ["2.2.2",  "Hooks",          "All 19 SDK hook events + matchers + decisions.",  "Typed event matchers (PreToolUse, UserPromptSubmit, …) with allow/deny/transform decisions. Composable Layers."],
+  ["2.2.3",  "Configuration",  "Typed config via effect/Schema, layered sources.",  "Schema-validated config from env, file, and CLI. Layered: defaults → file → env → flag. No untyped reads."],
+  ["2.2.4",  "Sandbox",        "Isolated execution for untrusted scripts/skills.",  "OS-level isolation (subprocess + restricted env) for skill scripts. Resource caps + egress allowlist."],
+  ["2.2.5",  "Workflows",      "@effect/workflow + @effect/cluster wrapper.",     "Durable state machines for multi-step orchestration. Beta-quality. Survives restart, replays from event log."],
+  ["2.2.6",  "UI",             "Tauri+React; consumes observability stream.",     "ui-web (:5173) is the chat surface — React + Vite + react-markdown + Shiki. ui-tauri wraps the same bundle as a native macOS app."],
+  ["2.2.7",  "Observability",  "Structured events + OTEL traces.",                 "Every Service emits typed events. Traces span module boundaries via @effect/opentelemetry."],
+  ["2.2.8",  "Telemetry",      "Metrics/logs to DuckDB + OTLP.",                   "Counters/histograms exported to DuckDB locally + OTLP for cloud sinks. Cost + latency dashboards."],
+  ["2.2.9",  "Network Security","Mediated HTTP, egress allowlists, TLS pinning.",  "All outbound HTTP through a mediator with allowlist. TLS pinning for high-value endpoints (Anthropic, 1Password)."],
+  ["2.2.10", "Account Rotation","Credential pool + policy (§0.2).",                "Per-query rotation of OAuth subscription tokens via SDK env overlay. Sticky-pin on resume for cache warmth."],
+  ["2.2.11", "Secrets",        "SecretProvider (1Password, env, file).",           "Pluggable secret resolution. Never plaintext env. 1Password service-account by default."],
+  ["2.2.12", "Cost Accounting","$-per-session/team/workflow; Labs budget gov.",    "Streaming cost tracker: tokens × model rate. Labs budget gates prevent runaway eval loops."],
+  ["2.2.13", "Schema Evolution","Versioned migrations for durable state.",          "Numbered migrations under packages/memory/migrations/ — SQLite schema evolves with the codebase."],
+];
+
+const WORKSPACE = [
+  ["pkg",  "@experiment-agent/core",        "Schema, Service patterns, session primitives, merge-policy.", "packages/core/"],
+  ["pkg",  "@experiment-agent/adapter-sdk", "Effect ↔ Claude Agent SDK bridge. Owns the subprocess.",      "packages/adapter-sdk/"],
+  ["pkg",  "@experiment-agent/tools",       "Tool registry + override tools.",                              "packages/tools/"],
+  ["pkg",  "@experiment-agent/memory",      "Memory backends + migrations.",                                 "packages/memory/"],
+  ["pkg",  "@experiment-agent/chat-service","Per-thread queue + pubsub + adapter.query lifecycle.",          "packages/chat-service/"],
+  ["pkg",  "@experiment-agent/ui-ws",       "WebSocket server + protocol.",                                  "packages/ui-ws/"],
+  ["pkg",  "@experiment-agent/ui-shared",   "react-markdown + Shiki — shared across UIs.",                   "packages/ui-shared/"],
+  ["app",  "apps/ui-web",                   "Chat UI on :5173 + dev-server-chat (WebSocket :4753).",         "apps/ui-web/"],
+  ["app",  "apps/ui-tauri",                 "Tauri 2 native shell wrapping the Vite bundle.",                "apps/ui-tauri/"],
+  ["app",  "apps/agent-cli",                "CLI client for the agent.",                                     "apps/agent-cli/"],
+];
+
+// ── Render helpers ────────────────────────────────────────────────────
+function card(tag, name, lede, detail, id, extra) {
+  const el = document.createElement("div");
+  el.className = "card";
+  el.innerHTML = `
+    <div class="tag ${tag}">${tag}</div>
+    ${id ? `<div class="id">${id}</div>` : ""}
+    <h3>${name}</h3>
+    <p>${lede}</p>
+  `;
+  el.addEventListener("click", () => openModal(name, detail, extra));
+  return el;
+}
+function fill(target, rows, mapper) {
+  const root = document.getElementById(target);
+  rows.forEach(r => root.appendChild(mapper(r)));
+}
+fill("features", FEATURES, ([id, name, lede, detail]) =>
+  card("feature", name, lede, detail, id));
+fill("runtimes", RUNTIMES, ([id, name, lede, detail]) =>
+  card("runtime", name, lede, detail, id));
+fill("workspace", WORKSPACE, ([kind, name, lede, detail, path]) =>
+  card(kind, name, lede, detail, "", path));
+
+function openModal(title, detail, extra) {
+  const m = document.getElementById("modal");
+  m.innerHTML = `
+    <button class="close" onclick="closeModal()">close ✕</button>
+    <h3>${title}</h3>
+    ${extra ? `<div class="meta">${extra}</div>` : ""}
+    <p>${detail}</p>
+  `;
+  document.getElementById("modal-bg").classList.add("open");
+}
+function closeModal() {
+  document.getElementById("modal-bg").classList.remove("open");
+}
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
+
+// ── Mermaid init ──────────────────────────────────────────────────────
+mermaid.initialize({
+  startOnLoad: true,
+  theme: "dark",
+  themeVariables: {
+    background: "#0b0d10",
+    primaryColor: "#1b2027",
+    primaryTextColor: "#e6edf3",
+    primaryBorderColor: "#f5b84a",
+    lineColor: "#8b949e",
+    secondaryColor: "#14181d",
+    tertiaryColor: "#1b2027",
+    fontFamily: "-apple-system, BlinkMacSystemFont, system-ui, sans-serif",
+  },
+  flowchart: { htmlLabels: true, curve: "basis" },
+  sequence: { actorMargin: 50, messageAlign: "center" },
+});
+
+document.getElementById("ts").textContent = new Date().toLocaleString();
+</script>
+</body>
+</html>
