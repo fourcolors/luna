@@ -51,6 +51,18 @@ if (!process.env["LUNA_REPO_ROOT"]) {
 }
 console.log(`📂 Agent cwd: ${process.env["LUNA_REPO_ROOT"]}`)
 
+// Trusted-local: assume the dev rig is Sterling's machine. If the shell
+// hasn't already exported this, default it on so the agent runs without
+// canUseTool prompts. Override by setting `LUNA_TRUSTED_LOCAL=0` in the env.
+if (!process.env["LUNA_TRUSTED_LOCAL"]) {
+  process.env["LUNA_TRUSTED_LOCAL"] = "1"
+}
+if (process.env["LUNA_TRUSTED_LOCAL"] === "1") {
+  console.log("🔓 Trusted-local mode: permissionMode=bypassPermissions")
+} else {
+  console.log("🔒 Untrusted: permissionMode=default (canUseTool prompts active)")
+}
+
 const TOKEN = "dev-ui-ws-token-do-not-ship"
 
 const hasToken = Boolean(process.env["CLAUDE_CODE_OAUTH_TOKEN"])

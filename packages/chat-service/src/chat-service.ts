@@ -147,6 +147,15 @@ export class ChatService extends Effect.Service<ChatService>()(
       const buildSessionOptions = (
         opts: CreateThreadOptions,
       ): SessionOptions => {
+        // Trusted-local default: when LUNA_TRUSTED_LOCAL=1, threads run with
+        // bypassPermissions (no canUseTool prompts). Sterling sets this in
+        // his shell once. Without the env var, mode stays at SDK default
+        // ("default" — prompts via canUseTool) so deployed configs cannot
+        // accidentally inherit bypass.
+        const defaultPermissionMode =
+          process.env["LUNA_TRUSTED_LOCAL"] === "1"
+            ? "bypassPermissions"
+            : "default"
         const sdkOptions: Record<string, unknown> = {
           includePartialMessages: true,
           cwd:
@@ -157,6 +166,7 @@ export class ChatService extends Effect.Service<ChatService>()(
           // CLAUDE.md, and hooks from ~/.claude/ + <cwd>/.claude/. Caller
           // can opt out with `settingSources: []`.
           settingSources: opts.settingSources ?? ["user", "project"],
+          permissionMode: opts.permissionMode ?? defaultPermissionMode,
         }
         return {
           model: opts.model,
