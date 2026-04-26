@@ -1,13 +1,28 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
-import { initialState, reduce, filterEvents, type Action } from "./reducer.js"
-
-const MarkdownView = lazy(() => import("./MarkdownView.js"))
 import {
+  CodeBlock,
+  CodeBlockFallback,
   browserWebSocketTransport,
+  canonLang,
+  countLines,
+  deriveTitle,
+  filterEvents,
+  formatBytes,
+  initialState,
+  reduce,
+  type Action,
+  type Artifact,
+  type ChatMessage,
+  type ClientFrame,
   type ConnectionStatus,
+  type SessionSummary,
+  type ThreadView,
   type TransportHandle,
-} from "./transport.js"
-import type { Artifact, ChatMessage, ClientFrame, SessionSummary } from "./wire.js"
+} from "@experiment-agent/ui-shared"
+
+const MarkdownView = lazy(() =>
+  import("@experiment-agent/ui-shared").then((m) => ({ default: m.MarkdownView })),
+)
 
 const STORAGE_KEY = "ui-ws.config"
 const DEFAULT_URL = "ws://127.0.0.1:4753/ui"
@@ -17,6 +32,9 @@ interface PersistedConfig {
   url: string
   token: string
   model: string
+  /** When true, plain Enter sends; Shift+Enter inserts newline.
+   *  Default false preserves the original ⌘/Ctrl+Enter contract. */
+  enterToSend: boolean
 }
 
 const loadConfig = (): PersistedConfig => {
@@ -28,6 +46,7 @@ const loadConfig = (): PersistedConfig => {
         url: parsed.url ?? DEFAULT_URL,
         token: parsed.token ?? "",
         model: parsed.model ?? DEFAULT_MODEL,
+        enterToSend: parsed.enterToSend ?? false,
       }
     }
   } catch {
@@ -35,7 +54,12 @@ const loadConfig = (): PersistedConfig => {
   }
   const envToken =
     (import.meta.env["VITE_UI_WS_TOKEN"] as string | undefined) ?? ""
-  return { url: DEFAULT_URL, token: envToken, model: DEFAULT_MODEL }
+  return {
+    url: DEFAULT_URL,
+    token: envToken,
+    model: DEFAULT_MODEL,
+    enterToSend: false,
+  }
 }
 
 const saveConfig = (cfg: PersistedConfig) => {
@@ -50,7 +74,7 @@ type Pane = "chat" | "obs"
 
 export function App() {
   const [cfg, setCfg] = useState<PersistedConfig>(loadConfig())
-  const { url, token, model } = cfg
+  const { url, token, model, enterToSend } = cfg
   const [status, setStatus] = useState<ConnectionStatus>({ kind: "idle" })
   const [state, dispatch] = useReducer(
     reduce as (s: typeof initialState, a: Action) => typeof initialState,
@@ -60,7 +84,14 @@ export function App() {
   const [selectedKinds, setSelectedKinds] = useState<ReadonlySet<string>>(
     new Set(),
   )
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const handleRef = useRef<TransportHandle | null>(null)
+
+  // Persist config edits as they happen so reload doesn't lose tweaks
+  // (e.g. enterToSend toggle).
+  useEffect(() => {
+    saveConfig(cfg)
+  }, [cfg])
 
   const send = useCallback((frame: ClientFrame) => {
     handleRef.current?.send(frame)
@@ -71,7 +102,8 @@ export function App() {
       handleRef.current.disconnect()
       handleRef.current = null
     }
-    saveConfig(cfg)
+    // No explicit saveConfig here — the cfg-watching useEffect already
+    // persists every edit, so this would be a redundant double-write.
     handleRef.current = browserWebSocketTransport.connect({
       url,
       token,
@@ -92,9 +124,11 @@ export function App() {
       onStatus: (s) => {
         setStatus(s)
         // On open, request the thread list immediately so the sidebar
-        // is populated without a manual click.
+        // is populated without a manual click. Also collapse the
+        // settings panel if it was left open from the disconnected state.
         if (s.kind === "open") {
           handleRef.current?.send({ type: "list-threads" })
+          setSettingsOpen(false)
         }
       },
     })
@@ -162,62 +196,39 @@ export function App() {
   )
 
   const isConnected = status.kind === "open"
+  const isConnecting = status.kind === "connecting"
   const chatEnabled = isConnected && state.capabilities.chat
   const selectedThread =
     state.selectedThreadId !== null
       ? state.threads.get(state.selectedThreadId) ?? null
       : null
 
+  // Show settings panel automatically when not yet connected (so the
+  // first-run experience surfaces the URL/Token fields), or when the
+  // user has explicitly toggled it open.
+  const showSettings = settingsOpen || (!isConnected && !isConnecting)
+
   return (
     <div className="app">
       <header className="topbar">
         <div className="row">
-          <label>
-            URL{" "}
-            <input
-              value={url}
-              onChange={(e) =>
-                setCfg((c) => ({ ...c, url: e.target.value }))
-              }
-              spellCheck={false}
-              autoCapitalize="off"
-              autoCorrect="off"
-            />
-          </label>
-          <label>
-            Token{" "}
-            <input
-              type="password"
-              value={token}
-              onChange={(e) =>
-                setCfg((c) => ({ ...c, token: e.target.value }))
-              }
-              placeholder="≥16 chars"
-            />
-          </label>
-          <label>
-            Model{" "}
-            <input
-              value={model}
-              onChange={(e) =>
-                setCfg((c) => ({ ...c, model: e.target.value }))
-              }
-              spellCheck={false}
-            />
-          </label>
-          {status.kind === "open" || status.kind === "connecting" ? (
-            <button onClick={onDisconnect}>Disconnect</button>
-          ) : (
-            <button onClick={onConnect} disabled={!token || token.length < 16}>
-              Connect
+          <strong className="brand">⚡ Agent Chat</strong>
+          <ConnectionSummary
+            status={status}
+            url={url}
+            model={model}
+            chatCap={state.capabilities.chat}
+          />
+          <span style={{ flex: 1 }} />
+          {isConnected && (
+            <button
+              className={`chip ${settingsOpen ? "active" : ""}`}
+              onClick={() => setSettingsOpen((v) => !v)}
+              title="Connection settings"
+            >
+              ⚙ Settings
             </button>
           )}
-          <StatusPill status={status} />
-          <span className="muted">
-            chat: {state.capabilities.chat ? "✓" : "✗"} · streaming:{" "}
-            {state.capabilities.streamingDeltas ? "✓" : "✗"}
-          </span>
-          <span style={{ flex: 1 }} />
           <button
             className={`chip ${pane === "chat" ? "active" : ""}`}
             onClick={() => setPane("chat")}
@@ -228,11 +239,90 @@ export function App() {
             className={`chip ${pane === "obs" ? "active" : ""}`}
             onClick={() => setPane("obs")}
           >
-            Obs
+            Events
           </button>
         </div>
+        {showSettings && (
+          <div className="row settings-row">
+            <label>
+              URL{" "}
+              <input
+                value={url}
+                onChange={(e) =>
+                  setCfg((c) => ({ ...c, url: e.target.value }))
+                }
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+              />
+            </label>
+            <label>
+              Token{" "}
+              <input
+                type="password"
+                value={token}
+                onChange={(e) =>
+                  setCfg((c) => ({ ...c, token: e.target.value }))
+                }
+                placeholder="≥16 chars"
+              />
+            </label>
+            <label>
+              Model{" "}
+              <input
+                value={model}
+                onChange={(e) =>
+                  setCfg((c) => ({ ...c, model: e.target.value }))
+                }
+                spellCheck={false}
+              />
+            </label>
+            <label className="toggle" title="When on, plain Enter sends; Shift+Enter inserts a newline">
+              <input
+                type="checkbox"
+                checked={enterToSend}
+                onChange={(e) =>
+                  setCfg((c) => ({ ...c, enterToSend: e.target.checked }))
+                }
+              />
+              <span>Enter to send</span>
+            </label>
+            {isConnected || isConnecting ? (
+              <button onClick={onDisconnect}>Disconnect</button>
+            ) : (
+              <button onClick={onConnect} disabled={!token || token.length < 16}>
+                Connect
+              </button>
+            )}
+          </div>
+        )}
         {state.closeReason && (
-          <div className="banner closed">closed by server: {state.closeReason}</div>
+          <div className="banner closed">
+            <span>closed by server: {state.closeReason}</span>
+            <button
+              className="chip"
+              onClick={onConnect}
+              disabled={!token || token.length < 16}
+            >
+              Reconnect
+            </button>
+          </div>
+        )}
+        {(status.kind === "closed" || status.kind === "error") && !state.closeReason && (
+          <div className="banner closed">
+            <span>
+              {status.kind === "error"
+                ? `connection error: ${status.message}`
+                : `disconnected (code ${status.code}${status.reason ? ` · ${status.reason}` : ""})`}
+            </span>
+            <button
+              className="chip"
+              onClick={onConnect}
+              disabled={!token || token.length < 16}
+            >
+              Reconnect
+            </button>
+          </div>
         )}
       </header>
 
@@ -247,6 +337,7 @@ export function App() {
         >
           <Sidebar
             threads={state.threadList}
+            threadViews={state.threads}
             selectedId={state.selectedThreadId}
             onSelect={selectThread}
             onNew={chatEnabled ? newThread : null}
@@ -256,6 +347,7 @@ export function App() {
             onSend={sendUserMessage}
             onInterrupt={interrupt}
             disabled={!chatEnabled}
+            enterToSend={enterToSend}
           />
           {selectedThread && selectedThread.artifacts.length > 0 && (
             <ArtifactPanel artifacts={selectedThread.artifacts} />
@@ -279,16 +371,69 @@ export function App() {
 }
 
 /* -------------------------------------------------------------------- */
+/* Connection summary — compact "● connected · model · host"           */
+/* -------------------------------------------------------------------- */
+
+function ConnectionSummary({
+  status,
+  url,
+  model,
+  chatCap,
+}: {
+  status: ConnectionStatus
+  url: string
+  model: string
+  chatCap: boolean
+}) {
+  const host = useMemo(() => {
+    try {
+      return new URL(url).host || url
+    } catch {
+      return url
+    }
+  }, [url])
+
+  const dotClass =
+    status.kind === "open"
+      ? "dot ok"
+      : status.kind === "connecting"
+        ? "dot pending"
+        : status.kind === "error" || status.kind === "closed"
+          ? "dot bad"
+          : "dot idle"
+
+  const label =
+    status.kind === "open"
+      ? `${model} · ${host}${chatCap ? "" : " · chat unavailable"}`
+      : status.kind === "connecting"
+        ? `connecting · ${host}`
+        : status.kind === "error"
+          ? `error · ${status.message}`
+          : status.kind === "closed"
+            ? `disconnected`
+            : "not connected"
+
+  return (
+    <span className="conn-summary" title={url}>
+      <span className={dotClass} />
+      <span className="muted">{label}</span>
+    </span>
+  )
+}
+
+/* -------------------------------------------------------------------- */
 /* Sidebar                                                              */
 /* -------------------------------------------------------------------- */
 
 function Sidebar({
   threads,
+  threadViews,
   selectedId,
   onSelect,
   onNew,
 }: {
   threads: ReadonlyArray<SessionSummary>
+  threadViews: ReadonlyMap<string, ThreadView>
   selectedId: string | null
   onSelect: (id: string) => void
   onNew: (() => void) | null
@@ -307,28 +452,38 @@ function Sidebar({
       </div>
       <div className="sidebar-list">
         {threads.length === 0 && (
-          <div className="muted sidebar-empty">no threads yet</div>
-        )}
-        {threads.map((t) => (
-          <button
-            key={t.id}
-            className={`thread-row ${selectedId === t.id ? "selected" : ""}`}
-            onClick={() => onSelect(t.id)}
-          >
-            <div className="thread-title">
-              {t.title ?? <em className="muted">untitled</em>}
-            </div>
-            {t.lastMessagePreview && (
-              <div className="thread-preview">{t.lastMessagePreview}</div>
+          <div className="sidebar-empty">
+            <p className="muted">No threads yet.</p>
+            {onNew !== null && (
+              <button onClick={onNew} className="chip primary">
+                Start your first thread
+              </button>
             )}
-            <div className="thread-meta">
-              <span className="muted">{t.model || "—"}</span>
-              {t.lastMessageAt !== null && (
-                <span className="muted">{relativeTime(t.lastMessageAt)}</span>
+          </div>
+        )}
+        {threads.map((t) => {
+          const title = deriveTitle(t, threadViews.get(t.id))
+          return (
+            <button
+              key={t.id}
+              className={`thread-row ${selectedId === t.id ? "selected" : ""}`}
+              onClick={() => onSelect(t.id)}
+            >
+              <div className="thread-title">
+                {title ?? <em className="muted">untitled</em>}
+              </div>
+              {t.lastMessagePreview && title !== t.lastMessagePreview && (
+                <div className="thread-preview">{t.lastMessagePreview}</div>
               )}
-            </div>
-          </button>
-        ))}
+              <div className="thread-meta">
+                <span className="muted">{t.model || "—"}</span>
+                {t.lastMessageAt !== null && (
+                  <span className="muted">{relativeTime(t.lastMessageAt)}</span>
+                )}
+              </div>
+            </button>
+          )
+        })}
       </div>
     </aside>
   )
@@ -351,11 +506,13 @@ function ChatPanel({
   onSend,
   onInterrupt,
   disabled,
+  enterToSend,
 }: {
-  thread: import("./reducer.js").ThreadView | null
+  thread: ThreadView | null
   onSend: (threadId: string, text: string) => void
   onInterrupt: (threadId: string) => void
   disabled: boolean
+  enterToSend: boolean
 }) {
   const [draft, setDraft] = useState("")
   const transcriptRef = useRef<HTMLDivElement>(null)
@@ -372,8 +529,8 @@ function ChatPanel({
         <div className="empty-state">
           <p className="muted">
             {disabled
-              ? "connect to a chat-capable server, then start a thread"
-              : "select a thread or start a new one"}
+              ? "Connect to a chat-capable server, then start a thread."
+              : "Select a thread or start a new one."}
           </p>
         </div>
       </main>
@@ -387,17 +544,30 @@ function ChatPanel({
     setDraft("")
   }
 
+  const placeholder = disabled
+    ? "Disconnected"
+    : enterToSend
+      ? "Type a message — Enter to send, Shift+Enter for newline"
+      : "Type a message — ⌘/Ctrl+Enter to send"
+
   return (
     <main className="chat-panel">
       <div className="chat-head">
         <div className="chat-title">
-          {thread.summary.title ?? <em>untitled</em>}
+          {deriveTitle(thread.summary, thread) ?? <em>untitled</em>}
         </div>
         <div className="muted small">
           {thread.summary.model || "—"} · {thread.messages.length} msg
         </div>
       </div>
       <div className="transcript" ref={transcriptRef}>
+        {thread.messages.length === 0 && !thread.inFlight && (
+          <div className="empty-state">
+            <p className="muted">
+              No messages yet — say hello to get started.
+            </p>
+          </div>
+        )}
         {thread.messages.map((m) => (
           <MessageBubble key={`${m.id}-${m.seq}`} message={m} />
         ))}
@@ -418,12 +588,26 @@ function ChatPanel({
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          placeholder={
-            disabled ? "disconnected" : "Type a message — ⌘/Ctrl+Enter to send"
-          }
+          placeholder={placeholder}
           disabled={disabled}
           onKeyDown={(e) => {
+            // ⌘/Ctrl+Enter always submits (preserved alias).
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+              e.preventDefault()
+              submit()
+              return
+            }
+            // Plain Enter submits ONLY when enterToSend is on AND no
+            // modifier is held. Shift+Enter falls through to insert a
+            // newline (the textarea default).
+            if (
+              enterToSend &&
+              e.key === "Enter" &&
+              !e.shiftKey &&
+              !e.metaKey &&
+              !e.ctrlKey &&
+              !e.altKey
+            ) {
               e.preventDefault()
               submit()
             }
@@ -479,6 +663,23 @@ function MessageBubble({ message }: { message: ChatMessage }) {
 /* Artifact panel — files & substantial code blocks pinned beside chat  */
 /* -------------------------------------------------------------------- */
 
+const downloadArtifact = (a: Artifact) => {
+  const filename =
+    (a.path && a.path.split("/").pop()) ||
+    (a.title && a.title.replace(/[^\w.\-]+/g, "_")) ||
+    `artifact-${a.id}.txt`
+  const blob = new Blob([a.content], { type: "text/plain;charset=utf-8" })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement("a")
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  // Revoke on next tick so the download has time to start.
+  setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
 function ArtifactPanel({
   artifacts,
 }: {
@@ -500,6 +701,8 @@ function ArtifactPanel({
     artifacts[artifacts.length - 1] ??
     null
 
+  const selectedLang = selected ? canonLang(selected.lang) : null
+
   return (
     <aside className="artifact-panel">
       <div className="artifact-head">
@@ -507,42 +710,61 @@ function ArtifactPanel({
         <span className="muted small">{artifacts.length}</span>
       </div>
       <div className="artifact-list">
-        {artifacts.map((a) => (
-          <button
-            key={a.id}
-            className={
-              "artifact-row" + (a.id === selected?.id ? " selected" : "")
-            }
-            onClick={() => setSelectedId(a.id)}
-          >
-            <div className="artifact-title">
-              {a.source === "tool-write" ? "📄" : "📝"} {a.title}
-            </div>
-            <div className="artifact-meta muted small">
-              {a.source === "tool-write" ? a.path : a.lang ?? "code"} ·{" "}
-              {a.content.length} chars
-            </div>
-          </button>
-        ))}
+        {artifacts.map((a) => {
+          const lines = countLines(a.content)
+          return (
+            <button
+              key={a.id}
+              className={
+                "artifact-row" + (a.id === selected?.id ? " selected" : "")
+              }
+              onClick={() => setSelectedId(a.id)}
+            >
+              <div className="artifact-title">
+                {a.source === "tool-write" ? "📄" : "📝"} {a.title}
+              </div>
+              <div className="artifact-meta muted small">
+                {a.source === "tool-write" ? a.path : a.lang ?? "code"} ·{" "}
+                {lines} {lines === 1 ? "line" : "lines"} ·{" "}
+                {formatBytes(a.content.length)}
+              </div>
+            </button>
+          )
+        })}
       </div>
       {selected && (
         <div className="artifact-view">
           <div className="artifact-view-head">
-            <span className="small">{selected.path ?? selected.title}</span>
+            <span className="small" title={selected.path ?? undefined}>
+              {selected.path ?? selected.title}
+            </span>
+            <span style={{ flex: 1 }} />
             <button
-              className="chip clear"
+              className="chip"
+              onClick={() => downloadArtifact(selected)}
+              title="Download as file"
+            >
+              ⬇ download
+            </button>
+            <button
+              className="chip"
               onClick={() => {
                 navigator.clipboard?.writeText(selected.content).catch(() => {
                   // ignore
                 })
               }}
+              title="Copy to clipboard"
             >
-              copy
+              ⧉ copy
             </button>
           </div>
-          <pre className="artifact-content">
-            <code>{selected.content}</code>
-          </pre>
+          <div className="artifact-content">
+            {selectedLang ? (
+              <CodeBlock lang={selectedLang} source={selected.content} />
+            ) : (
+              <CodeBlockFallback source={selected.content} />
+            )}
+          </div>
         </div>
       )}
     </aside>
@@ -568,7 +790,7 @@ function ObsPanel({
   selectedKinds: ReadonlySet<string>
   toggleKind: (k: string) => void
   clearKinds: () => void
-  filtered: ReadonlyArray<import("./wire.js").ObsEvent>
+  filtered: ReadonlyArray<import("@experiment-agent/ui-shared").ObsEvent>
   totalEvents: number
   lastDrop: { n: number; since: string } | null
   droppedTotal: number
@@ -621,22 +843,7 @@ function ObsPanel({
   )
 }
 
-function StatusPill({ status }: { status: ConnectionStatus }) {
-  const label = status.kind
-  const detail =
-    status.kind === "closed"
-      ? `code ${status.code}${status.reason ? ` · ${status.reason}` : ""}`
-      : status.kind === "error"
-        ? status.message
-        : ""
-  return (
-    <span className={`pill pill-${label}`} title={detail}>
-      {label}
-    </span>
-  )
-}
-
-function EventRow({ event }: { event: import("./wire.js").ObsEvent }) {
+function EventRow({ event }: { event: import("@experiment-agent/ui-shared").ObsEvent }) {
   const [open, setOpen] = useState(false)
   const summary = useMemo(() => {
     const { ts, kind, level, ...rest } = event

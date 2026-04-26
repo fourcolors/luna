@@ -6,5 +6,6 @@ export default defineConfig({
   server: {
     port: 5173,
     host: "127.0.0.1",
+    allowedHosts: ["mr.tail0d96d3.ts.net", ".tail0d96d3.ts.net"],
   },
 })
