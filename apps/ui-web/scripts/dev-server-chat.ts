@@ -62,6 +62,9 @@ const baseLayer = (() => {
     Layer.provide(obsL),
     Layer.provide(clockL),
   )
+  // ⚠️ In-memory SessionStore: threads vanish on server restart. This is
+  // a dev rig — durable storage (SQLite) lands when SessionStore.Sqlite
+  // ships. Until then, "jump to threads" only spans a single server run.
   const storeL = SessionStore.Default
   const sdkClientL = SDKClient.Default
   const sdkAdapterL = Layer.provideMerge(

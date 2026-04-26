@@ -64,7 +64,7 @@ export interface SessionSummary {
   readonly createdAt: number
   readonly endedAt: number | null
   readonly model: string
-  readonly status: "active" | "closed" | "errored"
+  readonly status: "active" | "idle" | "closed" | "errored"
   readonly lastMessageAt: number | null
   readonly lastMessagePreview: string | null
 }

@@ -18,8 +18,43 @@ WebSockets without baking it into the core.
 - **Bearer token required.** Refuses to start if `token` is unset or
   shorter than 16 chars. Tokens should come from 1Password
   (`op://Mr Bot/UI_WS_TOKEN`) — never check them into source.
-- **No client→server commands** in this phase. The protocol is
-  push-only; clients are pure subscribers.
+- **Client→server commands** were added in v2 (chat). Obs frames remain
+  push-only and broadcast; chat frames are scoped to a per-connection
+  set of subscribed `threadId`s.
+
+## Wire protocol — v2 (current, chat-aware)
+
+`UI_WS_PROTOCOL_VERSION = 2`. The server emits a `hello` frame with
+`capabilities: { chat, streamingDeltas }` so older clients can degrade.
+
+**Server → client** (additive over v1):
+
+| Type | Trigger |
+|------|---------|
+| `hello` | sent on connect (carries capabilities) |
+| `event` / `drop` / `ping` / `bye` | obs path (unchanged from v1) |
+| `thread-list` | response to `list-threads`; sidebar projection |
+| `thread-created` | server-side new-thread completion (auto-subscribes) |
+| `thread-snapshot` | full replay on first `subscribe(threadId)` (carries `throughSeq`) |
+| `user-accepted` | echo of an accepted user-message with persisted `seq` |
+| `assistant-delta` | cumulative streaming text for an in-flight turn |
+| `assistant-done` | finalized assistant turn with definitive `seq` |
+| `assistant-error` | tagged-union error (`sdk` / `idle` / `interrupted` / `unknown-thread`) |
+| `artifacts-extracted` | post-`assistant-done` payloads (substantial code fences + Write/Edit tool uses) |
+
+**Client → server** (new in v2):
+
+| Type | Effect |
+|------|--------|
+| `subscribe` / `unsubscribe` | toggle live forwarding for a `threadId` |
+| `list-threads` | request a fresh `thread-list` (sidebar refresh) |
+| `new-thread` | create + auto-subscribe (server emits `thread-created` then `thread-snapshot`) |
+| `user-message` | offer text into the chat queue |
+| `interrupt` | stop the current assistant turn |
+| `pong` / `bye` | liveness / clean shutdown |
+
+Dedupe: clients drop live frames whose `seq <= throughSeq` of the most
+recent snapshot — covers reconnect-during-turn race.
 
 ## Wire protocol (v1)
 
