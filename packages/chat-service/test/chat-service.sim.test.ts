@@ -369,6 +369,64 @@ describe("ChatService (Tier-2 sim)", () => {
   )
 
   it(
+    "settingSources defaults to ['user','project'] and forwards to SDK options",
+    async () => {
+      let capturedOptions: Record<string, unknown> | undefined
+      const fakeLayer = SDKClient.fake((p) => {
+        capturedOptions = (p.options ?? {}) as Record<string, unknown>
+        // Return a parked Query — we only care about the options capture.
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+      await runScoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          // Default — no settingSources passed
+          yield* chat.createThread({ model: "claude-test", title: "default" })
+          yield* Effect.sleep("30 millis")
+        }),
+        fakeLayer,
+      )
+      expect(capturedOptions).toBeDefined()
+      expect(capturedOptions!["settingSources"]).toEqual(["user", "project"])
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "settingSources can be overridden per-thread (e.g. opt out with [])",
+    async () => {
+      let capturedOptions: Record<string, unknown> | undefined
+      const fakeLayer = SDKClient.fake((p) => {
+        capturedOptions = (p.options ?? {}) as Record<string, unknown>
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+      await runScoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          yield* chat.createThread({
+            model: "claude-test",
+            title: "isolated",
+            settingSources: [],
+          })
+          yield* Effect.sleep("30 millis")
+        }),
+        fakeLayer,
+      )
+      expect(capturedOptions).toBeDefined()
+      expect(capturedOptions!["settingSources"]).toEqual([])
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
     "closeThread interrupts the per-thread Scope without dying on Exit",
     async () => {
       const fakeLayer = SDKClient.fake(async function* () {

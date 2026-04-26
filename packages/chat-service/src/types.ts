@@ -122,4 +122,12 @@ export interface CreateThreadOptions {
   readonly title?: string
   readonly tags?: ReadonlyArray<string>
   readonly systemPrompt?: string
+  /** Working directory for the agent's filesystem tools. Defaults to
+   *  `EXPERIMENT_AGENT_REPO_ROOT` env var if set, else `process.cwd()`. */
+  readonly cwd?: string
+  /** Which filesystem setting sources the SDK should load (skills, plugins,
+   *  MCP servers, CLAUDE.md, hooks). Defaults to `["user", "project"]` so
+   *  ~/.claude/skills + <cwd>/.claude/skills + project CLAUDE.md all load.
+   *  Pass `[]` to opt out of all filesystem-discovered config. */
+  readonly settingSources?: ReadonlyArray<"user" | "project" | "local">
 }
