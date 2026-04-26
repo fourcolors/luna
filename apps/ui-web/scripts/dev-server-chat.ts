@@ -36,8 +36,11 @@ import {
   DEFAULT_UI_KINDS,
   ObservabilityService,
   SessionStore,
+  makeSessionStoreSqlite,
   UIService,
 } from "@luna/core"
+import { homedir } from "node:os"
+import { mkdirSync } from "node:fs"
 import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
 import { ChatService } from "@luna/chat-service"
 import { startUIWebSocketServer } from "@luna/ui-ws"
@@ -85,10 +88,24 @@ const baseLayer = (() => {
     Layer.provide(obsL),
     Layer.provide(clockL),
   )
-  // ⚠️ In-memory SessionStore: threads vanish on server restart. This is
-  // a dev rig — durable storage (SQLite) lands when SessionStore.Sqlite
-  // ships. Until then, "jump to threads" only spans a single server run.
-  const storeL = SessionStore.Default
+  // SessionStore: SQLite-backed if LUNA_DB_PATH is set (or default
+  // ~/.luna/luna.db), in-memory otherwise. Phase 5 made threads durable
+  // across server restarts; opt-out by setting LUNA_DB_PATH=":memory:" or
+  // LUNA_INMEMORY_STORE=1 for the prior fully-ephemeral behavior.
+  const useMem = process.env["LUNA_INMEMORY_STORE"] === "1"
+  const dbPath =
+    process.env["LUNA_DB_PATH"] ?? path.join(homedir(), ".luna", "luna.db")
+  if (!useMem && dbPath !== ":memory:") {
+    mkdirSync(path.dirname(dbPath), { recursive: true })
+  }
+  const storeL = useMem
+    ? SessionStore.Default
+    : makeSessionStoreSqlite(dbPath)
+  if (!useMem) {
+    console.log(`💾 SessionStore: sqlite (${dbPath})`)
+  } else {
+    console.log(`💾 SessionStore: in-memory (LUNA_INMEMORY_STORE=1)`)
+  }
   const sdkClientL = SDKClient.Default
   const sdkAdapterL = Layer.provideMerge(
     SDKAdapter.Default,
