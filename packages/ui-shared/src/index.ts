@@ -1,6 +1,6 @@
 /**
  * @experiment-agent/ui-shared — chat-app-agnostic React building blocks
- * shared between apps/ui-web and apps/ui-canvas.
+ * used by apps/ui-web (and any future surface that wants the same chrome).
  *
  * Everything in here is pure UI plumbing: WebSocket transport, the chat
  * frame reducer, code/markdown rendering, and small helpers. No layout
