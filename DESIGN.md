@@ -1,6 +1,6 @@
 # Luna — Architecture
 
-> _(repo name remains `experiment-agent`; npm scope remains `@luna/*`. "Luna" is the user-facing agent name.)_
+> _(formerly "experiment-agent"; renamed across the workspace 2026-04-26. Repo dir is `~/Projects/luna`, npm scope is `@luna/*`, user data lives at `~/.luna/`.)_
 
 > A modular agent framework with full Claude Agent SDK feature parity, built on **Effect (TypeScript v3)**, extending the SDK with Teams (experimental→first-class), durable Workflows, a Training Center, plug-and-play Memory, Account Rotation, Screen Capture, and a Plugin-Play Gateway.
 
@@ -60,7 +60,7 @@ Three decisions that drive everything downstream. Dated, with rationale.
   - `acquireTool(name)` — rotates credentials for MCP servers + custom tools we own. Per-invocation, transparent wrap.
 - **Verified evidence**: sol-agent production uses this pattern at `~/sol-agent/lib/agent.ts:306-316`. The Claude Agent SDK respects `options.env` overlays per-query; the subprocess honors the injected token without restart. Our earlier concern ("subprocess owns HTTP, can't rotate without respawn") was wrong in practice.
 - **Consequence**: `AccountBroker` is truly transparent. Rotation strategies (round-robin, LRU, least-used-with-429-awareness) ported from sol-agent as a spec (not as code — see §9.3). Sticky-pin on session resume (`boundAccountId`) preserves prompt-cache warmth.
-- **Token type**: OAuth subscription tokens (1-year TTL, from `claude setup-token`), not API keys. Pool stored at `~/.experiment-agent/accounts.db` (SQLite per §5.1) via `SecretProvider`, never as plaintext env vars.
+- **Token type**: OAuth subscription tokens (1-year TTL, from `claude setup-token`), not API keys. Pool stored at `~/.luna/accounts.db` (SQLite per §5.1) via `SecretProvider`, never as plaintext env vars.
 
 ### 0.3 "One-shot" reinterpretation — **Frozen architecture + revisable implementation + named checkpoints**
 - **Chosen**: One architecture doc freezes decisions in §0–§6, §12, §13, §15. Implementation specifics (§7–§11, §14) revise as real code informs them. Two explicit **architecture re-evaluate checkpoints** at M1 and M3.
@@ -724,7 +724,7 @@ Every module emits structured events via `@effect/opentelemetry` Tracer + a loca
 - `Error` — tagged error + context.
 
 Sinks:
-- Local JSONL at `~/.experiment-agent/events.jsonl`.
+- Local JSONL at `~/.luna/events.jsonl`.
 - OTLP exporter (configurable).
 - DuckDB refresher (parity with sol-agent telemetry).
 

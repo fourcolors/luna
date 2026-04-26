@@ -49,6 +49,7 @@ import {
 import {
   SessionStore,
   Clock as CoreClock,
+  ObservabilityService,
   projectChatMessages,
   projectOne,
   type ChatMessage,
@@ -127,6 +128,7 @@ export class ChatService extends Effect.Service<ChatService>()(
       const store = yield* SessionStore
       const adapter = yield* SDKAdapter
       const clock = yield* CoreClock
+      const obs = yield* ObservabilityService
       const serviceScope = yield* Effect.scope
 
       const threads = yield* Ref.make<ReadonlyMap<string, ThreadEntry>>(new Map())
@@ -197,6 +199,15 @@ export class ChatService extends Effect.Service<ChatService>()(
           const summary = yield* store
             .create({ id, options: sessionOptions, createdAt })
             .pipe(Effect.orDie)
+
+          // Emit SessionStart so the obs Events tab shows activity.
+          yield* obs.emit({
+            kind: "SessionStart",
+            ts: new Date().toISOString(),
+            level: "info",
+            sessionId: id,
+            model: opts.model ?? "unknown",
+          })
 
           const inbox = yield* Queue.unbounded<SDKUserMessage>()
           const pubsub = yield* PubSub.unbounded<ChatFrame>()
@@ -347,10 +358,67 @@ export class ChatService extends Effect.Service<ChatService>()(
                 artifacts,
               })
             }
+            // Emit ToolCall obs events for each tool_use block in this turn.
+            // durationMs is 0 — the SDK doesn't give start/stop pairs at this
+            // level; status "success" because this is the completed-turn message.
+            const blocks = (
+              args.msg as {
+                message?: { content?: ReadonlyArray<{ type?: string; name?: string }> }
+              }
+            ).message?.content ?? []
+            for (const b of blocks) {
+              if (b.type === "tool_use" && typeof b.name === "string") {
+                yield* obs.emit({
+                  kind: "ToolCall",
+                  ts: new Date().toISOString(),
+                  level: "info",
+                  sessionId: args.threadId,
+                  toolName: b.name,
+                  durationMs: 0,
+                  status: "success",
+                })
+              }
+            }
             return
           }
-          // result / system / hook / status / stream_event-other /  user
-          // (echoed by real SDK) — not surfaced as chat frames.
+          if (t === "result") {
+            // Final result message — emit CostAccrued + SessionEnd. No ChatFrame
+            // is published for result (it's metadata only), but obs consumers
+            // (the Events tab) need these signals to show session lifecycle.
+            const m = args.msg as {
+              usage?: {
+                input_tokens?: number
+                output_tokens?: number
+                cache_creation_input_tokens?: number
+                cache_read_input_tokens?: number
+              }
+              total_cost_usd?: number
+              duration_ms?: number
+              is_error?: boolean
+            }
+            const u = m.usage ?? {}
+            yield* obs.emit({
+              kind: "CostAccrued",
+              ts: new Date().toISOString(),
+              level: "info",
+              sessionId: args.threadId,
+              tokensIn: u.input_tokens ?? 0,
+              tokensOut: u.output_tokens ?? 0,
+              cacheRead: u.cache_read_input_tokens ?? 0,
+              cacheWrite: u.cache_creation_input_tokens ?? 0,
+              estimatedUsd: m.total_cost_usd ?? 0,
+            })
+            yield* obs.emit({
+              kind: "SessionEnd",
+              ts: new Date().toISOString(),
+              level: m.is_error ? "error" : "info",
+              sessionId: args.threadId,
+              durationMs: m.duration_ms ?? 0,
+            })
+            return
+          }
+          // system / hook / status / stream_event-other / user
+          // (echoed by real SDK) — not surfaced as chat frames or obs events.
         })
 
       /** Lookup helper: scan store messages for this session, return the

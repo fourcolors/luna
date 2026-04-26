@@ -29,6 +29,7 @@ import {
 import {
   SessionStore,
   Clock as CoreClock,
+  ObservabilityService,
   type ChatMessage,
 } from "@luna/core"
 import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
@@ -77,9 +78,14 @@ const makeResultMessage = (sessionId: string, uuid: string): SDKMessage =>
   }) as unknown as SDKMessage
 import { ChatService, type ChatFrame } from "../src/index.js"
 
+const testClock = CoreClock.Test(1_700_000_000_000)
+const obsLayer = ObservabilityService.makeLayer({ logToConsole: false }).pipe(
+  Layer.provide(testClock),
+)
 const baseLayer = Layer.mergeAll(
   SessionStore.Default,
-  CoreClock.Test(1_700_000_000_000),
+  testClock,
+  obsLayer,
 )
 
 /** Fake Query that loops over inbound user messages, yielding assistant +
@@ -118,14 +124,18 @@ const makeChatLoopQuery = (params: {
 
 const fullLayer = (
   fakeLayer: Layer.Layer<SDKClient>,
-): Layer.Layer<ChatService | SessionStore | CoreClock> =>
+): Layer.Layer<ChatService | SessionStore | CoreClock | ObservabilityService> =>
   Layer.provideMerge(
     ChatService.Default,
     Layer.provideMerge(SDKAdapter.Default, Layer.mergeAll(fakeLayer, baseLayer)),
   )
 
 const runScoped = <A, E>(
-  eff: Effect.Effect<A, E, ChatService | SessionStore | CoreClock | Scope.Scope>,
+  eff: Effect.Effect<
+    A,
+    E,
+    ChatService | SessionStore | CoreClock | ObservabilityService | Scope.Scope
+  >,
   fakeLayer: Layer.Layer<SDKClient>,
 ) =>
   Effect.runPromise(
@@ -552,6 +562,194 @@ describe("ChatService (Tier-2 sim)", () => {
         }),
         fakeLayer,
       )
+    },
+    { timeout: 10_000 },
+  )
+
+  // ── Observability emission tests ────────────────────────────────────────
+
+  it(
+    "obs: createThread emits SessionStart with the thread id and model",
+    async () => {
+      const fakeLayer = SDKClient.fake((p) =>
+        makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+          responseFor: (t) => `echo:${t}`,
+        }),
+      )
+
+      const events = await runScoped(
+        Effect.gen(function* () {
+          const obs = yield* ObservabilityService
+          // Eagerly subscribe BEFORE creating the thread so we don't miss the event.
+          const evStream = yield* obs.subscribeEvents
+          const fiber = yield* Effect.fork(
+            evStream.pipe(
+              Stream.filter((e) => e.kind === "SessionStart"),
+              Stream.take(1),
+              Stream.runCollect,
+            ),
+          )
+
+          const chat = yield* ChatService
+          yield* chat.createThread({ model: "claude-sonnet-test", title: "obs-start" })
+
+          const chunk = yield* Fiber.join(fiber)
+          return Array.from(Chunk.toReadonlyArray(chunk))
+        }),
+        fakeLayer,
+      )
+
+      expect(events).toHaveLength(1)
+      const ev = events[0]!
+      expect(ev.kind).toBe("SessionStart")
+      if (ev.kind === "SessionStart") {
+        expect(ev.model).toBe("claude-sonnet-test")
+        expect(ev.sessionId).toMatch(/^thr_/)
+        expect(ev.level).toBe("info")
+      }
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "obs: assistant message with tool_use blocks emits ToolCall per block",
+    async () => {
+      // Build a fake SDK that returns an assistant message with two tool_use blocks.
+      const makeAssistantWithTools = (sessionId: string): SDKMessage =>
+        ({
+          type: "assistant",
+          session_id: sessionId,
+          uuid: "turn-tools",
+          parent_tool_use_id: null,
+          message: {
+            id: "turn-tools",
+            role: "assistant",
+            model: "claude-test",
+            content: [
+              { type: "tool_use", name: "Bash" },
+              { type: "tool_use", name: "Read" },
+              { type: "text", text: "done" },
+            ],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 10, output_tokens: 5 },
+          },
+        }) as unknown as SDKMessage
+
+      const fakeLayer = SDKClient.fake((p) => {
+        const sessionId = (p as { sessionId?: string }).sessionId ?? "thr-?"
+        async function* gen(): AsyncGenerator<SDKMessage, void> {
+          for await (const _u of p.prompt as AsyncIterable<SDKUserMessage>) {
+            yield makeAssistantWithTools(sessionId)
+            yield makeResultMessage(sessionId, "result-1")
+          }
+        }
+        const it = gen()
+        return Object.assign(it, {
+          interrupt: async () => {},
+          setPermissionMode: async () => {},
+          setModel: async () => {},
+          setMaxThinkingTokens: async () => {},
+          supplyToolPermissionResponse: async () => {},
+          mcpServerStatus: async () => ({}),
+        } as Partial<Query>) as Query
+      })
+
+      const toolCallEvents = await runScoped(
+        Effect.gen(function* () {
+          const obs = yield* ObservabilityService
+          const evStream = yield* obs.subscribeEvents
+          const fiber = yield* Effect.fork(
+            evStream.pipe(
+              Stream.filter((e) => e.kind === "ToolCall"),
+              Stream.take(2),
+              Stream.runCollect,
+            ),
+          )
+
+          const chat = yield* ChatService
+          const t = yield* chat.createThread({ model: "claude-test", title: "tool-obs" })
+          yield* Effect.sleep("5 millis")
+          yield* chat.send(t.id, "go")
+
+          const chunk = yield* Fiber.join(fiber)
+          return Array.from(Chunk.toReadonlyArray(chunk))
+        }),
+        fakeLayer,
+      )
+
+      expect(toolCallEvents).toHaveLength(2)
+      const names = toolCallEvents.map((e) => {
+        if (e.kind === "ToolCall") return e.toolName
+        return null
+      })
+      expect(names).toEqual(["Bash", "Read"])
+      for (const e of toolCallEvents) {
+        if (e.kind === "ToolCall") {
+          expect(e.status).toBe("success")
+          expect(e.durationMs).toBe(0)
+          expect(e.sessionId).toMatch(/^thr_/)
+        }
+      }
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "obs: result message emits CostAccrued then SessionEnd",
+    async () => {
+      const fakeLayer = SDKClient.fake((p) =>
+        makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+          responseFor: () => "done",
+        }),
+      )
+
+      const obsEvents = await runScoped(
+        Effect.gen(function* () {
+          const obs = yield* ObservabilityService
+          const evStream = yield* obs.subscribeEvents
+          const fiber = yield* Effect.fork(
+            evStream.pipe(
+              Stream.filter(
+                (e) => e.kind === "CostAccrued" || e.kind === "SessionEnd",
+              ),
+              Stream.take(2),
+              Stream.runCollect,
+            ),
+          )
+
+          const chat = yield* ChatService
+          const t = yield* chat.createThread({ model: "claude-test", title: "cost-obs" })
+          yield* Effect.sleep("5 millis")
+          yield* chat.send(t.id, "ping")
+
+          const chunk = yield* Fiber.join(fiber)
+          return Array.from(Chunk.toReadonlyArray(chunk))
+        }),
+        fakeLayer,
+      )
+
+      // CostAccrued fires first, then SessionEnd.
+      expect(obsEvents).toHaveLength(2)
+      expect(obsEvents[0]!.kind).toBe("CostAccrued")
+      expect(obsEvents[1]!.kind).toBe("SessionEnd")
+
+      const cost = obsEvents[0]!
+      const end = obsEvents[1]!
+      if (cost.kind === "CostAccrued") {
+        expect(cost.sessionId).toMatch(/^thr_/)
+        // Fake result has no usage — fields default to 0.
+        expect(cost.tokensIn).toBe(0)
+        expect(cost.tokensOut).toBe(0)
+      }
+      if (end.kind === "SessionEnd") {
+        expect(end.sessionId).toMatch(/^thr_/)
+        expect(end.level).toBe("info") // is_error: false
+      }
     },
     { timeout: 10_000 },
   )
