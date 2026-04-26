@@ -49,7 +49,7 @@ export interface MCPRegistryApi {
   >
 }
 
-export class MCPRegistry extends Effect.Tag("experiment-agent/MCPRegistry")<
+export class MCPRegistry extends Effect.Tag("luna/MCPRegistry")<
   MCPRegistry,
   MCPRegistryApi
 >() {

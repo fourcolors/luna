@@ -42,7 +42,7 @@ export interface HookRegistryApi {
   readonly list: () => Effect.Effect<Readonly<Record<string, HookSpecLike>>>
 }
 
-export class HookRegistry extends Effect.Tag("experiment-agent/HookRegistry")<
+export class HookRegistry extends Effect.Tag("luna/HookRegistry")<
   HookRegistry,
   HookRegistryApi
 >() {

@@ -1,5 +1,5 @@
 {
-  "name": "experiment-agent",
+  "name": "luna",
   "version": "0.0.1",
   "description": "Modular agent framework built on Effect with full Claude Agent SDK parity",
   "private": true,

@@ -48,7 +48,7 @@ const makeEmpty = (): InternalState => ({
 })
 
 export class WorkflowState extends Effect.Tag(
-  "experiment-agent/WorkflowState",
+  "luna/WorkflowState",
 )<WorkflowState, WorkflowStateApi>() {
   static readonly Default: Layer.Layer<WorkflowState, never, Clock> =
     Layer.effect(

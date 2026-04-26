@@ -190,7 +190,7 @@ describe("TaskList — Tier-2 simulation", () => {
       const advancingClock = Layer.succeed(
         Clock,
         Clock.of({
-          _tag: "experiment-agent/Clock",
+          _tag: "luna/Clock",
           nowMs: () =>
             Ref.get(ticker).pipe(
               Effect.tap(() => Ref.update(ticker, (n) => n + 1_000)),

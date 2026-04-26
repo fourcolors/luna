@@ -45,7 +45,7 @@ const makeBucketKey = (dimension: CostBucket["dimension"], key: string): BucketK
   `${dimension}:${key}`
 
 export class CostAccountingService extends Effect.Tag(
-  "experiment-agent/CostAccountingService",
+  "luna/CostAccountingService",
 )<CostAccountingService, CostAccountingApi>() {
   static readonly Default: Layer.Layer<
     CostAccountingService,

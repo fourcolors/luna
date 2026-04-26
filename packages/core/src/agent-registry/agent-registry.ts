@@ -52,7 +52,7 @@ export interface AgentRegistryApi {
   >
 }
 
-export class AgentRegistry extends Effect.Tag("experiment-agent/AgentRegistry")<
+export class AgentRegistry extends Effect.Tag("luna/AgentRegistry")<
   AgentRegistry,
   AgentRegistryApi
 >() {

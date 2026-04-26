@@ -1,7 +1,7 @@
 /**
  * Clock — trivial reference Service demonstrating the framework pattern.
  *
- * Every module in experiment-agent follows this shape:
+ * Every module in Luna follows this shape:
  *   1. Extend Effect.Service with a namespaced key.
  *   2. Define the effect that builds the default implementation.
  *   3. Expose a Test layer for deterministic testing (via Layer swap).
@@ -11,7 +11,7 @@
 import { Effect, Layer } from "effect"
 
 export class Clock extends Effect.Service<Clock>()(
-  "experiment-agent/Clock",
+  "luna/Clock",
   {
     effect: Effect.sync(() => ({
       nowMs: () => Effect.sync(() => Date.now()),
@@ -27,7 +27,7 @@ export class Clock extends Effect.Service<Clock>()(
     Layer.succeed(
       Clock,
       Clock.of({
-        _tag: "experiment-agent/Clock",
+        _tag: "luna/Clock",
         nowMs: () => Effect.sync(() => fixedMs),
         nowIso: () => Effect.sync(() => new Date(fixedMs).toISOString()),
       }),

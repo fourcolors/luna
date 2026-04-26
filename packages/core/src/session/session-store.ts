@@ -63,7 +63,7 @@ const toSummary = (row: SessionRow): SessionSummary => ({
 })
 
 export class SessionStore extends Effect.Service<SessionStore>()(
-  "experiment-agent/SessionStore",
+  "luna/SessionStore",
   {
     effect: Effect.gen(function* () {
       const ref = yield* Ref.make<StoreState>(emptyState())

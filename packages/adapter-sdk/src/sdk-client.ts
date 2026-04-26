@@ -45,7 +45,7 @@ export interface SDKClientService {
   readonly query: (params: QueryParams) => Effect.Effect<Query, never>
 }
 
-export class SDKClient extends Effect.Tag("experiment-agent/SDKClient")<
+export class SDKClient extends Effect.Tag("luna/SDKClient")<
   SDKClient,
   SDKClientService
 >() {

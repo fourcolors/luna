@@ -122,7 +122,7 @@ const buildUserMessage = (text: string): SDKUserMessage =>
 /* -------------------------------------------------------------------------- */
 
 export class ChatService extends Effect.Service<ChatService>()(
-  "experiment-agent/ChatService",
+  "luna/ChatService",
   {
     scoped: Effect.gen(function* () {
       const store = yield* SessionStore

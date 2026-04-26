@@ -8,14 +8,14 @@ don't drop any.
 ## Phase N — <title>
 
 ### 1. Required reading (BEFORE writing any code)
-- `/Users/sol/Projects/experiment-agent/DESIGN.md` — read these sections in full:
+- `/Users/sol/Projects/luna/DESIGN.md` — read these sections in full:
   - §<X.Y> — <why>
   - §3.4 (hard rules for executors — ALWAYS read)
   - §6 (error taxonomy — ALWAYS read)
   - §7 (service signatures this phase touches)
   - §12.2 (SDK adapter invariants, if the phase touches messages/hooks/tools)
 - Existing code you must NOT modify but should reference:
-  - `/Users/sol/Projects/experiment-agent/packages/<existing>/src/<file>.ts`
+  - `/Users/sol/Projects/luna/packages/<existing>/src/<file>.ts`
 
 ### 2. Scope (exactly what this phase ships)
 - <package/module> with <N> source files + <M> test files

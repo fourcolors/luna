@@ -63,7 +63,7 @@ function parseHostname(url: string): string {
 }
 
 export class NetSecClient extends Effect.Tag(
-  "experiment-agent/NetSecClient",
+  "luna/NetSecClient",
 )<NetSecClient, NetSecClientApi>() {
   static readonly Default: Layer.Layer<NetSecClient> =
     NetSecClient.makeLayer({})

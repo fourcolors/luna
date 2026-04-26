@@ -29,7 +29,7 @@ export interface InMemoryBackendApi {
 }
 
 export class InMemoryBackend extends Effect.Tag(
-  "experiment-agent/InMemoryBackend",
+  "luna/InMemoryBackend",
 )<InMemoryBackend, InMemoryBackendApi>() {
   static readonly Default: Layer.Layer<InMemoryBackend> = Layer.sync(
     InMemoryBackend,

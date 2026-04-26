@@ -31,7 +31,7 @@ const makeMockClock = (initialMs: number): MockClock => {
   const layer = Layer.succeed(
     Clock,
     Clock.of({
-      _tag: "experiment-agent/Clock",
+      _tag: "luna/Clock",
       nowMs: () => Effect.sync(() => holder.now),
       nowIso: () =>
         Effect.sync(() => new Date(holder.now).toISOString()),

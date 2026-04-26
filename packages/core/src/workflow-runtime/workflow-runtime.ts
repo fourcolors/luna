@@ -58,7 +58,7 @@ interface RunningEntry {
 }
 
 export class WorkflowRuntime extends Effect.Tag(
-  "experiment-agent/WorkflowRuntime",
+  "luna/WorkflowRuntime",
 )<WorkflowRuntime, WorkflowRuntimeApi>() {
   static readonly Default: Layer.Layer<
     WorkflowRuntime,

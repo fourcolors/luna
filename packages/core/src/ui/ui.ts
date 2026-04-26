@@ -14,7 +14,7 @@ import { Effect, Layer, Stream } from "effect"
 import { ObservabilityService } from "../observability/index.js"
 import { DEFAULT_UI_KINDS, type UIApi, type UIConfig } from "./types.js"
 
-export class UIService extends Effect.Tag("experiment-agent/UIService")<
+export class UIService extends Effect.Tag("luna/UIService")<
   UIService,
   UIApi
 >() {

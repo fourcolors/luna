@@ -22,7 +22,7 @@ import type {
   LabsConfig,
 } from "./types.js"
 
-export class LabsService extends Effect.Tag("experiment-agent/LabsService")<
+export class LabsService extends Effect.Tag("luna/LabsService")<
   LabsService,
   LabsApi
 >() {

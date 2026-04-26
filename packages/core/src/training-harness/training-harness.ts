@@ -17,7 +17,7 @@ import {
 } from "./types.js"
 
 export class TrainingHarness extends Effect.Tag(
-  "experiment-agent/TrainingHarness",
+  "luna/TrainingHarness",
 )<TrainingHarness, TrainingHarnessApi>() {
   /**
    * Construct a Layer that provides TrainingHarness using the given

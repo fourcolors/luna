@@ -29,7 +29,7 @@ export interface ConfigServiceApi {
   ) => Effect.Effect<ValidatedSessionOptions, ConfigError>
 }
 
-export class ConfigService extends Effect.Tag("experiment-agent/ConfigService")<
+export class ConfigService extends Effect.Tag("luna/ConfigService")<
   ConfigService,
   ConfigServiceApi
 >() {

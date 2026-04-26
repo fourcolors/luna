@@ -17,7 +17,7 @@
  * the adapter as a runtime `R` requirement WITHOUT creating a package-level
  * core → adapter-sdk dependency cycle (§4 topology: core is Persistence;
  * adapter-sdk is above Persistence; `packages/core` cannot import from it).
- * Any layer that provides "experiment-agent/SDKAdapter" satisfies the
+ * Any layer that provides "luna/SDKAdapter" satisfies the
  * requirement — including `SDKAdapter.Default` from adapter-sdk.
  */
 import { Clock } from "../clock.js"
@@ -54,18 +54,18 @@ export interface SDKAdapterLike {
 
 /**
  * Local Tag alias for the SDK adapter. Uses the EXACT identifier string
- * `"experiment-agent/SDKAdapter"` so it resolves to the same Context slot
+ * `"luna/SDKAdapter"` so it resolves to the same Context slot
  * as the adapter-sdk's own `SDKAdapter` Tag — Effect v3 keys Tags by
  * identifier (see `Effect.Tag(id)` behavior).
  */
 export const SDKAdapter = Context.GenericTag<SDKAdapterLike>(
-  "experiment-agent/SDKAdapter",
+  "luna/SDKAdapter",
 ) as Context.Tag<SDKAdapterLike, SDKAdapterLike> & {
-  readonly key: "experiment-agent/SDKAdapter"
+  readonly key: "luna/SDKAdapter"
 }
 
 export class SessionService extends Effect.Service<SessionService>()(
-  "experiment-agent/SessionService",
+  "luna/SessionService",
   {
     effect: Effect.gen(function* () {
       const store = yield* SessionStore

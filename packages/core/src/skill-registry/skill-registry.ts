@@ -49,7 +49,7 @@ export interface SkillRegistryApi {
   readonly listSegments: () => Effect.Effect<ReadonlyArray<string>>
 }
 
-export class SkillRegistry extends Effect.Tag("experiment-agent/SkillRegistry")<
+export class SkillRegistry extends Effect.Tag("luna/SkillRegistry")<
   SkillRegistry,
   SkillRegistryApi
 >() {

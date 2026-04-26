@@ -443,7 +443,7 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
       } satisfies SDKAdapterService
     })
 
-export class SDKAdapter extends Effect.Tag("experiment-agent/SDKAdapter")<
+export class SDKAdapter extends Effect.Tag("luna/SDKAdapter")<
   SDKAdapter,
   SDKAdapterService
 >() {

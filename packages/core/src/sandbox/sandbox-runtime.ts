@@ -141,7 +141,7 @@ function spawnToEffect(
 }
 
 export class SandboxRuntime extends Effect.Tag(
-  "experiment-agent/SandboxRuntime",
+  "luna/SandboxRuntime",
 )<SandboxRuntime, SandboxRuntimeApi>() {
   static readonly Default: Layer.Layer<SandboxRuntime> = Layer.succeed(
     SandboxRuntime,
