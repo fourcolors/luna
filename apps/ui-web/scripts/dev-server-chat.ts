@@ -19,9 +19,9 @@
  *   - send `{type:"interrupt", threadId}` for the Stop button
  *   - send `{type:"list-threads"}` for the sidebar projection
  *
- * No hardcoded prompt — UI drives. SessionStart/SessionEnd obs events
- * still fire (chat-service forwards them to ObservabilityService when
- * mounted alongside it) so the obs panel stays useful.
+ * No hardcoded prompt — UI drives. SessionStart/SessionEnd/ToolCall/
+ * CostAccrued obs events fire from ChatService (wired in at createThread
+ * and handleSdkMessage) so the Events tab stays populated.
  *
  * Architecture note: ChatService FORCES `disableIdleTimeout: true` and
  * `includePartialMessages: true` on every thread (commit 5e488d4). User
@@ -96,7 +96,7 @@ const baseLayer = (() => {
   )
   const chatL = Layer.provideMerge(
     ChatService.Default,
-    Layer.mergeAll(sdkAdapterL, storeL, clockL),
+    Layer.mergeAll(sdkAdapterL, storeL, clockL, obsL),
   )
   return Layer.mergeAll(uiL, obsL, clockL, storeL, sdkAdapterL, chatL)
 })()

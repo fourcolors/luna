@@ -44,7 +44,7 @@ import type {
   ObsEvent,
 } from "./types.js"
 
-const DEFAULT_JSONL_PATH = join(homedir(), ".experiment-agent", "events.jsonl")
+const DEFAULT_JSONL_PATH = join(homedir(), ".luna", "events.jsonl")
 // Claude 3.5 Sonnet pricing (approximate) — callers can override.
 const DEFAULT_PRICE_PER_M_INPUT = 3.0  // $3/M tokens
 const DEFAULT_PRICE_PER_M_OUTPUT = 15.0 // $15/M tokens

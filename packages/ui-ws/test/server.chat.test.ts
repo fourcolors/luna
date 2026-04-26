@@ -313,7 +313,7 @@ describe("UIWebSocketServer (chat routing)", () => {
 
   it("new-thread → thread-created → snapshot follows (auto-subscribe)", async () => {
     rig = await startChatRig()
-    const frames = await driveSequence(
+    const allFrames = await driveSequence(
       rig.url,
       [
         {
@@ -323,22 +323,27 @@ describe("UIWebSocketServer (chat routing)", () => {
           ],
         },
       ],
-      3, // hello + thread-created + thread-snapshot
+      // hello + thread-created + thread-snapshot + possible SessionStart obs event
+      4,
     )
+    // Filter out obs `event` frames — they can interleave with chat frames
+    // now that ChatService emits SessionStart on createThread.
+    const frames = allFrames.filter((f) => f.type !== "event")
     expect(frames.map((f) => f.type)).toEqual([
       "hello",
       "thread-created",
       "thread-snapshot",
     ])
-    if (frames[2]?.type === "thread-snapshot") {
-      expect(frames[2].messages).toHaveLength(0)
-      expect(frames[2].throughSeq).toBe(-1)
+    const snap = frames.find((f) => f.type === "thread-snapshot")
+    if (snap?.type === "thread-snapshot") {
+      expect(snap.messages).toHaveLength(0)
+      expect(snap.throughSeq).toBe(-1)
     }
   })
 
   it("user-message round-trip emits user-accepted then assistant-done", async () => {
     rig = await startChatRig((t) => `echo:${t}`)
-    const frames = await driveSequence(
+    const allFrames = await driveSequence(
       rig.url,
       [
         {
@@ -360,8 +365,13 @@ describe("UIWebSocketServer (chat routing)", () => {
           },
         },
       ],
-      5, // hello + thread-created + thread-snapshot + user-accepted + assistant-done
+      // hello + thread-created + thread-snapshot + user-accepted + assistant-done
+      // + up to 3 obs event frames (SessionStart, CostAccrued, SessionEnd)
+      8,
     )
+    // Filter out obs `event` frames — they interleave with chat frames now
+    // that ChatService emits SessionStart/CostAccrued/SessionEnd.
+    const frames = allFrames.filter((f) => f.type !== "event")
     expect(frames.map((f) => f.type)).toEqual([
       "hello",
       "thread-created",
@@ -369,11 +379,12 @@ describe("UIWebSocketServer (chat routing)", () => {
       "user-accepted",
       "assistant-done",
     ])
-    if (frames[4]?.type === "assistant-done") {
+    const done = frames.find((f) => f.type === "assistant-done")
+    if (done?.type === "assistant-done") {
       // Round-tripped through fake responseFor.
       // The projected ChatMessage carries the assistant text as
       // .text; assert the echo prefix is present.
-      expect(frames[4].message.text.startsWith("echo:")).toBe(true)
+      expect(done.message.text.startsWith("echo:")).toBe(true)
     }
   })
 
@@ -393,8 +404,11 @@ describe("UIWebSocketServer (chat routing)", () => {
           thenSend: () => [{ type: "list-threads" }],
         },
       ],
-      4, // hello + thread-created + thread-snapshot + thread-list
+      // hello + thread-created + thread-snapshot + thread-list
+      // + possible SessionStart obs event frame
+      5,
     )
+    // thread-list can arrive amid obs `event` frames — search by type.
     const list = frames.find((f) => f.type === "thread-list")
     expect(list).toBeDefined()
     if (list?.type === "thread-list") {

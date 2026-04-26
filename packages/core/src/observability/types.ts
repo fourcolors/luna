@@ -141,7 +141,7 @@ export type ObsEvent =
 export interface ObservabilityConfig {
   /**
    * Path to the JSONL file for local event storage.
-   * Default: `~/.experiment-agent/events.jsonl`.
+   * Default: `~/.luna/events.jsonl`.
    */
   readonly jsonlPath?: string
   /**
