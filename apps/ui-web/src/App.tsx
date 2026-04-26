@@ -26,7 +26,19 @@ const MarkdownView = lazy(() =>
 
 const STORAGE_KEY = "ui-ws.config"
 const DEFAULT_URL = "ws://127.0.0.1:4753/ui"
-const DEFAULT_MODEL = "claude-sonnet-4-5"
+const DEFAULT_MODEL = "claude-sonnet-4-6"
+
+/** Models the dropdown offers. Keep this in sync with what the SDK accepts.
+ *  Free-form input is preserved as a fallback (any value not in the list
+ *  still works — the input falls back to a text field if the user picks
+ *  "custom"). */
+const MODEL_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "claude-opus-4-7",    label: "Opus 4.7 — most capable" },
+  { value: "claude-sonnet-4-6",  label: "Sonnet 4.6 — balanced (default)" },
+  { value: "claude-haiku-4-5",   label: "Haiku 4.5 — fastest" },
+  { value: "claude-opus-4-6",    label: "Opus 4.6 — prior gen" },
+  { value: "claude-sonnet-4-5",  label: "Sonnet 4.5 — prior gen" },
+]
 
 interface PersistedConfig {
   url: string
@@ -38,13 +50,18 @@ interface PersistedConfig {
 }
 
 const loadConfig = (): PersistedConfig => {
+  const envToken =
+    (import.meta.env["VITE_UI_WS_TOKEN"] as string | undefined) ?? ""
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<PersistedConfig>
       return {
         url: parsed.url ?? DEFAULT_URL,
-        token: parsed.token ?? "",
+        // Stored token wins, BUT fall back to env token if storage has
+        // empty/missing — first-run on a new browser/device gets the
+        // dev token from .env.local without any user action.
+        token: parsed.token && parsed.token.length >= 16 ? parsed.token : envToken,
         model: parsed.model ?? DEFAULT_MODEL,
         enterToSend: parsed.enterToSend ?? false,
       }
@@ -52,8 +69,6 @@ const loadConfig = (): PersistedConfig => {
   } catch {
     // ignore
   }
-  const envToken =
-    (import.meta.env["VITE_UI_WS_TOKEN"] as string | undefined) ?? ""
   return {
     url: DEFAULT_URL,
     token: envToken,
@@ -269,14 +284,39 @@ export function App() {
             </label>
             <label>
               Model{" "}
-              <input
-                value={model}
-                onChange={(e) =>
-                  setCfg((c) => ({ ...c, model: e.target.value }))
+              <select
+                value={
+                  MODEL_OPTIONS.some((o) => o.value === model)
+                    ? model
+                    : "__custom"
                 }
-                spellCheck={false}
-              />
+                onChange={(e) => {
+                  const v = e.target.value
+                  if (v === "__custom") return // keep current value, show input
+                  setCfg((c) => ({ ...c, model: v }))
+                }}
+              >
+                {MODEL_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+                <option value="__custom">Custom…</option>
+              </select>
             </label>
+            {!MODEL_OPTIONS.some((o) => o.value === model) && (
+              <label>
+                Model ID{" "}
+                <input
+                  value={model}
+                  onChange={(e) =>
+                    setCfg((c) => ({ ...c, model: e.target.value }))
+                  }
+                  spellCheck={false}
+                  placeholder="claude-…"
+                />
+              </label>
+            )}
             <label className="toggle" title="When on, plain Enter sends; Shift+Enter inserts a newline">
               <input
                 type="checkbox"
