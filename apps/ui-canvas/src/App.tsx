@@ -117,13 +117,25 @@ export function App() {
     })
   }, [cfg])
 
+  // Tracks "user explicitly clicked Disconnect" so the auto-connect
+  // effect doesn't immediately reconnect after Disconnect returns the
+  // status to "idle". Reset on a successful onConnect call.
+  const userDisconnected = useRef(false)
+
   const onDisconnect = useCallback(() => {
     if (handleRef.current) {
       handleRef.current.disconnect()
       handleRef.current = null
+      userDisconnected.current = true
       setStatus({ kind: "idle" })
     }
   }, [])
+
+  // Wrap onConnect so an explicit (re)connect clears the disconnect intent.
+  const connect = useCallback(() => {
+    userDisconnected.current = false
+    onConnect()
+  }, [onConnect])
 
   // Disconnect on unmount.
   useEffect(() => {
@@ -132,16 +144,18 @@ export function App() {
     }
   }, [])
 
-  // Auto-connect when we have a usable token and we're idle. The hook
-  // re-fires whenever `status.kind` returns to "idle" (e.g. after the
-  // user clicks Disconnect, or after a transient close), so a failed
-  // first attempt isn't fatal. We do NOT auto-reconnect from "closed"
-  // or "error" — that's the user's call (Reconnect chip in the banner).
+  // Auto-connect once on mount when we have a usable token. We do NOT
+  // auto-reconnect from "closed" / "error" / explicit Disconnect — that's
+  // the user's call via the Reconnect chip or Connect button.
+  const didAutoConnect = useRef(false)
   useEffect(() => {
+    if (didAutoConnect.current) return
+    if (userDisconnected.current) return
     if (cfg.token && cfg.token.length >= 16 && status.kind === "idle") {
-      onConnect()
+      didAutoConnect.current = true
+      connect()
     }
-  }, [cfg.token, status.kind, onConnect])
+  }, [cfg.token, status.kind, connect])
 
   const isConnected = status.kind === "open"
   const chatEnabled = isConnected && state.capabilities.chat
@@ -225,7 +239,7 @@ export function App() {
           cfg={cfg}
           onChange={setCfg}
           status={status}
-          onConnect={onConnect}
+          onConnect={connect}
           onDisconnect={onDisconnect}
         />
       )}
@@ -234,7 +248,7 @@ export function App() {
           <span>{closeBanner}</span>
           <button
             className="chip"
-            onClick={onConnect}
+            onClick={connect}
             disabled={!cfg.token || cfg.token.length < 16}
           >
             Reconnect
