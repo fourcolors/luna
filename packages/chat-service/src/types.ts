@@ -130,4 +130,16 @@ export interface CreateThreadOptions {
    *  ~/.claude/skills + <cwd>/.claude/skills + project CLAUDE.md all load.
    *  Pass `[]` to opt out of all filesystem-discovered config. */
   readonly settingSources?: ReadonlyArray<"user" | "project" | "local">
+  /** Permission mode for the SDK. Default is `"default"` (canUseTool prompts
+   *  for sensitive ops). When the `LUNA_TRUSTED_LOCAL=1` env var is set, the
+   *  default flips to `"bypassPermissions"` — the agent runs unrestricted.
+   *  Caller-supplied value always wins over the env-derived default.
+   *
+   *  WARNING: `bypassPermissions` lets the agent run arbitrary Bash, write
+   *  any file, etc. Only use on a trusted local machine. */
+  readonly permissionMode?:
+    | "default"
+    | "acceptEdits"
+    | "bypassPermissions"
+    | "plan"
 }

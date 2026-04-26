@@ -427,6 +427,108 @@ describe("ChatService (Tier-2 sim)", () => {
   )
 
   it(
+    "permissionMode defaults to 'default' when LUNA_TRUSTED_LOCAL is unset",
+    async () => {
+      const prev = process.env["LUNA_TRUSTED_LOCAL"]
+      delete process.env["LUNA_TRUSTED_LOCAL"]
+      try {
+        let capturedOptions: Record<string, unknown> | undefined
+        const fakeLayer = SDKClient.fake((p) => {
+          capturedOptions = (p.options ?? {}) as Record<string, unknown>
+          return makeChatLoopQuery({
+            prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+            sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+            responseFor: (t) => `echo:${t}`,
+          })
+        })
+        await runScoped(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+            yield* chat.createThread({ model: "claude-test", title: "untrusted" })
+            yield* Effect.sleep("30 millis")
+          }),
+          fakeLayer,
+        )
+        expect(capturedOptions).toBeDefined()
+        expect(capturedOptions!["permissionMode"]).toBe("default")
+      } finally {
+        if (prev !== undefined) process.env["LUNA_TRUSTED_LOCAL"] = prev
+      }
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "permissionMode defaults to 'bypassPermissions' when LUNA_TRUSTED_LOCAL=1",
+    async () => {
+      const prev = process.env["LUNA_TRUSTED_LOCAL"]
+      process.env["LUNA_TRUSTED_LOCAL"] = "1"
+      try {
+        let capturedOptions: Record<string, unknown> | undefined
+        const fakeLayer = SDKClient.fake((p) => {
+          capturedOptions = (p.options ?? {}) as Record<string, unknown>
+          return makeChatLoopQuery({
+            prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+            sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+            responseFor: (t) => `echo:${t}`,
+          })
+        })
+        await runScoped(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+            yield* chat.createThread({ model: "claude-test", title: "trusted" })
+            yield* Effect.sleep("30 millis")
+          }),
+          fakeLayer,
+        )
+        expect(capturedOptions).toBeDefined()
+        expect(capturedOptions!["permissionMode"]).toBe("bypassPermissions")
+      } finally {
+        if (prev === undefined) delete process.env["LUNA_TRUSTED_LOCAL"]
+        else process.env["LUNA_TRUSTED_LOCAL"] = prev
+      }
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "caller-supplied permissionMode wins over the env-derived default",
+    async () => {
+      const prev = process.env["LUNA_TRUSTED_LOCAL"]
+      process.env["LUNA_TRUSTED_LOCAL"] = "1"
+      try {
+        let capturedOptions: Record<string, unknown> | undefined
+        const fakeLayer = SDKClient.fake((p) => {
+          capturedOptions = (p.options ?? {}) as Record<string, unknown>
+          return makeChatLoopQuery({
+            prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+            sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+            responseFor: (t) => `echo:${t}`,
+          })
+        })
+        await runScoped(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+            yield* chat.createThread({
+              model: "claude-test",
+              title: "plan-override",
+              permissionMode: "plan",
+            })
+            yield* Effect.sleep("30 millis")
+          }),
+          fakeLayer,
+        )
+        expect(capturedOptions).toBeDefined()
+        expect(capturedOptions!["permissionMode"]).toBe("plan")
+      } finally {
+        if (prev === undefined) delete process.env["LUNA_TRUSTED_LOCAL"]
+        else process.env["LUNA_TRUSTED_LOCAL"] = prev
+      }
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
     "closeThread interrupts the per-thread Scope without dying on Exit",
     async () => {
       const fakeLayer = SDKClient.fake(async function* () {
