@@ -25,6 +25,7 @@ import {
   CodeBlock,
   ConnectionSummary,
   MarkdownView,
+  ObsPanel,
   Sidebar,
   createUiStore,
   createTransport,
@@ -69,6 +70,18 @@ export const App: Component = () => {
         url="ws://127.0.0.1:4753/ui"
         model="claude-sonnet-4"
         chatCap={true}
+      />
+      <h2>ObsPanel smoke test</h2>
+      <ObsPanel
+        allKinds={["sdk:start", "sdk:tool"]}
+        selectedKinds={new Set()}
+        toggleKind={() => {}}
+        clearKinds={() => {}}
+        filtered={[]}
+        totalEvents={0}
+        lastDrop={null}
+        droppedTotal={0}
+        lastPingAt={null}
       />
       <h2>ArtifactPanel smoke test</h2>
       <ArtifactPanel artifacts={SAMPLE_ARTIFACTS} />
