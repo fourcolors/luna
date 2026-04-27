@@ -13,12 +13,15 @@
  * parity is verified (chunk 11), then ui-web-solid is renamed to ui-web.
  */
 import type { Component } from "solid-js"
+import { UI_WS_PROTOCOL_VERSION, initialState } from "@luna/ui-shared/core"
 
 export const App: Component = () => {
   return (
     <main style={{ padding: "2rem", "font-family": "system-ui, sans-serif" }}>
       <h1>Luna · Solid scaffold</h1>
       <p>Migration in progress. The React UI at port 5173 is still the source of truth.</p>
+      <p>Wire protocol version: <code>{UI_WS_PROTOCOL_VERSION}</code></p>
+      <p>Initial events count: <code>{initialState.events.length}</code></p>
     </main>
   )
 }
