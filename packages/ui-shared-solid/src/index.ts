@@ -9,6 +9,11 @@ export { MarkdownView } from "./MarkdownView.jsx"
 export { MessageBubble } from "./MessageBubble.jsx"
 export { ToolCallGroup } from "./ToolCallGroup.jsx"
 export { ChatPanel, type ChatPanelProps } from "./ChatPanel.jsx"
+export {
+  ConnectionSummary,
+  type ConnectionSummaryProps,
+} from "./ConnectionSummary.jsx"
+export { Sidebar, type SidebarProps } from "./Sidebar.jsx"
 export { createUiStore, type UiStoreHandle } from "./store.js"
 export {
   createTransport,

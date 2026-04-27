@@ -21,7 +21,9 @@ import {
 import {
   ChatPanel,
   CodeBlock,
+  ConnectionSummary,
   MarkdownView,
+  Sidebar,
   createUiStore,
   createTransport,
 } from "@luna/ui-shared-solid"
@@ -59,14 +61,30 @@ export const App: Component = () => {
       <CodeBlock lang="ts" source={`const sum = (a: number, b: number) => a + b`} />
       <h2>MarkdownView smoke test</h2>
       <MarkdownView text={SAMPLE_MD} />
-      <h2>ChatPanel smoke test</h2>
-      <ChatPanel
-        thread={SAMPLE_THREAD}
-        onSend={(id, text) => console.log("send", id, text)}
-        onInterrupt={(id) => console.log("interrupt", id)}
-        disabled={false}
-        enterToSend={false}
+      <h2>ConnectionSummary smoke test</h2>
+      <ConnectionSummary
+        status={{ kind: "open" }}
+        url="ws://127.0.0.1:4753/ui"
+        model="claude-sonnet-4"
+        chatCap={true}
       />
+      <h2>Sidebar smoke test</h2>
+      <div style={{ display: "flex", gap: "1rem", "max-height": "400px" }}>
+        <Sidebar
+          threads={[SAMPLE_THREAD.summary]}
+          threadViews={new Map([[SAMPLE_THREAD.summary.id, SAMPLE_THREAD]])}
+          selectedId={SAMPLE_THREAD.summary.id}
+          onSelect={(id) => console.log("select", id)}
+          onNew={() => console.log("new thread")}
+        />
+        <ChatPanel
+          thread={SAMPLE_THREAD}
+          onSend={(id, text) => console.log("send", id, text)}
+          onInterrupt={(id) => console.log("interrupt", id)}
+          disabled={false}
+          enterToSend={false}
+        />
+      </div>
     </main>
   )
 }
