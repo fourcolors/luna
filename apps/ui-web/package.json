@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "dev:server": "bun run scripts/dev-server.ts",
+    "dev:server:chat": "bun run scripts/dev-server-chat.ts",
     "dev:preview": "vite build --mode development && vite preview",
     "build": "vite build",
     "preview": "vite preview",
@@ -18,6 +19,8 @@
     "shiki": "^4.0.2"
   },
   "devDependencies": {
+    "@luna/adapter-sdk": "workspace:*",
+    "@luna/chat-service": "workspace:*",
     "@luna/core": "workspace:*",
     "@luna/ui-shared": "workspace:*",
     "@luna/ui-shared-solid": "workspace:*",
