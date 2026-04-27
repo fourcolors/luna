@@ -3,12 +3,13 @@
  * synthetic ObsEvents on a tick. Lets you poke at the web UI without
  * standing up the full agent runtime.
  *
- * Run:
- *   bun run dev:server
+ * Run (two terminals from repo root):
+ *   bun run --filter '@luna/ui-web' dev:server  # ws harness :4753
+ *   bun run --filter '@luna/ui-web' dev         # ui :5174 (HMR)
  *
- * The token is printed on startup; copy it into the web UI's Token
- * field (or set VITE_UI_WS_TOKEN in apps/ui-web/.env.local before
- * `bun run dev`).
+ * The token is committed in apps/ui-web/.env.development as
+ * VITE_UI_WS_TOKEN, so the UI's Token field is pre-filled — no
+ * copy/paste needed. The token is non-secret (this file's literal).
  */
 import { Effect, Layer, ManagedRuntime } from "effect"
 import {
@@ -108,9 +109,8 @@ const synthEvent = (n: number) => {
 const main = Effect.gen(function* () {
   const handle = yield* ServerHandle
   console.log(`✅ ui-ws dev server: ws://${handle.host}:${handle.port}/ui`)
-  console.log(`🔑 token: ${TOKEN}`)
-  console.log(`💡 web UI: cd apps/ui-web && bun run dev`)
-  console.log(`   then paste the token into the UI`)
+  console.log(`🔑 token: ${TOKEN} (auto-filled via .env.development)`)
+  console.log(`💡 web UI: bun run --filter '@luna/ui-web' dev`)
 
   const obs = yield* ObservabilityService
 
