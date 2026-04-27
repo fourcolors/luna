@@ -62,6 +62,16 @@ export class MemoryBackendError extends Data.TaggedError("MemoryBackendError")<{
   readonly cause: unknown
 }> {}
 
+// §6.2 — Embedder leaf error. Raised by EmbedderService implementations
+// (stub/ollama/anthropic/...) when embedding fails (network, model load,
+// dimension mismatch). Vector backends compose over this via mapError to
+// MemoryBackendError("embed", ...).
+export class EmbedderError extends Data.TaggedError("EmbedderError")<{
+  readonly provider: string
+  readonly op: string
+  readonly cause: unknown
+}> {}
+
 // §6.2 — Account rotation exhaustion (all accounts in cooldown or unavailable).
 export class AllAccountsExhaustedError extends Data.TaggedError("AllAccountsExhaustedError")<{
   readonly kind: string
