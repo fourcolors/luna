@@ -47,6 +47,16 @@ export interface ChatToolUse {
   readonly input: unknown
 }
 
+/**
+ * Image attachment on a user turn. `data` is raw base64 (no `data:` prefix).
+ * Constrained to the four media types the Anthropic API accepts for base64
+ * image sources.
+ */
+export interface ChatAttachment {
+  readonly mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+  readonly data: string
+}
+
 export interface ChatMessage {
   readonly id: string
   readonly seq: number
@@ -54,6 +64,8 @@ export interface ChatMessage {
   readonly role: "user" | "assistant"
   readonly text: string
   readonly toolUses: ReadonlyArray<ChatToolUse>
+  /** Image attachments. Non-empty only on user turns. */
+  readonly attachments: ReadonlyArray<ChatAttachment>
 }
 
 export interface SessionSummary {
@@ -206,6 +218,12 @@ export interface UserMessageFrame {
   readonly type: "user-message"
   readonly threadId: string
   readonly text: string
+  /**
+   * Optional image attachments. Base64-encoded, max 4MB raw per image
+   * (≈5.4MB base64). Only image/jpeg|png|gif|webp accepted — PDF is out of
+   * scope for v1. The server validates media types and rejects unknowns.
+   */
+  readonly attachments?: ReadonlyArray<ChatAttachment>
 }
 export interface InterruptFrame {
   readonly type: "interrupt"

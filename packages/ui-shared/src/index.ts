@@ -38,6 +38,7 @@ export type {
   AssistantDoneFrame,
   AssistantErrorFrame,
   ByeFrame,
+  ChatAttachment,
   ChatErrorKind,
   ChatMessage,
   ChatToolUse,
