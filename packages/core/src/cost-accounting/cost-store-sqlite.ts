@@ -28,8 +28,12 @@
  *   §3.1 + §3.4 #4 — Layer.scoped + `db.close` finalizer registered FIRST.
  *   §5.1          — cost_events column names byte-exact; no new columns.
  *   §5.2          — per-component PRAGMA user_version migration ladder.
- *   §6            — IntegrityError for SQL constraint violations; no new tags.
- *   §16           — subscriber filters CostAccrued from the canonical stream.
+ *   §6            — ConfigError raised at boot if `bun:sqlite` is unavailable;
+ *                   IntegrityError for SQL constraint violations is built in
+ *                   the daemon and emitted as an §16 ErrorEvent (no new tags).
+ *   §16           — subscriber filters CostAccrued from the canonical stream;
+ *                   insert failures emit `kind: "Error"` events with
+ *                   `errorTag: "CostInsertFailed"` (emit-and-continue).
  *   HANDOFF #9    — events are seeded via obs.recordCost; we consume the
  *                   canonical stream, never hand-built events.
  */
@@ -41,7 +45,7 @@ import {
 } from "effect"
 import { ObservabilityService } from "../observability/observability.js"
 import { Clock } from "../clock.js"
-import { IntegrityError } from "../errors.js"
+import { ConfigError, IntegrityError } from "../errors.js"
 import { CostAccountingService } from "./cost-accounting.js"
 import type {
   BudgetRule,
@@ -145,28 +149,41 @@ export const makeCostAccountingSqlite = (
   config: CostAccountingConfig = {},
 ): Layer.Layer<
   CostAccountingService,
-  never,
+  ConfigError,
   ObservabilityService | Clock
 > =>
   Layer.scoped(
     CostAccountingService,
     Effect.gen(function* () {
       const obs = yield* ObservabilityService
+      const clock = yield* Clock
       const defaultBudget = config.defaultBudgetUsd ?? 0
 
       // Dynamic import — keeps stock-vitest-under-node from hard-failing at
-      // import time. Bun resolves `bun:sqlite` natively.
+      // import time. Bun resolves `bun:sqlite` natively. Boot-time failure
+      // surfaces as a typed ConfigError on the Layer error channel (mirrors
+      // telemetry-store-sqlite §6).
       const bunSqliteSpec = "bun:sqlite"
       const mod = yield* Effect.tryPromise({
         try: () => import(/* @vite-ignore */ bunSqliteSpec) as Promise<unknown>,
         catch: (cause) =>
-          new Error(`failed to import bun:sqlite: ${String(cause)}`),
-      }).pipe(Effect.orDie)
+          new ConfigError({
+            module: "cost-accounting",
+            key: "bun:sqlite",
+            message: `failed to import bun:sqlite: ${String(cause)}`,
+          }),
+      })
       const Database = (mod as { Database?: unknown }).Database as
         | (new (p: string) => BunDb)
         | undefined
       if (!Database) {
-        return yield* Effect.dieMessage("bun:sqlite has no Database export")
+        return yield* Effect.fail(
+          new ConfigError({
+            module: "cost-accounting",
+            key: "bun:sqlite",
+            message: "bun:sqlite module has no `Database` export",
+          }),
+        )
       }
       const db = new Database(dbPath)
 
@@ -219,45 +236,26 @@ export const makeCostAccountingSqlite = (
       )
       const budgetDeleteAll = db.query(`DELETE FROM cost_budgets`)
       const eventsDeleteAll = db.query(`DELETE FROM cost_events`)
-      // Aggregate query, parameterized per-dim. Pre-build one per dimension
-      // so we don't string-concat user input into SQL.
+      // Aggregate queries — one prepared statement per dimension, sharing a
+      // single SQL template. We MUST NOT use a `CASE :dim WHEN ...` predicate
+      // here because that defeats the per-column indexes
+      // (idx_cost_session/team/workflow). Static dispatch via dimColumn keeps
+      // each statement's WHERE clause indexable.
+      const aggSql = (col: string) =>
+        `SELECT
+           COALESCE(SUM(tokens_in),0)  AS tokens_in,
+           COALESCE(SUM(tokens_out),0) AS tokens_out,
+           COALESCE(SUM(cache_read),0) AS cache_read,
+           COALESCE(SUM(cache_write),0) AS cache_write,
+           COALESCE(SUM(usd),0)        AS usd,
+           COUNT(*)                    AS cnt,
+           MIN(ts)                     AS min_ts,
+           MAX(ts)                     AS max_ts
+         FROM cost_events WHERE ${col} = ?`
       const aggQueries: Record<Dim, BunStmt> = {
-        session: db.query(
-          `SELECT
-             COALESCE(SUM(tokens_in),0)  AS tokens_in,
-             COALESCE(SUM(tokens_out),0) AS tokens_out,
-             COALESCE(SUM(cache_read),0) AS cache_read,
-             COALESCE(SUM(cache_write),0) AS cache_write,
-             COALESCE(SUM(usd),0)        AS usd,
-             COUNT(*)                    AS cnt,
-             MIN(ts)                     AS min_ts,
-             MAX(ts)                     AS max_ts
-           FROM cost_events WHERE session_id = ?`,
-        ),
-        team: db.query(
-          `SELECT
-             COALESCE(SUM(tokens_in),0)  AS tokens_in,
-             COALESCE(SUM(tokens_out),0) AS tokens_out,
-             COALESCE(SUM(cache_read),0) AS cache_read,
-             COALESCE(SUM(cache_write),0) AS cache_write,
-             COALESCE(SUM(usd),0)        AS usd,
-             COUNT(*)                    AS cnt,
-             MIN(ts)                     AS min_ts,
-             MAX(ts)                     AS max_ts
-           FROM cost_events WHERE team_name = ?`,
-        ),
-        workflow: db.query(
-          `SELECT
-             COALESCE(SUM(tokens_in),0)  AS tokens_in,
-             COALESCE(SUM(tokens_out),0) AS tokens_out,
-             COALESCE(SUM(cache_read),0) AS cache_read,
-             COALESCE(SUM(cache_write),0) AS cache_write,
-             COALESCE(SUM(usd),0)        AS usd,
-             COUNT(*)                    AS cnt,
-             MIN(ts)                     AS min_ts,
-             MAX(ts)                     AS max_ts
-           FROM cost_events WHERE workflow_id = ?`,
-        ),
+        session: db.query(aggSql(dimColumn.session)),
+        team: db.query(aggSql(dimColumn.team)),
+        workflow: db.query(aggSql(dimColumn.workflow)),
       }
       // Distinct keys per dim — for listBuckets.
       const distinctSessions = db.query(
@@ -316,48 +314,75 @@ export const makeCostAccountingSqlite = (
         eventStream.pipe(
           Stream.filter((e) => e.kind === "CostAccrued"),
           Stream.runForEach((ev) =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
               if (ev.kind !== "CostAccrued") return
               const id = crypto.randomUUID()
               const tsMs = Date.parse(ev.ts)
-              try {
-                db.run("BEGIN IMMEDIATE")
-                eventInsert.run(
-                  id,
-                  ev.sessionId ?? null,
-                  ev.teamName ?? null,
-                  ev.workflowId ?? null,
-                  null, // account_id — events don't carry it yet (§16)
-                  ev.tokensIn,
-                  ev.tokensOut,
-                  ev.cacheRead,
-                  ev.cacheWrite,
-                  ev.estimatedUsd,
-                  Number.isFinite(tsMs) ? tsMs : Date.now(),
-                )
-                // experiment_id sidecar: events don't currently carry it, but
-                // the schema is in place for the next phase. If a producer
-                // attaches `experimentId` via a forward-compatible widening,
-                // we'd write the sidecar row here.
-                const maybeExp = (ev as { experimentId?: unknown }).experimentId
-                if (typeof maybeExp === "string" && maybeExp.length > 0) {
-                  expInsert.run(id, maybeExp)
-                }
-                db.run("COMMIT")
-              } catch (cause) {
+              const insertResult = yield* Effect.try({
+                try: () => {
+                  db.run("BEGIN IMMEDIATE")
+                  eventInsert.run(
+                    id,
+                    ev.sessionId ?? null,
+                    ev.teamName ?? null,
+                    ev.workflowId ?? null,
+                    null, // account_id — events don't carry it yet (§16)
+                    ev.tokensIn,
+                    ev.tokensOut,
+                    ev.cacheRead,
+                    ev.cacheWrite,
+                    ev.estimatedUsd,
+                    Number.isFinite(tsMs) ? tsMs : Date.now(),
+                  )
+                  // experiment_id sidecar: events don't currently carry it,
+                  // but the schema is in place for the next phase. If a
+                  // producer attaches `experimentId` via a forward-compatible
+                  // widening, we'd write the sidecar row here. (HANDOFF #4 —
+                  // intentional forward-compat scaffolding per pattern #15.)
+                  const maybeExp = (ev as { experimentId?: unknown })
+                    .experimentId
+                  if (typeof maybeExp === "string" && maybeExp.length > 0) {
+                    expInsert.run(id, maybeExp)
+                  }
+                  db.run("COMMIT")
+                },
+                catch: (cause) => cause,
+              }).pipe(Effect.either)
+              if (insertResult._tag === "Left") {
                 try {
                   db.run("ROLLBACK")
                 } catch {
                   /* best-effort */
                 }
-                // Surface as Error event but don't kill the subscriber —
-                // matches in-memory daemon's catchAllCause posture.
-                // eslint-disable-next-line no-console
-                console.error("cost-store-sqlite insert failed:", cause)
+                // §6: build an IntegrityError describing the failure, then
+                // surface it as an §16 ErrorEvent on the obs stream. The
+                // daemon does NOT crash the fiber — emit-and-continue mirrors
+                // the in-memory cost-accounting daemon's `catchAllCause(() =>
+                // Effect.void)` posture (cost-accounting.ts ~115-120).
+                const cause = insertResult.left
+                const reason =
+                  cause instanceof Error ? cause.message : String(cause)
+                const integrityErr = integrity(
+                  "cost_events",
+                  `insert failed for event id=${id}: ${reason}`,
+                )
+                const ts = yield* clock.nowIso()
+                yield* obs.emit({
+                  ts,
+                  kind: "Error",
+                  level: "error",
+                  errorTag: "CostInsertFailed",
+                  message: integrityErr.message,
+                  context: {
+                    eventTs: ev.ts,
+                    eventId: id,
+                    cause: integrityErr,
+                  },
+                })
+                return
               }
-            }).pipe(
-              Effect.zipRight(Ref.update(writeCounter, (n) => n + 1)),
-            ),
+              yield* Ref.update(writeCounter, (n) => n + 1)
+            }),
           ),
           Effect.catchAllCause(() => Effect.void),
         ),
@@ -458,7 +483,7 @@ export const makeCostAccountingSqlite = (
     config?: CostAccountingConfig,
   ) => Layer.Layer<
     CostAccountingService,
-    never,
+    ConfigError,
     ObservabilityService | Clock
   >
 }).fromPath = makeCostAccountingSqlite
@@ -472,7 +497,7 @@ declare module "./cost-accounting.js" {
       config?: CostAccountingConfig,
     ): Layer.Layer<
       CostAccountingService,
-      never,
+      ConfigError,
       ObservabilityService | Clock
     >
   }
