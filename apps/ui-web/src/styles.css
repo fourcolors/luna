@@ -234,11 +234,91 @@ button:hover:not(:disabled) { background: #2780f5; }
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   line-height: 1.5;
 }
-.tool-uses { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
-.tool-chip {
-  background: #2a2d33; color: #aaa; font-size: 10px;
-  padding: 2px 6px; border-radius: 4px;
+/* ---- collapsible tool-call group ---- */
+.tool-group { margin-top: 8px; }
+
+.tool-group-toggle {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: #1e2027; border: 1px solid #2e3138; border-radius: 6px;
+  color: #9ba3af; font-size: 11px; padding: 3px 8px;
+  cursor: pointer; user-select: none;
+  transition: background 0.15s, color 0.15s;
 }
+.tool-group-toggle:hover { background: #252830; color: #c9d1d9; }
+.tool-group-toggle.open { border-color: #3d4450; color: #c9d1d9; }
+
+.tool-group-chevron { font-size: 9px; line-height: 1; }
+
+.tool-group-body {
+  margin-top: 6px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+
+.tool-card {
+  background: #161820; border: 1px solid #2a2d35; border-radius: 6px;
+  overflow: hidden;
+}
+.tool-card-name {
+  font-size: 11px; font-weight: 600; color: #7c8cf8;
+  padding: 5px 10px; border-bottom: 1px solid #2a2d35;
+  background: #1a1c24;
+}
+.tool-card-input {
+  margin: 0; padding: 8px 10px;
+  font-size: 11px; font-family: "JetBrains Mono", "Fira Code", "SF Mono", monospace;
+  color: #9ba3af; white-space: pre-wrap; word-break: break-all;
+  max-height: 240px; overflow-y: auto;
+  line-height: 1.5;
+}
+
+/* ---- attachment preview strip (pending, above textarea) ---- */
+.attach-strip {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 4px 0 2px;
+}
+.attach-thumb {
+  position: relative; width: 56px; height: 56px; border-radius: 6px;
+  overflow: hidden; border: 1px solid #2e3138; flex-shrink: 0;
+}
+.attach-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.attach-remove {
+  position: absolute; top: 2px; right: 2px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: rgba(0,0,0,0.7); color: #fff; border: none;
+  font-size: 11px; line-height: 1; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0;
+}
+.attach-remove:hover { background: #c0392b; }
+.attach-error {
+  font-size: 11px; color: #e74c3c; padding: 2px 0;
+}
+
+/* ---- bubble image attachments (sent messages) ---- */
+.bubble-attachments {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px;
+}
+.bubble-attach-img {
+  max-width: 240px; max-height: 200px;
+  border-radius: 6px; border: 1px solid #2e3138;
+  object-fit: contain; display: block;
+}
+
+/* ---- attach button ---- */
+.attach-btn {
+  background: none; border: none; cursor: pointer;
+  font-size: 16px; padding: 0 4px; opacity: 0.6;
+  line-height: 1;
+}
+.attach-btn:hover { opacity: 1; }
+.attach-btn:disabled { opacity: 0.3; cursor: default; }
+
+/* ---- drag-over state ---- */
+.composer.drag-over {
+  border-top-color: #7c8cf8;
+  background: #191b24;
+}
+.composer.drag-over textarea { opacity: 0.6; }
 
 .composer {
   border-top: 1px solid #222;
