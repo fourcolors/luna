@@ -14,6 +14,7 @@ export {
   countLines,
   deriveTitle,
   formatBytes,
+  formatVal,
   relativeTime,
   truncate,
 } from "./helpers.js"
