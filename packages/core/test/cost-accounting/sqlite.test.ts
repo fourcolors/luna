@@ -5,8 +5,8 @@
  * `:memory:` (and a tempfile for the migration-idempotence test). Bun-only:
  * `bun:sqlite` import dies under stock vitest/node — gated via `describe.skipIf`.
  */
-import { describe, expect, it } from "vitest"
-import { Duration, Effect, Layer, Ref, Scope } from "effect"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { Chunk, Duration, Effect, Fiber, Layer, Ref, Scope, Stream } from "effect"
 import * as os from "node:os"
 import * as path from "node:path"
 import * as fs from "node:fs"
@@ -25,6 +25,11 @@ const makeFullLayer = (dbPath: string) => {
     Layer.provide(clockL),
   )
   const costL = CostAccountingService.fromPath(dbPath).pipe(
+    // Layer error channel widened to ConfigError (boot-time bun:sqlite
+    // import). Tests run under Bun where that import is guaranteed; orDie
+    // surfaces any failure as a defect rather than polluting every Effect's
+    // error channel. Mirrors how 24b telemetry tests treat the same channel.
+    Layer.orDie,
     Layer.provide(obsL),
     Layer.provide(clockL),
   )
@@ -320,4 +325,117 @@ d("CostAccountingService.fromPath (sqlite)", () => {
       cleanupTmp(dbPath)
     }
   })
+
+  it("(8) insert failure emits ObsError + daemon stays alive (fail-injection)", async () => {
+    // Force a duplicate-PK insert by stubbing crypto.randomUUID to return the
+    // same value for two consecutive CostAccrued events. The second insert
+    // hits the cost_events PRIMARY KEY constraint — the daemon must:
+    //   1. Emit exactly ONE ObsEvent { kind: "Error", errorTag: "CostInsertFailed" }
+    //   2. NOT crash the fiber — a subsequent valid recordCost still lands
+    //
+    // We use real `crypto.randomUUID` for the third event by restoring the
+    // spy mid-test (third call falls through to the original).
+    const realRandomUuid = crypto.randomUUID.bind(crypto)
+    const spy = vi.spyOn(crypto, "randomUUID")
+    let calls = 0
+    const stubId = "11111111-1111-1111-1111-111111111111" as const
+    spy.mockImplementation(() => {
+      calls += 1
+      if (calls <= 2) return stubId as ReturnType<typeof crypto.randomUUID>
+      return realRandomUuid()
+    })
+
+    try {
+      const result = await run(
+        Effect.gen(function* () {
+          const obs = yield* ObservabilityService
+          const cost = yield* CostAccountingService
+
+          // Eager-subscribe to capture every event after this point — the
+          // §16 ErrorEvent must be observable on the canonical stream.
+          const events = yield* obs.subscribeEvents
+
+          const collected = yield* Ref.make<ReadonlyArray<{
+            kind: string
+            errorTag?: string
+            cause?: unknown
+          }>>([])
+          const collectorFiber = yield* Effect.forkScoped(
+            events.pipe(
+              Stream.runForEach((e) =>
+                Ref.update(collected, (xs) => [
+                  ...xs,
+                  e.kind === "Error"
+                    ? {
+                        kind: e.kind,
+                        errorTag: e.errorTag,
+                        cause: (e.context ?? {}).cause,
+                      }
+                    : { kind: e.kind },
+                ]),
+              ),
+            ),
+          )
+
+          // Two events with the same stubbed UUID → duplicate PK on event #2.
+          yield* obs.recordCost({
+            sessionId: "s-fail",
+            tokensIn: 100,
+            tokensOut: 50,
+            pricePerMillionInputTokens: 3.0,
+            pricePerMillionOutputTokens: 15.0,
+          })
+          yield* obs.recordCost({
+            sessionId: "s-fail",
+            tokensIn: 100,
+            tokensOut: 50,
+            pricePerMillionInputTokens: 3.0,
+            pricePerMillionOutputTokens: 15.0,
+          })
+
+          // Third event: real UUID — should land successfully, proving the
+          // daemon fiber didn't die on the previous insert failure.
+          yield* obs.recordCost({
+            sessionId: "s-fail",
+            tokensIn: 100,
+            tokensOut: 50,
+            pricePerMillionInputTokens: 3.0,
+            pricePerMillionOutputTokens: 15.0,
+          })
+
+          yield* Effect.sleep(Duration.millis(100))
+          const bucket = yield* cost.getBucket("session", "s-fail")
+          const captured = yield* Ref.get(collected)
+          yield* Fiber.interrupt(collectorFiber)
+          // The collector also fires off Chunk.empty when it terminates —
+          // ensure the test doesn't hang on it.
+          void Chunk.empty
+          return { bucket, captured }
+        }),
+      )
+
+      // First insert + third insert succeeded; second was rejected.
+      expect(result.bucket).not.toBeNull()
+      expect(result.bucket!.eventCount).toBe(2)
+
+      const errorEvents = result.captured.filter(
+        (e) => e.kind === "Error" && e.errorTag === "CostInsertFailed",
+      )
+      expect(errorEvents).toHaveLength(1)
+      // The cause carries the IntegrityError context — module + resource.
+      const cause = errorEvents[0]!.cause as
+        | { _tag?: string; module?: string; resource?: string }
+        | undefined
+      expect(cause).toBeDefined()
+      expect(cause!._tag).toBe("IntegrityError")
+      expect(cause!.module).toBe("cost-accounting")
+      expect(cause!.resource).toBe("cost_events")
+    } finally {
+      spy.mockRestore()
+    }
+  })
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
 })
