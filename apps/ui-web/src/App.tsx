@@ -7,6 +7,7 @@ import {
   canonLang,
   countLines,
   deriveTitle,
+  downloadArtifact,
   fileToAttachment,
   filterEvents,
   formatBytes,
@@ -864,23 +865,6 @@ function MessageBubble({ message }: { message: ChatMessage }) {
 /* -------------------------------------------------------------------- */
 /* Artifact panel — files & substantial code blocks pinned beside chat  */
 /* -------------------------------------------------------------------- */
-
-const downloadArtifact = (a: Artifact) => {
-  const filename =
-    (a.path && a.path.split("/").pop()) ||
-    (a.title && a.title.replace(/[^\w.\-]+/g, "_")) ||
-    `artifact-${a.id}.txt`
-  const blob = new Blob([a.content], { type: "text/plain;charset=utf-8" })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement("a")
-  link.href = url
-  link.download = filename
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  // Revoke on next tick so the download has time to start.
-  setTimeout(() => URL.revokeObjectURL(url), 0)
-}
 
 function ArtifactPanel({
   artifacts,
