@@ -21,6 +21,23 @@
       "name": "@luna/ui-web",
       "version": "0.0.1",
       "dependencies": {
+        "shiki": "^4.0.2",
+        "solid-js": "^1.9.12",
+        "solid-markdown": "^2.1.1",
+      },
+      "devDependencies": {
+        "@luna/ui-shared": "workspace:*",
+        "@luna/ui-shared-solid": "workspace:*",
+        "typescript": "^5.6.3",
+        "vite": "^5.4.10",
+        "vite-plugin-solid": "^2.11.12",
+        "vitest": "^2.1.5",
+      },
+    },
+    "apps/ui-web-react": {
+      "name": "@luna/ui-web-react",
+      "version": "0.0.1",
+      "dependencies": {
         "react": "^18.3.1",
         "react-dom": "^18.3.1",
         "react-markdown": "^10.1.0",
@@ -39,23 +56,6 @@
         "effect": "^3.21.0",
         "typescript": "^5.6.3",
         "vite": "^5.4.10",
-        "vitest": "^2.1.5",
-      },
-    },
-    "apps/ui-web-solid": {
-      "name": "@luna/ui-web-solid",
-      "version": "0.0.1",
-      "dependencies": {
-        "shiki": "^4.0.2",
-        "solid-js": "^1.9.12",
-        "solid-markdown": "^2.1.1",
-      },
-      "devDependencies": {
-        "@luna/ui-shared": "workspace:*",
-        "@luna/ui-shared-solid": "workspace:*",
-        "typescript": "^5.6.3",
-        "vite": "^5.4.10",
-        "vite-plugin-solid": "^2.11.12",
         "vitest": "^2.1.5",
       },
     },
@@ -308,7 +308,7 @@
 
     "@luna/ui-web": ["@luna/ui-web@workspace:apps/ui-web"],
 
-    "@luna/ui-web-solid": ["@luna/ui-web-solid@workspace:apps/ui-web-solid"],
+    "@luna/ui-web-react": ["@luna/ui-web-react@workspace:apps/ui-web-react"],
 
     "@luna/ui-ws": ["@luna/ui-ws@workspace:packages/ui-ws"],
 
