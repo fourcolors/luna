@@ -22,7 +22,7 @@ interface CounterState {
 }
 
 /** Stable key for (name, tags). Sort keys to make tag order irrelevant. */
-function counterKey(name: string, tags: MetricTags): string {
+export function counterKey(name: string, tags: MetricTags): string {
   const keys = Object.keys(tags).sort()
   const parts = keys.map((k) => `${k}=${tags[k] ?? ""}`)
   return `${name}\u0000${parts.join("\u0001")}`
