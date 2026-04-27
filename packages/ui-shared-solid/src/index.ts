@@ -18,6 +18,8 @@ export {
   ArtifactPanel,
   type ArtifactPanelProps,
 } from "./ArtifactPanel.jsx"
+export { EventRow } from "./EventRow.jsx"
+export { ObsPanel, type ObsPanelProps } from "./ObsPanel.jsx"
 export { createUiStore, type UiStoreHandle } from "./store.js"
 export {
   createTransport,
