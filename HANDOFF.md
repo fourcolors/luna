@@ -802,3 +802,70 @@ SQL migrations (`@effect/sql` integration deferred per Phase 15 note).
    tokensIn, tokensOut, pricePerMillion* })` over hand-constructing
    a CostAccrued event — fewer required fields, less brittle.
 
+### Session 2026-04-27 (Phase 23 — M4 acceptance bundle)
+
+**Shipped:** Phase 23 — M4 acceptance/integration test bundle.
+
+```
+Commit    Title                                              Tests delta
+────────  ─────────────────────────────────────────────────  ───────────
+ade604e   M4 acceptance bundle (F1 + F2 + F5 + predicate)    +6
+```
+
+**Repo state:** 419 passed / 14 skipped across 61 test files (was
+413/2 across 60). Typecheck clean.
+
+**Scope (per advisor ⚠️ MODIFY verdict):**
+- Single file: `packages/core/test/acceptance/m4.test.ts` (618 LOC)
+- F1: Gateway → Harness trial → CostAccounting → UI subscriber, with
+  F3 fold-in (NetSec-blocked request emits ToolCall(status="error") +
+  zero CostAccrued)
+- F2: Labs experiment with caller-glue trial (14 LOC) trips
+  `ExperimentBudgetExceededError` at iteration N
+- F5: TriggerAgent fires under TestClock → Obs → UI (smoke)
+- Cost-accuracy predicate suite: multi-dim attribution (one event
+  tagged `{sessionId, workflowId}` lands in BOTH buckets with same
+  amounts and `eventCount===1`), 9-decimal USD math, bucket
+  independence, `isBudgetExceeded`/`remainingBudget` semantics
+
+**Dropped from initial F1-F5 list:**
+- F4 (Secrets→AccountBroker→Gateway) — Gateway has no AccountBroker
+  layer dep at `gateway.ts:50`. Belongs in M2 adapter-parity tests
+  where SDK actually consumes broker creds.
+- F3 standalone — folded into F1 as a 5-line assertion. NetSec
+  unit-tests already cover the rejection path.
+
+**Pattern learnings:**
+
+10. **Acceptance tests live in `packages/<owner>/test/acceptance/`,
+    not at repo root.** Auditor flagged the orphan smell of
+    `test/rollup-tick.test.ts` (now removed). Bundle living inside
+    `@luna/core/test/acceptance/` inherits the package's tsconfig +
+    scripts; no new workspace overhead.
+
+11. **Labs+Harness composition is caller-glue, not framework-wired.**
+    `labs/types.ts:29` accepts arbitrary `Effect<A>` `trial`. F2
+    composes Harness invocation + `obs.recordCost` per-iteration in
+    14 LOC of trial body. Don't predict-build a "LabsRunner"
+    composer package until ≥2 callers need the same glue.
+
+12. **Acceptance tests use `Effect.timeout("5 seconds")` per body
+    + `TestClock` for time-dependent flows.** No real-clock sleeps
+    longer than 20ms (the canonical post-subscribe settle).
+
+**Auditor verdict:** SHIP. Cosmetic note: `void runner` on line 243 is
+dead (outer-scope shadowed by inner Layer.provide). Non-blocking.
+
+**M4 milestone status:** ✅ COMPLETE. All 9 server primitives shipped
+(Phases 14-22) + acceptance gate green (Phase 23). Per DESIGN §15:
+"Acceptance tests green; cost accounting accurate" — both satisfied.
+
+**Next-up candidates:**
+- M5 SQL persistence for Cost/Telemetry/Labs (needs design Q answered:
+  do Labs experiments flow through cost accounting? are telemetry
+  counters queryable post-session or live-only?)
+- M5 Effect v4 migration spike (deferred per §0.1 — blocked on
+  @effect/workflow + @effect/cluster v4 betas; check npm monthly)
+- Plugin Play package (separate from M4 server surface)
+- Tauri/React UI client (M5+ per §9)
+
