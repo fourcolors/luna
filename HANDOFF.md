@@ -921,21 +921,28 @@ tests skip on node, mirroring session-store-sqlite convention).
     follow the same rule: declare the table, leave the write path
     forward-compat until the event taxonomy widens.
 
-**Auditor non-blocking follow-ups (carry into 24b/future touch):**
-1. Collapse 3 per-dim aggregate queries (`getBucket` for session/team/
-   workflow) into 1 column-dispatched query — ~30 LOC saved.
-2. `IntegrityError` is imported + `integrity()` helper defined but
-   never raised. Daemon currently swallows insert errors via
-   `console.error` (silent data-loss risk). Either drop the helper or
-   wire it up on insert failure.
-3. Daemon insert errors should route through `obs.emit` as Error
-   events for parity with the in-memory daemon's `catchAllCause`
-   posture.
-4. `experimentId` sidecar write path (lines 342-345) unreachable today
-   — `as unknown` cast peeks for a field that doesn't exist in
-   `CostAccruedEvent`. Acceptable scaffolding because §5.1-required
-   sidecar table must exist regardless. Trim path when event taxonomy
-   widens.
+**Auditor non-blocking follow-ups — RESOLVED 2026-04-27 (#1-3 + ConfigError back-port):**
+1. ~~Collapse 3 per-dim aggregate queries~~ — **DONE.** Static dispatch
+   table (`Record<Dim, BunStmt>`); each statement keeps a literal column
+   `WHERE` clause so per-column indexes remain reachable. Advisor
+   caught a `CASE :dim WHEN ...` trap that would have defeated indexes.
+2. ~~`IntegrityError` unused~~ — **DONE.** Daemon now builds
+   `IntegrityError` via `integrity()` helper on insert failure.
+3. ~~Daemon swallows errors via console.error~~ — **DONE.** Daemon body
+   converted `Effect.sync` → `Effect.gen`; on Left, emits typed
+   `ErrorEvent { errorTag: "CostInsertFailed" }` through `obs.emit`.
+   Outer `catchAllCause(() => Effect.void)` mirrors in-memory parity.
+   New fail-injection test (`sqlite.test.ts:329-436`) stubs
+   `crypto.randomUUID` to force duplicate-PK, asserts the ErrorEvent
+   surfaces and the daemon survives.
+4. `experimentId` sidecar write path (lines 342-345) — **INTENTIONALLY
+   RETAINED** per Pattern #15 (forward-compat scaffolding for the
+   §5.1-required sidecar table). Trim path when event taxonomy widens.
+
+**Bonus: 24b's typed `ConfigError` for `bun:sqlite` import — back-ported
+to 24a.** Layer signature changed from `Layer.Layer<…, never, …>` →
+`Layer.Layer<…, ConfigError, …>`. Verified zero production callers
+before changing (test-only API).
 
 **Phase 24c (Labs persistence) — DROPPED (YAGNI).** Sterling confirmed
 2026-04-27. LabsService has zero state surface (`runExperiment` returns
