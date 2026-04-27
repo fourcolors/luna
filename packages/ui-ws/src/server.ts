@@ -116,6 +116,53 @@ const send = (ws: WebSocket, frame: ServerFrame): void => {
 }
 
 /**
+ * Validate inbound user-message attachments. The wire types narrow `mediaType`
+ * to a literal union, but a malicious client can send arbitrary strings — TS
+ * types don't run at runtime. Reject anything that isn't an allow-listed
+ * image type, oversized payload, or non-string data. Returns a human-readable
+ * error message on failure, or null on success.
+ *
+ * Limits mirror the UI client (apps/ui-web/src/App.tsx):
+ *   - mediaType ∈ { image/jpeg, image/png, image/gif, image/webp }
+ *   - data: base64 string
+ *   - decoded size ≤ 4 MB per attachment
+ *   - ≤ 8 attachments per turn (defence-in-depth on top of maxPayload)
+ */
+const ALLOWED_ATTACH_MEDIA_TYPES = new Set<string>([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+])
+const MAX_ATTACH_RAW_BYTES = 4 * 1024 * 1024
+const MAX_ATTACHMENTS_PER_TURN = 8
+
+const validateAttachments = (
+  atts: ReadonlyArray<{ readonly mediaType?: unknown; readonly data?: unknown }> | undefined,
+): string | null => {
+  if (!atts || atts.length === 0) return null
+  if (atts.length > MAX_ATTACHMENTS_PER_TURN) {
+    return `too many attachments: ${atts.length} (max ${MAX_ATTACHMENTS_PER_TURN})`
+  }
+  for (let i = 0; i < atts.length; i++) {
+    const a = atts[i]!
+    if (typeof a.mediaType !== "string" || !ALLOWED_ATTACH_MEDIA_TYPES.has(a.mediaType)) {
+      return `attachment[${i}]: unsupported mediaType: ${String(a.mediaType)}`
+    }
+    if (typeof a.data !== "string" || a.data.length === 0) {
+      return `attachment[${i}]: missing or invalid data`
+    }
+    // base64 decoded size ≈ length * 3/4. Use a fast bound check rather
+    // than actually decoding (avoids allocating the buffer just to size it).
+    const approxBytes = Math.floor(a.data.length * 3 / 4)
+    if (approxBytes > MAX_ATTACH_RAW_BYTES) {
+      return `attachment[${i}]: too large (${approxBytes} bytes; max ${MAX_ATTACH_RAW_BYTES})`
+    }
+  }
+  return null
+}
+
+/**
  * Start a UIWebSocketServer. Returns a handle inside a Scope.
  *
  * The server forks all per-connection forwarders into THIS server's scope,
@@ -158,11 +205,12 @@ export const startUIWebSocketServer = (
       res.end()
     })
 
-    // Cap inbound message size. ClientFrames are tiny (subscribe / new-thread
-    // / user-message text rarely > 4KB); 64KB is a generous cushion. The ws
-    // library's default is 100MB, which is a footgun if a token ever leaks
-    // or we relax the 127.0.0.1 bind. Oversize frames close with code 1009.
-    const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 })
+    // Cap inbound message size. Base-limit was 64KB for text-only frames.
+    // With image attachments (max 4MB raw ≈ 5.4MB base64 per image) we
+    // raise to 8MB — enough for one typical image plus JSON overhead.
+    // Still well below the ws default (100MB). Oversize frames still close
+    // with 1009; the UI validates pre-flight so hitting this is exceptional.
+    const wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 })
 
     // Constant-time string compare for the auth check. The token is short
     // (≥16 chars) and the listener is 127.0.0.1-bound, so timing-attack
@@ -480,7 +528,25 @@ export const startUIWebSocketServer = (
                     return
                   }
                   case "user-message": {
-                    const result = yield* chat.send(frame.threadId, frame.text)
+                    // TS types are erased at runtime — clients can send
+                    // arbitrary mediaType strings or oversized data. Validate
+                    // before forwarding to the SDK so a clean error surfaces
+                    // instead of a generic Anthropic-API failure.
+                    const attachErr = validateAttachments(frame.attachments)
+                    if (attachErr !== null) {
+                      send(ws, {
+                        type: "assistant-error",
+                        threadId: frame.threadId,
+                        turnId: null,
+                        error: { kind: "sdk", message: attachErr },
+                      })
+                      return
+                    }
+                    const result = yield* chat.send(
+                      frame.threadId,
+                      frame.text,
+                      frame.attachments,
+                    )
                     if (Option.isNone(result)) {
                       // Unknown thread — surface explicitly so the
                       // client doesn't sit waiting for a delta that
