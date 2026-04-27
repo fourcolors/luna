@@ -26,6 +26,8 @@
         "solid-markdown": "^2.1.1",
       },
       "devDependencies": {
+        "@luna/adapter-sdk": "workspace:*",
+        "@luna/chat-service": "workspace:*",
         "@luna/core": "workspace:*",
         "@luna/ui-shared": "workspace:*",
         "@luna/ui-shared-solid": "workspace:*",
