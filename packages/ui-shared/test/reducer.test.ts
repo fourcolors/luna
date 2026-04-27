@@ -28,7 +28,7 @@ const chatMsg = (
   seq: number,
   role: "user" | "assistant",
   text: string,
-): ChatMessage => ({ id, seq, ts: 0, role, text, toolUses: [] })
+): ChatMessage => ({ id, seq, ts: 0, role, text, toolUses: [], attachments: [] })
 
 describe("reducer", () => {
   it("hello sets advertisedKinds and clears closeReason", () => {

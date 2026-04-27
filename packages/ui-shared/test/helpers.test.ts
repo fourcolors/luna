@@ -29,6 +29,7 @@ const msg = (role: "user" | "assistant", text: string): ChatMessage => ({
   role,
   text,
   toolUses: [],
+  attachments: [],
 })
 
 const view = (messages: ReadonlyArray<ChatMessage>): ThreadView => ({
