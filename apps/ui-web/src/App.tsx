@@ -1,11 +1,13 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
 import {
+  ALLOWED_ATTACH_TYPES,
   CodeBlock,
   CodeBlockFallback,
   browserWebSocketTransport,
   canonLang,
   countLines,
   deriveTitle,
+  fileToAttachment,
   filterEvents,
   formatBytes,
   initialState,
@@ -17,6 +19,7 @@ import {
   type ChatToolUse,
   type ClientFrame,
   type ConnectionStatus,
+  type PendingAttachment,
   type SessionSummary,
   type ThreadView,
   type TransportHandle,
@@ -542,50 +545,6 @@ const relativeTime = (ms: number): string => {
 /* -------------------------------------------------------------------- */
 /* Chat panel                                                           */
 /* -------------------------------------------------------------------- */
-
-type PendingAttachment = {
-  id: string
-  name: string
-  mediaType: ChatAttachment["mediaType"]
-  data: string       // raw base64, no data: prefix
-  previewUrl: string // object URL for <img> thumbnail
-}
-
-const ALLOWED_ATTACH_TYPES = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/gif",
-  "image/webp",
-])
-const MAX_ATTACH_BYTES = 4 * 1024 * 1024 // 4 MB raw
-
-function fileToAttachment(file: File): Promise<PendingAttachment> {
-  return new Promise((resolve, reject) => {
-    if (!ALLOWED_ATTACH_TYPES.has(file.type)) {
-      reject(new Error(`Unsupported type: ${file.type}. Use JPEG, PNG, GIF, or WebP.`))
-      return
-    }
-    if (file.size > MAX_ATTACH_BYTES) {
-      reject(new Error(`Image too large (max 4 MB): ${file.name}`))
-      return
-    }
-    const reader = new FileReader()
-    reader.onload = () => {
-      const dataUrl = reader.result as string
-      // Strip the "data:image/png;base64," prefix to get raw base64.
-      const data = dataUrl.split(",")[1] ?? ""
-      resolve({
-        id: `att_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-        name: file.name,
-        mediaType: file.type as ChatAttachment["mediaType"],
-        data,
-        previewUrl: URL.createObjectURL(file),
-      })
-    }
-    reader.onerror = () => reject(new Error(`Failed to read file: ${file.name}`))
-    reader.readAsDataURL(file)
-  })
-}
 
 function ChatPanel({
   thread,
