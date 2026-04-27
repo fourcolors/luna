@@ -6,3 +6,9 @@
  */
 export { CodeBlock, CodeBlockFallback, canonLang } from "./CodeBlock.jsx"
 export { MarkdownView } from "./MarkdownView.jsx"
+export { createUiStore, type UiStoreHandle } from "./store.js"
+export {
+  createTransport,
+  type CreateTransportParams,
+  type TransportComposable,
+} from "./useTransport.js"

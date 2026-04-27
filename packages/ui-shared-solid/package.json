@@ -14,6 +14,7 @@
     "solid-js": "^1.9.12"
   },
   "dependencies": {
+    "@luna/ui-shared": "workspace:*",
     "solid-markdown": "^2.1.1",
     "remark-gfm": "^4.0.1",
     "shiki": "^4.0.2"
