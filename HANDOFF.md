@@ -772,9 +772,10 @@ Secrets — Acceptance tests green; cost accounting accurate."
 ✅ Observability (14), CostAccounting (15), NetSec (16), Gateway (17),
 Telemetry (18), TriggerAgent reg (19), TrainingHarness (20),
 LabsService (21), UIService (22) — all server primitives green.
-🚧 Remaining for M4 closure: Tauri/React UI client (separate package,
-M5+ per §9), Plugin Play (separate package), Acceptance test bundle,
-SQL migrations (`@effect/sql` integration deferred per Phase 15 note).
+🚧 Remaining for M4 closure: Tauri shell desktop wrapper around the
+Solid `@luna/ui-web` bundle (separate package, M5+ per §9), Plugin Play
+(separate package), Acceptance test bundle, SQL migrations
+(`@effect/sql` integration deferred per Phase 15 note).
 
 **Next-up candidates (when Sterling resumes):**
 - Acceptance/integration test bundle for the M4 gate
@@ -867,7 +868,7 @@ dead (outer-scope shadowed by inner Layer.provide). Non-blocking.
 - M5 Effect v4 migration spike (deferred per §0.1 — blocked on
   @effect/workflow + @effect/cluster v4 betas; check npm monthly)
 - Plugin Play package (separate from M4 server surface)
-- Tauri/React UI client (M5+ per §9)
+- Tauri/Solid desktop client (Tauri shell over `@luna/ui-web`; M5+ per §9)
 
 ### Session 2026-04-27 (Phase 24a — SQLite cost-accounting)
 
@@ -1077,7 +1078,9 @@ via subsequent valid event landing in the bucket.
 2. M5 was originally "SQL persistence + Effect v4 spike." SQL
    persistence is done; the v4 spike was never blocking and is now
    off the roadmap until Effect v4 ships stable.
-3. Other M5+ items (Tauri/React UI client per §9, plugin play
-   separate package, full acceptance test bundle) are
-   roadmap-revisable — wait for Sterling's direction.
+3. Other M5+ items (Tauri/Solid desktop client per §9 — Tauri shell
+   over the live `@luna/ui-web` Solid app; plugin play separate
+   package; full acceptance test bundle) are roadmap-revisable —
+   wait for Sterling's direction. Note: `apps/ui-web-react` is an
+   abandoned scaffold; `apps/ui-web` (SolidJS) is canonical.
 
