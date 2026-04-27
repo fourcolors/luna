@@ -1,10 +1,9 @@
 import { defineConfig } from "vite"
 import solid from "vite-plugin-solid"
 
-// Mirrors apps/ui-web/vite.config.ts (host + tailscale allowed hosts) so
-// `bun run --filter @luna/ui-web-solid dev` is a drop-in replacement
-// during the React → Solid migration. Different default port (5174) so
-// both apps can run side-by-side for parity testing.
+// SolidJS web UI. Port 5174 (5173 reserved for legacy/parity comparisons
+// during migration; kept as default to avoid breaking developer muscle
+// memory). Tailscale hosts allowed for remote dev access.
 export default defineConfig({
   plugins: [solid()],
   server: {
@@ -12,14 +11,17 @@ export default defineConfig({
     host: "0.0.0.0",
     allowedHosts: ["mr.tail0d96d3.ts.net", ".tail0d96d3.ts.net"],
   },
-  // The dev-server scripts in apps/ui-web/scripts/ pull in heavy server-side
-  // deps (effect, @luna/ui-ws, debug, etc.) that aren't browser-safe. Tell
-  // vite's dep crawler to ignore them — they're invoked separately via
-  // `bun run dev:server`, never bundled.
+  // Bun's hoisted .bun/ workspace layout serves CJS deps as raw CJS to the
+  // browser by default — vite's dep crawler doesn't always force them
+  // through esbuild prebundle. Two fixes here:
+  //   - `entries`: pin browser entry points so the crawler doesn't pull in
+  //     scripts/dev-server.ts (which has server-only deps like effect/ui-ws)
+  //   - `include`: force CJS deps used transitively by ui-shared-solid
+  //     (debug via solid-markdown, extend via the markdown pipeline) into
+  //     the prebundle so vite serves them as ESM with proper default exports
   optimizeDeps: {
-    // Pin browser entry points so vite's dep crawler doesn't pull in
-    // scripts/dev-server.ts and its server-side deps (effect, @luna/ui-ws).
     entries: ["src/main.tsx", "index.html"],
+    include: ["debug", "extend"],
   },
   preview: {
     port: 5174,
