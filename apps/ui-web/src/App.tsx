@@ -12,6 +12,7 @@ import {
   formatBytes,
   initialState,
   reduce,
+  relativeTime,
   type Action,
   type Artifact,
   type ChatAttachment,
@@ -532,14 +533,6 @@ function Sidebar({
       </div>
     </aside>
   )
-}
-
-const relativeTime = (ms: number): string => {
-  const diff = Date.now() - ms
-  if (diff < 60_000) return "just now"
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`
-  return `${Math.floor(diff / 86_400_000)}d`
 }
 
 /* -------------------------------------------------------------------- */
