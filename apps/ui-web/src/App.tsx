@@ -12,7 +12,9 @@ import {
   reduce,
   type Action,
   type Artifact,
+  type ChatAttachment,
   type ChatMessage,
+  type ChatToolUse,
   type ClientFrame,
   type ConnectionStatus,
   type SessionSummary,
@@ -147,7 +149,7 @@ export function App() {
         }
       },
     })
-  }, [cfg, url, token])
+  }, [cfg])
 
   const onDisconnect = useCallback(() => {
     if (handleRef.current) {
@@ -197,8 +199,8 @@ export function App() {
   }, [send, model])
 
   const sendUserMessage = useCallback(
-    (threadId: string, text: string) => {
-      send({ type: "user-message", threadId, text })
+    (threadId: string, text: string, attachments?: ReadonlyArray<ChatAttachment>) => {
+      send({ type: "user-message", threadId, text, ...(attachments ? { attachments } : {}) })
     },
     [send],
   )
@@ -541,6 +543,50 @@ const relativeTime = (ms: number): string => {
 /* Chat panel                                                           */
 /* -------------------------------------------------------------------- */
 
+type PendingAttachment = {
+  id: string
+  name: string
+  mediaType: ChatAttachment["mediaType"]
+  data: string       // raw base64, no data: prefix
+  previewUrl: string // object URL for <img> thumbnail
+}
+
+const ALLOWED_ATTACH_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+])
+const MAX_ATTACH_BYTES = 4 * 1024 * 1024 // 4 MB raw
+
+function fileToAttachment(file: File): Promise<PendingAttachment> {
+  return new Promise((resolve, reject) => {
+    if (!ALLOWED_ATTACH_TYPES.has(file.type)) {
+      reject(new Error(`Unsupported type: ${file.type}. Use JPEG, PNG, GIF, or WebP.`))
+      return
+    }
+    if (file.size > MAX_ATTACH_BYTES) {
+      reject(new Error(`Image too large (max 4 MB): ${file.name}`))
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = reader.result as string
+      // Strip the "data:image/png;base64," prefix to get raw base64.
+      const data = dataUrl.split(",")[1] ?? ""
+      resolve({
+        id: `att_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+        name: file.name,
+        mediaType: file.type as ChatAttachment["mediaType"],
+        data,
+        previewUrl: URL.createObjectURL(file),
+      })
+    }
+    reader.onerror = () => reject(new Error(`Failed to read file: ${file.name}`))
+    reader.readAsDataURL(file)
+  })
+}
+
 function ChatPanel({
   thread,
   onSend,
@@ -549,13 +595,33 @@ function ChatPanel({
   enterToSend,
 }: {
   thread: ThreadView | null
-  onSend: (threadId: string, text: string) => void
+  onSend: (threadId: string, text: string, attachments?: ReadonlyArray<ChatAttachment>) => void
   onInterrupt: (threadId: string) => void
   disabled: boolean
   enterToSend: boolean
 }) {
   const [draft, setDraft] = useState("")
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([])
+  const [attachError, setAttachError] = useState<string | null>(null)
+  const [isDragOver, setIsDragOver] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const transcriptRef = useRef<HTMLDivElement>(null)
+
+  // Mirror attachments into a ref so the unmount cleanup below can revoke
+  // every outstanding object URL even if the component unmounts mid-edit
+  // (thread switch, disconnect). Without this, each attached image leaks
+  // its blob until the page is reloaded.
+  const attachmentsRef = useRef(attachments)
+  useEffect(() => {
+    attachmentsRef.current = attachments
+  }, [attachments])
+  useEffect(() => {
+    return () => {
+      for (const a of attachmentsRef.current) {
+        URL.revokeObjectURL(a.previewUrl)
+      }
+    }
+  }, [])
 
   // Auto-scroll on new messages or in-flight delta updates.
   useEffect(() => {
@@ -577,18 +643,71 @@ function ChatPanel({
     )
   }
 
-  const submit = () => {
+  const addFiles = useCallback(async (files: FileList | File[]) => {
+    setAttachError(null)
+    const arr = Array.from(files)
+    const results = await Promise.allSettled(arr.map(fileToAttachment))
+    const added: PendingAttachment[] = []
+    const errors: string[] = []
+    for (const r of results) {
+      if (r.status === "fulfilled") added.push(r.value)
+      else errors.push((r.reason as Error).message)
+    }
+    if (added.length > 0) setAttachments((prev) => [...prev, ...added])
+    if (errors.length > 0) setAttachError(errors.join(" · "))
+  }, [])
+
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments((prev) => {
+      const removed = prev.find((a) => a.id === id)
+      if (removed) URL.revokeObjectURL(removed.previewUrl)
+      return prev.filter((a) => a.id !== id)
+    })
+  }, [])
+
+  const submit = useCallback(() => {
     const t = draft.trim()
-    if (!t) return
-    onSend(thread.summary.id, t)
+    if (!t && attachments.length === 0) return
+    onSend(
+      thread!.summary.id,
+      t,
+      attachments.length > 0
+        ? attachments.map((a) => ({ mediaType: a.mediaType, data: a.data }))
+        : undefined,
+    )
     setDraft("")
-  }
+    // Revoke object URLs before clearing.
+    attachments.forEach((a) => URL.revokeObjectURL(a.previewUrl))
+    setAttachments([])
+    setAttachError(null)
+  }, [draft, attachments, onSend, thread])
+
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const imageItems = Array.from(e.clipboardData.items).filter(
+      (item) => ALLOWED_ATTACH_TYPES.has(item.type),
+    )
+    if (imageItems.length === 0) return
+    e.preventDefault()
+    const files = imageItems.map((item) => item.getAsFile()).filter((f): f is File => f !== null)
+    if (files.length > 0) void addFiles(files)
+  }, [addFiles])
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(false)
+    const files = Array.from(e.dataTransfer.files).filter((f) =>
+      ALLOWED_ATTACH_TYPES.has(f.type),
+    )
+    if (files.length > 0) void addFiles(files)
+  }, [addFiles])
 
   const placeholder = disabled
     ? "Disconnected"
     : enterToSend
       ? "Type a message — Enter to send, Shift+Enter for newline"
       : "Type a message — ⌘/Ctrl+Enter to send"
+
+  const canSend = !disabled && (draft.trim().length > 0 || attachments.length > 0)
 
   return (
     <main className="chat-panel">
@@ -624,12 +743,35 @@ function ChatPanel({
           </div>
         )}
       </div>
-      <div className="composer">
+      <div
+        className={`composer${isDragOver ? " drag-over" : ""}`}
+        onDragOver={(e) => { e.preventDefault(); setIsDragOver(true) }}
+        onDragLeave={() => setIsDragOver(false)}
+        onDrop={handleDrop}
+      >
+        {attachments.length > 0 && (
+          <div className="attach-strip">
+            {attachments.map((a) => (
+              <div key={a.id} className="attach-thumb">
+                <img src={a.previewUrl} alt={a.name} />
+                <button
+                  className="attach-remove"
+                  onClick={() => removeAttachment(a.id)}
+                  title="Remove"
+                >×</button>
+              </div>
+            ))}
+          </div>
+        )}
+        {attachError && (
+          <div className="attach-error">{attachError}</div>
+        )}
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           placeholder={placeholder}
           disabled={disabled}
+          onPaste={handlePaste}
           onKeyDown={(e) => {
             // ⌘/Ctrl+Enter always submits (preserved alias).
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -654,18 +796,78 @@ function ChatPanel({
           }}
         />
         <div className="composer-actions">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/gif,image/webp"
+            multiple
+            style={{ display: "none" }}
+            onChange={(e) => {
+              if (e.target.files) void addFiles(e.target.files)
+              e.target.value = ""
+            }}
+          />
+          <button
+            className="attach-btn"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={disabled}
+            title="Attach image"
+          >
+            📎
+          </button>
           {thread.inFlight ? (
             <button onClick={() => onInterrupt(thread.summary.id)}>
               Stop
             </button>
           ) : (
-            <button onClick={submit} disabled={disabled || !draft.trim()}>
+            <button onClick={submit} disabled={!canSend}>
               Send
             </button>
           )}
         </div>
       </div>
     </main>
+  )
+}
+
+function ToolCallGroup({ toolUses }: { toolUses: ReadonlyArray<ChatToolUse> }) {
+  const [open, setOpen] = useState(false)
+  if (toolUses.length === 0) return null
+
+  const label =
+    toolUses.length === 1
+      ? `🛠 ${toolUses[0]!.name}`
+      : `🛠 ${toolUses.length} tool calls`
+
+  return (
+    <div className="tool-group">
+      <button
+        className={`tool-group-toggle${open ? " open" : ""}`}
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+      >
+        <span className="tool-group-chevron">{open ? "▾" : "▸"}</span>
+        {label}
+      </button>
+      {open && (
+        <div className="tool-group-body">
+          {toolUses.map((tu) => {
+            let inputStr: string
+            try {
+              inputStr = JSON.stringify(tu.input, null, 2)
+            } catch {
+              inputStr = String(tu.input)
+            }
+            return (
+              <div className="tool-card" key={tu.id}>
+                <div className="tool-card-name">{tu.name}</div>
+                <pre className="tool-card-input">{inputStr}</pre>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -680,20 +882,28 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         <MarkdownView text={message.text} />
       </Suspense>
     ) : (
-      <div className="bubble-text">{message.text}</div>
+      <>
+        {message.attachments.length > 0 && (
+          <div className="bubble-attachments">
+            {message.attachments.map((a, i) => (
+              <img
+                key={i}
+                className="bubble-attach-img"
+                src={`data:${a.mediaType};base64,${a.data}`}
+                alt={`attachment ${i + 1}`}
+              />
+            ))}
+          </div>
+        )}
+        {message.text && <div className="bubble-text">{message.text}</div>}
+      </>
     )
   return (
     <div className={`bubble ${message.role}`}>
       <div className="bubble-role">{message.role}</div>
       {body}
       {message.toolUses.length > 0 && (
-        <div className="tool-uses">
-          {message.toolUses.map((tu) => (
-            <span className="tool-chip" key={tu.id}>
-              🛠 {tu.name}
-            </span>
-          ))}
-        </div>
+        <ToolCallGroup toolUses={message.toolUses} />
       )}
     </div>
   )
@@ -728,13 +938,14 @@ function ArtifactPanel({
   const [selectedId, setSelectedId] = useState<string | null>(
     artifacts[0]?.id ?? null,
   )
-  // Auto-select newest when artifacts grow.
+  // Auto-select newest when artifacts grow or the newest artifact's
+  // identity changes (e.g. replaced in place at the same length).
+  const lastArtifactId = artifacts[artifacts.length - 1]?.id ?? null
   useEffect(() => {
-    if (artifacts.length > 0) {
-      const last = artifacts[artifacts.length - 1]!
-      setSelectedId((cur) => cur ?? last.id)
+    if (lastArtifactId) {
+      setSelectedId((cur) => cur ?? lastArtifactId)
     }
-  }, [artifacts.length])
+  }, [lastArtifactId])
 
   const selected =
     artifacts.find((a) => a.id === selectedId) ??
@@ -876,7 +1087,7 @@ function ObsPanel({
           )}
         </div>
         {filtered.map((ev, i) => (
-          <EventRow key={`${ev.ts}-${i}`} event={ev} />
+          <EventRow key={`${ev.ts}-${ev.kind}-${i}`} event={ev} />
         ))}
       </main>
     </>
