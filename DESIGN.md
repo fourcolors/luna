@@ -113,7 +113,7 @@ Two planes: **Feature Modules** (capabilities) and **Runtime Systems** (cross-cu
 2.2.3 │ Configuration          │ Typed config via effect/Schema, layered sources
 2.2.4 │ Sandbox                │ Isolated execution for untrusted scripts/skills
 2.2.5 │ Workflows              │ @effect/workflow + @effect/cluster wrapper
-2.2.6 │ UI                     │ Tauri+React; consumes observability stream
+2.2.6 │ UI                     │ Tauri+SolidJS; consumes observability stream
 2.2.7 │ Observability          │ Structured events + OTEL traces
 2.2.8 │ Telemetry              │ Metrics/logs to DuckDB + OTLP
 2.2.9 │ Network Security       │ Mediated HTTP, egress allowlists, TLS pinning
@@ -578,7 +578,7 @@ Every Service has a `Default` Layer (real) and a `Test` Layer (in-memory/fake). 
 
 ## §9. UI System (revisable)
 
-Consumes §16 observability stream. Tauri + React. Non-goal for M1–M3; targeted at M4+.
+Consumes §16 observability stream. **Tauri + SolidJS** (Tauri shell wraps the Solid `@luna/ui-web` bundle). Non-goal for M1–M3; targeted at M4+. Web client (`apps/ui-web`) is live; Tauri shell (`apps/ui-tauri`) wraps it.
 
 ---
 
