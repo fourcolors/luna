@@ -14,6 +14,17 @@
  */
 import type { Component } from "solid-js"
 import { UI_WS_PROTOCOL_VERSION, initialState } from "@luna/ui-shared/core"
+import { CodeBlock, MarkdownView } from "@luna/ui-shared-solid"
+
+const SAMPLE_MD = `# Hello from Solid
+
+Some prose with \`inline code\`, then a fenced block:
+
+\`\`\`ts
+const x: number = 42
+console.log("solid markdown works")
+\`\`\`
+`
 
 export const App: Component = () => {
   return (
@@ -22,6 +33,11 @@ export const App: Component = () => {
       <p>Migration in progress. The React UI at port 5173 is still the source of truth.</p>
       <p>Wire protocol version: <code>{UI_WS_PROTOCOL_VERSION}</code></p>
       <p>Initial events count: <code>{initialState.events.length}</code></p>
+      <hr />
+      <h2>CodeBlock smoke test</h2>
+      <CodeBlock lang="ts" source={`const sum = (a: number, b: number) => a + b`} />
+      <h2>MarkdownView smoke test</h2>
+      <MarkdownView text={SAMPLE_MD} />
     </main>
   )
 }

@@ -52,6 +52,7 @@
       },
       "devDependencies": {
         "@luna/ui-shared": "workspace:*",
+        "@luna/ui-shared-solid": "workspace:*",
         "typescript": "^5.6.3",
         "vite": "^5.4.10",
         "vite-plugin-solid": "^2.11.12",
@@ -133,6 +134,22 @@
       },
       "peerDependencies": {
         "react": "^18.3.1",
+      },
+    },
+    "packages/ui-shared-solid": {
+      "name": "@luna/ui-shared-solid",
+      "version": "0.0.1",
+      "dependencies": {
+        "remark-gfm": "^4.0.1",
+        "shiki": "^4.0.2",
+        "solid-markdown": "^2.1.1",
+      },
+      "devDependencies": {
+        "solid-js": "^1.9.12",
+        "typescript": "^5.6.3",
+      },
+      "peerDependencies": {
+        "solid-js": "^1.9.12",
       },
     },
     "packages/ui-ws": {
@@ -283,6 +300,8 @@
     "@luna/tools": ["@luna/tools@workspace:packages/tools"],
 
     "@luna/ui-shared": ["@luna/ui-shared@workspace:packages/ui-shared"],
+
+    "@luna/ui-shared-solid": ["@luna/ui-shared-solid@workspace:packages/ui-shared-solid"],
 
     "@luna/ui-tauri": ["@luna/ui-tauri@workspace:apps/ui-tauri"],
 
