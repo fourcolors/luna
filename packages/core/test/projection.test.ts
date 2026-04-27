@@ -113,6 +113,7 @@ describe("projectOne", () => {
       role: "user",
       text: "hi",
       toolUses: [],
+      attachments: [],
     })
   })
 
@@ -162,6 +163,131 @@ describe("projectOne", () => {
     const out = projectOne(stored("a-tool", 0, "assistant", toolOnly))
     expect(out?.text).toBe("")
     expect(out?.toolUses).toHaveLength(1)
+  })
+
+  it("extracts image attachments on user turns", () => {
+    const payload = {
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "see this" },
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/png", data: "AAAA" },
+          },
+        ],
+      },
+    }
+    const out = projectOne(stored("u-img", 0, "user", payload))
+    expect(out?.text).toBe("see this")
+    expect(out?.attachments).toEqual([
+      { mediaType: "image/png", data: "AAAA" },
+    ])
+  })
+
+  it("keeps image-only user turns (no text, only attachments)", () => {
+    const payload = {
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/jpeg", data: "BBBB" },
+          },
+        ],
+      },
+    }
+    const out = projectOne(stored("u-imgonly", 0, "user", payload))
+    expect(out).not.toBeNull()
+    expect(out?.text).toBe("")
+    expect(out?.attachments).toHaveLength(1)
+  })
+
+  it("filters out unknown media types and non-base64 sources", () => {
+    const payload = {
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "hi" },
+          // disallowed type
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/svg+xml", data: "X" },
+          },
+          // wrong source type
+          {
+            type: "image",
+            source: { type: "url", url: "https://example.com/x.png" },
+          },
+          // non-string data
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/png", data: 42 },
+          },
+        ],
+      },
+    }
+    const out = projectOne(stored("u-bad-img", 0, "user", payload))
+    expect(out?.attachments).toEqual([])
+  })
+
+  it("does not extract attachments on assistant turns", () => {
+    const payload = {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "yo" },
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/png", data: "ZZZZ" },
+          },
+        ],
+      },
+    }
+    const out = projectOne(stored("a-img", 0, "assistant", payload))
+    expect(out?.attachments).toEqual([])
+  })
+})
+
+describe("extractTextPreview — image-only fallback", () => {
+  it("returns [image] for a single-image user turn with no text", () => {
+    const payload = {
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/png", data: "A" },
+          },
+        ],
+      },
+    }
+    expect(extractTextPreview(payload)).toBe("[image]")
+  })
+
+  it("returns [N images] for multi-image user turn with no text", () => {
+    const payload = {
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/png", data: "A" },
+          },
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/jpeg", data: "B" },
+          },
+        ],
+      },
+    }
+    expect(extractTextPreview(payload)).toBe("[2 images]")
   })
 })
 

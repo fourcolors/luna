@@ -29,16 +29,29 @@ export interface ChatToolUse {
   readonly input: unknown
 }
 
+/**
+ * An image attachment on a user turn. `mediaType` is constrained to the four
+ * types accepted by the Anthropic API base64 image source. `data` is raw
+ * base64 (no `data:` URI prefix). v1 scope: images only — PDF is a
+ * different SDK source shape and is out of scope.
+ */
+export interface ChatAttachment {
+  readonly mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+  readonly data: string
+}
+
 /** A single rendered chat turn, role + text + optional tool_use blocks. */
 export interface ChatMessage {
   readonly id: string
   readonly seq: number
   readonly ts: number
   readonly role: "user" | "assistant"
-  /** Concatenated text content. May be empty if the turn was tool-use only. */
+  /** Concatenated text content. May be empty if the turn was attachment-only. */
   readonly text: string
   /** Tool-use blocks in document order. Empty array if none. */
   readonly toolUses: ReadonlyArray<ChatToolUse>
+  /** Image attachments on user turns. Empty array if none. */
+  readonly attachments: ReadonlyArray<ChatAttachment>
 }
 
 const MAX_PREVIEW_CHARS = 140
@@ -57,12 +70,22 @@ const truncate = (s: string, n: number): string =>
  * the payload doesn't carry surfaceable text (tool-use-only assistant turn,
  * structured user content with no text blocks, etc.). The sidebar treats
  * null as "leave the previous preview alone."
+ *
+ * For user turns that carry only image attachments (no text), returns a
+ * synthetic "[image]" preview so the sidebar doesn't go blank.
  */
 export function extractTextPreview(payload: unknown): string | null {
   const text = extractText(payload)
   if (text === null) return null
   const cleaned = collapseWhitespace(text)
-  if (cleaned.length === 0) return null
+  if (cleaned.length === 0) {
+    // Check if this is an image-only user turn and surface a placeholder.
+    const attachments = extractAttachments(payload)
+    if (attachments.length > 0) {
+      return attachments.length === 1 ? "[image]" : `[${attachments.length} images]`
+    }
+    return null
+  }
   return truncate(cleaned, MAX_PREVIEW_CHARS)
 }
 
@@ -114,6 +137,40 @@ function extractToolUses(payload: unknown): ReadonlyArray<ChatToolUse> {
   return out
 }
 
+const ALLOWED_MEDIA_TYPES = new Set<string>([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+])
+
+/**
+ * Pull image attachment blocks out of a user payload's content array.
+ * Only extracts base64 image sources matching the Anthropic API's allowed
+ * media types. Empty array for non-user or non-attachment-bearing payloads.
+ */
+function extractAttachments(payload: unknown): ReadonlyArray<ChatAttachment> {
+  if (!isObj(payload)) return []
+  const msg = payload["message"]
+  if (!isObj(msg)) return []
+  const content = msg["content"]
+  if (!Array.isArray(content)) return []
+  const out: ChatAttachment[] = []
+  for (const block of content) {
+    if (!isObj(block)) continue
+    if (block["type"] !== "image") continue
+    const source = block["source"]
+    if (!isObj(source)) continue
+    if (source["type"] !== "base64") continue
+    const mt = source["media_type"]
+    const data = source["data"]
+    if (typeof mt !== "string" || !ALLOWED_MEDIA_TYPES.has(mt)) continue
+    if (typeof data !== "string") continue
+    out.push({ mediaType: mt as ChatAttachment["mediaType"], data })
+  }
+  return out
+}
+
 /**
  * Project a single stored envelope into a ChatMessage. Returns null for
  * messages we don't surface (system/result/stream_event/hook/status/other,
@@ -124,9 +181,11 @@ export function projectOne(stored: StoredMessage): ChatMessage | null {
   const text = extractText(stored.payload)
   if (text === null) return null
   const toolUses = extractToolUses(stored.payload)
-  // Skip wholly-empty user turns (defensive); keep empty-text assistant
-  // turns when they carry tool_use blocks (caller will render the tools).
-  if (stored.kind === "user" && text.length === 0) return null
+  const attachments = stored.kind === "user" ? extractAttachments(stored.payload) : []
+  // Skip wholly-empty user turns only when there are no attachments either
+  // (defensive). Keep empty-text assistant turns when they carry tool_use
+  // blocks (caller will render the tools).
+  if (stored.kind === "user" && text.length === 0 && attachments.length === 0) return null
   return {
     id: stored.id,
     seq: stored.seq,
@@ -134,6 +193,7 @@ export function projectOne(stored: StoredMessage): ChatMessage | null {
     role: stored.kind,
     text,
     toolUses,
+    attachments,
   }
 }
 
