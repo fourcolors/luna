@@ -12,9 +12,14 @@
  * The React app at apps/ui-web stays the production UI until visual
  * parity is verified (chunk 11), then ui-web-solid is renamed to ui-web.
  */
-import type { Component } from "solid-js"
-import { UI_WS_PROTOCOL_VERSION, initialState } from "@luna/ui-shared/core"
-import { CodeBlock, MarkdownView } from "@luna/ui-shared-solid"
+import { type Component, createMemo } from "solid-js"
+import { UI_WS_PROTOCOL_VERSION } from "@luna/ui-shared/core"
+import {
+  CodeBlock,
+  MarkdownView,
+  createUiStore,
+  createTransport,
+} from "@luna/ui-shared-solid"
 
 const SAMPLE_MD = `# Hello from Solid
 
@@ -27,12 +32,23 @@ console.log("solid markdown works")
 `
 
 export const App: Component = () => {
+  // Smoke-test the new store + transport composable. Real wiring (URL,
+  // token, list-threads on open, etc.) lands with chunk 10. For now we
+  // just verify the primitives mount and react to status changes.
+  const store = createUiStore()
+  const transport = createTransport({
+    onFrame: (frame) => store.dispatch(frame),
+  })
+  const statusLabel = createMemo(() => transport.status().kind)
+  const eventCount = createMemo(() => store.state.events.length)
+
   return (
     <main style={{ padding: "2rem", "font-family": "system-ui, sans-serif" }}>
       <h1>Luna · Solid scaffold</h1>
       <p>Migration in progress. The React UI at port 5173 is still the source of truth.</p>
       <p>Wire protocol version: <code>{UI_WS_PROTOCOL_VERSION}</code></p>
-      <p>Initial events count: <code>{initialState.events.length}</code></p>
+      <p>Transport status: <code>{statusLabel()}</code></p>
+      <p>Live events count: <code>{eventCount()}</code></p>
       <hr />
       <h2>CodeBlock smoke test</h2>
       <CodeBlock lang="ts" source={`const sum = (a: number, b: number) => a + b`} />
