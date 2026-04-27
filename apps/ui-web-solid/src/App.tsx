@@ -13,8 +13,13 @@
  * parity is verified (chunk 11), then ui-web-solid is renamed to ui-web.
  */
 import { type Component, createMemo } from "solid-js"
-import { UI_WS_PROTOCOL_VERSION } from "@luna/ui-shared/core"
 import {
+  UI_WS_PROTOCOL_VERSION,
+  type ChatMessage,
+  type ThreadView,
+} from "@luna/ui-shared/core"
+import {
+  ChatPanel,
   CodeBlock,
   MarkdownView,
   createUiStore,
@@ -54,6 +59,59 @@ export const App: Component = () => {
       <CodeBlock lang="ts" source={`const sum = (a: number, b: number) => a + b`} />
       <h2>MarkdownView smoke test</h2>
       <MarkdownView text={SAMPLE_MD} />
+      <h2>ChatPanel smoke test</h2>
+      <ChatPanel
+        thread={SAMPLE_THREAD}
+        onSend={(id, text) => console.log("send", id, text)}
+        onInterrupt={(id) => console.log("interrupt", id)}
+        disabled={false}
+        enterToSend={false}
+      />
     </main>
   )
+}
+
+// Static fixture for the smoke render — chunk 10 replaces this with
+// store.state.threads.get(state.selectedThreadId).
+const NOW = Date.now()
+
+const SAMPLE_MESSAGES: ReadonlyArray<ChatMessage> = [
+  {
+    id: "m_user_1",
+    seq: 1,
+    ts: NOW,
+    role: "user",
+    text: "Hi! What's 2+2?",
+    toolUses: [],
+    attachments: [],
+  },
+  {
+    id: "m_asst_1",
+    seq: 2,
+    ts: NOW + 1,
+    role: "assistant",
+    text: "**4** — that's basic arithmetic.\n\n```ts\nconst answer = 2 + 2\n```",
+    toolUses: [],
+    attachments: [],
+  },
+]
+
+const SAMPLE_THREAD: ThreadView = {
+  summary: {
+    id: "thread_smoke",
+    parentId: null,
+    title: "Smoke test",
+    tags: [],
+    createdAt: NOW,
+    endedAt: null,
+    model: "claude-sonnet-4",
+    status: "active",
+    lastMessageAt: NOW + 1,
+    lastMessagePreview: "**4** — that's basic arithmetic.",
+  },
+  messages: SAMPLE_MESSAGES,
+  throughSeq: 2,
+  inFlight: null,
+  lastError: null,
+  artifacts: [],
 }

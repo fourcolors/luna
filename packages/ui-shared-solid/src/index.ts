@@ -6,6 +6,9 @@
  */
 export { CodeBlock, CodeBlockFallback, canonLang } from "./CodeBlock.jsx"
 export { MarkdownView } from "./MarkdownView.jsx"
+export { MessageBubble } from "./MessageBubble.jsx"
+export { ToolCallGroup } from "./ToolCallGroup.jsx"
+export { ChatPanel, type ChatPanelProps } from "./ChatPanel.jsx"
 export { createUiStore, type UiStoreHandle } from "./store.js"
 export {
   createTransport,
