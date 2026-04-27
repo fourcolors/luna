@@ -67,3 +67,15 @@ export const relativeTime = (ms: number, now: number = Date.now()): string => {
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`
   return `${Math.floor(diff / 86_400_000)}d`
 }
+
+/**
+ * Compact stringification for ObsEvent fields shown in EventRow
+ * summary lines. Strings get truncated to 30 chars; numbers/booleans
+ * pass through; objects fall through to a 30-char JSON snippet.
+ */
+export const formatVal = (v: unknown): string => {
+  if (v === null || v === undefined) return ""
+  if (typeof v === "string") return v.length > 30 ? v.slice(0, 30) + "…" : v
+  if (typeof v === "number" || typeof v === "boolean") return String(v)
+  return JSON.stringify(v).slice(0, 30)
+}

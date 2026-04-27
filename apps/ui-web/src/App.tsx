@@ -11,6 +11,7 @@ import {
   fileToAttachment,
   filterEvents,
   formatBytes,
+  formatVal,
   initialState,
   reduce,
   relativeTime,
@@ -1053,9 +1054,3 @@ function EventRow({ event }: { event: import("@luna/ui-shared").ObsEvent }) {
   )
 }
 
-function formatVal(v: unknown): string {
-  if (v === null || v === undefined) return ""
-  if (typeof v === "string") return v.length > 30 ? v.slice(0, 30) + "…" : v
-  if (typeof v === "number" || typeof v === "boolean") return String(v)
-  return JSON.stringify(v).slice(0, 30)
-}
