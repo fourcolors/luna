@@ -869,3 +869,84 @@ dead (outer-scope shadowed by inner Layer.provide). Non-blocking.
 - Plugin Play package (separate from M4 server surface)
 - Tauri/React UI client (M5+ per §9)
 
+### Session 2026-04-27 (Phase 24a — SQLite cost-accounting)
+
+**Sterling's design answers (locked this session):**
+- Q1 (experimentId placement): SIDECAR table `cost_event_experiments`
+  per advisor pushback. Frozen §5.1 schema untouched.
+- Q2 (telemetry persistence shape): HYBRID per advisor pushback —
+  Cost stays per-event (semantically natural; CostAccrued IS the unit),
+  Telemetry will use UPSERT counter map + opt-in history table when 24b
+  ships.
+- Phase split: ship 24a only; 24b gated on review; 24c gated on
+  "do we need Labs persistence at all?" YAGNI default = no.
+
+**Shipped this run:**
+
+```
+Commit  Title                                            Tests delta
+──────  ────────────────────────────────────────────────  ──────────
+<24a>   Phase 24a: SQLite-backed CostAccountingService    +7 (sqlite)
+```
+
+`bun --bun x vitest packages/core/test/cost-accounting/sqlite.test.ts`
+→ 7/7 in 273ms. m4 acceptance bundle untouched and continues 6/6.
+Typecheck clean. Full node-vitest run unchanged at 419/14 (sqlite
+tests skip on node, mirroring session-store-sqlite convention).
+
+**Files:**
+- new: `packages/core/src/cost-accounting/cost-store-sqlite.ts` (479 LOC)
+- new: `packages/core/test/cost-accounting/sqlite.test.ts` (323 LOC)
+- mod: `packages/core/src/cost-accounting/index.ts` (+1 export line)
+
+**Pattern learnings:**
+
+13. **Dual-Layer pattern is the canonical SQLite shape** —
+    `XxxService.Default` (in-memory) + `XxxService.fromPath(dbPath)`
+    (SQLite) via interface-augmentation. Mirrors session-store-sqlite.ts
+    line 497-507 exactly. Tests pick which layer at composition time;
+    in-memory acceptance bundles don't need to know SQL exists.
+
+14. **"Events canonical, rollups computed" beats "events + rollup
+    table".** No `cost_buckets` SQL table. `getBucket()` runs a SUM
+    aggregate. Eliminates the divergence-on-crash risk of derived state.
+    Per-dim indexes (`idx_cost_session(session_id, ts)` etc.) make the
+    aggregate fast enough.
+
+15. **Frozen §5.1 schema columns are byte-exact even when the event
+    taxonomy hasn't caught up yet.** `account_id` writes NULL today
+    because `CostAccruedEvent` has no `accountId` field; the column
+    exists because §5.1 mandates it. NOT dead code — schema-driven
+    forward-compat. Sidecar tables (e.g., `cost_event_experiments`)
+    follow the same rule: declare the table, leave the write path
+    forward-compat until the event taxonomy widens.
+
+**Auditor non-blocking follow-ups (carry into 24b/future touch):**
+1. Collapse 3 per-dim aggregate queries (`getBucket` for session/team/
+   workflow) into 1 column-dispatched query — ~30 LOC saved.
+2. `IntegrityError` is imported + `integrity()` helper defined but
+   never raised. Daemon currently swallows insert errors via
+   `console.error` (silent data-loss risk). Either drop the helper or
+   wire it up on insert failure.
+3. Daemon insert errors should route through `obs.emit` as Error
+   events for parity with the in-memory daemon's `catchAllCause`
+   posture.
+4. `experimentId` sidecar write path (lines 342-345) unreachable today
+   — `as unknown` cast peeks for a field that doesn't exist in
+   `CostAccruedEvent`. Acceptable scaffolding because §5.1-required
+   sidecar table must exist regardless. Trim path when event taxonomy
+   widens.
+
+**Next phase: 24b (TelemetryService UPSERT counter map).** Gated on
+Sterling reviewing 24a. When dispatched, must:
+- Use UPSERT (`INSERT ON CONFLICT DO UPDATE SET value = value + ?`)
+  on a steady-state `telemetry_counters(name, tags_key, tags_json,
+  value, last_updated_ts)` table.
+- Restore counter map from SQL on Layer init.
+- Optionally support per-counter history flag → opt-in
+  `telemetry_history(name, tags_key, delta, ts)` table; disabled by
+  default to honor HANDOFF Pattern #6 (storage-agnostic snapshot()).
+
+**Phase 24c (Labs persistence) remains gated** on Sterling answering
+"do we need Labs persistence at all?" — YAGNI default is NO.
+
