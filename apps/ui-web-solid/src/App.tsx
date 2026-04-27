@@ -1,163 +1,413 @@
 /**
- * Solid migration scaffold — chunk 1 of the migration plan.
+ * Solid migration — chunk 10/13: full App shell.
  *
- * This is the empty App shell that will be filled in chunk-by-chunk:
- *   - 5: transport hook + reducer-backed createStore
- *   - 6: ChatPanel + composer
- *   - 7: Sidebar
- *   - 8: ArtifactPanel
- *   - 9: ObsPanel
- *   - 10: settings panel + connection wiring
+ * Mirrors apps/ui-web/src/App.tsx top-level component (line 98+):
+ *   - persisted config (URL, token, model, enterToSend) in localStorage
+ *   - createUiStore (reducer-backed) holds all chat/obs state
+ *   - createTransport drives the WebSocket; onFrame → store.dispatch
+ *   - settings panel auto-opens when not connected
+ *   - Chat pane: Sidebar + ChatPanel (+ ArtifactPanel when artifacts)
+ *   - Obs pane: ObsPanel (kind chips, drop banner, event log)
  *
- * The React app at apps/ui-web stays the production UI until visual
- * parity is verified (chunk 11), then ui-web-solid is renamed to ui-web.
+ * Reactivity contract:
+ *   - cfg + selectedKinds + pane + settingsOpen are signals
+ *   - store.state is a Solid store proxy — reading any field tracks it
+ *   - createMemo wraps derived bools (isConnected, chatEnabled, etc.)
+ *     so JSX reads them without re-running the whole effect
+ *
+ * Differences from React:
+ *   - useReducer → createUiStore (reconcile-patched store.state)
+ *   - useRef<TransportHandle> → composable owns the live handle internally
+ *   - useEffect cleanup on unmount is implicit via composable.onCleanup
  */
-import { type Component, createMemo } from "solid-js"
+import { type Component, For, Show, createEffect, createMemo, createSignal } from "solid-js"
 import {
-  UI_WS_PROTOCOL_VERSION,
-  type Artifact,
-  type ChatMessage,
-  type ThreadView,
+  filterEvents,
+  type ClientFrame,
+  type ChatAttachment,
 } from "@luna/ui-shared/core"
 import {
   ArtifactPanel,
   ChatPanel,
-  CodeBlock,
   ConnectionSummary,
-  MarkdownView,
   ObsPanel,
   Sidebar,
-  createUiStore,
   createTransport,
+  createUiStore,
 } from "@luna/ui-shared-solid"
 
-const SAMPLE_MD = `# Hello from Solid
+const STORAGE_KEY = "ui-ws.config"
+const DEFAULT_URL = "ws://127.0.0.1:4753/ui"
+const DEFAULT_MODEL = "claude-sonnet-4-6"
 
-Some prose with \`inline code\`, then a fenced block:
+const MODEL_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "claude-opus-4-7", label: "Opus 4.7 — most capable" },
+  { value: "claude-sonnet-4-6", label: "Sonnet 4.6 — balanced (default)" },
+  { value: "claude-haiku-4-5", label: "Haiku 4.5 — fastest" },
+  { value: "claude-opus-4-6", label: "Opus 4.6 — prior gen" },
+  { value: "claude-sonnet-4-5", label: "Sonnet 4.5 — prior gen" },
+]
 
-\`\`\`ts
-const x: number = 42
-console.log("solid markdown works")
-\`\`\`
-`
-
-export const App: Component = () => {
-  // Smoke-test the new store + transport composable. Real wiring (URL,
-  // token, list-threads on open, etc.) lands with chunk 10. For now we
-  // just verify the primitives mount and react to status changes.
-  const store = createUiStore()
-  const transport = createTransport({
-    onFrame: (frame) => store.dispatch(frame),
-  })
-  const statusLabel = createMemo(() => transport.status().kind)
-  const eventCount = createMemo(() => store.state.events.length)
-
-  return (
-    <main style={{ padding: "2rem", "font-family": "system-ui, sans-serif" }}>
-      <h1>Luna · Solid scaffold</h1>
-      <p>Migration in progress. The React UI at port 5173 is still the source of truth.</p>
-      <p>Wire protocol version: <code>{UI_WS_PROTOCOL_VERSION}</code></p>
-      <p>Transport status: <code>{statusLabel()}</code></p>
-      <p>Live events count: <code>{eventCount()}</code></p>
-      <hr />
-      <h2>CodeBlock smoke test</h2>
-      <CodeBlock lang="ts" source={`const sum = (a: number, b: number) => a + b`} />
-      <h2>MarkdownView smoke test</h2>
-      <MarkdownView text={SAMPLE_MD} />
-      <h2>ConnectionSummary smoke test</h2>
-      <ConnectionSummary
-        status={{ kind: "open" }}
-        url="ws://127.0.0.1:4753/ui"
-        model="claude-sonnet-4"
-        chatCap={true}
-      />
-      <h2>ObsPanel smoke test</h2>
-      <ObsPanel
-        allKinds={["sdk:start", "sdk:tool"]}
-        selectedKinds={new Set()}
-        toggleKind={() => {}}
-        clearKinds={() => {}}
-        filtered={[]}
-        totalEvents={0}
-        lastDrop={null}
-        droppedTotal={0}
-        lastPingAt={null}
-      />
-      <h2>ArtifactPanel smoke test</h2>
-      <ArtifactPanel artifacts={SAMPLE_ARTIFACTS} />
-      <h2>Sidebar smoke test</h2>
-      <div style={{ display: "flex", gap: "1rem", "max-height": "400px" }}>
-        <Sidebar
-          threads={[SAMPLE_THREAD.summary]}
-          threadViews={new Map([[SAMPLE_THREAD.summary.id, SAMPLE_THREAD]])}
-          selectedId={SAMPLE_THREAD.summary.id}
-          onSelect={(id) => console.log("select", id)}
-          onNew={() => console.log("new thread")}
-        />
-        <ChatPanel
-          thread={SAMPLE_THREAD}
-          onSend={(id, text) => console.log("send", id, text)}
-          onInterrupt={(id) => console.log("interrupt", id)}
-          disabled={false}
-          enterToSend={false}
-        />
-      </div>
-    </main>
-  )
+interface PersistedConfig {
+  url: string
+  token: string
+  model: string
+  /** When true, plain Enter sends; Shift+Enter newline. Default false. */
+  enterToSend: boolean
 }
 
-// Static fixture for the smoke render — chunk 10 replaces this with
-// store.state.threads.get(state.selectedThreadId).
-const NOW = Date.now()
+const loadConfig = (): PersistedConfig => {
+  const envToken =
+    (import.meta.env["VITE_UI_WS_TOKEN"] as string | undefined) ?? ""
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<PersistedConfig>
+      return {
+        url: parsed.url ?? DEFAULT_URL,
+        token:
+          parsed.token && parsed.token.length >= 16 ? parsed.token : envToken,
+        model: parsed.model ?? DEFAULT_MODEL,
+        enterToSend: parsed.enterToSend ?? false,
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return {
+    url: DEFAULT_URL,
+    token: envToken,
+    model: DEFAULT_MODEL,
+    enterToSend: false,
+  }
+}
 
-const SAMPLE_MESSAGES: ReadonlyArray<ChatMessage> = [
-  {
-    id: "m_user_1",
-    seq: 1,
-    ts: NOW,
-    role: "user",
-    text: "Hi! What's 2+2?",
-    toolUses: [],
-    attachments: [],
-  },
-  {
-    id: "m_asst_1",
-    seq: 2,
-    ts: NOW + 1,
-    role: "assistant",
-    text: "**4** — that's basic arithmetic.\n\n```ts\nconst answer = 2 + 2\n```",
-    toolUses: [],
-    attachments: [],
-  },
-]
+const saveConfig = (cfg: PersistedConfig): void => {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg))
+  } catch {
+    // ignore
+  }
+}
 
-const SAMPLE_ARTIFACTS: ReadonlyArray<Artifact> = [
-  {
-    id: "art_1",
-    source: "code-fence",
-    path: null,
-    lang: "ts",
-    title: "answer.ts",
-    content: "const answer = 2 + 2\nconsole.log(answer)\n",
-  },
-]
+type Pane = "chat" | "obs"
 
-const SAMPLE_THREAD: ThreadView = {
-  summary: {
-    id: "thread_smoke",
-    parentId: null,
-    title: "Smoke test",
-    tags: [],
-    createdAt: NOW,
-    endedAt: null,
-    model: "claude-sonnet-4",
-    status: "active",
-    lastMessageAt: NOW + 1,
-    lastMessagePreview: "**4** — that's basic arithmetic.",
-  },
-  messages: SAMPLE_MESSAGES,
-  throughSeq: 2,
-  inFlight: null,
-  lastError: null,
-  artifacts: [],
+export const App: Component = () => {
+  const [cfg, setCfg] = createSignal<PersistedConfig>(loadConfig())
+  const [pane, setPane] = createSignal<Pane>("chat")
+  const [selectedKinds, setSelectedKinds] = createSignal<ReadonlySet<string>>(
+    new Set(),
+  )
+  const [settingsOpen, setSettingsOpen] = createSignal(false)
+
+  const store = createUiStore()
+  const transport = createTransport({
+    onFrame: (frame) => {
+      store.dispatch(frame)
+      // Sidebar freshness: any frame that mutates a thread's last-message
+      // metadata should refresh the list. Server orders by lastMessageAt,
+      // so the active thread bubbles to the top.
+      if (
+        frame.type === "thread-created" ||
+        frame.type === "assistant-done" ||
+        frame.type === "user-accepted"
+      ) {
+        transport.send({ type: "list-threads" })
+      }
+    },
+    onOpen: (handle) => {
+      // On open, request the thread list immediately so the sidebar
+      // populates without a manual click. Also collapse settings if it
+      // was left open from the disconnected state.
+      handle.send({ type: "list-threads" })
+      setSettingsOpen(false)
+    },
+  })
+
+  // Persist config edits as they happen so reload doesn't lose tweaks.
+  createEffect(() => {
+    saveConfig(cfg())
+  })
+
+  const send = (frame: ClientFrame): void => transport.send(frame)
+  const onConnect = (): void => {
+    const c = cfg()
+    transport.connect(c.url, c.token)
+  }
+  const onDisconnect = (): void => transport.disconnect()
+
+  const allKinds = createMemo(() => {
+    const set = new Set<string>(store.state.advertisedKinds)
+    for (const k of store.state.seenKinds) set.add(k)
+    return Array.from(set).sort()
+  })
+
+  const filtered = createMemo(() =>
+    filterEvents(store.state.events, selectedKinds()),
+  )
+
+  const toggleKind = (kind: string): void => {
+    const next = new Set(selectedKinds())
+    if (next.has(kind)) next.delete(kind)
+    else next.add(kind)
+    setSelectedKinds(next)
+  }
+
+  const selectThread = (id: string): void => {
+    store.dispatch({ tag: "select-thread", threadId: id })
+    // Subscribe (idempotent server-side) so live frames arrive.
+    send({ type: "subscribe", threadId: id })
+  }
+
+  const newThread = (): void => {
+    send({ type: "new-thread", model: cfg().model })
+  }
+
+  const sendUserMessage = (
+    threadId: string,
+    text: string,
+    attachments?: ReadonlyArray<ChatAttachment>,
+  ): void => {
+    send({
+      type: "user-message",
+      threadId,
+      text,
+      ...(attachments ? { attachments } : {}),
+    })
+  }
+
+  const interrupt = (threadId: string): void => {
+    send({ type: "interrupt", threadId })
+  }
+
+  const isConnected = createMemo(() => transport.status().kind === "open")
+  const isConnecting = createMemo(
+    () => transport.status().kind === "connecting",
+  )
+  const chatEnabled = createMemo(
+    () => isConnected() && store.state.capabilities.chat,
+  )
+  const selectedThread = createMemo(() =>
+    store.state.selectedThreadId !== null
+      ? (store.state.threads.get(store.state.selectedThreadId) ?? null)
+      : null,
+  )
+
+  // Show settings panel automatically when not yet connected (so the
+  // first-run experience surfaces URL/Token), or when explicitly toggled.
+  const showSettings = createMemo(
+    () => settingsOpen() || (!isConnected() && !isConnecting()),
+  )
+
+  const isCustomModel = createMemo(
+    () => !MODEL_OPTIONS.some((o) => o.value === cfg().model),
+  )
+
+  return (
+    <div class="app">
+      <header class="topbar">
+        <div class="row">
+          <strong class="brand">⚡ Agent Chat</strong>
+          <ConnectionSummary
+            status={transport.status()}
+            url={cfg().url}
+            model={cfg().model}
+            chatCap={store.state.capabilities.chat}
+          />
+          <span style={{ flex: 1 }} />
+          <Show when={isConnected()}>
+            <button
+              class={`chip ${settingsOpen() ? "active" : ""}`}
+              onClick={() => setSettingsOpen((v) => !v)}
+              title="Connection settings"
+            >
+              ⚙ Settings
+            </button>
+          </Show>
+          <button
+            class={`chip ${pane() === "chat" ? "active" : ""}`}
+            onClick={() => setPane("chat")}
+          >
+            Chat
+          </button>
+          <button
+            class={`chip ${pane() === "obs" ? "active" : ""}`}
+            onClick={() => setPane("obs")}
+          >
+            Events
+          </button>
+        </div>
+        <Show when={showSettings()}>
+          <div class="row settings-row">
+            <label>
+              URL{" "}
+              <input
+                value={cfg().url}
+                onInput={(e) =>
+                  setCfg({ ...cfg(), url: e.currentTarget.value })
+                }
+                spellcheck={false}
+                autocapitalize="off"
+                autocorrect="off"
+              />
+            </label>
+            <label>
+              Token{" "}
+              <input
+                type="password"
+                value={cfg().token}
+                onInput={(e) =>
+                  setCfg({ ...cfg(), token: e.currentTarget.value })
+                }
+                placeholder="≥16 chars"
+              />
+            </label>
+            <label>
+              Model{" "}
+              <select
+                value={isCustomModel() ? "__custom" : cfg().model}
+                onChange={(e) => {
+                  const v = e.currentTarget.value
+                  if (v === "__custom") return
+                  setCfg({ ...cfg(), model: v })
+                }}
+              >
+                <For each={MODEL_OPTIONS}>
+                  {(o) => <option value={o.value}>{o.label}</option>}
+                </For>
+                <option value="__custom">Custom…</option>
+              </select>
+            </label>
+            <Show when={isCustomModel()}>
+              <label>
+                Model ID{" "}
+                <input
+                  value={cfg().model}
+                  onInput={(e) =>
+                    setCfg({ ...cfg(), model: e.currentTarget.value })
+                  }
+                  spellcheck={false}
+                  placeholder="claude-…"
+                />
+              </label>
+            </Show>
+            <label
+              class="toggle"
+              title="When on, plain Enter sends; Shift+Enter inserts a newline"
+            >
+              <input
+                type="checkbox"
+                checked={cfg().enterToSend}
+                onChange={(e) =>
+                  setCfg({ ...cfg(), enterToSend: e.currentTarget.checked })
+                }
+              />
+              <span>Enter to send</span>
+            </label>
+            <Show
+              when={isConnected() || isConnecting()}
+              fallback={
+                <button
+                  onClick={onConnect}
+                  disabled={!cfg().token || cfg().token.length < 16}
+                >
+                  Connect
+                </button>
+              }
+            >
+              <button onClick={onDisconnect}>Disconnect</button>
+            </Show>
+          </div>
+        </Show>
+        <Show when={store.state.closeReason}>
+          {(reason) => (
+            <div class="banner closed">
+              <span>closed by server: {reason()}</span>
+              <button
+                class="chip"
+                onClick={onConnect}
+                disabled={!cfg().token || cfg().token.length < 16}
+              >
+                Reconnect
+              </button>
+            </div>
+          )}
+        </Show>
+        <Show
+          when={
+            (transport.status().kind === "closed" ||
+              transport.status().kind === "error") &&
+            !store.state.closeReason
+          }
+        >
+          <div class="banner closed">
+            <span>
+              {(() => {
+                const s = transport.status()
+                if (s.kind === "error") return `connection error: ${s.message}`
+                if (s.kind === "closed") {
+                  return `disconnected (code ${s.code}${s.reason ? ` · ${s.reason}` : ""})`
+                }
+                return ""
+              })()}
+            </span>
+            <button
+              class="chip"
+              onClick={onConnect}
+              disabled={!cfg().token || cfg().token.length < 16}
+            >
+              Reconnect
+            </button>
+          </div>
+        </Show>
+      </header>
+
+      <Show
+        when={pane() === "chat"}
+        fallback={
+          <ObsPanel
+            allKinds={allKinds()}
+            selectedKinds={selectedKinds()}
+            toggleKind={toggleKind}
+            clearKinds={() => setSelectedKinds(new Set())}
+            filtered={filtered()}
+            totalEvents={store.state.events.length}
+            lastDrop={store.state.lastDrop}
+            droppedTotal={store.state.droppedTotal}
+            lastPingAt={store.state.lastPingAt}
+          />
+        }
+      >
+        <div
+          class={`chat-layout${
+            selectedThread() && selectedThread()!.artifacts.length > 0
+              ? " with-artifacts"
+              : ""
+          }`}
+        >
+          <Sidebar
+            threads={store.state.threadList}
+            threadViews={store.state.threads}
+            selectedId={store.state.selectedThreadId}
+            onSelect={selectThread}
+            onNew={chatEnabled() ? newThread : null}
+          />
+          <ChatPanel
+            thread={selectedThread()}
+            onSend={sendUserMessage}
+            onInterrupt={interrupt}
+            disabled={!chatEnabled()}
+            enterToSend={cfg().enterToSend}
+          />
+          <Show
+            when={
+              selectedThread() && selectedThread()!.artifacts.length > 0
+            }
+          >
+            <ArtifactPanel artifacts={selectedThread()!.artifacts} />
+          </Show>
+        </div>
+      </Show>
+    </div>
+  )
 }
