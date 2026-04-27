@@ -937,16 +937,62 @@ tests skip on node, mirroring session-store-sqlite convention).
    sidecar table must exist regardless. Trim path when event taxonomy
    widens.
 
-**Next phase: 24b (TelemetryService UPSERT counter map).** Gated on
-Sterling reviewing 24a. When dispatched, must:
-- Use UPSERT (`INSERT ON CONFLICT DO UPDATE SET value = value + ?`)
-  on a steady-state `telemetry_counters(name, tags_key, tags_json,
-  value, last_updated_ts)` table.
-- Restore counter map from SQL on Layer init.
-- Optionally support per-counter history flag → opt-in
-  `telemetry_history(name, tags_key, delta, ts)` table; disabled by
-  default to honor HANDOFF Pattern #6 (storage-agnostic snapshot()).
+**Phase 24c (Labs persistence) — DROPPED (YAGNI).** Sterling confirmed
+2026-04-27. LabsService has zero state surface (`runExperiment` returns
+`ExperimentReport` and forgets). Revisit only if a real caller demands
+queryable experiment history.
 
-**Phase 24c (Labs persistence) remains gated** on Sterling answering
-"do we need Labs persistence at all?" — YAGNI default is NO.
+---
+
+## Session 2026-04-27 (Phase 24b — SQLite TelemetryService)
+
+**Shipped:** `TelemetryService.fromPath(dbPath, options?)` — SQLite-backed
+Layer mirroring the Phase 24a cost-store pattern. SQL is the sole source
+of truth (no `Ref<Map>` mirror — advisor mandate). UPSERT on
+`(name, tags_key)` keeps the hot path single-statement.
+
+**Files:**
+- NEW `packages/core/src/telemetry/telemetry-store-sqlite.ts` (327 LOC)
+- NEW `packages/core/test/telemetry/sqlite.test.ts` (253 LOC, 7/7 green)
+- MODIFIED `packages/core/src/telemetry/telemetry.ts` (+`export` on `counterKey`)
+- MODIFIED `packages/core/src/telemetry/index.ts` (re-exports)
+
+**Schema:**
+- `telemetry_counters(name, tags_key, tags_json, value INTEGER, last_updated_ts)`
+  PRIMARY KEY (name, tags_key) WITHOUT ROWID
+- `telemetry_history(id, name, tags_key, tags_json, delta, ts)` —
+  opt-in via `{ history: { enabled, nameAllowlist? } }`, default OFF
+
+**Pattern learnings (additions to running list):**
+
+16. **SQL table IS the map** — when migrating an in-memory `Ref<Map>`
+    service to SQLite, prefer dropping the in-memory mirror entirely
+    over restoring it on Layer init. Single source of truth eliminates
+    dual-write bug class. (Phase 24a kept a Ref-backed daemon because
+    cost events stream in via §16 subscribe; Phase 24b had no such
+    constraint and went pure-SQL.)
+17. **No-daemon SQLite Layers are simpler than daemon ones** — when the
+    service has no §16 events to subscribe to, the SQLite Layer needs
+    only ONE finalizer (`db.close`). LIFO ordering becomes trivially
+    correct. Telemetry, AccountBroker, and similar pull-only services
+    fit this shape; Cost (event-driven) does not.
+18. **Advisor caught a HANDOFF ambiguity** — original Phase 24b
+    pre-spec said "restore counter map from SQL on Layer init,"
+    implying a Ref<Map> mirror. Advisor flagged this as dual-source-of-
+    truth risk. The clean read is "SQL is the map" — ambiguity resolved
+    by interpretation, not amendment. Future SQLite phases: if pre-
+    spec implies hybrid storage, ask if it's actually needed.
+
+**SQL-persistence epic (24a/24b/24c) status: DONE.** 24a + 24b shipped;
+24c dropped YAGNI. Three running follow-ups from 24a auditor remain
+non-blocking:
+1. Collapse 3 per-dim aggregate queries in cost-store-sqlite into 1
+2. Use `IntegrityError` not `console.error` on insert failure
+3. Route daemon insert errors through `obs.emit` as Error events
+
+24b auditor follow-ups (also non-blocking):
+- Consider gating `BEGIN IMMEDIATE` on `historyAllows(name)` for hot-path
+  throughput if profiling shows the overhead matters
+- Back-port 24b's typed `ConfigError` for bun:sqlite import failure
+  to 24a (currently uses `Effect.orDie`)
 
