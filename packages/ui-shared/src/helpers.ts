@@ -52,3 +52,18 @@ export const countLines = (s: string): number => {
   // Don't count a trailing newline as a separate empty line.
   return s.endsWith("\n") ? s.split("\n").length - 1 : s.split("\n").length
 }
+
+/**
+ * Compact relative-time label for thread rows: "just now", "5m", "2h",
+ * "3d". Coarse on purpose — this lives next to a thread title and just
+ * needs to convey "fresh vs stale".
+ *
+ * Takes a `now` arg for testability; defaults to Date.now().
+ */
+export const relativeTime = (ms: number, now: number = Date.now()): string => {
+  const diff = now - ms
+  if (diff < 60_000) return "just now"
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`
+  return `${Math.floor(diff / 86_400_000)}d`
+}
