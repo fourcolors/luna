@@ -1,4 +1,4 @@
-# Experiment-Agent — Orchestrator Handoff
+# Luna — Orchestrator Handoff
 
 Continuity doc between orchestrator sessions. Keep it short and append-only at
 the bottom so the next orchestrator can read the tail and resume.
@@ -991,15 +991,93 @@ of truth (no `Ref<Map>` mirror — advisor mandate). UPSERT on
     spec implies hybrid storage, ask if it's actually needed.
 
 **SQL-persistence epic (24a/24b/24c) status: DONE.** 24a + 24b shipped;
-24c dropped YAGNI. Three running follow-ups from 24a auditor remain
-non-blocking:
-1. Collapse 3 per-dim aggregate queries in cost-store-sqlite into 1
-2. Use `IntegrityError` not `console.error` on insert failure
-3. Route daemon insert errors through `obs.emit` as Error events
+24c dropped YAGNI.
 
-24b auditor follow-ups (also non-blocking):
-- Consider gating `BEGIN IMMEDIATE` on `historyAllows(name)` for hot-path
-  throughput if profiling shows the overhead matters
-- Back-port 24b's typed `ConfigError` for bun:sqlite import failure
-  to 24a (currently uses `Effect.orDie`)
+---
+
+## Session 2026-04-27 (Phase 24a/24b auditor follow-ups — RESOLVED)
+
+**Shipped:** Three 24a auditor follow-ups + 24b's typed `ConfigError`
+back-port. All non-blocking items closed.
+
+**Files:**
+- MODIFIED `packages/core/src/cost-accounting/cost-store-sqlite.ts`
+  (+187/-83-ish reshape; daemon body Effect.sync → Effect.gen)
+- MODIFIED `packages/core/test/cost-accounting/sqlite.test.ts`
+  (+122 LOC; new fail-injection test stubs `crypto.randomUUID`)
+
+**What changed:**
+1. **Aggregate queries collapsed** — `getBucket` now uses a static
+   `Record<Dim, BunStmt>` dispatch table built from one SQL template.
+   Each statement keeps a literal `WHERE col = ?` clause so per-column
+   indexes stay reachable. Advisor caught a `CASE :dim WHEN ...`
+   variant that would have defeated the indexes.
+2. **Typed insert failures** — daemon body converted from `Effect.sync`
+   to `Effect.gen`. On Left, builds `IntegrityError` via `integrity()`
+   and emits `obs.emit({ kind: "Error", errorTag: "CostInsertFailed",
+   context: { eventTs, eventId, cause } })`. Outer
+   `catchAllCause(() => Effect.void)` mirrors in-memory parity —
+   fiber stays alive (emit-and-continue).
+3. **`console.error` removed** — silent data-loss risk closed. Failures
+   now surface in the obs stream the user actually consumes.
+4. **`ConfigError` back-port** — Layer signature gained `ConfigError`
+   for `bun:sqlite` import failure. Verified zero production callers
+   (test-only API) before changing.
+
+**Test:** New fail-injection test stubs `crypto.randomUUID` to force
+duplicate-PK insert; asserts exactly one `CostInsertFailed`
+ErrorEvent with `IntegrityError` cause attached, plus daemon survival
+via subsequent valid event landing in the bucket.
+
+**Verification:**
+- `bun test` SQLite: 15/15 pass (8 cost + 7 telemetry, 505ms)
+- `node vitest run`: 419/419 (28 skipped — SQLite tests gate on
+  `globalThis.Bun` per existing workspace pattern)
+- `bun run typecheck`: clean
+
+**Pattern learning #19 (added to running list):**
+
+19. **API-channel changes are free when callers are test-only.**
+    Before back-porting 24b's `ConfigError` to 24a, grep for
+    `fromPath` callers — discovered zero production sites, only test
+    files. Changing the Layer error channel from `never` to
+    `ConfigError` was therefore costless. Lesson: always grep callers
+    before assuming an error-channel change is "breaking."
+
+**ONLY remaining 24a/24b follow-up (intentional):**
+- HANDOFF #4: `experimentId` sidecar write path retained as
+  forward-compat scaffolding per Pattern #15. Trim when event taxonomy
+  widens. Do not remove pre-emptively.
+
+24b cosmetic follow-up (low priority, non-blocking):
+- Consider gating `BEGIN IMMEDIATE` on `historyAllows(name)` for
+  hot-path throughput if profiling shows the overhead matters.
+  Speculative; no profiling signal yet.
+
+---
+
+## Project status — 2026-04-27
+
+**Luna is in a clean, healthy, milestone-complete state.**
+
+- Working tree: clean, all committed
+- Full repo tests: 419 passed | 28 skipped | 0 failed (canonical
+  `bun run test` → vitest under node)
+- SQLite-specific tests: 15/15 pass under `bun test`
+- Typecheck: zero errors
+- ui-ws WebSocket dev-server: confirmed working under bun (live probe
+  to `ws://127.0.0.1:4753/ui` returns hello frame end-to-end)
+
+**Milestones complete: M0 → M4 + SQL persistence epic (24a/24b).**
+
+**No active work queued.** Next-session orchestrator should:
+1. Read DESIGN.md §15 to confirm M5+ scope when Sterling chooses to
+   resume — but Effect v4 migration is **deferred indefinitely**
+   per Sterling's call (waiting for upstream stability).
+2. M5 was originally "SQL persistence + Effect v4 spike." SQL
+   persistence is done; the v4 spike was never blocking and is now
+   off the roadmap until Effect v4 ships stable.
+3. Other M5+ items (Tauri/React UI client per §9, plugin play
+   separate package, full acceptance test bundle) are
+   roadmap-revisable — wait for Sterling's direction.
 
