@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "dev:server": "bun run scripts/dev-server.ts",
+    "dev:preview": "vite build --mode development && vite preview",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
