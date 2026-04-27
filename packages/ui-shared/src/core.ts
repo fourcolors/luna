@@ -17,6 +17,12 @@ export {
   truncate,
 } from "./helpers.js"
 export {
+  ALLOWED_ATTACH_TYPES,
+  MAX_ATTACH_BYTES,
+  fileToAttachment,
+  type PendingAttachment,
+} from "./attachments.js"
+export {
   initialState,
   reduce,
   filterEvents,
