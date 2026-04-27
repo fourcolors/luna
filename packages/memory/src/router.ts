@@ -12,7 +12,7 @@
  */
 import { Effect, Stream } from "effect"
 import { MemoryBackendError } from "@luna/core"
-import type { MemoryBackend } from "./backend.js"
+import { hasVectorSearch, type MemoryBackend } from "./backend.js"
 import type {
   MemoryExport,
   MemoryQuery,
@@ -43,6 +43,26 @@ export interface MemoryRouter {
   readonly backendFor: (namespace: string) => MemoryBackend
   readonly exportAll: () => Effect.Effect<
     ReadonlyArray<MemoryExport>,
+    MemoryBackendError
+  >
+  /**
+   * Vector search across the namespace's matched backend. If the backend
+   * isn't vector-capable, the stream fails with MemoryBackendError("router",
+   * "no vector backend for namespace X"). If no namespace is provided, the
+   * router fans out to ALL vector-capable backends (Stream.mergeAll); if
+   * none are registered, fails with the same error.
+   *
+   * `mode: "vec"` (default) does pure cosine ranking. `"hybrid"` will gain
+   * BM25/FTS5 support in Phase 26 — vector backends currently return a
+   * not-implemented MemoryBackendError for hybrid mode.
+   */
+  readonly search: (args: {
+    readonly queryText: string
+    readonly topK?: number
+    readonly namespace?: string
+    readonly mode?: "vec" | "hybrid"
+  }) => Stream.Stream<
+    { readonly record: MemoryRecord; readonly score: number },
     MemoryBackendError
   >
 }
@@ -102,5 +122,39 @@ export function makeRouter(rules: ReadonlyArray<Rule>): MemoryRouter {
       return out
     })
 
-  return { put, get, query, delete: del, backendFor, exportAll }
+  const search: MemoryRouter["search"] = (args) => {
+    if (args.namespace !== undefined) {
+      const backend = backendFor(args.namespace)
+      if (!hasVectorSearch(backend)) {
+        return Stream.fail(
+          new MemoryBackendError({
+            backend: "router",
+            op: "search",
+            namespace: args.namespace,
+            cause: new Error(
+              `no vector backend for namespace ${args.namespace}`,
+            ),
+          }),
+        )
+      }
+      return backend.search(args)
+    }
+    // No namespace → fan out across every vector-capable backend.
+    const vecBackends = rules
+      .map((r) => r.backend)
+      .filter(hasVectorSearch)
+    if (vecBackends.length === 0) {
+      return Stream.fail(
+        new MemoryBackendError({
+          backend: "router",
+          op: "search",
+          cause: new Error("no vector backends registered"),
+        }),
+      )
+    }
+    const streams = vecBackends.map((b) => b.search(args))
+    return Stream.mergeAll(streams, { concurrency: vecBackends.length })
+  }
+
+  return { put, get, query, delete: del, backendFor, exportAll, search }
 }
