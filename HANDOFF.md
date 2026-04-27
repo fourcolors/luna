@@ -1081,6 +1081,8 @@ via subsequent valid event landing in the bucket.
 3. Other M5+ items (Tauri/Solid desktop client per §9 — Tauri shell
    over the live `@luna/ui-web` Solid app; plugin play separate
    package; full acceptance test bundle) are roadmap-revisable —
-   wait for Sterling's direction. Note: `apps/ui-web-react` is an
-   abandoned scaffold; `apps/ui-web` (SolidJS) is canonical.
+   wait for Sterling's direction. Apps in tree: `apps/ui-web`
+   (SolidJS, canonical), `apps/ui-tauri` (Tauri shell),
+   `apps/agent-cli`. The legacy `apps/ui-web-react` scaffold was
+   removed 2026-04-27.
 
