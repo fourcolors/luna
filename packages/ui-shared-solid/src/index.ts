@@ -14,6 +14,10 @@ export {
   type ConnectionSummaryProps,
 } from "./ConnectionSummary.jsx"
 export { Sidebar, type SidebarProps } from "./Sidebar.jsx"
+export {
+  ArtifactPanel,
+  type ArtifactPanelProps,
+} from "./ArtifactPanel.jsx"
 export { createUiStore, type UiStoreHandle } from "./store.js"
 export {
   createTransport,

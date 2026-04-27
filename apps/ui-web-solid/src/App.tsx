@@ -15,10 +15,12 @@
 import { type Component, createMemo } from "solid-js"
 import {
   UI_WS_PROTOCOL_VERSION,
+  type Artifact,
   type ChatMessage,
   type ThreadView,
 } from "@luna/ui-shared/core"
 import {
+  ArtifactPanel,
   ChatPanel,
   CodeBlock,
   ConnectionSummary,
@@ -68,6 +70,8 @@ export const App: Component = () => {
         model="claude-sonnet-4"
         chatCap={true}
       />
+      <h2>ArtifactPanel smoke test</h2>
+      <ArtifactPanel artifacts={SAMPLE_ARTIFACTS} />
       <h2>Sidebar smoke test</h2>
       <div style={{ display: "flex", gap: "1rem", "max-height": "400px" }}>
         <Sidebar
@@ -111,6 +115,17 @@ const SAMPLE_MESSAGES: ReadonlyArray<ChatMessage> = [
     text: "**4** — that's basic arithmetic.\n\n```ts\nconst answer = 2 + 2\n```",
     toolUses: [],
     attachments: [],
+  },
+]
+
+const SAMPLE_ARTIFACTS: ReadonlyArray<Artifact> = [
+  {
+    id: "art_1",
+    source: "code-fence",
+    path: null,
+    lang: "ts",
+    title: "answer.ts",
+    content: "const answer = 2 + 2\nconsole.log(answer)\n",
   },
 ]
 
