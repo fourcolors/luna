@@ -171,10 +171,25 @@ export interface NewThreadFrame {
   readonly systemPrompt?: string
 }
 
+/**
+ * Image attachment on a user turn. `data` is raw base64 (no `data:` prefix).
+ * Constrained to the four media types the Anthropic API accepts.
+ * Mirrors `ChatAttachment` in @luna/ui-shared and @luna/core.
+ */
+export interface WireAttachment {
+  readonly mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+  readonly data: string
+}
+
 export interface UserMessageFrame {
   readonly type: "user-message"
   readonly threadId: string
   readonly text: string
+  /**
+   * Optional image attachments. Max 4MB raw each. Validated server-side;
+   * unknown mediaTypes are rejected with `assistant-error{kind:"sdk"}`.
+   */
+  readonly attachments?: ReadonlyArray<WireAttachment>
 }
 
 export interface InterruptFrame {
