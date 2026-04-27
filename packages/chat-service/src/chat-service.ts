@@ -107,15 +107,48 @@ const extractStreamEventText = (m: SDKMessage): string | null => {
   return null
 }
 
-/** Synthesize an SDKUserMessage envelope from raw text. The SDK accepts
- *  `{type:"user", message:{role:"user", content:string}, parent_tool_use_id}`
- *  for streaming-input mode. */
-const buildUserMessage = (text: string): SDKUserMessage =>
-  ({
+/** Synthesize an SDKUserMessage envelope from text + optional image attachments.
+ *
+ * When attachments are present, we build a content-block array per the
+ * Anthropic API spec: text block first (omitted if empty), then one image
+ * block per attachment in document order.
+ *
+ * The SDK accepts both:
+ *   content: string                      (text-only shortcut)
+ *   content: Array<ContentBlockParam>    (structured, required for images)
+ */
+const buildUserMessage = (
+  text: string,
+  attachments?: ReadonlyArray<{ readonly mediaType: string; readonly data: string }>,
+): SDKUserMessage => {
+  if (!attachments || attachments.length === 0) {
+    return {
+      type: "user",
+      message: { role: "user", content: text },
+      parent_tool_use_id: null,
+    } as SDKUserMessage
+  }
+
+  type ContentBlock =
+    | { type: "text"; text: string }
+    | { type: "image"; source: { type: "base64"; media_type: string; data: string } }
+
+  const content: ContentBlock[] = []
+  if (text.length > 0) {
+    content.push({ type: "text", text })
+  }
+  for (const a of attachments) {
+    content.push({
+      type: "image",
+      source: { type: "base64", media_type: a.mediaType, data: a.data },
+    })
+  }
+  return {
     type: "user",
-    message: { role: "user", content: text },
+    message: { role: "user", content },
     parent_tool_use_id: null,
-  }) as SDKUserMessage
+  } as SDKUserMessage
+}
 
 /* -------------------------------------------------------------------------- */
 /* Service                                                                    */
@@ -456,6 +489,7 @@ export class ChatService extends Effect.Service<ChatService>()(
       const send = (
         threadId: string,
         text: string,
+        attachments?: ReadonlyArray<{ readonly mediaType: string; readonly data: string }>,
       ): Effect.Effect<Option.Option<ChatMessage>, never> =>
         Effect.gen(function* () {
           const m = yield* Ref.get(threads)
@@ -464,7 +498,7 @@ export class ChatService extends Effect.Service<ChatService>()(
 
           const ts = yield* clock.nowMs()
           const messageId = `usr_${ts.toString(36)}_${Math.random().toString(36).slice(2, 6)}`
-          const userPayload = buildUserMessage(text)
+          const userPayload = buildUserMessage(text, attachments)
 
           const stored = yield* store
             .appendMessage({
