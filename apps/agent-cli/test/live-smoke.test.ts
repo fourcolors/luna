@@ -6,7 +6,8 @@
  *
  * Skipped unless `LUNA_LIVE_SMOKE=1` is set, because it requires:
  *   - `op` CLI on PATH
- *   - `OP_SERVICE_ACCOUNT_TOKEN` set OR an active `op signin` session
+ *   - `OP_SERVICE_ACCOUNT_TOKEN` set (preferred — service account, headless)
+ *     OR an active `op signin` session (interactive fallback)
  *   - the canonical Sterling Claude OAuth ref to be reachable
  *
  * Run:

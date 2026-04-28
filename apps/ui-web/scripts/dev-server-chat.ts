@@ -20,8 +20,9 @@
  *
  * Token resolution chain (§2.2.11):
  *   1. OnePasswordSecretProvider — resolves `op://vault/item/field`
- *      pointers via the `op` CLI. Requires `op signin` or
- *      `OP_SERVICE_ACCOUNT_TOKEN`.
+ *      pointers via the `op` CLI. Requires `OP_SERVICE_ACCOUNT_TOKEN`
+ *      in env (preferred for headless dev/CI), or an active
+ *      `op signin` session as a fallback for interactive use.
  *   2. EnvSecretProvider — fallback for `env:VARNAME` pointers (legacy).
  *
  * # Account Setup
@@ -258,15 +259,17 @@ process.on("SIGINT", async () => {
 // design). When that happens, the broker emits a ConfigError into the
 // SDKAdapter's error channel; the user-facing symptom is a ws-side
 // error rather than a boot crash. Hint to set OP_SERVICE_ACCOUNT_TOKEN
-// or run `op signin` if chat queries fail with a ConfigError tagged
+// (preferred — headless service account) or run `op signin` (interactive
+// fallback) if chat queries fail with a ConfigError tagged
 // `OnePasswordSecretProvider`.
 runtime.runPromise(main).catch((err) => {
   const msg = String(err)
   console.error("❌ chat server crashed:", err)
   if (msg.includes("OnePasswordSecretProvider") || msg.includes("'op'")) {
     console.error(
-      "   hint: 1Password CLI not authenticated. Run `op signin` or set " +
-        "OP_SERVICE_ACCOUNT_TOKEN in this shell, then restart.",
+      "   hint: 1Password CLI not authenticated. Set " +
+        "OP_SERVICE_ACCOUNT_TOKEN in this shell (preferred) or run " +
+        "`op signin` for interactive use, then restart.",
     )
   }
   process.exit(1)
