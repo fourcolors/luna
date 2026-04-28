@@ -5,9 +5,11 @@
  * Read path: on service construction, stream the file and populate the
  * id→record index; subsequent gets/queries hit the index.
  *
- * A periodic compact (not implemented here) would rewrite the file with
- * only latest-per-id records. For Phase 5 we optimize for correctness,
- * not throughput.
+ * Compaction + retention are deferred until a real caller reports pain.
+ * FileBackend has no default routing slot (see DESIGN §10.1); SqliteBackend
+ * is the recommended single-process durable answer. If a caller ever picks
+ * this backend at scale, revisit: latest-per-id atomic rewrite via temp-file
+ * + rename, optional TTL/since pruning. For now: correctness over throughput.
  *
  * Not concurrency-safe across processes. Use for single-process gateway
  * scenarios; the sqlite backend is the shared-process answer.
