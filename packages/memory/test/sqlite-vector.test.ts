@@ -828,6 +828,102 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     expect(out.fetched).toBeNull()
   })
 
+  // ───────────────────────── Phase 27: Vectorlite HNSW ─────────────────
+  // Active path checks. These run under `bun test` (the bun:sqlite gate),
+  // and rely on Vectorlite loading successfully on this machine. If the
+  // extension isn't installed (e.g. Homebrew sqlite missing), the tests
+  // skipif via the same hasBunSqlite gate; the graceful-fallback case is
+  // covered separately via LUNA_DISABLE_VECTORLITE.
+
+  it("HNSW #1: memory_vectors_hnsw exists and gets a row per put-with-text", async () => {
+    // Use the ESM `import("bun:sqlite" as string)` shape used elsewhere in
+    // this file; that lets us peek at the underlying tables via raw SQL.
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* SqliteVectorBackend
+        for (let i = 0; i < 3; i++) {
+          yield* b.put(
+            makeRecord({
+              id: `hnsw-${i}`,
+              namespace: "hn",
+              kind: "note",
+              content: { text: `entry ${i} hnsw test` },
+            }),
+          )
+        }
+        // One keyed-only record (no text) — must NOT appear in HNSW.
+        yield* b.put(
+          makeRecord({
+            id: "hnsw-blob",
+            namespace: "hn",
+            kind: "blob",
+            content: { foo: "bar" },
+          }),
+        )
+        return yield* Stream.runCollect(
+          b.search({ queryText: "entry 0 hnsw test", namespace: "hn", topK: 5 }),
+        )
+      }),
+    )
+    const arr = Array.from(out)
+    // Three text-bearing records visible to vector search; the blob isn't.
+    expect(arr.length).toBe(3)
+    expect(arr.find((r) => r.record.id === "hnsw-blob")).toBeUndefined()
+  })
+
+  it("Performance #1: HNSW search p95 < 50ms at N=1000 (skipif HNSW unavailable)", async () => {
+    // Probe whether vectorlite is wired up on this machine WITHOUT resetting
+    // the cache (resetting after a Database has been opened would fail
+    // setCustomSQLite). If init never succeeded in this process, skip — the
+    // graceful fallback path is covered by HNSW #2.
+    const initMod = await import("../src/backends/vectorlite-init.js")
+    const probe = initMod.initVectorlite()
+    if (!probe.ok) {
+      // eslint-disable-next-line no-console
+      console.log(`[perf] skipping — vectorlite unavailable: ${probe.reason}`)
+      return
+    }
+
+    const N = 1000
+    const QUERIES = 30
+    const latencies = await run(
+      Effect.gen(function* () {
+        const b = yield* SqliteVectorBackend
+        for (let i = 0; i < N; i++) {
+          yield* b.put(
+            makeRecord({
+              id: `perf-${i}`,
+              namespace: "perf",
+              kind: "note",
+              content: {
+                text: `record ${i} payload alpha beta gamma ${i % 17} delta`,
+              },
+            }),
+          )
+        }
+        const lats: number[] = []
+        for (let q = 0; q < QUERIES; q++) {
+          const t0 = performance.now()
+          yield* Stream.runCollect(
+            b.search({
+              queryText: `record ${q * 7} payload`,
+              namespace: "perf",
+              topK: 10,
+            }),
+          )
+          lats.push(performance.now() - t0)
+        }
+        return lats
+      }),
+    )
+    latencies.sort((a, b) => a - b)
+    const p50 = latencies[Math.floor(latencies.length * 0.5)]!
+    const p95 = latencies[Math.floor(latencies.length * 0.95)]!
+    // eslint-disable-next-line no-console
+    console.log(`[perf] N=${N} p50=${p50.toFixed(2)}ms p95=${p95.toFixed(2)}ms`)
+    expect(p95).toBeLessThan(50)
+  }, 30_000)
+
   it("delete cascades to memory_vectors (FK ON DELETE CASCADE)", async () => {
     const out = await run(
       Effect.gen(function* () {
@@ -857,6 +953,56 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     expect(out.beforeCount).toBe(1)
     expect(out.wasDeleted).toBe(true)
     expect(out.afterCount).toBe(0)
+  })
+
+  // Last in the describe so resetting the init cache cannot disturb earlier
+  // tests' Database state. Resetting after a Database has been opened in this
+  // process means a subsequent setCustomSQLite would fail; that's exactly the
+  // graceful-fallback path we're testing.
+  it("HNSW #2 (graceful fallback): LUNA_DISABLE_VECTORLITE forces naive path", async () => {
+    const initMod = await import("../src/backends/vectorlite-init.js")
+    initMod._resetVectorliteInitForTests()
+    const prev = process.env.LUNA_DISABLE_VECTORLITE
+    process.env.LUNA_DISABLE_VECTORLITE = "1"
+    try {
+      const fallbackLayer = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(":memory:"),
+        StubEmbedderLayer,
+      )
+      const arr = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            yield* b.put(
+              makeRecord({
+                id: "fb-1",
+                namespace: "fb",
+                kind: "note",
+                content: { text: "naive cosine still works" },
+              }),
+            )
+            yield* b.put(
+              makeRecord({
+                id: "fb-2",
+                namespace: "fb",
+                kind: "note",
+                content: { text: "submarines and torpedoes" },
+              }),
+            )
+            const results = yield* Stream.runCollect(
+              b.search({ queryText: "naive cosine", namespace: "fb", topK: 5 }),
+            )
+            return Array.from(results).map((r) => r.record.id)
+          }),
+        ).pipe(Effect.provide(fallbackLayer)),
+      )
+      expect(arr).toContain("fb-1")
+      expect(arr[0]).toBe("fb-1")
+    } finally {
+      if (prev === undefined) delete process.env.LUNA_DISABLE_VECTORLITE
+      else process.env.LUNA_DISABLE_VECTORLITE = prev
+      initMod._resetVectorliteInitForTests()
+    }
   })
 })
 

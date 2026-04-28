@@ -83,6 +83,7 @@
       "dependencies": {
         "@luna/core": "workspace:*",
         "effect": "^3.21.0",
+        "vectorlite": "^0.2.0",
       },
     },
     "packages/tools": {
@@ -142,6 +143,14 @@
     },
   },
   "packages": {
+    "@1yefuwang1/vectorlite-darwin-arm64": ["@1yefuwang1/vectorlite-darwin-arm64@0.2.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-taYA4xt4zFgQi0DwZvS1pr0bYmP7uAYVScxFGf5rl3CIxOXDxPyHytHRrvU5rqPUprLZlnxEb/gNGvCplYLNhA=="],
+
+    "@1yefuwang1/vectorlite-darwin-x64": ["@1yefuwang1/vectorlite-darwin-x64@0.2.0", "", { "os": "darwin", "cpu": "x64" }, "sha512-vOU7h+PPE7VoJkUw6UQ2IT+a4Stzgj103yKdr85iLJqi4oX8TjxNH2OP5c1LKU8ZT/vQziKAqUE+p63XmFP8LA=="],
+
+    "@1yefuwang1/vectorlite-linux-x64": ["@1yefuwang1/vectorlite-linux-x64@0.2.0", "", { "os": "linux", "cpu": "x64" }, "sha512-VWgE4DVPVKoVzStnUR+PASWUloi5mUO+z7TEfsu6zHEBzPkOgL9ofC0DDr9/rFo1UNozN93j17ZOZL0HTsZKcQ=="],
+
+    "@1yefuwang1/vectorlite-win32-x64": ["@1yefuwang1/vectorlite-win32-x64@0.2.0", "", { "os": "win32", "cpu": "x64" }, "sha512-NLZLfxQf2wS+PrhL1bavrULOSQhaOItGVsLebKy0Tu8Hpn81M3KPmweKwNiVTSqfLzy0IlhSalLlb+ypUdRm0Q=="],
+
     "@anthropic-ai/claude-agent-sdk": ["@anthropic-ai/claude-agent-sdk@0.2.119", "", { "dependencies": { "@anthropic-ai/sdk": "^0.81.0", "@modelcontextprotocol/sdk": "^1.29.0" }, "optionalDependencies": { "@anthropic-ai/claude-agent-sdk-darwin-arm64": "0.2.119", "@anthropic-ai/claude-agent-sdk-darwin-x64": "0.2.119", "@anthropic-ai/claude-agent-sdk-linux-arm64": "0.2.119", "@anthropic-ai/claude-agent-sdk-linux-arm64-musl": "0.2.119", "@anthropic-ai/claude-agent-sdk-linux-x64": "0.2.119", "@anthropic-ai/claude-agent-sdk-linux-x64-musl": "0.2.119", "@anthropic-ai/claude-agent-sdk-win32-arm64": "0.2.119", "@anthropic-ai/claude-agent-sdk-win32-x64": "0.2.119" }, "peerDependencies": { "zod": "^4.0.0" } }, "sha512-6AvthpsaOTlkn514brSGOcCSLHDXODnU+ExN1O3CJCjxr5RBcmzR057C9EIM0G7IchnXsRfMZgRO1QKsjTXdbA=="],
 
     "@anthropic-ai/claude-agent-sdk-darwin-arm64": ["@anthropic-ai/claude-agent-sdk-darwin-arm64@0.2.119", "", { "os": "darwin", "cpu": "arm64" }, "sha512-kxnG37SZqUata2Jcp/YQ0n9Y7o/sinE/8LdG4ltM1gePh+z+0Mfa4vBUUTEBMBFth9PTovKoesIuVuyFpvO/Cw=="],
@@ -863,6 +872,8 @@
     "update-browserslist-db": ["update-browserslist-db@1.2.3", "", { "dependencies": { "escalade": "^3.2.0", "picocolors": "^1.1.1" }, "peerDependencies": { "browserslist": ">= 4.21.0" }, "bin": { "update-browserslist-db": "cli.js" } }, "sha512-Js0m9cx+qOgDxo0eMiFGEueWztz+d4+M3rGlmKPT+T4IS/jP4ylw3Nwpu6cpTTP8R1MAC1kF4VbdLt3ARf209w=="],
 
     "vary": ["vary@1.1.2", "", {}, "sha512-BNGbWLfd0eUPabhkXUVm0j8uuvREyTh5ovRa/dyow/BqAbZJyC+5fU+IzQOzmAKzYqYRAISoRhdQr3eIZ/PXqg=="],
+
+    "vectorlite": ["vectorlite@0.2.0", "", { "optionalDependencies": { "@1yefuwang1/vectorlite-darwin-arm64": "0.2.0", "@1yefuwang1/vectorlite-darwin-x64": "0.2.0", "@1yefuwang1/vectorlite-linux-x64": "0.2.0", "@1yefuwang1/vectorlite-win32-x64": "0.2.0" } }, "sha512-hHFAISJuUblqTecD/EtNmEhIm4P6vTax4tswN486qCBDtse9uqBPLGdUsW4+CSjyG9Zoc0Jxj+dubQSZjvYGqg=="],
 
     "vfile": ["vfile@6.0.3", "", { "dependencies": { "@types/unist": "^3.0.0", "vfile-message": "^4.0.0" } }, "sha512-KzIbH/9tXat2u30jf+smMwFCsno4wHVdNmzFyL+T/L3UGqqk6JKfVqOFOZEpZSHADH1k40ab6NUIXZq422ov3Q=="],
 

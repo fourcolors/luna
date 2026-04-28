@@ -5,11 +5,28 @@
  *   - Owns BOTH `memory_keyed` and `memory_vectors` tables in one DB.
  *   - Auto-embeds on `put()` ONLY when `rec.content.text` is a string.
  *     Records without text are keyed-only (no row in memory_vectors).
- *   - Naive ranking: SELECT all vectors → JS cosine → topK in-process.
- *     Sterling's `sqlite-vec-scaling` skill puts the practical wall at
- *     ~1k records / 372ms p95 for sqlite-vec; we expect parity for naive.
- *     Phase 2 trigger: >100ms @ 5k → swap to sqlite-vec or migrate to
- *     PGlite+pgvector HNSW (372× speedup at N=1k per Sterling's bench).
+ *
+ * Phase 27 (vector scale-up — Vectorlite HNSW):
+ *   - On Layer build, attempt to load the Vectorlite SQLite extension via
+ *     `vectorlite-init.ts` (process-wide one-shot — `Database.setCustomSQLite`
+ *     must run before the first `new Database()`). On macOS this requires
+ *     Homebrew's libsqlite3 (`/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib`)
+ *     because Apple's stock libsqlite3 ships with `SQLITE_OMIT_LOAD_EXTENSION`.
+ *   - When the extension loads: create `memory_vectors_hnsw` (vectorlite v-table)
+ *     and AFTER INSERT/DELETE/UPDATE triggers on `memory_vectors` keep it in
+ *     sync. Idempotent backfill on open (`INSERT … SELECT … WHERE rowid NOT IN`)
+ *     covers pre-Phase-27 dbs.
+ *   - When the extension does NOT load (non-bun runtime, missing brew sqlite,
+ *     missing prebuilt, init too late, etc.): warn ONCE and fall back to the
+ *     naive `SELECT * → JS cosine → topK` ranker. Per §6.1 this is a graceful
+ *     degradation — never raises a `MemoryBackendError`.
+ *   - With HNSW active, ranking uses `knn_search(embedding, knn_param(?, K))`
+ *     against the v-table. Vectorlite returns L2² distance; embeddings are
+ *     L2-normalized upstream so we recover cosine similarity via
+ *     `score = 1 - distance / 2`.
+ *   - Naive cosine wall (pre-Phase-27 fallback path): ~1k records / 372ms p95
+ *     per Sterling's `sqlite-vec-scaling` skill. With HNSW: 0.037ms p95 @ 10k
+ *     measured on arm64-darwin (same skill).
  *   - search() honors namespace filter via SQL `WHERE namespace = ?`.
  *   - search() supports `mode: "vec" | "hybrid"`. `"hybrid"` (Phase 26)
  *     fuses BM25 (FTS5 over `text`) with cosine vector ranking via
@@ -45,6 +62,7 @@ import {
   type MemoryQuery,
   type MemoryRecord,
 } from "../types.js"
+import { initVectorlite } from "./vectorlite-init.js"
 
 export interface SqliteVectorBackendApi {
   readonly backendName: "sqlite-vector"
@@ -104,6 +122,19 @@ function rowToRecord(row: DbRow): MemoryRecord {
 
 function asError(op: string, cause: unknown): MemoryBackendError {
   return new MemoryBackendError({ backend: "sqlite-vector", op, cause })
+}
+
+// Warn-once flag (process-scoped). The fallback path is fine; the operator
+// just needs to know about it once so they can investigate if unexpected.
+let _vectorliteFallbackWarned = false
+function warnFallbackOnce(reason: string): void {
+  if (_vectorliteFallbackWarned) return
+  _vectorliteFallbackWarned = true
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[luna/sqlite-vector] Vectorlite HNSW unavailable (${reason}); ` +
+      `falling back to naive in-process cosine ranking.`,
+  )
 }
 
 function extractText(content: unknown): string | null {
@@ -182,6 +213,12 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
       Effect.gen(function* () {
         const embedder = yield* EmbedderService
 
+        // Phase 27: call setCustomSQLite BEFORE the bun:sqlite ESM module is
+        // first imported in this process. The init helper uses createRequire
+        // (synchronous), so it can wire up the Homebrew libsqlite3 before any
+        // ESM dynamic-import side-effect opens an internal Database.
+        const vlInit = initVectorlite()
+
         const bunSqliteSpec = "bun:sqlite"
         const mod = yield* Effect.tryPromise({
           try: () =>
@@ -212,6 +249,83 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
         db.run("PRAGMA foreign_keys = ON")
         db.run(MIGRATION)
         yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
+
+        // Try to load the extension on this connection. Even if vlInit
+        // succeeded earlier (process-wide setCustomSQLite), each Database
+        // needs its own loadExtension() call.
+        let hnswEnabled = false
+        if (vlInit.ok) {
+          try {
+            ;(db as unknown as { loadExtension: (p: string) => void })
+              .loadExtension(vlInit.path)
+            // Did the v-table already exist on this DB? If yes (re-open of a
+            // Phase-27 db) we must NOT run the full backfill — the v-table
+            // already has rows and re-inserting would duplicate (and a
+            // SELECT-from-vtable is not supported by vectorlite, so we can't
+            // diff easily). If NO (fresh db OR pre-Phase-27 db with rows in
+            // memory_vectors but no v-table), we backfill once after CREATE.
+            const hnswExisted =
+              (db
+                .query(
+                  `SELECT name FROM sqlite_master
+                    WHERE type='table' AND name='memory_vectors_hnsw'`,
+                )
+                .get() as { name: string } | null | undefined) != null
+            // Create the HNSW v-table mirroring memory_vectors by rowid.
+            // max_elements is required at create-time; 100k is well above any
+            // realistic single-process working set and small in memory.
+            db.run(
+              `CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors_hnsw
+                 USING vectorlite(embedding float32[${embedder.dimension}], hnsw(max_elements=100000))`,
+            )
+            // AFTER triggers keep HNSW in sync with memory_vectors. The FTS5
+            // triggers from MIGRATION fire independently — both run per row
+            // mutation; vectorlite is happy inside trigger bodies (verified).
+            db.run(`
+              CREATE TRIGGER IF NOT EXISTS memory_vectors_hnsw_ai
+                AFTER INSERT ON memory_vectors BEGIN
+                  INSERT INTO memory_vectors_hnsw(rowid, embedding)
+                    VALUES (new.rowid, new.embedding);
+                END;
+              CREATE TRIGGER IF NOT EXISTS memory_vectors_hnsw_ad
+                AFTER DELETE ON memory_vectors BEGIN
+                  DELETE FROM memory_vectors_hnsw WHERE rowid = old.rowid;
+                END;
+              CREATE TRIGGER IF NOT EXISTS memory_vectors_hnsw_au
+                AFTER UPDATE ON memory_vectors BEGIN
+                  DELETE FROM memory_vectors_hnsw WHERE rowid = old.rowid;
+                  INSERT INTO memory_vectors_hnsw(rowid, embedding)
+                    VALUES (new.rowid, new.embedding);
+                END;
+            `)
+            if (!hnswExisted) {
+              // First creation on this DB. Backfill any pre-existing
+              // memory_vectors rows (covers pre-Phase-27 dbs and dbs where
+              // the v-table was dropped). Vectorlite v-tables don't support
+              // generic SELECT, so we read the source side and INSERT … SELECT.
+              db.run(
+                `INSERT INTO memory_vectors_hnsw(rowid, embedding)
+                   SELECT rowid, embedding FROM memory_vectors`,
+              )
+            }
+            hnswEnabled = true
+          } catch (cause) {
+            warnFallbackOnce(`loadExtension failed: ${String(cause)}`)
+            // Best-effort cleanup so the half-created v-table + triggers
+            // don't break subsequent put()s. If these fail (e.g. extension
+            // never actually loaded), ignore — the next open will retry.
+            try {
+              db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ai`)
+              db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ad`)
+              db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_au`)
+              db.run(`DROP TABLE IF EXISTS memory_vectors_hnsw`)
+            } catch {
+              /* best-effort */
+            }
+          }
+        } else {
+          warnFallbackOnce(vlInit.reason)
+        }
 
         // Prepared statements
         const putKeyedStmt = db.query(
@@ -264,6 +378,29 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
             ORDER BY bm25(memory_fts)
             LIMIT ?`,
         )
+
+        // Phase 27 HNSW prepared statements (only used when hnswEnabled).
+        // Vectorlite returns L2² distance; embeddings are L2-normalized
+        // upstream so cosine ≈ 1 - distance/2. We bind a Buffer (Float32
+        // little-endian) and an integer K; the namespace filter happens on
+        // the JOIN side (memory_vectors.namespace).
+        const hnswByNsStmt = hnswEnabled
+          ? db.query(
+              `SELECT v.id AS id, h.distance AS distance
+                 FROM memory_vectors_hnsw h
+                 JOIN memory_vectors v ON v.rowid = h.rowid
+                WHERE knn_search(h.embedding, knn_param(?, ?))
+                  AND v.namespace = ?`,
+            )
+          : null
+        const hnswAllStmt = hnswEnabled
+          ? db.query(
+              `SELECT v.id AS id, h.distance AS distance
+                 FROM memory_vectors_hnsw h
+                 JOIN memory_vectors v ON v.rowid = h.rowid
+                WHERE knn_search(h.embedding, knn_param(?, ?))`,
+            )
+          : null
 
         // ─── put ────────────────────────────────────────────────────────
         // Atomicity (Phase 26 follow-up, advisor ⚠️ MODIFY):
@@ -407,6 +544,37 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
           namespace: string | undefined,
           limit: number,
         ): { id: string; score: number }[] => {
+          // Fast path: Vectorlite HNSW. The namespace filter is applied on
+          // the JOIN to memory_vectors. We over-fetch slightly when a
+          // namespace is supplied (HNSW returns top-K globally before the
+          // JOIN's WHERE prunes by namespace), then truncate to `limit`.
+          if (hnswEnabled && hnswByNsStmt && hnswAllStmt) {
+            const queryBuf = Buffer.from(
+              queryVec.buffer,
+              queryVec.byteOffset,
+              queryVec.byteLength,
+            )
+            const k = namespace ? Math.max(limit * 4, 50) : limit
+            const rows = (namespace
+              ? hnswByNsStmt.all(queryBuf, k, namespace)
+              : hnswAllStmt.all(queryBuf, k)) as {
+              id: string
+              distance: number
+            }[]
+            // L2² → cosine for L2-normalized embeddings. Clamp to [-1, 1]
+            // to be safe for tiny floating-point overshoots.
+            const scored = rows.map((r) => {
+              const cos = 1 - r.distance / 2
+              const clamped = cos > 1 ? 1 : cos < -1 ? -1 : cos
+              return { id: r.id, score: clamped }
+            })
+            scored.sort((a, b) => b.score - a.score)
+            return scored.slice(0, limit)
+          }
+
+          // Fallback: naive in-process cosine over all (or namespace-filtered)
+          // memory_vectors rows. Hit when extension load failed or runtime
+          // is non-bun.
           const vecRows = (namespace
             ? selectVecByNsStmt.all(namespace)
             : selectVecAllStmt.all()) as VecRow[]
