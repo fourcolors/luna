@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest"
 import { Effect, Stream, Layer } from "effect"
 import {
+  EmbedderError,
   EmbedderService,
   StubEmbedderLayer,
   bufferToFloat32,
@@ -643,6 +644,188 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
         /* ignore */
       }
     }
+  })
+
+  // ───────────────────────── Phase 26 follow-up ────────────────────────
+  // Atomicity: put() embeds FIRST, then writes (keyed + vec) inside a single
+  // BEGIN IMMEDIATE transaction wrapped in Effect.uninterruptible. A failed
+  // embed must leave the DB completely untouched — no half-state.
+
+  it("Atomicity #1: embed failure leaves no keyed row (put fails before any DB write)", async () => {
+    const FailEmbedderLayer = Layer.succeed(EmbedderService, {
+      provider: "fail",
+      dimension: 64,
+      embed: () =>
+        Effect.fail(
+          new EmbedderError({
+            provider: "fail",
+            op: "embed",
+            cause: new Error("forced embedder failure"),
+          }),
+        ),
+    })
+    const failLayer = Layer.provideMerge(
+      SqliteVectorBackend.fromPath(":memory:"),
+      FailEmbedderLayer,
+    )
+    const out = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const b = yield* SqliteVectorBackend
+          const result = yield* Effect.either(
+            b.put(
+              makeRecord({
+                id: "atomic-1",
+                namespace: "atom",
+                kind: "note",
+                content: { text: "should never persist" },
+              }),
+            ),
+          )
+          const fetched = yield* b.get("atomic-1")
+          return { failed: result._tag === "Left", fetched }
+        }),
+      ).pipe(Effect.provide(failLayer)),
+    )
+    expect(out.failed).toBe(true)
+    // Critical: keyed row MUST NOT exist (embed failed before any DB write).
+    expect(out.fetched).toBeNull()
+  })
+
+  it("Atomicity #2: failed re-put preserves prior keyed + vec + FTS rows", async () => {
+    // Build a "flaky" embedder layer: succeeds for the first put, fails for
+    // the second. Use a closure-scoped counter inside Layer.effect.
+    // Fails ONLY for embed calls whose text contains the poison marker. This
+    // way put() #1 and any search() embeds work fine; only the second put()
+    // (which carries the poison text) fails — exactly the scenario we want.
+    // Poison marker only present in the put() text, not in any search query.
+    const POISON = "ZZZ-POISON-MARKER-INTERNAL-ONLY"
+    const FlakyEmbedderLayer = Layer.succeed(EmbedderService, {
+      provider: "flaky",
+      dimension: 64,
+      embed: (text: string) =>
+        Effect.suspend(() => {
+          if (text.includes(POISON)) {
+            return Effect.fail(
+              new EmbedderError({
+                provider: "flaky",
+                op: "embed",
+                cause: new Error("poisoned text rejected"),
+              }),
+            )
+          }
+          // Deterministic lexical-sketch vector.
+          const v = new Float32Array(64)
+          for (let i = 0; i < text.length; i++) {
+            v[text.charCodeAt(i) % 64]! += 1
+          }
+          let n = 0
+          for (let i = 0; i < 64; i++) n += v[i]! * v[i]!
+          n = Math.sqrt(n) || 1
+          for (let i = 0; i < 64; i++) v[i] = v[i]! / n
+          return Effect.succeed(v)
+        }),
+    })
+    const flakyLayer = Layer.provideMerge(
+      SqliteVectorBackend.fromPath(":memory:"),
+      FlakyEmbedderLayer,
+    )
+    const out = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const b = yield* SqliteVectorBackend
+          // First put — succeeds.
+          yield* b.put(
+            makeRecord({
+              id: "swap",
+              namespace: "atom2",
+              kind: "note",
+              content: { text: "original-uniqtoken-aa11" },
+            }),
+          )
+          const beforeSearch = yield* Stream.runCollect(
+            b.search({
+              queryText: "original-uniqtoken-aa11",
+              mode: "hybrid",
+              namespace: "atom2",
+              topK: 5,
+            }),
+          )
+          // Second put with SAME id — embed fails, txn must roll back.
+          const result = yield* Effect.either(
+            b.put(
+              makeRecord({
+                id: "swap",
+                namespace: "atom2",
+                kind: "note",
+                content: { text: "rewrite-should-fail-bb22 " + POISON },
+              }),
+            ),
+          )
+          const fetched = yield* b.get("swap")
+          // Hybrid search by ORIGINAL token — must still find the row, proving
+          // FTS + vec + keyed rows survived the failed re-put intact.
+          const afterSearch = yield* Stream.runCollect(
+            b.search({
+              queryText: "original-uniqtoken-aa11",
+              mode: "hybrid",
+              namespace: "atom2",
+              topK: 5,
+            }),
+          )
+          return {
+            beforeIds: Array.from(beforeSearch).map((r) => r.record.id),
+            failed: result._tag === "Left",
+            fetched,
+            afterIds: Array.from(afterSearch).map((r) => r.record.id),
+          }
+        }),
+      ).pipe(Effect.provide(flakyLayer)),
+    )
+    expect(out.beforeIds).toContain("swap")
+    expect(out.failed).toBe(true)
+    // Original keyed row content survives unchanged.
+    expect(out.fetched).not.toBeNull()
+    expect((out.fetched!.content as { text: string }).text).toBe(
+      "original-uniqtoken-aa11",
+    )
+    // FTS still indexed under the original token (proves the FTS row was
+    // not rewritten — the AFTER DELETE trigger from the failed re-put would
+    // have nuked the FTS row if the txn weren't rolled back).
+    expect(out.afterIds).toContain("swap")
+  })
+
+  it("Atomicity #3: dimension-mismatch failure is treated like embed failure (no DB write)", async () => {
+    const WrongDimEmbedderLayer = Layer.succeed(EmbedderService, {
+      provider: "wrongdim",
+      dimension: 64, // declared
+      embed: () => Effect.succeed(new Float32Array(8)), // returns 8 ≠ 64
+    })
+    const wrongLayer = Layer.provideMerge(
+      SqliteVectorBackend.fromPath(":memory:"),
+      WrongDimEmbedderLayer,
+    )
+    const out = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const b = yield* SqliteVectorBackend
+          const result = yield* Effect.either(
+            b.put(
+              makeRecord({
+                id: "wrong-dim",
+                namespace: "wd",
+                kind: "note",
+                content: { text: "won't persist" },
+              }),
+            ),
+          )
+          const fetched = yield* b.get("wrong-dim")
+          return { failed: result._tag === "Left", fetched }
+        }),
+      ).pipe(Effect.provide(wrongLayer)),
+    )
+    expect(out.failed).toBe(true)
+    expect(out.fetched).toBeNull()
   })
 
   it("delete cascades to memory_vectors (FK ON DELETE CASCADE)", async () => {
