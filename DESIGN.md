@@ -584,7 +584,118 @@ Consumes §16 observability stream. **Tauri + SolidJS** (Tauri shell wraps the S
 
 ## §10. Memory Backend Details (revisable)
 
-Per-backend schemas and query shapes. Revises as third parties ship backends.
+The memory subsystem is namespace-routed: a `MemoryRouter` accepts arbitrary
+namespace strings on every `MemoryRecord` and dispatches reads/writes to a
+backend selected by the first matching rule. This section documents the
+**recommended namespace taxonomy** that app composers should follow, the
+**default backend mapping** per prefix, and the **schema-drift policy** that
+relates the shipped backend tables to the §5.1 reserved skeleton.
+
+### 10.1 Reserved namespace prefixes
+
+These prefixes are conventions, not contract. The router accepts any string;
+the prefixes below are the recommended shape for app composition so that
+default backends, retention policies, and tooling can converge on shared
+expectations.
+
+```
+Prefix            │ Lifetime               │ Default backend         │ Vector?
+──────────────────┼────────────────────────┼─────────────────────────┼────────
+session:<id>:*    │ Ephemeral; dies with   │ InMemoryBackend         │ no
+                  │ the owning Session     │                         │
+                  │ Scope (§3.1)           │                         │
+working:<id>:*    │ Durable working set;   │ SqliteBackend           │ no
+                  │ outlives session;      │ (per-session db path or │
+                  │ caller-managed eviction│  shared db + ns filter) │
+knowledge:*       │ Durable; long-lived    │ SqliteVectorBackend     │ yes
+                  │ knowledge corpus       │                         │
+*                 │ Catch-all default;     │ Caller's choice         │ caller
+                  │ MUST be specified per  │ (often InMemoryBackend  │
+                  │ `makeRouter` contract  │  for tests, SqliteBackend│
+                  │                        │  for prod)              │
+```
+
+**Lifetime/retention guidance** (no enforcement code; this is composition policy):
+
+- `session:<sessionId>:*` — records die with the session Scope. The default
+  `InMemoryBackend` Layer is itself process-scoped; a real session-scoped
+  Layer is composed by the Session machinery (§3.1) and finalized when the
+  session closes. Callers MAY pin to a durable backend if they need
+  postmortem inspection — that's a deliberate choice, not the default.
+- `working:<sessionId>:*` — durable across restarts; intended for working
+  memory (scratchpads, draft notes, in-progress task state) that the agent
+  may want to resume. Default `SqliteBackend` retention is unlimited;
+  callers SHOULD prune by `since` filter (`MemoryQuery.since`) on a cadence
+  appropriate to their domain.
+- `knowledge:*` — durable, vector-searchable. Default `SqliteVectorBackend`
+  embeds via `EmbedderService` only when `rec.content.text` is a string
+  (per `packages/memory/src/backends/sqlite-vector.ts:5-9`); records without
+  text are keyed-only. No automatic expiry; this is the corpus.
+- `*` — must be specified explicitly per `makeRouter`'s precondition
+  (`packages/memory/src/router.ts:74-76`). Construction throws otherwise.
+
+### 10.2 Embedder requirement
+
+Only `SqliteVectorBackend` requires `EmbedderService` in its Layer
+(`packages/core/src/embedder/embedder.ts`). The other backends (`InMemoryBackend`,
+`FileBackend`, `SqliteBackend`) have no embedder dependency and can be
+composed without it. `MemoryLayer` itself does NOT take an embedder argument
+— vector backends compose `EmbedderService` upstream, then are passed to
+`MemoryLayer` as already-resolved `MemoryBackend` values. This keeps
+namespace routing decoupled from any specific I/O capability.
+
+### 10.3 Schema drift from §5.1
+
+§5.1 reserves two memory tables in the Persistence Schema baseline:
+`memory_keyed(k, v, ts, tags)` and `memory_vectors(id, embedding, text,
+meta_json, ts)`. The shipped backends in `packages/memory/src/backends/`
+**extend** these schemas to make `MemoryRecord` round-trip losslessly through
+the export/import envelope:
+
+- `sqlite.ts:11-22` — `memory_keyed` carries the full record columns
+  (`id`, `namespace`, `kind`, `content_json`, `schema_version`,
+  `created_at`, `updated_at`, `tags_json`) plus per-column indexes. The
+  original §5.1 `(k, v, ts, tags)` skeleton was too flat to support
+  `MemoryQuery` filters.
+- `sqlite-vector.ts:19-27` — `memory_vectors` adds `namespace`, `dimension`,
+  drops `meta_json` (no current consumer), and a `FOREIGN KEY ... ON DELETE
+  CASCADE` to `memory_keyed`.
+
+These extensions are governed by §5.2 migration policy: every schema change
+is a numbered migration, gated by `schema_versions`, with the §5.1 column
+intent preserved. The shipped tables are the authoritative shape for any
+backend implementing the `MemoryBackend` interface (`packages/memory/src/backend.ts`).
+Future schema changes follow §5.2 — no byte-edits to §5.1 are required for
+the current drift.
+
+### 10.4 Routing contract recap
+
+- `makeRouter(rules)` requires `rules.length >= 1` and at least one rule with
+  `pattern: "*"` (the default). Construction throws synchronously otherwise.
+- `MemoryLayer({ rules })` wraps `makeRouter` in a `Layer.sync` that provides
+  the `MemoryRouterTag` Effect Tag. The throw surfaces at Layer build time,
+  not at `MemoryLayer({...})` call time.
+- Pattern matching is first-match-wins, in registration order. Patterns
+  support exact match, `prefix:*` suffix wildcard, and the bare `"*"`
+  catch-all. No regex; no nested wildcards.
+- Reads by `id` fan through all backends in registration order until one
+  returns non-null. This tolerates id collisions across backends but does
+  not detect them — backend authors should namespace their ids.
+- `query({namespace})` dispatches by pattern; `query({})` (no namespace) fans
+  out across every backend via `Stream.mergeAll` and merges results.
+
+### 10.5 Forward-pointers
+
+- **Phase 26 — hybrid search.** `MemoryRouter.search` already accepts
+  `mode: "vec" | "hybrid"`. `"hybrid"` currently fails with a
+  not-implemented `MemoryBackendError` from `SqliteVectorBackend`; Phase 26
+  adds BM25/FTS5 ranking and merges with cosine.
+- **Phase 27 — vector scale-up.** Per Sterling's `sqlite-vec-scaling` skill,
+  the naive `SELECT * → JS cosine → topK` ranker holds to ~1k records / 372ms
+  p95. Trigger to swap to `sqlite-vec` extension (or migrate to PGlite +
+  pgvector HNSW for the 372× speedup at N=1k) is `>100ms @ 5k`.
+- **Per-backend tuning knobs** (TTL, eviction policy, encryption-at-rest)
+  remain backend-private until a real caller demands a uniform surface.
 
 ---
 

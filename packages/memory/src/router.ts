@@ -10,7 +10,7 @@
  * which backend owns a given id — backends should namespace their ids
  * to avoid collisions, but the router is tolerant).
  */
-import { Effect, Stream } from "effect"
+import { Context, Effect, Stream } from "effect"
 import { MemoryBackendError } from "@luna/core"
 import { hasVectorSearch, type MemoryBackend } from "./backend.js"
 import type {
@@ -158,3 +158,19 @@ export function makeRouter(rules: ReadonlyArray<Rule>): MemoryRouter {
 
   return { put, get, query, delete: del, backendFor, exportAll, search }
 }
+
+/**
+ * MemoryRouterTag — Effect Context Tag for the MemoryRouter.
+ *
+ * Additive in Phase 25b; the existing `MemoryRouter` interface and
+ * `makeRouter` factory are unchanged. Use the `MemoryLayer` composition
+ * helper (`./layer.ts`) to build a Layer that provides this Tag.
+ *
+ * Note: uses `Context.GenericTag` rather than `Effect.Tag` because the
+ * Service identity is structural (the `MemoryRouter` interface), not a
+ * class wrapping its own implementation — mirroring the SDKAdapter
+ * Tag-aliasing convention in `packages/core/src/session/session-service.ts`.
+ */
+export const MemoryRouterTag = Context.GenericTag<MemoryRouter>(
+  "luna/MemoryRouter",
+)
