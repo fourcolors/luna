@@ -12,6 +12,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
+    "@luna/core": "workspace:*",
+    "effect": "^3.21.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.5"
   }
