@@ -11,8 +11,10 @@
  *     Phase 2 trigger: >100ms @ 5k → swap to sqlite-vec or migrate to
  *     PGlite+pgvector HNSW (372× speedup at N=1k per Sterling's bench).
  *   - search() honors namespace filter via SQL `WHERE namespace = ?`.
- *   - search() supports `mode: "vec" | "hybrid"`. `"hybrid"` returns a
- *     not-implemented MemoryBackendError (BM25/FTS5 deferred to Phase 26).
+ *   - search() supports `mode: "vec" | "hybrid"`. `"hybrid"` (Phase 26)
+ *     fuses BM25 (FTS5 over `text`) with cosine vector ranking via
+ *     Reciprocal Rank Fusion (k=60). Backends that don't have FTS5 in
+ *     scope MUST fail; we never silently degrade.
  *
  * Schema (DESIGN.md §5.1 reserved this; we add the indexes):
  *
@@ -140,6 +142,28 @@ const MIGRATION = `
     ts          INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_vectors_ns ON memory_vectors(namespace);
+
+  CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts
+    USING fts5(text, content='memory_vectors', content_rowid='rowid', tokenize='porter unicode61');
+
+  CREATE TRIGGER IF NOT EXISTS memory_vectors_ai AFTER INSERT ON memory_vectors BEGIN
+    INSERT INTO memory_fts(rowid, text) VALUES (new.rowid, new.text);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS memory_vectors_ad AFTER DELETE ON memory_vectors BEGIN
+    INSERT INTO memory_fts(memory_fts, rowid, text) VALUES('delete', old.rowid, old.text);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS memory_vectors_au AFTER UPDATE ON memory_vectors BEGIN
+    INSERT INTO memory_fts(memory_fts, rowid, text) VALUES('delete', old.rowid, old.text);
+    INSERT INTO memory_fts(rowid, text) VALUES (new.rowid, new.text);
+  END;
+
+  -- Backfill: rebuild the FTS index from the external content table. This
+  -- is the canonical idempotent op for content='memory_vectors' FTS5
+  -- tables (handles pre-Phase-26 dbs whose vector rows have no FTS entry).
+  -- Cheap when FTS is already in sync; reads the same rowids it would emit.
+  INSERT INTO memory_fts(memory_fts) VALUES('rebuild');
 `
 
 export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
@@ -196,8 +220,14 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
               created_at, updated_at, tags_json)
            VALUES (?,?,?,?,?,?,?,?)`,
         )
-        const putVecStmt = db.query(
-          `INSERT OR REPLACE INTO memory_vectors
+        // Explicit DELETE + INSERT (rather than INSERT OR REPLACE) so the
+        // FTS5 sync triggers fire predictably: the AFTER DELETE trigger
+        // removes the old `memory_fts` index entry (using OLD.text), and
+        // the AFTER INSERT trigger reinserts with NEW.text. INSERT OR
+        // REPLACE in bun:sqlite was observed to leave a stale FTS row in
+        // some scenarios, so we sequence the two operations ourselves.
+        const insertVecStmt = db.query(
+          `INSERT INTO memory_vectors
              (id, namespace, embedding, dimension, text, ts)
            VALUES (?,?,?,?,?,?)`,
         )
@@ -213,6 +243,26 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
         const selectVecByNsStmt = db.query(
           `SELECT id, namespace, embedding, dimension, text
              FROM memory_vectors WHERE namespace = ?`,
+        )
+        // FTS5 hybrid: BM25-ranked candidates from memory_fts joined back to
+        // memory_vectors for namespace filter + id resolution. The FTS table
+        // has no namespace column; join through memory_vectors.rowid.
+        const ftsByNsStmt = db.query(
+          `SELECT v.id AS id
+             FROM memory_vectors v
+             JOIN memory_fts f ON f.rowid = v.rowid
+            WHERE memory_fts MATCH ?
+              AND v.namespace = ?
+            ORDER BY bm25(memory_fts)
+            LIMIT ?`,
+        )
+        const ftsAllStmt = db.query(
+          `SELECT v.id AS id
+             FROM memory_vectors v
+             JOIN memory_fts f ON f.rowid = v.rowid
+            WHERE memory_fts MATCH ?
+            ORDER BY bm25(memory_fts)
+            LIMIT ?`,
         )
 
         // ─── put ────────────────────────────────────────────────────────
@@ -261,7 +311,10 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
             }
             yield* Effect.try({
               try: () => {
-                putVecStmt.run(
+                // DELETE-then-INSERT so AFTER DELETE + AFTER INSERT triggers
+                // both fire in order, keeping memory_fts in sync on rewrites.
+                delVecStmt.run(rec.id)
+                insertVecStmt.run(
                   rec.id,
                   rec.namespace,
                   float32ToBuffer(vec),
@@ -328,55 +381,111 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
           })
 
         // ─── search ─────────────────────────────────────────────────────
+        // Compute vec-only ranking for query against namespace-scoped rows.
+        // Returned ids are sorted by descending cosine score, truncated to
+        // `limit`. Shared by mode:"vec" and mode:"hybrid".
+        const rankByVec = (
+          queryVec: Float32Array,
+          namespace: string | undefined,
+          limit: number,
+        ): { id: string; score: number }[] => {
+          const vecRows = (namespace
+            ? selectVecByNsStmt.all(namespace)
+            : selectVecAllStmt.all()) as VecRow[]
+          const scored: { id: string; score: number }[] = []
+          for (const vr of vecRows) {
+            if (vr.dimension !== queryVec.length) continue
+            const candidate = bufferToFloat32(vr.embedding as Uint8Array)
+            scored.push({
+              id: vr.id,
+              score: cosineSimilarity(queryVec, candidate),
+            })
+          }
+          scored.sort((a, b) => b.score - a.score)
+          return scored.slice(0, limit)
+        }
+
+        // BM25 ranking via FTS5. Returns ids ordered best-first.
+        // FTS5 MATCH syntax is sensitive to special chars (-, :, etc.); wrap
+        // the user-supplied query as a single quoted phrase so arbitrary
+        // text is treated as a literal phrase query. Tokens within the
+        // phrase are still tokenized by porter+unicode61 internally.
+        const rankByBm25 = (
+          queryText: string,
+          namespace: string | undefined,
+          limit: number,
+        ): string[] => {
+          // Escape embedded double-quotes per FTS5 quoting rules ("" = ").
+          const phrase = `"${queryText.replace(/"/g, '""')}"`
+          const rows = (namespace
+            ? ftsByNsStmt.all(phrase, namespace, limit)
+            : ftsAllStmt.all(phrase, limit)) as { id: string }[]
+          return rows.map((r) => r.id)
+        }
+
         const search: SqliteVectorBackendApi["search"] = (args) => {
           const mode = args.mode ?? "vec"
-          if (mode === "hybrid") {
-            return Stream.fail(
-              asError(
-                "search.hybrid",
-                new Error(
-                  "hybrid (BM25+vec) not implemented — Phase 26",
-                ),
-              ),
-            )
-          }
           const topK = args.topK ?? 10
 
           return Stream.unwrap(
             Effect.gen(function* () {
-              // 1. Embed the query text.
+              // 1. Embed the query text (needed by both modes; hybrid still
+              //    uses vec ranking as one of the two fused signals).
               const queryVec = yield* embedder.embed(args.queryText).pipe(
                 Effect.mapError((cause) => asError("search.embed", cause)),
               )
 
-              // 2. Pull candidate vectors (namespace-scoped if requested).
-              const vecRows = yield* Effect.try({
-                try: () =>
-                  (args.namespace
-                    ? selectVecByNsStmt.all(args.namespace)
-                    : selectVecAllStmt.all()) as VecRow[],
-                catch: (cause) => asError("search.scan", cause),
-              })
-
-              // 3. Cosine similarity for each candidate.
-              type Scored = { id: string; score: number }
-              const scored: Scored[] = []
-              for (const vr of vecRows) {
-                if (vr.dimension !== queryVec.length) continue // skip mismatches
-                const candidate = bufferToFloat32(vr.embedding as Uint8Array)
-                const score = cosineSimilarity(queryVec, candidate)
-                scored.push({ id: vr.id, score })
+              if (mode === "vec") {
+                const top = yield* Effect.try({
+                  try: () => rankByVec(queryVec, args.namespace, topK),
+                  catch: (cause) => asError("search.scan", cause),
+                })
+                const out: { record: MemoryRecord; score: number }[] = []
+                for (const s of top) {
+                  const row = getStmt.get(s.id) as DbRow | null | undefined
+                  if (row)
+                    out.push({ record: rowToRecord(row), score: s.score })
+                }
+                return Stream.fromIterable(out)
               }
 
-              // 4. topK by score (partial sort would suffice; this is fine for N≤10k).
-              scored.sort((a, b) => b.score - a.score)
-              const top = scored.slice(0, topK)
+              // mode === "hybrid"
+              // Pull max(topK, 50) candidates per side; fuse via RRF (k=60).
+              const candidateLimit = Math.max(topK, 50)
 
-              // 5. Hydrate records.
+              const vecRanked = yield* Effect.try({
+                try: () => rankByVec(queryVec, args.namespace, candidateLimit),
+                catch: (cause) => asError("search.hybrid.vec", cause),
+              })
+              const bm25Ranked = yield* Effect.try({
+                try: () =>
+                  rankByBm25(args.queryText, args.namespace, candidateLimit),
+                catch: (cause) => asError("search.hybrid.bm25", cause),
+              })
+
+              // RRF: score = sum(1 / (k + rank)) over rankings the id appears in.
+              const RRF_K = 60
+              const fused = new Map<string, number>()
+              vecRanked.forEach((entry, idx) => {
+                fused.set(
+                  entry.id,
+                  (fused.get(entry.id) ?? 0) + 1 / (RRF_K + idx + 1),
+                )
+              })
+              bm25Ranked.forEach((id, idx) => {
+                fused.set(id, (fused.get(id) ?? 0) + 1 / (RRF_K + idx + 1))
+              })
+
+              const top = Array.from(fused.entries())
+                .map(([id, score]) => ({ id, score }))
+                .sort((a, b) => b.score - a.score)
+                .slice(0, topK)
+
               const out: { record: MemoryRecord; score: number }[] = []
               for (const s of top) {
                 const row = getStmt.get(s.id) as DbRow | null | undefined
-                if (row) out.push({ record: rowToRecord(row), score: s.score })
+                if (row)
+                  out.push({ record: rowToRecord(row), score: s.score })
               }
               return Stream.fromIterable(out)
             }),

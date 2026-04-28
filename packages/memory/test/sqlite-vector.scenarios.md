@@ -51,11 +51,55 @@ one or more vitest cases in `sqlite-vector.test.ts`.
 **When** I `put` a record and then read the BLOB via raw SQL
 **Then** decoding the BLOB back to Float32Array yields bytes equal to the original.
 
-## Scenario 7: hybrid mode returns "not implemented" error
+## Scenario 7: hybrid mode fuses BM25 (FTS5) and cosine via RRF (Phase 26)
 
-**Given** any vector backend
-**When** I `search({ queryText: "...", mode: "hybrid" })`
-**Then** the stream fails with `MemoryBackendError("hybrid not implemented")`.
+**Given** records put with content `{ text: "..." }` (FTS5 row populated by trigger)
+**When** I `search({ queryText: "...", mode: "hybrid", topK: K })`
+**Then** the backend pulls `max(K, 50)` candidates from the vector ranking
+**And** pulls `max(K, 50)` candidates from BM25 ranking via `memory_fts MATCH`
+**And** fuses them with Reciprocal Rank Fusion (RRF, k=60):
+       `score(id) = sum(1 / (60 + rank_in_list))` over rankings id appears in
+**And** returns the top-K of the fused list, sorted by descending fused score
+**And** namespace filter (if supplied) is honored on both sides via JOIN through
+       `memory_vectors.namespace`.
+
+## Scenario 7a: hybrid finds an exact-term match that vec ranks weakly
+
+**Given** records mixing common phrases and one record with a rare token
+       (e.g. `"x7y9z3-rare-token"`)
+**When** I `search({ queryText: "x7y9z3-rare-token", mode: "hybrid" })`
+**Then** the rare-token record appears in the hybrid result set
+**And** in pure `mode: "vec"` it may be ranked lower or missed.
+
+## Scenario 7b: hybrid keeps semantic recall when keywords miss
+
+**Given** a record `"feline pet"` and an unrelated record
+**When** I `search({ queryText: "cat", mode: "hybrid" })`
+**Then** the `"feline pet"` record still surfaces (vec contributes the recall)
+**And** pure BM25 alone would miss it.
+
+## Scenario 7c: RRF ranking sanity
+
+**Given** A vec-only-top-K, B BM25-only-top-K, C in both
+**When** I do a hybrid search
+**Then** all three ids appear in the fused result
+**And** C ranks above A and B (it earns RRF score from both rankings).
+
+## Scenario 7d: FTS5 trigger sync on REPLACE / DELETE
+
+**Given** a put with text `"alpha"` (insert trigger fires → FTS row written)
+**When** I put the SAME id with text `"beta"` (`INSERT OR REPLACE`)
+**Then** hybrid search for `"alpha"` returns nothing
+**And** hybrid search for `"beta"` returns the record
+**And** deleting the record removes its FTS row (no hybrid hit).
+
+## Scenario 7e: idempotent backfill on existing pre-Phase-26 dbs
+
+**Given** a `memory_vectors` row inserted before the FTS table existed
+       (simulated by raw INSERT bypassing put())
+**When** the SqliteVectorBackend Layer is built (MIGRATION runs)
+**Then** the backfill INSERT populates `memory_fts` for that row
+**And** subsequent hybrid searches find it.
 
 ## Scenario 8: MemoryRouter.search() dispatches to first matching vector backend
 
@@ -77,8 +121,9 @@ one or more vitest cases in `sqlite-vector.test.ts`.
 
 ## Out of scope for Phase 1
 
-- BM25 / FTS5 hybrid scoring (`mode: "hybrid"` returns not-impl)
 - HyDE
 - sqlite-vec extension (deferred until naive >100ms @ 5k rows)
 - Re-embed-on-rerun optimization (always re-embed)
 - InMemoryVectorBackend (stub embedder + sqlite `:memory:` covers tests)
+
+(Phase 26 added BM25/FTS5 hybrid scoring; see Scenario 7 series.)

@@ -111,6 +111,37 @@ describe.skipIf(!hasBunSqlite)("MemoryRouter.search()", () => {
     expect(Array.from(out).length).toBeGreaterThan(0)
   })
 
+  it("Phase 26: hybrid mode passes through router to sqlite-vector backend", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const vec = yield* SqliteVectorBackend
+        const keyed = new InMemoryBackend()
+        const router = makeRouter([
+          { pattern: "notes:*", backend: vec },
+          { pattern: "*", backend: keyed },
+        ])
+        yield* router.put(
+          makeRecord({
+            id: "h1",
+            namespace: "notes:hybrid",
+            kind: "note",
+            content: { text: "rare-token-abc123 plus context" },
+          }),
+        )
+        return yield* Stream.runCollect(
+          router.search({
+            queryText: "rare-token-abc123",
+            namespace: "notes:hybrid",
+            mode: "hybrid",
+            topK: 5,
+          }),
+        )
+      }),
+    )
+    const arr = Array.from(out)
+    expect(arr.map((r) => r.record.id)).toContain("h1")
+  })
+
   it("fan-out fails cleanly when no vector backends are registered", async () => {
     const keyed = new InMemoryBackend()
     const router = makeRouter([{ pattern: "*", backend: keyed }])
