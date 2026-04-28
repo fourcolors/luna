@@ -690,10 +690,22 @@ the current drift.
   `mode: "vec" | "hybrid"`. `"hybrid"` currently fails with a
   not-implemented `MemoryBackendError` from `SqliteVectorBackend`; Phase 26
   adds BM25/FTS5 ranking and merges with cosine.
-- **Phase 27 — vector scale-up.** Per Sterling's `sqlite-vec-scaling` skill,
-  the naive `SELECT * → JS cosine → topK` ranker holds to ~1k records / 372ms
-  p95. Trigger to swap to `sqlite-vec` extension (or migrate to PGlite +
-  pgvector HNSW for the 372× speedup at N=1k) is `>100ms @ 5k`.
+- **Phase 27 — vector scale-up (shipped).** `SqliteVectorBackend` now loads
+  the [Vectorlite](https://github.com/1yefuwang1/vectorlite) SQLite extension
+  at Layer build (process-wide one-shot via `Database.setCustomSQLite` to
+  Homebrew's libsqlite3, since Apple stock libsqlite is built with
+  `SQLITE_OMIT_LOAD_EXTENSION`). When loaded, vec ranking goes through a
+  `memory_vectors_hnsw` virtual table (HNSW index) kept in sync with
+  `memory_vectors` via AFTER triggers. Note: this is **not** `sqlite-vec`
+  (which is brute-force only and would still be O(N)); Vectorlite is the
+  HNSW-indexed SQLite extension. When the extension cannot load (non-bun
+  runtime, missing brew sqlite, missing prebuilt), the backend warns once
+  and falls back to the original naive `SELECT * → JS cosine → topK` ranker
+  — graceful degradation per §6.1, never an error. Measured p95 on
+  arm64-darwin with the stub embedder (64-dim): ~0.4–0.9ms across
+  N ∈ {100, 500, 1k, 5k}, vs the naive path's ~372ms p95 at N=1k. The
+  hybrid leg's vec component now uses the HNSW path; the BM25 (FTS5) leg
+  is unchanged.
 - **Per-backend tuning knobs** (TTL, eviction policy, encryption-at-rest)
   remain backend-private until a real caller demands a uniform surface.
 
