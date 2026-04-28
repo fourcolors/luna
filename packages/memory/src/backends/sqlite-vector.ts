@@ -266,65 +266,83 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
         )
 
         // ─── put ────────────────────────────────────────────────────────
+        // Atomicity (Phase 26 follow-up, advisor ⚠️ MODIFY):
+        //   1. Embed FIRST (async, outside any txn) — if it fails we have
+        //      not touched the DB yet.
+        //   2. Wrap the keyed + vec writes in a single BEGIN IMMEDIATE
+        //      transaction. Run inside Effect.uninterruptible so a Fiber
+        //      interrupt mid-txn cannot leave the connection holding an
+        //      open write lock (§3.4 rule 4).
+        //   3. On any throw inside the txn, ROLLBACK before propagating
+        //      the MemoryBackendError (§6.1: no other error type).
         const put: SqliteVectorBackendApi["put"] = (rec) =>
           Effect.gen(function* () {
-            // 1. Always write the keyed row.
-            yield* Effect.try({
-              try: () => {
-                putKeyedStmt.run(
-                  rec.id,
-                  rec.namespace,
-                  rec.kind,
-                  JSON.stringify(rec.content),
-                  rec.schemaVersion,
-                  rec.createdAt,
-                  rec.updatedAt,
-                  JSON.stringify(rec.tags),
-                )
-              },
-              catch: (cause) => asError("put.keyed", cause),
-            })
-
-            // 2. If content.text exists, embed and write the vector row.
-            //    Otherwise drop any stale vector row (idempotent rewrite).
             const text = extractText(rec.content)
-            if (text === null) {
-              yield* Effect.try({
-                try: () => delVecStmt.run(rec.id),
-                catch: (cause) => asError("put.vec-cleanup", cause),
-              })
-              return
+
+            // Step 1: embed first (only if needed). No DB state mutated yet.
+            let vecBuf: Uint8Array | null = null
+            if (text !== null) {
+              const vec = yield* embedder.embed(text).pipe(
+                Effect.mapError((cause) => asError("put.embed", cause)),
+              )
+              if (vec.length !== embedder.dimension) {
+                yield* Effect.fail(
+                  asError(
+                    "put.embed",
+                    new Error(
+                      `dimension mismatch: got ${vec.length} expected ${embedder.dimension}`,
+                    ),
+                  ),
+                )
+              }
+              vecBuf = float32ToBuffer(vec)
             }
 
-            const vec = yield* embedder.embed(text).pipe(
-              Effect.mapError((cause) => asError("put.embed", cause)),
+            // Step 2+3: atomic keyed + vec writes under BEGIN IMMEDIATE.
+            yield* Effect.uninterruptible(
+              Effect.try({
+                try: () => {
+                  db.run("BEGIN IMMEDIATE")
+                  try {
+                    putKeyedStmt.run(
+                      rec.id,
+                      rec.namespace,
+                      rec.kind,
+                      JSON.stringify(rec.content),
+                      rec.schemaVersion,
+                      rec.createdAt,
+                      rec.updatedAt,
+                      JSON.stringify(rec.tags),
+                    )
+                    if (vecBuf === null) {
+                      // No text → drop any stale vec row (idempotent).
+                      delVecStmt.run(rec.id)
+                    } else {
+                      // DELETE+INSERT so AFTER DELETE + AFTER INSERT triggers
+                      // both fire in order, keeping memory_fts in sync.
+                      delVecStmt.run(rec.id)
+                      insertVecStmt.run(
+                        rec.id,
+                        rec.namespace,
+                        vecBuf,
+                        embedder.dimension,
+                        text!,
+                        rec.updatedAt,
+                      )
+                    }
+                    db.run("COMMIT")
+                  } catch (txnErr) {
+                    try {
+                      db.run("ROLLBACK")
+                    } catch {
+                      /* rollback best-effort; original error wins */
+                    }
+                    throw txnErr
+                  }
+                },
+                catch: (cause) => asError("put", cause),
+              }),
             )
-            if (vec.length !== embedder.dimension) {
-              yield* Effect.fail(
-                asError(
-                  "put.embed",
-                  new Error(
-                    `dimension mismatch: got ${vec.length} expected ${embedder.dimension}`,
-                  ),
-                ),
-              )
-            }
-            yield* Effect.try({
-              try: () => {
-                // DELETE-then-INSERT so AFTER DELETE + AFTER INSERT triggers
-                // both fire in order, keeping memory_fts in sync on rewrites.
-                delVecStmt.run(rec.id)
-                insertVecStmt.run(
-                  rec.id,
-                  rec.namespace,
-                  float32ToBuffer(vec),
-                  embedder.dimension,
-                  text,
-                  rec.updatedAt,
-                )
-              },
-              catch: (cause) => asError("put.vec", cause),
-            })
           })
 
         // ─── get / delete / query / export / import (keyed) ─────────────
