@@ -36,10 +36,20 @@ export interface MemoryBackend {
 }
 
 export interface MemoryVectorBackend extends MemoryBackend {
+  /**
+   * Vector search.
+   *
+   * `mode`:
+   *   - `"vec"` (default) — pure cosine ranking over the backend's vectors.
+   *   - `"hybrid"` — backends fuse BM25 (FTS5) with vector ranking via RRF.
+   *     Backends that do not support hybrid MUST fail with
+   *     `MemoryBackendError`, not silently fall back to vec-only.
+   */
   readonly search: (args: {
     readonly queryText: string
     readonly topK?: number
     readonly namespace?: string
+    readonly mode?: "vec" | "hybrid"
   }) => Stream.Stream<
     { readonly record: MemoryRecord; readonly score: number },
     MemoryBackendError

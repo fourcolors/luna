@@ -52,9 +52,11 @@ export interface MemoryRouter {
    * router fans out to ALL vector-capable backends (Stream.mergeAll); if
    * none are registered, fails with the same error.
    *
-   * `mode: "vec"` (default) does pure cosine ranking. `"hybrid"` will gain
-   * BM25/FTS5 support in Phase 26 — vector backends currently return a
-   * not-implemented MemoryBackendError for hybrid mode.
+   * `mode: "vec"` (default) does pure cosine ranking. `"hybrid"` (Phase 26)
+   * fuses BM25 (FTS5) with vec ranking via Reciprocal Rank Fusion on
+   * backends that support it (currently `SqliteVectorBackend`). Backends
+   * that don't support hybrid fail with `MemoryBackendError`; the router
+   * does not silently fall back to vec-only.
    */
   readonly search: (args: {
     readonly queryText: string

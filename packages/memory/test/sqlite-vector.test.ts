@@ -204,20 +204,444 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     expect(arr[0]!.score).toBeGreaterThan(0.99)
   })
 
-  it("Scenario 7: hybrid mode returns 'not implemented' error", async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const b = yield* SqliteVectorBackend
-          return yield* Stream.runCollect(
-            b.search({ queryText: "x", mode: "hybrid" }),
+  it("Scenario 7: hybrid finds an exact-term match that vec ranks weakly", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* SqliteVectorBackend
+        // Pad with distractors that share many tokens with the query phrase
+        // so the rare-token record is not also vec's top hit by accident.
+        for (let i = 0; i < 10; i++) {
+          yield* b.put(
+            makeRecord({
+              id: `pad-${i}`,
+              namespace: "rare",
+              kind: "note",
+              content: { text: `padding distractor record number ${i} contains common tokens` },
+            }),
           )
-        }),
-      ).pipe(Effect.provide(layer), Effect.either),
+        }
+        yield* b.put(
+          makeRecord({
+            id: "rare",
+            namespace: "rare",
+            kind: "note",
+            content: { text: "x7y9z3-rare-token appears here exactly once" },
+          }),
+        )
+        const hybrid = yield* Stream.runCollect(
+          b.search({
+            queryText: "x7y9z3-rare-token",
+            mode: "hybrid",
+            namespace: "rare",
+            topK: 5,
+          }),
+        )
+        return Array.from(hybrid).map((r) => r.record.id)
+      }),
     )
-    expect(result._tag).toBe("Left")
-    if (result._tag === "Left") {
-      expect((result.left as { op: string }).op).toBe("search.hybrid")
+    expect(out).toContain("rare")
+  })
+
+  it("Scenario 7b: hybrid keeps semantic recall when keywords miss", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* SqliteVectorBackend
+        yield* b.put(
+          makeRecord({
+            id: "feline",
+            namespace: "sem",
+            kind: "note",
+            content: { text: "cat feline pet" },
+          }),
+        )
+        yield* b.put(
+          makeRecord({
+            id: "unrelated",
+            namespace: "sem",
+            kind: "note",
+            content: { text: "submarine torpedo" },
+          }),
+        )
+        const hybrid = yield* Stream.runCollect(
+          b.search({
+            queryText: "cat",
+            mode: "hybrid",
+            namespace: "sem",
+            topK: 5,
+          }),
+        )
+        return Array.from(hybrid).map((r) => r.record.id)
+      }),
+    )
+    // The "feline" record (which contains "cat") should surface via either
+    // FTS or vec; the unrelated record should NOT outrank it.
+    expect(out).toContain("feline")
+    expect(out[0]).toBe("feline")
+  })
+
+  it("Scenario 7c: RRF ranks an id appearing in BOTH lists above singletons", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* SqliteVectorBackend
+        // Three records:
+        //  C — contains the exact query term AND high vec overlap
+        //  A — exact query term but low vec overlap
+        //  B — high vec overlap but no exact-term match
+        yield* b.put(
+          makeRecord({
+            id: "C",
+            namespace: "rrf",
+            kind: "note",
+            content: { text: "alpha beta gamma delta epsilon" },
+          }),
+        )
+        yield* b.put(
+          makeRecord({
+            id: "A",
+            namespace: "rrf",
+            kind: "note",
+            content: { text: "alpha unrelated topic submarine" },
+          }),
+        )
+        yield* b.put(
+          makeRecord({
+            id: "B",
+            namespace: "rrf",
+            kind: "note",
+            content: { text: "beta gamma delta epsilon" },
+          }),
+        )
+        const hybrid = yield* Stream.runCollect(
+          b.search({
+            queryText: "alpha beta gamma delta epsilon",
+            mode: "hybrid",
+            namespace: "rrf",
+            topK: 3,
+          }),
+        )
+        return Array.from(hybrid).map((r) => r.record.id)
+      }),
+    )
+    expect(out.length).toBe(3)
+    // C — the only record present in both rankings — must rank first.
+    expect(out[0]).toBe("C")
+  })
+
+  it("Scenario 7d: namespace filter is honored on hybrid", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* SqliteVectorBackend
+        yield* b.put(
+          makeRecord({
+            id: "pub",
+            namespace: "ns:public",
+            kind: "note",
+            content: { text: "shared knowledge" },
+          }),
+        )
+        yield* b.put(
+          makeRecord({
+            id: "priv",
+            namespace: "ns:private",
+            kind: "note",
+            content: { text: "shared knowledge" },
+          }),
+        )
+        const arr = yield* Stream.runCollect(
+          b.search({
+            queryText: "shared",
+            mode: "hybrid",
+            namespace: "ns:public",
+            topK: 5,
+          }),
+        )
+        return Array.from(arr).map((r) => r.record.namespace)
+      }),
+    )
+    expect(out.every((ns) => ns === "ns:public")).toBe(true)
+    expect(out.length).toBe(1)
+  })
+
+  it("Scenario 7e: INSERT OR REPLACE updates FTS row (trigger sync)", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* SqliteVectorBackend
+        yield* b.put(
+          makeRecord({
+            id: "swap",
+            namespace: "swp",
+            kind: "note",
+            content: { text: "alphaorig zztoken-uniq11" },
+          }),
+        )
+        // Insert decoys so RRF has a populated candidate pool — but the swap
+        // row, after rewrite to disjoint tokens, will have cosine 0 vs the
+        // old query text. With topK=3 it should fall out of both rankings.
+        for (let i = 0; i < 8; i++) {
+          yield* b.put(
+            makeRecord({
+              id: `decoy-${i}`,
+              namespace: "swp",
+              kind: "note",
+              content: { text: `decoy filler tokens number ${i} other words` },
+            }),
+          )
+        }
+        const beforeAlpha = yield* Stream.runCollect(
+          b.search({
+            queryText: "zztoken-uniq11",
+            mode: "hybrid",
+            namespace: "swp",
+            topK: 3,
+          }),
+        )
+        // Replace SAME id with text using DISJOINT tokens (no overlap with
+        // either the original text or the original query) so neither the
+        // vec leg nor the BM25 leg of hybrid should find it via "uniq11".
+        yield* b.put(
+          makeRecord({
+            id: "swap",
+            namespace: "swp",
+            kind: "note",
+            content: { text: "betarep yytoken-uniq22" },
+          }),
+        )
+        const afterAlpha = yield* Stream.runCollect(
+          b.search({
+            queryText: "zztoken-uniq11",
+            mode: "hybrid",
+            namespace: "swp",
+            topK: 3,
+          }),
+        )
+        const afterBeta = yield* Stream.runCollect(
+          b.search({
+            queryText: "yytoken-uniq22",
+            mode: "hybrid",
+            namespace: "swp",
+            topK: 3,
+          }),
+        )
+        return {
+          beforeAlpha: Array.from(beforeAlpha).map((r) => r.record.id),
+          afterAlpha: Array.from(afterAlpha).map((r) => r.record.id),
+          afterBeta: Array.from(afterBeta).map((r) => r.record.id),
+        }
+      }),
+    )
+    expect(out.beforeAlpha).toContain("swap")
+    // The original text must NOT find the row anymore — proves the FTS row
+    // was updated (delete+insert via after-update trigger, or via REPLACE
+    // firing delete+insert triggers).
+    expect(out.afterAlpha).not.toContain("swap")
+    expect(out.afterBeta).toContain("swap")
+  })
+
+  it("Scenario 7f: DELETE cascades to FTS row", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* SqliteVectorBackend
+        yield* b.put(
+          makeRecord({
+            id: "del-fts",
+            namespace: "delfts",
+            kind: "note",
+            content: { text: "uniqueword-zzz12345" },
+          }),
+        )
+        const before = yield* Stream.runCollect(
+          b.search({
+            queryText: "uniqueword-zzz12345",
+            mode: "hybrid",
+            namespace: "delfts",
+            topK: 5,
+          }),
+        )
+        yield* b.delete("del-fts")
+        const after = yield* Stream.runCollect(
+          b.search({
+            queryText: "uniqueword-zzz12345",
+            mode: "hybrid",
+            namespace: "delfts",
+            topK: 5,
+          }),
+        )
+        return {
+          before: Array.from(before).map((r) => r.record.id),
+          after: Array.from(after).map((r) => r.record.id),
+        }
+      }),
+    )
+    expect(out.before).toContain("del-fts")
+    expect(out.after).not.toContain("del-fts")
+  })
+
+  it("Scenario 7g: mode:'vec' (default) regression — unchanged behavior", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* SqliteVectorBackend
+        yield* b.put(
+          makeRecord({
+            id: "v1",
+            namespace: "vreg",
+            kind: "note",
+            content: { text: "cats and dogs" },
+          }),
+        )
+        yield* b.put(
+          makeRecord({
+            id: "v2",
+            namespace: "vreg",
+            kind: "note",
+            content: { text: "submarines and torpedoes" },
+          }),
+        )
+        // Explicit mode:"vec"
+        const explicit = yield* Stream.runCollect(
+          b.search({
+            queryText: "cats",
+            mode: "vec",
+            namespace: "vreg",
+            topK: 5,
+          }),
+        )
+        // Default mode (omitted)
+        const defaulted = yield* Stream.runCollect(
+          b.search({ queryText: "cats", namespace: "vreg", topK: 5 }),
+        )
+        return {
+          explicit: Array.from(explicit).map((r) => r.record.id),
+          defaulted: Array.from(defaulted).map((r) => r.record.id),
+        }
+      }),
+    )
+    expect(out.explicit[0]).toBe("v1")
+    expect(out.defaulted[0]).toBe("v1")
+    expect(out.explicit).toEqual(out.defaulted)
+  })
+
+  it("Scenario 7h: hybrid skips records without text content", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* SqliteVectorBackend
+        yield* b.put(
+          makeRecord({
+            id: "blob-only",
+            namespace: "blob",
+            kind: "blob",
+            content: { foo: "bar" },
+          }),
+        )
+        const arr = yield* Stream.runCollect(
+          b.search({
+            queryText: "anything",
+            mode: "hybrid",
+            namespace: "blob",
+            topK: 5,
+          }),
+        )
+        return Array.from(arr).map((r) => r.record.id)
+      }),
+    )
+    // Consistent with vec behavior: a keyed-only record (no FTS, no vec)
+    // is invisible to hybrid search.
+    expect(out).not.toContain("blob-only")
+  })
+
+  it("Scenario 7i: backfill populates FTS for rows that pre-date the FTS table", async () => {
+    // Simulate a pre-Phase-26 database: open the DB directly via bun:sqlite
+    // WITHOUT the FTS table or triggers, insert a memory_vectors row, close.
+    // Then open via SqliteVectorBackend (MIGRATION runs → creates FTS +
+    // backfills). Hybrid search must find the row.
+    const fs = await import("node:fs")
+    const os = await import("node:os")
+    const path = await import("node:path")
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "luna-fts-backfill-"))
+    const dbPath = path.join(tmp, "vectors.db")
+
+    try {
+      // Phase: build a "pre-Phase-26" DB manually.
+      const bunSqlite = (await import("bun:sqlite" as string)) as {
+        Database: new (p: string) => {
+          run: (sql: string) => void
+          query: (sql: string) => {
+            run: (...p: unknown[]) => { changes: number }
+          }
+          close: () => void
+        }
+      }
+      const pre = new bunSqlite.Database(dbPath)
+      pre.run("PRAGMA foreign_keys = ON")
+      // Just the keyed + vectors tables — NO FTS, NO triggers.
+      pre.run(`
+        CREATE TABLE memory_keyed (
+          id TEXT PRIMARY KEY, namespace TEXT NOT NULL, kind TEXT NOT NULL,
+          content_json TEXT NOT NULL, schema_version INTEGER NOT NULL,
+          created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+          tags_json TEXT NOT NULL
+        );
+        CREATE TABLE memory_vectors (
+          id TEXT PRIMARY KEY REFERENCES memory_keyed(id) ON DELETE CASCADE,
+          namespace TEXT NOT NULL, embedding BLOB NOT NULL,
+          dimension INTEGER NOT NULL, text TEXT NOT NULL, ts INTEGER NOT NULL
+        );
+      `)
+      // Insert a row directly. Embedding bytes don't matter for FTS lookup
+      // (we'll search by exact phrase via BM25 leg of hybrid).
+      const fakeEmbedding = new Uint8Array(8 * 4) // 8-dim Float32 zeros
+      pre.query(
+        `INSERT INTO memory_keyed VALUES (?,?,?,?,?,?,?,?)`,
+      ).run(
+        "legacy-1",
+        "legacyns",
+        "note",
+        JSON.stringify({ text: "legacy-pre-phase-26 marker" }),
+        1,
+        Date.now(),
+        Date.now(),
+        JSON.stringify([]),
+      )
+      pre.query(
+        `INSERT INTO memory_vectors VALUES (?,?,?,?,?,?)`,
+      ).run(
+        "legacy-1",
+        "legacyns",
+        fakeEmbedding,
+        8,
+        "legacy-pre-phase-26 marker",
+        Date.now(),
+      )
+      pre.close()
+
+      // Now open via SqliteVectorBackend (MIGRATION runs, backfill should
+      // populate memory_fts for legacy-1).
+      const fileLayer = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        StubEmbedderLayer,
+      )
+      const ids = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            const arr = yield* Stream.runCollect(
+              b.search({
+                queryText: "legacy-pre-phase-26 marker",
+                mode: "hybrid",
+                namespace: "legacyns",
+                topK: 5,
+              }),
+            )
+            return Array.from(arr).map((r) => r.record.id)
+          }),
+        ).pipe(Effect.provide(fileLayer)),
+      )
+      expect(ids).toContain("legacy-1")
+    } finally {
+      try {
+        fs.rmSync(tmp, { recursive: true, force: true })
+      } catch {
+        /* ignore */
+      }
     }
   })
 
