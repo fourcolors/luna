@@ -27,6 +27,7 @@ import {
   EnvSecretProvider,
   OnePasswordSecretProvider,
   RoutedOpSecretProvider,
+  readKeychainToken,
   secretProviderFirstOf,
 } from "@luna/core"
 
@@ -116,6 +117,99 @@ d("Phase 25d live smoke — broker → RoutedOpSecretProvider → Redacted<sk-an
       cleanupDb(dbPath)
     }
   }, 30_000)
+
+  // Phase 25e/5: full chain proof, folded in from the now-deleted
+  // apps/ui-web/scripts/broker-smoke.ts. Exercises:
+  //   keychain × 3  →  OnePasswordSecretProvider × 3  →  RoutedOpSecretProvider
+  //   →  AccountBrokerLayer.fromSql  →  acquireSession
+  //   →  Redacted<sk-ant-oat-...>
+  // Requires all three luna.op.<label> keychain entries present
+  // (Sterling's machine has them; CI does not — that's why this is gated).
+  it("3 keychain × OP layers × RoutedOp → broker → Redacted<sk-ant-oat>", async () => {
+    const OP_ACCOUNTS = [
+      {
+        label: "antmachine",
+        keychainService: "luna.op.antmachine",
+        keychainAccount: "antmachine",
+      },
+      {
+        label: "mrbot",
+        keychainService: "luna.op.mrbot",
+        keychainAccount: "mrbot",
+      },
+      {
+        label: "flow",
+        keychainService: "luna.op.flow",
+        keychainAccount: "flow",
+      },
+    ] as const
+
+    const buildOpLayers = Effect.gen(function* () {
+      const accounts: {
+        label: string
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        layer: Layer.Layer<any, any, any>
+      }[] = []
+      for (const acct of OP_ACCOUNTS) {
+        const token = yield* readKeychainToken({
+          service: acct.keychainService,
+          account: acct.keychainAccount,
+        })
+        const opLayer = OnePasswordSecretProvider.make({
+          accountLabel: acct.label,
+          token,
+        }).pipe(Layer.provide(Clock.Default))
+        accounts.push({ label: acct.label, layer: opLayer })
+      }
+      return accounts
+    })
+
+    // Sterling's keychain layout: the `mrbot` SA token has read access to
+    // the antmachine vault where the canonical credential lives. The other
+    // two tokens 403 against this ref. Routing via `luna-op://VAULT/ITEM/FIELD
+    // proves the dispatcher picks the right inner layer (this is the whole
+    // point of RoutedOp: don't rely on a single SA having every vault).
+    const ROUTED_REF =
+      "luna-op://VAULT/ITEM/FIELD"
+    const dbPath = seedDb(ROUTED_REF)
+    try {
+      const program = Effect.gen(function* () {
+        const accounts = yield* buildOpLayers
+        expect(accounts).toHaveLength(3)
+        expect(accounts.map((a) => a.label)).toEqual([
+          "antmachine",
+          "mrbot",
+          "flow",
+        ])
+        const routedOp = RoutedOpSecretProvider.make({ accounts })
+        const secretL = secretProviderFirstOf([
+          routedOp,
+          EnvSecretProvider.Default,
+        ])
+        const brokerL = AccountBrokerLayer.fromSql({ dbPath }).pipe(
+          Layer.provide(secretL),
+          Layer.provide(Clock.Default),
+        )
+        const acquire = Effect.gen(function* () {
+          const broker = yield* AccountBroker
+          return yield* broker.acquireSession({ model: "claude-sonnet-4-5" })
+        })
+        return yield* acquire.pipe(Effect.scoped, Effect.provide(brokerL))
+      })
+      const credential = await Effect.runPromise(
+        program as Effect.Effect<{
+          accountId: string
+          kind: string
+          resolvedSecret: Redacted.Redacted<string>
+        }>,
+      )
+      expect(credential.kind).toBe("anthropic")
+      const resolved = Redacted.value(credential.resolvedSecret)
+      expect(resolved.startsWith("sk-ant-oat")).toBe(true)
+    } finally {
+      cleanupDb(dbPath)
+    }
+  }, 60_000)
 
   it("bare op://... still resolves when exactly 1 OP account is registered", async () => {
     const dbPath = seedDb(CANONICAL_BARE_OP_REF)
