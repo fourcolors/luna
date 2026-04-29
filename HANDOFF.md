@@ -1086,3 +1086,36 @@ via subsequent valid event landing in the bucket.
    `apps/agent-cli`. The legacy `apps/ui-web-react` scaffold was
    removed 2026-04-27.
 
+---
+
+## Drift note — 2026-04-28: Phase 25d supersedes 25c "try-each" routing
+
+Phase 25c shipped a `secretProviderFirstOf([...opLayers, env])`
+composition where every registered OP token was tried in priority
+order against every `op://` ref. This was a permission-probing
+oracle — wrong tokens silently failed and the chain fell through to
+the next.
+
+**Phase 25d replaces this with explicit per-ref account routing.**
+See DESIGN.md §2.2.11 for the full grammar lock. Summary:
+
+- `op://...` is allowed ONLY when exactly 1 OP account is registered
+  with the routed wrapper.
+- `luna-op://<label>/...` is the explicit form; the wrapper dispatches
+  to the named account only — no fall-through.
+- Account labels match `^[a-z][a-z0-9-]{0,30}$`; reserved labels
+  `env`, `file`, `op` are rejected at both CLI-validator and
+  wrapper-construction time.
+- Errors from `luna-op://<label>/...` failures are wrapped with
+  `(account=<label>)` for diagnostic context. Tokens never appear in
+  any error message.
+- Side-fix: the CLI validator now requires `env:VAR` (one colon, no
+  slashes) — `env://VAR` is rejected. `EnvSecretProvider` only ever
+  parsed `env:`, so `env://...` rows would never resolve.
+
+The 25c composition language above this note ("`firstOf` IS the
+multi-account routing") is **superseded** by 25d's
+`RoutedOpSecretProvider`. Operators with `op://...` rows after 25d
+must EITHER keep exactly one OP account registered OR migrate refs
+to `luna-op://<label>/...`.
+

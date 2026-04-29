@@ -123,6 +123,75 @@ Two planes: **Feature Modules** (capabilities) and **Runtime Systems** (cross-cu
 2.2.13│ Schema Evolution       │ Versioned migrations for durable state
 ```
 
+#### 2.2.11 Secrets — token resolution chain (Phase 25d)
+
+The `secret_ref` column on `accounts` (§5.1) is a string pointer the
+SecretProvider chain resolves at session-acquire time. Phase 25d locks
+the grammar; earlier "iterate every OP token until one resolves"
+phrasing from 25c is **superseded** by explicit per-ref account
+routing.
+
+**Ref grammar:**
+
+```
+op://<vault>/<item>/[section/]<field>
+  Canonical 1Password syntax (verified against developer.1password.com).
+  Valid ONLY when exactly ONE OP service-account is registered with
+  the routed wrapper. With ≥2 OP accounts, op:// is rejected with a
+  ConfigError directing the operator to use luna-op://<label>/...
+  With 0 OP accounts, op:// is also rejected.
+
+luna-op://<account-label>/<vault>/<item>/[section/]<field>
+  Luna-specific explicit-routing form. <account-label> matches a
+  registered OP service-account by its keychain label. Resolution is
+  bound to that single account — NO fall-through to other accounts.
+  Unknown label → ConfigError naming the unknown label and listing the
+  registered set.
+
+env:<VARNAME>
+  Reads from process env. Single colon, no slashes (RFC-style URI
+  scheme without authority). NB: `env://VAR` is REJECTED by the CLI
+  validator — it would never resolve at runtime.
+
+file:<absolute-path>  |  file:///<absolute-path>
+  Reads from local file. Same semantics as Phase 9.
+```
+
+**Account-label format (mandatory for `luna-op://`):**
+
+```
+^[a-z][a-z0-9-]{0,30}$
+Reserved labels (rejected): env, file, op
+```
+
+No URL-decoding is performed on any path segment. Splitting is on
+literal `/`.
+
+**Routing dispatcher (`RoutedOpSecretProvider`):**
+
+Wraps N single-account `OnePasswordSecretProvider` layers, each
+registered by `accountLabel`. On `luna-op://`, dispatches to the
+matching layer ONLY. On `op://`, allowed iff exactly one OP layer is
+registered (otherwise the dispatcher returns a guidance ConfigError).
+The dispatcher rewrites `luna-op://<label>/<rest>` to `op://<rest>`
+before handing it to the inner backend, which remains a pure
+1Password reader. Refs that begin with neither prefix surface as a
+"miss" ConfigError so `secretProviderFirstOf` can fall through.
+
+**Error wrapping:**
+
+Failures from a `luna-op://<label>/...` resolution are wrapped via
+`Effect.mapError` to prepend `"(account=<label>) "` to the message.
+Tokens never appear in any error message.
+
+**Boot-time dangling refs:**
+
+A helper `validateAccountsTableLabels(refs, registeredLabels)` returns
+the list of refs pointing at unknown labels. The composition site
+(dev-server-chat) calls it after broker hydration and logs a WARN
+line when the count is >0. Dangling refs are NOT a hard-fail — an
+operator may add accounts later without rebooting.
+
 ---
 
 ## §3. Concurrency & Lifetime Model (frozen)
