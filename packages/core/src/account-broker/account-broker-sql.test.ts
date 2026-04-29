@@ -182,12 +182,12 @@ d("AccountBrokerLayer.fromSql — schema migration", () => {
     }
   })
 
-  it("(2) re-run migration on existing DB is idempotent; user_version stays 1", async () => {
+  it("(2) re-run migration on existing DB is idempotent; schema_versions row stays single", async () => {
     const dbPath = tmpDb()
     try {
       const log = await Effect.runPromise(Ref.make<ReadonlyArray<string>>([]))
       const layer = buildLayer(dbPath, stubSecretsLayer({}, log))
-      // First build → v0 → v1.
+      // First build → applyMigration("accounts", 1, ...) inserts a single row.
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
@@ -200,16 +200,25 @@ d("AccountBrokerLayer.fromSql — schema migration", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const mod: any = await import(/* @vite-ignore */ bunSqliteSpec)
       const raw1 = new mod.Database(dbPath) as {
-        query: (sql: string) => { get: () => unknown }
+        query: (sql: string) => {
+          get: (...p: unknown[]) => unknown
+          all: (...p: unknown[]) => unknown[]
+        }
         close: () => void
       }
-      const v1 = raw1.query("PRAGMA user_version").get() as
-        | { user_version: number }
-        | undefined
+      const rows1 = raw1
+        .query(
+          "SELECT component, version FROM schema_versions WHERE component = ?",
+        )
+        .all("accounts") as ReadonlyArray<{
+        component: string
+        version: number
+      }>
       raw1.close()
-      expect(v1?.user_version).toBe(1)
+      expect(rows1).toHaveLength(1)
+      expect(rows1[0]).toEqual({ component: "accounts", version: 1 })
 
-      // Second build → no-op, must not throw.
+      // Second build → no-op, must not throw, ledger row count unchanged.
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
@@ -219,14 +228,19 @@ d("AccountBrokerLayer.fromSql — schema migration", () => {
         ).pipe(Effect.provide(layer)),
       )
       const raw2 = new mod.Database(dbPath) as {
-        query: (sql: string) => { get: () => unknown }
+        query: (sql: string) => {
+          get: (...p: unknown[]) => unknown
+          all: (...p: unknown[]) => unknown[]
+        }
         close: () => void
       }
-      const v2 = raw2.query("PRAGMA user_version").get() as
-        | { user_version: number }
-        | undefined
+      const rows2 = raw2
+        .query(
+          "SELECT component, version FROM schema_versions WHERE component = ?",
+        )
+        .all("accounts") as ReadonlyArray<unknown>
       raw2.close()
-      expect(v2?.user_version).toBe(1)
+      expect(rows2).toHaveLength(1)
     } finally {
       cleanupTmp(dbPath)
     }

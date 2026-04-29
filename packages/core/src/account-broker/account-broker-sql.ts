@@ -13,10 +13,11 @@
  *     time — same shape as Phase 9.
  *   - §5.1 — `accounts(id, label, kind, secret_ref, health, cooldown_ms,
  *     usage_json)` columns byte-exact per DESIGN.md. No additive columns.
- *   - §5.2 — Migration ladder uses `PRAGMA user_version` (mirrors
- *     `cost-store-sqlite.ts` and `session-store-sqlite.ts`). NOTE drift:
- *     §5.2 prose mentions a `schema_versions` table but no shipped module
- *     uses it; this Layer follows the in-repo convention.
+ *   - §5.2 — Migration ladder uses the per-component `schema_versions`
+ *     ledger (Phase 25e) via `applyMigration("accounts", 1, ...)`. The
+ *     pre-25e drift to `PRAGMA user_version` collided across components
+ *     sharing `~/.luna/luna.db`; the new ledger keys per (component, version)
+ *     so each store migrates independently.
  *   - §6 — Errors only via existing `ConfigError`. Missing `bun:sqlite` →
  *     ConfigError. Malformed row at hydrate (empty `kind` or empty
  *     `secret_ref`) → ConfigError with offending `id` in the message.
@@ -40,6 +41,7 @@ import type * as Scope from "effect/Scope"
 import * as os from "node:os"
 import * as path from "node:path"
 import { Clock } from "../clock.js"
+import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
 import {
   AllAccountsExhaustedError,
   ConfigError,
@@ -65,8 +67,6 @@ const SCHEMA_V1 = `
     usage_json    TEXT NOT NULL
   );
 `
-
-const TARGET_USER_VERSION = 1
 
 const DEFAULT_COOLDOWN_MS = 60_000
 
@@ -147,33 +147,19 @@ const fromSql = (
       db.run("PRAGMA synchronous = NORMAL")
       db.run("PRAGMA foreign_keys = ON")
 
-      // Migration ladder: PRAGMA user_version → bump per component (§5.2).
-      const cur = db.query("PRAGMA user_version").get() as
-        | { user_version: number }
-        | undefined
-      const userVersion = cur?.user_version ?? 0
-      if (userVersion < 1) {
-        db.run("BEGIN IMMEDIATE")
-        try {
-          db.run(SCHEMA_V1)
-          db.run(`PRAGMA user_version = ${TARGET_USER_VERSION}`)
-          db.run("COMMIT")
-        } catch (e) {
-          try {
-            db.run("ROLLBACK")
-          } catch {
-            /* best-effort */
-          }
-          throw e
-        }
-      }
+      // §5.2 migration ladder: per-component `schema_versions` ledger.
+      // Component name "accounts" is shared with apps/agent-cli/src/db.ts —
+      // the CLI writes the same table on the same DB and must agree on
+      // version keying.
+      const now = yield* clock.nowMs()
+      ensureSchemaVersions(db)
+      applyMigration(db, "accounts", 1, SCHEMA_V1, now)
 
       // §3.4 #4 LIFO: register `db.close` finalizer so the DB closes
       // when the surrounding scope finalizes.
       yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
 
       // Hydrate rows → AccountRecord[].
-      const now = yield* clock.nowMs()
       const rows = db.query("SELECT * FROM accounts").all() as AccountsRow[]
 
       const initial: AccountRecord[] = []

@@ -42,6 +42,7 @@
  */
 import { Effect, Layer } from "effect"
 import { Clock } from "../clock.js"
+import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
 import { ConfigError } from "../errors.js"
 import { TelemetryService, counterKey } from "./telemetry.js"
 import type {
@@ -91,8 +92,6 @@ const SCHEMA_V1 = `
   CREATE INDEX IF NOT EXISTS idx_telemetry_history_name_ts
     ON telemetry_history(name, ts);
 `
-
-const TARGET_USER_VERSION = 1
 
 // ── bun:sqlite minimal shape (mirrors cost-store-sqlite.ts) ─────────────────
 interface BunDb {
@@ -169,22 +168,12 @@ export const makeTelemetrySqlite = (
       db.run("PRAGMA synchronous = NORMAL")
       db.run("PRAGMA foreign_keys = ON")
 
-      // §5.2 migration ladder: PRAGMA user_version → bump per component.
-      const cur = db.query("PRAGMA user_version").get() as
-        | { user_version: number }
-        | undefined
-      const userVersion = cur?.user_version ?? 0
-      if (userVersion < 1) {
-        db.run("BEGIN IMMEDIATE")
-        try {
-          db.run(SCHEMA_V1)
-          db.run(`PRAGMA user_version = ${TARGET_USER_VERSION}`)
-          db.run("COMMIT")
-        } catch (e) {
-          db.run("ROLLBACK")
-          throw e
-        }
-      }
+      // §5.2 migration ladder: per-component `schema_versions` ledger
+      // (Phase 25e). Replaces the pre-25e `PRAGMA user_version` gate that
+      // collided across components sharing `~/.luna/luna.db`.
+      const nowMs = yield* clock.nowMs()
+      ensureSchemaVersions(db)
+      applyMigration(db, "telemetry", 1, SCHEMA_V1, nowMs)
 
       // §3.4 #4 LIFO: register `db.close` finalizer. Telemetry has no
       // daemon (§16: no events to subscribe to), so this is the ONLY

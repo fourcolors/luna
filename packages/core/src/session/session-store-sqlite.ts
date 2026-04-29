@@ -37,6 +37,7 @@ import {
   type MessageKind,
   type StoredMessage,
 } from "../messages.js"
+import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
 import { IntegrityError } from "../errors.js"
 import { extractTextPreview } from "./projection.js"
 import { SessionStore } from "./session-store.js"
@@ -78,8 +79,6 @@ const SCHEMA_V1 = `
   CREATE INDEX IF NOT EXISTS idx_sessions_status
     ON sessions(status);
 `
-
-const TARGET_USER_VERSION = 1
 
 // ── Row shapes (mirror SQL columns 1:1) ────────────────────────────────────
 interface SessionDbRow {
@@ -202,23 +201,12 @@ export const makeSessionStoreSqlite = (
       db.run("PRAGMA synchronous = NORMAL")
       db.run("PRAGMA foreign_keys = ON")
 
-      // Migration ladder. Single-version today; ladder shape lets v2 land
-      // without a schema-versioning library.
-      const cur = db.query("PRAGMA user_version").get() as
-        | { user_version: number }
-        | undefined
-      const userVersion = cur?.user_version ?? 0
-      if (userVersion < 1) {
-        db.run("BEGIN")
-        try {
-          db.run(SCHEMA_V1)
-          db.run(`PRAGMA user_version = ${TARGET_USER_VERSION}`)
-          db.run("COMMIT")
-        } catch (e) {
-          db.run("ROLLBACK")
-          throw e
-        }
-      }
+      // §5.2 migration ladder: per-component `schema_versions` ledger
+      // (Phase 25e). Replaces the pre-25e `PRAGMA user_version` gate.
+      // SessionStore has no Clock dep; Date.now() is fine for the ledger
+      // applied_at column (it's an audit timestamp, not a domain time).
+      ensureSchemaVersions(db)
+      applyMigration(db, "sessions", 1, SCHEMA_V1, Date.now())
 
       yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
 

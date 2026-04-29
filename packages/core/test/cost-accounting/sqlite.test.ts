@@ -234,10 +234,10 @@ d("CostAccountingService.fromPath (sqlite)", () => {
     expect(result.bucket!.eventCount).toBe(3)
   })
 
-  it("(6) migration ladder: idempotent on reopen — user_version stays 1", async () => {
+  it("(6) migration ladder: idempotent on reopen — schema_versions row stays single", async () => {
     const dbPath = tmpDb()
     try {
-      // First scope: triggers the v0 → v1 migration.
+      // First scope: triggers the cost v1 migration.
       await run(
         Effect.gen(function* () {
           const cost = yield* CostAccountingService
@@ -246,24 +246,26 @@ d("CostAccountingService.fromPath (sqlite)", () => {
         }),
         dbPath,
       )
-      // Second scope: must observe user_version=1 already, skip migration.
-      // We verify by opening the file directly via bun:sqlite and reading the
-      // pragma — any second-layer-construction path through `fromPath` would
-      // also exercise this, but a direct read is the most explicit assertion.
+      // Verify a single (component=cost, version=1) row in schema_versions.
       const bunSqliteSpec = "bun:sqlite"
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const mod: any = await import(/* @vite-ignore */ bunSqliteSpec)
       const db = new mod.Database(dbPath) as {
-        query: (sql: string) => { get: () => unknown }
+        query: (sql: string) => {
+          get: (...p: unknown[]) => unknown
+          all: (...p: unknown[]) => unknown[]
+        }
         close: () => void
       }
-      const row = db.query("PRAGMA user_version").get() as
-        | { user_version: number }
-        | undefined
+      const rows = db
+        .query("SELECT version FROM schema_versions WHERE component = ?")
+        .all("cost") as ReadonlyArray<{ version: number }>
       db.close()
-      expect(row?.user_version).toBe(1)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]?.version).toBe(1)
 
-      // Re-open via our Layer — should not throw, should not bump version.
+      // Re-open via our Layer — applyMigration must early-return; ledger
+      // row count must stay at 1 (no PK collision, no duplicate insert).
       await run(
         Effect.gen(function* () {
           const cost = yield* CostAccountingService
@@ -272,14 +274,17 @@ d("CostAccountingService.fromPath (sqlite)", () => {
         dbPath,
       )
       const db2 = new mod.Database(dbPath) as {
-        query: (sql: string) => { get: () => unknown }
+        query: (sql: string) => {
+          get: (...p: unknown[]) => unknown
+          all: (...p: unknown[]) => unknown[]
+        }
         close: () => void
       }
-      const row2 = db2.query("PRAGMA user_version").get() as
-        | { user_version: number }
-        | undefined
+      const rows2 = db2
+        .query("SELECT version FROM schema_versions WHERE component = ?")
+        .all("cost") as ReadonlyArray<unknown>
       db2.close()
-      expect(row2?.user_version).toBe(1)
+      expect(rows2).toHaveLength(1)
     } finally {
       cleanupTmp(dbPath)
     }
@@ -316,11 +321,13 @@ d("CostAccountingService.fromPath (sqlite)", () => {
         query: (sql: string) => { get: () => unknown }
         close: () => void
       }
-      const row = db.query("PRAGMA user_version").get() as
-        | { user_version: number }
-        | undefined
+      const row = db
+        .query(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='cost_events'",
+        )
+        .get() as { name: string } | null | undefined
       db.close()
-      expect(row?.user_version).toBe(1)
+      expect(row?.name).toBe("cost_events")
     } finally {
       cleanupTmp(dbPath)
     }
