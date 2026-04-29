@@ -234,11 +234,11 @@ describe("secretProviderFirstOf — multi-account routing", () => {
     // ConfigError, env wins.
     process.env.MULTI_OP_FALLBACK = "env-wins"
     const op1 = OnePasswordSecretProvider.make({
-      vault: "fake-1",
+      accountLabel: "fake1",
       token: "ops_fake_1",
     }).pipe(Layer.provide(Clock.Default))
     const op2 = OnePasswordSecretProvider.make({
-      vault: "fake-2",
+      accountLabel: "fake2",
       token: "ops_fake_2",
     }).pipe(Layer.provide(Clock.Default))
     const layer = secretProviderFirstOf([op1, op2, EnvSecretProvider.Default])

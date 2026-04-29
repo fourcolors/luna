@@ -4,7 +4,9 @@
  *
  * Design notes:
  *   - Refs not starting with `op://` → ConfigError (so `firstOf` falls
- *     through cleanly to other backends).
+ *     through cleanly to other backends). The backend is `op://`-only
+ *     by hard contract — `luna-op://` never reaches here; the
+ *     RoutedOpSecretProvider rewrites and dispatches above this layer.
  *   - Auth: `OP_SERVICE_ACCOUNT_TOKEN` is forwarded to the spawned
  *     process; tests can override via the `token` option.
  *   - Cache: Layer-scoped Map keyed by ref, TTL 5min default. Race on
@@ -17,13 +19,23 @@ import { Effect, Layer, Redacted, Ref } from "effect"
 import { ConfigError } from "../errors.js"
 import { Clock } from "../clock.js"
 import { SecretProvider, type SecretProviderApi } from "./secret-provider.js"
+import {
+  ACCOUNT_LABEL_RE,
+  RESERVED_LABELS,
+} from "./routed-op-provider.js"
 
 const OP_PREFIX = "op://"
 const DEFAULT_TTL_MS = 300_000 // 5 minutes
 
 export interface OnePasswordOptions {
-  /** Required: 1Password vault name (e.g. "Mr Bot"). Used for diagnostics. */
-  readonly vault: string
+  /**
+   * Required: account label this layer represents. Used for diagnostic
+   * context at the wrapper layer (RoutedOpSecretProvider) — the
+   * backend itself does not thread it through error messages. Must
+   * match `^[a-z][a-z0-9-]{0,30}$` and not be in {env, file, op}.
+   * Defense-in-depth — bypassing the wrapper still rejects bad labels.
+   */
+  readonly accountLabel: string
   /** Optional service-account token; defaults to OP_SERVICE_ACCOUNT_TOKEN env. */
   readonly token?: string
   /** TTL for the in-memory cache; defaults to 5 minutes. */
@@ -136,8 +148,40 @@ const spawnOpRead = (
 
 const make = (
   opts: OnePasswordOptions,
-): Layer.Layer<SecretProvider, never, Clock> =>
-  Layer.effect(
+): Layer.Layer<SecretProvider, ConfigError, Clock> => {
+  // Defense-in-depth label validation. RoutedOpSecretProvider already
+  // validates at construction; a future caller bypassing the wrapper
+  // still gets the same guarantee here. Surfacing as a Layer.fail puts
+  // the error in the Layer's error channel without forcing every
+  // caller into Effect.gen at the make() call site.
+  if (typeof opts.accountLabel !== "string") {
+    return Layer.fail(
+      new ConfigError({
+        module: "OnePasswordSecretProvider",
+        key: "accountLabel",
+        message: `accountLabel is required`,
+      }),
+    )
+  }
+  if (RESERVED_LABELS.has(opts.accountLabel)) {
+    return Layer.fail(
+      new ConfigError({
+        module: "OnePasswordSecretProvider",
+        key: "accountLabel",
+        message: `account label "${opts.accountLabel}" is reserved (env, file, op)`,
+      }),
+    )
+  }
+  if (!ACCOUNT_LABEL_RE.test(opts.accountLabel)) {
+    return Layer.fail(
+      new ConfigError({
+        module: "OnePasswordSecretProvider",
+        key: "accountLabel",
+        message: `account label "${opts.accountLabel}" does not match ${ACCOUNT_LABEL_RE.source}`,
+      }),
+    )
+  }
+  return Layer.effect(
     SecretProvider,
     Effect.gen(function* () {
       const clock = yield* Clock
@@ -152,6 +196,8 @@ const make = (
 
       const get: SecretProviderApi["get"] = (ref) =>
         Effect.gen(function* () {
+          // Hard contract: backend only handles op://. luna-op:// is
+          // dispatched + rewritten by RoutedOpSecretProvider one layer up.
           if (!ref.startsWith(OP_PREFIX)) {
             return yield* Effect.fail(
               new ConfigError({
@@ -175,13 +221,10 @@ const make = (
           return redacted
         })
 
-      // Mark vault for diagnostics — referenced via void to keep the
-      // unused-checker quiet without exposing it on the API surface.
-      void opts.vault
-
       return { get } satisfies SecretProviderApi
     }),
   )
+}
 
 export const OnePasswordSecretProvider = {
   make,

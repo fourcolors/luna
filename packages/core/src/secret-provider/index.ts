@@ -12,6 +12,15 @@ export {
   type OnePasswordOptions,
 } from "./onepassword-backend.js"
 export {
+  RoutedOpSecretProvider,
+  validateAccountsTableLabels,
+  ACCOUNT_LABEL_RE,
+  RESERVED_LABELS,
+  type RoutedOpAccount,
+  type RoutedOpOptions,
+  type DanglingRef,
+} from "./routed-op-provider.js"
+export {
   readKeychainToken,
   type KeychainQuery,
 } from "./keychain-helper.js"

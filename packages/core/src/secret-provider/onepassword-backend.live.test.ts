@@ -20,7 +20,7 @@ describe.skipIf(!hasToken)(
   () => {
     it("resolves a known op:// ref via the real `op` binary", async () => {
       const layer = OnePasswordSecretProvider.make({
-        vault: "Mr Bot",
+        accountLabel: "live",
       }).pipe(Layer.provide(Clock.Default))
 
       const ref =

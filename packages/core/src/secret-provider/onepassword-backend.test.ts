@@ -61,7 +61,7 @@ import { OnePasswordSecretProvider } from "./onepassword-backend.js"
 const baseClock = Clock.Test(1_000_000)
 
 const buildLayer = (overrides?: Parameters<typeof OnePasswordSecretProvider.make>[0]) =>
-  OnePasswordSecretProvider.make(overrides ?? { vault: "Test Vault" }).pipe(
+  OnePasswordSecretProvider.make(overrides ?? { accountLabel: "test" }).pipe(
     Layer.provide(baseClock),
   )
 
@@ -171,6 +171,36 @@ describe("OnePasswordSecretProvider", () => {
     expect(spawnLog[0]?.env.OP_SERVICE_ACCOUNT_TOKEN).toBe("from-process-env")
   })
 
+  it("accountLabel validation: reserved label fails Layer build", async () => {
+    const exit = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const sp = yield* SecretProvider
+        return yield* sp.get("op://VAULT/ITEM/FIELD")
+      }).pipe(Effect.provide(buildLayer({ accountLabel: "env" }))),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      const j = JSON.stringify(exit.cause)
+      expect(j).toContain("ConfigError")
+      expect(j).toContain("reserved")
+    }
+    expect(spawnLog).toHaveLength(0)
+  })
+
+  it("accountLabel validation: bad regex fails Layer build", async () => {
+    const exit = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const sp = yield* SecretProvider
+        return yield* sp.get("op://VAULT/ITEM/FIELD")
+      }).pipe(Effect.provide(buildLayer({ accountLabel: "Mr Bot" }))),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      expect(JSON.stringify(exit.cause)).toContain("ConfigError")
+    }
+    expect(spawnLog).toHaveLength(0)
+  })
+
   it("explicit token option overrides process env", async () => {
     process.env.OP_SERVICE_ACCOUNT_TOKEN = "from-process-env"
     spawnQueue.push({ stdout: "v", exitCode: 0 })
@@ -180,7 +210,7 @@ describe("OnePasswordSecretProvider", () => {
         return yield* sp.get("op://VAULT/ITEM/FIELD")
       }).pipe(
         Effect.provide(
-          buildLayer({ vault: "Test Vault", token: "explicit-token" }),
+          buildLayer({ accountLabel: "test", token: "explicit-token" }),
         ),
       ),
     )
