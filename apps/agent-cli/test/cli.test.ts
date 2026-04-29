@@ -176,7 +176,7 @@ d("luna-account CLI", () => {
         "--kind",
         "tool-search",
         "--secret-ref",
-        "env://TOOL_TOKEN",
+        "env:TOOL_TOKEN",
       ],
       db,
     )
@@ -299,5 +299,93 @@ d("luna-account CLI", () => {
     const r = runCli(["wat"], db)
     expect(r.status).toBe(2)
     expect(r.stderr).toMatch(/unknown subcommand/)
+  })
+
+  // ── Phase 25d: luna-op:// + env: validator cases ──────────────────────
+
+  const addRefArgs = (ref: string): ReadonlyArray<string> => [
+    "add",
+    "--id",
+    "x",
+    "--label",
+    "x",
+    "--kind",
+    "anthropic",
+    "--secret-ref",
+    ref,
+  ]
+
+  it("add accepts luna-op://<label>/<rest>", () => {
+    const r = runCli(addRefArgs("luna-op://VAULT/ITEM/FIELD"), db)
+    expect(r.status, r.stderr).toBe(0)
+  })
+
+  it("add accepts luna-op://<label>/<vault>/<item>/<section>/<field>", () => {
+    const r = runCli(addRefArgs("luna-op://VAULT/ITEM/FIELD"), db)
+    expect(r.status, r.stderr).toBe(0)
+  })
+
+  it("add rejects luna-op:// with empty rest", () => {
+    const r = runCli(addRefArgs("luna-op://flow/"), db)
+    expect(r.status).toBe(1)
+    expect(r.stderr).toMatch(/invalid --secret-ref/)
+  })
+
+  it("add rejects luna-op:// with no slash", () => {
+    const r = runCli(addRefArgs("luna-op://flow"), db)
+    expect(r.status).toBe(1)
+    expect(r.stderr).toMatch(/invalid --secret-ref/)
+  })
+
+  it("add rejects luna-op:// with reserved label (env)", () => {
+    const r = runCli(addRefArgs("luna-op://VAULT/ITEM/FIELD"), db)
+    expect(r.status).toBe(1)
+    expect(r.stderr).toMatch(/invalid --secret-ref/)
+  })
+
+  it("add rejects luna-op:// with reserved label (file)", () => {
+    const r = runCli(addRefArgs("luna-op://VAULT/ITEM/FIELD"), db)
+    expect(r.status).toBe(1)
+  })
+
+  it("add rejects luna-op:// with reserved label (op)", () => {
+    const r = runCli(addRefArgs("luna-op://VAULT/ITEM/FIELD"), db)
+    expect(r.status).toBe(1)
+  })
+
+  it("add rejects luna-op:// with uppercase label", () => {
+    const r = runCli(addRefArgs("luna-op://VAULT/ITEM/FIELD"), db)
+    expect(r.status).toBe(1)
+  })
+
+  it("add rejects luna-op:// with space in label", () => {
+    const r = runCli(addRefArgs("luna-op://Mr Bot/v/i/f"), db)
+    expect(r.status).toBe(1)
+  })
+
+  it("add rejects env://VAR (legacy bug — env: is the canonical form)", () => {
+    const r = runCli(addRefArgs("env://FOO"), db)
+    expect(r.status).toBe(1)
+    expect(r.stderr).toMatch(/invalid --secret-ref/)
+  })
+
+  it("add accepts env:VAR (one colon, no slashes)", () => {
+    const r = runCli(addRefArgs("env:CLAUDE_TOKEN"), db)
+    expect(r.status, r.stderr).toBe(0)
+  })
+
+  it("add rejects env: with slash in name", () => {
+    const r = runCli(addRefArgs("env:FOO/BAR"), db)
+    expect(r.status).toBe(1)
+  })
+
+  it("add accepts file:<path>", () => {
+    const r = runCli(addRefArgs("file:/tmp/x"), db)
+    expect(r.status, r.stderr).toBe(0)
+  })
+
+  it("add accepts file:///<path>", () => {
+    const r = runCli(addRefArgs("file:///tmp/x"), db)
+    expect(r.status, r.stderr).toBe(0)
   })
 })

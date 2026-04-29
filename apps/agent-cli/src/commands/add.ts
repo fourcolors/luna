@@ -1,10 +1,16 @@
 /**
  * `luna-account add` — insert one row into the §5.1 `accounts` table.
  *
- * Validation:
+ * Validation (DESIGN.md §2.2.11):
  *   - all four required fields non-empty
  *   - kind ∈ allowlist (`anthropic`, `tool-<name>`, `mcp-<name>`)
- *   - secret-ref starts with `op://`, `env://`, or `file://`
+ *   - secret-ref matches one of:
+ *       op://<rest>                                — bare 1Password
+ *       luna-op://<label>/<rest>                   — explicit-account 1Password
+ *       env:<VAR>                                  — process env (one colon)
+ *       file:<path>  |  file://<host>/<path>       — local file
+ *     where <label> matches ^[a-z][a-z0-9-]{0,30}$ and is not in
+ *     {env, file, op}.
  *
  * NEVER resolves the secret. The CLI is a pointer-mover only.
  */
@@ -12,7 +18,9 @@ import { openDb, defaultDbPath } from "../db.js"
 
 const KIND_ALLOWLIST_EXACT = new Set(["anthropic"])
 const KIND_PREFIX_ALLOW = ["tool-", "mcp-"]
-const SECRET_REF_PREFIXES = ["op://", "env://", "file://"]
+
+const ACCOUNT_LABEL_RE = /^[a-z][a-z0-9-]{0,30}$/
+const RESERVED_LABELS = new Set(["env", "file", "op"])
 
 export interface AddArgs {
   id?: string
@@ -35,8 +43,33 @@ const validateKind = (kind: string): boolean => {
   )
 }
 
-const validateSecretRef = (ref: string): boolean =>
-  SECRET_REF_PREFIXES.some((p) => ref.startsWith(p))
+const validateSecretRef = (ref: string): boolean => {
+  if (ref.startsWith("luna-op://")) {
+    const rest = ref.slice("luna-op://".length)
+    const slash = rest.indexOf("/")
+    if (slash <= 0) return false
+    const label = rest.slice(0, slash)
+    const remainder = rest.slice(slash + 1)
+    if (remainder.length === 0) return false
+    if (RESERVED_LABELS.has(label)) return false
+    return ACCOUNT_LABEL_RE.test(label)
+  }
+  if (ref.startsWith("op://")) {
+    return ref.length > "op://".length
+  }
+  if (ref.startsWith("env:")) {
+    // env:VAR — one colon, no slashes immediately after.
+    // Reject env:// (would never resolve at runtime).
+    if (ref.startsWith("env://")) return false
+    const name = ref.slice("env:".length)
+    return name.length > 0 && !name.includes("/")
+  }
+  if (ref.startsWith("file:")) {
+    // file:<path> or file:///<path> — both supported by FileSecretProvider.
+    return ref.length > "file:".length
+  }
+  return false
+}
 
 export const runAdd = (args: AddArgs): CmdResult => {
   const missing: string[] = []
@@ -71,7 +104,9 @@ export const runAdd = (args: AddArgs): CmdResult => {
       exitCode: 1,
       stderr:
         `error: invalid --secret-ref "${secretRef}". ` +
-        `Must start with op://, env://, or file://.\n`,
+        `Must be one of: op://<rest>, luna-op://<label>/<rest> ` +
+        `(label matches ^[a-z][a-z0-9-]{0,30}$, not in {env, file, op}), ` +
+        `env:<VAR> (one colon, no slashes), file:<path>, or file:///<path>.\n`,
     }
   }
 
