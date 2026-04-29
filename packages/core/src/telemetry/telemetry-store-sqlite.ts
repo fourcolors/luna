@@ -21,8 +21,9 @@
  *     drifts. `n` is integer-by-convention.
  *
  * Architecture:
- *   - Layer.scoped opens the DB, runs migrations (PRAGMA user_version
- *     ladder, §5.2), registers `db.close` finalizer (LIFO §3.4 #4 — only
+ *   - Layer.scoped opens the DB, runs migrations (per-component
+ *     `schema_versions` ledger, §5.2 / Phase 25e), registers `db.close`
+ *     finalizer (LIFO §3.4 #4 — only
  *     finalizer needed: no daemon, see §16). Then prepared statements.
  *   - Dynamic `bun:sqlite` import keeps stock-vitest-under-node from
  *     hard-failing at module-load. Mirrors cost-store-sqlite + session-
@@ -31,7 +32,7 @@
  * Invariants:
  *   §3.4 #4    — Layer.scoped + `db.close` finalizer registered FIRST
  *                (only finalizer; Telemetry has no daemon — §16).
- *   §5.2       — PRAGMA user_version 0→1 migration ladder, idempotent.
+ *   §5.2       — per-component `schema_versions` ledger (Phase 25e), idempotent.
  *   §6         — ConfigError raised at boot if `bun:sqlite` is unavailable.
  *   §16        — Telemetry emits no events; no obs.subscribeEvents daemon.
  *   HANDOFF #6 — opt-in history table, default OFF; storage-agnostic
