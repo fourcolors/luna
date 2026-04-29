@@ -59,7 +59,7 @@ describe("OnePasswordSecretProvider cache TTL", () => {
   it("two get() calls within TTL → spawn called once", async () => {
     const clock = makeMockClock(0)
     const layer = OnePasswordSecretProvider.make({
-      vault: "v",
+      accountLabel: "test",
       ttlMs: 1000,
     }).pipe(Layer.provide(clock.layer))
 
@@ -78,7 +78,7 @@ describe("OnePasswordSecretProvider cache TTL", () => {
   it("advance past TTL → next get() spawns again (2 total)", async () => {
     const clock = makeMockClock(0)
     const layer = OnePasswordSecretProvider.make({
-      vault: "v",
+      accountLabel: "test",
       ttlMs: 1000,
     }).pipe(Layer.provide(clock.layer))
 
@@ -97,7 +97,7 @@ describe("OnePasswordSecretProvider cache TTL", () => {
   it("different refs within TTL → spawn called per ref (no cross-ref hit)", async () => {
     const clock = makeMockClock(0)
     const layer = OnePasswordSecretProvider.make({
-      vault: "v",
+      accountLabel: "test",
       ttlMs: 60_000,
     }).pipe(Layer.provide(clock.layer))
 

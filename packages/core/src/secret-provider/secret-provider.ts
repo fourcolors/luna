@@ -47,8 +47,8 @@ export class SecretProvider extends Effect.Tag(
  * service instance, then a composite SecretProvider is exposed.
  */
 export const firstOf = (
-  layers: ReadonlyArray<Layer.Layer<SecretProvider>>,
-): Layer.Layer<SecretProvider> => {
+  layers: ReadonlyArray<Layer.Layer<SecretProvider, ConfigError>>,
+): Layer.Layer<SecretProvider, ConfigError> => {
   if (layers.length === 0) {
     return Layer.effect(
       SecretProvider,
