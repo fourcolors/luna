@@ -1,5 +1,6 @@
 export * from "./errors.js"
 export * from "./clock.js"
+export * from "./db/index.js"
 export * from "./messages.js"
 export * from "./stream-bridge.js"
 export * from "./session/types.js"
