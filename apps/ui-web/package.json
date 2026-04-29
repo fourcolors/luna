@@ -22,6 +22,7 @@
     "@luna/adapter-sdk": "workspace:*",
     "@luna/chat-service": "workspace:*",
     "@luna/core": "workspace:*",
+    "@luna/memory": "workspace:*",
     "@luna/ui-shared": "workspace:*",
     "@luna/ui-shared-solid": "workspace:*",
     "@luna/ui-ws": "workspace:*",
