@@ -13,6 +13,7 @@
 import { Effect, Layer, Stream } from "effect"
 import { StubEmbedderLayer } from "@luna/core"
 import { SqliteVectorBackend } from "../src/backends/sqlite-vector.js"
+import { LunaSqliteBootstrapLive } from "../src/backends/vectorlite-bootstrap.js"
 import { initVectorlite } from "../src/backends/vectorlite-init.js"
 import { makeRecord } from "../src/types.js"
 
@@ -29,7 +30,7 @@ interface Row {
 async function benchOne(N: number): Promise<Row> {
   const layer = Layer.provideMerge(
     SqliteVectorBackend.fromPath(":memory:"),
-    StubEmbedderLayer,
+    Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
   )
 
   const lats = await Effect.runPromise(

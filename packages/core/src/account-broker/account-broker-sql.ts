@@ -42,6 +42,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { Clock } from "../clock.js"
 import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
+import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
 import {
   AllAccountsExhaustedError,
   ConfigError,
@@ -113,10 +114,23 @@ export interface FromSqlOptions {
  */
 const fromSql = (
   opts: FromSqlOptions = {},
-): Layer.Layer<AccountBroker, ConfigError, SecretProvider | Clock> =>
+): Layer.Layer<
+  AccountBroker,
+  ConfigError,
+  SecretProvider | Clock | LunaSqliteBootstrap
+> =>
   Layer.scoped(
     AccountBroker,
     Effect.gen(function* () {
+      // Phase 27a: pull the bootstrap Tag BEFORE the dynamic
+      // `import("bun:sqlite")`. Forcing the dependency this way means the
+      // process-wide `Database.setCustomSQLite()` swap (provided by
+      // `LunaSqliteBootstrapLive` from @luna/memory) has run before the
+      // very first `new Database()` in the process — so Vectorlite's HNSW
+      // path is available downstream. We don't branch on the result; the
+      // side effect is what matters.
+      yield* LunaSqliteBootstrap
+
       const secrets = yield* SecretProvider
       const clock = yield* Clock
       const dbPath = opts.dbPath ?? defaultDbPath()

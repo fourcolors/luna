@@ -50,6 +50,7 @@
 import { Effect, Layer, Stream } from "effect"
 import {
   EmbedderService,
+  LunaSqliteBootstrap,
   MemoryBackendError,
   bufferToFloat32,
   cosineSimilarity,
@@ -62,7 +63,6 @@ import {
   type MemoryQuery,
   type MemoryRecord,
 } from "../types.js"
-import { initVectorlite } from "./vectorlite-init.js"
 
 export interface SqliteVectorBackendApi {
   readonly backendName: "sqlite-vector"
@@ -215,17 +215,24 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
    */
   static fromPath(
     dbPath: string,
-  ): Layer.Layer<SqliteVectorBackend, MemoryBackendError, EmbedderService> {
+  ): Layer.Layer<
+    SqliteVectorBackend,
+    MemoryBackendError,
+    EmbedderService | LunaSqliteBootstrap
+  > {
     return Layer.scoped(
       SqliteVectorBackend,
       Effect.gen(function* () {
         const embedder = yield* EmbedderService
 
-        // Phase 27: call setCustomSQLite BEFORE the bun:sqlite ESM module is
-        // first imported in this process. The init helper uses createRequire
-        // (synchronous), so it can wire up the Homebrew libsqlite3 before any
-        // ESM dynamic-import side-effect opens an internal Database.
-        const vlInit = initVectorlite()
+        // Phase 27a: the process-wide `setCustomSQLite()` swap is now
+        // owned by `LunaSqliteBootstrap` (Tag in @luna/core, Live Layer
+        // in @luna/memory). Pulling the Tag here BEFORE the dynamic
+        // `import("bun:sqlite")` makes ordering explicit in the type
+        // system: any composition that wires this backend MUST also
+        // provide `LunaSqliteBootstrapLive`, which runs first. Single
+        // source of truth — no double init path.
+        const vlInit = yield* LunaSqliteBootstrap
 
         const bunSqliteSpec = "bun:sqlite"
         const mod = yield* Effect.tryPromise({

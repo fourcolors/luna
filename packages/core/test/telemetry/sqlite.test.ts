@@ -10,6 +10,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import * as fs from "node:fs"
 import { Clock } from "../../src/clock.js"
+import { LunaSqliteBootstrap } from "../../src/db/sqlite-bootstrap.js"
 // Importing the SQLite module installs `TelemetryService.fromPath`.
 import "../../src/telemetry/telemetry-store-sqlite.js"
 import {
@@ -20,6 +21,14 @@ import {
 const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined"
 const d = isBun ? describe : describe.skip
 
+// Phase 27a: telemetry-store now declares `LunaSqliteBootstrap` in its `R`.
+// The real Live Layer lives in @luna/memory; @luna/core tests satisfy the
+// Tag with a no-op success value (no Vectorlite against this DB).
+const bootstrapStubL = Layer.succeed(LunaSqliteBootstrap, {
+  ok: false,
+  reason: "core test — bootstrap stub",
+} as const)
+
 const makeFullLayer = (
   dbPath: string,
   options?: TelemetrySqliteOptions,
@@ -27,6 +36,7 @@ const makeFullLayer = (
   const clockL = Clock.Default
   const telL = TelemetryService.fromPath(dbPath, options).pipe(
     Layer.provide(clockL),
+    Layer.provide(bootstrapStubL),
   )
   return Layer.mergeAll(telL, clockL)
 }
