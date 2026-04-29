@@ -15,8 +15,9 @@
  *     since budgets aren't event-derived.
  *
  * Architecture:
- *   - Layer.scoped opens the DB, runs migrations (PRAGMA user_version ladder),
- *     registers the `db.close` finalizer FIRST (LIFO §3.4 #4), then prepared
+ *   - Layer.scoped opens the DB, runs migrations (per-component
+ *     `schema_versions` ledger, §5.2 / Phase 25e), registers the `db.close`
+ *     finalizer FIRST (LIFO §3.4 #4), then prepared
  *     statements + the subscriber daemon.
  *   - Subscriber consumes `obs.subscribeEvents` (eager, HANDOFF #2), filters
  *     to CostAccrued, INSERTs one cost_events row + (if applicable) the
@@ -27,7 +28,7 @@
  * Invariants:
  *   §3.1 + §3.4 #4 — Layer.scoped + `db.close` finalizer registered FIRST.
  *   §5.1          — cost_events column names byte-exact; no new columns.
- *   §5.2          — per-component PRAGMA user_version migration ladder.
+ *   §5.2          — per-component `schema_versions` ledger (Phase 25e).
  *   §6            — ConfigError raised at boot if `bun:sqlite` is unavailable;
  *                   IntegrityError for SQL constraint violations is built in
  *                   the daemon and emitted as an §16 ErrorEvent (no new tags).
