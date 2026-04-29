@@ -66,6 +66,14 @@ import { initVectorlite } from "./vectorlite-init.js"
 
 export interface SqliteVectorBackendApi {
   readonly backendName: "sqlite-vector"
+  /**
+   * True when the Vectorlite HNSW v-table loaded successfully on this DB
+   * connection (Phase 27 fast path active). False when the backend fell back
+   * to naive in-process cosine ranking (extension-load failure, non-bun
+   * runtime, missing brew sqlite, etc.). Operators / tests can read this to
+   * detect the dev-time race the Phase 27a bootstrap Layer was added to fix.
+   */
+  readonly hnswEnabled: boolean
   readonly put: (rec: MemoryRecord) => Effect.Effect<void, MemoryBackendError>
   readonly get: (
     id: string,
@@ -680,6 +688,7 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
 
         return {
           backendName: "sqlite-vector" as const,
+          hnswEnabled,
           put,
           get,
           query,
