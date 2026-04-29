@@ -26,11 +26,19 @@
 import { describe, expect, it } from "vitest"
 import { Effect, Layer } from "effect"
 import { Clock } from "../clock.js"
+import { LunaSqliteBootstrap } from "./sqlite-bootstrap.js"
 import {
   SecretProvider,
   type SecretProviderApi,
 } from "../secret-provider/index.js"
 import { AccountBroker, AccountBrokerLayer } from "../account-broker/index.js"
+
+// Phase 27a: AccountBrokerLayer.fromSql now declares `LunaSqliteBootstrap`
+// in its `R`. Provide a no-op stub here (no Vectorlite against this DB).
+const bootstrapStubL = Layer.succeed(LunaSqliteBootstrap, {
+  ok: false,
+  reason: "core test — bootstrap stub",
+} as const)
 
 const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined"
 const d = isBun ? describe : describe.skip
@@ -96,6 +104,7 @@ d("Phase 25e regression — migration collision across components", () => {
       const brokerL = AccountBrokerLayer.fromSql({ dbPath }).pipe(
         Layer.provide(SecretProviderStub),
         Layer.provide(Clock.Default),
+        Layer.provide(bootstrapStubL),
       )
       const program = Effect.gen(function* () {
         // Just touching the broker forces Layer construction (and the

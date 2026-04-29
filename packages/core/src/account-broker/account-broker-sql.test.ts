@@ -10,12 +10,21 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { Clock } from "../clock.js"
+import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
 import { ConfigError } from "../errors.js"
 import {
   SecretProvider,
   type SecretProviderApi,
 } from "../secret-provider/index.js"
 import { AccountBroker, AccountBrokerLayer } from "./index.js"
+
+// Phase 27a: AccountBrokerLayer.fromSql now declares `LunaSqliteBootstrap`
+// in its `R`. The real Live Layer lives in @luna/memory; @luna/core tests
+// satisfy the Tag with a no-op success value.
+const bootstrapStubL = Layer.succeed(LunaSqliteBootstrap, {
+  ok: false,
+  reason: "core test — bootstrap stub",
+} as const)
 
 const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined"
 const d = isBun ? describe : describe.skip
@@ -133,7 +142,9 @@ const buildLayer = (
   fixedMs = 1000,
 ) =>
   AccountBrokerLayer.fromSql({ dbPath }).pipe(
-    Layer.provide(Layer.mergeAll(secretsLayer, Clock.Test(fixedMs))),
+    Layer.provide(
+      Layer.mergeAll(secretsLayer, Clock.Test(fixedMs), bootstrapStubL),
+    ),
   )
 
 // ── Tests ─────────────────────────────────────────────────────────────────

@@ -11,10 +11,19 @@ import * as os from "node:os"
 import * as path from "node:path"
 import * as fs from "node:fs"
 import { Clock } from "../../src/clock.js"
+import { LunaSqliteBootstrap } from "../../src/db/sqlite-bootstrap.js"
 import { ObservabilityService } from "../../src/observability/index.js"
 // Importing the SQLite module installs `CostAccountingService.fromPath`.
 import "../../src/cost-accounting/cost-store-sqlite.js"
 import { CostAccountingService } from "../../src/cost-accounting/index.js"
+
+// Phase 27a: cost-store now declares `LunaSqliteBootstrap` in its `R`. The
+// real Live Layer lives in @luna/memory; @luna/core tests satisfy the Tag
+// with a no-op success value (Vectorlite is not loaded against this DB).
+const bootstrapStubL = Layer.succeed(LunaSqliteBootstrap, {
+  ok: false,
+  reason: "core test — bootstrap stub",
+} as const)
 
 const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined"
 const d = isBun ? describe : describe.skip
@@ -32,6 +41,7 @@ const makeFullLayer = (dbPath: string) => {
     Layer.orDie,
     Layer.provide(obsL),
     Layer.provide(clockL),
+    Layer.provide(bootstrapStubL),
   )
   return Layer.mergeAll(costL, obsL, clockL)
 }

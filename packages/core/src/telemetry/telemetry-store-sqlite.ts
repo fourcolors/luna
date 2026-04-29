@@ -44,6 +44,7 @@
 import { Effect, Layer } from "effect"
 import { Clock } from "../clock.js"
 import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
+import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
 import { ConfigError } from "../errors.js"
 import { TelemetryService, counterKey } from "./telemetry.js"
 import type {
@@ -123,10 +124,15 @@ interface BunStmt {
 export const makeTelemetrySqlite = (
   dbPath: string,
   options: TelemetrySqliteOptions = {},
-): Layer.Layer<TelemetryService, ConfigError, Clock> =>
+): Layer.Layer<TelemetryService, ConfigError, Clock | LunaSqliteBootstrap> =>
   Layer.scoped(
     TelemetryService,
     Effect.gen(function* () {
+      // Phase 27a: pull the bootstrap Tag BEFORE opening any Database so
+      // the process-wide `setCustomSQLite()` swap has run. Side effect
+      // only — we don't branch on the result.
+      yield* LunaSqliteBootstrap
+
       const clock = yield* Clock
 
       // Resolve history config once at boot — runtime stays branch-light.
@@ -302,7 +308,7 @@ export const makeTelemetrySqlite = (
   fromPath: (
     dbPath: string,
     options?: TelemetrySqliteOptions,
-  ) => Layer.Layer<TelemetryService, ConfigError, Clock>
+  ) => Layer.Layer<TelemetryService, ConfigError, Clock | LunaSqliteBootstrap>
 }).fromPath = makeTelemetrySqlite
 
 declare module "./telemetry.js" {
@@ -312,6 +318,6 @@ declare module "./telemetry.js" {
     function fromPath(
       dbPath: string,
       options?: TelemetrySqliteOptions,
-    ): Layer.Layer<TelemetryService, ConfigError, Clock>
+    ): Layer.Layer<TelemetryService, ConfigError, Clock | LunaSqliteBootstrap>
   }
 }

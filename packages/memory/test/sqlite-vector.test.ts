@@ -13,6 +13,7 @@ import {
   bufferToFloat32,
 } from "@luna/core"
 import { SqliteVectorBackend } from "../src/backends/sqlite-vector.js"
+import { LunaSqliteBootstrapLive } from "../src/backends/vectorlite-bootstrap.js"
 import { makeRecord } from "../src/types.js"
 
 const hasBunSqlite = (() => {
@@ -20,9 +21,12 @@ const hasBunSqlite = (() => {
 })()
 
 describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)", () => {
+  // Phase 27a: SqliteVectorBackend now declares `LunaSqliteBootstrap` in
+  // its `R`. Provide the Live Layer here so the backend can build under
+  // test. (Same fixture pattern dev-server-chat uses.)
   const layer = Layer.provideMerge(
     SqliteVectorBackend.fromPath(":memory:"),
-    StubEmbedderLayer,
+    Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
   )
 
   const run = <A, E>(
@@ -618,7 +622,7 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
       // populate memory_fts for legacy-1).
       const fileLayer = Layer.provideMerge(
         SqliteVectorBackend.fromPath(dbPath),
-        StubEmbedderLayer,
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
       )
       const ids = await Effect.runPromise(
         Effect.scoped(
@@ -666,7 +670,7 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     })
     const failLayer = Layer.provideMerge(
       SqliteVectorBackend.fromPath(":memory:"),
-      FailEmbedderLayer,
+      Layer.merge(FailEmbedderLayer, LunaSqliteBootstrapLive),
     )
     const out = await Effect.runPromise(
       Effect.scoped(
@@ -728,7 +732,7 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     })
     const flakyLayer = Layer.provideMerge(
       SqliteVectorBackend.fromPath(":memory:"),
-      FlakyEmbedderLayer,
+      Layer.merge(FlakyEmbedderLayer, LunaSqliteBootstrapLive),
     )
     const out = await Effect.runPromise(
       Effect.scoped(
@@ -803,7 +807,7 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     })
     const wrongLayer = Layer.provideMerge(
       SqliteVectorBackend.fromPath(":memory:"),
-      WrongDimEmbedderLayer,
+      Layer.merge(WrongDimEmbedderLayer, LunaSqliteBootstrapLive),
     )
     const out = await Effect.runPromise(
       Effect.scoped(
@@ -967,7 +971,7 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     try {
       const fallbackLayer = Layer.provideMerge(
         SqliteVectorBackend.fromPath(":memory:"),
-        StubEmbedderLayer,
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
       )
       const arr = await Effect.runPromise(
         Effect.scoped(

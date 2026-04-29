@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest"
 import { Effect, Layer, Stream } from "effect"
 import { EmbedderService, StubEmbedderLayer } from "@luna/core"
 import { SqliteVectorBackend } from "../src/backends/sqlite-vector.js"
+import { LunaSqliteBootstrapLive } from "../src/backends/vectorlite-bootstrap.js"
 import { InMemoryBackend } from "../src/backends/in-memory.js"
 import { makeRouter } from "../src/router.js"
 import { makeRecord } from "../src/types.js"
@@ -19,7 +20,7 @@ const hasBunSqlite = (() => {
 describe.skipIf(!hasBunSqlite)("MemoryRouter.search()", () => {
   const layer = Layer.provideMerge(
     SqliteVectorBackend.fromPath(":memory:"),
-    StubEmbedderLayer,
+    Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
   )
 
   const run = <A, E>(

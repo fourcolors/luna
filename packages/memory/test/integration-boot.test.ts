@@ -29,6 +29,7 @@ import {
   StubEmbedderLayer,
 } from "@luna/core"
 import { SqliteVectorBackend } from "../src/backends/sqlite-vector.js"
+import { LunaSqliteBootstrapLive } from "../src/backends/vectorlite-bootstrap.js"
 import { _resetVectorliteInitForTests } from "../src/backends/vectorlite-init.js"
 
 const hasBunSqlite =
@@ -92,6 +93,11 @@ describe.skipIf(!hasBunSqlite)(
                 Effect.provide(vectorL),
                 Effect.provide(sessionL),
                 Effect.provide(brokerL),
+                // Phase 27a: provide the bootstrap Layer last so it
+                // builds first. The store layers' yield* of
+                // LunaSqliteBootstrap forces the swap to run before
+                // any `new Database()` — which is the whole fix.
+                Effect.provide(LunaSqliteBootstrapLive),
               ),
             ),
           )

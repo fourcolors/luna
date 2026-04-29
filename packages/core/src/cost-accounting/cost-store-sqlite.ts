@@ -47,6 +47,7 @@ import {
 import { ObservabilityService } from "../observability/observability.js"
 import { Clock } from "../clock.js"
 import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
+import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
 import { ConfigError, IntegrityError } from "../errors.js"
 import { CostAccountingService } from "./cost-accounting.js"
 import type {
@@ -150,11 +151,16 @@ export const makeCostAccountingSqlite = (
 ): Layer.Layer<
   CostAccountingService,
   ConfigError,
-  ObservabilityService | Clock
+  ObservabilityService | Clock | LunaSqliteBootstrap
 > =>
   Layer.scoped(
     CostAccountingService,
     Effect.gen(function* () {
+      // Phase 27a: pull the bootstrap Tag BEFORE opening any Database so
+      // the process-wide `setCustomSQLite()` swap has run. Side effect
+      // only — we don't branch on the result.
+      yield* LunaSqliteBootstrap
+
       const obs = yield* ObservabilityService
       const clock = yield* Clock
       const defaultBudget = config.defaultBudgetUsd ?? 0
@@ -473,7 +479,7 @@ export const makeCostAccountingSqlite = (
   ) => Layer.Layer<
     CostAccountingService,
     ConfigError,
-    ObservabilityService | Clock
+    ObservabilityService | Clock | LunaSqliteBootstrap
   >
 }).fromPath = makeCostAccountingSqlite
 

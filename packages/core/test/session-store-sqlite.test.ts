@@ -15,13 +15,27 @@ import { Effect, Stream, Layer, Scope } from "effect"
 import * as os from "node:os"
 import * as path from "node:path"
 import * as fs from "node:fs"
-import { SessionStore, makeSessionStoreSqlite } from "../src/index.js"
+import {
+  LunaSqliteBootstrap,
+  SessionStore,
+  makeSessionStoreSqlite,
+} from "../src/index.js"
 
 // Skip the whole suite on non-bun runners. `bun:sqlite` is bun-native.
 const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined"
 const d = isBun ? describe : describe.skip
 
-const memLayer = () => makeSessionStoreSqlite(":memory:")
+// Phase 27a: SessionStore.fromPath now declares `LunaSqliteBootstrap` in
+// its `R`. The real Live Layer lives in @luna/memory; @luna/core tests
+// satisfy the Tag with a no-op success value. Effect of `setCustomSQLite`
+// is unobservable here (no Vectorlite is loaded against this DB).
+const bootstrapStubL = Layer.succeed(LunaSqliteBootstrap, {
+  ok: false,
+  reason: "core test — bootstrap stub",
+} as const)
+
+const memLayer = () =>
+  makeSessionStoreSqlite(":memory:").pipe(Layer.provide(bootstrapStubL))
 
 const provideMem = <A, E>(
   eff: Effect.Effect<A, E, SessionStore | Scope.Scope>,
@@ -307,7 +321,7 @@ d("SessionStore.fromPath (sqlite)", () => {
               kind: "user",
               payload: { type: "user", message: { content: "saved" } },
             })
-          }).pipe(Effect.provide(makeSessionStoreSqlite(dbPath))),
+          }).pipe(Effect.provide(makeSessionStoreSqlite(dbPath).pipe(Layer.provide(bootstrapStubL)))),
         ),
       )
       // Second scope: reopen the same DB file.
@@ -320,7 +334,7 @@ d("SessionStore.fromPath (sqlite)", () => {
               store.readMessages("persist"),
             )
             return { got, msgs: Array.from(msgs) }
-          }).pipe(Effect.provide(makeSessionStoreSqlite(dbPath))),
+          }).pipe(Effect.provide(makeSessionStoreSqlite(dbPath).pipe(Layer.provide(bootstrapStubL)))),
         ),
       )
       expect(result.got?.title).toBe("first")
@@ -340,7 +354,7 @@ d("SessionStore.fromPath (sqlite)", () => {
         Effect.scoped(
           Effect.gen(function* () {
             yield* SessionStore
-          }).pipe(Effect.provide(makeSessionStoreSqlite(dbPath))),
+          }).pipe(Effect.provide(makeSessionStoreSqlite(dbPath).pipe(Layer.provide(bootstrapStubL)))),
         ),
       )
       // Second open should no-op the migration.
@@ -353,7 +367,7 @@ d("SessionStore.fromPath (sqlite)", () => {
               options: { model: "m" },
               createdAt: 1,
             })
-          }).pipe(Effect.provide(makeSessionStoreSqlite(dbPath))),
+          }).pipe(Effect.provide(makeSessionStoreSqlite(dbPath).pipe(Layer.provide(bootstrapStubL)))),
         ),
       )
       // Third open verifies the v1 schema still works.
@@ -363,7 +377,7 @@ d("SessionStore.fromPath (sqlite)", () => {
             const store = yield* SessionStore
             const got = yield* store.get("after-migrate")
             return got?.id
-          }).pipe(Effect.provide(makeSessionStoreSqlite(dbPath))),
+          }).pipe(Effect.provide(makeSessionStoreSqlite(dbPath).pipe(Layer.provide(bootstrapStubL)))),
         ),
       )
       expect(id).toBe("after-migrate")

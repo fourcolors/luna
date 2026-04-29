@@ -23,6 +23,7 @@ import { basename, join } from "node:path"
 import { Effect, Layer, Stream } from "effect"
 import { StubEmbedderLayer, makeStubEmbedderLayer } from "@luna/core"
 import { SqliteVectorBackend } from "../src/backends/sqlite-vector.js"
+import { LunaSqliteBootstrapLive } from "../src/backends/vectorlite-bootstrap.js"
 import { makeRecord } from "../src/types.js"
 
 const CORPUS_DIR = "/Users/sol/.sol/memory/qmd/sol-agent"
@@ -86,7 +87,7 @@ const program = Effect.gen(function* () {
   const wideStub = makeStubEmbedderLayer({ dimension: 256 })
   const layer = Layer.provideMerge(
     SqliteVectorBackend.fromPath(":memory:"),
-    wideStub,
+    Layer.merge(wideStub, LunaSqliteBootstrapLive),
   )
 
   yield* Effect.scoped(
