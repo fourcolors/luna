@@ -4,7 +4,7 @@
  * Mirrors the in-memory store's contract tests, plus three scenarios
  * unique to a durable backend:
  *   - round-trip across reopen (the headline persistence test)
- *   - schema migration is idempotent (open twice → user_version stays 1)
+ *   - schema migration is idempotent (open twice → single schema_versions row)
  *   - WAL mode is on after construction
  *
  * Bun-only: `bun:sqlite` import dies under stock vitest/node. We gate the
@@ -332,10 +332,10 @@ d("SessionStore.fromPath (sqlite)", () => {
     }
   })
 
-  it("schema migration is idempotent (open twice, user_version stays 1)", async () => {
+  it("schema migration is idempotent (open twice, schema_versions row stays single)", async () => {
     const dbPath = tmpDb()
     try {
-      // First open creates schema + sets user_version=1.
+      // First open creates schema + records (sessions, 1) in schema_versions.
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {

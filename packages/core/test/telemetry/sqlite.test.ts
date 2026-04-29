@@ -214,10 +214,10 @@ d("TelemetryService.fromPath (sqlite)", () => {
     }
   })
 
-  it("(7) migration ladder idempotent: reopen leaves user_version=1", async () => {
+  it("(7) migration ladder idempotent: reopen leaves single schema_versions row", async () => {
     const dbPath = tmpDb()
     try {
-      // First open — runs v0→v1 migration.
+      // First open — runs telemetry v1 migration via applyMigration.
       await run(
         Effect.gen(function* () {
           const tel = yield* TelemetryService
@@ -226,13 +226,14 @@ d("TelemetryService.fromPath (sqlite)", () => {
         dbPath,
       )
       const db1 = await openRaw(dbPath)
-      const row1 = db1.query("PRAGMA user_version").get() as
-        | { user_version: number }
-        | undefined
+      const rows1 = db1
+        .query("SELECT version FROM schema_versions WHERE component = ?")
+        .all("telemetry") as ReadonlyArray<{ version: number }>
       db1.close()
-      expect(row1?.user_version).toBe(1)
+      expect(rows1).toHaveLength(1)
+      expect(rows1[0]?.version).toBe(1)
 
-      // Second open — must be a no-op.
+      // Second open — must be a no-op (applyMigration early-returns).
       await run(
         Effect.gen(function* () {
           const tel = yield* TelemetryService
@@ -241,11 +242,11 @@ d("TelemetryService.fromPath (sqlite)", () => {
         dbPath,
       )
       const db2 = await openRaw(dbPath)
-      const row2 = db2.query("PRAGMA user_version").get() as
-        | { user_version: number }
-        | undefined
+      const rows2 = db2
+        .query("SELECT version FROM schema_versions WHERE component = ?")
+        .all("telemetry") as ReadonlyArray<unknown>
       db2.close()
-      expect(row2?.user_version).toBe(1)
+      expect(rows2).toHaveLength(1)
     } finally {
       cleanupTmp(dbPath)
     }

@@ -45,6 +45,7 @@ import {
 } from "effect"
 import { ObservabilityService } from "../observability/observability.js"
 import { Clock } from "../clock.js"
+import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
 import { ConfigError, IntegrityError } from "../errors.js"
 import { CostAccountingService } from "./cost-accounting.js"
 import type {
@@ -95,8 +96,6 @@ const SCHEMA_V1 = `
     PRIMARY KEY (dim, key)
   );
 `
-
-const TARGET_USER_VERSION = 1
 
 // ── bun:sqlite minimal shape (mirrors session-store-sqlite.ts) ──────────────
 interface BunDb {
@@ -192,23 +191,12 @@ export const makeCostAccountingSqlite = (
       db.run("PRAGMA synchronous = NORMAL")
       db.run("PRAGMA foreign_keys = ON")
 
-      // Migration ladder: PRAGMA user_version → bump per component (§5.2).
-      // Wrap each bump in BEGIN IMMEDIATE / COMMIT / ROLLBACK.
-      const cur = db.query("PRAGMA user_version").get() as
-        | { user_version: number }
-        | undefined
-      const userVersion = cur?.user_version ?? 0
-      if (userVersion < 1) {
-        db.run("BEGIN IMMEDIATE")
-        try {
-          db.run(SCHEMA_V1)
-          db.run(`PRAGMA user_version = ${TARGET_USER_VERSION}`)
-          db.run("COMMIT")
-        } catch (e) {
-          db.run("ROLLBACK")
-          throw e
-        }
-      }
+      // §5.2 migration ladder: per-component `schema_versions` ledger
+      // (Phase 25e). Replaces the pre-25e `PRAGMA user_version` gate that
+      // collided across components sharing `~/.luna/luna.db`.
+      const nowMs = yield* clock.nowMs()
+      ensureSchemaVersions(db)
+      applyMigration(db, "cost", 1, SCHEMA_V1, nowMs)
 
       // §3.4 #4 LIFO: register `db.close` FIRST so the subscriber finalizer
       // (registered later via Stream consumption inside the scope) runs first
