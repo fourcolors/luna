@@ -11,3 +11,7 @@ export {
   OnePasswordSecretProvider,
   type OnePasswordOptions,
 } from "./onepassword-backend.js"
+export {
+  readKeychainToken,
+  type KeychainQuery,
+} from "./keychain-helper.js"
