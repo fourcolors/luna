@@ -122,6 +122,7 @@ import {
 import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
 import { ChatService } from "@luna/chat-service"
 import { startUIWebSocketServer } from "@luna/ui-ws"
+import { LunaSqliteBootstrapLive } from "@luna/memory"
 import {
   MemoryToolsLayer,
   MemoryToolsService,
@@ -307,6 +308,15 @@ const buildServerLayer = (
   ).pipe(
     Layer.provide(MemoryToolsLayer()),
     Layer.provide(baseLayer),
+    // Phase 27a: provide LunaSqliteBootstrapLive at the END of the chain
+    // so it builds FIRST (Layer.provide is bottom-up — last listed wins
+    // build order). Every store layer above declares LunaSqliteBootstrap
+    // in its `R`, so this single line enforces the ordering: the
+    // process-wide `Database.setCustomSQLite()` swap runs before the
+    // very first `new Database()` in baseLayer/AccountBroker. Without
+    // this, dev-server-chat silently falls back to naive cosine ranking
+    // (Phase 27 HNSW path dead) — see brief §0 for the original repro.
+    Layer.provide(LunaSqliteBootstrapLive),
   ) as Layer.Layer<ServerHandle>
 
 const SEED_HINT =
