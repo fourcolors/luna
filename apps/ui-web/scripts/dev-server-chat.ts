@@ -18,18 +18,22 @@
  * `~/.luna/luna.db` (§5.1 `accounts` table) hydrate at boot and the
  * SDKAdapter overlays the resolved token per-query (§0.2 rotation).
  *
- * Token resolution chain (§2.2.11), Phase 25c:
- *   1. OP env-var layer — if `OP_SERVICE_ACCOUNT_TOKEN` is set, build
- *      an OnePasswordSecretProvider with it (preserves existing dev
- *      workflow for shells that already export the token).
- *   2. OP keychain layers — one per entry in OP_ACCOUNTS, each reading
- *      its token from the macOS keychain at boot. Missing keychain
- *      entries are non-fatal (the layer is simply skipped).
- *   3. EnvSecretProvider — fallback for `env:VARNAME` pointers (legacy).
+ * Token resolution chain (DESIGN.md §2.2.11), Phase 25d:
+ *   1. RoutedOpSecretProvider — wraps N single-account OnePassword
+ *      backends, one per `luna.op.<label>` keychain entry found at
+ *      boot. Refs are dispatched explicitly:
+ *        op://<rest>                    only if exactly 1 account is
+ *                                       registered (otherwise hard fail)
+ *        luna-op://<label>/<rest>       routed only to <label>; no
+ *                                       fall-through to other accounts
+ *      Errors from a luna-op://<label>/... resolution are wrapped to
+ *      include "(account=<label>)" — tokens never appear in messages.
+ *   2. EnvSecretProvider — for `env:VARNAME` pointers (one colon).
  *
- * Each 1Password service-account token sees only its own account's
- * vaults, so `secretProviderFirstOf` IS the routing: wrong-token
- * attempts fail with ConfigError and fall through to the next provider.
+ * The 25c "iterate every OP token" composition is **superseded** by
+ * this explicit routing (see HANDOFF.md drift note for 2026-04-28).
+ * `OP_SERVICE_ACCOUNT_TOKEN` env-var fallback is dropped — keychain
+ * is the single source of truth for service-account tokens.
  *
  * # Account Setup
  *
@@ -43,9 +47,17 @@
  *
  *   bun run --filter '@luna/agent-cli' luna-account list
  *
- * Pointer format (`secret_ref` column):
- *   - `op://<vault-uuid-or-name>/<item-uuid-or-name>/<field>` — 1Password
- *   - `env:<VARNAME>` — process env (legacy escape hatch)
+ * Pointer format (`secret_ref` column, DESIGN.md §2.2.11):
+ *   - `op://<vault>/<item>/<field>` — 1Password (only when exactly 1
+ *     OP account is registered; else hard fail)
+ *   - `luna-op://<label>/<vault>/<item>/<field>` — explicit-account
+ *     1Password routing
+ *   - `env:<VARNAME>` — process env (one colon, no slashes)
+ *
+ * Examples (with antmachine + mrbot + flow registered in keychain):
+ *   - luna-op://antmachine/cdtygwycj55n4ewcnobycow7tu/eqvivujwp6ahevhkdao2vte35a/credential
+ *   - luna-op://mrbot/<vault>/<item>/<field>
+ *   - luna-op://flow/<vault>/<item>/<field>
  *
  * ## macOS Keychain entries (Phase 25c)
  *
@@ -68,8 +80,8 @@
  * setup (e.g. `-T <bun-binary>` at add-time, or "Always Allow" on
  * first prompt). That is out of scope for the dev rig.
  *
- * The `OP_SERVICE_ACCOUNT_TOKEN` env var still works as a fallback
- * (and takes priority over the keychain entries when set).
+ * `OP_SERVICE_ACCOUNT_TOKEN` env-var fallback is no longer honored
+ * (Phase 25d) — keychain is the single source of truth.
  *
  * Hot-reload is NOT supported. AccountBroker hydrates the `accounts`
  * table once at Layer construction. To pick up new rows inserted via
@@ -100,10 +112,12 @@ import {
   EnvSecretProvider,
   ObservabilityService,
   OnePasswordSecretProvider,
+  RoutedOpSecretProvider,
   SessionStore,
   UIService,
   readKeychainToken,
   secretProviderFirstOf,
+  validateAccountsTableLabels,
 } from "@luna/core"
 import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
 import { ChatService } from "@luna/chat-service"
@@ -114,7 +128,6 @@ import {
 } from "@luna/memory-tools"
 
 const TOKEN = "dev-ui-ws-token-do-not-ship"
-const OP_VAULT = "Mr Bot"
 
 // ── Multi-account 1Password bootstrap (Phase 25c) ───────────────────────
 //
@@ -138,18 +151,18 @@ interface DiscoveredOpToken {
 }
 
 /**
- * Resolve every OP token we can find: env first (preserves the
- * existing dev workflow), then each keychain entry in priority order.
+ * Resolve every OP token we can find from the macOS keychain.
  * Missing keychain entries are non-fatal — they yield None and are
  * filtered out before composition.
+ *
+ * Phase 25d: the OP_SERVICE_ACCOUNT_TOKEN env-var fallback is dropped.
+ * Keychain is the single source of truth — using `env` as a label
+ * would also collide with the reserved-label set in
+ * RoutedOpSecretProvider.
  */
 const discoverOpTokens: Effect.Effect<ReadonlyArray<DiscoveredOpToken>> =
   Effect.gen(function* () {
     const found: Array<DiscoveredOpToken> = []
-    const envTok = process.env["OP_SERVICE_ACCOUNT_TOKEN"]
-    if (envTok !== undefined && envTok.length > 0) {
-      found.push({ label: "env", token: envTok })
-    }
     for (const acct of OP_ACCOUNTS) {
       const result = yield* readKeychainToken({
         service: acct.keychainService,
@@ -164,18 +177,11 @@ const discoverOpTokens: Effect.Effect<ReadonlyArray<DiscoveredOpToken>> =
 
 // ── Layer wiring ────────────────────────────────────────────────────────
 //
-// Phase 25b: SecretProvider chain (1Password → env) feeds AccountBroker
-// (SQL-hydrated from ~/.luna/luna.db). The broker is a Layer requirement
-// of SDKAdapter (Phase 9.5) — providing it here causes acquireSession()
-// to overlay the per-query Claude OAuth token automatically. No env-var
-// bail; no plaintext token in this process beyond a short-lived
-// Redacted<string> at acquire time.
-//
-// Phase 25c: the SecretProvider chain now contains N OnePasswordSecret-
-// Provider layers (one per discovered token) ahead of the legacy
-// EnvSecretProvider for `env:VARNAME` refs. Each OP token sees only its
-// own account's vaults, so `firstOf` IS the multi-account routing —
-// wrong-token attempts fail with ConfigError and fall through cleanly.
+// Phase 25d: SecretProvider chain is RoutedOpSecretProvider →
+// EnvSecretProvider. Each registered OP account is a single-account
+// OnePasswordSecretProvider built inline; the routed wrapper dispatches
+// based on the ref scheme (op://, luna-op://<label>/...) per
+// DESIGN.md §2.2.11. No fall-through across OP accounts.
 const buildBaseLayer = (
   opTokens: ReadonlyArray<DiscoveredOpToken>,
 ): Layer.Layer<
@@ -197,18 +203,19 @@ const buildBaseLayer = (
   )
   const storeL = SessionStore.Default
 
-  // One OnePasswordSecretProvider layer per discovered token. The
-  // `vault` field is purely diagnostic — `op read` is driven by the
-  // ref string itself; the token determines which account's vaults
-  // are visible.
-  const opLayers = opTokens.map((t) =>
-    OnePasswordSecretProvider.make({
-      vault: `${OP_VAULT} (${t.label})`,
+  // Build one inner OP layer per discovered token, then wrap in the
+  // routed dispatcher. The routed wrapper owns the op://-vs-luna-op://
+  // grammar; the inner backends are pure 1Password readers.
+  const routedAccounts = opTokens.map((t) => ({
+    label: t.label,
+    layer: OnePasswordSecretProvider.make({
+      accountLabel: t.label,
       token: t.token,
     }).pipe(Layer.provide(clockL)),
-  )
+  }))
+  const routedOpL = RoutedOpSecretProvider.make({ accounts: routedAccounts })
   const envProviderL = EnvSecretProvider.Default
-  const secretL = secretProviderFirstOf([...opLayers, envProviderL])
+  const secretL = secretProviderFirstOf([routedOpL, envProviderL])
 
   // AccountBroker hydrates the §5.1 `accounts` table from the default
   // ~/.luna/luna.db. Failures here surface as ConfigError at boot —
@@ -305,13 +312,11 @@ const buildServerLayer = (
 const SEED_HINT =
   "  bun run --filter '@luna/agent-cli' luna-account add \\\n" +
   "    --id sterling --label \"Sterling\" --kind anthropic \\\n" +
-  "    --secret-ref op://cdtygwycj55n4ewcnobycow7tu/eqvivujwp6ahevhkdao2vte35a/credential"
+  "    --secret-ref luna-op://antmachine/cdtygwycj55n4ewcnobycow7tu/eqvivujwp6ahevhkdao2vte35a/credential"
 
-const buildMain = (): Effect.Effect<
-  never,
-  Error,
-  AccountBroker | ServerHandle
-> =>
+const buildMain = (
+  opLabelsRegistered: ReadonlyArray<string>,
+): Effect.Effect<never, Error, AccountBroker | ServerHandle> =>
   Effect.gen(function* () {
     // Operator-visible boot log: how many accounts hydrated, by kind.
     // Resolves nothing; just inspects the in-memory broker pool.
@@ -336,6 +341,18 @@ const buildMain = (): Effect.Effect<
       .join(", ")
     console.log(`[accounts] ${accounts.length} hydrated: ${breakdown}`)
 
+    // Phase 25d: warn on luna-op://<label>/... refs whose label is
+    // not in the registered OP keychain set. Soft warning — operator
+    // may add accounts later without rebooting.
+    const refs = accounts.map((a) => a.secretRef)
+    const dangling = validateAccountsTableLabels(refs, opLabelsRegistered)
+    if (dangling.length > 0) {
+      console.warn(`[op] dangling refs: ${dangling.length}`)
+      for (const d of dangling) {
+        console.warn(`  - ${d.ref} (label="${d.label}" not registered)`)
+      }
+    }
+
     const handle = yield* ServerHandle
     console.log(`✅ ui-ws chat server: ws://${handle.host}:${handle.port}/ui`)
     console.log(`🔑 token: ${TOKEN}`)
@@ -358,7 +375,7 @@ const bootstrap = async (): Promise<void> => {
   // (e.g. AccountBroker) fail later in boot.
   if (opTokens.length === 0) {
     console.log(
-      `[op] 0 providers active — no OP_SERVICE_ACCOUNT_TOKEN env and no keychain entries found`,
+      `[op] 0 providers active — no luna.op.<label> keychain entries found`,
     )
   } else {
     console.log(
@@ -367,6 +384,7 @@ const bootstrap = async (): Promise<void> => {
         .join(", ")}`,
     )
   }
+  const opLabelsRegistered = opTokens.map((t) => t.label)
   const baseLayer = buildBaseLayer(opTokens)
   const serverLayer = buildServerLayer(baseLayer)
   const runtime = ManagedRuntime.make(Layer.mergeAll(serverLayer, baseLayer))
@@ -388,14 +406,14 @@ const bootstrap = async (): Promise<void> => {
   // (preferred — headless service account) or add a `luna.op.<label>`
   // keychain entry if chat queries fail with a ConfigError tagged
   // `OnePasswordSecretProvider`.
-  runtime.runPromise(buildMain()).catch((err) => {
+  runtime.runPromise(buildMain(opLabelsRegistered)).catch((err) => {
     const msg = String(err)
     console.error("❌ chat server crashed:", err)
     if (msg.includes("OnePasswordSecretProvider") || msg.includes("'op'")) {
       console.error(
-        "   hint: 1Password CLI not authenticated. Set " +
-          "OP_SERVICE_ACCOUNT_TOKEN in this shell, add a luna.op.<label> " +
-          "keychain entry, or run `op signin` for interactive use, then restart.",
+        "   hint: 1Password CLI not authenticated. Add a " +
+          "luna.op.<label> keychain entry (see header comment) or run " +
+          "`op signin` for interactive use, then restart.",
       )
     }
     process.exit(1)

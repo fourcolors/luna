@@ -1,8 +1,9 @@
 /**
- * Phase 25b live smoke — exercises the full canary path that
+ * Phase 25d live smoke — exercises the full canary path that
  * dev-server-chat boots:
  *   CLI insert  →  AccountBrokerLayer.fromSql  →  acquireSession()
- *   →  OnePasswordSecretProvider  →  Redacted<sk-ant-oat-...>
+ *   →  RoutedOpSecretProvider  →  OnePasswordSecretProvider
+ *   →  Redacted<sk-ant-oat-...>
  *
  * Skipped unless `LUNA_LIVE_SMOKE=1` is set, because it requires:
  *   - `op` CLI on PATH
@@ -25,6 +26,7 @@ import {
   Clock,
   EnvSecretProvider,
   OnePasswordSecretProvider,
+  RoutedOpSecretProvider,
   secretProviderFirstOf,
 } from "@luna/core"
 
@@ -36,70 +38,106 @@ const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined"
 // dev:server:chat`) is the canonical end-to-end verification.
 const d = LIVE && isBun ? describe : describe.skip
 
-const CANONICAL_REF =
+const CANONICAL_LUNA_OP_REF =
+  "luna-op://antmachine/cdtygwycj55n4ewcnobycow7tu/eqvivujwp6ahevhkdao2vte35a/credential"
+const CANONICAL_BARE_OP_REF =
   "op://cdtygwycj55n4ewcnobycow7tu/eqvivujwp6ahevhkdao2vte35a/credential"
 const CLI_ENTRY = path.resolve(__dirname, "..", "src", "index.ts")
 
-d("Phase 25b live smoke — broker → 1Password → Redacted<sk-ant-oat>", () => {
-  it("acquireSession returns a Redacted secret starting with sk-ant-oat", async () => {
-    // 1. Seed a fresh DB via the CLI (subprocess) — same path users hit.
-    const dbPath = path.join(
-      os.tmpdir(),
-      `luna-live-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
-    )
-    try {
-      const seed = spawnSync(
-        "bun",
-        [
-          "run",
-          CLI_ENTRY,
-          "add",
-          "--id",
-          "sterling",
-          "--label",
-          "Sterling",
-          "--kind",
-          "anthropic",
-          "--secret-ref",
-          CANONICAL_REF,
-        ],
-        { encoding: "utf8", env: { ...process.env, LUNA_DB_PATH: dbPath } },
-      )
-      expect(seed.status, seed.stderr).toBe(0)
+const seedDb = (ref: string): string => {
+  const dbPath = path.join(
+    os.tmpdir(),
+    `luna-live-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
+  )
+  const seed = spawnSync(
+    "bun",
+    [
+      "run",
+      CLI_ENTRY,
+      "add",
+      "--id",
+      "sterling",
+      "--label",
+      "Sterling",
+      "--kind",
+      "anthropic",
+      "--secret-ref",
+      ref,
+    ],
+    { encoding: "utf8", env: { ...process.env, LUNA_DB_PATH: dbPath } },
+  )
+  if (seed.status !== 0) {
+    throw new Error(`seed failed: ${seed.stderr}`)
+  }
+  return dbPath
+}
 
-      // 2. Build the broker Layer composition that dev-server-chat uses,
-      //    minus the WS server.
-      const opL = OnePasswordSecretProvider.make({ vault: "Mr Bot" }).pipe(
-        Layer.provide(Clock.Default),
-      )
-      const secretL = secretProviderFirstOf([opL, EnvSecretProvider.Default])
+const cleanupDb = (dbPath: string): void => {
+  for (const suffix of ["", "-wal", "-shm"]) {
+    try {
+      fs.unlinkSync(dbPath + suffix)
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+const buildRoutedSecretL = () => {
+  const innerOpL = OnePasswordSecretProvider.make({
+    accountLabel: "antmachine",
+  }).pipe(Layer.provide(Clock.Default))
+  const routedL = RoutedOpSecretProvider.make({
+    accounts: [{ label: "antmachine", layer: innerOpL }],
+  })
+  return secretProviderFirstOf([routedL, EnvSecretProvider.Default])
+}
+
+d("Phase 25d live smoke — broker → RoutedOpSecretProvider → Redacted<sk-ant-oat>", () => {
+  it("luna-op://antmachine/... → acquireSession returns Redacted starting with sk-ant-oat", async () => {
+    const dbPath = seedDb(CANONICAL_LUNA_OP_REF)
+    try {
+      const secretL = buildRoutedSecretL()
       const brokerL = AccountBrokerLayer.fromSql({ dbPath }).pipe(
         Layer.provide(secretL),
         Layer.provide(Clock.Default),
       )
-
-      // 3. acquireSession + assert Redacted shape.
       const program = Effect.gen(function* () {
         const broker = yield* AccountBroker
         return yield* broker.acquireSession({ model: "claude-sonnet-4-5" })
       })
-
       const credential = await Effect.runPromise(
         Effect.scoped(program).pipe(Effect.provide(brokerL)) as Effect.Effect<{
           resolvedSecret: Redacted.Redacted<string>
         }>,
       )
-
       const resolved = Redacted.value(credential.resolvedSecret)
       expect(resolved.startsWith("sk-ant-oat")).toBe(true)
     } finally {
-      for (const suffix of ["", "-wal", "-shm"]) {
-        try {
-          fs.unlinkSync(dbPath + suffix)
-        } catch {
-          /* ignore */
-        }
-      }
+      cleanupDb(dbPath)
+    }
+  }, 30_000)
+
+  it("bare op://... still resolves when exactly 1 OP account is registered", async () => {
+    const dbPath = seedDb(CANONICAL_BARE_OP_REF)
+    try {
+      const secretL = buildRoutedSecretL()
+      const brokerL = AccountBrokerLayer.fromSql({ dbPath }).pipe(
+        Layer.provide(secretL),
+        Layer.provide(Clock.Default),
+      )
+      const program = Effect.gen(function* () {
+        const broker = yield* AccountBroker
+        return yield* broker.acquireSession({ model: "claude-sonnet-4-5" })
+      })
+      const credential = await Effect.runPromise(
+        Effect.scoped(program).pipe(Effect.provide(brokerL)) as Effect.Effect<{
+          resolvedSecret: Redacted.Redacted<string>
+        }>,
+      )
+      const resolved = Redacted.value(credential.resolvedSecret)
+      expect(resolved.startsWith("sk-ant-oat")).toBe(true)
+    } finally {
+      cleanupDb(dbPath)
     }
   }, 30_000)
 })
