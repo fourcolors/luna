@@ -142,4 +142,12 @@ export interface CreateThreadOptions {
     | "acceptEdits"
     | "bypassPermissions"
     | "plan"
+  /**
+   * MCP servers to register on the thread's underlying SDK session. The
+   * map is merged into `sdkOptions.mcpServers`. Phase 30 added this so
+   * memory tools (and any future tool packages) can be wired in by the
+   * caller without subclassing ChatService. Values are opaque to chat-
+   * service — they pass through to the SDK adapter.
+   */
+  readonly mcpServers?: Readonly<Record<string, unknown>>
 }

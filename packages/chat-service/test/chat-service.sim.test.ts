@@ -436,6 +436,41 @@ describe("ChatService (Tier-2 sim)", () => {
     { timeout: 10_000 },
   )
 
+  // Regression test: caller-supplied systemPrompt must reach the SDK call.
+  // Prior bug — top-level SessionOptions.systemPrompt was never read by the
+  // SDKAdapter, so DNA.md / identity prompts were silently dropped before
+  // hitting Claude. Fixed by also slotting systemPrompt into sdkOptions.
+  it(
+    "createThread forwards opts.systemPrompt into the SDK options",
+    async () => {
+      let capturedOptions: Record<string, unknown> | undefined
+      const fakeLayer = SDKClient.fake((p) => {
+        capturedOptions = (p.options ?? {}) as Record<string, unknown>
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+      const dna = "You are Luna — a modular agent framework. Not Claude."
+      await runScoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          yield* chat.createThread({
+            model: "claude-test",
+            title: "dna",
+            systemPrompt: dna,
+          })
+          yield* Effect.sleep("30 millis")
+        }),
+        fakeLayer,
+      )
+      expect(capturedOptions).toBeDefined()
+      expect(capturedOptions!["systemPrompt"]).toBe(dna)
+    },
+    { timeout: 10_000 },
+  )
+
   it(
     "permissionMode defaults to 'default' when LUNA_TRUSTED_LOCAL is unset",
     async () => {
