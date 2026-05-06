@@ -31,6 +31,7 @@ import {
   Clock as CoreClock,
   ObservabilityService,
   type ChatMessage,
+  type SessionOptions,
 } from "@luna/core"
 import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
 import type {
@@ -436,13 +437,40 @@ describe("ChatService (Tier-2 sim)", () => {
     { timeout: 10_000 },
   )
 
-  // Regression test: caller-supplied systemPrompt must reach the SDK call.
-  // Prior bug — top-level SessionOptions.systemPrompt was never read by the
-  // SDKAdapter, so DNA.md / identity prompts were silently dropped before
-  // hitting Claude. Fixed by also slotting systemPrompt into sdkOptions.
-  it(
-    "createThread forwards opts.systemPrompt into the SDK options",
-    async () => {
+  // Contract table: every field in CreateThreadOptions that must reach sdkOptions.
+  // Regression anchor for systemPrompt (prior bug: silently dropped before SDK);
+  // also pins cwd, settingSources, permissionMode, and mcpServers in one sweep.
+  const CONTRACT_FIELDS = [
+    {
+      name: "systemPrompt" as const,
+      value: "X-IDENTITY-X",
+      sdkKey: "systemPrompt",
+    },
+    {
+      name: "cwd" as const,
+      value: "/tmp/luna-cwd-test",
+      sdkKey: "cwd",
+    },
+    {
+      name: "settingSources" as const,
+      value: [] as string[],
+      sdkKey: "settingSources",
+    },
+    {
+      name: "permissionMode" as const,
+      value: "bypassPermissions" as const,
+      sdkKey: "permissionMode",
+    },
+    {
+      name: "mcpServers" as const,
+      value: { foo: {} as never },
+      sdkKey: "mcpServers",
+    },
+  ] as const
+
+  it.each(CONTRACT_FIELDS)(
+    "createThread forwards opts.$name into SDK options as $sdkKey",
+    async ({ name, value, sdkKey }) => {
       let capturedOptions: Record<string, unknown> | undefined
       const fakeLayer = SDKClient.fake((p) => {
         capturedOptions = (p.options ?? {}) as Record<string, unknown>
@@ -452,21 +480,20 @@ describe("ChatService (Tier-2 sim)", () => {
           responseFor: (t) => `echo:${t}`,
         })
       })
-      const dna = "You are Luna — a modular agent framework. Not Claude."
       await runScoped(
         Effect.gen(function* () {
           const chat = yield* ChatService
           yield* chat.createThread({
             model: "claude-test",
-            title: "dna",
-            systemPrompt: dna,
+            title: "contract",
+            [name]: value,
           })
           yield* Effect.sleep("30 millis")
         }),
         fakeLayer,
       )
       expect(capturedOptions).toBeDefined()
-      expect(capturedOptions!["systemPrompt"]).toBe(dna)
+      expect(capturedOptions![sdkKey]).toEqual(value)
     },
     { timeout: 10_000 },
   )
@@ -728,6 +755,118 @@ describe("ChatService (Tier-2 sim)", () => {
           expect(e.sessionId).toMatch(/^thr_/)
         }
       }
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "§3.1 identity: systemPrompt containing Luna sentinel reaches SDK options",
+    async () => {
+      const LUNA_IDENTITY =
+        "You are **Luna** — a modular, locally-hosted AI agent framework."
+      let capturedOptions: Record<string, unknown> | undefined
+      const fakeLayer = SDKClient.fake((p) => {
+        capturedOptions = (p.options ?? {}) as Record<string, unknown>
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+      await runScoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          yield* chat.createThread({
+            model: "claude-test",
+            title: "luna-identity",
+            systemPrompt: LUNA_IDENTITY,
+          })
+          yield* Effect.sleep("30 millis")
+        }),
+        fakeLayer,
+      )
+      expect(capturedOptions).toBeDefined()
+      expect(typeof capturedOptions!["systemPrompt"]).toBe("string")
+      expect(capturedOptions!["systemPrompt"] as string).toContain(
+        "You are **Luna**",
+      )
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    // TODO: fix fork dead-letter
+    // session-service.fork() builds childOpts with systemPrompt at the
+    // TOP-LEVEL only; it never slots it into sdkOptions. The adapter reads
+    // ONLY sessionOptions.sdkOptions — it never reads the top-level
+    // sessionOptions.systemPrompt. So a forked child's overridden
+    // systemPrompt is silently dropped before reaching the SDK.
+    //
+    // This test directly exercises the adapter with the options shape that
+    // fork() produces: sdkOptions is undefined, systemPrompt is top-level.
+    // It demonstrates the bug: capturedOptions.systemPrompt is undefined.
+    //
+    // ChatService.createThread is NOT affected (it correctly slots
+    // systemPrompt into sdkOptions via buildSessionOptions). The dead-letter
+    // only affects callers that go through SessionService.fork() directly.
+    //
+    // Fix: session-service.fork() must propagate overrides.systemPrompt into
+    // childOpts.sdkOptions.systemPrompt in addition to the top-level field.
+    "fork dead-letter: systemPrompt top-level-only (fork shape) is NOT forwarded into SDK options",
+    async () => {
+      // Capture what the adapter actually sends to the SDK client.
+      let capturedOptions: Record<string, unknown> | undefined
+      const fakeLayer = SDKClient.fake((p) => {
+        capturedOptions = (p.options ?? {}) as Record<string, unknown>
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+
+      // Drive a createThread whose buildSessionOptions path we bypass by
+      // constructing the fork()-shaped SessionOptions manually and passing
+      // them to the adapter directly. We need the adapter in scope, so we
+      // run inside the fullLayer environment.
+      //
+      // The fork()-shaped SessionOptions:
+      //   - systemPrompt at the TOP LEVEL (set by fork's childOpts)
+      //   - sdkOptions: undefined  (fork() only merges sdkOptions if
+      //     overrides.sdkOptions is explicitly supplied; otherwise absent)
+      //
+      // This is distinct from ChatService.createThread which always calls
+      // buildSessionOptions() and correctly writes into sdkOptions.
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const adapter = yield* SDKAdapter
+            const forkShapedOptions = {
+              model: "claude-test",
+              disableIdleTimeout: true,
+              // fork() copies overrides.systemPrompt here — top-level only.
+              systemPrompt: "CHILD-IDENTITY",
+              // sdkOptions deliberately absent: what fork() produces when
+              // overrides.sdkOptions is not passed.
+              sdkOptions: undefined,
+            }
+            const replies = yield* adapter.query({
+              sessionId: "thr-fork-test",
+              prompt: Stream.empty as Stream.Stream<SDKUserMessage>,
+              sessionOptions: forkShapedOptions as SessionOptions,
+            })
+            // Drain the empty stream; we only care about the options capture.
+            yield* Stream.runDrain(replies).pipe(Effect.catchAll(() => Effect.void))
+          }),
+        ).pipe(Effect.provide(fullLayer(fakeLayer))),
+      )
+
+      expect(capturedOptions).toBeDefined()
+      // BUG: systemPrompt is silently dropped — the adapter sees undefined.
+      // Once session-service.fork() is fixed to also populate
+      // sdkOptions.systemPrompt, change this assertion to:
+      //   expect(capturedOptions!["systemPrompt"]).toBe("CHILD-IDENTITY")
+      expect(capturedOptions!["systemPrompt"]).toBeUndefined()
     },
     { timeout: 10_000 },
   )
