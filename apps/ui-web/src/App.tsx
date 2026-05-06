@@ -27,6 +27,7 @@ import {
   type ChatAttachment,
 } from "@luna/ui-shared/core"
 import {
+  AccountSwitcher,
   ArtifactPanel,
   ChatPanel,
   ConnectionSummary,
@@ -55,6 +56,8 @@ interface PersistedConfig {
   model: string
   /** When true, plain Enter sends; Shift+Enter newline. Default false. */
   enterToSend: boolean
+  /** Last-selected account id. null = use default broker rotation. */
+  selectedAccountId: string | null
 }
 
 const loadConfig = (): PersistedConfig => {
@@ -70,6 +73,7 @@ const loadConfig = (): PersistedConfig => {
           parsed.token && parsed.token.length >= 16 ? parsed.token : envToken,
         model: parsed.model ?? DEFAULT_MODEL,
         enterToSend: parsed.enterToSend ?? false,
+        selectedAccountId: parsed.selectedAccountId ?? null,
       }
     }
   } catch {
@@ -80,6 +84,7 @@ const loadConfig = (): PersistedConfig => {
     token: envToken,
     model: DEFAULT_MODEL,
     enterToSend: false,
+    selectedAccountId: null,
   }
 }
 
@@ -102,6 +107,13 @@ export const App: Component = () => {
   const [settingsOpen, setSettingsOpen] = createSignal(false)
 
   const store = createUiStore()
+
+  // Restore persisted selectedAccountId into the reducer so the dropdown
+  // is pre-selected on reconnect (before a fresh account-list arrives).
+  if (cfg().selectedAccountId !== null) {
+    store.dispatch({ tag: "select-account", accountId: cfg().selectedAccountId })
+  }
+
   const transport = createTransport({
     onFrame: (frame) => {
       store.dispatch(frame)
@@ -128,6 +140,12 @@ export const App: Component = () => {
   // Persist config edits as they happen so reload doesn't lose tweaks.
   createEffect(() => {
     saveConfig(cfg())
+  })
+
+  // Persist selectedAccountId changes so reconnect restores the user's choice.
+  createEffect(() => {
+    const accountId = store.state.selectedAccountId
+    saveConfig({ ...cfg(), selectedAccountId: accountId })
   })
 
   const send = (frame: ClientFrame): void => transport.send(frame)
@@ -161,7 +179,13 @@ export const App: Component = () => {
   }
 
   const newThread = (): void => {
-    send({ type: "new-thread", model: cfg().model })
+    send({
+      type: "new-thread",
+      model: cfg().model,
+      ...(store.state.selectedAccountId !== null
+        ? { accountId: store.state.selectedAccountId }
+        : {}),
+    })
   }
 
   const sendUserMessage = (
@@ -197,7 +221,13 @@ export const App: Component = () => {
         // Open a new thread on the same model. The `thread-created` server
         // frame triggers auto-subscribe; the reducer selects the new thread
         // once `thread-created` arrives (handled in onFrame above).
-        send({ type: "new-thread", model: cfg().model })
+        send({
+          type: "new-thread",
+          model: cfg().model,
+          ...(store.state.selectedAccountId !== null
+            ? { accountId: store.state.selectedAccountId }
+            : {}),
+        })
         break
       }
     }
@@ -314,6 +344,12 @@ export const App: Component = () => {
                 />
               </label>
             </Show>
+            <AccountSwitcher
+              accounts={store.state.accounts}
+              selectedId={store.state.selectedAccountId}
+              onSelect={(id) => store.dispatch({ tag: "select-account", accountId: id })}
+              disabled={!isConnected()}
+            />
             <label
               class="toggle"
               title="When on, plain Enter sends; Shift+Enter inserts a newline"

@@ -30,3 +30,8 @@ export {
   type CreateTransportParams,
   type TransportComposable,
 } from "./useTransport.js"
+export {
+  AccountSwitcher,
+  type AccountSwitcherProps,
+  type AccountSummary,
+} from "./AccountSwitcher.jsx"

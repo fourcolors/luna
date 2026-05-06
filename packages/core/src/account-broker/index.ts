@@ -2,6 +2,7 @@ export {
   AccountBroker,
   type AccountBrokerApi,
   type AccountSeed,
+  type AccountSummary,
   type AccountError,
   type Credential,
   type UsageReport,

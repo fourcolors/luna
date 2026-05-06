@@ -316,12 +316,14 @@ const buildServerLayer = (
         },
       }
 
+      const broker = yield* AccountBroker
       return yield* startUIWebSocketServer({
         port: 4753,
         token: TOKEN,
         advertisedKinds: DEFAULT_UI_KINDS,
         pingIntervalMs: 5000,
         chatService: chatWithMemory,
+        accountBroker: broker,
       })
     }),
   ).pipe(
