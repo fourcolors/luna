@@ -283,17 +283,12 @@ export const reduce = (state: UIState, action: Action): UIState => {
         return { ...t, artifacts: [...filtered, ...frame.artifacts] }
       })
     case "account-list": {
-      // Auto-select the first healthy account if none is currently selected.
-      const firstHealthy = frame.accounts.find(
-        (a) => a.health === "healthy",
-      )
       return {
         ...state,
         accounts: frame.accounts,
-        selectedAccountId:
-          state.selectedAccountId !== null
-            ? state.selectedAccountId   // preserve user's choice
-            : (firstHealthy?.id ?? null),
+        // selectedAccountId intentionally NOT changed here.
+        // null = "Auto" (broker picks). User must explicitly select an account.
+        // On reconnect, user's prior selection is preserved as-is.
       }
     }
   }
