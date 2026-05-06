@@ -123,44 +123,42 @@ describe("S1 — account-list frame populates state.accounts", () => {
   })
 })
 
-// ─── S2 — auto-select first healthy account ───────────────────────────────────
+// ─── S2 — account-list does NOT auto-select ───────────────────────────────────
 
-describe("S2 — auto-select first healthy account on first account-list", () => {
+describe("S2 — account-list frame does not auto-select (starts on Auto)", () => {
   /**
-   * Given: selectedAccountId is null (first connection).
+   * Given: selectedAccountId is null (first connection, "Auto" mode).
    * When:  account-list frame with [a1 healthy, a2 healthy] arrives.
-   * Then:  selectedAccountId is set to "a1" (first healthy).
+   * Then:  selectedAccountId stays null — broker picks automatically.
    */
-  it("auto-selects the first healthy account when none is selected", () => {
+  it("account-list frame leaves selectedAccountId null (no auto-select)", () => {
     const frame = makeAccountListFrame([healthy("a1"), healthy("a2")])
     const next = reduce(initialState, frame)
-    expect(getSelected(next)).toBe("a1")
+    expect(getSelected(next)).toBeNull()
   })
 
   /**
    * Given: a1 is rate-limited; a2 is healthy.
    * When:  account-list frame arrives with [a1 rate_limited, a2 healthy].
-   * Then:  selectedAccountId is set to "a2" (first HEALTHY account).
+   * Then:  selectedAccountId stays null — no auto-select even with healthy accounts.
    */
-  it("auto-selects first HEALTHY account, skipping rate-limited ones", () => {
+  it("account-list frame leaves selectedAccountId null even when healthy accounts exist", () => {
     const frame = makeAccountListFrame([rateLimited("a1"), healthy("a2")])
     const next = reduce(initialState, frame)
-    expect(getSelected(next)).toBe("a2")
+    expect(getSelected(next)).toBeNull()
   })
 
   /**
-   * Given: selectedAccountId is already "a2" (user previously selected it).
+   * Given: selectedAccountId is already "a2" (user explicitly selected it).
    * When:  a new account-list frame arrives (e.g. reconnect).
-   * Then:  selectedAccountId stays "a2" — user's choice is preserved.
+   * Then:  selectedAccountId stays "a2" — user's explicit choice is preserved.
    */
   it("does NOT overwrite an existing selectedAccountId on reconnect", () => {
-    // First: select a2.
-    const firstFrame = makeAccountListFrame([healthy("a1"), healthy("a2")])
-    let state = reduce(initialState, firstFrame)
-    state = reduce(state, makeSelectAccountAction("a2"))
+    // First: explicitly select a2 via select-account action.
+    let state = reduce(initialState, makeSelectAccountAction("a2"))
     expect(getSelected(state)).toBe("a2")
 
-    // Second: reconnect sends a fresh account-list.
+    // Reconnect sends a fresh account-list.
     const reconnectFrame = makeAccountListFrame([healthy("a1"), healthy("a2")])
     const after = reduce(state, reconnectFrame)
     // a2 must still be selected.
@@ -179,10 +177,10 @@ describe("S3 — select-account action updates selectedAccountId", () => {
   it("switches selectedAccountId to the chosen account", () => {
     const frame = makeAccountListFrame([healthy("a1"), healthy("a2")])
     let state = reduce(initialState, frame)
-    // Initial auto-select: a1.
-    expect(getSelected(state)).toBe("a1")
+    // After account-list: no auto-select, stays null (Auto mode).
+    expect(getSelected(state)).toBeNull()
 
-    // User picks a2 in the dropdown.
+    // User explicitly picks a2 in the dropdown.
     state = reduce(state, makeSelectAccountAction("a2"))
     expect(getSelected(state)).toBe("a2")
   })
@@ -340,14 +338,15 @@ describe("S8 — Single account in pool", () => {
   /**
    * Given: only one anthropic account.
    * When:  account-list frame arrives.
-   * Then:  it is stored and auto-selected (UI may hide the dropdown but
-   *        the state is still correct).
+   * Then:  it is stored; selectedAccountId stays null (Auto mode — no auto-select).
+   *        The UI always shows the dropdown (with "— Auto —") so the user
+   *        can still explicitly pin to the sole account if desired.
    */
-  it("stores and auto-selects the sole account", () => {
+  it("stores the sole account and leaves selectedAccountId null (no auto-select)", () => {
     const frame = makeAccountListFrame([healthy("solo", "My Only Account")])
     const next = reduce(initialState, frame)
     expect(getAccounts(next)).toHaveLength(1)
-    expect(getSelected(next)).toBe("solo")
+    expect(getSelected(next)).toBeNull()
   })
 })
 

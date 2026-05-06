@@ -23,7 +23,7 @@
  *     `secret_ref`) → ConfigError with offending `id` in the message.
  *
  * Hydrate rule for §5.1 columns the in-memory `AccountRecord` doesn't model:
- *   - `label`        — read but not carried into Ref (label is for ops/UI)
+ *   - `label`        — carried into AccountRecord (displayed in UI/AccountSwitcher)
  *   - `health`       — ignored at hydrate (semantically default "healthy");
  *                      runtime cooldowns live on `cooldownUntilMs`
  *   - `cooldown_ms`  — if non-zero, sets `cooldownUntilMs = now + cooldown_ms`
