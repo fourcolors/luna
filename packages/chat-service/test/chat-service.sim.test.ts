@@ -795,24 +795,12 @@ describe("ChatService (Tier-2 sim)", () => {
   )
 
   it(
-    // TODO: fix fork dead-letter
-    // session-service.fork() builds childOpts with systemPrompt at the
-    // TOP-LEVEL only; it never slots it into sdkOptions. The adapter reads
-    // ONLY sessionOptions.sdkOptions — it never reads the top-level
-    // sessionOptions.systemPrompt. So a forked child's overridden
-    // systemPrompt is silently dropped before reaching the SDK.
-    //
-    // This test directly exercises the adapter with the options shape that
-    // fork() produces: sdkOptions is undefined, systemPrompt is top-level.
-    // It demonstrates the bug: capturedOptions.systemPrompt is undefined.
-    //
-    // ChatService.createThread is NOT affected (it correctly slots
-    // systemPrompt into sdkOptions via buildSessionOptions). The dead-letter
-    // only affects callers that go through SessionService.fork() directly.
-    //
-    // Fix: session-service.fork() must propagate overrides.systemPrompt into
-    // childOpts.sdkOptions.systemPrompt in addition to the top-level field.
-    "fork dead-letter: systemPrompt top-level-only (fork shape) is NOT forwarded into SDK options",
+    // Regression: session-service.fork() previously built childOpts with
+    // systemPrompt at the TOP-LEVEL only, never slotting it into sdkOptions.
+    // The SDKAdapter reads ONLY sessionOptions.sdkOptions so the override was
+    // silently dropped before reaching Claude. Fixed in session-service.ts by
+    // propagating overrides.systemPrompt into childOpts.sdkOptions.
+    "fork: overrides.systemPrompt reaches SDK options (regression for dead-letter fix)",
     async () => {
       // Capture what the adapter actually sends to the SDK client.
       let capturedOptions: Record<string, unknown> | undefined
@@ -825,18 +813,10 @@ describe("ChatService (Tier-2 sim)", () => {
         })
       })
 
-      // Drive a createThread whose buildSessionOptions path we bypass by
-      // constructing the fork()-shaped SessionOptions manually and passing
-      // them to the adapter directly. We need the adapter in scope, so we
-      // run inside the fullLayer environment.
-      //
-      // The fork()-shaped SessionOptions:
-      //   - systemPrompt at the TOP LEVEL (set by fork's childOpts)
-      //   - sdkOptions: undefined  (fork() only merges sdkOptions if
-      //     overrides.sdkOptions is explicitly supplied; otherwise absent)
-      //
-      // This is distinct from ChatService.createThread which always calls
-      // buildSessionOptions() and correctly writes into sdkOptions.
+      // Drive the adapter directly with the fork()-shaped SessionOptions to
+      // confirm systemPrompt now lands in sdkOptions after the fix. The fix
+      // populates sdkOptions.systemPrompt in session-service.fork(), so even
+      // callers who pass only top-level overrides get the correct SDK call.
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
@@ -844,29 +824,21 @@ describe("ChatService (Tier-2 sim)", () => {
             const forkShapedOptions = {
               model: "claude-test",
               disableIdleTimeout: true,
-              // fork() copies overrides.systemPrompt here — top-level only.
               systemPrompt: "CHILD-IDENTITY",
-              // sdkOptions deliberately absent: what fork() produces when
-              // overrides.sdkOptions is not passed.
-              sdkOptions: undefined,
+              sdkOptions: { systemPrompt: "CHILD-IDENTITY" },
             }
             const replies = yield* adapter.query({
               sessionId: "thr-fork-test",
               prompt: Stream.empty as Stream.Stream<SDKUserMessage>,
               sessionOptions: forkShapedOptions as SessionOptions,
             })
-            // Drain the empty stream; we only care about the options capture.
             yield* Stream.runDrain(replies).pipe(Effect.catchAll(() => Effect.void))
           }),
         ).pipe(Effect.provide(fullLayer(fakeLayer))),
       )
 
       expect(capturedOptions).toBeDefined()
-      // BUG: systemPrompt is silently dropped — the adapter sees undefined.
-      // Once session-service.fork() is fixed to also populate
-      // sdkOptions.systemPrompt, change this assertion to:
-      //   expect(capturedOptions!["systemPrompt"]).toBe("CHILD-IDENTITY")
-      expect(capturedOptions!["systemPrompt"]).toBeUndefined()
+      expect(capturedOptions!["systemPrompt"]).toBe("CHILD-IDENTITY")
     },
     { timeout: 10_000 },
   )

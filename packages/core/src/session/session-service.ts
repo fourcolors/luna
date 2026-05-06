@@ -145,9 +145,17 @@ export class SessionService extends Effect.Service<SessionService>()(
               : {}),
             ...(overrides?.tags !== undefined ? { tags: overrides.tags } : {}),
             parentSessionId: id,
-            ...(overrides?.sdkOptions !== undefined
-              ? { sdkOptions: overrides.sdkOptions }
-              : {}),
+            // Slot systemPrompt into sdkOptions so the SDKAdapter sees it.
+            // The adapter reads ONLY sessionOptions.sdkOptions — the top-level
+            // systemPrompt field above is consumed by merge-policy only. Without
+            // this, fork() overrides are silently dropped before reaching Claude.
+            sdkOptions: {
+              ...(parent.options?.sdkOptions ?? {}),
+              ...(overrides?.systemPrompt !== undefined
+                ? { systemPrompt: overrides.systemPrompt }
+                : {}),
+              ...(overrides?.sdkOptions ?? {}),
+            },
           }
           return yield* open(childOpts)
         })
