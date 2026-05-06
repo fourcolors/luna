@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Write(/Users/sol/Projects/luna/**)",
+      "Edit(/Users/sol/Projects/luna/**)",
+      "Bash(git -C /Users/sol/Projects/luna *)",
+      "Bash(bun run *)",
+      "Bash(bun test *)",
+      "Bash(bun install)",
+      "Bash(bun add *)",
+      "Bash(mkdir -p ~/.luna/**)",
+      "Bash(mkdir -p /Users/sol/Projects/luna/.claude/**)"
+    ]
+  },
+  "mcpServers": {
+    "memory": {
+      "command": "bun",
+      "args": [
+        "run",
+        "--filter",
+        "@luna/memory-tools",
+        "start"
+      ],
+      "env": {
+        "LUNA_EMBEDDER": "stub",
+        "LUNA_MEMORY_DB": ":memory:"
+      }
+    }
+  },
+  "skipAutoPermissionPrompt": true,
+  "skipDangerousModePermissionPrompt": true,
+  "voiceEnabled": false,
+  "effortLevel": "high"
+}
