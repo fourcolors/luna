@@ -10,6 +10,19 @@
         "vitest": "^2.1.5",
       },
     },
+    "apps/agent-cli": {
+      "name": "@luna/agent-cli",
+      "version": "0.0.1",
+      "bin": {
+        "luna-account": "./src/index.ts",
+      },
+      "devDependencies": {
+        "@luna/core": "workspace:*",
+        "effect": "^3.21.0",
+        "typescript": "^5.6.3",
+        "vitest": "^2.1.5",
+      },
+    },
     "apps/ui-tauri": {
       "name": "@luna/ui-tauri",
       "version": "0.0.1",
@@ -29,6 +42,7 @@
         "@luna/adapter-sdk": "workspace:*",
         "@luna/chat-service": "workspace:*",
         "@luna/core": "workspace:*",
+        "@luna/memory": "workspace:*",
         "@luna/ui-shared": "workspace:*",
         "@luna/ui-shared-solid": "workspace:*",
         "@luna/ui-ws": "workspace:*",
@@ -84,6 +98,24 @@
         "@luna/core": "workspace:*",
         "effect": "^3.21.0",
         "vectorlite": "^0.2.0",
+      },
+    },
+    "packages/memory-tools": {
+      "name": "@luna/memory-tools",
+      "version": "0.0.1",
+      "dependencies": {
+        "@luna/core": "workspace:*",
+        "@luna/memory": "workspace:*",
+        "@luna/tools": "workspace:*",
+        "effect": "^3.21.0",
+      },
+      "devDependencies": {
+        "@anthropic-ai/claude-agent-sdk": "^0.2.119",
+        "zod": "^4.0.0",
+      },
+      "peerDependencies": {
+        "@anthropic-ai/claude-agent-sdk": ">=0.2.0 <1",
+        "zod": "^4.0.0",
       },
     },
     "packages/tools": {
@@ -269,11 +301,15 @@
 
     "@luna/adapter-sdk": ["@luna/adapter-sdk@workspace:packages/adapter-sdk"],
 
+    "@luna/agent-cli": ["@luna/agent-cli@workspace:apps/agent-cli"],
+
     "@luna/chat-service": ["@luna/chat-service@workspace:packages/chat-service"],
 
     "@luna/core": ["@luna/core@workspace:packages/core"],
 
     "@luna/memory": ["@luna/memory@workspace:packages/memory"],
+
+    "@luna/memory-tools": ["@luna/memory-tools@workspace:packages/memory-tools"],
 
     "@luna/tools": ["@luna/tools@workspace:packages/tools"],
 
