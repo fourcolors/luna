@@ -493,6 +493,70 @@ describe("UIWebSocketServer (chat routing)", () => {
     expect(types).toContain("assistant-done")
   })
 
+  it("new-thread systemPrompt round-trip: systemPrompt reaches SDK options", async () => {
+    // Build a rig that captures the QueryParams the fake SDK receives.
+    // This tests the §2.3 dead-letter path: new-thread → createThread →
+    // buildSessionOptions → sdkOptions.systemPrompt → adapter.query → SDKClient.
+    let capturedOptions: Record<string, unknown> | undefined
+    const fakeLayer = SDKClient.fake((p) => {
+      capturedOptions = p.options as Record<string, unknown> | undefined
+      return makeChatLoopQuery({
+        prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+        sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+        responseFor: (t) => `echo:${t}`,
+      })
+    })
+    const baseChatLayer = fullLayer(fakeLayer)
+    const serverLayer = Layer.scoped(
+      ServerHandle,
+      Effect.gen(function* () {
+        const chat = yield* ChatService
+        return yield* startUIWebSocketServer({
+          port: 0,
+          token: TOKEN,
+          pingIntervalMs: 0,
+          chatService: chat,
+        })
+      }),
+    ).pipe(Layer.provide(baseChatLayer))
+    const runtime = ManagedRuntime.make(Layer.mergeAll(serverLayer, baseChatLayer))
+    const handle = await runtime.runPromise(ServerHandle)
+    rig = {
+      url: `ws://127.0.0.1:${handle.port}/ui`,
+      shutdown: async () => { await runtime.dispose() },
+    }
+
+    // Send new-thread with systemPrompt; wait for thread-created to confirm
+    // the SDK was invoked (the fake query is started lazily, so we also need
+    // to trigger the first user turn to flush the adapter.query call).
+    // However, createThread itself starts the SDK query eagerly via
+    // adapter.query() — the fake build function runs at query() time, i.e.
+    // before any user message. So thread-created is sufficient confirmation.
+    await driveSequence(
+      rig.url,
+      [
+        {
+          waitFor: (f) => f.type === "hello",
+          thenSend: () => [
+            {
+              type: "new-thread",
+              model: "claude-test",
+              systemPrompt: "Z-IDENTITY-Z",
+            },
+          ],
+        },
+        {
+          waitFor: (f) => f.type === "thread-created",
+          thenSend: () => [],
+        },
+      ],
+      // hello + thread-created + thread-snapshot + possible obs event frames
+      5,
+    )
+
+    expect(capturedOptions?.systemPrompt).toBe("Z-IDENTITY-Z")
+  })
+
   it("malformed JSON inbound frame does not crash the connection", async () => {
     rig = await startChatRig()
     // Open ws, blast garbage, then send a valid list-threads — the
