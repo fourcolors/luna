@@ -103,8 +103,7 @@
  * think-time between turns can be hours — chat is the canonical case
  * the flag exists for.
  */
-import { readFileSync } from "node:fs"
-import { resolve as resolvePath, dirname } from "node:path"
+import { dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { Effect, Layer, ManagedRuntime, Option } from "effect"
 import {
@@ -122,6 +121,8 @@ import {
   secretProviderFirstOf,
   validateAccountsTableLabels,
 } from "@luna/core"
+import { loadDna } from "./dna-loader.js"
+export { loadDna } from "./dna-loader.js"
 import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
 import { ChatService } from "@luna/chat-service"
 import { startUIWebSocketServer } from "@luna/ui-ws"
@@ -291,8 +292,7 @@ const buildServerLayer = (
       // file is missing the boot fails loudly — that's correct: a Luna
       // boot without DNA.md is a misconfigured boot.
       const __scriptDir = dirname(fileURLToPath(import.meta.url))
-      const dnaPath = resolvePath(__scriptDir, "../../..", "DNA.md")
-      const dnaContent = readFileSync(dnaPath, "utf-8").trim()
+      const dnaContent = loadDna(__scriptDir)
 
       const chatWithMemory: typeof chat = {
         ...chat,
@@ -449,4 +449,9 @@ const bootstrap = async (): Promise<void> => {
   })
 }
 
-void bootstrap()
+// Guard against running bootstrap when imported (e.g. from tests that
+// import `loadDna`). `import.meta.main` is true only when this file is
+// the direct entry point (bun run dev-server-chat.ts).
+if (import.meta.main) {
+  void bootstrap()
+}
