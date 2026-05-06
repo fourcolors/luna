@@ -291,6 +291,11 @@ export class ChatService extends Effect.Service<ChatService>()(
               sessionId: id,
               prompt: promptStream,
               sessionOptions,
+              // §0.2 sticky-pin: forward boundAccountId so WithBroker can
+              // route this thread's queries to the caller-selected account.
+              ...(opts.boundAccountId !== undefined
+                ? { boundAccountId: opts.boundAccountId }
+                : {}),
             })
             .pipe(Scope.extend(threadScope), Effect.orDie)
 

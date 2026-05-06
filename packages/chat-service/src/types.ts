@@ -150,4 +150,9 @@ export interface CreateThreadOptions {
    * service — they pass through to the SDK adapter.
    */
   readonly mcpServers?: Readonly<Record<string, unknown>>
+  /**
+   * §0.2 sticky-pin: if set, the adapter requests this specific account.
+   * Passed through SessionOptions → QueryRequest.boundAccountId.
+   */
+  readonly boundAccountId?: string
 }

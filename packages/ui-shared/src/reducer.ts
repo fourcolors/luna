@@ -54,6 +54,15 @@ export interface UIState {
   readonly threads: ReadonlyMap<string, ThreadView>
   /** Currently-selected thread (chat panel renders this). */
   readonly selectedThreadId: string | null
+  /** Available accounts from the server (public info only — no secrets). */
+  readonly accounts: ReadonlyArray<{
+    readonly id: string
+    readonly label: string
+    readonly kind: string
+    readonly health: string
+  }>
+  /** Currently-selected account id. null = use default broker rotation. */
+  readonly selectedAccountId: string | null
 }
 
 export const initialState: UIState = {
@@ -68,6 +77,8 @@ export const initialState: UIState = {
   threadList: [],
   threads: new Map(),
   selectedThreadId: null,
+  accounts: [],
+  selectedAccountId: null,
 }
 
 const MAX_RETAINED = 500
@@ -104,6 +115,7 @@ const ensureSummary = (
  *  echo lands. We just pre-extend the in-flight turn with no text yet. */
 export type ChatLocalAction =
   | { readonly tag: "select-thread"; readonly threadId: string | null }
+  | { readonly tag: "select-account"; readonly accountId: string | null }
   | { readonly tag: "init-thread"; readonly summary: SessionSummary }
   | {
       readonly tag: "optimistic-user"
@@ -122,6 +134,8 @@ export const reduce = (state: UIState, action: Action): UIState => {
     switch (action.tag) {
       case "select-thread":
         return { ...state, selectedThreadId: action.threadId }
+      case "select-account":
+        return { ...state, selectedAccountId: action.accountId }
       case "init-thread": {
         // Insert a placeholder ThreadView for a freshly-created thread
         // so the chat panel can render immediately even before the
@@ -268,6 +282,20 @@ export const reduce = (state: UIState, action: Action): UIState => {
         )
         return { ...t, artifacts: [...filtered, ...frame.artifacts] }
       })
+    case "account-list": {
+      // Auto-select the first healthy account if none is currently selected.
+      const firstHealthy = frame.accounts.find(
+        (a) => a.health === "healthy",
+      )
+      return {
+        ...state,
+        accounts: frame.accounts,
+        selectedAccountId:
+          state.selectedAccountId !== null
+            ? state.selectedAccountId   // preserve user's choice
+            : (firstHealthy?.id ?? null),
+      }
+    }
   }
 }
 

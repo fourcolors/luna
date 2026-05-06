@@ -13,6 +13,7 @@
  */
 export interface AccountRecord {
   readonly id: string
+  readonly label?: string
   readonly kind: string
   readonly secretRef: string
   readonly inFlight: number

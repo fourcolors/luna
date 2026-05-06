@@ -97,6 +97,20 @@ export interface UIWebSocketServerConfig {
    * the server's environment doesn't grow a `ChatService` dependency.
    */
   readonly chatService?: ChatService
+  /**
+   * Optional AccountBroker handle. When provided, the server sends an
+   * `account-list` frame to each client immediately after the `hello`
+   * frame, populated with all "anthropic"-kind accounts. If absent, no
+   * `account-list` is sent (graceful degradation).
+   */
+  readonly accountBroker?: {
+    readonly list: (kindFilter?: string) => import("effect").Effect.Effect<ReadonlyArray<{
+      readonly id: string
+      readonly label: string
+      readonly kind: string
+      readonly health: string
+    }>>
+  }
 }
 
 export interface UIWebSocketServerHandle {
@@ -309,6 +323,21 @@ export const startUIWebSocketServer = (
           },
         })
 
+        // Send account-list immediately after hello so the client can
+        // populate the account-switcher dropdown on connect. Fire-and-
+        // forget via runFork — connection setup must not block on OP
+        // resolution.
+        if (config.accountBroker) {
+          const broker = config.accountBroker
+          Effect.runFork(
+            Effect.flatMap(broker.list("anthropic"), (accounts) =>
+              Effect.sync(() => {
+                send(ws, { type: "account-list", accounts })
+              }),
+            ),
+          )
+        }
+
         // Per-connection chat state.
         //   - `chatFibers`: forwarder fibers, one per subscribed threadId.
         //     Interrupting the fiber releases the underlying PubSub
@@ -518,6 +547,9 @@ export const startUIWebSocketServer = (
                       ...(frame.tags !== undefined ? { tags: frame.tags } : {}),
                       ...(frame.systemPrompt !== undefined
                         ? { systemPrompt: frame.systemPrompt }
+                        : {}),
+                      ...(frame.accountId !== undefined
+                        ? { boundAccountId: frame.accountId }
                         : {}),
                     })
                     send(ws, { type: "thread-created", thread: summary })

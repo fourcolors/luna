@@ -53,6 +53,7 @@ import {
   type AccountBrokerApi,
   type AccountError,
   type Credential,
+  type AccountSummary,
 } from "./account-broker.js"
 import { pickAccount, type AccountRecord } from "./rotation-policy.js"
 
@@ -202,6 +203,7 @@ const fromSql = (
             : 0
         const record: AccountRecord = {
           id: r.id,
+          label: r.label || r.id,
           kind: r.kind,
           secretRef: r.secret_ref as SecretRef,
           inFlight: 0,
@@ -276,6 +278,24 @@ const fromSql = (
 
       const _inspect: AccountBrokerApi["_inspect"] = () => Ref.get(ref)
 
+      const list: AccountBrokerApi["list"] = (kindFilter) =>
+        Effect.gen(function* () {
+          const t = yield* clock.nowMs()
+          const accounts = yield* Ref.get(ref)
+          const filtered = kindFilter
+            ? accounts.filter((a) => a.kind === kindFilter)
+            : accounts
+          return filtered.map((a): AccountSummary => ({
+            id: a.id,
+            label: a.label ?? a.id,
+            kind: a.kind,
+            health:
+              a.cooldownUntilMs !== undefined && a.cooldownUntilMs > t
+                ? "rate_limited"
+                : "healthy",
+          }))
+        })
+
       // Suppress "unused" lint without changing surface — Redacted is
       // imported for the JSDoc reference to redacted secrets.
       void Redacted
@@ -285,6 +305,7 @@ const fromSql = (
         acquireTool,
         report,
         _inspect,
+        list,
       } satisfies AccountBrokerApi
     }),
   )

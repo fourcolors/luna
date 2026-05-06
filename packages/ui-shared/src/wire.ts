@@ -174,6 +174,16 @@ export interface ArtifactsExtractedFrame {
   readonly artifacts: ReadonlyArray<Artifact>
 }
 
+export interface AccountListFrame {
+  readonly type: "account-list"
+  readonly accounts: ReadonlyArray<{
+    readonly id: string
+    readonly label: string
+    readonly kind: string
+    readonly health: string
+  }>
+}
+
 export type ServerFrame =
   | HelloFrame
   | EventFrame
@@ -188,6 +198,7 @@ export type ServerFrame =
   | AssistantDoneFrame
   | AssistantErrorFrame
   | ArtifactsExtractedFrame
+  | AccountListFrame
 
 /* Client → server frames */
 
@@ -210,6 +221,7 @@ export interface ListThreadsFrame {
 export interface NewThreadFrame {
   readonly type: "new-thread"
   readonly model: string
+  readonly accountId?: string    // pins this thread to a specific account
   readonly title?: string
   readonly tags?: ReadonlyArray<string>
   readonly systemPrompt?: string

@@ -34,6 +34,15 @@ import { Clock } from "../clock.js"
 import { SecretProvider, type SecretRef } from "../secret-provider/index.js"
 import { pickAccount, type AccountRecord } from "./rotation-policy.js"
 
+/** Public account summary — no secrets. Used by the account-switcher UI. */
+export interface AccountSummary {
+  readonly id: string
+  readonly label: string
+  readonly kind: string
+  /** "healthy" | "rate_limited" */
+  readonly health: string
+}
+
 /** Public credential handed to callers. `resolvedSecret` is redacted. */
 export interface Credential {
   readonly kind: string
@@ -55,6 +64,7 @@ export type UsageReport =
 /** Seed shape used by the layer factory. */
 export interface AccountSeed {
   readonly id: string
+  readonly label?: string
   readonly kind: string
   readonly secretRef: SecretRef
 }
@@ -73,6 +83,13 @@ export interface AccountBrokerApi {
   ) => Effect.Effect<Credential, AccountError, Scope.Scope>
 
   readonly report: (usage: UsageReport) => Effect.Effect<void>
+
+  /**
+   * Returns public account summaries — no secrets, no resolvedSecret.
+   * Used by the account-switcher dropdown.
+   * @param kindFilter — if provided, only return accounts matching this kind.
+   */
+  readonly list: (kindFilter?: string) => Effect.Effect<ReadonlyArray<AccountSummary>>
 
   /**
    * Test-only inspector. NOT part of the design-frozen §7.5 surface;
@@ -101,6 +118,7 @@ const fromAccounts = (
       const clock = yield* Clock
       const initial: ReadonlyArray<AccountRecord> = seeds.map((s) => ({
         id: s.id,
+        label: s.label ?? s.id,
         kind: s.kind,
         secretRef: s.secretRef,
         inFlight: 0,
@@ -174,11 +192,30 @@ const fromAccounts = (
 
       const _inspect: AccountBrokerApi["_inspect"] = () => Ref.get(ref)
 
+      const list: AccountBrokerApi["list"] = (kindFilter) =>
+        Effect.gen(function* () {
+          const now = yield* clock.nowMs()
+          const accounts = yield* Ref.get(ref)
+          const filtered = kindFilter
+            ? accounts.filter((a) => a.kind === kindFilter)
+            : accounts
+          return filtered.map((a) => ({
+            id: a.id,
+            label: a.label ?? a.id,
+            kind: a.kind,
+            health:
+              a.cooldownUntilMs !== undefined && a.cooldownUntilMs > now
+                ? "rate_limited"
+                : "healthy",
+          }))
+        })
+
       return {
         acquireSession,
         acquireTool,
         report,
         _inspect,
+        list,
       } satisfies AccountBrokerApi
     }),
   )
