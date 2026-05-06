@@ -34,6 +34,7 @@ import {
   Sidebar,
   createTransport,
   createUiStore,
+  type SlashCommand,
 } from "@luna/ui-shared-solid"
 
 const STORAGE_KEY = "ui-ws.config"
@@ -178,6 +179,28 @@ export const App: Component = () => {
 
   const interrupt = (threadId: string): void => {
     send({ type: "interrupt", threadId })
+  }
+
+  /**
+   * Handle a recognised slash command from the composer.
+   *
+   * `/restart` — interrupt any in-flight turn on the current thread, then
+   * open a fresh thread on the same model. The server auto-subscribes the
+   * new thread (`new-thread` response carries auto-subscribe), so the UI
+   * transitions cleanly without a manual subscribe round-trip.
+   */
+  const handleCommand = (threadId: string, command: SlashCommand): void => {
+    switch (command) {
+      case "restart": {
+        // Best-effort interrupt — safe to fire even if no turn is in-flight.
+        send({ type: "interrupt", threadId })
+        // Open a new thread on the same model. The `thread-created` server
+        // frame triggers auto-subscribe; the reducer selects the new thread
+        // once `thread-created` arrives (handled in onFrame above).
+        send({ type: "new-thread", model: cfg().model })
+        break
+      }
+    }
   }
 
   const isConnected = createMemo(() => transport.status().kind === "open")
@@ -396,6 +419,7 @@ export const App: Component = () => {
             thread={selectedThread()}
             onSend={sendUserMessage}
             onInterrupt={interrupt}
+            onCommand={handleCommand}
             disabled={!chatEnabled()}
             enterToSend={cfg().enterToSend}
           />

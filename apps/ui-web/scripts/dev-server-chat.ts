@@ -103,6 +103,9 @@
  * think-time between turns can be hours — chat is the canonical case
  * the flag exists for.
  */
+import { readFileSync } from "node:fs"
+import { resolve as resolvePath, dirname } from "node:path"
+import { fileURLToPath } from "node:url"
 import { Effect, Layer, ManagedRuntime, Option } from "effect"
 import {
   AccountBroker,
@@ -278,13 +281,29 @@ const buildServerLayer = (
       const chat = yield* ChatService
       const memTools = yield* MemoryToolsService
 
+      // Luna identity: load DNA.md at boot. This is Luna's "who am I, how
+      // do I operate" prompt — prepended to every thread's systemPrompt so
+      // Luna doesn't fall back to the underlying Claude model's default
+      // identity (or, worse, leak Sol's identity from a stray ancestor
+      // CLAUDE.md). Repo layout: this file is at
+      // apps/ui-web/scripts/dev-server-chat.ts → DNA.md is 3 levels up.
+      // Read sync at Layer build (one-shot, fast, deterministic). If the
+      // file is missing the boot fails loudly — that's correct: a Luna
+      // boot without DNA.md is a misconfigured boot.
+      const __scriptDir = dirname(fileURLToPath(import.meta.url))
+      const dnaPath = resolvePath(__scriptDir, "../../..", "DNA.md")
+      const dnaContent = readFileSync(dnaPath, "utf-8").trim()
+
       const chatWithMemory: typeof chat = {
         ...chat,
         createThread: (opts) => {
-          const mergedSystemPrompt =
-            opts.systemPrompt !== undefined
-              ? `${opts.systemPrompt}\n\n${memTools.systemPromptAddendum}`
-              : memTools.systemPromptAddendum
+          const mergedSystemPrompt = [
+            dnaContent,
+            opts.systemPrompt,
+            memTools.systemPromptAddendum,
+          ]
+            .filter((s): s is string => typeof s === "string" && s.length > 0)
+            .join("\n\n")
           const mergedMcp = {
             ...(opts.mcpServers ?? {}),
             [memTools.serverName]: memTools.server,
