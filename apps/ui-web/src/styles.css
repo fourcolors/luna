@@ -294,6 +294,42 @@ button:hover:not(:disabled) { background: #2780f5; }
   font-size: 11px; color: #e74c3c; padding: 2px 0;
 }
 
+/* ---- slash-command hint popover (appears above textarea) ---- */
+.slash-hints {
+  display: flex;
+  flex-direction: column;
+  background: #161820;
+  border: 1px solid #2a2d3e;
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+.slash-hint-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 12px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid #1e2030;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  color: inherit;
+}
+.slash-hint-row:last-child { border-bottom: none; }
+.slash-hint-row:hover { background: #1e2030; }
+.slash-hint-cmd {
+  font-family: monospace;
+  font-size: 13px;
+  color: #7c8cf8;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.slash-hint-desc {
+  font-size: 11px;
+}
+
 /* ---- bubble image attachments (sent messages) ---- */
 .bubble-attachments {
   display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px;

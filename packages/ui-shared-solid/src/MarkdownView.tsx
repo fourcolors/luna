@@ -31,10 +31,20 @@ export const MarkdownView: Component<Props> = (props) => {
             const match = /language-([\w-]+)/.exec(cls)
             const raw = match?.[1]
             const lang = canonLang(raw)
-            const source = String(codeProps.children).replace(/\n$/, "")
+            // solid-markdown passes `children` as a Solid component getter,
+            // not a plain string — extracting source text from it produces
+            // "function () { [native code] }". Instead, read the raw text
+            // from the hast node that solid-markdown always passes as `node`.
+            // For inline code the hast node is an element whose first child
+            // is a text node; for fenced blocks it is a `code` element whose
+            // first child carries the raw source.
+            const hast = (codeProps as Record<string, unknown>).node as
+              | { children?: Array<{ value?: string }> }
+              | undefined
+            const source = (hast?.children?.[0]?.value ?? "").replace(/\n$/, "")
             // Inline code (no class) → render as <code>
             if (!cls) {
-              return <code>{codeProps.children}</code>
+              return <code>{source}</code>
             }
             if (lang) return <CodeBlock lang={lang} source={source} />
             // Fenced block with disallowed/unknown lang → plain <pre>.
