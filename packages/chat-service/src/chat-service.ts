@@ -202,12 +202,36 @@ export class ChatService extends Effect.Service<ChatService>()(
           // can opt out with `settingSources: []`.
           settingSources: opts.settingSources ?? ["user", "project"],
           permissionMode: opts.permissionMode ?? defaultPermissionMode,
+          // Identity: forward caller-supplied systemPrompt INSIDE sdkOptions
+          // so the SDK adapter actually sees it. The top-level
+          // `SessionOptions.systemPrompt` field below is consumed only by
+          // the merge-policy + session-service.fork() machinery — the
+          // adapter feeds `sessionOptions.sdkOptions` (not the top-level
+          // fields) into the SDK call. Without this slot, a caller-supplied
+          // systemPrompt is silently dropped before reaching Claude.
+          // DESIGN.md §2.1.5 (unified `systemPrompt` field on SDK Options).
+          // Follow-up (Option B): accept full SystemPromptSpec shape
+          // (string | string[] | preset) and reconcile the top-level
+          // `SessionOptions.systemPrompt` typing in core/session/types.ts.
+          ...(opts.systemPrompt !== undefined
+            ? { systemPrompt: opts.systemPrompt }
+            : {}),
+          // Phase 30: forward caller-supplied MCP server registrations
+          // through to the SDK. Values are opaque to chat-service — the
+          // SDK adapter is the authority on shape.
+          ...(opts.mcpServers !== undefined
+            ? { mcpServers: opts.mcpServers }
+            : {}),
         }
         return {
           model: opts.model,
           disableIdleTimeout: true,
           ...(opts.title !== undefined ? { title: opts.title } : {}),
           ...(opts.tags !== undefined ? { tags: opts.tags } : {}),
+          // Top-level systemPrompt mirror: retained for the merge-policy
+          // (`replace`) + session-service.fork() child-override carry-over
+          // consumers. The actual SDK plumbing happens via
+          // sdkOptions.systemPrompt set above.
           ...(opts.systemPrompt !== undefined
             ? { systemPrompt: opts.systemPrompt }
             : {}),
