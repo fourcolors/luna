@@ -37,6 +37,9 @@ import {
 } from "@luna/ui-shared/core"
 import { MessageBubble } from "./MessageBubble.jsx"
 
+/** Commands recognised in the composer (slash-prefixed). */
+export type SlashCommand = "restart"
+
 export interface ChatPanelProps {
   readonly thread: ThreadView | null
   readonly onSend: (
@@ -45,6 +48,8 @@ export interface ChatPanelProps {
     attachments?: ReadonlyArray<ChatAttachment>,
   ) => void
   readonly onInterrupt: (threadId: string) => void
+  /** Called when the user submits a recognised slash command. */
+  readonly onCommand?: (threadId: string, command: SlashCommand) => void
   readonly disabled: boolean
   readonly enterToSend: boolean
 }
@@ -101,6 +106,18 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
     if (!t) return
     const text = draft().trim()
     const atts = attachments()
+
+    // Slash-command dispatch — recognised before regular send so commands
+    // with attachments are also caught (attachments are cleared below).
+    if (text === "/restart") {
+      props.onCommand?.(t.summary.id, "restart")
+      setDraft("")
+      for (const a of atts) URL.revokeObjectURL(a.previewUrl)
+      setAttachments([])
+      setAttachError(null)
+      return
+    }
+
     if (!text && atts.length === 0) return
     props.onSend(
       t.summary.id,
@@ -147,6 +164,24 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
 
   const canSend = (): boolean =>
     !props.disabled && (draft().trim().length > 0 || attachments().length > 0)
+
+  /** Commands that should surface in the autocomplete hint. */
+  const SLASH_COMMANDS: ReadonlyArray<{ cmd: string; desc: string }> = [
+    { cmd: "/restart", desc: "Start a new thread" },
+  ]
+
+  /**
+   * When the user has typed a bare `/` prefix, surface a pop-over listing
+   * matching commands so they know what's available. We match the current
+   * trimmed draft against the command list — partial matches work too
+   * (`/r` surfaces `/restart`).
+   */
+  const slashHints = (): ReadonlyArray<{ cmd: string; desc: string }> => {
+    const t = draft()
+    if (!t.startsWith("/")) return []
+    const needle = t.toLowerCase()
+    return SLASH_COMMANDS.filter((c) => c.cmd.startsWith(needle))
+  }
 
   return (
     <Show
@@ -232,6 +267,23 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
             </Show>
             <Show when={attachError()}>
               {(msg) => <div class="attach-error">{msg()}</div>}
+            </Show>
+            <Show when={slashHints().length > 0}>
+              <div class="slash-hints" role="listbox" aria-label="Slash commands">
+                <For each={slashHints()}>
+                  {(h) => (
+                    <button
+                      class="slash-hint-row"
+                      role="option"
+                      onClick={() => setDraft(h.cmd)}
+                      onMouseDown={(e) => e.preventDefault()}
+                    >
+                      <span class="slash-hint-cmd">{h.cmd}</span>
+                      <span class="slash-hint-desc muted small">{h.desc}</span>
+                    </button>
+                  )}
+                </For>
+              </div>
             </Show>
             <textarea
               value={draft()}
