@@ -50,7 +50,32 @@ apps/
   agent-cli/      — reference CLI composition
 ```
 
-## Getting Started
+## Install (macOS)
+
+One command to install Luna on any Mac — clones the repo, installs deps, sets up `~/.luna/`, registers a launchd daemon, and installs the `luna` CLI shortcut:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fourcolors/luna/master/install.sh | bash
+```
+
+Or clone and run locally:
+
+```bash
+git clone https://github.com/fourcolors/luna.git ~/Projects/luna
+bash ~/Projects/luna/install.sh
+```
+
+You'll need:
+- macOS (Apple Silicon or Intel)
+- An [Anthropic API key](https://console.anthropic.com) — set `ANTHROPIC_API_KEY` or add it to `~/.luna/.env`
+- Bun — the installer will install it if missing
+
+After install:
+```bash
+luna          # opens the web UI at http://localhost:5174
+```
+
+## Development
 
 ```bash
 bun install
@@ -61,11 +86,21 @@ bun run typecheck   # type check all packages
 ### Dev servers
 
 ```bash
-# Web UI (Vite)
+# Web UI (Vite, hot reload)
 bun run --filter '@luna/ui-web' dev
 
 # Chat backend (requires Anthropic API key)
 bun run --filter '@luna/ui-web' dev:server:chat
+```
+
+## Personalisation
+
+Luna's identity (`DNA.md`) is loaded at boot into every chat thread's system prompt.
+
+The loader checks `~/.luna/DNA.md` first — if it exists, that wins. The repo's `DNA.md` is the fallback. This lets you keep a personal identity file (with your name, handles, preferences) outside the repo:
+
+```bash
+edit ~/.luna/DNA.md   # your personal Luna identity — never committed
 ```
 
 ## Local state
