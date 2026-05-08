@@ -1,0 +1,102 @@
+/**
+ * §4.3 Scheduler tools MCP structural assertions.
+ *
+ * Asserts structural invariants at build time:
+ *
+ *   1. SchedulerToolsLayer() builds successfully and provides a
+ *      SchedulerToolsService with the expected shape.
+ *   2. buildSchedulerMcpServer(trigger, scope) returns an object with
+ *      type "sdk" and name "scheduler".
+ *   3. makeSchedulerTools(trigger, scope) exposes exactly
+ *      ["schedule_create", "schedule_list", "schedule_cancel"] in that order.
+ *   4. SCHEDULER_SYSTEM_PROMPT_ADDENDUM is a non-empty string containing
+ *      the word "scheduler".
+ *
+ * Tests 1-3 require a running TriggerAgent + JobScheduler stack.
+ * Test 4 is a constant check that runs everywhere.
+ */
+import { describe, expect, it } from "vitest"
+import { Effect, Layer } from "effect"
+import {
+  Clock,
+  JobSchedulerLayer,
+  TriggerAgent,
+  TriggerAgentLayer,
+} from "@luna/core"
+import {
+  SchedulerToolsLayer,
+  SchedulerToolsService,
+  buildSchedulerMcpServer,
+  SCHEDULER_SYSTEM_PROMPT_ADDENDUM,
+} from "../src/layer.js"
+import { makeSchedulerTools } from "../src/tools.js"
+
+/** Minimal stack: TriggerAgent + JobScheduler + Clock. */
+const schedulerStack = Layer.provide(
+  TriggerAgentLayer.Default,
+  Layer.provide(
+    JobSchedulerLayer.make({ capacity: 8, offerPolicy: "drop-newest" }),
+    Clock.Default,
+  ),
+)
+
+describe("§4.3 SchedulerToolsLayer — structural invariants", () => {
+  it("SchedulerToolsLayer() builds and provides SchedulerToolsService with correct shape", async () => {
+    const config = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          return yield* SchedulerToolsService
+        }),
+      ).pipe(Effect.provide(SchedulerToolsLayer())),
+    )
+
+    expect(config.serverName).toBe("scheduler")
+    expect(config.server).not.toBeNull()
+    expect(typeof config.server).toBe("object")
+    expect(typeof config.systemPromptAddendum).toBe("string")
+    expect(config.systemPromptAddendum.length).toBeGreaterThan(0)
+    expect(config.systemPromptAddendum).toBe(SCHEDULER_SYSTEM_PROMPT_ADDENDUM)
+  })
+
+  it("buildSchedulerMcpServer returns object with type='sdk' and name='scheduler'", async () => {
+    const serverConfig = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const trigger = yield* TriggerAgent
+          const layerScope = yield* Effect.scope
+          return buildSchedulerMcpServer(trigger, layerScope)
+        }),
+      ).pipe(Effect.provide(schedulerStack)),
+    )
+
+    expect(serverConfig).not.toBeNull()
+    expect(typeof serverConfig).toBe("object")
+    expect((serverConfig as { type?: string }).type).toBe("sdk")
+    expect((serverConfig as { name?: string }).name).toBe("scheduler")
+    expect(typeof (serverConfig as { instance?: unknown }).instance).toBe("object")
+  })
+
+  it("makeSchedulerTools exposes exactly [schedule_create, schedule_list, schedule_cancel]", async () => {
+    const tools = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const trigger = yield* TriggerAgent
+          const layerScope = yield* Effect.scope
+          return makeSchedulerTools(trigger, layerScope)
+        }),
+      ).pipe(Effect.provide(schedulerStack)),
+    )
+
+    expect(tools).toHaveLength(3)
+    const names = tools.map((t) => (t as unknown as { name: string }).name)
+    expect(names).toEqual(["schedule_create", "schedule_list", "schedule_cancel"])
+  })
+})
+
+describe("§4.3 SchedulerToolsService — constant invariants (all runtimes)", () => {
+  it("SCHEDULER_SYSTEM_PROMPT_ADDENDUM is a non-empty string containing 'scheduler'", () => {
+    expect(typeof SCHEDULER_SYSTEM_PROMPT_ADDENDUM).toBe("string")
+    expect(SCHEDULER_SYSTEM_PROMPT_ADDENDUM.length).toBeGreaterThan(0)
+    expect(SCHEDULER_SYSTEM_PROMPT_ADDENDUM.toLowerCase()).toContain("scheduler")
+  })
+})

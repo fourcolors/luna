@@ -131,6 +131,10 @@ import {
   MemoryToolsLayer,
   MemoryToolsService,
 } from "@luna/memory-tools"
+import {
+  SchedulerToolsLayer,
+  SchedulerToolsService,
+} from "@luna/scheduler-tools"
 
 const TOKEN = "dev-ui-ws-token-do-not-ship"
 
@@ -281,6 +285,7 @@ const buildServerLayer = (
     Effect.gen(function* () {
       const chat = yield* ChatService
       const memTools = yield* MemoryToolsService
+      const schedTools = yield* SchedulerToolsService
 
       // Luna identity: load DNA.md at boot. This is Luna's "who am I, how
       // do I operate" prompt — prepended to every thread's systemPrompt so
@@ -294,19 +299,21 @@ const buildServerLayer = (
       const __scriptDir = dirname(fileURLToPath(import.meta.url))
       const dnaContent = loadDna(__scriptDir)
 
-      const chatWithMemory: typeof chat = {
+      const chatWithTools: typeof chat = {
         ...chat,
         createThread: (opts) => {
           const mergedSystemPrompt = [
             dnaContent,
             opts.systemPrompt,
             memTools.systemPromptAddendum,
+            schedTools.systemPromptAddendum,
           ]
             .filter((s): s is string => typeof s === "string" && s.length > 0)
             .join("\n\n")
           const mergedMcp = {
             ...(opts.mcpServers ?? {}),
             [memTools.serverName]: memTools.server,
+            [schedTools.serverName]: schedTools.server,
           }
           return chat.createThread({
             ...opts,
@@ -322,12 +329,13 @@ const buildServerLayer = (
         token: TOKEN,
         advertisedKinds: DEFAULT_UI_KINDS,
         pingIntervalMs: 5000,
-        chatService: chatWithMemory,
+        chatService: chatWithTools,
         accountBroker: broker,
       })
     }),
   ).pipe(
     Layer.provide(MemoryToolsLayer()),
+    Layer.provide(SchedulerToolsLayer()),
     Layer.provide(baseLayer),
     // Phase 27a: provide LunaSqliteBootstrapLive at the END of the chain
     // so it builds FIRST (Layer.provide is bottom-up — last listed wins

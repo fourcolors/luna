@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Luna vs QMD — Architecture &amp; Flow</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --panel-2: #1c232c;
+    --border: #2a323d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --luna: #58a6ff;
+    --qmd: #f0883e;
+    --shared: #3fb950;
+    --warn: #d29922;
+    --crit: #f85149;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    line-height: 1.5;
+  }
+  header {
+    padding: 20px 32px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header h1 { margin: 0; font-size: 22px; }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--border);
+    min-height: calc(100vh - 80px);
+  }
+  .col { background: var(--bg); padding: 24px; }
+  .col h2 {
+    margin: 0 0 4px;
+    font-size: 18px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .col h2 .dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    display: inline-block;
+  }
+  .col.luna h2 .dot { background: var(--luna); }
+  .col.qmd  h2 .dot { background: var(--qmd); }
+  .col .tag {
+    display: inline-block;
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 18px;
+    font-family: var(--mono);
+  }
+  .stage {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin: 0 0 10px;
+    position: relative;
+  }
+  .stage.missing {
+    border-style: dashed;
+    background: transparent;
+    color: var(--muted);
+  }
+  .stage.shared { border-color: var(--shared); }
+  .stage.custom { border-left: 3px solid var(--qmd); }
+  .stage h3 {
+    margin: 0 0 4px;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+  }
+  .stage .label { font-size: 14px; font-weight: 600; }
+  .stage .detail {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 4px;
+    white-space: pre-wrap;
+  }
+  .stage .badge {
+    position: absolute;
+    top: 10px; right: 10px;
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: var(--mono);
+    background: var(--panel-2);
+    color: var(--muted);
+  }
+  .stage.missing .badge { background: transparent; color: var(--crit); border: 1px solid var(--crit); }
+  .stage.custom .badge  { background: rgba(240, 136, 62, 0.15); color: var(--qmd); }
+  .stage.shared .badge  { background: rgba(63, 185, 80, 0.15); color: var(--shared); }
+  .arrow {
+    text-align: center;
+    color: var(--muted);
+    font-size: 14px;
+    margin: 0 0 10px;
+    user-select: none;
+  }
+  .col-summary {
+    margin-top: 24px;
+    padding: 14px;
+    background: var(--panel-2);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .col-summary h4 {
+    margin: 0 0 8px; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--muted);
+  }
+  .col-summary table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .col-summary td {
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+  }
+  .col-summary td:first-child { color: var(--muted); }
+  .col-summary tr:last-child td { border-bottom: none; }
+
+  footer {
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+    padding: 20px 32px;
+  }
+  footer h3 { margin: 0 0 12px; font-size: 14px; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .legend .item { display: flex; align-items: center; gap: 6px; }
+  .legend .swatch { width: 12px; height: 12px; border-radius: 3px; }
+  .legend .swatch.shared  { background: var(--shared); }
+  .legend .swatch.custom  { background: var(--qmd); }
+  .legend .swatch.missing { background: transparent; border: 1px dashed var(--crit); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Luna vs QMD — Retrieval Pipeline Architecture</h1>
+  <p>Top-level structural comparison. Read top→bottom: query enters at top, ranked results exit at bottom.</p>
+</header>
+
+<main>
+
+  <!-- ========================= LUNA ========================= -->
+  <section class="col luna">
+    <h2><span class="dot"></span>Luna · MemoryRouter + SqliteVectorBackend</h2>
+    <div class="tag">packages/memory · Phase 25 · MVP</div>
+
+    <div class="stage">
+      <span class="badge">stage 1</span>
+      <h3>Input</h3>
+      <div class="label">Query string</div>
+      <div class="detail">router.search({ queryText, namespace?, topK, mode: "vec" })</div>
+    </div>
+    <div class="arrow">↓</div>
+
+    <div class="stage missing">
+      <span class="badge">absent</span>
+      <h3>Query expansion</h3>
+      <div class="label">— not implemented —</div>
+      <div class="detail">No HyDE. No lex/vec/hyde variants. Single-shot.</div>
+    </div>
+    <div class="arrow">↓</div>
+
+    <div class="stage shared">
+      <span class="badge">stage 2</span>
+      <h3>Embedder</h3>
+      <div class="label">EmbedderService (Effect Tag)</div>
+      <div class="detail">Today: StubEmbedder (FNV bag-of-tokens, 64–256d)
+Available: OllamaLayer (nomic-embed-text 768d)
+Not wired: Gemma GGUF</div>
+    </div>
+    <div class="arrow">↓</div>
+
+    <div class="stage missing">
+      <span class="badge">absent</span>
+      <h3>BM25 / FTS</h3>
+      <div class="label">— not implemented —</div>
+      <div class="detail">No keyword path. Pure vector only.</div>
+    </div>
+    <div class="arrow">↓</div>
+
+    <div class="stage shared">
+      <span class="badge">stage 3</span>
+      <h3>Vector index</h3>
+      <div class="label">bun:sqlite + Float32 BLOB</div>
+      <div class="detail">memory_vectors table (id, namespace, embedding BLOB, dimension, text)
+Cosine computed in JS via cosineSimilarity()
+NO ANN — full table scan, sorted in memory</div>
+    </div>
+    <div class="arrow">↓</div>
+
+    <div class="stage missing">
+      <span class="badge">absent</span>
+      <h3>Fusion (RRF)</h3>
+      <div class="label">— not implemented —</div>
+      <div class="detail">No multi-list reciprocal rank fusion.</div>
+    </div>
+    <div class="arrow">↓</div>
+
+    <div class="stage missing">
+      <span class="badge">absent</span>
+      <h3>Reranker</h3>
+      <div class="label">— not implemented —</div>
+      <div class="detail">No cross-encoder. Cosine score is final.</div>
+    </div>
+    <div class="arrow">↓</div>
+
+    <div class="stage">
+      <span class="badge">stage 4</span>
+      <h3>Output</h3>
+      <div class="label">Stream&lt;{record, score}&gt;</div>
+      <div class="detail">topK by raw cosine. No snippet extraction.</div>
+    </div>
+
+    <div class="col-summary">
+      <h4>By the numbers</h4>
+      <table>
+        <tr><td>Stages</td><td>4 (1 + embed + index + sort)</td></tr>
+        <tr><td>Models</td><td>0 (stub) — 1 if Ollama wired</td></tr>
+        <tr><td>Storage</td><td>BLOB cosine, full scan</td></tr>
+        <tr><td>Chunking</td><td>None — whole doc per record</td></tr>
+        <tr><td>Latency (137 docs)</td><td>~1 ms / query (in-process)</td></tr>
+        <tr><td>LOC</td><td>~400 (sqlite-vector.ts)</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <!-- ========================= QMD ========================= -->
+  <section class="col qmd">
+    <h2><span class="dot"></span>QMD · @tobilu/qmd query pipeline</h2>
+    <div class="tag">v2.1.0 · production · 7-stage hybrid</div>
+
+    <div class="stage">
+      <span class="badge">stage 1</span>
+      <h3>Input</h3>
+      <div class="label">Query string + optional intent</div>
+      <div class="detail">qmd query "..." [--intent "..."]</div>
+    </div>
+    <div class="arrow">↓</div>
+
+    <div class="stage shared">
+      <span class="badge">stage 2</span>
+      <h3>BM25 probe</h3>
+      <div class="label">SQLite FTS5 + Porter tokenizer</div>
+      <div class="detail">Top-20 from documents_fts.
+SHORT-CIRCUIT: if topScore ≥ 0.85 AND gap ≥ 0.15,
+skip stages 3–4 entirely → straight to rerank.</div>
+    </div>
+    <div class="arrow">↓</div>
+
+    <div class="stage custom">
+      <span class="badge">stage 3 · custom</span>
+      <h3>Query expansion</h3>
+      <div class="label">qmd-query-expansion-1.7B-q4_k_m.gguf</div>
+      <div class="detail">Tobilu's own fine-tuned 1.7B model.
+Generates 3 variants per query:
+  • lex   — keyword reformulation
+  • vec   — semantic paraphrase
+  • hyde  — hypothetical answer</div>
+    </div>
+    <div class="arrow">↓</div>
+
+    <div class="stage shared">
+      <span class="badge">stage 4</span>
+      <h3>Embedder</h3>
+      <div class="label">embeddinggemma-300M-Q8_0 (768d)</div>
+      <div class="detail">Task prefixes:
+  docs:  "title: X | text: Y"
+  query: "task: search_result | query: Z"
+Batch-embedded: original + vec + hyde in one call.</div>
+    </div>
+    <div class="arrow">↓</div>
+
+    <div class="stage shared">
+      <span class="badge">stage 5</span>
+      <h3>Vector index</h3>
+      <div class="label">sqlite-vec virtual table</div>
+      <div class="detail">vectors_vec (768d cosine, native C extension)
+20 hits per query variant.</div>
+    </div>
+    <div class="arrow">↓</div>
+
+    <div class="stage custom">
+      <span class="badge">stage 6 · custom</span>
+      <h3>Fusion — Reciprocal Rank Fusion</h3>
+      <div class="label">Weighted RRF (k=60)</div>
+      <div class="detail">Merges all retrieval lists (BM25 + 3× vec).
+2× weight on first BM25 list AND first vec list
+to prioritize the obvious match path.</div>
+    </div>
+    <div class="arrow">↓</div>
+
+    <div class="stage custom">
+      <span class="badge">stage 7 · custom</span>
+      <h3>Chunk-level reranker</h3>
+      <div class="label">qwen3-reranker-0.6b-q8_0</div>
+      <div class="detail">Picks best chunk per file (keyword + intent terms).
+Reranks ~40 chunks NOT full docs (token-cost trick).
+Cross-encoder scoring with intent prefix.
+Cached by query+chunk hash.</div>
+    </div>
+    <div class="arrow">↓</div>
+
+    <div class="stage">
+      <span class="badge">stage 8</span>
+      <h3>Output</h3>
+      <div class="label">Ranked chunks + scores + snippets</div>
+      <div class="detail">qmd://collection/path:line  +  score%  +  diff-context.</div>
+    </div>
+
+    <div class="col-summary">
+      <h4>By the numbers</h4>
+      <table>
+        <tr><td>Stages</td><td>7 (BM25 + expand + embed + vec + RRF + rerank + format)</td></tr>
+        <tr><td>Models</td><td>3 GGUF (expansion 1.7B · embed 300M · rerank 0.6B)</td></tr>
+        <tr><td>Storage</td><td>sqlite-vec + FTS5 + content_vectors</td></tr>
+        <tr><td>Chunking</td><td>900 tok, 15% overlap, AST-aware breaks for code</td></tr>
+        <tr><td>Latency (148 chunks)</td><td>~700–1300 ms / query (3 model calls)</td></tr>
+        <tr><td>Disk (models)</td><td>~3 GB GGUF</td></tr>
+      </table>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <h3>Legend</h3>
+  <div class="legend">
+    <div class="item"><span class="swatch shared"></span> Shared concept (both have it, different impl)</div>
+    <div class="item"><span class="swatch custom"></span> QMD-specific custom component</div>
+    <div class="item"><span class="swatch missing"></span> Gap in Luna vs QMD</div>
+  </div>
+  <div style="margin-top:14px; color:var(--muted); font-size:12px; max-width:900px;">
+    <strong>Reading the diff:</strong> Luna today is QMD's stages 4 + 5 only (embed + vector lookup), with a stub embedder.
+    Everything QMD does in stages 2, 3, 6, 7 — BM25, query expansion, RRF fusion, chunk reranking — is a gap.
+    A fair head-to-head on retrieval quality would either (a) match embedders (Gemma both sides) and compare stage 4+5 only, or (b) build out Luna's missing stages first.
+    Latency comparison is ~700× in Luna's favor today, but Luna is doing ~700× less work — three GGUF model calls vs one in-process cosine sweep.
+  </div>
+</footer>
+
+</body>
+</html>

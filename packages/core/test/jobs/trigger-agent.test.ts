@@ -149,6 +149,61 @@ describe("TriggerAgent — Tier 1", () => {
     )
     expect(out).toHaveLength(3)
   })
+
+  it("cancel(id) returns true and removes trigger from list()", async () => {
+    const result = await Effect.runPromise(
+      program(
+        Effect.gen(function* () {
+          const trig = yield* TriggerAgent
+          const id = yield* trig.register({
+            kind: "stream",
+            source: Stream.never,
+            build: () => ({ run: Effect.succeed(0) }),
+          })
+          const beforeCancel = yield* trig.list
+          const cancelled = yield* trig.cancel(id)
+          const afterCancel = yield* trig.list
+          return { beforeCount: beforeCancel.length, cancelled, afterCount: afterCancel.length }
+        }),
+      ),
+    )
+    expect(result.beforeCount).toBe(1)
+    expect(result.cancelled).toBe(true)
+    expect(result.afterCount).toBe(0)
+  })
+
+  it("cancel(unknown-id) returns false without error", async () => {
+    const result = await Effect.runPromise(
+      program(
+        Effect.gen(function* () {
+          const trig = yield* TriggerAgent
+          return yield* trig.cancel("trigger-does-not-exist")
+        }),
+      ),
+    )
+    expect(result).toBe(false)
+  })
+
+  it("cancel stops a cron trigger from appearing in list()", async () => {
+    const result = await Effect.runPromise(
+      program(
+        Effect.gen(function* () {
+          const trig = yield* TriggerAgent
+          const id = yield* trig.register({
+            kind: "cron",
+            expr: "0 * * * *",
+            build: () => ({ run: Effect.succeed(0) }),
+          })
+          const beforeCancel = yield* trig.list
+          yield* trig.cancel(id)
+          const afterCancel = yield* trig.list
+          return { beforeCount: beforeCancel.length, afterCount: afterCancel.length }
+        }),
+      ),
+    )
+    expect(result.beforeCount).toBe(1)
+    expect(result.afterCount).toBe(0)
+  })
 })
 
 const _t: TriggerError | null = null
