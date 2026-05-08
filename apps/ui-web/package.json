@@ -23,6 +23,8 @@
     "@luna/chat-service": "workspace:*",
     "@luna/core": "workspace:*",
     "@luna/memory": "workspace:*",
+    "@luna/memory-tools": "workspace:*",
+    "@luna/scheduler-tools": "workspace:*",
     "@luna/ui-shared": "workspace:*",
     "@luna/ui-shared-solid": "workspace:*",
     "@luna/ui-ws": "workspace:*",

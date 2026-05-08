@@ -27,7 +27,7 @@
  *   computed at exactly the boundary yields the NEXT match (so no
  *   double-fire at boundary).
  */
-import { Cron, Duration, Effect, Either, Layer, Ref, Stream } from "effect"
+import { Cron, Duration, Effect, Either, Fiber, Layer, Ref, Stream } from "effect"
 import * as EffectClock from "effect/Clock"
 import type * as Scope from "effect/Scope"
 import {
@@ -74,6 +74,13 @@ export interface TriggerAgentApi {
    * the entry is removed from the registry.
    */
   readonly list: Effect.Effect<ReadonlyArray<TriggerSummary>>
+
+  /**
+   * Cancel a trigger by id. Closes the trigger's child Scope, which
+   * interrupts the loop/stream fiber and removes it from the registry.
+   * Returns true if the trigger was found and cancelled, false if not found.
+   */
+  readonly cancel: (id: TriggerId) => Effect.Effect<boolean>
 }
 
 export class TriggerAgent extends Effect.Tag(
@@ -87,10 +94,13 @@ const nextTriggerId = (): TriggerId =>
 const make = (
   scheduler: JobSchedulerApi,
   registry: Ref.Ref<Map<TriggerId, TriggerSummary>>,
+  // Per-trigger fibers for cancel support — interrupt fiber to stop trigger.
+  fibers: Ref.Ref<Map<TriggerId, Fiber.RuntimeFiber<unknown, unknown>>>,
 ): TriggerAgentApi => {
   const trackEntry = (
     id: TriggerId,
     kind: TriggerKind,
+    fiber: Fiber.RuntimeFiber<unknown, unknown>,
     expr?: string,
   ): Effect.Effect<void, never, Scope.Scope> =>
     Effect.gen(function* () {
@@ -105,12 +115,24 @@ const make = (
         next.set(id, summary)
         return next
       })
-      // Remove from registry when caller's Scope closes.
+      yield* Ref.update(fibers, (m) => {
+        const next = new Map(m)
+        next.set(id, fiber)
+        return next
+      })
+      // Remove from registry + fibers when parent Scope closes.
       yield* Effect.addFinalizer(() =>
-        Ref.update(registry, (m) => {
-          const next = new Map(m)
-          next.delete(id)
-          return next
+        Effect.gen(function* () {
+          yield* Ref.update(registry, (m) => {
+            const next = new Map(m)
+            next.delete(id)
+            return next
+          })
+          yield* Ref.update(fibers, (m) => {
+            const next = new Map(m)
+            next.delete(id)
+            return next
+          })
         }),
       )
     })
@@ -118,6 +140,7 @@ const make = (
   const register: TriggerAgentApi["register"] = (spec) =>
     Effect.gen(function* () {
       const id = nextTriggerId()
+
       if (spec.kind === "cron") {
         // Use Either-based parser for typed errors.
         const parsed = Cron.parse(spec.expr)
@@ -159,13 +182,11 @@ const make = (
             }),
           )
           // Whether submit succeeded or failed, advance to next tick.
-          // (Discard `submitted` — it's only here to ensure the chain
-          // executes.)
           void submitted
         }).pipe(Effect.forever)
         // Fork into caller's Scope — Scope.close interrupts the loop.
-        yield* Effect.forkScoped(loop)
-        yield* trackEntry(id, "cron", spec.expr)
+        const fiber = yield* Effect.forkScoped(loop)
+        yield* trackEntry(id, "cron", fiber, spec.expr)
         return id
       }
       if (spec.kind === "stream") {
@@ -181,8 +202,8 @@ const make = (
             }),
           ),
         )
-        yield* Effect.forkScoped(consume)
-        yield* trackEntry(id, "stream")
+        const fiber = yield* Effect.forkScoped(consume)
+        yield* trackEntry(id, "stream", fiber)
         return id
       }
       // Exhaustiveness — TS already narrows, but defensive.
@@ -200,7 +221,29 @@ const make = (
     return Array.from(m.values())
   })
 
-  return { register, list }
+  const cancel: TriggerAgentApi["cancel"] = (id) =>
+    Effect.gen(function* () {
+      const fiberMap = yield* Ref.get(fibers)
+      const fiber = fiberMap.get(id)
+      if (fiber === undefined) return false
+      // Interrupt the fiber — stops the loop/stream.
+      yield* Fiber.interrupt(fiber)
+      // Remove from both maps immediately (finalizer also removes when
+      // parent Scope closes, but cancel is an explicit early removal).
+      yield* Ref.update(registry, (m) => {
+        const next = new Map(m)
+        next.delete(id)
+        return next
+      })
+      yield* Ref.update(fibers, (m) => {
+        const next = new Map(m)
+        next.delete(id)
+        return next
+      })
+      return true
+    })
+
+  return { register, list, cancel }
 }
 
 export const TriggerAgentLayer = {
@@ -209,7 +252,8 @@ export const TriggerAgentLayer = {
     Effect.gen(function* () {
       const scheduler = yield* JobScheduler
       const registry = yield* Ref.make<Map<TriggerId, TriggerSummary>>(new Map())
-      return make(scheduler, registry)
+      const fibers = yield* Ref.make<Map<TriggerId, Fiber.RuntimeFiber<unknown, unknown>>>(new Map())
+      return make(scheduler, registry, fibers)
     }),
   ),
 } as const
