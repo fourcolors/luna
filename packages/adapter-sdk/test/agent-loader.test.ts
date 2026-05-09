@@ -153,6 +153,73 @@ describe("loadAgents", () => {
     expect(Object.keys(agents).sort()).toEqual(["alpha", "beta"])
   })
 
+  it("parses memory field with valid enum values", () => {
+    for (const memVal of ["user", "project", "local"] as const) {
+      write(
+        `mem-${memVal}.md`,
+        ["---", `name: mem-${memVal}`, 'description: "Agent"', `memory: ${memVal}`, "---", "Body."].join("\n"),
+      )
+    }
+    const agents = loadAgents(dir)
+    expect(agents["mem-user"]!.memory).toBe("user")
+    expect(agents["mem-project"]!.memory).toBe("project")
+    expect(agents["mem-local"]!.memory).toBe("local")
+  })
+
+  it("ignores invalid memory values", () => {
+    write(
+      "bad-mem.md",
+      ["---", "name: bad-mem", 'description: "Agent"', "memory: global", "---", "Body."].join("\n"),
+    )
+    expect(loadAgents(dir)["bad-mem"]!.memory).toBeUndefined()
+  })
+
+  it("parses maxTurns as integer", () => {
+    write(
+      "turns.md",
+      ["---", "name: turns", 'description: "Agent"', "maxTurns: 20", "---", "Body."].join("\n"),
+    )
+    expect(loadAgents(dir)["turns"]!.maxTurns).toBe(20)
+  })
+
+  it("parses background boolean", () => {
+    write(
+      "bg.md",
+      ["---", "name: bg", 'description: "Agent"', "background: true", "---", "Body."].join("\n"),
+    )
+    expect(loadAgents(dir)["bg"]!.background).toBe(true)
+  })
+
+  it("parses permissionMode enum values", () => {
+    for (const mode of ["default", "acceptEdits", "auto", "bypassPermissions", "dontAsk", "plan"] as const) {
+      write(
+        `pm-${mode}.md`,
+        ["---", `name: pm-${mode}`, 'description: "Agent"', `permissionMode: ${mode}`, "---", "Body."].join("\n"),
+      )
+    }
+    const agents = loadAgents(dir)
+    expect(agents["pm-default"]!.permissionMode).toBe("default")
+    expect(agents["pm-acceptEdits"]!.permissionMode).toBe("acceptEdits")
+    expect(agents["pm-bypassPermissions"]!.permissionMode).toBe("bypassPermissions")
+  })
+
+  it("parses mcpServers as string reference list", () => {
+    write(
+      "mcp.md",
+      [
+        "---",
+        "name: mcp",
+        'description: "Agent"',
+        "mcpServers:",
+        "  - my-server",
+        "  - other-server",
+        "---",
+        "Body.",
+      ].join("\n"),
+    )
+    expect(loadAgents(dir)["mcp"]!.mcpServers).toEqual(["my-server", "other-server"])
+  })
+
   it("loads the real advisor.md from agents/ with a valid description", () => {
     // Regression: the real agent files use >- folded scalars
     const repoAgentsDir = new URL("../../../agents", import.meta.url).pathname

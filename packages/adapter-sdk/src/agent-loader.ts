@@ -19,6 +19,11 @@
  * (single-line, optionally quoted), folded scalars (>- multiline joined with
  * spaces), and block lists (- item). Anything more complex would be a smell
  * in an agent definition file.
+ *
+ * Supported AgentDefinition fields (all optional except description + prompt):
+ *   description, model, effort, tools, disallowedTools, skills, mcpServers
+ *   (string refs only), maxTurns, background, memory, permissionMode,
+ *   initialPrompt, criticalSystemReminder_EXPERIMENTAL
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
@@ -153,6 +158,44 @@ const toAgentDefinition = (
   const skills = parsed.fields["skills"]
   if (Array.isArray(skills) && skills.length > 0) {
     def.skills = skills
+  }
+  // mcpServers: block list items are treated as string references.
+  // Inline object specs are not supported in frontmatter — use sdkOptions directly.
+  const mcpServers = parsed.fields["mcpServers"]
+  if (Array.isArray(mcpServers) && mcpServers.length > 0) {
+    def.mcpServers = mcpServers
+  }
+  const maxTurns = parsed.fields["maxTurns"]
+  if (typeof maxTurns === "string" && maxTurns.length > 0) {
+    const n = Number(maxTurns)
+    if (Number.isInteger(n) && n > 0) def.maxTurns = n
+  }
+  const background = parsed.fields["background"]
+  if (background === "true") def.background = true
+  else if (background === "false") def.background = false
+
+  const memory = parsed.fields["memory"]
+  if (memory === "user" || memory === "project" || memory === "local") {
+    def.memory = memory
+  }
+  const permissionMode = parsed.fields["permissionMode"]
+  if (
+    permissionMode === "default" ||
+    permissionMode === "acceptEdits" ||
+    permissionMode === "auto" ||
+    permissionMode === "bypassPermissions" ||
+    permissionMode === "dontAsk" ||
+    permissionMode === "plan"
+  ) {
+    def.permissionMode = permissionMode
+  }
+  const initialPrompt = parsed.fields["initialPrompt"]
+  if (typeof initialPrompt === "string" && initialPrompt.length > 0) {
+    def.initialPrompt = initialPrompt
+  }
+  const criticalReminder = parsed.fields["criticalSystemReminder_EXPERIMENTAL"]
+  if (typeof criticalReminder === "string" && criticalReminder.length > 0) {
+    def.criticalSystemReminder_EXPERIMENTAL = criticalReminder
   }
   return def
 }
