@@ -33,7 +33,9 @@ describe("SandboxRuntime", () => {
       Effect.gen(function* () {
         const sandbox = yield* SandboxRuntime
         return yield* sandbox.exec(
-          { command: "bash", args: ["-c", "echo -n world"] },
+          // Use absolute path — Vitest runs with a restricted PATH that
+          // omits /bin, so bare "bash" fails with ENOENT.
+          { command: "/bin/bash", args: ["-c", "echo -n world"] },
           { allowNonZero: false },
         )
       }),
