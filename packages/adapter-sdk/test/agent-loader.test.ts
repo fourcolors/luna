@@ -346,17 +346,14 @@ describe("list fields", () => {
 // ── Regression: real agent files ──────────────────────────────────────────────
 
 describe("real agent files (regression)", () => {
-  it("advisor.md loads with a non-trivial description (guards against >- regression)", () => {
-    const repoAgentsDir = new URL("../../../agents", import.meta.url).pathname
-    let agents: ReturnType<typeof loadAgents>
-    try {
-      agents = loadAgents(repoAgentsDir)
-    } catch {
-      return // agents/ dir not present — skip
-    }
-    const advisor = agents["advisor"]
-    if (advisor === undefined) return // not found — skip
+  // agents/ ships with the repo — these files must exist. Fail loudly if
+  // they're missing or malformed so the regression is never silently skipped.
+  const repoAgentsDir = new URL("../../../agents", import.meta.url).pathname
 
+  it("advisor.md loads with a non-trivial description (guards against >- regression)", () => {
+    const agents = loadAgents(repoAgentsDir)
+    const advisor = agents["advisor"]!
+    expect(advisor).toBeDefined()
     expect(advisor.description).not.toBe(">-")
     expect(advisor.description).not.toBe(">")
     expect(advisor.description.length).toBeGreaterThan(30)
@@ -366,16 +363,9 @@ describe("real agent files (regression)", () => {
   })
 
   it("auditor.md loads with a non-trivial description", () => {
-    const repoAgentsDir = new URL("../../../agents", import.meta.url).pathname
-    let agents: ReturnType<typeof loadAgents>
-    try {
-      agents = loadAgents(repoAgentsDir)
-    } catch {
-      return
-    }
-    const auditor = agents["auditor"]
-    if (auditor === undefined) return
-
+    const agents = loadAgents(repoAgentsDir)
+    const auditor = agents["auditor"]!
+    expect(auditor).toBeDefined()
     expect(auditor.description).not.toBe(">-")
     expect(auditor.description.length).toBeGreaterThan(30)
     expect(auditor.model).toBe("opus")

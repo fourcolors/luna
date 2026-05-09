@@ -27,10 +27,8 @@ import {
   Ref,
   Scope,
   Stream,
-  pipe,
 } from "effect"
 import {
-  MESSAGE_ENVELOPE_VERSION,
   SDKError,
   SessionStore,
   AccountBroker,
@@ -53,7 +51,6 @@ import {
   sdkMessageKind,
   sdkMessageId,
   sdkMessageParentId,
-  sdkMessageSessionId,
 } from "./message-kind.js"
 import { mergeOptionsLogged } from "./merge-options.js"
 import { mergeEnvOverlayLogged } from "./merge-env.js"
@@ -181,16 +178,12 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
       }
 
       const buildCanUseTool = (
-        cb: ReturnType<
-          typeof Effect.runSync
-        > extends never
-          ? never
-          :
-              | ((
-                  toolName: string,
-                  input: Record<string, unknown>,
-                ) => Effect.Effect<PermissionResult, never>)
-              | null,
+        cb:
+          | ((
+              toolName: string,
+              input: Record<string, unknown>,
+            ) => Effect.Effect<PermissionResult, never>)
+          | null,
       ): CanUseTool | undefined => {
         if (!cb) return undefined
         return async (toolName, input) =>
@@ -272,15 +265,15 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             overrides.env = mergedEnv
           }
 
+          const agentDefs = loadAgents()
+          if (Object.keys(agentDefs).length > 0) {
+            overrides.agents = agentDefs
+          }
+
           const mergedOpts = yield* mergeOptionsLogged(
             req.sessionOptions.sdkOptions,
             overrides,
           )
-
-          const agentDefs = loadAgents()
-          if (Object.keys(agentDefs).length > 0) {
-            ;(mergedOpts as Record<string, unknown>).agents = agentDefs
-          }
 
           // Stream → AsyncIterable for the SDK to consume.
           const promptIterable = yield* Stream.toAsyncIterableEffect(req.prompt)
@@ -483,8 +476,3 @@ export class SDKAdapter extends Effect.Tag("luna/SDKAdapter")<
   )
 }
 
-// Keep unused import pruner quiet — `pipe` and `MESSAGE_ENVELOPE_VERSION` and
-// `sdkMessageSessionId` are exported helpers some tests/consumers will use.
-void pipe
-void MESSAGE_ENVELOPE_VERSION
-void sdkMessageSessionId

@@ -9,6 +9,7 @@
  * Supported frontmatter scalar types:
  *   - Single-line strings (optionally quoted)
  *   - Folded scalars: `>` or `>-` (multi-line, joined with a single space)
+ *   - Literal block scalars: `|` or `|-` (multi-line, joined with newlines)
  *   - Block lists: `key:\n  - item`
  *
  * Full YAML is not supported by design. Agent definition files should be
