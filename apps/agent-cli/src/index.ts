@@ -17,8 +17,8 @@
  *   2  system error (db open / sqlite failure / unknown subcommand)
  *
  * Hot-reload note: AccountBroker hydrates once at Layer construction. CLI
- * inserts will NOT appear in a running dev-server-chat until you restart
- * it. (See `apps/ui-web/scripts/dev-server-chat.ts` header.)
+ * inserts will NOT appear in a running chat-server until you restart
+ * it. (See `apps/ui-web/scripts/chat-server.ts` header.)
  */
 import { runAdd } from "./commands/add.js"
 import { runList } from "./commands/list.js"

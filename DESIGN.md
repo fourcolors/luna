@@ -188,7 +188,7 @@ Tokens never appear in any error message.
 
 A helper `validateAccountsTableLabels(refs, registeredLabels)` returns
 the list of refs pointing at unknown labels. The composition site
-(dev-server-chat) calls it after broker hydration and logs a WARN
+(chat-server) calls it after broker hydration and logs a WARN
 line when the count is >0. Dangling refs are NOT a hard-fail — an
 operator may add accounts later without rebooting.
 

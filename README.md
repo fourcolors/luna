@@ -119,7 +119,7 @@ bun run typecheck   # type check all packages
 bun run --filter '@luna/ui-web' dev
 
 # Chat backend (requires Claude Code login)
-bun run --filter '@luna/ui-web' dev:server:chat
+bun run --filter '@luna/ui-web' server:chat
 ```
 
 ### Adding accounts

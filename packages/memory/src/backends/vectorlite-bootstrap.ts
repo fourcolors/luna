@@ -15,7 +15,7 @@
  * same process returns the same `VectorliteInitResult` reference; the
  * Layer system will only build it once per Effect runtime regardless.
  *
- * App entrypoints (`apps/ui-web/scripts/dev-server-chat.ts`) provide
+ * App entrypoints (`apps/ui-web/scripts/chat-server.ts`) provide
  * this Layer at the bottom of their Layer.provide chain so it runs
  * before any store opens a Database. The agent-cli does NOT wire this
  * (see brief §2.4 — the CLI opens bun:sqlite outside any Layer and

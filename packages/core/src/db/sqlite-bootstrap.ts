@@ -21,7 +21,7 @@
  * The result is exposed in case a future consumer wants to surface the
  * fallback reason in a status/telemetry endpoint.
  *
- * App entrypoints (`apps/ui-web/scripts/dev-server-chat.ts`) provide
+ * App entrypoints (`apps/ui-web/scripts/chat-server.ts`) provide
  * `LunaSqliteBootstrapLive` at the bottom of the Layer.provide chain so
  * it builds first. Stores that yield* `LunaSqliteBootstrap` then run
  * after the swap is in place — single source of truth, no double-init

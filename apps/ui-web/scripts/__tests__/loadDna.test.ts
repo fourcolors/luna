@@ -7,7 +7,7 @@
  *      for a misconfigured Luna boot).
  *
  * loadDna lives in dna-loader.ts (zero non-node deps) and is re-exported
- * from dev-server-chat.ts so both import paths are valid. Tests use the
+ * from chat-server.ts so both import paths are valid. Tests use the
  * direct path to avoid pulling in the full server dependency tree.
  */
 import * as fs from "node:fs"

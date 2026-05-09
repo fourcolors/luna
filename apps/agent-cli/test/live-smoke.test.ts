@@ -1,6 +1,6 @@
 /**
  * Phase 25d live smoke — exercises the full canary path that
- * dev-server-chat boots:
+ * chat-server boots:
  *   CLI insert  →  AccountBrokerLayer.fromSql  →  acquireSession()
  *   →  RoutedOpSecretProvider  →  OnePasswordSecretProvider
  *   →  Redacted<sk-ant-oat-...>
@@ -36,7 +36,7 @@ const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined"
 // `AccountBrokerLayer.fromSql` resolves `bun:sqlite` at boot. Under
 // stock vitest+node the module is unavailable — skip cleanly so the
 // suite stays green. The manual smoke (`bun run --filter '@luna/ui-web'
-// dev:server:chat`) is the canonical end-to-end verification.
+// server:chat`) is the canonical end-to-end verification.
 const d = LIVE && isBun ? describe : describe.skip
 
 const CANONICAL_LUNA_OP_REF =
