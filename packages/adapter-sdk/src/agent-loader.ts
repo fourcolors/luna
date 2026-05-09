@@ -15,9 +15,10 @@
  *   ---
  *   <markdown body — used as the agent's system prompt>
  *
- * Frontmatter parser is intentionally hand-rolled: we only support scalar
- * strings (optionally quoted) and block lists. Anything more complex would
- * be a smell in an agent definition file.
+ * Frontmatter parser is intentionally hand-rolled: we support scalar strings
+ * (single-line, optionally quoted), folded scalars (>- multiline joined with
+ * spaces), and block lists (- item). Anything more complex would be a smell
+ * in an agent definition file.
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
@@ -52,6 +53,8 @@ const parseFrontmatter = (raw: string): ParsedFrontmatter | null => {
 
   let currentListKey: string | null = null
   let currentList: string[] = []
+  let currentFoldedKey: string | null = null
+  let currentFoldedLines: string[] = []
 
   const flushList = () => {
     if (currentListKey !== null) {
@@ -61,19 +64,44 @@ const parseFrontmatter = (raw: string): ParsedFrontmatter | null => {
     }
   }
 
+  const flushFolded = () => {
+    if (currentFoldedKey !== null) {
+      fields[currentFoldedKey] = currentFoldedLines.join(" ").trim()
+      currentFoldedKey = null
+      currentFoldedLines = []
+    }
+  }
+
   for (const line of lines) {
+    // Continuation lines for a folded scalar (indented)
+    if (currentFoldedKey !== null) {
+      if (line.match(/^\s+/)) {
+        currentFoldedLines.push(line.trim())
+        continue
+      }
+      // Non-indented line ends the folded scalar
+      flushFolded()
+    }
+
     if (line.trim() === "") continue
+
     const listItem = /^\s*-\s+(.*)$/.exec(line)
     if (listItem && currentListKey !== null) {
       currentList.push(stripQuotes(listItem[1] ?? ""))
       continue
     }
+
     const kv = /^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/.exec(line)
     if (!kv) continue
     flushList()
     const key = kv[1] ?? ""
-    const value = kv[2] ?? ""
-    if (value.trim() === "") {
+    const value = (kv[2] ?? "").trim()
+
+    if (value === ">-" || value === ">" || value === "|" || value === "|-") {
+      // Folded or literal block scalar — collect indented continuation lines
+      currentFoldedKey = key
+      currentFoldedLines = []
+    } else if (value === "") {
       currentListKey = key
       currentList = []
     } else {
@@ -81,6 +109,7 @@ const parseFrontmatter = (raw: string): ParsedFrontmatter | null => {
     }
   }
   flushList()
+  flushFolded()
 
   return { fields, body: body.trim() }
 }
