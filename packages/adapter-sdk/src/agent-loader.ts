@@ -54,6 +54,13 @@ const stripQuotes = (value: string): string => {
 }
 
 /**
+ * Parser mode for multi-line block scalars.
+ *   "folded"  — `>` / `>-`  lines joined with a single space
+ *   "literal" — `|` / `|-`  lines joined with a newline
+ */
+type BlockMode = "folded" | "literal"
+
+/**
  * Parse a YAML frontmatter block into typed fields. Returns null when the
  * document does not contain a valid `--- ... ---` frontmatter section.
  */
@@ -69,8 +76,9 @@ const parseFrontmatter = (raw: string): ParsedFile | null => {
   // Parser state — only one of these is active at a time.
   let listKey: string | null = null
   let listItems: string[] = []
-  let foldedKey: string | null = null
-  let foldedLines: string[] = []
+  let blockKey: string | null = null
+  let blockMode: BlockMode = "folded"
+  let blockLines: string[] = []
 
   const commitList = () => {
     if (listKey !== null) {
@@ -80,22 +88,30 @@ const parseFrontmatter = (raw: string): ParsedFile | null => {
     }
   }
 
-  const commitFolded = () => {
-    if (foldedKey !== null) {
-      fields[foldedKey] = foldedLines.join(" ").trim()
-      foldedKey = null
-      foldedLines = []
+  const commitBlock = () => {
+    if (blockKey !== null) {
+      const sep = blockMode === "literal" ? "\n" : " "
+      fields[blockKey] = blockLines.join(sep).trim()
+      blockKey = null
+      blockLines = []
     }
   }
 
   for (const line of lines) {
-    // A folded scalar accumulates indented continuation lines.
-    if (foldedKey !== null) {
+    // A block scalar accumulates indented lines AND blank lines within the block.
+    if (blockKey !== null) {
       if (/^\s+/.test(line)) {
-        foldedLines.push(line.trim())
+        // Indented content line — strip leading indent and accumulate.
+        blockLines.push(line.trim())
         continue
       }
-      commitFolded()
+      if (line.trim() === "") {
+        // Blank line inside a block scalar is a paragraph break — keep it.
+        blockLines.push("")
+        continue
+      }
+      // First non-indented, non-blank line terminates the block.
+      commitBlock()
     }
 
     if (line.trim() === "") continue
@@ -107,7 +123,7 @@ const parseFrontmatter = (raw: string): ParsedFile | null => {
       continue
     }
 
-    // Key-value pair — commits any in-flight list or folded scalar first.
+    // Key-value pair — commits any in-flight list or block scalar first.
     const kvMatch = /^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/.exec(line)
     if (kvMatch === null) continue
 
@@ -116,9 +132,15 @@ const parseFrontmatter = (raw: string): ParsedFile | null => {
     const value = (kvMatch[2] ?? "").trim()
 
     if (value === ">-" || value === ">") {
-      // Folded block scalar — collect indented continuation lines.
-      foldedKey = key
-      foldedLines = []
+      // Folded block scalar — lines joined with a space.
+      blockKey = key
+      blockMode = "folded"
+      blockLines = []
+    } else if (value === "|-" || value === "|") {
+      // Literal block scalar — lines joined with a newline.
+      blockKey = key
+      blockMode = "literal"
+      blockLines = []
     } else if (value === "") {
       // Empty value means a block list follows.
       listKey = key
@@ -130,7 +152,7 @@ const parseFrontmatter = (raw: string): ParsedFile | null => {
 
   // Commit any trailing state after the last line.
   commitList()
-  commitFolded()
+  commitBlock()
 
   return { fields, body }
 }
@@ -187,7 +209,6 @@ const toAgentDefinition = (parsed: ParsedFile): AgentDefinition | null => {
 
   const effortRaw = getString(parsed.fields, "effort")
   if (effortRaw !== undefined) {
-    const effortNamed = effortRaw as AgentDefinition["effort"]
     if (
       effortRaw === "low" ||
       effortRaw === "medium" ||
@@ -195,7 +216,7 @@ const toAgentDefinition = (parsed: ParsedFile): AgentDefinition | null => {
       effortRaw === "xhigh" ||
       effortRaw === "max"
     ) {
-      def.effort = effortNamed
+      def.effort = effortRaw
     } else {
       const numeric = Number(effortRaw)
       if (Number.isFinite(numeric) && numeric > 0) def.effort = numeric
