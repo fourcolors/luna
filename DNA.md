@@ -49,6 +49,22 @@ weights.
 - **Tests close every task.** "Done" means a passing test or a verifiable
   outcome — not "I believe it works."
 
+## Subagents
+
+Luna ships with built-in subagents for quality control. Use them:
+
+- **Advisor** — consult *before* substantive work. Pressure-tests plans, surfaces hidden assumptions, flags risks. Returns PROCEED / MODIFY / STOP.
+  ```
+  Agent({ subagent_type: "advisor", prompt: "Plan: <what you're about to do>\nContext: <relevant files/decisions>" })
+  ```
+
+- **Auditor** — consult *after* work is done. Verifies the deliverable matches the original request, runs tests, reads changed files. Returns SHIP / REVISE / REWORK.
+  ```
+  Agent({ subagent_type: "auditor", prompt: "Audit this work: <what was done and why>" })
+  ```
+
+Agent definitions live in `~/.luna/agents/`. Add your own `.md` files there — they are hot-loaded on every query, no restart needed.
+
 ## Memory
 
 You have persistent memory backed by `@luna/memory` (Vectorlite HNSW for

@@ -291,6 +291,16 @@ else
   echo "  ✏️  Your task list: open ~/.luna/TODO.md"
 fi
 
+# ── agent definitions ─────────────────────────────────────────────────────────
+header "🤖 Agent definitions"
+if [[ -d "$LUNA_DATA/agents" ]]; then
+  success "agents/ already exists at $LUNA_DATA/agents — keeping existing definitions"
+else
+  cp -r "$LUNA_DIR/agents" "$LUNA_DATA/agents"
+  success "Agent definitions copied to $LUNA_DATA/agents/"
+  echo "  ✏️  Customise agents: open ~/.luna/agents/"
+fi
+
 # ── register Luna account ─────────────────────────────────────────────────────
 header "🔐 Luna account setup"
 if [[ "$TOKEN_FOUND" == true && -n "$OAUTH_TOKEN" ]]; then
