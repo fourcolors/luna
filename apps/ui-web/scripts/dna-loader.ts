@@ -21,13 +21,20 @@ import { resolve as resolvePath } from "node:path"
  * `dirname(fileURLToPath(import.meta.url))`). The repo DNA.md lives three
  * levels up from `apps/ui-web/scripts/` — pass a fake path in tests.
  *
+ * `personalDnaPath` overrides the default `~/.luna/DNA.md` location.
+ * Pass `null` to skip the personal override entirely (useful in tests
+ * that need to exercise the repo-relative path without interference from
+ * the real user install).
+ *
  * If neither file exists, throws — a Luna boot without DNA.md is a
  * misconfigured boot.
  */
-export function loadDna(scriptDir: string): string {
-  const personalDna = resolvePath(homedir(), ".luna", "DNA.md")
-  if (existsSync(personalDna)) {
-    return readFileSync(personalDna, "utf-8").trim()
+export function loadDna(
+  scriptDir: string,
+  personalDnaPath: string | null = resolvePath(homedir(), ".luna", "DNA.md"),
+): string {
+  if (personalDnaPath !== null && existsSync(personalDnaPath)) {
+    return readFileSync(personalDnaPath, "utf-8").trim()
   }
   const repoDna = resolvePath(scriptDir, "../../..", "DNA.md")
   return readFileSync(repoDna, "utf-8").trim()
