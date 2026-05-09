@@ -57,6 +57,7 @@ import {
 } from "./message-kind.js"
 import { mergeOptionsLogged } from "./merge-options.js"
 import { mergeEnvOverlayLogged } from "./merge-env.js"
+import { loadAgents } from "./agent-loader.js"
 
 const DEFAULT_IDLE_TIMEOUT_MS = 120_000
 
@@ -275,6 +276,11 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             req.sessionOptions.sdkOptions,
             overrides,
           )
+
+          const agentDefs = loadAgents()
+          if (Object.keys(agentDefs).length > 0) {
+            ;(mergedOpts as Record<string, unknown>).agents = agentDefs
+          }
 
           // Stream → AsyncIterable for the SDK to consume.
           const promptIterable = yield* Stream.toAsyncIterableEffect(req.prompt)
