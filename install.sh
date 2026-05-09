@@ -228,30 +228,57 @@ fi
 
 # ── personal DNA.md ───────────────────────────────────────────────────────────
 header "🧬 Identity (DNA.md)"
-if [[ ! -f "$LUNA_DATA/DNA.md" ]]; then
-  info "Creating personal DNA.md at $LUNA_DATA/DNA.md"
+echo ""
+echo "  Luna's identity file tells it who you are and how you like to work."
+echo "  It's loaded into every chat thread as part of the system prompt."
+echo ""
+
+if [[ -f "$LUNA_DATA/DNA.md" ]]; then
+  success "DNA.md already exists at $LUNA_DATA/DNA.md"
+  read -rp "  Re-configure it now? [y/N] " RECONFIGURE
+  [[ "${RECONFIGURE,,}" == "y" ]] || { echo "  Keeping existing DNA.md."; DNA_DONE=true; }
+fi
+
+if [[ "${DNA_DONE:-false}" == false ]]; then
+  # Copy the base template
   cp "$LUNA_DIR/DNA.md" "$LUNA_DATA/DNA.md"
 
+  echo "  Answer a few questions to personalise Luna for you."
+  echo "  (Press Enter to skip any field.)"
   echo ""
-  echo "  Luna's identity file controls how it introduces itself and behaves."
-  echo "  Saved to $LUNA_DATA/DNA.md — edit it anytime."
-  echo ""
-  read -rp "  Enter your name (or press Enter to skip): " USER_NAME
-  if [[ -n "$USER_NAME" ]]; then
-    cat >> "$LUNA_DATA/DNA.md" <<EOF
 
-## User
+  read -rp "  Your name:                " DNA_NAME
+  read -rp "  GitHub username:          " DNA_GITHUB
+  read -rp "  Discord username:         " DNA_DISCORD
+  read -rp "  Preferred communication   "
+  read -rp "    style (e.g. 'concise,   "
+  read -rp "    bullet points'):        " DNA_STYLE
 
-- **${USER_NAME}**
-- Repo: \`~/Projects/luna/\`. User data: \`~/.luna/\`.
-- Communication style: friendly, practical, markdown with structure.
-EOF
-    success "DNA.md personalised for $USER_NAME"
-  else
-    success "DNA.md created (edit ~/.luna/DNA.md to personalise)"
+  # Build the User section
+  USER_SECTION=""
+  if [[ -n "$DNA_NAME" || -n "$DNA_GITHUB" || -n "$DNA_DISCORD" || -n "$DNA_STYLE" ]]; then
+    USER_SECTION+="\n## User\n\n"
+    [[ -n "$DNA_NAME" ]]    && USER_SECTION+="- **${DNA_NAME}**\n"
+    [[ -n "$DNA_GITHUB" ]]  && USER_SECTION+="- GitHub: \`${DNA_GITHUB}\`\n"
+    [[ -n "$DNA_DISCORD" ]] && USER_SECTION+="- Discord: \`${DNA_DISCORD}\`\n"
+    USER_SECTION+="- Repo: \`~/Projects/luna/\`. User data: \`~/.luna/\`.\n"
+    if [[ -n "$DNA_STYLE" ]]; then
+      USER_SECTION+="- Communication style: ${DNA_STYLE}.\n"
+    else
+      USER_SECTION+="- Communication style: friendly, practical, markdown with structure.\n"
+    fi
   fi
-else
-  success "DNA.md already exists at $LUNA_DATA/DNA.md"
+
+  if [[ -n "$USER_SECTION" ]]; then
+    printf "\n%b" "$USER_SECTION" >> "$LUNA_DATA/DNA.md"
+    NAME_DISPLAY="${DNA_NAME:-user}"
+    success "DNA.md personalised for $NAME_DISPLAY"
+  else
+    success "DNA.md created from template (edit ~/.luna/DNA.md to personalise)"
+  fi
+
+  echo ""
+  echo "  ✏️  You can edit it anytime: open ~/.luna/DNA.md"
 fi
 
 # ── register Luna account ─────────────────────────────────────────────────────
