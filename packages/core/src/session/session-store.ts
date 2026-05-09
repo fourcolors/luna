@@ -124,6 +124,16 @@ export class SessionStore extends Effect.Service<SessionStore>()(
           }),
         )
 
+      const getOptions = (
+        id: string,
+      ): Effect.Effect<SessionOptions | null, never> =>
+        Ref.get(ref).pipe(
+          Effect.map((s) => {
+            const row = s.sessions.get(id)
+            return row ? row.options : null
+          }),
+        )
+
       const setStatus = (
         id: string,
         status: SessionStatus,
@@ -265,6 +275,7 @@ export class SessionStore extends Effect.Service<SessionStore>()(
       return {
         create,
         get,
+        getOptions,
         setStatus,
         appendMessage,
         readMessages,

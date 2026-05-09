@@ -135,6 +135,7 @@ export class SessionService extends Effect.Service<SessionService>()(
               }),
             )
           }
+          const parentOpts = yield* store.getOptions(id)
           const childOpts: SessionOptions = {
             model: overrides?.model ?? parent.model,
             ...(overrides?.systemPrompt !== undefined
@@ -150,7 +151,7 @@ export class SessionService extends Effect.Service<SessionService>()(
             // systemPrompt field above is consumed by merge-policy only. Without
             // this, fork() overrides are silently dropped before reaching Claude.
             sdkOptions: {
-              ...(parent.options?.sdkOptions ?? {}),
+              ...(parentOpts?.sdkOptions ?? {}),
               ...(overrides?.systemPrompt !== undefined
                 ? { systemPrompt: overrides.systemPrompt }
                 : {}),

@@ -316,6 +316,19 @@ export const makeSessionStoreSqlite = (
           return row ? rowToSummary(row) : null
         })
 
+      const getOptions = (
+        id: string,
+      ): Effect.Effect<SessionOptions | null, never> =>
+        Effect.sync(() => {
+          const row = sessionGet.get(id) as SessionDbRow | undefined
+          if (!row) return null
+          try {
+            return JSON.parse(row.options_json) as SessionOptions
+          } catch {
+            return null
+          }
+        })
+
       const setStatus = (
         id: string,
         status: SessionStatus,
@@ -471,6 +484,7 @@ export const makeSessionStoreSqlite = (
         _tag: "luna/SessionStore",
         create,
         get,
+        getOptions,
         setStatus,
         appendMessage,
         readMessages,

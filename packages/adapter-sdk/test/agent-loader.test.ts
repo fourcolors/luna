@@ -130,6 +130,56 @@ describe("frontmatter parser", () => {
     expect(desc).not.toContain("\n")
   })
 
+  it("folded scalar (>-) with a blank line mid-block does not prematurely terminate", () => {
+    write("agent.md", [
+      "---",
+      "name: agent",
+      "description: >-",
+      "  First paragraph.",
+      "",
+      "  Second paragraph.",
+      "model: opus",
+      "---",
+      "Body.",
+    ].join("\n"))
+    const desc = loadAgents(dir)["agent"]!.description
+    expect(desc).toContain("First paragraph")
+    expect(desc).toContain("Second paragraph")
+  })
+
+  it("parses a literal block (|) description — lines joined with newlines", () => {
+    write("agent.md", [
+      "---",
+      "name: agent",
+      "description: |",
+      "  Line one.",
+      "  Line two.",
+      "---",
+      "Body.",
+    ].join("\n"))
+    const desc = loadAgents(dir)["agent"]!.description
+    expect(desc).toContain("Line one")
+    expect(desc).toContain("Line two")
+    expect(desc).toContain("\n")
+  })
+
+  it("parses a literal block strip (|-) description", () => {
+    write("agent.md", [
+      "---",
+      "name: agent",
+      "description: |-",
+      "  Line A.",
+      "  Line B.",
+      "model: haiku",
+      "---",
+      "Body.",
+    ].join("\n"))
+    const desc = loadAgents(dir)["agent"]!.description
+    expect(desc).toContain("Line A")
+    expect(desc).toContain("Line B")
+    expect(desc).toContain("\n")
+  })
+
   it("parses a block list", () => {
     write("agent.md", agentFile(["tools:", "  - Read", "  - Grep", "  - Glob"]))
     expect(loadAgents(dir)["agent"]!.tools).toEqual(["Read", "Grep", "Glob"])
