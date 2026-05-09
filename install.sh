@@ -220,11 +220,24 @@ if [[ ! -f "$LUNA_DATA/.env" ]]; then
 # Luna environment
 # OAuth token is managed via Claude Code — do not paste it here.
 # To re-authenticate: claude login
+
+# Store Claude Code session history, memory, and settings under ~/.luna/
+# so everything Luna-related stays in one place.
+CLAUDE_CONFIG_DIR=$LUNA_DATA/claude
 EOF
   success ".env created"
 else
-  success ".env already exists"
+  # Add CLAUDE_CONFIG_DIR to existing .env if not already present
+  if ! grep -q "CLAUDE_CONFIG_DIR" "$LUNA_DATA/.env" 2>/dev/null; then
+    printf '\n# Store Claude Code session history, memory, and settings under ~/.luna/\nCLAUDE_CONFIG_DIR=%s/claude\n' "$LUNA_DATA" >> "$LUNA_DATA/.env"
+    success ".env updated with CLAUDE_CONFIG_DIR"
+  else
+    success ".env already exists"
+  fi
 fi
+
+# Ensure the Claude config directory exists
+mkdir -p "$LUNA_DATA/claude"
 
 # ── personal DNA.md ───────────────────────────────────────────────────────────
 header "🧬 Identity (DNA.md)"
@@ -367,6 +380,8 @@ cat > "$LAUNCHD_PLIST" <<EOF
     <string>${HOME}</string>
     <key>PATH</key>
     <string>/usr/local/bin:/usr/bin:/bin:${BUN_DIR}</string>
+    <key>CLAUDE_CONFIG_DIR</key>
+    <string>${LUNA_DATA}/claude</string>
   </dict>
   <key>StandardOutPath</key>
   <string>${LOG_OUT}</string>

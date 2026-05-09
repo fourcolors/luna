@@ -103,8 +103,27 @@
  * think-time between turns can be hours — chat is the canonical case
  * the flag exists for.
  */
-import { dirname } from "node:path"
+import { existsSync, readFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+
+// Load ~/.luna/.env before anything else so CLAUDE_CONFIG_DIR (and any other
+// Luna env vars) are in process.env when the SDK initialises.
+{
+  const lunaEnv = join(homedir(), ".luna", ".env")
+  if (existsSync(lunaEnv)) {
+    for (const line of readFileSync(lunaEnv, "utf8").split("\n")) {
+      const trimmed = line.trim()
+      if (trimmed === "" || trimmed.startsWith("#")) continue
+      const eq = trimmed.indexOf("=")
+      if (eq === -1) continue
+      const key = trimmed.slice(0, eq).trim()
+      const value = trimmed.slice(eq + 1).trim()
+      if (key && !(key in process.env)) process.env[key] = value
+    }
+  }
+}
 import { Effect, Layer, ManagedRuntime, Option } from "effect"
 import {
   AccountBroker,
