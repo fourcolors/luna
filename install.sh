@@ -281,6 +281,16 @@ if [[ "${DNA_DONE:-false}" == false ]]; then
   echo "  ✏️  You can edit it anytime: open ~/.luna/DNA.md"
 fi
 
+# ── TODO.md ───────────────────────────────────────────────────────────────────
+header "📋 Task list (TODO.md)"
+if [[ -f "$LUNA_DATA/TODO.md" ]]; then
+  success "TODO.md already exists at $LUNA_DATA/TODO.md"
+else
+  cp "$LUNA_DIR/TODO.md" "$LUNA_DATA/TODO.md"
+  success "TODO.md created at $LUNA_DATA/TODO.md"
+  echo "  ✏️  Your task list: open ~/.luna/TODO.md"
+fi
+
 # ── register Luna account ─────────────────────────────────────────────────────
 header "🔐 Luna account setup"
 if [[ "$TOKEN_FOUND" == true && -n "$OAUTH_TOKEN" ]]; then
