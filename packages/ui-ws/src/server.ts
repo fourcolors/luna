@@ -669,8 +669,20 @@ export const startUIWebSocketServer = (
         yield* Effect.async<void>((resume) => {
           wss.close(() => resume(Effect.void))
         })
+        // Force-close all tracked connections before calling httpServer.close().
+        // Bun issue #14946: after WebSocket upgrades, httpServer.close(cb) may
+        // never fire its callback if lingering TCP sockets remain tracked.
+        // closeAllConnections() (Node 18.2+ / Bun compat) destroys them so the
+        // callback fires promptly.
+        try { (httpServer as { closeAllConnections?: () => void }).closeAllConnections?.() } catch { /* not critical */ }
         yield* Effect.async<void>((resume) => {
-          httpServer.close(() => resume(Effect.void))
+          // Safety-valve: resolve after 500ms even if the callback never fires
+          // (Bun #14946 in environments that don't support closeAllConnections).
+          const t = setTimeout(() => resume(Effect.void), 500)
+          httpServer.close(() => {
+            clearTimeout(t)
+            resume(Effect.void)
+          })
         })
       }),
     )
