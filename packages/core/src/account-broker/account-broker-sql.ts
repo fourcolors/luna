@@ -34,7 +34,7 @@
  * Out of scope this phase:
  *   - `report()` SQL write-back (in-memory cooldown only, exactly as Phase 9)
  *   - Hot-reload of new accounts post-boot (load-once-at-boot)
- *   - Seed CLI / dev-server-chat wiring (Phase 25b)
+ *   - Seed CLI / chat-server wiring (Phase 25b)
  */
 import { Effect, Layer, Redacted, Ref } from "effect"
 import type * as Scope from "effect/Scope"

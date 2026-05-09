@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "dev:server": "bun run scripts/dev-server.ts",
-    "dev:server:chat": "bun run scripts/dev-server-chat.ts",
+    "server:chat": "bun run scripts/chat-server.ts",
     "dev:preview": "vite build --mode development && vite preview",
     "build": "vite build",
     "preview": "vite preview",

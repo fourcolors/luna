@@ -23,7 +23,7 @@ const hasBunSqlite = (() => {
 describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)", () => {
   // Phase 27a: SqliteVectorBackend now declares `LunaSqliteBootstrap` in
   // its `R`. Provide the Live Layer here so the backend can build under
-  // test. (Same fixture pattern dev-server-chat uses.)
+  // test. (Same fixture pattern chat-server uses.)
   const layer = Layer.provideMerge(
     SqliteVectorBackend.fromPath(":memory:"),
     Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),

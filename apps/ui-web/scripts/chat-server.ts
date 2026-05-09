@@ -10,7 +10,7 @@
  * driven by a real Claude Agent SDK subprocess.
  *
  * Run:
- *   bun run --filter '@luna/ui-web' dev:server:chat
+ *   bun run --filter '@luna/ui-web' server:chat
  *
  * Phase 25b: this script is the first production caller of
  * AccountBroker. The Claude OAuth token is no longer pulled from
@@ -311,7 +311,7 @@ const buildServerLayer = (
       // Luna doesn't fall back to the underlying Claude model's default
       // identity (or, worse, leak Sol's identity from a stray ancestor
       // CLAUDE.md). Repo layout: this file is at
-      // apps/ui-web/scripts/dev-server-chat.ts → DNA.md is 3 levels up.
+      // apps/ui-web/scripts/chat-server.ts → DNA.md is 3 levels up.
       // Read sync at Layer build (one-shot, fast, deterministic). If the
       // file is missing the boot fails loudly — that's correct: a Luna
       // boot without DNA.md is a misconfigured boot.
@@ -362,7 +362,7 @@ const buildServerLayer = (
     // in its `R`, so this single line enforces the ordering: the
     // process-wide `Database.setCustomSQLite()` swap runs before the
     // very first `new Database()` in baseLayer/AccountBroker. Without
-    // this, dev-server-chat silently falls back to naive cosine ranking
+    // this, chat-server silently falls back to naive cosine ranking
     // (Phase 27 HNSW path dead) — see brief §0 for the original repro.
     Layer.provide(LunaSqliteBootstrapLive),
   ) as Layer.Layer<ServerHandle>
@@ -480,7 +480,7 @@ const bootstrap = async (): Promise<void> => {
 
 // Guard against running bootstrap when imported (e.g. from tests that
 // import `loadDna`). `import.meta.main` is true only when this file is
-// the direct entry point (bun run dev-server-chat.ts).
+// the direct entry point (bun run chat-server.ts).
 if (import.meta.main) {
   void bootstrap()
 }

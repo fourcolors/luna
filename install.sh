@@ -370,7 +370,7 @@ cat > "$LAUNCHD_PLIST" <<EOF
     <string>run</string>
     <string>--filter</string>
     <string>@luna/ui-web</string>
-    <string>dev:server:chat</string>
+    <string>server:chat</string>
   </array>
   <key>WorkingDirectory</key>
   <string>${LUNA_DIR}</string>

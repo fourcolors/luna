@@ -1,8 +1,8 @@
 /**
  * Standalone DNA.md loader — extracted so tests can import it without
- * pulling in the full dev-server-chat.ts dependency tree.
+ * pulling in the full chat-server.ts dependency tree.
  *
- * Imported and re-exported by dev-server-chat.ts; consumers that only
+ * Imported and re-exported by chat-server.ts; consumers that only
  * need `loadDna` should import from this file directly.
  */
 import { existsSync, readFileSync } from "node:fs"

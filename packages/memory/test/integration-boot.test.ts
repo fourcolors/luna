@@ -1,7 +1,7 @@
 /**
  * Phase 27a regression test — Vectorlite bootstrap race.
  *
- * Reproduces the dev-server-chat boot order: AccountBroker.fromSql + an
+ * Reproduces the chat-server boot order: AccountBroker.fromSql + an
  * sqlite-backed SessionStore both open `bun:sqlite` Databases BEFORE the
  * SqliteVectorBackend Layer runs `initVectorlite()`. Because
  * `Database.setCustomSQLite()` is process-global one-shot — it MUST run
@@ -50,7 +50,7 @@ describe.skipIf(!hasBunSqlite)(
         const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
 
         try {
-          // Mirror the dev-server-chat composition: AccountBroker.fromSql +
+          // Mirror the chat-server composition: AccountBroker.fromSql +
           // sqlite SessionStore + SqliteVectorBackend, all on :memory:. The
           // bug is that AccountBroker / SessionStore open `bun:sqlite`
           // Databases inside their own Layer.scoped before the
@@ -67,7 +67,7 @@ describe.skipIf(!hasBunSqlite)(
             Layer.provide(StubEmbedderLayer),
           )
 
-          // Force the dev-server-chat boot order: build broker + session
+          // Force the chat-server boot order: build broker + session
           // FIRST (each opens bun:sqlite via `new Database(...)`), then
           // build the vector backend. We achieve this via a 2-phase
           // provide: the inner Effect requires SqliteVectorBackend (so
