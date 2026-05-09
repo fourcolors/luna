@@ -1,235 +1,318 @@
 /**
- * Agent loader — reads markdown agent definitions from disk and produces
- * `Record<string, AgentDefinition>` suitable for the SDK's `Options.agents`
- * field.
+ * Agent loader — reads agent definition files from a directory and returns
+ * `Record<string, AgentDefinition>` suitable for the SDK's `Options.agents`.
  *
- * Format: `<name>.md` files with YAML frontmatter:
- *   ---
- *   name: advisor
- *   description: "..."
- *   model: opus
- *   effort: max
- *   tools:
- *     - Read
- *     - Grep
- *   ---
- *   <markdown body — used as the agent's system prompt>
+ * File format: `<name>.md` with YAML frontmatter followed by a markdown body.
+ * The body becomes the agent's system prompt (`prompt`). The frontmatter
+ * declares all other `AgentDefinition` fields.
  *
- * Frontmatter parser is intentionally hand-rolled: we support scalar strings
- * (single-line, optionally quoted), folded scalars (>- multiline joined with
- * spaces), and block lists (- item). Anything more complex would be a smell
- * in an agent definition file.
+ * Supported frontmatter scalar types:
+ *   - Single-line strings (optionally quoted)
+ *   - Folded scalars: `>` or `>-` (multi-line, joined with a single space)
+ *   - Block lists: `key:\n  - item`
  *
- * Supported AgentDefinition fields (all optional except description + prompt):
- *   description, model, effort, tools, disallowedTools, skills, mcpServers
- *   (string refs only), maxTurns, background, memory, permissionMode,
+ * Full YAML is not supported by design. Agent definition files should be
+ * simple enough to read in seconds — if yours isn't, use `sdkOptions` instead.
+ *
+ * Supported AgentDefinition fields (all optional except `description`):
+ *   description, model, effort, tools, disallowedTools, skills,
+ *   mcpServers (string references only — inline server specs not supported),
+ *   maxTurns, background, memory, permissionMode,
  *   initialPrompt, criticalSystemReminder_EXPERIMENTAL
+ *
+ * Malformed or unrecognised files are skipped with a console.warn. The loader
+ * never throws — a missing or unreadable directory returns {}.
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { AgentDefinition } from "@anthropic-ai/claude-agent-sdk"
 
-const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/
+// ── Frontmatter parser ────────────────────────────────────────────────────────
 
-interface ParsedFrontmatter {
-  readonly fields: Record<string, string | string[]>
+/** Fields parsed from YAML frontmatter. Values are strings or string arrays. */
+type FrontmatterFields = Record<string, string | string[]>
+
+interface ParsedFile {
+  readonly fields: FrontmatterFields
+  /** Markdown body used as the agent's system prompt. */
   readonly body: string
 }
 
-const stripQuotes = (s: string): string => {
-  const t = s.trim()
-  if (
-    (t.startsWith('"') && t.endsWith('"')) ||
-    (t.startsWith("'") && t.endsWith("'"))
-  ) {
-    return t.slice(1, -1)
+const DOCUMENT_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/
+
+const stripQuotes = (value: string): string => {
+  const v = value.trim()
+  if (v.length >= 2) {
+    const first = v[0]
+    const last = v[v.length - 1]
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      return v.slice(1, -1)
+    }
   }
-  return t
+  return v
 }
 
-const parseFrontmatter = (raw: string): ParsedFrontmatter | null => {
-  const m = FRONTMATTER_RE.exec(raw)
-  if (!m) return null
-  const head = m[1] ?? ""
-  const body = m[2] ?? ""
-  const lines = head.split(/\r?\n/)
-  const fields: Record<string, string | string[]> = {}
+/**
+ * Parse a YAML frontmatter block into typed fields. Returns null when the
+ * document does not contain a valid `--- ... ---` frontmatter section.
+ */
+const parseFrontmatter = (raw: string): ParsedFile | null => {
+  const match = DOCUMENT_RE.exec(raw)
+  if (!match) return null
 
-  let currentListKey: string | null = null
-  let currentList: string[] = []
-  let currentFoldedKey: string | null = null
-  let currentFoldedLines: string[] = []
+  const frontmatter = match[1] ?? ""
+  const body = (match[2] ?? "").trim()
+  const lines = frontmatter.split(/\r?\n/)
+  const fields: FrontmatterFields = {}
 
-  const flushList = () => {
-    if (currentListKey !== null) {
-      fields[currentListKey] = currentList
-      currentListKey = null
-      currentList = []
+  // Parser state — only one of these is active at a time.
+  let listKey: string | null = null
+  let listItems: string[] = []
+  let foldedKey: string | null = null
+  let foldedLines: string[] = []
+
+  const commitList = () => {
+    if (listKey !== null) {
+      fields[listKey] = listItems
+      listKey = null
+      listItems = []
     }
   }
 
-  const flushFolded = () => {
-    if (currentFoldedKey !== null) {
-      fields[currentFoldedKey] = currentFoldedLines.join(" ").trim()
-      currentFoldedKey = null
-      currentFoldedLines = []
+  const commitFolded = () => {
+    if (foldedKey !== null) {
+      fields[foldedKey] = foldedLines.join(" ").trim()
+      foldedKey = null
+      foldedLines = []
     }
   }
 
   for (const line of lines) {
-    // Continuation lines for a folded scalar (indented)
-    if (currentFoldedKey !== null) {
-      if (line.match(/^\s+/)) {
-        currentFoldedLines.push(line.trim())
+    // A folded scalar accumulates indented continuation lines.
+    if (foldedKey !== null) {
+      if (/^\s+/.test(line)) {
+        foldedLines.push(line.trim())
         continue
       }
-      // Non-indented line ends the folded scalar
-      flushFolded()
+      commitFolded()
     }
 
     if (line.trim() === "") continue
 
-    const listItem = /^\s*-\s+(.*)$/.exec(line)
-    if (listItem && currentListKey !== null) {
-      currentList.push(stripQuotes(listItem[1] ?? ""))
+    // Block list items (`  - value`) attach to the current list key.
+    const listItemMatch = /^\s+-\s+(.*)$/.exec(line)
+    if (listItemMatch !== null && listKey !== null) {
+      listItems.push(stripQuotes(listItemMatch[1] ?? ""))
       continue
     }
 
-    const kv = /^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/.exec(line)
-    if (!kv) continue
-    flushList()
-    const key = kv[1] ?? ""
-    const value = (kv[2] ?? "").trim()
+    // Key-value pair — commits any in-flight list or folded scalar first.
+    const kvMatch = /^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/.exec(line)
+    if (kvMatch === null) continue
 
-    if (value === ">-" || value === ">" || value === "|" || value === "|-") {
-      // Folded or literal block scalar — collect indented continuation lines
-      currentFoldedKey = key
-      currentFoldedLines = []
+    commitList()
+    const key = kvMatch[1] ?? ""
+    const value = (kvMatch[2] ?? "").trim()
+
+    if (value === ">-" || value === ">") {
+      // Folded block scalar — collect indented continuation lines.
+      foldedKey = key
+      foldedLines = []
     } else if (value === "") {
-      currentListKey = key
-      currentList = []
+      // Empty value means a block list follows.
+      listKey = key
+      listItems = []
     } else {
       fields[key] = stripQuotes(value)
     }
   }
-  flushList()
-  flushFolded()
 
-  return { fields, body: body.trim() }
+  // Commit any trailing state after the last line.
+  commitList()
+  commitFolded()
+
+  return { fields, body }
 }
 
-const toAgentDefinition = (
-  parsed: ParsedFrontmatter,
-): AgentDefinition | null => {
-  const desc = parsed.fields["description"]
-  if (typeof desc !== "string" || desc.length === 0) return null
+// ── AgentDefinition mapping ───────────────────────────────────────────────────
+
+const getString = (
+  fields: FrontmatterFields,
+  key: string,
+): string | undefined => {
+  const value = fields[key]
+  return typeof value === "string" && value.length > 0 ? value : undefined
+}
+
+const getStringList = (
+  fields: FrontmatterFields,
+  key: string,
+): string[] | undefined => {
+  const value = fields[key]
+  return Array.isArray(value) && value.length > 0 ? value : undefined
+}
+
+/**
+ * Map parsed frontmatter fields to an `AgentDefinition`. Returns null when
+ * the required `description` field is absent or empty.
+ */
+const toAgentDefinition = (parsed: ParsedFile): AgentDefinition | null => {
+  const description = getString(parsed.fields, "description")
+  if (description === undefined) return null
+
   const def: AgentDefinition = {
-    description: desc,
+    description,
     prompt: parsed.body,
   }
-  const model = parsed.fields["model"]
-  if (typeof model === "string" && model.length > 0) {
-    def.model = model
-  }
-  const effort = parsed.fields["effort"]
-  if (typeof effort === "string" && effort.length > 0) {
-    const numeric = Number(effort)
-    if (Number.isFinite(numeric)) {
-      def.effort = numeric
-    } else if (
-      effort === "low" ||
-      effort === "medium" ||
-      effort === "high" ||
-      effort === "xhigh" ||
-      effort === "max"
-    ) {
-      def.effort = effort
-    }
-  }
-  const tools = parsed.fields["tools"]
-  if (Array.isArray(tools) && tools.length > 0) {
-    def.tools = tools
-  }
-  const disallowed = parsed.fields["disallowedTools"]
-  if (Array.isArray(disallowed) && disallowed.length > 0) {
-    def.disallowedTools = disallowed
-  }
-  const skills = parsed.fields["skills"]
-  if (Array.isArray(skills) && skills.length > 0) {
-    def.skills = skills
-  }
-  // mcpServers: block list items are treated as string references.
-  // Inline object specs are not supported in frontmatter — use sdkOptions directly.
-  const mcpServers = parsed.fields["mcpServers"]
-  if (Array.isArray(mcpServers) && mcpServers.length > 0) {
-    def.mcpServers = mcpServers
-  }
-  const maxTurns = parsed.fields["maxTurns"]
-  if (typeof maxTurns === "string" && maxTurns.length > 0) {
-    const n = Number(maxTurns)
-    if (Number.isInteger(n) && n > 0) def.maxTurns = n
-  }
-  const background = parsed.fields["background"]
-  if (background === "true") def.background = true
-  else if (background === "false") def.background = false
 
-  const memory = parsed.fields["memory"]
-  if (memory === "user" || memory === "project" || memory === "local") {
-    def.memory = memory
-  }
-  const permissionMode = parsed.fields["permissionMode"]
-  if (
-    permissionMode === "default" ||
-    permissionMode === "acceptEdits" ||
-    permissionMode === "auto" ||
-    permissionMode === "bypassPermissions" ||
-    permissionMode === "dontAsk" ||
-    permissionMode === "plan"
-  ) {
-    def.permissionMode = permissionMode
-  }
-  const initialPrompt = parsed.fields["initialPrompt"]
-  if (typeof initialPrompt === "string" && initialPrompt.length > 0) {
-    def.initialPrompt = initialPrompt
-  }
-  const criticalReminder = parsed.fields["criticalSystemReminder_EXPERIMENTAL"]
-  if (typeof criticalReminder === "string" && criticalReminder.length > 0) {
+  // ── String scalars ──────────────────────────────────────────────────────────
+
+  const model = getString(parsed.fields, "model")
+  if (model !== undefined) def.model = model
+
+  const initialPrompt = getString(parsed.fields, "initialPrompt")
+  if (initialPrompt !== undefined) def.initialPrompt = initialPrompt
+
+  // Field name dictated by SDK — the _EXPERIMENTAL suffix is intentional.
+  const criticalReminder = getString(
+    parsed.fields,
+    "criticalSystemReminder_EXPERIMENTAL",
+  )
+  if (criticalReminder !== undefined) {
     def.criticalSystemReminder_EXPERIMENTAL = criticalReminder
   }
+
+  // ── Numeric scalars ─────────────────────────────────────────────────────────
+
+  const effortRaw = getString(parsed.fields, "effort")
+  if (effortRaw !== undefined) {
+    const effortNamed = effortRaw as AgentDefinition["effort"]
+    if (
+      effortRaw === "low" ||
+      effortRaw === "medium" ||
+      effortRaw === "high" ||
+      effortRaw === "xhigh" ||
+      effortRaw === "max"
+    ) {
+      def.effort = effortNamed
+    } else {
+      const numeric = Number(effortRaw)
+      if (Number.isFinite(numeric) && numeric > 0) def.effort = numeric
+    }
+  }
+
+  const maxTurnsRaw = getString(parsed.fields, "maxTurns")
+  if (maxTurnsRaw !== undefined) {
+    const maxTurns = Number(maxTurnsRaw)
+    if (Number.isInteger(maxTurns) && maxTurns > 0) def.maxTurns = maxTurns
+  }
+
+  // ── Boolean scalars ─────────────────────────────────────────────────────────
+
+  const backgroundRaw = getString(parsed.fields, "background")
+  if (backgroundRaw === "true") def.background = true
+  else if (backgroundRaw === "false") def.background = false
+
+  // ── Enum scalars ────────────────────────────────────────────────────────────
+
+  const memoryRaw = getString(parsed.fields, "memory")
+  if (
+    memoryRaw === "user" ||
+    memoryRaw === "project" ||
+    memoryRaw === "local"
+  ) {
+    def.memory = memoryRaw
+  }
+
+  const permissionModeRaw = getString(parsed.fields, "permissionMode")
+  if (
+    permissionModeRaw === "default" ||
+    permissionModeRaw === "acceptEdits" ||
+    permissionModeRaw === "auto" ||
+    permissionModeRaw === "bypassPermissions" ||
+    permissionModeRaw === "dontAsk" ||
+    permissionModeRaw === "plan"
+  ) {
+    def.permissionMode = permissionModeRaw
+  }
+
+  // ── String lists ────────────────────────────────────────────────────────────
+
+  const tools = getStringList(parsed.fields, "tools")
+  if (tools !== undefined) def.tools = tools
+
+  const disallowedTools = getStringList(parsed.fields, "disallowedTools")
+  if (disallowedTools !== undefined) def.disallowedTools = disallowedTools
+
+  const skills = getStringList(parsed.fields, "skills")
+  if (skills !== undefined) def.skills = skills
+
+  // mcpServers accepts string references only. Inline object specs require
+  // the full McpServerConfigForProcessTransport shape — use sdkOptions instead.
+  const mcpServers = getStringList(parsed.fields, "mcpServers")
+  if (mcpServers !== undefined) def.mcpServers = mcpServers
+
   return def
 }
 
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/**
+ * Load all `*.md` agent definitions from `agentsDir`.
+ *
+ * - Missing or unreadable directory → returns `{}`
+ * - Malformed or incomplete files → skipped with `console.warn`
+ * - The agent's key in the returned map is its `name` frontmatter field,
+ *   falling back to the filename stem if `name` is absent.
+ *
+ * Called on every SDK query so agents are hot-loaded without a restart.
+ * Uses synchronous I/O — appropriate for a per-query filesystem read of
+ * a small directory, not a hot loop.
+ */
 export const loadAgents = (
   agentsDir: string = join(homedir(), ".luna", "agents"),
 ): Record<string, AgentDefinition> => {
   if (!existsSync(agentsDir)) return {}
+
   let entries: string[]
   try {
     entries = readdirSync(agentsDir)
-  } catch {
+  } catch (err) {
+    console.warn(`[agent-loader] Could not read agents directory: ${agentsDir}`, err)
     return {}
   }
-  const result: Record<string, AgentDefinition> = {}
-  for (const entry of entries) {
-    if (!entry.endsWith(".md")) continue
-    const path = join(agentsDir, entry)
+
+  const agents: Record<string, AgentDefinition> = {}
+
+  for (const filename of entries) {
+    if (!filename.endsWith(".md")) continue
+
+    const filePath = join(agentsDir, filename)
     let raw: string
     try {
-      raw = readFileSync(path, "utf8")
-    } catch {
+      raw = readFileSync(filePath, "utf8")
+    } catch (err) {
+      console.warn(`[agent-loader] Could not read agent file: ${filePath}`, err)
       continue
     }
+
     const parsed = parseFrontmatter(raw)
-    if (!parsed) continue
-    const def = toAgentDefinition(parsed)
-    if (!def) continue
-    const name = parsed.fields["name"]
-    const key =
-      typeof name === "string" && name.length > 0
-        ? name
-        : entry.replace(/\.md$/, "")
-    result[key] = def
+    if (parsed === null) {
+      console.warn(`[agent-loader] No frontmatter found, skipping: ${filePath}`)
+      continue
+    }
+
+    const definition = toAgentDefinition(parsed)
+    if (definition === null) {
+      console.warn(`[agent-loader] Missing required 'description' field, skipping: ${filePath}`)
+      continue
+    }
+
+    const nameField = getString(parsed.fields, "name")
+    const agentKey = nameField ?? filename.replace(/\.md$/, "")
+    agents[agentKey] = definition
   }
-  return result
+
+  return agents
 }
