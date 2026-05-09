@@ -293,13 +293,21 @@ fi
 
 # ── agent definitions ─────────────────────────────────────────────────────────
 header "🤖 Agent definitions"
-if [[ -d "$LUNA_DATA/agents" ]]; then
-  success "agents/ already exists at $LUNA_DATA/agents — keeping existing definitions"
-else
-  cp -r "$LUNA_DIR/agents" "$LUNA_DATA/agents"
-  success "Agent definitions copied to $LUNA_DATA/agents/"
-  echo "  ✏️  Customise agents: open ~/.luna/agents/"
-fi
+mkdir -p "$LUNA_DATA/agents"
+# Copy each bundled agent only if it doesn't already exist in ~/.luna/agents/
+# This lets users customise their agents without getting them overwritten on re-install,
+# while still picking up new bundled agents added in future Luna versions.
+for agent_src in "$LUNA_DIR/agents/"*.md; do
+  agent_name="$(basename "$agent_src")"
+  agent_dst="$LUNA_DATA/agents/$agent_name"
+  if [[ -f "$agent_dst" ]]; then
+    info "Keeping existing $agent_name"
+  else
+    cp "$agent_src" "$agent_dst"
+    success "Installed agent: $agent_name"
+  fi
+done
+echo "  ✏️  Customise agents: open ~/.luna/agents/"
 
 # ── register Luna account ─────────────────────────────────────────────────────
 header "🔐 Luna account setup"
