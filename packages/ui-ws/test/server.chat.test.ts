@@ -299,7 +299,7 @@ describe("UIWebSocketServer (chat routing)", () => {
 
   afterEach(async () => {
     if (rig) await rig.shutdown()
-  })
+  }, 15_000) // Bun #14946: httpServer.close(cb) may delay after WS upgrades; allow extra time
 
   it("hello frame advertises chat capabilities when ChatService is bound", async () => {
     rig = await startChatRig()
@@ -485,9 +485,13 @@ describe("UIWebSocketServer (chat routing)", () => {
           },
         },
       ],
-      6, // hello + thread-created + snapshot1 + snapshot2 + user-accepted + assistant-done
+      // hello + thread-created + snapshot1 + snapshot2 + user-accepted + assistant-done
+      // + up to 3 obs `event` frames (SessionStart, CostAccrued, SessionEnd)
+      9,
+      8000,
     )
-    const types = frames.map((f) => f.type)
+    // Filter obs event frames before asserting — they interleave with chat frames.
+    const types = frames.filter((f) => f.type !== "event").map((f) => f.type)
     expect(types.filter((t) => t === "thread-snapshot").length).toBe(2)
     expect(types).toContain("user-accepted")
     expect(types).toContain("assistant-done")
@@ -550,8 +554,8 @@ describe("UIWebSocketServer (chat routing)", () => {
           thenSend: () => [],
         },
       ],
-      // hello + thread-created + thread-snapshot + possible obs event frames
-      5,
+      // hello + thread-created + thread-snapshot (minimum guaranteed set)
+      3,
     )
 
     expect(capturedOptions?.systemPrompt).toBe("Z-IDENTITY-Z")
