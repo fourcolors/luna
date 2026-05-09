@@ -4,14 +4,16 @@
 # Or:    bash install.sh
 #
 # What this does:
-#   1. Checks prerequisites (macOS, Bun, git)
-#   2. Clones or updates the Luna repo
-#   3. Installs dependencies
-#   4. Creates ~/.luna/ directory structure
-#   5. Sets up a personal DNA.md
-#   6. Installs the launchd daemon (background service)
-#   7. Installs the web UI launch script
-#   8. Prints next steps
+#   1. Checks prerequisites (macOS, Bun, git, Claude Code)
+#   2. Detects or sets up Claude Code authentication
+#   3. Clones or updates the Luna repo
+#   4. Installs dependencies
+#   5. Creates ~/.luna/ directory structure
+#   6. Sets up a personal DNA.md
+#   7. Registers a Luna account using your Claude Code session
+#   8. Installs the launchd daemon (background service)
+#   9. Installs the luna CLI shortcut
+#  10. Prints next steps
 
 set -euo pipefail
 
@@ -25,6 +27,17 @@ warn()    { echo -e "${YELLOW}⚠${RESET} $*"; }
 error()   { echo -e "${RED}✗${RESET} $*" >&2; exit 1; }
 header()  { echo -e "\n${BOLD}$*${RESET}"; }
 
+# ── banner ────────────────────────────────────────────────────────────────────
+echo ""
+echo "    ██╗     ██╗   ██╗███╗   ██╗ █████╗ "
+echo "    ██║     ██║   ██║████╗  ██║██╔══██╗"
+echo "    ██║     ██║   ██║██╔██╗ ██║███████║"
+echo "    ██║     ██║   ██║██║╚██╗██║██╔══██║"
+echo "    ███████╗╚██████╔╝██║ ╚████║██║  ██║"
+echo "    ╚══════╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═╝"
+echo "    installer"
+echo ""
+
 # ── config ────────────────────────────────────────────────────────────────────
 LUNA_REPO="https://github.com/fourcolors/luna.git"
 LUNA_DIR="${LUNA_DIR:-$HOME/Projects/luna}"
@@ -32,8 +45,7 @@ LUNA_DATA="$HOME/.luna"
 LAUNCHD_LABEL="com.user.luna-web"
 LAUNCHD_PLIST="$HOME/Library/LaunchAgents/${LAUNCHD_LABEL}.plist"
 
-# ── checks ────────────────────────────────────────────────────────────────────
-header "🌙 Luna Installer"
+header "Prerequisites"
 echo "  Repo:  $LUNA_DIR"
 echo "  Data:  $LUNA_DATA"
 
@@ -47,19 +59,124 @@ if ! command -v bun &>/dev/null; then
   # shellcheck disable=SC1090
   source "$HOME/.bun/env" 2>/dev/null || export PATH="$HOME/.bun/bin:$PATH"
 fi
-BUN_VERSION=$(bun --version)
-success "Bun $BUN_VERSION"
+success "Bun $(bun --version)"
 
 # git
 command -v git &>/dev/null || error "git is required. Install Xcode Command Line Tools: xcode-select --install"
 success "git $(git --version | awk '{print $3}')"
 
-# Anthropic API key
-if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
-  warn "ANTHROPIC_API_KEY not set."
-  echo "  You'll need to set it before starting Luna:"
-  echo "  export ANTHROPIC_API_KEY=sk-ant-..."
-  echo "  Or add it to ~/.luna/.env"
+# ── Claude Code authentication ────────────────────────────────────────────────
+header "🔑 Claude Code authentication"
+
+# Check if claude CLI is installed
+if ! command -v claude &>/dev/null; then
+  echo ""
+  echo "  Claude Code is not installed."
+  echo "  Luna runs on your Claude.ai subscription via the Claude Code Agent SDK."
+  echo ""
+  echo "  Install Claude Code from: https://claude.ai/code"
+  echo "  Then re-run this installer."
+  echo ""
+  read -rp "  Press Enter to open https://claude.ai/code in your browser, or Ctrl+C to exit: "
+  open "https://claude.ai/code" 2>/dev/null || true
+  error "Please install Claude Code and re-run the installer."
+fi
+success "Claude Code $(claude --version 2>/dev/null | head -1 || echo 'installed')"
+
+# Check if already logged in by looking for an OAuth token
+CLAUDE_TOKEN_FILE="$HOME/.claude/.credentials.json"
+CLAUDE_CONFIG_DIR="$HOME/.claude"
+TOKEN_FOUND=false
+OAUTH_TOKEN=""
+
+# Try to read token from Claude Code's credentials file
+if [[ -f "$CLAUDE_TOKEN_FILE" ]]; then
+  # Extract oauth token if present (claude stores it as JSON)
+  OAUTH_TOKEN=$(python3 -c "
+import json, sys
+try:
+    data = json.load(open('$CLAUDE_TOKEN_FILE'))
+    # Try common key names
+    for key in ['oauth_token', 'token', 'access_token', 'claudeAiOauthToken']:
+        if key in data:
+            print(data[key])
+            sys.exit(0)
+    # Nested structures
+    if 'primaryAccount' in data:
+        acc = data['primaryAccount']
+        for key in ['oauth_token', 'token', 'access_token', 'claudeAiOauthToken']:
+            if key in acc:
+                print(acc[key])
+                sys.exit(0)
+except Exception:
+    pass
+" 2>/dev/null || true)
+fi
+
+# Also check if CLAUDE_CODE_OAUTH_TOKEN is already in environment
+if [[ -z "$OAUTH_TOKEN" && -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+  OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN"
+fi
+
+# Try running claude to get the token via setup-token
+if [[ -n "$OAUTH_TOKEN" ]]; then
+  TOKEN_FOUND=true
+  success "Claude Code session detected — reusing existing login"
+else
+  warn "No active Claude Code session found."
+  echo ""
+  echo "  Luna uses your Claude.ai subscription (Pro or higher)."
+  echo "  You need to log in to Claude Code to continue."
+  echo ""
+  echo "  Running: claude login"
+  echo ""
+
+  if claude login 2>/dev/null; then
+    success "Logged in to Claude Code"
+
+    # Re-check for token after login
+    if [[ -f "$CLAUDE_TOKEN_FILE" ]]; then
+      OAUTH_TOKEN=$(python3 -c "
+import json, sys
+try:
+    data = json.load(open('$CLAUDE_TOKEN_FILE'))
+    for key in ['oauth_token', 'token', 'access_token', 'claudeAiOauthToken']:
+        if key in data:
+            print(data[key])
+            sys.exit(0)
+    if 'primaryAccount' in data:
+        acc = data['primaryAccount']
+        for key in ['oauth_token', 'token', 'access_token', 'claudeAiOauthToken']:
+            if key in acc:
+                print(acc[key])
+                sys.exit(0)
+except Exception:
+    pass
+" 2>/dev/null || true)
+    fi
+
+    if [[ -n "$OAUTH_TOKEN" ]]; then
+      TOKEN_FOUND=true
+    fi
+  fi
+
+  if [[ "$TOKEN_FOUND" == false ]]; then
+    echo ""
+    warn "Could not automatically retrieve your OAuth token."
+    echo ""
+    echo "  You can get it manually by running:"
+    echo "    claude setup-token"
+    echo ""
+    read -rp "  Paste your OAuth token here (or press Enter to skip and configure later): " MANUAL_TOKEN
+    if [[ -n "$MANUAL_TOKEN" ]]; then
+      OAUTH_TOKEN="$MANUAL_TOKEN"
+      TOKEN_FOUND=true
+      success "Token accepted"
+    else
+      warn "Skipping auth setup — you'll need to configure this before Luna can run."
+      warn "See: bun run --filter '@luna/agent-cli' luna-account add"
+    fi
+  fi
 fi
 
 # ── clone / update ────────────────────────────────────────────────────────────
@@ -101,10 +218,10 @@ if [[ ! -f "$LUNA_DATA/.env" ]]; then
   info "Creating $LUNA_DATA/.env..."
   cat > "$LUNA_DATA/.env" <<EOF
 # Luna environment
-# Add your Anthropic API key here if not set in your shell profile
-# ANTHROPIC_API_KEY=sk-ant-...
+# OAuth token is managed via Claude Code — do not paste it here.
+# To re-authenticate: claude login
 EOF
-  success ".env created (edit to add your API key)"
+  success ".env created"
 else
   success ".env already exists"
 fi
@@ -115,15 +232,12 @@ if [[ ! -f "$LUNA_DATA/DNA.md" ]]; then
   info "Creating personal DNA.md at $LUNA_DATA/DNA.md"
   cp "$LUNA_DIR/DNA.md" "$LUNA_DATA/DNA.md"
 
-  # Prompt for personalisation
   echo ""
-  echo "  Luna's identity file has been copied to $LUNA_DATA/DNA.md"
-  echo "  You can personalise it — add your name, handles, preferences."
-  echo "  Luna will use this file instead of the repo default."
+  echo "  Luna's identity file controls how it introduces itself and behaves."
+  echo "  Saved to $LUNA_DATA/DNA.md — edit it anytime."
   echo ""
   read -rp "  Enter your name (or press Enter to skip): " USER_NAME
   if [[ -n "$USER_NAME" ]]; then
-    # Append user section
     cat >> "$LUNA_DATA/DNA.md" <<EOF
 
 ## User
@@ -134,25 +248,45 @@ if [[ ! -f "$LUNA_DATA/DNA.md" ]]; then
 EOF
     success "DNA.md personalised for $USER_NAME"
   else
-    success "DNA.md copied (edit ~/.luna/DNA.md to personalise)"
+    success "DNA.md created (edit ~/.luna/DNA.md to personalise)"
   fi
 else
   success "DNA.md already exists at $LUNA_DATA/DNA.md"
 fi
 
-# ── build ─────────────────────────────────────────────────────────────────────
-header "🔨 Build"
-info "Type-checking..."
-if bun run --cwd "$LUNA_DIR" typecheck 2>/dev/null; then
-  success "Typecheck passed"
+# ── register Luna account ─────────────────────────────────────────────────────
+header "🔐 Luna account setup"
+if [[ "$TOKEN_FOUND" == true && -n "$OAUTH_TOKEN" ]]; then
+  # Write token to a temp env and register the account
+  info "Registering your Claude.ai account with Luna..."
+
+  # Store token reference in .env for the CLI to use
+  if ! grep -q "CLAUDE_CODE_OAUTH_TOKEN" "$LUNA_DATA/.env" 2>/dev/null; then
+    echo "" >> "$LUNA_DATA/.env"
+    echo "# Claude Code OAuth token (managed by installer — update via: claude login)" >> "$LUNA_DATA/.env"
+    echo "CLAUDE_CODE_OAUTH_TOKEN=$OAUTH_TOKEN" >> "$LUNA_DATA/.env"
+  fi
+
+  CLAUDE_CODE_OAUTH_TOKEN="$OAUTH_TOKEN" \
+    bun run --cwd "$LUNA_DIR" --filter '@luna/agent-cli' luna-account add \
+      --id default \
+      --label "Claude.ai" \
+      --kind anthropic \
+      --secret-ref "env:CLAUDE_CODE_OAUTH_TOKEN" 2>/dev/null && \
+    success "Account registered: Claude.ai (default)" || \
+    warn "Account registration skipped — you can register manually later"
 else
-  warn "Typecheck had warnings — Luna may still run fine"
+  warn "Skipping account registration (no token available)"
+  echo "  Run after install: bun run --filter '@luna/agent-cli' luna-account add"
 fi
 
-# ── launchd daemon (web UI) ───────────────────────────────────────────────────
-header "🚀 launchd service"
+# ── launchd daemon ────────────────────────────────────────────────────────────
+header "🚀 Background service"
 LOG_OUT="$LUNA_DATA/logs/luna-web.log"
 LOG_ERR="$LUNA_DATA/logs/luna-web-error.log"
+
+BUN_PATH="$(command -v bun)"
+BUN_DIR="$(dirname "$BUN_PATH")"
 
 cat > "$LAUNCHD_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -164,7 +298,7 @@ cat > "$LAUNCHD_PLIST" <<EOF
   <string>${LAUNCHD_LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$(command -v bun)</string>
+    <string>${BUN_PATH}</string>
     <string>run</string>
     <string>--filter</string>
     <string>@luna/ui-web</string>
@@ -177,7 +311,7 @@ cat > "$LAUNCHD_PLIST" <<EOF
     <key>HOME</key>
     <string>${HOME}</string>
     <key>PATH</key>
-    <string>/usr/local/bin:/usr/bin:/bin:$(dirname "$(command -v bun)")</string>
+    <string>/usr/local/bin:/usr/bin:/bin:${BUN_DIR}</string>
   </dict>
   <key>StandardOutPath</key>
   <string>${LOG_OUT}</string>
@@ -190,41 +324,43 @@ cat > "$LAUNCHD_PLIST" <<EOF
 </dict>
 </plist>
 EOF
-success "Plist written to $LAUNCHD_PLIST"
+success "Service plist written"
 
-# Load (or reload) the service
-if launchctl list | grep -q "$LAUNCHD_LABEL" 2>/dev/null; then
+if launchctl list 2>/dev/null | grep -q "$LAUNCHD_LABEL"; then
   info "Reloading existing service..."
   launchctl unload "$LAUNCHD_PLIST" 2>/dev/null || true
 fi
 launchctl load "$LAUNCHD_PLIST"
-success "Service loaded: $LAUNCHD_LABEL"
+success "Service started: $LAUNCHD_LABEL"
 
-# ── web UI launch script ──────────────────────────────────────────────────────
-header "🖥  Web UI"
+# ── luna CLI shortcut ─────────────────────────────────────────────────────────
+header "🖥  Luna CLI"
 LUNA_OPEN="$HOME/.local/bin/luna"
 mkdir -p "$(dirname "$LUNA_OPEN")"
 cat > "$LUNA_OPEN" <<'SCRIPT'
 #!/usr/bin/env bash
-# Open Luna web UI in the default browser
+# Open Luna web UI
 open http://localhost:5174
 SCRIPT
 chmod +x "$LUNA_OPEN"
-success "luna command installed at $LUNA_OPEN"
-echo "  Run 'luna' to open the web UI (once the backend starts)"
+success "luna command → $LUNA_OPEN"
+
+# Remind about PATH if needed
+if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+  warn "Add ~/.local/bin to your PATH:"
+  echo "    echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc && source ~/.zshrc"
+fi
 
 # ── done ─────────────────────────────────────────────────────────────────────
-header "✅ Installation complete"
+header "✅ Luna installed"
 echo ""
-echo -e "  ${BOLD}Luna is now running as a background service.${RESET}"
+echo -e "  ${BOLD}Luna is running as a background service.${RESET}"
 echo ""
-echo "  Next steps:"
-echo "    1. Set your API key in ~/.luna/.env or export ANTHROPIC_API_KEY=..."
-echo "    2. Restart the service: launchctl kickstart -k gui/\$(id -u)/${LAUNCHD_LABEL}"
-echo "    3. Open the UI:         luna"
-echo "    4. Personalise:         edit ~/.luna/DNA.md"
+echo "  Open the UI:    luna   (or visit http://localhost:5174)"
+echo "  Logs:           $LOG_OUT"
+echo "  Identity:       edit ~/.luna/DNA.md"
+echo "  Re-auth:        claude login  (then restart Luna)"
+echo "  Restart:        launchctl kickstart -k gui/\$(id -u)/${LAUNCHD_LABEL}"
 echo ""
-echo "  Logs: $LOG_OUT"
-echo "  Data: $LUNA_DATA"
+echo -e "  ${GREEN}🌙 Welcome to Luna.${RESET}"
 echo ""
-echo -e "  ${GREEN}🌙 Luna installed successfully.${RESET}"

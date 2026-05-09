@@ -1,4 +1,12 @@
-# 🌙 Luna
+```
+    ██╗     ██╗   ██╗███╗   ██╗ █████╗
+    ██║     ██║   ██║████╗  ██║██╔══██╗
+    ██║     ██║   ██║██╔██╗ ██║███████║
+    ██║     ██║   ██║██║╚██╗██║██╔══██║
+    ███████╗╚██████╔╝██║ ╚████║██║  ██║
+    ╚══════╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═╝
+    locally-hosted AI agent framework
+```
 
 A modular, locally-hosted AI agent framework built on Effect-TS, Bun, and SQLite.
 
@@ -6,10 +14,30 @@ A modular, locally-hosted AI agent framework built on Effect-TS, Bun, and SQLite
 
 Luna is a composable agent SDK. It provides the infrastructure layer for running Claude-powered agents locally — account brokering, session management, memory, cost accounting, MCP tool servers, and a chat surface — all wired together as Effect-TS Layers.
 
+## Authentication
+
+Luna uses your **Claude.ai subscription** — not an Anthropic API key.
+
+Under the hood, Luna runs on the [Claude Code Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk), which authenticates via the same OAuth token that Claude Code uses. If you're already logged in to Claude Code on your machine, Luna can use that session directly.
+
+**How it works:**
+- Luna's `AccountBroker` manages a pool of OAuth tokens
+- Tokens are obtained via `claude setup-token` (the Claude Code CLI)
+- Secrets are stored in 1Password or macOS Keychain — never as plaintext
+- Per-query token injection happens transparently via the SDK's env overlay
+- Multiple accounts are supported with automatic rotation and health tracking
+
+**You need:**
+- A [Claude.ai](https://claude.ai) subscription (Pro or higher)
+- [Claude Code](https://claude.ai/code) installed and logged in (`claude login`)
+
+The install script will check for an existing Claude Code session and walk you through setup if needed.
+
 ## Stack
 
 - **Runtime:** [Bun](https://bun.sh)
 - **Effect system:** [Effect-TS v3](https://effect.website)
+- **Agent SDK:** [Anthropic Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk)
 - **Database:** SQLite via `@effect/sql-sqlite-bun` · Vectorlite for HNSW vector search
 - **Testing:** Vitest
 - **UI:** Solid.js (web) · Tauri (desktop shell)
@@ -20,7 +48,7 @@ Luna is built from composable Effect Layers:
 
 | Layer | Purpose |
 |-------|---------|
-| `AccountBroker` | Multi-account Anthropic API rotation with health tracking |
+| `AccountBroker` | Multi-account OAuth token rotation with health tracking |
 | `SessionStore` | SQLite-backed chat session + message persistence |
 | `ChatService` | Agent execution, streaming, MCP integration |
 | `JobScheduler` | Bounded fiber pool for background jobs |
@@ -37,7 +65,7 @@ Luna is built from composable Effect Layers:
 packages/
   core/           — foundation services (sessions, jobs, memory, observability)
   chat-service/   — agent execution + streaming
-  adapter-sdk/    — Anthropic SDK bridge
+  adapter-sdk/    — Anthropic Agent SDK bridge
   memory/         — memory backends (SQLite, vector, file, in-memory)
   memory-tools/   — MCP server exposing memory to agents
   scheduler-tools/ — MCP server exposing scheduling to agents
@@ -52,7 +80,7 @@ apps/
 
 ## Install (macOS)
 
-One command to install Luna on any Mac — clones the repo, installs deps, sets up `~/.luna/`, registers a launchd daemon, and installs the `luna` CLI shortcut:
+One command to install Luna on any Mac — clones the repo, installs deps, sets up `~/.luna/`, checks your Claude Code session, registers a launchd daemon, and installs the `luna` CLI shortcut:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/fourcolors/luna/master/install.sh | bash
@@ -65,9 +93,10 @@ git clone https://github.com/fourcolors/luna.git ~/Projects/luna
 bash ~/Projects/luna/install.sh
 ```
 
-You'll need:
+**Prerequisites:**
 - macOS (Apple Silicon or Intel)
-- An [Anthropic API key](https://console.anthropic.com) — set `ANTHROPIC_API_KEY` or add it to `~/.luna/.env`
+- A [Claude.ai](https://claude.ai) subscription (Pro or higher)
+- [Claude Code](https://claude.ai/code) — the installer will check your login status
 - Bun — the installer will install it if missing
 
 After install:
@@ -89,8 +118,20 @@ bun run typecheck   # type check all packages
 # Web UI (Vite, hot reload)
 bun run --filter '@luna/ui-web' dev
 
-# Chat backend (requires Anthropic API key)
+# Chat backend (requires Claude Code login)
 bun run --filter '@luna/ui-web' dev:server:chat
+```
+
+### Adding accounts
+
+```bash
+# Register a Claude.ai account with Luna
+bun run --filter '@luna/agent-cli' luna-account add \
+  --id me --label "My Account" --kind anthropic \
+  --secret-ref env:CLAUDE_CODE_OAUTH_TOKEN
+
+# List registered accounts
+bun run --filter '@luna/agent-cli' luna-account list
 ```
 
 ## Personalisation
