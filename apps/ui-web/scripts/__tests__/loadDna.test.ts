@@ -36,11 +36,13 @@ describe("loadDna", () => {
     const dnaContent = "You are **Luna** — a modular, locally-hosted AI agent framework."
     fs.writeFileSync(path.join(tmpDir, "DNA.md"), `  ${dnaContent}  `)
 
-    const result = loadDna(scriptDir)
+    // Pass null to bypass ~/.luna/DNA.md so we exercise the repo-relative path.
+    const result = loadDna(scriptDir, null)
     expect(result).toBe(dnaContent)
   })
 
   it("loadDna: throws when DNA.md is missing", () => {
-    expect(() => loadDna("/nonexistent/path")).toThrow()
+    // Pass null to bypass ~/.luna/DNA.md — only the repo-relative path is checked.
+    expect(() => loadDna("/nonexistent/path", null)).toThrow()
   })
 })
