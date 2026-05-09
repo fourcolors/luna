@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { Effect, Layer, ManagedRuntime } from "effect"
 import { EmbedderService, StubEmbedderLayer } from "@luna/core"
 import {
+  LunaSqliteBootstrapLive,
   MemoryRouterTag,
   SqliteVectorBackend,
   MemoryLayer,
@@ -57,6 +58,7 @@ describe.skipIf(!hasBunSqlite)("memory tools", () => {
   ).pipe(
     Layer.provideMerge(SqliteVectorBackend.fromPath(":memory:")),
     Layer.provideMerge(StubEmbedderLayer),
+    Layer.provideMerge(LunaSqliteBootstrapLive),
   )
 
   let runtime: ManagedRuntime.ManagedRuntime<
