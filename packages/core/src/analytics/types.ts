@@ -6,6 +6,11 @@
  * or "which sessions encountered errors and what was the pattern?"
  */
 
+import type { Effect } from "effect"
+import type { DuckDbError } from "../db/duckdb-service.js"
+
+export type { DuckDbError }
+
 export interface SessionTelemetryJoin {
   // Session fields
   readonly sessionId: string
@@ -49,12 +54,16 @@ export interface AnalyticsApi {
    * Execute a cross-domain query joining session history + telemetry.
    * Returns sessions with aggregated metrics.
    */
-  readonly querySessionMetrics: (q: AnalyticsQuery) => Promise<AnalyticsResult>
+  readonly querySessionMetrics: (
+    q: AnalyticsQuery,
+  ) => Effect.Effect<AnalyticsResult, DuckDbError>
 
   /**
    * Detailed breakdown of a single session's operations.
    */
-  readonly explainSession: (sessionId: string) => Promise<SessionTelemetryJoin>
+  readonly explainSession: (
+    sessionId: string,
+  ) => Effect.Effect<SessionTelemetryJoin, DuckDbError>
 
   /**
    * Find anomalies: sessions with high error rates, long durations, etc.
@@ -62,10 +71,9 @@ export interface AnalyticsApi {
   readonly findAnomalies: (threshold?: {
     errorRate?: number
     duration?: number
-  }) => Promise<SessionTelemetryJoin[]>
+  }) => Effect.Effect<ReadonlyArray<SessionTelemetryJoin>, DuckDbError>
 }
 
 export interface AnalyticsConfig {
-  readonly sessionHistoryDbPath: string
-  readonly telemetryDbPath: string
+  readonly dbPath: string
 }

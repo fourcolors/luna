@@ -1,345 +1,401 @@
 /**
- * AnalyticsService Tier-1 tests — querySessionMetrics, explainSession,
- * and findAnomalies contract validation.
+ * AnalyticsService integration tests — real DuckDbService (:memory:) backend.
  *
- * These tests validate the shape and semantics of analytics queries before
- * DuckDB driver integration. Once DuckDB is integrated, tests will execute
- * real queries against a test database.
+ * Each test inserts data via DuckDbService, then queries via AnalyticsService.
+ * No mocks — real SQL against a real in-process SQLite-compatible store.
+ *
+ * BDD structure: Given / When / Then
  */
 
 import { describe, expect, it } from "vitest"
-import { Effect, Exit, Layer } from "effect"
+import { Effect, Layer } from "effect"
 import { AnalyticsService } from "./analytics.js"
-import type { AnalyticsResult } from "./types.js"
+import { DuckDbService, makeDuckDbLayer } from "../db/duckdb-service.js"
 
-// Mock AnalyticsService for testing
-const makeMockAnalytics = (): Layer.Layer<AnalyticsService> =>
-  Layer.succeed(AnalyticsService, {
-    querySessionMetrics: async (q) => {
-      // Simplified mock: if sessionId is provided, simulate finding that session
-      if (q.sessionId) {
-        return {
-          sessions: [
-            {
-              sessionId: q.sessionId,
-              sessionType: "user" as const,
-              entrypoint: "discord",
-              sessionStartTime: new Date().toISOString(),
-              sessionEndTime: new Date(Date.now() + 3600000).toISOString(),
-              messageCount: 5,
-              metrics: {
-                toolUsageCount: { Read: 2, Grep: 1 },
-                totalDuration: 3600000,
-                errorCount: 0,
-                successCount: 3,
-              },
-            },
-          ],
-          summary: {
-            totalSessions: 1,
-            totalMessages: 5,
-            totalToolUses: 3,
-            errorRate: 0,
-          },
-        }
-      }
-      // No filter: return empty (real implementation would return all sessions)
-      return {
-        sessions: [],
-        summary: {
-          totalSessions: 0,
-          totalMessages: 0,
-          totalToolUses: 0,
-          errorRate: 0,
-        },
-      }
-    },
+// ── Test layer helpers ────────────────────────────────────────────────────────
 
-    explainSession: async (sessionId) => {
-      return {
-        sessionId,
-        sessionType: "assistant" as const,
-        entrypoint: "telegram",
-        sessionStartTime: new Date().toISOString(),
-        sessionEndTime: new Date(Date.now() + 1800000).toISOString(),
-        messageCount: 3,
-        metrics: {
-          toolUsageCount: { Bash: 2 },
-          totalDuration: 1800000,
-          errorCount: 1,
-          successCount: 2,
-        },
-      }
-    },
+// A single shared DuckDb layer. Layer.scoped means it's re-created per test
+// run when we call makeTestLayer(). ":memory:" gives an isolated in-process DB.
+const makeDuckDb = () => makeDuckDbLayer({ dbPath: ":memory:" })
 
-    findAnomalies: async (threshold) => {
-      // Mock: return sessions with error rate > threshold (default 0.5)
-      const errorRateThreshold = threshold?.errorRate ?? 0.5
-      const anomalous = []
-      if (errorRateThreshold <= 0.33) {
-        // Simulate finding a session with 33% error rate
-        anomalous.push({
-          sessionId: "sess-anomaly",
-          sessionType: "user" as const,
-          entrypoint: "discord",
-          sessionStartTime: new Date().toISOString(),
-          sessionEndTime: new Date(Date.now() + 600000).toISOString(),
-          messageCount: 3,
-          metrics: {
-            toolUsageCount: { Read: 1 },
-            totalDuration: 600000,
-            errorCount: 1,
-            successCount: 2,
-          },
-        })
-      }
-      return anomalous
-    },
+// Composed layer: DuckDbService + AnalyticsService built on top of it.
+// Layer.provide wires the DuckDbLayer as the requirement for AnalyticsLayer,
+// but the DuckDbService is ALSO exposed in the output so test effects can use it.
+const makeTestLayer = () => {
+  const dbLayer = makeDuckDb()
+  const analyticsLayer = AnalyticsService.makeLayer({ dbPath: ":memory:" }).pipe(
+    Layer.provide(dbLayer),
+  )
+  // Merge both layers so both AnalyticsService and DuckDbService are in context
+  return Layer.merge(analyticsLayer, dbLayer)
+}
+
+// Helper: run an effect with the full test layer (both AnalyticsService + DuckDbService)
+const run = <A>(
+  effect: Effect.Effect<A, unknown, AnalyticsService | DuckDbService>,
+) =>
+  Effect.runPromise(
+    effect.pipe(
+      Effect.provide(makeTestLayer()),
+    ),
+  )
+
+// Helper: insert a session row
+const insertSession = (
+  id: string,
+  opts: {
+    model?: string
+    created_at?: string
+    ended_at?: string
+    duration_ms?: number
+    status?: string
+  } = {},
+) => {
+  const model = opts.model ?? "claude-3-5-sonnet"
+  const created_at = opts.created_at ?? new Date().toISOString()
+  const ended_at = opts.ended_at ?? null
+  const duration_ms = opts.duration_ms ?? null
+  const status = opts.status ?? (ended_at ? "closed" : "active")
+
+  return Effect.gen(function* () {
+    const db = yield* DuckDbService
+    yield* db.write(
+      `INSERT OR IGNORE INTO sessions (id, model, status, created_at, ended_at, duration_ms)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [id, model, status, created_at, ended_at, duration_ms],
+    )
   })
+}
 
-describe("AnalyticsService", () => {
-  describe("Contract: querySessionMetrics", () => {
-    it("Given no filters, When querying metrics, Then returns empty result set", async () => {
-      const result = await Effect.runPromise(
+// Helper: insert an event row
+const insertEvent = (
+  sessionId: string,
+  opts: {
+    kind?: string
+    tool_name?: string
+    status?: string
+    duration_ms?: number
+  } = {},
+) => {
+  const id = crypto.randomUUID()
+  const kind = opts.kind ?? "ToolCall"
+  const tool_name = opts.tool_name ?? null
+  const status = opts.status ?? "success"
+  const duration_ms = opts.duration_ms ?? null
+
+  return Effect.gen(function* () {
+    const db = yield* DuckDbService
+    yield* db.write(
+      `INSERT OR IGNORE INTO events
+         (id, ts, kind, level, session_id, tool_name, status, duration_ms, raw_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        new Date().toISOString(),
+        kind,
+        "info",
+        sessionId,
+        tool_name,
+        status,
+        duration_ms,
+        "{}",
+      ],
+    )
+  })
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+describe("AnalyticsService (real DuckDb)", () => {
+  // ── querySessionMetrics ───────────────────────────────────────────────────
+
+  describe("querySessionMetrics", () => {
+    it("Given no data, When querying metrics, Then returns empty result", async () => {
+      const result = await run(
         Effect.gen(function* () {
           const api = yield* AnalyticsService
-          return yield* Effect.promise(() =>
-            api.querySessionMetrics({ limit: 100 }),
-          )
-        }).pipe(Effect.provide(makeMockAnalytics())),
+          return yield* api.querySessionMetrics({ limit: 100 })
+        }),
       )
 
-      expect(result.summary).toBeDefined()
-      expect(result.summary.totalSessions).toBe(0)
       expect(result.sessions).toEqual([])
+      expect(result.summary.totalSessions).toBe(0)
+      expect(result.summary.totalMessages).toBe(0)
+      expect(result.summary.errorRate).toBe(0)
     })
 
-    it("Given a sessionId filter, When querying metrics, Then returns that session", async () => {
-      const sessionId = "sess-abc123"
-      const result = await Effect.runPromise(
+    it("Given a session with events, When querying metrics, Then returns aggregated data", async () => {
+      const result = await run(
         Effect.gen(function* () {
           const api = yield* AnalyticsService
-          return yield* Effect.promise(() =>
-            api.querySessionMetrics({ sessionId }),
-          )
-        }).pipe(Effect.provide(makeMockAnalytics())),
+
+          // Given: one session with two ToolCall events
+          yield* insertSession("sess-001")
+          yield* insertEvent("sess-001", { kind: "ToolCall", tool_name: "Read", status: "success" })
+          yield* insertEvent("sess-001", { kind: "ToolCall", tool_name: "Grep", status: "success" })
+
+          // When: query all sessions
+          return yield* api.querySessionMetrics({})
+        }),
       )
 
-      expect(result.summary.totalSessions).toBe(1)
+      // Then: session is found with aggregated counts
       expect(result.sessions).toHaveLength(1)
-      expect(result.sessions[0]?.sessionId).toBe(sessionId)
+      expect(result.sessions[0]?.sessionId).toBe("sess-001")
+      expect(result.summary.totalSessions).toBe(1)
+      expect(result.summary.totalToolUses).toBe(2)
     })
 
-    it("Result includes session metadata and aggregated metrics", async () => {
-      const result = await Effect.runPromise(
+    it("Given multiple sessions, When filtering by sessionId, Then returns only that session", async () => {
+      const result = await run(
         Effect.gen(function* () {
           const api = yield* AnalyticsService
-          return yield* Effect.promise(() =>
-            api.querySessionMetrics({ sessionId: "sess-test" }),
-          )
-        }).pipe(Effect.provide(makeMockAnalytics())),
+
+          // Given: two sessions
+          yield* insertSession("sess-filter-a")
+          yield* insertSession("sess-filter-b")
+          yield* insertEvent("sess-filter-a", { kind: "ToolCall", tool_name: "Read" })
+          yield* insertEvent("sess-filter-b", { kind: "ToolCall", tool_name: "Write" })
+
+          // When: filter by sessionId
+          return yield* api.querySessionMetrics({ sessionId: "sess-filter-a" })
+        }),
       )
 
-      const session = result.sessions[0]
-      expect(session).toBeDefined()
-      expect(session?.sessionId).toBeDefined()
-      expect(session?.sessionType).toMatch(/user|assistant|system/)
-      expect(session?.entrypoint).toBeDefined()
-      expect(session?.messageCount).toBeGreaterThanOrEqual(0)
-      expect(session?.metrics.toolUsageCount).toBeDefined()
-      expect(session?.metrics.totalDuration).toBeGreaterThanOrEqual(0)
-      expect(session?.metrics.errorCount).toBeGreaterThanOrEqual(0)
-      expect(session?.metrics.successCount).toBeGreaterThanOrEqual(0)
+      // Then: only session A is returned
+      expect(result.sessions).toHaveLength(1)
+      expect(result.sessions[0]?.sessionId).toBe("sess-filter-a")
+      expect(result.summary.totalSessions).toBe(1)
     })
 
-    it("Summary metrics are consistent with session list", async () => {
-      const result = await Effect.runPromise(
+    it("Given sessions with events, When filtering by toolName, Then returns only sessions using that tool", async () => {
+      const result = await run(
         Effect.gen(function* () {
           const api = yield* AnalyticsService
-          return yield* Effect.promise(() =>
-            api.querySessionMetrics({ sessionId: "sess-consistent" }),
-          )
-        }).pipe(Effect.provide(makeMockAnalytics())),
+
+          // Given: two sessions — one uses Bash, one uses Read
+          yield* insertSession("sess-tool-bash")
+          yield* insertSession("sess-tool-read")
+          yield* insertEvent("sess-tool-bash", { kind: "ToolCall", tool_name: "Bash" })
+          yield* insertEvent("sess-tool-read", { kind: "ToolCall", tool_name: "Read" })
+
+          // When: filter by tool_name = "Bash"
+          return yield* api.querySessionMetrics({ toolName: "Bash" })
+        }),
       )
 
+      // Then: only the Bash session appears
+      expect(result.sessions).toHaveLength(1)
+      expect(result.sessions[0]?.sessionId).toBe("sess-tool-bash")
+    })
+
+    it("Given sessions, When filtering by time range, Then only sessions in range are returned", async () => {
+      const past = "2024-01-01T00:00:00.000Z"
+      const present = "2025-05-01T00:00:00.000Z"
+      const future = "2026-12-31T00:00:00.000Z"
+
+      const result = await run(
+        Effect.gen(function* () {
+          const api = yield* AnalyticsService
+
+          // Given: two sessions at different times
+          yield* insertSession("sess-time-old", { created_at: past })
+          yield* insertSession("sess-time-new", { created_at: present })
+
+          // When: query only from 2025 onward
+          return yield* api.querySessionMetrics({ startTime: "2025-01-01T00:00:00.000Z", endTime: future })
+        }),
+      )
+
+      // Then: only the 2025 session is returned
+      const ids = result.sessions.map((s) => s.sessionId)
+      expect(ids).toContain("sess-time-new")
+      expect(ids).not.toContain("sess-time-old")
+    })
+
+    it("Summary metrics are consistent with session list totals", async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const api = yield* AnalyticsService
+
+          // Given: two sessions with different event counts
+          yield* insertSession("sess-sum-1")
+          yield* insertSession("sess-sum-2")
+          yield* insertEvent("sess-sum-1", { kind: "ToolCall", tool_name: "Read" })
+          yield* insertEvent("sess-sum-1", { kind: "ToolCall", tool_name: "Read" })
+          yield* insertEvent("sess-sum-2", { kind: "ToolCall", tool_name: "Grep" })
+
+          // When: query all sessions
+          return yield* api.querySessionMetrics({})
+        }),
+      )
+
+      // Then: summary counts match derived values
       expect(result.summary.totalSessions).toBe(result.sessions.length)
-      const totalMessages = result.sessions.reduce(
+      const derivedMessages = result.sessions.reduce(
         (sum, s) => sum + s.messageCount,
         0,
       )
-      expect(result.summary.totalMessages).toBe(totalMessages)
-    })
-
-    it("Supports filtering by toolName (for analytics skill)", async () => {
-      const exit = await Effect.runPromiseExit(
-        Effect.gen(function* () {
-          const api = yield* AnalyticsService
-          const result = yield* Effect.promise(() =>
-            api.querySessionMetrics({ toolName: "Read" }),
-          )
-          expect(result).toBeDefined()
-        }).pipe(Effect.provide(makeMockAnalytics())),
-      )
-
-      expect(Exit.isSuccess(exit)).toBe(true)
-    })
-
-    it("Supports filtering by skillName", async () => {
-      const exit = await Effect.runPromiseExit(
-        Effect.gen(function* () {
-          const api = yield* AnalyticsService
-          const result = yield* Effect.promise(() =>
-            api.querySessionMetrics({ skillName: "advisor" }),
-          )
-          expect(result).toBeDefined()
-        }).pipe(Effect.provide(makeMockAnalytics())),
-      )
-
-      expect(Exit.isSuccess(exit)).toBe(true)
-    })
-
-    it("Supports time range filters (startTime, endTime)", async () => {
-      const now = new Date()
-      const startTime = new Date(now.getTime() - 86400000).toISOString() // 1 day ago
-      const endTime = now.toISOString()
-
-      const exit = await Effect.runPromiseExit(
-        Effect.gen(function* () {
-          const api = yield* AnalyticsService
-          const result = yield* Effect.promise(() =>
-            api.querySessionMetrics({ startTime, endTime }),
-          )
-          expect(result).toBeDefined()
-        }).pipe(Effect.provide(makeMockAnalytics())),
-      )
-
-      expect(Exit.isSuccess(exit)).toBe(true)
+      expect(result.summary.totalMessages).toBe(derivedMessages)
     })
   })
 
-  describe("Contract: explainSession", () => {
-    it("Given a sessionId, When explaining, Then returns detailed breakdown", async () => {
-      const sessionId = "sess-explain"
-      const result = await Effect.runPromise(
+  // ── explainSession ────────────────────────────────────────────────────────
+
+  describe("explainSession", () => {
+    it("Given a session with tool calls, When explaining, Then returns per-tool breakdown", async () => {
+      const result = await run(
         Effect.gen(function* () {
           const api = yield* AnalyticsService
-          return yield* Effect.promise(() =>
-            api.explainSession(sessionId),
-          )
-        }).pipe(Effect.provide(makeMockAnalytics())),
+
+          // Given: a session with multiple tool calls
+          yield* insertSession("sess-explain-1")
+          yield* insertEvent("sess-explain-1", { kind: "ToolCall", tool_name: "Read", status: "success" })
+          yield* insertEvent("sess-explain-1", { kind: "ToolCall", tool_name: "Read", status: "success" })
+          yield* insertEvent("sess-explain-1", { kind: "ToolCall", tool_name: "Bash", status: "error" })
+
+          // When: explain that session
+          return yield* api.explainSession("sess-explain-1")
+        }),
       )
 
-      expect(result.sessionId).toBe(sessionId)
-      expect(result.messageCount).toBeGreaterThanOrEqual(0)
-      expect(result.metrics.toolUsageCount).toBeDefined()
+      // Then: tool usage counts are correct
+      expect(result.sessionId).toBe("sess-explain-1")
+      expect(result.metrics.toolUsageCount["Read"]).toBe(2)
+      expect(result.metrics.toolUsageCount["Bash"]).toBe(1)
+      expect(result.metrics.errorCount).toBe(1)
+      expect(result.metrics.successCount).toBe(2)
+      expect(result.messageCount).toBe(3)
     })
 
-    it("Breakdown includes tool usage counts", async () => {
-      const result = await Effect.runPromise(
+    it("Given an unknown sessionId, When explaining, Then returns empty shell with zero counts", async () => {
+      const result = await run(
         Effect.gen(function* () {
           const api = yield* AnalyticsService
-          return yield* Effect.promise(() =>
-            api.explainSession("sess-tools"),
-          )
-        }).pipe(Effect.provide(makeMockAnalytics())),
+          // No setup — session does not exist
+          return yield* api.explainSession("sess-nonexistent-xyz")
+        }),
       )
 
-      expect(result.metrics.toolUsageCount).toBeDefined()
-      expect(typeof result.metrics.toolUsageCount).toBe("object")
-    })
-  })
-
-  describe("Contract: findAnomalies", () => {
-    it("Default threshold detects high error rates", async () => {
-      const results = await Effect.runPromise(
-        Effect.gen(function* () {
-          const api = yield* AnalyticsService
-          return yield* Effect.promise(() =>
-            api.findAnomalies({ errorRate: 0.3 }),
-          )
-        }).pipe(Effect.provide(makeMockAnalytics())),
-      )
-
-      expect(Array.isArray(results)).toBe(true)
-      // With threshold 0.3, mock should return at least one anomalous session
-      expect(results.length).toBeGreaterThanOrEqual(1)
-    })
-
-    it("Results contain anomalies matching the threshold", async () => {
-      const results = await Effect.runPromise(
-        Effect.gen(function* () {
-          const api = yield* AnalyticsService
-          return yield* Effect.promise(() =>
-            api.findAnomalies({ errorRate: 0.5 }),
-          )
-        }).pipe(Effect.provide(makeMockAnalytics())),
-      )
-
-      expect(Array.isArray(results)).toBe(true)
-      // With threshold 0.5, mock should return nothing (no sessions have >50% error rate)
-      expect(results.length).toBe(0)
-    })
-
-    it("Detects long-running sessions", async () => {
-      const results = await Effect.runPromise(
-        Effect.gen(function* () {
-          const api = yield* AnalyticsService
-          return yield* Effect.promise(() =>
-            api.findAnomalies({ duration: 10800000 }), // 3 hours
-          )
-        }).pipe(Effect.provide(makeMockAnalytics())),
-      )
-
-      expect(Array.isArray(results)).toBe(true)
+      expect(result.sessionId).toBe("sess-nonexistent-xyz")
+      expect(result.messageCount).toBe(0)
+      expect(result.metrics.errorCount).toBe(0)
+      expect(result.metrics.toolUsageCount).toEqual({})
     })
   })
 
-  describe("BDD: Analytics agent diagnostic workflow", () => {
-    it("Scenario: Agent diagnoses a session with errors", async () => {
-      // Given: a session that has errors
-      const sessionId = "sess-error"
+  // ── findAnomalies ─────────────────────────────────────────────────────────
 
-      // When: analytics agent queries for that session
-      const sessionDetails = await Effect.runPromise(
+  describe("findAnomalies", () => {
+    it("Given a session with high error rate, When finding anomalies below threshold, Then it is returned", async () => {
+      const now = new Date().toISOString()
+      const ended = new Date(Date.now() + 1000).toISOString()
+
+      const results = await run(
         Effect.gen(function* () {
           const api = yield* AnalyticsService
-          return yield* Effect.promise(() =>
-            api.explainSession(sessionId),
-          )
-        }).pipe(Effect.provide(makeMockAnalytics())),
+
+          // Given: one closed session with 2 errors out of 3 events (~66% error rate)
+          yield* insertSession("sess-anomaly-high", {
+            created_at: now,
+            ended_at: ended,
+            duration_ms: 1000,
+            status: "closed",
+          })
+          yield* insertEvent("sess-anomaly-high", { kind: "ToolCall", tool_name: "Bash", status: "error" })
+          yield* insertEvent("sess-anomaly-high", { kind: "ToolCall", tool_name: "Bash", status: "error" })
+          yield* insertEvent("sess-anomaly-high", { kind: "ToolCall", tool_name: "Read", status: "success" })
+
+          // When: find anomalies with errorRate threshold of 0.5
+          return yield* api.findAnomalies({ errorRate: 0.5 })
+        }),
       )
 
-      // Then: agent has breakdown of what happened
-      expect(sessionDetails.sessionId).toBe(sessionId)
-      expect(sessionDetails.metrics).toBeDefined()
-      expect(sessionDetails.metrics.errorCount).toBeGreaterThanOrEqual(0)
-
-      // And: agent can recommend actions based on metrics
-      const hasErrors = sessionDetails.metrics.errorCount > 0
-      expect(typeof hasErrors).toBe("boolean")
+      // Then: the high-error session is returned
+      const ids = results.map((r) => r.sessionId)
+      expect(ids).toContain("sess-anomaly-high")
+      const s = results.find((r) => r.sessionId === "sess-anomaly-high")
+      expect(s?.metrics.errorCount).toBe(2)
     })
 
-    it("Scenario: Agent finds anomalous sessions for monitoring", async () => {
-      // Given: a monitoring request
-      // When: analytics agent finds anomalies
-      const anomalies = await Effect.runPromise(
+    it("Given a session with low error rate, When finding anomalies at high threshold, Then it is NOT returned", async () => {
+      const now = new Date().toISOString()
+      const ended = new Date(Date.now() + 1000).toISOString()
+
+      const results = await run(
         Effect.gen(function* () {
           const api = yield* AnalyticsService
-          return yield* Effect.promise(() =>
-            api.findAnomalies({ errorRate: 0.3 }),
-          )
-        }).pipe(Effect.provide(makeMockAnalytics())),
+
+          // Given: one closed session with 1 error out of 10 events (10% error rate)
+          yield* insertSession("sess-anomaly-low", {
+            created_at: now,
+            ended_at: ended,
+            duration_ms: 1000,
+            status: "closed",
+          })
+          for (let i = 0; i < 9; i++) {
+            yield* insertEvent("sess-anomaly-low", { kind: "ToolCall", tool_name: "Read", status: "success" })
+          }
+          yield* insertEvent("sess-anomaly-low", { kind: "ToolCall", tool_name: "Bash", status: "error" })
+
+          // When: find anomalies with errorRate threshold of 0.5 (50%)
+          return yield* api.findAnomalies({ errorRate: 0.5 })
+        }),
       )
 
-      // Then: agent has list of sessions needing attention
-      expect(Array.isArray(anomalies)).toBe(true)
+      // Then: the low-error session is NOT returned
+      const ids = results.map((r) => r.sessionId)
+      expect(ids).not.toContain("sess-anomaly-low")
+    })
 
-      // And: each anomaly can be explained in detail
-      if (anomalies.length > 0) {
-        const first = anomalies[0]
-        expect(first?.sessionId).toBeDefined()
-        expect(first?.metrics.errorCount).toBeGreaterThan(0)
-      }
+    it("Given a long-running session, When finding anomalies by duration, Then it is returned", async () => {
+      const now = new Date().toISOString()
+      const ended = new Date(Date.now() + 1000).toISOString()
+
+      const results = await run(
+        Effect.gen(function* () {
+          const api = yield* AnalyticsService
+
+          // Given: one closed session with 4h duration
+          yield* insertSession("sess-long", {
+            created_at: now,
+            ended_at: ended,
+            duration_ms: 4 * 3600 * 1000, // 4 hours
+            status: "closed",
+          })
+          yield* insertEvent("sess-long", { kind: "ToolCall", tool_name: "Read", status: "success" })
+
+          // When: find anomalies with duration threshold of 3h — session exceeds it
+          // Use a very high error rate so only duration triggers
+          return yield* api.findAnomalies({
+            errorRate: 0.99, // unreachable for success-only session
+            duration: 3 * 3600 * 1000,
+          })
+        }),
+      )
+
+      // Then: the long session is found via duration trigger
+      const ids = results.map((r) => r.sessionId)
+      expect(ids).toContain("sess-long")
+    })
+
+    it("Given only active sessions (no ended_at), When finding anomalies, Then returns empty", async () => {
+      const results = await run(
+        Effect.gen(function* () {
+          const api = yield* AnalyticsService
+
+          // Given: active session with errors but not ended
+          yield* insertSession("sess-active-only", { status: "active" })
+          yield* insertEvent("sess-active-only", { kind: "ToolCall", tool_name: "Bash", status: "error" })
+
+          // When: find anomalies (only closed sessions qualify)
+          return yield* api.findAnomalies({ errorRate: 0.0 })
+        }),
+      )
+
+      // Then: no results (WHERE ended_at IS NOT NULL filters them out)
+      const ids = results.map((r) => r.sessionId)
+      expect(ids).not.toContain("sess-active-only")
     })
   })
 })
