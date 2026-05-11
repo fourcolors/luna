@@ -40,9 +40,9 @@ const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined"
 const d = LIVE && isBun ? describe : describe.skip
 
 const CANONICAL_LUNA_OP_REF =
-  "luna-op://antmachine/cdtygwycj55n4ewcnobycow7tu/eqvivujwp6ahevhkdao2vte35a/credential"
+  "luna-op://antmachine/<vault-id>/<item-id>/credential"
 const CANONICAL_BARE_OP_REF =
-  "op://cdtygwycj55n4ewcnobycow7tu/eqvivujwp6ahevhkdao2vte35a/credential"
+  "op://<vault-id>/<item-id>/credential"
 const CLI_ENTRY = path.resolve(__dirname, "..", "src", "index.ts")
 
 const seedDb = (ref: string): string => {
@@ -170,7 +170,7 @@ d("Phase 25d live smoke — broker → RoutedOpSecretProvider → Redacted<sk-an
     // proves the dispatcher picks the right inner layer (this is the whole
     // point of RoutedOp: don't rely on a single SA having every vault).
     const ROUTED_REF =
-      "luna-op://mrbot/cdtygwycj55n4ewcnobycow7tu/eqvivujwp6ahevhkdao2vte35a/credential"
+      "luna-op://mrbot/<vault-id>/<item-id>/credential"
     const dbPath = seedDb(ROUTED_REF)
     try {
       const program = Effect.gen(function* () {

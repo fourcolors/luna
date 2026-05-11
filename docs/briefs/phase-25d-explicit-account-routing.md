@@ -283,7 +283,7 @@ Modify `apps/ui-web/scripts/dev-server-chat.ts`:
 
 Modify `apps/agent-cli/test/live-smoke.test.ts`:
 - Switch the canonical ref to
-  `luna-op://antmachine/cdtygwycj55n4ewcnobycow7tu/eqvivujwp6ahevhkdao2vte35a/credential`.
+  `luna-op://antmachine/<vault-id>/<item-id>/credential`.
 - Add a SECOND smoke (also live-gated) using a bare `op://...` ref
   to confirm the single-account fall-through still works when only
   one account is registered.

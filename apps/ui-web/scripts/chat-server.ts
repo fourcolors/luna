@@ -41,7 +41,7 @@
  *
  *   bun run --filter '@luna/agent-cli' luna-account add \
  *     --id sterling --label "Sterling" --kind anthropic \
- *     --secret-ref op://cdtygwycj55n4ewcnobycow7tu/eqvivujwp6ahevhkdao2vte35a/credential
+ *     --secret-ref op://<vault-id>/<item-id>/credential
  *
  * Then verify:
  *
@@ -55,7 +55,7 @@
  *   - `env:<VARNAME>` — process env (one colon, no slashes)
  *
  * Examples (with antmachine + mrbot + flow registered in keychain):
- *   - luna-op://antmachine/cdtygwycj55n4ewcnobycow7tu/eqvivujwp6ahevhkdao2vte35a/credential
+ *   - luna-op://antmachine/<vault-id>/<item-id>/credential
  *   - luna-op://mrbot/<vault>/<item>/<field>
  *   - luna-op://flow/<vault>/<item>/<field>
  *
@@ -459,7 +459,7 @@ const buildServerLayer = (
 const SEED_HINT =
   "  bun run --filter '@luna/agent-cli' luna-account add \\\n" +
   "    --id sterling --label \"Sterling\" --kind anthropic \\\n" +
-  "    --secret-ref luna-op://antmachine/cdtygwycj55n4ewcnobycow7tu/eqvivujwp6ahevhkdao2vte35a/credential"
+  "    --secret-ref luna-op://antmachine/<vault-id>/<item-id>/credential"
 
 const buildMain = (
   opLabelsRegistered: ReadonlyArray<string>,
