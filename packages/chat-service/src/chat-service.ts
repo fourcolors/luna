@@ -264,6 +264,9 @@ export class ChatService extends Effect.Service<ChatService>()(
             level: "info",
             sessionId: id,
             model: opts.model ?? "unknown",
+            ...(opts.parentSessionId !== undefined ? { parentId: opts.parentSessionId } : {}),
+            ...(opts.tags !== undefined && opts.tags.length > 0 ? { tags: [...opts.tags] } : {}),
+            ...(opts.title !== undefined ? { title: opts.title } : {}),
           })
 
           const inbox = yield* Queue.unbounded<SDKUserMessage>()
