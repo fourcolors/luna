@@ -121,6 +121,7 @@ export interface CreateThreadOptions {
   readonly model: string
   readonly title?: string
   readonly tags?: ReadonlyArray<string>
+  readonly parentSessionId?: string
   readonly systemPrompt?: string
   /** Working directory for the agent's filesystem tools. Defaults to
    *  `LUNA_REPO_ROOT` env var if set, else `process.cwd()`. */
