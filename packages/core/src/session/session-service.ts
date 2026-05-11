@@ -243,7 +243,11 @@ export class SessionService extends Effect.Service<SessionService>()(
             close: close(summary.id).pipe(Effect.orDie),
           }
           return handle
-        })
+        }).pipe(
+          Effect.withSpan("luna.session.open_scoped", {
+            attributes: { "session.model": opts.model },
+          }),
+        )
 
       return { open, resume, fork, list, close, openScoped } as const
     }),

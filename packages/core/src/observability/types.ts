@@ -40,6 +40,9 @@ export interface SessionStartEvent extends ObsEventBase {
   readonly sessionId: string
   readonly model: string
   readonly optionsDigest?: string
+  readonly parentId?: string
+  readonly tags?: ReadonlyArray<string>
+  readonly title?: string
 }
 
 export interface SessionEndEvent extends ObsEventBase {
