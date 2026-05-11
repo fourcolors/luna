@@ -41,9 +41,11 @@
       "devDependencies": {
         "@luna/adapter-sdk": "workspace:*",
         "@luna/chat-service": "workspace:*",
+        "@luna/control-server": "workspace:*",
         "@luna/core": "workspace:*",
         "@luna/memory": "workspace:*",
         "@luna/memory-tools": "workspace:*",
+        "@luna/observability-tools": "workspace:*",
         "@luna/scheduler-tools": "workspace:*",
         "@luna/ui-shared": "workspace:*",
         "@luna/ui-shared-solid": "workspace:*",
@@ -86,6 +88,19 @@
         "@anthropic-ai/claude-agent-sdk": ">=0.2.0 <1",
       },
     },
+    "packages/control-server": {
+      "name": "@luna/control-server",
+      "version": "0.0.1",
+      "dependencies": {
+        "@luna/core": "workspace:*",
+        "@trpc/server": "^11.0.0",
+        "effect": "^3.21.0",
+        "zod": "^4.0.0",
+      },
+      "devDependencies": {
+        "vitest": "^2.1.5",
+      },
+    },
     "packages/core": {
       "name": "@luna/core",
       "version": "0.0.1",
@@ -113,6 +128,24 @@
       },
       "devDependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.2.119",
+        "zod": "^4.0.0",
+      },
+      "peerDependencies": {
+        "@anthropic-ai/claude-agent-sdk": ">=0.2.0 <1",
+        "zod": "^4.0.0",
+      },
+    },
+    "packages/observability-tools": {
+      "name": "@luna/observability-tools",
+      "version": "0.0.1",
+      "dependencies": {
+        "@luna/core": "workspace:*",
+        "@luna/tools": "workspace:*",
+        "effect": "^3.21.0",
+      },
+      "devDependencies": {
+        "@anthropic-ai/claude-agent-sdk": "^0.2.119",
+        "@luna/memory": "workspace:*",
         "zod": "^4.0.0",
       },
       "peerDependencies": {
@@ -324,11 +357,15 @@
 
     "@luna/chat-service": ["@luna/chat-service@workspace:packages/chat-service"],
 
+    "@luna/control-server": ["@luna/control-server@workspace:packages/control-server"],
+
     "@luna/core": ["@luna/core@workspace:packages/core"],
 
     "@luna/memory": ["@luna/memory@workspace:packages/memory"],
 
     "@luna/memory-tools": ["@luna/memory-tools@workspace:packages/memory-tools"],
+
+    "@luna/observability-tools": ["@luna/observability-tools@workspace:packages/observability-tools"],
 
     "@luna/scheduler-tools": ["@luna/scheduler-tools@workspace:packages/scheduler-tools"],
 
@@ -437,6 +474,8 @@
     "@tauri-apps/cli-win32-ia32-msvc": ["@tauri-apps/cli-win32-ia32-msvc@2.10.1", "", { "os": "win32", "cpu": "ia32" }, "sha512-gXyxgEzsFegmnWywYU5pEBURkcFN/Oo45EAwvZrHMh+zUSEAvO5E8TXsgPADYm31d1u7OQU3O3HsYfVBf2moHw=="],
 
     "@tauri-apps/cli-win32-x64-msvc": ["@tauri-apps/cli-win32-x64-msvc@2.10.1", "", { "os": "win32", "cpu": "x64" }, "sha512-6Cn7YpPFwzChy0ERz6djKEmUehWrYlM+xTaNzGPgZocw3BD7OfwfWHKVWxXzdjEW2KfKkHddfdxK1XXTYqBRLg=="],
+
+    "@trpc/server": ["@trpc/server@11.17.0", "", { "peerDependencies": { "typescript": ">=5.7.2" }, "bin": { "intent": "bin/intent.js" } }, "sha512-jbAOUe0PpUTCYqziyu+8vYXZdDXPudZgnEhWCQ2NjKnVEjfE93RqHTt1oycZJv/HNf51YlRXfEEwSIAbb161rw=="],
 
     "@types/babel__core": ["@types/babel__core@7.20.5", "", { "dependencies": { "@babel/parser": "^7.20.7", "@babel/types": "^7.20.7", "@types/babel__generator": "*", "@types/babel__template": "*", "@types/babel__traverse": "*" } }, "sha512-qoQprZvz5wQFJwMDqeseRXWv3rqMvhgpbXFfVyWhbx9X47POIA6i/+dXefEmZKoAgOaTdaIgNSMqMIU61yRyzA=="],
 

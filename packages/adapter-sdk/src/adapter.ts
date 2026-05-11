@@ -432,7 +432,16 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
           )
 
           return mirrored
-        })
+        }).pipe(
+          Effect.withSpan("luna.sdk_adapter.query", {
+            attributes: {
+              "session.id": req.sessionId,
+              "session.model": String(
+                req.sessionOptions.sdkOptions?.model ?? "default",
+              ),
+            },
+          }),
+        )
 
       return {
         query,
