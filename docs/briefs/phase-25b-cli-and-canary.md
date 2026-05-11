@@ -21,7 +21,7 @@
 - `apps/agent-cli/src/` is empty (workspace exists, no source).
 - Canonical 1Password reference for Sterling's Claude OAuth token (use
   this in seed instructions and the smoke test):
-  `op://VAULT/ITEM/FIELD
+  `op://<vault-id>/<item-id>/credential`
 
 ---
 
@@ -181,7 +181,7 @@ This phase ships infra; full e2e requires real 1Password auth which
 test runners can't have. Instead, write a single
 `describe.skipIf(!process.env.LUNA_LIVE_SMOKE)` test that:
 1. Inserts one account row via the CLI module pointing to
-   `op://VAULT/ITEM/FIELD
+   `op://<vault-id>/<item-id>/credential`
 2. Boots the dev-server-chat layer composition (NOT the WS server —
    just the broker layer)
 3. Calls `acquireSession({model:"claude-sonnet-4-5"})`
@@ -191,7 +191,7 @@ test runners can't have. Instead, write a single
 
 **Then run the manual smoke separately**:
 - `op signin` (verify auth)
-- `bun run --filter '@luna/agent-cli' luna-account add --id sterling --label "Sterling" --kind anthropic --secret-ref op://VAULT/ITEM/FIELD
+- `bun run --filter '@luna/agent-cli' luna-account add --id sterling --label "Sterling" --kind anthropic --secret-ref op://<vault-id>/<item-id>/credential`
 - `bun run --filter '@luna/agent-cli' luna-account list`
 - `bun run --filter '@luna/ui-web' dev:server:chat`
 - Confirm boot log: `[accounts] 1 hydrated: anthropic×1`
