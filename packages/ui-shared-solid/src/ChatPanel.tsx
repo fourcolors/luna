@@ -275,7 +275,7 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
                     <button
                       class="slash-hint-row"
                       role="option"
-                      onClick={() => setDraft(h.cmd)}
+                      onClick={() => { setDraft(h.cmd); submit() }}
                       onMouseDown={(e) => e.preventDefault()}
                     >
                       <span class="slash-hint-cmd">{h.cmd}</span>

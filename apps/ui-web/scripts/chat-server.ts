@@ -128,14 +128,19 @@ import { Effect, Layer, ManagedRuntime, Option } from "effect"
 import {
   AccountBroker,
   AccountBrokerLayer,
+  AgentNotesService,
   Clock,
   DEFAULT_UI_KINDS,
   EnvSecretProvider,
+  NoopTracerLayer,
   ObservabilityService,
   OnePasswordSecretProvider,
   RoutedOpSecretProvider,
   SessionStore,
+  TelemetryPlatform,
+  TelemetryService,
   UIService,
+  makeDuckDbLayer,
   readKeychainToken,
   secretProviderFirstOf,
   validateAccountsTableLabels,
@@ -154,6 +159,11 @@ import {
   SchedulerToolsLayer,
   SchedulerToolsService,
 } from "@luna/scheduler-tools"
+import {
+  ObsToolsLayer,
+  ObsToolsService,
+} from "@luna/observability-tools"
+import { startControlServer } from "@luna/control-server"
 
 const TOKEN = "dev-ui-ws-token-do-not-ship"
 
@@ -220,6 +230,8 @@ const buildBaseLayer = (
   | AccountBroker
   | SDKAdapter
   | ChatService
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  | any // TelemetryPlatform sinks + NoopTracerLayer + AgentNotesService are side-effect Layers
 > => {
   const clockL = Clock.Default
   const obsL = ObservabilityService.makeLayer({ logToConsole: false }).pipe(
@@ -270,6 +282,37 @@ const buildBaseLayer = (
     ChatService.Default,
     Layer.mergeAll(sdkAdapterL, storeL, clockL, obsL),
   )
+
+  // ── Self-observation platform (Phase 27b) ──────────────────────────────
+  // TelemetryService: in-memory counters (pull-based, Clock only).
+  const telemetryL = TelemetryService.makeLayer().pipe(Layer.provide(clockL))
+
+  // DuckDbService: single connection to the analytics DB.
+  // All writes are serialized through a bounded Queue.dropping fiber.
+  const lunaHome = join(homedir(), ".luna")
+  const analyticsDbPath = process.env["LUNA_ANALYTICS_DB_PATH"] ?? join(lunaHome, "analytics.duckdb")
+  const duckDbL = makeDuckDbLayer({ dbPath: analyticsDbPath })
+
+  // TelemetryPlatform: EventSink + SessionSync + MetricsFlusher, all wired
+  // to the analytics DuckDB. Side-effect-only Layers — fire-and-forget.
+  const telPlatformL = TelemetryPlatform.pipe(
+    Layer.provide(Layer.mergeAll(obsL, duckDbL, telemetryL, clockL)),
+  )
+
+  // NoopTracerLayer: provides Tracer.Tracer as a no-op. Activates
+  // Effect.withSpan() instrumentation without requiring @effect/opentelemetry
+  // until M5. Structural only — no spans leave the process.
+  const noopTracerL = NoopTracerLayer
+
+  // AgentNotesService: SQLite-backed self-report stream. Shares luna.db
+  // with AccountBroker + TelemetryService-sqlite (same file, separate tables).
+  const lunaDbPath = process.env["LUNA_DB_PATH"] ?? join(lunaHome, "luna.db")
+  const agentNotesL = AgentNotesService.makeLayer(lunaDbPath).pipe(
+    Layer.provide(clockL),
+    // LunaSqliteBootstrapLive provided at the bottom of buildServerLayer
+    // (same pattern as all other SQLite layers in this server).
+  )
+
   return Layer.mergeAll(
     uiL,
     obsL,
@@ -278,6 +321,9 @@ const buildBaseLayer = (
     brokerL,
     sdkAdapterL,
     chatL,
+    telPlatformL,
+    noopTracerL,
+    agentNotesL,
   )
 }
 
@@ -305,6 +351,13 @@ const buildServerLayer = (
       const chat = yield* ChatService
       const memTools = yield* MemoryToolsService
       const schedTools = yield* SchedulerToolsService
+      const obsTools = yield* ObsToolsService
+
+      console.log("[luna/boot] MCP servers registered:", [
+        memTools.serverName,
+        schedTools.serverName,
+        obsTools.serverName,
+      ].join(", "))
 
       // Luna identity: load DNA.md at boot. This is Luna's "who am I, how
       // do I operate" prompt — prepended to every thread's systemPrompt so
@@ -318,14 +371,31 @@ const buildServerLayer = (
       const __scriptDir = dirname(fileURLToPath(import.meta.url))
       const dnaContent = loadDna(__scriptDir)
 
+      // Session metadata injected into every thread so Luna knows the surface
+      // she's running on and can tailor her responses accordingly.
+      const sessionMetadata = [
+        `# Session Metadata`,
+        `- **Interface:** Luna Web UI`,
+        `- **User:** Sterling Cobb (Discord: fourcolors, GitHub: fourcolors)`,
+        `- **Server:** luna-chat-server (local, launchd)`,
+        `- **Started:** ${new Date().toISOString()}`,
+      ].join("\n")
+
       const chatWithTools: typeof chat = {
         ...chat,
         createThread: (opts) => {
+          console.log("[luna/thread] createThread called — wiring MCP servers:", [
+            memTools.serverName,
+            schedTools.serverName,
+            obsTools.serverName,
+          ].join(", "))
           const mergedSystemPrompt = [
             dnaContent,
+            sessionMetadata,
             opts.systemPrompt,
             memTools.systemPromptAddendum,
             schedTools.systemPromptAddendum,
+            obsTools.systemPromptAddendum,
           ]
             .filter((s): s is string => typeof s === "string" && s.length > 0)
             .join("\n\n")
@@ -333,16 +403,32 @@ const buildServerLayer = (
             ...(opts.mcpServers ?? {}),
             [memTools.serverName]: memTools.server,
             [schedTools.serverName]: schedTools.server,
+            [obsTools.serverName]: obsTools.server,
           }
-          return chat.createThread({
-            ...opts,
-            systemPrompt: mergedSystemPrompt,
-            mcpServers: mergedMcp,
-          })
+          return chat
+            .createThread({
+              ...opts,
+              systemPrompt: mergedSystemPrompt,
+              mcpServers: mergedMcp,
+            })
+            .pipe(
+              // Bind the new session id so obs_note auto-tags notes with the
+              // current thread. SessionSummary.id is always present.
+              Effect.tap((summary) => {
+                obsTools.bindSession(summary.id)
+                console.log("[luna/thread] session bound:", summary.id, "— obs tools active")
+                return Effect.void
+              }),
+            )
         },
       }
 
       const broker = yield* AccountBroker
+
+      // tRPC control server — port 4754, alongside the WebSocket server.
+      // Exposes control.restart / control.status / control.version.
+      yield* startControlServer(4754)
+
       return yield* startUIWebSocketServer({
         port: 4753,
         token: TOKEN,
@@ -355,6 +441,9 @@ const buildServerLayer = (
   ).pipe(
     Layer.provide(MemoryToolsLayer()),
     Layer.provide(SchedulerToolsLayer()),
+    // ObsToolsLayer provides ObsToolsService with 5 self-observation tools.
+    // Requires Clock + LunaSqliteBootstrapLive (both provided below).
+    Layer.provide(ObsToolsLayer()),
     Layer.provide(baseLayer),
     // Phase 27a: provide LunaSqliteBootstrapLive at the END of the chain
     // so it builds FIRST (Layer.provide is bottom-up — last listed wins

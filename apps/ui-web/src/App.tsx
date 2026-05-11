@@ -38,6 +38,28 @@ import {
   type SlashCommand,
 } from "@luna/ui-shared-solid"
 
+const CONTROL_URL = "http://127.0.0.1:4754/trpc"
+
+/** Call control.restart mutation via raw fetch (tRPC v11: mutations = POST). */
+async function restartServer(): Promise<void> {
+  await fetch(`${CONTROL_URL}/control.restart`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ json: null }),
+  })
+}
+
+/** Call control.status query via raw fetch (tRPC v11: queries = GET). */
+async function fetchServerStatus(): Promise<{ uptime: number; startedAt: string; version: string } | null> {
+  try {
+    const res = await fetch(`${CONTROL_URL}/control.status?input=${encodeURIComponent(JSON.stringify({ json: null }))}`)
+    const json = await res.json() as { result?: { data?: { uptime: number; startedAt: string; version: string } } }
+    return json.result?.data ?? null
+  } catch {
+    return null
+  }
+}
+
 const STORAGE_KEY = "ui-ws.config"
 const DEFAULT_URL = "ws://127.0.0.1:4753/ui"
 const DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -105,6 +127,7 @@ export const App: Component = () => {
     new Set(),
   )
   const [settingsOpen, setSettingsOpen] = createSignal(false)
+  const [restarting, setRestarting] = createSignal(false)
 
   const store = createUiStore()
 
@@ -376,6 +399,31 @@ export const App: Component = () => {
             >
               <button onClick={onDisconnect}>Disconnect</button>
             </Show>
+            <button
+              class="chip"
+              disabled={restarting()}
+              title="Restart the Luna chat server (launchd auto-respawns)"
+              onClick={async () => {
+                setRestarting(true)
+                try {
+                  await restartServer()
+                  // Disconnect WebSocket — server is going down.
+                  // Auto-reconnect banner will appear after the server respawns.
+                  transport.disconnect()
+                } catch {
+                  // Server may have gone down before responding — that's fine.
+                  transport.disconnect()
+                } finally {
+                  // Give launchd ~3s to respawn, then attempt reconnect.
+                  setTimeout(() => {
+                    setRestarting(false)
+                    onConnect()
+                  }, 3000)
+                }
+              }}
+            >
+              {restarting() ? "⟳ Restarting…" : "↺ Restart Server"}
+            </button>
           </div>
         </Show>
         <Show when={store.state.closeReason}>
