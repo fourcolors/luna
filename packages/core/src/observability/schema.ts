@@ -34,6 +34,9 @@ export const SessionStartSchema = Schema.Struct({
   sessionId: Schema.String,
   model: Schema.String,
   optionsDigest: Schema.optional(Schema.String),
+  parentId: Schema.optional(Schema.String),
+  tags: Schema.optional(Schema.Array(Schema.String)),
+  title: Schema.optional(Schema.String),
 })
 
 export const SessionEndSchema = Schema.Struct({

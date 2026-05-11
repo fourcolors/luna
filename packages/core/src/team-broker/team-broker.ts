@@ -383,7 +383,12 @@ export class TeamBroker extends Effect.Tag("luna/TeamBroker")<
           })
 
         // ─── spawn ────────────────────────────────────────────────────────
-        const spawn: TeamBrokerApi["spawn"] = (spec) => spawnCore(spec)
+        const spawn: TeamBrokerApi["spawn"] = (spec) =>
+          spawnCore(spec).pipe(
+            Effect.withSpan("luna.team_broker.spawn", {
+              attributes: { "team.name": spec.name },
+            }),
+          )
 
         // ─── spawnIn ──────────────────────────────────────────────────────
         // Links team lifecycle to the provided leadScope. When leadScope

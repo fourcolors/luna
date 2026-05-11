@@ -223,7 +223,11 @@ const make = (
               new JobSubmitError({ reason: "shutting-down", jobId }),
             )
         }
-      })
+      }).pipe(
+        Effect.withSpan("luna.job_scheduler.submit", {
+          attributes: { "job.id": job.id ?? "generated" },
+        }),
+      )
 
     const results: JobSchedulerApi["results"] =
       Stream.fromQueue(schedulerResultsQueue)
