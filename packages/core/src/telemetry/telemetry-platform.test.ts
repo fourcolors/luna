@@ -1,0 +1,181 @@
+/**
+ * TelemetryPlatform integration tests — TDD PING phase.
+ *
+ * TelemetryPlatform is a pure composition Layer (Layer.mergeAll) that wires
+ * together EventSink + SessionSync + MetricsFlusher. No logic of its own —
+ * tests confirm that all three sinks fire when composed together.
+ *
+ * Tests:
+ *   1. TelemetryPlatform composes all three sinks — emit SessionStart + inc a
+ *      counter + flush() → events row, sessions row, metric_snapshots row.
+ *   2. Non-session event + no counters → events has 1 row, sessions/metrics empty.
+ *
+ * Layer topology:
+ *   Clock.Default              — provides Clock
+ *   makeDuckDbLayer            — provides DuckDbService
+ *   ObservabilityService.Default — requires Clock
+ *   TelemetryService.makeLayer() — requires Clock
+ *   TelemetryPlatform            — requires ObservabilityService | DuckDbService |
+ *                                    TelemetryService | Clock
+ */
+import { describe, expect, it } from "vitest"
+import { Effect, Layer } from "effect"
+import * as os from "node:os"
+import * as path from "node:path"
+import * as fs from "node:fs"
+
+import { ObservabilityService } from "../observability/observability.js"
+import { DuckDbService, makeDuckDbLayer } from "../db/duckdb-service.js"
+import { Clock } from "../clock.js"
+import { TelemetryService } from "./telemetry.js"
+import { MetricsFlusher } from "./metrics-flusher.js"
+import { TelemetryPlatform } from "./telemetry-platform.js"
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Unique temp DB file per test; cleaned up in finally. */
+const withTempDb = <A>(fn: (dbPath: string) => Promise<A>): Promise<A> => {
+  const dbPath = path.join(
+    os.tmpdir(),
+    `luna-telemetry-platform-test-${Date.now()}-${Math.random().toString(36).slice(2)}.duckdb`,
+  )
+  return fn(dbPath).finally(() => {
+    for (const suffix of ["", ".wal", ".lock"]) {
+      try { fs.unlinkSync(dbPath + suffix) } catch { /* ignore */ }
+    }
+  })
+}
+
+/**
+ * Build the full composed layer for TelemetryPlatform tests.
+ *
+ * Provides all dependencies that TelemetryPlatform's constituent sinks need:
+ *   ObservabilityService | DuckDbService | TelemetryService | Clock
+ *
+ * TelemetryPlatform is provided on top, so MetricsFlusher (and its flush()
+ * method) is available via yield* MetricsFlusher.
+ */
+const makeTestLayer = (dbPath: string) => {
+  const clockLayer = Clock.Default
+  const duckLayer = makeDuckDbLayer({ dbPath })
+  const obsLayer = ObservabilityService.Default.pipe(Layer.provide(clockLayer))
+  const telLayer = TelemetryService.makeLayer().pipe(Layer.provide(clockLayer))
+
+  // TelemetryPlatform requires all four dependencies
+  const platformLayer = TelemetryPlatform.pipe(
+    Layer.provide(Layer.mergeAll(obsLayer, duckLayer, telLayer, clockLayer)),
+  )
+
+  return Layer.mergeAll(clockLayer, duckLayer, obsLayer, telLayer, platformLayer)
+}
+
+type TestServices = ObservabilityService | DuckDbService | TelemetryService | MetricsFlusher
+
+const runWithLayer = (dbPath: string) =>
+  <A>(eff: Effect.Effect<A, unknown, TestServices>): Promise<A> => {
+    const layer = makeTestLayer(dbPath)
+    return Effect.runPromise(
+      Effect.scoped(
+        eff.pipe(
+          Effect.provide(layer as Layer.Layer<TestServices, never, never>),
+        ),
+      ),
+    )
+  }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+describe("TelemetryPlatform", () => {
+  // ── 1. All three sinks fire together ─────────────────────────────────────
+
+  it("composes all three sinks — SessionStart lands in events + sessions + metric_snapshots", async () => {
+    await withTempDb(async (dbPath) => {
+      const result = await runWithLayer(dbPath)(
+        Effect.gen(function* () {
+          const obs = yield* ObservabilityService
+          const db = yield* DuckDbService
+          const tel = yield* TelemetryService
+          const flusher = yield* MetricsFlusher
+
+          // Emit a SessionStart — triggers EventSink AND SessionSync
+          yield* obs.emit({
+            ts: "2024-01-01T00:00:00.000Z",
+            kind: "SessionStart",
+            level: "info",
+            sessionId: "plat-sess-001",
+            model: "claude-3-5-sonnet",
+          })
+
+          // Yield to daemon fibers
+          yield* Effect.sleep("30 millis")
+
+          // Increment a counter and flush — triggers MetricsFlusher
+          yield* tel.inc("platform.test.counter")
+          yield* flusher.flush
+
+          const eventsCount = yield* db.query("SELECT COUNT(*) AS n FROM events")
+          const sessionsCount = yield* db.query("SELECT COUNT(*) AS n FROM sessions")
+          const metricsCount = yield* db.query("SELECT COUNT(*) AS n FROM metric_snapshots")
+
+          return {
+            events: (eventsCount[0] as { n: number }).n,
+            sessions: (sessionsCount[0] as { n: number }).n,
+            metrics: (metricsCount[0] as { n: number }).n,
+          }
+        }),
+      )
+
+      // EventSink: the SessionStart event
+      expect(result.events).toBe(1)
+      // SessionSync: the SessionStart row in sessions
+      expect(result.sessions).toBe(1)
+      // MetricsFlusher: the one counter we flushed
+      expect(result.metrics).toBe(1)
+    })
+  })
+
+  // ── 2. Non-session event + no counters → only events table gets a row ────
+
+  it("non-session event lands only in events — sessions and metrics remain empty", async () => {
+    await withTempDb(async (dbPath) => {
+      const result = await runWithLayer(dbPath)(
+        Effect.gen(function* () {
+          const obs = yield* ObservabilityService
+          const db = yield* DuckDbService
+          const flusher = yield* MetricsFlusher
+
+          // Emit a non-session event (Error) — EventSink handles it, SessionSync ignores it
+          yield* obs.emit({
+            ts: "2024-01-01T00:00:00.000Z",
+            kind: "Error",
+            level: "error",
+            errorTag: "TestError",
+            message: "non-session event",
+          })
+
+          yield* Effect.sleep("30 millis")
+
+          // Flush with no counters — MetricsFlusher should write nothing
+          yield* flusher.flush
+
+          const eventsCount = yield* db.query("SELECT COUNT(*) AS n FROM events")
+          const sessionsCount = yield* db.query("SELECT COUNT(*) AS n FROM sessions")
+          const metricsCount = yield* db.query("SELECT COUNT(*) AS n FROM metric_snapshots")
+
+          return {
+            events: (eventsCount[0] as { n: number }).n,
+            sessions: (sessionsCount[0] as { n: number }).n,
+            metrics: (metricsCount[0] as { n: number }).n,
+          }
+        }),
+      )
+
+      // EventSink: 1 row for the Error event
+      expect(result.events).toBe(1)
+      // SessionSync: 0 rows — only handles SessionStart/SessionEnd
+      expect(result.sessions).toBe(0)
+      // MetricsFlusher: 0 rows — no counters were incremented
+      expect(result.metrics).toBe(0)
+    })
+  })
+})
