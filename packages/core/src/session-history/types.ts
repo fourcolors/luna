@@ -1,59 +1,78 @@
 /**
- * Session history types — the contract for storing and querying agent sessions
- * alongside telemetry data for analytics.
+ * Session history types — the contract for storing and querying agent session
+ * transcripts in Luna's Effect/Layer architecture.
  *
- * Mirrors sol-agent's cc_sessions table but designed for Luna's Effect/Layer
- * architecture and DuckDB backend.
+ * All API methods return Effect.Effect, never raw Promises (DESIGN §1).
  */
+import { Data, Effect } from "effect"
 
-export interface SessionRecord {
+// ── Error ────────────────────────────────────────────────────────────────────
+
+export class SessionHistoryError extends Data.TaggedError("SessionHistoryError")<{
+  readonly op: "record" | "query" | "delete" | "boot"
+  readonly message: string
+  readonly cause?: unknown
+}> {}
+
+// ── Domain types ─────────────────────────────────────────────────────────────
+
+/** Input shape for recording a new session transcript entry. */
+export interface SessionRecordInput {
   readonly type: "user" | "assistant" | "system"
   readonly entrypoint: string
   readonly sessionId: string
-  readonly uuid: string
-  readonly parentUuid: string | null
-  readonly timestamp: string // ISO 8601
-  readonly requestId: string | null
-  readonly toolUseId: string | null
+  readonly parentUuid?: string
+  readonly timestamp: string   // ISO 8601
+  readonly requestId?: string
+  readonly toolUseId?: string
   readonly textContent: string
-  readonly toolName: string | null
-  readonly skillName: string | null
+  readonly toolName?: string
+  readonly skillName?: string
+}
+
+/** A persisted session transcript entry (includes generated uuid + created_at). */
+export interface SessionRecord extends SessionRecordInput {
+  readonly uuid: string
+  readonly created_at: string  // ISO 8601
 }
 
 export interface SessionHistoryQuery {
   readonly sessionId?: string
-  readonly type?: SessionRecord["type"]
+  readonly type?: "user" | "assistant" | "system"
   readonly toolName?: string
   readonly skillName?: string
-  readonly startTime?: string // ISO 8601
-  readonly endTime?: string // ISO 8601
   readonly limit?: number
 }
+
+// ── API contract ─────────────────────────────────────────────────────────────
 
 export interface SessionHistoryApi {
   /**
    * Record a single message/event in session history.
-   * Returns the UUID of the recorded message.
+   * Returns the UUID assigned to the recorded entry.
    */
-  readonly record: (rec: SessionRecord) => Promise<string>
+  readonly record: (entry: SessionRecordInput) => Effect.Effect<string, SessionHistoryError>
 
   /**
    * Query session history with optional filters.
    */
-  readonly query: (q: SessionHistoryQuery) => Promise<SessionRecord[]>
+  readonly query: (q: SessionHistoryQuery) => Effect.Effect<ReadonlyArray<SessionRecord>, SessionHistoryError>
 
   /**
-   * Get a single session's full transcript.
+   * Get a single session's full transcript, ordered by timestamp ASC.
    */
-  readonly getSession: (sessionId: string) => Promise<SessionRecord[]>
+  readonly getSession: (sessionId: string) => Effect.Effect<ReadonlyArray<SessionRecord>, SessionHistoryError>
 
   /**
-   * Delete old session records (cleanup/retention policy).
+   * Delete entries whose timestamp (epoch ms) is older than `ts`.
    * Returns count of deleted rows.
    */
-  readonly deleteOlderThan: (isoTimestamp: string) => Promise<number>
+  readonly deleteOlderThan: (ts: number) => Effect.Effect<number, SessionHistoryError>
 }
 
+// ── Legacy types (kept for backward compat — prefer SessionRecordInput) ──────
+
+/** @deprecated Use SessionRecordInput. Will be removed in a future phase. */
 export interface SessionHistoryConfig {
   readonly dbPath: string
   readonly enableAudit?: boolean
