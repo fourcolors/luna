@@ -18,6 +18,7 @@ interface RegisteredClient {
 interface PendingRequest {
   readonly threadId: string
   readonly resolve: (frame: LocalShellResultFrame) => void
+  readonly reject: (error: Error) => void
   readonly timer: ReturnType<typeof setTimeout>
 }
 
@@ -41,6 +42,16 @@ export const createLocalShellBridge = (): LocalShellBridge => {
   const clients = new Map<string, RegisteredClient>()
   const pending = new Map<string, PendingRequest>()
 
+  const rejectPendingForThread = (threadId: string, message: string): void => {
+    for (const [requestId, request] of pending) {
+      if (request.threadId !== threadId) continue
+
+      clearTimeout(request.timer)
+      pending.delete(requestId)
+      request.reject(new Error(message))
+    }
+  }
+
   const setCapability = (
     frame: LocalShellCapabilityFrame,
     send: SendLocalShellFrame,
@@ -50,6 +61,10 @@ export const createLocalShellBridge = (): LocalShellBridge => {
     if (!frame.enabled) {
       if (existing?.capability.clientId === frame.clientId) {
         clients.delete(frame.threadId)
+        rejectPendingForThread(
+          frame.threadId,
+          `local shell disabled for ${frame.threadId}`,
+        )
       }
 
       return {
@@ -84,7 +99,13 @@ export const createLocalShellBridge = (): LocalShellBridge => {
 
   const removeClient = (clientId: string): void => {
     for (const [threadId, client] of clients) {
-      if (client.capability.clientId === clientId) clients.delete(threadId)
+      if (client.capability.clientId === clientId) {
+        clients.delete(threadId)
+        rejectPendingForThread(
+          threadId,
+          `local shell client removed for ${threadId}`,
+        )
+      }
     }
   }
 
@@ -115,6 +136,7 @@ export const createLocalShellBridge = (): LocalShellBridge => {
       pending.set(requestId, {
         threadId: input.threadId,
         resolve,
+        reject,
         timer,
       })
 

@@ -107,4 +107,62 @@ describe("local shell bridge", () => {
       bridge.request({ threadId: "thr_1", command: "pwd", timeoutMs: 10 }),
     ).rejects.toThrow("local shell unavailable")
   })
+
+  it("rejects pending request when client is removed", async () => {
+    const bridge = createLocalShellBridge()
+    bridge.setCapability(
+      {
+        type: "local-shell-capability",
+        threadId: "thr_1",
+        enabled: true,
+        clientId: "cli_1",
+        platform: "darwin",
+        cwd: "/work",
+      },
+      () => undefined,
+    )
+
+    const pending = bridge.request({
+      threadId: "thr_1",
+      command: "pwd",
+      timeoutMs: 2_000,
+    })
+    bridge.removeClient("cli_1")
+
+    await expect(pending).rejects.toThrow("local shell client removed")
+  })
+
+  it("rejects pending request when capability is disabled", async () => {
+    const bridge = createLocalShellBridge()
+    bridge.setCapability(
+      {
+        type: "local-shell-capability",
+        threadId: "thr_1",
+        enabled: true,
+        clientId: "cli_1",
+        platform: "darwin",
+        cwd: "/work",
+      },
+      () => undefined,
+    )
+
+    const pending = bridge.request({
+      threadId: "thr_1",
+      command: "pwd",
+      timeoutMs: 2_000,
+    })
+    bridge.setCapability(
+      {
+        type: "local-shell-capability",
+        threadId: "thr_1",
+        enabled: false,
+        clientId: "cli_1",
+        platform: "darwin",
+        cwd: "/work",
+      },
+      () => undefined,
+    )
+
+    await expect(pending).rejects.toThrow("local shell disabled")
+  })
 })
