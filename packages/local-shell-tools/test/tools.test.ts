@@ -165,4 +165,52 @@ describe("local shell tools", () => {
       timedOut: false,
     })
   })
+
+  it("local_shell_run defaults omitted timeout_ms to 120000", async () => {
+    const bridge = createLocalShellBridge()
+    const sent: unknown[] = []
+    bridge.setCapability(
+      {
+        type: "local-shell-capability",
+        threadId: "thr_1",
+        enabled: true,
+        clientId: "cli_1",
+        platform: "darwin",
+        cwd: "/work",
+      },
+      (frame) => sent.push(frame),
+    )
+
+    const [runTool] = makeLocalShellTools(bridge, () => "thr_1")
+    const pending = runTool.handler(
+      {
+        command: "pwd",
+        cwd: undefined,
+        timeout_ms: undefined,
+        thread_id: undefined,
+      },
+      undefined,
+    )
+
+    expect(sent).toHaveLength(1)
+    const request = sent[0] as {
+      readonly requestId: string
+      readonly timeoutMs?: number
+    }
+    expect(request.timeoutMs).toBe(120_000)
+
+    bridge.acceptResult({
+      type: "local-shell-result",
+      requestId: request.requestId,
+      threadId: "thr_1",
+      approved: true,
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      durationMs: 1,
+      timedOut: false,
+    })
+
+    await pending
+  })
 })

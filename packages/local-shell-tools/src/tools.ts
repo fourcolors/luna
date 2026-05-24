@@ -3,8 +3,8 @@ import { z } from "zod"
 import { defineTool, ToolError } from "@luna/tools"
 import type { LocalShellBridge } from "@luna/ui-ws"
 
-const DEFAULT_TIMEOUT_MS = 30_000
-const MAX_TIMEOUT_MS = 300_000
+const DEFAULT_TIMEOUT_MS = 120_000
+const MAX_TIMEOUT_MS = 120_000
 
 const runShape = {
   command: z
@@ -24,7 +24,7 @@ const runShape = {
     .positive()
     .max(MAX_TIMEOUT_MS)
     .optional()
-    .describe("Optional timeout in milliseconds. Default 30000, maximum 300000."),
+    .describe("Optional timeout in milliseconds. Default 120000, maximum 120000."),
   thread_id: z
     .string()
     .min(1)
