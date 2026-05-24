@@ -21,6 +21,7 @@ export type LunaCliIO = {
   stdout: Writable
   stderr: Writable
   env: Record<string, string | undefined>
+  homeDir?: string
   cwd: string
   approveLocalCommand?: (command: string) => Promise<boolean>
 }
@@ -162,11 +163,12 @@ export async function runLunaCli(
     return { exitCode: 2 }
   }
 
+  const homeDir = io.homeDir ?? homedir()
   const cfg = loadChatConfig({
     args,
     env: io.env,
-    dotenv: readLunaDotEnv(homedir()),
-    homeDir: homedir(),
+    dotenv: readLunaDotEnv(homeDir),
+    homeDir,
     cwd: io.cwd,
   })
   if (cfg.validationErrors.length > 0) {

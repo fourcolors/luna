@@ -31,7 +31,9 @@ Under the hood, Luna runs on the [Claude Code Agent SDK](https://docs.anthropic.
 - A [Claude.ai](https://claude.ai) subscription (Pro or higher)
 - [Claude Code](https://claude.ai/code) installed and logged in (`claude login`)
 
-The install script will check for an existing Claude Code session and walk you through setup if needed.
+Install the Claude Code CLI and authenticate it on the machine that will run
+the Luna server. The client installer does not read or write Claude OAuth
+tokens.
 
 ## Stack
 
@@ -78,39 +80,135 @@ apps/
   agent-cli/      — reference CLI composition
 ```
 
-## Install (macOS)
+## Install
 
-One command to install Luna on any Mac — clones the repo, installs deps, sets up `~/.luna/`, checks your Claude Code session, registers a launchd daemon, and installs the `luna` CLI shortcut:
+Luna is a monorepo. A clone contains the terminal client, web UI, server
+runtime, shared packages, and host/container setup scripts.
+
+Install the terminal client on a Mac:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/example-org/luna/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/fourcolors/luna/master/install.sh | bash
 ```
 
 Or clone and run locally:
 
 ```bash
-git clone https://github.com/example-org/luna.git ~/Projects/luna
+git clone https://github.com/fourcolors/luna.git ~/Projects/luna
 bash ~/Projects/luna/install.sh
 ```
 
-**Prerequisites:**
-- macOS (Apple Silicon or Intel)
-- A [Claude.ai](https://claude.ai) subscription (Pro or higher)
-- [Claude Code](https://claude.ai/code) — the installer will check your login status
-- Bun — the installer will install it if missing
+The installer clones the monorepo, installs dependencies, creates `~/.luna/`,
+and writes a `luna` wrapper that runs the terminal client:
 
 After install:
 ```bash
-luna          # opens the web UI at http://localhost:5174
+luna chat        # stable runtime
+luna chat --dev  # dev runtime
 ```
+
+Server and container setup are separate, explicit operations:
+
+- [Install guide](./docs/install.md)
+- [Incus container runtime](./docs/container-runtime.md)
+- [jax-box deployment](./docs/jax-box-deploy.md)
+
+The clone includes scripts for Linux hosts:
+
+```bash
+scripts/luna-server-install --help
+scripts/luna-container-create --help
+```
+
+## Runtime model
+
+Luna is designed to run with one local client and two server runtimes:
+
+| Runtime | Purpose | Client command | Default URL |
+|---------|---------|----------------|-------------|
+| Stable | The agent you actually use day to day | `luna chat` | `ws://jax-box:4753/ui` |
+| Dev | A separate runtime for testing fixes and branches | `luna chat --dev` | `ws://jax-box:5753/ui` |
+
+The terminal client reads profile settings from `~/.luna/.env`:
+
+```bash
+LUNA_STABLE_WS_URL=ws://jax-box:4753/ui
+LUNA_STABLE_UI_WS_TOKEN=<stable-token>
+LUNA_DEV_WS_URL=ws://jax-box:5753/ui
+LUNA_DEV_UI_WS_TOKEN=<dev-token>
+```
+
+Tokens are local secrets and should not be committed.
+
+## Container system
+
+Luna uses Incus system containers for host-like Linux runtimes. This gives each
+runtime its own systemd service, filesystem state, Claude Code config, and Bun
+environment without turning the whole machine into an OpenStack deployment.
+
+The recommended jax-box layout is:
+
+```text
+/root/luna/stable/repo      stable repo checkout
+/root/luna/dev/repo         dev repo checkout
+/root/.luna                 stable runtime state
+/root/.luna-dev             dev runtime state
+```
+
+Inside a container, the mounted paths are always:
+
+```text
+/root/luna                  repo
+/root/.luna                 runtime state
+```
+
+The dev container maps host ports to container ports:
+
+```text
+jax-box:5753 -> luna-dev:4753  WebSocket server
+jax-box:5754 -> luna-dev:4754  control server
+```
+
+Create the dev container from a clone on jax-box:
+
+```bash
+scripts/luna-container-create \
+  --profile dev \
+  --name luna-dev \
+  --repo git@github.com:fourcolors/luna.git \
+  --branch master \
+  --repo-path /root/luna/dev/repo \
+  --state-path /root/.luna-dev \
+  --host jax-box \
+  --host-ws-port 5753 \
+  --host-control-port 5754 \
+  --token '<dev-ui-ws-token>'
+```
+
+If the container already exists, this command exits successfully without
+changing the existing instance. Use `--replace` only when you intend to delete
+and rebuild the container. The scripts do not upgrade the host kernel; Incus
+containers share the T2 Mac host kernel.
 
 ## Development
 
 ```bash
 bun install
-bun run test        # run all tests
-bun run typecheck   # type check all packages
+bun run typecheck
+bun run test
 ```
+
+Focused checks for the deployment/client work:
+
+```bash
+bash -n install.sh scripts/luna-server-install scripts/luna-container-create scripts/lib/luna-deploy.sh
+bun run test test/deploy-scripts.test.ts apps/ui-web/scripts/__tests__/rename-chat-server.test.ts
+bun run --filter '@luna/agent-cli' test
+```
+
+Known local caveat: some DuckDB/telemetry tests currently fail under Vitest
+when it cannot load `bun:sqlite`. Use the focused checks above for deployment
+script changes until that test-runner issue is fixed.
 
 ### Dev servers
 
@@ -120,6 +218,32 @@ bun run --filter '@luna/ui-web' dev
 
 # Chat backend (requires Claude Code login)
 bun run --filter '@luna/ui-web' server:chat
+```
+
+### Stable/dev workflow
+
+Develop on a branch, push it, and test it through the dev runtime:
+
+```bash
+git checkout -b <feature-branch>
+bun run typecheck
+bun run --filter '@luna/agent-cli' test
+git push origin <feature-branch>
+luna chat --dev
+```
+
+After the dev runtime is working, merge to `master` and promote stable on
+jax-box:
+
+```bash
+ssh root@jax-box
+cd /root/luna/stable/repo
+git fetch origin master
+git checkout master
+git pull --ff-only origin master
+bun install --frozen-lockfile
+systemctl restart luna-chat-server.service
+curl -fsS http://127.0.0.1:4753/healthz
 ```
 
 ### Adding accounts

@@ -1,0 +1,275 @@
+#!/usr/bin/env bash
+# Create an Incus system container for a Luna runtime.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/luna-deploy.sh
+source "$SCRIPT_DIR/lib/luna-deploy.sh"
+
+PROFILE="${LUNA_PROFILE:-dev}"
+INSTANCE=""
+REPO_URL="${LUNA_REPO:-https://github.com/fourcolors/luna.git}"
+BRANCH="${LUNA_BRANCH:-master}"
+REPO_PATH=""
+STATE_PATH=""
+HOST="${LUNA_HOST:-jax-box}"
+LISTEN_ADDR="${LUNA_LISTEN_ADDR:-0.0.0.0}"
+HOST_WS_PORT=""
+HOST_CONTROL_PORT=""
+TOKEN="${LUNA_UI_WS_TOKEN:-}"
+IMAGE="${LUNA_INCUS_IMAGE:-images:ubuntu/24.04/cloud}"
+DRY_RUN=false
+INIT_INCUS=false
+REPLACE=false
+SKIP_CLONE=false
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/luna-container-create [options]
+
+Options:
+  --dry-run                    Print the Incus/container plan without changing the host.
+  --profile <name>             Profile name. Default: dev.
+  --name <instance>            Incus instance name. Default: luna-<profile>.
+  --repo <url>                 Luna git URL. Default: https://github.com/fourcolors/luna.git
+  --branch <branch>            Git branch to checkout. Default: master.
+  --repo-path <path>           Host repo path mounted at /root/luna.
+  --state-path <path>          Host state path mounted at /root/.luna.
+  --host <hostname>            Hostname clients use. Default: jax-box.
+  --listen-addr <addr>         Host listen address for proxies. Default: 0.0.0.0.
+  --host-ws-port <port>        Host WebSocket proxy port.
+  --host-control-port <port>   Host control proxy port.
+  --token <token>              UI WebSocket token to write if no token exists.
+  --init-incus                 Run `incus admin init --minimal` if Incus is uninitialized.
+  --replace                    Delete an existing instance with this name before creating it.
+  --skip-clone                 Require an existing repo path instead of cloning/updating it.
+  -h, --help                   Show this help.
+
+The container is unprivileged, uses security.nesting=true for Bun, mounts the
+repo/state from /root/luna/<profile>/repo and /root/.luna-<profile>, and proxies
+host ports to container-local 4753/4754.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY_RUN=true; shift ;;
+    --profile) PROFILE="${2:?missing --profile value}"; shift 2 ;;
+    --name) INSTANCE="${2:?missing --name value}"; shift 2 ;;
+    --repo) REPO_URL="${2:?missing --repo value}"; shift 2 ;;
+    --branch) BRANCH="${2:?missing --branch value}"; shift 2 ;;
+    --repo-path) REPO_PATH="${2:?missing --repo-path value}"; shift 2 ;;
+    --state-path) STATE_PATH="${2:?missing --state-path value}"; shift 2 ;;
+    --host) HOST="${2:?missing --host value}"; shift 2 ;;
+    --listen-addr) LISTEN_ADDR="${2:?missing --listen-addr value}"; shift 2 ;;
+    --host-ws-port) HOST_WS_PORT="${2:?missing --host-ws-port value}"; shift 2 ;;
+    --host-control-port) HOST_CONTROL_PORT="${2:?missing --host-control-port value}"; shift 2 ;;
+    --token) TOKEN="${2:?missing --token value}"; shift 2 ;;
+    --init-incus) INIT_INCUS=true; shift ;;
+    --replace) REPLACE=true; shift ;;
+    --skip-clone) SKIP_CLONE=true; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) luna_die "unknown option: $1" ;;
+  esac
+done
+
+luna_validate_profile "$PROFILE"
+[[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || luna_die "branch contains unsupported characters"
+
+PROFILE_ENV="$(luna_profile_env_name "$PROFILE")"
+
+if [[ -z "$INSTANCE" ]]; then
+  INSTANCE="luna-${PROFILE}"
+fi
+
+if [[ -z "$REPO_PATH" ]]; then
+  REPO_PATH="/root/luna/${PROFILE}/repo"
+fi
+
+if [[ -z "$STATE_PATH" ]]; then
+  if [[ "$PROFILE" == "stable" ]]; then
+    STATE_PATH="/root/.luna"
+  else
+    STATE_PATH="/root/.luna-${PROFILE}"
+  fi
+fi
+
+if [[ -z "$HOST_WS_PORT" ]]; then
+  if [[ "$PROFILE" == "stable" ]]; then
+    HOST_WS_PORT="4753"
+  else
+    HOST_WS_PORT="5753"
+  fi
+fi
+
+if [[ -z "$HOST_CONTROL_PORT" ]]; then
+  if [[ "$PROFILE" == "stable" ]]; then
+    HOST_CONTROL_PORT="4754"
+  else
+    HOST_CONTROL_PORT="5754"
+  fi
+fi
+
+[[ "$HOST_WS_PORT" =~ ^[0-9]+$ ]] || luna_die "--host-ws-port must be numeric"
+[[ "$HOST_CONTROL_PORT" =~ ^[0-9]+$ ]] || luna_die "--host-control-port must be numeric"
+
+if [[ -z "$TOKEN" ]]; then
+  profile_token_var="LUNA_${PROFILE_ENV}_UI_WS_TOKEN"
+  TOKEN="${!profile_token_var:-}"
+fi
+
+preflight_incus_reachable() {
+  command -v incus >/dev/null 2>&1 || luna_die "Incus CLI not found. Install and initialize Incus before creating Luna containers."
+  if ! incus info >/dev/null 2>&1; then
+    if [[ "$INIT_INCUS" == true ]]; then
+      luna_run incus admin init --minimal
+    else
+      luna_die "Incus daemon is not reachable or not initialized. Re-run with --init-incus to run 'incus admin init --minimal'."
+    fi
+  fi
+}
+
+preflight_incus_baseline() {
+  incus storage show default >/dev/null 2>&1 || luna_die "Incus storage pool 'default' is missing"
+  incus network show incusbr0 >/dev/null 2>&1 || luna_die "Incus network 'incusbr0' is missing"
+  [[ "$(incus profile device get default root pool 2>/dev/null)" == "default" ]] || luna_die "Incus default profile root disk must use pool=default"
+  [[ "$(incus profile device get default root path 2>/dev/null)" == "/" ]] || luna_die "Incus default profile root disk must mount path=/"
+  [[ "$(incus profile device get default eth0 network 2>/dev/null)" == "incusbr0" ]] || luna_die "Incus default profile eth0 must use network=incusbr0"
+}
+
+prepare_repo() {
+  if [[ "$SKIP_CLONE" == true ]]; then
+    if [[ "$DRY_RUN" == true ]]; then
+      luna_run test -d "$REPO_PATH/.git"
+    else
+      [[ -d "$REPO_PATH/.git" ]] || luna_die "--skip-clone requires $REPO_PATH to be a git clone"
+    fi
+    return 0
+  fi
+
+  if [[ "$DRY_RUN" == true ]]; then
+    luna_run mkdir -p "$(dirname "$REPO_PATH")"
+    printf '+ if repo missing: git clone --branch %q %q %q\n' "$BRANCH" "$REPO_URL" "$REPO_PATH"
+    printf '+ if repo exists: git -C %q pull --ff-only\n' "$REPO_PATH"
+    return 0
+  fi
+
+  if [[ -d "$REPO_PATH/.git" ]]; then
+    if [[ -n "$(git -C "$REPO_PATH" status --porcelain)" ]]; then
+      luna_die "$REPO_PATH has uncommitted changes; commit/stash or use a clean path"
+    fi
+    git -C "$REPO_PATH" fetch origin "$BRANCH"
+    git -C "$REPO_PATH" checkout "$BRANCH"
+    git -C "$REPO_PATH" pull --ff-only origin "$BRANCH"
+  else
+    mkdir -p "$(dirname "$REPO_PATH")"
+    git clone --branch "$BRANCH" "$REPO_URL" "$REPO_PATH"
+  fi
+}
+
+render_cloud_init() {
+  cat <<EOF
+#cloud-config
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - git
+  - unzip
+runcmd:
+  - [ bash, -lc, "/root/luna/scripts/luna-server-install --profile ${PROFILE} --repo-dir /root/luna --luna-home /root/.luna" ]
+EOF
+}
+
+set_cloud_init() {
+  if [[ "$DRY_RUN" == true ]]; then
+    printf '+ incus config set %q cloud-init.user-data - <<CLOUD_INIT\n' "$INSTANCE"
+    render_cloud_init
+    printf 'CLOUD_INIT\n'
+    return 0
+  fi
+  render_cloud_init | incus config set "$INSTANCE" cloud-init.user-data -
+}
+
+instance_exists() {
+  incus info "$INSTANCE" >/dev/null 2>&1
+}
+
+luna_info "Preparing Luna Incus container: $INSTANCE"
+printf 'Profile: %s\n' "$PROFILE"
+printf 'Repo mount: %s -> /root/luna\n' "$REPO_PATH"
+printf 'State mount: %s -> /root/.luna\n' "$STATE_PATH"
+printf 'Client URL: ws://%s:%s/ui\n' "$HOST" "$HOST_WS_PORT"
+
+INSTANCE_ALREADY_EXISTS=false
+if [[ "$DRY_RUN" == false ]]; then
+  preflight_incus_reachable
+  if instance_exists; then
+    INSTANCE_ALREADY_EXISTS=true
+    if [[ "$REPLACE" == true ]]; then
+      preflight_incus_baseline
+    else
+      luna_info "Incus instance '$INSTANCE' already exists; leaving it unchanged"
+      printf 'Use --replace to delete and recreate it, or run scripts/luna-server-install inside the container to repair the server.\n'
+      exit 0
+    fi
+  else
+    preflight_incus_baseline
+  fi
+else
+  printf '+ command -v incus\n'
+  printf '+ incus info\n'
+fi
+
+prepare_repo
+luna_run mkdir -p "$STATE_PATH" "$STATE_PATH/claude" "$STATE_PATH/logs" "$STATE_PATH/run"
+
+luna_upsert_env "$STATE_PATH/.env" "CLAUDE_CONFIG_DIR" "/root/.luna/claude"
+luna_upsert_env "$STATE_PATH/.env" "LUNA_REPO_ROOT" "/root/luna"
+luna_upsert_env "$STATE_PATH/.env" "LUNA_UI_WS_HOST" "0.0.0.0"
+luna_upsert_env "$STATE_PATH/.env" "LUNA_${PROFILE_ENV}_WS_URL" "ws://${HOST}:${HOST_WS_PORT}/ui"
+
+if luna_env_has_token "$STATE_PATH/.env"; then
+  luna_info "Existing UI token found; preserving it"
+elif [[ -n "$TOKEN" ]]; then
+  luna_upsert_env "$STATE_PATH/.env" "UI_WS_TOKEN" "$TOKEN"
+  luna_upsert_env "$STATE_PATH/.env" "LUNA_${PROFILE_ENV}_UI_WS_TOKEN" "$TOKEN"
+else
+  luna_die "UI token is required. Pass --token or pre-create $STATE_PATH/.env with UI_WS_TOKEN."
+fi
+
+if [[ "$DRY_RUN" == false && "$REPLACE" == true && "$INSTANCE_ALREADY_EXISTS" == true ]]; then
+  luna_run incus delete "$INSTANCE" --force
+fi
+
+if [[ "$DRY_RUN" == true && "$REPLACE" == true ]]; then
+  luna_run incus delete "$INSTANCE" --force
+fi
+
+luna_run incus init "$IMAGE" "$INSTANCE" \
+  --config security.nesting=true \
+  --config boot.autostart=true \
+  --config boot.autorestart=true
+
+set_cloud_init
+
+luna_run incus config device add "$INSTANCE" luna-repo disk \
+  source="$REPO_PATH" path=/root/luna shift=true
+luna_run incus config device add "$INSTANCE" luna-home disk \
+  source="$STATE_PATH" path=/root/.luna shift=true
+luna_run incus config device add "$INSTANCE" "ws${HOST_WS_PORT}" proxy \
+  "listen=tcp:${LISTEN_ADDR}:${HOST_WS_PORT}" "connect=tcp:127.0.0.1:4753" bind=host
+luna_run incus config device add "$INSTANCE" "control${HOST_CONTROL_PORT}" proxy \
+  "listen=tcp:${LISTEN_ADDR}:${HOST_CONTROL_PORT}" "connect=tcp:127.0.0.1:4754" bind=host
+
+luna_run incus start "$INSTANCE"
+luna_run incus exec "$INSTANCE" -- cloud-init status --wait
+luna_run incus exec "$INSTANCE" -- test -w /root/luna
+STATUS_SERVICE="$(luna_service_name "$PROFILE")"
+luna_run incus exec "$INSTANCE" -- systemctl status "$STATUS_SERVICE"
+
+luna_info "Container ready"
+printf 'Client config:\n'
+printf 'LUNA_%s_WS_URL=ws://%s:%s/ui\n' "$PROFILE_ENV" "$HOST" "$HOST_WS_PORT"
+printf 'LUNA_%s_UI_WS_TOKEN=<redacted>\n' "$PROFILE_ENV"

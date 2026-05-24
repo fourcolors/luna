@@ -1,6 +1,9 @@
 import { PassThrough } from "node:stream"
 import { AddressInfo } from "node:net"
 import { spawnSync } from "node:child_process"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocketServer } from "ws"
 import type { ClientFrame, ServerFrame } from "@luna/ui-ws"
@@ -81,6 +84,13 @@ const hasProcessWithMarker = (marker: string): boolean => {
 
 describe("luna chat app", () => {
   let server: WebSocketServer | undefined
+  const homeDirs: string[] = []
+
+  const isolatedHomeDir = (): string => {
+    const dir = mkdtempSync(join(tmpdir(), "luna-cli-home-"))
+    homeDirs.push(dir)
+    return dir
+  }
 
   afterEach(async () => {
     if (server !== undefined) {
@@ -88,6 +98,9 @@ describe("luna chat app", () => {
         server?.close((error) => (error === undefined ? resolve() : reject(error)))
       })
       server = undefined
+    }
+    for (const dir of homeDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 
@@ -161,6 +174,7 @@ describe("luna chat app", () => {
       stdout,
       stderr,
       env: { LUNA_UI_WS_TOKEN: "token-from-env" },
+      homeDir: isolatedHomeDir(),
       cwd: process.cwd(),
     })
 
@@ -196,6 +210,7 @@ describe("luna chat app", () => {
       stdout,
       stderr,
       env: { LUNA_UI_WS_TOKEN: "token-from-env" },
+      homeDir: isolatedHomeDir(),
       cwd: process.cwd(),
     })
 
@@ -218,6 +233,7 @@ describe("luna chat app", () => {
       stdout,
       stderr,
       env: { LUNA_DEV_UI_WS_TOKEN: "token-from-env" },
+      homeDir: isolatedHomeDir(),
       cwd: process.cwd(),
     })
 
@@ -262,6 +278,7 @@ describe("luna chat app", () => {
       stdout,
       stderr,
       env: { LUNA_UI_WS_TOKEN: "token-from-env" },
+      homeDir: isolatedHomeDir(),
       cwd: process.cwd(),
     })
 
@@ -293,6 +310,7 @@ describe("luna chat app", () => {
       stdout,
       stderr,
       env: { LUNA_UI_WS_TOKEN: "token-from-env" },
+      homeDir: isolatedHomeDir(),
       cwd: process.cwd(),
     })
 
@@ -355,6 +373,7 @@ describe("luna chat app", () => {
       stdout,
       stderr,
       env: { LUNA_UI_WS_TOKEN: "token-from-env" },
+      homeDir: isolatedHomeDir(),
       cwd: process.cwd(),
     })
 
@@ -408,6 +427,7 @@ describe("luna chat app", () => {
       stdout,
       stderr,
       env: { LUNA_UI_WS_TOKEN: "token-from-env" },
+      homeDir: isolatedHomeDir(),
       cwd: process.cwd(),
       approveLocalCommand,
     })
@@ -465,6 +485,7 @@ describe("luna chat app", () => {
       stdout,
       stderr,
       env: { LUNA_UI_WS_TOKEN: "token-from-env" },
+      homeDir: isolatedHomeDir(),
       cwd: process.cwd(),
       approveLocalCommand,
     })
@@ -509,6 +530,7 @@ describe("luna chat app", () => {
       stdout,
       stderr,
       env: { LUNA_UI_WS_TOKEN: "token-from-env" },
+      homeDir: isolatedHomeDir(),
       cwd: process.cwd(),
       approveLocalCommand: async () => true,
     })
@@ -554,6 +576,7 @@ describe("luna chat app", () => {
       stdout,
       stderr,
       env: { LUNA_UI_WS_TOKEN: "token-from-env" },
+      homeDir: isolatedHomeDir(),
       cwd: process.cwd(),
       approveLocalCommand: async () => true,
     })

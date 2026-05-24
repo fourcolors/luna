@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# Install the Luna chat server as a systemd service.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/luna-deploy.sh
+source "$SCRIPT_DIR/lib/luna-deploy.sh"
+
+PROFILE="${LUNA_PROFILE:-stable}"
+REPO_DIR="${LUNA_REPO_DIR:-/root/luna}"
+LUNA_HOME="${LUNA_HOME:-/root/.luna}"
+SERVICE_DIR="${LUNA_SERVICE_DIR:-/etc/systemd/system}"
+SERVICE_NAME=""
+TOKEN="${UI_WS_TOKEN:-${LUNA_UI_WS_TOKEN:-}}"
+BIND_HOST="${LUNA_UI_WS_HOST:-0.0.0.0}"
+DRY_RUN=false
+SKIP_DEPS=false
+ENABLE_SERVICE=true
+START_SERVICE=true
+ROTATE_TOKEN=false
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/luna-server-install [options]
+
+Options:
+  --dry-run                 Print the files/commands without changing the host.
+  --profile <name>          Runtime profile name. Default: stable.
+  --repo-dir <path>         Luna monorepo path. Default: /root/luna.
+  --luna-home <path>        Luna state path. Default: /root/.luna.
+  --service-dir <path>      systemd unit directory. Default: /etc/systemd/system.
+  --service-name <name>     Override generated unit name.
+  --token <token>           UI WebSocket token to write if no token exists.
+  --rotate-token            Replace existing UI token with --token.
+  --bind-host <host>        LUNA_UI_WS_HOST value. Default: 0.0.0.0.
+  --skip-deps               Do not install apt packages or Bun.
+  --no-enable               Do not run systemctl enable.
+  --no-start                Do not start/restart the service.
+  -h, --help                Show this help.
+
+This script never prints token values. Existing tokens in .env are preserved
+unless --rotate-token is supplied.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY_RUN=true; shift ;;
+    --profile) PROFILE="${2:?missing --profile value}"; shift 2 ;;
+    --repo-dir) REPO_DIR="${2:?missing --repo-dir value}"; shift 2 ;;
+    --luna-home) LUNA_HOME="${2:?missing --luna-home value}"; shift 2 ;;
+    --service-dir) SERVICE_DIR="${2:?missing --service-dir value}"; shift 2 ;;
+    --service-name) SERVICE_NAME="${2:?missing --service-name value}"; shift 2 ;;
+    --token) TOKEN="${2:?missing --token value}"; shift 2 ;;
+    --rotate-token) ROTATE_TOKEN=true; shift ;;
+    --bind-host) BIND_HOST="${2:?missing --bind-host value}"; shift 2 ;;
+    --skip-deps) SKIP_DEPS=true; shift ;;
+    --no-enable) ENABLE_SERVICE=false; shift ;;
+    --no-start) START_SERVICE=false; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) luna_die "unknown option: $1" ;;
+  esac
+done
+
+luna_validate_profile "$PROFILE"
+
+if [[ -z "$SERVICE_NAME" ]]; then
+  SERVICE_NAME="$(luna_service_name "$PROFILE")"
+fi
+
+ENV_FILE="$LUNA_HOME/.env"
+SERVICE_FILE="$SERVICE_DIR/$SERVICE_NAME"
+
+install_deps() {
+  [[ "$SKIP_DEPS" == false ]] || return 0
+  if [[ "$DRY_RUN" == true ]]; then
+    luna_run apt-get update
+    luna_run apt-get install -y ca-certificates curl git unzip
+    luna_run bash -lc 'command -v bun >/dev/null || curl -fsSL https://bun.sh/install | bash'
+    return 0
+  fi
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git unzip
+  fi
+  if ! command -v bun >/dev/null 2>&1 && [[ ! -x "$HOME/.bun/bin/bun" ]]; then
+    curl -fsSL https://bun.sh/install | bash
+    export PATH="$HOME/.bun/bin:$PATH"
+  fi
+}
+
+write_service() {
+  local bun_bin="$1"
+  if [[ "$DRY_RUN" == true ]]; then
+    printf 'Would write %s:\n' "$SERVICE_FILE"
+    render_service "$bun_bin"
+    return 0
+  fi
+  mkdir -p "$SERVICE_DIR"
+  render_service "$bun_bin" > "$SERVICE_FILE"
+}
+
+render_service() {
+  local bun_bin="$1"
+  cat <<EOF
+[Unit]
+Description=Luna chat server (${PROFILE})
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${REPO_DIR}
+EnvironmentFile=${ENV_FILE}
+ExecStart=${bun_bin} run --filter @luna/ui-web server:chat
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+luna_info "Installing Luna server profile: $PROFILE"
+printf 'Repo: %s\n' "$REPO_DIR"
+printf 'State: %s\n' "$LUNA_HOME"
+printf 'Service: %s\n' "$SERVICE_FILE"
+
+if [[ "$DRY_RUN" == false ]]; then
+  [[ -d "$REPO_DIR/.git" ]] || luna_die "$REPO_DIR is not a git clone"
+fi
+
+if ! luna_env_has_token "$ENV_FILE" || [[ "$ROTATE_TOKEN" == true ]]; then
+  [[ -n "$TOKEN" ]] ||
+    luna_die "UI_WS_TOKEN is required. Pass --token, set UI_WS_TOKEN, or create $ENV_FILE before installing."
+fi
+
+install_deps
+BUN_BIN="$(luna_find_bun)"
+
+if [[ "$DRY_RUN" == false ]]; then
+  [[ -x "$BUN_BIN" ]] || luna_die "Bun not found at $BUN_BIN"
+fi
+
+luna_run mkdir -p "$LUNA_HOME" "$LUNA_HOME/claude" "$LUNA_HOME/logs" "$LUNA_HOME/run"
+
+luna_upsert_env "$ENV_FILE" "CLAUDE_CONFIG_DIR" "$LUNA_HOME/claude"
+luna_upsert_env "$ENV_FILE" "LUNA_REPO_ROOT" "$REPO_DIR"
+luna_upsert_env "$ENV_FILE" "LUNA_UI_WS_HOST" "$BIND_HOST"
+
+if luna_env_has_token "$ENV_FILE" && [[ "$ROTATE_TOKEN" == false ]]; then
+  luna_info "Existing UI token found; preserving it"
+else
+  luna_upsert_env "$ENV_FILE" "UI_WS_TOKEN" "$TOKEN"
+fi
+
+if [[ "$SKIP_DEPS" == false ]]; then
+  luna_run "$BUN_BIN" install --cwd "$REPO_DIR" --frozen-lockfile
+fi
+
+write_service "$BUN_BIN"
+
+if [[ "$DRY_RUN" == false ]]; then
+  systemctl daemon-reload
+  if [[ "$ENABLE_SERVICE" == true ]]; then
+    systemctl enable "$SERVICE_NAME"
+  fi
+  if [[ "$START_SERVICE" == true ]]; then
+    systemctl restart "$SERVICE_NAME"
+  fi
+else
+  luna_run systemctl daemon-reload
+  [[ "$ENABLE_SERVICE" == false ]] || luna_run systemctl enable "$SERVICE_NAME"
+  [[ "$START_SERVICE" == false ]] || luna_run systemctl restart "$SERVICE_NAME"
+fi
+
+luna_info "Luna server install complete"
