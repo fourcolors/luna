@@ -2,7 +2,10 @@ import { AddressInfo } from "node:net"
 import { afterEach, describe, expect, it } from "vitest"
 import { WebSocketServer } from "ws"
 import type { ClientFrame, ServerFrame } from "@luna/ui-ws"
-import { LunaWsClient } from "../src/chat/ws-client.js"
+import {
+  LunaWsClient,
+  shouldRegisterUnexpectedResponseHandler,
+} from "../src/chat/ws-client.js"
 
 const waitFor = async <T>(promise: Promise<T>, timeoutMs = 1_000): Promise<T> => {
   let timeout: ReturnType<typeof setTimeout> | undefined
@@ -26,9 +29,13 @@ describe("LunaWsClient", () => {
       client = undefined
     }
     if (server !== undefined) {
-      await new Promise<void>((resolve, reject) => {
-        server?.close((err) => (err === undefined ? resolve() : reject(err)))
-      })
+      for (const socket of server.clients) socket.terminate()
+      await Promise.race([
+        new Promise<void>((resolve, reject) => {
+          server?.close((err) => (err === undefined ? resolve() : reject(err)))
+        }),
+        new Promise<void>((resolve) => setTimeout(resolve, 250)),
+      ])
       server = undefined
     }
   })
@@ -38,6 +45,11 @@ describe("LunaWsClient", () => {
     const address = server.address() as AddressInfo
     return { server, url: `ws://127.0.0.1:${address.port}` }
   }
+
+  it("skips unsupported unexpected-response listener under Bun", () => {
+    expect(shouldRegisterUnexpectedResponseHandler({ Bun: {} })).toBe(false)
+    expect(shouldRegisterUnexpectedResponseHandler({})).toBe(true)
+  })
 
   it("sends bearer auth and receives server frames in order", async () => {
     const { server, url } = startServer()

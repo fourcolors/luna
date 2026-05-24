@@ -29,6 +29,10 @@ const parseServerFrame = (raw: RawData): ServerFrame => {
   return parsed as unknown as ServerFrame
 }
 
+export const shouldRegisterUnexpectedResponseHandler = (
+  runtime: { readonly Bun?: unknown } = globalThis as { readonly Bun?: unknown },
+): boolean => runtime.Bun === undefined
+
 export class LunaWsClient {
   readonly #socket: WebSocket
   readonly #frames: ServerFrame[] = []
@@ -58,7 +62,9 @@ export class LunaWsClient {
       const cleanup = (): void => {
         socket.off("open", onOpen)
         socket.off("error", onError)
-        socket.off("unexpected-response", onUnexpectedResponse)
+        if (shouldRegisterUnexpectedResponseHandler()) {
+          socket.off("unexpected-response", onUnexpectedResponse)
+        }
         if (timeout !== undefined) {
           clearTimeout(timeout)
           timeout = undefined
@@ -96,7 +102,9 @@ export class LunaWsClient {
 
       socket.on("open", onOpen)
       socket.on("error", onError)
-      socket.on("unexpected-response", onUnexpectedResponse)
+      if (shouldRegisterUnexpectedResponseHandler()) {
+        socket.on("unexpected-response", onUnexpectedResponse)
+      }
     })
   }
 
@@ -117,9 +125,24 @@ export class LunaWsClient {
   }
 
   close(): Promise<void> {
+    if (this.#terminalError !== null) {
+      if (this.#socket.readyState !== WebSocket.CLOSED) this.#socket.terminate()
+      return Promise.resolve()
+    }
     if (this.#socket.readyState === WebSocket.CLOSED) return Promise.resolve()
     return new Promise((resolve) => {
-      this.#socket.once("close", () => resolve())
+      let settled = false
+      const done = (): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeout)
+        resolve()
+      }
+      const timeout = setTimeout(() => {
+        if (this.#socket.readyState !== WebSocket.CLOSED) this.#socket.terminate()
+        done()
+      }, 250)
+      this.#socket.once("close", done)
       if (this.#socket.readyState === WebSocket.CLOSING) return
       this.#socket.close()
     })
