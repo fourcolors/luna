@@ -28,6 +28,21 @@ describe("resolveUiWsToken", () => {
     ).toThrow("UI_WS_TOKEN or LUNA_UI_WS_TOKEN must be set")
   })
 
+  it("does not fall back when UI_WS_TOKEN is present but empty", () => {
+    expect(() =>
+      resolveUiWsToken({
+        UI_WS_TOKEN: "",
+        LUNA_UI_WS_TOKEN: "luna-token-123456",
+      }),
+    ).toThrow("UI_WS_TOKEN or LUNA_UI_WS_TOKEN must be set")
+    expect(() =>
+      resolveUiWsToken({
+        UI_WS_TOKEN: "   ",
+        LUNA_UI_WS_TOKEN: "luna-token-123456",
+      }),
+    ).toThrow("UI_WS_TOKEN or LUNA_UI_WS_TOKEN must be set")
+  })
+
   it("throws when the resolved token is shorter than 16 characters", () => {
     expect(() => resolveUiWsToken({ UI_WS_TOKEN: "short-token" })).toThrow(
       /at least 16 characters/,

@@ -367,14 +367,14 @@ export const startUIWebSocketServer = (
           )
         }
 
-        const localShellClients = yield* Ref.make<ReadonlyMap<string, string>>(
-          new Map(),
+        const localShellClients = yield* Ref.make<ReadonlySet<string>>(
+          new Set(),
         )
         if (localShellBridge !== null) {
           yield* Effect.addFinalizer(() =>
             Effect.gen(function* () {
               const clients = yield* Ref.get(localShellClients)
-              for (const clientId of new Set(clients.values())) {
+              for (const clientId of clients) {
                 localShellBridge.removeClient(clientId)
               }
             }),
@@ -558,9 +558,9 @@ export const startUIWebSocketServer = (
                     send(ws, status)
                     if (status.accepted) {
                       yield* Ref.update(localShellClients, (clients) => {
-                        const next = new Map(clients)
-                        if (frame.enabled) next.set(frame.threadId, frame.clientId)
-                        else next.delete(frame.threadId)
+                        const next = new Set(clients)
+                        if (frame.enabled) next.add(frame.clientId)
+                        else next.delete(frame.clientId)
                         return next
                       })
                     }
