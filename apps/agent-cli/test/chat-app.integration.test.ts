@@ -206,6 +206,28 @@ describe("luna chat app", () => {
     await expect(waitFor(done)).resolves.toEqual({ exitCode: 0 })
   })
 
+  it("prints the selected non-stable profile in the ready hint", async () => {
+    const chat = await startChatServer()
+    const stdin = new PassThrough()
+    const stdout = new PassThrough()
+    const stderr = new PassThrough()
+    const output = collectStream(stdout)
+
+    const done = runLunaCli(["chat", "--dev", "--url", chat.url], {
+      stdin,
+      stdout,
+      stderr,
+      env: { LUNA_DEV_UI_WS_TOKEN: "token-from-env" },
+      cwd: process.cwd(),
+    })
+
+    await waitForOutput(output, "Luna dev ready. Type a message, /help, or /quit.")
+    stdin.write("/quit\n")
+    stdin.end()
+
+    await expect(waitFor(done)).resolves.toEqual({ exitCode: 0 })
+  })
+
   it("does not print the initial disabled local-shell status as chat output", async () => {
     server = new WebSocketServer({ port: 0 })
     await new Promise<void>((resolve) => server?.once("listening", resolve))

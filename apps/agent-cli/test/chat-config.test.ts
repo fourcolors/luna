@@ -16,6 +16,24 @@ describe("luna chat config", () => {
     expect(parseChatArgs(["chat", "-h"])).toEqual({ command: "help", unknown: [] })
   })
 
+  it("parses profile aliases for one luna binary", () => {
+    expect(parseChatArgs(["chat", "--dev"])).toMatchObject({
+      command: "chat",
+      profile: "dev",
+      unknown: [],
+    })
+    expect(parseChatArgs(["chat", "--profile", "stable"])).toMatchObject({
+      command: "chat",
+      profile: "stable",
+      unknown: [],
+    })
+    expect(parseChatArgs(["chat", "--profile=dev"])).toMatchObject({
+      command: "chat",
+      profile: "dev",
+      unknown: [],
+    })
+  })
+
   it("applies precedence flags over env over dotenv over defaults", () => {
     const args = parseChatArgs([
       "chat",
@@ -47,6 +65,50 @@ describe("luna chat config", () => {
     expect(cfg.startMode).toBe("ssh")
     expect(cfg.startTimeoutMs).toBe(45_000)
     expect(cfg.localShellInitial).toBe(true)
+  })
+
+  it("loads profile-specific settings before legacy stable settings", () => {
+    const cfg = loadChatConfig({
+      args: parseChatArgs(["chat", "--dev"]),
+      env: {
+        LUNA_WS_URL: "ws://stable-env/ui",
+        LUNA_UI_WS_TOKEN: "stable-env-token",
+        LUNA_START_MODE: "local",
+        LUNA_DEV_WS_URL: "ws://dev-env/ui",
+        LUNA_DEV_UI_WS_TOKEN: "dev-env-token",
+        LUNA_DEV_START_MODE: "ssh",
+        LUNA_DEV_START_COMMAND: "systemctl --user restart luna-dev-chat-server.service",
+        LUNA_DEV_START_SSH: "root@jax-box",
+      },
+      dotenv: {
+        LUNA_DEV_WS_URL: "ws://dev-file/ui",
+        LUNA_DEV_UI_WS_TOKEN: "dev-file-token",
+      },
+      homeDir: "/tmp/home",
+      cwd: "/work",
+    })
+    expect(cfg.profileName).toBe("dev")
+    expect(cfg.url).toBe("ws://dev-env/ui")
+    expect(cfg.token).toBe("dev-env-token")
+    expect(cfg.startMode).toBe("ssh")
+    expect(cfg.startCommand).toBe("systemctl --user restart luna-dev-chat-server.service")
+    expect(cfg.startSsh).toBe("root@jax-box")
+  })
+
+  it("lets explicit flags override profile settings", () => {
+    const cfg = loadChatConfig({
+      args: parseChatArgs(["chat", "--dev", "--url", "ws://flag/ui", "--token", "flag-token"]),
+      env: {
+        LUNA_DEV_WS_URL: "ws://dev-env/ui",
+        LUNA_DEV_UI_WS_TOKEN: "dev-env-token",
+      },
+      dotenv: {},
+      homeDir: "/tmp/home",
+      cwd: "/work",
+    })
+    expect(cfg.profileName).toBe("dev")
+    expect(cfg.url).toBe("ws://flag/ui")
+    expect(cfg.token).toBe("flag-token")
   })
 
   it("defaults to localhost url, no recovery, and local shell off", () => {
@@ -84,6 +146,7 @@ describe("luna chat config", () => {
       cwd: "/work",
     })
     const summary = redactedConfigSummary(cfg)
+    expect(summary).toContain("profile=stable")
     expect(summary).toContain("token=present")
     expect(summary).not.toContain("secret-token-123456")
   })

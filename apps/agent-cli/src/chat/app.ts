@@ -39,6 +39,8 @@ const USAGE = [
   "Usage: luna chat [options]",
   "",
   "Options:",
+  "  --profile <name>           use a named profile from ~/.luna/.env",
+  "  --dev                      shortcut for --profile dev",
   "  --url <ws-url>              UI WebSocket URL",
   "  --token <token>             UI WebSocket bearer token",
   "  --thread <thread-id>        subscribe to an existing thread",
@@ -206,7 +208,8 @@ export async function runLunaCli(
   const announceReady = (): void => {
     if (readyAnnounced) return
     readyAnnounced = true
-    write(io.stdout, "Luna ready. Type a message, /help, or /quit.\n")
+    const name = cfg.profileName === "stable" ? "Luna" : `Luna ${cfg.profileName}`
+    write(io.stdout, `${name} ready. Type a message, /help, or /quit.\n`)
   }
 
   const markThread = (threadId: string): void => {

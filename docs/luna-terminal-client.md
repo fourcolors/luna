@@ -18,14 +18,42 @@ LUNA_UI_WS_TOKEN=<token>
 `LUNA_WS_URL` defaults to `ws://127.0.0.1:4753/ui` when omitted.
 `LUNA_UI_WS_TOKEN` is required unless you pass `--token`.
 
+Profiles let one `luna` binary switch between stable and development runtimes:
+
+```bash
+LUNA_STABLE_WS_URL=ws://jax-box:4753/ui
+LUNA_STABLE_UI_WS_TOKEN=<stable-token>
+
+LUNA_DEV_WS_URL=ws://jax-box:5753/ui
+LUNA_DEV_UI_WS_TOKEN=<dev-token>
+```
+
+Use the stable profile by default:
+
+```bash
+luna chat
+```
+
+Use the dev profile with either flag:
+
+```bash
+luna chat --dev
+luna chat --profile dev
+```
+
+Profile-specific variables are read before legacy variables. Explicit flags
+such as `--url` and `--token` still win over profile configuration.
+
 The chat server itself reads `UI_WS_TOKEN` or `LUNA_UI_WS_TOKEN`. Use the same
 token value on both sides. The terminal client checks token values in this order:
 
 1. `--token <token>`
-2. `LUNA_UI_WS_TOKEN` from the process environment
-3. `UI_WS_TOKEN` from the process environment
-4. `LUNA_UI_WS_TOKEN` from `~/.luna/.env`
-5. `UI_WS_TOKEN` from `~/.luna/.env`
+2. `LUNA_<PROFILE>_UI_WS_TOKEN` from the process environment
+3. `LUNA_<PROFILE>_UI_WS_TOKEN` from `~/.luna/.env`
+4. `LUNA_UI_WS_TOKEN` from the process environment
+5. `UI_WS_TOKEN` from the process environment
+6. `LUNA_UI_WS_TOKEN` from `~/.luna/.env`
+7. `UI_WS_TOKEN` from `~/.luna/.env`
 
 ## Optional recovery configuration
 
@@ -38,6 +66,15 @@ LUNA_START_MODE=local|ssh|none
 LUNA_START_COMMAND=<command>
 LUNA_START_SSH=<ssh-target>
 LUNA_START_TIMEOUT_MS=30000
+```
+
+Profile-specific recovery variables use the same prefix:
+
+```bash
+LUNA_DEV_START_MODE=ssh
+LUNA_DEV_START_COMMAND="systemctl --user restart luna-dev-chat-server.service"
+LUNA_DEV_START_SSH=root@jax-box
+LUNA_DEV_START_TIMEOUT_MS=30000
 ```
 
 Modes:
@@ -71,6 +108,7 @@ luna chat \
 
 ```bash
 luna chat
+luna chat --dev
 luna chat --url ws://127.0.0.1:4753/ui
 luna chat --thread <thread-id>
 luna chat --local-shell

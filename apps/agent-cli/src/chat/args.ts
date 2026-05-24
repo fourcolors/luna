@@ -3,6 +3,7 @@ export type StartMode = "local" | "ssh" | "none"
 export interface ChatArgs {
   readonly command: "chat" | "help" | "unknown"
   readonly unknown: ReadonlyArray<string>
+  readonly profile?: string
   readonly url?: string
   readonly token?: string
   readonly threadId?: string
@@ -51,6 +52,7 @@ export const parseChatArgs = (argv: ReadonlyArray<string>): ChatArgs => {
   const out: {
     command: "chat"
     unknown: string[]
+    profile?: string
     url?: string
     token?: string
     threadId?: string
@@ -83,6 +85,16 @@ export const parseChatArgs = (argv: ReadonlyArray<string>): ChatArgs => {
         i = r.nextIndex
         break
       }
+      case "--profile": {
+        const r = readValue(argv, i, "--profile")
+        if ("error" in r) out.unknown.push(r.error)
+        else out.profile = r.value
+        i = r.nextIndex
+        break
+      }
+      case "--dev":
+        out.profile = "dev"
+        break
       case "--thread": {
         const r = readValue(argv, i, "--thread")
         if ("error" in r) out.unknown.push(r.error)

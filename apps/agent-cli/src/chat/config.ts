@@ -3,6 +3,7 @@ import { join } from "node:path"
 import type { ChatArgs, StartMode } from "./args.js"
 
 export interface ChatConfig {
+  readonly profileName: string
   readonly url: string
   readonly token: string | null
   readonly threadId: string | null
@@ -48,63 +49,107 @@ export const readLunaDotEnv = (homeDir: string): Record<string, string> => {
   return parseDotEnv(readFileSync(path, "utf8"))
 }
 
-const pick = (
-  flagValue: string | undefined,
-  envValue: string | undefined,
-  dotenvValue: string | undefined,
-  fallback: string,
-): string => flagValue ?? envValue ?? dotenvValue ?? fallback
+type SettingCandidate = {
+  readonly name: string
+  readonly value: string | undefined
+}
+
+const selectSetting = (
+  candidates: ReadonlyArray<SettingCandidate>,
+): SettingCandidate | undefined =>
+  candidates.find((candidate) => candidate.value !== undefined)
 
 const parseStartMode = (value: string): StartMode =>
   value === "local" || value === "ssh" || value === "none" ? value : "none"
 
 const isPositiveInteger = (value: string): boolean => /^[1-9]\d*$/.test(value)
 
+const isValidProfileName = (value: string): boolean => /^[A-Za-z][A-Za-z0-9_-]*$/.test(value)
+
+const normalizeProfileName = (value: string): string => value.toLowerCase()
+
+const profileEnvPrefix = (profileName: string): string =>
+  `LUNA_${profileName.toUpperCase().replace(/-/g, "_")}`
+
 export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
   const errors: string[] = []
-  const url = pick(
-    input.args.url,
-    input.env["LUNA_WS_URL"],
-    input.dotenv["LUNA_WS_URL"],
-    "ws://127.0.0.1:4753/ui",
-  )
-  const token =
-    input.args.token ??
-    input.env["LUNA_UI_WS_TOKEN"] ??
-    input.env["UI_WS_TOKEN"] ??
-    input.dotenv["LUNA_UI_WS_TOKEN"] ??
-    input.dotenv["UI_WS_TOKEN"] ??
-    null
-  const startModeRaw = pick(
-    input.args.startMode,
-    input.env["LUNA_START_MODE"],
-    input.dotenv["LUNA_START_MODE"],
-    "none",
-  )
+  const profileSetting = selectSetting([
+    { name: "--profile", value: input.args.profile },
+    { name: "LUNA_PROFILE", value: input.env["LUNA_PROFILE"] },
+    { name: "LUNA_PROFILE", value: input.dotenv["LUNA_PROFILE"] },
+  ])
+  const profileRaw = profileSetting?.value ?? "stable"
+  const profileName = isValidProfileName(profileRaw)
+    ? normalizeProfileName(profileRaw)
+    : "stable"
+  if (!isValidProfileName(profileRaw)) {
+    errors.push(`${profileSetting?.name ?? "LUNA_PROFILE"} must start with a letter and contain only letters, numbers, hyphens, or underscores`)
+  }
+  const profilePrefix = profileEnvPrefix(profileName)
+  const profiled = (suffix: string): string => `${profilePrefix}_${suffix}`
+
+  const urlSetting = selectSetting([
+    { name: "--url", value: input.args.url },
+    { name: profiled("WS_URL"), value: input.env[profiled("WS_URL")] },
+    { name: profiled("WS_URL"), value: input.dotenv[profiled("WS_URL")] },
+    { name: "LUNA_WS_URL", value: input.env["LUNA_WS_URL"] },
+    { name: "LUNA_WS_URL", value: input.dotenv["LUNA_WS_URL"] },
+  ])
+  const url = urlSetting?.value ?? "ws://127.0.0.1:4753/ui"
+
+  const tokenSetting = selectSetting([
+    { name: "--token", value: input.args.token },
+    { name: profiled("UI_WS_TOKEN"), value: input.env[profiled("UI_WS_TOKEN")] },
+    { name: profiled("UI_WS_TOKEN"), value: input.dotenv[profiled("UI_WS_TOKEN")] },
+    { name: "LUNA_UI_WS_TOKEN", value: input.env["LUNA_UI_WS_TOKEN"] },
+    { name: "UI_WS_TOKEN", value: input.env["UI_WS_TOKEN"] },
+    { name: "LUNA_UI_WS_TOKEN", value: input.dotenv["LUNA_UI_WS_TOKEN"] },
+    { name: "UI_WS_TOKEN", value: input.dotenv["UI_WS_TOKEN"] },
+  ])
+  const token = tokenSetting?.value ?? null
+
+  const startModeSetting = selectSetting([
+    { name: "--start-mode", value: input.args.startMode },
+    { name: profiled("START_MODE"), value: input.env[profiled("START_MODE")] },
+    { name: profiled("START_MODE"), value: input.dotenv[profiled("START_MODE")] },
+    { name: "LUNA_START_MODE", value: input.env["LUNA_START_MODE"] },
+    { name: "LUNA_START_MODE", value: input.dotenv["LUNA_START_MODE"] },
+  ])
+  const startModeRaw = startModeSetting?.value ?? "none"
   const startMode = parseStartMode(startModeRaw)
   if (startModeRaw !== startMode) {
-    errors.push("LUNA_START_MODE must be local, ssh, or none")
+    errors.push(`${startModeSetting?.name ?? "LUNA_START_MODE"} must be local, ssh, or none`)
   }
 
-  const timeoutRaw =
-    input.args.startTimeoutMs?.toString() ??
-    input.env["LUNA_START_TIMEOUT_MS"] ??
-    input.dotenv["LUNA_START_TIMEOUT_MS"]
+  const timeoutSetting = selectSetting([
+    { name: "--start-timeout-ms", value: input.args.startTimeoutMs?.toString() },
+    { name: profiled("START_TIMEOUT_MS"), value: input.env[profiled("START_TIMEOUT_MS")] },
+    { name: profiled("START_TIMEOUT_MS"), value: input.dotenv[profiled("START_TIMEOUT_MS")] },
+    { name: "LUNA_START_TIMEOUT_MS", value: input.env["LUNA_START_TIMEOUT_MS"] },
+    { name: "LUNA_START_TIMEOUT_MS", value: input.dotenv["LUNA_START_TIMEOUT_MS"] },
+  ])
+  const timeoutRaw = timeoutSetting?.value
   const startTimeoutMs =
     timeoutRaw === undefined || isPositiveInteger(timeoutRaw) ? Number(timeoutRaw ?? "30000") : 30_000
   if (timeoutRaw !== undefined && !isPositiveInteger(timeoutRaw)) {
-    errors.push("LUNA_START_TIMEOUT_MS must be a positive integer")
+    errors.push(`${timeoutSetting?.name ?? "LUNA_START_TIMEOUT_MS"} must be a positive integer`)
   }
   const startCommand =
-    input.args.startCommand ??
-    input.env["LUNA_START_COMMAND"] ??
-    input.dotenv["LUNA_START_COMMAND"] ??
-    null
+    selectSetting([
+      { name: "--start-command", value: input.args.startCommand },
+      { name: profiled("START_COMMAND"), value: input.env[profiled("START_COMMAND")] },
+      { name: profiled("START_COMMAND"), value: input.dotenv[profiled("START_COMMAND")] },
+      { name: "LUNA_START_COMMAND", value: input.env["LUNA_START_COMMAND"] },
+      { name: "LUNA_START_COMMAND", value: input.dotenv["LUNA_START_COMMAND"] },
+    ])?.value ?? null
   const startSsh =
-    input.args.startSsh ??
-    input.env["LUNA_START_SSH"] ??
-    input.dotenv["LUNA_START_SSH"] ??
-    null
+    selectSetting([
+      { name: "--start-ssh", value: input.args.startSsh },
+      { name: profiled("START_SSH"), value: input.env[profiled("START_SSH")] },
+      { name: profiled("START_SSH"), value: input.dotenv[profiled("START_SSH")] },
+      { name: "LUNA_START_SSH", value: input.env["LUNA_START_SSH"] },
+      { name: "LUNA_START_SSH", value: input.dotenv["LUNA_START_SSH"] },
+    ])?.value ?? null
   const threadId = input.args.threadId ?? null
   if (token === null || token.length === 0) errors.push("missing LUNA_UI_WS_TOKEN")
   if (startMode === "local" && (startCommand === null || startCommand.length === 0)) {
@@ -119,6 +164,7 @@ export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
     }
   }
   return {
+    profileName,
     url,
     token,
     threadId,
@@ -135,6 +181,7 @@ export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
 
 export const redactedConfigSummary = (cfg: ChatConfig): string =>
   [
+    `profile=${cfg.profileName}`,
     `url=${cfg.url}`,
     `token=${cfg.token === null ? "missing" : "present"}`,
     `startMode=${cfg.startMode}`,
