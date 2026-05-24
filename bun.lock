@@ -14,10 +14,16 @@
       "name": "@luna/agent-cli",
       "version": "0.0.1",
       "bin": {
+        "luna": "./src/luna.ts",
         "luna-account": "./src/index.ts",
+      },
+      "dependencies": {
+        "@luna/ui-ws": "workspace:*",
+        "ws": "^8.18.0",
       },
       "devDependencies": {
         "@luna/core": "workspace:*",
+        "@types/ws": "^8.5.13",
         "effect": "^3.21.0",
         "typescript": "^5.6.3",
         "vitest": "^2.1.5",

@@ -4,17 +4,24 @@
   "private": true,
   "type": "module",
   "bin": {
+    "luna": "./src/luna.ts",
     "luna-account": "./src/index.ts"
   },
   "scripts": {
+    "luna": "bun run src/luna.ts",
     "luna-account": "bun run src/index.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@luna/ui-ws": "workspace:*",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@luna/core": "workspace:*",
     "effect": "^3.21.0",
     "typescript": "^5.6.3",
-    "vitest": "^2.1.5"
+    "vitest": "^2.1.5",
+    "@types/ws": "^8.5.13"
   }
 }
