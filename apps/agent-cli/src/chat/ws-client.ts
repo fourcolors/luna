@@ -108,9 +108,9 @@ export class LunaWsClient {
   }
 
   nextFrame(): Promise<ServerFrame> {
-    if (this.#terminalError !== null) return Promise.reject(this.#terminalError)
     const frame = this.#frames.shift()
     if (frame !== undefined) return Promise.resolve(frame)
+    if (this.#terminalError !== null) return Promise.reject(this.#terminalError)
     return new Promise((resolve, reject) => {
       this.#waiters.push({ resolve, reject })
     })

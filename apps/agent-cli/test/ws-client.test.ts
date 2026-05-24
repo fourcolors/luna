@@ -108,6 +108,24 @@ describe("LunaWsClient", () => {
     await expect(waitFor(client.nextFrame())).rejects.toThrow(/websocket closed/i)
   })
 
+  it("drains queued frames before reporting close errors", async () => {
+    const { server, url } = startServer()
+    const hello: ServerFrame = {
+      type: "hello",
+      protocolVersion: 2,
+      kinds: [],
+      capabilities: { chat: true, streamingDeltas: true },
+    }
+    server.on("connection", (socket) => {
+      socket.send(JSON.stringify(hello), () => socket.close())
+    })
+
+    client = await LunaWsClient.connect({ url, token: "secret-token" })
+    await new Promise<void>((resolve) => setTimeout(resolve, 25))
+
+    await expect(client.nextFrame()).resolves.toEqual(hello)
+    await expect(client.nextFrame()).rejects.toThrow(/websocket closed/i)
+  })
   it("throws when sending after close", async () => {
     const { url } = startServer()
     client = await LunaWsClient.connect({ url, token: "secret-token" })
