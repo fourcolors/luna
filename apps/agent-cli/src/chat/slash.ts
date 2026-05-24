@@ -2,11 +2,12 @@ export type SlashCommand =
   | { readonly type: "message"; readonly text: string }
   | { readonly type: "help" }
   | { readonly type: "threads" }
-  | { readonly type: "new_thread" }
-  | { readonly type: "switch_thread"; readonly threadId: string }
+  | { readonly type: "new-thread" }
+  | { readonly type: "switch-thread"; readonly threadId: string }
   | { readonly type: "interrupt" }
   | { readonly type: "quit" }
-  | { readonly type: "local_shell"; readonly action: "on" | "off" | "status" }
+  | { readonly type: "local-shell"; readonly action: "on" | "off" }
+  | { readonly type: "local-shell-status" }
   | { readonly type: "error"; readonly message: string }
 
 export const HELP_TEXT = [
@@ -33,8 +34,9 @@ const parseLocalShell = (rest: string): SlashCommand => {
   switch (rest) {
     case "on":
     case "off":
+      return { type: "local-shell", action: rest }
     case "status":
-      return { type: "local_shell", action: rest }
+      return { type: "local-shell-status" }
     default:
       return {
         type: "error",
@@ -53,12 +55,12 @@ export const parseSlashCommand = (line: string): SlashCommand => {
     case "/threads":
       return { type: "threads" }
     case "/new":
-      return { type: "new_thread" }
+      return { type: "new-thread" }
     case "/switch":
       if (rest.length === 0) {
         return { type: "error", message: "/switch requires a thread id" }
       }
-      return { type: "switch_thread", threadId: rest }
+      return { type: "switch-thread", threadId: rest }
     case "/interrupt":
       return { type: "interrupt" }
     case "/quit":

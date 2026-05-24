@@ -9,23 +9,31 @@ export interface LocalShellState {
 }
 
 export interface LocalCommandRequest {
+  readonly requestId: string
+  readonly threadId: string
   readonly command: string
+  readonly cwd?: string
+  readonly timeoutMs?: number
 }
 
 export interface LocalCommandResult {
-  readonly command: string
+  readonly type: "local-shell-result"
+  readonly requestId: string
+  readonly threadId: string
   readonly approved: boolean
   readonly exitCode: number | null
   readonly stdout: string
   readonly stderr: string
+  readonly durationMs: number
   readonly timedOut: boolean
 }
 
 export interface ExecuteLocalCommandOptions {
+  readonly request: LocalCommandRequest
   readonly cwd: string
-  readonly approve: (command: string) => boolean | Promise<boolean>
-  readonly timeoutMs?: number
-  readonly maxOutputBytes?: number
+  readonly timeoutMs: number
+  readonly maxOutputBytes: number
+  readonly approve: (command: string) => Promise<boolean>
 }
 
 export interface MakeLocalShellStateOptions {
@@ -34,7 +42,7 @@ export interface MakeLocalShellStateOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000
-const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024
+const FORCE_KILL_GRACE_MS = 250
 
 export const makeLocalShellState = (
   options: MakeLocalShellStateOptions,
@@ -54,24 +62,66 @@ export const setLocalShellEnabled = (
 })
 
 export const truncateOutput = (output: string, maxBytes: number): string => {
-  const bytes = Buffer.byteLength(output)
-  if (bytes <= maxBytes) return output
+  const buffer = Buffer.from(output)
+  if (buffer.byteLength <= maxBytes) return output
 
-  const truncated = Buffer.from(output).subarray(0, maxBytes).toString("utf8")
-  return `${truncated}\n[truncated ${bytes - maxBytes} bytes]`
+  return formatCapturedOutput([buffer.subarray(0, maxBytes)], buffer.byteLength - maxBytes)
 }
 
-const killChild = (pid: number | undefined): void => {
+class BoundedOutputBuffer {
+  private readonly chunks: Buffer[] = []
+  private retainedBytes = 0
+  private omittedBytes = 0
+
+  constructor(private readonly maxBytes: number) {}
+
+  append(chunk: Buffer | string): void {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    const remaining = this.maxBytes - this.retainedBytes
+    if (remaining <= 0) {
+      this.omittedBytes += buffer.byteLength
+      return
+    }
+
+    if (buffer.byteLength <= remaining) {
+      this.chunks.push(buffer)
+      this.retainedBytes += buffer.byteLength
+      return
+    }
+
+    this.chunks.push(buffer.subarray(0, remaining))
+    this.retainedBytes += remaining
+    this.omittedBytes += buffer.byteLength - remaining
+  }
+
+  toString(): string {
+    return formatCapturedOutput(this.chunks, this.omittedBytes)
+  }
+}
+
+const formatCapturedOutput = (
+  chunks: ReadonlyArray<Buffer>,
+  omittedBytes: number,
+): string => {
+  const output = Buffer.concat(chunks).toString("utf8")
+  if (omittedBytes === 0) return output
+  return `${output}\n[truncated ${omittedBytes} bytes]`
+}
+
+const signalChild = (
+  pid: number | undefined,
+  signal: NodeJS.Signals,
+): void => {
   if (pid === undefined) return
   try {
     if (process.platform === "win32") {
-      process.kill(pid)
+      process.kill(pid, signal)
     } else {
-      process.kill(-pid, "SIGTERM")
+      process.kill(-pid, signal)
     }
   } catch {
     try {
-      process.kill(pid, "SIGTERM")
+      process.kill(pid, signal)
     } catch {
       /* already exited */
     }
@@ -79,13 +129,24 @@ const killChild = (pid: number | undefined): void => {
 }
 
 export const executeLocalCommand = async (
-  request: LocalCommandRequest,
   options: ExecuteLocalCommandOptions,
 ): Promise<LocalCommandResult> => {
+  const request = options.request
+  const cwd = request.cwd ?? options.cwd
+  const timeoutMs = request.timeoutMs ?? options.timeoutMs
+  const startedAt = Date.now()
   const approved = await options.approve(request.command)
+
+  const baseResult = (): Omit<LocalCommandResult, "approved" | "exitCode" | "stdout" | "stderr" | "timedOut"> => ({
+    type: "local-shell-result",
+    requestId: request.requestId,
+    threadId: request.threadId,
+    durationMs: Date.now() - startedAt,
+  })
+
   if (!approved) {
     return {
-      command: request.command,
+      ...baseResult(),
       approved: false,
       exitCode: null,
       stdout: "",
@@ -94,51 +155,62 @@ export const executeLocalCommand = async (
     }
   }
 
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
-  const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES
-
   return await new Promise<LocalCommandResult>((resolve) => {
     const child = spawn(request.command, {
       shell: true,
-      cwd: options.cwd,
+      cwd,
       env: process.env,
       detached: process.platform !== "win32",
     })
 
-    const stdout: Buffer[] = []
-    const stderr: Buffer[] = []
+    const stdout = new BoundedOutputBuffer(options.maxOutputBytes)
+    const stderr = new BoundedOutputBuffer(options.maxOutputBytes)
     let timedOut = false
     let settled = false
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined
+    let forceKillTimer: ReturnType<typeof setTimeout> | undefined
+
+    const clearTimers = (): void => {
+      if (timeoutTimer !== undefined) clearTimeout(timeoutTimer)
+      if (forceKillTimer !== undefined) clearTimeout(forceKillTimer)
+      timeoutTimer = undefined
+      forceKillTimer = undefined
+    }
 
     const finish = (exitCode: number | null): void => {
       if (settled) return
       settled = true
-      clearTimeout(timer)
+      clearTimers()
       resolve({
-        command: request.command,
+        ...baseResult(),
         approved: true,
         exitCode: timedOut ? null : exitCode,
-        stdout: truncateOutput(Buffer.concat(stdout).toString("utf8"), maxOutputBytes),
-        stderr: truncateOutput(Buffer.concat(stderr).toString("utf8"), maxOutputBytes),
+        stdout: stdout.toString(),
+        stderr: stderr.toString(),
         timedOut,
       })
     }
 
-    const timer = setTimeout(() => {
+    timeoutTimer = setTimeout(() => {
+      if (settled) return
       timedOut = true
-      killChild(child.pid)
+      signalChild(child.pid, "SIGTERM")
+      forceKillTimer = setTimeout(() => {
+        signalChild(child.pid, "SIGKILL")
+        finish(null)
+      }, FORCE_KILL_GRACE_MS)
     }, timeoutMs)
 
     child.stdout.on("data", (chunk: Buffer | string) => {
-      stdout.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+      stdout.append(chunk)
     })
 
     child.stderr.on("data", (chunk: Buffer | string) => {
-      stderr.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+      stderr.append(chunk)
     })
 
     child.on("error", (error) => {
-      stderr.push(Buffer.from(error.message))
+      stderr.append(error.message)
       finish(null)
     })
 

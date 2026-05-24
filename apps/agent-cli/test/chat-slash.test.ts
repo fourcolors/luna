@@ -4,25 +4,24 @@ import { HELP_TEXT, parseSlashCommand } from "../src/chat/slash.js"
 describe("chat slash commands", () => {
   it("parses local shell toggles", () => {
     expect(parseSlashCommand("/local-shell on")).toEqual({
-      type: "local_shell",
+      type: "local-shell",
       action: "on",
     })
     expect(parseSlashCommand("/local-shell off")).toEqual({
-      type: "local_shell",
+      type: "local-shell",
       action: "off",
     })
     expect(parseSlashCommand("/local-shell status")).toEqual({
-      type: "local_shell",
-      action: "status",
+      type: "local-shell-status",
     })
   })
 
   it("parses thread and lifecycle commands", () => {
     expect(parseSlashCommand("/help")).toEqual({ type: "help" })
     expect(parseSlashCommand("/threads")).toEqual({ type: "threads" })
-    expect(parseSlashCommand("/new")).toEqual({ type: "new_thread" })
+    expect(parseSlashCommand("/new")).toEqual({ type: "new-thread" })
     expect(parseSlashCommand("/switch thread-123")).toEqual({
-      type: "switch_thread",
+      type: "switch-thread",
       threadId: "thread-123",
     })
     expect(parseSlashCommand("/interrupt")).toEqual({ type: "interrupt" })

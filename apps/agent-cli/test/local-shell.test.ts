@@ -9,6 +9,18 @@ import {
   truncateOutput,
 } from "../src/chat/local-shell.js"
 
+const baseCommandOptions = (cwd: string) => ({
+  request: {
+    requestId: "req-1",
+    threadId: "thread-1",
+    command: "printf hello",
+  },
+  cwd,
+  timeoutMs: 2_000,
+  maxOutputBytes: 64 * 1024,
+  approve: async () => true,
+})
+
 describe("local shell state", () => {
   it("starts disabled and toggles enabled without mutating the original", () => {
     const cwd = "/tmp/luna"
@@ -35,6 +47,19 @@ describe("truncateOutput", () => {
   it("leaves output unchanged when within the limit", () => {
     expect(truncateOutput("abcd", 4)).toBe("abcd")
   })
+
+  it("tracks omitted bytes for output larger than the retained stream buffer", async () => {
+    const result = await executeLocalCommand({
+      ...baseCommandOptions(process.cwd()),
+      request: {
+        ...baseCommandOptions(process.cwd()).request,
+        command: "head -c 100000 /dev/zero | tr '\\0' a",
+      },
+      maxOutputBytes: 4,
+    })
+
+    expect(result.stdout).toBe("aaaa\n[truncated 99996 bytes]")
+  })
 })
 
 describe("executeLocalCommand", () => {
@@ -51,29 +76,45 @@ describe("executeLocalCommand", () => {
   it("returns denied without running the command", async () => {
     const approve = vi.fn(() => false)
     const deniedPath = join(cwd, "denied-command-ran")
-    const result = await executeLocalCommand(
-      { command: `touch ${deniedPath}` },
-      { cwd, approve },
-    )
+    const result = await executeLocalCommand({
+      ...baseCommandOptions(cwd),
+      request: {
+        ...baseCommandOptions(cwd).request,
+        command: `touch ${deniedPath}`,
+        cwd,
+      },
+      approve,
+    })
 
     expect(approve).toHaveBeenCalledWith(`touch ${deniedPath}`)
     expect(result).toEqual({
-      command: `touch ${deniedPath}`,
+      type: "local-shell-result",
+      requestId: "req-1",
+      threadId: "thread-1",
       approved: false,
       exitCode: null,
       stdout: "",
       stderr: "denied by user",
+      durationMs: expect.any(Number),
       timedOut: false,
     })
+    expect(result.durationMs).toBeGreaterThanOrEqual(0)
     expect(existsSync(deniedPath)).toBe(false)
   })
 
   it("captures stdout for successful commands", async () => {
-    const result = await executeLocalCommand(
-      { command: "printf hello" },
-      { cwd, approve: () => true },
-    )
+    const result = await executeLocalCommand({
+      ...baseCommandOptions(cwd),
+      request: {
+        ...baseCommandOptions(cwd).request,
+        command: "printf hello",
+        cwd,
+      },
+    })
 
+    expect(result.type).toBe("local-shell-result")
+    expect(result.requestId).toBe("req-1")
+    expect(result.threadId).toBe("thread-1")
     expect(result.approved).toBe(true)
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toBe("hello")
@@ -82,10 +123,14 @@ describe("executeLocalCommand", () => {
   })
 
   it("preserves non-zero exit codes", async () => {
-    const result = await executeLocalCommand(
-      { command: "printf failure >&2; exit 7" },
-      { cwd, approve: () => true },
-    )
+    const result = await executeLocalCommand({
+      ...baseCommandOptions(cwd),
+      request: {
+        ...baseCommandOptions(cwd).request,
+        command: "printf failure >&2; exit 7",
+        cwd,
+      },
+    })
 
     expect(result.approved).toBe(true)
     expect(result.exitCode).toBe(7)
@@ -96,10 +141,15 @@ describe("executeLocalCommand", () => {
 
   it("returns timedOut and terminates long-running commands", async () => {
     const startedAt = Date.now()
-    const result = await executeLocalCommand(
-      { command: "sleep 2" },
-      { cwd, approve: () => true, timeoutMs: 50 },
-    )
+    const result = await executeLocalCommand({
+      ...baseCommandOptions(cwd),
+      request: {
+        ...baseCommandOptions(cwd).request,
+        command: "sleep 2",
+        cwd,
+        timeoutMs: 50,
+      },
+    })
 
     expect(Date.now() - startedAt).toBeLessThan(1_500)
     expect(result.approved).toBe(true)
@@ -107,5 +157,43 @@ describe("executeLocalCommand", () => {
     expect(result.stdout).toBe("")
     expect(result.stderr).toBe("")
     expect(result.timedOut).toBe(true)
+  })
+
+  it("resolves after a bounded grace period when a command traps TERM", async () => {
+    const startedAt = Date.now()
+    const result = await executeLocalCommand({
+      ...baseCommandOptions(cwd),
+      request: {
+        ...baseCommandOptions(cwd).request,
+        command: "trap '' TERM; sleep 10",
+        cwd,
+        timeoutMs: 50,
+      },
+    })
+
+    expect(Date.now() - startedAt).toBeLessThan(1_500)
+    expect(result.approved).toBe(true)
+    expect(result.exitCode).toBeNull()
+    expect(result.timedOut).toBe(true)
+  })
+
+  it("uses per-request cwd and timeout overrides", async () => {
+    const result = await executeLocalCommand({
+      request: {
+        requestId: "req-2",
+        threadId: "thread-2",
+        command: "pwd",
+        cwd: "/",
+        timeoutMs: 1_000,
+      },
+      cwd,
+      timeoutMs: 30_000,
+      maxOutputBytes: 64 * 1024,
+      approve: async () => true,
+    })
+
+    expect(result.requestId).toBe("req-2")
+    expect(result.threadId).toBe("thread-2")
+    expect(result.stdout.trim()).toBe("/")
   })
 })
