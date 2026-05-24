@@ -16,7 +16,7 @@
  *   - pubsub: PubSub<ChatFrame>       — the wire-shape fan-out
  *   - scope: Scope.CloseableScope     — the per-thread sub-scope; closing it
  *                                       interrupts the SDK subprocess for
- *                                       that thread only (Sterling's "stop"
+ *                                       that thread only (Operator's "stop"
  *                                       button + thread deletion)
  *   - turnCounter: ref to next assistant turnId (uuid is fine, but a counter
  *                                       per thread is debuggable)
@@ -183,7 +183,7 @@ export class ChatService extends Effect.Service<ChatService>()(
         opts: CreateThreadOptions,
       ): SessionOptions => {
         // Trusted-local default: when LUNA_TRUSTED_LOCAL=1, threads run with
-        // bypassPermissions (no canUseTool prompts). Sterling sets this in
+        // bypassPermissions (no canUseTool prompts). Operator sets this in
         // his shell once. Without the env var, mode stays at SDK default
         // ("default" — prompts via canUseTool) so deployed configs cannot
         // accidentally inherit bypass.

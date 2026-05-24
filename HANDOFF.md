@@ -6,8 +6,8 @@ the bottom so the next orchestrator can read the tail and resume.
 ## How to resume (for the next orchestrator)
 
 1. Read this file end-to-end.
-2. `cd /Users/sol/Projects/luna && git log --oneline -10`
-3. Read `/Users/sol/Projects/luna/DESIGN.md` §15 (milestones) and
+2. `cd /path/to/luna && git log --oneline -10`
+3. Read `/path/to/luna/DESIGN.md` §15 (milestones) and
    the §-anchors noted under "Next phase required reading" below.
 4. Read `BRIEF_TEMPLATE.md` — every subagent dispatch fills this template.
 5. Resume with the next pending phase per TodoWrite.
@@ -40,7 +40,7 @@ the bottom so the next orchestrator can read the tail and resume.
 - Orchestrator stops Reading diffs and trusts summaries → drift begins
 - Brief divergence across phases → always fill BRIEF_TEMPLATE.md slots
 
-## Frozen artifacts (do not modify without explicit Sterling approval)
+## Frozen artifacts (do not modify without explicit Operator approval)
 
 - `packages/core/src/errors.ts` — error taxonomy (§6)
 - `packages/core/src/messages.ts` — versioned envelope (§12.2 #6)
@@ -52,7 +52,7 @@ the bottom so the next orchestrator can read the tail and resume.
 ### Session 2026-04-24 (orchestrator A)
 - Shipped: Phases 0–5 (initial strategy: inline; too context-heavy)
 - Last commit: `933a8ea` feat(memory): Phase 5 — plug-and-play memory …
-- Strategy change: Sterling switched to orchestrator/subagent model mid-session
+- Strategy change: Operator switched to orchestrator/subagent model mid-session
 - Scaffolding created: BRIEF_TEMPLATE.md, HANDOFF.md
 - Advisor verdict on strategy: MODIFY — realistic horizon 4–6 phases/session,
   subagents share DESIGN path (not pasted text), verification must cite §-anchors
@@ -74,7 +74,7 @@ the bottom so the next orchestrator can read the tail and resume.
 | 8     | `df56702` | AgentRegistry                           | 109 / 3 sk  |
 | 9     | `776fc2e` | AccountBroker + SecretProvider (narrow) | 139 / 3 sk  |
 
-**Frozen-file edit authorized this session** (approved by Sterling, one-time):
+**Frozen-file edit authorized this session** (approved by Operator, one-time):
 - `packages/core/src/errors.ts` — appended `AllAccountsExhaustedError` per §6.2
   spec (byte-exact). Conformance, not new design. `errors.ts` remains frozen for
   any further edits.
@@ -99,11 +99,11 @@ the bottom so the next orchestrator can read the tail and resume.
 ### Session 2026-04-24 (end of orchestrator B)
 
 **Full transcript of this session (for next orchestrator if needed):**
-`/Users/sol/.claude/projects/-Users-sol/0dd4905e-c2c5-445c-b66a-21dc53a7fc75.jsonl`
+`<local-agent-transcript-path>`
 
 **Next pending phase: 9.5/10a — ADAPTER.TS FROZEN-FILE EDIT + 1Password backend**
 
-⚠️  **Requires explicit Sterling approval BEFORE dispatch.** This phase touches
+⚠️  **Requires explicit Operator approval BEFORE dispatch.** This phase touches
 `packages/adapter-sdk/src/adapter.ts` (listed as frozen above), which is the
 largest-blast-radius file in the repo.
 
@@ -122,7 +122,7 @@ Scope (pre-advised by orchestrator B, not yet advisor-reviewed):
 3. If (c) is chosen, update `packages/core/src/session/types.ts`
    `RESERVED_SDK_OPTION_KEYS` array and add a §12.2 #7 bullet.
 4. Add `OnePasswordSecretProvider.make({ vault, token?})` that shells to `op`
-   CLI. Use `OP_SERVICE_ACCOUNT_TOKEN` from caller env (already set in Sterling's
+   CLI. Use `OP_SERVICE_ACCOUNT_TOKEN` from caller env (already set in Operator's
    shell). Cache results with a short TTL. Integration test skipped via
    `describe.skipIf(!process.env.OP_SERVICE_ACCOUNT_TOKEN)`; mocked-shell unit
    test always runs.
@@ -142,8 +142,8 @@ Required reading for Phase 9.5/10a:
 
 **How to resume (concrete):**
 1. Read this file end-to-end.
-2. `git log --oneline -10` from `/Users/sol/Projects/luna`.
-3. Ask Sterling for explicit ✅/❌ on the adapter.ts frozen-file edit — the
+2. `git log --oneline -10` from `/path/to/luna`.
+3. Ask Operator for explicit ✅/❌ on the adapter.ts frozen-file edit — the
    merge policy choice in particular. Do not dispatch without approval.
 4. Once approved, invoke the advisor on scope (cite §12.2 invariants + §0.2).
 5. Fill BRIEF_TEMPLATE.md with the narrowed Phase 9.5 scope + invariants.
@@ -165,7 +165,7 @@ session, not paired.
 |-------|-----------|----------------------------------------------------------|-------------|
 | 9.5   | `b938361` | adapter env-overlay wiring + OnePasswordSecretProvider   | 162 / 3 sk  |
 
-**Frozen-file edit authorized this session** (approved by Sterling, one-time):
+**Frozen-file edit authorized this session** (approved by Operator, one-time):
 - `packages/adapter-sdk/src/adapter.ts` — split into `SDKAdapter.Default` +
   `SDKAdapter.WithBroker` via shared `makeAdapter(broker | null)` helper.
   `boundAccountId?: string` added to QueryRequest (NOT SessionOptions).
@@ -266,7 +266,7 @@ Required reading for Phase 10:
 
 **How to resume (concrete):**
 1. Read this file end-to-end.
-2. `git log --oneline -10` from `/Users/sol/Projects/luna`.
+2. `git log --oneline -10` from `/path/to/luna`.
 3. Read DESIGN.md §2.1.10 + §15 M2 + §3.4.
 4. Invoke advisor on Phase 10 scope (cite §3.4 invariants, §6.1 errors).
    Specific risk-checks: cron lib choice, backpressure default policy,
@@ -349,7 +349,7 @@ Required reading for Phase 11:
 
 **How to resume (concrete):**
 1. Read this file end-to-end.
-2. `git log --oneline -10` from `/Users/sol/Projects/luna`.
+2. `git log --oneline -10` from `/path/to/luna`.
 3. Read DESIGN.md Teams section + verify §-anchor numbers.
 4. Invoke advisor on Phase 11 scope (cite §3.4 invariants, §6.1+§6.3 errors,
    the Phase 10 template above). Risk-checks: PubSub vs Mailbox vs Queue
@@ -364,7 +364,7 @@ consumed. STOP HERE — hand off to a fresh orchestrator for Phase 11.
 
 ### Session 2026-04-25 (orchestrator D — Phase 11a only)
 
-**Phase 11 decomposition (Sterling approved):** The §7.2 TeamBroker signature
+**Phase 11 decomposition (Operator approved):** The §7.2 TeamBroker signature
 depends on `TaskList` + `SessionService`, neither of which exist. Phase 11 is
 split into four sub-phases, one per orchestrator session:
 
@@ -375,7 +375,7 @@ split into four sub-phases, one per orchestrator session:
 | 11.5      | Extract `_supervised-pool/` helper         | no           |
 | 11c       | TeamBroker (FiberSet + LIFO template)      | **YES** — §6.2 |
 
-**Frozen-file edit pre-approved for 11c** (Sterling gave advance ✅): append
+**Frozen-file edit pre-approved for 11c** (Operator gave advance ✅): append
 `TeammateOrphanedError` + `TaskCompletionLagError` byte-exact per DESIGN §6.2
 lines 414–419 to `packages/core/src/errors.ts`. Still requires re-confirmation
 at 11c dispatch time to mirror Phase 9 pattern.
@@ -443,7 +443,7 @@ Required reading for Phase 11b:
 
 **How to resume (concrete):**
 1. Read this file end-to-end.
-2. `git log --oneline -10` from `/Users/sol/Projects/luna`.
+2. `git log --oneline -10` from `/path/to/luna`.
 3. Check whether `SessionStore` Tag exists in core or needs to be built in
    11b alongside SessionService (`grep -r "SessionStore" packages/core/src`).
 4. Invoke advisor on Phase 11b scope (cite §7.1, §3.1, §3.5). Risk-checks:
@@ -595,7 +595,7 @@ awaits relay → scheduler queue closes.
 
 **Next pending phase: 11c — TeamBroker**
 
-Frozen-edit pre-approved by Sterling: append `TeammateOrphanedError` +
+Frozen-edit pre-approved by Operator: append `TeammateOrphanedError` +
 `TaskCompletionLagError` to `packages/core/src/errors.ts` per DESIGN §6.2
 lines 414–419 (byte-exact additions only).
 
@@ -634,7 +634,7 @@ lines 414–419).
 
 **How to resume (concrete):**
 1. Read this file end-to-end.
-2. `git log --oneline -10` from `/Users/sol/Projects/luna`.
+2. `git log --oneline -10` from `/path/to/luna`.
 3. Read `packages/core/src/jobs/job-scheduler.ts` (the current supervision
    template).
 4. Invoke advisor on Phase 11.5 scope — verify the extraction shape before
@@ -717,7 +717,7 @@ to a fresh session.
 5. Standard cycle: advisor → BRIEF → implement → test → typecheck →
    advisor → commit → HANDOFF append.
 
-**Sterling's standing directive:** "do all the phases without bothering me"
+**Operator's standing directive:** "do all the phases without bothering me"
 — continue autonomous through the remaining 4 phases unless an
 irreversible / high-blast-radius decision arises.
 
@@ -777,7 +777,7 @@ Solid `@luna/ui-web` bundle (separate package, M5+ per §9), Plugin Play
 (separate package), Acceptance test bundle, SQL migrations
 (`@effect/sql` integration deferred per Phase 15 note).
 
-**Next-up candidates (when Sterling resumes):**
+**Next-up candidates (when Operator resumes):**
 - Acceptance/integration test bundle for the M4 gate
 - WS/SSE UI transport adapter (consumes `UIService.subscribe`)
 - M5 prep: SQL persistence layer for CostAccounting/Telemetry/Labs
@@ -872,7 +872,7 @@ dead (outer-scope shadowed by inner Layer.provide). Non-blocking.
 
 ### Session 2026-04-27 (Phase 24a — SQLite cost-accounting)
 
-**Sterling's design answers (locked this session):**
+**Operator's design answers (locked this session):**
 - Q1 (experimentId placement): SIDECAR table `cost_event_experiments`
   per advisor pushback. Frozen §5.1 schema untouched.
 - Q2 (telemetry persistence shape): HYBRID per advisor pushback —
@@ -945,7 +945,7 @@ to 24a.** Layer signature changed from `Layer.Layer<…, never, …>` →
 `Layer.Layer<…, ConfigError, …>`. Verified zero production callers
 before changing (test-only API).
 
-**Phase 24c (Labs persistence) — DROPPED (YAGNI).** Sterling confirmed
+**Phase 24c (Labs persistence) — DROPPED (YAGNI).** Operator confirmed
 2026-04-27. LabsService has zero state surface (`runExperiment` returns
 `ExperimentReport` and forgets). Revisit only if a real caller demands
 queryable experiment history.
@@ -1072,16 +1072,16 @@ via subsequent valid event landing in the bucket.
 **Milestones complete: M0 → M4 + SQL persistence epic (24a/24b).**
 
 **No active work queued.** Next-session orchestrator should:
-1. Read DESIGN.md §15 to confirm M5+ scope when Sterling chooses to
+1. Read DESIGN.md §15 to confirm M5+ scope when Operator chooses to
    resume — but Effect v4 migration is **deferred indefinitely**
-   per Sterling's call (waiting for upstream stability).
+   per Operator's call (waiting for upstream stability).
 2. M5 was originally "SQL persistence + Effect v4 spike." SQL
    persistence is done; the v4 spike was never blocking and is now
    off the roadmap until Effect v4 ships stable.
 3. Other M5+ items (Tauri/Solid desktop client per §9 — Tauri shell
    over the live `@luna/ui-web` Solid app; plugin play separate
    package; full acceptance test bundle) are roadmap-revisable —
-   wait for Sterling's direction. Apps in tree: `apps/ui-web`
+   wait for Operator's direction. Apps in tree: `apps/ui-web`
    (SolidJS, canonical), `apps/ui-tauri` (Tauri shell),
    `apps/agent-cli`. The legacy `apps/ui-web-react` scaffold was
    removed 2026-04-27.

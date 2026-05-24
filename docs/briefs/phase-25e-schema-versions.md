@@ -11,7 +11,7 @@ Phase 25c+25d shipped the broker end-to-end, but the very first attempt to seed
 an account on a real dev DB failed:
 
 ```
-$ luna-account add --id sterling --kind anthropic --secret-ref 'luna-op://...'
+$ luna-account add --id operator --kind anthropic --secret-ref 'luna-op://...'
 @luna/agent-cli luna-account: error: insert failed:
   SQLiteError: no such table: accounts
 ```
@@ -238,7 +238,7 @@ This commit closes the loop and removes the throwaway script.
    ```
    Boot log must show:
    ```
-   [op] 3 providers active: antmachine, mrbot, flow
+   [op] 3 providers active: primary, ops, flow
    [accounts] 1 hydrated: anthropic×1
    ```
 4. `LUNA_LIVE_SMOKE=1 bun run test apps/agent-cli/test/live-smoke.test.ts`

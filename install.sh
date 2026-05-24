@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Luna — install script
-# Usage: curl -fsSL https://raw.githubusercontent.com/fourcolors/luna/master/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/example-org/luna/master/install.sh | bash
 # Or:    bash install.sh
 #
 # What this does:
@@ -39,7 +39,7 @@ echo "    installer"
 echo ""
 
 # ── config ────────────────────────────────────────────────────────────────────
-LUNA_REPO="https://github.com/fourcolors/luna.git"
+LUNA_REPO="https://github.com/example-org/luna.git"
 LUNA_DIR="${LUNA_DIR:-$HOME/Projects/luna}"
 LUNA_DATA="$HOME/.luna"
 LAUNCHD_LABEL="com.user.luna-web"

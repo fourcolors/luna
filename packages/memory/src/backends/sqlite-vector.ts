@@ -25,7 +25,7 @@
  *     L2-normalized upstream so we recover cosine similarity via
  *     `score = 1 - distance / 2`.
  *   - Naive cosine wall (pre-Phase-27 fallback path): ~1k records / 372ms p95
- *     per Sterling's `sqlite-vec-scaling` skill. With HNSW: 0.037ms p95 @ 10k
+ *     per Operator's `sqlite-vec-scaling` skill. With HNSW: 0.037ms p95 @ 10k
  *     measured on arm64-darwin (same skill).
  *   - search() honors namespace filter via SQL `WHERE namespace = ?`.
  *   - search() supports `mode: "vec" | "hybrid"`. `"hybrid"` (Phase 26)

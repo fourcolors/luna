@@ -5,7 +5,7 @@
  *
  * Designed for the Phase 25c multi-account 1Password bootstrap: each
  * service-account token is stored at a distinct keychain entry
- * (e.g. `luna.op.antmachine`/`antmachine`) and read at boot to compose
+ * (e.g. `luna.op.primary`/`primary`) and read at boot to compose
  * one OnePasswordSecretProvider layer per account.
  *
  * Hard rules (§0.2 + §6):
@@ -27,9 +27,9 @@ const DEFAULT_TIMEOUT_MS = 5_000
 
 /** Key into the macOS keychain. Both fields must match the entry exactly. */
 export interface KeychainQuery {
-  /** -s argument, e.g. "luna.op.antmachine". */
+  /** -s argument, e.g. "luna.op.primary". */
   readonly service: string
-  /** -a argument, e.g. "antmachine". */
+  /** -a argument, e.g. "primary". */
   readonly account: string
 }
 

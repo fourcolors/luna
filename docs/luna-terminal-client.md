@@ -50,12 +50,12 @@ Modes:
 `LUNA_START_SSH` is required for `ssh` mode.
 `LUNA_START_TIMEOUT_MS` must be a positive integer and defaults to `30000`.
 
-For jax-box recovery:
+For remote-host recovery:
 
 ```bash
 LUNA_START_MODE=ssh
 LUNA_START_COMMAND="incus exec agent-lab-1 -- systemctl restart jax-agent-lab.service"
-LUNA_START_SSH=root@jax-box
+LUNA_START_SSH=root@remote-host
 ```
 
 The same recovery settings can also be passed as flags:
@@ -64,7 +64,7 @@ The same recovery settings can also be passed as flags:
 luna chat \
   --start-mode ssh \
   --start-command "incus exec agent-lab-1 -- systemctl restart jax-agent-lab.service" \
-  --start-ssh root@jax-box
+  --start-ssh root@remote-host
 ```
 
 ## Common commands

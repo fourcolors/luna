@@ -20,7 +20,7 @@ findings already folded into this brief. Do not re-litigate:
   import. Mirror that pattern. There is no `schema_versions` table
   anywhere in the codebase. Note this drift in your return summary
   for HANDOFF.md.
-- §0.2 says `~/.luna/accounts.db`. **Sterling decision**: use
+- §0.2 says `~/.luna/accounts.db`. **Operator decision**: use
   `~/.luna/luna.db` (single shared DB, mirroring all shipped modules)
   and flag the §0.2 wording as drift in HANDOFF for amendment. Do
   NOT fork a separate accounts.db file.
@@ -44,18 +44,18 @@ DESIGN.md sections (read in full):
 - §7.5 — AccountBroker three-method surface (frozen)
 
 Existing code — READ as templates, do NOT modify:
-- `/Users/sol/Projects/luna/packages/core/src/account-broker/account-broker.ts`
+- `/path/to/luna/packages/core/src/account-broker/account-broker.ts`
   — lines 18–20 (deferral note you are closing), 56–60 (`AccountSeed`
   interface), 94–184 (`fromAccounts` Layer factory you are mirroring
   for `fromSql`)
-- `/Users/sol/Projects/luna/packages/core/src/cost-accounting/cost-store-sqlite.ts`
+- `/path/to/luna/packages/core/src/cost-accounting/cost-store-sqlite.ts`
   — **canonical template**: PRAGMA user_version pattern, dynamic
   `bun:sqlite` import, Layer.scoped + LIFO finalizer, `ConfigError`
   on missing module
-- `/Users/sol/Projects/luna/packages/core/src/session/session-store-sqlite.ts`
+- `/path/to/luna/packages/core/src/session/session-store-sqlite.ts`
   — second precedent for the same pattern; cross-reference if
   cost-store details are unclear
-- `/Users/sol/Projects/luna/packages/core/src/secret-provider/secret-provider.ts`
+- `/path/to/luna/packages/core/src/secret-provider/secret-provider.ts`
   — `SecretRef` shape; `fromSql` rows store the ref string, broker
   resolves it lazily on `acquireSession()` exactly as today
 

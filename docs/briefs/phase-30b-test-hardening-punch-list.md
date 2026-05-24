@@ -1,6 +1,6 @@
 # Phase 30b — Test hardening punch list
 
-> Sterling asked "what needs to be tested?" after we found and fixed the
+> Operator asked "what needs to be tested?" after we found and fixed the
 > systemPrompt dead-letter bug (chat-service top-level `systemPrompt` field was
 > read by zero SDK-path consumers, silently dropped before reaching Claude).
 > Same bug class likely exists at two other seams. This brief enumerates the
@@ -90,7 +90,7 @@ break Luna identity again.
 **Goal:** Fresh thread with DNA.md loaded → fake SDK echoes `options.systemPrompt`
 back → assert the system prompt sent to the model contains the literal string
 "You are **Luna**" (or whatever the canonical identity sentence is in DNA.md).
-**Why:** the symptom Sterling actually cares about. Tier 1 tests prove
+**Why:** the symptom Operator actually cares about. Tier 1 tests prove
 plumbing; this proves Luna identity reaches the model. Pin the canonical
 sentence in DNA.md so the test fails loudly if someone rewrites DNA.md to
 say "You are Sol" or similar.

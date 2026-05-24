@@ -1,7 +1,7 @@
 /**
  * OnePasswordSecretProvider live test — gated on
  * `OP_SERVICE_ACCOUNT_TOKEN` being present in the environment. Uses
- * Sterling's known `Mr Bot` vault item to validate that the real `op`
+ * Operator's known `Example Vault` vault item to validate that the real `op`
  * binary path works end-to-end.
  *
  * This test MUST NOT print secret values on failure. We assert only on
@@ -24,7 +24,7 @@ describe.skipIf(!hasToken)(
       }).pipe(Layer.provide(Clock.Default))
 
       const ref =
-        "op://Mr Bot/GitHub PAT - fourcolors classic/credential"
+        "op://Example Vault/Example Credential/credential"
       const result = await Effect.runPromiseExit(
         Effect.gen(function* () {
           const sp = yield* SecretProvider

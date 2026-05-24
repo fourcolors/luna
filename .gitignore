@@ -10,5 +10,5 @@ pnpm-lock.yaml
 .env.local
 .env.*.local
 
-# Local-only symlink to ~/.luna/CLAUDE.md (Sterling's box only)
+# Local-only symlink to ~/.luna/CLAUDE.md (Operator's box only)
 /CLAUDE.md

@@ -40,7 +40,7 @@
  * Before first run, seed at least one anthropic-kind account:
  *
  *   bun run --filter '@luna/agent-cli' luna-account add \
- *     --id sterling --label "Sterling" --kind anthropic \
+ *     --id default --label "Default" --kind anthropic \
  *     --secret-ref op://<vault-id>/<item-id>/credential
  *
  * Then verify:
@@ -54,10 +54,9 @@
  *     1Password routing
  *   - `env:<VARNAME>` — process env (one colon, no slashes)
  *
- * Examples (with antmachine + mrbot + flow registered in keychain):
- *   - luna-op://antmachine/<vault-id>/<item-id>/credential
- *   - luna-op://mrbot/<vault>/<item>/<field>
- *   - luna-op://flow/<vault>/<item>/<field>
+ * Examples (with primary + ops registered in keychain):
+ *   - luna-op://primary/<vault-id>/<item-id>/credential
+ *   - luna-op://ops/<vault>/<item>/<field>
  *
  * ## macOS Keychain entries (Phase 25c)
  *
@@ -67,10 +66,14 @@
  *   security add-generic-password -U \
  *     -s luna.op.<label> -a <label> -w '<ops_-prefixed-token>'
  *
- * The three labels this server reads (in priority order):
- *   - `luna.op.antmachine` / `antmachine`
- *   - `luna.op.mrbot`      / `mrbot`
- *   - `luna.op.flow`       / `flow`
+ * Configure the labels this server reads with:
+ *
+ *   LUNA_OP_ACCOUNTS=primary,ops
+ *
+ * Each plain label maps to `luna.op.<label>` / `<label>`. For custom
+ * keychain names, use:
+ *
+ *   LUNA_OP_ACCOUNTS=primary:com.example.luna.primary:svc-primary
  *
  * Missing entries are non-fatal — the layer is skipped and the boot
  * log lists only the labels that contributed.
@@ -168,6 +171,7 @@ import {
   LocalShellToolsService,
 } from "@luna/local-shell-tools"
 import { startControlServer } from "@luna/control-server"
+import { resolveOpAccounts } from "./op-accounts.js"
 import { resolveUiWsToken } from "./ui-ws-token.js"
 
 const TOKEN = resolveUiWsToken()
@@ -176,19 +180,14 @@ const localShellBridge = createLocalShellBridge()
 
 // ── Multi-account 1Password bootstrap (Phase 25c) ───────────────────────
 //
-// Hardcoded list of OP service-account tokens to try, in priority order.
-// Each entry maps to a macOS keychain item. Missing entries are
-// non-fatal — the layer is simply skipped and the boot log lists only
-// the labels that contributed.
+// Operators opt in via LUNA_OP_ACCOUNTS. Each entry maps to a macOS
+// keychain item. Missing entries are non-fatal — the layer is simply
+// skipped and the boot log lists only the labels that contributed.
 //
 // Add a new entry with:
 //   security add-generic-password -U \
 //     -s luna.op.<label> -a <label> -w '<ops_-prefixed-token>'
-const OP_ACCOUNTS = [
-  { label: "antmachine", keychainService: "luna.op.antmachine", keychainAccount: "antmachine" },
-  { label: "mrbot",      keychainService: "luna.op.mrbot",      keychainAccount: "mrbot" },
-  { label: "flow",       keychainService: "luna.op.flow",       keychainAccount: "flow" },
-] as const
+const OP_ACCOUNTS = resolveOpAccounts()
 
 interface DiscoveredOpToken {
   readonly label: string
@@ -385,7 +384,7 @@ const buildServerLayer = (
       const sessionMetadata = [
         `# Session Metadata`,
         `- **Interface:** Luna Web UI`,
-        `- **User:** Sterling Cobb (Discord: fourcolors, GitHub: fourcolors)`,
+        `- **User:** local operator`,
         `- **Server:** luna-chat-server (local, launchd)`,
         `- **Started:** ${new Date().toISOString()}`,
       ].join("\n")
@@ -475,8 +474,8 @@ const buildServerLayer = (
 
 const SEED_HINT =
   "  bun run --filter '@luna/agent-cli' luna-account add \\\n" +
-  "    --id sterling --label \"Sterling\" --kind anthropic \\\n" +
-  "    --secret-ref luna-op://antmachine/<vault-id>/<item-id>/credential"
+  "    --id default --label \"Default\" --kind anthropic \\\n" +
+  "    --secret-ref luna-op://primary/<vault-id>/<item-id>/credential"
 
 const buildMain = (
   opLabelsRegistered: ReadonlyArray<string>,

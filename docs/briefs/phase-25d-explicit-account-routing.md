@@ -18,7 +18,7 @@ Prior phases (DO NOT modify):
 - 25b (83644f4 + e3bc497) — luna-account CLI + dev-server-chat OP+Env wiring
 - 25c (64f7b15 + a1e5ac3) — macOS keychain bootstrap + N OnePasswordSecretProvider layers in firstOf chain
 
-Sterling's reasoning for this phase: 25c's "iterate every account until one resolves" is a permission-probing oracle. Multiple tokens are tried against every ref. He wants explicit routing where each `secret_ref` names which OP account to use, hard-fail on mismatch.
+Operator's reasoning for this phase: 25c's "iterate every account until one resolves" is a permission-probing oracle. Multiple tokens are tried against every ref. He wants explicit routing where each `secret_ref` names which OP account to use, hard-fail on mismatch.
 
 1Password official ref grammar (verified against developer.1password.com docs):
 ```
@@ -27,9 +27,9 @@ op://<vault-name>/<item-name>/[section-name/]<field-name>
 Account selection in `op` CLI is out-of-band (`--account` flag / `OP_ACCOUNT` env / token). 1P does NOT have an account-prefix grammar of their own.
 
 Currently registered keychain entries (verified by Sol):
-- `luna.op.antmachine` / `antmachine` — populated, `op vault list` returns "Mr Bot"
-- `luna.op.mrbot` / `mrbot` — Sterling will add later
-- `luna.op.flow` / `flow` — Sterling will add later
+- `luna.op.primary` / `primary` — populated, `op vault list` returns "Example Vault"
+- `luna.op.ops` / `ops` — Operator will add later
+- `luna.op.flow` / `flow` — Operator will add later
 
 Pre-existing bug to fix while we're here: `add.ts` validator allows `env://VAR` (with slashes), but `EnvSecretProvider` only accepts `env:VAR` (one colon, no slashes). Any row added with `env://` will never resolve. Fix in this phase by making the CLI validator require `env:` (one colon).
 
@@ -45,20 +45,20 @@ DESIGN.md sections:
 - §7.5 — AccountBroker surface (frozen)
 
 Existing code — READ as references:
-- `/Users/sol/Projects/luna/packages/core/src/secret-provider/onepassword-backend.ts`
+- `/path/to/luna/packages/core/src/secret-provider/onepassword-backend.ts`
   — `OnePasswordOptions` shape; `make({ token })`. You'll drop `vault`
   (dead — only `void opts.vault` today) and add required `accountLabel`.
-- `/Users/sol/Projects/luna/packages/core/src/secret-provider/secret-provider.ts`
+- `/path/to/luna/packages/core/src/secret-provider/secret-provider.ts`
   — `secretProviderFirstOf` semantics. Leave alone.
-- `/Users/sol/Projects/luna/packages/core/src/secret-provider/env-backend.ts`
+- `/path/to/luna/packages/core/src/secret-provider/env-backend.ts`
   — line 12: shows the canonical `env:` form (one colon, no slashes)
-- `/Users/sol/Projects/luna/packages/core/src/secret-provider/keychain-helper.ts`
+- `/path/to/luna/packages/core/src/secret-provider/keychain-helper.ts`
   — already shipped in 25c, no changes
-- `/Users/sol/Projects/luna/apps/ui-web/scripts/dev-server-chat.ts`
+- `/path/to/luna/apps/ui-web/scripts/dev-server-chat.ts`
   — current OP composition you'll restructure
-- `/Users/sol/Projects/luna/apps/agent-cli/src/commands/add.ts`
+- `/path/to/luna/apps/agent-cli/src/commands/add.ts`
   — line 15 region: validator regex you'll extend
-- `/Users/sol/Projects/luna/apps/agent-cli/test/cli.test.ts`
+- `/path/to/luna/apps/agent-cli/test/cli.test.ts`
   — existing validator test patterns
 
 ---
@@ -192,7 +192,7 @@ Tests at `routed-op-provider.test.ts`:
   - `luna-op://flow/`, `luna-op://flow` (no rest) → ConfigError.
   - `luna-op:///v/i/f` (empty label) → ConfigError.
   - `luna-op://env/v/i/f` (reserved) → ConfigError.
-  - `luna-op://Mr Bot/v/i/f` (space) → ConfigError.
+  - `luna-op://Example Vault/v/i/f` (space) → ConfigError.
   - `luna-op://flow%2Fother/v/i/f` → ConfigError (no decoding).
 - Error wrapping: when the wrapped backend fails for a
   `luna-op://flow/...` ref, the outer error message contains
@@ -260,14 +260,14 @@ Modify `apps/ui-web/scripts/dev-server-chat.ts`:
   inline via `OnePasswordSecretProvider.make({ token, accountLabel:
   label })`. The env-var token uses label `env` IF you keep it in
   the routed pool — actually NO, `env` is a reserved label. Decide:
-  - Option (i): drop the env-var fallback entirely — Sterling's
+  - Option (i): drop the env-var fallback entirely — Operator's
     Sol-agent shell shouldn't be relied on; keychain is the source
     of truth. Cleaner.
   - Option (ii): give the env-var-sourced token an internal label
-    like `envtok` (not reserved). Sterling's Sol-agent shell
+    like `envtok` (not reserved). Operator's Sol-agent shell
     continues to work as a hidden default account.
   Lean **(i) drop** — but make this an explicit decision in your
-  return summary so Sterling can override. Discuss tradeoff in the
+  return summary so Operator can override. Discuss tradeoff in the
   summary.
 - Boot log: keep the existing format
   `[op] N providers active: <label1>, <label2>, ...`.
@@ -283,7 +283,7 @@ Modify `apps/ui-web/scripts/dev-server-chat.ts`:
 
 Modify `apps/agent-cli/test/live-smoke.test.ts`:
 - Switch the canonical ref to
-  `luna-op://antmachine/<vault-id>/<item-id>/credential`.
+  `luna-op://primary/<vault-id>/<item-id>/credential`.
 - Add a SECOND smoke (also live-gated) using a bare `op://...` ref
   to confirm the single-account fall-through still works when only
   one account is registered.
@@ -364,7 +364,7 @@ luna-op:// + env: fix), §G (live-smoke — both ref forms gated).
 - Do NOT mutate `process.env` for tokens.
 - Do NOT log tokens. Do NOT include token-shaped substrings in any
   error message.
-- Do NOT change `secret_ref` for stored rows — Sterling will
+- Do NOT change `secret_ref` for stored rows — Operator will
   manually rewrite his ~1 row. Don't write a migration.
 - Do NOT touch §5.1 `accounts` schema.
 - Do NOT touch `errors.ts` (frozen).
@@ -386,7 +386,7 @@ Plus four extras:
 - **DESIGN.md diff** — short summary of what changed in §2.2.11.
 - **env: vs env:// fix** — confirm validator now requires `env:`
   (one colon) and reports any pre-existing `env://...` rows in
-  Sterling's DB. If any rows exist, STOP before making code
+  Operator's DB. If any rows exist, STOP before making code
   changes.
 - **env-var-token decision** — which option (i drop / ii envtok)
   you implemented and why. Justify in 2 sentences.
@@ -394,7 +394,7 @@ Plus four extras:
   AND the existing 25c keychain-helper tests still assert no token
   leakage in stderr/error messages.
 
-**Commits along the way** — Sterling explicitly wants per-checkpoint
+**Commits along the way** — Operator explicitly wants per-checkpoint
 commits. Use selective `git add <specific paths>` — NEVER
 `git add -A` or `.`. Recommended split:
 
@@ -415,7 +415,7 @@ on-topic files staged.
 
 ## 8. Red flags (stop and report, don't guess)
 
-- Sterling's `~/.luna/luna.db` has any row with `env://...` in
+- Operator's `~/.luna/luna.db` has any row with `env://...` in
   `secret_ref` — STOP before changing the env: validator. Report
   the row(s).
 - DESIGN.md §2.2.11 doesn't exist or contradicts the proposed

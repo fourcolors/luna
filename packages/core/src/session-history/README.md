@@ -144,6 +144,6 @@ bun run test packages/core/src/analytics/
 
 ## References
 
-- **Sol-agent cc_sessions:** `/Users/sol/sol-agent/lib/cc-sessions.ts`
+- **Sol-agent cc_sessions:** `<local-agent-history-path>`
 - **Luna DESIGN.md §2.2.8:** Telemetry → DuckDB + OTLP
 - **Luna DESIGN.md §17:** Repo layout (Phase 25–28 progression)

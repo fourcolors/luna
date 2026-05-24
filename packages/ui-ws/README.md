@@ -17,7 +17,7 @@ WebSockets without baking it into the core.
   or TLS-terminating reverse proxy.
 - **Bearer token required.** Refuses to start if `token` is unset or
   shorter than 16 chars. Tokens should come from 1Password
-  (`op://Mr Bot/UI_WS_TOKEN`) — never check them into source.
+  (`op://Example Vault/UI_WS_TOKEN`) — never check them into source.
 - **Client→server commands** were added in v2 (chat). Obs frames remain
   push-only and broadcast; chat frames are scoped to a per-connection
   set of subscribed `threadId`s.
@@ -126,7 +126,7 @@ runtime.runPromise(Effect.scoped(program))
 ## Connecting
 
 ```bash
-TOKEN=$(op item get UI_WS_TOKEN --vault "Mr Bot" --fields label=token --reveal)
+TOKEN=$(op item get UI_WS_TOKEN --vault "Example Vault" --fields label=token --reveal)
 websocat -H "Authorization: Bearer $TOKEN" ws://127.0.0.1:4753/ui
 ```
 

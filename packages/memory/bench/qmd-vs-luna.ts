@@ -26,7 +26,7 @@ import { SqliteVectorBackend } from "../src/backends/sqlite-vector.js"
 import { LunaSqliteBootstrapLive } from "../src/backends/vectorlite-bootstrap.js"
 import { makeRecord } from "../src/types.js"
 
-const CORPUS_DIR = "/Users/sol/.sol/memory/qmd/sol-agent"
+const CORPUS_DIR = "<local-memory-corpus>"
 const MAX_DOC_BYTES = 10240 // QMD's default ceiling
 const TOP_K = 5
 

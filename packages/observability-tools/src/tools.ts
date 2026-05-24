@@ -168,7 +168,7 @@ export const makeObsTools = (
       "Write a durable self-observation note — a record in Luna's behavioral ledger. " +
       "Use this to capture goals, progress, decisions, and reflections throughout a session. " +
       "These notes survive context resets and form the foundation for daily self-review. " +
-      "Examples: kind='goal_declared' when Sterling states intent; kind='progress' at " +
+      "Examples: kind='goal_declared' when Operator states intent; kind='progress' at " +
       "key milestones; kind='decision' when choosing between approaches; " +
       "kind='reflection' at session end to summarize what was accomplished.",
     inputSchema: noteShape,

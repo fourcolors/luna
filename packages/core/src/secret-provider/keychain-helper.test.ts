@@ -5,7 +5,7 @@
  * happy-path, miss, timeout, non-darwin, and no-leak behavior without
  * actually shelling out. A live integration test (gated to darwin) at
  * the bottom verifies the real `security` binary against the
- * pre-populated `luna.op.antmachine` keychain entry.
+ * pre-populated `luna.op.primary` keychain entry.
  */
 import type { ChildProcess, ExecFileException } from "node:child_process"
 import { EventEmitter } from "node:events"
@@ -172,14 +172,14 @@ describe("readKeychainToken — unit", () => {
   })
 })
 
-describe("readKeychainToken — live (darwin only, antmachine entry)", () => {
+describe("readKeychainToken — live (darwin only, primary entry)", () => {
   it.skipIf(process.platform !== "darwin")(
-    "reads luna.op.antmachine and returns ops_-prefixed token",
+    "reads luna.op.primary and returns ops_-prefixed token",
     async () => {
       const result = await Effect.runPromiseExit(
         readKeychainToken({
-          service: "luna.op.antmachine",
-          account: "antmachine",
+          service: "luna.op.primary",
+          account: "primary",
         }),
       )
       if (Exit.isFailure(result)) {

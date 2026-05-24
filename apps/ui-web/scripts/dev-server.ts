@@ -20,7 +20,7 @@ import {
 } from "@luna/core"
 import { startUIWebSocketServer } from "@luna/ui-ws"
 
-const TOKEN = "dev-ui-ws-token-do-not-ship"
+const TOKEN = "local-dev-token-change-me"
 
 const baseLayer = (() => {
   const clockL = Clock.Default

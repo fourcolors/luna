@@ -70,9 +70,9 @@ d("luna-account CLI", () => {
       [
         "add",
         "--id",
-        "sterling",
+        "operator",
         "--label",
-        "Sterling",
+        "Operator",
         "--kind",
         "anthropic",
         "--secret-ref",
@@ -81,12 +81,12 @@ d("luna-account CLI", () => {
       db,
     )
     expect(add.status, add.stderr).toBe(0)
-    expect(add.stdout).toContain("added account id=sterling kind=anthropic")
+    expect(add.stdout).toContain("added account id=operator kind=anthropic")
 
     const list = runCli(["list"], db)
     expect(list.status, list.stderr).toBe(0)
-    expect(list.stdout).toContain("sterling")
-    expect(list.stdout).toContain("Sterling")
+    expect(list.stdout).toContain("operator")
+    expect(list.stdout).toContain("Operator")
     expect(list.stdout).toContain("anthropic")
     expect(list.stdout).toContain(ref)
   })
@@ -228,9 +228,9 @@ d("luna-account CLI", () => {
       [
         "add",
         "--id",
-        "sterling",
+        "operator",
         "--label",
-        "Sterling",
+        "Operator",
         "--kind",
         "anthropic",
         "--secret-ref",
@@ -259,9 +259,9 @@ d("luna-account CLI", () => {
       [
         "add",
         "--id",
-        "sterling",
+        "operator",
         "--label",
-        "Sterling",
+        "Operator",
         "--kind",
         "anthropic",
         "--secret-ref",
@@ -269,9 +269,9 @@ d("luna-account CLI", () => {
       ],
       db,
     )
-    const rm = runCli(["rm", "--id", "sterling"], db)
+    const rm = runCli(["rm", "--id", "operator"], db)
     expect(rm.status, rm.stderr).toBe(0)
-    expect(rm.stdout).toMatch(/removed account id=sterling/)
+    expect(rm.stdout).toMatch(/removed account id=operator/)
     const list = runCli(["list"], db)
     expect(list.stdout).toMatch(/no accounts/)
   })
@@ -321,7 +321,7 @@ d("luna-account CLI", () => {
   })
 
   it("add accepts luna-op://<label>/<vault>/<item>/<section>/<field>", () => {
-    const r = runCli(addRefArgs("luna-op://antmachine/v/i/sec/f"), db)
+    const r = runCli(addRefArgs("luna-op://primary/v/i/sec/f"), db)
     expect(r.status, r.stderr).toBe(0)
   })
 
@@ -359,7 +359,7 @@ d("luna-account CLI", () => {
   })
 
   it("add rejects luna-op:// with space in label", () => {
-    const r = runCli(addRefArgs("luna-op://Mr Bot/v/i/f"), db)
+    const r = runCli(addRefArgs("luna-op://Example Vault/v/i/f"), db)
     expect(r.status).toBe(1)
   })
 

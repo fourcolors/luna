@@ -98,7 +98,7 @@ export const OBS_SYSTEM_PROMPT_ADDENDUM =
   "You have five observability tools (MCP server `observability`) for self-observation " +
   "and self-improvement:\n" +
   "- `obs_note(kind, summary, payload?, session_id?)` — write a durable behavioral note " +
-  "  (goal, progress, decision, reflection, obstacle). Call this when Sterling states intent, " +
+  "  (goal, progress, decision, reflection, obstacle). Call this when Operator states intent, " +
   "  at key milestones, when choosing between approaches, and at session end.\n" +
   "- `obs_notes_recent(session_id?, kind?, limit?)` — recall recent notes. Use FIRST when " +
   "  resuming work after a context reset ('what was I doing?').\n" +

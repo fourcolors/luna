@@ -86,7 +86,7 @@ describe.skipIf(!hasBunSqlite)("memory tools", () => {
 
     const saved = parseTextResult<{ id: string }>(
       await saveTool.handler(
-        { text: "Sterling prefers cats over dogs" },
+        { text: "Operator prefers cats over dogs" },
         undefined,
       ),
     )

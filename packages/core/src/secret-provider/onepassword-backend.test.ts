@@ -192,7 +192,7 @@ describe("OnePasswordSecretProvider", () => {
       Effect.gen(function* () {
         const sp = yield* SecretProvider
         return yield* sp.get("op://v/i/f")
-      }).pipe(Effect.provide(buildLayer({ accountLabel: "Mr Bot" }))),
+      }).pipe(Effect.provide(buildLayer({ accountLabel: "Example Vault" }))),
     )
     expect(Exit.isFailure(exit)).toBe(true)
     if (Exit.isFailure(exit)) {

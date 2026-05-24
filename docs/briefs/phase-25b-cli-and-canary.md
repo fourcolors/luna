@@ -19,7 +19,7 @@
   AccountBroker into the layer composition causes `acquireSession()`
   to overlay the env automatically.
 - `apps/agent-cli/src/` is empty (workspace exists, no source).
-- Canonical 1Password reference for Sterling's Claude OAuth token (use
+- Canonical 1Password reference for Operator's Claude OAuth token (use
   this in seed instructions and the smoke test):
   `op://<vault-id>/<item-id>/credential`
 
@@ -37,13 +37,13 @@ DESIGN.md sections:
   but the canary path runs through it)
 
 Existing code — READ as references:
-- `/Users/sol/Projects/luna/packages/core/src/account-broker/account-broker-sql.ts`
+- `/path/to/luna/packages/core/src/account-broker/account-broker-sql.ts`
   (shipped in 25a) — the `fromSql` you will instantiate
-- `/Users/sol/Projects/luna/packages/core/src/secret-provider/onepassword-backend.ts`
+- `/path/to/luna/packages/core/src/secret-provider/onepassword-backend.ts`
   — Layer factory, options shape
-- `/Users/sol/Projects/luna/packages/core/src/secret-provider/secret-provider.ts`
+- `/path/to/luna/packages/core/src/secret-provider/secret-provider.ts`
   — `secretProviderFirstOf` chain helper (1password → env fallback)
-- `/Users/sol/Projects/luna/apps/ui-web/scripts/dev-server-chat.ts`
+- `/path/to/luna/apps/ui-web/scripts/dev-server-chat.ts`
   — full file, especially lines 49–80 (env-var bail you are
   replacing) and the layer composition
 
@@ -83,7 +83,7 @@ Existing code — READ as references:
 - Failure modes — surface clearly, do NOT crash on panic:
   - 0 accounts in DB → log a `ConfigError`-style message with the
     seed CLI command to fix (e.g.,
-    `"No accounts seeded. Run: bun run --filter '@luna/agent-cli' luna-account add --id sterling --label 'Sterling' --kind anthropic --secret-ref op://..."`)
+    `"No accounts seeded. Run: bun run --filter '@luna/agent-cli' luna-account add --id operator --label 'Operator' --kind anthropic --secret-ref op://..."`)
     and exit cleanly. Do NOT proceed.
   - 1Password CLI not authenticated → `ConfigError` with hint to set
     `OP_SERVICE_ACCOUNT_TOKEN` env. Surface at first
@@ -191,7 +191,7 @@ test runners can't have. Instead, write a single
 
 **Then run the manual smoke separately**:
 - `op signin` (verify auth)
-- `bun run --filter '@luna/agent-cli' luna-account add --id sterling --label "Sterling" --kind anthropic --secret-ref op://<vault-id>/<item-id>/credential`
+- `bun run --filter '@luna/agent-cli' luna-account add --id operator --label "Operator" --kind anthropic --secret-ref op://<vault-id>/<item-id>/credential`
 - `bun run --filter '@luna/agent-cli' luna-account list`
 - `bun run --filter '@luna/ui-web' dev:server:chat`
 - Confirm boot log: `[accounts] 1 hydrated: anthropic×1`

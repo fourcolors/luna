@@ -11,7 +11,7 @@
 Boot log from `bun run --filter '@luna/ui-web' dev:server:chat`:
 
 ```
-[op] 3 providers active: antmachine, mrbot, flow
+[op] 3 providers active: primary, ops, flow
 [luna/sqlite-vector] Vectorlite HNSW unavailable (setCustomSQLite(...) failed:
   Error: SQLite already loaded
 This function can only be called before SQLite has been loaded and exactly

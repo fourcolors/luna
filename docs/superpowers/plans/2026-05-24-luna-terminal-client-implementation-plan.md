@@ -98,7 +98,7 @@ Keep existing package metadata outside those fields unchanged.
 Run:
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 bun install
 ```
 
@@ -133,7 +133,7 @@ if (isMain) {
 Run:
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 bun run --filter '@luna/agent-cli' test
 ```
 
@@ -142,7 +142,7 @@ Expected: fail because `./chat/app.js` does not exist yet. This confirms the new
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 git add apps/agent-cli/package.json apps/agent-cli/src/luna.ts bun.lock
 git commit -m "feat(agent-cli): add luna chat entrypoint"
 ```
@@ -253,7 +253,7 @@ describe("luna chat config", () => {
 Run:
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 bun run --filter '@luna/agent-cli' test -- chat-config.test.ts
 ```
 
@@ -523,7 +523,7 @@ export const redactedConfigSummary = (cfg: ChatConfig): string =>
 Run:
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 bun run --filter '@luna/agent-cli' test -- chat-config.test.ts
 ```
 
@@ -532,7 +532,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 git add apps/agent-cli/src/chat/args.ts apps/agent-cli/src/chat/config.ts apps/agent-cli/test/chat-config.test.ts
 git commit -m "feat(agent-cli): load luna chat config"
 ```
@@ -672,7 +672,7 @@ describe("local shell state", () => {
 Run:
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 bun run --filter '@luna/agent-cli' test -- chat-slash.test.ts local-shell.test.ts
 ```
 
@@ -877,7 +877,7 @@ export const executeLocalCommand = async (
 Run:
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 bun run --filter '@luna/agent-cli' test -- chat-slash.test.ts local-shell.test.ts
 ```
 
@@ -886,7 +886,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 git add apps/agent-cli/src/chat/slash.ts apps/agent-cli/src/chat/local-shell.ts apps/agent-cli/test/chat-slash.test.ts apps/agent-cli/test/local-shell.test.ts
 git commit -m "feat(agent-cli): add chat commands and local shell executor"
 ```
@@ -968,9 +968,9 @@ describe("recovery", () => {
   })
 
   it("builds ssh command", () => {
-    expect(buildRecoveryCommand({ mode: "ssh", command: "systemctl restart luna", sshTarget: "root@jax-box" })).toEqual({
+    expect(buildRecoveryCommand({ mode: "ssh", command: "systemctl restart luna", sshTarget: "root@remote-host" })).toEqual({
       command: "ssh",
-      args: ["root@jax-box", "systemctl restart luna"],
+      args: ["root@remote-host", "systemctl restart luna"],
       shell: false,
     })
   })
@@ -992,7 +992,7 @@ describe("recovery", () => {
 Run:
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 bun run --filter '@luna/agent-cli' test -- ws-client.test.ts recovery.test.ts
 ```
 
@@ -1146,7 +1146,7 @@ export const runRecovery = async (input: RecoveryInput): Promise<RecoveryResult>
 Run:
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 bun run --filter '@luna/agent-cli' test -- ws-client.test.ts recovery.test.ts
 ```
 
@@ -1155,7 +1155,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 git add apps/agent-cli/src/chat/ws-client.ts apps/agent-cli/src/chat/recovery.ts apps/agent-cli/test/ws-client.test.ts apps/agent-cli/test/recovery.test.ts
 git commit -m "feat(agent-cli): add websocket client and recovery"
 ```
@@ -1265,7 +1265,7 @@ describe("local shell bridge", () => {
 Run:
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 bun run --filter '@luna/ui-ws' test -- local-shell-bridge.test.ts
 ```
 
@@ -1462,7 +1462,7 @@ export const createLocalShellBridge = (): LocalShellBridge => {
 Run:
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 bun run --filter '@luna/ui-ws' test -- local-shell-bridge.test.ts
 ```
 
@@ -1471,7 +1471,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 git add packages/ui-ws/src/protocol.ts packages/ui-ws/src/index.ts packages/ui-ws/src/local-shell-bridge.ts packages/ui-ws/test/local-shell-bridge.test.ts
 git commit -m "feat(ui-ws): add local shell bridge protocol"
 ```
@@ -1603,7 +1603,7 @@ describe("local shell MCP tool", () => {
 Run:
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 bun run --filter '@luna/local-shell-tools' test
 ```
 
@@ -1699,8 +1699,8 @@ export class LocalShellToolsService extends Effect.Tag("luna/LocalShellToolsServ
 export const LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM =
   "You have one local shell tool (MCP server `local_shell`): " +
   "`local_shell_run(command, cwd?, timeout_ms?, thread_id?)`. " +
-  "Use it only when Sterling asks you to inspect or operate on the machine connected by the Luna CLI. " +
-  "Every command requires approval in Sterling's terminal before it runs. " +
+  "Use it only when Operator asks you to inspect or operate on the machine connected by the Luna CLI. " +
+  "Every command requires approval in Operator's terminal before it runs. " +
   "If the tool says local shell is unavailable or denied, continue without command output."
 
 export const buildLocalShellMcpServer = (
@@ -1742,7 +1742,7 @@ export const LocalShellToolsLayer = (input: {
 Run:
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 bun install
 bun run --filter '@luna/local-shell-tools' test
 ```
@@ -1752,7 +1752,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 git add packages/local-shell-tools package.json bun.lock
 git commit -m "feat(local-shell): add local shell MCP tool"
 ```
@@ -1963,7 +1963,7 @@ import { LocalShellToolsLayer, LocalShellToolsService } from "@luna/local-shell-
 Replace:
 
 ```ts
-const TOKEN = "dev-ui-ws-token-do-not-ship"
+const TOKEN = "local-dev-token-change-me"
 ```
 
 with:
@@ -2031,7 +2031,7 @@ console.log("token: configured")
 Run:
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 bun run --filter '@luna/ui-web' test -- ui-ws-token.test.ts
 bun run --filter '@luna/ui-ws' test
 ```
@@ -2041,7 +2041,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 git add apps/ui-web/package.json apps/ui-web/scripts/ui-ws-token.ts apps/ui-web/scripts/__tests__/ui-ws-token.test.ts apps/ui-web/scripts/chat-server.ts packages/ui-ws/src/server.ts packages/ui-ws/test/server.test.ts
 git commit -m "feat(server): wire env token and local shell bridge"
 ```
@@ -2128,7 +2128,7 @@ describe("luna chat app", () => {
 Run:
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 bun run --filter '@luna/agent-cli' test -- chat-app.integration.test.ts
 ```
 
@@ -2363,7 +2363,7 @@ Keep the default in `app.ts` as deny, so non-interactive test pipes never execut
 Run:
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 bun run --filter '@luna/agent-cli' test -- chat-app.integration.test.ts
 ```
 
@@ -2374,7 +2374,7 @@ Expected: PASS.
 Run:
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 bun run --filter '@luna/agent-cli' test
 bun run --filter '@luna/agent-cli' typecheck
 ```
@@ -2384,7 +2384,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 git add apps/agent-cli/src/chat/app.ts apps/agent-cli/src/luna.ts apps/agent-cli/test/chat-app.integration.test.ts
 git commit -m "feat(agent-cli): implement luna terminal chat"
 ```
@@ -2415,7 +2415,7 @@ Optional recovery config:
 ```env
 LUNA_START_MODE=local|ssh|none
 LUNA_START_COMMAND=incus exec agent-lab-1 -- systemctl restart jax-agent-lab.service
-LUNA_START_SSH=root@jax-box
+LUNA_START_SSH=root@remote-host
 LUNA_START_TIMEOUT_MS=30000
 ```
 
@@ -2450,7 +2450,7 @@ Local shell is off by default. When enabled, Luna can request a command on the m
 Run:
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 bun run --filter '@luna/agent-cli' test
 bun run --filter '@luna/agent-cli' typecheck
 bun run --filter '@luna/ui-ws' test
@@ -2466,14 +2466,14 @@ Expected: all commands exit 0.
 Start server with a non-hardcoded token:
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 UI_WS_TOKEN="$(openssl rand -hex 24)" bun run --filter '@luna/ui-web' server:chat
 ```
 
 In a second terminal using the same token:
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 LUNA_UI_WS_TOKEN="<token-from-shell>" bun run --filter '@luna/agent-cli' luna -- chat
 ```
 
@@ -2485,7 +2485,7 @@ Expected:
 - `/local-shell on` returns an accepted local-shell status.
 - Asking Luna to inspect the current directory triggers a terminal approval prompt before any command executes.
 
-- [ ] **Step 4: Manual jax-box smoke**
+- [ ] **Step 4: Manual remote-host smoke**
 
 From the machine that should act as client:
 
@@ -2493,7 +2493,7 @@ From the machine that should act as client:
 LUNA_WS_URL=ws://127.0.0.1:43111/ui \
 LUNA_UI_WS_TOKEN="<deployed-token>" \
 LUNA_START_MODE=ssh \
-LUNA_START_SSH=root@jax-box \
+LUNA_START_SSH=root@remote-host \
 LUNA_START_COMMAND="incus exec agent-lab-1 -- systemctl restart jax-agent-lab.service" \
 bun run --filter '@luna/agent-cli' luna -- chat --local-shell
 ```
@@ -2506,7 +2506,7 @@ Expected:
 - [ ] **Step 5: Commit docs and any smoke fixes**
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 git add docs/luna-terminal-client.md
 git commit -m "docs: document luna terminal client"
 ```
@@ -2518,7 +2518,7 @@ If smoke fixes required code changes, commit those files with a message that nam
 Run:
 
 ```bash
-cd /root/projects/luna
+cd /path/to/luna
 bun run --filter '@luna/agent-cli' test
 bun run --filter '@luna/agent-cli' typecheck
 bun run --filter '@luna/ui-ws' test

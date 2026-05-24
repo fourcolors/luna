@@ -74,18 +74,18 @@ const get = (ref: string, layer: Layer.Layer<SecretProvider, ConfigError>) =>
 
 describe("RoutedOpSecretProvider — §3.4 no-fallthrough invariant (multi-account)", () => {
   /**
-   * GAP-1: With 3 accounts [antmachine, mrbot, flow], requesting
+   * GAP-1: With 3 accounts [primary, ops, flow], requesting
    * luna-op://flow/v/i/f when flow's inner layer FAILS must:
    *   (a) propagate as a ConfigError (not succeed)
-   *   (b) never call antmachine or mrbot (no cascade to other accounts)
+   *   (b) never call primary or ops (no cascade to other accounts)
    *   (c) include the (account=flow) breadcrumb
    */
-  it("luna-op://flow failure does not fall through to antmachine or mrbot", async () => {
+  it("luna-op://flow failure does not fall through to primary or ops", async () => {
     const log: StubLog = { received: [] }
     const layer = RoutedOpSecretProvider.make({
       accounts: [
-        { label: "antmachine", layer: stubLayer("antmachine", log, "ok") },
-        { label: "mrbot", layer: stubLayer("mrbot", log, "ok") },
+        { label: "primary", layer: stubLayer("primary", log, "ok") },
+        { label: "ops", layer: stubLayer("ops", log, "ok") },
         { label: "flow", layer: stubLayer("flow", log, "fail") },
       ],
     })
@@ -95,7 +95,7 @@ describe("RoutedOpSecretProvider — §3.4 no-fallthrough invariant (multi-accou
     // Must fail — no fallthrough to a succeeding account.
     expect(Exit.isFailure(exit)).toBe(true)
 
-    // Only flow was called — never antmachine, never mrbot.
+    // Only flow was called — never primary, never ops.
     expect(log.received).toEqual(["flow:op://v/i/f"])
 
     // Error message includes the breadcrumb.
@@ -104,23 +104,23 @@ describe("RoutedOpSecretProvider — §3.4 no-fallthrough invariant (multi-accou
     }
   })
 
-  it("luna-op://antmachine failure does not fall through when mrbot + flow would succeed", async () => {
+  it("luna-op://primary failure does not fall through when ops + flow would succeed", async () => {
     const log: StubLog = { received: [] }
     const layer = RoutedOpSecretProvider.make({
       accounts: [
-        { label: "antmachine", layer: stubLayer("antmachine", log, "fail") },
-        { label: "mrbot", layer: stubLayer("mrbot", log, "ok") },
+        { label: "primary", layer: stubLayer("primary", log, "fail") },
+        { label: "ops", layer: stubLayer("ops", log, "ok") },
         { label: "flow", layer: stubLayer("flow", log, "ok") },
       ],
     })
 
-    const exit = await get("luna-op://antmachine/v/i/f", layer)
+    const exit = await get("luna-op://primary/v/i/f", layer)
 
     expect(Exit.isFailure(exit)).toBe(true)
-    // mrbot and flow must not have been called.
-    expect(log.received).toEqual(["antmachine:op://v/i/f"])
+    // ops and flow must not have been called.
+    expect(log.received).toEqual(["primary:op://v/i/f"])
     if (Exit.isFailure(exit)) {
-      expect(JSON.stringify(exit.cause)).toContain("(account=antmachine)")
+      expect(JSON.stringify(exit.cause)).toContain("(account=primary)")
     }
   })
 
@@ -132,8 +132,8 @@ describe("RoutedOpSecretProvider — §3.4 no-fallthrough invariant (multi-accou
     const log: StubLog = { received: [] }
     const layer = RoutedOpSecretProvider.make({
       accounts: [
-        { label: "antmachine", layer: stubLayer("antmachine", log, "ok") },
-        { label: "mrbot", layer: stubLayer("mrbot", log, "ok") },
+        { label: "primary", layer: stubLayer("primary", log, "ok") },
+        { label: "ops", layer: stubLayer("ops", log, "ok") },
         { label: "flow", layer: stubLayer("flow", log, "ok") },
       ],
     })
@@ -147,7 +147,7 @@ describe("RoutedOpSecretProvider — §3.4 no-fallthrough invariant (multi-accou
       const j = JSON.stringify(exit.cause)
       expect(j).toContain("ghost")
       // Registered list is surfaced.
-      expect(j).toContain("antmachine")
+      expect(j).toContain("primary")
     }
   })
 })
@@ -200,7 +200,7 @@ describe("RoutedOpSecretProvider — §3.4 zero-secret-material invariant (leak-
     const log: StubLog = { received: [] }
     const layer = RoutedOpSecretProvider.make({
       accounts: [
-        { label: "antmachine", layer: stubLayer("antmachine", log, "ok") },
+        { label: "primary", layer: stubLayer("primary", log, "ok") },
         { label: "flow", layer: stubLayer("flow", log, "leak-token") },
       ],
     })
@@ -208,7 +208,7 @@ describe("RoutedOpSecretProvider — §3.4 zero-secret-material invariant (leak-
     const exit = await get("luna-op://flow/v/i/f", layer)
     expect(Exit.isFailure(exit)).toBe(true)
 
-    // antmachine must not have been called.
+    // primary must not have been called.
     expect(log.received).toEqual(["flow:op://v/i/f"])
 
     if (Exit.isFailure(exit)) {

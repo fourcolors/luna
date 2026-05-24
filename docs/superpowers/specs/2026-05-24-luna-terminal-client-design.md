@@ -60,7 +60,7 @@ Command examples:
 ```bash
 luna chat
 luna chat --local-shell
-luna chat --url wss://jax-box.tail0d96d3.ts.net:43111/ui
+luna chat --url wss://remote-host.tailnet.example.ts.net:43111/ui
 luna chat --thread <thread-id>
 luna chat --new
 ```
@@ -105,7 +105,7 @@ LUNA_UI_WS_TOKEN=<secret-token>
 # Optional recovery.
 LUNA_START_MODE=local|ssh|none
 LUNA_START_COMMAND=<command>
-LUNA_START_SSH=root@jax-box
+LUNA_START_SSH=root@remote-host
 LUNA_START_TIMEOUT_MS=30000
 ```
 
@@ -141,7 +141,7 @@ Recovery modes:
 - `local`: run `LUNA_START_COMMAND` on the client machine.
 - `ssh`: run `ssh $LUNA_START_SSH "$LUNA_START_COMMAND"`.
 
-For `jax-box`, an expected recovery command is:
+For `remote-host`, an expected recovery command is:
 
 ```bash
 incus exec agent-lab-1 -- systemctl restart jax-agent-lab.service
@@ -310,7 +310,7 @@ Phase 3:
 
 Phase 4:
 
-- Polish terminal UX, docs, and deployment config for `jax-box`.
+- Polish terminal UX, docs, and deployment config for `remote-host`.
 
 ## Implementation Decisions
 

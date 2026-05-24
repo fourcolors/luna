@@ -1,15 +1,15 @@
 {
   "permissions": {
     "allow": [
-      "Write(/Users/sol/Projects/luna/**)",
-      "Edit(/Users/sol/Projects/luna/**)",
-      "Bash(git -C /Users/sol/Projects/luna *)",
+      "Write(/path/to/luna/**)",
+      "Edit(/path/to/luna/**)",
+      "Bash(git -C /path/to/luna *)",
       "Bash(bun run *)",
       "Bash(bun test *)",
       "Bash(bun install)",
       "Bash(bun add *)",
       "Bash(mkdir -p ~/.luna/**)",
-      "Bash(mkdir -p /Users/sol/Projects/luna/.claude/**)"
+      "Bash(mkdir -p /path/to/luna/.claude/**)"
     ]
   },
   "mcpServers": {

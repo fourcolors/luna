@@ -83,13 +83,13 @@ apps/
 One command to install Luna on any Mac — clones the repo, installs deps, sets up `~/.luna/`, checks your Claude Code session, registers a launchd daemon, and installs the `luna` CLI shortcut:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fourcolors/luna/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/example-org/luna/master/install.sh | bash
 ```
 
 Or clone and run locally:
 
 ```bash
-git clone https://github.com/fourcolors/luna.git ~/Projects/luna
+git clone https://github.com/example-org/luna.git ~/Projects/luna
 bash ~/Projects/luna/install.sh
 ```
 

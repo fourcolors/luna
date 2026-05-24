@@ -121,37 +121,37 @@ describe("RoutedOpSecretProvider — single-account routing", () => {
   it("op://v/i/f resolves via the only registered account", async () => {
     const log: StubLog = { received: [] }
     const layer = RoutedOpSecretProvider.make({
-      accounts: [{ label: "antmachine", layer: stubLayer("antmachine", log) }],
+      accounts: [{ label: "primary", layer: stubLayer("primary", log) }],
     })
     const exit = await get("op://v/i/f", layer)
     expect(Exit.isSuccess(exit)).toBe(true)
     if (Exit.isSuccess(exit)) {
-      expect(Redacted.value(exit.value)).toBe("secret(antmachine:op://v/i/f)")
+      expect(Redacted.value(exit.value)).toBe("secret(primary:op://v/i/f)")
     }
-    expect(log.received).toEqual(["antmachine:op://v/i/f"])
+    expect(log.received).toEqual(["primary:op://v/i/f"])
   })
 
-  it("luna-op://antmachine/v/i/f rewrites to op://v/i/f and routes correctly", async () => {
+  it("luna-op://primary/v/i/f rewrites to op://v/i/f and routes correctly", async () => {
     const log: StubLog = { received: [] }
     const layer = RoutedOpSecretProvider.make({
-      accounts: [{ label: "antmachine", layer: stubLayer("antmachine", log) }],
+      accounts: [{ label: "primary", layer: stubLayer("primary", log) }],
     })
-    const exit = await get("luna-op://antmachine/v/i/f", layer)
+    const exit = await get("luna-op://primary/v/i/f", layer)
     expect(Exit.isSuccess(exit)).toBe(true)
-    expect(log.received).toEqual(["antmachine:op://v/i/f"])
+    expect(log.received).toEqual(["primary:op://v/i/f"])
   })
 
   it("luna-op://wrong/v/i/f → ConfigError naming the unknown label and listing registered set", async () => {
     const log: StubLog = { received: [] }
     const layer = RoutedOpSecretProvider.make({
-      accounts: [{ label: "antmachine", layer: stubLayer("antmachine", log) }],
+      accounts: [{ label: "primary", layer: stubLayer("primary", log) }],
     })
     const exit = await get("luna-op://wrong/v/i/f", layer)
     expect(Exit.isFailure(exit)).toBe(true)
     if (Exit.isFailure(exit)) {
       const j = JSON.stringify(exit.cause)
       expect(j).toContain("wrong")
-      expect(j).toContain("[antmachine]")
+      expect(j).toContain("[primary]")
     }
     expect(log.received).toEqual([])
   })
@@ -161,8 +161,8 @@ describe("RoutedOpSecretProvider — multi-account routing", () => {
   const buildMulti = (log: StubLog) =>
     RoutedOpSecretProvider.make({
       accounts: [
-        { label: "antmachine", layer: stubLayer("antmachine", log) },
-        { label: "mrbot", layer: stubLayer("mrbot", log) },
+        { label: "primary", layer: stubLayer("primary", log) },
+        { label: "ops", layer: stubLayer("ops", log) },
         { label: "flow", layer: stubLayer("flow", log) },
       ],
     })
@@ -175,7 +175,7 @@ describe("RoutedOpSecretProvider — multi-account routing", () => {
       const j = JSON.stringify(exit.cause)
       expect(j).toContain("(have 3)")
       expect(j).toContain("luna-op://<label>")
-      expect(j).toContain("[antmachine, mrbot, flow]")
+      expect(j).toContain("[primary, ops, flow]")
     }
     expect(log.received).toEqual([])
   })
@@ -187,11 +187,11 @@ describe("RoutedOpSecretProvider — multi-account routing", () => {
     expect(log.received).toEqual(["flow:op://v/i/f"])
   })
 
-  it("luna-op://mrbot/v/i/section/f preserves the section path segment", async () => {
+  it("luna-op://ops/v/i/section/f preserves the section path segment", async () => {
     const log: StubLog = { received: [] }
-    const exit = await get("luna-op://mrbot/v/i/sec/f", buildMulti(log))
+    const exit = await get("luna-op://ops/v/i/sec/f", buildMulti(log))
     expect(Exit.isSuccess(exit)).toBe(true)
-    expect(log.received).toEqual(["mrbot:op://v/i/sec/f"])
+    expect(log.received).toEqual(["ops:op://v/i/sec/f"])
   })
 })
 
@@ -233,8 +233,8 @@ describe("RoutedOpSecretProvider — malformed / edge cases", () => {
     }
   })
 
-  it("luna-op://Mr Bot/v/i/f (space) → ConfigError, no path leak", async () => {
-    const exit = await get("luna-op://Mr Bot/v/i/f", layer)
+  it("luna-op://Example Vault/v/i/f (space) → ConfigError, no path leak", async () => {
+    const exit = await get("luna-op://Example Vault/v/i/f", layer)
     expect(Exit.isFailure(exit)).toBe(true)
     if (Exit.isFailure(exit)) {
       const j = JSON.stringify(exit.cause)
@@ -303,7 +303,7 @@ describe("validateAccountsTableLabels", () => {
       "op://v/i/f",
       "env:FOO",
     ]
-    const dangling = validateAccountsTableLabels(refs, ["flow", "antmachine"])
+    const dangling = validateAccountsTableLabels(refs, ["flow", "primary"])
     expect(dangling).toEqual([{ ref: "luna-op://ghost/v/i/f", label: "ghost" }])
   })
 

@@ -9,7 +9,7 @@
  *   - `op` CLI on PATH
  *   - `OP_SERVICE_ACCOUNT_TOKEN` set (preferred — service account, headless)
  *     OR an active `op signin` session (interactive fallback)
- *   - the canonical Sterling Claude OAuth ref to be reachable
+ *   - the canonical Operator Claude OAuth ref to be reachable
  *
  * Run:
  *   LUNA_LIVE_SMOKE=1 bun run test apps/agent-cli/test/live-smoke.test.ts
@@ -40,7 +40,7 @@ const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined"
 const d = LIVE && isBun ? describe : describe.skip
 
 const CANONICAL_LUNA_OP_REF =
-  "luna-op://antmachine/<vault-id>/<item-id>/credential"
+  "luna-op://primary/<vault-id>/<item-id>/credential"
 const CANONICAL_BARE_OP_REF =
   "op://<vault-id>/<item-id>/credential"
 const CLI_ENTRY = path.resolve(__dirname, "..", "src", "index.ts")
@@ -57,9 +57,9 @@ const seedDb = (ref: string): string => {
       CLI_ENTRY,
       "add",
       "--id",
-      "sterling",
+      "operator",
       "--label",
-      "Sterling",
+      "Operator",
       "--kind",
       "anthropic",
       "--secret-ref",
@@ -85,16 +85,16 @@ const cleanupDb = (dbPath: string): void => {
 
 const buildRoutedSecretL = () => {
   const innerOpL = OnePasswordSecretProvider.make({
-    accountLabel: "antmachine",
+    accountLabel: "primary",
   }).pipe(Layer.provide(Clock.Default))
   const routedL = RoutedOpSecretProvider.make({
-    accounts: [{ label: "antmachine", layer: innerOpL }],
+    accounts: [{ label: "primary", layer: innerOpL }],
   })
   return secretProviderFirstOf([routedL, EnvSecretProvider.Default])
 }
 
 d("Phase 25d live smoke — broker → RoutedOpSecretProvider → Redacted<sk-ant-oat>", () => {
-  it("luna-op://antmachine/... → acquireSession returns Redacted starting with sk-ant-oat", async () => {
+  it("luna-op://primary/... → acquireSession returns Redacted starting with sk-ant-oat", async () => {
     const dbPath = seedDb(CANONICAL_LUNA_OP_REF)
     try {
       const secretL = buildRoutedSecretL()
@@ -124,18 +124,18 @@ d("Phase 25d live smoke — broker → RoutedOpSecretProvider → Redacted<sk-an
   //   →  AccountBrokerLayer.fromSql  →  acquireSession
   //   →  Redacted<sk-ant-oat-...>
   // Requires all three luna.op.<label> keychain entries present
-  // (Sterling's machine has them; CI does not — that's why this is gated).
+  // (Operator's machine has them; CI does not — that's why this is gated).
   it("3 keychain × OP layers × RoutedOp → broker → Redacted<sk-ant-oat>", async () => {
     const OP_ACCOUNTS = [
       {
-        label: "antmachine",
-        keychainService: "luna.op.antmachine",
-        keychainAccount: "antmachine",
+        label: "primary",
+        keychainService: "luna.op.primary",
+        keychainAccount: "primary",
       },
       {
-        label: "mrbot",
-        keychainService: "luna.op.mrbot",
-        keychainAccount: "mrbot",
+        label: "ops",
+        keychainService: "luna.op.ops",
+        keychainAccount: "ops",
       },
       {
         label: "flow",
@@ -164,21 +164,21 @@ d("Phase 25d live smoke — broker → RoutedOpSecretProvider → Redacted<sk-an
       return accounts
     })
 
-    // Sterling's keychain layout: the `mrbot` SA token has read access to
-    // the antmachine vault where the canonical credential lives. The other
-    // two tokens 403 against this ref. Routing via `luna-op://mrbot/...`
+    // Operator's keychain layout: the `ops` SA token has read access to
+    // the primary vault where the canonical credential lives. The other
+    // two tokens 403 against this ref. Routing via `luna-op://ops/...`
     // proves the dispatcher picks the right inner layer (this is the whole
     // point of RoutedOp: don't rely on a single SA having every vault).
     const ROUTED_REF =
-      "luna-op://mrbot/<vault-id>/<item-id>/credential"
+      "luna-op://ops/<vault-id>/<item-id>/credential"
     const dbPath = seedDb(ROUTED_REF)
     try {
       const program = Effect.gen(function* () {
         const accounts = yield* buildOpLayers
         expect(accounts).toHaveLength(3)
         expect(accounts.map((a) => a.label)).toEqual([
-          "antmachine",
-          "mrbot",
+          "primary",
+          "ops",
           "flow",
         ])
         const routedOp = RoutedOpSecretProvider.make({ accounts })

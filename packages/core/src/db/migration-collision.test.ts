@@ -74,7 +74,7 @@ d("Phase 25e regression — migration collision across components", () => {
   it("broker hydrate creates `accounts` table even when user_version is already 1", async () => {
     // We need a single physical file so the Layer reopens what we seeded.
     // bun:sqlite `:memory:` can't be shared across handles, so use a
-    // tempfile instead — still in-process, no /Users/sol/.luna touched.
+    // tempfile instead — still in-process, no ~/.luna touched.
     const os = await import("node:os")
     const path = await import("node:path")
     const fs = await import("node:fs")
@@ -86,7 +86,7 @@ d("Phase 25e regression — migration collision across components", () => {
     try {
       // STEP 1+2: simulate "another component already migrated to v1" by
       // bumping PRAGMA user_version=1 WITHOUT creating the accounts table.
-      // This is exactly what happens on Sterling's dev DB after sessions
+      // This is exactly what happens on Operator's dev DB after sessions
       // migration ran first.
       const seedDb = await openMemoryDbAt(dbPath)
       seedDb.run("PRAGMA journal_mode = WAL")

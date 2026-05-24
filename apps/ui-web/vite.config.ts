@@ -1,15 +1,21 @@
 import { defineConfig } from "vite"
 import solid from "vite-plugin-solid"
 
+const allowedHosts =
+  process.env["LUNA_VITE_ALLOWED_HOSTS"]
+    ?.split(",")
+    .map((host) => host.trim())
+    .filter((host) => host.length > 0) ?? []
+
 // SolidJS web UI. Port 5174 (5173 reserved for legacy/parity comparisons
 // during migration; kept as default to avoid breaking developer muscle
-// memory). Tailscale hosts allowed for remote dev access.
+// memory). Additional remote dev hosts can be provided via env.
 export default defineConfig({
   plugins: [solid()],
   server: {
     port: 5174,
     host: "0.0.0.0",
-    allowedHosts: ["mr.tail0d96d3.ts.net", ".tail0d96d3.ts.net"],
+    ...(allowedHosts.length > 0 ? { allowedHosts } : {}),
   },
   // Bun's hoisted .bun/ workspace layout serves CJS deps as raw CJS to the
   // browser by default — vite's dep crawler doesn't always force them
