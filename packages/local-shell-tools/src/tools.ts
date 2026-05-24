@@ -25,13 +25,6 @@ const runShape = {
     .max(MAX_TIMEOUT_MS)
     .optional()
     .describe("Optional timeout in milliseconds. Default 120000, maximum 120000."),
-  thread_id: z
-    .string()
-    .min(1)
-    .optional()
-    .describe(
-      "Optional Luna thread id. Defaults to the session bound by LocalShellToolsService.",
-    ),
 }
 
 export const makeLocalShellTools = (
@@ -47,13 +40,13 @@ export const makeLocalShellTools = (
     inputSchema: runShape,
     handler: (args) =>
       Effect.gen(function* () {
-        const threadId = args.thread_id ?? currentThreadId()
+        const threadId = currentThreadId()
         if (!threadId) {
           return yield* Effect.fail(
             new ToolError({
               tool: "local_shell_run",
               op: "local_shell.run",
-              cause: "no local shell session is bound and no thread_id was provided",
+              cause: "no local shell session is bound",
             }),
           )
         }

@@ -26,7 +26,7 @@ export class LocalShellToolsService extends Effect.Tag(
 
 export const LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM =
   "You have one local shell MCP server (`local_shell`) with tool " +
-  "`local_shell_run(command, cwd?, timeout_ms?, thread_id?)`. It requests command " +
+  "`local_shell_run(command, cwd?, timeout_ms?)`. It requests command " +
   "execution in Sterling's attached Luna terminal client for the current thread. " +
   "Every command requires explicit user approval in that terminal before it runs. " +
   "If the local shell client is unavailable, no session is bound, or the user denied " +

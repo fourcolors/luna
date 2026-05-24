@@ -56,6 +56,81 @@ describe("LocalShellToolsLayer - structural invariants", () => {
     expect(second.systemPromptAddendum).toBe(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM)
   })
 
+  it("does not let one thread binding route commands to another thread", async () => {
+    const bridge = createLocalShellBridge()
+
+    const config = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          return yield* LocalShellToolsService
+        }),
+      ).pipe(Effect.provide(LocalShellToolsLayer({ bridge }))),
+    )
+    const first = config.createSessionBinding()
+    const second = config.createSessionBinding()
+    first.bindSession("thr_1")
+    second.bindSession("thr_2")
+
+    const sentByThread1: unknown[] = []
+    const sentByThread2: unknown[] = []
+    bridge.setCapability(
+      {
+        type: "local-shell-capability",
+        threadId: "thr_1",
+        enabled: true,
+        clientId: "cli_1",
+        platform: "test",
+        cwd: "/one",
+      },
+      (frame) => sentByThread1.push(frame),
+    )
+    bridge.setCapability(
+      {
+        type: "local-shell-capability",
+        threadId: "thr_2",
+        enabled: true,
+        clientId: "cli_2",
+        platform: "test",
+        cwd: "/two",
+      },
+      (frame) => sentByThread2.push(frame),
+    )
+
+    const firstTool = ((first.server as unknown as {
+      instance?: {
+        _registeredTools?: Record<string, unknown>
+      }
+    }).instance?._registeredTools?.["local_shell_run"]) as {
+      handler: (args: { command: string; cwd?: string; timeout_ms?: number }, extra: unknown) => Promise<unknown>
+    }
+    const pending = firstTool.handler(
+      { command: "pwd", timeout_ms: 100 },
+      undefined,
+    )
+
+    expect(sentByThread1).toHaveLength(1)
+    expect(sentByThread1[0]).toMatchObject({
+      type: "local-shell-request",
+      threadId: "thr_1",
+      command: "pwd",
+    })
+    expect(sentByThread2).toHaveLength(0)
+
+    const request = sentByThread1[0] as { requestId: string }
+    bridge.acceptResult({
+      type: "local-shell-result",
+      requestId: request.requestId,
+      threadId: "thr_1",
+      approved: true,
+      exitCode: 0,
+      stdout: "/one",
+      stderr: "",
+      durationMs: 1,
+      timedOut: false,
+    })
+    await pending
+  })
+
   it("buildLocalShellMcpServer returns type='sdk' and name='local_shell'", () => {
     const bridge = createLocalShellBridge()
     const tools = makeLocalShellTools(bridge, () => "thr_1")

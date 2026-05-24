@@ -29,7 +29,6 @@ describe("local shell tools", () => {
         command: "pwd",
         cwd: undefined,
         timeout_ms: 100,
-        thread_id: undefined,
       },
       undefined,
     )
@@ -59,7 +58,6 @@ describe("local shell tools", () => {
         command: "pwd",
         cwd: "/tmp",
         timeout_ms: 500,
-        thread_id: undefined,
       },
       undefined,
     )
@@ -94,7 +92,6 @@ describe("local shell tools", () => {
       stderr: string
       durationMs: number
       timedOut: boolean
-      thread_id?: string
     }>((await pending) as ToolCallResult)
     expect(parsed).toEqual({
       approved: true,
@@ -104,7 +101,6 @@ describe("local shell tools", () => {
       durationMs: 4,
       timedOut: false,
     })
-    expect(parsed.thread_id).toBeUndefined()
   })
 
   it("local_shell_run returns denied bridge results instead of a ToolError", async () => {
@@ -128,7 +124,6 @@ describe("local shell tools", () => {
         command: "rm -rf tmp",
         cwd: undefined,
         timeout_ms: undefined,
-        thread_id: undefined,
       },
       undefined,
     )
@@ -187,7 +182,6 @@ describe("local shell tools", () => {
         command: "pwd",
         cwd: undefined,
         timeout_ms: undefined,
-        thread_id: undefined,
       },
       undefined,
     )
@@ -236,7 +230,6 @@ describe("local shell tools", () => {
         command: "pwd",
         cwd: undefined,
         timeout_ms: 120_001,
-        thread_id: undefined,
       },
       undefined,
     )
