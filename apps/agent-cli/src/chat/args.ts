@@ -25,13 +25,19 @@ const readValue = (
 ): ReadValueResult => {
   const token = argv[index] ?? ""
   const eq = token.indexOf("=")
-  if (eq > 0) return { value: token.slice(eq + 1), nextIndex: index }
+  if (eq > 0) {
+    const value = token.slice(eq + 1)
+    if (value.length === 0) return { nextIndex: index, error: `${flag} requires a value` }
+    return { value, nextIndex: index }
+  }
   const value = argv[index + 1]
-  if (value === undefined || value.startsWith("--")) {
+  if (value === undefined || value.length === 0 || value.startsWith("--")) {
     return { nextIndex: index, error: `${flag} requires a value` }
   }
   return { value, nextIndex: index + 1 }
 }
+
+const isPositiveInteger = (value: string): boolean => /^[1-9]\d*$/.test(value)
 
 export const parseChatArgs = (argv: ReadonlyArray<string>): ChatArgs => {
   const first = argv[0]
@@ -115,9 +121,10 @@ export const parseChatArgs = (argv: ReadonlyArray<string>): ChatArgs => {
       }
       case "--start-timeout-ms": {
         const r = readValue(argv, i, "--start-timeout-ms")
-        const parsed = "error" in r ? Number.NaN : Number(r.value)
-        if (!Number.isFinite(parsed) || parsed <= 0) out.unknown.push("--start-timeout-ms must be positive")
-        else out.startTimeoutMs = Math.floor(parsed)
+        if ("error" in r) out.unknown.push(r.error)
+        else if (!isPositiveInteger(r.value)) {
+          out.unknown.push("--start-timeout-ms must be a positive integer")
+        } else out.startTimeoutMs = Number(r.value)
         i = r.nextIndex
         break
       }

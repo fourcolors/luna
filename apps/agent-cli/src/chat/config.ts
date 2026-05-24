@@ -58,7 +58,10 @@ const pick = (
 const parseStartMode = (value: string): StartMode =>
   value === "local" || value === "ssh" || value === "none" ? value : "none"
 
+const isPositiveInteger = (value: string): boolean => /^[1-9]\d*$/.test(value)
+
 export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
+  const errors: string[] = []
   const url = pick(
     input.args.url,
     input.env["LUNA_WS_URL"],
@@ -72,21 +75,26 @@ export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
     input.dotenv["LUNA_UI_WS_TOKEN"] ??
     input.dotenv["UI_WS_TOKEN"] ??
     null
-  const startMode = parseStartMode(
-    pick(
-      input.args.startMode,
-      input.env["LUNA_START_MODE"],
-      input.dotenv["LUNA_START_MODE"],
-      "none",
-    ),
+  const startModeRaw = pick(
+    input.args.startMode,
+    input.env["LUNA_START_MODE"],
+    input.dotenv["LUNA_START_MODE"],
+    "none",
   )
-  const timeoutRaw = pick(
-    input.args.startTimeoutMs?.toString(),
-    input.env["LUNA_START_TIMEOUT_MS"],
-    input.dotenv["LUNA_START_TIMEOUT_MS"],
-    "30000",
-  )
-  const startTimeoutMs = Math.max(1, Number.parseInt(timeoutRaw, 10) || 30_000)
+  const startMode = parseStartMode(startModeRaw)
+  if (startModeRaw !== startMode) {
+    errors.push("LUNA_START_MODE must be local, ssh, or none")
+  }
+
+  const timeoutRaw =
+    input.args.startTimeoutMs?.toString() ??
+    input.env["LUNA_START_TIMEOUT_MS"] ??
+    input.dotenv["LUNA_START_TIMEOUT_MS"]
+  const startTimeoutMs =
+    timeoutRaw === undefined || isPositiveInteger(timeoutRaw) ? Number(timeoutRaw ?? "30000") : 30_000
+  if (timeoutRaw !== undefined && !isPositiveInteger(timeoutRaw)) {
+    errors.push("LUNA_START_TIMEOUT_MS must be a positive integer")
+  }
   const startCommand =
     input.args.startCommand ??
     input.env["LUNA_START_COMMAND"] ??
@@ -98,7 +106,6 @@ export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
     input.dotenv["LUNA_START_SSH"] ??
     null
   const threadId = input.args.threadId ?? null
-  const errors: string[] = []
   if (token === null || token.length === 0) errors.push("missing LUNA_UI_WS_TOKEN")
   if (startMode === "local" && (startCommand === null || startCommand.length === 0)) {
     errors.push("LUNA_START_COMMAND is required when LUNA_START_MODE=local")
