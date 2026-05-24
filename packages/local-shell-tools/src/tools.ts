@@ -74,24 +74,13 @@ export const makeLocalShellTools = (
             }),
         })
 
-        if (!result.approved) {
-          return yield* Effect.fail(
-            new ToolError({
-              tool: "local_shell_run",
-              op: "local_shell.run",
-              cause: result.stderr || "local shell request denied by user",
-            }),
-          )
-        }
-
         return {
-          thread_id: result.threadId,
           approved: result.approved,
-          exit_code: result.exitCode,
+          exitCode: result.exitCode,
           stdout: result.stdout,
           stderr: result.stderr,
-          duration_ms: result.durationMs,
-          timed_out: result.timedOut,
+          durationMs: result.durationMs,
+          timedOut: result.timedOut,
         } as const
       }),
   })

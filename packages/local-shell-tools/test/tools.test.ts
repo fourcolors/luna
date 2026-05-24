@@ -38,7 +38,7 @@ describe("local shell tools", () => {
     expect(message).toContain("local_shell_run.local_shell.run")
   })
 
-  it("local_shell_run sends request through the attached bridge client", async () => {
+  it("local_shell_run returns successful bridge results with camelCase fields", async () => {
     const bridge = createLocalShellBridge()
     const sent: unknown[] = []
     bridge.setCapability(
@@ -88,22 +88,81 @@ describe("local shell tools", () => {
     })
 
     const parsed = parseTextResult<{
-      thread_id: string
       approved: boolean
-      exit_code: number | null
+      exitCode: number | null
       stdout: string
       stderr: string
-      duration_ms: number
-      timed_out: boolean
+      durationMs: number
+      timedOut: boolean
+      thread_id?: string
     }>((await pending) as ToolCallResult)
     expect(parsed).toEqual({
-      thread_id: "thr_1",
       approved: true,
-      exit_code: 0,
+      exitCode: 0,
       stdout: "/work\n",
       stderr: "",
-      duration_ms: 4,
-      timed_out: false,
+      durationMs: 4,
+      timedOut: false,
+    })
+    expect(parsed.thread_id).toBeUndefined()
+  })
+
+  it("local_shell_run returns denied bridge results instead of a ToolError", async () => {
+    const bridge = createLocalShellBridge()
+    const sent: unknown[] = []
+    bridge.setCapability(
+      {
+        type: "local-shell-capability",
+        threadId: "thr_1",
+        enabled: true,
+        clientId: "cli_1",
+        platform: "darwin",
+        cwd: "/work",
+      },
+      (frame) => sent.push(frame),
+    )
+
+    const [runTool] = makeLocalShellTools(bridge, () => "thr_1")
+    const pending = runTool.handler(
+      {
+        command: "rm -rf tmp",
+        cwd: undefined,
+        timeout_ms: undefined,
+        thread_id: undefined,
+      },
+      undefined,
+    )
+
+    expect(sent).toHaveLength(1)
+    const request = sent[0] as { readonly requestId: string }
+
+    bridge.acceptResult({
+      type: "local-shell-result",
+      requestId: request.requestId,
+      threadId: "thr_1",
+      approved: false,
+      exitCode: null,
+      stdout: "",
+      stderr: "denied by user",
+      durationMs: 2,
+      timedOut: false,
+    })
+
+    const parsed = parseTextResult<{
+      approved: boolean
+      exitCode: number | null
+      stdout: string
+      stderr: string
+      durationMs: number
+      timedOut: boolean
+    }>((await pending) as ToolCallResult)
+    expect(parsed).toEqual({
+      approved: false,
+      exitCode: null,
+      stdout: "",
+      stderr: "denied by user",
+      durationMs: 2,
+      timedOut: false,
     })
   })
 })
