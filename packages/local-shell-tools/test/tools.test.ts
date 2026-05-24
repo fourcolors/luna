@@ -213,4 +213,36 @@ describe("local shell tools", () => {
 
     await pending
   })
+
+  it("local_shell_run rejects timeout_ms greater than 120000", async () => {
+    const bridge = createLocalShellBridge()
+    const sent: unknown[] = []
+    bridge.setCapability(
+      {
+        type: "local-shell-capability",
+        threadId: "thr_1",
+        enabled: true,
+        clientId: "cli_1",
+        platform: "darwin",
+        cwd: "/work",
+      },
+      (frame) => sent.push(frame),
+    )
+
+    const [runTool] = makeLocalShellTools(bridge, () => "thr_1")
+
+    const result = await runTool.handler(
+      {
+        command: "pwd",
+        cwd: undefined,
+        timeout_ms: 120_001,
+        thread_id: undefined,
+      },
+      undefined,
+    )
+
+    const message = parseErrorResult(result as ToolCallResult)
+    expect(message).toContain("120000")
+    expect(sent).toHaveLength(0)
+  })
 })

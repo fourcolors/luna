@@ -57,6 +57,15 @@ export const makeLocalShellTools = (
             }),
           )
         }
+        if (args.timeout_ms !== undefined && args.timeout_ms > MAX_TIMEOUT_MS) {
+          return yield* Effect.fail(
+            new ToolError({
+              tool: "local_shell_run",
+              op: "local_shell.run",
+              cause: `timeout_ms must be less than or equal to ${MAX_TIMEOUT_MS}`,
+            }),
+          )
+        }
 
         const result = yield* Effect.tryPromise({
           try: () =>
