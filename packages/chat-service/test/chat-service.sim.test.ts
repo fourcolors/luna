@@ -123,6 +123,45 @@ const makeChatLoopQuery = (params: {
   } as Partial<Query>) as Query
 }
 
+const makeStreamingQuery = (params: {
+  readonly prompt: AsyncIterable<SDKUserMessage>
+  readonly sessionId: string
+}): Query => {
+  async function* gen(): AsyncGenerator<SDKMessage, void> {
+    for await (const _u of params.prompt) {
+      yield {
+        type: "stream_event",
+        session_id: params.sessionId,
+        uuid: "delta-1",
+        event: {
+          type: "content_block_delta",
+          delta: { type: "text_delta", text: "O" },
+        },
+      } as unknown as SDKMessage
+      yield {
+        type: "stream_event",
+        session_id: params.sessionId,
+        uuid: "delta-2",
+        event: {
+          type: "content_block_delta",
+          delta: { type: "text_delta", text: "K" },
+        },
+      } as unknown as SDKMessage
+      yield makeAssistantMessage(params.sessionId, "OK", "assistant-final")
+      yield makeResultMessage(params.sessionId, "result-final")
+    }
+  }
+  const it = gen()
+  return Object.assign(it, {
+    interrupt: async () => {},
+    setPermissionMode: async () => {},
+    setModel: async () => {},
+    setMaxThinkingTokens: async () => {},
+    supplyToolPermissionResponse: async () => {},
+    mcpServerStatus: async () => ({}),
+  } as Partial<Query>) as Query
+}
+
 const fullLayer = (
   fakeLayer: Layer.Layer<SDKClient>,
 ): Layer.Layer<ChatService | SessionStore | CoreClock | ObservabilityService> =>
@@ -357,6 +396,50 @@ describe("ChatService (Tier-2 sim)", () => {
       if (errorFrame.type === "assistant-error") {
         expect(errorFrame.error.kind).toBe("interrupted")
       }
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "stream_event deltas with distinct SDK uuids keep one stable wire turn id",
+    async () => {
+      const fakeLayer = SDKClient.fake((p) =>
+        makeStreamingQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+        }),
+      )
+
+      const frames = await runScoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const t = yield* chat.createThread({
+            model: "claude-test",
+            title: "streaming",
+          })
+          const sub = chat.subscribe(t.id)
+          const fiber = yield* Effect.fork(
+            sub.pipe(Stream.take(5), Stream.runCollect),
+          )
+          yield* Effect.sleep("30 millis")
+          yield* chat.send(t.id, "reply ok")
+          const chunk = yield* Fiber.join(fiber)
+          return Array.from(Chunk.toReadonlyArray(chunk))
+        }),
+        fakeLayer,
+      )
+
+      const deltas = frames.filter((f) => f.type === "assistant-delta")
+      const done = frames.find((f) => f.type === "assistant-done")
+      expect(deltas).toHaveLength(2)
+      expect(deltas.map((f) => f.turnId)).toEqual(["delta-1", "delta-1"])
+      expect(deltas.map((f) => f.text)).toEqual(["O", "OK"])
+      expect(done?.type).toBe("assistant-done")
+      if (done?.type !== "assistant-done") {
+        throw new Error("expected assistant-done frame")
+      }
+      expect(done.turnId).toBe("delta-1")
+      expect(done.message.text).toBe("OK")
     },
     { timeout: 10_000 },
   )

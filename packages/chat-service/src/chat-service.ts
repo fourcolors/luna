@@ -375,12 +375,14 @@ export class ChatService extends Effect.Service<ChatService>()(
         Effect.gen(function* () {
           const t = (args.msg as { type?: string }).type
           if (t === "stream_event") {
-            const turnId = turnIdOf(args.msg) ?? "unknown"
             const deltaText = extractStreamEventText(args.msg)
             if (deltaText === null) return
-            // Track the in-flight turnId; reset accumulator if a new turn started.
-            const prevTurn = yield* Ref.get(args.inFlightTurnId)
-            if (prevTurn !== turnId) {
+            // The SDK gives each stream_event its own uuid, so the wire
+            // turn id is a Luna-stable id captured from the first delta and
+            // kept until the final assistant message lands.
+            const existingTurn = yield* Ref.get(args.inFlightTurnId)
+            const turnId = existingTurn ?? turnIdOf(args.msg) ?? "unknown"
+            if (existingTurn === null) {
               yield* Ref.set(args.inFlightTurnId, turnId)
               yield* Ref.set(args.inFlightText, deltaText)
             } else {
@@ -400,8 +402,10 @@ export class ChatService extends Effect.Service<ChatService>()(
             // Pull the persisted seq via projectOne over a synthesized envelope:
             // we don't have the StoredMessage in hand here, so we read the
             // store for this session and grab the latest assistant by uuid.
-            const turnId = turnIdOf(args.msg) ?? "unknown"
-            const stored = yield* findStoredById(args.threadId, turnId)
+            const storedTurnId = turnIdOf(args.msg) ?? "unknown"
+            const wireTurnId =
+              (yield* Ref.get(args.inFlightTurnId)) ?? storedTurnId
+            const stored = yield* findStoredById(args.threadId, storedTurnId)
             if (stored === null) return
             const projected = projectOne(stored)
             if (projected === null) return
@@ -410,7 +414,7 @@ export class ChatService extends Effect.Service<ChatService>()(
             yield* PubSub.publish(args.pubsub, {
               type: "assistant-done",
               threadId: args.threadId,
-              turnId,
+              turnId: wireTurnId,
               seq: stored.seq,
               message: projected,
             })
