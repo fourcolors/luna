@@ -171,6 +171,7 @@ import { startControlServer } from "@luna/control-server"
 import { resolveUiWsToken } from "./ui-ws-token.js"
 
 const TOKEN = resolveUiWsToken()
+const BIND_HOST = process.env["LUNA_UI_WS_HOST"]?.trim() || undefined
 const localShellBridge = createLocalShellBridge()
 
 // ── Multi-account 1Password bootstrap (Phase 25c) ───────────────────────
@@ -444,6 +445,7 @@ const buildServerLayer = (
 
       return yield* startUIWebSocketServer({
         port: 4753,
+        ...(BIND_HOST !== undefined ? { host: BIND_HOST } : {}),
         token: TOKEN,
         advertisedKinds: DEFAULT_UI_KINDS,
         pingIntervalMs: 5000,
