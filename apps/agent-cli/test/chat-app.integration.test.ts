@@ -57,6 +57,21 @@ const collectStream = (stream: PassThrough): { readonly read: () => string } => 
   return { read: () => text }
 }
 
+const waitForOutput = async (
+  output: { readonly read: () => string },
+  text: string,
+  timeoutMs = 1_000,
+): Promise<void> => {
+  const started = Date.now()
+  for (;;) {
+    if (output.read().includes(text)) return
+    if (Date.now() - started > timeoutMs) {
+      throw new Error(`timed out waiting for output: ${text}`)
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 10))
+  }
+}
+
 const hasProcessWithMarker = (marker: string): boolean => {
   const ps = spawnSync("ps", ["-eo", "pid,pgid,ppid,stat,etime,cmd"], {
     encoding: "utf8",
@@ -167,6 +182,74 @@ describe("luna chat app", () => {
       text: "hello",
     })
     expect(output).toContain("Hi from Luna")
+  })
+
+  it("prints a ready hint once the default thread is ready", async () => {
+    const chat = await startChatServer()
+    const stdin = new PassThrough()
+    const stdout = new PassThrough()
+    const stderr = new PassThrough()
+    const output = collectStream(stdout)
+
+    const done = runLunaCli(["chat", "--url", chat.url], {
+      stdin,
+      stdout,
+      stderr,
+      env: { LUNA_UI_WS_TOKEN: "token-from-env" },
+      cwd: process.cwd(),
+    })
+
+    await waitForOutput(output, "Luna ready. Type a message, /help, or /quit.")
+    stdin.write("/quit\n")
+    stdin.end()
+
+    await expect(waitFor(done)).resolves.toEqual({ exitCode: 0 })
+  })
+
+  it("does not print the initial disabled local-shell status as chat output", async () => {
+    server = new WebSocketServer({ port: 0 })
+    await new Promise<void>((resolve) => server?.once("listening", resolve))
+    const address = server.address() as AddressInfo
+
+    server.on("connection", (socket) => {
+      socket.send(JSON.stringify(helloFrame))
+      socket.on("message", (raw) => {
+        const frame = JSON.parse(raw.toString()) as ClientFrame
+        if (frame.type === "new-thread") {
+          socket.send(JSON.stringify({ type: "thread-created", thread: thread("thr_1") } satisfies ServerFrame))
+        }
+        if (frame.type === "local-shell-capability") {
+          socket.send(JSON.stringify({
+            type: "local-shell-status",
+            threadId: "thr_1",
+            enabled: false,
+            accepted: true,
+            message: "local shell disabled",
+          } satisfies ServerFrame))
+        }
+      })
+    })
+
+    const stdin = new PassThrough()
+    const stdout = new PassThrough()
+    const stderr = new PassThrough()
+    const output = collectStream(stdout)
+
+    const done = runLunaCli(["chat", "--url", `ws://127.0.0.1:${address.port}/ui`], {
+      stdin,
+      stdout,
+      stderr,
+      env: { LUNA_UI_WS_TOKEN: "token-from-env" },
+      cwd: process.cwd(),
+    })
+
+    await waitForOutput(output, "Luna ready. Type a message, /help, or /quit.")
+    await new Promise<void>((resolve) => setTimeout(resolve, 50))
+    expect(output.read()).not.toContain("local shell disabled")
+
+    stdin.write("/quit\n")
+    stdin.end()
+    await expect(waitFor(done)).resolves.toEqual({ exitCode: 0 })
   })
 
   it("can quit while a user message is waiting for thread creation", async () => {

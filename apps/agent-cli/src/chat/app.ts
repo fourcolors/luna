@@ -197,14 +197,22 @@ export async function runLunaCli(
   let pendingAssistantCount = 0
   let pendingAssistantDrain: Promise<void> | null = null
   let resolvePendingAssistantDrain: (() => void) | null = null
+  let readyAnnounced = false
   const assistantTextByTurn = new Map<string, string>()
   const localShellTasks = new Set<Promise<void>>()
   const localShellControllers = new Set<AbortController>()
   const localCommandEnv = sanitizeLocalCommandEnv(io.env)
 
+  const announceReady = (): void => {
+    if (readyAnnounced) return
+    readyAnnounced = true
+    write(io.stdout, "Luna ready. Type a message, /help, or /quit.\n")
+  }
+
   const markThread = (threadId: string): void => {
     currentThreadId = threadId
     threadWaiter.resolve()
+    announceReady()
     flushPendingUserMessages()
   }
 
@@ -341,7 +349,9 @@ export async function runLunaCli(
         }
         return
       case "local-shell-status":
-        write(io.stdout, `local shell: ${frame.message}\n`)
+        if (!frame.accepted && localShell.enabled) {
+          write(io.stderr, `local shell: ${frame.message}\n`)
+        }
         return
       case "local-shell-request": {
         runLocalShellRequest(frame)
