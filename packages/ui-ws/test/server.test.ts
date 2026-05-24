@@ -295,6 +295,49 @@ describe("UIWebSocketServer", () => {
     expect(bridge.getCapability("thr_1")).toBeNull()
   })
 
+  it("keeps multi-thread local shell client tracked after disabling one thread", async () => {
+    const bridge = createLocalShellBridge()
+    rig = await startRig(undefined, { localShellBridge: bridge })
+    await exchangeFrames(
+      rig.url,
+      { authorization: `Bearer ${TOKEN}` },
+      [
+        {
+          type: "local-shell-capability",
+          threadId: "thr_1",
+          enabled: true,
+          clientId: "cli_1",
+          platform: "darwin",
+          cwd: "/work",
+        },
+        {
+          type: "local-shell-capability",
+          threadId: "thr_2",
+          enabled: true,
+          clientId: "cli_1",
+          platform: "darwin",
+          cwd: "/work",
+        },
+        {
+          type: "local-shell-capability",
+          threadId: "thr_1",
+          enabled: false,
+          clientId: "cli_1",
+          platform: "darwin",
+          cwd: "/work",
+        },
+      ],
+      4,
+    )
+
+    expect(bridge.getCapability("thr_1")).toBeNull()
+    expect(bridge.getCapability("thr_2")?.clientId).toBe("cli_1")
+
+    await rig.shutdown()
+
+    expect(bridge.getCapability("thr_2")).toBeNull()
+  })
+
   it("hello frame advertises configured kinds", async () => {
     rig = await startRig(undefined, {
       advertisedKinds: ["SessionStart", "Error"],
