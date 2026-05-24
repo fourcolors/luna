@@ -12,19 +12,35 @@ type FrameWaiter = {
   readonly reject: (error: Error) => void
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null
+
+const parseServerFrame = (raw: RawData): ServerFrame => {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw.toString())
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause)
+    throw new Error(`Invalid WebSocket JSON: ${message}`)
+  }
+  if (!isRecord(parsed) || typeof parsed["type"] !== "string") {
+    throw new Error("Invalid WebSocket frame: missing string type")
+  }
+  return parsed as unknown as ServerFrame
+}
+
 export class LunaWsClient {
   readonly #socket: WebSocket
   readonly #frames: ServerFrame[] = []
   readonly #waiters: FrameWaiter[] = []
-  #closedError: Error | null = null
+  #terminalError: Error | null = null
 
   private constructor(socket: WebSocket) {
     this.#socket = socket
     socket.on("message", (raw) => this.#handleMessage(raw))
-    socket.on("error", (error) => this.#rejectWaiters(error))
+    socket.on("error", (error) => this.#markTerminal(error))
     socket.on("close", () => {
-      this.#closedError = new Error("WebSocket closed")
-      this.#rejectWaiters(this.#closedError)
+      if (this.#terminalError === null) this.#markTerminal(new Error("WebSocket closed"))
     })
   }
 
@@ -92,9 +108,9 @@ export class LunaWsClient {
   }
 
   nextFrame(): Promise<ServerFrame> {
+    if (this.#terminalError !== null) return Promise.reject(this.#terminalError)
     const frame = this.#frames.shift()
     if (frame !== undefined) return Promise.resolve(frame)
-    if (this.#closedError !== null) return Promise.reject(this.#closedError)
     return new Promise((resolve, reject) => {
       this.#waiters.push({ resolve, reject })
     })
@@ -110,7 +126,15 @@ export class LunaWsClient {
   }
 
   #handleMessage(raw: RawData): void {
-    const frame = JSON.parse(raw.toString()) as ServerFrame
+    let frame: ServerFrame
+    try {
+      frame = parseServerFrame(raw)
+    } catch (error) {
+      this.#markTerminal(error instanceof Error ? error : new Error(String(error)))
+      this.#socket.terminate()
+      return
+    }
+
     const waiter = this.#waiters.shift()
     if (waiter !== undefined) {
       waiter.resolve(frame)
@@ -119,7 +143,9 @@ export class LunaWsClient {
     this.#frames.push(frame)
   }
 
-  #rejectWaiters(error: Error): void {
+  #markTerminal(error: Error): void {
+    if (this.#terminalError !== null) return
+    this.#terminalError = error
     const waiters = this.#waiters.splice(0)
     for (const waiter of waiters) waiter.reject(error)
   }

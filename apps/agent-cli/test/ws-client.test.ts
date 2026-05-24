@@ -74,4 +74,45 @@ describe("LunaWsClient", () => {
 
     await expect(waitFor(received)).resolves.toEqual(frame)
   })
+
+  it("rejects pending and future nextFrame calls on invalid JSON", async () => {
+    const { server, url } = startServer()
+    server.on("connection", (socket) => {
+      setTimeout(() => socket.send("{"), 0)
+    })
+
+    client = await LunaWsClient.connect({ url, token: "secret-token" })
+
+    await expect(waitFor(client.nextFrame())).rejects.toThrow(/invalid websocket json/i)
+    await expect(client.nextFrame()).rejects.toThrow(/invalid websocket json/i)
+  })
+
+  it("rejects pending and future nextFrame calls on invalid frame shape", async () => {
+    const { server, url } = startServer()
+    server.on("connection", (socket) => {
+      setTimeout(() => socket.send(JSON.stringify({ protocolVersion: 2 })), 0)
+    })
+
+    client = await LunaWsClient.connect({ url, token: "secret-token" })
+
+    await expect(waitFor(client.nextFrame())).rejects.toThrow(/invalid websocket frame/i)
+    await expect(client.nextFrame()).rejects.toThrow(/invalid websocket frame/i)
+  })
+
+  it("rejects pending nextFrame calls when the socket closes", async () => {
+    const { server, url } = startServer()
+    server.on("connection", (socket) => socket.close())
+
+    client = await LunaWsClient.connect({ url, token: "secret-token" })
+
+    await expect(waitFor(client.nextFrame())).rejects.toThrow(/websocket closed/i)
+  })
+
+  it("throws when sending after close", async () => {
+    const { url } = startServer()
+    client = await LunaWsClient.connect({ url, token: "secret-token" })
+    await client.close()
+
+    expect(() => client?.send({ type: "list-threads" })).toThrow(/not open/i)
+  })
 })
