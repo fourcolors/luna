@@ -29,9 +29,10 @@ import {
   ObservabilityService,
   UIService,
 } from "@luna/core"
+import { createLocalShellBridge } from "../src/local-shell-bridge.js"
 import type { ObsEvent } from "@luna/core"
 import { startUIWebSocketServer } from "../src/server.js"
-import type { ServerFrame } from "../src/protocol.js"
+import type { ClientFrame, ServerFrame } from "../src/protocol.js"
 
 const TOKEN = "test-token-1234567890" // ≥16 chars
 
@@ -67,6 +68,47 @@ const collectFrames = (
     ws.on("unexpected-response", (_req, res) => {
       clearTimeout(timer)
       reject(new Error(`unexpected ${res.statusCode}`))
+    })
+    ws.on("message", (raw) => {
+      try {
+        const frame = JSON.parse(raw.toString()) as ServerFrame
+        out.push(frame)
+        if (out.length >= takeN) {
+          clearTimeout(timer)
+          ws.close()
+          resolve(out)
+        }
+      } catch (e) {
+        clearTimeout(timer)
+        reject(e)
+      }
+    })
+  })
+
+const exchangeFrames = (
+  url: string,
+  headers: Record<string, string>,
+  sendFrames: ReadonlyArray<ClientFrame>,
+  takeN: number,
+  timeoutMs = 2000,
+): Promise<ServerFrame[]> =>
+  new Promise((resolve, reject) => {
+    const ws = new WebSocket(url, { headers })
+    const out: ServerFrame[] = []
+    const timer = setTimeout(() => {
+      ws.close()
+      reject(new Error(`timeout: got ${out.length}/${takeN} frames`))
+    }, timeoutMs)
+    ws.on("error", (err) => {
+      clearTimeout(timer)
+      reject(err)
+    })
+    ws.on("unexpected-response", (_req, res) => {
+      clearTimeout(timer)
+      reject(new Error(`unexpected ${res.statusCode}`))
+    })
+    ws.on("open", () => {
+      for (const frame of sendFrames) ws.send(JSON.stringify(frame))
     })
     ws.on("message", (raw) => {
       try {
@@ -186,7 +228,39 @@ describe("UIWebSocketServer", () => {
       // chat-enabled startup path.
       expect(frames[0].capabilities.chat).toBe(false)
       expect(frames[0].capabilities.streamingDeltas).toBe(false)
+      expect(frames[0].capabilities.localShell).toBe(false)
     }
+  })
+
+  it("advertises and accepts local shell capability when bridge is configured", async () => {
+    const bridge = createLocalShellBridge()
+    rig = await startRig(undefined, { localShellBridge: bridge })
+    const frames = await exchangeFrames(
+      rig.url,
+      { authorization: `Bearer ${TOKEN}` },
+      [
+        {
+          type: "local-shell-capability",
+          threadId: "thr_1",
+          enabled: true,
+          clientId: "cli_1",
+          platform: "darwin",
+          cwd: "/work",
+        },
+      ],
+      2,
+    )
+
+    expect(frames[0]?.type).toBe("hello")
+    if (frames[0]?.type === "hello") {
+      expect(frames[0].capabilities.localShell).toBe(true)
+    }
+    expect(frames[1]).toMatchObject({
+      type: "local-shell-status",
+      threadId: "thr_1",
+      enabled: true,
+      accepted: true,
+    })
   })
 
   it("hello frame advertises configured kinds", async () => {

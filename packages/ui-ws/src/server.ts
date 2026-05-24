@@ -42,6 +42,7 @@ import { WebSocketServer, type WebSocket } from "ws"
 import { UIService } from "@luna/core"
 import type { ObsEvent } from "@luna/core"
 import type { ChatService, ChatFrame } from "@luna/chat-service"
+import type { LocalShellBridge } from "./local-shell-bridge.js"
 import {
   UI_WS_PROTOCOL_VERSION,
   type ClientFrame,
@@ -111,6 +112,12 @@ export interface UIWebSocketServerConfig {
       readonly health: string
     }>>
   }
+  /**
+   * Optional local-shell bridge. When provided, clients may advertise
+   * terminal execution capability and receive local-shell request frames
+   * from MCP tools bound to the same thread.
+   */
+  readonly localShellBridge?: LocalShellBridge
 }
 
 export interface UIWebSocketServerHandle {
@@ -202,6 +209,7 @@ export const startUIWebSocketServer = (
     const pingMs = config.pingIntervalMs ?? 30_000
     const kindsList: ReadonlyArray<string> = config.advertisedKinds ?? []
     const chat = config.chatService ?? null
+    const localShellBridge = config.localShellBridge ?? null
 
     const httpServer = http.createServer((req, res) => {
       if (req.url === "/healthz") {
@@ -320,7 +328,7 @@ export const startUIWebSocketServer = (
           capabilities: {
             chat: chat !== null,
             streamingDeltas: chat !== null,
-            localShell: false,
+            localShell: localShellBridge !== null,
           },
         })
 
@@ -355,6 +363,20 @@ export const startUIWebSocketServer = (
             Effect.gen(function* () {
               const m = yield* Ref.get(chatFibers)
               yield* Fiber.interruptAll(Array.from(m.values()))
+            }),
+          )
+        }
+
+        const localShellClients = yield* Ref.make<ReadonlyMap<string, string>>(
+          new Map(),
+        )
+        if (localShellBridge !== null) {
+          yield* Effect.addFinalizer(() =>
+            Effect.gen(function* () {
+              const clients = yield* Ref.get(localShellClients)
+              for (const clientId of new Set(clients.values())) {
+                localShellBridge.removeClient(clientId)
+              }
             }),
           )
         }
@@ -505,7 +527,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null) {
+        if (chat !== null || localShellBridge !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -528,20 +550,46 @@ export const startUIWebSocketServer = (
                   case "pong":
                   case "bye":
                     return
+                  case "local-shell-capability": {
+                    if (localShellBridge === null) return
+                    const status = localShellBridge.setCapability(frame, (out) => {
+                      send(ws, out)
+                    })
+                    send(ws, status)
+                    if (status.accepted) {
+                      yield* Ref.update(localShellClients, (clients) => {
+                        const next = new Map(clients)
+                        if (frame.enabled) next.set(frame.threadId, frame.clientId)
+                        else next.delete(frame.threadId)
+                        return next
+                      })
+                    }
+                    return
+                  }
+                  case "local-shell-result": {
+                    if (localShellBridge !== null) {
+                      localShellBridge.acceptResult(frame)
+                    }
+                    return
+                  }
                   case "subscribe": {
+                    if (chat === null) return
                     yield* subscribeChatThread(frame.threadId)
                     return
                   }
                   case "unsubscribe": {
+                    if (chat === null) return
                     yield* unsubscribeChatThread(frame.threadId)
                     return
                   }
                   case "list-threads": {
+                    if (chat === null) return
                     const threads = yield* chat.listThreads(frame.limit ?? 50)
                     send(ws, { type: "thread-list", threads })
                     return
                   }
                   case "new-thread": {
+                    if (chat === null) return
                     const summary = yield* chat.createThread({
                       model: frame.model,
                       ...(frame.title !== undefined ? { title: frame.title } : {}),
@@ -561,6 +609,7 @@ export const startUIWebSocketServer = (
                     return
                   }
                   case "user-message": {
+                    if (chat === null) return
                     // TS types are erased at runtime — clients can send
                     // arbitrary mediaType strings or oversized data. Validate
                     // before forwarding to the SDK so a clean error surfaces
@@ -597,6 +646,7 @@ export const startUIWebSocketServer = (
                     return
                   }
                   case "interrupt": {
+                    if (chat === null) return
                     yield* chat.interrupt(frame.threadId)
                     return
                   }

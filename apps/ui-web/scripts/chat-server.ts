@@ -149,7 +149,7 @@ import { loadDna } from "./dna-loader.js"
 export { loadDna } from "./dna-loader.js"
 import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
 import { ChatService } from "@luna/chat-service"
-import { startUIWebSocketServer } from "@luna/ui-ws"
+import { createLocalShellBridge, startUIWebSocketServer } from "@luna/ui-ws"
 import { LunaSqliteBootstrapLive } from "@luna/memory"
 import {
   MemoryToolsLayer,
@@ -163,9 +163,15 @@ import {
   ObsToolsLayer,
   ObsToolsService,
 } from "@luna/observability-tools"
+import {
+  LocalShellToolsLayer,
+  LocalShellToolsService,
+} from "@luna/local-shell-tools"
 import { startControlServer } from "@luna/control-server"
+import { resolveUiWsToken } from "./ui-ws-token.js"
 
-const TOKEN = "dev-ui-ws-token-do-not-ship"
+const TOKEN = resolveUiWsToken()
+const localShellBridge = createLocalShellBridge()
 
 // ── Multi-account 1Password bootstrap (Phase 25c) ───────────────────────
 //
@@ -352,11 +358,13 @@ const buildServerLayer = (
       const memTools = yield* MemoryToolsService
       const schedTools = yield* SchedulerToolsService
       const obsTools = yield* ObsToolsService
+      const localShellTools = yield* LocalShellToolsService
 
       console.log("[luna/boot] MCP servers registered:", [
         memTools.serverName,
         schedTools.serverName,
         obsTools.serverName,
+        localShellTools.serverName,
       ].join(", "))
 
       // Luna identity: load DNA.md at boot. This is Luna's "who am I, how
@@ -388,6 +396,7 @@ const buildServerLayer = (
             memTools.serverName,
             schedTools.serverName,
             obsTools.serverName,
+            localShellTools.serverName,
           ].join(", "))
           const mergedSystemPrompt = [
             dnaContent,
@@ -396,6 +405,7 @@ const buildServerLayer = (
             memTools.systemPromptAddendum,
             schedTools.systemPromptAddendum,
             obsTools.systemPromptAddendum,
+            localShellTools.systemPromptAddendum,
           ]
             .filter((s): s is string => typeof s === "string" && s.length > 0)
             .join("\n\n")
@@ -404,6 +414,7 @@ const buildServerLayer = (
             [memTools.serverName]: memTools.server,
             [schedTools.serverName]: schedTools.server,
             [obsTools.serverName]: obsTools.server,
+            [localShellTools.serverName]: localShellTools.server,
           }
           return chat
             .createThread({
@@ -416,7 +427,8 @@ const buildServerLayer = (
               // current thread. SessionSummary.id is always present.
               Effect.tap((summary) => {
                 obsTools.bindSession(summary.id)
-                console.log("[luna/thread] session bound:", summary.id, "— obs tools active")
+                localShellTools.bindSession(summary.id)
+                console.log("[luna/thread] session bound:", summary.id, "— obs/local-shell tools active")
                 return Effect.void
               }),
             )
@@ -436,11 +448,13 @@ const buildServerLayer = (
         pingIntervalMs: 5000,
         chatService: chatWithTools,
         accountBroker: broker,
+        localShellBridge,
       })
     }),
   ).pipe(
     Layer.provide(MemoryToolsLayer()),
     Layer.provide(SchedulerToolsLayer()),
+    Layer.provide(LocalShellToolsLayer({ bridge: localShellBridge })),
     // ObsToolsLayer provides ObsToolsService with 5 self-observation tools.
     // Requires Clock + LunaSqliteBootstrapLive (both provided below).
     Layer.provide(ObsToolsLayer()),
@@ -502,7 +516,7 @@ const buildMain = (
 
     const handle = yield* ServerHandle
     console.log(`✅ ui-ws chat server: ws://${handle.host}:${handle.port}/ui`)
-    console.log(`🔑 token: ${TOKEN}`)
+    console.log(`🔑 token: configured`)
     console.log(`🧠 chat enabled (capabilities.chat=true, streamingDeltas=true)`)
     console.log(`💡 web UI: bun run --filter '@luna/ui-web' dev`)
     console.log(`   token auto-fills via .env.development — start a thread`)

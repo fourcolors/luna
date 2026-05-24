@@ -49,6 +49,7 @@
         "@luna/chat-service": "workspace:*",
         "@luna/control-server": "workspace:*",
         "@luna/core": "workspace:*",
+        "@luna/local-shell-tools": "workspace:*",
         "@luna/memory": "workspace:*",
         "@luna/memory-tools": "workspace:*",
         "@luna/observability-tools": "workspace:*",
