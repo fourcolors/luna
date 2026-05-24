@@ -35,6 +35,7 @@ export interface HelloFrame {
   readonly capabilities: {
     readonly chat: boolean
     readonly streamingDeltas: boolean
+    readonly localShell: boolean
   }
 }
 
@@ -134,6 +135,23 @@ export interface AccountListFrame {
   }>
 }
 
+export interface LocalShellRequestFrame {
+  readonly type: "local-shell-request"
+  readonly requestId: string
+  readonly threadId: string
+  readonly command: string
+  readonly cwd?: string
+  readonly timeoutMs?: number
+}
+
+export interface LocalShellStatusFrame {
+  readonly type: "local-shell-status"
+  readonly threadId: string
+  readonly enabled: boolean
+  readonly accepted: boolean
+  readonly message: string
+}
+
 export type ServerFrame =
   | HelloFrame
   | EventFrame
@@ -149,6 +167,8 @@ export type ServerFrame =
   | AssistantErrorFrame
   | ArtifactsExtractedFrame
   | AccountListFrame
+  | LocalShellRequestFrame
+  | LocalShellStatusFrame
 
 /* -------------------------------------------------------------------------- */
 /* Client → server                                                            */
@@ -209,6 +229,27 @@ export interface InterruptFrame {
   readonly threadId: string
 }
 
+export interface LocalShellCapabilityFrame {
+  readonly type: "local-shell-capability"
+  readonly threadId: string
+  readonly enabled: boolean
+  readonly clientId: string
+  readonly platform: string
+  readonly cwd: string
+}
+
+export interface LocalShellResultFrame {
+  readonly type: "local-shell-result"
+  readonly requestId: string
+  readonly threadId: string
+  readonly approved: boolean
+  readonly exitCode: number | null
+  readonly stdout: string
+  readonly stderr: string
+  readonly durationMs: number
+  readonly timedOut: boolean
+}
+
 export type ClientFrame =
   | PongFrame
   | ByeFrame
@@ -218,3 +259,5 @@ export type ClientFrame =
   | NewThreadFrame
   | UserMessageFrame
   | InterruptFrame
+  | LocalShellCapabilityFrame
+  | LocalShellResultFrame

@@ -320,6 +320,7 @@ export const startUIWebSocketServer = (
           capabilities: {
             chat: chat !== null,
             streamingDeltas: chat !== null,
+            localShell: false,
           },
         })
 
