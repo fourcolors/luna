@@ -34,6 +34,7 @@ export interface ExecuteLocalCommandOptions {
   readonly timeoutMs: number
   readonly maxOutputBytes: number
   readonly approve: (command: string) => Promise<boolean>
+  readonly signal?: AbortSignal
 }
 
 export interface MakeLocalShellStateOptions {
@@ -134,8 +135,8 @@ export const executeLocalCommand = async (
   const request = options.request
   const cwd = request.cwd ?? options.cwd
   const timeoutMs = request.timeoutMs ?? options.timeoutMs
+  const signal = options.signal
   const startedAt = Date.now()
-  const approved = await options.approve(request.command)
 
   const baseResult = (): Omit<LocalCommandResult, "approved" | "exitCode" | "stdout" | "stderr" | "timedOut"> => ({
     type: "local-shell-result",
@@ -143,6 +144,36 @@ export const executeLocalCommand = async (
     threadId: request.threadId,
     durationMs: Date.now() - startedAt,
   })
+
+  const abortedResult = (approved: boolean): LocalCommandResult => ({
+    ...baseResult(),
+    approved,
+    exitCode: null,
+    stdout: "",
+    stderr: "aborted",
+    timedOut: true,
+  })
+
+  if (signal?.aborted === true) {
+    return abortedResult(false)
+  }
+
+  let cleanupApprovalAbort = (): void => undefined
+  const abortPromise = signal === undefined
+    ? null
+    : new Promise<"aborted">((resolve) => {
+        const onAbort = (): void => resolve("aborted")
+        cleanupApprovalAbort = () => signal.removeEventListener("abort", onAbort)
+        signal.addEventListener("abort", onAbort, { once: true })
+      })
+  const approvedOrAborted = await (abortPromise === null
+    ? options.approve(request.command)
+    : Promise.race([options.approve(request.command), abortPromise]))
+  cleanupApprovalAbort()
+  if (approvedOrAborted === "aborted") {
+    return abortedResult(false)
+  }
+  const approved = approvedOrAborted
 
   if (!approved) {
     return {
@@ -156,6 +187,11 @@ export const executeLocalCommand = async (
   }
 
   return await new Promise<LocalCommandResult>((resolve) => {
+    if (signal?.aborted === true) {
+      resolve(abortedResult(true))
+      return
+    }
+
     const child = spawn(request.command, {
       shell: true,
       cwd,
@@ -177,10 +213,17 @@ export const executeLocalCommand = async (
       forceKillTimer = undefined
     }
 
+    const removeAbortListener = (): void => {
+      if (signal !== undefined) {
+        signal.removeEventListener("abort", abort)
+      }
+    }
+
     const finish = (exitCode: number | null): void => {
       if (settled) return
       settled = true
       clearTimers()
+      removeAbortListener()
       resolve({
         ...baseResult(),
         approved: true,
@@ -190,6 +233,18 @@ export const executeLocalCommand = async (
         timedOut,
       })
     }
+
+    const abort = (): void => {
+      if (settled) return
+      timedOut = true
+      stderr.append("aborted")
+      clearTimers()
+      signalChild(child.pid, "SIGTERM")
+      signalChild(child.pid, "SIGKILL")
+      finish(null)
+    }
+
+    signal?.addEventListener("abort", abort, { once: true })
 
     timeoutTimer = setTimeout(() => {
       if (settled) return

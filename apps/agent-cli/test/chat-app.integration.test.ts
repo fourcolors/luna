@@ -1,5 +1,6 @@
 import { PassThrough } from "node:stream"
 import { AddressInfo } from "node:net"
+import { spawnSync } from "node:child_process"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocketServer } from "ws"
 import type { ClientFrame, ServerFrame } from "@luna/ui-ws"
@@ -54,6 +55,13 @@ const collectStream = (stream: PassThrough): { readonly read: () => string } => 
     text += chunk.toString()
   })
   return { read: () => text }
+}
+
+const hasProcessWithMarker = (marker: string): boolean => {
+  const ps = spawnSync("ps", ["-eo", "pid,pgid,ppid,stat,etime,cmd"], {
+    encoding: "utf8",
+  })
+  return ps.stdout.includes(marker)
 }
 
 describe("luna chat app", () => {
@@ -291,5 +299,42 @@ describe("luna chat app", () => {
 
     await expect(waitFor(done, 250)).resolves.toEqual({ exitCode: 0 })
     expect(approveLocalCommand).toHaveBeenCalledWith("printf hello")
+  })
+
+  it("cancels an approved long local shell command during quit", async () => {
+    server = new WebSocketServer({ port: 0 })
+    await new Promise<void>((resolve) => server?.once("listening", resolve))
+    const address = server.address() as AddressInfo
+    const marker = `luna-local-shell-cancel-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+    server.on("connection", (socket) => {
+      socket.send(JSON.stringify(helloFrame))
+      socket.send(JSON.stringify({
+        type: "local-shell-request",
+        requestId: "req_2",
+        threadId: "thr_1",
+        command: `sh -c 'sleep 5' ${marker}`,
+      } satisfies ServerFrame))
+    })
+
+    const stdin = new PassThrough()
+    const stdout = new PassThrough()
+    const stderr = new PassThrough()
+
+    const done = runLunaCli(["chat", "--url", `ws://127.0.0.1:${address.port}/ui`], {
+      stdin,
+      stdout,
+      stderr,
+      env: { LUNA_UI_WS_TOKEN: "token-from-env" },
+      cwd: process.cwd(),
+      approveLocalCommand: async () => true,
+    })
+
+    stdin.write("/quit\n")
+    stdin.end()
+
+    await expect(waitFor(done, 500)).resolves.toEqual({ exitCode: 0 })
+    await new Promise<void>((resolve) => setTimeout(resolve, 100))
+    expect(hasProcessWithMarker(marker)).toBe(false)
   })
 })

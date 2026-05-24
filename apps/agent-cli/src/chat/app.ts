@@ -182,6 +182,7 @@ export async function runLunaCli(
   let resolvePendingAssistantDrain: (() => void) | null = null
   const assistantTextByTurn = new Map<string, string>()
   const localShellTasks = new Set<Promise<void>>()
+  const localShellControllers = new Set<AbortController>()
 
   const markThread = (threadId: string): void => {
     currentThreadId = threadId
@@ -231,6 +232,8 @@ export async function runLunaCli(
   }
 
   const runLocalShellRequest = (frame: Extract<ServerFrame, { type: "local-shell-request" }>): void => {
+    const controller = new AbortController()
+    localShellControllers.add(controller)
     const task = (async (): Promise<void> => {
       const result = await executeLocalCommand({
         request: frame,
@@ -238,6 +241,7 @@ export async function runLunaCli(
         timeoutMs: DEFAULT_LOCAL_COMMAND_TIMEOUT_MS,
         maxOutputBytes: MAX_LOCAL_COMMAND_OUTPUT_BYTES,
         approve: io.approveLocalCommand ?? (async () => false),
+        signal: controller.signal,
       })
       if (!quitting) client.send(result)
     })()
@@ -245,9 +249,14 @@ export async function runLunaCli(
         if (!quitting) writeError(io, `local shell failed: ${formatRuntimeError(error)}`)
       })
       .finally(() => {
+        localShellControllers.delete(controller)
         localShellTasks.delete(task)
       })
     localShellTasks.add(task)
+  }
+
+  const abortLocalShellTasks = (): void => {
+    for (const controller of localShellControllers) controller.abort()
   }
 
   const renderFrame = async (frame: ServerFrame): Promise<void> => {
@@ -361,6 +370,7 @@ export async function runLunaCli(
         }
         case "quit":
           quitting = true
+          abortLocalShellTasks()
           if (pendingUserMessages.length > 0) {
             await waitBounded(threadWaiter.promise, THREAD_CREATE_DRAIN_MS)
           }
@@ -395,6 +405,7 @@ export async function runLunaCli(
 
     if (!quitting) await waitBounded(waitForAssistantDrain(), QUIT_DRAIN_MS)
     quitting = true
+    abortLocalShellTasks()
     await waitBounded(Promise.allSettled([...localShellTasks]), 100)
     await client.close()
     await frameLoop
@@ -406,6 +417,7 @@ export async function runLunaCli(
     return { exitCode: 0 }
   } catch (error) {
     quitting = true
+    abortLocalShellTasks()
     await client.close().catch(() => undefined)
     await frameLoop.catch(() => undefined)
     writeError(io, formatRuntimeError(error))

@@ -21,6 +21,18 @@ const baseCommandOptions = (cwd: string) => ({
   approve: async () => true,
 })
 
+const waitFor = async <T>(promise: Promise<T>, timeoutMs = 1_000): Promise<T> => {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error("timed out waiting")), timeoutMs)
+  })
+  try {
+    return await Promise.race([promise, timeoutPromise])
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout)
+  }
+}
+
 describe("local shell state", () => {
   it("starts disabled and toggles enabled without mutating the original", () => {
     const cwd = "/tmp/luna"
@@ -195,5 +207,28 @@ describe("executeLocalCommand", () => {
     expect(result.requestId).toBe("req-2")
     expect(result.threadId).toBe("thread-2")
     expect(result.stdout.trim()).toBe("/")
+  })
+
+  it("aborts an approved running command promptly", async () => {
+    const controller = new AbortController()
+    const startedAt = Date.now()
+    const pending = executeLocalCommand({
+      ...baseCommandOptions(cwd),
+      request: {
+        ...baseCommandOptions(cwd).request,
+        command: "sleep 5",
+        cwd,
+      },
+      signal: controller.signal,
+    })
+
+    setTimeout(() => controller.abort(), 50)
+    const result = await waitFor(pending, 500)
+
+    expect(Date.now() - startedAt).toBeLessThan(1_000)
+    expect(result.approved).toBe(true)
+    expect(result.exitCode).toBeNull()
+    expect(result.timedOut).toBe(true)
+    expect(result.stderr).toContain("aborted")
   })
 })
