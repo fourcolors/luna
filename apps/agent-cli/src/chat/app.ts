@@ -10,7 +10,8 @@ export type LunaCliIO = {
 
 export async function runLunaCli(
   _argv: readonly string[],
-  _io: LunaCliIO,
-): Promise<{ exitCode: number }> {
-  return { exitCode: 0 }
+  io: LunaCliIO,
+): Promise<{ exitCode: 2 }> {
+  io.stderr.write("error: luna chat CLI is not implemented yet\n")
+  return { exitCode: 2 }
 }
