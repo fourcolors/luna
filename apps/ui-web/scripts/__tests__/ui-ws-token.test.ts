@@ -9,6 +9,12 @@ describe("resolveUiWsToken", () => {
         LUNA_UI_WS_TOKEN: "luna-token-123456",
       }),
     ).toBe("ui-token-123456789")
+    expect(
+      resolveUiWsToken({
+        UI_WS_TOKEN: "  ui-token-123456789  ",
+        LUNA_UI_WS_TOKEN: "luna-token-123456",
+      }),
+    ).toBe("  ui-token-123456789  ")
   })
 
   it("falls back to LUNA_UI_WS_TOKEN", () => {
