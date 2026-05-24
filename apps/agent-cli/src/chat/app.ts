@@ -7,7 +7,9 @@ import { loadChatConfig, readLunaDotEnv, redactedConfigSummary } from "./config.
 import {
   executeLocalCommand,
   makeLocalShellState,
+  sanitizeLocalCommandEnv,
   setLocalShellEnabled,
+  type LocalCommandResult,
   type LocalShellState,
 } from "./local-shell.js"
 import { runRecovery } from "./recovery.js"
@@ -97,6 +99,21 @@ const sendLocalShellCapability = (
   })
 }
 
+const deniedLocalShellResult = (
+  frame: Extract<ServerFrame, { type: "local-shell-request" }>,
+  stderr: string,
+): LocalCommandResult => ({
+  type: "local-shell-result",
+  requestId: frame.requestId,
+  threadId: frame.threadId,
+  approved: false,
+  exitCode: null,
+  stdout: "",
+  stderr,
+  durationMs: 0,
+  timedOut: false,
+})
+
 const connectWithRecovery = async (
   cfg: ReturnType<typeof loadChatConfig>,
   io: LunaCliIO,
@@ -183,6 +200,7 @@ export async function runLunaCli(
   const assistantTextByTurn = new Map<string, string>()
   const localShellTasks = new Set<Promise<void>>()
   const localShellControllers = new Set<AbortController>()
+  const localCommandEnv = sanitizeLocalCommandEnv(io.env)
 
   const markThread = (threadId: string): void => {
     currentThreadId = threadId
@@ -232,12 +250,22 @@ export async function runLunaCli(
   }
 
   const runLocalShellRequest = (frame: Extract<ServerFrame, { type: "local-shell-request" }>): void => {
+    if (!localShell.enabled) {
+      client.send(deniedLocalShellResult(frame, "local shell disabled"))
+      return
+    }
+    if (frame.threadId !== currentThreadId) {
+      client.send(deniedLocalShellResult(frame, "local shell unavailable for thread"))
+      return
+    }
+
     const controller = new AbortController()
     localShellControllers.add(controller)
     const task = (async (): Promise<void> => {
       const result = await executeLocalCommand({
         request: frame,
         cwd: cfg.cwd,
+        env: localCommandEnv,
         timeoutMs: DEFAULT_LOCAL_COMMAND_TIMEOUT_MS,
         maxOutputBytes: MAX_LOCAL_COMMAND_OUTPUT_BYTES,
         approve: io.approveLocalCommand ?? (async () => false),
@@ -379,6 +407,7 @@ export async function runLunaCli(
           break
         case "local-shell":
           localShell = setLocalShellEnabled(localShell, command.action === "on")
+          if (!localShell.enabled) abortLocalShellTasks()
           write(io.stdout, `local shell: ${localShell.enabled ? "on" : "off"}\n`)
           sendLocalShellCapability(client, currentThreadId, localShell)
           break

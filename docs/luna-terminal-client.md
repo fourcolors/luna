@@ -97,9 +97,10 @@ Type these commands at the `luna chat` prompt:
 
 ## Local shell safety
 
-Local shell capability is advertised as off by default. When enabled, Luna may
-request commands on the machine running the CLI. Any received command request
-still requires explicit approval before execution.
+Local shell capability is off by default. While it is off, the CLI denies local
+command requests without prompting. When enabled, Luna may request commands on
+the machine running the CLI, and each received command request still requires
+explicit approval before execution.
 
 Enable it at startup:
 

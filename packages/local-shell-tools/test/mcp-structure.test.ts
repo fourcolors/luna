@@ -30,6 +30,30 @@ describe("LocalShellToolsLayer - structural invariants", () => {
     expect(config.systemPromptAddendum).toBe(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM)
     expect(typeof config.bindSession).toBe("function")
     expect(typeof config.clearSession).toBe("function")
+    expect(typeof config.createSessionBinding).toBe("function")
+  })
+
+  it("creates isolated local shell server bindings per chat thread", async () => {
+    const bridge = createLocalShellBridge()
+
+    const config = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          return yield* LocalShellToolsService
+        }),
+      ).pipe(Effect.provide(LocalShellToolsLayer({ bridge }))),
+    )
+    const first = config.createSessionBinding()
+    const second = config.createSessionBinding()
+
+    first.bindSession("thr_1")
+    second.bindSession("thr_2")
+
+    expect(first.serverName).toBe("local_shell")
+    expect(second.serverName).toBe("local_shell")
+    expect(first.server).not.toBe(second.server)
+    expect(first.systemPromptAddendum).toBe(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM)
+    expect(second.systemPromptAddendum).toBe(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM)
   })
 
   it("buildLocalShellMcpServer returns type='sdk' and name='local_shell'", () => {

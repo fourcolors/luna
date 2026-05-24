@@ -8,12 +8,16 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk"
 import { makeLocalShellTools } from "./tools.js"
 
-export interface LocalShellToolsConfig {
+export interface LocalShellToolsSessionConfig {
   readonly serverName: "local_shell"
   readonly server: McpSdkServerConfigWithInstance
   readonly systemPromptAddendum: string
   readonly bindSession: (sessionId: string) => void
   readonly clearSession: (sessionId: string) => void
+}
+
+export interface LocalShellToolsConfig extends LocalShellToolsSessionConfig {
+  readonly createSessionBinding: () => LocalShellToolsSessionConfig
 }
 
 export class LocalShellToolsService extends Effect.Tag(
@@ -34,6 +38,32 @@ export interface LocalShellToolsLayerOptions {
   readonly bridge: LocalShellBridge
 }
 
+const createLocalShellToolsConfig = (
+  bridge: LocalShellBridge,
+): LocalShellToolsSessionConfig => {
+  const sessionCell: { value: string | null } = { value: null }
+  const currentThreadId = () => sessionCell.value
+  const bindSession = (sessionId: string) => {
+    sessionCell.value = sessionId
+  }
+  const clearSession = (sessionId: string) => {
+    if (sessionCell.value === sessionId) {
+      sessionCell.value = null
+    }
+  }
+
+  const tools = makeLocalShellTools(bridge, currentThreadId)
+  const server = buildLocalShellMcpServer(tools)
+
+  return {
+    serverName: "local_shell",
+    server,
+    systemPromptAddendum: LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM,
+    bindSession,
+    clearSession,
+  }
+}
+
 export const buildLocalShellMcpServer = (
   tools: ReturnType<typeof makeLocalShellTools>,
 ): McpSdkServerConfigWithInstance => {
@@ -49,26 +79,10 @@ export const LocalShellToolsLayer = (
   Layer.scoped(
     LocalShellToolsService,
     Effect.gen(function* () {
-      const sessionCell: { value: string | null } = { value: null }
-      const currentThreadId = () => sessionCell.value
-      const bindSession = (sessionId: string) => {
-        sessionCell.value = sessionId
-      }
-      const clearSession = (sessionId: string) => {
-        if (sessionCell.value === sessionId) {
-          sessionCell.value = null
-        }
-      }
-
-      const tools = makeLocalShellTools(opts.bridge, currentThreadId)
-      const server = buildLocalShellMcpServer(tools)
-
+      const config = createLocalShellToolsConfig(opts.bridge)
       return {
-        serverName: "local_shell" as const,
-        server,
-        systemPromptAddendum: LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM,
-        bindSession,
-        clearSession,
+        ...config,
+        createSessionBinding: () => createLocalShellToolsConfig(opts.bridge),
       }
     }),
   )

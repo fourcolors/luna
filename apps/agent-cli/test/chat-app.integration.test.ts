@@ -265,20 +265,33 @@ describe("luna chat app", () => {
     expect(output.read()).toContain("reply 2")
   })
 
-  it("does not wait for unresolved local shell approval during quit", async () => {
+  it("denies local shell requests while disabled without prompting", async () => {
     server = new WebSocketServer({ port: 0 })
     await new Promise<void>((resolve) => server?.once("listening", resolve))
     const address = server.address() as AddressInfo
     const approveLocalCommand = vi.fn(() => new Promise<boolean>(() => undefined))
+    const received: ClientFrame[] = []
+    let resolveDenied!: (frame: ClientFrame) => void
+    const denied = new Promise<ClientFrame>((resolve) => {
+      resolveDenied = resolve
+    })
 
     server.on("connection", (socket) => {
       socket.send(JSON.stringify(helloFrame))
-      socket.send(JSON.stringify({
-        type: "local-shell-request",
-        requestId: "req_1",
-        threadId: "thr_1",
-        command: "printf hello",
-      } satisfies ServerFrame))
+      socket.on("message", (raw) => {
+        const frame = JSON.parse(raw.toString()) as ClientFrame
+        received.push(frame)
+        if (frame.type === "new-thread") {
+          socket.send(JSON.stringify({ type: "thread-created", thread: thread("thr_1") } satisfies ServerFrame))
+          socket.send(JSON.stringify({
+            type: "local-shell-request",
+            requestId: "req_1",
+            threadId: "thr_1",
+            command: "printf hello",
+          } satisfies ServerFrame))
+        }
+        if (frame.type === "local-shell-result") resolveDenied(frame)
+      })
     })
 
     const stdin = new PassThrough()
@@ -294,10 +307,69 @@ describe("luna chat app", () => {
       approveLocalCommand,
     })
 
+    const result = await waitFor(denied)
+    expect(result).toMatchObject({
+      type: "local-shell-result",
+      approved: false,
+      stderr: "local shell disabled",
+    })
+    expect(approveLocalCommand).not.toHaveBeenCalled()
+
     stdin.write("/quit\n")
     stdin.end()
 
     await expect(waitFor(done, 250)).resolves.toEqual({ exitCode: 0 })
+    expect(received).toContainEqual({
+      type: "local-shell-capability",
+      threadId: "thr_1",
+      enabled: false,
+      clientId: expect.any(String),
+      platform: process.platform,
+      cwd: process.cwd(),
+    })
+  })
+
+  it("does not wait for unresolved local shell approval during quit", async () => {
+    server = new WebSocketServer({ port: 0 })
+    await new Promise<void>((resolve) => server?.once("listening", resolve))
+    const address = server.address() as AddressInfo
+    const approveLocalCommand = vi.fn(() => new Promise<boolean>(() => undefined))
+
+    server.on("connection", (socket) => {
+      socket.send(JSON.stringify(helloFrame))
+      socket.on("message", (raw) => {
+        const frame = JSON.parse(raw.toString()) as ClientFrame
+        if (frame.type === "new-thread") {
+          socket.send(JSON.stringify({ type: "thread-created", thread: thread("thr_1") } satisfies ServerFrame))
+          socket.send(JSON.stringify({
+            type: "local-shell-request",
+            requestId: "req_2",
+            threadId: "thr_1",
+            command: "printf hello",
+          } satisfies ServerFrame))
+        }
+      })
+    })
+
+    const stdin = new PassThrough()
+    const stdout = new PassThrough()
+    const stderr = new PassThrough()
+
+    const done = runLunaCli(["chat", "--local-shell", "--url", `ws://127.0.0.1:${address.port}/ui`], {
+      stdin,
+      stdout,
+      stderr,
+      env: { LUNA_UI_WS_TOKEN: "token-from-env" },
+      cwd: process.cwd(),
+      approveLocalCommand,
+    })
+
+    setTimeout(() => {
+      stdin.write("/quit\n")
+      stdin.end()
+    }, 25)
+
+    await expect(waitFor(done, 500)).resolves.toEqual({ exitCode: 0 })
     expect(approveLocalCommand).toHaveBeenCalledWith("printf hello")
   })
 
@@ -309,19 +381,25 @@ describe("luna chat app", () => {
 
     server.on("connection", (socket) => {
       socket.send(JSON.stringify(helloFrame))
-      socket.send(JSON.stringify({
-        type: "local-shell-request",
-        requestId: "req_2",
-        threadId: "thr_1",
-        command: `sh -c 'sleep 5' ${marker}`,
-      } satisfies ServerFrame))
+      socket.on("message", (raw) => {
+        const frame = JSON.parse(raw.toString()) as ClientFrame
+        if (frame.type === "new-thread") {
+          socket.send(JSON.stringify({ type: "thread-created", thread: thread("thr_1") } satisfies ServerFrame))
+          socket.send(JSON.stringify({
+            type: "local-shell-request",
+            requestId: "req_3",
+            threadId: "thr_1",
+            command: `sh -c 'sleep 5' ${marker}`,
+          } satisfies ServerFrame))
+        }
+      })
     })
 
     const stdin = new PassThrough()
     const stdout = new PassThrough()
     const stderr = new PassThrough()
 
-    const done = runLunaCli(["chat", "--url", `ws://127.0.0.1:${address.port}/ui`], {
+    const done = runLunaCli(["chat", "--local-shell", "--url", `ws://127.0.0.1:${address.port}/ui`], {
       stdin,
       stdout,
       stderr,
@@ -330,8 +408,56 @@ describe("luna chat app", () => {
       approveLocalCommand: async () => true,
     })
 
-    stdin.write("/quit\n")
-    stdin.end()
+    setTimeout(() => {
+      stdin.write("/quit\n")
+      stdin.end()
+    }, 25)
+
+    await expect(waitFor(done, 500)).resolves.toEqual({ exitCode: 0 })
+    await new Promise<void>((resolve) => setTimeout(resolve, 100))
+    expect(hasProcessWithMarker(marker)).toBe(false)
+  })
+
+  it("aborts running local shell commands when local shell is toggled off", async () => {
+    server = new WebSocketServer({ port: 0 })
+    await new Promise<void>((resolve) => server?.once("listening", resolve))
+    const address = server.address() as AddressInfo
+    const marker = `luna-local-shell-off-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+    server.on("connection", (socket) => {
+      socket.send(JSON.stringify(helloFrame))
+      socket.on("message", (raw) => {
+        const frame = JSON.parse(raw.toString()) as ClientFrame
+        if (frame.type === "new-thread") {
+          socket.send(JSON.stringify({ type: "thread-created", thread: thread("thr_1") } satisfies ServerFrame))
+          socket.send(JSON.stringify({
+            type: "local-shell-request",
+            requestId: "req_4",
+            threadId: "thr_1",
+            command: `sh -c 'sleep 5' ${marker}`,
+          } satisfies ServerFrame))
+        }
+      })
+    })
+
+    const stdin = new PassThrough()
+    const stdout = new PassThrough()
+    const stderr = new PassThrough()
+
+    const done = runLunaCli(["chat", "--local-shell", "--url", `ws://127.0.0.1:${address.port}/ui`], {
+      stdin,
+      stdout,
+      stderr,
+      env: { LUNA_UI_WS_TOKEN: "token-from-env" },
+      cwd: process.cwd(),
+      approveLocalCommand: async () => true,
+    })
+
+    setTimeout(() => {
+      stdin.write("/local-shell off\n")
+      stdin.write("/quit\n")
+      stdin.end()
+    }, 25)
 
     await expect(waitFor(done, 500)).resolves.toEqual({ exitCode: 0 })
     await new Promise<void>((resolve) => setTimeout(resolve, 100))

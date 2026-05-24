@@ -392,11 +392,12 @@ const buildServerLayer = (
       const chatWithTools: typeof chat = {
         ...chat,
         createThread: (opts) => {
+          const localShellThreadTools = localShellTools.createSessionBinding()
           console.log("[luna/thread] createThread called — wiring MCP servers:", [
             memTools.serverName,
             schedTools.serverName,
             obsTools.serverName,
-            localShellTools.serverName,
+            localShellThreadTools.serverName,
           ].join(", "))
           const mergedSystemPrompt = [
             dnaContent,
@@ -405,7 +406,7 @@ const buildServerLayer = (
             memTools.systemPromptAddendum,
             schedTools.systemPromptAddendum,
             obsTools.systemPromptAddendum,
-            localShellTools.systemPromptAddendum,
+            localShellThreadTools.systemPromptAddendum,
           ]
             .filter((s): s is string => typeof s === "string" && s.length > 0)
             .join("\n\n")
@@ -414,7 +415,7 @@ const buildServerLayer = (
             [memTools.serverName]: memTools.server,
             [schedTools.serverName]: schedTools.server,
             [obsTools.serverName]: obsTools.server,
-            [localShellTools.serverName]: localShellTools.server,
+            [localShellThreadTools.serverName]: localShellThreadTools.server,
           }
           return chat
             .createThread({
@@ -427,7 +428,7 @@ const buildServerLayer = (
               // current thread. SessionSummary.id is always present.
               Effect.tap((summary) => {
                 obsTools.bindSession(summary.id)
-                localShellTools.bindSession(summary.id)
+                localShellThreadTools.bindSession(summary.id)
                 console.log("[luna/thread] session bound:", summary.id, "— obs/local-shell tools active")
                 return Effect.void
               }),

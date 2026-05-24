@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   executeLocalCommand,
   makeLocalShellState,
+  sanitizeLocalCommandEnv,
   setLocalShellEnabled,
   truncateOutput,
 } from "../src/chat/local-shell.js"
@@ -132,6 +133,25 @@ describe("executeLocalCommand", () => {
     expect(result.stdout).toBe("hello")
     expect(result.stderr).toBe("")
     expect(result.timedOut).toBe(false)
+  })
+
+  it("does not expose Luna token environment to local commands", async () => {
+    const result = await executeLocalCommand({
+      ...baseCommandOptions(cwd),
+      request: {
+        ...baseCommandOptions(cwd).request,
+        command: "printf \"${LUNA_UI_WS_TOKEN:-missing}\"",
+        cwd,
+      },
+      env: sanitizeLocalCommandEnv({
+        PATH: process.env["PATH"],
+        LUNA_UI_WS_TOKEN: "secret-token-value",
+      }),
+    })
+
+    expect(result.approved).toBe(true)
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toBe("missing")
   })
 
   it("preserves non-zero exit codes", async () => {

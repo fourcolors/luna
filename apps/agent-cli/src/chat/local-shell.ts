@@ -31,6 +31,7 @@ export interface LocalCommandResult {
 export interface ExecuteLocalCommandOptions {
   readonly request: LocalCommandRequest
   readonly cwd: string
+  readonly env?: Record<string, string | undefined>
   readonly timeoutMs: number
   readonly maxOutputBytes: number
   readonly approve: (command: string) => Promise<boolean>
@@ -44,6 +45,7 @@ export interface MakeLocalShellStateOptions {
 
 const DEFAULT_TIMEOUT_MS = 30_000
 const FORCE_KILL_GRACE_MS = 250
+const SECRET_ENV_KEY = /(TOKEN|SECRET|PASSWORD|PASS|API[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL|AUTH|COOKIE|SESSION)/i
 
 export const makeLocalShellState = (
   options: MakeLocalShellStateOptions,
@@ -67,6 +69,18 @@ export const truncateOutput = (output: string, maxBytes: number): string => {
   if (buffer.byteLength <= maxBytes) return output
 
   return formatCapturedOutput([buffer.subarray(0, maxBytes)], buffer.byteLength - maxBytes)
+}
+
+export const sanitizeLocalCommandEnv = (
+  env: Record<string, string | undefined>,
+): NodeJS.ProcessEnv => {
+  const sanitized: NodeJS.ProcessEnv = {}
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) continue
+    if (SECRET_ENV_KEY.test(key)) continue
+    sanitized[key] = value
+  }
+  return sanitized
 }
 
 class BoundedOutputBuffer {
@@ -195,7 +209,7 @@ export const executeLocalCommand = async (
     const child = spawn(request.command, {
       shell: true,
       cwd,
-      env: process.env,
+      env: options.env ?? process.env,
       detached: process.platform !== "win32",
     })
 
