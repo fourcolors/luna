@@ -29,6 +29,7 @@ import {
   Stream,
 } from "effect"
 import {
+  CLAUDE_CODE_LOGIN_SECRET_REF,
   SDKError,
   SessionStore,
   AccountBroker,
@@ -246,23 +247,25 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
                 ),
               )
             acquiredAccountId = cred.accountId
-            // SECRET HYGIENE: `Redacted.value(...)` is unwrapped at this
-            // single overlay-construction site only. The plaintext is
-            // immediately handed to the SDK Options object via merge —
-            // it is NEVER stored in a Ref, NEVER logged, NEVER passed to
-            // anything that stringifies. Any future change to this
-            // location must preserve this invariant.
-            const brokerOwnedEnv: Record<string, string> = {
-              CLAUDE_CODE_OAUTH_TOKEN: Redacted.value(cred.resolvedSecret),
+            if (cred.secretRef !== CLAUDE_CODE_LOGIN_SECRET_REF) {
+              // SECRET HYGIENE: `Redacted.value(...)` is unwrapped at this
+              // single overlay-construction site only. The plaintext is
+              // immediately handed to the SDK Options object via merge —
+              // it is NEVER stored in a Ref, NEVER logged, NEVER passed to
+              // anything that stringifies. Any future change to this
+              // location must preserve this invariant.
+              const brokerOwnedEnv: Record<string, string> = {
+                CLAUDE_CODE_OAUTH_TOKEN: Redacted.value(cred.resolvedSecret),
+              }
+              const callerEnv = req.sessionOptions.sdkOptions?.env as
+                | Readonly<Record<string, string | undefined>>
+                | undefined
+              const mergedEnv = yield* mergeEnvOverlayLogged(
+                callerEnv,
+                brokerOwnedEnv,
+              )
+              overrides.env = mergedEnv
             }
-            const callerEnv = req.sessionOptions.sdkOptions?.env as
-              | Readonly<Record<string, string | undefined>>
-              | undefined
-            const mergedEnv = yield* mergeEnvOverlayLogged(
-              callerEnv,
-              brokerOwnedEnv,
-            )
-            overrides.env = mergedEnv
           }
 
           const agentDefs = loadAgents()
@@ -484,4 +487,3 @@ export class SDKAdapter extends Effect.Tag("luna/SDKAdapter")<
     }),
   )
 }
-

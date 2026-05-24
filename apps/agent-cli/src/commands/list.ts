@@ -3,7 +3,7 @@
  *
  * §0.2 hard rule: NEVER resolve or print the actual secret. We print the
  * pointer string from the row. The pointer is not a secret — it's the
- * `op://vault/item/field` (or env:// / file://) reference itself.
+ * `op://vault/item/field` (or env: / file: / claude-code:login) reference itself.
  */
 import { openDb, defaultDbPath, type AccountRow } from "../db.js"
 import type { CmdResult } from "./add.js"

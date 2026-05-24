@@ -9,6 +9,7 @@
  *       luna-op://<label>/<rest>                   — explicit-account 1Password
  *       env:<VAR>                                  — process env (one colon)
  *       file:<path>  |  file://<host>/<path>       — local file
+ *       claude-code:login                          — CLAUDE_CONFIG_DIR login
  *     where <label> matches ^[a-z][a-z0-9-]{0,30}$ and is not in
  *     {env, file, op}.
  *
@@ -44,6 +45,7 @@ const validateKind = (kind: string): boolean => {
 }
 
 const validateSecretRef = (ref: string): boolean => {
+  if (ref === "claude-code:login") return true
   if (ref.startsWith("luna-op://")) {
     const rest = ref.slice("luna-op://".length)
     const slash = rest.indexOf("/")
@@ -106,7 +108,8 @@ export const runAdd = (args: AddArgs): CmdResult => {
         `error: invalid --secret-ref "${secretRef}". ` +
         `Must be one of: op://<rest>, luna-op://<label>/<rest> ` +
         `(label matches ^[a-z][a-z0-9-]{0,30}$, not in {env, file, op}), ` +
-        `env:<VAR> (one colon, no slashes), file:<path>, or file:///<path>.\n`,
+        `env:<VAR> (one colon, no slashes), file:<path>, file:///<path>, ` +
+        `or claude-code:login.\n`,
     }
   }
 

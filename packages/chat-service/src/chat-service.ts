@@ -191,12 +191,17 @@ export class ChatService extends Effect.Service<ChatService>()(
           process.env["LUNA_TRUSTED_LOCAL"] === "1"
             ? "bypassPermissions"
             : "default"
+        const pathToClaudeCodeExecutable =
+          process.env["LUNA_CLAUDE_CODE_EXECUTABLE"]?.trim()
         const sdkOptions: Record<string, unknown> = {
           includePartialMessages: true,
           cwd:
             opts.cwd ??
             process.env["LUNA_REPO_ROOT"] ??
             process.cwd(),
+          ...(pathToClaudeCodeExecutable
+            ? { pathToClaudeCodeExecutable }
+            : {}),
           // Filesystem setting sources: load skills, plugins, MCP servers,
           // CLAUDE.md, and hooks from ~/.claude/ + <cwd>/.claude/. Caller
           // can opt out with `settingSources: []`.

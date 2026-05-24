@@ -31,7 +31,11 @@ import {
   ConfigError,
 } from "../errors.js"
 import { Clock } from "../clock.js"
-import { SecretProvider, type SecretRef } from "../secret-provider/index.js"
+import {
+  SecretProvider,
+  isClaudeCodeLoginSecretRef,
+  type SecretRef,
+} from "../secret-provider/index.js"
 import { pickAccount, type AccountRecord } from "./rotation-policy.js"
 
 /** Public account summary — no secrets. Used by the account-switcher UI. */
@@ -160,7 +164,9 @@ const fromAccounts = (
           )
           // Resolve the secret AFTER the finalizer is registered, so a
           // resolution failure still releases inFlight.
-          const resolved = yield* secrets.get(picked.secretRef)
+          const resolved = isClaudeCodeLoginSecretRef(picked.secretRef)
+            ? Redacted.make("")
+            : yield* secrets.get(picked.secretRef)
           return {
             kind: picked.kind,
             accountId: picked.id,

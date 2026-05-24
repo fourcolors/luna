@@ -78,7 +78,7 @@ usage: luna-account <subcommand> [options]
 subcommands:
   add   --id <id> --label <label> --kind <kind> --secret-ref <ref>
         kind ∈ { anthropic, tool-<name>, mcp-<name> }
-        secret-ref must start with op://, env://, or file://
+        secret-ref must be op://, luna-op://, env:, file:, or claude-code:login
   list
   rm    --id <id>
 

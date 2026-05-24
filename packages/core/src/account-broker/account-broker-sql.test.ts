@@ -13,6 +13,7 @@ import { Clock } from "../clock.js"
 import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
 import { ConfigError } from "../errors.js"
 import {
+  CLAUDE_CODE_LOGIN_SECRET_REF,
   SecretProvider,
   type SecretProviderApi,
 } from "../secret-provider/index.js"
@@ -443,6 +444,37 @@ d("AccountBrokerLayer.fromSql — invariant enforcement", () => {
       expect(out.cred.secretRef).toBe("anth:only")
       expect(Redacted.value(out.cred.resolvedSecret)).toBe("the-token")
       expect(out.seenRefs).toContain("anth:only")
+    } finally {
+      cleanupTmp(dbPath)
+    }
+  })
+
+  it("claude-code:login rows do not resolve through SecretProvider", async () => {
+    const dbPath = tmpDb()
+    try {
+      await seedAccountsTable(dbPath, [
+        {
+          id: "claude-login",
+          kind: "anthropic",
+          secret_ref: CLAUDE_CODE_LOGIN_SECRET_REF,
+        },
+      ])
+      const log = await Effect.runPromise(Ref.make<ReadonlyArray<string>>([]))
+      const layer = buildLayer(dbPath, stubSecretsLayer({}, log))
+      const out = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const broker = yield* AccountBroker
+            const cred = yield* broker.acquireSession({ model: "m" })
+            const seenRefs = yield* Ref.get(log)
+            return { cred, seenRefs }
+          }),
+        ).pipe(Effect.provide(layer)),
+      )
+      expect(out.cred.accountId).toBe("claude-login")
+      expect(out.cred.secretRef).toBe(CLAUDE_CODE_LOGIN_SECRET_REF)
+      expect(Redacted.value(out.cred.resolvedSecret)).toBe("")
+      expect(out.seenRefs).toEqual([])
     } finally {
       cleanupTmp(dbPath)
     }

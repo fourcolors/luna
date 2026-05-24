@@ -47,7 +47,11 @@ import {
   AllAccountsExhaustedError,
   ConfigError,
 } from "../errors.js"
-import { SecretProvider, type SecretRef } from "../secret-provider/index.js"
+import {
+  SecretProvider,
+  isClaudeCodeLoginSecretRef,
+  type SecretRef,
+} from "../secret-provider/index.js"
 import {
   AccountBroker,
   type AccountBrokerApi,
@@ -246,7 +250,9 @@ const fromSql = (
               ),
             ),
           )
-          const resolved = yield* secrets.get(picked.secretRef)
+          const resolved = isClaudeCodeLoginSecretRef(picked.secretRef)
+            ? Redacted.make("")
+            : yield* secrets.get(picked.secretRef)
           return {
             kind: picked.kind,
             accountId: picked.id,

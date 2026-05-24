@@ -374,6 +374,11 @@ d("luna-account CLI", () => {
     expect(r.status, r.stderr).toBe(0)
   })
 
+  it("add accepts claude-code:login", () => {
+    const r = runCli(addRefArgs("claude-code:login"), db)
+    expect(r.status, r.stderr).toBe(0)
+  })
+
   it("add rejects env: with slash in name", () => {
     const r = runCli(addRefArgs("env:FOO/BAR"), db)
     expect(r.status).toBe(1)

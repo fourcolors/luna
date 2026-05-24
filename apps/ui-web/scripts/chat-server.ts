@@ -41,7 +41,7 @@
  *
  *   bun run --filter '@luna/agent-cli' luna-account add \
  *     --id default --label "Default" --kind anthropic \
- *     --secret-ref op://<vault-id>/<item-id>/credential
+ *     --secret-ref claude-code:login
  *
  * Then verify:
  *
@@ -53,6 +53,7 @@
  *   - `luna-op://<label>/<vault>/<item>/<field>` — explicit-account
  *     1Password routing
  *   - `env:<VARNAME>` — process env (one colon, no slashes)
+ *   - `claude-code:login` — use the OAuth login in CLAUDE_CONFIG_DIR
  *
  * Examples (with primary + ops registered in keychain):
  *   - luna-op://primary/<vault-id>/<item-id>/credential
@@ -475,7 +476,7 @@ const buildServerLayer = (
 const SEED_HINT =
   "  bun run --filter '@luna/agent-cli' luna-account add \\\n" +
   "    --id default --label \"Default\" --kind anthropic \\\n" +
-  "    --secret-ref luna-op://primary/<vault-id>/<item-id>/credential"
+  "    --secret-ref claude-code:login"
 
 const buildMain = (
   opLabelsRegistered: ReadonlyArray<string>,

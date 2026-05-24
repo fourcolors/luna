@@ -564,6 +564,41 @@ describe("ChatService (Tier-2 sim)", () => {
   )
 
   it(
+    "forwards LUNA_CLAUDE_CODE_EXECUTABLE as pathToClaudeCodeExecutable",
+    async () => {
+      const prev = process.env["LUNA_CLAUDE_CODE_EXECUTABLE"]
+      process.env["LUNA_CLAUDE_CODE_EXECUTABLE"] = "/usr/local/bin/claude"
+      try {
+        let capturedOptions: Record<string, unknown> | undefined
+        const fakeLayer = SDKClient.fake((p) => {
+          capturedOptions = (p.options ?? {}) as Record<string, unknown>
+          return makeChatLoopQuery({
+            prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+            sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+            responseFor: (t) => `echo:${t}`,
+          })
+        })
+        await runScoped(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+            yield* chat.createThread({ model: "claude-test", title: "exec" })
+            yield* Effect.sleep("30 millis")
+          }),
+          fakeLayer,
+        )
+        expect(capturedOptions).toBeDefined()
+        expect(capturedOptions!["pathToClaudeCodeExecutable"]).toBe(
+          "/usr/local/bin/claude",
+        )
+      } finally {
+        if (prev === undefined) delete process.env["LUNA_CLAUDE_CODE_EXECUTABLE"]
+        else process.env["LUNA_CLAUDE_CODE_EXECUTABLE"] = prev
+      }
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
     "caller-supplied permissionMode wins over the env-derived default",
     async () => {
       const prev = process.env["LUNA_TRUSTED_LOCAL"]

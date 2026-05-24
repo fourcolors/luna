@@ -17,6 +17,7 @@ import {
   Clock as CoreClock,
   AccountBroker,
   AccountBrokerLayer,
+  CLAUDE_CODE_LOGIN_SECRET_REF,
   EnvSecretProvider,
   type AccountSeed,
   type UsageReport,
@@ -110,8 +111,12 @@ const baseLayer = Layer.mergeAll(
   CoreClock.Default,
 )
 
-const buildLayer = (recorder: FakeRecorder, spy: BrokerSpy) => {
-  const brokerL = AccountBrokerLayer.fromAccounts(seeds).pipe(
+const buildLayer = (
+  recorder: FakeRecorder,
+  spy: BrokerSpy,
+  accountSeeds: ReadonlyArray<AccountSeed> = seeds,
+) => {
+  const brokerL = AccountBrokerLayer.fromAccounts(accountSeeds).pipe(
     Layer.provide(Layer.mergeAll(EnvSecretProvider.Default, CoreClock.Default)),
   )
   const spiedBrokerL = reportSpyLayer(spy).pipe(Layer.provide(brokerL))
@@ -259,6 +264,28 @@ describe("SDKAdapter rotation simulation (WithBroker)", () => {
       }).pipe(Effect.provide(layer)),
     )
     expect(recorder.tokensSeen).toEqual(["tok-a2"])
+  })
+
+  it("claude-code:login account does not inject CLAUDE_CODE_OAUTH_TOKEN", async () => {
+    const recorder = makeRecordingFake()
+    const spy: BrokerSpy = { reports: [] }
+    const layer = buildLayer(recorder, spy, [
+      {
+        id: "login",
+        kind: "anthropic",
+        secretRef: CLAUDE_CODE_LOGIN_SECRET_REF,
+      },
+    ])
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* SDKAdapter
+        const store = yield* SessionStore
+        yield* Effect.scoped(runOneQuery(adapter, store, undefined))
+      }).pipe(Effect.provide(layer)),
+    )
+
+    expect(recorder.tokensSeen).toEqual([])
   })
 
   it("clean stream end → broker.report({kind:'success'}); error → kind:'error'", async () => {

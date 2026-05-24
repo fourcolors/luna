@@ -128,7 +128,7 @@ bun run --filter '@luna/ui-web' server:chat
 # Register a Claude.ai account with Luna
 bun run --filter '@luna/agent-cli' luna-account add \
   --id me --label "My Account" --kind anthropic \
-  --secret-ref env:CLAUDE_CODE_OAUTH_TOKEN
+  --secret-ref claude-code:login
 
 # List registered accounts
 bun run --filter '@luna/agent-cli' luna-account list

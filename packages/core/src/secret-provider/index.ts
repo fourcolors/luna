@@ -5,6 +5,10 @@ export {
   type SecretValue,
   type SecretProviderApi,
 } from "./secret-provider.js"
+export {
+  CLAUDE_CODE_LOGIN_SECRET_REF,
+  isClaudeCodeLoginSecretRef,
+} from "./claude-code-login.js"
 export { EnvSecretProvider } from "./env-backend.js"
 export { FileSecretProvider } from "./file-backend.js"
 export {
