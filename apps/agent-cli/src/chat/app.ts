@@ -31,6 +31,7 @@ const DEFAULT_MODEL = "claude-sonnet-4-5"
 const DEFAULT_LOCAL_COMMAND_TIMEOUT_MS = 30_000
 const MAX_LOCAL_COMMAND_OUTPUT_BYTES = 64 * 1024
 const QUIT_DRAIN_MS = 1_000
+const THREAD_CREATE_DRAIN_MS = 100
 
 const USAGE = [
   "Usage: luna chat [options]",
@@ -70,11 +71,11 @@ const waitBounded = async (promise: Promise<unknown>, timeoutMs: number): Promis
 }
 
 const createThreadWaiter = (): {
-  readonly promise: Promise<string>
-  readonly resolve: (threadId: string) => void
+  readonly promise: Promise<void>
+  readonly resolve: () => void
 } => {
-  let resolveThread!: (threadId: string) => void
-  const promise = new Promise<string>((resolve) => {
+  let resolveThread!: () => void
+  const promise = new Promise<void>((resolve) => {
     resolveThread = resolve
   })
   return { promise, resolve: resolveThread }
@@ -171,17 +172,21 @@ export async function runLunaCli(
 
   let currentThreadId: string | null = cfg.threadId
   let threadWaiter = createThreadWaiter()
-  if (currentThreadId !== null) threadWaiter.resolve(currentThreadId)
+  if (currentThreadId !== null) threadWaiter.resolve()
+  const pendingUserMessages: string[] = []
   let localShell = makeLocalShellState({ enabled: cfg.localShellInitial, cwd: cfg.cwd })
   let quitting = false
   let fatalErrorMessage: string | null = null
-  let pendingAssistant: Promise<void> | null = null
-  let resolvePendingAssistant: (() => void) | null = null
+  let pendingAssistantCount = 0
+  let pendingAssistantDrain: Promise<void> | null = null
+  let resolvePendingAssistantDrain: (() => void) | null = null
   const assistantTextByTurn = new Map<string, string>()
+  const localShellTasks = new Set<Promise<void>>()
 
   const markThread = (threadId: string): void => {
     currentThreadId = threadId
-    threadWaiter.resolve(threadId)
+    threadWaiter.resolve()
+    flushPendingUserMessages()
   }
 
   const resetThreadWaiter = (): void => {
@@ -189,16 +194,60 @@ export async function runLunaCli(
     threadWaiter = createThreadWaiter()
   }
 
-  const startPendingAssistant = (): void => {
-    pendingAssistant = new Promise<void>((resolve) => {
-      resolvePendingAssistant = resolve
-    })
+  const waitForAssistantDrain = (): Promise<void> => {
+    if (pendingAssistantCount === 0) return Promise.resolve()
+    if (pendingAssistantDrain === null) {
+      pendingAssistantDrain = new Promise<void>((resolve) => {
+        resolvePendingAssistantDrain = resolve
+      })
+    }
+    return pendingAssistantDrain
+  }
+
+  const trackPendingAssistant = (): void => {
+    pendingAssistantCount += 1
   }
 
   const finishPendingAssistant = (): void => {
-    resolvePendingAssistant?.()
-    pendingAssistant = null
-    resolvePendingAssistant = null
+    if (pendingAssistantCount > 0) pendingAssistantCount -= 1
+    if (pendingAssistantCount === 0) {
+      resolvePendingAssistantDrain?.()
+      pendingAssistantDrain = null
+      resolvePendingAssistantDrain = null
+    }
+  }
+
+  const sendUserMessage = (threadId: string, text: string): void => {
+    client.send({ type: "user-message", threadId, text })
+    trackPendingAssistant()
+  }
+
+  function flushPendingUserMessages(): void {
+    if (currentThreadId === null) return
+    while (pendingUserMessages.length > 0) {
+      const text = pendingUserMessages.shift()
+      if (text !== undefined) sendUserMessage(currentThreadId, text)
+    }
+  }
+
+  const runLocalShellRequest = (frame: Extract<ServerFrame, { type: "local-shell-request" }>): void => {
+    const task = (async (): Promise<void> => {
+      const result = await executeLocalCommand({
+        request: frame,
+        cwd: cfg.cwd,
+        timeoutMs: DEFAULT_LOCAL_COMMAND_TIMEOUT_MS,
+        maxOutputBytes: MAX_LOCAL_COMMAND_OUTPUT_BYTES,
+        approve: io.approveLocalCommand ?? (async () => false),
+      })
+      if (!quitting) client.send(result)
+    })()
+      .catch((error) => {
+        if (!quitting) writeError(io, `local shell failed: ${formatRuntimeError(error)}`)
+      })
+      .finally(() => {
+        localShellTasks.delete(task)
+      })
+    localShellTasks.add(task)
   }
 
   const renderFrame = async (frame: ServerFrame): Promise<void> => {
@@ -247,7 +296,7 @@ export async function runLunaCli(
       case "assistant-error":
         if (frame.turnId !== null) assistantTextByTurn.delete(frame.turnId)
         write(io.stderr, `luna: ${frame.error.kind}: ${frame.error.message}\n`)
-        finishPendingAssistant()
+        if (frame.turnId !== null) finishPendingAssistant()
         return
       case "thread-list":
         for (const thread of frame.threads) {
@@ -258,14 +307,7 @@ export async function runLunaCli(
         write(io.stdout, `local shell: ${frame.message}\n`)
         return
       case "local-shell-request": {
-        const result = await executeLocalCommand({
-          request: frame,
-          cwd: cfg.cwd,
-          timeoutMs: DEFAULT_LOCAL_COMMAND_TIMEOUT_MS,
-          maxOutputBytes: MAX_LOCAL_COMMAND_OUTPUT_BYTES,
-          approve: io.approveLocalCommand ?? (async () => false),
-        })
-        client.send(result)
+        runLocalShellRequest(frame)
         return
       }
     }
@@ -313,14 +355,16 @@ export async function runLunaCli(
           sendLocalShellCapability(client, currentThreadId, localShell)
           break
         case "interrupt": {
-          const threadId = await threadWaiter.promise
-          client.send({ type: "interrupt", threadId })
+          if (currentThreadId !== null) client.send({ type: "interrupt", threadId: currentThreadId })
           finishPendingAssistant()
           break
         }
         case "quit":
           quitting = true
-          if (pendingAssistant !== null) await waitBounded(pendingAssistant, QUIT_DRAIN_MS)
+          if (pendingUserMessages.length > 0) {
+            await waitBounded(threadWaiter.promise, THREAD_CREATE_DRAIN_MS)
+          }
+          await waitBounded(waitForAssistantDrain(), QUIT_DRAIN_MS)
           lineReader.close()
           break
         case "local-shell":
@@ -337,9 +381,11 @@ export async function runLunaCli(
           break
         case "message": {
           if (command.text.trim().length === 0) break
-          const threadId = await threadWaiter.promise
-          client.send({ type: "user-message", threadId, text: command.text })
-          startPendingAssistant()
+          if (currentThreadId === null) {
+            pendingUserMessages.push(command.text)
+          } else {
+            sendUserMessage(currentThreadId, command.text)
+          }
           break
         }
       }
@@ -347,8 +393,9 @@ export async function runLunaCli(
       if (quitting) break
     }
 
-    if (!quitting && pendingAssistant !== null) await waitBounded(pendingAssistant, QUIT_DRAIN_MS)
+    if (!quitting) await waitBounded(waitForAssistantDrain(), QUIT_DRAIN_MS)
     quitting = true
+    await waitBounded(Promise.allSettled([...localShellTasks]), 100)
     await client.close()
     await frameLoop
 
