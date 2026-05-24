@@ -11,6 +11,11 @@ describe("luna chat config", () => {
     })
   })
 
+  it("treats chat --help as help", () => {
+    expect(parseChatArgs(["chat", "--help"])).toEqual({ command: "help", unknown: [] })
+    expect(parseChatArgs(["chat", "-h"])).toEqual({ command: "help", unknown: [] })
+  })
+
   it("applies precedence flags over env over dotenv over defaults", () => {
     const args = parseChatArgs([
       "chat",

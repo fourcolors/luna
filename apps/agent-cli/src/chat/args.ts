@@ -66,6 +66,9 @@ export const parseChatArgs = (argv: ReadonlyArray<string>): ChatArgs => {
     const tok = argv[i] as string
     const key = tok.includes("=") ? tok.slice(0, tok.indexOf("=")) : tok
     switch (key) {
+      case "-h":
+      case "--help":
+        return { command: "help", unknown: [] }
       case "--url": {
         const r = readValue(argv, i, "--url")
         if ("error" in r) out.unknown.push(r.error)
