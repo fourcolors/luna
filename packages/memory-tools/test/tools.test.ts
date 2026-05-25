@@ -19,13 +19,15 @@
  * the @luna/memory test suite.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { Effect, Layer, ManagedRuntime } from "effect"
+import { Effect, Layer, ManagedRuntime, Stream } from "effect"
 import { EmbedderService, StubEmbedderLayer } from "@luna/core"
 import {
   LunaSqliteBootstrapLive,
   MemoryRouterTag,
   SqliteVectorBackend,
   MemoryLayer,
+  makeRecord,
+  type MemoryRouter,
 } from "@luna/memory"
 import { makeMemoryTools } from "../src/tools.js"
 import { selectEmbedderLayer } from "../src/layer.js"
@@ -134,6 +136,54 @@ describe.skipIf(!hasBunSqlite)("memory tools", () => {
       await delTool.handler({ id: saved.id }, undefined),
     )
     expect(second.deleted).toBe(false)
+  })
+})
+
+describe("memory tools search mode", () => {
+  it("uses hybrid search to match the tool contract", async () => {
+    const calls: Array<Parameters<MemoryRouter["search"]>[0]> = []
+    const router = {
+      put: () => Effect.void,
+      get: () => Effect.succeed(null),
+      query: () => Stream.empty,
+      delete: () => Effect.succeed(false),
+      backendFor: () => {
+        throw new Error("not used")
+      },
+      exportAll: () => Effect.succeed([]),
+      search: (args: Parameters<MemoryRouter["search"]>[0]) => {
+        calls.push(args)
+        return Stream.succeed({
+          record: makeRecord({
+            id: "mem_test",
+            namespace: args.namespace ?? "notes",
+            kind: "note",
+            content: { text: "hybrid hit" },
+          }),
+          score: 1,
+        })
+      },
+    } satisfies MemoryRouter
+    const [, searchTool] = makeMemoryTools(router)
+
+    const hits = parseTextResult<ReadonlyArray<{ id: string; text: string }>>(
+      await searchTool.handler(
+        { query: "hybrid", limit: 3, namespace: "diagnostics" },
+        undefined,
+      ),
+    )
+
+    expect(hits).toEqual([
+      { id: "mem_test", text: "hybrid hit", score: 1, tags: [] },
+    ])
+    expect(calls).toEqual([
+      {
+        queryText: "hybrid",
+        topK: 3,
+        namespace: "diagnostics",
+        mode: "hybrid",
+      },
+    ])
   })
 })
 

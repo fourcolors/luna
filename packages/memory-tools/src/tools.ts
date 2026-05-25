@@ -148,6 +148,7 @@ export const makeMemoryTools = (router: MemoryRouter) => {
             queryText: args.query,
             topK: limit,
             namespace,
+            mode: "hybrid",
           }),
         ).pipe(
           Effect.mapError(
