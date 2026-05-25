@@ -29,8 +29,8 @@ get stuck during early boot/network setup, while 24.04 worked.
 Recommended stable/dev layout:
 
 ```text
-/root/luna/stable/repo      host stable repo checkout
-/root/luna/dev/repo         host dev repo checkout
+/root/luna/stable/repo      host stable repo checkout tracking master
+/root/luna/dev/repo         host dev repo checkout tracking dev
 /root/.luna                 host stable state
 /root/.luna-dev             host dev state
 

@@ -10,7 +10,7 @@ source "$SCRIPT_DIR/lib/luna-deploy.sh"
 PROFILE="${LUNA_PROFILE:-dev}"
 INSTANCE=""
 REPO_URL="${LUNA_REPO:-https://github.com/fourcolors/luna.git}"
-BRANCH="${LUNA_BRANCH:-master}"
+BRANCH="${LUNA_BRANCH:-}"
 REPO_PATH=""
 STATE_PATH=""
 HOST="${LUNA_HOST:-jax-box}"
@@ -33,7 +33,7 @@ Options:
   --profile <name>             Profile name. Default: dev.
   --name <instance>            Incus instance name. Default: luna-<profile>.
   --repo <url>                 Luna git URL. Default: https://github.com/fourcolors/luna.git
-  --branch <branch>            Git branch to checkout. Default: master.
+  --branch <branch>            Git branch to checkout. Default: master for stable, profile name otherwise.
   --repo-path <path>           Host repo path mounted at /root/luna.
   --state-path <path>          Host state path mounted at /root/.luna.
   --host <hostname>            Hostname clients use. Default: jax-box.
@@ -75,6 +75,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 luna_validate_profile "$PROFILE"
+
+if [[ -z "$BRANCH" ]]; then
+  if [[ "$PROFILE" == "stable" ]]; then
+    BRANCH="master"
+  else
+    BRANCH="$PROFILE"
+  fi
+fi
+
 [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || luna_die "branch contains unsupported characters"
 
 PROFILE_ENV="$(luna_profile_env_name "$PROFILE")"
@@ -198,6 +207,7 @@ instance_exists() {
 
 luna_info "Preparing Luna Incus container: $INSTANCE"
 printf 'Profile: %s\n' "$PROFILE"
+printf 'Branch: %s\n' "$BRANCH"
 printf 'Repo mount: %s -> /root/luna\n' "$REPO_PATH"
 printf 'State mount: %s -> /root/.luna\n' "$STATE_PATH"
 printf 'Client URL: ws://%s:%s/ui\n' "$HOST" "$HOST_WS_PORT"

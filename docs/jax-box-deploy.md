@@ -2,6 +2,13 @@
 
 This is the intended operator flow for the Luna stable/dev split on jax-box.
 
+Branch policy:
+
+- `master` is stable. The main Luna agent runs this branch.
+- `dev` is integration. The dev container runs this branch.
+- Promote by testing `dev`, merging `dev` into `master`, then restarting the
+  stable runtime.
+
 ## Local Client
 
 On the MacBook:
@@ -63,7 +70,7 @@ scripts/luna-container-create \
   --profile dev \
   --name luna-dev \
   --repo git@github.com:fourcolors/luna.git \
-  --branch master \
+  --branch dev \
   --repo-path /root/luna/dev/repo \
   --state-path /root/.luna-dev \
   --host jax-box \
@@ -88,14 +95,41 @@ luna chat --dev
 Code flow:
 
 ```bash
+git checkout dev
+git pull --ff-only origin dev
 git checkout -b <feature-branch>
 bun run test
 bun run typecheck
 git push origin <feature-branch>
+git checkout dev
+git merge --ff-only <feature-branch>
+git push origin dev
 ```
 
-After testing through the dev runtime, merge to `master`. Promote stable on
-jax-box:
+Update the dev runtime on jax-box:
+
+```bash
+ssh root@jax-box
+cd /root/luna/dev/repo
+git fetch origin dev
+git checkout dev
+git pull --ff-only origin dev
+incus exec luna-dev -- bash -lc 'cd /root/luna && /root/.bun/bin/bun install --frozen-lockfile'
+incus exec luna-dev -- systemctl restart luna-dev-chat-server.service
+curl -fsS http://jax-box:5753/healthz
+```
+
+After testing through the dev runtime, merge `dev` to `master`. Use a normal
+merge or PR if the branches have diverged:
+
+```bash
+git checkout master
+git pull --ff-only origin master
+git merge --ff-only origin/dev
+git push origin master
+```
+
+Promote stable on jax-box:
 
 ```bash
 ssh root@jax-box
@@ -103,9 +137,9 @@ cd /root/luna/stable/repo
 git fetch origin master
 git checkout master
 git pull --ff-only origin master
-bun install --frozen-lockfile
-systemctl restart luna-chat-server.service
-curl -fsS http://127.0.0.1:4753/healthz
+/root/.bun/bin/bun install --frozen-lockfile
+systemctl --user restart luna-chat-server.service
+curl -fsS http://jax-box:4753/healthz
 ```
 
 If stable needs to roll back:
@@ -115,9 +149,9 @@ ssh root@jax-box
 cd /root/luna/stable/repo
 git log --oneline -5
 git checkout <known-good-commit>
-bun install --frozen-lockfile
-systemctl restart luna-chat-server.service
-curl -fsS http://127.0.0.1:4753/healthz
+/root/.bun/bin/bun install --frozen-lockfile
+systemctl --user restart luna-chat-server.service
+curl -fsS http://jax-box:4753/healthz
 ```
 
 Rollback should be a temporary recovery step. Follow it with a revert commit or

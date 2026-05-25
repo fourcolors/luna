@@ -90,7 +90,7 @@ scripts/luna-container-create \
   --profile dev \
   --name luna-dev \
   --repo git@github.com:fourcolors/luna.git \
-  --branch master \
+  --branch dev \
   --repo-path /root/luna/dev/repo \
   --state-path /root/.luna-dev \
   --host jax-box \

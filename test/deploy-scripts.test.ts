@@ -127,6 +127,8 @@ exit 1
 
     expect(result.status).toBe(0)
     expect(result.stdout).toContain("incus init images:ubuntu/24.04/cloud luna-dev")
+    expect(result.stdout).toContain("Branch: dev")
+    expect(result.stdout).toContain("git clone --branch dev")
     expect(result.stdout).toContain("security.nesting=true")
     expect(result.stdout).toContain("listen=tcp:0.0.0.0:5753")
     expect(result.stdout).toContain("connect=tcp:127.0.0.1:4753")
@@ -134,6 +136,45 @@ exit 1
     expect(result.stdout).toContain("LUNA_DEV_WS_URL=ws://jax-box:5753/ui")
     expect(result.stdout).not.toContain(token)
     expect(result.stdout).toContain("<redacted>")
+  })
+
+  it("container branch defaults keep stable on master and dev on dev", () => {
+    const temp = makeTempDir()
+    const token = "test-token-1234567890-secret"
+
+    const stable = runScript("scripts/luna-container-create", [
+      "--dry-run",
+      "--profile",
+      "stable",
+      "--name",
+      "luna-stable",
+      "--repo-path",
+      join(temp, "stable", "repo"),
+      "--state-path",
+      join(temp, "stable", "state"),
+      "--token",
+      token,
+    ])
+    const dev = runScript("scripts/luna-container-create", [
+      "--dry-run",
+      "--profile",
+      "dev",
+      "--name",
+      "luna-dev",
+      "--repo-path",
+      join(temp, "dev", "repo"),
+      "--state-path",
+      join(temp, "dev", "state"),
+      "--token",
+      token,
+    ])
+
+    expect(stable.status).toBe(0)
+    expect(stable.stdout).toContain("Branch: master")
+    expect(stable.stdout).toContain("git clone --branch master")
+    expect(dev.status).toBe(0)
+    expect(dev.stdout).toContain("Branch: dev")
+    expect(dev.stdout).toContain("git clone --branch dev")
   })
 
   it("container creation fails before mutation when Incus is unavailable", () => {

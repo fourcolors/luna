@@ -129,6 +129,9 @@ Luna is designed to run with one local client and two server runtimes:
 | Stable | The agent you actually use day to day | `luna chat` | `ws://jax-box:4753/ui` |
 | Dev | A separate runtime for testing fixes and branches | `luna chat --dev` | `ws://jax-box:5753/ui` |
 
+Stable tracks the `master` branch. Dev tracks the `dev` branch. Promote code by
+testing it through dev first, then merging `dev` into `master`.
+
 The terminal client reads profile settings from `~/.luna/.env`:
 
 ```bash
@@ -176,7 +179,7 @@ scripts/luna-container-create \
   --profile dev \
   --name luna-dev \
   --repo git@github.com:fourcolors/luna.git \
-  --branch master \
+  --branch dev \
   --repo-path /root/luna/dev/repo \
   --state-path /root/.luna-dev \
   --host jax-box \
@@ -222,18 +225,32 @@ bun run --filter '@luna/ui-web' server:chat
 
 ### Stable/dev workflow
 
-Develop on a branch, push it, and test it through the dev runtime:
+Develop from `dev`, push back to `dev`, and test through the dev runtime:
 
 ```bash
+git checkout dev
+git pull --ff-only origin dev
 git checkout -b <feature-branch>
 bun run typecheck
 bun run --filter '@luna/agent-cli' test
 git push origin <feature-branch>
+git checkout dev
+git merge --ff-only <feature-branch>
+git push origin dev
 luna chat --dev
 ```
 
-After the dev runtime is working, merge to `master` and promote stable on
-jax-box:
+After the dev runtime is working, merge `dev` to `master` and promote stable on
+jax-box. Use a normal merge or PR if `master` and `dev` have diverged:
+
+```bash
+git checkout master
+git pull --ff-only origin master
+git merge --ff-only origin/dev
+git push origin master
+```
+
+Then update the stable runtime:
 
 ```bash
 ssh root@jax-box
@@ -242,8 +259,8 @@ git fetch origin master
 git checkout master
 git pull --ff-only origin master
 bun install --frozen-lockfile
-systemctl restart luna-chat-server.service
-curl -fsS http://127.0.0.1:4753/healthz
+systemctl --user restart luna-chat-server.service
+curl -fsS http://jax-box:4753/healthz
 ```
 
 ### Adding accounts
