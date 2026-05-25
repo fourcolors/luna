@@ -21,8 +21,12 @@ import { EmbedderError } from "../errors.js"
 export interface EmbedderApi {
   /** Provider tag — e.g. "stub", "ollama", "anthropic". For telemetry/logs. */
   readonly provider: string
+  /** Model identifier within the provider. */
+  readonly model: string
   /** Output vector dimension. Constant per Layer instance. */
   readonly dimension: number
+  /** Stable vector-input formatter version used for stored memory vectors. */
+  readonly embeddingFormat: string
   /** Embed one text into a Float32Array of length `dimension`. */
   readonly embed: (
     text: string,
@@ -65,12 +69,15 @@ export interface StubEmbedderOptions {
 }
 
 const STUB_DEFAULT_DIM = 64
+export const DEFAULT_MEMORY_EMBEDDING_FORMAT = "memory-note-v1"
 
 export function makeStubEmbedder(opts?: StubEmbedderOptions): EmbedderApi {
   const dimension = opts?.dimension ?? STUB_DEFAULT_DIM
   return {
     provider: "stub",
+    model: "stub",
     dimension,
+    embeddingFormat: DEFAULT_MEMORY_EMBEDDING_FORMAT,
     embed: (text) =>
       Effect.sync(() => {
         const v = new Float32Array(dimension)
@@ -253,7 +260,9 @@ export const makeOllamaEmbedderLayer = (
 
       return {
         provider: "ollama",
+        model,
         dimension,
+        embeddingFormat: DEFAULT_MEMORY_EMBEDDING_FORMAT,
         embed: (text) =>
           Effect.tryPromise({
             try: () => ollamaEmbedHttp(baseUrl, model, text),

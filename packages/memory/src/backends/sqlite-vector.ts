@@ -63,6 +63,12 @@ import {
   type MemoryQuery,
   type MemoryRecord,
 } from "../types.js"
+import {
+  ensureMemoryVectorSchema,
+  formatMemoryQueryEmbeddingInput,
+  formatMemoryRecordEmbeddingInput,
+  hashEmbeddingInput,
+} from "./sqlite-vector-maintenance.js"
 
 export interface SqliteVectorBackendApi {
   readonly backendName: "sqlite-vector"
@@ -157,54 +163,6 @@ function extractText(content: unknown): string | null {
   return null
 }
 
-const MIGRATION = `
-  CREATE TABLE IF NOT EXISTS memory_keyed (
-    id              TEXT PRIMARY KEY,
-    namespace       TEXT NOT NULL,
-    kind            TEXT NOT NULL,
-    content_json    TEXT NOT NULL,
-    schema_version  INTEGER NOT NULL,
-    created_at      INTEGER NOT NULL,
-    updated_at      INTEGER NOT NULL,
-    tags_json       TEXT NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_memory_ns ON memory_keyed(namespace);
-  CREATE INDEX IF NOT EXISTS idx_memory_kind ON memory_keyed(kind);
-  CREATE INDEX IF NOT EXISTS idx_memory_updated ON memory_keyed(updated_at);
-
-  CREATE TABLE IF NOT EXISTS memory_vectors (
-    id          TEXT PRIMARY KEY REFERENCES memory_keyed(id) ON DELETE CASCADE,
-    namespace   TEXT NOT NULL,
-    embedding   BLOB NOT NULL,
-    dimension   INTEGER NOT NULL,
-    text        TEXT NOT NULL,
-    ts          INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_vectors_ns ON memory_vectors(namespace);
-
-  CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts
-    USING fts5(text, content='memory_vectors', content_rowid='rowid', tokenize='porter unicode61');
-
-  CREATE TRIGGER IF NOT EXISTS memory_vectors_ai AFTER INSERT ON memory_vectors BEGIN
-    INSERT INTO memory_fts(rowid, text) VALUES (new.rowid, new.text);
-  END;
-
-  CREATE TRIGGER IF NOT EXISTS memory_vectors_ad AFTER DELETE ON memory_vectors BEGIN
-    INSERT INTO memory_fts(memory_fts, rowid, text) VALUES('delete', old.rowid, old.text);
-  END;
-
-  CREATE TRIGGER IF NOT EXISTS memory_vectors_au AFTER UPDATE ON memory_vectors BEGIN
-    INSERT INTO memory_fts(memory_fts, rowid, text) VALUES('delete', old.rowid, old.text);
-    INSERT INTO memory_fts(rowid, text) VALUES (new.rowid, new.text);
-  END;
-
-  -- Backfill: rebuild the FTS index from the external content table. This
-  -- is the canonical idempotent op for content='memory_vectors' FTS5
-  -- tables (handles pre-Phase-26 dbs whose vector rows have no FTS entry).
-  -- Cheap when FTS is already in sync; reads the same rowids it would emit.
-  INSERT INTO memory_fts(memory_fts) VALUES('rebuild');
-`
-
 export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
   SqliteVectorBackend,
   SqliteVectorBackendApi
@@ -262,7 +220,7 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
 
         const db = new Database(dbPath)
         db.run("PRAGMA foreign_keys = ON")
-        db.run(MIGRATION)
+        ensureMemoryVectorSchema(db)
         yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
 
         // Try to load the extension on this connection. Even if vlInit
@@ -368,8 +326,10 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
         // some scenarios, so we sequence the two operations ourselves.
         const insertVecStmt = db.query(
           `INSERT INTO memory_vectors
-             (id, namespace, embedding, dimension, text, ts)
-           VALUES (?,?,?,?,?,?)`,
+             (id, namespace, embedding, dimension, text, ts,
+              embedding_provider, embedding_model, embedding_format,
+              embedding_input_hash, embedded_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
         )
         const delVecStmt = db.query(`DELETE FROM memory_vectors WHERE id = ?`)
         const getStmt = db.query(`SELECT * FROM memory_keyed WHERE id = ?`)
@@ -444,8 +404,16 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
 
             // Step 1: embed first (only if needed). No DB state mutated yet.
             let vecBuf: Uint8Array | null = null
+            let embeddingInputHash: string | null = null
+            let embeddedAt = 0
             if (text !== null) {
-              const vec = yield* embedder.embed(text).pipe(
+              const embeddingInput = formatMemoryRecordEmbeddingInput({
+                namespace: rec.namespace,
+                kind: rec.kind,
+                tags: rec.tags,
+                text,
+              })
+              const vec = yield* embedder.embed(embeddingInput).pipe(
                 Effect.mapError((cause) => asError("put.embed", cause)),
               )
               if (vec.length !== embedder.dimension) {
@@ -459,6 +427,8 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
                 )
               }
               vecBuf = float32ToBuffer(vec)
+              embeddingInputHash = hashEmbeddingInput(embeddingInput)
+              embeddedAt = Date.now()
             }
 
             // Step 2+3: atomic keyed + vec writes under BEGIN IMMEDIATE.
@@ -491,6 +461,11 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
                         embedder.dimension,
                         text!,
                         rec.updatedAt,
+                        embedder.provider,
+                        embedder.model,
+                        embedder.embeddingFormat,
+                        embeddingInputHash,
+                        embeddedAt,
                       )
                     }
                     db.run("COMMIT")
@@ -643,9 +618,11 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
             Effect.gen(function* () {
               // 1. Embed the query text (needed by both modes; hybrid still
               //    uses vec ranking as one of the two fused signals).
-              const queryVec = yield* embedder.embed(args.queryText).pipe(
-                Effect.mapError((cause) => asError("search.embed", cause)),
-              )
+              const queryVec = yield* embedder
+                .embed(formatMemoryQueryEmbeddingInput(args.queryText))
+                .pipe(
+                  Effect.mapError((cause) => asError("search.embed", cause)),
+                )
 
               if (mode === "vec") {
                 const top = yield* Effect.try({

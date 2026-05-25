@@ -18,13 +18,14 @@
         "luna-account": "./src/index.ts",
       },
       "dependencies": {
+        "@luna/core": "workspace:*",
+        "@luna/memory": "workspace:*",
         "@luna/ui-ws": "workspace:*",
+        "effect": "^3.21.0",
         "ws": "^8.18.0",
       },
       "devDependencies": {
-        "@luna/core": "workspace:*",
         "@types/ws": "^8.5.13",
-        "effect": "^3.21.0",
         "typescript": "^5.6.3",
         "vitest": "^2.1.5",
       },

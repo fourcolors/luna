@@ -9,6 +9,7 @@ import { Effect, Stream, Layer } from "effect"
 import {
   EmbedderError,
   EmbedderService,
+  LunaSqliteBootstrap,
   StubEmbedderLayer,
   bufferToFloat32,
 } from "@luna/core"
@@ -42,7 +43,7 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
             id: "a",
             namespace: "notes",
             kind: "note",
-            content: { text: "cats and dogs" },
+            content: { text: "cats felines whiskers" },
           }),
         )
         yield* b.put(
@@ -62,7 +63,7 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
           }),
         )
         return yield* Stream.runCollect(
-          b.search({ queryText: "cats", topK: 3 }),
+          b.search({ queryText: "cats felines whiskers", topK: 3 }),
         )
       }),
     )
@@ -70,10 +71,10 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     expect(arr.length).toBe(3)
     // The "cats and dogs" record must rank first.
     expect(arr[0]!.record.id).toBe("a")
-    // Submarine record must rank last (no token overlap).
-    expect(arr[2]!.record.id).toBe("c")
-    // Top score must beat bottom score.
-    expect(arr[0]!.score).toBeGreaterThan(arr[2]!.score)
+    // Top score must beat the zero-overlap records. Their relative order is
+    // intentionally not asserted because formatted vector inputs add common
+    // structural tokens that can make unrelated rows tie.
+    expect(arr[0]!.score).toBeGreaterThan(arr[1]!.score)
   })
 
   it("Scenario 2: namespace filter is honored", async () => {
@@ -185,6 +186,100 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     expect(found!.score).toBeGreaterThan(0)
   })
 
+  it("Scenario 5b: formats record/query embedding input while preserving raw FTS text", async () => {
+    const fs = await import("node:fs")
+    const os = await import("node:os")
+    const path = await import("node:path")
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "luna-format-input-"))
+    const dbPath = path.join(tmp, "memory.db")
+    const embeddedInputs: string[] = []
+    const CapturingEmbedderLayer = Layer.succeed(EmbedderService, {
+      provider: "capture",
+      model: "unit-test",
+      dimension: 4,
+      embeddingFormat: "memory-note-v1",
+      embed: (text: string) =>
+        Effect.sync(() => {
+          embeddedInputs.push(text)
+          return new Float32Array([1, 0, 0, 0])
+        }),
+    })
+    const NoVectorliteLayer = Layer.succeed(LunaSqliteBootstrap, {
+      ok: false as const,
+      reason: "test disables vectorlite",
+    })
+    const localLayer = Layer.provideMerge(
+      SqliteVectorBackend.fromPath(dbPath),
+      Layer.merge(CapturingEmbedderLayer, NoVectorliteLayer),
+    )
+    try {
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            yield* b.put(
+              makeRecord({
+                id: "formatted",
+                namespace: "notes",
+                kind: "note",
+                content: { text: "raw memory text" },
+                tags: ["alpha", "beta"],
+              }),
+            )
+            yield* Stream.runCollect(
+              b.search({
+                queryText: "raw memory",
+                namespace: "notes",
+                topK: 1,
+              }),
+            )
+          }).pipe(Effect.provide(localLayer)),
+        ),
+      )
+
+      expect(embeddedInputs).toEqual([
+        "title: notes/note tags:alpha,beta | text: raw memory text",
+        "task: search result | query: raw memory",
+      ])
+
+      const bunSqlite = (await import("bun:sqlite" as string)) as {
+        Database: new (p: string) => {
+          query: (sql: string) => { get: (...p: unknown[]) => unknown }
+          close: () => void
+        }
+      }
+      const db = new bunSqlite.Database(dbPath)
+      try {
+        const row = db
+          .query(
+            `SELECT text, embedding_provider, embedding_model, embedding_format, embedding_input_hash, embedded_at
+               FROM memory_vectors WHERE id = ?`,
+          )
+          .get("formatted") as
+          | {
+              text: string
+              embedding_provider: string
+              embedding_model: string
+              embedding_format: string
+              embedding_input_hash: string
+              embedded_at: number
+            }
+          | null
+        expect(row).not.toBeNull()
+        expect(row!.text).toBe("raw memory text")
+        expect(row!.embedding_provider).toBe("capture")
+        expect(row!.embedding_model).toBe("unit-test")
+        expect(row!.embedding_format).toBe("memory-note-v1")
+        expect(row!.embedding_input_hash).toMatch(/^[a-f0-9]{64}$/)
+        expect(row!.embedded_at).toBeGreaterThan(0)
+      } finally {
+        db.close()
+      }
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
   it("Scenario 6: Float32 ↔ BLOB roundtrip preserves bytes (via search ranking)", async () => {
     // If the BLOB roundtrip were broken, scores would be NaN/garbage and
     // scenario 1 would already fail. But pin the property explicitly: a
@@ -206,7 +301,10 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
       }),
     )
     const arr = Array.from(out)
-    expect(arr[0]!.score).toBeGreaterThan(0.99)
+    // Record and query embedding inputs are formatted differently in
+    // memory-note-v1, so exact raw text no longer means cosine ~= 1. The
+    // BLOB roundtrip still must yield a finite positive score for self lookup.
+    expect(arr[0]!.score).toBeGreaterThan(0)
   })
 
   it("Scenario 7: hybrid finds an exact-term match that vec ranks weakly", async () => {
@@ -368,78 +466,99 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
   })
 
   it("Scenario 7e: INSERT OR REPLACE updates FTS row (trigger sync)", async () => {
-    const out = await run(
-      Effect.gen(function* () {
-        const b = yield* SqliteVectorBackend
-        yield* b.put(
-          makeRecord({
-            id: "swap",
-            namespace: "swp",
-            kind: "note",
-            content: { text: "alphaorig zztoken-uniq11" },
-          }),
-        )
-        // Insert decoys so RRF has a populated candidate pool — but the swap
-        // row, after rewrite to disjoint tokens, will have cosine 0 vs the
-        // old query text. With topK=3 it should fall out of both rankings.
-        for (let i = 0; i < 8; i++) {
-          yield* b.put(
-            makeRecord({
-              id: `decoy-${i}`,
-              namespace: "swp",
-              kind: "note",
-              content: { text: `decoy filler tokens number ${i} other words` },
-            }),
-          )
-        }
-        const beforeAlpha = yield* Stream.runCollect(
-          b.search({
-            queryText: "zztoken-uniq11",
-            mode: "hybrid",
-            namespace: "swp",
-            topK: 3,
-          }),
-        )
-        // Replace SAME id with text using DISJOINT tokens (no overlap with
-        // either the original text or the original query) so neither the
-        // vec leg nor the BM25 leg of hybrid should find it via "uniq11".
-        yield* b.put(
-          makeRecord({
-            id: "swap",
-            namespace: "swp",
-            kind: "note",
-            content: { text: "betarep yytoken-uniq22" },
-          }),
-        )
-        const afterAlpha = yield* Stream.runCollect(
-          b.search({
-            queryText: "zztoken-uniq11",
-            mode: "hybrid",
-            namespace: "swp",
-            topK: 3,
-          }),
-        )
-        const afterBeta = yield* Stream.runCollect(
-          b.search({
-            queryText: "yytoken-uniq22",
-            mode: "hybrid",
-            namespace: "swp",
-            topK: 3,
-          }),
-        )
-        return {
-          beforeAlpha: Array.from(beforeAlpha).map((r) => r.record.id),
-          afterAlpha: Array.from(afterAlpha).map((r) => r.record.id),
-          afterBeta: Array.from(afterBeta).map((r) => r.record.id),
-        }
-      }),
+    const fs = await import("node:fs")
+    const os = await import("node:os")
+    const path = await import("node:path")
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "luna-fts-update-"))
+    const dbPath = path.join(tmp, "memory.db")
+    const NoVectorliteLayer = Layer.succeed(LunaSqliteBootstrap, {
+      ok: false as const,
+      reason: "test disables vectorlite",
+    })
+    const localLayer = Layer.provideMerge(
+      SqliteVectorBackend.fromPath(dbPath),
+      Layer.merge(StubEmbedderLayer, NoVectorliteLayer),
     )
-    expect(out.beforeAlpha).toContain("swap")
-    // The original text must NOT find the row anymore — proves the FTS row
-    // was updated (delete+insert via after-update trigger, or via REPLACE
-    // firing delete+insert triggers).
-    expect(out.afterAlpha).not.toContain("swap")
-    expect(out.afterBeta).toContain("swap")
+    try {
+      const out = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            yield* b.put(
+              makeRecord({
+                id: "swap",
+                namespace: "swp",
+                kind: "note",
+                content: { text: "alphaorig zztokenuniq11" },
+              }),
+            )
+            const beforeAlpha = yield* Stream.runCollect(
+              b.search({
+                queryText: "zztokenuniq11",
+                mode: "hybrid",
+                namespace: "swp",
+                topK: 3,
+              }),
+            )
+            yield* b.put(
+              makeRecord({
+                id: "swap",
+                namespace: "swp",
+                kind: "note",
+                content: { text: "betarep yytokenuniq22" },
+              }),
+            )
+            const afterBeta = yield* Stream.runCollect(
+              b.search({
+                queryText: "yytokenuniq22",
+                mode: "hybrid",
+                namespace: "swp",
+                topK: 3,
+              }),
+            )
+            return {
+              beforeAlpha: Array.from(beforeAlpha).map((r) => r.record.id),
+              afterBeta: Array.from(afterBeta).map((r) => r.record.id),
+            }
+          }).pipe(Effect.provide(localLayer)),
+        ),
+      )
+
+      const bunSqlite = (await import("bun:sqlite" as string)) as {
+        Database: new (p: string) => {
+          query: (sql: string) => { all: (...p: unknown[]) => unknown[] }
+          close: () => void
+        }
+      }
+      const db = new bunSqlite.Database(dbPath)
+      try {
+        const oldFts = db
+          .query(
+            `SELECT v.id AS id
+               FROM memory_vectors v
+               JOIN memory_fts f ON f.rowid = v.rowid
+              WHERE memory_fts MATCH ?`,
+          )
+          .all('"zztokenuniq11"') as { id: string }[]
+        const newFts = db
+          .query(
+            `SELECT v.id AS id
+               FROM memory_vectors v
+               JOIN memory_fts f ON f.rowid = v.rowid
+              WHERE memory_fts MATCH ?`,
+          )
+          .all('"yytokenuniq22"') as { id: string }[]
+
+        expect(out.beforeAlpha).toContain("swap")
+        expect(oldFts.map((r) => r.id)).not.toContain("swap")
+        expect(newFts.map((r) => r.id)).toContain("swap")
+        expect(out.afterBeta).toContain("swap")
+      } finally {
+        db.close()
+      }
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
   })
 
   it("Scenario 7f: DELETE cascades to FTS row", async () => {
@@ -658,7 +777,9 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
   it("Atomicity #1: embed failure leaves no keyed row (put fails before any DB write)", async () => {
     const FailEmbedderLayer = Layer.succeed(EmbedderService, {
       provider: "fail",
+      model: "fail",
       dimension: 64,
+      embeddingFormat: "memory-note-v1",
       embed: () =>
         Effect.fail(
           new EmbedderError({
@@ -706,7 +827,9 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     const POISON = "ZZZ-POISON-MARKER-INTERNAL-ONLY"
     const FlakyEmbedderLayer = Layer.succeed(EmbedderService, {
       provider: "flaky",
+      model: "flaky",
       dimension: 64,
+      embeddingFormat: "memory-note-v1",
       embed: (text: string) =>
         Effect.suspend(() => {
           if (text.includes(POISON)) {
@@ -802,7 +925,9 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
   it("Atomicity #3: dimension-mismatch failure is treated like embed failure (no DB write)", async () => {
     const WrongDimEmbedderLayer = Layer.succeed(EmbedderService, {
       provider: "wrongdim",
+      model: "wrongdim",
       dimension: 64, // declared
+      embeddingFormat: "memory-note-v1",
       embed: () => Effect.succeed(new Float32Array(8)), // returns 8 ≠ 64
     })
     const wrongLayer = Layer.provideMerge(

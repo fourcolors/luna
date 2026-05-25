@@ -4,6 +4,7 @@ export {
   makeStubEmbedder,
   makeStubEmbedderLayer,
   makeOllamaEmbedderLayer,
+  DEFAULT_MEMORY_EMBEDDING_FORMAT,
   cosineSimilarity,
   float32ToBuffer,
   bufferToFloat32,

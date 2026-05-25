@@ -16,6 +16,7 @@ import {
 import { runRecovery } from "./recovery.js"
 import { HELP_TEXT, parseSlashCommand } from "./slash.js"
 import { LunaWsClient } from "./ws-client.js"
+import { runMemoryCommand } from "../memory.js"
 
 export type LunaCliIO = {
   stdin: Readable
@@ -199,6 +200,13 @@ export async function runLunaCli(
   argv: readonly string[],
   io: LunaCliIO,
 ): Promise<LunaCliResult> {
+  if (argv[0] === "memory") {
+    const result = await runMemoryCommand(argv.slice(1), { env: io.env })
+    if (result.stdout.length > 0) write(io.stdout, result.stdout)
+    if (result.stderr.length > 0) write(io.stderr, result.stderr)
+    return { exitCode: result.exitCode }
+  }
+
   const args = parseChatArgs(argv)
   if (args.command === "help") {
     write(io.stdout, `${USAGE}\n`)
