@@ -23,6 +23,7 @@ DRY_RUN=false
 INIT_INCUS=false
 REPLACE=false
 SKIP_CLONE=false
+ENABLE_DANGEROUS_LOCAL_SHELL=false
 
 usage() {
   cat <<'EOF'
@@ -44,6 +45,8 @@ Options:
   --init-incus                 Run `incus admin init --minimal` if Incus is uninitialized.
   --replace                    Delete an existing instance with this name before creating it.
   --skip-clone                 Require an existing repo path instead of cloning/updating it.
+  --enable-dangerous-local-shell
+                               Write the marker and profile env that allow container-scoped local shell auto approval.
   -h, --help                   Show this help.
 
 The container is unprivileged, uses security.nesting=true for Bun, mounts the
@@ -69,6 +72,7 @@ while [[ $# -gt 0 ]]; do
     --init-incus) INIT_INCUS=true; shift ;;
     --replace) REPLACE=true; shift ;;
     --skip-clone) SKIP_CLONE=true; shift ;;
+    --enable-dangerous-local-shell) ENABLE_DANGEROUS_LOCAL_SHELL=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) luna_die "unknown option: $1" ;;
   esac
@@ -247,6 +251,16 @@ elif [[ -n "$TOKEN" ]]; then
   luna_upsert_env "$STATE_PATH/.env" "LUNA_${PROFILE_ENV}_UI_WS_TOKEN" "$TOKEN"
 else
   luna_die "UI token is required. Pass --token or pre-create $STATE_PATH/.env with UI_WS_TOKEN."
+fi
+
+luna_upsert_env "$STATE_PATH/.env" "LUNA_RUNTIME_SCOPE" "incus-container"
+
+if [[ "$ENABLE_DANGEROUS_LOCAL_SHELL" == true ]]; then
+  luna_upsert_env "$STATE_PATH/.env" "LUNA_${PROFILE_ENV}_DANGEROUS_AUTO_APPROVE_LOCAL_SHELL" "1"
+  luna_run touch "$STATE_PATH/allow-dangerous-local-shell"
+  if [[ "$DRY_RUN" == false ]]; then
+    chmod 0600 "$STATE_PATH/allow-dangerous-local-shell"
+  fi
 fi
 
 if [[ "$DRY_RUN" == false && "$REPLACE" == true && "$INSTANCE_ALREADY_EXISTS" == true ]]; then

@@ -138,6 +138,49 @@ exit 1
     expect(result.stdout).toContain("<redacted>")
   })
 
+  it("container dry-run writes an Incus runtime scope marker", () => {
+    const temp = makeTempDir()
+    const result = runScript("scripts/luna-container-create", [
+      "--dry-run",
+      "--profile",
+      "stable",
+      "--name",
+      "luna-stable",
+      "--repo-path",
+      join(temp, "repo"),
+      "--state-path",
+      join(temp, "state"),
+      "--token",
+      "test-token-1234567890-secret",
+    ])
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("LUNA_RUNTIME_SCOPE=incus-container")
+  })
+
+  it("container dry-run can enable dangerous local shell marker explicitly", () => {
+    const temp = makeTempDir()
+    const result = runScript("scripts/luna-container-create", [
+      "--dry-run",
+      "--profile",
+      "stable",
+      "--name",
+      "luna-stable",
+      "--repo-path",
+      join(temp, "repo"),
+      "--state-path",
+      join(temp, "state"),
+      "--token",
+      "test-token-1234567890-secret",
+      "--enable-dangerous-local-shell",
+    ])
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("touch")
+    expect(result.stdout).toContain("allow-dangerous-local-shell")
+    expect(result.stdout).toContain("LUNA_STABLE_DANGEROUS_AUTO_APPROVE_LOCAL_SHELL=1")
+  })
+
   it("container branch defaults keep stable on master and dev on dev", () => {
     const temp = makeTempDir()
     const token = "test-token-1234567890-secret"
