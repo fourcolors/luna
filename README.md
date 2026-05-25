@@ -260,7 +260,7 @@ git checkout master
 git pull --ff-only origin master
 bun install --frozen-lockfile
 systemctl --user restart luna-chat-server.service
-curl -fsS http://jax-box:4753/healthz
+curl -fsS "http://$(tailscale ip -4):4753/healthz"
 ```
 
 ### Adding accounts

@@ -116,7 +116,7 @@ git checkout dev
 git pull --ff-only origin dev
 incus exec luna-dev -- bash -lc 'cd /root/luna && /root/.bun/bin/bun install --frozen-lockfile'
 incus exec luna-dev -- systemctl restart luna-dev-chat-server.service
-curl -fsS http://jax-box:5753/healthz
+curl -fsS "http://$(tailscale ip -4):5753/healthz"
 ```
 
 After testing through the dev runtime, merge `dev` to `master`. Use a normal
@@ -139,7 +139,7 @@ git checkout master
 git pull --ff-only origin master
 /root/.bun/bin/bun install --frozen-lockfile
 systemctl --user restart luna-chat-server.service
-curl -fsS http://jax-box:4753/healthz
+curl -fsS "http://$(tailscale ip -4):4753/healthz"
 ```
 
 If stable needs to roll back:
@@ -151,7 +151,7 @@ git log --oneline -5
 git checkout <known-good-commit>
 /root/.bun/bin/bun install --frozen-lockfile
 systemctl --user restart luna-chat-server.service
-curl -fsS http://jax-box:4753/healthz
+curl -fsS "http://$(tailscale ip -4):4753/healthz"
 ```
 
 Rollback should be a temporary recovery step. Follow it with a revert commit or
