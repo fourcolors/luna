@@ -340,4 +340,21 @@ exit 0
     expect(docs).toContain("http://127.0.0.1:4753/healthz")
     expect(docs).toContain("http://127.0.0.1:5753/healthz")
   })
+
+  it("documents stable container cutover with candidate ports and rollback", () => {
+    const read = (path: string) => readFileSync(join(repoRoot, path), "utf8")
+    const docs = [
+      read("README.md"),
+      read("docs/install.md"),
+      read("docs/container-runtime.md"),
+    ].join("\n")
+
+    expect(docs).toContain("luna-stable")
+    expect(docs).toContain("--profile stable")
+    expect(docs).toContain("--host-ws-port 6753")
+    expect(docs).toContain("systemctl --user stop luna-chat-server.service")
+    expect(docs).toContain("incus config device remove luna-stable ws6753")
+    expect(docs).toContain("incus config device add luna-stable ws4753")
+    expect(docs).toContain("rollback")
+  })
 })

@@ -52,6 +52,55 @@ jax-box:4753 -> stable WebSocket server
 jax-box:4754 -> stable control server
 ```
 
+## Stable Container Cutover
+
+Build the stable container on candidate ports first so the existing host root
+user service stays available until the maintenance window.
+
+```bash
+# 1. Build candidate stable container on temporary host ports.
+scripts/luna-container-create \
+  --profile stable \
+  --name luna-stable \
+  --repo git@github.com:fourcolors/luna.git \
+  --branch master \
+  --repo-path /root/luna/stable/repo \
+  --state-path /root/.luna \
+  --host jax-box \
+  --host-ws-port 6753 \
+  --host-control-port 6754 \
+  --skip-clone
+
+# 2. Verify candidate without touching the host stable service.
+curl -fsS http://127.0.0.1:6753/healthz
+luna chat --url ws://jax-box.local:6753/ui
+
+# 3. Cut over the stable ports during a short maintenance window.
+systemctl --user stop luna-chat-server.service
+systemctl --user disable luna-chat-server.service
+incus config device remove luna-stable ws6753
+incus config device remove luna-stable control6754
+incus config device add luna-stable ws4753 proxy listen=tcp:0.0.0.0:4753 connect=tcp:127.0.0.1:4753 bind=host
+incus config device add luna-stable control4754 proxy listen=tcp:0.0.0.0:4754 connect=tcp:127.0.0.1:4754 bind=host
+incus restart luna-stable
+
+# 4. Verify stable after cutover.
+curl -fsS http://127.0.0.1:4753/healthz
+curl -fsS http://jax-box.local:4753/healthz
+```
+
+Rollback restores the host root user service and removes the stable container's
+production port proxies:
+
+```bash
+incus config device remove luna-stable ws4753
+incus config device remove luna-stable control4754
+incus stop luna-stable
+systemctl --user enable luna-chat-server.service
+systemctl --user restart luna-chat-server.service
+curl -fsS http://127.0.0.1:4753/healthz
+```
+
 ## Incus Settings
 
 The container script uses:

@@ -129,6 +129,23 @@ scripts/luna-container-create \
   --token '<dev-ui-ws-token>'
 ```
 
+To prepare stable for a container cutover, build it on temporary candidate
+ports first:
+
+```bash
+scripts/luna-container-create \
+  --profile stable \
+  --name luna-stable \
+  --repo git@github.com:fourcolors/luna.git \
+  --branch master \
+  --repo-path /root/luna/stable/repo \
+  --state-path /root/.luna \
+  --host jax-box \
+  --host-ws-port 6753 \
+  --host-control-port 6754 \
+  --skip-clone
+```
+
 The script prepares host paths, writes container `.env`, creates an Ubuntu
 24.04 cloud container, mounts:
 

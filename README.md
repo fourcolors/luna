@@ -195,6 +195,9 @@ changing the existing instance. Use `--replace` only when you intend to delete
 and rebuild the container. The scripts do not upgrade the host kernel; Incus
 containers share the T2 Mac host kernel.
 
+Stable and dev container operations, including the stable container cutover and
+rollback runbook, are documented in [Incus container runtime](./docs/container-runtime.md).
+
 ## Development
 
 ```bash
