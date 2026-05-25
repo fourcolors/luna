@@ -43,6 +43,7 @@ const USAGE = [
   "  --profile <name>           use a named profile from ~/.luna/.env",
   "  --dev                      shortcut for --profile dev",
   "  --url <ws-url>              UI WebSocket URL",
+  "  --fallback-url <ws-url>     fallback UI WebSocket URL",
   "  --token <token>             UI WebSocket bearer token",
   "  --thread <thread-id>        subscribe to an existing thread",
   "  --new                       force creation of a new thread",
@@ -51,6 +52,7 @@ const USAGE = [
   "  --start-mode <mode>         recovery mode: local, ssh, or none",
   "  --start-command <command>   recovery command",
   "  --start-ssh <target>        recovery SSH target",
+  "  --fallback-start-ssh <target> fallback recovery SSH target",
   "  --start-timeout-ms <ms>     recovery timeout",
   "  -h, --help                  show help",
   "",
@@ -121,26 +123,56 @@ const connectWithRecovery = async (
   cfg: ReturnType<typeof loadChatConfig>,
   io: LunaCliIO,
 ): Promise<LunaWsClient> => {
+  const connectToConfiguredUrl = async (): Promise<LunaWsClient> => {
+    let lastError: unknown
+    for (const url of cfg.urls) {
+      try {
+        return await LunaWsClient.connect({ url, token: cfg.token ?? "" })
+      } catch (error) {
+        lastError = error
+        if (cfg.urls.length > 1) {
+          write(io.stderr, `connection failed for ${url}: ${formatRuntimeError(error)}\n`)
+        }
+      }
+    }
+    throw lastError ?? new Error("WebSocket connection failed")
+  }
+
   try {
-    return await LunaWsClient.connect({ url: cfg.url, token: cfg.token ?? "" })
+    return await connectToConfiguredUrl()
   } catch (firstError) {
     if (cfg.startMode === "none") throw firstError
 
-    write(io.stderr, `connection failed; running ${cfg.startMode} recovery\n`)
-    const recovery = await runRecovery({
-      mode: cfg.startMode,
-      command: cfg.startCommand,
-      target: cfg.startSsh,
-      timeoutMs: cfg.startTimeoutMs,
-    })
-    if (!recovery.ran || recovery.exitCode !== 0 || recovery.timedOut) {
-      const detail = recovery.timedOut
-        ? "recovery timed out"
-        : `recovery exited ${recovery.exitCode ?? "without status"}`
-      throw new Error(detail)
+    const recoveryTargets = cfg.startMode === "ssh"
+      ? cfg.startSshTargets
+      : [cfg.startSsh]
+    let lastRecoveryError: string | null = null
+    for (const target of recoveryTargets) {
+      const targetLabel = cfg.startMode === "ssh" && target !== null
+        ? ` via ${target}`
+        : ""
+      write(io.stderr, `connection failed; running ${cfg.startMode} recovery${targetLabel}\n`)
+      const recovery = await runRecovery({
+        mode: cfg.startMode,
+        command: cfg.startCommand,
+        target,
+        timeoutMs: cfg.startTimeoutMs,
+      })
+      if (!recovery.ran || recovery.exitCode !== 0 || recovery.timedOut) {
+        lastRecoveryError = recovery.timedOut
+          ? "recovery timed out"
+          : `recovery exited ${recovery.exitCode ?? "without status"}`
+        continue
+      }
+
+      try {
+        return await connectToConfiguredUrl()
+      } catch (error) {
+        lastRecoveryError = formatRuntimeError(error)
+      }
     }
 
-    return await LunaWsClient.connect({ url: cfg.url, token: cfg.token ?? "" })
+    throw new Error(lastRecoveryError ?? formatRuntimeError(firstError))
   }
 }
 

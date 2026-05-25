@@ -5,6 +5,7 @@ import type { ChatArgs, StartMode } from "./args.js"
 export interface ChatConfig {
   readonly profileName: string
   readonly url: string
+  readonly urls: ReadonlyArray<string>
   readonly token: string | null
   readonly threadId: string | null
   readonly newThread: boolean
@@ -12,6 +13,7 @@ export interface ChatConfig {
   readonly startMode: StartMode
   readonly startCommand: string | null
   readonly startSsh: string | null
+  readonly startSshTargets: ReadonlyArray<string>
   readonly startTimeoutMs: number
   readonly cwd: string
   readonly validationErrors: ReadonlyArray<string>
@@ -59,6 +61,20 @@ const selectSetting = (
 ): SettingCandidate | undefined =>
   candidates.find((candidate) => candidate.value !== undefined)
 
+const splitListSetting = (value: string | undefined): ReadonlyArray<string> =>
+  value
+    ?.split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0) ?? []
+
+const uniqueList = (values: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const out: string[] = []
+  for (const value of values) {
+    if (!out.includes(value)) out.push(value)
+  }
+  return out
+}
+
 const parseStartMode = (value: string): StartMode =>
   value === "local" || value === "ssh" || value === "none" ? value : "none"
 
@@ -96,6 +112,23 @@ export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
     { name: "LUNA_WS_URL", value: input.dotenv["LUNA_WS_URL"] },
   ])
   const url = urlSetting?.value ?? "ws://127.0.0.1:4753/ui"
+  const explicitUrl = input.args.url !== undefined
+  const fallbackUrlSetting = selectSetting(explicitUrl
+    ? [
+      { name: "--fallback-url", value: input.args.fallbackUrl },
+    ]
+    : [
+      { name: "--fallback-url", value: input.args.fallbackUrl },
+      { name: profiled("FALLBACK_WS_URLS"), value: input.env[profiled("FALLBACK_WS_URLS")] },
+      { name: profiled("FALLBACK_WS_URLS"), value: input.dotenv[profiled("FALLBACK_WS_URLS")] },
+      { name: profiled("FALLBACK_WS_URL"), value: input.env[profiled("FALLBACK_WS_URL")] },
+      { name: profiled("FALLBACK_WS_URL"), value: input.dotenv[profiled("FALLBACK_WS_URL")] },
+      { name: "LUNA_FALLBACK_WS_URLS", value: input.env["LUNA_FALLBACK_WS_URLS"] },
+      { name: "LUNA_FALLBACK_WS_URLS", value: input.dotenv["LUNA_FALLBACK_WS_URLS"] },
+      { name: "LUNA_FALLBACK_WS_URL", value: input.env["LUNA_FALLBACK_WS_URL"] },
+      { name: "LUNA_FALLBACK_WS_URL", value: input.dotenv["LUNA_FALLBACK_WS_URL"] },
+    ])
+  const urls = uniqueList([url, ...splitListSetting(fallbackUrlSetting?.value)])
 
   const tokenSetting = selectSetting([
     { name: "--token", value: input.args.token },
@@ -150,6 +183,26 @@ export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
       { name: "LUNA_START_SSH", value: input.env["LUNA_START_SSH"] },
       { name: "LUNA_START_SSH", value: input.dotenv["LUNA_START_SSH"] },
     ])?.value ?? null
+  const explicitStartSsh = input.args.startSsh !== undefined
+  const fallbackStartSshSetting = selectSetting(explicitStartSsh
+    ? [
+      { name: "--fallback-start-ssh", value: input.args.fallbackStartSsh },
+    ]
+    : [
+      { name: "--fallback-start-ssh", value: input.args.fallbackStartSsh },
+      { name: profiled("FALLBACK_START_SSHS"), value: input.env[profiled("FALLBACK_START_SSHS")] },
+      { name: profiled("FALLBACK_START_SSHS"), value: input.dotenv[profiled("FALLBACK_START_SSHS")] },
+      { name: profiled("FALLBACK_START_SSH"), value: input.env[profiled("FALLBACK_START_SSH")] },
+      { name: profiled("FALLBACK_START_SSH"), value: input.dotenv[profiled("FALLBACK_START_SSH")] },
+      { name: "LUNA_FALLBACK_START_SSHS", value: input.env["LUNA_FALLBACK_START_SSHS"] },
+      { name: "LUNA_FALLBACK_START_SSHS", value: input.dotenv["LUNA_FALLBACK_START_SSHS"] },
+      { name: "LUNA_FALLBACK_START_SSH", value: input.env["LUNA_FALLBACK_START_SSH"] },
+      { name: "LUNA_FALLBACK_START_SSH", value: input.dotenv["LUNA_FALLBACK_START_SSH"] },
+    ])
+  const startSshTargets = uniqueList([
+    ...(startSsh === null || startSsh.length === 0 ? [] : [startSsh]),
+    ...splitListSetting(fallbackStartSshSetting?.value),
+  ])
   const threadId = input.args.threadId ?? null
   if (token === null || token.length === 0) errors.push("missing LUNA_UI_WS_TOKEN")
   if (startMode === "local" && (startCommand === null || startCommand.length === 0)) {
@@ -159,13 +212,14 @@ export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
     if (startCommand === null || startCommand.length === 0) {
       errors.push("LUNA_START_COMMAND is required when LUNA_START_MODE=ssh")
     }
-    if (startSsh === null || startSsh.length === 0) {
+    if (startSshTargets.length === 0) {
       errors.push("LUNA_START_SSH is required when LUNA_START_MODE=ssh")
     }
   }
   return {
     profileName,
     url,
+    urls,
     token,
     threadId,
     newThread: input.args.newThread ?? threadId === null,
@@ -173,6 +227,7 @@ export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
     startMode,
     startCommand,
     startSsh,
+    startSshTargets,
     startTimeoutMs,
     cwd: input.cwd,
     validationErrors: errors,
@@ -183,6 +238,7 @@ export const redactedConfigSummary = (cfg: ChatConfig): string =>
   [
     `profile=${cfg.profileName}`,
     `url=${cfg.url}`,
+    `urls=${cfg.urls.length}`,
     `token=${cfg.token === null ? "missing" : "present"}`,
     `startMode=${cfg.startMode}`,
     `localShell=${cfg.localShellInitial ? "on" : "off"}`,

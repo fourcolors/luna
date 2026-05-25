@@ -244,6 +244,37 @@ describe("luna chat app", () => {
     await expect(waitFor(done)).resolves.toEqual({ exitCode: 0 })
   })
 
+  it("connects to a fallback URL when the primary URL is unreachable", async () => {
+    const chat = await startChatServer()
+    const stdin = new PassThrough()
+    const stdout = new PassThrough()
+    const stderr = new PassThrough()
+    const output = collectStream(stdout)
+
+    const done = runLunaCli([
+      "chat",
+      "--url",
+      "ws://127.0.0.1:1/ui",
+      "--fallback-url",
+      chat.url,
+    ], {
+      stdin,
+      stdout,
+      stderr,
+      env: { LUNA_UI_WS_TOKEN: "token-from-env" },
+      homeDir: isolatedHomeDir(),
+      cwd: process.cwd(),
+    })
+
+    await waitForOutput(output, "Luna ready. Type a message, /help, or /quit.")
+    stdin.write("/quit\n")
+    stdin.end()
+
+    await expect(waitFor(done)).resolves.toEqual({ exitCode: 0 })
+    await expect(chat.authHeader).resolves.toBe("Bearer token-from-env")
+  })
+
+
   it("does not print the initial disabled local-shell status as chat output", async () => {
     server = new WebSocketServer({ port: 0 })
     await new Promise<void>((resolve) => server?.once("listening", resolve))

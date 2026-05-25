@@ -15,8 +15,13 @@ On the MacBook:
 
 ```bash
 bash install.sh \
-  --stable-url ws://jax-box.local:4753/ui \
-  --dev-url ws://jax-box.local:5753/ui \
+  --stable-url ws://jax-box:4753/ui \
+  --stable-fallback-url ws://jax-box.local:4753/ui \
+  --dev-url ws://jax-box:5753/ui \
+  --dev-fallback-url ws://jax-box.local:5753/ui \
+  --enable-ssh-recovery \
+  --ssh-host jax-box \
+  --fallback-ssh-host jax-box.local \
   --stable-token '<stable-ui-ws-token>' \
   --dev-token '<dev-ui-ws-token>'
 ```

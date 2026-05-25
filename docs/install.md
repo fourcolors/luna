@@ -24,7 +24,7 @@ The installer:
 - runs `bun install --frozen-lockfile`
 - creates `~/.luna/`
 - installs `~/.local/bin/luna`
-- writes stable/dev WebSocket URLs to `~/.luna/.env`
+- writes stable/dev primary and fallback WebSocket URLs to `~/.luna/.env`
 
 It does not install a server and does not read or write Claude OAuth tokens.
 
@@ -44,6 +44,36 @@ bash install.sh \
 ```
 
 Tokens are written with `0600` permissions and are never printed by dry-runs.
+
+By default, the client installer writes Tailscale-style primary URLs and
+LAN-style fallback URLs:
+
+```bash
+LUNA_STABLE_WS_URL=ws://jax-box:4753/ui
+LUNA_STABLE_FALLBACK_WS_URL=ws://jax-box.local:4753/ui
+LUNA_DEV_WS_URL=ws://jax-box:5753/ui
+LUNA_DEV_FALLBACK_WS_URL=ws://jax-box.local:5753/ui
+```
+
+Use explicit URLs for another host:
+
+```bash
+bash install.sh \
+  --stable-url ws://luna-host:4753/ui \
+  --stable-fallback-url ws://luna-host.local:4753/ui \
+  --dev-url ws://luna-host:5753/ui \
+  --dev-fallback-url ws://luna-host.local:5753/ui
+```
+
+If the client should also try SSH-based restart/repair, opt in explicitly:
+
+```bash
+bash install.sh \
+  --enable-ssh-recovery \
+  --ssh-user root \
+  --ssh-host jax-box \
+  --fallback-ssh-host jax-box.local
+```
 
 ## Linux Server
 

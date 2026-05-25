@@ -5,6 +5,7 @@ export interface ChatArgs {
   readonly unknown: ReadonlyArray<string>
   readonly profile?: string
   readonly url?: string
+  readonly fallbackUrl?: string
   readonly token?: string
   readonly threadId?: string
   readonly newThread?: boolean
@@ -12,6 +13,7 @@ export interface ChatArgs {
   readonly startMode?: StartMode
   readonly startCommand?: string
   readonly startSsh?: string
+  readonly fallbackStartSsh?: string
   readonly startTimeoutMs?: number
 }
 
@@ -54,6 +56,7 @@ export const parseChatArgs = (argv: ReadonlyArray<string>): ChatArgs => {
     unknown: string[]
     profile?: string
     url?: string
+    fallbackUrl?: string
     token?: string
     threadId?: string
     newThread?: boolean
@@ -61,6 +64,7 @@ export const parseChatArgs = (argv: ReadonlyArray<string>): ChatArgs => {
     startMode?: StartMode
     startCommand?: string
     startSsh?: string
+    fallbackStartSsh?: string
     startTimeoutMs?: number
   } = { command: "chat", unknown: [] }
 
@@ -75,6 +79,13 @@ export const parseChatArgs = (argv: ReadonlyArray<string>): ChatArgs => {
         const r = readValue(argv, i, "--url")
         if ("error" in r) out.unknown.push(r.error)
         else out.url = r.value
+        i = r.nextIndex
+        break
+      }
+      case "--fallback-url": {
+        const r = readValue(argv, i, "--fallback-url")
+        if ("error" in r) out.unknown.push(r.error)
+        else out.fallbackUrl = r.value
         i = r.nextIndex
         break
       }
@@ -131,6 +142,13 @@ export const parseChatArgs = (argv: ReadonlyArray<string>): ChatArgs => {
         const r = readValue(argv, i, "--start-ssh")
         if ("error" in r) out.unknown.push(r.error)
         else out.startSsh = r.value
+        i = r.nextIndex
+        break
+      }
+      case "--fallback-start-ssh": {
+        const r = readValue(argv, i, "--fallback-start-ssh")
+        if ("error" in r) out.unknown.push(r.error)
+        else out.fallbackStartSsh = r.value
         i = r.nextIndex
         break
       }

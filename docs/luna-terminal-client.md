@@ -21,10 +21,12 @@ LUNA_UI_WS_TOKEN=<token>
 Profiles let one `luna` binary switch between stable and development runtimes:
 
 ```bash
-LUNA_STABLE_WS_URL=ws://jax-box.local:4753/ui
+LUNA_STABLE_WS_URL=ws://jax-box:4753/ui
+LUNA_STABLE_FALLBACK_WS_URL=ws://jax-box.local:4753/ui
 LUNA_STABLE_UI_WS_TOKEN=<stable-token>
 
-LUNA_DEV_WS_URL=ws://jax-box.local:5753/ui
+LUNA_DEV_WS_URL=ws://jax-box:5753/ui
+LUNA_DEV_FALLBACK_WS_URL=ws://jax-box.local:5753/ui
 LUNA_DEV_UI_WS_TOKEN=<dev-token>
 ```
 
@@ -42,7 +44,9 @@ luna chat --profile dev
 ```
 
 Profile-specific variables are read before legacy variables. Explicit flags
-such as `--url` and `--token` still win over profile configuration.
+such as `--url` and `--token` still win over profile configuration. When a
+fallback URL is configured, Luna tries the primary URL first and then the
+fallback URL before running recovery.
 
 The chat server itself reads `UI_WS_TOKEN` or `LUNA_UI_WS_TOKEN`. Use the same
 token value on both sides. The terminal client checks token values in this order:
@@ -74,6 +78,7 @@ Profile-specific recovery variables use the same prefix:
 LUNA_DEV_START_MODE=ssh
 LUNA_DEV_START_COMMAND="systemctl --user restart luna-dev-chat-server.service"
 LUNA_DEV_START_SSH=root@jax-box
+LUNA_DEV_FALLBACK_START_SSH=root@jax-box.local
 LUNA_DEV_START_TIMEOUT_MS=30000
 ```
 
@@ -86,6 +91,8 @@ Modes:
 `LUNA_START_COMMAND` is required for `local` and `ssh` mode.
 `LUNA_START_SSH` is required for `ssh` mode.
 `LUNA_START_TIMEOUT_MS` must be a positive integer and defaults to `30000`.
+When `LUNA_FALLBACK_START_SSH` or `LUNA_<PROFILE>_FALLBACK_START_SSH` is set,
+Luna tries the primary SSH target first and then the fallback target.
 
 For remote-host recovery:
 
@@ -101,7 +108,8 @@ The same recovery settings can also be passed as flags:
 luna chat \
   --start-mode ssh \
   --start-command "incus exec agent-lab-1 -- systemctl restart jax-agent-lab.service" \
-  --start-ssh root@remote-host
+  --start-ssh root@remote-host \
+  --fallback-start-ssh root@lan-host.local
 ```
 
 ## Common commands

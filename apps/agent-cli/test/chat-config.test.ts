@@ -95,6 +95,63 @@ describe("luna chat config", () => {
     expect(cfg.startSsh).toBe("root@jax-box")
   })
 
+  it("loads profile fallback URLs and fallback SSH targets", () => {
+    const cfg = loadChatConfig({
+      args: parseChatArgs(["chat", "--dev"]),
+      env: {
+        LUNA_DEV_WS_URL: "ws://jax-box/ui",
+        LUNA_DEV_FALLBACK_WS_URL: "ws://jax-box.local/ui",
+        LUNA_DEV_UI_WS_TOKEN: "dev-env-token",
+        LUNA_DEV_START_MODE: "ssh",
+        LUNA_DEV_START_COMMAND: "incus exec luna-dev -- systemctl restart luna-dev-chat-server.service",
+        LUNA_DEV_START_SSH: "root@jax-box",
+        LUNA_DEV_FALLBACK_START_SSH: "root@jax-box.local",
+      },
+      dotenv: {},
+      homeDir: "/tmp/home",
+      cwd: "/work",
+    })
+
+    expect(cfg.urls).toEqual(["ws://jax-box/ui", "ws://jax-box.local/ui"])
+    expect(cfg.startSshTargets).toEqual(["root@jax-box", "root@jax-box.local"])
+    expect(redactedConfigSummary(cfg)).toContain("urls=2")
+  })
+
+  it("lets explicit fallback flags pair with explicit primary flags", () => {
+    const args = parseChatArgs([
+      "chat",
+      "--url",
+      "ws://primary/ui",
+      "--fallback-url",
+      "ws://fallback/ui",
+      "--start-mode",
+      "ssh",
+      "--start-command",
+      "restart luna",
+      "--start-ssh",
+      "root@primary",
+      "--fallback-start-ssh",
+      "root@fallback",
+    ])
+    const cfg = loadChatConfig({
+      args,
+      env: {
+        LUNA_WS_URL: "ws://env/ui",
+        LUNA_FALLBACK_WS_URL: "ws://env-fallback/ui",
+        LUNA_UI_WS_TOKEN: "env-token",
+        LUNA_START_SSH: "root@env",
+        LUNA_FALLBACK_START_SSH: "root@env-fallback",
+      },
+      dotenv: {},
+      homeDir: "/tmp/home",
+      cwd: "/work",
+    })
+
+    expect(args.unknown).toEqual([])
+    expect(cfg.urls).toEqual(["ws://primary/ui", "ws://fallback/ui"])
+    expect(cfg.startSshTargets).toEqual(["root@primary", "root@fallback"])
+  })
+
   it("lets explicit flags override profile settings", () => {
     const cfg = loadChatConfig({
       args: parseChatArgs(["chat", "--dev", "--url", "ws://flag/ui", "--token", "flag-token"]),
