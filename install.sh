@@ -10,8 +10,8 @@ LUNA_REPO="${LUNA_REPO:-https://github.com/fourcolors/luna.git}"
 LUNA_DIR="${LUNA_DIR:-$HOME/Projects/luna}"
 LUNA_DATA="${LUNA_DATA:-$HOME/.luna}"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
-STABLE_WS_URL="${LUNA_STABLE_WS_URL:-ws://jax-box:4753/ui}"
-DEV_WS_URL="${LUNA_DEV_WS_URL:-ws://jax-box:5753/ui}"
+STABLE_WS_URL="${LUNA_STABLE_WS_URL:-ws://jax-box.local:4753/ui}"
+DEV_WS_URL="${LUNA_DEV_WS_URL:-ws://jax-box.local:5753/ui}"
 STABLE_TOKEN="${LUNA_STABLE_UI_WS_TOKEN:-}"
 DEV_TOKEN="${LUNA_DEV_UI_WS_TOKEN:-}"
 DRY_RUN=false
@@ -27,9 +27,9 @@ Options:
   --luna-dir <path>         Local clone path. Default: ~/Projects/luna
   --data-dir <path>         Luna config/state path. Default: ~/.luna
   --bin-dir <path>          Directory for the luna wrapper. Default: ~/.local/bin
-  --stable-url <ws-url>     Stable Luna WebSocket URL. Default: ws://jax-box:4753/ui
+  --stable-url <ws-url>     Stable Luna WebSocket URL. Default: ws://jax-box.local:4753/ui
   --stable-token <token>    Stable UI WebSocket token to write to ~/.luna/.env.
-  --dev-url <ws-url>        Dev Luna WebSocket URL. Default: ws://jax-box:5753/ui
+  --dev-url <ws-url>        Dev Luna WebSocket URL. Default: ws://jax-box.local:5753/ui
   --dev-token <token>       Dev UI WebSocket token to write to ~/.luna/.env.
   --skip-deps               Skip bun install.
   -h, --help                Show this help.

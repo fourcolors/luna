@@ -126,8 +126,8 @@ Luna is designed to run with one local client and two server runtimes:
 
 | Runtime | Purpose | Client command | Default URL |
 |---------|---------|----------------|-------------|
-| Stable | The agent you actually use day to day | `luna chat` | `ws://jax-box:4753/ui` |
-| Dev | A separate runtime for testing fixes and branches | `luna chat --dev` | `ws://jax-box:5753/ui` |
+| Stable | The agent you actually use day to day | `luna chat` | `ws://jax-box.local:4753/ui` |
+| Dev | A separate runtime for testing fixes and branches | `luna chat --dev` | `ws://jax-box.local:5753/ui` |
 
 Stable tracks the `master` branch. Dev tracks the `dev` branch. Promote code by
 testing it through dev first, then merging `dev` into `master`.
@@ -135,9 +135,9 @@ testing it through dev first, then merging `dev` into `master`.
 The terminal client reads profile settings from `~/.luna/.env`:
 
 ```bash
-LUNA_STABLE_WS_URL=ws://jax-box:4753/ui
+LUNA_STABLE_WS_URL=ws://jax-box.local:4753/ui
 LUNA_STABLE_UI_WS_TOKEN=<stable-token>
-LUNA_DEV_WS_URL=ws://jax-box:5753/ui
+LUNA_DEV_WS_URL=ws://jax-box.local:5753/ui
 LUNA_DEV_UI_WS_TOKEN=<dev-token>
 ```
 
@@ -260,7 +260,7 @@ git checkout master
 git pull --ff-only origin master
 bun install --frozen-lockfile
 systemctl --user restart luna-chat-server.service
-curl -fsS "http://$(tailscale ip -4):4753/healthz"
+curl -fsS http://127.0.0.1:4753/healthz
 ```
 
 ### Adding accounts

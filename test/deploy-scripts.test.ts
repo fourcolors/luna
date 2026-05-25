@@ -281,6 +281,8 @@ exit 0
     expect(result.stdout).toContain("run --cwd")
     expect(result.stdout).toContain("@luna/agent-cli")
     expect(result.stdout).toContain("luna chat")
+    expect(result.stdout).toContain("LUNA_STABLE_WS_URL=ws://jax-box.local:4753/ui")
+    expect(result.stdout).toContain("LUNA_DEV_WS_URL=ws://jax-box.local:5753/ui")
   })
 
   it("script entrypoints are executable", () => {
@@ -292,5 +294,17 @@ exit 0
       const mode = statSync(join(repoRoot, script)).mode
       expect(mode & 0o111).not.toBe(0)
     }
+  })
+
+  it("jax-box docs use non-Tailscale-bound health probes", () => {
+    const read = (path: string) => readFileSync(join(repoRoot, path), "utf8")
+    const docs = [
+      read("README.md"),
+      read("docs/jax-box-deploy.md"),
+    ].join("\n")
+
+    expect(docs).not.toContain("tailscale ip")
+    expect(docs).toContain("http://127.0.0.1:4753/healthz")
+    expect(docs).toContain("http://127.0.0.1:5753/healthz")
   })
 })

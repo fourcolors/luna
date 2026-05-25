@@ -21,10 +21,10 @@ LUNA_UI_WS_TOKEN=<token>
 Profiles let one `luna` binary switch between stable and development runtimes:
 
 ```bash
-LUNA_STABLE_WS_URL=ws://jax-box:4753/ui
+LUNA_STABLE_WS_URL=ws://jax-box.local:4753/ui
 LUNA_STABLE_UI_WS_TOKEN=<stable-token>
 
-LUNA_DEV_WS_URL=ws://jax-box:5753/ui
+LUNA_DEV_WS_URL=ws://jax-box.local:5753/ui
 LUNA_DEV_UI_WS_TOKEN=<dev-token>
 ```
 
