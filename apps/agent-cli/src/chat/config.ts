@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs"
-import { join } from "node:path"
+import { join, posix as pathPosix } from "node:path"
 import type { ChatArgs, StartMode } from "./args.js"
 
 export interface ChatConfig {
@@ -11,6 +11,7 @@ export interface ChatConfig {
   readonly newThread: boolean
   readonly localShellInitial: boolean
   readonly dangerouslyAutoApproveLocalShell: boolean
+  readonly dangerousLocalShellRoot: string
   readonly startMode: StartMode
   readonly startCommand: string | null
   readonly startSsh: string | null
@@ -26,6 +27,7 @@ export interface LoadChatConfigInput {
   readonly dotenv: Record<string, string | undefined>
   readonly homeDir: string
   readonly cwd: string
+  readonly dangerousLocalShellRoot?: string
 }
 
 export const parseDotEnv = (text: string): Record<string, string> => {
@@ -84,8 +86,15 @@ const isPositiveInteger = (value: string): boolean => /^[1-9]\d*$/.test(value)
 const isTruthy = (value: string | undefined): boolean =>
   value === "1" || value === "true" || value === "yes" || value === "on"
 
-const isUnderRootLuna = (cwd: string): boolean =>
-  cwd === "/root/luna" || cwd.startsWith("/root/luna/")
+const DEFAULT_DANGEROUS_LOCAL_SHELL_ROOT = "/root/luna"
+
+const isUnderDangerousLocalShellRoot = (cwd: string, root: string): boolean => {
+  if (!cwd.startsWith("/") || !root.startsWith("/")) return false
+  const normalizedCwd = pathPosix.normalize(cwd)
+  const normalizedRoot = pathPosix.normalize(root)
+  return normalizedCwd === normalizedRoot
+    || normalizedCwd.startsWith(`${normalizedRoot}/`)
+}
 
 const isValidProfileName = (value: string): boolean => /^[A-Za-z][A-Za-z0-9_-]*$/.test(value)
 
@@ -119,6 +128,7 @@ export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
     { name: "LUNA_DANGEROUS_AUTO_APPROVE_LOCAL_SHELL", value: input.dotenv["LUNA_DANGEROUS_AUTO_APPROVE_LOCAL_SHELL"] },
   ])
   const dangerousRequested = dangerousAutoSetting !== undefined && isTruthy(dangerousAutoSetting.value)
+  const dangerousLocalShellRoot = input.dangerousLocalShellRoot ?? DEFAULT_DANGEROUS_LOCAL_SHELL_ROOT
   const runtimeScope = selectSetting([
     { name: "LUNA_RUNTIME_SCOPE", value: input.env["LUNA_RUNTIME_SCOPE"] },
     { name: "LUNA_RUNTIME_SCOPE", value: input.dotenv["LUNA_RUNTIME_SCOPE"] },
@@ -132,13 +142,13 @@ export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
     if (!existsSync(dangerousMarkerPath)) {
       errors.push("dangerous local shell auto approval requires ~/.luna/allow-dangerous-local-shell")
     }
-    if (!isUnderRootLuna(input.cwd)) {
-      errors.push("dangerous local shell auto approval requires cwd under /root/luna")
+    if (!isUnderDangerousLocalShellRoot(input.cwd, dangerousLocalShellRoot)) {
+      errors.push(`dangerous local shell auto approval requires cwd under ${dangerousLocalShellRoot}`)
     }
     dangerouslyAutoApproveLocalShell =
       runtimeScope === "incus-container" &&
       existsSync(dangerousMarkerPath) &&
-      isUnderRootLuna(input.cwd)
+      isUnderDangerousLocalShellRoot(input.cwd, dangerousLocalShellRoot)
   }
 
   const urlSetting = selectSetting([
@@ -262,6 +272,7 @@ export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
     newThread: input.args.newThread ?? threadId === null,
     localShellInitial: input.args.localShell ?? false,
     dangerouslyAutoApproveLocalShell,
+    dangerousLocalShellRoot,
     startMode,
     startCommand,
     startSsh,

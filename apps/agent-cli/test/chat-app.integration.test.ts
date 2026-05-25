@@ -334,19 +334,21 @@ describe("luna chat app", () => {
     await expect(waitFor(done)).resolves.toEqual({ exitCode: 0 })
   })
 
-  it("advertises auto approval only when dangerous mode is configured", async () => {
+  it("auto-approves local shell requests only when dangerous mode is configured", async () => {
     const home = isolatedHomeDir()
     mkdirSync(join(home, ".luna"), { recursive: true })
     writeFileSync(join(home, ".luna", "allow-dangerous-local-shell"), "")
+    const approvedRoot = mkdtempSync(join(tmpdir(), "luna-dangerous-root-"))
+    homeDirs.push(approvedRoot)
 
     server = new WebSocketServer({ port: 0 })
     await new Promise<void>((resolve) => server?.once("listening", resolve))
     const address = server.address() as AddressInfo
     const approveLocalCommand = vi.fn(async () => false)
     const received: ClientFrame[] = []
-    let resolveCapability!: (frame: Extract<ClientFrame, { type: "local-shell-capability" }>) => void
-    const capabilityFrame = new Promise<Extract<ClientFrame, { type: "local-shell-capability" }>>((resolve) => {
-      resolveCapability = resolve
+    let resolveResult!: (frame: ClientFrame) => void
+    const resultFrame = new Promise<ClientFrame>((resolve) => {
+      resolveResult = resolve
     })
 
     server.on("connection", (socket) => {
@@ -358,8 +360,15 @@ describe("luna chat app", () => {
           socket.send(JSON.stringify({ type: "thread-created", thread: thread("thr_danger") } satisfies ServerFrame))
         }
         if (frame.type === "local-shell-capability" && frame.enabled) {
-          resolveCapability(frame)
+          expect(frame.approvalMode).toBe("auto")
+          socket.send(JSON.stringify({
+            type: "local-shell-request",
+            requestId: "req-danger",
+            threadId: "thr_danger",
+            command: "printf dangerous-ok",
+          } satisfies ServerFrame))
         }
+        if (frame.type === "local-shell-result") resolveResult(frame)
       })
     })
 
@@ -377,19 +386,18 @@ describe("luna chat app", () => {
         LUNA_DANGEROUS_AUTO_APPROVE_LOCAL_SHELL: "1",
       },
       homeDir: home,
-      cwd: "/root/luna",
+      cwd: approvedRoot,
+      dangerousLocalShellRoot: approvedRoot,
       approveLocalCommand,
     })
 
-    const capability = await waitFor(capabilityFrame)
-    expect(capability).toEqual({
-      type: "local-shell-capability",
-      threadId: "thr_danger",
-      enabled: true,
-      approvalMode: "auto",
-      clientId: expect.any(String),
-      platform: process.platform,
-      cwd: "/root/luna",
+    const result = await waitFor(resultFrame)
+    expect(result).toMatchObject({
+      type: "local-shell-result",
+      requestId: "req-danger",
+      approved: true,
+      stdout: "dangerous-ok",
+      timedOut: false,
     })
     expect(approveLocalCommand).not.toHaveBeenCalled()
     expect(received).toContainEqual({
@@ -399,7 +407,7 @@ describe("luna chat app", () => {
       approvalMode: "auto",
       clientId: expect.any(String),
       platform: process.platform,
-      cwd: "/root/luna",
+      cwd: approvedRoot,
     })
 
     stdin.write("/quit\n")

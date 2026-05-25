@@ -24,6 +24,7 @@ export type LunaCliIO = {
   env: Record<string, string | undefined>
   homeDir?: string
   cwd: string
+  dangerousLocalShellRoot?: string
   approveLocalCommand?: (command: string) => Promise<boolean>
 }
 
@@ -36,7 +37,7 @@ const DEFAULT_LOCAL_COMMAND_TIMEOUT_MS = 30_000
 const MAX_LOCAL_COMMAND_OUTPUT_BYTES = 64 * 1024
 const QUIT_DRAIN_MS = 1_000
 const THREAD_CREATE_DRAIN_MS = 100
-const AUTO_APPROVED_LOCAL_SHELL_ROOT = "/root/luna"
+const DEFAULT_AUTO_APPROVED_LOCAL_SHELL_ROOT = "/root/luna"
 
 const USAGE = [
   "Usage: luna chat [options]",
@@ -122,13 +123,17 @@ const deniedLocalShellResult = (
   timedOut: false,
 })
 
-export const isAutoApprovedLocalShellCwd = (cwd: string | undefined): boolean => {
+export const isAutoApprovedLocalShellCwd = (
+  cwd: string | undefined,
+  root = DEFAULT_AUTO_APPROVED_LOCAL_SHELL_ROOT,
+): boolean => {
   if (cwd === undefined) return true
-  if (!cwd.startsWith("/")) return false
+  if (!cwd.startsWith("/") || !root.startsWith("/")) return false
 
+  const normalizedRoot = pathPosix.normalize(root)
   const normalized = pathPosix.normalize(cwd)
-  return normalized === AUTO_APPROVED_LOCAL_SHELL_ROOT
-    || normalized.startsWith(`${AUTO_APPROVED_LOCAL_SHELL_ROOT}/`)
+  return normalized === normalizedRoot
+    || normalized.startsWith(`${normalizedRoot}/`)
 }
 
 const connectWithRecovery = async (
@@ -214,6 +219,9 @@ export async function runLunaCli(
     dotenv: readLunaDotEnv(homeDir),
     homeDir,
     cwd: io.cwd,
+    ...(io.dangerousLocalShellRoot !== undefined
+      ? { dangerousLocalShellRoot: io.dangerousLocalShellRoot }
+      : {}),
   })
   if (cfg.validationErrors.length > 0) {
     for (const error of cfg.validationErrors) writeError(io, error)
@@ -319,7 +327,7 @@ export async function runLunaCli(
       client.send(deniedLocalShellResult(frame, "local shell unavailable for thread"))
       return
     }
-    if (cfg.dangerouslyAutoApproveLocalShell && !isAutoApprovedLocalShellCwd(frame.cwd)) {
+    if (cfg.dangerouslyAutoApproveLocalShell && !isAutoApprovedLocalShellCwd(frame.cwd, cfg.dangerousLocalShellRoot)) {
       client.send(deniedLocalShellResult(frame, "local shell cwd outside approved root"))
       return
     }

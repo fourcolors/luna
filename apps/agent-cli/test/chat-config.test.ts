@@ -324,6 +324,31 @@ describe("luna chat config", () => {
     )
   })
 
+  it("rejects dangerous auto approval when the container cwd normalizes outside the approved root", () => {
+    const home = mkdtempSync(join(tmpdir(), "luna-dangerous-home-"))
+    try {
+      mkdirSync(join(home, ".luna"), { recursive: true })
+      writeFileSync(join(home, ".luna", "allow-dangerous-local-shell"), "")
+      const cfg = loadChatConfig({
+        args: parseChatArgs(["chat", "--dangerously-auto-approve-local-shell"]),
+        env: {
+          LUNA_UI_WS_TOKEN: "env-token-123456",
+          LUNA_RUNTIME_SCOPE: "incus-container",
+        },
+        dotenv: {},
+        homeDir: home,
+        cwd: "/root/luna/..",
+      })
+
+      expect(cfg.dangerouslyAutoApproveLocalShell).toBe(false)
+      expect(cfg.validationErrors).toContain(
+        "dangerous local shell auto approval requires cwd under /root/luna",
+      )
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
   it("accepts dangerous auto approval with runtime marker, marker file, and container cwd", () => {
     const home = mkdtempSync(join(tmpdir(), "luna-dangerous-home-"))
     try {
