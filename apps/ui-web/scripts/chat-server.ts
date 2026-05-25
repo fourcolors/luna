@@ -388,29 +388,32 @@ const buildServerLayer = (
       const chatWithTools: typeof chat = {
         ...chat,
         createThread: (opts) => {
+          const memoryThreadTools = memTools.createSessionBinding()
+          const schedulerThreadTools = schedTools.createSessionBinding()
+          const obsThreadTools = obsTools.createSessionBinding()
           const localShellThreadTools = localShellTools.createSessionBinding()
           console.log("[luna/thread] createThread called — wiring MCP servers:", [
-            memTools.serverName,
-            schedTools.serverName,
-            obsTools.serverName,
+            memoryThreadTools.serverName,
+            schedulerThreadTools.serverName,
+            obsThreadTools.serverName,
             localShellThreadTools.serverName,
           ].join(", "))
           const mergedSystemPrompt = [
             dnaContent,
             sessionMetadata,
             opts.systemPrompt,
-            memTools.systemPromptAddendum,
-            schedTools.systemPromptAddendum,
-            obsTools.systemPromptAddendum,
+            memoryThreadTools.systemPromptAddendum,
+            schedulerThreadTools.systemPromptAddendum,
+            obsThreadTools.systemPromptAddendum,
             localShellThreadTools.systemPromptAddendum,
           ]
             .filter((s): s is string => typeof s === "string" && s.length > 0)
             .join("\n\n")
           const mergedMcp = {
             ...(opts.mcpServers ?? {}),
-            [memTools.serverName]: memTools.server,
-            [schedTools.serverName]: schedTools.server,
-            [obsTools.serverName]: obsTools.server,
+            [memoryThreadTools.serverName]: memoryThreadTools.server,
+            [schedulerThreadTools.serverName]: schedulerThreadTools.server,
+            [obsThreadTools.serverName]: obsThreadTools.server,
             [localShellThreadTools.serverName]: localShellThreadTools.server,
           }
           return chat
@@ -423,7 +426,7 @@ const buildServerLayer = (
               // Bind the new session id so obs_note auto-tags notes with the
               // current thread. SessionSummary.id is always present.
               Effect.tap((summary) => {
-                obsTools.bindSession(summary.id)
+                obsThreadTools.bindSession(summary.id)
                 localShellThreadTools.bindSession(summary.id)
                 console.log("[luna/thread] session bound:", summary.id, "— obs/local-shell tools active")
                 return Effect.void

@@ -69,6 +69,17 @@ describe("ObsToolsLayer — structural invariants", () => {
     expect(config.systemPromptAddendum.length).toBeGreaterThan(0)
     expect(config.systemPromptAddendum).toBe(OBS_SYSTEM_PROMPT_ADDENDUM)
     expect(typeof config.bindSession).toBe("function")
+    expect(typeof config.createSessionBinding).toBe("function")
+
+    const first = config.createSessionBinding()
+    const second = config.createSessionBinding()
+    expect(first.serverName).toBe("observability")
+    expect(second.serverName).toBe("observability")
+    expect(first.server).not.toBe(second.server)
+    expect(
+      (first.server as { instance?: unknown }).instance,
+    ).not.toBe((second.server as { instance?: unknown }).instance)
+    expect(typeof first.bindSession).toBe("function")
   })
 
   it("buildObsMcpServer returns type='sdk' and name='observability'", async () => {

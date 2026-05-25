@@ -115,11 +115,15 @@ export const MemoryRouterLayer = (dbPath: string) =>
  * server config the chat dev rig (or any caller) splats into
  * `sdkOptions.mcpServers`.
  */
-export interface MemoryToolsConfig {
+export interface MemoryToolsSessionConfig {
   readonly serverName: "memory"
   readonly server: McpSdkServerConfigWithInstance
   /** The system-prompt addendum the agent needs to know the tools exist. */
   readonly systemPromptAddendum: string
+}
+
+export interface MemoryToolsConfig extends MemoryToolsSessionConfig {
+  readonly createSessionBinding: () => MemoryToolsSessionConfig
 }
 
 export class MemoryToolsService extends Effect.Tag(
@@ -161,15 +165,21 @@ export const MemoryToolsLayer = (
 > => {
   const dbPath = opts?.dbPath ?? resolveDbPath()
   const embedderL = opts?.embedder ?? selectEmbedderLayer()
+  const createConfig = (
+    router: Parameters<typeof buildMemoryMcpServer>[0],
+  ): MemoryToolsSessionConfig => ({
+    serverName: "memory" as const,
+    server: buildMemoryMcpServer(router),
+    systemPromptAddendum: MEMORY_SYSTEM_PROMPT_ADDENDUM,
+  })
   return Layer.scoped(
     MemoryToolsService,
     Effect.gen(function* () {
       const router = yield* MemoryRouterTag
-      const server = buildMemoryMcpServer(router)
+      const config = createConfig(router)
       return {
-        serverName: "memory" as const,
-        server,
-        systemPromptAddendum: MEMORY_SYSTEM_PROMPT_ADDENDUM,
+        ...config,
+        createSessionBinding: () => createConfig(router),
       }
     }),
   ).pipe(Layer.provide(MemoryRouterLayer(dbPath)), Layer.provide(embedderL))

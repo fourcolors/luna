@@ -77,7 +77,7 @@ export function resolveLunaDbPath(): string {
  * ObsToolsConfig — emitted by ObsToolsLayer, carries the SDK MCP server
  * config and a system-prompt addendum string.
  */
-export interface ObsToolsConfig {
+export interface ObsToolsSessionConfig {
   readonly serverName: "observability"
   readonly server: McpSdkServerConfigWithInstance
   /** The system-prompt addendum the agent needs to know the tools exist. */
@@ -87,6 +87,10 @@ export interface ObsToolsConfig {
    * Call this after a new thread is created.
    */
   readonly bindSession: (sessionId: string) => void
+}
+
+export interface ObsToolsConfig extends ObsToolsSessionConfig {
+  readonly createSessionBinding: () => ObsToolsSessionConfig
 }
 
 export class ObsToolsService extends Effect.Tag("luna/ObsToolsService")<
@@ -182,21 +186,29 @@ export const ObsToolsLayer = (
       const notes = yield* AgentNotesService
       const analytics = yield* AnalyticsService
 
-      // Mutable session-id cell. Closed over by all tool handlers.
-      const sessionCell: { value: string | null } = { value: null }
-      const currentSessionId = () => sessionCell.value
-      const bindSession = (id: string) => {
-        sessionCell.value = id
+      const createConfig = (): ObsToolsSessionConfig => {
+        // Mutable session-id cell. Closed over by one thread's tool handlers.
+        const sessionCell: { value: string | null } = { value: null }
+        const currentSessionId = () => sessionCell.value
+        const bindSession = (id: string) => {
+          sessionCell.value = id
+        }
+
+        const tools = makeObsTools(notes, analytics, currentSessionId)
+        const server = buildObsMcpServer(tools)
+
+        return {
+          serverName: "observability" as const,
+          server,
+          systemPromptAddendum: OBS_SYSTEM_PROMPT_ADDENDUM,
+          bindSession,
+        }
       }
 
-      const tools = makeObsTools(notes, analytics, currentSessionId)
-      const server = buildObsMcpServer(tools)
-
+      const config = createConfig()
       return {
-        serverName: "observability" as const,
-        server,
-        systemPromptAddendum: OBS_SYSTEM_PROMPT_ADDENDUM,
-        bindSession,
+        ...config,
+        createSessionBinding: createConfig,
       }
     }),
   ).pipe(

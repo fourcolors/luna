@@ -56,6 +56,16 @@ describe("§4.3 SchedulerToolsLayer — structural invariants", () => {
     expect(typeof config.systemPromptAddendum).toBe("string")
     expect(config.systemPromptAddendum.length).toBeGreaterThan(0)
     expect(config.systemPromptAddendum).toBe(SCHEDULER_SYSTEM_PROMPT_ADDENDUM)
+    expect(typeof config.createSessionBinding).toBe("function")
+
+    const first = config.createSessionBinding()
+    const second = config.createSessionBinding()
+    expect(first.serverName).toBe("scheduler")
+    expect(second.serverName).toBe("scheduler")
+    expect(first.server).not.toBe(second.server)
+    expect(
+      (first.server as { instance?: unknown }).instance,
+    ).not.toBe((second.server as { instance?: unknown }).instance)
   })
 
   it("buildSchedulerMcpServer returns object with type='sdk' and name='scheduler'", async () => {

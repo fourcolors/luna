@@ -38,11 +38,15 @@ import { makeSchedulerTools } from "./tools.js"
  * server config the chat dev rig (or any caller) splats into
  * `sdkOptions.mcpServers`.
  */
-export interface SchedulerToolsConfig {
+export interface SchedulerToolsSessionConfig {
   readonly serverName: "scheduler"
   readonly server: McpSdkServerConfigWithInstance
   /** The system-prompt addendum the agent needs to know the tools exist. */
   readonly systemPromptAddendum: string
+}
+
+export interface SchedulerToolsConfig extends SchedulerToolsSessionConfig {
+  readonly createSessionBinding: () => SchedulerToolsSessionConfig
 }
 
 export class SchedulerToolsService extends Effect.Tag(
@@ -102,11 +106,15 @@ export const SchedulerToolsLayer = (
       const trigger = yield* TriggerAgent
       // Capture the Layer's own Scope so trigger registrations outlive calls.
       const layerScope = yield* Effect.scope
-      const server = buildSchedulerMcpServer(trigger, layerScope)
-      return {
+      const createConfig = (): SchedulerToolsSessionConfig => ({
         serverName: "scheduler" as const,
-        server,
+        server: buildSchedulerMcpServer(trigger, layerScope),
         systemPromptAddendum: SCHEDULER_SYSTEM_PROMPT_ADDENDUM,
+      })
+      const config = createConfig()
+      return {
+        ...config,
+        createSessionBinding: createConfig,
       }
     }),
   ).pipe(

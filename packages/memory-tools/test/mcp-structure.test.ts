@@ -77,6 +77,16 @@ describe.skipIf(!hasBunSqlite)("§4.3 MemoryToolsLayer — structural invariants
 
     // Matches the canonical constant.
     expect(config.systemPromptAddendum).toBe(MEMORY_SYSTEM_PROMPT_ADDENDUM)
+    expect(typeof config.createSessionBinding).toBe("function")
+
+    const first = config.createSessionBinding()
+    const second = config.createSessionBinding()
+    expect(first.serverName).toBe("memory")
+    expect(second.serverName).toBe("memory")
+    expect(first.server).not.toBe(second.server)
+    expect(
+      (first.server as { instance?: unknown }).instance,
+    ).not.toBe((second.server as { instance?: unknown }).instance)
   })
 
   it("buildMemoryMcpServer(router) returns object with type='sdk' and name='memory'", async () => {
