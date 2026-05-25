@@ -150,6 +150,13 @@ const buildUserMessage = (
   } as SDKUserMessage
 }
 
+const LUNA_ALLOWED_MCP_TOOLS = [
+  "mcp__memory__*",
+  "mcp__scheduler__*",
+  "mcp__observability__*",
+  "mcp__local_shell__*",
+] as const
+
 /* -------------------------------------------------------------------------- */
 /* Service                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -216,6 +223,10 @@ export class ChatService extends Effect.Service<ChatService>()(
           // calls. `tools: []` removes Claude Code built-ins (Task, WebFetch,
           // TodoWrite, Bash, etc.) while leaving Luna's MCP tools available.
           tools: [],
+          // MCP tools still need SDK permission approval. Luna's own tool
+          // handlers enforce their safety rules, so the SDK layer can
+          // auto-approve these without reintroducing Claude Code built-ins.
+          allowedTools: [...LUNA_ALLOWED_MCP_TOOLS],
           strictMcpConfig: true,
           env: sdkEnv,
           permissionMode: opts.permissionMode ?? defaultPermissionMode,

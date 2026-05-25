@@ -487,6 +487,12 @@ describe("ChatService (Tier-2 sim)", () => {
       expect(capturedOptions).toBeDefined()
       expect(capturedOptions!["settingSources"]).toEqual([])
       expect(capturedOptions!["tools"]).toEqual([])
+      expect(capturedOptions!["allowedTools"]).toEqual([
+        "mcp__memory__*",
+        "mcp__scheduler__*",
+        "mcp__observability__*",
+        "mcp__local_shell__*",
+      ])
       expect(capturedOptions!["strictMcpConfig"]).toBe(true)
       expect(capturedOptions!["env"]).toMatchObject({
         CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
@@ -525,6 +531,8 @@ describe("ChatService (Tier-2 sim)", () => {
       )
       expect(capturedOptions).toBeDefined()
       expect(capturedOptions!["tools"]).toEqual([])
+      expect(capturedOptions!["allowedTools"]).toContain("mcp__memory__*")
+      expect(capturedOptions!["allowedTools"]).toContain("mcp__scheduler__*")
       expect(capturedOptions!["mcpServers"]).toEqual(mcpServers)
     },
     { timeout: 10_000 },
