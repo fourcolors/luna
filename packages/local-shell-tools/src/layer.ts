@@ -26,7 +26,8 @@ export class LocalShellToolsService extends Effect.Tag(
 
 export const LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM =
   "You have one local shell MCP server (`local_shell`) with tool " +
-  "`local_shell_run(command, cwd?, timeout_ms?)`. It requests command " +
+  "`mcp__local_shell__local_shell_run(command, cwd?, timeout_ms?)`. Use this fully " +
+  "qualified MCP tool name exactly; do not call bare `local_shell_run`. It requests command " +
   "execution in Operator's attached Luna terminal client for the current thread. " +
   "Commands normally require explicit user approval in that terminal before they run. " +
   "A trusted container session may advertise auto approval; in that mode commands run " +

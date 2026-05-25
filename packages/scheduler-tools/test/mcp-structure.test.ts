@@ -98,5 +98,15 @@ describe("§4.3 SchedulerToolsService — constant invariants (all runtimes)", (
     expect(typeof SCHEDULER_SYSTEM_PROMPT_ADDENDUM).toBe("string")
     expect(SCHEDULER_SYSTEM_PROMPT_ADDENDUM.length).toBeGreaterThan(0)
     expect(SCHEDULER_SYSTEM_PROMPT_ADDENDUM.toLowerCase()).toContain("scheduler")
+    expect(SCHEDULER_SYSTEM_PROMPT_ADDENDUM).toContain(
+      "mcp__scheduler__schedule_create",
+    )
+    expect(SCHEDULER_SYSTEM_PROMPT_ADDENDUM).toContain(
+      "mcp__scheduler__schedule_list",
+    )
+    expect(SCHEDULER_SYSTEM_PROMPT_ADDENDUM).toContain(
+      "mcp__scheduler__schedule_cancel",
+    )
+    expect(SCHEDULER_SYSTEM_PROMPT_ADDENDUM).toContain("fully qualified")
   })
 })

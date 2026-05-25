@@ -145,5 +145,15 @@ describe("§4.3 MemoryToolsService — constant invariants (all runtimes)", () =
     expect(typeof MEMORY_SYSTEM_PROMPT_ADDENDUM).toBe("string")
     expect(MEMORY_SYSTEM_PROMPT_ADDENDUM.length).toBeGreaterThan(0)
     expect(MEMORY_SYSTEM_PROMPT_ADDENDUM.toLowerCase()).toContain("memory")
+    expect(MEMORY_SYSTEM_PROMPT_ADDENDUM).toContain(
+      "mcp__memory__memory_save",
+    )
+    expect(MEMORY_SYSTEM_PROMPT_ADDENDUM).toContain(
+      "mcp__memory__memory_search",
+    )
+    expect(MEMORY_SYSTEM_PROMPT_ADDENDUM).toContain(
+      "mcp__memory__memory_delete",
+    )
+    expect(MEMORY_SYSTEM_PROMPT_ADDENDUM).toContain("fully qualified")
   })
 })

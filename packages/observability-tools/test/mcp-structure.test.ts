@@ -136,11 +136,22 @@ describe("ObsToolsService — constant invariants (all runtimes)", () => {
   })
 
   it("OBS_SYSTEM_PROMPT_ADDENDUM mentions all 5 tools", () => {
-    expect(OBS_SYSTEM_PROMPT_ADDENDUM).toContain("obs_note")
-    expect(OBS_SYSTEM_PROMPT_ADDENDUM).toContain("obs_notes_recent")
-    expect(OBS_SYSTEM_PROMPT_ADDENDUM).toContain("obs_session_explain")
-    expect(OBS_SYSTEM_PROMPT_ADDENDUM).toContain("obs_session_anomalies")
-    expect(OBS_SYSTEM_PROMPT_ADDENDUM).toContain("obs_sessions_search")
+    expect(OBS_SYSTEM_PROMPT_ADDENDUM).toContain(
+      "mcp__observability__obs_note",
+    )
+    expect(OBS_SYSTEM_PROMPT_ADDENDUM).toContain(
+      "mcp__observability__obs_notes_recent",
+    )
+    expect(OBS_SYSTEM_PROMPT_ADDENDUM).toContain(
+      "mcp__observability__obs_session_explain",
+    )
+    expect(OBS_SYSTEM_PROMPT_ADDENDUM).toContain(
+      "mcp__observability__obs_session_anomalies",
+    )
+    expect(OBS_SYSTEM_PROMPT_ADDENDUM).toContain(
+      "mcp__observability__obs_sessions_search",
+    )
+    expect(OBS_SYSTEM_PROMPT_ADDENDUM).toContain("fully qualified")
   })
 
   it("DuckDbService is not exported from the package surface (internal dep only)", () => {

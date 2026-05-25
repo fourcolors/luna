@@ -50,11 +50,14 @@ export class SchedulerToolsService extends Effect.Tag(
 )<SchedulerToolsService, SchedulerToolsConfig>() {}
 
 export const SCHEDULER_SYSTEM_PROMPT_ADDENDUM =
-  "You have three scheduler tools (MCP server `scheduler`): " +
-  "`schedule_create(expr, label?)` to register a recurring cron job " +
+  "You have three scheduler tools on MCP server `scheduler`. Use their fully " +
+  "qualified MCP tool names exactly: " +
+  "`mcp__scheduler__schedule_create(expr, label?)` to register a recurring cron job " +
   "(standard 5-field cron syntax, e.g. '0 9 * * 1' for every Monday at 9am), " +
-  "`schedule_list()` to see all active schedules, and " +
-  "`schedule_cancel(triggerId)` to stop a schedule. " +
+  "`mcp__scheduler__schedule_list()` to see all active schedules, and " +
+  "`mcp__scheduler__schedule_cancel(triggerId)` to stop a schedule. " +
+  "Do not call bare tool names such as `schedule_create`; use the `mcp__scheduler__...` " +
+  "names. " +
   "Use these when the user asks you to do something on a recurring schedule. " +
   "Schedules persist for the session but do not survive process restarts."
 

@@ -95,18 +95,19 @@ export class ObsToolsService extends Effect.Tag("luna/ObsToolsService")<
 >() {}
 
 export const OBS_SYSTEM_PROMPT_ADDENDUM =
-  "You have five observability tools (MCP server `observability`) for self-observation " +
-  "and self-improvement:\n" +
-  "- `obs_note(kind, summary, payload?, session_id?)` — write a durable behavioral note " +
+  "You have five observability tools on MCP server `observability` for self-observation " +
+  "and self-improvement. Use their fully qualified MCP tool names exactly; do not call " +
+  "bare names such as `obs_note`:\n" +
+  "- `mcp__observability__obs_note(kind, summary, payload?, session_id?)` — write a durable behavioral note " +
   "  (goal, progress, decision, reflection, obstacle). Call this when Operator states intent, " +
   "  at key milestones, when choosing between approaches, and at session end.\n" +
-  "- `obs_notes_recent(session_id?, kind?, limit?)` — recall recent notes. Use FIRST when " +
+  "- `mcp__observability__obs_notes_recent(session_id?, kind?, limit?)` — recall recent notes. Use FIRST when " +
   "  resuming work after a context reset ('what was I doing?').\n" +
-  "- `obs_session_explain(session_id)` — detailed breakdown of one session: tools used, " +
+  "- `mcp__observability__obs_session_explain(session_id)` — detailed breakdown of one session: tools used, " +
   "  error/success counts, duration. Use for targeted self-improvement.\n" +
-  "- `obs_session_anomalies(error_rate?, duration_ms?)` — find sessions with high error rates " +
+  "- `mcp__observability__obs_session_anomalies(error_rate?, duration_ms?)` — find sessions with high error rates " +
   "  or long duration. Entry point for daily feedback loops.\n" +
-  "- `obs_sessions_search(session_id?, tool_name?, start_time?, end_time?, limit?)` — " +
+  "- `mcp__observability__obs_sessions_search(session_id?, tool_name?, start_time?, end_time?, limit?)` — " +
   "  search session history; returns session-level summaries (tool call counts, error/success " +
   "  counts, duration). Use for general-purpose session search and pattern detection."
 

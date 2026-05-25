@@ -127,12 +127,14 @@ export class MemoryToolsService extends Effect.Tag(
 )<MemoryToolsService, MemoryToolsConfig>() {}
 
 export const MEMORY_SYSTEM_PROMPT_ADDENDUM =
-  "You have three memory tools (MCP server `memory`): " +
-  "`memory_save(text, tags?, namespace?)` to remember a durable fact, " +
-  "`memory_search(query, limit?, namespace?)` to recall prior context " +
-  "before answering, and `memory_delete(id)` only when the user asks to " +
-  "forget. Search before answering questions about the user. Save " +
-  "preferences, decisions, and facts the user states about themselves."
+  "You have three memory tools on MCP server `memory`. Use their fully " +
+  "qualified MCP tool names exactly: " +
+  "`mcp__memory__memory_save(text, tags?, namespace?)` to remember a durable fact, " +
+  "`mcp__memory__memory_search(query, limit?, namespace?)` to recall prior context " +
+  "before answering, and `mcp__memory__memory_delete(id)` only when the user asks to " +
+  "forget. Do not call bare tool names such as `memory_search`; use the `mcp__memory__...` " +
+  "names. Search before answering questions about the user. Save preferences, decisions, " +
+  "and facts the user states about themselves."
 
 export interface MemoryToolsLayerOptions {
   /** Override the sqlite-vector db path. Default: `resolveDbPath()`. */

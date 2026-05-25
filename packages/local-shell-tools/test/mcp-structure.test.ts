@@ -157,7 +157,10 @@ describe("LocalShellToolsLayer - structural invariants", () => {
 describe("LocalShellToolsService - prompt invariants", () => {
   it("LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM describes local_shell availability and approval", () => {
     expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM).toContain("local_shell")
-    expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM).toContain("local_shell_run")
+    expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM).toContain(
+      "mcp__local_shell__local_shell_run",
+    )
+    expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM).toContain("fully qualified")
     expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM.toLowerCase()).toContain("approval")
     expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM).toContain("trusted container session")
     expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM).not.toContain(
