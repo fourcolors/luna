@@ -463,7 +463,7 @@ describe("ChatService (Tier-2 sim)", () => {
   )
 
   it(
-    "settingSources defaults to SDK isolation mode and disables Claude Code auto memory",
+    "SDK defaults isolate settings, disable auto memory, and remove Claude Code built-ins",
     async () => {
       let capturedOptions: Record<string, unknown> | undefined
       const fakeLayer = SDKClient.fake((p) => {
@@ -486,9 +486,46 @@ describe("ChatService (Tier-2 sim)", () => {
       )
       expect(capturedOptions).toBeDefined()
       expect(capturedOptions!["settingSources"]).toEqual([])
+      expect(capturedOptions!["tools"]).toEqual([])
+      expect(capturedOptions!["strictMcpConfig"]).toBe(true)
       expect(capturedOptions!["env"]).toMatchObject({
         CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
       })
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "programmatic MCP servers stay available while Claude Code built-ins are removed",
+    async () => {
+      const mcpServers = {
+        memory: { type: "sdk", instance: {} },
+        scheduler: { type: "sdk", instance: {} },
+      }
+      let capturedOptions: Record<string, unknown> | undefined
+      const fakeLayer = SDKClient.fake((p) => {
+        capturedOptions = (p.options ?? {}) as Record<string, unknown>
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+      await runScoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          yield* chat.createThread({
+            model: "claude-test",
+            title: "mcp-only-tools",
+            mcpServers,
+          })
+          yield* Effect.sleep("30 millis")
+        }),
+        fakeLayer,
+      )
+      expect(capturedOptions).toBeDefined()
+      expect(capturedOptions!["tools"]).toEqual([])
+      expect(capturedOptions!["mcpServers"]).toEqual(mcpServers)
     },
     { timeout: 10_000 },
   )

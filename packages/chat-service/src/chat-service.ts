@@ -212,6 +212,11 @@ export class ChatService extends Effect.Service<ChatService>()(
           // programmatically. Do not inherit Claude Code filesystem settings
           // unless a caller explicitly opts in for a thread.
           settingSources: opts.settingSources ?? [],
+          // Availability, not permission: `allowedTools` only pre-approves
+          // calls. `tools: []` removes Claude Code built-ins (Task, WebFetch,
+          // TodoWrite, Bash, etc.) while leaving Luna's MCP tools available.
+          tools: [],
+          strictMcpConfig: true,
           env: sdkEnv,
           permissionMode: opts.permissionMode ?? defaultPermissionMode,
           // Identity: forward caller-supplied systemPrompt INSIDE sdkOptions

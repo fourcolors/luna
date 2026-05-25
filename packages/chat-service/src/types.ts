@@ -127,9 +127,9 @@ export interface CreateThreadOptions {
    *  `LUNA_REPO_ROOT` env var if set, else `process.cwd()`. */
   readonly cwd?: string
   /** Which filesystem setting sources the SDK should load (skills, plugins,
-   *  MCP servers, CLAUDE.md, hooks). Defaults to `["user", "project"]` so
-   *  ~/.claude/skills + <cwd>/.claude/skills + project CLAUDE.md all load.
-   *  Pass `[]` to opt out of all filesystem-discovered config. */
+   *  MCP servers, CLAUDE.md, hooks). Defaults to SDK isolation mode (`[]`) so
+   *  Luna does not inherit Claude Code user/project/local presets. Pass
+   *  explicit sources only for a thread that should opt into that config. */
   readonly settingSources?: ReadonlyArray<"user" | "project" | "local">
   /** Permission mode for the SDK. Default is `"default"` (canUseTool prompts
    *  for sensitive ops). When the `LUNA_TRUSTED_LOCAL=1` env var is set, the
