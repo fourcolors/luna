@@ -21,6 +21,11 @@ SKIP_DEPS=false
 ENABLE_SERVICE=true
 START_SERVICE=true
 ROTATE_TOKEN=false
+EMBEDDER="${LUNA_EMBEDDER:-}"
+OLLAMA_BASE_URL="${LUNA_OLLAMA_BASE_URL:-}"
+OLLAMA_EMBED_MODEL="${LUNA_OLLAMA_EMBED_MODEL:-}"
+OLLAMA_EMBED_DIMENSION="${LUNA_OLLAMA_EMBED_DIMENSION:-}"
+OLLAMA_PROBE_TIMEOUT_MS="${LUNA_OLLAMA_PROBE_TIMEOUT_MS:-}"
 
 usage() {
   cat <<'EOF'
@@ -36,6 +41,13 @@ Options:
   --token <token>           UI WebSocket token to write if no token exists.
   --rotate-token            Replace existing UI token with --token.
   --bind-host <host>        LUNA_UI_WS_HOST value. Default: 0.0.0.0.
+  --embedder <name>         Memory embedder: stub or ollama. Omitted preserves/defaults.
+  --ollama-base-url <url>   Ollama base URL for LUNA_EMBEDDER=ollama.
+  --ollama-embed-model <m>  Ollama embedding model. Default in code: embeddinggemma.
+  --ollama-embed-dimension <n>
+                             Optional expected embedding dimension.
+  --ollama-probe-timeout-ms <n>
+                             Optional startup probe timeout.
   --skip-deps               Do not install apt packages or Bun.
   --no-enable               Do not run systemctl enable.
   --no-start                Do not start/restart the service.
@@ -57,6 +69,11 @@ while [[ $# -gt 0 ]]; do
     --token) TOKEN="${2:?missing --token value}"; shift 2 ;;
     --rotate-token) ROTATE_TOKEN=true; shift ;;
     --bind-host) BIND_HOST="${2:?missing --bind-host value}"; shift 2 ;;
+    --embedder) EMBEDDER="${2:?missing --embedder value}"; shift 2 ;;
+    --ollama-base-url) OLLAMA_BASE_URL="${2:?missing --ollama-base-url value}"; shift 2 ;;
+    --ollama-embed-model) OLLAMA_EMBED_MODEL="${2:?missing --ollama-embed-model value}"; shift 2 ;;
+    --ollama-embed-dimension) OLLAMA_EMBED_DIMENSION="${2:?missing --ollama-embed-dimension value}"; shift 2 ;;
+    --ollama-probe-timeout-ms) OLLAMA_PROBE_TIMEOUT_MS="${2:?missing --ollama-probe-timeout-ms value}"; shift 2 ;;
     --skip-deps) SKIP_DEPS=true; shift ;;
     --no-enable) ENABLE_SERVICE=false; shift ;;
     --no-start) START_SERVICE=false; shift ;;
@@ -153,6 +170,11 @@ luna_upsert_env "$ENV_FILE" "LUNA_REPO_ROOT" "$REPO_DIR"
 luna_upsert_env "$ENV_FILE" "LUNA_UI_WS_HOST" "$BIND_HOST"
 luna_upsert_env "$ENV_FILE" "LUNA_PROFILE" "$PROFILE"
 luna_upsert_env "$ENV_FILE" "LUNA_CHAT_SERVER_NAME" "$CHAT_SERVER_NAME"
+luna_upsert_env "$ENV_FILE" "LUNA_EMBEDDER" "$EMBEDDER"
+luna_upsert_env "$ENV_FILE" "LUNA_OLLAMA_BASE_URL" "$OLLAMA_BASE_URL"
+luna_upsert_env "$ENV_FILE" "LUNA_OLLAMA_EMBED_MODEL" "$OLLAMA_EMBED_MODEL"
+luna_upsert_env "$ENV_FILE" "LUNA_OLLAMA_EMBED_DIMENSION" "$OLLAMA_EMBED_DIMENSION"
+luna_upsert_env "$ENV_FILE" "LUNA_OLLAMA_PROBE_TIMEOUT_MS" "$OLLAMA_PROBE_TIMEOUT_MS"
 
 if luna_env_has_token "$ENV_FILE" && [[ "$ROTATE_TOKEN" == false ]]; then
   luna_info "Existing UI token found; preserving it"

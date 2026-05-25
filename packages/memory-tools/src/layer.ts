@@ -61,6 +61,13 @@ export function resolveDbPath(): string {
   return path
 }
 
+function parsePositiveIntegerEnv(name: string): number | undefined {
+  const value = process.env[name]
+  if (value === undefined || value.trim() === "") return undefined
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+}
+
 /**
  * Pick the embedder Layer based on `LUNA_EMBEDDER`. See module header for
  * the selection rules. Returns a Layer that produces `EmbedderService`;
@@ -73,7 +80,22 @@ export function selectEmbedderLayer(): Layer.Layer<
 > {
   const choice = process.env["LUNA_EMBEDDER"]?.toLowerCase()
   if (choice === "ollama") {
-    return makeOllamaEmbedderLayer()
+    const dimension = parsePositiveIntegerEnv("LUNA_OLLAMA_EMBED_DIMENSION")
+    const probeTimeoutMs = parsePositiveIntegerEnv(
+      "LUNA_OLLAMA_PROBE_TIMEOUT_MS",
+    )
+    return makeOllamaEmbedderLayer({
+      ...(process.env["LUNA_OLLAMA_EMBED_MODEL"] !== undefined
+        ? { model: process.env["LUNA_OLLAMA_EMBED_MODEL"] }
+        : {}),
+      ...(process.env["LUNA_OLLAMA_BASE_URL"] !== undefined
+        ? { baseUrl: process.env["LUNA_OLLAMA_BASE_URL"] }
+        : process.env["OLLAMA_HOST"] !== undefined
+          ? { baseUrl: process.env["OLLAMA_HOST"] }
+          : {}),
+      ...(dimension !== undefined ? { dimension } : {}),
+      ...(probeTimeoutMs !== undefined ? { probeTimeoutMs } : {}),
+    })
   }
   return StubEmbedderLayer
 }

@@ -8,8 +8,8 @@
  *
  * Phase 25 ships two Layers:
  *   - StubLayer    — deterministic seeded vector, no I/O. Tests + dev.
- *   - OllamaLayer  — HTTP to local ollama daemon (default model nomic-embed-text,
- *                    dimension 768). Probe-on-init: Layer construction fails
+ *   - OllamaLayer  — HTTP to local ollama daemon (default model embeddinggemma).
+ *                    Probe-on-init: Layer construction fails
  *                    with a clean EmbedderError if the daemon is unreachable.
  *
  * Future (deferred): Anthropic / OpenAI / fastembed-onnx Layers. Add only
@@ -115,7 +115,7 @@ export const makeStubEmbedderLayer = (
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface OllamaEmbedderOptions {
-  /** Model name. Default: "nomic-embed-text" (768-dim). */
+  /** Model name. Default: "embeddinggemma". */
   readonly model?: string
   /** Base URL. Default: "http://127.0.0.1:11434". */
   readonly baseUrl?: string
@@ -127,6 +127,58 @@ export interface OllamaEmbedderOptions {
 
 interface OllamaEmbedResponse {
   readonly embedding?: ReadonlyArray<number>
+  readonly embeddings?: ReadonlyArray<ReadonlyArray<number>>
+}
+
+function normalizeBaseUrl(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/, "")
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed
+  }
+  return `http://${trimmed}`
+}
+
+function normalizeVector(v: Float32Array): Float32Array {
+  let mag = 0
+  for (let i = 0; i < v.length; i++) {
+    const x = v[i] ?? 0
+    mag += x * x
+  }
+  const norm = Math.sqrt(mag)
+  if (norm === 0 || !Number.isFinite(norm)) return v
+  for (let i = 0; i < v.length; i++) v[i] = (v[i] ?? 0) / norm
+  return v
+}
+
+function parseOllamaEmbedding(json: OllamaEmbedResponse): Float32Array {
+  const current = json.embeddings?.[0]
+  const legacy = json.embedding
+  const embedding = current ?? legacy
+  if (!Array.isArray(embedding) || embedding.length === 0) {
+    throw new Error("ollama returned empty embedding")
+  }
+  return normalizeVector(Float32Array.from(embedding))
+}
+
+async function postOllamaEmbedding(
+  url: string,
+  body: unknown,
+  signal?: AbortSignal,
+): Promise<{ status: number; embedding: Float32Array }> {
+  const init: RequestInit = {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }
+  if (signal) init.signal = signal
+  const res = await fetch(url, init)
+  if (!res.ok) {
+    throw new Error(`ollama HTTP ${res.status}: ${await res.text()}`)
+  }
+  return {
+    status: res.status,
+    embedding: parseOllamaEmbedding((await res.json()) as OllamaEmbedResponse),
+  }
 }
 
 async function ollamaEmbedHttp(
@@ -135,21 +187,28 @@ async function ollamaEmbedHttp(
   text: string,
   signal?: AbortSignal,
 ): Promise<Float32Array> {
-  const init: RequestInit = {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model, prompt: text }),
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl)
+  try {
+    return (
+      await postOllamaEmbedding(
+        `${normalizedBaseUrl}/api/embed`,
+        { model, input: text },
+        signal,
+      )
+    ).embedding
+  } catch (cause) {
+    const message = String(cause)
+    if (!message.includes("ollama HTTP 404") && !message.includes("ollama HTTP 405")) {
+      throw cause
+    }
   }
-  if (signal) init.signal = signal
-  const res = await fetch(`${baseUrl}/api/embeddings`, init)
-  if (!res.ok) {
-    throw new Error(`ollama HTTP ${res.status}: ${await res.text()}`)
-  }
-  const json = (await res.json()) as OllamaEmbedResponse
-  if (!Array.isArray(json.embedding) || json.embedding.length === 0) {
-    throw new Error("ollama returned empty embedding")
-  }
-  return Float32Array.from(json.embedding)
+  return (
+    await postOllamaEmbedding(
+      `${normalizedBaseUrl}/api/embeddings`,
+      { model, prompt: text },
+      signal,
+    )
+  ).embedding
 }
 
 export const makeOllamaEmbedderLayer = (
@@ -158,7 +217,7 @@ export const makeOllamaEmbedderLayer = (
   Layer.effect(
     EmbedderService,
     Effect.gen(function* () {
-      const model = opts?.model ?? "nomic-embed-text"
+      const model = opts?.model ?? "embeddinggemma"
       const baseUrl = opts?.baseUrl ?? "http://127.0.0.1:11434"
       const probeTimeoutMs = opts?.probeTimeoutMs ?? 3000
 

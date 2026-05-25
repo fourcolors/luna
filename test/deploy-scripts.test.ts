@@ -160,6 +160,34 @@ exit 1
     expect(result.stdout).toContain("LUNA_RUNTIME_SCOPE=incus-container")
   })
 
+  it("container dry-run can configure an Ollama embedder without hardcoding local paths", () => {
+    const temp = makeTempDir()
+    const result = runScript("scripts/luna-container-create", [
+      "--dry-run",
+      "--profile",
+      "dev",
+      "--name",
+      "luna-dev",
+      "--repo-path",
+      join(temp, "repo"),
+      "--state-path",
+      join(temp, "state"),
+      "--token",
+      "test-token-1234567890-secret",
+      "--embedder",
+      "ollama",
+      "--ollama-base-url",
+      "http://10.77.0.1:11434",
+      "--ollama-embed-model",
+      "qwen3-embedding:0.6b",
+    ])
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("LUNA_EMBEDDER=ollama")
+    expect(result.stdout).toContain("LUNA_OLLAMA_BASE_URL=http://10.77.0.1:11434")
+    expect(result.stdout).toContain("LUNA_OLLAMA_EMBED_MODEL=qwen3-embedding:0.6b")
+  })
+
   it("container dry-run writes dev runtime metadata for the dev chat server", () => {
     const temp = makeTempDir()
     const result = runScript("scripts/luna-container-create", [
@@ -328,6 +356,44 @@ exit 1
     expect(result.stdout).toContain("Service: " + join(temp, "systemd", "luna-dev-chat-server.service"))
     expect(result.stdout).toContain("LUNA_PROFILE=dev")
     expect(result.stdout).toContain("LUNA_CHAT_SERVER_NAME=luna-dev-chat-server")
+  })
+
+  it("server install dry-run can configure an Ollama embedder", () => {
+    const temp = makeTempDir()
+
+    const result = runScript("scripts/luna-server-install", [
+      "--dry-run",
+      "--profile",
+      "stable",
+      "--repo-dir",
+      join(temp, "repo"),
+      "--luna-home",
+      join(temp, "state"),
+      "--service-dir",
+      join(temp, "systemd"),
+      "--token",
+      "server-token-1234567890-secret",
+      "--skip-deps",
+      "--no-enable",
+      "--embedder",
+      "ollama",
+      "--ollama-base-url",
+      "http://10.77.0.1:11434",
+      "--ollama-embed-model",
+      "embeddinggemma",
+      "--ollama-probe-timeout-ms",
+      "10000",
+    ], {
+      env: {
+        LUNA_TEST_BUN_PATH: "/root/.bun/bin/bun",
+      },
+    })
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("LUNA_EMBEDDER=ollama")
+    expect(result.stdout).toContain("LUNA_OLLAMA_BASE_URL=http://10.77.0.1:11434")
+    expect(result.stdout).toContain("LUNA_OLLAMA_EMBED_MODEL=embeddinggemma")
+    expect(result.stdout).toContain("LUNA_OLLAMA_PROBE_TIMEOUT_MS=10000")
   })
 
   it("server install validates the repo before installing host dependencies", () => {

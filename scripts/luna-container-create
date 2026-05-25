@@ -24,6 +24,11 @@ INIT_INCUS=false
 REPLACE=false
 SKIP_CLONE=false
 ENABLE_DANGEROUS_LOCAL_SHELL=false
+EMBEDDER="${LUNA_EMBEDDER:-}"
+OLLAMA_BASE_URL="${LUNA_OLLAMA_BASE_URL:-}"
+OLLAMA_EMBED_MODEL="${LUNA_OLLAMA_EMBED_MODEL:-}"
+OLLAMA_EMBED_DIMENSION="${LUNA_OLLAMA_EMBED_DIMENSION:-}"
+OLLAMA_PROBE_TIMEOUT_MS="${LUNA_OLLAMA_PROBE_TIMEOUT_MS:-}"
 
 usage() {
   cat <<'EOF'
@@ -42,6 +47,12 @@ Options:
   --host-ws-port <port>        Host WebSocket proxy port.
   --host-control-port <port>   Host control proxy port.
   --token <token>              UI WebSocket token to write if no token exists.
+  --embedder <name>            Memory embedder: stub or ollama. Omitted preserves/defaults.
+  --ollama-base-url <url>      Ollama base URL for LUNA_EMBEDDER=ollama.
+  --ollama-embed-model <m>     Ollama embedding model. Default in code: embeddinggemma.
+  --ollama-embed-dimension <n> Optional expected embedding dimension.
+  --ollama-probe-timeout-ms <n>
+                               Optional startup probe timeout.
   --init-incus                 Run `incus admin init --minimal` if Incus is uninitialized.
   --replace                    Delete an existing instance with this name before creating it.
   --skip-clone                 Require an existing repo path instead of cloning/updating it.
@@ -71,6 +82,11 @@ while [[ $# -gt 0 ]]; do
     --host-ws-port) HOST_WS_PORT="${2:?missing --host-ws-port value}"; shift 2 ;;
     --host-control-port) HOST_CONTROL_PORT="${2:?missing --host-control-port value}"; shift 2 ;;
     --token) TOKEN="${2:?missing --token value}"; shift 2 ;;
+    --embedder) EMBEDDER="${2:?missing --embedder value}"; shift 2 ;;
+    --ollama-base-url) OLLAMA_BASE_URL="${2:?missing --ollama-base-url value}"; shift 2 ;;
+    --ollama-embed-model) OLLAMA_EMBED_MODEL="${2:?missing --ollama-embed-model value}"; shift 2 ;;
+    --ollama-embed-dimension) OLLAMA_EMBED_DIMENSION="${2:?missing --ollama-embed-dimension value}"; shift 2 ;;
+    --ollama-probe-timeout-ms) OLLAMA_PROBE_TIMEOUT_MS="${2:?missing --ollama-probe-timeout-ms value}"; shift 2 ;;
     --init-incus) INIT_INCUS=true; shift ;;
     --replace) REPLACE=true; shift ;;
     --skip-clone) SKIP_CLONE=true; shift ;;
@@ -252,6 +268,11 @@ luna_upsert_env "$STATE_PATH/.env" "LUNA_UI_WS_HOST" "0.0.0.0"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_PROFILE" "$PROFILE"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_CHAT_SERVER_NAME" "$CHAT_SERVER_NAME"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_${PROFILE_ENV}_WS_URL" "ws://${HOST}:${HOST_WS_PORT}/ui"
+luna_upsert_env "$STATE_PATH/.env" "LUNA_EMBEDDER" "$EMBEDDER"
+luna_upsert_env "$STATE_PATH/.env" "LUNA_OLLAMA_BASE_URL" "$OLLAMA_BASE_URL"
+luna_upsert_env "$STATE_PATH/.env" "LUNA_OLLAMA_EMBED_MODEL" "$OLLAMA_EMBED_MODEL"
+luna_upsert_env "$STATE_PATH/.env" "LUNA_OLLAMA_EMBED_DIMENSION" "$OLLAMA_EMBED_DIMENSION"
+luna_upsert_env "$STATE_PATH/.env" "LUNA_OLLAMA_PROBE_TIMEOUT_MS" "$OLLAMA_PROBE_TIMEOUT_MS"
 
 if luna_env_has_token "$STATE_PATH/.env"; then
   luna_info "Existing UI token found; preserving it"

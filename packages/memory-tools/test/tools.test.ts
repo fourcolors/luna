@@ -18,7 +18,7 @@
  * Skipped under stock node (no bun:sqlite) — same gate as the rest of
  * the @luna/memory test suite.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { Effect, Layer, ManagedRuntime, Stream } from "effect"
 import { EmbedderService, StubEmbedderLayer } from "@luna/core"
 import {
@@ -187,12 +187,49 @@ describe("memory tools search mode", () => {
   })
 })
 
+const originalFetch = globalThis.fetch
+
+const setFetch = (fetchImpl: typeof globalThis.fetch) => {
+  Object.defineProperty(globalThis, "fetch", {
+    configurable: true,
+    writable: true,
+    value: fetchImpl,
+  })
+}
+
+const restoreFetch = () => {
+  if (originalFetch === undefined) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+    delete (globalThis as { fetch?: typeof globalThis.fetch }).fetch
+  } else {
+    setFetch(originalFetch)
+  }
+}
+
+const okJson = (body: unknown) =>
+  ({
+    ok: true,
+    status: 200,
+    json: () => Promise.resolve(body),
+    text: () => Promise.resolve(JSON.stringify(body)),
+  }) as Response
+
 // Embedder selection tests run regardless of bun (no sqlite involved).
 describe("selectEmbedderLayer", () => {
-  const ORIG = process.env["LUNA_EMBEDDER"]
+  const ORIG = {
+    LUNA_EMBEDDER: process.env["LUNA_EMBEDDER"],
+    LUNA_OLLAMA_BASE_URL: process.env["LUNA_OLLAMA_BASE_URL"],
+    LUNA_OLLAMA_EMBED_MODEL: process.env["LUNA_OLLAMA_EMBED_MODEL"],
+    LUNA_OLLAMA_EMBED_DIMENSION: process.env["LUNA_OLLAMA_EMBED_DIMENSION"],
+    LUNA_OLLAMA_PROBE_TIMEOUT_MS: process.env["LUNA_OLLAMA_PROBE_TIMEOUT_MS"],
+    OLLAMA_HOST: process.env["OLLAMA_HOST"],
+  }
   afterEach(() => {
-    if (ORIG === undefined) delete process.env["LUNA_EMBEDDER"]
-    else process.env["LUNA_EMBEDDER"] = ORIG
+    restoreFetch()
+    for (const [key, value] of Object.entries(ORIG)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
   })
 
   it("returns Stub when LUNA_EMBEDDER is unset", async () => {
@@ -209,10 +246,46 @@ describe("selectEmbedderLayer", () => {
     expect(provider).toBe("stub")
   })
 
-  // Ollama path: skip if the daemon isn't reachable. selectEmbedderLayer's
-  // ollama Layer probes during construction, so a missing daemon would
-  // fail the whole effect. Probe lazily inside the test.
+  it("passes Ollama model and base URL from env", async () => {
+    const mockFetch = vi.fn().mockResolvedValue(
+      okJson({ embeddings: [[1, 0, 0]] }),
+    )
+    setFetch(mockFetch as unknown as typeof globalThis.fetch)
+
+    process.env["LUNA_EMBEDDER"] = "ollama"
+    process.env["LUNA_OLLAMA_BASE_URL"] = "http://ollama.example:11434"
+    process.env["LUNA_OLLAMA_EMBED_MODEL"] = "qwen3-embedding:0.6b"
+    process.env["LUNA_OLLAMA_EMBED_DIMENSION"] = "3"
+    const layer = selectEmbedderLayer()
+
+    const provider = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const e = yield* EmbedderService
+          return e.provider
+        }),
+      ).pipe(Effect.provide(layer)),
+    )
+
+    expect(provider).toBe("ollama")
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://ollama.example:11434/api/embed",
+      expect.objectContaining({
+        body: JSON.stringify({
+          model: "qwen3-embedding:0.6b",
+          input: "ping",
+        }),
+      }),
+    )
+  })
+
+  // Live Ollama path: opt-in only. A local daemon can be reachable while the
+  // default embedding model is absent, which should not make unit tests flaky.
   it("returns Ollama when LUNA_EMBEDDER=ollama and daemon is reachable", async () => {
+    if (process.env["LUNA_TEST_OLLAMA"] !== "1") {
+      console.warn("[memory-tools] skipping Ollama test — set LUNA_TEST_OLLAMA=1")
+      return
+    }
     let reachable = false
     try {
       const res = await fetch("http://127.0.0.1:11434/", {

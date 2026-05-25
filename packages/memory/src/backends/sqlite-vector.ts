@@ -279,13 +279,23 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
             // SELECT-from-vtable is not supported by vectorlite, so we can't
             // diff easily). If NO (fresh db OR pre-Phase-27 db with rows in
             // memory_vectors but no v-table), we backfill once after CREATE.
-            const hnswExisted =
-              (db
-                .query(
-                  `SELECT name FROM sqlite_master
-                    WHERE type='table' AND name='memory_vectors_hnsw'`,
-                )
-                .get() as { name: string } | null | undefined) != null
+            const existingHnsw = db
+              .query(
+                `SELECT sql FROM sqlite_master
+                  WHERE type='table' AND name='memory_vectors_hnsw'`,
+              )
+              .get() as { sql: string | null } | null | undefined
+            let hnswExisted = existingHnsw != null
+            if (
+              existingHnsw?.sql != null &&
+              !existingHnsw.sql.includes(`float32[${embedder.dimension}]`)
+            ) {
+              db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ai`)
+              db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ad`)
+              db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_au`)
+              db.run(`DROP TABLE IF EXISTS memory_vectors_hnsw`)
+              hnswExisted = false
+            }
             // Create the HNSW v-table mirroring memory_vectors by rowid.
             // max_elements is required at create-time; 100k is well above any
             // realistic single-process working set and small in memory.
@@ -320,7 +330,8 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
               // generic SELECT, so we read the source side and INSERT … SELECT.
               db.run(
                 `INSERT INTO memory_vectors_hnsw(rowid, embedding)
-                   SELECT rowid, embedding FROM memory_vectors`,
+                   SELECT rowid, embedding FROM memory_vectors
+                    WHERE dimension = ${embedder.dimension}`,
               )
             }
             hnswEnabled = true

@@ -66,6 +66,54 @@ scripts/luna-server-install \
 
 ## Dev Runtime
 
+### Shared Ollama Embedder
+
+Luna can use a real local embedding model for memory by pointing the container
+at an Ollama daemon on the host. This keeps model downloads out of each
+container and lets stable/dev share the same embedding service.
+
+On jax-box:
+
+```bash
+ssh root@jax-box
+ollama pull embeddinggemma
+
+INCUS_GW="$(incus exec luna-dev -- ip route | awk '/default/ {print $3; exit}')"
+systemctl edit ollama
+```
+
+Use this systemd override, replacing the IP with `$INCUS_GW` if different:
+
+```ini
+[Service]
+Environment="OLLAMA_HOST=10.77.0.1:11434"
+```
+
+Then restart and verify from inside the container:
+
+```bash
+systemctl daemon-reload
+systemctl restart ollama
+incus exec luna-dev -- curl -fsS http://10.77.0.1:11434/api/tags
+```
+
+Existing containers can opt into the real embedder by writing these values to
+their Luna state `.env`, then restarting the chat server:
+
+```bash
+incus exec luna-dev -- bash -lc '
+  cd /root/luna
+  scripts/luna-server-install \
+    --profile dev \
+    --repo-dir /root/luna \
+    --luna-home /root/.luna \
+    --skip-deps \
+    --embedder ollama \
+    --ollama-base-url http://10.77.0.1:11434 \
+    --ollama-embed-model embeddinggemma
+'
+```
+
 Create the dev container:
 
 ```bash
@@ -81,6 +129,9 @@ scripts/luna-container-create \
   --host jax-box \
   --host-ws-port 5753 \
   --host-control-port 5754 \
+  --embedder ollama \
+  --ollama-base-url http://10.77.0.1:11434 \
+  --ollama-embed-model embeddinggemma \
   --token '<dev-ui-ws-token>'
 ```
 
