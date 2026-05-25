@@ -112,6 +112,25 @@ describe("ObsToolsLayer — structural invariants", () => {
     ])
   })
 
+  it("makeObsTools marks every observability tool as eagerly loaded", async () => {
+    const tools = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const notes = yield* AgentNotesService
+          const analytics = yield* AnalyticsService
+          return makeObsTools(notes, analytics, () => "test-session")
+        }),
+      ).pipe(Effect.provide(obsStack)),
+    )
+
+    for (const tool of tools) {
+      const meta = (tool as unknown as { _meta?: Record<string, unknown> })._meta
+      expect(meta).toMatchObject({ "anthropic/alwaysLoad": true })
+      expect(typeof meta?.["anthropic/searchHint"]).toBe("string")
+      expect((meta?.["anthropic/searchHint"] as string).length).toBeGreaterThan(0)
+    }
+  })
+
   it("bindSession is a no-throw callable", async () => {
     await Effect.runPromise(
       Effect.scoped(

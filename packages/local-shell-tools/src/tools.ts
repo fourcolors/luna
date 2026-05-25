@@ -5,6 +5,11 @@ import type { LocalShellBridge } from "@luna/ui-ws"
 
 const DEFAULT_TIMEOUT_MS = 120_000
 const MAX_TIMEOUT_MS = 120_000
+const LOCAL_SHELL_TOOL_DISCOVERY = {
+  alwaysLoad: true,
+  searchHint:
+    "Local shell command tool for running commands through an attached Luna terminal client when machine access is enabled.",
+} as const
 
 const runShape = {
   command: z
@@ -38,6 +43,7 @@ export const makeLocalShellTools = (
       "The terminal client may ask the user for approval or run the command in an auto-approved attached session. " +
       "Use this only when local machine execution is needed for the current task.",
     inputSchema: runShape,
+    ...LOCAL_SHELL_TOOL_DISCOVERY,
     handler: (args) =>
       Effect.gen(function* () {
         const threadId = currentThreadId()

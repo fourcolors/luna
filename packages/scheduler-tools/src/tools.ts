@@ -50,6 +50,12 @@ const cancelShape = {
     .describe("The triggerId returned by schedule_create."),
 }
 
+const SCHEDULER_TOOL_DISCOVERY = {
+  alwaysLoad: true,
+  searchHint:
+    "Scheduler tools for creating, listing, and cancelling recurring cron reminders and background tasks.",
+} as const
+
 /**
  * Build the three scheduler tools bound to a resolved TriggerAgentApi and a
  * long-lived Layer Scope.
@@ -73,6 +79,7 @@ export const makeSchedulerTools = (
       "triggerId you can pass to schedule_cancel to stop it. " +
       "Use standard 5-field cron syntax: minute hour day-of-month month day-of-week.",
     inputSchema: createShape,
+    ...SCHEDULER_TOOL_DISCOVERY,
     handler: (args) =>
       Effect.gen(function* () {
         const label = args.label ?? "scheduled-job"
@@ -115,6 +122,7 @@ export const makeSchedulerTools = (
       "List all currently active schedules. Returns an array of trigger " +
       "summaries including their id, cron expression, and registration time.",
     inputSchema: listShape,
+    ...SCHEDULER_TOOL_DISCOVERY,
     handler: (_args) =>
       Effect.gen(function* () {
         const triggers = yield* trigger.list
@@ -135,6 +143,7 @@ export const makeSchedulerTools = (
       "Cancel an active schedule by its triggerId. Returns { cancelled: true } " +
       "if the trigger was found and stopped, { cancelled: false } if not found.",
     inputSchema: cancelShape,
+    ...SCHEDULER_TOOL_DISCOVERY,
     handler: (args) =>
       Effect.gen(function* () {
         const cancelled = yield* trigger.cancel(args.triggerId)

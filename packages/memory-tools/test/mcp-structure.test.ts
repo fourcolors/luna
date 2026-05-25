@@ -136,6 +136,32 @@ describe.skipIf(!hasBunSqlite)("§4.3 MemoryToolsLayer — structural invariants
       await runtime.dispose()
     }
   })
+
+  it("makeMemoryTools(router) marks every memory tool as eagerly loaded", async () => {
+    const runtime = ManagedRuntime.make(baseLayer) as ManagedRuntime.ManagedRuntime<
+      typeof MemoryRouterTag.Service,
+      never
+    >
+
+    try {
+      const router = await runtime.runPromise(
+        Effect.gen(function* () {
+          return yield* MemoryRouterTag
+        }),
+      )
+
+      const tools = makeMemoryTools(router)
+
+      for (const tool of tools) {
+        const meta = (tool as unknown as { _meta?: Record<string, unknown> })._meta
+        expect(meta).toMatchObject({ "anthropic/alwaysLoad": true })
+        expect(typeof meta?.["anthropic/searchHint"]).toBe("string")
+        expect((meta?.["anthropic/searchHint"] as string).length).toBeGreaterThan(0)
+      }
+    } finally {
+      await runtime.dispose()
+    }
+  })
 })
 
 // Non-bun structural check: MEMORY_SYSTEM_PROMPT_ADDENDUM is always defined,

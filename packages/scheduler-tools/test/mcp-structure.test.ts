@@ -91,6 +91,25 @@ describe("§4.3 SchedulerToolsLayer — structural invariants", () => {
     const names = tools.map((t) => (t as unknown as { name: string }).name)
     expect(names).toEqual(["schedule_create", "schedule_list", "schedule_cancel"])
   })
+
+  it("makeSchedulerTools marks every scheduler tool as eagerly loaded", async () => {
+    const tools = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const trigger = yield* TriggerAgent
+          const layerScope = yield* Effect.scope
+          return makeSchedulerTools(trigger, layerScope)
+        }),
+      ).pipe(Effect.provide(schedulerStack)),
+    )
+
+    for (const tool of tools) {
+      const meta = (tool as unknown as { _meta?: Record<string, unknown> })._meta
+      expect(meta).toMatchObject({ "anthropic/alwaysLoad": true })
+      expect(typeof meta?.["anthropic/searchHint"]).toBe("string")
+      expect((meta?.["anthropic/searchHint"] as string).length).toBeGreaterThan(0)
+    }
+  })
 })
 
 describe("§4.3 SchedulerToolsService — constant invariants (all runtimes)", () => {

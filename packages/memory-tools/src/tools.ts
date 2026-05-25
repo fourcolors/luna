@@ -26,6 +26,11 @@ import { defineTool, ToolError } from "@luna/tools"
 import { makeRecord, type MemoryRouter } from "@luna/memory"
 
 const DEFAULT_NAMESPACE = "notes"
+const MEMORY_TOOL_DISCOVERY = {
+  alwaysLoad: true,
+  searchHint:
+    "Long-term memory tools for saving, searching, and deleting durable user facts, preferences, project context, and prior conversation notes.",
+} as const
 
 // We don't import Zod types from the SDK; the SDK accepts a raw shape
 // (Record<string, ZodType>) and treats it opaquely. zod v4 ships flat
@@ -103,6 +108,7 @@ export const makeMemoryTools = (router: MemoryRouter) => {
       "their projects, or their preferences — anything you'd want to recall in " +
       "a future conversation.",
     inputSchema: saveShape,
+    ...MEMORY_TOOL_DISCOVERY,
     handler: (args) =>
       Effect.gen(function* () {
         const id = newId()
@@ -132,6 +138,7 @@ export const makeMemoryTools = (router: MemoryRouter) => {
       "answering questions about the user's prior context, preferences, or " +
       "anything you might have stored earlier with memory_save.",
     inputSchema: searchShape,
+    ...MEMORY_TOOL_DISCOVERY,
     handler: (args) =>
       Effect.gen(function* () {
         const limit = args.limit ?? 5
@@ -168,6 +175,7 @@ export const makeMemoryTools = (router: MemoryRouter) => {
       "was removed, { deleted: false } when no record matched. Use only " +
       "when the user explicitly asks to forget something.",
     inputSchema: deleteShape,
+    ...MEMORY_TOOL_DISCOVERY,
     handler: (args) =>
       Effect.gen(function* () {
         const removed = yield* router.delete(args.id).pipe(

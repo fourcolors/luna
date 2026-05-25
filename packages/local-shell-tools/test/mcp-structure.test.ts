@@ -152,6 +152,16 @@ describe("LocalShellToolsLayer - structural invariants", () => {
       "local_shell_run",
     ])
   })
+
+  it("makeLocalShellTools marks local_shell_run as eagerly loaded", () => {
+    const bridge = createLocalShellBridge()
+    const tools = makeLocalShellTools(bridge, () => "thr_1")
+    const meta = (tools[0] as unknown as { _meta?: Record<string, unknown> })._meta
+
+    expect(meta).toMatchObject({ "anthropic/alwaysLoad": true })
+    expect(typeof meta?.["anthropic/searchHint"]).toBe("string")
+    expect((meta?.["anthropic/searchHint"] as string).length).toBeGreaterThan(0)
+  })
 })
 
 describe("LocalShellToolsService - prompt invariants", () => {

@@ -43,6 +43,8 @@ export interface DefineToolSpec<Schema extends AnyZodRawShape> {
   readonly name: string
   readonly description: string
   readonly inputSchema: Schema
+  readonly searchHint?: string
+  readonly alwaysLoad?: boolean
   readonly handler: (
     args: InferShape<Schema>,
   ) => Effect.Effect<JSONOutput, ToolError>
@@ -77,6 +79,10 @@ export const defineTool = <Schema extends AnyZodRawShape>(
         isError: true,
         content: [{ type: "text" as const, text: message }],
       }
+    },
+    {
+      ...(spec.searchHint !== undefined ? { searchHint: spec.searchHint } : {}),
+      ...(spec.alwaysLoad !== undefined ? { alwaysLoad: spec.alwaysLoad } : {}),
     },
   )
 

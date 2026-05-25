@@ -145,6 +145,12 @@ const eventsSearchShape = {
     .describe("Maximum number of events to return. Default 50."),
 }
 
+const OBS_TOOL_DISCOVERY = {
+  alwaysLoad: true,
+  searchHint:
+    "Observability tools for writing self-observation notes and inspecting recent notes, session history, anomalies, and tool usage.",
+} as const
+
 // ── Tool factory ──────────────────────────────────────────────────────────────
 
 /**
@@ -172,6 +178,7 @@ export const makeObsTools = (
       "key milestones; kind='decision' when choosing between approaches; " +
       "kind='reflection' at session end to summarize what was accomplished.",
     inputSchema: noteShape,
+    ...OBS_TOOL_DISCOVERY,
     handler: (args) =>
       Effect.gen(function* () {
         const sessionId = args.session_id ?? currentSessionId() ?? "unknown"
@@ -207,6 +214,7 @@ export const makeObsTools = (
       "goals/decisions before starting new work. Filters by session, kind, or both. " +
       "Returns notes sorted newest-first.",
     inputSchema: notesRecentShape,
+    ...OBS_TOOL_DISCOVERY,
     handler: (args) =>
       Effect.gen(function* () {
         const limit = args.limit ?? 20
@@ -301,6 +309,7 @@ export const makeObsTools = (
       "Use this to understand why a past session behaved as it did — prerequisite " +
       "to any targeted self-improvement on tool efficiency or error patterns.",
     inputSchema: sessionExplainShape,
+    ...OBS_TOOL_DISCOVERY,
     handler: (args) =>
       Effect.gen(function* () {
         const detail = yield* analytics
@@ -339,6 +348,7 @@ export const makeObsTools = (
       "reviewing with obs_session_explain or obs_sessions_search to understand what " +
       "went wrong. Primary entry point for daily self-improvement feedback loops.",
     inputSchema: sessionAnomaliesShape,
+    ...OBS_TOOL_DISCOVERY,
     handler: (args) =>
       Effect.gen(function* () {
         const anomalies = yield* analytics
@@ -383,6 +393,7 @@ export const makeObsTools = (
       "up with obs_session_explain. Complements obs_session_anomalies (anomaly detection) with " +
       "general-purpose session search.",
     inputSchema: eventsSearchShape,
+    ...OBS_TOOL_DISCOVERY,
     handler: (args) =>
       Effect.gen(function* () {
         const limit = args.limit ?? 50

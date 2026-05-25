@@ -78,6 +78,22 @@ describe("defineTool", () => {
     await def.handler({ passed: "through", n: 7 }, undefined)
     expect(seen).toEqual({ passed: "through", n: 7 })
   })
+
+  it("passes SDK discovery metadata through to the MCP tool definition", () => {
+    const def = defineTool({
+      name: "discoverable",
+      description: "d",
+      inputSchema: emptyShape,
+      searchHint: "Find durable user facts and preferences.",
+      alwaysLoad: true,
+      handler: () => Effect.succeed("ok"),
+    })
+
+    expect(def._meta).toMatchObject({
+      "anthropic/searchHint": "Find durable user facts and preferences.",
+      "anthropic/alwaysLoad": true,
+    })
+  })
 })
 
 describe("makeSdkMcpServer", () => {
