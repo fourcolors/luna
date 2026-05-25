@@ -9,9 +9,19 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { describe, expect, it } from "vitest"
-import { Effect } from "effect"
-import { float32ToBuffer, type EmbedderApi } from "@luna/core"
-import { getMemoryVectorStatus } from "../src/backends/sqlite-vector-maintenance.js"
+import { Effect, Layer } from "effect"
+import {
+  StubEmbedderLayer,
+  float32ToBuffer,
+  type EmbedderApi,
+} from "@luna/core"
+import { SqliteVectorBackend } from "../src/backends/sqlite-vector.js"
+import { LunaSqliteBootstrapLive } from "../src/backends/vectorlite-bootstrap.js"
+import {
+  getMemoryVectorStatus,
+  reembedMemoryVectors,
+} from "../src/backends/sqlite-vector-maintenance.js"
+import { makeRecord } from "../src/types.js"
 
 const hasBunSqlite = (() => {
   return typeof (process.versions as { bun?: string }).bun === "string"
@@ -25,6 +35,14 @@ const activeEmbeddingGemma: EmbedderApi = {
   dimension: 768,
   embeddingFormat: "memory-note-v1",
   embed: () => Effect.succeed(new Float32Array(768)),
+}
+
+const replacementStub: EmbedderApi = {
+  provider: "replacement",
+  model: "replacement",
+  dimension: 64,
+  embeddingFormat: "memory-note-v1",
+  embed: () => Effect.succeed(new Float32Array(64).fill(1 / 8)),
 }
 
 async function makeOldVectorDb(): Promise<{
@@ -140,6 +158,55 @@ d("sqlite-vector maintenance", () => {
       ])
     } finally {
       fixture.cleanup()
+    }
+  })
+
+  it("re-embeds rows in a DB with an existing HNSW table", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "luna-hnsw-reembed-"))
+    const dbPath = path.join(dir, "memory.db")
+    try {
+      const layer = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      const hnswEnabled = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            yield* b.put(
+              makeRecord({
+                id: "hnsw-stale",
+                namespace: "notes",
+                kind: "note",
+                content: { text: "memory row with hnsw trigger" },
+              }),
+            )
+            return b.hnswEnabled
+          }).pipe(Effect.provide(layer)),
+        ),
+      )
+      if (!hnswEnabled) return
+
+      const result = await Effect.runPromise(
+        reembedMemoryVectors({
+          dbPath,
+          embedder: replacementStub,
+          dryRun: false,
+        }),
+      )
+
+      expect(result.reembedded).toBe(1)
+      const status = await Effect.runPromise(
+        getMemoryVectorStatus({ dbPath, embedder: replacementStub }),
+      )
+      expect(status.staleVectors).toBe(0)
+      expect(status.hnsw).toEqual({
+        present: true,
+        dimension: 64,
+        compatible: true,
+      })
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
     }
   })
 })

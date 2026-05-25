@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 import { Effect } from "effect"
 import { MemoryBackendError, type EmbedderApi } from "@luna/core"
+import { initVectorlite } from "./vectorlite-init.js"
 
 type BunStatement = {
   readonly get: (...p: unknown[]) => unknown
@@ -11,6 +12,7 @@ type BunStatement = {
 type BunDatabase = {
   readonly run: (sql: string) => void
   readonly query: (sql: string) => BunStatement
+  readonly loadExtension?: (path: string) => void
   readonly close: () => void
 }
 
@@ -328,11 +330,15 @@ function auditRow(row: VectorAuditRow, embedder: EmbedderApi): MemoryVectorStatu
 }
 
 async function openDb(dbPath: string): Promise<BunDatabase> {
+  const vlInit = initVectorlite()
   const bunSqlite = (await import("bun:sqlite" as string)) as {
     Database: new (p: string) => BunDatabase
   }
   const db = new bunSqlite.Database(dbPath)
   db.run("PRAGMA foreign_keys = ON")
+  if (vlInit.ok) {
+    db.loadExtension?.(vlInit.path)
+  }
   return db
 }
 
