@@ -1,4 +1,5 @@
 import { homedir } from "node:os"
+import { posix as pathPosix } from "node:path"
 import { createInterface } from "node:readline"
 import type { Readable, Writable } from "node:stream"
 import type { ServerFrame } from "@luna/ui-ws"
@@ -35,6 +36,7 @@ const DEFAULT_LOCAL_COMMAND_TIMEOUT_MS = 30_000
 const MAX_LOCAL_COMMAND_OUTPUT_BYTES = 64 * 1024
 const QUIT_DRAIN_MS = 1_000
 const THREAD_CREATE_DRAIN_MS = 100
+const AUTO_APPROVED_LOCAL_SHELL_ROOT = "/root/luna"
 
 const USAGE = [
   "Usage: luna chat [options]",
@@ -119,6 +121,15 @@ const deniedLocalShellResult = (
   durationMs: 0,
   timedOut: false,
 })
+
+export const isAutoApprovedLocalShellCwd = (cwd: string | undefined): boolean => {
+  if (cwd === undefined) return true
+  if (!cwd.startsWith("/")) return false
+
+  const normalized = pathPosix.normalize(cwd)
+  return normalized === AUTO_APPROVED_LOCAL_SHELL_ROOT
+    || normalized.startsWith(`${AUTO_APPROVED_LOCAL_SHELL_ROOT}/`)
+}
 
 const connectWithRecovery = async (
   cfg: ReturnType<typeof loadChatConfig>,
@@ -306,6 +317,10 @@ export async function runLunaCli(
     }
     if (frame.threadId !== currentThreadId) {
       client.send(deniedLocalShellResult(frame, "local shell unavailable for thread"))
+      return
+    }
+    if (cfg.dangerouslyAutoApproveLocalShell && !isAutoApprovedLocalShellCwd(frame.cwd)) {
+      client.send(deniedLocalShellResult(frame, "local shell cwd outside approved root"))
       return
     }
 
