@@ -193,6 +193,12 @@ export class ChatService extends Effect.Service<ChatService>()(
             : "default"
         const pathToClaudeCodeExecutable =
           process.env["LUNA_CLAUDE_CODE_EXECUTABLE"]?.trim()
+        const sdkEnv: Record<string, string | undefined> = {
+          CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+          ...(process.env["CLAUDE_CONFIG_DIR"]?.trim()
+            ? { CLAUDE_CONFIG_DIR: process.env["CLAUDE_CONFIG_DIR"] }
+            : {}),
+        }
         const sdkOptions: Record<string, unknown> = {
           includePartialMessages: true,
           cwd:
@@ -206,9 +212,7 @@ export class ChatService extends Effect.Service<ChatService>()(
           // programmatically. Do not inherit Claude Code filesystem settings
           // unless a caller explicitly opts in for a thread.
           settingSources: opts.settingSources ?? [],
-          env: {
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
-          },
+          env: sdkEnv,
           permissionMode: opts.permissionMode ?? defaultPermissionMode,
           // Identity: forward caller-supplied systemPrompt INSIDE sdkOptions
           // so the SDK adapter actually sees it. The top-level

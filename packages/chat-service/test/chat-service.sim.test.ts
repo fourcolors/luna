@@ -494,6 +494,42 @@ describe("ChatService (Tier-2 sim)", () => {
   )
 
   it(
+    "SDK env defaults preserve CLAUDE_CONFIG_DIR while disabling Claude Code auto memory",
+    async () => {
+      const prev = process.env["CLAUDE_CONFIG_DIR"]
+      process.env["CLAUDE_CONFIG_DIR"] = "/tmp/luna-claude-config-test"
+      try {
+        let capturedOptions: Record<string, unknown> | undefined
+        const fakeLayer = SDKClient.fake((p) => {
+          capturedOptions = (p.options ?? {}) as Record<string, unknown>
+          return makeChatLoopQuery({
+            prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+            sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+            responseFor: (t) => `echo:${t}`,
+          })
+        })
+        await runScoped(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+            yield* chat.createThread({ model: "claude-test", title: "env" })
+            yield* Effect.sleep("30 millis")
+          }),
+          fakeLayer,
+        )
+        expect(capturedOptions).toBeDefined()
+        expect(capturedOptions!["env"]).toMatchObject({
+          CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+          CLAUDE_CONFIG_DIR: "/tmp/luna-claude-config-test",
+        })
+      } finally {
+        if (prev === undefined) delete process.env["CLAUDE_CONFIG_DIR"]
+        else process.env["CLAUDE_CONFIG_DIR"] = prev
+      }
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
     "settingSources can be explicitly opted into per-thread",
     async () => {
       let capturedOptions: Record<string, unknown> | undefined
