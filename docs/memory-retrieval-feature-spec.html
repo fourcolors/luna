@@ -1,0 +1,861 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Luna Memory Retrieval Plan</title>
+<style>
+  :root {
+    --bg: #0c0f14;
+    --panel: #151a21;
+    --panel-2: #1d242e;
+    --panel-3: #10151c;
+    --border: #2b3440;
+    --text: #e8edf3;
+    --muted: #9aa6b2;
+    --soft: #c8d2dc;
+    --blue: #6aa7ff;
+    --green: #4fca82;
+    --gold: #e5b44b;
+    --red: #ef6b73;
+    --purple: #b891ff;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    background: var(--bg);
+    color: var(--text);
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    line-height: 1.5;
+  }
+
+  body {
+    margin: 0;
+  }
+
+  header {
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 28px;
+  }
+
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+    gap: 28px;
+    padding: 36px 28px 30px;
+  }
+
+  h1,
+  h2,
+  h3,
+  p {
+    margin-top: 0;
+  }
+
+  h1 {
+    margin-bottom: 10px;
+    font-size: clamp(30px, 4vw, 48px);
+    line-height: 1.05;
+    letter-spacing: 0;
+  }
+
+  h2 {
+    margin-bottom: 12px;
+    font-size: 19px;
+    letter-spacing: 0;
+  }
+
+  h3 {
+    margin-bottom: 8px;
+    font-size: 15px;
+    letter-spacing: 0;
+  }
+
+  p {
+    color: var(--soft);
+  }
+
+  .lede {
+    max-width: 720px;
+    margin-bottom: 18px;
+    color: var(--muted);
+    font-size: 16px;
+  }
+
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 20px;
+  }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel-2);
+    color: var(--soft);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
+  .status-box {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel-3);
+    padding: 18px;
+  }
+
+  .status-box strong {
+    color: var(--text);
+  }
+
+  .status-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 14px;
+  }
+
+  .stat {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel-2);
+    padding: 12px;
+  }
+
+  .stat .value {
+    color: var(--text);
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .stat .label {
+    margin-top: 5px;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+
+  main {
+    padding: 34px 0 64px;
+  }
+
+  section {
+    margin-bottom: 34px;
+  }
+
+  .section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 9px;
+    margin-bottom: 16px;
+  }
+
+  .section-head p {
+    margin-bottom: 0;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 14px;
+  }
+
+  .span-4 {
+    grid-column: span 4;
+  }
+
+  .span-5 {
+    grid-column: span 5;
+  }
+
+  .span-6 {
+    grid-column: span 6;
+  }
+
+  .span-7 {
+    grid-column: span 7;
+  }
+
+  .span-12 {
+    grid-column: span 12;
+  }
+
+  .panel {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    padding: 16px;
+  }
+
+  .panel h3 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .dot {
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--blue);
+  }
+
+  .dot.green {
+    background: var(--green);
+  }
+
+  .dot.gold {
+    background: var(--gold);
+  }
+
+  .dot.red {
+    background: var(--red);
+  }
+
+  .dot.purple {
+    background: var(--purple);
+  }
+
+  code,
+  pre {
+    font-family: var(--mono);
+  }
+
+  code {
+    color: #dbeafe;
+    font-size: 0.94em;
+  }
+
+  pre {
+    overflow-x: auto;
+    margin: 12px 0 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #090c11;
+    padding: 12px;
+    color: #d6e2ee;
+    font-size: 12px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  th,
+  td {
+    vertical-align: top;
+    border-bottom: 1px solid var(--border);
+    padding: 10px 8px;
+    text-align: left;
+  }
+
+  th {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  td {
+    color: var(--soft);
+  }
+
+  tr:last-child td {
+    border-bottom: 0;
+  }
+
+  ul,
+  ol {
+    margin: 10px 0 0 20px;
+    padding: 0;
+    color: var(--soft);
+  }
+
+  li + li {
+    margin-top: 6px;
+  }
+
+  .flow {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(130px, 1fr));
+    gap: 10px;
+  }
+
+  .flow-step {
+    min-height: 116px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel-2);
+    padding: 12px;
+    position: relative;
+  }
+
+  .flow-step::after {
+    content: "";
+    position: absolute;
+    right: -10px;
+    top: 50%;
+    width: 10px;
+    height: 1px;
+    background: var(--border);
+  }
+
+  .flow-step:last-child::after {
+    display: none;
+  }
+
+  .flow-step b {
+    display: block;
+    margin-bottom: 5px;
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  .flow-step span {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .spec {
+    border-left: 4px solid var(--blue);
+  }
+
+  .spec.priority-0 {
+    border-left-color: var(--red);
+  }
+
+  .spec.priority-1 {
+    border-left-color: var(--gold);
+  }
+
+  .spec.priority-2 {
+    border-left-color: var(--green);
+  }
+
+  .spec .spec-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    margin-bottom: 12px;
+  }
+
+  .tag {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel-2);
+    color: var(--muted);
+    padding: 3px 7px;
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+
+  .callout {
+    border: 1px solid rgba(229, 180, 75, 0.5);
+    border-radius: 8px;
+    background: rgba(229, 180, 75, 0.08);
+    padding: 13px 14px;
+    color: var(--soft);
+  }
+
+  .callout strong {
+    color: var(--gold);
+  }
+
+  .danger {
+    border-color: rgba(239, 107, 115, 0.55);
+    background: rgba(239, 107, 115, 0.08);
+  }
+
+  .danger strong {
+    color: var(--red);
+  }
+
+  footer {
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    padding: 24px 0;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
+  @media (max-width: 900px) {
+    .hero {
+      grid-template-columns: 1fr;
+    }
+
+    .span-4,
+    .span-5,
+    .span-6,
+    .span-7,
+    .span-12 {
+      grid-column: span 12;
+    }
+
+    .flow {
+      grid-template-columns: 1fr;
+    }
+
+    .flow-step::after {
+      display: none;
+    }
+  }
+
+  @media (max-width: 560px) {
+    .wrap,
+    .hero {
+      padding-left: 18px;
+      padding-right: 18px;
+    }
+
+    .status-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap hero">
+    <div>
+      <h1>Luna Memory Retrieval Plan</h1>
+      <p class="lede">
+        A feature-spec breakdown for improving Luna's memory search while keeping the current SQLite database as the source of truth.
+      </p>
+      <div class="meta">
+        <span class="pill">branch: dev</span>
+        <span class="pill">date: 2026-05-25</span>
+        <span class="pill">backend: sqlite-vector</span>
+        <span class="pill">model: embeddinggemma via Ollama</span>
+      </div>
+    </div>
+    <aside class="status-box">
+      <p><strong>Live DB snapshot checked on luna-dev.</strong></p>
+      <p>
+        The deployed memory DB is already on the new runtime shape, but existing vectors still need migration from the old stub embedder.
+      </p>
+      <div class="status-grid">
+        <div class="stat">
+          <div class="value">5</div>
+          <div class="label">memory_keyed rows</div>
+        </div>
+        <div class="stat">
+          <div class="value">5</div>
+          <div class="label">memory_vectors rows</div>
+        </div>
+        <div class="stat">
+          <div class="value">64d</div>
+          <div class="label">stored vector dimension</div>
+        </div>
+        <div class="stat">
+          <div class="value">768d</div>
+          <div class="label">active HNSW dimension</div>
+        </div>
+      </div>
+    </aside>
+  </div>
+</header>
+
+<main class="wrap">
+  <section>
+    <div class="section-head">
+      <h2>Current Database Contract</h2>
+      <p>/root/.luna/memory.db</p>
+    </div>
+    <div class="grid">
+      <div class="panel span-6">
+        <h3><span class="dot"></span>Canonical Record Store</h3>
+        <p>
+          <code>memory_keyed</code> owns the durable memory record. This table is the safe migration source because it keeps namespace, kind, opaque JSON content, schema version, timestamps, and tags.
+        </p>
+        <pre><code>CREATE TABLE memory_keyed (
+  id TEXT PRIMARY KEY,
+  namespace TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  content_json TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  tags_json TEXT NOT NULL
+);</code></pre>
+      </div>
+
+      <div class="panel span-6">
+        <h3><span class="dot green"></span>Searchable Vector Store</h3>
+        <p>
+          <code>memory_vectors</code> is one-to-one with <code>memory_keyed</code>. It stores the vector blob and the plain text mirrored into FTS5. Today it does not record which embedding model, prompt format, or source hash produced the vector.
+        </p>
+        <pre><code>CREATE TABLE memory_vectors (
+  id TEXT PRIMARY KEY REFERENCES memory_keyed(id) ON DELETE CASCADE,
+  namespace TEXT NOT NULL,
+  embedding BLOB NOT NULL,
+  dimension INTEGER NOT NULL,
+  text TEXT NOT NULL,
+  ts INTEGER NOT NULL
+);</code></pre>
+      </div>
+
+      <div class="panel span-6">
+        <h3><span class="dot gold"></span>Keyword Index</h3>
+        <p>
+          <code>memory_fts</code> indexes <code>memory_vectors.text</code> with FTS5. Insert, update, and delete triggers keep the keyword index synchronized with vector rows.
+        </p>
+        <pre><code>CREATE VIRTUAL TABLE memory_fts
+  USING fts5(
+    text,
+    content='memory_vectors',
+    content_rowid='rowid',
+    tokenize='porter unicode61'
+  );</code></pre>
+      </div>
+
+      <div class="panel span-6">
+        <h3><span class="dot purple"></span>Approximate Vector Index</h3>
+        <p>
+          <code>memory_vectors_hnsw</code> is a Vectorlite virtual table. On the deployed dev DB it was created as <code>float32[768]</code>, matching <code>embeddinggemma</code>.
+        </p>
+        <pre><code>CREATE VIRTUAL TABLE memory_vectors_hnsw
+  USING vectorlite(
+    embedding float32[768],
+    hnsw(max_elements=100000)
+  );</code></pre>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Target Retrieval Flow</h2>
+      <p>atomic memory first, document chunks later</p>
+    </div>
+    <div class="panel">
+      <div class="flow">
+        <div class="flow-step">
+          <b>1. Save</b>
+          <span>Agent calls <code>memory_save</code>; Luna writes the canonical record to <code>memory_keyed</code>.</span>
+        </div>
+        <div class="flow-step">
+          <b>2. Format</b>
+          <span>Luna builds a model-aware embedding input from namespace, kind, tags, and text.</span>
+        </div>
+        <div class="flow-step">
+          <b>3. Embed</b>
+          <span>Ollama returns a normalized <code>embeddinggemma</code> vector. Metadata records the model and format.</span>
+        </div>
+        <div class="flow-step">
+          <b>4. Index</b>
+          <span><code>memory_vectors</code> updates; triggers sync FTS5 and HNSW indexes.</span>
+        </div>
+        <div class="flow-step">
+          <b>5. Search</b>
+          <span>Query formatting, vector search, BM25, RRF fusion, then optional reranking.</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Feature Specs</h2>
+      <p>implementation order</p>
+    </div>
+
+    <div class="grid">
+      <article class="panel spec priority-0 span-12">
+        <div class="spec-meta">
+          <span class="tag">P0</span>
+          <span class="tag">migration safety</span>
+          <span class="tag">memory_vectors</span>
+        </div>
+        <h3>F1. Embedding Metadata Columns</h3>
+        <p>
+          Add enough metadata to know whether an existing vector is compatible with the currently configured embedder and embedding prompt format.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Field</th>
+              <th>Purpose</th>
+              <th>Default for existing rows</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>embedding_provider</code></td>
+              <td>Distinguishes <code>stub</code>, <code>ollama</code>, or future providers.</td>
+              <td><code>unknown</code></td>
+            </tr>
+            <tr>
+              <td><code>embedding_model</code></td>
+              <td>Records <code>embeddinggemma</code>, <code>qwen3-embedding:0.6b</code>, etc.</td>
+              <td><code>unknown</code></td>
+            </tr>
+            <tr>
+              <td><code>embedding_format</code></td>
+              <td>Versioned formatter name, for example <code>raw-v0</code> or <code>memory-note-v1</code>.</td>
+              <td><code>raw-v0</code></td>
+            </tr>
+            <tr>
+              <td><code>embedding_input_hash</code></td>
+              <td>Hash of the exact formatted input sent to the embedder.</td>
+              <td>empty string</td>
+            </tr>
+            <tr>
+              <td><code>embedded_at</code></td>
+              <td>Timestamp for status and stale-vector audits.</td>
+              <td><code>0</code></td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Acceptance criteria: old DBs open without manual work, new saves populate all metadata, and search ignores or reports incompatible rows instead of silently mixing vector spaces.
+        </p>
+      </article>
+
+      <article class="panel spec priority-0 span-12">
+        <div class="spec-meta">
+          <span class="tag">P0</span>
+          <span class="tag">operator CLI</span>
+          <span class="tag">jax-box</span>
+        </div>
+        <h3>F2. Memory Status + Re-embed Command</h3>
+        <p>
+          Build an operator command that audits the memory DB, reports incompatible rows, and re-embeds records from <code>memory_keyed</code>. This is required before judging retrieval quality, because the live dev DB currently has 64d vectors while the active index is 768d.
+        </p>
+        <pre><code>luna memory status
+luna memory reembed --dry-run
+luna memory reembed --namespace notes
+luna memory reembed --force --limit 100</code></pre>
+        <ul>
+          <li>Status reports row counts grouped by dimension, provider, model, and format.</li>
+          <li>Dry run prints which rows would be rebuilt and why.</li>
+          <li>Re-embed recomputes the formatter output from <code>memory_keyed.content_json</code>, not from stale vector text alone.</li>
+          <li>Each row is updated transactionally so FTS5 and HNSW triggers stay in sync.</li>
+          <li>The command exits non-zero if the active HNSW dimension does not match the configured embedder.</li>
+        </ul>
+      </article>
+
+      <article class="panel spec priority-1 span-6">
+        <div class="spec-meta">
+          <span class="tag">P1</span>
+          <span class="tag">retrieval quality</span>
+          <span class="tag">prompt formatting</span>
+        </div>
+        <h3>F3. Query and Document Embedding Formatting</h3>
+        <p>
+          Move raw text embedding behind two explicit formatters: one for saved memory records and one for search queries.
+        </p>
+        <pre><code>// Query
+task: search result | query: {query}
+
+// Memory record
+title: {namespace}/{kind} tags:{tags} | text: {content.text}</code></pre>
+        <p>
+          The raw memory text should remain in <code>memory_vectors.text</code> for BM25 and tool output. Only the vector input changes. This keeps keyword search honest while making semantic search more model-friendly.
+        </p>
+      </article>
+
+      <article class="panel spec priority-1 span-6">
+        <div class="spec-meta">
+          <span class="tag">P1</span>
+          <span class="tag">regression tests</span>
+          <span class="tag">quality gate</span>
+        </div>
+        <h3>F4. Retrieval Regression Suite</h3>
+        <p>
+          Add a deterministic test corpus that exercises the actual MemoryRouter path. The goal is to catch silent regressions in embedding config, FTS5 query escaping, hybrid search, and dimension migration.
+        </p>
+        <ul>
+          <li>Seed project facts, user-preference facts, and distractor facts.</li>
+          <li>Assert that hybrid search returns the right record for natural paraphrases.</li>
+          <li>Assert that stale 64d rows are detected by <code>memory status</code>.</li>
+          <li>Assert that re-embedding upgrades rows to the configured dimension and metadata.</li>
+          <li>Use no personal data in fixtures.</li>
+        </ul>
+      </article>
+
+      <article class="panel spec priority-2 span-6">
+        <div class="spec-meta">
+          <span class="tag">P2</span>
+          <span class="tag">ranking</span>
+          <span class="tag">optional model</span>
+        </div>
+        <h3>F5. Optional Reranking Stage</h3>
+        <p>
+          After hybrid search returns the top 20-50 candidates, allow an optional local reranker to reorder candidates before tool results are returned.
+        </p>
+        <ul>
+          <li>Default off on the old T2 Mac unless performance is acceptable.</li>
+          <li>Provider controlled by env, similar to the embedder.</li>
+          <li>Search still works if the reranker is unavailable.</li>
+          <li>Log ranking inputs and outputs to observability, not to <code>memory.db</code>.</li>
+        </ul>
+      </article>
+
+      <article class="panel spec priority-2 span-6">
+        <div class="spec-meta">
+          <span class="tag">P2</span>
+          <span class="tag">documents</span>
+          <span class="tag">new tables</span>
+        </div>
+        <h3>F6. Chunked Document Memory</h3>
+        <p>
+          The current <code>memory_vectors.id PRIMARY KEY</code> shape is correct for atomic memories but cannot store multiple chunks for one source document. Add chunk tables only when Luna starts indexing longer docs, transcripts, or project files.
+        </p>
+        <pre><code>memory_documents(
+  document_id TEXT PRIMARY KEY,
+  namespace TEXT NOT NULL,
+  title TEXT NOT NULL,
+  source_uri TEXT,
+  source_hash TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+)
+
+memory_chunks(
+  chunk_id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL REFERENCES memory_documents(document_id),
+  namespace TEXT NOT NULL,
+  chunk_index INTEGER NOT NULL,
+  text TEXT NOT NULL,
+  embedding BLOB NOT NULL,
+  dimension INTEGER NOT NULL,
+  embedding_model TEXT NOT NULL,
+  embedding_format TEXT NOT NULL,
+  embedding_input_hash TEXT NOT NULL,
+  embedded_at INTEGER NOT NULL
+)</code></pre>
+      </article>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Migration Sequence</h2>
+      <p>lowest risk first</p>
+    </div>
+    <div class="grid">
+      <div class="panel span-7">
+        <ol>
+          <li>Add metadata columns to <code>memory_vectors</code> with safe defaults.</li>
+          <li>Expose embedder identity from <code>EmbedderService</code> so saves and status can compare provider, model, dimension, and format.</li>
+          <li>Add formatter helpers and route both <code>put()</code> and <code>search()</code> through them.</li>
+          <li>Add <code>luna memory status</code> and <code>luna memory reembed --dry-run</code>.</li>
+          <li>Run re-embed on <code>luna-dev</code>; confirm all rows become 768d and metadata is populated.</li>
+          <li>Add regression tests around the migration and retrieval path.</li>
+          <li>Only then consider reranking and chunked document memory.</li>
+        </ol>
+      </div>
+      <div class="panel span-5">
+        <div class="callout danger">
+          <p><strong>Do not skip re-embedding.</strong></p>
+          <p>
+            A 64d vector from the stub embedder and a 768d vector from <code>embeddinggemma</code> are different spaces. Mixing them makes retrieval look broken even if the current code is correct.
+          </p>
+        </div>
+        <div class="callout" style="margin-top: 12px;">
+          <p><strong>Keep FTS text raw.</strong></p>
+          <p>
+            Format the string passed to the embedder, not the text stored for BM25. That preserves exact keyword behavior and avoids returning formatting noise to the agent.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Test Plan</h2>
+      <p>before merge to master</p>
+    </div>
+    <div class="grid">
+      <div class="panel span-4">
+        <h3><span class="dot red"></span>Unit</h3>
+        <ul>
+          <li>Formatter output is stable and versioned.</li>
+          <li>Embedder identity is present for stub and Ollama.</li>
+          <li>Status detects old dimensions and unknown metadata.</li>
+        </ul>
+      </div>
+      <div class="panel span-4">
+        <h3><span class="dot gold"></span>Integration</h3>
+        <ul>
+          <li>SQLite migration opens an old DB fixture.</li>
+          <li>Re-embed updates vector blobs, dimension, and metadata.</li>
+          <li>FTS and HNSW triggers remain synchronized after updates.</li>
+        </ul>
+      </div>
+      <div class="panel span-4">
+        <h3><span class="dot green"></span>Live Smoke</h3>
+        <ul>
+          <li>Deploy to <code>luna-dev</code>.</li>
+          <li>Run <code>luna memory status</code>.</li>
+          <li>Ask Luna to save and recall a non-sensitive test fact.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Reference Points</h2>
+      <p>why these features are ordered this way</p>
+    </div>
+    <div class="grid">
+      <div class="panel span-4">
+        <h3><span class="dot"></span>QMD Embedding Flow</h3>
+        <p>
+          QMD formats query and document embedding inputs differently, uses chunked document storage, and treats re-embedding as an explicit operator workflow.
+        </p>
+        <p><a href="https://www.mintlify.com/tobi/qmd/concepts/embeddings">QMD embedding docs</a></p>
+      </div>
+      <div class="panel span-4">
+        <h3><span class="dot green"></span>Ollama Embed API</h3>
+        <p>
+          Luna's current Ollama adapter uses <code>/api/embed</code>, which supports embedding models like <code>embeddinggemma</code> and <code>qwen3-embedding</code>.
+        </p>
+        <p><a href="https://www.ollama.com/library/embeddinggemma">embeddinggemma</a> | <a href="https://ollama.com/library/qwen3-embedding">qwen3-embedding</a></p>
+      </div>
+      <div class="panel span-4">
+        <h3><span class="dot purple"></span>Vectorlite HNSW</h3>
+        <p>
+          Luna uses Vectorlite's HNSW table for fast approximate nearest-neighbor search when the SQLite extension loads successfully.
+        </p>
+        <p><a href="https://github.com/1yefuwang1/vectorlite">Vectorlite repository</a></p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    Source inventory: packages/memory/src/backends/sqlite-vector.ts, packages/memory-tools/src/tools.ts, live luna-dev /root/.luna/memory.db schema.
+  </div>
+</footer>
+</body>
+</html>
