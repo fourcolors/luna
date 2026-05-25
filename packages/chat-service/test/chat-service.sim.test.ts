@@ -463,7 +463,7 @@ describe("ChatService (Tier-2 sim)", () => {
   )
 
   it(
-    "settingSources defaults to ['user','project'] and forwards to SDK options",
+    "settingSources defaults to SDK isolation mode and disables Claude Code auto memory",
     async () => {
       let capturedOptions: Record<string, unknown> | undefined
       const fakeLayer = SDKClient.fake((p) => {
@@ -485,13 +485,16 @@ describe("ChatService (Tier-2 sim)", () => {
         fakeLayer,
       )
       expect(capturedOptions).toBeDefined()
-      expect(capturedOptions!["settingSources"]).toEqual(["user", "project"])
+      expect(capturedOptions!["settingSources"]).toEqual([])
+      expect(capturedOptions!["env"]).toMatchObject({
+        CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+      })
     },
     { timeout: 10_000 },
   )
 
   it(
-    "settingSources can be overridden per-thread (e.g. opt out with [])",
+    "settingSources can be explicitly opted into per-thread",
     async () => {
       let capturedOptions: Record<string, unknown> | undefined
       const fakeLayer = SDKClient.fake((p) => {
@@ -507,15 +510,15 @@ describe("ChatService (Tier-2 sim)", () => {
           const chat = yield* ChatService
           yield* chat.createThread({
             model: "claude-test",
-            title: "isolated",
-            settingSources: [],
+            title: "project-settings",
+            settingSources: ["project"],
           })
           yield* Effect.sleep("30 millis")
         }),
         fakeLayer,
       )
       expect(capturedOptions).toBeDefined()
-      expect(capturedOptions!["settingSources"]).toEqual([])
+      expect(capturedOptions!["settingSources"]).toEqual(["project"])
     },
     { timeout: 10_000 },
   )
@@ -536,7 +539,7 @@ describe("ChatService (Tier-2 sim)", () => {
     },
     {
       name: "settingSources" as const,
-      value: [] as string[],
+      value: ["project"] as string[],
       sdkKey: "settingSources",
     },
     {

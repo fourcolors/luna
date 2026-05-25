@@ -150,6 +150,7 @@ import {
   validateAccountsTableLabels,
 } from "@luna/core"
 import { loadDna } from "./dna-loader.js"
+import { buildSessionMetadata } from "./runtime-metadata.js"
 export { loadDna } from "./dna-loader.js"
 import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
 import { ChatService } from "@luna/chat-service"
@@ -380,15 +381,9 @@ const buildServerLayer = (
       const __scriptDir = dirname(fileURLToPath(import.meta.url))
       const dnaContent = loadDna(__scriptDir)
 
-      // Session metadata injected into every thread so Luna knows the surface
-      // she's running on and can tailor her responses accordingly.
-      const sessionMetadata = [
-        `# Session Metadata`,
-        `- **Interface:** Luna Web UI`,
-        `- **User:** local operator`,
-        `- **Server:** luna-chat-server (local, launchd)`,
-        `- **Started:** ${new Date().toISOString()}`,
-      ].join("\n")
+      // Session metadata injected into every thread so Luna knows which
+      // runtime profile and server instance she is actually serving.
+      const sessionMetadata = buildSessionMetadata()
 
       const chatWithTools: typeof chat = {
         ...chat,

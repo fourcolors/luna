@@ -91,6 +91,7 @@ fi
 [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || luna_die "branch contains unsupported characters"
 
 PROFILE_ENV="$(luna_profile_env_name "$PROFILE")"
+CHAT_SERVER_NAME="$(luna_chat_server_name "$PROFILE")"
 
 if [[ -z "$INSTANCE" ]]; then
   INSTANCE="luna-${PROFILE}"
@@ -246,6 +247,8 @@ luna_remove_env "$STATE_PATH/.env" "LUNA_CLAUDE_CODE_EXECUTABLE"
 luna_upsert_env "$STATE_PATH/.env" "CLAUDE_CONFIG_DIR" "/root/.luna/claude"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_REPO_ROOT" "/root/luna"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_UI_WS_HOST" "0.0.0.0"
+luna_upsert_env "$STATE_PATH/.env" "LUNA_PROFILE" "$PROFILE"
+luna_upsert_env "$STATE_PATH/.env" "LUNA_CHAT_SERVER_NAME" "$CHAT_SERVER_NAME"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_${PROFILE_ENV}_WS_URL" "ws://${HOST}:${HOST_WS_PORT}/ui"
 
 if luna_env_has_token "$STATE_PATH/.env"; then

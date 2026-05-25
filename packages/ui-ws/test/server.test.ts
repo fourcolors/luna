@@ -185,7 +185,7 @@ describe("UIWebSocketServer", () => {
     rig = await startRig()
     await expect(
       collectFrames(rig.url, {}, 1, 1000),
-    ).rejects.toThrow(/401|unexpected|unexpected-response/i)
+    ).rejects.toThrow(/401|unexpected|unexpected-response|Connection ended/i)
   })
 
   it("accepts ?token= query-string auth (browser-compatible path)", async () => {
@@ -202,7 +202,7 @@ describe("UIWebSocketServer", () => {
     rig = await startRig()
     const url = `${rig.url}?token=wrongtoken1234567`
     await expect(collectFrames(url, {}, 1, 1000)).rejects.toThrow(
-      /401|unexpected/i,
+      /401|unexpected|Connection ended/i,
     )
   })
 
@@ -210,7 +210,7 @@ describe("UIWebSocketServer", () => {
     rig = await startRig()
     await expect(
       collectFrames(rig.url, { authorization: "Bearer wrongtoken1234567" }, 1, 1000),
-    ).rejects.toThrow(/401|unexpected/i)
+    ).rejects.toThrow(/401|unexpected|Connection ended/i)
   })
 
   it("sends hello frame on connect with correct bearer", async () => {

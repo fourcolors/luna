@@ -23,6 +23,7 @@ import { Data, Effect, Exit, Layer, Queue, Scope } from "effect"
 import * as os from "node:os"
 import * as path from "node:path"
 import * as fs from "node:fs"
+import { spawn } from "node:child_process"
 
 // ── Imports under test (will not exist until implementation) ─────────────────
 // These are the contracts the test holds the implementation to.
@@ -487,26 +488,37 @@ describe("DuckDbService", () => {
   it("Layer build fails with ConfigError when lock file is already held", async () => {
     await withTempDb(async (dbPath) => {
       const lockPath = dbPath + ".lock"
+      const holder = spawn("sleep", ["10"], { stdio: "ignore" })
+      holder.unref()
+      await new Promise<void>((resolve, reject) => {
+        holder.once("spawn", resolve)
+        holder.once("error", reject)
+      })
+      expect(holder.pid).toBeDefined()
 
-      // Simulate another process holding the lock by writing the file first.
-      fs.writeFileSync(lockPath, String(process.pid + 1))
+      // Simulate another live process holding the lock by writing its PID.
+      fs.writeFileSync(lockPath, String(holder.pid))
 
-      const layer = makeDuckDbLayer({ dbPath })
-      const exit = await Effect.runPromiseExit(
-        Effect.scoped(
-          Effect.gen(function* () {
-            yield* DuckDbService
-          }).pipe(
-            Effect.provide(layer as Layer.Layer<DuckDbService, never, never>),
+      try {
+        const layer = makeDuckDbLayer({ dbPath })
+        const exit = await Effect.runPromiseExit(
+          Effect.scoped(
+            Effect.gen(function* () {
+              yield* DuckDbService
+            }).pipe(
+              Effect.provide(layer as Layer.Layer<DuckDbService, never, never>),
+            ),
           ),
-        ),
-      )
+        )
 
-      expect(Exit.isFailure(exit)).toBe(true)
-      if (Exit.isFailure(exit)) {
-        const flat = JSON.stringify(exit.cause)
-        expect(flat).toContain("ConfigError")
-        expect(flat).toContain("lock")
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) {
+          const flat = JSON.stringify(exit.cause)
+          expect(flat).toContain("ConfigError")
+          expect(flat).toContain("lock")
+        }
+      } finally {
+        holder.kill("SIGTERM")
       }
 
       // Clean up the lock we wrote so withTempDb cleanup doesn't trip.

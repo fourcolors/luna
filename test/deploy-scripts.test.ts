@@ -155,7 +155,32 @@ exit 1
     ])
 
     expect(result.status).toBe(0)
+    expect(result.stdout).toContain("LUNA_PROFILE=stable")
+    expect(result.stdout).toContain("LUNA_CHAT_SERVER_NAME=luna-chat-server")
     expect(result.stdout).toContain("LUNA_RUNTIME_SCOPE=incus-container")
+  })
+
+  it("container dry-run writes dev runtime metadata for the dev chat server", () => {
+    const temp = makeTempDir()
+    const result = runScript("scripts/luna-container-create", [
+      "--dry-run",
+      "--profile",
+      "dev",
+      "--name",
+      "luna-dev",
+      "--repo-path",
+      join(temp, "repo"),
+      "--state-path",
+      join(temp, "state"),
+      "--token",
+      "test-token-1234567890-secret",
+    ])
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("LUNA_PROFILE=dev")
+    expect(result.stdout).toContain("LUNA_CHAT_SERVER_NAME=luna-dev-chat-server")
+    expect(result.stdout).toContain("LUNA_RUNTIME_SCOPE=incus-container")
+    expect(result.stdout).toContain("systemctl status luna-dev-chat-server.service")
   })
 
   it("container dry-run can enable dangerous local shell marker explicitly", () => {
@@ -269,8 +294,40 @@ exit 1
     expect(result.stdout).toContain("EnvironmentFile=" + join(temp, "state", ".env"))
     expect(result.stdout).toContain("ExecStart=/root/.bun/bin/bun run --filter @luna/ui-web server:chat")
     expect(result.stdout).toContain("LUNA_REPO_ROOT=" + join(temp, "repo"))
+    expect(result.stdout).toContain("LUNA_PROFILE=stable")
+    expect(result.stdout).toContain("LUNA_CHAT_SERVER_NAME=luna-chat-server")
     expect(result.stdout).toContain("UI_WS_TOKEN=<redacted>")
     expect(result.stdout).not.toContain(token)
+  })
+
+  it("server install dry-run writes dev chat-server runtime metadata", () => {
+    const temp = makeTempDir()
+
+    const result = runScript("scripts/luna-server-install", [
+      "--dry-run",
+      "--profile",
+      "dev",
+      "--repo-dir",
+      join(temp, "repo"),
+      "--luna-home",
+      join(temp, "state"),
+      "--service-dir",
+      join(temp, "systemd"),
+      "--token",
+      "server-token-1234567890-secret",
+      "--skip-deps",
+      "--no-enable",
+      "--no-start",
+    ], {
+      env: {
+        LUNA_TEST_BUN_PATH: "/root/.bun/bin/bun",
+      },
+    })
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("Service: " + join(temp, "systemd", "luna-dev-chat-server.service"))
+    expect(result.stdout).toContain("LUNA_PROFILE=dev")
+    expect(result.stdout).toContain("LUNA_CHAT_SERVER_NAME=luna-dev-chat-server")
   })
 
   it("server install validates the repo before installing host dependencies", () => {

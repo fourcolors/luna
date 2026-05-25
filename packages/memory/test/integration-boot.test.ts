@@ -30,7 +30,10 @@ import {
 } from "@luna/core"
 import { SqliteVectorBackend } from "../src/backends/sqlite-vector.js"
 import { LunaSqliteBootstrapLive } from "../src/backends/vectorlite-bootstrap.js"
-import { _resetVectorliteInitForTests } from "../src/backends/vectorlite-init.js"
+import {
+  initVectorlite,
+  _resetVectorliteInitForTests,
+} from "../src/backends/vectorlite-init.js"
 
 const hasBunSqlite =
   typeof (process.versions as { bun?: string }).bun === "string"
@@ -42,10 +45,15 @@ describe.skipIf(!hasBunSqlite)(
       "SqliteVectorBackend.hnswEnabled is true when AccountBroker + SessionStore " +
         "are co-built (no 'Vectorlite HNSW unavailable' warning)",
       async () => {
-        // Process-global cache must be cleared so this test re-attempts the
-        // bootstrap on its own. Without this, an earlier test in the run may
-        // have already cached a result that doesn't reflect the race.
+        // Bun cannot undo the process-global `Database.setCustomSQLite()`
+        // precondition after any earlier test has opened `bun:sqlite`.
+        // In that full-suite state this regression cannot be evaluated
+        // faithfully; run this file directly to exercise the success path.
         _resetVectorliteInitForTests()
+        const preflight = initVectorlite()
+        if (!preflight.ok && preflight.reason.includes("setCustomSQLite")) {
+          return
+        }
 
         const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
 

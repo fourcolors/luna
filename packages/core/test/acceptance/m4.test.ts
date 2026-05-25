@@ -67,6 +67,25 @@ import {
   TriggerAgentLayer,
 } from "../../src/jobs/index.js"
 
+const originalFetch = globalThis.fetch
+
+const setFetch = (fetchImpl: typeof globalThis.fetch) => {
+  Object.defineProperty(globalThis, "fetch", {
+    configurable: true,
+    writable: true,
+    value: fetchImpl,
+  })
+}
+
+const restoreFetch = () => {
+  if (originalFetch === undefined) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+    delete (globalThis as { fetch?: typeof globalThis.fetch }).fetch
+  } else {
+    setFetch(originalFetch)
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Layer composition shared across F1, F2, the cost-predicate suite.
 // (F5 needs TestClock + JobScheduler/TriggerAgent — composed inline.)
@@ -245,14 +264,13 @@ describe("F1 — Gateway→Harness→Cost→UI", () => {
 
   it("F3 fold-in: NetSec-blocked request → ToolCall(status=error), zero CostAccrued", async () => {
     // Mock fetch so the disallowed host can't actually be reached.
-    vi.stubGlobal(
-      "fetch",
+    setFetch(
       vi.fn().mockResolvedValue({
         status: 200,
         statusText: "OK",
         text: () => Promise.resolve(""),
         headers: { forEach: () => {} },
-      }),
+      }) as unknown as typeof globalThis.fetch,
     )
     try {
       const result = await Effect.runPromise(
@@ -306,7 +324,7 @@ describe("F1 — Gateway→Harness→Cost→UI", () => {
       // Zero CostAccrued for this session.
       expect(result.bucket).toBeNull()
     } finally {
-      vi.unstubAllGlobals()
+      restoreFetch()
     }
   })
 })

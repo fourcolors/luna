@@ -184,6 +184,12 @@ luna_service_name() {
   fi
 }
 
+luna_chat_server_name() {
+  local service_name
+  service_name="$(luna_service_name "$1")"
+  printf '%s\n' "${service_name%.service}"
+}
+
 luna_find_bun() {
   if [[ -n "${LUNA_TEST_BUN_PATH:-}" ]]; then
     printf '%s\n' "$LUNA_TEST_BUN_PATH"

@@ -79,23 +79,25 @@ describe("control.restart", () => {
     vi.clearAllTimers()
 
     const { spawnSync } = await import("node:child_process")
-    const spy = vi.mocked(spawnSync)
+    const spy = spawnSync as unknown as { mockClear: () => void }
     spy.mockClear()
 
-    await caller.control.restart()
+    try {
+      await caller.control.restart()
 
-    // Not called yet — the timeout hasn't fired
-    expect(spy).not.toHaveBeenCalled()
+      // Not called yet — the timeout hasn't fired
+      expect(spawnSync).not.toHaveBeenCalled()
 
-    // Advance timers past the 500ms delay
-    vi.advanceTimersByTime(600)
-    expect(spy).toHaveBeenCalledOnce()
-    expect(spy).toHaveBeenCalledWith(
-      "launchctl",
-      expect.arrayContaining(["kickstart", "-k"]),
-      expect.objectContaining({ stdio: "ignore" }),
-    )
-
-    vi.useRealTimers()
+      // Advance timers past the 500ms delay
+      vi.advanceTimersByTime(600)
+      expect(spawnSync).toHaveBeenCalledOnce()
+      expect(spawnSync).toHaveBeenCalledWith(
+        "launchctl",
+        expect.arrayContaining(["kickstart", "-k"]),
+        expect.objectContaining({ stdio: "ignore" }),
+      )
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

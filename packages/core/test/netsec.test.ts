@@ -15,6 +15,24 @@ import {
 
 // Mock globalThis.fetch for all tests
 const mockFetch = vi.fn()
+const originalFetch = globalThis.fetch
+
+const setFetch = (fetchImpl: typeof globalThis.fetch) => {
+  Object.defineProperty(globalThis, "fetch", {
+    configurable: true,
+    writable: true,
+    value: fetchImpl,
+  })
+}
+
+const restoreFetch = () => {
+  if (originalFetch === undefined) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+    delete (globalThis as { fetch?: typeof globalThis.fetch }).fetch
+  } else {
+    setFetch(originalFetch)
+  }
+}
 
 const run = <A, E>(
   prog: Effect.Effect<A, E, NetSecClient>,
@@ -26,7 +44,7 @@ const run = <A, E>(
 
 describe("NetSecClient", () => {
   beforeEach(() => {
-    vi.stubGlobal("fetch", mockFetch)
+    setFetch(mockFetch as unknown as typeof globalThis.fetch)
     mockFetch.mockResolvedValue({
       status: 200,
       statusText: "OK",
@@ -36,7 +54,7 @@ describe("NetSecClient", () => {
   })
 
   afterEach(() => {
-    vi.unstubAllGlobals()
+    restoreFetch()
     mockFetch.mockReset()
   })
 

@@ -202,10 +202,13 @@ export class ChatService extends Effect.Service<ChatService>()(
           ...(pathToClaudeCodeExecutable
             ? { pathToClaudeCodeExecutable }
             : {}),
-          // Filesystem setting sources: load skills, plugins, MCP servers,
-          // CLAUDE.md, and hooks from ~/.claude/ + <cwd>/.claude/. Caller
-          // can opt out with `settingSources: []`.
-          settingSources: opts.settingSources ?? ["user", "project"],
+          // SDK isolation: Luna supplies identity, tools, and memory
+          // programmatically. Do not inherit Claude Code filesystem settings
+          // unless a caller explicitly opts in for a thread.
+          settingSources: opts.settingSources ?? [],
+          env: {
+            CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+          },
           permissionMode: opts.permissionMode ?? defaultPermissionMode,
           // Identity: forward caller-supplied systemPrompt INSIDE sdkOptions
           // so the SDK adapter actually sees it. The top-level

@@ -70,6 +70,7 @@ luna_validate_profile "$PROFILE"
 if [[ -z "$SERVICE_NAME" ]]; then
   SERVICE_NAME="$(luna_service_name "$PROFILE")"
 fi
+CHAT_SERVER_NAME="${SERVICE_NAME%.service}"
 
 ENV_FILE="$LUNA_HOME/.env"
 SERVICE_FILE="$SERVICE_DIR/$SERVICE_NAME"
@@ -150,6 +151,8 @@ luna_run mkdir -p "$LUNA_HOME" "$LUNA_HOME/claude" "$LUNA_HOME/logs" "$LUNA_HOME
 luna_upsert_env "$ENV_FILE" "CLAUDE_CONFIG_DIR" "$LUNA_HOME/claude"
 luna_upsert_env "$ENV_FILE" "LUNA_REPO_ROOT" "$REPO_DIR"
 luna_upsert_env "$ENV_FILE" "LUNA_UI_WS_HOST" "$BIND_HOST"
+luna_upsert_env "$ENV_FILE" "LUNA_PROFILE" "$PROFILE"
+luna_upsert_env "$ENV_FILE" "LUNA_CHAT_SERVER_NAME" "$CHAT_SERVER_NAME"
 
 if luna_env_has_token "$ENV_FILE" && [[ "$ROTATE_TOKEN" == false ]]; then
   luna_info "Existing UI token found; preserving it"
