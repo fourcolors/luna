@@ -30,6 +30,22 @@ describe("local shell bridge", () => {
     expect(first.accepted).toBe(true)
     expect(second.accepted).toBe(false)
     expect(second.message).toContain("already attached")
+
+    const accepted = bridge.setCapability(
+      {
+        type: "local-shell-capability",
+        threadId: "thread-1",
+        enabled: true,
+        clientId: "client-1",
+        platform: "linux",
+        cwd: "/root/luna",
+        approvalMode: "auto",
+      },
+      () => undefined,
+    )
+
+    expect(accepted.accepted).toBe(true)
+    expect(bridge.getCapability("thread-1")?.approvalMode).toBe("auto")
   })
 
   it("removes a client when capability is disabled", () => {

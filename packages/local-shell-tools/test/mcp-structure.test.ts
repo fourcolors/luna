@@ -159,6 +159,10 @@ describe("LocalShellToolsService - prompt invariants", () => {
     expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM).toContain("local_shell")
     expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM).toContain("local_shell_run")
     expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM.toLowerCase()).toContain("approval")
+    expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM).toContain("trusted container session")
+    expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM).not.toContain(
+      "Every command requires explicit user approval",
+    )
     expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM.toLowerCase()).toContain("unavailable")
     expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM.toLowerCase()).toContain("denied")
   })

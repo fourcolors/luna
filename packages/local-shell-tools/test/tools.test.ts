@@ -238,4 +238,14 @@ describe("local shell tools", () => {
     expect(message).toContain("120000")
     expect(sent).toHaveLength(0)
   })
+
+  it("local_shell_run description allows auto-approved attached sessions", () => {
+    const bridge = createLocalShellBridge()
+    const [runTool] = makeLocalShellTools(bridge, () => "thr_1")
+
+    const description = (runTool as unknown as { description: string }).description
+    expect(description).toContain("may ask")
+    expect(description).toContain("auto-approved")
+    expect(description).not.toContain("asks the user for approval before")
+  })
 })

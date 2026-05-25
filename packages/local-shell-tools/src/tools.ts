@@ -35,7 +35,7 @@ export const makeLocalShellTools = (
     name: "local_shell_run",
     description:
       "Request execution of a shell command in the user's attached Luna terminal client. " +
-      "The terminal client asks the user for approval before running the command. " +
+      "The terminal client may ask the user for approval or run the command in an auto-approved attached session. " +
       "Use this only when local machine execution is needed for the current task.",
     inputSchema: runShape,
     handler: (args) =>
