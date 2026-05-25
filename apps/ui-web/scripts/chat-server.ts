@@ -441,7 +441,7 @@ const buildServerLayer = (
                   attachSandboxLocalShell({
                     bridge: localShellBridge,
                     threadId: summary.id,
-                    cwd: process.cwd(),
+                    cwd: sandboxLocalShell.sandboxRoot,
                     sandboxRoot: sandboxLocalShell.sandboxRoot,
                     env: process.env,
                   })
