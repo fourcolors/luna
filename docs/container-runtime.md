@@ -130,17 +130,22 @@ curl -fsS http://127.0.0.1:4753/healthz
 
 ## Dangerous Local Shell
 
-Stable can be created with `--enable-dangerous-local-shell` to write
+Stable or dev containers can be created with `--enable-dangerous-local-shell` to write
 `/root/.luna/allow-dangerous-local-shell` and
-`LUNA_STABLE_DANGEROUS_AUTO_APPROVE_LOCAL_SHELL=1` into the mounted stable
-state. This does not create a headless shell daemon. Auto approval only applies
-when an attached Luna CLI runs inside the container with
-`--dangerously-auto-approve-local-shell`, `--local-shell`, and cwd under
-`/root/luna`.
+`LUNA_<PROFILE>_DANGEROUS_AUTO_APPROVE_LOCAL_SHELL=1` into the mounted
+profile state. When the chat server starts with that marker, `LUNA_RUNTIME_SCOPE=incus-container`,
+and a cwd under `/root/luna`, it attaches a per-thread container-local shell
+binding automatically. Luna can then run shell commands in her own Incus
+sandbox even when the operator is connected from a remote CLI or browser.
+
+An attached Luna CLI can still expose the machine running that CLI with
+`--local-shell`; explicit CLI bindings may replace the default server sandbox
+binding for that thread.
 
 The `/root/luna` cwd check is a guardrail against accidental request cwd
-changes, not a filesystem sandbox. Commands still run as the CLI user inside
-the Incus container and can use absolute paths available inside that container.
+changes, not a filesystem sandbox. Commands still run as the chat server user
+inside the Incus container and can use absolute paths available inside that
+container.
 Do not mount the host Incus socket or host SSH keys into `luna-stable` unless
 you intentionally want to grant host-level control.
 

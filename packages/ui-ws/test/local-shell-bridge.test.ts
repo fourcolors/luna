@@ -51,6 +51,39 @@ describe("local shell bridge", () => {
     expect(bridge.getCapability("thread-1")?.approvalMode).toBe("auto")
   })
 
+  it("allows an explicit client to replace a replaceable sandbox binding", () => {
+    const bridge = createLocalShellBridge()
+    const sandbox = bridge.setCapability(
+      {
+        type: "local-shell-capability",
+        threadId: "thr_1",
+        enabled: true,
+        clientId: "server_sandbox_thr_1",
+        platform: "linux",
+        cwd: "/root/luna",
+        approvalMode: "auto",
+        replaceable: true,
+      },
+      () => undefined,
+    )
+    const client = bridge.setCapability(
+      {
+        type: "local-shell-capability",
+        threadId: "thr_1",
+        enabled: true,
+        clientId: "cli_1",
+        platform: "darwin",
+        cwd: "/Users/sterling/Projects/luna",
+        approvalMode: "prompt",
+      },
+      () => undefined,
+    )
+
+    expect(sandbox.accepted).toBe(true)
+    expect(client.accepted).toBe(true)
+    expect(bridge.getCapability("thr_1")?.clientId).toBe("cli_1")
+  })
+
   it("removes a client when capability is disabled", () => {
     const bridge = createLocalShellBridge()
     bridge.setCapability(

@@ -28,10 +28,11 @@ export const LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM =
   "You have one local shell MCP server (`local_shell`) with tool " +
   "`mcp__local_shell__local_shell_run(command, cwd?, timeout_ms?)`. Use this fully " +
   "qualified MCP tool name exactly; do not call bare `local_shell_run`. It requests command " +
-  "execution in Operator's attached Luna terminal client for the current thread. " +
-  "Commands normally require explicit user approval in that terminal before they run. " +
-  "A trusted container session may advertise auto approval; in that mode commands run " +
-  "inside the attached container without a per-command prompt. " +
+  "execution in the current thread's local shell binding. The binding may be Operator's " +
+  "attached Luna terminal client or an auto-approved Luna container sandbox. Commands " +
+  "normally require explicit user approval in that terminal before they run. A trusted " +
+  "container session may advertise auto approval; in that mode commands run inside the " +
+  "attached container without a per-command prompt. " +
   "If the local shell client is unavailable, no session is bound, or the user denied " +
   "approval, report that the command could not run and do not claim local execution " +
   "succeeded. Non-zero exit codes, stdout, stderr, and timeouts are returned as command " +

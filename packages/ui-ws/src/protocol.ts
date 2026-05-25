@@ -234,6 +234,7 @@ export interface LocalShellCapabilityFrame {
   readonly threadId: string
   readonly enabled: boolean
   readonly approvalMode?: "prompt" | "auto"
+  readonly replaceable?: boolean
   readonly clientId: string
   readonly platform: string
   readonly cwd: string

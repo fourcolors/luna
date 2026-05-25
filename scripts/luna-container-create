@@ -46,7 +46,9 @@ Options:
   --replace                    Delete an existing instance with this name before creating it.
   --skip-clone                 Require an existing repo path instead of cloning/updating it.
   --enable-dangerous-local-shell
-                               Write the marker and profile env that allow container-scoped local shell auto approval.
+                               Write the marker and profile env that allow the
+                               chat server to attach a container-scoped local
+                               shell sandbox.
   -h, --help                   Show this help.
 
 The container is unprivileged, uses security.nesting=true for Bun, mounts the

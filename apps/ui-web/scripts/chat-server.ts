@@ -151,6 +151,10 @@ import {
 } from "@luna/core"
 import { loadDna } from "./dna-loader.js"
 import { buildSessionMetadata } from "./runtime-metadata.js"
+import {
+  attachSandboxLocalShell,
+  resolveSandboxLocalShell,
+} from "./sandbox-local-shell.js"
 export { loadDna } from "./dna-loader.js"
 import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
 import { ChatService } from "@luna/chat-service"
@@ -384,6 +388,11 @@ const buildServerLayer = (
       // Session metadata injected into every thread so Luna knows which
       // runtime profile and server instance she is actually serving.
       const sessionMetadata = buildSessionMetadata()
+      const sandboxLocalShell = resolveSandboxLocalShell()
+      console.log(
+        "[luna/boot] sandbox local shell:",
+        sandboxLocalShell.enabled ? "enabled" : `disabled (${sandboxLocalShell.reason})`,
+      )
 
       const chatWithTools: typeof chat = {
         ...chat,
@@ -428,6 +437,15 @@ const buildServerLayer = (
               Effect.tap((summary) => {
                 obsThreadTools.bindSession(summary.id)
                 localShellThreadTools.bindSession(summary.id)
+                if (sandboxLocalShell.enabled) {
+                  attachSandboxLocalShell({
+                    bridge: localShellBridge,
+                    threadId: summary.id,
+                    cwd: process.cwd(),
+                    sandboxRoot: sandboxLocalShell.sandboxRoot,
+                    env: process.env,
+                  })
+                }
                 console.log("[luna/thread] session bound:", summary.id, "— obs/local-shell tools active")
                 return Effect.void
               }),

@@ -76,7 +76,11 @@ export const createLocalShellBridge = (): LocalShellBridge => {
       }
     }
 
-    if (existing && existing.capability.clientId !== frame.clientId) {
+    if (
+      existing &&
+      existing.capability.clientId !== frame.clientId &&
+      existing.capability.replaceable !== true
+    ) {
       return {
         type: "local-shell-status",
         threadId: frame.threadId,
