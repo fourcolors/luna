@@ -7,6 +7,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/luna-deploy.sh
 source "$SCRIPT_DIR/lib/luna-deploy.sh"
 
+export HOME="${HOME:-/root}"
+
 PROFILE="${LUNA_PROFILE:-stable}"
 REPO_DIR="${LUNA_REPO_DIR:-/root/luna}"
 LUNA_HOME="${LUNA_HOME:-/root/.luna}"

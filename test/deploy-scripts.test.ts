@@ -303,6 +303,34 @@ exit 0
     expect(existsSync(log)).toBe(false)
   })
 
+  it("server install tolerates cloud-init environments without HOME", () => {
+    const temp = makeTempDir()
+
+    const result = runScript("scripts/luna-server-install", [
+      "--dry-run",
+      "--profile",
+      "stable",
+      "--repo-dir",
+      join(temp, "repo"),
+      "--luna-home",
+      join(temp, "state"),
+      "--service-dir",
+      join(temp, "systemd"),
+      "--token",
+      "server-token-1234567890-secret",
+      "--skip-deps",
+      "--no-enable",
+    ], {
+      env: {
+        HOME: undefined,
+        PATH: "/usr/bin:/bin",
+      },
+    })
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("ExecStart=/root/.bun/bin/bun run --filter @luna/ui-web server:chat")
+  })
+
   it("local installer dry-run uses the real GitHub repository and installs the chat CLI wrapper", () => {
     const temp = makeTempDir()
 
