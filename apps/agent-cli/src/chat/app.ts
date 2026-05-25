@@ -52,6 +52,8 @@ const USAGE = [
   "  --new                       force creation of a new thread",
   "  --local-shell               enable local shell capability",
   "  --no-local-shell            disable local shell capability",
+  "  --dangerously-auto-approve-local-shell",
+  "                              auto-approve local shell requests in a marked container",
   "  --start-mode <mode>         recovery mode: local, ssh, or none",
   "  --start-command <command>   recovery command",
   "  --start-ssh <target>        recovery SSH target",

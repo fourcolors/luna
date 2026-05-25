@@ -410,6 +410,8 @@ exit 0
     expect(docs).not.toContain("tailscale ip")
     expect(docs).toContain("http://127.0.0.1:4753/healthz")
     expect(docs).toContain("http://127.0.0.1:5753/healthz")
+    expect(docs).toContain("incus exec luna-stable -- systemctl restart luna-chat-server.service")
+    expect(docs).not.toContain("systemctl --user restart luna-chat-server.service")
   })
 
   it("documents stable container cutover with candidate ports and rollback", () => {
@@ -432,8 +434,12 @@ exit 0
     expect(runtime).toContain("systemctl stop luna-chat-server.service")
     expect(runtime).toContain("systemctl --user enable luna-chat-server.service")
     expect(runtime).toContain("systemctl enable luna-chat-server.service")
+    expect(runtime).toContain("/root/.luna/stable-host-service-scope")
+    expect(runtime).not.toContain("/tmp/luna-stable-service-scope")
     expect(runtime).toContain("incus config device remove luna-stable ws6753")
     expect(runtime).toContain("incus config device add luna-stable ws4753")
+    expect(runtime).toContain("--enable-dangerous-local-shell")
+    expect(runtime).toContain("not a filesystem sandbox")
     expect(runtime).toContain("rollback")
   })
 })

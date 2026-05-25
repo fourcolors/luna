@@ -143,7 +143,8 @@ git fetch origin master
 git checkout master
 git pull --ff-only origin master
 /root/.bun/bin/bun install --frozen-lockfile
-systemctl --user restart luna-chat-server.service
+incus exec luna-stable -- bash -lc 'cd /root/luna && /root/.bun/bin/bun install --frozen-lockfile'
+incus exec luna-stable -- systemctl restart luna-chat-server.service
 curl -fsS http://127.0.0.1:4753/healthz
 ```
 
@@ -155,7 +156,8 @@ cd /root/luna/stable/repo
 git log --oneline -5
 git checkout <known-good-commit>
 /root/.bun/bin/bun install --frozen-lockfile
-systemctl --user restart luna-chat-server.service
+incus exec luna-stable -- bash -lc 'cd /root/luna && /root/.bun/bin/bun install --frozen-lockfile'
+incus exec luna-stable -- systemctl restart luna-chat-server.service
 curl -fsS http://127.0.0.1:4753/healthz
 ```
 

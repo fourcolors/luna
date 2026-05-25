@@ -54,8 +54,8 @@ jax-box:4754 -> stable control server
 
 ## Stable Container Cutover
 
-Build the stable container on candidate ports first so the existing host root
-user service stays available until the maintenance window.
+Build the stable container on candidate ports first so any existing host stable
+service stays available until the maintenance window.
 
 ```bash
 # 1. Build candidate stable container on temporary host ports.
@@ -79,11 +79,11 @@ luna chat --url ws://jax-box.local:6753/ui
 systemctl --user status luna-chat-server.service --no-pager || true
 systemctl status luna-chat-server.service --no-pager || true
 if systemctl --user list-unit-files luna-chat-server.service --no-legend 2>/dev/null | grep -q '^luna-chat-server.service'; then
-  printf 'user\n' > /tmp/luna-stable-service-scope
+  printf 'user\n' > /root/.luna/stable-host-service-scope
   systemctl --user stop luna-chat-server.service
   systemctl --user disable luna-chat-server.service
 elif systemctl list-unit-files luna-chat-server.service --no-legend 2>/dev/null | grep -q '^luna-chat-server.service'; then
-  printf 'system\n' > /tmp/luna-stable-service-scope
+  printf 'system\n' > /root/.luna/stable-host-service-scope
   systemctl stop luna-chat-server.service
   systemctl disable luna-chat-server.service
 else
@@ -101,14 +101,17 @@ curl -fsS http://127.0.0.1:4753/healthz
 curl -fsS http://jax-box.local:4753/healthz
 ```
 
-Rollback restores the host root user service and removes the stable container's
-production port proxies:
+Rollback restores the previous host stable service and removes the stable
+container's production port proxies. If the durable scope file is missing,
+inspect `systemctl --user status luna-chat-server.service` and
+`systemctl status luna-chat-server.service`, then write `user` or `system` to
+`/root/.luna/stable-host-service-scope` before rolling back.
 
 ```bash
 incus config device remove luna-stable ws4753
 incus config device remove luna-stable control4754
 incus stop luna-stable
-case "$(cat /tmp/luna-stable-service-scope 2>/dev/null || true)" in
+case "$(cat /root/.luna/stable-host-service-scope 2>/dev/null || true)" in
   user)
     systemctl --user enable luna-chat-server.service
     systemctl --user restart luna-chat-server.service
@@ -118,12 +121,28 @@ case "$(cat /tmp/luna-stable-service-scope 2>/dev/null || true)" in
     systemctl restart luna-chat-server.service
     ;;
   *)
-    echo "Set /tmp/luna-stable-service-scope to user or system before rollback" >&2
+    echo "Set /root/.luna/stable-host-service-scope to user or system before rollback" >&2
     exit 1
     ;;
 esac
 curl -fsS http://127.0.0.1:4753/healthz
 ```
+
+## Dangerous Local Shell
+
+Stable can be created with `--enable-dangerous-local-shell` to write
+`/root/.luna/allow-dangerous-local-shell` and
+`LUNA_STABLE_DANGEROUS_AUTO_APPROVE_LOCAL_SHELL=1` into the mounted stable
+state. This does not create a headless shell daemon. Auto approval only applies
+when an attached Luna CLI runs inside the container with
+`--dangerously-auto-approve-local-shell`, `--local-shell`, and cwd under
+`/root/luna`.
+
+The `/root/luna` cwd check is a guardrail against accidental request cwd
+changes, not a filesystem sandbox. Commands still run as the CLI user inside
+the Incus container and can use absolute paths available inside that container.
+Do not mount the host Incus socket or host SSH keys into `luna-stable` unless
+you intentionally want to grant host-level control.
 
 ## Incus Settings
 

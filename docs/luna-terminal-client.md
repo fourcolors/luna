@@ -148,6 +148,13 @@ command requests without prompting. When enabled, Luna may request commands on
 the machine running the CLI, and each received command request still requires
 explicit approval before execution.
 
+Trusted container sessions can opt into auto approval with
+`--dangerously-auto-approve-local-shell`. That mode requires the container
+runtime marker, `/root/.luna/allow-dangerous-local-shell`, and a CLI cwd under
+`/root/luna`. It is intended for an attached CLI running inside a Luna Incus
+container. The cwd check is not a filesystem sandbox; commands still run as the
+CLI user inside that container.
+
 Enable it at startup:
 
 ```bash
