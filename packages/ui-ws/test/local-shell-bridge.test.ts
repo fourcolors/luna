@@ -30,7 +30,10 @@ describe("local shell bridge", () => {
     expect(first.accepted).toBe(true)
     expect(second.accepted).toBe(false)
     expect(second.message).toContain("already attached")
+  })
 
+  it("preserves approval mode on accepted capability", () => {
+    const bridge = createLocalShellBridge()
     const accepted = bridge.setCapability(
       {
         type: "local-shell-capability",
