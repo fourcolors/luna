@@ -113,7 +113,8 @@ scripts/luna-server-install --dry-run --profile dev --token '<ui-ws-token>'
 
 ## Incus Container
 
-On a host with Incus initialized:
+On a host with Incus initialized, create the dev container on the dev host
+ports:
 
 ```bash
 scripts/luna-container-create \
@@ -127,6 +128,15 @@ scripts/luna-container-create \
   --host-ws-port 5753 \
   --host-control-port 5754 \
   --token '<dev-ui-ws-token>'
+```
+
+The dev container uses:
+
+```text
+/root/luna/dev/repo         host repo checkout mounted to /root/luna
+/root/.luna-dev             host runtime state mounted to /root/.luna
+jax-box:5753 -> luna-dev:4753  WebSocket server
+jax-box:5754 -> luna-dev:4754  control server
 ```
 
 To prepare stable for a container cutover, build it on temporary candidate
@@ -146,15 +156,24 @@ scripts/luna-container-create \
   --skip-clone
 ```
 
+The stable candidate uses:
+
+```text
+/root/luna/stable/repo      host repo checkout mounted to /root/luna
+/root/.luna                 host runtime state mounted to /root/.luna
+jax-box:6753 -> luna-stable:4753  candidate WebSocket server
+jax-box:6754 -> luna-stable:4754  candidate control server
+```
+
+After verification, use the stable cutover runbook in
+[`docs/container-runtime.md`](./container-runtime.md) to move stable from
+candidate ports to production ports and keep rollback available.
+
 The script prepares host paths, writes container `.env`, creates an Ubuntu
-24.04 cloud container, mounts:
-
-- `/root/luna/dev/repo` on the host to `/root/luna` in the container
-- `/root/.luna-dev` on the host to `/root/.luna` in the container
-
-It then proxies host `5753` to container `4753`, proxies host `5754` to
-container `4754`, starts the container, waits for cloud-init, and checks the
-systemd service.
+24.04 cloud container, mounts the selected repo and state paths into the
+container, proxies the selected host ports to container ports `4753` and
+`4754`, starts the container, waits for cloud-init, and checks the systemd
+service.
 
 If the Incus instance already exists, the script exits successfully without
 changing repo files, state files, cloud-init, devices, or services. Use

@@ -343,18 +343,26 @@ exit 0
 
   it("documents stable container cutover with candidate ports and rollback", () => {
     const read = (path: string) => readFileSync(join(repoRoot, path), "utf8")
-    const docs = [
-      read("README.md"),
-      read("docs/install.md"),
-      read("docs/container-runtime.md"),
-    ].join("\n")
+    const readme = read("README.md")
+    const install = read("docs/install.md")
+    const runtime = read("docs/container-runtime.md")
 
-    expect(docs).toContain("luna-stable")
-    expect(docs).toContain("--profile stable")
-    expect(docs).toContain("--host-ws-port 6753")
-    expect(docs).toContain("systemctl --user stop luna-chat-server.service")
-    expect(docs).toContain("incus config device remove luna-stable ws6753")
-    expect(docs).toContain("incus config device add luna-stable ws4753")
-    expect(docs).toContain("rollback")
+    expect(readme).toContain("docs/container-runtime.md")
+    expect(install).toContain("luna-stable")
+    expect(install).toContain("--profile stable")
+    expect(install).toContain("--host-ws-port 6753")
+    expect(install).toContain("/root/luna/stable/repo")
+    expect(install).toContain("/root/luna/dev/repo")
+
+    expect(runtime).toContain("luna-stable")
+    expect(runtime).toContain("--profile stable")
+    expect(runtime).toContain("--host-ws-port 6753")
+    expect(runtime).toContain("systemctl --user stop luna-chat-server.service")
+    expect(runtime).toContain("systemctl stop luna-chat-server.service")
+    expect(runtime).toContain("systemctl --user enable luna-chat-server.service")
+    expect(runtime).toContain("systemctl enable luna-chat-server.service")
+    expect(runtime).toContain("incus config device remove luna-stable ws6753")
+    expect(runtime).toContain("incus config device add luna-stable ws4753")
+    expect(runtime).toContain("rollback")
   })
 })

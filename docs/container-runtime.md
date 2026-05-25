@@ -76,8 +76,20 @@ curl -fsS http://127.0.0.1:6753/healthz
 luna chat --url ws://jax-box.local:6753/ui
 
 # 3. Cut over the stable ports during a short maintenance window.
-systemctl --user stop luna-chat-server.service
-systemctl --user disable luna-chat-server.service
+systemctl --user status luna-chat-server.service --no-pager || true
+systemctl status luna-chat-server.service --no-pager || true
+if systemctl --user list-unit-files luna-chat-server.service --no-legend 2>/dev/null | grep -q '^luna-chat-server.service'; then
+  printf 'user\n' > /tmp/luna-stable-service-scope
+  systemctl --user stop luna-chat-server.service
+  systemctl --user disable luna-chat-server.service
+elif systemctl list-unit-files luna-chat-server.service --no-legend 2>/dev/null | grep -q '^luna-chat-server.service'; then
+  printf 'system\n' > /tmp/luna-stable-service-scope
+  systemctl stop luna-chat-server.service
+  systemctl disable luna-chat-server.service
+else
+  echo "luna-chat-server.service not found as a user or system service" >&2
+  exit 1
+fi
 incus config device remove luna-stable ws6753
 incus config device remove luna-stable control6754
 incus config device add luna-stable ws4753 proxy listen=tcp:0.0.0.0:4753 connect=tcp:127.0.0.1:4753 bind=host
@@ -96,8 +108,20 @@ production port proxies:
 incus config device remove luna-stable ws4753
 incus config device remove luna-stable control4754
 incus stop luna-stable
-systemctl --user enable luna-chat-server.service
-systemctl --user restart luna-chat-server.service
+case "$(cat /tmp/luna-stable-service-scope 2>/dev/null || true)" in
+  user)
+    systemctl --user enable luna-chat-server.service
+    systemctl --user restart luna-chat-server.service
+    ;;
+  system)
+    systemctl enable luna-chat-server.service
+    systemctl restart luna-chat-server.service
+    ;;
+  *)
+    echo "Set /tmp/luna-stable-service-scope to user or system before rollback" >&2
+    exit 1
+    ;;
+esac
 curl -fsS http://127.0.0.1:4753/healthz
 ```
 
