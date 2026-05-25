@@ -10,6 +10,7 @@ export interface ChatArgs {
   readonly threadId?: string
   readonly newThread?: boolean
   readonly localShell?: boolean
+  readonly dangerouslyAutoApproveLocalShell?: boolean
   readonly startMode?: StartMode
   readonly startCommand?: string
   readonly startSsh?: string
@@ -61,6 +62,7 @@ export const parseChatArgs = (argv: ReadonlyArray<string>): ChatArgs => {
     threadId?: string
     newThread?: boolean
     localShell?: boolean
+    dangerouslyAutoApproveLocalShell?: boolean
     startMode?: StartMode
     startCommand?: string
     startSsh?: string
@@ -121,6 +123,9 @@ export const parseChatArgs = (argv: ReadonlyArray<string>): ChatArgs => {
         break
       case "--no-local-shell":
         out.localShell = false
+        break
+      case "--dangerously-auto-approve-local-shell":
+        out.dangerouslyAutoApproveLocalShell = true
         break
       case "--start-mode": {
         const r = readValue(argv, i, "--start-mode")

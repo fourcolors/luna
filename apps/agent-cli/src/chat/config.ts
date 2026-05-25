@@ -10,6 +10,7 @@ export interface ChatConfig {
   readonly threadId: string | null
   readonly newThread: boolean
   readonly localShellInitial: boolean
+  readonly dangerouslyAutoApproveLocalShell: boolean
   readonly startMode: StartMode
   readonly startCommand: string | null
   readonly startSsh: string | null
@@ -80,6 +81,12 @@ const parseStartMode = (value: string): StartMode =>
 
 const isPositiveInteger = (value: string): boolean => /^[1-9]\d*$/.test(value)
 
+const isTruthy = (value: string | undefined): boolean =>
+  value === "1" || value === "true" || value === "yes" || value === "on"
+
+const isUnderRootLuna = (cwd: string): boolean =>
+  cwd === "/root/luna" || cwd.startsWith("/root/luna/")
+
 const isValidProfileName = (value: string): boolean => /^[A-Za-z][A-Za-z0-9_-]*$/.test(value)
 
 const normalizeProfileName = (value: string): string => value.toLowerCase()
@@ -103,6 +110,36 @@ export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
   }
   const profilePrefix = profileEnvPrefix(profileName)
   const profiled = (suffix: string): string => `${profilePrefix}_${suffix}`
+
+  const dangerousAutoSetting = selectSetting([
+    { name: "--dangerously-auto-approve-local-shell", value: input.args.dangerouslyAutoApproveLocalShell === true ? "1" : undefined },
+    { name: profiled("DANGEROUS_AUTO_APPROVE_LOCAL_SHELL"), value: input.env[profiled("DANGEROUS_AUTO_APPROVE_LOCAL_SHELL")] },
+    { name: profiled("DANGEROUS_AUTO_APPROVE_LOCAL_SHELL"), value: input.dotenv[profiled("DANGEROUS_AUTO_APPROVE_LOCAL_SHELL")] },
+    { name: "LUNA_DANGEROUS_AUTO_APPROVE_LOCAL_SHELL", value: input.env["LUNA_DANGEROUS_AUTO_APPROVE_LOCAL_SHELL"] },
+    { name: "LUNA_DANGEROUS_AUTO_APPROVE_LOCAL_SHELL", value: input.dotenv["LUNA_DANGEROUS_AUTO_APPROVE_LOCAL_SHELL"] },
+  ])
+  const dangerousRequested = dangerousAutoSetting !== undefined && isTruthy(dangerousAutoSetting.value)
+  const runtimeScope = selectSetting([
+    { name: "LUNA_RUNTIME_SCOPE", value: input.env["LUNA_RUNTIME_SCOPE"] },
+    { name: "LUNA_RUNTIME_SCOPE", value: input.dotenv["LUNA_RUNTIME_SCOPE"] },
+  ])?.value
+  const dangerousMarkerPath = join(input.homeDir, ".luna", "allow-dangerous-local-shell")
+  let dangerouslyAutoApproveLocalShell = false
+  if (dangerousRequested) {
+    if (runtimeScope !== "incus-container") {
+      errors.push("dangerous local shell auto approval requires LUNA_RUNTIME_SCOPE=incus-container")
+    }
+    if (!existsSync(dangerousMarkerPath)) {
+      errors.push("dangerous local shell auto approval requires ~/.luna/allow-dangerous-local-shell")
+    }
+    if (!isUnderRootLuna(input.cwd)) {
+      errors.push("dangerous local shell auto approval requires cwd under /root/luna")
+    }
+    dangerouslyAutoApproveLocalShell =
+      runtimeScope === "incus-container" &&
+      existsSync(dangerousMarkerPath) &&
+      isUnderRootLuna(input.cwd)
+  }
 
   const urlSetting = selectSetting([
     { name: "--url", value: input.args.url },
@@ -224,6 +261,7 @@ export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
     threadId,
     newThread: input.args.newThread ?? threadId === null,
     localShellInitial: input.args.localShell ?? false,
+    dangerouslyAutoApproveLocalShell,
     startMode,
     startCommand,
     startSsh,
@@ -242,4 +280,5 @@ export const redactedConfigSummary = (cfg: ChatConfig): string =>
     `token=${cfg.token === null ? "missing" : "present"}`,
     `startMode=${cfg.startMode}`,
     `localShell=${cfg.localShellInitial ? "on" : "off"}`,
+    `localShellApproval=${cfg.dangerouslyAutoApproveLocalShell ? "auto" : "prompt"}`,
   ].join(" ")

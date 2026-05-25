@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import { parseChatArgs } from "../src/chat/args.js"
 import { loadChatConfig, parseDotEnv, redactedConfigSummary } from "../src/chat/config.js"
@@ -293,5 +296,56 @@ describe("luna chat config", () => {
     const args = parseChatArgs(["chat", "--url=ws://flag/ui"])
     expect(args.unknown).toEqual([])
     expect(args.url).toBe("ws://flag/ui")
+  })
+
+  it("parses the dangerous auto-approve flag", () => {
+    const args = parseChatArgs(["chat", "--dangerously-auto-approve-local-shell"])
+    expect(args.unknown).toEqual([])
+    expect(args.dangerouslyAutoApproveLocalShell).toBe(true)
+  })
+
+  it("rejects dangerous auto approval outside the Incus container scope", () => {
+    const cfg = loadChatConfig({
+      args: parseChatArgs(["chat", "--dangerously-auto-approve-local-shell"]),
+      env: {
+        LUNA_UI_WS_TOKEN: "env-token-123456",
+      },
+      dotenv: {},
+      homeDir: "/tmp/home",
+      cwd: "/Users/fourcolors/Projects/1_active/luna",
+    })
+
+    expect(cfg.dangerouslyAutoApproveLocalShell).toBe(false)
+    expect(cfg.validationErrors).toContain(
+      "dangerous local shell auto approval requires LUNA_RUNTIME_SCOPE=incus-container",
+    )
+    expect(cfg.validationErrors).toContain(
+      "dangerous local shell auto approval requires cwd under /root/luna",
+    )
+  })
+
+  it("accepts dangerous auto approval with runtime marker, marker file, and container cwd", () => {
+    const home = mkdtempSync(join(tmpdir(), "luna-dangerous-home-"))
+    try {
+      mkdirSync(join(home, ".luna"), { recursive: true })
+      writeFileSync(join(home, ".luna", "allow-dangerous-local-shell"), "")
+      const cfg = loadChatConfig({
+        args: parseChatArgs(["chat", "--local-shell"]),
+        env: {
+          LUNA_STABLE_DANGEROUS_AUTO_APPROVE_LOCAL_SHELL: "1",
+          LUNA_UI_WS_TOKEN: "env-token-123456",
+        },
+        dotenv: {
+          LUNA_RUNTIME_SCOPE: "incus-container",
+        },
+        homeDir: home,
+        cwd: "/root/luna",
+      })
+
+      expect(cfg.dangerouslyAutoApproveLocalShell).toBe(true)
+      expect(cfg.validationErrors).toEqual([])
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
   })
 })
