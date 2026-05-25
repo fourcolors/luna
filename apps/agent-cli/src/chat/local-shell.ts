@@ -1,9 +1,12 @@
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 
+export type LocalShellApprovalMode = "prompt" | "auto"
+
 export interface LocalShellState {
   readonly enabled: boolean
   readonly cwd: string
+  readonly approvalMode: LocalShellApprovalMode
   readonly clientId: string
   readonly platform: NodeJS.Platform
 }
@@ -41,6 +44,7 @@ export interface ExecuteLocalCommandOptions {
 export interface MakeLocalShellStateOptions {
   readonly enabled: boolean
   readonly cwd: string
+  readonly approvalMode: LocalShellApprovalMode
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -52,6 +56,7 @@ export const makeLocalShellState = (
 ): LocalShellState => ({
   enabled: options.enabled,
   cwd: options.cwd,
+  approvalMode: options.approvalMode,
   clientId: `cli_${randomUUID().replaceAll("-", "")}`,
   platform: process.platform,
 })

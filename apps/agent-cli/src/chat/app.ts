@@ -98,6 +98,7 @@ const sendLocalShellCapability = (
     type: "local-shell-capability",
     threadId,
     enabled: localShell.enabled,
+    approvalMode: localShell.approvalMode,
     clientId: localShell.clientId,
     platform: localShell.platform,
     cwd: localShell.cwd,
@@ -227,7 +228,11 @@ export async function runLunaCli(
   let threadWaiter = createThreadWaiter()
   if (currentThreadId !== null) threadWaiter.resolve()
   const pendingUserMessages: string[] = []
-  let localShell = makeLocalShellState({ enabled: cfg.localShellInitial, cwd: cfg.cwd })
+  let localShell = makeLocalShellState({
+    enabled: cfg.localShellInitial,
+    cwd: cfg.cwd,
+    approvalMode: cfg.dangerouslyAutoApproveLocalShell ? "auto" : "prompt",
+  })
   let quitting = false
   let fatalErrorMessage: string | null = null
   let pendingAssistantCount = 0
@@ -313,7 +318,9 @@ export async function runLunaCli(
         env: localCommandEnv,
         timeoutMs: DEFAULT_LOCAL_COMMAND_TIMEOUT_MS,
         maxOutputBytes: MAX_LOCAL_COMMAND_OUTPUT_BYTES,
-        approve: io.approveLocalCommand ?? (async () => false),
+        approve: cfg.dangerouslyAutoApproveLocalShell
+          ? async () => true
+          : io.approveLocalCommand ?? (async () => false),
         signal: controller.signal,
       })
       if (!quitting) client.send(result)

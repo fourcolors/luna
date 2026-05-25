@@ -37,15 +37,17 @@ const waitFor = async <T>(promise: Promise<T>, timeoutMs = 1_000): Promise<T> =>
 describe("local shell state", () => {
   it("starts disabled and toggles enabled without mutating the original", () => {
     const cwd = "/tmp/luna"
-    const state = makeLocalShellState({ enabled: false, cwd })
+    const state = makeLocalShellState({ enabled: false, cwd, approvalMode: "prompt" })
     expect(state.enabled).toBe(false)
     expect(state.cwd).toBe(cwd)
+    expect(state.approvalMode).toBe("prompt")
     expect(state.clientId).toMatch(/^cli_/)
     expect(state.platform).toBe(process.platform)
 
     const enabled = setLocalShellEnabled(state, true)
     expect(enabled.enabled).toBe(true)
     expect(enabled.cwd).toBe(cwd)
+    expect(enabled.approvalMode).toBe("prompt")
     expect(enabled.clientId).toBe(state.clientId)
     expect(enabled.platform).toBe(state.platform)
     expect(state.enabled).toBe(false)
