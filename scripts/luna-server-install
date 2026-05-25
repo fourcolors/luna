@@ -161,6 +161,8 @@ if [[ "$SKIP_DEPS" == false ]]; then
   luna_run "$BUN_BIN" install --cwd "$REPO_DIR" --frozen-lockfile
 fi
 
+luna_configure_claude_executable "$ENV_FILE" "$REPO_DIR"
+
 write_service "$BUN_BIN"
 
 if [[ "$DRY_RUN" == false ]]; then

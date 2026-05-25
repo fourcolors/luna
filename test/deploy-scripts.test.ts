@@ -331,6 +331,66 @@ exit 0
     expect(result.stdout).toContain("ExecStart=/root/.bun/bin/bun run --filter @luna/ui-web server:chat")
   })
 
+  it("server install replaces stale Claude Code overrides with the repo-bundled Linux binary", () => {
+    const temp = makeTempDir()
+    const repo = join(temp, "repo")
+    const state = join(temp, "state")
+    const serviceDir = join(temp, "systemd")
+    const bin = join(temp, "bin")
+    const bun = join(bin, "bun")
+    const bundledClaude = join(
+      repo,
+      "node_modules",
+      ".bun",
+      "@anthropic-ai+claude-agent-sdk-linux-x64@0.2.119",
+      "node_modules",
+      "@anthropic-ai",
+      "claude-agent-sdk-linux-x64",
+      "claude",
+    )
+    mkdirSync(join(repo, ".git"), { recursive: true })
+    mkdirSync(join(bundledClaude, ".."), { recursive: true })
+    mkdirSync(state, { recursive: true })
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(bun, "#!/usr/bin/env bash\nexit 0\n")
+    writeFileSync(join(bin, "systemctl"), "#!/usr/bin/env bash\nexit 0\n")
+    writeFileSync(bundledClaude, "#!/usr/bin/env bash\nexit 0\n")
+    spawnSync("chmod", ["+x", bun, join(bin, "systemctl"), bundledClaude])
+    writeFileSync(
+      join(state, ".env"),
+      [
+        "UI_WS_TOKEN=server-token-1234567890-secret",
+        "LUNA_CLAUDE_CODE_EXECUTABLE=/does/not/exist/claude",
+        "",
+      ].join("\n"),
+    )
+
+    const result = runScript("scripts/luna-server-install", [
+      "--profile",
+      "stable",
+      "--repo-dir",
+      repo,
+      "--luna-home",
+      state,
+      "--service-dir",
+      serviceDir,
+      "--skip-deps",
+      "--no-enable",
+      "--no-start",
+    ], {
+      env: {
+        PATH: `${bin}:/usr/bin:/bin`,
+        LUNA_TEST_BUN_PATH: bun,
+      },
+    })
+
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stderr).toContain("removing stale LUNA_CLAUDE_CODE_EXECUTABLE")
+    expect(readFileSync(join(state, ".env"), "utf8")).toContain(
+      `LUNA_CLAUDE_CODE_EXECUTABLE=${bundledClaude}`,
+    )
+  })
+
   it("local installer dry-run uses the real GitHub repository and installs the chat CLI wrapper", () => {
     const temp = makeTempDir()
 

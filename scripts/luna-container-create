@@ -239,6 +239,10 @@ fi
 prepare_repo
 luna_run mkdir -p "$STATE_PATH" "$STATE_PATH/claude" "$STATE_PATH/logs" "$STATE_PATH/run"
 
+# Host-specific Claude Code executable overrides commonly break after mounting
+# state into a Linux container. luna-server-install will detect a container-local
+# executable after dependencies are installed.
+luna_remove_env "$STATE_PATH/.env" "LUNA_CLAUDE_CODE_EXECUTABLE"
 luna_upsert_env "$STATE_PATH/.env" "CLAUDE_CONFIG_DIR" "/root/.luna/claude"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_REPO_ROOT" "/root/luna"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_UI_WS_HOST" "0.0.0.0"
