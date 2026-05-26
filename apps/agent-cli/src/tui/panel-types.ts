@@ -1,4 +1,4 @@
-import type { ServerFrame } from "@luna/ui-ws"
+import type { ServerFrame, MemorySearchHit } from "@luna/ui-ws"
 import type { Artifact } from "@luna/chat-service"
 
 export type ContextTab = "memories" | "events" | "artifacts"
@@ -23,12 +23,7 @@ export type FrameRingEntry = {
   readonly frame: ServerFrame
 }
 
-export type MemorySearchHit = {
-  readonly id: string
-  readonly kind: string
-  readonly content: string
-  readonly score: number
-}
+export type { MemorySearchHit }
 
 export type MemorySearchState =
   | { readonly status: "idle" }
