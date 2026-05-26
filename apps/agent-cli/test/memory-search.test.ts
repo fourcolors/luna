@@ -1,33 +1,33 @@
 import { describe, expect, it } from "vitest"
-import { Effect, Stream } from "effect"
 import { runMemorySearch } from "../src/tui/memory-search.js"
+import type {
+  MemorySearchResultFrame,
+  MemorySearchErrorFrame,
+} from "@luna/ui-ws"
 
-const makeFakeRouter = (results: Array<{ id: string; kind: string; content: string; score: number }>) => ({
-  search: (_args: { queryText: string; topK?: number }) =>
-    Stream.fromIterable(
-      results.map((r) => ({
-        record: {
-          id: r.id,
-          namespace: "default",
-          kind: r.kind,
-          content: r.content,
-          schemaVersion: 1,
-          createdAt: 0,
-          updatedAt: 0,
-          tags: [],
-        },
-        score: r.score,
-      }))
-    ),
-}) as Parameters<typeof runMemorySearch>[0]
+type SessionLike = Parameters<typeof runMemorySearch>[0]
 
-describe("runMemorySearch", () => {
+const makeFakeSession = (
+  respond: (args: { queryText: string; topK?: number }) =>
+    | MemorySearchResultFrame
+    | MemorySearchErrorFrame,
+): SessionLike => {
+  return {
+    searchMemory: async (args) => respond(args),
+  } as SessionLike
+}
+
+describe("runMemorySearch (WS-mediated)", () => {
   it("returns ready with hits on success", async () => {
-    const router = makeFakeRouter([
-      { id: "m1", kind: "feedback", content: "hello", score: 0.9 },
-      { id: "m2", kind: "project", content: "world", score: 0.7 },
-    ])
-    const result = await runMemorySearch(router, "hello world", 10)
+    const session = makeFakeSession((args) => ({
+      type: "memory-search-result",
+      queryText: args.queryText,
+      hits: [
+        { id: "m1", kind: "feedback", content: "hello", score: 0.9 },
+        { id: "m2", kind: "project", content: "world", score: 0.7 },
+      ],
+    }))
+    const result = await runMemorySearch(session, "hello world", 10)
     expect(result.status).toBe("ready")
     if (result.status !== "ready") throw new Error("unreachable")
     expect(result.hits.length).toBe(2)
@@ -35,28 +35,43 @@ describe("runMemorySearch", () => {
     expect(result.query).toBe("hello world")
   })
 
-  it("returns ready with empty hits when no results", async () => {
-    const router = makeFakeRouter([])
-    const result = await runMemorySearch(router, "nothing", 10)
+  it("returns ready with empty hits when server returns no matches", async () => {
+    const session = makeFakeSession((args) => ({
+      type: "memory-search-result",
+      queryText: args.queryText,
+      hits: [],
+    }))
+    const result = await runMemorySearch(session, "nothing", 10)
     expect(result.status).toBe("ready")
     if (result.status !== "ready") throw new Error("unreachable")
     expect(result.hits.length).toBe(0)
   })
 
-  it("returns error with message when search Effect fails", async () => {
-    const failingRouter = {
-      search: (_args: { queryText: string; topK?: number }) =>
-        Stream.fail(new Error("backend down")) as ReturnType<ReturnType<typeof makeFakeRouter>["search"]>,
-    } as Parameters<typeof runMemorySearch>[0]
-    const result = await runMemorySearch(failingRouter, "x", 10)
+  it("returns error when server replies with memory-search-error frame", async () => {
+    const session = makeFakeSession((args) => ({
+      type: "memory-search-error",
+      queryText: args.queryText,
+      message: "no vector backends registered",
+      kind: "no-vector-backend",
+    }))
+    const result = await runMemorySearch(session, "x", 10)
     expect(result.status).toBe("error")
     if (result.status !== "error") throw new Error("unreachable")
-    expect(result.message).toContain("backend down")
+    expect(result.message).toContain("no vector backends")
   })
 
   it("returns idle for empty query", async () => {
-    const router = makeFakeRouter([])
-    const result = await runMemorySearch(router, "  ", 10)
+    let called = false
+    const session = makeFakeSession((args) => {
+      called = true
+      return {
+        type: "memory-search-result",
+        queryText: args.queryText,
+        hits: [],
+      }
+    })
+    const result = await runMemorySearch(session, "  ", 10)
     expect(result.status).toBe("idle")
+    expect(called).toBe(false) // empty query should NOT send a request
   })
 })
