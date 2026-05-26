@@ -426,6 +426,7 @@ export async function runLunaCli(
 
     if (!quitting) await waitForAssistantDrain(QUIT_DRAIN_MS)
     quitting = true
+    session.beginQuit()
     abortLocalShellTasks()
     await waitBounded(Promise.allSettled([...localShellTasks]), 100)
     await client.close()
