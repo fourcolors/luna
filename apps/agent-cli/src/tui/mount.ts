@@ -2,8 +2,11 @@ import { homedir } from "node:os"
 import { appendFileSync } from "node:fs"
 import { render, useRenderer, useKeyboard } from "@opentui/solid"
 import type { CliRenderer } from "@opentui/core"
-import { createComponent } from "solid-js"
+import { createComponent, createEffect } from "solid-js"
 import { createTuiStore } from "./store.js"
+import { runMemorySearch } from "./memory-search.js"
+import { makeRouter, InMemoryBackend } from "@luna/memory"
+import { Effect } from "effect"
 
 const DEBUG_LOG = process.env["LUNA_TUI_DEBUG"]
 const dbg = (msg: string): void => {
@@ -27,6 +30,7 @@ import {
 import { parseChatArgs } from "../chat/args.js"
 
 const DEFAULT_MODEL = "claude-sonnet-4-5"
+const MEMORY_SEARCH_DEBOUNCE_MS = 300
 
 const USAGE = [
   "Usage: luna chat [options]",
@@ -44,6 +48,14 @@ export type TuiMountResult = { exitCode: 0 | 1 | 2 }
 
 export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult> => {
   dbg(`mountTui start argv=${JSON.stringify(argv)} LUNA_TUI_DEBUG=${DEBUG_LOG ?? "<unset>"}`)
+
+  const memoryBackend = await Effect.runPromise(
+    Effect.gen(function* () {
+      return yield* InMemoryBackend
+    }).pipe(Effect.provide(InMemoryBackend.Default)),
+  )
+  const memoryRouter = makeRouter([{ pattern: "*", backend: memoryBackend }])
+
   // The OpenTUI Solid preload (which both installs the Bun JSX transform and
   // swaps solid-js's server build for the reactive client build) is registered
   // at the top of luna.ts. By the time we get here, the plugin is active and
@@ -142,6 +154,12 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
   session.on("localShellStatus", (msg, accepted) => {
     if (!accepted) store.setMessages((m) => [...m, { role: "assistant", text: `local shell: ${msg}` }])
   })
+  session.on("rawFrame", (frame) => {
+    store.pushRawFrame(frame)
+    if (frame.type === "artifacts-extracted") {
+      store.setArtifactsForThread(frame.threadId, frame.artifacts)
+    }
+  })
 
   // Local-shell request handler.
   const { approveLocalCommand } = await import("../luna.js") as {
@@ -202,6 +220,7 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
     }
     if (parsed.type === "message") {
       store.appendUser(trimmed)
+      store.setLastUserMessage(trimmed)
       dbg(`appendUser done, messages count = ${store.messages().length}`)
     }
     session.dispatchSlash(trimmed)
@@ -254,6 +273,30 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
   }
 
   const RootApp = () => {
+    let memorySearchTimer: ReturnType<typeof setTimeout> | undefined
+
+    createEffect(() => {
+      const query = store.lastUserMessage()
+      if (memorySearchTimer !== undefined) clearTimeout(memorySearchTimer)
+      if (query.trim().length === 0) {
+        store.setMemorySearch({ status: "idle" })
+        return
+      }
+      store.setMemorySearch({ status: "loading", query: query.trim() })
+      memorySearchTimer = setTimeout(() => {
+        void (async () => {
+          try {
+            const result = await runMemorySearch(memoryRouter, query, 10)
+            store.setMemorySearch(result)
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err)
+            store.setMemorySearch({ status: "error", query: query.trim(), message })
+            dbg(`memory search error: ${message}`)
+          }
+        })()
+      }, MEMORY_SEARCH_DEBOUNCE_MS)
+    })
+
     // Stash renderer ref for destroy on quit.
     const renderer = useRenderer()
     rendererRef = renderer

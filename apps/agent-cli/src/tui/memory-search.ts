@@ -17,7 +17,7 @@ export const runMemorySearch = async (
     const hits: MemorySearchHit[] = Array.from(chunk).map(({ record, score }) => ({
       id: record.id,
       kind: record.kind,
-      content: record.content,
+      content: typeof record.content === "string" ? record.content : JSON.stringify(record.content),
       score,
     }))
     return { status: "ready", query: trimmed, hits }
