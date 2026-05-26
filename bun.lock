@@ -17,6 +17,7 @@
         "luna": "./src/luna.ts",
       },
       "dependencies": {
+        "@luna/chat-service": "workspace:*",
         "@luna/core": "workspace:*",
         "@luna/memory": "workspace:*",
         "@luna/ui-ws": "workspace:*",
