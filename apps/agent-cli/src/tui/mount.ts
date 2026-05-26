@@ -222,6 +222,22 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
       void client.close().then(() => { rendererRef?.destroy() })
       return
     }
+    if (evt.name === "tab") {
+      store.cycleContextPanelTab()
+      return
+    }
+    if (evt.ctrl === true && evt.name === "1") {
+      store.setContextPanelTab("memories")
+      return
+    }
+    if (evt.ctrl === true && evt.name === "2") {
+      store.setContextPanelTab("events")
+      return
+    }
+    if (evt.ctrl === true && evt.name === "3") {
+      store.setContextPanelTab("artifacts")
+      return
+    }
     if (evt.name === "return") {
       submit(store.inputDraft())
       return
