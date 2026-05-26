@@ -13,6 +13,7 @@ export type SessionErrorEvent = {
   readonly message: string
   readonly kind?: string
   readonly turnId: string | null
+  readonly silent?: boolean
 }
 
 export type LunaHeadlessEvents = {
@@ -152,10 +153,13 @@ export class LunaHeadlessSession extends EventEmitter {
   }
 
   private bindThread(threadId: string): void {
+    const changed = this.currentThreadId !== threadId
     this.currentThreadId = threadId
     this.pendingAutoResumedThreadId = null
-    try { this.saveLastThread(threadId) } catch { /* best-effort */ }
-    this.emit("threadChange", threadId)
+    if (changed) {
+      try { this.saveLastThread(threadId) } catch { /* best-effort */ }
+      this.emit("threadChange", threadId)
+    }
     this.flushPending()
   }
 
@@ -223,6 +227,14 @@ export class LunaHeadlessSession extends EventEmitter {
           this.pendingAutoResumedThreadId = null
           this.resetThread()
           this.client.send({ type: "new-thread", model: this.model })
+          if (frame.turnId !== null) {
+            this.emit("assistantError", {
+              message: `resumed thread ${staleId} no longer exists`,
+              kind: "unknown-thread",
+              turnId: frame.turnId,
+              silent: true,
+            })
+          }
           this.emit("info", `luna: resumed thread ${staleId} no longer exists — starting a new one`)
           return
         }

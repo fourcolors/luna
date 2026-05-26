@@ -355,12 +355,12 @@ export async function runLunaCli(
     if (pendingTurnCount > 0) pendingTurnCount -= 1
     write(io, "\n")
   })
-  session.on("assistantError", ({ message, kind, turnId }) => {
-    writeErr(io, `luna: ${kind ?? "error"}: ${message}\n`)
-    if (turnId !== null) {
-      printedTextByTurn.delete(turnId)
-      if (pendingTurnCount > 0) pendingTurnCount -= 1
+  session.on("assistantError", ({ message, kind, turnId, silent }) => {
+    if (silent !== true) {
+      writeErr(io, `luna: ${kind ?? "error"}: ${message}\n`)
     }
+    if (turnId !== null) printedTextByTurn.delete(turnId)
+    if (pendingTurnCount > 0) pendingTurnCount -= 1
   })
   session.on("threadList", (threads) => {
     for (const t of threads) write(io, `${t.id}\t${t.title ?? ""}\t${t.status}\n`)
