@@ -43,7 +43,7 @@ const CANONICAL_LUNA_OP_REF =
   "luna-op://primary/<vault-id>/<item-id>/credential"
 const CANONICAL_BARE_OP_REF =
   "op://<vault-id>/<item-id>/credential"
-const CLI_ENTRY = path.resolve(__dirname, "..", "src", "index.ts")
+const CLI_ENTRY = path.resolve(__dirname, "..", "src", "luna.ts")
 
 const seedDb = (ref: string): string => {
   const dbPath = path.join(
@@ -55,6 +55,7 @@ const seedDb = (ref: string): string => {
     [
       "run",
       CLI_ENTRY,
+      "account",
       "add",
       "--id",
       "operator",

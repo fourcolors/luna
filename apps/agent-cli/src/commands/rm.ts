@@ -1,5 +1,5 @@
 /**
- * `luna-account rm --id <id>` — delete one row by id.
+ * `luna account rm --id <id>` — delete one row by id.
  */
 import { openDb, defaultDbPath } from "../db.js"
 import type { CmdResult } from "./add.js"

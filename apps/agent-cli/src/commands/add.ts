@@ -1,5 +1,5 @@
 /**
- * `luna-account add` — insert one row into the §5.1 `accounts` table.
+ * `luna account add` — insert one row into the §5.1 `accounts` table.
  *
  * Validation (DESIGN.md §2.2.11):
  *   - all four required fields non-empty
