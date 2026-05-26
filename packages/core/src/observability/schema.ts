@@ -124,6 +124,22 @@ export const CostAccruedSchema = Schema.Struct({
   estimatedUsd: Schema.Number,
 })
 
+export const RetrievalCallSchema = Schema.Struct({
+  ...Base,
+  kind: Schema.Literal("RetrievalCall"),
+  sessionId: Schema.optional(Schema.String),
+  namespace: Schema.optional(Schema.String),
+  mode: Schema.Literal("vec", "hybrid"),
+  queryDigest: Schema.String,
+  embedderProvider: Schema.String,
+  embedderModel: Schema.String,
+  embedderDimension: Schema.Number,
+  candidateCount: Schema.Number,
+  topScore: Schema.optional(Schema.Number),
+  durationMs: Schema.Number,
+  status: Schema.Literal("success", "error"),
+})
+
 export const ErrorEventSchema = Schema.Struct({
   ...Base,
   kind: Schema.Literal("Error"),
@@ -144,6 +160,7 @@ export const ObsEventSchema = Schema.Union(
   WorkflowTransitionSchema,
   AccountSwitchSchema,
   CostAccruedSchema,
+  RetrievalCallSchema,
   ErrorEventSchema,
 )
 

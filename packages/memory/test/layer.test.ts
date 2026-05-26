@@ -2,12 +2,24 @@
  * MemoryLayer tests — composition helper that provides MemoryRouterTag.
  */
 import { describe, expect, it } from "vitest"
-import { Effect } from "effect"
+import { Effect, Layer } from "effect"
+import { Clock, ObservabilityService, StubEmbedderLayer } from "@luna/core"
 import { InMemoryBackend } from "../src/backends/in-memory.js"
 import { MemoryLayer } from "../src/layer.js"
 import { MemoryRouterTag } from "../src/router.js"
 import type { MemoryBackend } from "../src/backend.js"
 import { makeRecord } from "../src/types.js"
+
+// MemoryLayer now requires ObservabilityService, EmbedderService, and Clock
+// at construction (so search() can emit RetrievalCallEvent telemetry). The
+// stub embedder, default Clock, and a no-console observability sink satisfy
+// the contract for these unit tests. ObservabilityService internally needs
+// Clock, so feed it before merging the three at the top level.
+const supportLayer = Layer.mergeAll(
+  ObservabilityService.Default.pipe(Layer.provide(Clock.Default)),
+  StubEmbedderLayer,
+  Clock.Default,
+)
 
 async function makeInMem(): Promise<MemoryBackend> {
   return Effect.runPromise(
@@ -39,7 +51,7 @@ describe("MemoryLayer", () => {
             content: 1,
           }),
         )
-      }).pipe(Effect.provide(layer)),
+      }).pipe(Effect.provide(Layer.provideMerge(layer, supportLayer))),
     )
 
     const inSession = await Effect.runPromise(sessionBe.get("x"))
@@ -69,7 +81,7 @@ describe("MemoryLayer", () => {
             content: 2,
           }),
         )
-      }).pipe(Effect.provide(layer)),
+      }).pipe(Effect.provide(Layer.provideMerge(layer, supportLayer))),
     )
 
     const inSession = await Effect.runPromise(sessionBe.get("y"))
@@ -96,7 +108,7 @@ describe("MemoryLayer", () => {
           }),
         )
         return yield* router.get("z")
-      }).pipe(Effect.provide(layer)),
+      }).pipe(Effect.provide(Layer.provideMerge(layer, supportLayer))),
     )
 
     expect(got?.id).toBe("z")
@@ -113,7 +125,7 @@ describe("MemoryLayer", () => {
       Effect.runPromise(
         Effect.gen(function* () {
           return yield* MemoryRouterTag
-        }).pipe(Effect.provide(badLayer)),
+        }).pipe(Effect.provide(Layer.provideMerge(badLayer, supportLayer))),
       ),
     ).rejects.toThrow(/default rule/)
   })

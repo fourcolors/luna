@@ -88,6 +88,41 @@ describe("ObsEvent schema validation", () => {
     }
   })
 
+  it("decodeObsEvent rejects RetrievalCall missing embedderModel", () => {
+    const bad = {
+      ts: new Date().toISOString(),
+      kind: "RetrievalCall",
+      level: "info",
+      mode: "hybrid",
+      queryDigest: "abc123",
+      embedderProvider: "ollama",
+      // embedderModel missing — required
+      embedderDimension: 768,
+      candidateCount: 3,
+      durationMs: 12,
+      status: "success",
+    }
+    expect(Either.isLeft(decodeObsEvent(bad))).toBe(true)
+  })
+
+  it("decodeObsEvent accepts a well-formed RetrievalCall", () => {
+    const good = {
+      ts: new Date().toISOString(),
+      kind: "RetrievalCall",
+      level: "info",
+      mode: "hybrid",
+      queryDigest: "abc123",
+      embedderProvider: "ollama",
+      embedderModel: "embeddinggemma",
+      embedderDimension: 768,
+      candidateCount: 3,
+      topScore: 0.87,
+      durationMs: 12,
+      status: "success",
+    }
+    expect(Either.isRight(decodeObsEvent(good))).toBe(true)
+  })
+
   it("emit() passes through a well-formed event unchanged", async () => {
     const collected = await run(
       Effect.gen(function* () {

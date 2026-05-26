@@ -8,7 +8,8 @@
   },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "bench:recall": "bun bench/paraphrase-recall.ts"
   },
   "dependencies": {
     "@luna/core": "workspace:*",

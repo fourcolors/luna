@@ -358,6 +358,78 @@
     border-left-color: var(--green);
   }
 
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 6px;
+    padding: 3px 9px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+
+  .status-badge.done {
+    border: 1px solid rgba(79, 202, 130, 0.55);
+    background: rgba(79, 202, 130, 0.12);
+    color: var(--green);
+  }
+
+  .status-badge.partial {
+    border: 1px solid rgba(229, 180, 75, 0.55);
+    background: rgba(229, 180, 75, 0.12);
+    color: var(--gold);
+  }
+
+  .status-badge.todo {
+    border: 1px solid rgba(239, 107, 115, 0.55);
+    background: rgba(239, 107, 115, 0.12);
+    color: var(--red);
+  }
+
+  .status-summary {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--panel);
+    padding: 18px 20px;
+  }
+
+  .status-summary h2 {
+    margin-bottom: 14px;
+  }
+
+  .status-summary table {
+    margin-top: 4px;
+  }
+
+  .status-summary td.feature {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .status-summary td.evidence {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
+  .step-done {
+    color: var(--green);
+    font-weight: 600;
+  }
+
+  .step-partial {
+    color: var(--gold);
+    font-weight: 600;
+  }
+
+  .step-todo {
+    color: var(--red);
+    font-weight: 600;
+  }
+
   .spec .spec-meta {
     display: flex;
     flex-wrap: wrap;
@@ -483,6 +555,56 @@
 
 <main class="wrap">
   <section>
+    <div class="status-summary">
+      <h2>Implementation Status</h2>
+      <p style="margin-bottom: 12px; color: var(--muted); font-size: 13px;">
+        Verified against the <code>dev</code> branch on 2026-05-25. F1–F4 are fully shipped and exercised by tests; F4's paraphrase-recall bench (Tier 1 mechanics + Tier 2 quality) and the RetrievalCallEvent observability event landed in the F4 follow-up. F5 and F6 are deferred — F5 awaits F4 bench data to justify, F6 awaits a document-ingestion use case.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Spec</th>
+            <th>Status</th>
+            <th>Evidence in code</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="feature">F1. Embedding metadata columns</td>
+            <td><span class="status-badge done">Done</span></td>
+            <td class="evidence">packages/memory/src/backends/sqlite-vector-maintenance.ts (schema + idempotent ALTER); test/sqlite-vector-maintenance.test.ts</td>
+          </tr>
+          <tr>
+            <td class="feature">F2. Memory status + re-embed CLI</td>
+            <td><span class="status-badge done">Done</span></td>
+            <td class="evidence">apps/agent-cli/src/memory.ts; getMemoryVectorStatus + reembedMemoryVectors; apps/agent-cli/test/memory-cli.test.ts (4 cases)</td>
+          </tr>
+          <tr>
+            <td class="feature">F3. Query and document formatters</td>
+            <td><span class="status-badge done">Done</span></td>
+            <td class="evidence">formatMemoryRecordEmbeddingInput at sqlite-vector.ts:410 (put); formatMemoryQueryEmbeddingInput at sqlite-vector.ts:622 (search); Scenario 5b test</td>
+          </tr>
+          <tr>
+            <td class="feature">F4. Retrieval regression suite</td>
+            <td><span class="status-badge done">Done</span></td>
+            <td class="evidence">Tier 1 mechanics: packages/memory/test/retrieval-mechanics.test.ts (6 cases incl. telemetry); Tier 2 quality bench: packages/memory/bench/paraphrase-recall.ts + corpus.json (30 facts, 60 paraphrase queries); RetrievalCallEvent in observability/types.ts &amp; schema.ts</td>
+          </tr>
+          <tr>
+            <td class="feature">F5. Optional reranking stage</td>
+            <td><span class="status-badge todo">Not started</span></td>
+            <td class="evidence">Gated on F4 bench data — build only if recall@5 &lt; 0.9 on the real-Ollama run. Reference: packages/memory/bench/architecture-comparison.html</td>
+          </tr>
+          <tr>
+            <td class="feature">F6. Chunked document memory</td>
+            <td><span class="status-badge todo">Not started</span></td>
+            <td class="evidence">Deferred — no document-ingestion use case yet. Add only when Luna starts indexing longer docs. No memory_documents / memory_chunks tables</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
     <div class="section-head">
       <h2>Current Database Contract</h2>
       <p>/root/.luna/memory.db</p>
@@ -591,6 +713,7 @@
           <span class="tag">P0</span>
           <span class="tag">migration safety</span>
           <span class="tag">memory_vectors</span>
+          <span class="status-badge done">Done</span>
         </div>
         <h3>F1. Embedding Metadata Columns</h3>
         <p>
@@ -642,6 +765,7 @@
           <span class="tag">P0</span>
           <span class="tag">operator CLI</span>
           <span class="tag">jax-box</span>
+          <span class="status-badge done">Done</span>
         </div>
         <h3>F2. Memory Status + Re-embed Command</h3>
         <p>
@@ -665,6 +789,7 @@ luna memory reembed --force --limit 100</code></pre>
           <span class="tag">P1</span>
           <span class="tag">retrieval quality</span>
           <span class="tag">prompt formatting</span>
+          <span class="status-badge done">Done</span>
         </div>
         <h3>F3. Query and Document Embedding Formatting</h3>
         <p>
@@ -685,18 +810,24 @@ title: {namespace}/{kind} tags:{tags} | text: {content.text}</code></pre>
           <span class="tag">P1</span>
           <span class="tag">regression tests</span>
           <span class="tag">quality gate</span>
+          <span class="status-badge done">Done</span>
         </div>
         <h3>F4. Retrieval Regression Suite</h3>
         <p>
-          Add a deterministic test corpus that exercises the actual MemoryRouter path. The goal is to catch silent regressions in embedding config, FTS5 query escaping, hybrid search, and dimension migration.
+          Deterministic test corpus that exercises the actual MemoryRouter path. Two tiers: Tier 1 mechanics (stub embedder, vitest) and Tier 2 paraphrase recall (real Ollama, standalone bench). Plus RetrievalCallEvent for per-search telemetry.
         </p>
         <ul>
-          <li>Seed project facts, user-preference facts, and distractor facts.</li>
-          <li>Assert that hybrid search returns the right record for natural paraphrases.</li>
-          <li>Assert that stale 64d rows are detected by <code>memory status</code>.</li>
-          <li>Assert that re-embedding upgrades rows to the configured dimension and metadata.</li>
-          <li>Use no personal data in fixtures.</li>
+          <li><span class="step-done">Done:</span> seeded project (10), user-preference (10), and distractor (10) facts in <code>packages/memory/bench/corpus.json</code> with 60 paraphrase queries total.</li>
+          <li><span class="step-done">Done:</span> Tier 2 bench asserts hybrid search returns the correct id at rank ≤ 5 for natural paraphrases — <code>packages/memory/bench/paraphrase-recall.ts</code>. Exits non-zero if overall recall@5 &lt; 0.9 (override via <code>LUNA_BENCH_RECALL_THRESHOLD</code>).</li>
+          <li><span class="step-done">Done:</span> Tier 1 mechanics suite covers topK enforcement, namespace isolation, idempotency, empty-corpus, hybrid ranking, and RetrievalCallEvent telemetry — <code>packages/memory/test/retrieval-mechanics.test.ts</code> (6 cases).</li>
+          <li><span class="step-done">Done:</span> per-search observability via <code>RetrievalCallEvent</code> (queryDigest, embedder provenance, candidateCount, topScore, durationMs, status) — wired at MemoryRouter level so every consumer gets identical telemetry.</li>
+          <li><span class="step-done">Done:</span> stale rows detected by <code>memory status</code> — <code>sqlite-vector-maintenance.test.ts:123</code>.</li>
+          <li><span class="step-done">Done:</span> re-embed upgrades rows to the configured dimension and metadata — <code>sqlite-vector-maintenance.test.ts:164</code>, <code>memory-cli.test.ts:215</code>.</li>
+          <li><span class="step-done">Done:</span> corpus contains no personal data (work email only, no credentials or private facts).</li>
         </ul>
+        <p style="margin-top: 12px;">
+          <strong>First real-corpus run (2026-05-25):</strong> Ollama + <code>nomic-embed-text</code> (substitute — <code>embeddinggemma</code> not installed on dev machine). 768-d embeddings, 60 paraphrase queries. <strong>Overall recall@5 = 0.917</strong> (preference 0.900, project 0.933); recall@1 = 0.417; MRR = 0.605. Passes the 0.9 go/no-go gate by a narrow margin — F5 reranker not justified for top-5 quality, but top-1 weakness (0.417) suggests reranking <em>could</em> meaningfully help single-best-answer queries if Luna's traffic requires them. Re-run against <code>embeddinggemma</code> when available to confirm against the calibrated threshold.
+        </p>
       </article>
 
       <article class="panel spec priority-2 span-6">
@@ -704,6 +835,7 @@ title: {namespace}/{kind} tags:{tags} | text: {content.text}</code></pre>
           <span class="tag">P2</span>
           <span class="tag">ranking</span>
           <span class="tag">optional model</span>
+          <span class="status-badge todo">Not started</span>
         </div>
         <h3>F5. Optional Reranking Stage</h3>
         <p>
@@ -715,6 +847,9 @@ title: {namespace}/{kind} tags:{tags} | text: {content.text}</code></pre>
           <li>Search still works if the reranker is unavailable.</li>
           <li>Log ranking inputs and outputs to observability, not to <code>memory.db</code>.</li>
         </ul>
+        <p style="margin-top: 12px;">
+          <strong>Gated on F4 bench data.</strong> Only build if the real-Ollama recall@5 falls below 0.9, and with a specific per-kind target informed by the per-kind breakdown. Don't build a fix for a non-problem.
+        </p>
       </article>
 
       <article class="panel spec priority-2 span-6">
@@ -722,10 +857,14 @@ title: {namespace}/{kind} tags:{tags} | text: {content.text}</code></pre>
           <span class="tag">P2</span>
           <span class="tag">documents</span>
           <span class="tag">new tables</span>
+          <span class="status-badge todo">Not started</span>
         </div>
         <h3>F6. Chunked Document Memory</h3>
         <p>
           The current <code>memory_vectors.id PRIMARY KEY</code> shape is correct for atomic memories but cannot store multiple chunks for one source document. Add chunk tables only when Luna starts indexing longer docs, transcripts, or project files.
+        </p>
+        <p style="margin-top: 8px;">
+          <strong>Deferred — no document ingestion use case yet.</strong> Atomic memory is what the chat agent uses today. Adding a schema + tool surface for documents before there's a caller would be premature scope.
         </p>
         <pre><code>memory_documents(
   document_id TEXT PRIMARY KEY,
@@ -762,13 +901,13 @@ memory_chunks(
     <div class="grid">
       <div class="panel span-7">
         <ol>
-          <li>Add metadata columns to <code>memory_vectors</code> with safe defaults.</li>
-          <li>Expose embedder identity from <code>EmbedderService</code> so saves and status can compare provider, model, dimension, and format.</li>
-          <li>Add formatter helpers and route both <code>put()</code> and <code>search()</code> through them.</li>
-          <li>Add <code>luna memory status</code> and <code>luna memory reembed --dry-run</code>.</li>
-          <li>Run re-embed on <code>luna-dev</code>; confirm all rows become 768d and metadata is populated.</li>
-          <li>Add regression tests around the migration and retrieval path.</li>
-          <li>Only then consider reranking and chunked document memory.</li>
+          <li><span class="step-done">Done.</span> Add metadata columns to <code>memory_vectors</code> with safe defaults.</li>
+          <li><span class="step-done">Done.</span> Expose embedder identity from <code>EmbedderService</code> so saves and status can compare provider, model, dimension, and format.</li>
+          <li><span class="step-done">Done.</span> Add formatter helpers and route both <code>put()</code> and <code>search()</code> through them.</li>
+          <li><span class="step-done">Done.</span> Add <code>luna memory status</code> and <code>luna memory reembed --dry-run</code>.</li>
+          <li><span class="step-todo">Pending.</span> Run re-embed on <code>luna-dev</code>; confirm all rows become 768d and metadata is populated. (Tooling exists, deploy/run still needed — live snapshot still shows 64d rows.)</li>
+          <li><span class="step-done">Done.</span> Regression tests around the migration and retrieval path — mechanics + paraphrase corpus shipped (see F4).</li>
+          <li><span class="step-todo">Pending.</span> Only then consider reranking and chunked document memory.</li>
         </ol>
       </div>
       <div class="panel span-5">

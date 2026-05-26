@@ -27,6 +27,7 @@ export type ObsEventKind =
   | "WorkflowTransition"
   | "AccountSwitch"
   | "CostAccrued"
+  | "RetrievalCall"
   | "Error"
 
 export interface ObsEventBase {
@@ -120,6 +121,21 @@ export interface CostAccruedEvent extends ObsEventBase {
   readonly estimatedUsd: number
 }
 
+export interface RetrievalCallEvent extends ObsEventBase {
+  readonly kind: "RetrievalCall"
+  readonly sessionId?: string
+  readonly namespace?: string
+  readonly mode: "vec" | "hybrid"
+  readonly queryDigest: string
+  readonly embedderProvider: string
+  readonly embedderModel: string
+  readonly embedderDimension: number
+  readonly candidateCount: number
+  readonly topScore?: number
+  readonly durationMs: number
+  readonly status: "success" | "error"
+}
+
 export interface ErrorEvent extends ObsEventBase {
   readonly kind: "Error"
   readonly errorTag: string
@@ -139,6 +155,7 @@ export type ObsEvent =
   | WorkflowTransitionEvent
   | AccountSwitchEvent
   | CostAccruedEvent
+  | RetrievalCallEvent
   | ErrorEvent
 
 export interface ObservabilityConfig {

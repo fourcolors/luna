@@ -11,7 +11,12 @@
  * to avoid collisions, but the router is tolerant).
  */
 import { Context, Effect, Stream } from "effect"
-import { MemoryBackendError } from "@luna/core"
+import { createHash } from "node:crypto"
+import {
+  MemoryBackendError,
+  type Clock,
+  type ObservabilityApi,
+} from "@luna/core"
 import { hasVectorSearch, type MemoryBackend } from "./backend.js"
 import type {
   MemoryExport,
@@ -22,6 +27,22 @@ import type {
 export interface Rule {
   readonly pattern: string
   readonly backend: MemoryBackend
+}
+
+/**
+ * Optional instrumentation hooks for `makeRouter`. When provided, every
+ * `search()` call emits a `RetrievalCallEvent` to ObservabilityService when
+ * the stream terminates (success, error, or empty). Captured at construction
+ * — no Tag plumbing in the hot path. Mirrors the cost-store-sqlite pattern.
+ */
+export interface RouterOptions {
+  readonly observability: ObservabilityApi
+  readonly clock: Clock
+  readonly embedderInfo: {
+    readonly provider: string
+    readonly model: string
+    readonly dimension: number
+  }
 }
 
 function matchesPattern(pattern: string, namespace: string): boolean {
@@ -69,7 +90,10 @@ export interface MemoryRouter {
   >
 }
 
-export function makeRouter(rules: ReadonlyArray<Rule>): MemoryRouter {
+export function makeRouter(
+  rules: ReadonlyArray<Rule>,
+  opts?: RouterOptions,
+): MemoryRouter {
   if (rules.length === 0) {
     throw new Error("MemoryRouter: at least one rule required")
   }
@@ -125,37 +149,89 @@ export function makeRouter(rules: ReadonlyArray<Rule>): MemoryRouter {
     })
 
   const search: MemoryRouter["search"] = (args) => {
-    if (args.namespace !== undefined) {
-      const backend = backendFor(args.namespace)
-      if (!hasVectorSearch(backend)) {
+    const inner = ((): Stream.Stream<
+      { readonly record: MemoryRecord; readonly score: number },
+      MemoryBackendError
+    > => {
+      if (args.namespace !== undefined) {
+        const backend = backendFor(args.namespace)
+        if (!hasVectorSearch(backend)) {
+          return Stream.fail(
+            new MemoryBackendError({
+              backend: "router",
+              op: "search",
+              namespace: args.namespace,
+              cause: new Error(
+                `no vector backend for namespace ${args.namespace}`,
+              ),
+            }),
+          )
+        }
+        return backend.search(args)
+      }
+      // No namespace → fan out across every vector-capable backend.
+      const vecBackends = rules
+        .map((r) => r.backend)
+        .filter(hasVectorSearch)
+      if (vecBackends.length === 0) {
         return Stream.fail(
           new MemoryBackendError({
             backend: "router",
             op: "search",
-            namespace: args.namespace,
-            cause: new Error(
-              `no vector backend for namespace ${args.namespace}`,
-            ),
+            cause: new Error("no vector backends registered"),
           }),
         )
       }
-      return backend.search(args)
-    }
-    // No namespace → fan out across every vector-capable backend.
-    const vecBackends = rules
-      .map((r) => r.backend)
-      .filter(hasVectorSearch)
-    if (vecBackends.length === 0) {
-      return Stream.fail(
-        new MemoryBackendError({
-          backend: "router",
-          op: "search",
-          cause: new Error("no vector backends registered"),
+      const streams = vecBackends.map((b) => b.search(args))
+      return Stream.mergeAll(streams, { concurrency: vecBackends.length })
+    })()
+
+    if (opts === undefined) return inner
+
+    // Instrumented path: accumulate per-call stats via Stream.tap, then emit
+    // a RetrievalCallEvent once when the stream terminates. Status flips to
+    // "error" via Stream.tapError; success is the default (interruption is
+    // treated as success since no error occurred).
+    const startMs = Date.now()
+    let candidateCount = 0
+    let topScore: number | undefined
+    let status: "success" | "error" = "success"
+
+    const emit = Effect.gen(function* () {
+      const ts = yield* opts.clock.nowIso()
+      const queryDigest = createHash("sha256")
+        .update(args.queryText)
+        .digest("hex")
+        .slice(0, 16)
+      yield* opts.observability.emit({
+        ts,
+        kind: "RetrievalCall",
+        level: "info",
+        mode: args.mode ?? "vec",
+        queryDigest,
+        embedderProvider: opts.embedderInfo.provider,
+        embedderModel: opts.embedderInfo.model,
+        embedderDimension: opts.embedderInfo.dimension,
+        candidateCount,
+        ...(topScore !== undefined ? { topScore } : {}),
+        ...(args.namespace !== undefined ? { namespace: args.namespace } : {}),
+        durationMs: Date.now() - startMs,
+        status,
+      })
+    })
+
+    return inner.pipe(
+      Stream.tap((hit) =>
+        Effect.sync(() => {
+          candidateCount++
+          if (topScore === undefined || hit.score > topScore) {
+            topScore = hit.score
+          }
         }),
-      )
-    }
-    const streams = vecBackends.map((b) => b.search(args))
-    return Stream.mergeAll(streams, { concurrency: vecBackends.length })
+      ),
+      Stream.tapError(() => Effect.sync(() => { status = "error" })),
+      Stream.ensuring(emit),
+    )
   }
 
   return { put, get, query, delete: del, backendFor, exportAll, search }

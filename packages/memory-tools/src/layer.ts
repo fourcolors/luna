@@ -24,8 +24,10 @@ import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { Effect, Layer } from "effect"
 import {
+  Clock,
   EmbedderService,
   LunaSqliteBootstrap,
+  ObservabilityService,
   StubEmbedderLayer,
   makeOllamaEmbedderLayer,
   type EmbedderError,
@@ -183,7 +185,7 @@ export const MemoryToolsLayer = (
 ): Layer.Layer<
   MemoryToolsService,
   MemoryBackendError | EmbedderError,
-  LunaSqliteBootstrap
+  LunaSqliteBootstrap | ObservabilityService | Clock
 > => {
   const dbPath = opts?.dbPath ?? resolveDbPath()
   const embedderL = opts?.embedder ?? selectEmbedderLayer()

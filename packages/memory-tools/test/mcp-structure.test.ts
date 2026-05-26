@@ -18,7 +18,11 @@
  */
 import { describe, expect, it } from "vitest"
 import { Effect, Layer, ManagedRuntime } from "effect"
-import { StubEmbedderLayer } from "@luna/core"
+import {
+  Clock,
+  ObservabilityService,
+  StubEmbedderLayer,
+} from "@luna/core"
 import {
   MemoryRouterTag,
   SqliteVectorBackend,
@@ -46,6 +50,8 @@ const baseLayer = Layer.unwrapEffect(
   Layer.provideMerge(SqliteVectorBackend.fromPath(":memory:")),
   Layer.provideMerge(StubEmbedderLayer),
   Layer.provideMerge(LunaSqliteBootstrapLive),
+  Layer.provideMerge(ObservabilityService.Default),
+  Layer.provideMerge(Clock.Default),
 )
 
 describe.skipIf(!hasBunSqlite)("§4.3 MemoryToolsLayer — structural invariants", () => {
@@ -53,6 +59,8 @@ describe.skipIf(!hasBunSqlite)("§4.3 MemoryToolsLayer — structural invariants
     // MemoryToolsLayer requires LunaSqliteBootstrap in its R channel.
     const layer = MemoryToolsLayer({ dbPath: ":memory:", embedder: StubEmbedderLayer }).pipe(
       Layer.provide(LunaSqliteBootstrapLive),
+      Layer.provide(ObservabilityService.Default),
+      Layer.provide(Clock.Default),
     )
 
     const config = await Effect.runPromise(

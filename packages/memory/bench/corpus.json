@@ -1,0 +1,268 @@
+{
+  "version": "v1",
+  "description": "Paraphrase recall corpus for F4 bench. 10 project + 10 preference targets with 2-3 paraphrases each. 10 distractor entries are decoys with lexical overlap to one or more targets but distinct semantics — they should NOT win on hybrid BM25+vec search. See packages/memory/bench/paraphrase-recall.ts for the harness.",
+  "facts": [
+    {
+      "id": "proj_001_vectorlite",
+      "kind": "project",
+      "text": "Luna runs the memory system on bun:sqlite with vectorlite HNSW for vector search",
+      "paraphrases": [
+        "what database powers Luna's memory storage",
+        "how is Luna's vector search implemented",
+        "which sqlite extension does Luna use for embeddings"
+      ]
+    },
+    {
+      "id": "proj_002_account_broker",
+      "kind": "project",
+      "text": "Luna's AccountBroker rotates OAuth tokens across multiple Anthropic accounts for load distribution and health tracking",
+      "paraphrases": [
+        "how does Luna handle multiple Anthropic credentials",
+        "what does Luna do when one Claude account hits its rate limit",
+        "how are tokens rotated between accounts"
+      ]
+    },
+    {
+      "id": "proj_003_effect_layers",
+      "kind": "project",
+      "text": "Luna's services are wired together as composable Effect-TS Layers — AccountBroker, SessionStore, MemoryRouter, JobScheduler, ObservabilityService",
+      "paraphrases": [
+        "what dependency injection pattern does Luna use",
+        "how are Luna's services composed",
+        "what framework wires the runtime together"
+      ]
+    },
+    {
+      "id": "proj_004_local_state",
+      "kind": "project",
+      "text": "Luna stores all local state under the ~/.luna/ directory on Operator's machine — sqlite databases, event logs, and account secrets",
+      "paraphrases": [
+        "where does Luna keep its data on disk",
+        "what directory holds Luna's runtime state",
+        "is Luna's data cloud-hosted or local"
+      ]
+    },
+    {
+      "id": "proj_005_memory_mcp",
+      "kind": "project",
+      "text": "The memory MCP server exposes save, search, and delete tools for the agent to manage persistent recall",
+      "paraphrases": [
+        "what tools does Luna give the agent for memory",
+        "how does Luna's agent persist information across sessions",
+        "what MCP server handles memory operations"
+      ]
+    },
+    {
+      "id": "proj_006_session_store",
+      "kind": "project",
+      "text": "SessionStore persists chat threads and messages in SQLite via @effect/sql-sqlite-bun",
+      "paraphrases": [
+        "where do Luna chat conversations get saved",
+        "how is conversation history persisted",
+        "what backs the chat thread storage"
+      ]
+    },
+    {
+      "id": "proj_007_hybrid_rrf",
+      "kind": "project",
+      "text": "Hybrid search uses Reciprocal Rank Fusion to combine BM25 keyword and vector cosine scores into a single ranking",
+      "paraphrases": [
+        "how does Luna merge keyword and semantic search",
+        "what algorithm fuses lexical and vector results",
+        "explain Luna's hybrid retrieval scoring"
+      ]
+    },
+    {
+      "id": "proj_008_job_scheduler",
+      "kind": "project",
+      "text": "JobScheduler runs background jobs as bounded Effect fibers to cap concurrency and protect the host",
+      "paraphrases": [
+        "how does Luna run background work without flooding the system",
+        "what limits concurrent job execution in Luna",
+        "what runs cron and trigger-driven tasks"
+      ]
+    },
+    {
+      "id": "proj_009_cost_accounting",
+      "kind": "project",
+      "text": "Cost accounting subscribes to ObservabilityService CostAccrued events and rolls them up per session, team, and workflow",
+      "paraphrases": [
+        "how does Luna track LLM spending",
+        "where do per-session token costs accumulate",
+        "what listens for cost events"
+      ]
+    },
+    {
+      "id": "proj_010_obs_jsonl",
+      "kind": "project",
+      "text": "ObservabilityService writes structured events to ~/.luna/events.jsonl as JSON Lines for downstream DuckDB analysis",
+      "paraphrases": [
+        "where does Luna log telemetry events",
+        "what file holds Luna's observability stream",
+        "how can I query Luna's event history"
+      ]
+    },
+
+    {
+      "id": "pref_001_dark_mode",
+      "kind": "preference",
+      "text": "Mr. Cobb prefers dark mode in his editor and terminal",
+      "paraphrases": [
+        "what editor theme does the user like",
+        "does Mr. Cobb use light or dark UI",
+        "what color scheme does Mr. Cobb prefer when coding"
+      ]
+    },
+    {
+      "id": "pref_002_terse",
+      "kind": "preference",
+      "text": "Mr. Cobb prefers terse responses with no trailing summaries — answer the question and stop",
+      "paraphrases": [
+        "how detailed should responses to Mr. Cobb be",
+        "does Mr. Cobb want long explanations",
+        "what's the preferred response length"
+      ]
+    },
+    {
+      "id": "pref_003_verify",
+      "kind": "preference",
+      "text": "Mr. Cobb wants verification before claims — run a grep, read the file, execute the test, don't say 'I think' or 'probably'",
+      "paraphrases": [
+        "should I assume or check before answering",
+        "is hedged language acceptable for Mr. Cobb",
+        "how should I validate technical statements"
+      ]
+    },
+    {
+      "id": "pref_004_1password",
+      "kind": "preference",
+      "text": "Mr. Cobb stores credentials in 1Password and uses macOS Keychain as a fallback",
+      "paraphrases": [
+        "where does Mr. Cobb keep his secrets",
+        "what password manager does the user use",
+        "how are API keys managed on this machine"
+      ]
+    },
+    {
+      "id": "pref_005_zsh",
+      "kind": "preference",
+      "text": "Mr. Cobb defaults to Zsh syntax for shell examples, only using Bash for cross-platform skills or scripts",
+      "paraphrases": [
+        "which shell syntax should I use in examples",
+        "is Mr. Cobb a Bash or Zsh user",
+        "what's the default shell for terminal snippets"
+      ]
+    },
+    {
+      "id": "pref_006_new_commits",
+      "kind": "preference",
+      "text": "Mr. Cobb prefers creating new git commits rather than amending existing ones, unless he explicitly asks for an amend",
+      "paraphrases": [
+        "should I amend or make a fresh commit",
+        "does Mr. Cobb like git history rewrites",
+        "how should commits be structured"
+      ]
+    },
+    {
+      "id": "pref_007_obsidian",
+      "kind": "preference",
+      "text": "Mr. Cobb keeps his daily notes and second-brain content in Obsidian using a flat-note metadata-based system",
+      "paraphrases": [
+        "where does Mr. Cobb take notes",
+        "what app holds the user's knowledge base",
+        "how does Mr. Cobb organize his personal docs"
+      ]
+    },
+    {
+      "id": "pref_008_bang_prefix",
+      "kind": "preference",
+      "text": "Mr. Cobb wants interactive commands suggested with a ! prefix so he can run them himself in the prompt",
+      "paraphrases": [
+        "how should I suggest commands the user needs to run interactively",
+        "what's the convention for shell commands Mr. Cobb should execute",
+        "how do I hand off a CLI invocation to the user"
+      ]
+    },
+    {
+      "id": "pref_009_email",
+      "kind": "preference",
+      "text": "Mr. Cobb's email address is sterling@flowstay.ai for work and personal contact",
+      "paraphrases": [
+        "what is Mr. Cobb's email",
+        "how do I reach Sterling Cobb electronically",
+        "what address should I use for the user"
+      ]
+    },
+    {
+      "id": "pref_010_address",
+      "kind": "preference",
+      "text": "Mr. Cobb prefers being addressed as 'Mr. Cobb' in conversation, not Sterling or by first name",
+      "paraphrases": [
+        "how should I address the user",
+        "what's the right way to refer to Mr. Cobb",
+        "does the user prefer first or last name"
+      ]
+    },
+
+    {
+      "id": "dist_001_luna_moon",
+      "kind": "distractor",
+      "text": "Luna landings on the moon stored telemetry data in onboard memory before transmitting to Earth ground stations",
+      "paraphrases": []
+    },
+    {
+      "id": "dist_002_cobb_salad",
+      "kind": "distractor",
+      "text": "Cobb salads are a popular American dish named after Robert Cobb of the Brown Derby restaurant in Hollywood",
+      "paraphrases": []
+    },
+    {
+      "id": "dist_003_memory_foam",
+      "kind": "distractor",
+      "text": "Memory foam mattresses are stored compressed in shipping packages and expand to full size when unboxed",
+      "paraphrases": []
+    },
+    {
+      "id": "dist_004_shell_history",
+      "kind": "distractor",
+      "text": "Terminal session history is stored in the shell's history file, not in any application database",
+      "paraphrases": []
+    },
+    {
+      "id": "dist_005_bm25_generic",
+      "kind": "distractor",
+      "text": "BM25 is the default ranking algorithm in Elasticsearch and is used standalone for keyword-only retrieval",
+      "paraphrases": []
+    },
+    {
+      "id": "dist_006_effect_optics",
+      "kind": "distractor",
+      "text": "Optical effects in TypeScript-based animation libraries often involve compositing multiple layers of transforms",
+      "paraphrases": []
+    },
+    {
+      "id": "dist_007_oauth_generic",
+      "kind": "distractor",
+      "text": "OAuth 2.0 client credentials should be rotated quarterly in production environments per OWASP guidance",
+      "paraphrases": []
+    },
+    {
+      "id": "dist_008_prometheus",
+      "kind": "distractor",
+      "text": "Observability dashboards typically push metrics to Prometheus and visualize them in Grafana, not as JSON Lines files",
+      "paraphrases": []
+    },
+    {
+      "id": "dist_009_dark_coffee",
+      "kind": "distractor",
+      "text": "Mr. Cobb prefers dark roast coffee brewed in a French press first thing in the morning",
+      "paraphrases": []
+    },
+    {
+      "id": "dist_010_sterling_silver",
+      "kind": "distractor",
+      "text": "Sterling silver flatware should be polished with a microfiber cloth to avoid tarnish and scratches",
+      "paraphrases": []
+    }
+  ]
+}
