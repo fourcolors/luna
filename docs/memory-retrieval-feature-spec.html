@@ -826,7 +826,7 @@ title: {namespace}/{kind} tags:{tags} | text: {content.text}</code></pre>
           <li><span class="step-done">Done:</span> corpus contains no personal data (work email only, no credentials or private facts).</li>
         </ul>
         <p style="margin-top: 12px;">
-          <strong>First real-corpus run (2026-05-25):</strong> Ollama + <code>nomic-embed-text</code> (substitute — <code>embeddinggemma</code> not installed on dev machine). 768-d embeddings, 60 paraphrase queries. <strong>Overall recall@5 = 0.917</strong> (preference 0.900, project 0.933); recall@1 = 0.417; MRR = 0.605. Passes the 0.9 go/no-go gate by a narrow margin — F5 reranker not justified for top-5 quality, but top-1 weakness (0.417) suggests reranking <em>could</em> meaningfully help single-best-answer queries if Luna's traffic requires them. Re-run against <code>embeddinggemma</code> when available to confirm against the calibrated threshold.
+          <strong>Canonical baseline run (2026-05-25):</strong> Ollama + <code>embeddinggemma:latest</code> (307M, 768-d) inside the <code>luna-dev</code> container against the host's Ollama daemon. 60 paraphrase queries. <strong>Overall recall@5 = 0.950</strong> (preference <strong>1.000</strong>, project 0.900); <strong>recall@1 = 0.800</strong>; MRR = 0.863. Comfortably above the 0.9 go/no-go gate on top-5, and strong on top-1 too — <strong>F5 reranker is not justified</strong>. The only failures left are 3 project-kind queries with terse technical vocab; worth a future per-query dive but not a reranker trigger. Local cross-check with <code>nomic-embed-text</code> (768-d) gave 0.917 / 0.417 / 0.605 — same overall verdict, much weaker top-1.
         </p>
       </article>
 
