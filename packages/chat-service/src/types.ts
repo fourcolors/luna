@@ -156,4 +156,20 @@ export interface CreateThreadOptions {
    * Passed through SessionOptions → QueryRequest.boundAccountId.
    */
   readonly boundAccountId?: string
+  /**
+   * Use this thread id instead of generating a fresh one. Used by the
+   * subscribe-cache-miss recovery path so a resumed thread keeps its
+   * original id from the client's perspective. Caller must ensure the id
+   * is well-formed (`thr_<base36>_<rand>`); a collision with an existing
+   * thread fails the create.
+   */
+  readonly threadIdOverride?: string
+  /**
+   * When set, the underlying SDK call resumes the conversation history
+   * persisted under this SDK session UUID (the SDK keeps history as JSONL
+   * indexed by its own session id). Used together with `threadIdOverride`
+   * to restore a thread after the chat-server's in-memory state was wiped
+   * by a restart.
+   */
+  readonly resumeFromSessionId?: string
 }

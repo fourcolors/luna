@@ -52,6 +52,7 @@ import {
   sdkMessageKind,
   sdkMessageId,
   sdkMessageParentId,
+  sdkMessageSessionId,
 } from "./message-kind.js"
 import { mergeOptionsLogged } from "./merge-options.js"
 import { mergeEnvOverlayLogged } from "./merge-env.js"
@@ -71,6 +72,15 @@ export interface QueryRequest {
    * bound via `SDKAdapter.WithBroker`; ignored by `SDKAdapter.Default`.
    */
   readonly boundAccountId?: string
+  /**
+   * Invoked at most once per query with the SDK's own session id, captured
+   * from the first message that carries one. Used by the chat-server to
+   * persist a `lunaThreadId → sdkSessionId` mapping so threads can be
+   * resumed across server restarts via `resumeFromSessionId`.
+   *
+   * Callback is best-effort: errors must not poison the message stream.
+   */
+  readonly onSdkSessionId?: (sdkSessionId: string) => void
 }
 
 interface HookRegistration {
@@ -418,8 +428,28 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
           const consumer: Stream.Stream<SDKMessage, SDKError> =
             Stream.repeatEffectOption(pullOne)
 
+          // Capture the SDK's own session_id from the first message that
+          // carries one. Fires the optional onSdkSessionId callback exactly
+          // once per query so the caller can persist the
+          // `lunaThreadId → sdkSessionId` mapping for resume.
+          let reportedSdkSessionId = false
+          const reportSdkSessionId = (msg: SDKMessage): void => {
+            if (reportedSdkSessionId || req.onSdkSessionId === undefined) return
+            const sid = sdkMessageSessionId(msg)
+            if (sid === null) return
+            reportedSdkSessionId = true
+            try {
+              req.onSdkSessionId(sid)
+            } catch {
+              // Best-effort — callback failures must not break the stream.
+            }
+          }
+
           // Mirror every message to SessionStore (§12.2 #2) before yielding.
           const mirrored: Stream.Stream<SDKMessage, SDKError> = consumer.pipe(
+            Stream.tap((msg) =>
+              Effect.sync(() => reportSdkSessionId(msg)),
+            ),
             Stream.tap((msg) =>
               store
                 .appendMessage({

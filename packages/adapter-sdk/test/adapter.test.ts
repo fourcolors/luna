@@ -82,6 +82,43 @@ describe("SDKAdapter (fake SDK)", () => {
     expect(seen.persisted).toBe(2)
   })
 
+  // PING: capture the SDK's session_id so callers can persist the
+  // lunaThreadId → sdkSessionId mapping for resume-across-restart support.
+  // The callback should fire once per query with the first session_id seen.
+  it("invokes onSdkSessionId with the captured SDK session id when a message yields one", async () => {
+    const sdkSid = "sdk-uuid-abc123-test"
+    const messages = [
+      makeAssistantMessage(sdkSid, "hi", "u1"),
+      makeResultMessage(sdkSid, "u2"),
+    ]
+    const fake = makeFakeQuery({ messages })
+    const captured: Array<string> = []
+
+    await runScoped(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        yield* store.create({
+          id: sid,
+          options: { model: "claude-test" },
+          createdAt: 0,
+        })
+        const adapter = yield* SDKAdapter
+        const out = yield* adapter.query({
+          sessionId: sid,
+          prompt: emptyPrompt,
+          sessionOptions: { model: "claude-test", idleTimeoutMs: 5_000 },
+          onSdkSessionId: (id: string) => {
+            captured.push(id)
+          },
+        })
+        yield* Stream.runDrain(out)
+      }),
+      SDKClient.fake(() => fake.query),
+    )
+
+    expect(captured).toEqual([sdkSid])
+  })
+
   it("closing the Scope aborts the underlying subprocess", async () => {
     const abortSeen = { aborted: false }
     const fakeLayer = SDKClient.fake((params) => {

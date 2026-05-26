@@ -66,6 +66,10 @@ import {
   type CreateThreadOptions,
 } from "./types.js"
 import { extractArtifacts } from "./artifacts.js"
+import {
+  appendThreadSessionEntry,
+  loadThreadSessionMap,
+} from "./thread-session-map.js"
 
 /* -------------------------------------------------------------------------- */
 /* Internal per-thread state                                                  */
@@ -238,6 +242,16 @@ export class ChatService extends Effect.Service<ChatService>()(
           allowedTools: [...LUNA_ALLOWED_MCP_TOOLS],
           strictMcpConfig: true,
           env: sdkEnv,
+          // SDK subprocess stderr → parent process stderr → journalctl.
+          // Without this, the SDK's stderr was being routed to /dev/null,
+          // so expired-OAuth retry-loops, network failures, and any
+          // SDK-side error were invisible to operators. The callback
+          // contract per @anthropic-ai/claude-agent-sdk v0.2.119 is
+          // synchronous and chunk-string. Tag the prefix so operators can
+          // grep journalctl for `[claude-sdk]` to isolate subprocess output.
+          stderr: (data: string) => {
+            process.stderr.write(`[claude-sdk] ${data}`)
+          },
           permissionMode: opts.permissionMode ?? defaultPermissionMode,
           // Identity: forward caller-supplied systemPrompt INSIDE sdkOptions
           // so the SDK adapter actually sees it. The top-level
@@ -285,7 +299,7 @@ export class ChatService extends Effect.Service<ChatService>()(
         opts: CreateThreadOptions,
       ): Effect.Effect<SessionSummary, never> =>
         Effect.gen(function* () {
-          const id = yield* genThreadId()
+          const id = opts.threadIdOverride ?? (yield* genThreadId())
           const createdAt = yield* clock.nowMs()
           const sessionOptions = buildSessionOptions(opts)
 
@@ -327,6 +341,22 @@ export class ChatService extends Effect.Service<ChatService>()(
           const promptStream: Stream.Stream<SDKUserMessage> =
             Stream.fromQueue(inbox)
 
+          // When LUNA_HOME is set, persist `lunaThreadId → sdkSessionId` so a
+          // chat-server restart can resume this thread via the SDK's
+          // resume option (the SDK keeps conversation history per
+          // sdkSessionId in JSONL files on disk).
+          const lunaHome = process.env["LUNA_HOME"]
+          const recordSdkSession: ((sdkSid: string) => void) | undefined =
+            lunaHome !== undefined
+              ? (sdkSid) => {
+                  try {
+                    appendThreadSessionEntry(lunaHome, id, sdkSid)
+                  } catch {
+                    // Best-effort persistence — must not break live chat.
+                  }
+                }
+              : undefined
+
           // The adapter.query call is provided with the thread scope so its
           // AbortController + watchdog tear down when we close threadScope.
           const replies: Stream.Stream<SDKMessage, unknown> = yield* adapter
@@ -338,6 +368,12 @@ export class ChatService extends Effect.Service<ChatService>()(
               // route this thread's queries to the caller-selected account.
               ...(opts.boundAccountId !== undefined
                 ? { boundAccountId: opts.boundAccountId }
+                : {}),
+              ...(recordSdkSession !== undefined
+                ? { onSdkSessionId: recordSdkSession }
+                : {}),
+              ...(opts.resumeFromSessionId !== undefined
+                ? { resumeFromSessionId: opts.resumeFromSessionId }
                 : {}),
             })
             .pipe(Scope.extend(threadScope), Effect.orDie)
@@ -696,7 +732,30 @@ export class ChatService extends Effect.Service<ChatService>()(
         Stream.unwrapScoped(
           Effect.gen(function* () {
             const m = yield* Ref.get(threads)
-            const entry = m.get(threadId)
+            let entry = m.get(threadId)
+            if (!entry) {
+              // Cache-miss recovery: if the chat-server was restarted and
+              // wiped its in-memory threads map, but the persisted
+              // thread-session-map remembers this threadId's SDK session
+              // id, transparently re-create the thread with the SDK's
+              // resume flag set. The model retains conversation context
+              // via the SDK's JSONL backing; the visual snapshot will be
+              // empty until new messages arrive.
+              const lunaHome = process.env["LUNA_HOME"]
+              const persistedSdkId =
+                lunaHome !== undefined
+                  ? loadThreadSessionMap(lunaHome)[threadId]
+                  : undefined
+              if (persistedSdkId !== undefined) {
+                yield* createThread({
+                  model: "claude-sonnet-4-5",
+                  threadIdOverride: threadId,
+                  resumeFromSessionId: persistedSdkId,
+                })
+                const m2 = yield* Ref.get(threads)
+                entry = m2.get(threadId)
+              }
+            }
             if (!entry) return Stream.empty as Stream.Stream<ChatFrame, never>
 
             // Subscribe FIRST (PubSub buffers from subscribe-time forward),

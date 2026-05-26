@@ -688,6 +688,165 @@ describe("ChatService (Tier-2 sim)", () => {
     { timeout: 10_000 },
   )
 
+  // PING: stderr forward — surface SDK subprocess errors instead of swallowing
+  // them to /dev/null. Without this, expired-OAuth retry-loops and similar
+  // failure modes are invisible to operators (cost ~30 min today).
+  it(
+    "createThread wires a stderr forward into sdkOptions so SDK subprocess errors are observable",
+    async () => {
+      let capturedOptions: Record<string, unknown> | undefined
+      const fakeLayer = SDKClient.fake((p) => {
+        capturedOptions = (p.options ?? {}) as Record<string, unknown>
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+      await runScoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          yield* chat.createThread({ model: "claude-test", title: "stderr-wire" })
+          yield* Effect.sleep("30 millis")
+        }),
+        fakeLayer,
+      )
+      expect(capturedOptions).toBeDefined()
+      const stderr = capturedOptions!["stderr"]
+      expect(typeof stderr).toBe("function")
+      // Calling the captured callback should produce side effects on
+      // process.stderr (we can't easily spy on it cross-process; the smoke
+      // check that it's a function exercising chunk-string input is enough
+      // to lock the contract).
+      ;(stderr as (data: string) => void)("from-sdk: ETIMEOUT\n")
+    },
+  )
+
+  // PING: when subscribing to a threadId the chat-service forgot (server
+  // restart wiped in-memory state) BUT the persisted map remembers its
+  // SDK session id, the subscribe call must transparently re-create the
+  // thread with resumeFromSessionId so the model retains context.
+  it(
+    "subscribe re-creates a forgotten thread when the persisted map has its SDK session id",
+    async () => {
+      const fs = require("node:fs") as typeof import("node:fs")
+      const path = require("node:path") as typeof import("node:path")
+      const os = require("node:os") as typeof import("node:os")
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "luna-resume-"))
+      const prevHome = process.env["LUNA_HOME"]
+      process.env["LUNA_HOME"] = home
+      try {
+        // Pre-populate the persisted map as if a prior session had run.
+        const RESUMED_ID = "thr_resumeme_abc123"
+        const PERSISTED_SDK_ID = "sdk-prior-uuid-xyz"
+        const mapDir = path.join(home, ".luna")
+        fs.mkdirSync(mapDir, { recursive: true })
+        fs.writeFileSync(
+          path.join(mapDir, "thread-session-map.json"),
+          JSON.stringify({ [RESUMED_ID]: PERSISTED_SDK_ID }),
+          { mode: 0o600 },
+        )
+
+        let capturedResume: string | undefined
+        const fakeLayer = SDKClient.fake((p) => {
+          const opts = (p.options ?? {}) as Record<string, unknown>
+          if (opts["resume"] !== undefined) {
+            capturedResume = opts["resume"] as string
+          }
+          return makeChatLoopQuery({
+            prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+            sessionId: PERSISTED_SDK_ID,
+            responseFor: (t) => `echo:${t}`,
+          })
+        })
+
+        await runScoped(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+            // Subscribe to a thread we never created — should trigger
+            // the auto-resume path.
+            const sub = chat.subscribe(RESUMED_ID)
+            const fiber = yield* Effect.fork(
+              sub.pipe(
+                Stream.take(1),
+                Stream.runCollect,
+              ),
+            )
+            yield* Effect.sleep("100 millis")
+            yield* Fiber.interrupt(fiber)
+          }),
+          fakeLayer,
+        )
+        expect(capturedResume).toBe(PERSISTED_SDK_ID)
+      } finally {
+        if (prevHome !== undefined) {
+          process.env["LUNA_HOME"] = prevHome
+        } else {
+          delete process.env["LUNA_HOME"]
+        }
+        fs.rmSync(home, { recursive: true, force: true })
+      }
+    },
+  )
+
+  // PING: when LUNA_HOME is set, ChatService must persist the
+  // lunaThreadId → sdkSessionId mapping so threads can be resumed after
+  // a chat-server restart.
+  it(
+    "createThread persists thread-session-map entry when LUNA_HOME is set",
+    async () => {
+      const fs = require("node:fs") as typeof import("node:fs")
+      const path = require("node:path") as typeof import("node:path")
+      const os = require("node:os") as typeof import("node:os")
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "luna-chat-tsmap-"))
+      const prevHome = process.env["LUNA_HOME"]
+      process.env["LUNA_HOME"] = home
+      try {
+        // The fake SDK assigns a known session_id that diverges from the
+        // Luna threadId so we can prove the mapping captures the SDK's id
+        // (not just an echo of what we passed in).
+        const SDK_UUID = "sdk-uuid-from-fake-9f8e7d"
+        const fakeLayer = SDKClient.fake((p) =>
+          makeChatLoopQuery({
+            prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+            sessionId: SDK_UUID,
+            responseFor: (t) => `echo:${t}`,
+          }),
+        )
+        let createdThreadId: string | undefined
+        await runScoped(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+            const summary = yield* chat.createThread({
+              model: "claude-test",
+              title: "tsmap-test",
+            })
+            createdThreadId = summary.id
+            // Trigger one user-message so the fake SDK actually yields.
+            yield* chat.send(summary.id, "hello", undefined)
+            yield* Effect.sleep("80 millis")
+          }),
+          fakeLayer,
+        )
+        expect(createdThreadId).toBeDefined()
+        const mapPath = path.join(home, ".luna", "thread-session-map.json")
+        expect(fs.existsSync(mapPath)).toBe(true)
+        const map = JSON.parse(fs.readFileSync(mapPath, "utf8")) as Record<
+          string,
+          string
+        >
+        expect(map[createdThreadId!]).toBe(SDK_UUID)
+      } finally {
+        if (prevHome !== undefined) {
+          process.env["LUNA_HOME"] = prevHome
+        } else {
+          delete process.env["LUNA_HOME"]
+        }
+        fs.rmSync(home, { recursive: true, force: true })
+      }
+    },
+  )
+
   it(
     "permissionMode defaults to 'default' when LUNA_TRUSTED_LOCAL is unset",
     async () => {
