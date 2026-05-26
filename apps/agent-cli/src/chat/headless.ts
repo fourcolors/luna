@@ -18,6 +18,7 @@ export type SessionErrorEvent = {
 export type LunaHeadlessEvents = {
   threadChange: (threadId: string) => void
   ready: () => void
+  userMessageSent: () => void
   assistantDelta: (turn: AssistantTurnState) => void
   assistantDone: (turn: AssistantTurnState) => void
   assistantError: (event: SessionErrorEvent) => void
@@ -89,6 +90,7 @@ export class LunaHeadlessSession extends EventEmitter {
       return
     }
     this.client.send({ type: "user-message", threadId: this.currentThreadId, text })
+    this.emit("userMessageSent")
   }
 
   dispatchSlash(line: string): SlashCommand {
@@ -167,6 +169,7 @@ export class LunaHeadlessSession extends EventEmitter {
       const text = this.pendingUserMessages.shift()
       if (text !== undefined) {
         this.client.send({ type: "user-message", threadId: this.currentThreadId, text })
+        this.emit("userMessageSent")
       }
     }
   }
