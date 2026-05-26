@@ -46,3 +46,6 @@ export const runRm = (args: RmArgs): CmdResult => {
     db.close()
   }
 }
+
+/** Citty-friendly alias for runRm — returns exit code directly. */
+export const removeAccount = runRm

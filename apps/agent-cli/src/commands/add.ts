@@ -149,3 +149,6 @@ export const runAdd = (args: AddArgs): CmdResult => {
     db.close()
   }
 }
+
+/** Citty-friendly alias for runAdd — returns exit code directly. */
+export const addAccount = runAdd

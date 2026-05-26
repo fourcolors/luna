@@ -47,3 +47,6 @@ export const runList = (args: ListArgs): CmdResult => {
     db.close()
   }
 }
+
+/** Citty-friendly alias for runList — returns exit code directly. */
+export const listAccounts = runList
