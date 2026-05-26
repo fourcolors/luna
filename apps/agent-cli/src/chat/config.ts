@@ -1,6 +1,37 @@
-import { existsSync, readFileSync } from "node:fs"
-import { join, posix as pathPosix } from "node:path"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { dirname, join, posix as pathPosix } from "node:path"
 import type { ChatArgs, StartMode } from "./args.js"
+
+const LAST_THREAD_VALID = /^[A-Za-z0-9_-]{4,128}$/
+
+/**
+ * Path where the last-active thread id is persisted per profile, so a
+ * vanilla `luna chat` (no --thread, no --new) resumes where you left off.
+ */
+export const lastThreadPath = (homeDir: string, profileName: string): string =>
+  join(homeDir, ".luna", `.last-thread-${profileName}`)
+
+export const readLastThread = (
+  homeDir: string,
+  profileName: string,
+): string | null => {
+  const path = lastThreadPath(homeDir, profileName)
+  if (!existsSync(path)) return null
+  const raw = readFileSync(path, "utf8").trim()
+  if (!LAST_THREAD_VALID.test(raw)) return null
+  return raw
+}
+
+export const writeLastThread = (
+  homeDir: string,
+  profileName: string,
+  threadId: string,
+): void => {
+  if (!LAST_THREAD_VALID.test(threadId)) return
+  const path = lastThreadPath(homeDir, profileName)
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+  writeFileSync(path, threadId, { mode: 0o600 })
+}
 
 export interface ChatConfig {
   readonly profileName: string
@@ -250,7 +281,15 @@ export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
     ...(startSsh === null || startSsh.length === 0 ? [] : [startSsh]),
     ...splitListSetting(fallbackStartSshSetting?.value),
   ])
-  const threadId = input.args.threadId ?? null
+  // Auto-resume the most-recently-active thread when neither --thread nor
+  // --new was passed. Keeps sessions continuous instead of every `luna chat`
+  // landing on a fresh empty thread. `--new` is the explicit opt-out.
+  const explicitNew = input.args.newThread === true
+  const resumedThreadId =
+    input.args.threadId === undefined && !explicitNew
+      ? readLastThread(input.homeDir, profileName)
+      : null
+  const threadId = input.args.threadId ?? resumedThreadId ?? null
   if (token === null || token.length === 0) errors.push("missing LUNA_UI_WS_TOKEN")
   if (startMode === "local" && (startCommand === null || startCommand.length === 0)) {
     errors.push("LUNA_START_COMMAND is required when LUNA_START_MODE=local")

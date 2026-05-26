@@ -3,7 +3,13 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import { parseChatArgs } from "../src/chat/args.js"
-import { loadChatConfig, parseDotEnv, redactedConfigSummary } from "../src/chat/config.js"
+import {
+  loadChatConfig,
+  parseDotEnv,
+  readLastThread,
+  redactedConfigSummary,
+  writeLastThread,
+} from "../src/chat/config.js"
 
 describe("luna chat config", () => {
   it("parses simple dotenv lines without leaking comments", () => {
@@ -344,6 +350,92 @@ describe("luna chat config", () => {
       expect(cfg.validationErrors).toContain(
         "dangerous local shell auto approval requires cwd under /root/luna",
       )
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it("auto-resumes the last persisted thread when neither --thread nor --new is passed", () => {
+    const home = mkdtempSync(join(tmpdir(), "luna-resume-"))
+    try {
+      writeLastThread(home, "stable", "thr_resume_abc123")
+      const cfg = loadChatConfig({
+        args: parseChatArgs(["chat"]),
+        env: { LUNA_UI_WS_TOKEN: "env-token-123456" },
+        dotenv: {},
+        homeDir: home,
+        cwd: "/tmp",
+      })
+      expect(cfg.threadId).toBe("thr_resume_abc123")
+      expect(cfg.newThread).toBe(false)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it("ignores persisted last thread when --new is explicit", () => {
+    const home = mkdtempSync(join(tmpdir(), "luna-resume-"))
+    try {
+      writeLastThread(home, "stable", "thr_resume_abc123")
+      const cfg = loadChatConfig({
+        args: parseChatArgs(["chat", "--new"]),
+        env: { LUNA_UI_WS_TOKEN: "env-token-123456" },
+        dotenv: {},
+        homeDir: home,
+        cwd: "/tmp",
+      })
+      expect(cfg.threadId).toBeNull()
+      expect(cfg.newThread).toBe(true)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it("prefers --thread <id> over persisted last thread", () => {
+    const home = mkdtempSync(join(tmpdir(), "luna-resume-"))
+    try {
+      writeLastThread(home, "stable", "thr_persisted_xyz")
+      const cfg = loadChatConfig({
+        args: parseChatArgs(["chat", "--thread", "thr_explicit_qwe"]),
+        env: { LUNA_UI_WS_TOKEN: "env-token-123456" },
+        dotenv: {},
+        homeDir: home,
+        cwd: "/tmp",
+      })
+      expect(cfg.threadId).toBe("thr_explicit_qwe")
+      expect(cfg.newThread).toBe(false)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it("scopes persisted last thread per profile", () => {
+    const home = mkdtempSync(join(tmpdir(), "luna-resume-"))
+    try {
+      writeLastThread(home, "stable", "thr_stable_one")
+      writeLastThread(home, "dev", "thr_dev_two")
+      expect(readLastThread(home, "stable")).toBe("thr_stable_one")
+      expect(readLastThread(home, "dev")).toBe("thr_dev_two")
+      const devCfg = loadChatConfig({
+        args: parseChatArgs(["chat", "--dev"]),
+        env: { LUNA_UI_WS_TOKEN: "env-token-123456" },
+        dotenv: {},
+        homeDir: home,
+        cwd: "/tmp",
+      })
+      expect(devCfg.profileName).toBe("dev")
+      expect(devCfg.threadId).toBe("thr_dev_two")
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects malformed persisted last-thread content", () => {
+    const home = mkdtempSync(join(tmpdir(), "luna-resume-"))
+    try {
+      mkdirSync(join(home, ".luna"), { recursive: true })
+      writeFileSync(join(home, ".luna", ".last-thread-stable"), "../escape; rm -rf /")
+      expect(readLastThread(home, "stable")).toBeNull()
     } finally {
       rmSync(home, { recursive: true, force: true })
     }

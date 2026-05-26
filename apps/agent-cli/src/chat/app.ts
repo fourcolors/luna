@@ -4,7 +4,12 @@ import { createInterface } from "node:readline"
 import type { Readable, Writable } from "node:stream"
 import type { ServerFrame } from "@luna/ui-ws"
 import { parseChatArgs } from "./args.js"
-import { loadChatConfig, readLunaDotEnv, redactedConfigSummary } from "./config.js"
+import {
+  loadChatConfig,
+  readLunaDotEnv,
+  redactedConfigSummary,
+  writeLastThread,
+} from "./config.js"
 import {
   executeLocalCommand,
   makeLocalShellState,
@@ -285,6 +290,14 @@ export async function runLunaCli(
     threadWaiter.resolve()
     announceReady()
     flushPendingUserMessages()
+    // Persist for next `luna chat` invocation so the user can resume the
+    // same thread without remembering the id. Best-effort — disk failures
+    // here must not break the live session.
+    try {
+      writeLastThread(io.homeDir ?? homedir(), cfg.profileName, threadId)
+    } catch {
+      // Swallow — persisting last-thread is a UX nicety, not load-bearing.
+    }
   }
 
   const resetThreadWaiter = (): void => {
