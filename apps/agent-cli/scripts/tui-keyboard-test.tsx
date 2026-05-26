@@ -48,5 +48,13 @@ const App = () => {
   )
 }
 
-await render(() => createComponent(App, {}), { useThread: false })
+let resolveDone!: () => void
+const done = new Promise<void>((resolve) => { resolveDone = resolve })
+
+await render(() => createComponent(App, {}), {
+  useThread: false,
+  onDestroy: () => resolveDone(),
+})
+
+await done
 process.exit(0)

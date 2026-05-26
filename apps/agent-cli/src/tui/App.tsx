@@ -35,14 +35,8 @@ export const App = (props: AppProps) => {
           )}
         </For>
       </box>
-      <box style={{ borderStyle: "single", width: dims().width }}>
-        <input
-          focused
-          value={props.store.inputDraft()}
-          onInput={(v: string) => props.store.setInputDraft(v)}
-          // @ts-expect-error JSX type leaks DOM SubmitEvent; the OpenTUI input emits (value: string).
-          onSubmit={(v: string) => props.onSubmit(v)}
-        />
+      <box style={{ borderStyle: "single", width: dims().width, height: 3, padding: 1 }}>
+        <text>{"> " + props.store.inputDraft()}</text>
       </box>
       <box style={{ width: dims().width, padding: 1 }}>
         <text>{formatStatus()}</text>

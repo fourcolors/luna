@@ -44,14 +44,10 @@ export type TuiMountResult = { exitCode: 0 | 1 | 2 }
 
 export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult> => {
   dbg(`mountTui start argv=${JSON.stringify(argv)} LUNA_TUI_DEBUG=${DEBUG_LOG ?? "<unset>"}`)
-  // Register the Bun JSX transform plugin before importing any .tsx files.
-  // We use Function() to construct the import call so tsc cannot follow the
-  // module specifier to type-check the Bun-only preload source.
-  // eslint-disable-next-line no-new-func
-  await (Function("m", "return import(m)") as (m: string) => Promise<unknown>)("@opentui/solid/preload")
-
-  // Import App.tsx after preload so the Bun JSX transform is registered first.
-  // TypeScript resolves "./App.js" to App.tsx for type-checking purposes.
+  // The OpenTUI Solid preload (which both installs the Bun JSX transform and
+  // swaps solid-js's server build for the reactive client build) is registered
+  // at the top of luna.ts. By the time we get here, the plugin is active and
+  // any subsequent .tsx import + solid-js read uses the reactive build.
   const { App } = await import("./App.js")
 
   const args = parseChatArgs(argv)
@@ -123,9 +119,16 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
     },
   })
 
-  session.on("threadChange", (id) => store.setThreadId(id))
-  session.on("assistantDelta", ({ turnId, text }) => store.upsertAssistant(turnId, text, false))
-  session.on("assistantDone", ({ turnId, text }) => store.upsertAssistant(turnId, text, true))
+  session.on("threadChange", (id) => { dbg(`evt threadChange: ${id}`); store.setThreadId(id) })
+  session.on("assistantDelta", ({ turnId, text }) => {
+    dbg(`evt assistantDelta turn=${turnId} text-len=${text.length}`)
+    store.upsertAssistant(turnId, text, false)
+  })
+  session.on("assistantDone", ({ turnId, text }) => {
+    dbg(`evt assistantDone turn=${turnId}`)
+    store.upsertAssistant(turnId, text, true)
+    dbg(`after upsert, messages count = ${store.messages().length}, last = ${JSON.stringify(store.messages()[store.messages().length - 1])}`)
+  })
   session.on("assistantError", ({ message, kind, silent }) => {
     if (silent === true) return
     store.setMessages((m) => [...m, { role: "assistant", text: `[${kind ?? "error"}] ${message}` }])
@@ -185,12 +188,13 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
   // Submit handler: parse slash commands and dispatch.
   const submit = (text: string) => {
     const trimmed = text.trim()
+    dbg(`submit: ${JSON.stringify(trimmed)}`)
     if (trimmed.length === 0) return
     store.setInputDraft("")
     const parsed = parseSlashCommand(trimmed)
+    dbg(`submit parsed: ${parsed.type}`)
     if (parsed.type === "quit") {
       session.beginQuit()
-      // Close client so sessionLoop's nextFrame() unblocks, then destroy renderer.
       void client.close().then(() => {
         rendererRef?.destroy()
       })
@@ -198,41 +202,53 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
     }
     if (parsed.type === "message") {
       store.appendUser(trimmed)
+      dbg(`appendUser done, messages count = ${store.messages().length}`)
     }
     session.dispatchSlash(trimmed)
+    dbg(`dispatchSlash done`)
   }
 
   // Root Solid component with keyboard handling.
+  type KeyPressEvent = {
+    readonly name?: string
+    readonly ctrl?: boolean
+    readonly sequence?: string
+  }
+
+  const handleKey = (evt: KeyPressEvent): void => {
+    dbg(`key: name=${evt.name ?? ""} ctrl=${evt.ctrl ?? false} seq=${JSON.stringify(evt.sequence ?? "")}`)
+    if (evt.ctrl === true && evt.name === "c") {
+      session.beginQuit()
+      void client.close().then(() => { rendererRef?.destroy() })
+      return
+    }
+    if (evt.name === "return") {
+      submit(store.inputDraft())
+      return
+    }
+    if (evt.name === "backspace") {
+      store.setInputDraft((d) => d.slice(0, -1))
+      return
+    }
+    if (evt.sequence !== undefined && evt.sequence.length === 1 && evt.sequence.charCodeAt(0) >= 0x20) {
+      const seq = evt.sequence
+      store.setInputDraft((d) => d + seq)
+      dbg(`inputDraft now = ${JSON.stringify(store.inputDraft())}`)
+    }
+  }
+
   const RootApp = () => {
     // Stash renderer ref for destroy on quit.
     const renderer = useRenderer()
     rendererRef = renderer
-    dbg(`RootApp mounted, renderer keyInput=${renderer?.keyInput !== undefined ? "present" : "MISSING"}`)
+    dbg(`RootApp setup, renderer keyInput=${renderer?.keyInput !== undefined ? "present" : "MISSING"}`)
 
-    useKeyboard((evt) => {
-      dbg(`key: name=${evt.name ?? ""} ctrl=${evt.ctrl ?? false} seq=${JSON.stringify(evt.sequence ?? "")}`)
-      if (evt.ctrl && evt.name === "c") {
-        dbg("ctrl-c -> beginQuit")
-        session.beginQuit()
-        void client.close().then(() => {
-          rendererRef?.destroy()
-        })
-        return
-      }
-      if (evt.name === "return") {
-        dbg(`return -> submit(${JSON.stringify(store.inputDraft())})`)
-        submit(store.inputDraft())
-        return
-      }
-      if (evt.name === "backspace") {
-        store.setInputDraft((d) => d.slice(0, -1))
-        return
-      }
-      // Printable ASCII characters.
-      if (evt.sequence !== undefined && evt.sequence.length === 1 && evt.sequence.charCodeAt(0) >= 0x20) {
-        store.setInputDraft((d) => d + evt.sequence)
-      }
-    })
+    // Direct keyInput registration (bypassing useKeyboard, which relies on
+    // onMount and doesn't fire for pass-through components that return
+    // createComponent(...) instead of JSX).
+    if (renderer?.keyInput !== undefined) {
+      renderer.keyInput.on("keypress", handleKey)
+    }
 
     return createComponent(App, { store, onSubmit: submit, onKey: () => {} })
   }

@@ -1,0 +1,10 @@
+# Bun configuration for @luna/agent-cli.
+#
+# Preload @opentui/solid's plugin BEFORE any user code runs. This installs
+# the Bun build hook that:
+#   1. Transforms .tsx files with babel-preset-solid (so JSX → reactive)
+#   2. Intercepts solid-js's import resolution and swaps the server build
+#      for the reactive client build
+#
+# Without this, signals in mount.ts update but the rendered UI never refreshes.
+preload = ["@opentui/solid/preload"]
