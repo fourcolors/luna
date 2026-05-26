@@ -1,6 +1,7 @@
 import { Show } from "solid-js"
 import type { TuiStore } from "./store.js"
 import { CONTEXT_TAB_LABEL, CONTEXT_TAB_ORDER, type ContextTab } from "./panel-types.js"
+import { MemoriesTab } from "./MemoriesTab.js"
 
 export type ContextPanelProps = {
   store: TuiStore
@@ -42,7 +43,7 @@ export const ContextPanel = (props: ContextPanelProps) => {
       </box>
       <box style={{ flexDirection: "column", flexGrow: 1, width: props.width - 2, padding: 1 }}>
         <Show when={props.store.contextPanelTab() === "memories"}>
-          <text>(memories tab — populated in Task 4)</text>
+          <MemoriesTab store={props.store} />
         </Show>
         <Show when={props.store.contextPanelTab() === "events"}>
           <text>(events tab — populated in Task 5)</text>
