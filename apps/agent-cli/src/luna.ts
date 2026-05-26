@@ -1,11 +1,12 @@
 #!/usr/bin/env bun
+import { defineCommand, runMain } from "citty"
 import { createReadStream, createWriteStream, openSync } from "node:fs"
 import { createInterface } from "node:readline/promises"
-import { runLunaCli } from "./chat/app.js"
+import { accountCommand } from "./commands/account/index.js"
+import { chatCommand } from "./commands/chat.js"
+import { memoryCommand } from "./commands/memory.js"
 
-const isMain = (import.meta as { main?: boolean }).main === true
-
-const approveLocalCommand = async (command: string): Promise<boolean> => {
+export const approveLocalCommand = async (command: string): Promise<boolean> => {
   let input: ReturnType<typeof createReadStream> | undefined
   let output: ReturnType<typeof createWriteStream> | undefined
   try {
@@ -27,14 +28,18 @@ const approveLocalCommand = async (command: string): Promise<boolean> => {
   }
 }
 
-if (isMain) {
-  const result = await runLunaCli(process.argv.slice(2), {
-    stdin: process.stdin,
-    stdout: process.stdout,
-    stderr: process.stderr,
-    env: process.env,
-    cwd: process.cwd(),
-    approveLocalCommand,
-  })
-  process.exit(result.exitCode)
+const root = defineCommand({
+  meta: {
+    name: "luna",
+    description: "Luna agent client",
+  },
+  subCommands: {
+    chat: chatCommand,
+    account: accountCommand,
+    memory: memoryCommand,
+  },
+})
+
+if ((import.meta as { main?: boolean }).main === true) {
+  runMain(root)
 }
