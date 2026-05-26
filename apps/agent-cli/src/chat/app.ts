@@ -1,8 +1,8 @@
 import { homedir } from "node:os"
 import { posix as pathPosix } from "node:path"
-import { createInterface } from "node:readline"
 import type { Readable, Writable } from "node:stream"
 import type { ServerFrame } from "@luna/ui-ws"
+import { createLineReader, writeError, writeOut as write, writeErr } from "../views/readline.js"
 import { parseChatArgs } from "./args.js"
 import {
   clearLastThread,
@@ -70,14 +70,6 @@ const USAGE = [
   "",
   HELP_TEXT,
 ].join("\n")
-
-const write = (stream: Writable, text: string): void => {
-  stream.write(text)
-}
-
-const writeError = (io: LunaCliIO, message: string): void => {
-  write(io.stderr, `error: ${message}\n`)
-}
 
 const formatRuntimeError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)
@@ -157,7 +149,7 @@ const connectWithRecovery = async (
       } catch (error) {
         lastError = error
         if (cfg.urls.length > 1) {
-          write(io.stderr, `connection failed for ${url}: ${formatRuntimeError(error)}\n`)
+          writeErr(io, `connection failed for ${url}: ${formatRuntimeError(error)}\n`)
         }
       }
     }
@@ -177,7 +169,7 @@ const connectWithRecovery = async (
       const targetLabel = cfg.startMode === "ssh" && target !== null
         ? ` via ${target}`
         : ""
-      write(io.stderr, `connection failed; running ${cfg.startMode} recovery${targetLabel}\n`)
+      writeErr(io, `connection failed; running ${cfg.startMode} recovery${targetLabel}\n`)
       const recovery = await runRecovery({
         mode: cfg.startMode,
         command: cfg.startCommand,
@@ -208,19 +200,19 @@ export async function runLunaCli(
 ): Promise<LunaCliResult> {
   if (argv[0] === "memory") {
     const result = await runMemoryCommand(argv.slice(1), { env: io.env })
-    if (result.stdout.length > 0) write(io.stdout, result.stdout)
-    if (result.stderr.length > 0) write(io.stderr, result.stderr)
+    if (result.stdout.length > 0) write(io, result.stdout)
+    if (result.stderr.length > 0) writeErr(io, result.stderr)
     return { exitCode: result.exitCode }
   }
 
   const args = parseChatArgs(argv)
   if (args.command === "help") {
-    write(io.stdout, `${USAGE}\n`)
+    write(io, `${USAGE}\n`)
     return { exitCode: 0 }
   }
   if (args.command === "unknown") {
     writeError(io, `unknown command: ${args.unknown.join(" ")}`)
-    write(io.stderr, `${USAGE}\n`)
+    writeErr(io, `${USAGE}\n`)
     return { exitCode: 2 }
   }
   if (args.unknown.length > 0) {
@@ -241,7 +233,7 @@ export async function runLunaCli(
   })
   if (cfg.validationErrors.length > 0) {
     for (const error of cfg.validationErrors) writeError(io, error)
-    write(io.stderr, `${redactedConfigSummary(cfg)}\n`)
+    writeErr(io, `${redactedConfigSummary(cfg)}\n`)
     return { exitCode: 2 }
   }
 
@@ -253,11 +245,7 @@ export async function runLunaCli(
     return { exitCode: 1 }
   }
 
-  const lineReader = createInterface({
-    input: io.stdin,
-    crlfDelay: Infinity,
-    terminal: false,
-  })
+  const lineReader = createLineReader(io)
 
   let currentThreadId: string | null = cfg.threadId
   let threadWaiter = createThreadWaiter()
@@ -289,7 +277,7 @@ export async function runLunaCli(
     if (readyAnnounced) return
     readyAnnounced = true
     const name = cfg.profileName === "stable" ? "Luna" : `Luna ${cfg.profileName}`
-    write(io.stdout, `${name} ready. Type a message, /help, or /quit.\n`)
+    write(io, `${name} ready. Type a message, /help, or /quit.\n`)
   }
 
   const markThread = (threadId: string): void => {
@@ -420,7 +408,7 @@ export async function runLunaCli(
         markThread(frame.threadId)
         sendLocalShellCapability(client, currentThreadId, localShell)
         for (const message of frame.messages) {
-          write(io.stdout, `${message.role}: ${message.text}\n`)
+          write(io, `${message.role}: ${message.text}\n`)
         }
         return
       case "user-accepted":
@@ -430,13 +418,13 @@ export async function runLunaCli(
         const previous = assistantTextByTurn.get(frame.turnId) ?? ""
         const next = frame.text.startsWith(previous) ? frame.text.slice(previous.length) : frame.text
         assistantTextByTurn.set(frame.turnId, frame.text)
-        if (previous.length === 0) write(io.stdout, "Luna: ")
-        write(io.stdout, next)
+        if (previous.length === 0) write(io, "Luna: ")
+        write(io, next)
         return
       }
       case "assistant-done":
         assistantTextByTurn.delete(frame.turnId)
-        write(io.stdout, "\n")
+        write(io, "\n")
         finishPendingAssistant()
         return
       case "assistant-error":
@@ -455,27 +443,24 @@ export async function runLunaCli(
           } catch {
             // Best-effort cleanup.
           }
-          write(
-            io.stderr,
-            `luna: resumed thread ${pendingAutoResumedThreadId} no longer exists — starting a new one\n`,
-          )
+          writeErr(io, `luna: resumed thread ${pendingAutoResumedThreadId} no longer exists — starting a new one\n`)
           pendingAutoResumedThreadId = null
           resetThreadWaiter()
           if (frame.turnId !== null) finishPendingAssistant()
           client.send({ type: "new-thread", model: io.env["LUNA_MODEL"] ?? DEFAULT_MODEL })
           return
         }
-        write(io.stderr, `luna: ${frame.error.kind}: ${frame.error.message}\n`)
+        writeErr(io, `luna: ${frame.error.kind}: ${frame.error.message}\n`)
         if (frame.turnId !== null) finishPendingAssistant()
         return
       case "thread-list":
         for (const thread of frame.threads) {
-          write(io.stdout, `${thread.id}\t${thread.title ?? ""}\t${thread.status}\n`)
+          write(io, `${thread.id}\t${thread.title ?? ""}\t${thread.status}\n`)
         }
         return
       case "local-shell-status":
         if (!frame.accepted && localShell.enabled) {
-          write(io.stderr, `local shell: ${frame.message}\n`)
+          writeErr(io, `local shell: ${frame.message}\n`)
         }
         return
       case "local-shell-request": {
@@ -512,7 +497,7 @@ export async function runLunaCli(
 
       switch (command.type) {
         case "help":
-          write(io.stdout, `${HELP_TEXT}\n`)
+          write(io, `${HELP_TEXT}\n`)
           break
         case "threads":
           client.send({ type: "list-threads", limit: 50 })
@@ -543,11 +528,11 @@ export async function runLunaCli(
         case "local-shell":
           localShell = setLocalShellEnabled(localShell, command.action === "on")
           if (!localShell.enabled) abortLocalShellTasks()
-          write(io.stdout, `local shell: ${localShell.enabled ? "on" : "off"}\n`)
+          write(io, `local shell: ${localShell.enabled ? "on" : "off"}\n`)
           sendLocalShellCapability(client, currentThreadId, localShell)
           break
         case "local-shell-status":
-          write(io.stdout, `local shell: ${localShell.enabled ? "on" : "off"}\n`)
+          write(io, `local shell: ${localShell.enabled ? "on" : "off"}\n`)
           sendLocalShellCapability(client, currentThreadId, localShell)
           break
         case "error":
