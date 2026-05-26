@@ -199,10 +199,8 @@ export class LunaHeadlessSession extends EventEmitter {
         this.bindThread(frame.threadId)
         return
       case "assistant-delta": {
-        const previous = this.assistantTextByTurn.get(frame.turnId) ?? ""
         this.assistantTextByTurn.set(frame.turnId, frame.text)
         this.emit("assistantDelta", { turnId: frame.turnId, text: frame.text, done: false })
-        void previous
         return
       }
       case "assistant-done": {
@@ -217,11 +215,12 @@ export class LunaHeadlessSession extends EventEmitter {
           this.pendingAutoResumedThreadId !== null &&
           frame.threadId === this.pendingAutoResumedThreadId
         ) {
+          const staleId = this.pendingAutoResumedThreadId
           try { this.clearLastThread() } catch { /* best-effort */ }
           this.pendingAutoResumedThreadId = null
           this.resetThread()
           this.client.send({ type: "new-thread", model: this.model })
-          this.emit("info", `luna: resumed thread no longer exists — starting a new one`)
+          this.emit("info", `luna: resumed thread ${staleId} no longer exists — starting a new one`)
           return
         }
         this.emit("assistantError", {
