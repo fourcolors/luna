@@ -101,6 +101,8 @@ The script:
 
 - installs required apt packages and Bun unless `--skip-deps` is set
 - writes `CLAUDE_CONFIG_DIR`, `LUNA_REPO_ROOT`, and `LUNA_UI_WS_HOST`
+- pins portable state paths under `--luna-home`: `LUNA_DB_PATH`,
+  `LUNA_MEMORY_DB`, `LUNA_ANALYTICS_DB_PATH`, and `LUNA_EVENTS_JSONL_PATH`
 - preserves an existing UI token unless `--rotate-token` is set
 - writes a systemd service
 - runs `systemctl daemon-reload`, `enable`, and `restart` by default
@@ -137,6 +139,17 @@ The dev container uses:
 /root/.luna-dev             host runtime state mounted to /root/.luna
 jax-box:5753 -> luna-dev:4753  WebSocket server
 jax-box:5754 -> luna-dev:4754  control server
+```
+
+Inside the container, runtime state is addressed through container-local paths
+in `.env`:
+
+```text
+LUNA_HOME=/root/.luna
+LUNA_DB_PATH=/root/.luna/luna.db
+LUNA_MEMORY_DB=/root/.luna/memory.db
+LUNA_ANALYTICS_DB_PATH=/root/.luna/analytics.duckdb
+LUNA_EVENTS_JSONL_PATH=/root/.luna/events.jsonl
 ```
 
 To prepare stable for a container cutover, build it on temporary candidate

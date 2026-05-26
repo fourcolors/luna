@@ -110,6 +110,7 @@ fi
 
 PROFILE_ENV="$(luna_profile_env_name "$PROFILE")"
 CHAT_SERVER_NAME="$(luna_chat_server_name "$PROFILE")"
+CONTAINER_LUNA_HOME="/root/.luna"
 
 if [[ -z "$INSTANCE" ]]; then
   INSTANCE="luna-${PROFILE}"
@@ -267,6 +268,11 @@ luna_upsert_env "$STATE_PATH/.env" "LUNA_REPO_ROOT" "/root/luna"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_UI_WS_HOST" "0.0.0.0"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_PROFILE" "$PROFILE"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_CHAT_SERVER_NAME" "$CHAT_SERVER_NAME"
+luna_upsert_env "$STATE_PATH/.env" "LUNA_HOME" "$CONTAINER_LUNA_HOME"
+luna_upsert_env "$STATE_PATH/.env" "LUNA_DB_PATH" "$CONTAINER_LUNA_HOME/luna.db"
+luna_upsert_env "$STATE_PATH/.env" "LUNA_MEMORY_DB" "$CONTAINER_LUNA_HOME/memory.db"
+luna_upsert_env "$STATE_PATH/.env" "LUNA_ANALYTICS_DB_PATH" "$CONTAINER_LUNA_HOME/analytics.duckdb"
+luna_upsert_env "$STATE_PATH/.env" "LUNA_EVENTS_JSONL_PATH" "$CONTAINER_LUNA_HOME/events.jsonl"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_${PROFILE_ENV}_WS_URL" "ws://${HOST}:${HOST_WS_PORT}/ui"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_EMBEDDER" "$EMBEDDER"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_OLLAMA_BASE_URL" "$OLLAMA_BASE_URL"

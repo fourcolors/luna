@@ -108,14 +108,18 @@
  * the flag exists for.
  */
 import { existsSync, readFileSync } from "node:fs"
-import { homedir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname } from "node:path"
 import { fileURLToPath } from "node:url"
+import {
+  applyRuntimePathEnvDefaults,
+  resolveRuntimePaths,
+} from "./runtime-paths.js"
 
-// Load ~/.luna/.env before anything else so CLAUDE_CONFIG_DIR (and any other
-// Luna env vars) are in process.env when the SDK initialises.
+// Load Luna's runtime .env before anything else so CLAUDE_CONFIG_DIR (and any
+// other Luna env vars) are in process.env when the SDK initialises. LUNA_HOME
+// makes the runtime portable; the default remains ~/.luna.
 {
-  const lunaEnv = join(homedir(), ".luna", ".env")
+  const lunaEnv = resolveRuntimePaths().envFilePath
   if (existsSync(lunaEnv)) {
     for (const line of readFileSync(lunaEnv, "utf8").split("\n")) {
       const trimmed = line.trim()
@@ -127,6 +131,7 @@ import { fileURLToPath } from "node:url"
       if (key && !(key in process.env)) process.env[key] = value
     }
   }
+  applyRuntimePathEnvDefaults(resolveRuntimePaths())
 }
 import { Effect, Layer, ManagedRuntime, Option } from "effect"
 import {
@@ -247,9 +252,11 @@ const buildBaseLayer = (
   | any // TelemetryPlatform sinks + NoopTracerLayer + AgentNotesService are side-effect Layers
 > => {
   const clockL = Clock.Default
-  const lunaHome = join(homedir(), ".luna")
-  const lunaDbPath = process.env["LUNA_DB_PATH"] ?? join(lunaHome, "luna.db")
-  const obsL = ObservabilityService.makeLayer({ logToConsole: false }).pipe(
+  const paths = resolveRuntimePaths()
+  const obsL = ObservabilityService.makeLayer({
+    logToConsole: false,
+    jsonlPath: paths.eventsJsonlPath,
+  }).pipe(
     Layer.provide(clockL),
   )
   const uiL = UIService.makeLayer().pipe(
@@ -296,12 +303,13 @@ const buildBaseLayer = (
   // ── Self-observation platform (Phase 27b) ──────────────────────────────
   // TelemetryService: SQLite-backed counters so current counter state
   // survives restarts; MetricsFlusher snapshots them into analytics.duckdb.
-  const telemetryL = makeTelemetrySqlite(lunaDbPath).pipe(Layer.provide(clockL))
+  const telemetryL = makeTelemetrySqlite(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
 
   // DuckDbService: single connection to the analytics DB.
   // All writes are serialized through a bounded Queue.dropping fiber.
-  const analyticsDbPath = process.env["LUNA_ANALYTICS_DB_PATH"] ?? join(lunaHome, "analytics.duckdb")
-  const duckDbL = makeDuckDbLayer({ dbPath: analyticsDbPath })
+  const duckDbL = makeDuckDbLayer({ dbPath: paths.analyticsDbPath })
 
   // TelemetryPlatform: EventSink + SessionSync + MetricsFlusher, all wired
   // to the analytics DuckDB. Side-effect-only Layers — fire-and-forget.
@@ -316,7 +324,7 @@ const buildBaseLayer = (
 
   // AgentNotesService: SQLite-backed self-report stream. Shares luna.db
   // with AccountBroker + TelemetryService-sqlite (same file, separate tables).
-  const agentNotesL = AgentNotesService.makeLayer(lunaDbPath).pipe(
+  const agentNotesL = AgentNotesService.makeLayer(paths.lunaDbPath).pipe(
     Layer.provide(clockL),
     // LunaSqliteBootstrapLive provided at the bottom of buildServerLayer
     // (same pattern as all other SQLite layers in this server).
