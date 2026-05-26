@@ -98,3 +98,109 @@ describe("LunaHeadlessSession", () => {
     expect(rawFrameOrder).toBeLessThan(threadChangeOrder)
   })
 })
+
+function makeSessionUnderTest() {
+  const client = new StubWsClient()
+  const session = new LunaHeadlessSession({
+    client: client as never,
+    profileName: "stable",
+    model: "claude-sonnet-4-5",
+    saveLastThread: () => undefined,
+    clearLastThread: () => undefined,
+  })
+  return { session, client }
+}
+
+describe("LunaHeadlessSession.searchMemory", () => {
+  it("resolves with the matching result frame", async () => {
+    const { session, client } = makeSessionUnderTest()
+    void session.run()
+
+    const promise = session.searchMemory({ queryText: "hello", topK: 5 })
+
+    await new Promise((r) => setTimeout(r, 5))
+    client.emit({
+      type: "memory-search-result",
+      queryText: "hello",
+      hits: [{ id: "m1", kind: "feedback", content: "hello world", score: 0.9 }],
+    })
+
+    const result = await promise
+    expect(result.type).toBe("memory-search-result")
+    if (result.type !== "memory-search-result") throw new Error("unreachable")
+    expect(result.hits.length).toBe(1)
+    expect(result.hits[0]?.id).toBe("m1")
+  })
+
+  it("resolves with the matching error frame", async () => {
+    const { session, client } = makeSessionUnderTest()
+    void session.run()
+
+    const promise = session.searchMemory({ queryText: "hello", topK: 5 })
+    await new Promise((r) => setTimeout(r, 5))
+    client.emit({
+      type: "memory-search-error",
+      queryText: "hello",
+      message: "no vector backends registered",
+      kind: "no-vector-backend",
+    })
+
+    const result = await promise
+    expect(result.type).toBe("memory-search-error")
+    if (result.type !== "memory-search-error") throw new Error("unreachable")
+    expect(result.message).toContain("no vector backends")
+    expect(result.kind).toBe("no-vector-backend")
+  })
+
+  it("ignores stale results whose queryText does not match", async () => {
+    const { session, client } = makeSessionUnderTest()
+    void session.run()
+
+    const promise = session.searchMemory({ queryText: "ab", topK: 5 })
+
+    await new Promise((r) => setTimeout(r, 5))
+    client.emit({
+      type: "memory-search-result",
+      queryText: "a",
+      hits: [],
+    })
+
+    client.emit({
+      type: "memory-search-result",
+      queryText: "ab",
+      hits: [{ id: "m2", kind: "project", content: "ab match", score: 0.5 }],
+    })
+
+    const result = await promise
+    if (result.type !== "memory-search-result") throw new Error("unreachable")
+    expect(result.queryText).toBe("ab")
+    expect(result.hits[0]?.id).toBe("m2")
+  })
+
+  it("sends the request frame with the queryText and topK", async () => {
+    const { session, client } = makeSessionUnderTest()
+    void session.run()
+
+    void session.searchMemory({ queryText: "test", topK: 7 })
+    await new Promise((r) => setTimeout(r, 5))
+
+    expect(client.sent).toContainEqual({
+      type: "memory-search-request",
+      queryText: "test",
+      topK: 7,
+    })
+  })
+
+  it("omits topK from the request when not provided", async () => {
+    const { session, client } = makeSessionUnderTest()
+    void session.run()
+
+    void session.searchMemory({ queryText: "test" })
+    await new Promise((r) => setTimeout(r, 5))
+
+    expect(client.sent).toContainEqual({
+      type: "memory-search-request",
+      queryText: "test",
+    })
+  })
+})

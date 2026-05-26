@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events"
-import type { ClientFrame, ServerFrame } from "@luna/ui-ws"
+import type { ClientFrame, ServerFrame, MemorySearchResultFrame, MemorySearchErrorFrame } from "@luna/ui-ws"
 import type { LunaWsClient } from "./ws-client.js"
 import { parseSlashCommand, type SlashCommand } from "./slash.js"
 
@@ -93,6 +93,30 @@ export class LunaHeadlessSession extends EventEmitter {
     }
     this.client.send({ type: "user-message", threadId: this.currentThreadId, text })
     this.emit("userMessageSent")
+  }
+
+  searchMemory(args: {
+    readonly queryText: string
+    readonly topK?: number
+  }): Promise<MemorySearchResultFrame | MemorySearchErrorFrame> {
+    return new Promise((resolve) => {
+      const onFrame = (frame: ServerFrame): void => {
+        if (
+          (frame.type === "memory-search-result" ||
+            frame.type === "memory-search-error") &&
+          frame.queryText === args.queryText
+        ) {
+          this.off("rawFrame", onFrame)
+          resolve(frame)
+        }
+      }
+      this.on("rawFrame", onFrame)
+      this.client.send({
+        type: "memory-search-request",
+        queryText: args.queryText,
+        ...(args.topK !== undefined ? { topK: args.topK } : {}),
+      })
+    })
   }
 
   dispatchSlash(line: string): SlashCommand {
