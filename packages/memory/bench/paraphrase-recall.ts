@@ -58,9 +58,15 @@ const TOP_K = 5
 const NAMESPACE = "bench"
 
 async function probeOllama(): Promise<boolean> {
+  const baseUrl =
+    process.env["LUNA_OLLAMA_BASE_URL"] ??
+    process.env["OLLAMA_HOST"] ??
+    "http://127.0.0.1:11434"
+  // Normalize: accept "host:port", "http://host:port", and trailing-slash forms.
+  const url = baseUrl.startsWith("http") ? baseUrl : `http://${baseUrl}`
   try {
-    const res = await fetch("http://127.0.0.1:11434/", {
-      signal: AbortSignal.timeout(500),
+    const res = await fetch(url.replace(/\/+$/, "") + "/", {
+      signal: AbortSignal.timeout(1500),
     })
     return res.ok || res.status < 500
   } catch {
