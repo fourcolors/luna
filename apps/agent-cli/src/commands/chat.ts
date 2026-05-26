@@ -28,7 +28,7 @@ export const chatCommand = defineCommand({
     "no-tui": { type: "boolean", description: "use the legacy readline UI instead of the TUI" },
   },
   async run({ args }) {
-    const argv: string[] = []
+    const argv: string[] = ["chat"]
     if (args.profile !== undefined) argv.push("--profile", args.profile)
     if (args.dev === true) argv.push("--dev")
     if (args.url !== undefined) argv.push("--url", args.url)
