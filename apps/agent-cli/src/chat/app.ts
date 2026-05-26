@@ -5,6 +5,7 @@ import type { Readable, Writable } from "node:stream"
 import type { ServerFrame } from "@luna/ui-ws"
 import { parseChatArgs } from "./args.js"
 import {
+  clearLastThread,
   loadChatConfig,
   readLunaDotEnv,
   redactedConfigSummary,
@@ -261,6 +262,12 @@ export async function runLunaCli(
   let currentThreadId: string | null = cfg.threadId
   let threadWaiter = createThreadWaiter()
   if (currentThreadId !== null) threadWaiter.resolve()
+  // Track whether the active thread came from disk-persisted auto-resume so
+  // we can transparently recover from a stale id (server lost the thread
+  // across a restart, etc.) without surfacing the error to the user.
+  let pendingAutoResumedThreadId: string | null = cfg.threadIdAutoResumed
+    ? cfg.threadId
+    : null
   const pendingUserMessages: string[] = []
   let localShell = makeLocalShellState({
     enabled: cfg.localShellInitial,
@@ -290,6 +297,10 @@ export async function runLunaCli(
     threadWaiter.resolve()
     announceReady()
     flushPendingUserMessages()
+    // Once we successfully bind a thread (any source), clear the
+    // auto-resume tracker — subsequent unknown-thread errors are
+    // legit errors, not stale-resume cases.
+    pendingAutoResumedThreadId = null
     // Persist for next `luna chat` invocation so the user can resume the
     // same thread without remembering the id. Best-effort — disk failures
     // here must not break the live session.
@@ -430,6 +441,30 @@ export async function runLunaCli(
         return
       case "assistant-error":
         if (frame.turnId !== null) assistantTextByTurn.delete(frame.turnId)
+        // Auto-recover from a stale resumed thread: server doesn't know the
+        // id we persisted (e.g. chat-server restart wiped in-memory state).
+        // Clear the bad persisted id, reset thread state, and create a new
+        // one. The user's last message becomes the seed of the fresh thread.
+        if (
+          frame.error.kind === "unknown-thread" &&
+          pendingAutoResumedThreadId !== null &&
+          frame.threadId === pendingAutoResumedThreadId
+        ) {
+          try {
+            clearLastThread(io.homeDir ?? homedir(), cfg.profileName)
+          } catch {
+            // Best-effort cleanup.
+          }
+          write(
+            io.stderr,
+            `luna: resumed thread ${pendingAutoResumedThreadId} no longer exists — starting a new one\n`,
+          )
+          pendingAutoResumedThreadId = null
+          resetThreadWaiter()
+          if (frame.turnId !== null) finishPendingAssistant()
+          client.send({ type: "new-thread", model: io.env["LUNA_MODEL"] ?? DEFAULT_MODEL })
+          return
+        }
         write(io.stderr, `luna: ${frame.error.kind}: ${frame.error.message}\n`)
         if (frame.turnId !== null) finishPendingAssistant()
         return

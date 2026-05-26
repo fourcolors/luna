@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join, posix as pathPosix } from "node:path"
 import type { ChatArgs, StartMode } from "./args.js"
 
@@ -33,6 +33,11 @@ export const writeLastThread = (
   writeFileSync(path, threadId, { mode: 0o600 })
 }
 
+export const clearLastThread = (homeDir: string, profileName: string): void => {
+  const path = lastThreadPath(homeDir, profileName)
+  if (existsSync(path)) rmSync(path, { force: true })
+}
+
 export interface ChatConfig {
   readonly profileName: string
   readonly url: string
@@ -40,6 +45,13 @@ export interface ChatConfig {
   readonly token: string | null
   readonly threadId: string | null
   readonly newThread: boolean
+  /**
+   * True when `threadId` was sourced from the persisted last-thread file
+   * (not from an explicit `--thread <id>` flag). The CLI uses this to
+   * decide whether `unknown-thread` errors should silently fall back to
+   * creating a new thread, vs. surfacing the error to the user.
+   */
+  readonly threadIdAutoResumed: boolean
   readonly localShellInitial: boolean
   readonly dangerouslyAutoApproveLocalShell: boolean
   readonly dangerousLocalShellRoot: string
@@ -290,6 +302,7 @@ export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
       ? readLastThread(input.homeDir, profileName)
       : null
   const threadId = input.args.threadId ?? resumedThreadId ?? null
+  const threadIdAutoResumed = input.args.threadId === undefined && resumedThreadId !== null
   if (token === null || token.length === 0) errors.push("missing LUNA_UI_WS_TOKEN")
   if (startMode === "local" && (startCommand === null || startCommand.length === 0)) {
     errors.push("LUNA_START_COMMAND is required when LUNA_START_MODE=local")
@@ -308,6 +321,7 @@ export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
     urls,
     token,
     threadId,
+    threadIdAutoResumed,
     newThread: input.args.newThread ?? threadId === null,
     localShellInitial: input.args.localShell ?? false,
     dangerouslyAutoApproveLocalShell,

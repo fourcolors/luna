@@ -430,6 +430,42 @@ describe("luna chat config", () => {
     }
   })
 
+  it("flags threadIdAutoResumed when resuming from disk", () => {
+    const home = mkdtempSync(join(tmpdir(), "luna-resume-"))
+    try {
+      writeLastThread(home, "stable", "thr_from_disk_abc")
+      const cfg = loadChatConfig({
+        args: parseChatArgs(["chat"]),
+        env: { LUNA_UI_WS_TOKEN: "env-token-123456" },
+        dotenv: {},
+        homeDir: home,
+        cwd: "/tmp",
+      })
+      expect(cfg.threadId).toBe("thr_from_disk_abc")
+      expect(cfg.threadIdAutoResumed).toBe(true)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it("does NOT flag threadIdAutoResumed when --thread is explicit", () => {
+    const home = mkdtempSync(join(tmpdir(), "luna-resume-"))
+    try {
+      writeLastThread(home, "stable", "thr_persisted_xyz")
+      const cfg = loadChatConfig({
+        args: parseChatArgs(["chat", "--thread", "thr_explicit"]),
+        env: { LUNA_UI_WS_TOKEN: "env-token-123456" },
+        dotenv: {},
+        homeDir: home,
+        cwd: "/tmp",
+      })
+      expect(cfg.threadId).toBe("thr_explicit")
+      expect(cfg.threadIdAutoResumed).toBe(false)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
   it("rejects malformed persisted last-thread content", () => {
     const home = mkdtempSync(join(tmpdir(), "luna-resume-"))
     try {
