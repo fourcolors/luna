@@ -61,4 +61,40 @@ describe("LunaHeadlessSession", () => {
     await new Promise((r) => setTimeout(r, 5))
     expect(client.sent).toContainEqual({ type: "user-message", threadId: "t2", text: "hello" })
   })
+
+  it("emits rawFrame for every received ServerFrame, before dispatch", async () => {
+    const client = new StubWsClient()
+    const session = new LunaHeadlessSession({
+      client: client as never,
+      profileName: "stable",
+      model: "claude-sonnet-4-5",
+      saveLastThread: () => undefined,
+      clearLastThread: () => undefined,
+    })
+    const rawFrameListener = vi.fn()
+    const threadChangeListener = vi.fn()
+    session.on("rawFrame", rawFrameListener)
+    session.on("threadChange", threadChangeListener)
+
+    void session.run() // start the consume loop
+
+    client.emit({ type: "hello", protocolVersion: 1, kinds: [], capabilities: {} } as never)
+    client.emit({ type: "ping", ts: 1234 } as never)
+    client.emit({
+      type: "thread-created",
+      thread: { id: "thr_test", parentId: null, title: null, tags: [], createdAt: 0, updatedAt: 0, status: "open" },
+    } as never)
+
+    await new Promise((r) => setTimeout(r, 5))
+
+    expect(rawFrameListener).toHaveBeenCalledTimes(3)
+    expect(rawFrameListener.mock.calls[0]?.[0]).toMatchObject({ type: "hello" })
+    expect(rawFrameListener.mock.calls[1]?.[0]).toMatchObject({ type: "ping" })
+    expect(rawFrameListener.mock.calls[2]?.[0]).toMatchObject({ type: "thread-created" })
+
+    // rawFrame fires BEFORE the high-level dispatch
+    const rawFrameOrder = rawFrameListener.mock.invocationCallOrder[2] ?? 0
+    const threadChangeOrder = threadChangeListener.mock.invocationCallOrder[0] ?? 0
+    expect(rawFrameOrder).toBeLessThan(threadChangeOrder)
+  })
 })

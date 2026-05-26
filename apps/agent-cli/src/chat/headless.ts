@@ -17,6 +17,7 @@ export type SessionErrorEvent = {
 }
 
 export type LunaHeadlessEvents = {
+  rawFrame: (frame: ServerFrame) => void
   threadChange: (threadId: string) => void
   ready: () => void
   userMessageSent: () => void
@@ -179,6 +180,7 @@ export class LunaHeadlessSession extends EventEmitter {
   }
 
   private handleFrame(frame: ServerFrame): void {
+    this.emit("rawFrame", frame)
     switch (frame.type) {
       case "hello":
       case "event":
