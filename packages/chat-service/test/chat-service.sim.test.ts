@@ -38,6 +38,7 @@ import {
   type SessionOptions,
 } from "@luna/core"
 import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
+import { MemoryRouterTag, type MemoryRouter } from "@luna/memory"
 import type {
   Query,
   SDKMessage,
@@ -83,6 +84,19 @@ const makeResultMessage = (sessionId: string, uuid: string): SDKMessage =>
   }) as unknown as SDKMessage
 import { ChatService, type ChatFrame } from "../src/index.js"
 
+// No-op MemoryRouter: sim tests never call searchMemory; they just need
+// the tag to be present in the layer graph after MemoryRouterTag was added
+// to ChatService.Default's requirements.
+const noopMemoryRouter: MemoryRouter = {
+  search: () => Stream.empty as ReturnType<MemoryRouter["search"]>,
+  put: () => Effect.die("noopMemoryRouter.put"),
+  get: () => Effect.die("noopMemoryRouter.get"),
+  query: () => Stream.die("noopMemoryRouter.query"),
+  delete: () => Effect.die("noopMemoryRouter.delete"),
+  backendFor: () => { throw new Error("noopMemoryRouter.backendFor") },
+  exportAll: () => Effect.die("noopMemoryRouter.exportAll"),
+}
+
 const testClock = CoreClock.Test(1_700_000_000_000)
 const obsJsonlPath = join(
   tmpdir(),
@@ -107,6 +121,7 @@ const baseLayer = Layer.mergeAll(
   testClock,
   obsLayer,
   telemetryLayer,
+  Layer.succeed(MemoryRouterTag, noopMemoryRouter),
 )
 
 /** Fake Query that loops over inbound user messages, yielding assistant +

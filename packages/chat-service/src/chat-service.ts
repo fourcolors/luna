@@ -59,6 +59,7 @@ import {
   type StoredMessage,
 } from "@luna/core"
 import { SDKAdapter } from "@luna/adapter-sdk"
+import { MemoryRouterTag } from "@luna/memory"
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
 import {
   type ChatFrame,
@@ -175,6 +176,7 @@ export class ChatService extends Effect.Service<ChatService>()(
       const clock = yield* CoreClock
       const obs = yield* ObservabilityService
       const tel = yield* TelemetryService
+      const memoryRouter = yield* MemoryRouterTag
       const serviceScope = yield* Effect.scope
 
       const threads = yield* Ref.make<ReadonlyMap<string, ThreadEntry>>(new Map())
@@ -808,12 +810,59 @@ export class ChatService extends Effect.Service<ChatService>()(
             .pipe(Effect.catchAll(() => Effect.void))
         })
 
+      /** Read-only memory search delegating to the wired MemoryRouter.
+       *  Errors are tagged in the result rather than failing the Effect,
+       *  so the WS handler can pattern-match cleanly. */
+      const searchMemory = (args: {
+        readonly queryText: string
+        readonly topK?: number
+      }): Effect.Effect<
+        | { readonly hits: ReadonlyArray<{ id: string; kind: string; content: string; score: number }> }
+        | { readonly error: { readonly message: string; readonly kind: "no-vector-backend" | "internal" } },
+        never
+      > =>
+        Effect.gen(function* () {
+          const collect = Stream.runCollect(
+            memoryRouter.search({ queryText: args.queryText, topK: args.topK ?? 10 }),
+          )
+          const either = yield* Effect.either(collect)
+          if (either._tag === "Left") {
+            const err = either.left
+            // MemoryBackendError carries the underlying cause. Extract the
+            // message by checking cause first (the real discriminating text
+            // lives in cause.message), then fall back to err.message / String.
+            const causeMsg =
+              typeof (err as { cause?: unknown }).cause === "object" &&
+              (err as { cause?: { message?: string } }).cause !== null
+                ? (err as { cause?: { message?: string } }).cause?.message
+                : typeof (err as { cause?: unknown }).cause === "string"
+                ? (err as { cause: string }).cause
+                : undefined
+            const msg = causeMsg ?? (err instanceof Error ? err.message : String(err))
+            const kind: "no-vector-backend" | "internal" = msg.includes("no vector backends")
+              ? "no-vector-backend"
+              : "internal"
+            return { error: { message: msg, kind } }
+          }
+          const hits = Array.from(either.right).map(({ record, score }) => ({
+            id: record.id,
+            kind: record.kind,
+            content:
+              typeof record.content === "string"
+                ? record.content
+                : JSON.stringify(record.content),
+            score,
+          }))
+          return { hits }
+        })
+
       return {
         createThread,
         send,
         interrupt,
         subscribe,
         listThreads,
+        searchMemory,
         closeThread,
       } as const
     }),
