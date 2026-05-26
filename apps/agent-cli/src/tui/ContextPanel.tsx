@@ -2,6 +2,7 @@ import { Show } from "solid-js"
 import type { TuiStore } from "./store.js"
 import { CONTEXT_TAB_LABEL, CONTEXT_TAB_ORDER, type ContextTab } from "./panel-types.js"
 import { MemoriesTab } from "./MemoriesTab.js"
+import { EventsTab } from "./EventsTab.js"
 
 export type ContextPanelProps = {
   store: TuiStore
@@ -46,7 +47,7 @@ export const ContextPanel = (props: ContextPanelProps) => {
           <MemoriesTab store={props.store} />
         </Show>
         <Show when={props.store.contextPanelTab() === "events"}>
-          <text>(events tab — populated in Task 5)</text>
+          <EventsTab store={props.store} />
         </Show>
         <Show when={props.store.contextPanelTab() === "artifacts"}>
           <text>(artifacts tab — populated in Task 6)</text>
