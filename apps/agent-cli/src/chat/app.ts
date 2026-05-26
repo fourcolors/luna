@@ -126,7 +126,7 @@ export const isAutoApprovedLocalShellCwd = (
     || normalized.startsWith(`${normalizedRoot}/`)
 }
 
-const connectWithRecovery = async (
+export const connectWithRecovery = async (
   cfg: ReturnType<typeof loadChatConfig>,
   io: LunaCliIO,
 ): Promise<LunaWsClient> => {

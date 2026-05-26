@@ -25,6 +25,7 @@ export const chatCommand = defineCommand({
     "start-ssh": { type: "string", description: "recovery SSH target" },
     "fallback-start-ssh": { type: "string", description: "fallback recovery SSH target" },
     "start-timeout-ms": { type: "string", description: "recovery timeout (ms)" },
+    "no-tui": { type: "boolean", description: "use the legacy readline UI instead of the TUI" },
   },
   async run({ args }) {
     const argv: string[] = []
@@ -48,6 +49,14 @@ export const chatCommand = defineCommand({
     }
     if (args["start-timeout-ms"] !== undefined) {
       argv.push("--start-timeout-ms", args["start-timeout-ms"])
+    }
+
+    const useTui = args["no-tui"] !== true && process.stdout.isTTY === true
+
+    if (useTui) {
+      const { mountTui } = await import("../tui/mount.js")
+      const result = await mountTui(argv)
+      process.exit(result.exitCode)
     }
 
     const { approveLocalCommand } = await import("../luna.js") as {
