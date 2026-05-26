@@ -19,7 +19,9 @@ import {
   Effect,
   Layer,
   ManagedRuntime,
+  Stream,
 } from "effect"
+import { MemoryRouterTag, type MemoryRouter } from "@luna/memory"
 import { unlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -122,6 +124,19 @@ const makeChatLoopQuery = (params: {
 
 // ── runtime wiring ──────────────────────────────────────────────────────
 
+// No-op MemoryRouter: chat routing tests never exercise searchMemory; they
+// just need the MemoryRouterTag to be present in the layer graph because
+// ChatService.Default requires it.
+const noopMemoryRouter: MemoryRouter = {
+  search: () => Stream.empty as ReturnType<MemoryRouter["search"]>,
+  put: () => Effect.die("noopMemoryRouter.put"),
+  get: () => Effect.die("noopMemoryRouter.get"),
+  query: () => Stream.die("noopMemoryRouter.query"),
+  delete: () => Effect.die("noopMemoryRouter.delete"),
+  backendFor: () => { throw new Error("noopMemoryRouter.backendFor") },
+  exportAll: () => Effect.die("noopMemoryRouter.exportAll"),
+}
+
 const baseLayer = (() => {
   const clockL = CoreClock.Test(1_700_000_000_000)
   const obsL = ObservabilityService.makeLayer({
@@ -138,7 +153,8 @@ const baseLayer = (() => {
     Layer.provide(clockL),
   )
   const storeL = SessionStore.Default
-  return Layer.mergeAll(uiL, obsL, telemetryL, clockL, storeL)
+  const memoryL = Layer.succeed(MemoryRouterTag, noopMemoryRouter)
+  return Layer.mergeAll(uiL, obsL, telemetryL, clockL, storeL, memoryL)
 })()
 
 const fullLayer = (fakeLayer: Layer.Layer<SDKClient>) =>
