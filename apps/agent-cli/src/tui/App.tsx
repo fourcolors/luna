@@ -1,4 +1,5 @@
-import { For, Show } from "solid-js"
+import { For } from "solid-js"
+import { useTerminalDimensions } from "@opentui/solid"
 import type { KeyEvent } from "@opentui/core"
 import type { TuiStore } from "./store.js"
 
@@ -9,42 +10,43 @@ export type AppProps = {
 }
 
 export const App = (props: AppProps) => {
+  const dims = useTerminalDimensions()
+
+  const formatStatus = () => {
+    const id = props.store.threadId()
+    const idStr = id === null ? "—" : id.slice(0, 8)
+    return (
+      props.store.profileName() +
+      " • thread " +
+      idStr +
+      " • shell " +
+      (props.store.localShellEnabled() ? "on" : "off") +
+      " • " +
+      props.store.connection()
+    )
+  }
+
   return (
-    <box style={{ flexDirection: "column", width: "100%", height: "100%" }}>
-      {/* Chat stream area */}
-      <box style={{ flexDirection: "column", flexGrow: 1, padding: 1 }}>
+    <box style={{ flexDirection: "column", width: dims().width, height: dims().height }}>
+      <box style={{ flexDirection: "column", flexGrow: 1, width: dims().width, padding: 1 }}>
         <For each={props.store.messages()}>
           {(msg) => (
-            <box style={{ flexDirection: "column", marginBottom: 1 }}>
-              <text>{(msg.role === "user" ? "you: " : "Luna: ") + msg.text}</text>
-            </box>
+            <text>{(msg.role === "user" ? "you: " : "Luna: ") + msg.text}</text>
           )}
         </For>
       </box>
-
-      {/* Input box */}
-      <box style={{ borderStyle: "single", padding: 1, height: 3 }}>
-        <text>{"> " + props.store.inputDraft()}</text>
+      <box style={{ borderStyle: "single", width: dims().width }}>
+        <input
+          focused
+          value={props.store.inputDraft()}
+          onInput={(v: string) => props.store.setInputDraft(v)}
+          // @ts-expect-error JSX type leaks DOM SubmitEvent; the OpenTUI input emits (value: string).
+          onSubmit={(v: string) => props.onSubmit(v)}
+        />
       </box>
-
-      {/* Status footer */}
-      <box style={{ flexDirection: "row", padding: 1 }}>
-        <text>
-          {props.store.profileName() +
-            " • thread " +
-            (props.store.threadId() ?? "—").slice(0, 8) +
-            " • shell " +
-            (props.store.localShellEnabled() ? "on" : "off") +
-            " • " +
-            props.store.connection()}
-        </text>
+      <box style={{ width: dims().width, padding: 1 }}>
+        <text>{formatStatus()}</text>
       </box>
-
-      <Show when={props.store.fatalReason() !== null}>
-        <box style={{ borderStyle: "double", padding: 1 }}>
-          <text>{"fatal: " + (props.store.fatalReason() ?? "")}</text>
-        </box>
-      </Show>
     </box>
   )
 }

@@ -1,8 +1,15 @@
 import { homedir } from "node:os"
+import { appendFileSync } from "node:fs"
 import { render, useRenderer, useKeyboard } from "@opentui/solid"
 import type { CliRenderer } from "@opentui/core"
 import { createComponent } from "solid-js"
 import { createTuiStore } from "./store.js"
+
+const DEBUG_LOG = process.env["LUNA_TUI_DEBUG"]
+const dbg = (msg: string): void => {
+  if (DEBUG_LOG === undefined) return
+  try { appendFileSync(DEBUG_LOG, `${new Date().toISOString()} ${msg}\n`) } catch { /* best-effort */ }
+}
 import {
   loadChatConfig,
   readLunaDotEnv,
@@ -36,6 +43,7 @@ const USAGE = [
 export type TuiMountResult = { exitCode: 0 | 1 | 2 }
 
 export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult> => {
+  dbg(`mountTui start argv=${JSON.stringify(argv)} LUNA_TUI_DEBUG=${DEBUG_LOG ?? "<unset>"}`)
   // Register the Bun JSX transform plugin before importing any .tsx files.
   // We use Function() to construct the import call so tsc cannot follow the
   // module specifier to type-check the Bun-only preload source.
@@ -199,9 +207,12 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
     // Stash renderer ref for destroy on quit.
     const renderer = useRenderer()
     rendererRef = renderer
+    dbg(`RootApp mounted, renderer keyInput=${renderer?.keyInput !== undefined ? "present" : "MISSING"}`)
 
     useKeyboard((evt) => {
+      dbg(`key: name=${evt.name ?? ""} ctrl=${evt.ctrl ?? false} seq=${JSON.stringify(evt.sequence ?? "")}`)
       if (evt.ctrl && evt.name === "c") {
+        dbg("ctrl-c -> beginQuit")
         session.beginQuit()
         void client.close().then(() => {
           rendererRef?.destroy()
@@ -209,6 +220,7 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
         return
       }
       if (evt.name === "return") {
+        dbg(`return -> submit(${JSON.stringify(store.inputDraft())})`)
         submit(store.inputDraft())
         return
       }
@@ -217,7 +229,7 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
         return
       }
       // Printable ASCII characters.
-      if (evt.sequence.length === 1 && evt.sequence.charCodeAt(0) >= 0x20) {
+      if (evt.sequence !== undefined && evt.sequence.length === 1 && evt.sequence.charCodeAt(0) >= 0x20) {
         store.setInputDraft((d) => d + evt.sequence)
       }
     })
@@ -226,7 +238,10 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
   }
 
   // Mount TUI — render() resolves immediately after setup.
+  // useThread: false to avoid the Zig threaded stdin reader; we want the
+  // Node.js event-loop reader so all stdin bytes reach the JS layer reliably.
   await render(() => createComponent(RootApp, {}), {
+    useThread: false,
     onDestroy: resolveDestroyed,
   })
 
