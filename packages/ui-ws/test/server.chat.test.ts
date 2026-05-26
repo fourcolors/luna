@@ -14,12 +14,15 @@
  * The chat-service.sim test covers ChatService internals; this file is
  * thin and only verifies the WS layer's frame mapping + routing.
  */
-import { afterEach, describe, expect, it } from "vitest"
+import { afterAll, afterEach, describe, expect, it } from "vitest"
 import {
   Effect,
   Layer,
   ManagedRuntime,
 } from "effect"
+import { unlinkSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { WebSocket } from "ws"
 import {
   Clock as CoreClock,
@@ -39,6 +42,14 @@ import { startUIWebSocketServer } from "../src/server.js"
 import type { ClientFrame, ServerFrame } from "../src/protocol.js"
 
 const TOKEN = "test-token-1234567890" // ≥16 chars
+const obsJsonlPath = join(
+  tmpdir(),
+  `luna-ui-ws-chat-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`,
+)
+
+afterAll(() => {
+  try { unlinkSync(obsJsonlPath) } catch { /* ignore */ }
+})
 
 // Fake SDK assistant/result message builders (same shapes as
 // chat-service.sim.test.ts; duplicated because adapter-sdk doesn't
@@ -113,7 +124,10 @@ const makeChatLoopQuery = (params: {
 
 const baseLayer = (() => {
   const clockL = CoreClock.Test(1_700_000_000_000)
-  const obsL = ObservabilityService.makeLayer({ logToConsole: false }).pipe(
+  const obsL = ObservabilityService.makeLayer({
+    logToConsole: false,
+    jsonlPath: obsJsonlPath,
+  }).pipe(
     Layer.provide(clockL),
   )
   const telemetryL = TelemetryService.makeLayer().pipe(

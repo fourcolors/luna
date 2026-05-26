@@ -13,7 +13,7 @@
  * Layer topology:
  *   Clock.Default              — provides Clock
  *   makeDuckDbLayer            — provides DuckDbService
- *   ObservabilityService.Default — requires Clock
+ *   ObservabilityService.makeLayer — requires Clock
  *   TelemetryService.makeLayer() — requires Clock
  *   TelemetryPlatform            — requires ObservabilityService | DuckDbService |
  *                                    TelemetryService | Clock
@@ -40,7 +40,7 @@ const withTempDb = <A>(fn: (dbPath: string) => Promise<A>): Promise<A> => {
     `luna-telemetry-platform-test-${Date.now()}-${Math.random().toString(36).slice(2)}.duckdb`,
   )
   return fn(dbPath).finally(() => {
-    for (const suffix of ["", ".wal", ".lock"]) {
+    for (const suffix of ["", ".wal", ".lock", ".events.jsonl"]) {
       try { fs.unlinkSync(dbPath + suffix) } catch { /* ignore */ }
     }
   })
@@ -58,7 +58,10 @@ const withTempDb = <A>(fn: (dbPath: string) => Promise<A>): Promise<A> => {
 const makeTestLayer = (dbPath: string) => {
   const clockLayer = Clock.Default
   const duckLayer = makeDuckDbLayer({ dbPath })
-  const obsLayer = ObservabilityService.Default.pipe(Layer.provide(clockLayer))
+  const obsLayer = ObservabilityService.makeLayer({
+    logToConsole: false,
+    jsonlPath: `${dbPath}.events.jsonl`,
+  }).pipe(Layer.provide(clockLayer))
   const telLayer = TelemetryService.makeLayer().pipe(Layer.provide(clockLayer))
 
   // TelemetryPlatform requires all four dependencies

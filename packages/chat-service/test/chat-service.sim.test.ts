@@ -16,7 +16,7 @@
  * + one result per turn. No partial-stream deltas in this scenario; that
  * path needs a real-SDK smoke test, which we'll add separately.
  */
-import { describe, expect, it } from "vitest"
+import { afterAll, describe, expect, it } from "vitest"
 import {
   Chunk,
   Effect,
@@ -26,6 +26,9 @@ import {
   Scope,
   Stream,
 } from "effect"
+import { unlinkSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import {
   SessionStore,
   Clock as CoreClock,
@@ -81,7 +84,19 @@ const makeResultMessage = (sessionId: string, uuid: string): SDKMessage =>
 import { ChatService, type ChatFrame } from "../src/index.js"
 
 const testClock = CoreClock.Test(1_700_000_000_000)
-const obsLayer = ObservabilityService.makeLayer({ logToConsole: false }).pipe(
+const obsJsonlPath = join(
+  tmpdir(),
+  `luna-chat-service-sim-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`,
+)
+
+afterAll(() => {
+  try { unlinkSync(obsJsonlPath) } catch { /* ignore */ }
+})
+
+const obsLayer = ObservabilityService.makeLayer({
+  logToConsole: false,
+  jsonlPath: obsJsonlPath,
+}).pipe(
   Layer.provide(testClock),
 )
 const telemetryLayer = TelemetryService.makeLayer().pipe(
