@@ -1,5 +1,5 @@
 /**
- * `luna-account` CLI tests — Phase 25b.
+ * `luna account` CLI tests — Phase 25b.
  *
  * The CLI binary imports `bun:sqlite` directly, so we exercise it as a
  * subprocess under `bun`. This works regardless of whether the test
@@ -15,7 +15,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
-const CLI_ENTRY = path.resolve(__dirname, "..", "src", "index.ts")
+const CLI_ENTRY = path.resolve(__dirname, "..", "src", "luna.ts")
 
 interface RunOut {
   status: number
@@ -24,7 +24,7 @@ interface RunOut {
 }
 
 const runCli = (args: ReadonlyArray<string>, dbPath: string): RunOut => {
-  const r = spawnSync("bun", ["run", CLI_ENTRY, ...args], {
+  const r = spawnSync("bun", ["run", CLI_ENTRY, "account", ...args], {
     encoding: "utf8",
     env: { ...process.env, LUNA_DB_PATH: dbPath },
     timeout: 15_000,
@@ -55,7 +55,7 @@ const cleanup = (p: string) => {
 const hasBun = spawnSync("bun", ["--version"], { encoding: "utf8" }).status === 0
 const d = hasBun ? describe : describe.skip
 
-d("luna-account CLI", () => {
+d("luna account CLI", () => {
   let db: string
   beforeEach(() => {
     db = tmpDb()
@@ -295,10 +295,10 @@ d("luna-account CLI", () => {
     expect(b.stderr).toMatch(/already exists/)
   })
 
-  it("unknown subcommand exits 2", () => {
+  it("unknown subcommand exits 1", () => {
     const r = runCli(["wat"], db)
-    expect(r.status).toBe(2)
-    expect(r.stderr).toMatch(/unknown subcommand/)
+    expect(r.status).toBe(1)
+    expect(r.stderr).toMatch(/Unknown command/)
   })
 
   // ── Phase 25d: luna-op:// + env: validator cases ──────────────────────

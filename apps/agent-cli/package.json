@@ -4,12 +4,10 @@
   "private": true,
   "type": "module",
   "bin": {
-    "luna": "./src/luna.ts",
-    "luna-account": "./src/index.ts"
+    "luna": "./src/luna.ts"
   },
   "scripts": {
     "luna": "bun run src/luna.ts",
-    "luna-account": "bun run src/index.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
