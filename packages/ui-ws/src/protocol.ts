@@ -152,6 +152,30 @@ export interface LocalShellStatusFrame {
   readonly message: string
 }
 
+/* ── memory search ──────────────────────────────────────────────────── */
+
+export interface MemorySearchHit {
+  readonly id: string
+  readonly kind: string
+  readonly content: string
+  readonly score: number
+}
+
+export interface MemorySearchResultFrame {
+  readonly type: "memory-search-result"
+  readonly queryText: string
+  readonly hits: ReadonlyArray<MemorySearchHit>
+}
+
+export type MemorySearchErrorKind = "no-vector-backend" | "internal"
+
+export interface MemorySearchErrorFrame {
+  readonly type: "memory-search-error"
+  readonly queryText: string
+  readonly message: string
+  readonly kind: MemorySearchErrorKind
+}
+
 export type ServerFrame =
   | HelloFrame
   | EventFrame
@@ -169,6 +193,8 @@ export type ServerFrame =
   | AccountListFrame
   | LocalShellRequestFrame
   | LocalShellStatusFrame
+  | MemorySearchResultFrame
+  | MemorySearchErrorFrame
 
 /* -------------------------------------------------------------------------- */
 /* Client → server                                                            */
@@ -252,6 +278,12 @@ export interface LocalShellResultFrame {
   readonly timedOut: boolean
 }
 
+export interface MemorySearchRequestFrame {
+  readonly type: "memory-search-request"
+  readonly queryText: string
+  readonly topK?: number
+}
+
 export type ClientFrame =
   | PongFrame
   | ByeFrame
@@ -263,3 +295,4 @@ export type ClientFrame =
   | InterruptFrame
   | LocalShellCapabilityFrame
   | LocalShellResultFrame
+  | MemorySearchRequestFrame
