@@ -231,11 +231,22 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
   type KeyPressEvent = {
     readonly name?: string
     readonly ctrl?: boolean
+    readonly meta?: boolean
+    readonly option?: boolean
     readonly sequence?: string
   }
 
+  // Alt-1/2/3 arrives as `meta=true` OR `option=true` depending on terminal
+  // (most send Esc-prefix → meta; macOS Option-as-Meta sends option). Ctrl-1/2/3
+  // would be cleaner but ASCII has no control code for digits 1/3 so terminals
+  // deliver them as plain "1"/"3" and they can't be distinguished from input.
+  const isAltDigit = (evt: KeyPressEvent, digit: string): boolean =>
+    evt.name === digit && (evt.meta === true || evt.option === true)
+
   const handleKey = (evt: KeyPressEvent): void => {
-    dbg(`key: name=${evt.name ?? ""} ctrl=${evt.ctrl ?? false} seq=${JSON.stringify(evt.sequence ?? "")}`)
+    dbg(
+      `key: name=${evt.name ?? ""} ctrl=${evt.ctrl ?? false} meta=${evt.meta ?? false} option=${evt.option ?? false} seq=${JSON.stringify(evt.sequence ?? "")}`,
+    )
     if (evt.ctrl === true && evt.name === "c") {
       session.beginQuit()
       void client.close().then(() => { rendererRef?.destroy() })
@@ -245,15 +256,15 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
       store.cycleContextPanelTab()
       return
     }
-    if (evt.ctrl === true && evt.name === "1") {
+    if (isAltDigit(evt, "1")) {
       store.setContextPanelTab("memories")
       return
     }
-    if (evt.ctrl === true && evt.name === "2") {
+    if (isAltDigit(evt, "2")) {
       store.setContextPanelTab("events")
       return
     }
-    if (evt.ctrl === true && evt.name === "3") {
+    if (isAltDigit(evt, "3")) {
       store.setContextPanelTab("artifacts")
       return
     }
