@@ -1,10 +1,4 @@
 #!/usr/bin/env bun
-/**
- * Luna CLI entry point.
- *
- * This coordinates with the chat-server backend (apps/ui-web/scripts/chat-server.ts)
- * to provide a unified agent client interface.
- */
 import { defineCommand, runMain } from "citty"
 import { createReadStream, createWriteStream, openSync } from "node:fs"
 import { createInterface } from "node:readline/promises"
