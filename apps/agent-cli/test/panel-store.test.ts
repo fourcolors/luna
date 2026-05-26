@@ -55,6 +55,15 @@ describe("tui store panel state", () => {
     expect(frames[FRAME_RING_CAPACITY - 1]?.frame).toMatchObject({ ts: FRAME_RING_CAPACITY + 4 })
   })
 
+  it("pushRawFrame at exactly FRAME_RING_CAPACITY does not evict", () => {
+    const store = createTuiStore()
+    for (let i = 0; i < FRAME_RING_CAPACITY; i++) store.pushRawFrame(makeFrame(i))
+    const frames = store.rawFrames()
+    expect(frames.length).toBe(FRAME_RING_CAPACITY)
+    expect(frames[0]?.frame).toMatchObject({ ts: 0 })
+    expect(frames[FRAME_RING_CAPACITY - 1]?.frame).toMatchObject({ ts: FRAME_RING_CAPACITY - 1 })
+  })
+
   it("memorySearch defaults to idle and setMemorySearch updates state", () => {
     const store = createTuiStore()
     expect(store.memorySearch().status).toBe("idle")
@@ -66,6 +75,17 @@ describe("tui store panel state", () => {
       hits: [{ id: "m1", kind: "feedback", content: "test", score: 0.9 }],
     })
     expect(store.memorySearch().status).toBe("ready")
+  })
+
+  it("setMemorySearch updates to error state with message", () => {
+    const store = createTuiStore()
+    store.setMemorySearch({ status: "error", query: "broken", message: "backend timeout" })
+    const state = store.memorySearch()
+    expect(state.status).toBe("error")
+    if (state.status === "error") {
+      expect(state.query).toBe("broken")
+      expect(state.message).toBe("backend timeout")
+    }
   })
 
   it("setArtifactsForThread stores artifacts keyed by thread id", () => {
