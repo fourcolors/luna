@@ -1,8 +1,9 @@
 /**
  * Memory tools — three SDK MCP tool definitions exposed to the chat agent:
  *
- *   - memory_save(text, tags?, namespace?) → { id }
- *   - memory_search(query, limit?, namespace?) → [{ id, text, score, tags }]
+ *   - memory_save(text, kind?, tags?, namespace?) → { id }
+ *   - memory_search(query, kind?, limit?, namespace?)
+ *       → [{ id, text, score, tags, kind, namespace, createdAt, updatedAt }]
  *   - memory_delete(id) → { deleted }
  *
  * Implementation routes through `MemoryRouter` (Phase 25 router Tag) — this
@@ -12,11 +13,19 @@
  * Notes:
  *   - `memory_get` was intentionally dropped per Phase 30 plan — search
  *     subsumes it for v1 (a search hit returns the full record body).
- *   - Records are stored with `kind: "note"` and `content: { text }` so the
- *     sqlite-vector backend's auto-embed path (which keys off `content.text`)
- *     fires on every save.
+ *   - Records are stored with `content: { text }` so the sqlite-vector
+ *     backend's auto-embed path (which keys off `content.text`) fires on
+ *     every save.
+ *   - `kind` is a first-class field on `MemoryRecord`. Conventional values
+ *     are `"semantic"` (durable facts — the default), `"episodic"` (events),
+ *     `"procedural"` (how-to / skills), `"prospective"` (future intentions),
+ *     but the field is open — callers may pass any string. Records written
+ *     before Phase 30b have `kind: "note"`.
  *   - Default namespace is `"notes"` — single-bucket so search without a
  *     namespace argument finds anything the agent has written.
+ *   - `kind` filtering on search is implemented as a post-filter on the
+ *     hybrid hits with a 4× over-fetch (min 20). The router/backend search
+ *     surface is intentionally unchanged so the blast radius stays small.
  *   - Tools live in @luna/memory-tools (not @luna/tools) so the @luna/tools
  *     package stays a domain-free Runtime helper.
  */
@@ -26,11 +35,23 @@ import { defineTool, ToolError } from "@luna/tools"
 import { makeRecord, type MemoryRouter } from "@luna/memory"
 
 const DEFAULT_NAMESPACE = "notes"
+const DEFAULT_KIND = "semantic"
 const MEMORY_TOOL_DISCOVERY = {
   alwaysLoad: true,
   searchHint:
     "Long-term memory tools for saving, searching, and deleting durable user facts, preferences, project context, and prior conversation notes.",
 } as const
+
+const KIND_SAVE_HINT =
+  'Optional memory kind tag. Conventional values: "semantic" ' +
+  "(durable facts — the default), \"episodic\" (time-stamped events), " +
+  '"procedural" (how-to / skills), "prospective" (future intentions). ' +
+  "The field is open — any string is accepted."
+
+const KIND_SEARCH_HINT =
+  "Restrict search to records of this kind. Conventional values match " +
+  '`memory_save`: "semantic", "episodic", "procedural", "prospective". ' +
+  'Records written before this field was exposed have kind "note".'
 
 // We don't import Zod types from the SDK; the SDK accepts a raw shape
 // (Record<string, ZodType>) and treats it opaquely. zod v4 ships flat
@@ -38,6 +59,7 @@ const MEMORY_TOOL_DISCOVERY = {
 
 const saveShape = {
   text: z.string().min(1).describe("The memory text to save."),
+  kind: z.string().optional().describe(KIND_SAVE_HINT),
   tags: z
     .array(z.string())
     .optional()
@@ -52,6 +74,7 @@ const saveShape = {
 
 const searchShape = {
   query: z.string().min(1).describe("Natural-language search query."),
+  kind: z.string().optional().describe(KIND_SEARCH_HINT),
   limit: z
     .number()
     .int()
@@ -106,17 +129,19 @@ export const makeMemoryTools = (router: MemoryRouter) => {
       "Save a piece of text to long-term memory. Returns the new record id. " +
       "Use this to remember durable facts the user mentions about themselves, " +
       "their projects, or their preferences — anything you'd want to recall in " +
-      "a future conversation.",
+      "a future conversation. Optionally pass `kind` to tag the memory as " +
+      '"semantic" (default), "episodic", "procedural", or "prospective".',
     inputSchema: saveShape,
     ...MEMORY_TOOL_DISCOVERY,
     handler: (args) =>
       Effect.gen(function* () {
         const id = newId()
         const namespace = args.namespace ?? DEFAULT_NAMESPACE
+        const kind = args.kind ?? DEFAULT_KIND
         const rec = makeRecord({
           id,
           namespace,
-          kind: "note",
+          kind,
           content: { text: args.text },
           tags: args.tags ?? [],
         })
@@ -134,19 +159,29 @@ export const makeMemoryTools = (router: MemoryRouter) => {
     name: "memory_search",
     description:
       "Search long-term memory for records relevant to a query. Returns up " +
-      "to `limit` hits ranked by hybrid BM25+vector score. Use this BEFORE " +
-      "answering questions about the user's prior context, preferences, or " +
-      "anything you might have stored earlier with memory_save.",
+      "to `limit` hits ranked by hybrid BM25+vector score. Each hit includes " +
+      "`id`, `text`, `score`, `tags`, `kind`, `namespace`, `createdAt`, and " +
+      "`updatedAt` (epoch ms). Use this BEFORE answering questions about the " +
+      "user's prior context, preferences, or anything you might have stored " +
+      "earlier with memory_save. Pass `kind` to restrict to a single memory " +
+      'kind (e.g. "semantic", "episodic", "procedural", "prospective").',
     inputSchema: searchShape,
     ...MEMORY_TOOL_DISCOVERY,
     handler: (args) =>
       Effect.gen(function* () {
         const limit = args.limit ?? 5
         const namespace = args.namespace ?? DEFAULT_NAMESPACE
+        const kindFilter = args.kind
+        // Over-fetch when a kind filter is set so the post-filter still
+        // has enough candidates to return `limit` matches. 4× with a floor
+        // of 20 is a heuristic — good enough for the local store sizes
+        // we see in practice.
+        const fetchTopK =
+          kindFilter !== undefined ? Math.max(limit * 4, 20) : limit
         const hits = yield* Stream.runCollect(
           router.search({
             queryText: args.query,
-            topK: limit,
+            topK: fetchTopK,
             namespace,
             mode: "hybrid",
           }),
@@ -160,11 +195,20 @@ export const makeMemoryTools = (router: MemoryRouter) => {
               }),
           ),
         )
-        return Array.from(hits).map((h) => ({
+        const all = Array.from(hits)
+        const filtered =
+          kindFilter !== undefined
+            ? all.filter((h) => h.record.kind === kindFilter)
+            : all
+        return filtered.slice(0, limit).map((h) => ({
           id: h.record.id,
           text: extractText(h.record.content),
           score: h.score,
           tags: h.record.tags,
+          kind: h.record.kind,
+          namespace: h.record.namespace,
+          createdAt: h.record.createdAt,
+          updatedAt: h.record.updatedAt,
         }))
       }),
   })

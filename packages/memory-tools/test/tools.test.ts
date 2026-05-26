@@ -90,7 +90,65 @@ describe.skipIf(!hasBunSqlite)("memory tools", () => {
     await runtime.dispose()
   })
 
-  it("save → search roundtrip", async () => {
+  it("save with explicit kind round-trips and is surfaced on search", async () => {
+    const [saveTool, searchTool] = tools
+
+    const saved = parseTextResult<{ id: string }>(
+      await saveTool.handler(
+        {
+          text: "Quarterly review happened last Tuesday",
+          kind: "episodic",
+        },
+        undefined,
+      ),
+    )
+
+    const hits = parseTextResult<
+      ReadonlyArray<{
+        id: string
+        kind: string
+        createdAt: number
+        updatedAt: number
+      }>
+    >(
+      await searchTool.handler(
+        { query: "quarterly review", kind: "episodic" },
+        undefined,
+      ),
+    )
+    expect(hits.length).toBeGreaterThan(0)
+    const hit = hits.find((h) => h.id === saved.id)
+    expect(hit).toBeDefined()
+    expect(hit!.kind).toBe("episodic")
+    expect(typeof hit!.createdAt).toBe("number")
+    expect(hit!.createdAt).toBeGreaterThan(0)
+    expect(hit!.updatedAt).toBeGreaterThanOrEqual(hit!.createdAt)
+  })
+
+  it("save defaults kind to \"semantic\" when omitted", async () => {
+    const [saveTool, searchTool] = tools
+
+    const saved = parseTextResult<{ id: string }>(
+      await saveTool.handler(
+        { text: "Operator likes terse answers" },
+        undefined,
+      ),
+    )
+
+    const hits = parseTextResult<
+      ReadonlyArray<{ id: string; kind: string }>
+    >(
+      await searchTool.handler(
+        { query: "terse answers" },
+        undefined,
+      ),
+    )
+    const hit = hits.find((h) => h.id === saved.id)
+    expect(hit).toBeDefined()
+    expect(hit!.kind).toBe("semantic")
+  })
+
+    it("save → search roundtrip", async () => {
     const [saveTool, searchTool] = tools
 
     const saved = parseTextResult<{ id: string }>(
@@ -173,16 +231,34 @@ describe("memory tools search mode", () => {
     } satisfies MemoryRouter
     const [, searchTool] = makeMemoryTools(router)
 
-    const hits = parseTextResult<ReadonlyArray<{ id: string; text: string }>>(
+    const hits = parseTextResult<
+      ReadonlyArray<{
+        id: string
+        text: string
+        score: number
+        tags: ReadonlyArray<string>
+        kind: string
+        namespace: string
+        createdAt: number
+        updatedAt: number
+      }>
+    >(
       await searchTool.handler(
         { query: "hybrid", limit: 3, namespace: "diagnostics" },
         undefined,
       ),
     )
 
-    expect(hits).toEqual([
-      { id: "mem_test", text: "hybrid hit", score: 1, tags: [] },
-    ])
+    expect(hits).toHaveLength(1)
+    const hit = hits[0]!
+    expect(hit.id).toBe("mem_test")
+    expect(hit.text).toBe("hybrid hit")
+    expect(hit.score).toBe(1)
+    expect(hit.tags).toEqual([])
+    expect(hit.kind).toBe("note")
+    expect(hit.namespace).toBe("diagnostics")
+    expect(typeof hit.createdAt).toBe("number")
+    expect(typeof hit.updatedAt).toBe("number")
     expect(calls).toEqual([
       {
         queryText: "hybrid",
@@ -191,6 +267,58 @@ describe("memory tools search mode", () => {
         mode: "hybrid",
       },
     ])
+  })
+
+  it("over-fetches and post-filters when a kind is supplied", async () => {
+    const calls: Array<Parameters<MemoryRouter["search"]>[0]> = []
+    const records = [
+      makeRecord({
+        id: "mem_sem",
+        namespace: "notes",
+        kind: "semantic",
+        content: { text: "semantic hit" },
+      }),
+      makeRecord({
+        id: "mem_epi",
+        namespace: "notes",
+        kind: "episodic",
+        content: { text: "episodic hit" },
+      }),
+    ]
+    const router = {
+      put: () => Effect.void,
+      get: () => Effect.succeed(null),
+      query: () => Stream.empty,
+      delete: () => Effect.succeed(false),
+      backendFor: () => {
+        throw new Error("not used")
+      },
+      exportAll: () => Effect.succeed([]),
+      search: (args: Parameters<MemoryRouter["search"]>[0]) => {
+        calls.push(args)
+        return Stream.fromIterable(
+          records.map((record, i) => ({ record, score: 1 - i * 0.1 })),
+        )
+      },
+    } satisfies MemoryRouter
+    const [, searchTool] = makeMemoryTools(router)
+
+    const hits = parseTextResult<
+      ReadonlyArray<{ id: string; kind: string }>
+    >(
+      await searchTool.handler(
+        { query: "anything", limit: 3, kind: "episodic" },
+        undefined,
+      ),
+    )
+
+    // Only the episodic record survives the post-filter.
+    expect(hits).toHaveLength(1)
+    expect(hits[0]!.id).toBe("mem_epi")
+    expect(hits[0]!.kind).toBe("episodic")
+    // Over-fetch heuristic: kind filter → max(limit*4, 20) = 20.
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.topK).toBe(20)
   })
 })
 

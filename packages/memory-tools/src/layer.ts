@@ -157,12 +157,16 @@ export class MemoryToolsService extends Effect.Tag(
 export const MEMORY_SYSTEM_PROMPT_ADDENDUM =
   "You have three memory tools on MCP server `memory`. Use their fully " +
   "qualified MCP tool names exactly: " +
-  "`mcp__memory__memory_save(text, tags?, namespace?)` to remember a durable fact, " +
-  "`mcp__memory__memory_search(query, limit?, namespace?)` to recall prior context " +
+  "`mcp__memory__memory_save(text, kind?, tags?, namespace?)` to remember a durable fact, " +
+  "`mcp__memory__memory_search(query, kind?, limit?, namespace?)` to recall prior context " +
   "before answering, and `mcp__memory__memory_delete(id)` only when the user asks to " +
   "forget. Do not call bare tool names such as `memory_search`; use the `mcp__memory__...` " +
   "names. Search before answering questions about the user. Save preferences, decisions, " +
-  "and facts the user states about themselves."
+  "and facts the user states about themselves. The `kind` field is a memory-type tag — " +
+  "conventional values are \"semantic\" (durable facts, the default), \"episodic\" " +
+  "(time-stamped events), \"procedural\" (how-to / skills), and \"prospective\" " +
+  "(future intentions). Search hits include `kind`, `namespace`, `createdAt`, and " +
+  "`updatedAt` (epoch ms) so you can reason about recency."
 
 export interface MemoryToolsLayerOptions {
   /** Override the sqlite-vector db path. Default: `resolveDbPath()`. */
