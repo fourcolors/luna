@@ -118,6 +118,14 @@ export interface UIWebSocketServerConfig {
    * from MCP tools bound to the same thread.
    */
   readonly localShellBridge?: LocalShellBridge
+  /**
+   * Fired when a local-shell client releases its slot — either by sending
+   * `local-shell-capability { enabled: false }` or by disconnecting. Used
+   * by the chat-server to re-attach its container-sandbox executor so the
+   * agent doesn't lose `mcp__local_shell__*` access when an attached CLI
+   * disables its own local-shell.
+   */
+  readonly onLocalShellRelease?: (threadId: string) => void
 }
 
 export interface UIWebSocketServerHandle {
@@ -370,12 +378,24 @@ export const startUIWebSocketServer = (
         const localShellClients = yield* Ref.make<ReadonlyMap<string, string>>(
           new Map(),
         )
+        const onLocalShellRelease = config.onLocalShellRelease
         if (localShellBridge !== null) {
           yield* Effect.addFinalizer(() =>
             Effect.gen(function* () {
               const clients = yield* Ref.get(localShellClients)
-              for (const clientId of new Set(clients.values())) {
+              const releasedThreads = new Set<string>()
+              for (const [threadId, clientId] of clients) {
                 localShellBridge.removeClient(clientId)
+                releasedThreads.add(threadId)
+              }
+              if (onLocalShellRelease !== undefined) {
+                for (const threadId of releasedThreads) {
+                  try {
+                    onLocalShellRelease(threadId)
+                  } catch {
+                    // Callback failures must not poison connection teardown.
+                  }
+                }
               }
             }),
           )
@@ -566,6 +586,16 @@ export const startUIWebSocketServer = (
                         }
                         return next
                       })
+                      // Notify the chat-server when a client vacates so it can
+                      // re-attach its container-sandbox executor (otherwise the
+                      // agent loses local-shell access until the next thread).
+                      if (!frame.enabled && onLocalShellRelease !== undefined) {
+                        try {
+                          onLocalShellRelease(frame.threadId)
+                        } catch {
+                          // Callback failures must not poison message handling.
+                        }
+                      }
                     }
                     return
                   }

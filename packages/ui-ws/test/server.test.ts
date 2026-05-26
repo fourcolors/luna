@@ -295,6 +295,79 @@ describe("UIWebSocketServer", () => {
     expect(bridge.getCapability("thr_1")).toBeNull()
   })
 
+  it("fires onLocalShellRelease when a client disables its local shell", async () => {
+    const bridge = createLocalShellBridge()
+    const released: Array<string> = []
+    rig = await startRig(undefined, {
+      localShellBridge: bridge,
+      onLocalShellRelease: (threadId) => {
+        released.push(threadId)
+      },
+    })
+    await exchangeFrames(
+      rig.url,
+      { authorization: `Bearer ${TOKEN}` },
+      [
+        {
+          type: "local-shell-capability",
+          threadId: "thr_release",
+          enabled: true,
+          clientId: "cli_release",
+          platform: "darwin",
+          cwd: "/work",
+        },
+        {
+          type: "local-shell-capability",
+          threadId: "thr_release",
+          enabled: false,
+          clientId: "cli_release",
+          platform: "darwin",
+          cwd: "/work",
+        },
+      ],
+      3,
+    )
+    expect(released).toContain("thr_release")
+  })
+
+  it("fires onLocalShellRelease for active threads when the client disconnects", async () => {
+    const bridge = createLocalShellBridge()
+    const released: Array<string> = []
+    rig = await startRig(undefined, {
+      localShellBridge: bridge,
+      onLocalShellRelease: (threadId) => {
+        released.push(threadId)
+      },
+    })
+    await exchangeFrames(
+      rig.url,
+      { authorization: `Bearer ${TOKEN}` },
+      [
+        {
+          type: "local-shell-capability",
+          threadId: "thr_disco_a",
+          enabled: true,
+          clientId: "cli_disco",
+          platform: "darwin",
+          cwd: "/work",
+        },
+        {
+          type: "local-shell-capability",
+          threadId: "thr_disco_b",
+          enabled: true,
+          clientId: "cli_disco",
+          platform: "darwin",
+          cwd: "/work",
+        },
+      ],
+      3,
+    )
+    // exchangeFrames closes the socket once it has all requested frames.
+    // Give the server's close finalizer a moment to drain.
+    await new Promise((r) => setTimeout(r, 50))
+    expect(released).toEqual(expect.arrayContaining(["thr_disco_a", "thr_disco_b"]))
+  })
+
   it("keeps multi-thread local shell client tracked after disabling one thread", async () => {
     const bridge = createLocalShellBridge()
     rig = await startRig(undefined, { localShellBridge: bridge })

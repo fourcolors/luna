@@ -404,6 +404,17 @@ const buildServerLayer = (
         sandboxLocalShell.enabled ? "enabled" : `disabled (${sandboxLocalShell.reason})`,
       )
 
+      // Per-thread sandbox re-attach closures. The container sandbox owns
+      // the local-shell slot at thread creation; an attached CLI with
+      // --local-shell can take over (`replaceable: true`). When the CLI
+      // releases (toggle off or disconnect), we re-run the original
+      // attach so the agent doesn't lose local_shell access until /new.
+      const sandboxReattachers = new Map<string, () => void>()
+      const reattachSandbox = (threadId: string): void => {
+        const reattach = sandboxReattachers.get(threadId)
+        if (reattach !== undefined) reattach()
+      }
+
       const chatWithTools: typeof chat = {
         ...chat,
         createThread: (opts) => {
@@ -448,13 +459,16 @@ const buildServerLayer = (
                 obsThreadTools.bindSession(summary.id)
                 localShellThreadTools.bindSession(summary.id)
                 if (sandboxLocalShell.enabled) {
-                  attachSandboxLocalShell({
-                    bridge: localShellBridge,
-                    threadId: summary.id,
-                    cwd: sandboxLocalShell.sandboxRoot,
-                    sandboxRoot: sandboxLocalShell.sandboxRoot,
-                    env: process.env,
-                  })
+                  const reattach = () =>
+                    attachSandboxLocalShell({
+                      bridge: localShellBridge,
+                      threadId: summary.id,
+                      cwd: sandboxLocalShell.sandboxRoot,
+                      sandboxRoot: sandboxLocalShell.sandboxRoot,
+                      env: process.env,
+                    })
+                  reattach()
+                  sandboxReattachers.set(summary.id, reattach)
                 }
                 console.log("[luna/thread] session bound:", summary.id, "— obs/local-shell tools active")
                 return Effect.void
@@ -478,6 +492,7 @@ const buildServerLayer = (
         chatService: chatWithTools,
         accountBroker: broker,
         localShellBridge,
+        onLocalShellRelease: reattachSandbox,
       })
     }),
   ).pipe(
