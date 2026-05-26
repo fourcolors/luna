@@ -145,6 +145,7 @@ import {
   TelemetryService,
   UIService,
   makeDuckDbLayer,
+  makeTelemetrySqlite,
   readKeychainToken,
   secretProviderFirstOf,
   validateAccountsTableLabels,
@@ -246,6 +247,8 @@ const buildBaseLayer = (
   | any // TelemetryPlatform sinks + NoopTracerLayer + AgentNotesService are side-effect Layers
 > => {
   const clockL = Clock.Default
+  const lunaHome = join(homedir(), ".luna")
+  const lunaDbPath = process.env["LUNA_DB_PATH"] ?? join(lunaHome, "luna.db")
   const obsL = ObservabilityService.makeLayer({ logToConsole: false }).pipe(
     Layer.provide(clockL),
   )
@@ -290,18 +293,13 @@ const buildBaseLayer = (
     SDKAdapter.WithBroker,
     Layer.mergeAll(sdkClientL, storeL, brokerL),
   )
-  const chatL = Layer.provideMerge(
-    ChatService.Default,
-    Layer.mergeAll(sdkAdapterL, storeL, clockL, obsL),
-  )
-
   // ── Self-observation platform (Phase 27b) ──────────────────────────────
-  // TelemetryService: in-memory counters (pull-based, Clock only).
-  const telemetryL = TelemetryService.makeLayer().pipe(Layer.provide(clockL))
+  // TelemetryService: SQLite-backed counters so current counter state
+  // survives restarts; MetricsFlusher snapshots them into analytics.duckdb.
+  const telemetryL = makeTelemetrySqlite(lunaDbPath).pipe(Layer.provide(clockL))
 
   // DuckDbService: single connection to the analytics DB.
   // All writes are serialized through a bounded Queue.dropping fiber.
-  const lunaHome = join(homedir(), ".luna")
   const analyticsDbPath = process.env["LUNA_ANALYTICS_DB_PATH"] ?? join(lunaHome, "analytics.duckdb")
   const duckDbL = makeDuckDbLayer({ dbPath: analyticsDbPath })
 
@@ -318,11 +316,15 @@ const buildBaseLayer = (
 
   // AgentNotesService: SQLite-backed self-report stream. Shares luna.db
   // with AccountBroker + TelemetryService-sqlite (same file, separate tables).
-  const lunaDbPath = process.env["LUNA_DB_PATH"] ?? join(lunaHome, "luna.db")
   const agentNotesL = AgentNotesService.makeLayer(lunaDbPath).pipe(
     Layer.provide(clockL),
     // LunaSqliteBootstrapLive provided at the bottom of buildServerLayer
     // (same pattern as all other SQLite layers in this server).
+  )
+
+  const chatL = Layer.provideMerge(
+    ChatService.Default,
+    Layer.mergeAll(sdkAdapterL, storeL, clockL, obsL, telemetryL),
   )
 
   return Layer.mergeAll(

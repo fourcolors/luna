@@ -30,6 +30,7 @@ import {
   SessionStore,
   Clock as CoreClock,
   ObservabilityService,
+  TelemetryService,
   type ChatMessage,
   type SessionOptions,
 } from "@luna/core"
@@ -83,10 +84,14 @@ const testClock = CoreClock.Test(1_700_000_000_000)
 const obsLayer = ObservabilityService.makeLayer({ logToConsole: false }).pipe(
   Layer.provide(testClock),
 )
+const telemetryLayer = TelemetryService.makeLayer().pipe(
+  Layer.provide(testClock),
+)
 const baseLayer = Layer.mergeAll(
   SessionStore.Default,
   testClock,
   obsLayer,
+  telemetryLayer,
 )
 
 /** Fake Query that loops over inbound user messages, yielding assistant +
@@ -164,7 +169,9 @@ const makeStreamingQuery = (params: {
 
 const fullLayer = (
   fakeLayer: Layer.Layer<SDKClient>,
-): Layer.Layer<ChatService | SessionStore | CoreClock | ObservabilityService> =>
+): Layer.Layer<
+  ChatService | SessionStore | CoreClock | ObservabilityService | TelemetryService
+> =>
   Layer.provideMerge(
     ChatService.Default,
     Layer.provideMerge(SDKAdapter.Default, Layer.mergeAll(fakeLayer, baseLayer)),
@@ -175,6 +182,7 @@ const runScoped = <A, E>(
     A,
     E,
     ChatService | SessionStore | CoreClock | ObservabilityService | Scope.Scope
+    | TelemetryService
   >,
   fakeLayer: Layer.Layer<SDKClient>,
 ) =>
@@ -957,6 +965,46 @@ describe("ChatService (Tier-2 sim)", () => {
           expect(e.sessionId).toMatch(/^thr_/)
         }
       }
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "telemetry: records thread, user message, assistant message, and turn counters",
+    async () => {
+      const fakeLayer = SDKClient.fake((p) =>
+        makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+          responseFor: () => "done",
+        }),
+      )
+
+      const snapshot = await runScoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const tel = yield* TelemetryService
+          const t = yield* chat.createThread({ model: "claude-test", title: "tel" })
+          yield* chat.send(t.id, "ping")
+          yield* Effect.sleep("30 millis")
+          return yield* tel.snapshot
+        }),
+        fakeLayer,
+      )
+
+      const valueFor = (
+        name: string,
+        tags: Readonly<Record<string, string>>,
+      ): number =>
+        snapshot.find((row) =>
+          row.name === name &&
+          JSON.stringify(row.tags) === JSON.stringify(tags),
+        )?.value ?? 0
+
+      expect(valueFor("luna.chat.threads.created", { model: "claude-test" })).toBe(1)
+      expect(valueFor("luna.chat.user_messages.accepted", { attachments: "0" })).toBe(1)
+      expect(valueFor("luna.chat.assistant_messages.completed", {})).toBe(1)
+      expect(valueFor("luna.chat.turns.completed", { is_error: "false" })).toBe(1)
     },
     { timeout: 10_000 },
   )

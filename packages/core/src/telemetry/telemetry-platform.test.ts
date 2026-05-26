@@ -2,13 +2,13 @@
  * TelemetryPlatform integration tests — TDD PING phase.
  *
  * TelemetryPlatform is a pure composition Layer (Layer.mergeAll) that wires
- * together EventSink + SessionSync + MetricsFlusher. No logic of its own —
- * tests confirm that all three sinks fire when composed together.
+ * together EventCounter + EventSink + SessionSync + MetricsFlusher. No logic
+ * of its own — tests confirm that all sinks fire when composed together.
  *
  * Tests:
  *   1. TelemetryPlatform composes all three sinks — emit SessionStart + inc a
- *      counter + flush() → events row, sessions row, metric_snapshots row.
- *   2. Non-session event + no counters → events has 1 row, sessions/metrics empty.
+ *      counter + flush() → events row, sessions row, metric_snapshots rows.
+ *   2. Non-session event → events has 1 row, sessions empty, counters flushed.
  *
  * Layer topology:
  *   Clock.Default              — provides Clock
@@ -129,14 +129,14 @@ describe("TelemetryPlatform", () => {
       expect(result.events).toBe(1)
       // SessionSync: the SessionStart row in sessions
       expect(result.sessions).toBe(1)
-      // MetricsFlusher: the one counter we flushed
-      expect(result.metrics).toBe(1)
+      // MetricsFlusher: the manual counter plus EventCounter's SessionStart counters.
+      expect(result.metrics).toBe(3)
     })
   })
 
   // ── 2. Non-session event + no counters → only events table gets a row ────
 
-  it("non-session event lands only in events — sessions and metrics remain empty", async () => {
+  it("non-session event lands in events and telemetry counters, while sessions remain empty", async () => {
     await withTempDb(async (dbPath) => {
       const result = await runWithLayer(dbPath)(
         Effect.gen(function* () {
@@ -155,7 +155,8 @@ describe("TelemetryPlatform", () => {
 
           yield* Effect.sleep("30 millis")
 
-          // Flush with no counters — MetricsFlusher should write nothing
+          // EventCounter mirrors this event into TelemetryService; flushing
+          // persists that counter while SessionSync still ignores it.
           yield* flusher.flush
 
           const eventsCount = yield* db.query("SELECT COUNT(*) AS n FROM events")
@@ -174,8 +175,45 @@ describe("TelemetryPlatform", () => {
       expect(result.events).toBe(1)
       // SessionSync: 0 rows — only handles SessionStart/SessionEnd
       expect(result.sessions).toBe(0)
-      // MetricsFlusher: 0 rows — no counters were incremented
-      expect(result.metrics).toBe(0)
+      // MetricsFlusher: EventCounter records the generic event and the error tag.
+      expect(result.metrics).toBe(2)
+    })
+  })
+
+  it("emitted observability events are mirrored into telemetry counters", async () => {
+    await withTempDb(async (dbPath) => {
+      const rows = await runWithLayer(dbPath)(
+        Effect.gen(function* () {
+          const obs = yield* ObservabilityService
+          const db = yield* DuckDbService
+          const flusher = yield* MetricsFlusher
+
+          yield* obs.emit({
+            ts: "2024-01-01T00:00:00.000Z",
+            kind: "SessionStart",
+            level: "info",
+            sessionId: "counter-sess-001",
+            model: "claude-test",
+          })
+
+          yield* Effect.sleep("30 millis")
+          yield* flusher.flush
+
+          return yield* db.query(
+            "SELECT name, tags_json, value FROM metric_snapshots WHERE name = ?",
+            ["luna.obs.events.total"],
+          )
+        }),
+      )
+
+      expect(rows).toHaveLength(1)
+      const row = rows[0] as { name: string; tags_json: string; value: number }
+      expect(row.name).toBe("luna.obs.events.total")
+      expect(JSON.parse(row.tags_json)).toEqual({
+        kind: "SessionStart",
+        level: "info",
+      })
+      expect(row.value).toBe(1)
     })
   })
 })

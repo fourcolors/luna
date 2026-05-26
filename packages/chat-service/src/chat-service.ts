@@ -50,6 +50,7 @@ import {
   SessionStore,
   Clock as CoreClock,
   ObservabilityService,
+  TelemetryService,
   projectChatMessages,
   projectOne,
   type ChatMessage,
@@ -169,9 +170,17 @@ export class ChatService extends Effect.Service<ChatService>()(
       const adapter = yield* SDKAdapter
       const clock = yield* CoreClock
       const obs = yield* ObservabilityService
+      const tel = yield* TelemetryService
       const serviceScope = yield* Effect.scope
 
       const threads = yield* Ref.make<ReadonlyMap<string, ThreadEntry>>(new Map())
+
+      const inc = (
+        name: string,
+        tags: Readonly<Record<string, string>> = {},
+        n = 1,
+      ): Effect.Effect<void, never> =>
+        tel.inc(name, tags, n).pipe(Effect.catchAllCause(() => Effect.void))
 
       /** Generate a thread/session id. Format `thr_<base36 ts>_<rand>`. */
       const genThreadId = (): Effect.Effect<string> =>
@@ -296,6 +305,9 @@ export class ChatService extends Effect.Service<ChatService>()(
             ...(opts.tags !== undefined && opts.tags.length > 0 ? { tags: [...opts.tags] } : {}),
             ...(opts.title !== undefined ? { title: opts.title } : {}),
           })
+          yield* inc("luna.chat.threads.created", {
+            model: opts.model ?? "unknown",
+          })
 
           const inbox = yield* Queue.unbounded<SDKUserMessage>()
           const pubsub = yield* PubSub.unbounded<ChatFrame>()
@@ -344,17 +356,29 @@ export class ChatService extends Effect.Service<ChatService>()(
                 inFlightText,
               }),
             ),
-            Effect.catchAllCause((cause) =>
-              PubSub.publish(pubsub, {
-                type: "assistant-error",
-                threadId: id,
-                turnId: null,
-                error: {
-                  kind: "sdk",
-                  message: `adapter stream failed: ${cause.toString().slice(0, 200)}`,
-                },
-              }),
-            ),
+            Effect.catchAllCause((cause) => {
+              const message = `adapter stream failed: ${cause.toString().slice(0, 200)}`
+              return Effect.gen(function* () {
+                yield* inc("luna.chat.adapter_stream.errors")
+                yield* obs.emit({
+                  kind: "Error",
+                  ts: new Date().toISOString(),
+                  level: "error",
+                  errorTag: "ChatAdapterStreamFailed",
+                  message,
+                  context: { threadId: id },
+                })
+                yield* PubSub.publish(pubsub, {
+                  type: "assistant-error",
+                  threadId: id,
+                  turnId: null,
+                  error: {
+                    kind: "sdk",
+                    message,
+                  },
+                })
+              })
+            }),
             Effect.forkIn(threadScope),
           )
 
@@ -400,6 +424,7 @@ export class ChatService extends Effect.Service<ChatService>()(
           if (t === "stream_event") {
             const deltaText = extractStreamEventText(args.msg)
             if (deltaText === null) return
+            yield* inc("luna.chat.assistant_deltas.total")
             // The SDK gives each stream_event its own uuid, so the wire
             // turn id is a Luna-stable id captured from the first delta and
             // kept until the final assistant message lands.
@@ -441,6 +466,7 @@ export class ChatService extends Effect.Service<ChatService>()(
               seq: stored.seq,
               message: projected,
             })
+            yield* inc("luna.chat.assistant_messages.completed")
             // Post-completion: extract artifacts (substantial code fences,
             // file-write tool uses) and publish a follow-up frame so the
             // UI can pin them into a side panel. Pure function — safe to
@@ -465,6 +491,7 @@ export class ChatService extends Effect.Service<ChatService>()(
             ).message?.content ?? []
             for (const b of blocks) {
               if (b.type === "tool_use" && typeof b.name === "string") {
+                yield* inc("luna.chat.tool_uses.reported", { tool: b.name })
                 yield* obs.emit({
                   kind: "ToolCall",
                   ts: new Date().toISOString(),
@@ -494,6 +521,9 @@ export class ChatService extends Effect.Service<ChatService>()(
               is_error?: boolean
             }
             const u = m.usage ?? {}
+            yield* inc("luna.chat.turns.completed", {
+              is_error: String(m.is_error === true),
+            })
             yield* obs.emit({
               kind: "CostAccrued",
               ts: new Date().toISOString(),
@@ -558,7 +588,20 @@ export class ChatService extends Effect.Service<ChatService>()(
         Effect.gen(function* () {
           const m = yield* Ref.get(threads)
           const entry = m.get(threadId)
-          if (!entry) return Option.none<ChatMessage>()
+          if (!entry) {
+            yield* inc("luna.chat.user_messages.rejected", {
+              reason: "unknown_thread",
+            })
+            yield* obs.emit({
+              kind: "Error",
+              ts: new Date().toISOString(),
+              level: "warn",
+              errorTag: "ChatUnknownThread",
+              message: `unknown thread: ${threadId}`,
+              context: { threadId },
+            })
+            return Option.none<ChatMessage>()
+          }
 
           const ts = yield* clock.nowMs()
           const messageId = `usr_${ts.toString(36)}_${Math.random().toString(36).slice(2, 6)}`
@@ -574,7 +617,12 @@ export class ChatService extends Effect.Service<ChatService>()(
               payload: userPayload,
             })
             .pipe(Effect.catchAll(() => Effect.succeed(null as StoredMessage | null)))
-          if (stored === null) return Option.none<ChatMessage>()
+          if (stored === null) {
+            yield* inc("luna.chat.user_messages.rejected", {
+              reason: "store_append_failed",
+            })
+            return Option.none<ChatMessage>()
+          }
 
           const projected = projectOne(stored)
 
@@ -589,6 +637,9 @@ export class ChatService extends Effect.Service<ChatService>()(
               threadId,
               seq: stored.seq,
               message: projected,
+            })
+            yield* inc("luna.chat.user_messages.accepted", {
+              attachments: String(attachments?.length ?? 0),
             })
           }
 
@@ -627,6 +678,7 @@ export class ChatService extends Effect.Service<ChatService>()(
             turnId,
             error: { kind: "interrupted", message: "user interrupted" },
           })
+          yield* inc("luna.chat.interrupts.total")
         })
 
       /** Subscribe to a thread's live ChatFrame stream. The Stream emits

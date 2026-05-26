@@ -25,6 +25,7 @@ import {
   Clock as CoreClock,
   ObservabilityService,
   SessionStore,
+  TelemetryService,
   UIService,
 } from "@luna/core"
 import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
@@ -115,12 +116,15 @@ const baseLayer = (() => {
   const obsL = ObservabilityService.makeLayer({ logToConsole: false }).pipe(
     Layer.provide(clockL),
   )
+  const telemetryL = TelemetryService.makeLayer().pipe(
+    Layer.provide(clockL),
+  )
   const uiL = UIService.makeLayer().pipe(
     Layer.provide(obsL),
     Layer.provide(clockL),
   )
   const storeL = SessionStore.Default
-  return Layer.mergeAll(uiL, obsL, clockL, storeL)
+  return Layer.mergeAll(uiL, obsL, telemetryL, clockL, storeL)
 })()
 
 const fullLayer = (fakeLayer: Layer.Layer<SDKClient>) =>
