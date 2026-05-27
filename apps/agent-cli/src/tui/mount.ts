@@ -5,8 +5,6 @@ import type { CliRenderer } from "@opentui/core"
 import { createComponent, createEffect } from "solid-js"
 import { createTuiStore } from "./store.js"
 import { runMemorySearch } from "./memory-search.js"
-import { makeRouter, InMemoryBackend } from "@luna/memory"
-import { Effect } from "effect"
 
 const DEBUG_LOG = process.env["LUNA_TUI_DEBUG"]
 const dbg = (msg: string): void => {
@@ -48,13 +46,6 @@ export type TuiMountResult = { exitCode: 0 | 1 | 2 }
 
 export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult> => {
   dbg(`mountTui start argv=${JSON.stringify(argv)} LUNA_TUI_DEBUG=${DEBUG_LOG ?? "<unset>"}`)
-
-  const memoryBackend = await Effect.runPromise(
-    Effect.gen(function* () {
-      return yield* InMemoryBackend
-    }).pipe(Effect.provide(InMemoryBackend.Default)),
-  )
-  const memoryRouter = makeRouter([{ pattern: "*", backend: memoryBackend }])
 
   // The OpenTUI Solid preload (which both installs the Bun JSX transform and
   // swaps solid-js's server build for the reactive client build) is registered
@@ -297,7 +288,7 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
       memorySearchTimer = setTimeout(() => {
         void (async () => {
           try {
-            const result = await runMemorySearch(memoryRouter, query, 10)
+            const result = await runMemorySearch(session, query, 10)
             store.setMemorySearch(result)
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err)
