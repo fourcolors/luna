@@ -287,8 +287,10 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
       store.setMemorySearch({ status: "loading", query: query.trim() })
       memorySearchTimer = setTimeout(() => {
         void (async () => {
+          dbg(`memory search: sending request for ${JSON.stringify(query)}`)
           try {
             const result = await runMemorySearch(session, query, 10)
+            dbg(`memory search: result status=${result.status}`)
             store.setMemorySearch(result)
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err)

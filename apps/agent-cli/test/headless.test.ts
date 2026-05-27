@@ -203,4 +203,17 @@ describe("LunaHeadlessSession.searchMemory", () => {
       queryText: "test",
     })
   })
+
+  it("resolves with a synthetic error frame when the server does not respond within timeoutMs", async () => {
+    const { session } = makeSessionUnderTest()
+    void session.run()
+
+    const result = await session.searchMemory({ queryText: "hangs", topK: 5, timeoutMs: 20 })
+
+    expect(result.type).toBe("memory-search-error")
+    if (result.type !== "memory-search-error") throw new Error("unreachable")
+    expect(result.queryText).toBe("hangs")
+    expect(result.message).toContain("timed out after 20ms")
+    expect(result.kind).toBe("internal")
+  })
 })

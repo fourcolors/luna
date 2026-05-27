@@ -95,21 +95,48 @@ export class LunaHeadlessSession extends EventEmitter {
     this.emit("userMessageSent")
   }
 
+  // Timeout for memory-search requests. Without it, a server that drops
+  // the request silently (e.g., older build that doesn't recognize the
+  // frame) leaves the panel hung in "loading" forever. 5s matches the
+  // user's "instant info" expectation for a sidebar query.
+  static readonly MEMORY_SEARCH_TIMEOUT_MS = 5000
+
   searchMemory(args: {
     readonly queryText: string
     readonly topK?: number
+    readonly timeoutMs?: number
   }): Promise<MemorySearchResultFrame | MemorySearchErrorFrame> {
     return new Promise((resolve) => {
+      const timeoutMs = args.timeoutMs ?? LunaHeadlessSession.MEMORY_SEARCH_TIMEOUT_MS
+      let settled = false
+
+      const finish = (frame: MemorySearchResultFrame | MemorySearchErrorFrame): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        this.off("rawFrame", onFrame)
+        resolve(frame)
+      }
+
       const onFrame = (frame: ServerFrame): void => {
         if (
           (frame.type === "memory-search-result" ||
             frame.type === "memory-search-error") &&
           frame.queryText === args.queryText
         ) {
-          this.off("rawFrame", onFrame)
-          resolve(frame)
+          finish(frame)
         }
       }
+
+      const timer = setTimeout(() => {
+        finish({
+          type: "memory-search-error",
+          queryText: args.queryText,
+          message: `memory search timed out after ${timeoutMs}ms (server did not respond)`,
+          kind: "internal",
+        })
+      }, timeoutMs)
+
       this.on("rawFrame", onFrame)
       this.client.send({
         type: "memory-search-request",
