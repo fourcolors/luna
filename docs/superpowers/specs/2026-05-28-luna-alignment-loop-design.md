@@ -104,8 +104,23 @@ risky is on by default.
 
 ### 3.1 Dream engine
 
-A durable multi-step workflow (`WorkflowRuntime`) scheduled via `TriggerAgent` /
-`JobScheduler`. Crash mid-dream resumes cleanly.
+A plain Effect program scheduled by `TriggerAgent` cron (5-field expr).
+
+**Durability = the watermark, not the workflow.** `WorkflowRuntime` exists but
+its `WorkflowState` is in-memory today, so it can't deliver cross-restart
+durability — wrapping Dream in it would be ceremony for a guarantee it can't
+make. Instead, the persisted SQLite **watermark** (§3.1.1) is the resume point:
+a crashed dream simply re-runs from the last committed watermark on the next
+tick. Transaction boundary that makes this safe:
+
+- **Reason *outside* any DB transaction** (the LLM step is slow).
+- **Apply ops + advance the watermark in ONE atomic transaction.**
+- **Ops are idempotent state-sets ("set memory X to Y"), never deltas** — so a
+  re-run after a crash mid-reason (watermark unmoved → re-reason, wasteful but
+  safe) or mid-apply (rollback → watermark unmoved → re-run) is harmless.
+
+(`WorkflowRuntime` becomes a viable wrapper once `WorkflowState` gets a SQL
+codec — out of scope for v1.)
 
 - **Reads:** see §3.1.1 (Dream inputs).
 - **Reasons about:**
@@ -319,13 +334,26 @@ the same data.
 Riskiest component last and dormant. Luna is useful and safe after Phase 3 even
 if Phase 4 never ships — the calibration loop stands on its own.
 
-1. **Dream engine + `dream_audit`** — batch reasoner; fixture-driven tests; no
-   user surface. Tiered auto-apply (conservative defaults).
+1. **Dream engine + `dream_audit` + watermark** — batch reasoner; fixture-driven
+   tests; no user surface. **Auto-apply is restricted to exact-duplicate dedup**
+   (the safest op) plus a `revert(auditId)` undo; **all other op classes
+   (staleness, contradiction, belief candidates) are logged as *proposed* ops
+   and held, not applied** — because the survey that would catch a bad
+   auto-apply doesn't exist until Phase 3. The reasoner is an **injectable port**
+   (`DreamReasoner`): tests inject a fake returning fixed ops; the real impl
+   calls the model. Cron wiring (`TriggerAgent`) is the final, discrete task so
+   the reasoner core is tested independently of the clock.
 2. **Belief set** — `kind:"belief"`, ≤20 cap + eviction, per-thread injection.
    Dream begins promoting candidates.
 3. **Survey + cadence controller + `alignment_log`** — closes the human loop.
    Cadence math unit-tested as a pure function. *Loop is now alive and
-   self-correcting.*
+   self-correcting.* **Prerequisite (net-new work):** `ObservabilityService` is
+   **write-only today** (live PubSub + JSONL sink, no historical query API —
+   `observability/types.ts`). Phase 3 must add a read path — either a JSONL
+   reader keyed by `(sessionId, time window)` or a query method on the service —
+   before task-quality signals can be sourced from telemetry. This also unblocks
+   Phase 1's deferred op classes: once the survey exists, staleness/contradiction
+   proposals can begin auto-applying under the alignment governor.
 4. **Outreach** — `TriggerAgent` watcher, **ships dormant**, per-belief +
    global-ceiling gate, inline welcome signal. Enabled only after Phases 1–3
    have logged real alignment.
