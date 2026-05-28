@@ -138,23 +138,19 @@ describe("deriveDreamId", () => {
   })
 })
 
-// ── Adaptation note ───────────────────────────────────────────────────────────
-// The task spec's verbatim test called runDream(1000) twice with the same `now`
-// and asserted after2.length === 1. That is internally inconsistent: the first
-// run advances the watermark to 1000, so the second run has watermark=1000,
-// dreamId="dream-1000-1000" (different from "dream-0-1000"), and the dedup key
-// (dreamId, targetId, op) does not match → INSERT fires → after2.length === 2.
+// ── Idempotency invariant ─────────────────────────────────────────────────────
+// dreamId is keyed on (watermark, cutoff) where cutoff = max(lastMessageAt) of
+// sessions actually gathered — NOT on `now`. This means a crash retry on a
+// later tick (different `now`) still produces the same dreamId and INSERT OR
+// IGNORE collapses duplicate audit rows.
 //
-// The real idempotency invariant is crash-recovery: if the process crashes
-// BEFORE setWatermark (watermark-last semantics), re-running with the same
-// watermark+now produces the same dreamId and INSERT OR IGNORE is a no-op.
-// The test below exercises that correct invariant by resetting the watermark
-// before the second run.
+// When no sessions are in the window (empty SessionStore), cutoff === watermark
+// === 0, so both runs produce dreamId "dream-0-0" regardless of `now`.
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("runDream (end-to-end, idempotent)", () => {
-  it("applies dedup once; a crash-recovery re-run over the same window is a no-op", async () => {
-    const ops: DreamOp[] = [
+  it("crash retry with a DIFFERENT now is still a no-op (idempotent)", async () => {
+    const ops = [
       { kind: "memory_dedup" as const, targetId: "dup-1", before: rec("dup-1"), after: null, rationale: "dup" },
     ]
     const layers = Layer.mergeAll(
@@ -167,20 +163,17 @@ describe("runDream (end-to-end, idempotent)", () => {
     const out = await Effect.runPromise(
       Effect.gen(function* () {
         const store = yield* DreamStore
-        yield* runDream(1000) // first run: watermark 0→1000, dreamId "dream-0-1000"
+        yield* runDream(1000)           // window (0, 0] over empty sessions → cutoff=0 → dreamId "dream-0-0"
         const after1 = yield* store.list({})
-        const wm1 = yield* store.getWatermark
-
-        // Simulate crash-recovery: reset watermark so the next run uses the
-        // same dreamId ("dream-0-1000") → INSERT OR IGNORE → no new audit row.
+        // Simulate a crash BEFORE the watermark was durably advanced, then a
+        // retry on a LATER tick with a different `now`.
         yield* store.setWatermark(0)
-        yield* runDream(1000) // same window → same dreamId → no-op
+        yield* runDream(2000)           // different now, same empty window → same cutoff=0 → same dreamId "dream-0-0"
         const after2 = yield* store.list({})
-        return { after1, after2, wm1 }
+        return { after1, after2 }
       }).pipe(Effect.provide(layers)) as Effect.Effect<any, any, never>,
     )
     expect(out.after1).toHaveLength(1)
-    expect(out.after2).toHaveLength(1) // INSERT OR IGNORE → still one row
-    expect(out.wm1).toBe(1000)
+    expect(out.after2).toHaveLength(1) // collapses despite different `now` — proves dreamId is NOT keyed on now
   })
 })

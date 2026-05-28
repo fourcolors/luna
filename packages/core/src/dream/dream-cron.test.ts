@@ -64,7 +64,7 @@ const dreamLayers = Layer.mergeAll(
  * the Effect runtime Clock for TestClock-driven tests.
  */
 const provide = <A, E>(
-  prog: Effect.Effect<A, E, JobScheduler | TriggerAgent | DreamStore | Clock>,
+  prog: Effect.Effect<A, E, JobScheduler | TriggerAgent | DreamStore | Clock | SessionStore>,
 ) =>
   Effect.scoped(
     prog.pipe(
@@ -94,13 +94,24 @@ describe("registerDreamCron", () => {
 
   it("(b) firing the cron (via TestClock.adjust) advances the dream watermark", async () => {
     // TestClock starts at epoch 0; advancing 1 hour → first hourly tick fires.
-    // The dream job runs runDream(3_600_000), setting watermark to 3_600_000.
+    // The dream job runs runDream(3_600_000). With the fix, the watermark
+    // advances to the max lastMessageAt of gathered sessions (not `now`), so
+    // we seed a session with lastMessageAt=1800 to ensure watermark advances.
     const result = await Effect.runPromise(
       provide(
         Effect.gen(function* () {
           const trig = yield* TriggerAgent
           const store = yield* DreamStore
           const sched = yield* JobScheduler
+          const sessions = yield* SessionStore
+
+          // Seed a session with a known lastMessageAt so the dream window is
+          // non-empty and the watermark can advance.
+          yield* sessions.create({ id: "s-1", options: { model: "test" }, createdAt: 0 })
+          yield* sessions.appendMessage({
+            sessionId: "s-1", messageId: "m-1", ts: 1800,
+            parentId: null, kind: "user", payload: "hello",
+          })
 
           // Collect one job result in background before registering.
           const collected = yield* Effect.fork(
@@ -125,8 +136,9 @@ describe("registerDreamCron", () => {
         }),
       ),
     )
-    // Watermark should be non-null and advanced past epoch 0.
+    // Watermark should advance to the lastMessageAt of the gathered session (1800),
+    // not to `now` (3_600_000) — proves dreamId + watermark are keyed on processed data.
     expect(result).not.toBeNull()
-    expect(result).toBeGreaterThan(0)
+    expect(result).toBe(1800)
   })
 })

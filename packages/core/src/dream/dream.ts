@@ -123,25 +123,47 @@ export const gatherInputs = (
  * One dream cycle. `now` is injected (caller/cron supplies the clock reading)
  * so the function is deterministic in tests. Watermark is advanced LAST.
  *
- * Crash-recovery idempotency: if the process crashes before `setWatermark`,
- * the watermark is unchanged, so the next run produces the same dreamId
- * (e.g. "dream-0-1000"). The dedup key (dreamId, targetId, op) in DreamStore
- * ensures INSERT OR IGNORE fires and memory ops are idempotent state-sets.
+ * Crash-recovery idempotency: dreamId and the watermark advance are keyed on
+ * the MAX `lastMessageAt` of sessions actually gathered this cycle (the
+ * "cutoff"), NOT on `now`. `now` is only the upper bound for gatherInputs.
+ *
+ * This means:
+ *   - A crash retry on a LATER tick (different `now`) gathers the same
+ *     sessions (same watermark, same data), produces the same cutoff, and
+ *     therefore the same dreamId → INSERT OR IGNORE collapses duplicates.
+ *   - Sessions that arrive between gather and watermark-advance (with
+ *     lastMessageAt ≤ now but > cutoff) are NOT skipped forever; the
+ *     watermark only advances to the latest session actually processed.
+ *
+ * When no sessions are in the window, cutoff === watermark, so the watermark
+ * doesn't move and dreamId is "dream-W-W" — memory-hygiene ops (if any) still
+ * get logged, and a clean re-run collapses them.
  */
 export const runDream = (now: number) =>
   Effect.gen(function* () {
     const store = yield* DreamStore
     const reasoner = yield* DreamReasoner
     const watermark = (yield* store.getWatermark) ?? 0
-    const dreamId = deriveDreamId(watermark, now)
 
     const inputs = yield* gatherInputs(watermark, now)
+
+    // Cutoff = the latest lastMessageAt actually processed this cycle (spec
+    // §3.1.1 step 5). Keying dreamId + the watermark advance on processed data
+    // (not on `now`) makes a crash retry over the same sessions regenerate the
+    // same dreamId — so INSERT OR IGNORE collapses the re-run — and prevents
+    // skipping sessions that arrive between gather and watermark-advance.
+    const cutoff = inputs.sessions.reduce(
+      (max, s) => Math.max(max, s.summary.lastMessageAt ?? 0),
+      watermark,
+    )
+    const dreamId = deriveDreamId(watermark, cutoff)
+
     const ops = yield* reasoner.reason(inputs)
     yield* applyOps(dreamId, ops)
 
-    // Advance watermark LAST. A crash before this re-runs the same window
-    // (same dreamId), which is a no-op thanks to INSERT OR IGNORE + idempotent ops.
-    yield* store.setWatermark(now)
+    // Advance to the latest processed lastMessageAt (no-op when no new sessions),
+    // LAST — a crash before this re-runs the same window safely.
+    yield* store.setWatermark(cutoff)
   })
 
 /**
