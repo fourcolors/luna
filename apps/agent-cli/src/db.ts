@@ -119,7 +119,7 @@ const loadDatabase = (): new (p: string) => SqliteDb => {
     if (mod.Database) return mod.Database
   } catch (e) {
     throw new Error(
-      `bun:sqlite is unavailable. luna-account must be run under \`bun\`. ` +
+      `bun:sqlite is unavailable. luna must be run under \`bun\`. ` +
         `Cause: ${String(e)}`,
     )
   }

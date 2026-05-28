@@ -621,6 +621,28 @@ export const startUIWebSocketServer = (
                     send(ws, { type: "thread-list", threads })
                     return
                   }
+                  case "memory-search-request": {
+                    if (chat === null) return
+                    const result = yield* chat.searchMemory({
+                      queryText: frame.queryText,
+                      ...(frame.topK !== undefined ? { topK: frame.topK } : {}),
+                    })
+                    if ("error" in result) {
+                      send(ws, {
+                        type: "memory-search-error",
+                        queryText: frame.queryText,
+                        message: result.error.message,
+                        kind: result.error.kind,
+                      })
+                    } else {
+                      send(ws, {
+                        type: "memory-search-result",
+                        queryText: frame.queryText,
+                        hits: result.hits,
+                      })
+                    }
+                    return
+                  }
                   case "new-thread": {
                     if (chat === null) return
                     const summary = yield* chat.createThread({

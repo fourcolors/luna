@@ -36,6 +36,7 @@
  */
 import {
   Chunk,
+  Context,
   Effect,
   Exit,
   Layer,
@@ -59,11 +60,13 @@ import {
   type StoredMessage,
 } from "@luna/core"
 import { SDKAdapter } from "@luna/adapter-sdk"
+import { MemoryRouterTag } from "@luna/memory"
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
 import {
   type ChatFrame,
   type ChatErrorKind,
   type CreateThreadOptions,
+  type ThreadToolsProvider,
 } from "./types.js"
 import { extractArtifacts } from "./artifacts.js"
 import {
@@ -110,6 +113,47 @@ const extractStreamEventText = (m: SDKMessage): string | null => {
   const delta = event["delta"]
   if (isObj(delta) && typeof delta["text"] === "string") return delta["text"]
   return null
+}
+
+const MAX_TOOL_OUTPUT_CHARS = 2048
+const MAX_TOOL_OUTPUT_LINES = 40
+
+/** Normalize an SDK tool_result `content` payload (string | block array |
+ *  arbitrary object) into plain text. */
+export const normalizeToolResultContent = (content: unknown): string => {
+  // SDK `ToolResultBlockParam.content` is optional; a tool that succeeds with
+  // no output yields `undefined`. Both null and undefined normalize to "".
+  if (content == null) return ""
+  if (typeof content === "string") return content
+  if (Array.isArray(content)) {
+    const parts = content.map((b) =>
+      isObj(b) && typeof b["text"] === "string"
+        ? (b["text"] as string)
+        : JSON.stringify(b),
+    )
+    return parts.join("\n")
+  }
+  return JSON.stringify(content)
+}
+
+/** Cap tool output to keep the wire small. Returns the (possibly clipped)
+ *  text plus whether it was clipped. */
+export const truncateOutput = (
+  s: string,
+): { readonly output: string; readonly truncated: boolean } => {
+  let out = s
+  let truncated = false
+  const lines = out.split("\n")
+  if (lines.length > MAX_TOOL_OUTPUT_LINES) {
+    out = lines.slice(0, MAX_TOOL_OUTPUT_LINES).join("\n")
+    truncated = true
+  }
+  if (out.length > MAX_TOOL_OUTPUT_CHARS) {
+    out = out.slice(0, MAX_TOOL_OUTPUT_CHARS)
+    truncated = true
+  }
+  if (truncated) out = out + "\n… (truncated)"
+  return { output: out, truncated }
 }
 
 /** Synthesize an SDKUserMessage envelope from text + optional image attachments.
@@ -162,6 +206,22 @@ const LUNA_ALLOWED_MCP_TOOLS = [
   "mcp__local_shell__*",
 ] as const
 
+/**
+ * Optional injection point for per-thread tool wiring. When provided, the
+ * app supplies MCP servers + a merged system prompt + a post-create binding
+ * callback that ChatService applies to EVERY thread creation. Resolved via
+ * `Effect.serviceOption`, so omitting it leaves ChatService's prior
+ * tool-free behavior intact (and existing consumers/tests need no change).
+ *
+ * This exists because tool wiring used to be an app-level wrapper around the
+ * public `createThread`, which the internal subscribe()-restart-recovery
+ * path bypassed — leaving resumed threads with `allowedTools` set but zero
+ * MCP servers. Wiring at the service seam covers both paths.
+ */
+export const ThreadToolsProviderTag = Context.GenericTag<ThreadToolsProvider>(
+  "luna/ThreadToolsProvider",
+)
+
 /* -------------------------------------------------------------------------- */
 /* Service                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -175,6 +235,13 @@ export class ChatService extends Effect.Service<ChatService>()(
       const clock = yield* CoreClock
       const obs = yield* ObservabilityService
       const tel = yield* TelemetryService
+      const memoryRouter = yield* MemoryRouterTag
+      // Optional — when the app provides it, EVERY thread (new or resumed)
+      // gets its MCP servers + merged system prompt + post-create binding.
+      // Omitted in tests/headless that don't need tools.
+      const threadToolsProvider = yield* Effect.serviceOption(
+        ThreadToolsProviderTag,
+      )
       const serviceScope = yield* Effect.scope
 
       const threads = yield* Ref.make<ReadonlyMap<string, ThreadEntry>>(new Map())
@@ -301,12 +368,41 @@ export class ChatService extends Effect.Service<ChatService>()(
         Effect.gen(function* () {
           const id = opts.threadIdOverride ?? (yield* genThreadId())
           const createdAt = yield* clock.nowMs()
-          const sessionOptions = buildSessionOptions(opts)
+
+          // Per-thread tool wiring. When the app provided a
+          // ThreadToolsProvider, decorate THIS thread's options with its MCP
+          // servers + merged system prompt before building sessionOptions.
+          // Because this lives in the internal createThread, both new threads
+          // and subscribe()-recovery (resume) threads get tools — the bug
+          // was that tool wiring used to live in an app wrapper the resume
+          // path bypassed.
+          const binding = Option.map(threadToolsProvider, (p) =>
+            p.decorate(opts),
+          )
+          const effectiveOpts: CreateThreadOptions = Option.match(binding, {
+            onNone: () => opts,
+            onSome: (b) => ({
+              ...opts,
+              mcpServers: { ...(opts.mcpServers ?? {}), ...b.mcpServers },
+              ...(b.systemPrompt !== undefined
+                ? { systemPrompt: b.systemPrompt }
+                : {}),
+            }),
+          })
+          const sessionOptions = buildSessionOptions(effectiveOpts)
 
           // Create the session row first — fail loudly if id collides.
           const summary = yield* store
             .create({ id, options: sessionOptions, createdAt })
             .pipe(Effect.orDie)
+
+          // Session row exists → run the provider's post-create binding
+          // (obs session tagging, local-shell attach, sandbox re-attach)
+          // BEFORE the SDK query starts so tool servers know their session.
+          Option.match(binding, {
+            onNone: () => {},
+            onSome: (b) => b.onBound(id),
+          })
 
           // Emit SessionStart so the obs Events tab shows activity.
           yield* obs.emit({
@@ -522,7 +618,14 @@ export class ChatService extends Effect.Service<ChatService>()(
             // level; status "success" because this is the completed-turn message.
             const blocks = (
               args.msg as {
-                message?: { content?: ReadonlyArray<{ type?: string; name?: string }> }
+                message?: {
+                  content?: ReadonlyArray<{
+                    type?: string
+                    id?: string
+                    name?: string
+                    input?: unknown
+                  }>
+                }
               }
             ).message?.content ?? []
             for (const b of blocks) {
@@ -537,6 +640,19 @@ export class ChatService extends Effect.Service<ChatService>()(
                   durationMs: 0,
                   status: "success",
                 })
+                // The frame links a call to its result by id; the SDK always
+                // carries `id` on real tool_use blocks. (Some test fixtures
+                // omit it — guard so the obs emit above still fires for them.)
+                if (typeof b.id === "string") {
+                  yield* PubSub.publish(args.pubsub, {
+                    type: "tool-call",
+                    threadId: args.threadId,
+                    turnId: wireTurnId,
+                    toolCallId: b.id,
+                    name: b.name,
+                    input: b.input,
+                  })
+                }
               }
             }
             return
@@ -580,8 +696,38 @@ export class ChatService extends Effect.Service<ChatService>()(
             })
             return
           }
-          // system / hook / status / stream_event-other / user
-          // (echoed by real SDK) — not surfaced as chat frames or obs events.
+          if (t === "user") {
+            const content = (
+              args.msg as {
+                message?: {
+                  content?: ReadonlyArray<{
+                    type?: string
+                    tool_use_id?: string
+                    is_error?: boolean
+                    content?: unknown
+                  }>
+                }
+              }
+            ).message?.content ?? []
+            for (const b of content) {
+              if (b.type === "tool_result" && typeof b.tool_use_id === "string") {
+                const { output, truncated } = truncateOutput(
+                  normalizeToolResultContent(b.content),
+                )
+                yield* PubSub.publish(args.pubsub, {
+                  type: "tool-result",
+                  threadId: args.threadId,
+                  toolCallId: b.tool_use_id,
+                  status: b.is_error === true ? "error" : "ok",
+                  output,
+                  truncated,
+                })
+              }
+            }
+            return
+          }
+          // system / hook / status / stream_event-other
+          // — not surfaced as chat frames or obs events.
         })
 
       /** Lookup helper: scan store messages for this session, return the
@@ -808,12 +954,59 @@ export class ChatService extends Effect.Service<ChatService>()(
             .pipe(Effect.catchAll(() => Effect.void))
         })
 
+      /** Read-only memory search delegating to the wired MemoryRouter.
+       *  Errors are tagged in the result rather than failing the Effect,
+       *  so the WS handler can pattern-match cleanly. */
+      const searchMemory = (args: {
+        readonly queryText: string
+        readonly topK?: number
+      }): Effect.Effect<
+        | { readonly hits: ReadonlyArray<{ id: string; kind: string; content: string; score: number }> }
+        | { readonly error: { readonly message: string; readonly kind: "no-vector-backend" | "internal" } },
+        never
+      > =>
+        Effect.gen(function* () {
+          const collect = Stream.runCollect(
+            memoryRouter.search({ queryText: args.queryText, topK: args.topK ?? 10 }),
+          )
+          const either = yield* Effect.either(collect)
+          if (either._tag === "Left") {
+            const err = either.left
+            // MemoryBackendError carries the underlying cause. Extract the
+            // message by checking cause first (the real discriminating text
+            // lives in cause.message), then fall back to err.message / String.
+            const causeMsg =
+              typeof (err as { cause?: unknown }).cause === "object" &&
+              (err as { cause?: { message?: string } }).cause !== null
+                ? (err as { cause?: { message?: string } }).cause?.message
+                : typeof (err as { cause?: unknown }).cause === "string"
+                ? (err as { cause: string }).cause
+                : undefined
+            const msg = causeMsg ?? (err instanceof Error ? err.message : String(err))
+            const kind: "no-vector-backend" | "internal" = msg.includes("no vector backends")
+              ? "no-vector-backend"
+              : "internal"
+            return { error: { message: msg, kind } }
+          }
+          const hits = Array.from(either.right).map(({ record, score }) => ({
+            id: record.id,
+            kind: record.kind,
+            content:
+              typeof record.content === "string"
+                ? record.content
+                : JSON.stringify(record.content),
+            score,
+          }))
+          return { hits }
+        })
+
       return {
         createThread,
         send,
         interrupt,
         subscribe,
         listThreads,
+        searchMemory,
         closeThread,
       } as const
     }),

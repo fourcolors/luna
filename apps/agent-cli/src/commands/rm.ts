@@ -1,5 +1,5 @@
 /**
- * `luna-account rm --id <id>` — delete one row by id.
+ * `luna account rm --id <id>` — delete one row by id.
  */
 import { openDb, defaultDbPath } from "../db.js"
 import type { CmdResult } from "./add.js"
@@ -46,3 +46,6 @@ export const runRm = (args: RmArgs): CmdResult => {
     db.close()
   }
 }
+
+/** Citty-friendly alias for runRm — returns exit code directly. */
+export const removeAccount = runRm

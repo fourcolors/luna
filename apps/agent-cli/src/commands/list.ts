@@ -1,5 +1,5 @@
 /**
- * `luna-account list` — print all accounts (id, label, kind, secret_ref).
+ * `luna account list` — print all accounts (id, label, kind, secret_ref).
  *
  * §0.2 hard rule: NEVER resolve or print the actual secret. We print the
  * pointer string from the row. The pointer is not a secret — it's the
@@ -47,3 +47,6 @@ export const runList = (args: ListArgs): CmdResult => {
     db.close()
   }
 }
+
+/** Citty-friendly alias for runList — returns exit code directly. */
+export const listAccounts = runList

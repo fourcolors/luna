@@ -4,20 +4,23 @@
   "private": true,
   "type": "module",
   "bin": {
-    "luna": "./src/luna.ts",
-    "luna-account": "./src/index.ts"
+    "luna": "./src/luna.ts"
   },
   "scripts": {
     "luna": "bun run src/luna.ts",
-    "luna-account": "bun run src/index.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@luna/chat-service": "workspace:*",
     "@luna/core": "workspace:*",
     "@luna/memory": "workspace:*",
     "@luna/ui-ws": "workspace:*",
+    "@opentui/core": "^0.2.15",
+    "@opentui/solid": "^0.2.15",
+    "citty": "^0.1.6",
     "effect": "^3.21.0",
+    "solid-js": "^1.9.12",
     "ws": "^8.18.0"
   },
   "devDependencies": {

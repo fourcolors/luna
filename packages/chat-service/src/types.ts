@@ -102,6 +102,28 @@ export interface ChatArtifactsExtracted {
   readonly artifacts: ReadonlyArray<Artifact>
 }
 
+/** A tool the agent invoked, surfaced live when the assistant turn lands.
+ *  `toolCallId` equals the SDK `tool_use.id` and links to its result. */
+export interface ChatToolCall {
+  readonly type: "tool-call"
+  readonly threadId: string
+  readonly turnId: string
+  readonly toolCallId: string
+  readonly name: string
+  readonly input: unknown
+}
+
+/** The result of a previously-announced tool call. `toolCallId` equals the
+ *  SDK `tool_result.tool_use_id`. `output` is normalized text, truncated. */
+export interface ChatToolResult {
+  readonly type: "tool-result"
+  readonly threadId: string
+  readonly toolCallId: string
+  readonly status: "ok" | "error"
+  readonly output: string
+  readonly truncated: boolean
+}
+
 /**
  * Union of every frame the per-thread subscribe Stream emits. ui-ws maps
  * this 1:1 to its ServerFrame chat variants.
@@ -113,6 +135,8 @@ export type ChatFrame =
   | ChatAssistantError
   | ChatUserAccepted
   | ChatArtifactsExtracted
+  | ChatToolCall
+  | ChatToolResult
 
 /** Options accepted by `createThread`. Mirrors the subset of SessionOptions
  *  a chat caller cares about; ChatService overlays the chat-required fields
@@ -172,4 +196,33 @@ export interface CreateThreadOptions {
    * by a restart.
    */
   readonly resumeFromSessionId?: string
+}
+
+/**
+ * The per-thread tool config a ThreadToolsProvider produces. ChatService
+ * applies this to EVERY thread creation — new threads and threads restored
+ * by the subscribe()-restart-recovery path alike — so a resumed thread can
+ * never come back without its tools.
+ */
+export interface ThreadToolsBinding {
+  /** MCP servers merged into the thread's `sdkOptions.mcpServers`. */
+  readonly mcpServers: Readonly<Record<string, unknown>>
+  /** Fully-merged system prompt (identity + metadata + tool addenda +
+   *  caller prompt). When present it replaces the caller's systemPrompt;
+   *  the provider is responsible for folding the caller's prompt in. */
+  readonly systemPrompt?: string
+  /** Run after the session row exists, with its id — for per-session
+   *  bindings (obs tagging, local-shell attach, sandbox re-attach). */
+  readonly onBound: (sessionId: string) => void
+}
+
+/**
+ * Injected, optional. When provided, ChatService calls `decorate(opts)`
+ * once per thread creation to obtain the thread's MCP servers, merged
+ * system prompt, and post-create binding callback. This replaces the old
+ * app-level createThread wrapper, which could not intercept the internal
+ * resume path and so left resumed threads tool-less.
+ */
+export interface ThreadToolsProvider {
+  readonly decorate: (opts: CreateThreadOptions) => ThreadToolsBinding
 }

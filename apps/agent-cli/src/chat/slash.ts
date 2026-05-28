@@ -23,6 +23,8 @@ export const HELP_TEXT = [
   "/local-shell status - show local shell status",
 ].join("\n")
 
+export { SLASH_COMMANDS, type SlashSpec } from "./slash-registry.js"
+
 const splitCommand = (line: string): readonly [string, string] => {
   const trimmed = line.trim()
   const space = trimmed.search(/\s/)

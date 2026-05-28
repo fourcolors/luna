@@ -56,3 +56,26 @@ describe("chat slash commands", () => {
     expect(HELP_TEXT).toContain("/local-shell status")
   })
 })
+
+import { SLASH_COMMANDS } from "../src/chat/slash.js"
+
+describe("SLASH_COMMANDS registry", () => {
+  it("exports every command name referenced by HELP_TEXT", () => {
+    const names = SLASH_COMMANDS.map((c) => c.name)
+    for (const expected of ["/help", "/threads", "/new", "/switch", "/interrupt", "/quit", "/exit", "/local-shell"]) {
+      expect(names).toContain(expected)
+    }
+  })
+
+  it("each entry has a one-line description", () => {
+    for (const cmd of SLASH_COMMANDS) {
+      expect(cmd.description.length).toBeGreaterThan(0)
+      expect(cmd.description).not.toContain("\n")
+    }
+  })
+
+  it("entries with arguments declare argHint", () => {
+    const withArgs = SLASH_COMMANDS.find((c) => c.name === "/switch")
+    expect(withArgs?.argHint).toBe("<thread-id>")
+  })
+})

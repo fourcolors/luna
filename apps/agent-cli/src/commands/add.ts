@@ -1,5 +1,5 @@
 /**
- * `luna-account add` — insert one row into the §5.1 `accounts` table.
+ * `luna account add` — insert one row into the §5.1 `accounts` table.
  *
  * Validation (DESIGN.md §2.2.11):
  *   - all four required fields non-empty
@@ -149,3 +149,6 @@ export const runAdd = (args: AddArgs): CmdResult => {
     db.close()
   }
 }
+
+/** Citty-friendly alias for runAdd — returns exit code directly. */
+export const addAccount = runAdd

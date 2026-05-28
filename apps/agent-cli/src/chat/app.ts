@@ -1,8 +1,8 @@
 import { homedir } from "node:os"
 import { posix as pathPosix } from "node:path"
-import { createInterface } from "node:readline"
 import type { Readable, Writable } from "node:stream"
 import type { ServerFrame } from "@luna/ui-ws"
+import { createLineReader, writeError, writeOut as write, writeErr } from "../views/readline.js"
 import { parseChatArgs } from "./args.js"
 import {
   clearLastThread,
@@ -22,7 +22,7 @@ import {
 import { runRecovery } from "./recovery.js"
 import { HELP_TEXT, parseSlashCommand } from "./slash.js"
 import { LunaWsClient } from "./ws-client.js"
-import { runMemoryCommand } from "../memory.js"
+import { LunaHeadlessSession } from "./headless.js"
 
 export type LunaCliIO = {
   stdin: Readable
@@ -71,14 +71,6 @@ const USAGE = [
   HELP_TEXT,
 ].join("\n")
 
-const write = (stream: Writable, text: string): void => {
-  stream.write(text)
-}
-
-const writeError = (io: LunaCliIO, message: string): void => {
-  write(io.stderr, `error: ${message}\n`)
-}
-
 const formatRuntimeError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)
 
@@ -87,17 +79,6 @@ const delay = (ms: number): Promise<void> =>
 
 const waitBounded = async (promise: Promise<unknown>, timeoutMs: number): Promise<void> => {
   await Promise.race([promise.then(() => undefined, () => undefined), delay(timeoutMs)])
-}
-
-const createThreadWaiter = (): {
-  readonly promise: Promise<void>
-  readonly resolve: () => void
-} => {
-  let resolveThread!: () => void
-  const promise = new Promise<void>((resolve) => {
-    resolveThread = resolve
-  })
-  return { promise, resolve: resolveThread }
 }
 
 const sendLocalShellCapability = (
@@ -145,7 +126,7 @@ export const isAutoApprovedLocalShellCwd = (
     || normalized.startsWith(`${normalizedRoot}/`)
 }
 
-const connectWithRecovery = async (
+export const connectWithRecovery = async (
   cfg: ReturnType<typeof loadChatConfig>,
   io: LunaCliIO,
 ): Promise<LunaWsClient> => {
@@ -157,7 +138,7 @@ const connectWithRecovery = async (
       } catch (error) {
         lastError = error
         if (cfg.urls.length > 1) {
-          write(io.stderr, `connection failed for ${url}: ${formatRuntimeError(error)}\n`)
+          writeErr(io, `connection failed for ${url}: ${formatRuntimeError(error)}\n`)
         }
       }
     }
@@ -177,7 +158,7 @@ const connectWithRecovery = async (
       const targetLabel = cfg.startMode === "ssh" && target !== null
         ? ` via ${target}`
         : ""
-      write(io.stderr, `connection failed; running ${cfg.startMode} recovery${targetLabel}\n`)
+      writeErr(io, `connection failed; running ${cfg.startMode} recovery${targetLabel}\n`)
       const recovery = await runRecovery({
         mode: cfg.startMode,
         command: cfg.startCommand,
@@ -206,21 +187,14 @@ export async function runLunaCli(
   argv: readonly string[],
   io: LunaCliIO,
 ): Promise<LunaCliResult> {
-  if (argv[0] === "memory") {
-    const result = await runMemoryCommand(argv.slice(1), { env: io.env })
-    if (result.stdout.length > 0) write(io.stdout, result.stdout)
-    if (result.stderr.length > 0) write(io.stderr, result.stderr)
-    return { exitCode: result.exitCode }
-  }
-
   const args = parseChatArgs(argv)
   if (args.command === "help") {
-    write(io.stdout, `${USAGE}\n`)
+    write(io, `${USAGE}\n`)
     return { exitCode: 0 }
   }
   if (args.command === "unknown") {
     writeError(io, `unknown command: ${args.unknown.join(" ")}`)
-    write(io.stderr, `${USAGE}\n`)
+    writeErr(io, `${USAGE}\n`)
     return { exitCode: 2 }
   }
   if (args.unknown.length > 0) {
@@ -241,7 +215,7 @@ export async function runLunaCli(
   })
   if (cfg.validationErrors.length > 0) {
     for (const error of cfg.validationErrors) writeError(io, error)
-    write(io.stderr, `${redactedConfigSummary(cfg)}\n`)
+    writeErr(io, `${redactedConfigSummary(cfg)}\n`)
     return { exitCode: 2 }
   }
 
@@ -253,22 +227,8 @@ export async function runLunaCli(
     return { exitCode: 1 }
   }
 
-  const lineReader = createInterface({
-    input: io.stdin,
-    crlfDelay: Infinity,
-    terminal: false,
-  })
+  const lineReader = createLineReader(io)
 
-  let currentThreadId: string | null = cfg.threadId
-  let threadWaiter = createThreadWaiter()
-  if (currentThreadId !== null) threadWaiter.resolve()
-  // Track whether the active thread came from disk-persisted auto-resume so
-  // we can transparently recover from a stale id (server lost the thread
-  // across a restart, etc.) without surfacing the error to the user.
-  let pendingAutoResumedThreadId: string | null = cfg.threadIdAutoResumed
-    ? cfg.threadId
-    : null
-  const pendingUserMessages: string[] = []
   let localShell = makeLocalShellState({
     enabled: cfg.localShellInitial,
     cwd: cfg.cwd,
@@ -276,80 +236,29 @@ export async function runLunaCli(
   })
   let quitting = false
   let fatalErrorMessage: string | null = null
-  let pendingAssistantCount = 0
-  let pendingAssistantDrain: Promise<void> | null = null
-  let resolvePendingAssistantDrain: (() => void) | null = null
-  let readyAnnounced = false
-  const assistantTextByTurn = new Map<string, string>()
   const localShellTasks = new Set<Promise<void>>()
   const localShellControllers = new Set<AbortController>()
   const localCommandEnv = sanitizeLocalCommandEnv(io.env)
 
-  const announceReady = (): void => {
-    if (readyAnnounced) return
-    readyAnnounced = true
-    const name = cfg.profileName === "stable" ? "Luna" : `Luna ${cfg.profileName}`
-    write(io.stdout, `${name} ready. Type a message, /help, or /quit.\n`)
-  }
+  const session = new LunaHeadlessSession({
+    client,
+    profileName: cfg.profileName,
+    model: io.env["LUNA_MODEL"] ?? DEFAULT_MODEL,
+    initialThreadId: cfg.threadId,
+    autoResumedThreadId: cfg.threadIdAutoResumed ? cfg.threadId : null,
+    newThread: cfg.newThread,
+    saveLastThread: (id) => {
+      try { writeLastThread(io.homeDir ?? homedir(), cfg.profileName, id) } catch {}
+    },
+    clearLastThread: () => {
+      try { clearLastThread(io.homeDir ?? homedir(), cfg.profileName) } catch {}
+    },
+  })
 
-  const markThread = (threadId: string): void => {
-    currentThreadId = threadId
-    threadWaiter.resolve()
-    announceReady()
-    flushPendingUserMessages()
-    // Once we successfully bind a thread (any source), clear the
-    // auto-resume tracker — subsequent unknown-thread errors are
-    // legit errors, not stale-resume cases.
-    pendingAutoResumedThreadId = null
-    // Persist for next `luna chat` invocation so the user can resume the
-    // same thread without remembering the id. Best-effort — disk failures
-    // here must not break the live session.
-    try {
-      writeLastThread(io.homeDir ?? homedir(), cfg.profileName, threadId)
-    } catch {
-      // Swallow — persisting last-thread is a UX nicety, not load-bearing.
-    }
-  }
-
-  const resetThreadWaiter = (): void => {
-    currentThreadId = null
-    threadWaiter = createThreadWaiter()
-  }
-
-  const waitForAssistantDrain = (): Promise<void> => {
-    if (pendingAssistantCount === 0) return Promise.resolve()
-    if (pendingAssistantDrain === null) {
-      pendingAssistantDrain = new Promise<void>((resolve) => {
-        resolvePendingAssistantDrain = resolve
-      })
-    }
-    return pendingAssistantDrain
-  }
-
-  const trackPendingAssistant = (): void => {
-    pendingAssistantCount += 1
-  }
-
-  const finishPendingAssistant = (): void => {
-    if (pendingAssistantCount > 0) pendingAssistantCount -= 1
-    if (pendingAssistantCount === 0) {
-      resolvePendingAssistantDrain?.()
-      pendingAssistantDrain = null
-      resolvePendingAssistantDrain = null
-    }
-  }
-
-  const sendUserMessage = (threadId: string, text: string): void => {
-    client.send({ type: "user-message", threadId, text })
-    trackPendingAssistant()
-  }
-
-  function flushPendingUserMessages(): void {
-    if (currentThreadId === null) return
-    while (pendingUserMessages.length > 0) {
-      const text = pendingUserMessages.shift()
-      if (text !== undefined) sendUserMessage(currentThreadId, text)
-    }
+  // If the session already has a thread bound (subscribe path), notify server
+  // of local-shell capability immediately.
+  if (session.threadId !== null) {
+    sendLocalShellCapability(client, session.threadId, localShell)
   }
 
   const runLocalShellRequest = (frame: Extract<ServerFrame, { type: "local-shell-request" }>): void => {
@@ -357,7 +266,7 @@ export async function runLunaCli(
       client.send(deniedLocalShellResult(frame, "local shell disabled"))
       return
     }
-    if (frame.threadId !== currentThreadId) {
+    if (frame.threadId !== session.threadId) {
       client.send(deniedLocalShellResult(frame, "local shell unavailable for thread"))
       return
     }
@@ -396,183 +305,124 @@ export async function runLunaCli(
     for (const controller of localShellControllers) controller.abort()
   }
 
-  const renderFrame = async (frame: ServerFrame): Promise<void> => {
-    switch (frame.type) {
-      case "hello":
-      case "event":
-      case "drop":
-      case "account-list":
-      case "artifacts-extracted":
-        return
-      case "ping":
-        client.send({ type: "pong", ts: frame.ts })
-        return
-      case "bye":
-        fatalErrorMessage = frame.reason
-        lineReader.close()
-        return
-      case "thread-created":
-        markThread(frame.thread.id)
-        client.send({ type: "subscribe", threadId: frame.thread.id })
-        sendLocalShellCapability(client, currentThreadId, localShell)
-        return
-      case "thread-snapshot":
-        markThread(frame.threadId)
-        sendLocalShellCapability(client, currentThreadId, localShell)
-        for (const message of frame.messages) {
-          write(io.stdout, `${message.role}: ${message.text}\n`)
-        }
-        return
-      case "user-accepted":
-        markThread(frame.threadId)
-        return
-      case "assistant-delta": {
-        const previous = assistantTextByTurn.get(frame.turnId) ?? ""
-        const next = frame.text.startsWith(previous) ? frame.text.slice(previous.length) : frame.text
-        assistantTextByTurn.set(frame.turnId, frame.text)
-        if (previous.length === 0) write(io.stdout, "Luna: ")
-        write(io.stdout, next)
-        return
-      }
-      case "assistant-done":
-        assistantTextByTurn.delete(frame.turnId)
-        write(io.stdout, "\n")
-        finishPendingAssistant()
-        return
-      case "assistant-error":
-        if (frame.turnId !== null) assistantTextByTurn.delete(frame.turnId)
-        // Auto-recover from a stale resumed thread: server doesn't know the
-        // id we persisted (e.g. chat-server restart wiped in-memory state).
-        // Clear the bad persisted id, reset thread state, and create a new
-        // one. The user's last message becomes the seed of the fresh thread.
-        if (
-          frame.error.kind === "unknown-thread" &&
-          pendingAutoResumedThreadId !== null &&
-          frame.threadId === pendingAutoResumedThreadId
-        ) {
-          try {
-            clearLastThread(io.homeDir ?? homedir(), cfg.profileName)
-          } catch {
-            // Best-effort cleanup.
-          }
-          write(
-            io.stderr,
-            `luna: resumed thread ${pendingAutoResumedThreadId} no longer exists — starting a new one\n`,
-          )
-          pendingAutoResumedThreadId = null
-          resetThreadWaiter()
-          if (frame.turnId !== null) finishPendingAssistant()
-          client.send({ type: "new-thread", model: io.env["LUNA_MODEL"] ?? DEFAULT_MODEL })
-          return
-        }
-        write(io.stderr, `luna: ${frame.error.kind}: ${frame.error.message}\n`)
-        if (frame.turnId !== null) finishPendingAssistant()
-        return
-      case "thread-list":
-        for (const thread of frame.threads) {
-          write(io.stdout, `${thread.id}\t${thread.title ?? ""}\t${thread.status}\n`)
-        }
-        return
-      case "local-shell-status":
-        if (!frame.accepted && localShell.enabled) {
-          write(io.stderr, `local shell: ${frame.message}\n`)
-        }
-        return
-      case "local-shell-request": {
-        runLocalShellRequest(frame)
-        return
-      }
-    }
-  }
+  // Drain tracking: count sent user messages not yet resolved by assistant-done/error.
+  let pendingTurnCount = 0
 
-  const frameLoop = (async (): Promise<void> => {
-    try {
-      for (;;) {
-        await renderFrame(await client.nextFrame())
-      }
-    } catch (error) {
-      if (!quitting) {
-        fatalErrorMessage = formatRuntimeError(error)
-        lineReader.close()
-      }
+  const printedTextByTurn = new Map<string, string>()
+
+  const announceReady = (() => {
+    let done = false
+    return () => {
+      if (done) return
+      done = true
+      const name = cfg.profileName === "stable" ? "Luna" : `Luna ${cfg.profileName}`
+      write(io, `${name} ready. Type a message, /help, or /quit.\n`)
     }
   })()
 
-  try {
-    if (cfg.newThread) {
-      client.send({ type: "new-thread", model: io.env["LUNA_MODEL"] ?? DEFAULT_MODEL })
-    } else if (currentThreadId !== null) {
-      client.send({ type: "subscribe", threadId: currentThreadId })
-      sendLocalShellCapability(client, currentThreadId, localShell)
+  const waitForAssistantDrain = async (timeoutMs: number): Promise<void> => {
+    const start = Date.now()
+    while ((printedTextByTurn.size > 0 || pendingTurnCount > 0) && Date.now() - start < timeoutMs) {
+      await new Promise((r) => setTimeout(r, 20))
     }
+  }
 
+  session.on("ready", announceReady)
+  session.on("threadChange", (threadId) => {
+    announceReady()
+    sendLocalShellCapability(client, threadId, localShell)
+  })
+  session.on("userMessageSent", () => {
+    pendingTurnCount += 1
+  })
+  session.on("assistantDelta", ({ turnId, text }) => {
+    const previous = printedTextByTurn.get(turnId) ?? ""
+    const next = text.startsWith(previous) ? text.slice(previous.length) : text
+    printedTextByTurn.set(turnId, text)
+    if (previous.length === 0) write(io, "Luna: ")
+    write(io, next)
+  })
+  session.on("assistantDone", ({ turnId }) => {
+    printedTextByTurn.delete(turnId)
+    if (pendingTurnCount > 0) pendingTurnCount -= 1
+    write(io, "\n")
+  })
+  session.on("assistantError", ({ message, kind, turnId, silent }) => {
+    if (silent !== true) {
+      writeErr(io, `luna: ${kind ?? "error"}: ${message}\n`)
+    }
+    if (turnId !== null) printedTextByTurn.delete(turnId)
+    if (pendingTurnCount > 0) pendingTurnCount -= 1
+  })
+  session.on("threadList", (threads) => {
+    for (const t of threads) write(io, `${t.id}\t${t.title ?? ""}\t${t.status}\n`)
+  })
+  session.on("localShellStatus", (message, accepted) => {
+    if (!accepted) writeErr(io, `local shell: ${message}\n`)
+  })
+  session.on("localShellRequest", (frame) => runLocalShellRequest(frame))
+  session.on("fatal", (reason) => { fatalErrorMessage = reason; lineReader.close() })
+  session.on("info", (text) => writeErr(io, `${text}\n`))
+  session.on("helpText", () => write(io, `${HELP_TEXT}\n`))
+
+  const sessionLoop = session.run()
+
+  // Track whether a thread is pending (for quit-while-buffering drain).
+  let threadBound = session.threadId !== null
+  session.on("threadChange", () => { threadBound = true })
+
+  // Promise that resolves when thread is first bound (for quit-while-buffering).
+  let resolveThreadBound!: () => void
+  const threadBoundPromise = new Promise<void>((resolve) => { resolveThreadBound = resolve })
+  if (threadBound) resolveThreadBound()
+  session.on("threadChange", resolveThreadBound)
+
+  try {
     for await (const rawLine of lineReader) {
       const line = String(rawLine).trimEnd()
       const command = parseSlashCommand(line)
 
-      switch (command.type) {
-        case "help":
-          write(io.stdout, `${HELP_TEXT}\n`)
-          break
-        case "threads":
-          client.send({ type: "list-threads", limit: 50 })
-          break
-        case "new-thread":
-          resetThreadWaiter()
-          client.send({ type: "new-thread", model: io.env["LUNA_MODEL"] ?? DEFAULT_MODEL })
-          break
-        case "switch-thread":
-          markThread(command.threadId)
-          client.send({ type: "subscribe", threadId: command.threadId })
-          sendLocalShellCapability(client, currentThreadId, localShell)
-          break
-        case "interrupt": {
-          if (currentThreadId !== null) client.send({ type: "interrupt", threadId: currentThreadId })
-          finishPendingAssistant()
-          break
+      // Local-shell toggle still lives in the readline view because it
+      // owns the LocalShellState object. Phase 2 moves this into the session.
+      if (command.type === "local-shell") {
+        localShell = setLocalShellEnabled(localShell, command.action === "on")
+        if (!localShell.enabled) abortLocalShellTasks()
+        write(io, `local shell: ${localShell.enabled ? "on" : "off"}\n`)
+        sendLocalShellCapability(client, session.threadId, localShell)
+        continue
+      }
+      if (command.type === "local-shell-status") {
+        write(io, `local shell: ${localShell.enabled ? "on" : "off"}\n`)
+        sendLocalShellCapability(client, session.threadId, localShell)
+        continue
+      }
+      if (command.type === "error") {
+        writeError(io, command.message)
+        continue
+      }
+      if (command.type === "quit") {
+        quitting = true
+        abortLocalShellTasks()
+        // If there are buffered messages waiting for a thread, wait briefly.
+        if (!threadBound) {
+          await waitBounded(threadBoundPromise, THREAD_CREATE_DRAIN_MS)
         }
-        case "quit":
-          quitting = true
-          abortLocalShellTasks()
-          if (pendingUserMessages.length > 0) {
-            await waitBounded(threadWaiter.promise, THREAD_CREATE_DRAIN_MS)
-          }
-          await waitBounded(waitForAssistantDrain(), QUIT_DRAIN_MS)
-          lineReader.close()
-          break
-        case "local-shell":
-          localShell = setLocalShellEnabled(localShell, command.action === "on")
-          if (!localShell.enabled) abortLocalShellTasks()
-          write(io.stdout, `local shell: ${localShell.enabled ? "on" : "off"}\n`)
-          sendLocalShellCapability(client, currentThreadId, localShell)
-          break
-        case "local-shell-status":
-          write(io.stdout, `local shell: ${localShell.enabled ? "on" : "off"}\n`)
-          sendLocalShellCapability(client, currentThreadId, localShell)
-          break
-        case "error":
-          writeError(io, command.message)
-          break
-        case "message": {
-          if (command.text.trim().length === 0) break
-          if (currentThreadId === null) {
-            pendingUserMessages.push(command.text)
-          } else {
-            sendUserMessage(currentThreadId, command.text)
-          }
-          break
-        }
+        await waitForAssistantDrain(QUIT_DRAIN_MS)
+        session.beginQuit()
+        lineReader.close()
+        break
       }
 
-      if (quitting) break
+      session.dispatchSlash(line)
     }
 
-    if (!quitting) await waitBounded(waitForAssistantDrain(), QUIT_DRAIN_MS)
+    if (!quitting) await waitForAssistantDrain(QUIT_DRAIN_MS)
     quitting = true
+    session.beginQuit()
     abortLocalShellTasks()
     await waitBounded(Promise.allSettled([...localShellTasks]), 100)
     await client.close()
-    await frameLoop
+    await sessionLoop
 
     if (fatalErrorMessage !== null) {
       writeError(io, fatalErrorMessage)
@@ -583,7 +433,7 @@ export async function runLunaCli(
     quitting = true
     abortLocalShellTasks()
     await client.close().catch(() => undefined)
-    await frameLoop.catch(() => undefined)
+    await sessionLoop.catch(() => undefined)
     writeError(io, formatRuntimeError(error))
     return { exitCode: 1 }
   }

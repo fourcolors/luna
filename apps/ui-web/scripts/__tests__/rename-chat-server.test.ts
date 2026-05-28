@@ -94,24 +94,6 @@ describe("rename: dev-server-chat -> chat-server", () => {
     });
   });
 
-  describe("apps/agent-cli/src/index.ts", () => {
-    const file = () => read("apps/agent-cli/src/index.ts");
-
-    it("uses 'chat-server' in restart-warning comment", () => {
-      expect(file()).toContain(
-        "inserts will NOT appear in a running chat-server until you restart",
-      );
-    });
-
-    it("references apps/ui-web/scripts/chat-server.ts in header pointer", () => {
-      expect(file()).toContain("apps/ui-web/scripts/chat-server.ts");
-    });
-
-    it("does NOT contain the literal 'dev-server-chat'", () => {
-      expect(file()).not.toContain("dev-server-chat");
-    });
-  });
-
   describe("apps/agent-cli/test/live-smoke.test.ts", () => {
     const file = () => read("apps/agent-cli/test/live-smoke.test.ts");
 
