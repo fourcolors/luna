@@ -177,6 +177,25 @@ const makeAssistantWithToolUse = (sessionId: string): SDKMessage =>
     },
   }) as unknown as SDKMessage
 
+const makeUserWithToolResult = (sessionId: string): SDKMessage =>
+  ({
+    type: "user",
+    session_id: sessionId,
+    uuid: "tr_user",
+    parent_tool_use_id: null,
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "tu_1",
+          is_error: false,
+          content: [{ type: "text", text: "3 hits found" }],
+        },
+      ],
+    },
+  }) as unknown as SDKMessage
+
 describe("ChatService tool-call frames", () => {
   it(
     "emits a tool-call frame for each assistant tool_use block",
@@ -190,6 +209,26 @@ describe("ChatService tool-call frames", () => {
         expect(toolCall.toolCallId).toBe("tu_1")
         expect(toolCall.name).toBe("mcp__memory__memory_search")
         expect(toolCall.input).toEqual({ query: "deploy" })
+      }
+    },
+    { timeout: 10_000 },
+  )
+})
+
+describe("ChatService tool-result frames", () => {
+  it(
+    "emits a tool-result frame for each user tool_result block",
+    async () => {
+      const frames = await collectFrames([
+        makeUserWithToolResult("thr-tr"),
+      ])
+      const toolResult = frames.find((f) => f.type === "tool-result")
+      expect(toolResult).toBeDefined()
+      if (toolResult && toolResult.type === "tool-result") {
+        expect(toolResult.toolCallId).toBe("tu_1")
+        expect(toolResult.status).toBe("ok")
+        expect(toolResult.output).toBe("3 hits found")
+        expect(toolResult.truncated).toBe(false)
       }
     },
     { timeout: 10_000 },

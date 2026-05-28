@@ -693,6 +693,36 @@ export class ChatService extends Effect.Service<ChatService>()(
             })
             return
           }
+          if (t === "user") {
+            const content = (
+              args.msg as {
+                message?: {
+                  content?: ReadonlyArray<{
+                    type?: string
+                    tool_use_id?: string
+                    is_error?: boolean
+                    content?: unknown
+                  }>
+                }
+              }
+            ).message?.content ?? []
+            for (const b of content) {
+              if (b.type === "tool_result" && typeof b.tool_use_id === "string") {
+                const { output, truncated } = truncateOutput(
+                  normalizeToolResultContent(b.content),
+                )
+                yield* PubSub.publish(args.pubsub, {
+                  type: "tool-result",
+                  threadId: args.threadId,
+                  toolCallId: b.tool_use_id,
+                  status: b.is_error === true ? "error" : "ok",
+                  output,
+                  truncated,
+                })
+              }
+            }
+            return
+          }
           // system / hook / status / stream_event-other / user
           // (echoed by real SDK) — not surfaced as chat frames or obs events.
         })
