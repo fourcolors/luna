@@ -57,16 +57,18 @@ d("DreamStore (sqlite)", () => {
     expect(row?.after).toBeNull()
   })
 
-  it("INSERT OR IGNORE on (dream_id,target_id,op)", async () => {
-    const rows = await run(
+  it("INSERT OR IGNORE on (dream_id,target_id,op) returns the same id", async () => {
+    const out = await run(
       Effect.gen(function* () {
         const store = yield* DreamStore
-        yield* store.record(input())
-        yield* store.record(input())
-        return yield* store.list({ dreamId: "dream-0-100" })
+        const id1 = yield* store.record(input())
+        const id2 = yield* store.record(input())
+        const rows = yield* store.list({ dreamId: "dream-0-100" })
+        return { id1, id2, rows }
       }),
     )
-    expect(rows).toHaveLength(1)
+    expect(out.rows).toHaveLength(1)
+    expect(out.id1).toBe(out.id2)
   })
 
   it("markReverted + watermark persist", async () => {

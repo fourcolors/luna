@@ -1,3 +1,32 @@
+/**
+ * DreamStore — SQLite-backed audit ledger + watermark for the dream-engine
+ * (Phase 1, alignment-loop-phase1).
+ *
+ * Storage model:
+ *   - `dream_audit` is an append-only op-ledger. Each row carries a `status`
+ *     of `applied` (auto-applied by applyOps), `proposed` (held for Phase 3
+ *     survey), or `reverted` (undo via revert()). Only `memory_dedup` ops are
+ *     auto-applied in Phase 1.
+ *   - `dream_state` is a key/value watermark store; key `last_dream_at` holds
+ *     the millisecond timestamp through which the last completed dream cycle ran.
+ *
+ * Layers:
+ *   - `DreamStore.Memory` — Ref-backed, in-process layer. Zero SQLite deps;
+ *     used in all unit/vitest tests.
+ *   - `DreamStore.makeLayer(dbPath)` — Layer.scoped over `bun:sqlite`. Requires
+ *     `Clock` and `LunaSqliteBootstrap` in the Effect environment.
+ *
+ * Idempotency:
+ *   The `dream_audit` table has a UNIQUE constraint on `(dream_id, target_id, op)`
+ *   and all inserts use `INSERT OR IGNORE`. This guarantees crash-recovery
+ *   idempotency: re-running the same dream window produces the same dreamId and
+ *   the second insert is silently ignored. Both layers honour this contract.
+ *
+ * Finalizer discipline (§3.4 #4):
+ *   The `db.close()` finalizer is registered FIRST inside the scoped Effect,
+ *   before any prepared statements are created (LIFO teardown order).
+ */
+
 import { Effect, Layer, Ref } from "effect"
 import { Clock } from "../clock.js"
 import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"

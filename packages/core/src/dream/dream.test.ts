@@ -74,6 +74,7 @@ describe("applyOps", () => {
           const ops: DreamOp[] = [
             { kind: "memory_staleness", targetId: "dup-1", before: rec("dup-1"), after: { ...rec("dup-1"), content: { updated: true } }, rationale: "stale" },
             { kind: "belief_candidate", targetId: "new-belief", before: null, after: { statement: "x" }, rationale: "pattern" },
+            { kind: "memory_contradiction", targetId: "other-1", before: null, after: { resolved: true }, rationale: "conflict" },
           ]
           yield* applyOps("dream-0-100", ops)
           const untouched = yield* mem.get("dup-1")
@@ -83,7 +84,7 @@ describe("applyOps", () => {
       ),
     )
     expect(out.untouched).not.toBeNull() // staleness was NOT applied
-    expect(out.rows).toHaveLength(2)
+    expect(out.rows).toHaveLength(3)
     expect(out.rows.every((r) => r.status === "proposed")).toBe(true)
     expect(out.rows.every((r) => r.appliedAt === null)).toBe(true)
   })
