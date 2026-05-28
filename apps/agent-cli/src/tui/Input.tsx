@@ -1,9 +1,13 @@
+import { onMount } from "solid-js"
 import type { TuiStore } from "./store.js"
 import {
   defaultTextareaKeyBindings,
   type KeyBinding,
   type TextareaRenderable,
 } from "@opentui/core"
+
+// Vim-style green block cursor + prompt prefix.
+const CURSOR_COLOR = "#00FF87"
 
 export type InputProps = {
   store: TuiStore
@@ -41,11 +45,23 @@ export const Input = (props: InputProps) => {
     props.onSubmit(v)
   }
 
+  // The textarea cursor is block-by-default but only shows when focused; the
+  // `focused` prop alone proved unreliable, so claim focus imperatively and
+  // pin a visible block cursor once the renderable is mounted.
+  onMount(() => {
+    if (textarea === undefined) return
+    textarea.focus()
+    textarea.cursorStyle = { style: "block", blinking: true }
+    textarea.cursorColor = CURSOR_COLOR
+  })
+
   return (
-    <box style={{ borderStyle: "single", flexShrink: 0, minHeight: 3 }}>
+    <box style={{ borderStyle: "single", flexShrink: 0, minHeight: 3, flexDirection: "row" }}>
+      <text style={{ fg: CURSOR_COLOR }}>{"> "}</text>
       <textarea
         ref={(el: TextareaRenderable) => { textarea = el }}
         focused
+        style={{ flexGrow: 1 }}
         keyBindings={chatKeyBindings}
         placeholder="Type a message — Enter to send, Shift+Enter for newline"
         onContentChange={syncDraft}
