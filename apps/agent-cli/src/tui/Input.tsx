@@ -35,7 +35,7 @@ export const Input = (props: InputProps) => {
   }
 
   return (
-    <box style={{ borderStyle: "single", flexShrink: 0 }}>
+    <box style={{ borderStyle: "single", flexShrink: 0, minHeight: 3 }}>
       <textarea
         focused
         keyBindings={chatKeyBindings}
