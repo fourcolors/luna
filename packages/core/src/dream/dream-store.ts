@@ -1,11 +1,54 @@
 import { Effect, Layer, Ref } from "effect"
 import { Clock } from "../clock.js"
+import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
+import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
+import { ConfigError } from "../errors.js"
 import type {
   DreamAuditQuery,
   DreamAuditRow,
   DreamAuditRowInput,
 } from "./types.js"
 import { DreamError } from "./types.js"
+
+// ── bun:sqlite minimal shape ─────────────────────────────────────────────────
+
+interface BunDb {
+  run: (sql: string) => void
+  query: (sql: string) => BunStmt
+  close: () => void
+}
+interface BunStmt {
+  get: (...p: unknown[]) => unknown
+  all: (...p: unknown[]) => unknown[]
+  run: (...p: unknown[]) => { changes: number }
+}
+
+// ── Schema ────────────────────────────────────────────────────────────────────
+
+const SCHEMA_V1 = `
+  CREATE TABLE IF NOT EXISTS dream_audit (
+    id           TEXT NOT NULL PRIMARY KEY,
+    dream_id     TEXT NOT NULL,
+    at           INTEGER NOT NULL,
+    op           TEXT NOT NULL,
+    target_id    TEXT NOT NULL,
+    before_json  TEXT,
+    after_json   TEXT,
+    rationale    TEXT NOT NULL,
+    status       TEXT NOT NULL CHECK(status IN ('applied','proposed','reverted')),
+    applied_at   INTEGER,
+    reverted_at  INTEGER,
+    UNIQUE(dream_id, target_id, op)
+  );
+  CREATE INDEX IF NOT EXISTS idx_dream_audit_dream ON dream_audit(dream_id);
+  CREATE INDEX IF NOT EXISTS idx_dream_audit_target ON dream_audit(target_id);
+  CREATE INDEX IF NOT EXISTS idx_dream_audit_status ON dream_audit(status);
+
+  CREATE TABLE IF NOT EXISTS dream_state (
+    k TEXT NOT NULL PRIMARY KEY,
+    v TEXT NOT NULL
+  );
+`
 
 const randomUuid = (): string =>
   globalThis.crypto?.randomUUID?.() ??
@@ -104,4 +147,156 @@ export class DreamStore extends Effect.Tag("luna/DreamStore")<
       } satisfies DreamStoreApi
     }),
   )
+
+  /**
+   * SQLite-backed Layer. `dbPath` may be `":memory:"` for ephemeral use.
+   * Requires `Clock` and `LunaSqliteBootstrap` in the environment.
+   */
+  static makeLayer(
+    dbPath: string,
+  ): Layer.Layer<DreamStore, ConfigError, Clock | LunaSqliteBootstrap> {
+    return Layer.scoped(
+      DreamStore,
+      Effect.gen(function* () {
+        // Pull bootstrap marker BEFORE opening any Database so the
+        // process-wide setCustomSQLite swap has run.
+        yield* LunaSqliteBootstrap
+
+        const clock = yield* Clock
+
+        // Dynamic import — insulates stock-node vitest from hard-failing
+        // at module load.
+        const bunSqliteSpec = "bun:sqlite"
+        const mod = yield* Effect.tryPromise({
+          try: () => import(/* @vite-ignore */ bunSqliteSpec) as Promise<unknown>,
+          catch: (cause) =>
+            new ConfigError({
+              module: "dream-store",
+              key: "bun:sqlite",
+              message: `failed to import bun:sqlite: ${String(cause)}`,
+            }),
+        })
+        const Database = (mod as { Database?: unknown }).Database as
+          | (new (p: string) => BunDb)
+          | undefined
+        if (!Database) {
+          return yield* Effect.fail(
+            new ConfigError({
+              module: "dream-store",
+              key: "bun:sqlite",
+              message: "bun:sqlite module has no `Database` export",
+            }),
+          )
+        }
+
+        const db = new Database(dbPath)
+
+        // Pragmas before any writes.
+        db.run("PRAGMA journal_mode = WAL")
+        db.run("PRAGMA synchronous = NORMAL")
+        db.run("PRAGMA foreign_keys = ON")
+
+        // §5.2 migration ladder.
+        const nowMs = yield* clock.nowMs()
+        ensureSchemaVersions(db)
+        applyMigration(db, "dream", 1, SCHEMA_V1, nowMs)
+
+        // §3.4 #4 LIFO: register db.close finalizer FIRST.
+        yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
+
+        // Prepared statements.
+        const insertStmt = db.query(`
+          INSERT OR IGNORE INTO dream_audit
+            (id, dream_id, at, op, target_id, before_json, after_json,
+             rationale, status, applied_at, reverted_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        `)
+        const selectById = db.query(`SELECT * FROM dream_audit WHERE id = ?`)
+        const selectKey = db.query(
+          `SELECT id FROM dream_audit WHERE dream_id = ? AND target_id = ? AND op = ?`,
+        )
+        const revertStmt = db.query(
+          `UPDATE dream_audit SET status = 'reverted', reverted_at = ? WHERE id = ?`,
+        )
+        const getWmStmt = db.query(`SELECT v FROM dream_state WHERE k = 'last_dream_at'`)
+        const setWmStmt = db.query(
+          `INSERT INTO dream_state (k, v) VALUES ('last_dream_at', ?)
+           ON CONFLICT(k) DO UPDATE SET v = excluded.v`,
+        )
+
+        const rowToAudit = (r: Record<string, unknown>): DreamAuditRow => ({
+          id: r.id as string,
+          dreamId: r.dream_id as string,
+          at: r.at as number,
+          op: r.op as DreamAuditRow["op"],
+          targetId: r.target_id as string,
+          before: r.before_json == null ? null : JSON.parse(r.before_json as string),
+          after: r.after_json == null ? null : JSON.parse(r.after_json as string),
+          rationale: r.rationale as string,
+          status: r.status as DreamAuditRow["status"],
+          appliedAt: (r.applied_at as number | null) ?? null,
+          revertedAt: (r.reverted_at as number | null) ?? null,
+        })
+
+        const wrap = <A>(op: string, f: () => A) =>
+          Effect.try({
+            try: f,
+            catch: (cause) =>
+              new DreamError({ op, message: `sqlite ${op} failed: ${String(cause)}`, cause }),
+          })
+
+        const record: DreamStoreApi["record"] = (input) =>
+          wrap("record", () => {
+            insertStmt.run(
+              randomUuid(),
+              input.dreamId,
+              input.at,
+              input.op,
+              input.targetId,
+              input.before == null ? null : JSON.stringify(input.before),
+              input.after == null ? null : JSON.stringify(input.after),
+              input.rationale,
+              input.status,
+              input.appliedAt,
+            )
+            const row = selectKey.get(input.dreamId, input.targetId, input.op) as
+              | { id: string }
+              | undefined
+            return row?.id ?? ""
+          })
+
+        const list: DreamStoreApi["list"] = (q) =>
+          wrap("list", () => {
+            const clauses: string[] = []
+            const params: unknown[] = []
+            if (q.dreamId !== undefined) { clauses.push("dream_id = ?"); params.push(q.dreamId) }
+            if (q.status !== undefined) { clauses.push("status = ?"); params.push(q.status) }
+            if (q.targetId !== undefined) { clauses.push("target_id = ?"); params.push(q.targetId) }
+            const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""
+            const limit = q.limit !== undefined ? `LIMIT ${Number(q.limit)}` : ""
+            const stmt = db.query(`SELECT * FROM dream_audit ${where} ORDER BY at ASC ${limit}`)
+            return (stmt.all(...params) as Array<Record<string, unknown>>).map(rowToAudit)
+          })
+
+        const get: DreamStoreApi["get"] = (id) =>
+          wrap("get", () => {
+            const r = selectById.get(id) as Record<string, unknown> | undefined
+            return r ? rowToAudit(r) : null
+          })
+
+        const markReverted: DreamStoreApi["markReverted"] = (id, at) =>
+          wrap("markReverted", () => revertStmt.run(at, id).changes > 0)
+
+        const getWatermark: DreamStoreApi["getWatermark"] = wrap("getWatermark", () => {
+          const r = getWmStmt.get() as { v: string } | undefined
+          return r ? Number(r.v) : null
+        })
+
+        const setWatermark: DreamStoreApi["setWatermark"] = (ms) =>
+          wrap("setWatermark", () => { setWmStmt.run(String(ms)) }).pipe(Effect.asVoid)
+
+        return { record, list, get, markReverted, getWatermark, setWatermark } satisfies DreamStoreApi
+      }),
+    )
+  }
 }
