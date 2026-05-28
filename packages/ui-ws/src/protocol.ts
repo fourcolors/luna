@@ -125,6 +125,24 @@ export interface ArtifactsExtractedFrame {
   readonly artifacts: ReadonlyArray<Artifact>
 }
 
+export interface ToolCallFrame {
+  readonly type: "tool-call"
+  readonly threadId: string
+  readonly turnId: string
+  readonly toolCallId: string
+  readonly name: string
+  readonly input: unknown
+}
+
+export interface ToolResultFrame {
+  readonly type: "tool-result"
+  readonly threadId: string
+  readonly toolCallId: string
+  readonly status: "ok" | "error"
+  readonly output: string
+  readonly truncated: boolean
+}
+
 export interface AccountListFrame {
   readonly type: "account-list"
   readonly accounts: ReadonlyArray<{
@@ -190,6 +208,8 @@ export type ServerFrame =
   | AssistantDoneFrame
   | AssistantErrorFrame
   | ArtifactsExtractedFrame
+  | ToolCallFrame
+  | ToolResultFrame
   | AccountListFrame
   | LocalShellRequestFrame
   | LocalShellStatusFrame
