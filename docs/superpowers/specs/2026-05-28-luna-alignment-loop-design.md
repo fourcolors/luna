@@ -70,6 +70,24 @@ The "outreach welcome" signal must not be suppressed by survey backoff: the
 riskiest action (unprompted messages) cannot be allowed to run in the
 lowest-oversight window with drift undetected for up to 30 days.
 
+**Category boundary — transcripts vs. telemetry.** The two are different *kinds*
+of evidence and feed different signals:
+
+- **Transcripts tell you about Operator.** A belief about Operator can *only*
+  come from the conversation. This is the sole source for the
+  **belief-validation** stream.
+- **Telemetry/observability tells you about Luna.** Tool failures, latencies,
+  cost, retries are about Luna's *performance*, not about Operator. Deriving a
+  belief about Operator from telemetry is a category error. Telemetry feeds the
+  **task-quality** stream only — never belief-validation.
+
+**Implicit signals (no survey needed).** Some objective events are unambiguous
+alignment labels on their own. The strongest is `PermissionDecision` **denials**
+(`observability/types.ts`): every denied tool call is a recorded instance of
+Luna misjudging, and feeds the task-quality stream directly without waiting for
+a survey. Telemetry thus **pre-biases** the task-quality score (objective rough
+draft); the survey **confirms or overrides** it (subjective ground truth).
+
 ### 2.4 Graduated autonomy ladder & cold start
 
 Stakes increase down the ladder; each rung is gated by the right-grained signal:
@@ -89,8 +107,7 @@ risky is on by default.
 A durable multi-step workflow (`WorkflowRuntime`) scheduled via `TriggerAgent` /
 `JobScheduler`. Crash mid-dream resumes cleanly.
 
-- **Reads:** sessions since the last dream + current beliefs + relevant memories
-  (via the `@luna/memory` router).
+- **Reads:** see §3.1.1 (Dream inputs).
 - **Reasons about:**
   - **Memory hygiene** — contradictions, staleness, duplicates.
   - **Candidate beliefs** — patterns worth promoting to the bounded belief set.
@@ -101,6 +118,40 @@ A durable multi-step workflow (`WorkflowRuntime`) scheduled via `TriggerAgent` /
   stores/queues. This keeps it a pure batch reasoner, testable as
   `fixture sessions → expected store mutations`.
 - **Default cadence:** nightly / on idle. (Configurable; correct in review.)
+
+#### 3.1.1 Dream inputs
+
+Dream is **incremental and idempotent**, driven by a persisted watermark
+`last_dream_at`. Each run:
+
+1. **Advance from the watermark.** Query `SessionStore`
+   (`session/session-store-sqlite.ts`) for sessions touched since
+   `last_dream_at`, ordered by `SessionSummary.lastMessageAt`. Pull each
+   session's message log.
+2. **Pull behavioral evidence.** For each session, filter the
+   `ObservabilityService` JSONL sink (`observability/types.ts`) by `sessionId` +
+   the session's time window, aggregating `ToolCall` (durations),
+   `Error`, `PermissionDecision` (denials), `RetrievalCall`, `CostAccrued`, and
+   `SessionEnd.durationMs`.
+3. **Pull current state.** `@luna/memory` router `query({ kind, since })` +
+   semantic `search()` for beliefs and memories relevant to the sessions under
+   review — the state to reconcile against.
+4. **Reason** (per the three reasoning targets above), routing evidence by the
+   §2.3 category boundary: transcripts → belief candidates + memory hygiene;
+   telemetry/observability → task-quality observations only.
+5. **Advance the watermark** to the latest processed `lastMessageAt`.
+
+The watermark makes re-runs safe: a session is never double-processed, and a
+crashed dream resumes from the last committed watermark.
+
+**Source-of-signal map:**
+
+| Input source | Layer / file | Routes to |
+|---|---|---|
+| Transcripts | `SessionStore` · `SessionSummary` | belief candidates + memory hygiene |
+| Memory / beliefs | `@luna/memory` router (`query` / `search`) | state to reconcile |
+| Observability events | `ObservabilityService` JSONL sink | task-quality observations |
+| `PermissionDecision` denials | `observability/types.ts` | task-quality (implicit, no survey) |
 
 ### 3.2 Belief set
 
@@ -140,8 +191,8 @@ Beliefs are `MemoryRecord`s with `kind: "belief"` — **no record-level migratio
 ## 4. Data flow (one cycle)
 
 ```
-sessions + beliefs + memories
-        │
+sessions + beliefs + memories + observability/telemetry
+        │  (transcripts → beliefs/hygiene; telemetry → task-quality only)
         ▼
    ┌─────────┐   auto-apply (tiered) ──▶ memory/beliefs  +  audit log
    │  DREAM  │   queue survey items   ──▶ survey queue
@@ -205,6 +256,10 @@ dream_audit (id, dream_id, at, op, target_id, before, after, reverted_at)
 
 - **Dream:** fixture session corpus → assert exact store mutations + audit rows.
   Deterministic; no user surface to mock.
+- **Dream input routing (category boundary):** given fixture transcripts +
+  observability events, assert transcripts produce belief candidates / hygiene
+  ops and telemetry produces *only* task-quality observations (never a belief).
+  Watermark advances; re-run on the same corpus is a no-op (idempotency).
 - **Belief writer:** cap/eviction unit tests (21st belief retires the weakest;
   retired beliefs persist for audit).
 - **Cadence controller:** pure-function table tests — low alignment snaps to 1
