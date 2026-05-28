@@ -31,6 +31,8 @@ export type LunaHeadlessEvents = {
   helpText: (text: string) => void
   info: (text: string) => void
   errorText: (text: string) => void
+  toolCall: (e: { toolCallId: string; name: string; input: unknown; turnId: string }) => void
+  toolResult: (e: { toolCallId: string; status: "ok" | "error"; output: string; truncated: boolean }) => void
 }
 
 export type LunaHeadlessConfig = {
@@ -306,6 +308,18 @@ export class LunaHeadlessSession extends EventEmitter {
         return
       case "local-shell-request":
         this.emit("localShellRequest", frame)
+        return
+      case "tool-call":
+        this.emit("toolCall", {
+          toolCallId: frame.toolCallId, name: frame.name,
+          input: frame.input, turnId: frame.turnId,
+        })
+        return
+      case "tool-result":
+        this.emit("toolResult", {
+          toolCallId: frame.toolCallId, status: frame.status,
+          output: frame.output, truncated: frame.truncated,
+        })
         return
     }
   }
