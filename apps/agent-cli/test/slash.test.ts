@@ -22,4 +22,12 @@ describe("slashState", () => {
     expect(s.active).toBe(true)
     expect(s.matches).toEqual([])
   })
+  it("treats non-string input as inactive instead of throwing", () => {
+    // The textarea change-event is an object, not a string; slashState must
+    // never throw on it (regression: input.startsWith is not a function).
+    const bad = { foo: 1 } as unknown as string
+    expect(() => slashState(bad, cmds)).not.toThrow()
+    expect(slashState(bad, cmds).active).toBe(false)
+    expect(slashState(undefined as unknown as string, cmds).active).toBe(false)
+  })
 })

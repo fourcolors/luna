@@ -1,6 +1,9 @@
 import type { TuiStore } from "./store.js"
-import type { TextareaProps } from "@opentui/solid"
-import { defaultTextareaKeyBindings, type KeyBinding } from "@opentui/core"
+import {
+  defaultTextareaKeyBindings,
+  type KeyBinding,
+  type TextareaRenderable,
+} from "@opentui/core"
 
 export type InputProps = {
   store: TuiStore
@@ -20,32 +23,33 @@ const chatKeyBindings: KeyBinding[] = [
   { name: "kpenter", shift: true, action: "newline" },
 ]
 
-// NOTE: the OpenTUI/solid types declare TextareaProps.onContentChange as
-// (value: string) => void, but it intersects with the underlying
-// EditBufferOptions.onContentChange of (event: ContentChangeEvent) => void,
-// producing an impossible intersection type. At runtime the textarea emits the
-// "change" event with the current text value (a string), so we type the handler
-// against that runtime-correct shape and assert it onto the prop.
-type ContentChangeHandler = (value: string) => void
-type TextareaContentChangeProp = TextareaProps["onContentChange"]
-
+// The textarea owns the edit buffer. `onContentChange` fires with a
+// ContentChangeEvent (an object, NOT the text), so we read the current text
+// from the renderable's `plainText` getter via a ref. We mirror it into the
+// store's inputDraft only so the SlashMenu can react to the leading "/".
 export const Input = (props: InputProps) => {
-  const handleContentChange: ContentChangeHandler = (value) => {
-    props.store.setInputDraft(value)
+  let textarea: TextareaRenderable | undefined
+
+  const syncDraft = (): void => {
+    props.store.setInputDraft(textarea?.plainText ?? "")
+  }
+
+  const submit = (): void => {
+    const v = textarea?.plainText ?? ""
+    textarea?.clear()
+    props.store.setInputDraft("")
+    props.onSubmit(v)
   }
 
   return (
     <box style={{ borderStyle: "single", flexShrink: 0, minHeight: 3 }}>
       <textarea
+        ref={(el: TextareaRenderable) => { textarea = el }}
         focused
         keyBindings={chatKeyBindings}
         placeholder="Type a message — Enter to send, Shift+Enter for newline"
-        onContentChange={handleContentChange as unknown as TextareaContentChangeProp}
-        onSubmit={() => {
-          const v = props.store.inputDraft()
-          props.store.setInputDraft("")
-          props.onSubmit(v)
-        }}
+        onContentChange={syncDraft}
+        onSubmit={submit}
       />
     </box>
   )
