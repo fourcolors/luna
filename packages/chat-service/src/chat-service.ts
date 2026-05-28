@@ -36,6 +36,7 @@
  */
 import {
   Chunk,
+  Context,
   Effect,
   Exit,
   Layer,
@@ -65,6 +66,7 @@ import {
   type ChatFrame,
   type ChatErrorKind,
   type CreateThreadOptions,
+  type ThreadToolsProvider,
 } from "./types.js"
 import { extractArtifacts } from "./artifacts.js"
 import {
@@ -163,6 +165,22 @@ const LUNA_ALLOWED_MCP_TOOLS = [
   "mcp__local_shell__*",
 ] as const
 
+/**
+ * Optional injection point for per-thread tool wiring. When provided, the
+ * app supplies MCP servers + a merged system prompt + a post-create binding
+ * callback that ChatService applies to EVERY thread creation. Resolved via
+ * `Effect.serviceOption`, so omitting it leaves ChatService's prior
+ * tool-free behavior intact (and existing consumers/tests need no change).
+ *
+ * This exists because tool wiring used to be an app-level wrapper around the
+ * public `createThread`, which the internal subscribe()-restart-recovery
+ * path bypassed — leaving resumed threads with `allowedTools` set but zero
+ * MCP servers. Wiring at the service seam covers both paths.
+ */
+export const ThreadToolsProviderTag = Context.GenericTag<ThreadToolsProvider>(
+  "luna/ThreadToolsProvider",
+)
+
 /* -------------------------------------------------------------------------- */
 /* Service                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -177,6 +195,12 @@ export class ChatService extends Effect.Service<ChatService>()(
       const obs = yield* ObservabilityService
       const tel = yield* TelemetryService
       const memoryRouter = yield* MemoryRouterTag
+      // Optional — when the app provides it, EVERY thread (new or resumed)
+      // gets its MCP servers + merged system prompt + post-create binding.
+      // Omitted in tests/headless that don't need tools.
+      const threadToolsProvider = yield* Effect.serviceOption(
+        ThreadToolsProviderTag,
+      )
       const serviceScope = yield* Effect.scope
 
       const threads = yield* Ref.make<ReadonlyMap<string, ThreadEntry>>(new Map())
@@ -303,12 +327,41 @@ export class ChatService extends Effect.Service<ChatService>()(
         Effect.gen(function* () {
           const id = opts.threadIdOverride ?? (yield* genThreadId())
           const createdAt = yield* clock.nowMs()
-          const sessionOptions = buildSessionOptions(opts)
+
+          // Per-thread tool wiring. When the app provided a
+          // ThreadToolsProvider, decorate THIS thread's options with its MCP
+          // servers + merged system prompt before building sessionOptions.
+          // Because this lives in the internal createThread, both new threads
+          // and subscribe()-recovery (resume) threads get tools — the bug
+          // was that tool wiring used to live in an app wrapper the resume
+          // path bypassed.
+          const binding = Option.map(threadToolsProvider, (p) =>
+            p.decorate(opts),
+          )
+          const effectiveOpts: CreateThreadOptions = Option.match(binding, {
+            onNone: () => opts,
+            onSome: (b) => ({
+              ...opts,
+              mcpServers: { ...(opts.mcpServers ?? {}), ...b.mcpServers },
+              ...(b.systemPrompt !== undefined
+                ? { systemPrompt: b.systemPrompt }
+                : {}),
+            }),
+          })
+          const sessionOptions = buildSessionOptions(effectiveOpts)
 
           // Create the session row first — fail loudly if id collides.
           const summary = yield* store
             .create({ id, options: sessionOptions, createdAt })
             .pipe(Effect.orDie)
+
+          // Session row exists → run the provider's post-create binding
+          // (obs session tagging, local-shell attach, sandbox re-attach)
+          // BEFORE the SDK query starts so tool servers know their session.
+          Option.match(binding, {
+            onNone: () => {},
+            onSome: (b) => b.onBound(id),
+          })
 
           // Emit SessionStart so the obs Events tab shows activity.
           yield* obs.emit({

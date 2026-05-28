@@ -173,3 +173,32 @@ export interface CreateThreadOptions {
    */
   readonly resumeFromSessionId?: string
 }
+
+/**
+ * The per-thread tool config a ThreadToolsProvider produces. ChatService
+ * applies this to EVERY thread creation — new threads and threads restored
+ * by the subscribe()-restart-recovery path alike — so a resumed thread can
+ * never come back without its tools.
+ */
+export interface ThreadToolsBinding {
+  /** MCP servers merged into the thread's `sdkOptions.mcpServers`. */
+  readonly mcpServers: Readonly<Record<string, unknown>>
+  /** Fully-merged system prompt (identity + metadata + tool addenda +
+   *  caller prompt). When present it replaces the caller's systemPrompt;
+   *  the provider is responsible for folding the caller's prompt in. */
+  readonly systemPrompt?: string
+  /** Run after the session row exists, with its id — for per-session
+   *  bindings (obs tagging, local-shell attach, sandbox re-attach). */
+  readonly onBound: (sessionId: string) => void
+}
+
+/**
+ * Injected, optional. When provided, ChatService calls `decorate(opts)`
+ * once per thread creation to obtain the thread's MCP servers, merged
+ * system prompt, and post-create binding callback. This replaces the old
+ * app-level createThread wrapper, which could not intercept the internal
+ * resume path and so left resumed threads tool-less.
+ */
+export interface ThreadToolsProvider {
+  readonly decorate: (opts: CreateThreadOptions) => ThreadToolsBinding
+}
