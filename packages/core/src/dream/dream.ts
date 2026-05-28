@@ -5,6 +5,7 @@ import { Clock } from "../clock.js"
 import { MemoryBackendError } from "../errors.js"
 import { SessionStore } from "../session/session-store.js"
 import { DreamStore } from "./dream-store.js"
+import { DreamReasoner } from "./reasoner.js"
 import type { DreamOp, DreamOpKind, DreamInputs } from "./types.js"
 
 /** Phase 1: the ONLY op kind safe to auto-apply without survey/undo coverage. */
@@ -115,4 +116,29 @@ export const gatherInputs = (
       .pipe(Stream.runCollect, Effect.map((c) => Array.from(c)))
 
     return { sessions: withMessages, memories }
+  })
+
+/**
+ * One dream cycle. `now` is injected (caller/cron supplies the clock reading)
+ * so the function is deterministic in tests. Watermark is advanced LAST.
+ *
+ * Crash-recovery idempotency: if the process crashes before `setWatermark`,
+ * the watermark is unchanged, so the next run produces the same dreamId
+ * (e.g. "dream-0-1000"). The dedup key (dreamId, targetId, op) in DreamStore
+ * ensures INSERT OR IGNORE fires and memory ops are idempotent state-sets.
+ */
+export const runDream = (now: number) =>
+  Effect.gen(function* () {
+    const store = yield* DreamStore
+    const reasoner = yield* DreamReasoner
+    const watermark = (yield* store.getWatermark) ?? 0
+    const dreamId = deriveDreamId(watermark, now)
+
+    const inputs = yield* gatherInputs(watermark, now)
+    const ops = yield* reasoner.reason(inputs)
+    yield* applyOps(dreamId, ops)
+
+    // Advance watermark LAST. A crash before this re-runs the same window
+    // (same dreamId), which is a no-op thanks to INSERT OR IGNORE + idempotent ops.
+    yield* store.setWatermark(now)
   })
