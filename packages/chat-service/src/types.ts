@@ -102,6 +102,28 @@ export interface ChatArtifactsExtracted {
   readonly artifacts: ReadonlyArray<Artifact>
 }
 
+/** A tool the agent invoked, surfaced live when the assistant turn lands.
+ *  `toolCallId` equals the SDK `tool_use.id` and links to its result. */
+export interface ChatToolCall {
+  readonly type: "tool-call"
+  readonly threadId: string
+  readonly turnId: string
+  readonly toolCallId: string
+  readonly name: string
+  readonly input: unknown
+}
+
+/** The result of a previously-announced tool call. `toolCallId` equals the
+ *  SDK `tool_result.tool_use_id`. `output` is normalized text, truncated. */
+export interface ChatToolResult {
+  readonly type: "tool-result"
+  readonly threadId: string
+  readonly toolCallId: string
+  readonly status: "ok" | "error"
+  readonly output: string
+  readonly truncated: boolean
+}
+
 /**
  * Union of every frame the per-thread subscribe Stream emits. ui-ws maps
  * this 1:1 to its ServerFrame chat variants.
@@ -113,6 +135,8 @@ export type ChatFrame =
   | ChatAssistantError
   | ChatUserAccepted
   | ChatArtifactsExtracted
+  | ChatToolCall
+  | ChatToolResult
 
 /** Options accepted by `createThread`. Mirrors the subset of SessionOptions
  *  a chat caller cares about; ChatService overlays the chat-required fields
