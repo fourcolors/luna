@@ -121,6 +121,9 @@ const MAX_TOOL_OUTPUT_LINES = 40
 /** Normalize an SDK tool_result `content` payload (string | block array |
  *  arbitrary object) into plain text. */
 export const normalizeToolResultContent = (content: unknown): string => {
+  // SDK `ToolResultBlockParam.content` is optional; a tool that succeeds with
+  // no output yields `undefined`. Both null and undefined normalize to "".
+  if (content == null) return ""
   if (typeof content === "string") return content
   if (Array.isArray(content)) {
     const parts = content.map((b) =>
@@ -723,8 +726,8 @@ export class ChatService extends Effect.Service<ChatService>()(
             }
             return
           }
-          // system / hook / status / stream_event-other / user
-          // (echoed by real SDK) — not surfaced as chat frames or obs events.
+          // system / hook / status / stream_event-other
+          // — not surfaced as chat frames or obs events.
         })
 
       /** Lookup helper: scan store messages for this session, return the

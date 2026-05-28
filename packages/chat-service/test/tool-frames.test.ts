@@ -32,6 +32,12 @@ describe("normalizeToolResultContent", () => {
   it("stringifies non-text payloads as JSON", () => {
     expect(normalizeToolResultContent({ a: 1 })).toBe('{"a":1}')
   })
+  it("returns an empty string for undefined (optional SDK content)", () => {
+    expect(normalizeToolResultContent(undefined)).toBe("")
+  })
+  it("returns an empty string for null", () => {
+    expect(normalizeToolResultContent(null)).toBe("")
+  })
 })
 
 describe("truncateOutput", () => {
@@ -196,6 +202,25 @@ const makeUserWithToolResult = (sessionId: string): SDKMessage =>
     },
   }) as unknown as SDKMessage
 
+const makeUserWithToolError = (sessionId: string): SDKMessage =>
+  ({
+    type: "user",
+    session_id: sessionId,
+    uuid: "tr_user_err",
+    parent_tool_use_id: null,
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "tu_2",
+          is_error: true,
+          content: [{ type: "text", text: "boom" }],
+        },
+      ],
+    },
+  }) as unknown as SDKMessage
+
 describe("ChatService tool-call frames", () => {
   it(
     "emits a tool-call frame for each assistant tool_use block",
@@ -229,6 +254,21 @@ describe("ChatService tool-result frames", () => {
         expect(toolResult.status).toBe("ok")
         expect(toolResult.output).toBe("3 hits found")
         expect(toolResult.truncated).toBe(false)
+      }
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "marks the frame status 'error' when is_error is true",
+    async () => {
+      const frames = await collectFrames([makeUserWithToolError("thr-tre")])
+      const toolResult = frames.find((f) => f.type === "tool-result")
+      expect(toolResult).toBeDefined()
+      if (toolResult && toolResult.type === "tool-result") {
+        expect(toolResult.toolCallId).toBe("tu_2")
+        expect(toolResult.status).toBe("error")
+        expect(toolResult.output).toBe("boom")
       }
     },
     { timeout: 10_000 },
