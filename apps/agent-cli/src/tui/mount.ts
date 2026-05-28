@@ -23,6 +23,7 @@ import {
   executeLocalCommand,
   makeLocalShellState,
   sanitizeLocalCommandEnv,
+  setLocalShellEnabled,
 } from "../chat/local-shell.js"
 import { parseChatArgs } from "../chat/args.js"
 
@@ -162,6 +163,22 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
   })
   const localCommandEnv = sanitizeLocalCommandEnv(process.env)
 
+  // Tell the server this client's local-shell capability. Sent on every
+  // thread (re)bind so the server registers the slot, and on each toggle.
+  const sendLocalShellCapability = (threadId: string | null): void => {
+    if (threadId === null) return
+    client.send({
+      type: "local-shell-capability",
+      threadId,
+      enabled: localShell.enabled,
+      approvalMode: localShell.approvalMode,
+      clientId: localShell.clientId,
+      platform: localShell.platform,
+      cwd: localShell.cwd,
+    })
+  }
+  session.on("threadChange", (id) => sendLocalShellCapability(id))
+
   session.on("localShellRequest", (frame) => {
     if (!localShell.enabled) {
       client.send({
@@ -206,6 +223,18 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
       void client.close().then(() => {
         rendererRef?.destroy()
       })
+      return
+    }
+    if (parsed.type === "local-shell") {
+      localShell = setLocalShellEnabled(localShell, parsed.action === "on")
+      store.setLocalShellEnabled(localShell.enabled)
+      store.appendSystem(`local shell: ${localShell.enabled ? "on" : "off"}`)
+      sendLocalShellCapability(store.threadId())
+      return
+    }
+    if (parsed.type === "local-shell-status") {
+      store.appendSystem(`local shell: ${localShell.enabled ? "on" : "off"}`)
+      sendLocalShellCapability(store.threadId())
       return
     }
     if (parsed.type === "message") {
