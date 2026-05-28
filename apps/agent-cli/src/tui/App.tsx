@@ -26,7 +26,7 @@ export const App = (props: AppProps) => {
     <box style={{ flexDirection: "column", width: dims().width, height: dims().height }}>
       <Transcript store={props.store} />
       <SlashMenu store={props.store} commands={SLASH_MENU_COMMANDS} />
-      <Input store={props.store} onSubmit={props.onSubmit} />
+      <Input store={props.store} onSubmit={props.onSubmit} commands={SLASH_MENU_COMMANDS} />
       <StatusBar store={props.store} />
     </box>
   )

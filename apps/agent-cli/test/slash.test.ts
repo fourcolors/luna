@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { slashState } from "../src/tui/slash.js"
+import { slashState, slashComplete } from "../src/tui/slash.js"
 
 const cmds = [
   { name: "new", help: "start a new thread" },
@@ -22,6 +22,19 @@ describe("slashState", () => {
     expect(s.active).toBe(true)
     expect(s.matches).toEqual([])
   })
+  it("completes a single match fully with a trailing space", () => {
+    expect(slashComplete("/he", cmds)).toBe("/help ")
+  })
+  it("completes multiple matches to their longest common prefix", () => {
+    expect(slashComplete("/ne", cmds)).toBe("/new")
+  })
+  it("returns null when completion would add nothing", () => {
+    expect(slashComplete("/", cmds)).toBeNull() // lcp empty
+    expect(slashComplete("/new", cmds)).toBeNull() // already at lcp of new/newish
+    expect(slashComplete("hello", cmds)).toBeNull() // not a slash
+    expect(slashComplete("/zzz", cmds)).toBeNull() // no matches
+  })
+
   it("treats non-string input as inactive instead of throwing", () => {
     // The textarea change-event is an object, not a string; slashState must
     // never throw on it (regression: input.startsWith is not a function).

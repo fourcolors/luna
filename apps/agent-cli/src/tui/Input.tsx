@@ -1,8 +1,10 @@
 import { onMount } from "solid-js"
 import type { TuiStore } from "./store.js"
+import { slashComplete, type SlashCommand } from "./slash.js"
 import {
   defaultTextareaKeyBindings,
   type KeyBinding,
+  type KeyEvent,
   type TextareaRenderable,
 } from "@opentui/core"
 
@@ -12,6 +14,7 @@ const CURSOR_COLOR = "#00FF87"
 export type InputProps = {
   store: TuiStore
   onSubmit: (text: string) => void
+  commands: ReadonlyArray<SlashCommand>
 }
 
 // Chat-style key handling: plain Enter submits, Shift+Enter inserts a newline.
@@ -45,6 +48,23 @@ export const Input = (props: InputProps) => {
     props.onSubmit(v)
   }
 
+  // Tab completes a slash command. Tab is unbound in the textarea, so defer to
+  // a microtask (lets any default key processing settle), strip any stray tab
+  // chars, then complete to the single match / longest common prefix.
+  const handleKeyDown = (e: KeyEvent): void => {
+    if (e.name !== "tab") return
+    queueMicrotask(() => {
+      if (textarea === undefined) return
+      const raw = textarea.plainText ?? ""
+      const cur = raw.replace(/\t/g, "")
+      const next = slashComplete(cur, props.commands) ?? cur
+      if (next !== raw) {
+        textarea.setText(next)
+        syncDraft()
+      }
+    })
+  }
+
   // The textarea cursor is block-by-default but only shows when focused; the
   // `focused` prop alone proved unreliable, so claim focus imperatively and
   // pin a visible block cursor once the renderable is mounted.
@@ -65,6 +85,7 @@ export const Input = (props: InputProps) => {
         keyBindings={chatKeyBindings}
         placeholder="Type a message — Enter to send, Shift+Enter for newline"
         onContentChange={syncDraft}
+        onKeyDown={handleKeyDown}
         onSubmit={submit}
       />
     </box>
