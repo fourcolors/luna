@@ -615,7 +615,14 @@ export class ChatService extends Effect.Service<ChatService>()(
             // level; status "success" because this is the completed-turn message.
             const blocks = (
               args.msg as {
-                message?: { content?: ReadonlyArray<{ type?: string; name?: string }> }
+                message?: {
+                  content?: ReadonlyArray<{
+                    type?: string
+                    id?: string
+                    name?: string
+                    input?: unknown
+                  }>
+                }
               }
             ).message?.content ?? []
             for (const b of blocks) {
@@ -630,6 +637,19 @@ export class ChatService extends Effect.Service<ChatService>()(
                   durationMs: 0,
                   status: "success",
                 })
+                // The frame links a call to its result by id; the SDK always
+                // carries `id` on real tool_use blocks. (Some test fixtures
+                // omit it — guard so the obs emit above still fires for them.)
+                if (typeof b.id === "string") {
+                  yield* PubSub.publish(args.pubsub, {
+                    type: "tool-call",
+                    threadId: args.threadId,
+                    turnId: wireTurnId,
+                    toolCallId: b.id,
+                    name: b.name,
+                    input: b.input,
+                  })
+                }
               }
             }
             return
