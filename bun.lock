@@ -118,6 +118,7 @@
       "name": "@luna/core",
       "version": "0.0.1",
       "dependencies": {
+        "@luna/memory": "workspace:*",
         "effect": "^3.21.0",
       },
     },
