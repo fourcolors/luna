@@ -1,10 +1,9 @@
 import { homedir } from "node:os"
 import { appendFileSync } from "node:fs"
-import { render, useRenderer, useKeyboard } from "@opentui/solid"
+import { render, useRenderer } from "@opentui/solid"
 import type { CliRenderer } from "@opentui/core"
-import { createComponent, createEffect } from "solid-js"
+import { createComponent } from "solid-js"
 import { createTuiStore } from "./store.js"
-import { runMemorySearch } from "./memory-search.js"
 
 const DEBUG_LOG = process.env["LUNA_TUI_DEBUG"]
 const dbg = (msg: string): void => {
@@ -28,7 +27,6 @@ import {
 import { parseChatArgs } from "../chat/args.js"
 
 const DEFAULT_MODEL = "claude-sonnet-4-5"
-const MEMORY_SEARCH_DEBOUNCE_MS = 300
 
 const USAGE = [
   "Usage: luna chat [options]",
@@ -125,16 +123,23 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
   session.on("threadChange", (id) => { dbg(`evt threadChange: ${id}`); store.setThreadId(id) })
   session.on("assistantDelta", ({ turnId, text }) => {
     dbg(`evt assistantDelta turn=${turnId} text-len=${text.length}`)
-    store.upsertAssistant(turnId, text, false)
+    store.onAssistantDelta(turnId, text)
   })
   session.on("assistantDone", ({ turnId, text }) => {
     dbg(`evt assistantDone turn=${turnId}`)
-    store.upsertAssistant(turnId, text, true)
-    dbg(`after upsert, messages count = ${store.messages().length}, last = ${JSON.stringify(store.messages()[store.messages().length - 1])}`)
+    store.onAssistantDone(turnId, text)
+  })
+  session.on("toolCall", (e) => {
+    dbg(`evt toolCall id=${e.toolCallId} name=${e.name}`)
+    store.onToolCall(e)
+  })
+  session.on("toolResult", (e) => {
+    dbg(`evt toolResult id=${e.toolCallId} status=${e.status}`)
+    store.onToolResult(e)
   })
   session.on("assistantError", ({ message, kind, silent }) => {
     if (silent === true) return
-    store.setMessages((m) => [...m, { role: "assistant", text: `[${kind ?? "error"}] ${message}` }])
+    store.appendSystem(`[${kind ?? "error"}] ${message}`)
   })
   session.on("fatal", (reason) => {
     store.setFatalReason(reason)
@@ -143,13 +148,7 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
     rendererRef?.destroy()
   })
   session.on("localShellStatus", (msg, accepted) => {
-    if (!accepted) store.setMessages((m) => [...m, { role: "assistant", text: `local shell: ${msg}` }])
-  })
-  session.on("rawFrame", (frame) => {
-    store.pushRawFrame(frame)
-    if (frame.type === "artifacts-extracted") {
-      store.setArtifactsForThread(frame.threadId, frame.artifacts)
-    }
+    if (!accepted) store.appendSystem(`local shell: ${msg}`)
   })
 
   // Local-shell request handler.
@@ -211,96 +210,30 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
     }
     if (parsed.type === "message") {
       store.appendUser(trimmed)
-      store.setLastUserMessage(trimmed)
-      dbg(`appendUser done, messages count = ${store.messages().length}`)
+      dbg(`appendUser done`)
     }
     session.dispatchSlash(trimmed)
     dbg(`dispatchSlash done`)
   }
 
-  // Root Solid component with keyboard handling.
+  // Root Solid component with keyboard handling. Text input + submit are now
+  // owned by the <textarea> in <Input>; the only global key we still intercept
+  // is Ctrl-C (quit). All other keys flow to the focused textarea.
   type KeyPressEvent = {
     readonly name?: string
     readonly ctrl?: boolean
-    readonly meta?: boolean
-    readonly option?: boolean
     readonly sequence?: string
   }
 
-  // Alt-1/2/3 arrives as `meta=true` OR `option=true` depending on terminal
-  // (most send Esc-prefix → meta; macOS Option-as-Meta sends option). Ctrl-1/2/3
-  // would be cleaner but ASCII has no control code for digits 1/3 so terminals
-  // deliver them as plain "1"/"3" and they can't be distinguished from input.
-  const isAltDigit = (evt: KeyPressEvent, digit: string): boolean =>
-    evt.name === digit && (evt.meta === true || evt.option === true)
-
   const handleKey = (evt: KeyPressEvent): void => {
-    dbg(
-      `key: name=${evt.name ?? ""} ctrl=${evt.ctrl ?? false} meta=${evt.meta ?? false} option=${evt.option ?? false} seq=${JSON.stringify(evt.sequence ?? "")}`,
-    )
     if (evt.ctrl === true && evt.name === "c") {
+      dbg(`key: ctrl-c quit`)
       session.beginQuit()
       void client.close().then(() => { rendererRef?.destroy() })
-      return
-    }
-    if (evt.name === "tab") {
-      store.cycleContextPanelTab()
-      return
-    }
-    if (isAltDigit(evt, "1")) {
-      store.setContextPanelTab("memories")
-      return
-    }
-    if (isAltDigit(evt, "2")) {
-      store.setContextPanelTab("events")
-      return
-    }
-    if (isAltDigit(evt, "3")) {
-      store.setContextPanelTab("artifacts")
-      return
-    }
-    if (evt.name === "return") {
-      submit(store.inputDraft())
-      return
-    }
-    if (evt.name === "backspace") {
-      store.setInputDraft((d) => d.slice(0, -1))
-      return
-    }
-    if (evt.sequence !== undefined && evt.sequence.length === 1 && evt.sequence.charCodeAt(0) >= 0x20) {
-      const seq = evt.sequence
-      store.setInputDraft((d) => d + seq)
-      dbg(`inputDraft now = ${JSON.stringify(store.inputDraft())}`)
     }
   }
 
   const RootApp = () => {
-    let memorySearchTimer: ReturnType<typeof setTimeout> | undefined
-
-    createEffect(() => {
-      const query = store.lastUserMessage()
-      if (memorySearchTimer !== undefined) clearTimeout(memorySearchTimer)
-      if (query.trim().length === 0) {
-        store.setMemorySearch({ status: "idle" })
-        return
-      }
-      store.setMemorySearch({ status: "loading", query: query.trim() })
-      memorySearchTimer = setTimeout(() => {
-        void (async () => {
-          dbg(`memory search: sending request for ${JSON.stringify(query)}`)
-          try {
-            const result = await runMemorySearch(session, query, 10)
-            dbg(`memory search: result status=${result.status}`)
-            store.setMemorySearch(result)
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err)
-            store.setMemorySearch({ status: "error", query: query.trim(), message })
-            dbg(`memory search error: ${message}`)
-          }
-        })()
-      }, MEMORY_SEARCH_DEBOUNCE_MS)
-    })
-
     // Stash renderer ref for destroy on quit.
     const renderer = useRenderer()
     rendererRef = renderer
@@ -308,12 +241,12 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
 
     // Direct keyInput registration (bypassing useKeyboard, which relies on
     // onMount and doesn't fire for pass-through components that return
-    // createComponent(...) instead of JSX).
+    // createComponent(...) instead of JSX). Global Ctrl-C only.
     if (renderer?.keyInput !== undefined) {
       renderer.keyInput.on("keypress", handleKey)
     }
 
-    return createComponent(App, { store, onSubmit: submit, onKey: () => {} })
+    return createComponent(App, { store, onSubmit: submit })
   }
 
   // Mount TUI — render() resolves immediately after setup.
