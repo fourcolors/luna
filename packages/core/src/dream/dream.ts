@@ -1,9 +1,11 @@
 import { Effect, Stream } from "effect"
+import * as EffectClock from "effect/Clock"
 import { MemoryRouterTag } from "@luna/memory"
-import type { MemoryRecord } from "@luna/memory"
+import type { MemoryRecord, MemoryRouter } from "@luna/memory"
 import { Clock } from "../clock.js"
 import { MemoryBackendError } from "../errors.js"
 import { SessionStore } from "../session/session-store.js"
+import type { TriggerAgentApi } from "../jobs/trigger-agent.js"
 import { DreamStore } from "./dream-store.js"
 import { DreamReasoner } from "./reasoner.js"
 import type { DreamOp, DreamOpKind, DreamInputs } from "./types.js"
@@ -141,4 +143,42 @@ export const runDream = (now: number) =>
     // Advance watermark LAST. A crash before this re-runs the same window
     // (same dreamId), which is a no-op thanks to INSERT OR IGNORE + idempotent ops.
     yield* store.setWatermark(now)
+  })
+
+/**
+ * Register a nightly (or custom cron) dream on the given TriggerAgent.
+ * At each cron tick, reads the ambient (test or live) Effect runtime clock
+ * and runs one dream cycle.
+ *
+ * Adaptation note: `JobSpec.run` is typed as
+ * `Effect.Effect<unknown, unknown, Scope.Scope>` — no other services allowed
+ * in R. Since `runDream` requires `DreamStore | DreamReasoner | SessionStore |
+ * MemoryRouterTag | Clock`, we capture the ambient context at registration
+ * time via `Effect.context<R>()` and bake it into the `run` effect via
+ * `Effect.provide(ctx)`. Scope is intentionally excluded — the pool provides
+ * a fresh per-job Scope; capturing the registration Scope would be wrong.
+ *
+ * Note: `MemoryRouterTag` is a `Context.GenericTag<MemoryRouter>` value; the
+ * service type is `MemoryRouter` — use the interface type, not the tag, in
+ * the type parameter.
+ *
+ * Returns the TriggerId inside `Effect.gen` (R includes the dream deps).
+ */
+export const registerDreamCron = (trigger: TriggerAgentApi, expr: string) =>
+  Effect.gen(function* () {
+    // Capture the dream-service environment at registration time.
+    // Scope is NOT included — the pool injects a per-job Scope.
+    const ctx = yield* Effect.context<
+      DreamStore | DreamReasoner | SessionStore | MemoryRouter | Clock
+    >()
+    return yield* trigger.register({
+      kind: "cron",
+      expr,
+      build: () => ({
+        run: EffectClock.currentTimeMillis.pipe(
+          Effect.flatMap((now) => runDream(now)),
+          Effect.provide(ctx),
+        ),
+      }),
+    })
   })
