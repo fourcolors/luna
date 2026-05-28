@@ -1,9 +1,11 @@
-import { Effect } from "effect"
+import { Effect, Stream } from "effect"
 import { MemoryRouterTag } from "@luna/memory"
 import type { MemoryRecord } from "@luna/memory"
 import { Clock } from "../clock.js"
+import { MemoryBackendError } from "../errors.js"
+import { SessionStore } from "../session/session-store.js"
 import { DreamStore } from "./dream-store.js"
-import type { DreamOp, DreamOpKind } from "./types.js"
+import type { DreamOp, DreamOpKind, DreamInputs } from "./types.js"
 
 /** Phase 1: the ONLY op kind safe to auto-apply without survey/undo coverage. */
 const AUTO_APPLY: ReadonlySet<DreamOpKind> = new Set<DreamOpKind>(["memory_dedup"])
@@ -65,4 +67,52 @@ export const revert = (auditId: string) =>
     }
     const now = yield* clock.nowMs()
     return yield* store.markReverted(auditId, now)
+  })
+
+export const deriveDreamId = (windowStart: number, windowEnd: number): string =>
+  `dream-${windowStart}-${windowEnd}`
+
+/**
+ * Collect the dream window (watermark, now]: sessions whose lastMessageAt falls
+ * in range, their messages, and operator-namespace memories.
+ *
+ * NOTE: SessionStore.list has no `since` param, so we list ordered by
+ * lastMessageAt and filter the window in code.
+ *
+ * Adaptation from task spec: the error channel is `MemoryBackendError` (not
+ * `never`) because MemoryRouter.query returns Stream<MemoryRecord, MemoryBackendError>.
+ */
+export const gatherInputs = (
+  watermark: number,
+  now: number,
+) =>
+  Effect.gen(function* () {
+    const sessions = yield* SessionStore
+    const mem = yield* MemoryRouterTag
+
+    const summaries = yield* sessions
+      .list({ orderBy: "lastMessageAt" })
+      .pipe(
+        Stream.filter(
+          (s) => s.lastMessageAt !== null && s.lastMessageAt > watermark && s.lastMessageAt <= now,
+        ),
+        Stream.runCollect,
+        Effect.map((c) => Array.from(c)),
+      )
+
+    const withMessages = yield* Effect.forEach(summaries, (summary) =>
+      sessions
+        .readMessages(summary.id)
+        .pipe(
+          Stream.runCollect,
+          Effect.map((c) => ({ summary, messages: Array.from(c) })),
+          Effect.catchAll(() => Effect.succeed({ summary, messages: [] as never[] })),
+        ),
+    )
+
+    const memories = yield* mem
+      .query({ namespace: "operator" })
+      .pipe(Stream.runCollect, Effect.map((c) => Array.from(c)))
+
+    return { sessions: withMessages, memories }
   })

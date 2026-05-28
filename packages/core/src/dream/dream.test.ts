@@ -4,7 +4,7 @@ import { Clock } from "../clock.js"
 import { MemoryRouterTag } from "@luna/memory"
 import type { MemoryRecord } from "@luna/memory"
 import { DreamStore } from "./dream-store.js"
-import { applyOps, revert } from "./dream.js"
+import { applyOps, revert, deriveDreamId } from "./dream.js"
 import type { DreamOp } from "./types.js"
 
 // Minimal Ref-backed memory router double (only the methods applyOps uses).
@@ -125,5 +125,12 @@ describe("revert", () => {
       ),
     )
     expect(out).toBe(false)
+  })
+})
+
+describe("deriveDreamId", () => {
+  it("is a pure function of the window bounds", () => {
+    expect(deriveDreamId(0, 100)).toBe("dream-0-100")
+    expect(deriveDreamId(0, 100)).toBe(deriveDreamId(0, 100))
   })
 })
