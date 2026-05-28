@@ -13,6 +13,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@luna/memory": "workspace:*",
     "effect": "^3.21.0"
   }
 }
