@@ -163,12 +163,19 @@ import {
 } from "./sandbox-local-shell.js"
 export { loadDna } from "./dna-loader.js"
 import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
-import { ChatService } from "@luna/chat-service"
+import {
+  ChatService,
+  ThreadToolsProviderTag,
+  type ThreadToolsProvider,
+} from "@luna/chat-service"
 import { createLocalShellBridge, startUIWebSocketServer } from "@luna/ui-ws"
 import { LunaSqliteBootstrapLive } from "@luna/memory"
 import {
+  MemoryRouterLayer,
   MemoryToolsLayer,
   MemoryToolsService,
+  resolveDbPath,
+  selectEmbedderLayer,
 } from "@luna/memory-tools"
 import {
   SchedulerToolsLayer,
@@ -189,6 +196,132 @@ import { resolveUiWsToken } from "./ui-ws-token.js"
 const TOKEN = resolveUiWsToken()
 const BIND_HOST = process.env["LUNA_UI_WS_HOST"]?.trim() || undefined
 const localShellBridge = createLocalShellBridge()
+
+// Per-thread sandbox re-attach closures. Module scope (single-process boot)
+// so both the ThreadToolsProvider (which registers a reattacher in onBound)
+// and the WS server (which calls it via onLocalShellRelease) can share it.
+// The container sandbox owns the local-shell slot at thread creation; an
+// attached CLI with --local-shell takes over (`replaceable: true`); when it
+// releases, we re-run the original attach so the agent keeps local_shell.
+const sandboxReattachers = new Map<string, () => void>()
+const reattachSandbox = (threadId: string): void => {
+  const reattach = sandboxReattachers.get(threadId)
+  if (reattach !== undefined) reattach()
+}
+
+/**
+ * ThreadToolsProviderLayer — the single source of per-thread tool wiring.
+ *
+ * Provides `ThreadToolsProviderTag`, which ChatService applies to EVERY
+ * thread creation (new threads AND subscribe()-restart-recovery resumes).
+ * This replaces the old `chatWithTools` createThread wrapper, which only
+ * intercepted the public createThread and so left resumed threads tool-less.
+ *
+ * `decorate(opts)` builds fresh per-session MCP bindings, the merged system
+ * prompt (DNA + runtime metadata + tool addenda + caller prompt), and an
+ * onBound callback that binds the session id into obs/local-shell tools and
+ * (when enabled) attaches the sandbox local-shell + registers its reattacher.
+ */
+const ThreadToolsProviderLayer = () =>
+  Layer.effect(
+    ThreadToolsProviderTag,
+    Effect.gen(function* () {
+      const memTools = yield* MemoryToolsService
+      const schedTools = yield* SchedulerToolsService
+      const obsTools = yield* ObsToolsService
+      const localShellTools = yield* LocalShellToolsService
+
+      console.log("[luna/boot] MCP servers registered:", [
+        memTools.serverName,
+        schedTools.serverName,
+        obsTools.serverName,
+        localShellTools.serverName,
+      ].join(", "))
+
+      // Luna identity: load DNA.md at boot (prepended to every thread's
+      // system prompt so Luna keeps her identity instead of falling back to
+      // the underlying model's default). Missing file → loud boot failure.
+      // Repo layout: this file is at
+      // apps/ui-web/scripts/chat-server.ts → DNA.md is 3 levels up.
+      const __scriptDir = dirname(fileURLToPath(import.meta.url))
+      const dnaContent = loadDna(__scriptDir)
+      const sessionMetadata = buildSessionMetadata()
+      const sandboxLocalShell = resolveSandboxLocalShell()
+      console.log(
+        "[luna/boot] sandbox local shell:",
+        sandboxLocalShell.enabled
+          ? "enabled"
+          : `disabled (${sandboxLocalShell.reason})`,
+      )
+
+      const provider: ThreadToolsProvider = {
+        decorate: (opts) => {
+          const memoryThreadTools = memTools.createSessionBinding()
+          const schedulerThreadTools = schedTools.createSessionBinding()
+          const obsThreadTools = obsTools.createSessionBinding()
+          const localShellThreadTools = localShellTools.createSessionBinding()
+          console.log(
+            "[luna/thread] wiring MCP servers:",
+            [
+              memoryThreadTools.serverName,
+              schedulerThreadTools.serverName,
+              obsThreadTools.serverName,
+              localShellThreadTools.serverName,
+            ].join(", "),
+          )
+          const systemPrompt = [
+            dnaContent,
+            sessionMetadata,
+            opts.systemPrompt,
+            memoryThreadTools.systemPromptAddendum,
+            schedulerThreadTools.systemPromptAddendum,
+            obsThreadTools.systemPromptAddendum,
+            localShellThreadTools.systemPromptAddendum,
+          ]
+            .filter((s): s is string => typeof s === "string" && s.length > 0)
+            .join("\n\n")
+          const mcpServers = {
+            ...(opts.mcpServers ?? {}),
+            [memoryThreadTools.serverName]: memoryThreadTools.server,
+            [schedulerThreadTools.serverName]: schedulerThreadTools.server,
+            [obsThreadTools.serverName]: obsThreadTools.server,
+            [localShellThreadTools.serverName]: localShellThreadTools.server,
+          }
+          return {
+            mcpServers,
+            systemPrompt,
+            onBound: (sessionId: string) => {
+              obsThreadTools.bindSession(sessionId)
+              localShellThreadTools.bindSession(sessionId)
+              if (sandboxLocalShell.enabled) {
+                const reattach = () =>
+                  attachSandboxLocalShell({
+                    bridge: localShellBridge,
+                    threadId: sessionId,
+                    cwd: sandboxLocalShell.sandboxRoot,
+                    sandboxRoot: sandboxLocalShell.sandboxRoot,
+                    env: process.env,
+                  })
+                reattach()
+                sandboxReattachers.set(sessionId, reattach)
+              }
+              console.log(
+                "[luna/thread] session bound:",
+                sessionId,
+                "— obs/local-shell tools active",
+              )
+            },
+          }
+        },
+      }
+      return provider
+    }),
+  ).pipe(
+    Layer.provide(MemoryToolsLayer()),
+    Layer.provide(SchedulerToolsLayer()),
+    Layer.provide(LocalShellToolsLayer({ bridge: localShellBridge })),
+    Layer.provide(ObsToolsLayer()),
+  )
 
 // ── Multi-account 1Password bootstrap (Phase 25c) ───────────────────────
 //
@@ -330,9 +463,40 @@ const buildBaseLayer = (
     // (same pattern as all other SQLite layers in this server).
   )
 
+  // MemoryRouter for ChatService.searchMemory (the WS-mediated context
+  // panel). ChatService.Default `yield*`s MemoryRouterTag, so the router
+  // MUST be in its layer graph or the runtime build fails at boot — which
+  // takes down the whole chatWithTools wiring (every MCP tool with it).
+  // Point it at the same db path the memory MCP tools use (resolveDbPath /
+  // LUNA_MEMORY_DB) so the panel reads the rows the agent persists.
+  // LunaSqliteBootstrap stays in R and is satisfied at the bottom of
+  // buildServerLayer, same as every other SQLite-backed layer here.
+  const memoryRouterL = MemoryRouterLayer(resolveDbPath()).pipe(
+    Layer.provide(selectEmbedderLayer()),
+    Layer.provide(obsL),
+    Layer.provide(clockL),
+  )
+
+  // Per-thread tool wiring, provided INTO ChatService so both new and
+  // resumed threads get tools (the resume path bypasses any outer wrapper).
+  // LunaSqliteBootstrap flows up and is satisfied at the bottom of
+  // buildServerLayer, same as every other SQLite-backed layer here.
+  const threadToolsL = ThreadToolsProviderLayer().pipe(
+    Layer.provide(obsL),
+    Layer.provide(clockL),
+  )
+
   const chatL = Layer.provideMerge(
     ChatService.Default,
-    Layer.mergeAll(sdkAdapterL, storeL, clockL, obsL, telemetryL),
+    Layer.mergeAll(
+      sdkAdapterL,
+      storeL,
+      clockL,
+      obsL,
+      telemetryL,
+      memoryRouterL,
+      threadToolsL,
+    ),
   )
 
   return Layer.mergeAll(
@@ -370,113 +534,11 @@ const buildServerLayer = (
   Layer.scoped(
     ServerHandle,
     Effect.gen(function* () {
+      // ChatService already has per-thread tool wiring baked in via the
+      // ThreadToolsProvider (see buildBaseLayer). Both new threads and
+      // resume-recovery threads get MCP servers + system prompt + session
+      // binding, so the WS server can use the service handle directly.
       const chat = yield* ChatService
-      const memTools = yield* MemoryToolsService
-      const schedTools = yield* SchedulerToolsService
-      const obsTools = yield* ObsToolsService
-      const localShellTools = yield* LocalShellToolsService
-
-      console.log("[luna/boot] MCP servers registered:", [
-        memTools.serverName,
-        schedTools.serverName,
-        obsTools.serverName,
-        localShellTools.serverName,
-      ].join(", "))
-
-      // Luna identity: load DNA.md at boot. This is Luna's "who am I, how
-      // do I operate" prompt — prepended to every thread's systemPrompt so
-      // Luna doesn't fall back to the underlying Claude model's default
-      // identity (or, worse, leak Sol's identity from a stray ancestor
-      // CLAUDE.md). Repo layout: this file is at
-      // apps/ui-web/scripts/chat-server.ts → DNA.md is 3 levels up.
-      // Read sync at Layer build (one-shot, fast, deterministic). If the
-      // file is missing the boot fails loudly — that's correct: a Luna
-      // boot without DNA.md is a misconfigured boot.
-      const __scriptDir = dirname(fileURLToPath(import.meta.url))
-      const dnaContent = loadDna(__scriptDir)
-
-      // Session metadata injected into every thread so Luna knows which
-      // runtime profile and server instance she is actually serving.
-      const sessionMetadata = buildSessionMetadata()
-      const sandboxLocalShell = resolveSandboxLocalShell()
-      console.log(
-        "[luna/boot] sandbox local shell:",
-        sandboxLocalShell.enabled ? "enabled" : `disabled (${sandboxLocalShell.reason})`,
-      )
-
-      // Per-thread sandbox re-attach closures. The container sandbox owns
-      // the local-shell slot at thread creation; an attached CLI with
-      // --local-shell can take over (`replaceable: true`). When the CLI
-      // releases (toggle off or disconnect), we re-run the original
-      // attach so the agent doesn't lose local_shell access until /new.
-      const sandboxReattachers = new Map<string, () => void>()
-      const reattachSandbox = (threadId: string): void => {
-        const reattach = sandboxReattachers.get(threadId)
-        if (reattach !== undefined) reattach()
-      }
-
-      const chatWithTools: typeof chat = {
-        ...chat,
-        createThread: (opts) => {
-          const memoryThreadTools = memTools.createSessionBinding()
-          const schedulerThreadTools = schedTools.createSessionBinding()
-          const obsThreadTools = obsTools.createSessionBinding()
-          const localShellThreadTools = localShellTools.createSessionBinding()
-          console.log("[luna/thread] createThread called — wiring MCP servers:", [
-            memoryThreadTools.serverName,
-            schedulerThreadTools.serverName,
-            obsThreadTools.serverName,
-            localShellThreadTools.serverName,
-          ].join(", "))
-          const mergedSystemPrompt = [
-            dnaContent,
-            sessionMetadata,
-            opts.systemPrompt,
-            memoryThreadTools.systemPromptAddendum,
-            schedulerThreadTools.systemPromptAddendum,
-            obsThreadTools.systemPromptAddendum,
-            localShellThreadTools.systemPromptAddendum,
-          ]
-            .filter((s): s is string => typeof s === "string" && s.length > 0)
-            .join("\n\n")
-          const mergedMcp = {
-            ...(opts.mcpServers ?? {}),
-            [memoryThreadTools.serverName]: memoryThreadTools.server,
-            [schedulerThreadTools.serverName]: schedulerThreadTools.server,
-            [obsThreadTools.serverName]: obsThreadTools.server,
-            [localShellThreadTools.serverName]: localShellThreadTools.server,
-          }
-          return chat
-            .createThread({
-              ...opts,
-              systemPrompt: mergedSystemPrompt,
-              mcpServers: mergedMcp,
-            })
-            .pipe(
-              // Bind the new session id so obs_note auto-tags notes with the
-              // current thread. SessionSummary.id is always present.
-              Effect.tap((summary) => {
-                obsThreadTools.bindSession(summary.id)
-                localShellThreadTools.bindSession(summary.id)
-                if (sandboxLocalShell.enabled) {
-                  const reattach = () =>
-                    attachSandboxLocalShell({
-                      bridge: localShellBridge,
-                      threadId: summary.id,
-                      cwd: sandboxLocalShell.sandboxRoot,
-                      sandboxRoot: sandboxLocalShell.sandboxRoot,
-                      env: process.env,
-                    })
-                  reattach()
-                  sandboxReattachers.set(summary.id, reattach)
-                }
-                console.log("[luna/thread] session bound:", summary.id, "— obs/local-shell tools active")
-                return Effect.void
-              }),
-            )
-        },
-      }
-
       const broker = yield* AccountBroker
 
       // tRPC control server — port 4754, alongside the WebSocket server.
@@ -489,19 +551,13 @@ const buildServerLayer = (
         token: TOKEN,
         advertisedKinds: DEFAULT_UI_KINDS,
         pingIntervalMs: 5000,
-        chatService: chatWithTools,
+        chatService: chat,
         accountBroker: broker,
         localShellBridge,
         onLocalShellRelease: reattachSandbox,
       })
     }),
   ).pipe(
-    Layer.provide(MemoryToolsLayer()),
-    Layer.provide(SchedulerToolsLayer()),
-    Layer.provide(LocalShellToolsLayer({ bridge: localShellBridge })),
-    // ObsToolsLayer provides ObsToolsService with 5 self-observation tools.
-    // Requires Clock + LunaSqliteBootstrapLive (both provided below).
-    Layer.provide(ObsToolsLayer()),
     Layer.provide(baseLayer),
     // Phase 27a: provide LunaSqliteBootstrapLive at the END of the chain
     // so it builds FIRST (Layer.provide is bottom-up — last listed wins
