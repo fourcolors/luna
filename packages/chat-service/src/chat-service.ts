@@ -115,6 +115,44 @@ const extractStreamEventText = (m: SDKMessage): string | null => {
   return null
 }
 
+const MAX_TOOL_OUTPUT_CHARS = 2048
+const MAX_TOOL_OUTPUT_LINES = 40
+
+/** Normalize an SDK tool_result `content` payload (string | block array |
+ *  arbitrary object) into plain text. */
+export const normalizeToolResultContent = (content: unknown): string => {
+  if (typeof content === "string") return content
+  if (Array.isArray(content)) {
+    const parts = content.map((b) =>
+      isObj(b) && typeof b["text"] === "string"
+        ? (b["text"] as string)
+        : JSON.stringify(b),
+    )
+    return parts.join("\n")
+  }
+  return JSON.stringify(content)
+}
+
+/** Cap tool output to keep the wire small. Returns the (possibly clipped)
+ *  text plus whether it was clipped. */
+export const truncateOutput = (
+  s: string,
+): { readonly output: string; readonly truncated: boolean } => {
+  let out = s
+  let truncated = false
+  const lines = out.split("\n")
+  if (lines.length > MAX_TOOL_OUTPUT_LINES) {
+    out = lines.slice(0, MAX_TOOL_OUTPUT_LINES).join("\n")
+    truncated = true
+  }
+  if (out.length > MAX_TOOL_OUTPUT_CHARS) {
+    out = out.slice(0, MAX_TOOL_OUTPUT_CHARS)
+    truncated = true
+  }
+  if (truncated) out = out + "\n… (truncated)"
+  return { output: out, truncated }
+}
+
 /** Synthesize an SDKUserMessage envelope from text + optional image attachments.
  *
  * When attachments are present, we build a content-block array per the
