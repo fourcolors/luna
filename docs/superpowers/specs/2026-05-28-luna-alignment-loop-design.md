@@ -153,6 +153,16 @@ crashed dream resumes from the last committed watermark.
 | Observability events | `ObservabilityService` JSONL sink | task-quality observations |
 | `PermissionDecision` denials | `observability/types.ts` | task-quality (implicit, no survey) |
 
+**Transcript source — v1 decision.** Dream reads the **live `SessionStore`**
+(`session/session-store-sqlite.ts`) — the wired, proven store. The nightly
+incremental scan (days of recent sessions, not years) is well within its reach.
+luna also has a denormalized, analytics-shaped `SessionHistory` table
+(`session-history/`, currently built-but-unconsumed) which — optionally fronted
+by DuckDB (§5.3) — is the documented **future read-layer** for when scans grow
+heavy or the §9 analytics arrive. Because "Reads" is an abstract interface,
+swapping the source later is **non-breaking** and never touches Dream's
+reasoning core (a CQRS write-model → read-model split). Not in v1 scope.
+
 ### 3.2 Belief set
 
 Beliefs are `MemoryRecord`s with `kind: "belief"` — **no record-level migration**
@@ -238,7 +248,11 @@ sessions + beliefs + memories + observability/telemetry
 Reusing the memory record gives beliefs vector search, export/import, and the
 existing backends for free.
 
-### 5.2 New SQLite tables (operational time-series, not "memories")
+### 5.2 New SQLite tables (append-only event/audit logs, not "memories")
+
+These are **append-only, time-ordered event logs** — *not* time-series in the
+TSDB sense. Volume is low (handfuls/day), and access is indexed point/range
+lookup, not analytical aggregation. See §5.3 for why SQLite, not DuckDB.
 
 ```
 alignment_log (id, at, signal_kind, score_delta, ewma_after, ref)
@@ -246,11 +260,41 @@ alignment_log (id, at, signal_kind, score_delta, ewma_after, ref)
   -- ref → the task / belief / outreach the signal came from
   -- belief_validation rows stay isolatable for action-gating even though
   --   task_quality + outreach_welcome roll into the global EWMA for cadence
+  -- index (signal_kind, at)
+
+alignment_state (id, ewma, updated_at)
+  -- single-row denormalized cache of the current global EWMA, for O(1) reads
+  -- on the cadence/gate hot path. alignment_log is the source of truth; this
+  -- is derivable and rebuildable (e.g. if the smoothing constant changes).
 
 dream_audit (id, dream_id, at, op, target_id, before, after, reverted_at)
   -- op ∈ {memory_edit, belief_add, belief_retire, belief_confidence}
   -- before/after = JSON snapshots → this IS undo + debug trace + training corpus
+  -- indexes (dream_id), (target_id)
 ```
+
+### 5.3 Storage engine decision — SQLite operational, DuckDB optional lens
+
+**These tables live in SQLite** (`bun:sqlite`), alongside beliefs (`@luna/memory`).
+Rationale:
+
+- **System of record.** `DNA.md` mandates SQLite as the system of record;
+  `session-history.ts` already migrated *off* a DuckDB stub onto `bun:sqlite`.
+  DuckDB is not a current dependency.
+- **Transaction boundary is decisive.** A gate decision writes a belief *and*
+  logs its alignment signal as **one atomic transaction**. Beliefs are in
+  SQLite, so the log must be too — splitting across engines turns an atomic
+  write into a two-phase sync problem with no rollback.
+- **Workload is OLTP, not OLAP.** Single-row appends + indexed point/range reads
+  + concurrent mixed read/write. That is SQLite's shape; DuckDB's columnar
+  engine is the wrong tool for single-row transactional writes.
+
+**DuckDB is the right tool only for read-only analytics** over the accumulated
+corpus (the §9 training-corpus future — e.g. "belief-validation accuracy by
+domain, week over week"). When that arrives, DuckDB reads the SQLite file
+directly (`sqlite_scanner` / `ATTACH`) or a Parquet export — **additive, never a
+migration.** SQLite stays the live store; DuckDB becomes an analytical lens over
+the same data.
 
 ## 6. Testing strategy
 
@@ -306,3 +350,18 @@ if Phase 4 never ships — the calibration loop stands on its own.
   *captured* for this future, not consumed in v1).
 - Cloud sync of beliefs/alignment (local-first; `~/.luna/` is the system of
   record).
+
+## 10. Pre-existing cleanup surfaced during design (not blocking)
+
+Found while grounding this spec; tracked here so they aren't lost. None block
+the alignment loop:
+
+- **Stale doc:** `session-history/README.md` says "MVP, mocked, DuckDB driver
+  pending," but `session-history.ts` is a finished `bun:sqlite` implementation
+  (Phase 28). Update the README.
+- **Built-but-unconsumed module:** `SessionHistory` is exported from
+  `core/index.ts` but has no real consumers. Either wire it (it's the natural
+  future Dream read-layer, §3.1.1) or mark it explicitly pending.
+- **Vestigial dependency reference:** `telemetry/session-sync.ts` imports a
+  `DuckDbService` (`../db/duckdb-service.js`) though DuckDB is no longer a
+  dependency (0 lockfile hits). Confirm it's a live stub vs. dead code.
