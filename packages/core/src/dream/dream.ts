@@ -44,3 +44,25 @@ export const applyOps = (dreamId: string, ops: ReadonlyArray<DreamOp>) =>
       }
     }
   })
+
+/**
+ * Undo an applied op: restore the `before` snapshot to memory and mark the
+ * audit row reverted. Returns false if the row is missing or not 'applied'.
+ */
+export const revert = (auditId: string) =>
+  Effect.gen(function* () {
+    const store = yield* DreamStore
+    const mem = yield* MemoryRouterTag
+    const clock = yield* Clock
+    const row = yield* store.get(auditId)
+    if (row === null || row.status !== "applied") return false
+    // Reverse the idempotent state-set.
+    if (row.before === null) {
+      // op created/kept nothing to restore by id; undo = delete the target.
+      yield* mem.delete(row.targetId)
+    } else {
+      yield* mem.put(row.before as MemoryRecord)
+    }
+    const now = yield* clock.nowMs()
+    return yield* store.markReverted(auditId, now)
+  })

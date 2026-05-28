@@ -4,7 +4,7 @@ import { Clock } from "../clock.js"
 import { MemoryRouterTag } from "@luna/memory"
 import type { MemoryRecord } from "@luna/memory"
 import { DreamStore } from "./dream-store.js"
-import { applyOps } from "./dream.js"
+import { applyOps, revert } from "./dream.js"
 import type { DreamOp } from "./types.js"
 
 // Minimal Ref-backed memory router double (only the methods applyOps uses).
@@ -84,5 +84,46 @@ describe("applyOps", () => {
     expect(out.rows).toHaveLength(2)
     expect(out.rows.every((r) => r.status === "proposed")).toBe(true)
     expect(out.rows.every((r) => r.appliedAt === null)).toBe(true)
+  })
+})
+
+describe("revert", () => {
+  it("restores the before snapshot and marks the row reverted", async () => {
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const mem = yield* MemoryRouterTag
+          const store = yield* DreamStore
+          // Apply a dedup that deletes dup-1 (before = the record).
+          yield* applyOps("dream-0-100", [
+            { kind: "memory_dedup", targetId: "dup-1", before: rec("dup-1"), after: null, rationale: "dup" },
+          ])
+          const rows = yield* store.list({ dreamId: "dream-0-100" })
+          const ok = yield* revert(rows[0]!.id)
+          const restored = yield* mem.get("dup-1")
+          const row = yield* store.get(rows[0]!.id)
+          return { ok, restored, row }
+        }),
+      ),
+    )
+    expect(out.ok).toBe(true)
+    expect(out.restored).not.toBeNull() // before snapshot put back
+    expect(out.row?.status).toBe("reverted")
+  })
+
+  it("refuses to revert a proposed (never-applied) row", async () => {
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const store = yield* DreamStore
+          yield* applyOps("dream-0-100", [
+            { kind: "memory_staleness", targetId: "dup-1", before: rec("dup-1"), after: rec("dup-1"), rationale: "stale" },
+          ])
+          const rows = yield* store.list({ dreamId: "dream-0-100" })
+          return yield* revert(rows[0]!.id)
+        }),
+      ),
+    )
+    expect(out).toBe(false)
   })
 })
