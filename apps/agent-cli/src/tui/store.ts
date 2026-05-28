@@ -1,89 +1,76 @@
 import { createSignal } from "solid-js"
 import {
-  type ContextTab,
-  type FrameRingEntry,
-  type MemorySearchState,
-  type ArtifactsByThread,
-  cycleContextTab,
-  FRAME_RING_CAPACITY,
-} from "./panel-types.js"
-import type { ServerFrame } from "@luna/ui-ws"
-import type { Artifact } from "@luna/chat-service"
-
-export type ChatMessage = {
-  readonly role: "user" | "assistant"
-  readonly text: string
-  readonly turnId?: string
-  readonly done?: boolean
-}
+  type Timeline,
+  emptyTimeline,
+  applyUser,
+  applyAssistantDelta,
+  applyAssistantDone,
+  applyToolCall,
+  applyToolResult,
+} from "./timeline.js"
 
 export type ConnectionState = "connecting" | "up" | "down" | "fatal"
 
 export const createTuiStore = () => {
-  const [messages, setMessages] = createSignal<ChatMessage[]>([])
+  const [timeline, setTimeline] = createSignal<Timeline>(emptyTimeline())
   const [threadId, setThreadId] = createSignal<string | null>(null)
   const [connection, setConnection] = createSignal<ConnectionState>("connecting")
   const [profileName, setProfileName] = createSignal<string>("stable")
   const [localShellEnabled, setLocalShellEnabled] = createSignal<boolean>(false)
   const [inputDraft, setInputDraft] = createSignal<string>("")
   const [fatalReason, setFatalReason] = createSignal<string | null>(null)
-  const [contextPanelTab, setContextPanelTab] = createSignal<ContextTab>("memories")
-  const [lastUserMessage, setLastUserMessage] = createSignal<string>("")
-  const [rawFrames, setRawFrames] = createSignal<readonly FrameRingEntry[]>([])
-  const [memorySearch, setMemorySearch] = createSignal<MemorySearchState>({ status: "idle" })
-  const [artifactsByThread, setArtifactsByThread] = createSignal<ArtifactsByThread>(new Map())
 
-  const appendUser = (text: string) => {
-    setMessages((m) => [...m, { role: "user", text }])
+  // Counter used to mint synthetic turn ids for system/error lines so they each
+  // become their own assistant-style block in the transcript.
+  let systemSeq = 0
+
+  const appendUser = (text: string): void => {
+    setTimeline((t) => applyUser(t, text))
   }
 
-  const upsertAssistant = (turnId: string, text: string, done = false) => {
-    setMessages((m) => {
-      const existing = m.findIndex((msg) => msg.role === "assistant" && msg.turnId === turnId)
-      if (existing === -1) return [...m, { role: "assistant", text, turnId, done }]
-      const updated = [...m]
-      const entry = updated[existing]
-      if (entry !== undefined) {
-        updated[existing] = { role: "assistant", text, turnId, done }
-      }
-      return updated
-    })
+  const onAssistantDelta = (turnId: string, text: string): void => {
+    setTimeline((t) => applyAssistantDelta(t, turnId, text))
   }
 
-  const cycleContextPanelTab = (): void => {
-    setContextPanelTab((curr) => cycleContextTab(curr))
+  const onAssistantDone = (turnId: string, text: string): void => {
+    setTimeline((t) => applyAssistantDone(t, turnId, text))
   }
 
-  const pushRawFrame = (frame: ServerFrame): void => {
-    setRawFrames((curr) => {
-      const next = [...curr, { receivedAt: Date.now(), frame }]
-      return next.length > FRAME_RING_CAPACITY
-        ? next.slice(next.length - FRAME_RING_CAPACITY)
-        : next
-    })
+  const onToolCall = (e: {
+    toolCallId: string
+    name: string
+    input: unknown
+    turnId: string
+  }): void => {
+    setTimeline((t) => applyToolCall(t, e))
   }
 
-  const setArtifactsForThread = (threadId: string, artifacts: readonly Artifact[]): void => {
-    setArtifactsByThread((curr) => {
-      const next = new Map(curr)
-      next.set(threadId, artifacts)
-      return next
-    })
+  const onToolResult = (e: {
+    toolCallId: string
+    status: "ok" | "error"
+    output: string
+    truncated: boolean
+  }): void => {
+    setTimeline((t) => applyToolResult(t, e))
+  }
+
+  const appendSystem = (text: string): void => {
+    systemSeq += 1
+    setTimeline((t) => applyAssistantDone(t, `system-${systemSeq}`, text))
   }
 
   return {
-    messages, setMessages, appendUser, upsertAssistant,
+    timeline, setTimeline,
+    appendUser,
+    onAssistantDelta, onAssistantDone,
+    onToolCall, onToolResult,
+    appendSystem,
     threadId, setThreadId,
     connection, setConnection,
     profileName, setProfileName,
     localShellEnabled, setLocalShellEnabled,
     inputDraft, setInputDraft,
     fatalReason, setFatalReason,
-    contextPanelTab, setContextPanelTab, cycleContextPanelTab,
-    lastUserMessage, setLastUserMessage,
-    rawFrames, pushRawFrame,
-    memorySearch, setMemorySearch,
-    artifactsByThread, setArtifactsForThread,
   }
 }
 
