@@ -144,7 +144,7 @@ function parseFlags(argv: ReadonlyArray<string>): ParsedFlags {
   return { flags, unknown }
 }
 
-function formatStatus(
+export function formatStatus(
   status: Awaited<ReturnType<typeof readStatus>>,
   dbPath: string,
 ): string {
@@ -159,20 +159,30 @@ function formatStatus(
   if (!status.hnsw.present) {
     lines.push("HNSW: not present")
   } else {
+    // The HNSW v-table is dimension-typed (float32[dim]) and can only ever
+    // hold rows at the active embedder dimension, so the denominator is the
+    // count of active-dimension vectors — NOT totalVectors (which spans every
+    // dimension). Using totalVectors would render a perfectly populated index
+    // as "N/total" on any store that still holds rows from a previous
+    // embedding dimension.
+    //
+    // getMemoryVectorStatus rebuilds this connection's (memory-only) graph
+    // before counting, so indexedCount reflects how many active-dimension rows
+    // are indexable: it equals `expected` when healthy, or null when the index
+    // could not be probed/rebuilt (extension missing, capacity exceeded, a
+    // busy DB, or a dimension mismatch) — rendered as "unknown". There is no
+    // separate empty/stale banner: a fresh maintenance connection's graph is
+    // always rebuilt, so "empty" is not an observable state here; "unknown" is
+    // the signal that the index could not be read.
+    const expected = status.groups
+      .filter((group) => group.dimension === status.active.dimension)
+      .reduce((sum, group) => sum + group.count, 0)
     const indexed =
       status.hnsw.indexedCount === null
         ? "unknown"
-        : `${status.hnsw.indexedCount}/${status.totalVectors}`
-    const healthy =
-      status.hnsw.indexedCount !== null &&
-      status.hnsw.indexedCount >= status.totalVectors
-    const warn =
-      status.hnsw.indexedCount !== null &&
-      status.hnsw.indexedCount < status.totalVectors
-        ? " ⚠️  empty/stale — run `luna memory reembed --force` to rebuild"
-        : ""
+        : `${status.hnsw.indexedCount}/${expected}`
     lines.push(
-      `HNSW: dimension=${status.hnsw.dimension ?? "unknown"} compatible=${status.hnsw.compatible ? "yes" : "no"} indexed=${indexed}${healthy ? "" : warn}`,
+      `HNSW: dimension=${status.hnsw.dimension ?? "unknown"} compatible=${status.hnsw.compatible ? "yes" : "no"} indexed=${indexed}`,
     )
   }
   lines.push("Groups:")

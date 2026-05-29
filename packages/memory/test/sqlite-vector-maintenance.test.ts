@@ -204,11 +204,54 @@ d("sqlite-vector maintenance", () => {
         present: true,
         dimension: 64,
         compatible: true,
-        // Phase 27d: status now reports actual HNSW population. The
-        // maintenance openDb runs the backfill on its fresh connection,
-        // so the v-table mirrors the 1 row in memory_vectors.
+        // Phase 27d: status reports actual HNSW population. getHnswStatus
+        // backfills its fresh maintenance connection's graph, so the v-table
+        // mirrors the 1 row in memory_vectors.
         indexedCount: 1,
       })
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("reports HNSW indexedCount for multiple active-dimension rows (not pinned at N=1)", async () => {
+    // Guards the N=1 blind spot: a fresh maintenance connection's graph starts
+    // empty, so getHnswStatus must backfill and recall ALL active-dimension
+    // rows, not a fixed 1.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "luna-hnsw-count-"))
+    const dbPath = path.join(dir, "memory.db")
+    try {
+      const layer = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      const hnswEnabled = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            for (let i = 0; i < 3; i++) {
+              yield* b.put(
+                makeRecord({
+                  id: `row-${i}`,
+                  namespace: "notes",
+                  kind: "note",
+                  content: { text: `memory row ${i}` },
+                }),
+              )
+            }
+            return b.hnswEnabled
+          }).pipe(Effect.provide(layer)),
+        ),
+      )
+      if (!hnswEnabled) return
+
+      const status = await Effect.runPromise(
+        // replacementStub is dim 64 — compatible with the float32[64] v-table.
+        getMemoryVectorStatus({ dbPath, embedder: replacementStub }),
+      )
+      expect(status.totalVectors).toBe(3)
+      expect(status.hnsw.present).toBe(true)
+      expect(status.hnsw.indexedCount).toBe(3)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

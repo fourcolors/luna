@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import { Effect } from "effect"
 import { MemoryBackendError, type EmbedderApi } from "@luna/core"
 import { initVectorlite } from "./vectorlite-init.js"
-import { backfillHnswIfEmpty } from "./hnsw-backfill.js"
+import { probeHnswPopulation, backfillHnswRows } from "./hnsw-backfill.js"
 
 type BunStatement = {
   readonly get: (...p: unknown[]) => unknown
@@ -283,34 +283,36 @@ function getHnswStatus(db: BunDatabase, embedder: EmbedderApi): MemoryVectorHnsw
   }
   const dimension = parseHnswDimension(row.sql)
   const compatible = dimension === embedder.dimension
-  // Probe the HNSW v-table to see how many rows it can actually recall.
-  // Vectorlite v-tables don't support generic SELECT, so we ask for the
-  // top-K against any stored embedding with K = totalVectors. If the
-  // extension is not loaded or the dimension is incompatible, knn_search
-  // throws — caught and reported as `null` (unknown).
+  // Report how many active-dimension rows the HNSW graph holds. The v-table
+  // is float32[dim] and can only contain rows at the embedder's dimension, so
+  // the denominator a caller compares against is the active-dimension count —
+  // never totalVectors (which spans other, un-indexable dimensions).
+  //
+  // This maintenance connection is separate from the long-lived backend, so
+  // its in-memory graph starts empty. Populate it from the source rows (the
+  // same recovery the backend runs on open), then report the population. A
+  // probe/backfill failure (extension not loaded, capacity exceeded, or a busy
+  // DB after the busy_timeout) is reported as null = "unknown" rather than
+  // crashing diagnostics.
   let indexedCount: number | null = null
   if (compatible) {
     try {
-      const sample = db
-        .query(
-          `SELECT embedding FROM memory_vectors
-            WHERE dimension = ${embedder.dimension} LIMIT 1`,
-        )
-        .get() as { embedding: Uint8Array } | null | undefined
-      if (sample?.embedding == null) {
+      const expected = (
+        db
+          .query(
+            `SELECT count(*) AS c FROM memory_vectors WHERE dimension = ${embedder.dimension}`,
+          )
+          .get() as { c: number }
+      ).c
+      if (expected === 0) {
         indexedCount = 0
       } else {
-        const totalRow = db
-          .query(`SELECT count(*) AS c FROM memory_vectors`)
-          .get() as { c: number }
-        const k = Math.max(1, totalRow.c)
-        const hits = db
-          .query(
-            `SELECT rowid FROM memory_vectors_hnsw
-              WHERE knn_search(embedding, knn_param(?, ?))`,
-          )
-          .all(sample.embedding, k) as Array<{ rowid: number }>
-        indexedCount = hits.length
+        let population = probeHnswPopulation(db, embedder.dimension, expected)
+        if (population === 0) {
+          backfillHnswRows(db, embedder.dimension)
+          population = expected
+        }
+        indexedCount = population
       }
     } catch {
       indexedCount = null
@@ -379,31 +381,20 @@ function auditRow(row: VectorAuditRow, embedder: EmbedderApi): MemoryVectorStatu
   }
 }
 
-async function openDb(
-  dbPath: string,
-  opts?: { readonly backfillDimension?: number },
-): Promise<BunDatabase> {
+async function openDb(dbPath: string): Promise<BunDatabase> {
   const vlInit = initVectorlite()
   const bunSqlite = (await import("bun:sqlite" as string)) as {
     Database: new (p: string) => BunDatabase
   }
   const db = new bunSqlite.Database(dbPath)
   db.run("PRAGMA foreign_keys = ON")
+  // The status path writes (getHnswStatus backfills the HNSW graph in order to
+  // count it) and may run while the long-lived backend holds a write lock on
+  // the same file. Wait for the lock instead of failing fast with SQLITE_BUSY
+  // and misreporting a populated index as empty.
+  db.run("PRAGMA busy_timeout = 5000")
   if (vlInit.ok) {
     db.loadExtension?.(vlInit.path)
-    // Vectorlite v-tables are per-connection memory-only without
-    // `index_file_path`, so this fresh maintenance connection sees an
-    // empty HNSW even when the source rows exist. Backfill so status /
-    // reembed see an accurate populated view, matching whatever the
-    // long-lived backend connection holds.
-    if (opts?.backfillDimension !== undefined) {
-      try {
-        backfillHnswIfEmpty(db, opts.backfillDimension)
-      } catch {
-        // Best-effort — diagnostic code must not crash if HNSW state is
-        // wedged. The status probe downstream will report indexedCount=null.
-      }
-    }
   }
   return db
 }
@@ -414,7 +405,7 @@ export function getMemoryVectorStatus(args: {
 }): Effect.Effect<MemoryVectorStatus, MemoryBackendError> {
   return Effect.acquireUseRelease(
     Effect.tryPromise({
-      try: () => openDb(args.dbPath, { backfillDimension: args.embedder.dimension }),
+      try: () => openDb(args.dbPath),
       catch: (cause) => asError("status.open", cause),
     }),
     (db) =>
@@ -481,7 +472,7 @@ export function reembedMemoryVectors(args: {
 }): Effect.Effect<MemoryReembedResult, MemoryBackendError> {
   return Effect.acquireUseRelease(
     Effect.tryPromise({
-      try: () => openDb(args.dbPath, { backfillDimension: args.embedder.dimension }),
+      try: () => openDb(args.dbPath),
       catch: (cause) => asError("reembed.open", cause),
     }),
     (db) =>
