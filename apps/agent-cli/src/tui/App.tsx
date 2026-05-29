@@ -33,7 +33,10 @@ export const App = (props: AppProps) => {
     <box style={{ flexDirection: "column", width: dims().width, height: dims().height }}>
       <Transcript store={props.store} />
       <SlashMenu store={props.store} commands={SLASH_MENU_COMMANDS} />
-      <Input store={props.store} onSubmit={props.onSubmit} commands={SLASH_MENU_COMMANDS} />
+      {/* Phase 3 D3: unmount chat Input while survey modal owns exclusive key focus */}
+      <Show when={props.store.chatInputActive()}>
+        <Input store={props.store} onSubmit={props.onSubmit} commands={SLASH_MENU_COMMANDS} />
+      </Show>
       <StatusBar store={props.store} />
       {/* Phase 3 D3: overlay the survey modal when a check-in is pending */}
       <Show when={props.store.survey()}>
