@@ -54,6 +54,15 @@ export interface SurveyVerdict {
   readonly score?: number // [0,1] for task_quality
   readonly verdict?: BeliefVerdict // confirmed | corrected | rejected
   readonly via: "survey" | "outreach"
+  /**
+   * Optional stable timestamp for this verdict (spec-delta #5 idempotency).
+   * When supplied, processVerdict uses this as the anchor for the log row id,
+   * the alignment_log `at`, and the BeliefValidation `at` — so re-processing
+   * the same verdict with the same `at` is a no-op (INSERT OR IGNORE + validation
+   * dedup both key on `at`). Falls back to clock.nowMs() only for new events
+   * where no stable timestamp is available.
+   */
+  readonly at?: number
 }
 
 /** One persisted alignment-log row (§5.2). */
