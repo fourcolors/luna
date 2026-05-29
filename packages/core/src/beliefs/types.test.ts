@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest"
-import { deriveBeliefId, makeBeliefRecord, readBelief, BELIEF_KIND, BELIEF_NAMESPACE } from "./types.js"
+import type { MemoryRecord } from "@luna/memory"
+import {
+  deriveBeliefId,
+  makeBeliefRecord,
+  readBelief,
+  isActiveBelief,
+  BELIEF_KIND,
+  BELIEF_NAMESPACE,
+} from "./types.js"
 
 describe("deriveBeliefId", () => {
   it("is deterministic for the same (domain, statement)", () => {
@@ -33,11 +41,48 @@ describe("makeBeliefRecord", () => {
     const c = readBelief(r)
     expect(c.status).toBe("proposed")
     expect(c.confidence).toBe(0.6)
+    expect(c.statement).toBe("Operator prefers terse answers")
+    expect(c.domain).toBe("comms")
+    expect(c.evidence).toEqual(["session:abc#msg12"])
     expect(c.validationHistory).toEqual([])
     expect(c.outreachRights).toEqual({ enabled: false, minConfidence: 0.8 })
   })
   it("honors an explicit status", () => {
     const r = makeBeliefRecord({ statement: "s", confidence: 0.9, domain: "d", status: "active", now: 0 })
     expect(readBelief(r).status).toBe("active")
+  })
+  it("honors custom outreachRights", () => {
+    const r = makeBeliefRecord({
+      statement: "s",
+      confidence: 0.9,
+      domain: "d",
+      outreachRights: { enabled: true, minConfidence: 0.5 },
+      now: 0,
+    })
+    expect(readBelief(r).outreachRights).toEqual({ enabled: true, minConfidence: 0.5 })
+  })
+})
+
+describe("isActiveBelief", () => {
+  it("returns true for an active belief record", () => {
+    const r = makeBeliefRecord({ statement: "s", confidence: 0.9, domain: "d", status: "active", now: 0 })
+    expect(isActiveBelief(r)).toBe(true)
+  })
+  it("returns false for a proposed (default) belief record", () => {
+    const r = makeBeliefRecord({ statement: "s", confidence: 0.6, domain: "d", now: 0 })
+    expect(isActiveBelief(r)).toBe(false)
+  })
+  it("returns false for a non-belief record", () => {
+    const r: MemoryRecord = {
+      id: "x",
+      namespace: "operator",
+      kind: "note",
+      content: {},
+      schemaVersion: 1,
+      createdAt: 0,
+      updatedAt: 0,
+      tags: [],
+    }
+    expect(isActiveBelief(r)).toBe(false)
   })
 })

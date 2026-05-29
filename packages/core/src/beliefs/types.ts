@@ -43,9 +43,10 @@ function fnv1a(s: string): string {
 }
 
 /**
- * Deterministic belief id from (domain, normalized statement). Whitespace-
- * collapsed + lowercased so paraphrase-identical statements collide (upsert,
- * not duplicate) — the Phase 1 "C1" idempotency lesson applied to beliefs.
+ * Deterministic belief id from (domain, normalized statement). Trimmed,
+ * whitespace-collapsed + lowercased so case- and whitespace-normalized
+ * statements collide (upsert, not duplicate) — the Phase 1 "C1" idempotency
+ * lesson applied to beliefs.
  */
 export function deriveBeliefId(domain: string, statement: string): string {
   const norm = statement.trim().toLowerCase().replace(/\s+/g, " ")
