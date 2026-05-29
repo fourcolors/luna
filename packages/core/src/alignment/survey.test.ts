@@ -165,6 +165,29 @@ describe("Survey.processVerdict — activation policy (spec-delta #7)", () => {
     expect(out.history).toBe(1)
   })
 
+  it("already-active belief + confirmed: stays active, only recordValidation (no re-cap)", async () => {
+    // Pins verdict-independence of the status guard: applyActivationPolicy early-returns
+    // for any non-proposed status BEFORE the verdict switch, so confirmed on an active
+    // belief is re-validation, not a re-activation/re-cap.
+    const b = makeBeliefRecord({ statement: "already active confirmed", confidence: 0.9, domain: "comms", status: "active", now: 0 })
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const survey = yield* Survey
+          yield* survey.processVerdict({
+            itemId: "i", kind: "belief_validation", ref: b.id, beliefId: b.id, verdict: "confirmed", via: "survey",
+          })
+          const mem = yield* MemoryRouterTag
+          const rec = (yield* mem.get(b.id))!
+          return { status: readBelief(rec).status, historyLen: readBelief(rec).validationHistory.length }
+        }),
+        FakeMemory([b]),
+      ),
+    )
+    expect(out.status).toBe("active")
+    expect(out.historyLen).toBe(1)
+  })
+
   it("already-active belief: all verdicts only recordValidation (no re-cap/retire)", async () => {
     // This is the surprising-but-correct branch — applyActivationPolicy returns early for non-proposed.
     // A survey `rejected` must NOT retire an active belief (only the full retirement
@@ -231,6 +254,29 @@ describe("Survey.processVerdict — idempotency (spec-delta #5)", () => {
     expect(out.ewma).toBeCloseTo(updateEwma(0, 1), 10) // EWMA moved once (not twice)
     expect(out.validationHistory).toHaveLength(1) // one validation entry (not two)
     expect(out.validationHistory[0]?.at).toBe(50) // verdict's own timestamp used, not clock's
+  })
+
+  it("with at undefined, the fixed clock supplies a stable `at` → still one log row on replay", async () => {
+    // Documents the constraint: idempotency relies on a STABLE `at`. When the verdict
+    // omits `at`, processVerdict falls back to clock.nowMs(); under Clock.Test(100) that
+    // fallback is deterministic, so a replay derives the same idempotency key → one row.
+    // (In production a real clock would NOT be stable across retries — hence callers that
+    //  need replay-safety must supply v.at; this test pins the fallback path's behavior.)
+    const v: SurveyVerdict = { itemId: "noat", kind: "task_quality", ref: "task:noat", score: 1, via: "survey" }
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const survey = yield* Survey
+          yield* survey.processVerdict(v)
+          yield* survey.processVerdict(v) // same verdict, no explicit at — fixed clock makes at stable
+          const store = yield* AlignmentStore
+          return { logRows: (yield* store.list({})).length, ewma: yield* store.getEwma }
+        }),
+        FakeMemory([]),
+      ),
+    )
+    expect(out.logRows).toBe(1) // stable `at` (fixed clock) → idempotent
+    expect(out.ewma).toBeCloseTo(updateEwma(0, 1), 10) // EWMA moved once
   })
 })
 

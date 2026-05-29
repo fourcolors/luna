@@ -18,18 +18,34 @@
  * IDEMPOTENCY (spec-delta #5 / T4's flag):
  * The verdict's own `at` (if supplied) is used as the stable timestamp anchor
  * for the alignment_log row id, the log `at`, and the BeliefValidation `at`.
- * Retrying the same verdict with the same `at` hits:
- *   - AlignmentStore.append: INSERT OR IGNORE on deterministic id → no-op
- *   - BeliefWriter.recordValidation: dedup on (at, verdict, via) → no-op
- *   - EWMA update: guarded by the log idempotency check (skip if row already exists)
  * Falls back to clock.nowMs() only when no stable timestamp is provided.
+ *
+ * Two distinct guarantees, of different strength:
+ *
+ *   (1) COMPLETED-VERDICT REPLAY (the common case — a UI/cron re-delivers a
+ *       verdict that fully processed last time): the pre-existing-log-row guard
+ *       short-circuits the whole block, so the EWMA, validationHistory, and log
+ *       are each touched exactly once. (append's INSERT OR IGNORE and
+ *       recordValidation's (at,verdict,via) dedup also self-guard as a backstop.)
+ *
+ *   (2) PARTIAL-WRITE THEN RETRY (a crash mid-block): writes are LOG-FIRST —
+ *       the log row (the declared source of truth, foldable by rebuildState) is
+ *       appended with `ewmaAfter` BEFORE the setEwma cache update. So a crash
+ *       after the log-append but before setEwma is a *recoverable under-count*:
+ *       rebuildState() restores the EWMA from the log. This is at-most-once on
+ *       the EWMA cache, recoverable via rebuildState — NOT "moved exactly once
+ *       under all faults". A crash BEFORE the log-append leaves no sentinel; a
+ *       retry then re-runs cleanly (correct). True single-tx atomicity across
+ *       the two stores remains a documented follow-on (spec-delta #5).
  *
  * DEVIATION FROM PLAN (Task 5): The plan's processVerdict used a fresh
  * clock.nowMs() for `at`, which breaks idempotency — the EWMA would move twice
  * on replay with a real clock (ClockTest masks it; the real clock does not).
- * Fixed here by: (1) anchoring `at` to `v.at ?? clock.nowMs()` and (2) checking
- * for a pre-existing log row (same idempotency key) before executing EWMA + belief
- * updates. `SurveyVerdict` gains an optional `at` field (backward-compatible).
+ * Fixed here by: (1) anchoring `at` to `v.at ?? clock.nowMs()`, (2) a
+ * pre-existing-log-row guard before any write, and (3) LOG-FIRST write ordering
+ * so a partial write degrades to a recoverable under-count rather than an
+ * unrecoverable double-count. `SurveyVerdict` gains an optional `at` field
+ * (backward-compatible).
  */
 import { Effect, Layer } from "effect"
 import { Clock } from "../clock.js"
@@ -100,37 +116,44 @@ export class Survey extends Effect.Tag("luna/Survey")<Survey, SurveyApi>() {
           const at = v.at !== undefined ? v.at : (yield* clock.nowMs())
 
           for (const sig of signalsForVerdict(v)) {
+            // belief_validation MUST be belief-bound (it gates a per-belief action).
+            // A belief_validation verdict with no beliefId is a malformed input — fail
+            // loudly rather than silently logging a signal that touches no belief.
+            // (task_quality is legitimately belief-less; outreach_welcome with no
+            //  beliefId is a global-only signal and falls through to the EWMA path.)
+            if (sig.kind === "belief_validation" && sig.beliefId === undefined) {
+              return yield* Effect.fail(
+                new AlignmentError({
+                  op: "processVerdict",
+                  message: "belief_validation verdict has no beliefId (cannot route to a belief track record)",
+                }),
+              )
+            }
+
             // IDEMPOTENCY GUARD: check if this exact (ref, signalKind, at) was already
-            // logged. If so, all downstream ops (EWMA, recordValidation, append) would
-            // also be no-ops (they key on `at`), so skip the entire block.
+            // logged. The log row is the sentinel (written FIRST below), so its presence
+            // means this verdict already fully processed — skip the entire block.
             // This prevents EWMA from moving twice on a retried verdict — the bug the
             // plan's fresh-clock approach would introduce with a real (non-Test) clock.
             const existing = yield* store.list({ signalKind: sig.kind, since: at })
             const alreadyProcessed = existing.some((r) => r.ref === sig.ref && r.at === at)
             if (alreadyProcessed) continue
 
-            // (a) Global EWMA — ONLY for EWMA-eligible kinds (category boundary §2.3).
-            // belief_validation is deliberately excluded here.
+            // Compute the new EWMA value WITHOUT committing the cache yet — ONLY for
+            // EWMA-eligible kinds (category boundary §2.3; belief_validation excluded).
             let ewmaAfter: number | null = null
             if (EWMA_ELIGIBLE.has(sig.kind)) {
               const prev = yield* store.getEwma
-              const next = updateEwma(prev, sig.value)
-              yield* store.setEwma(next)
-              ewmaAfter = next
+              ewmaAfter = updateEwma(prev, sig.value)
             }
 
-            // (b) Per-belief track record — for belief-bound signals.
-            // belief_validation and outreach_welcome (when beliefId is present).
-            if (sig.beliefId !== undefined && sig.verdict !== undefined) {
-              const validation: BeliefValidation = { at, verdict: sig.verdict, via: sig.via }
-              yield* writer.recordValidation(sig.beliefId, validation)
-              yield* applyActivationPolicy(sig.beliefId, sig.verdict)
-            }
-
-            // (c) Always log to the ledger (audit/training corpus; idempotent via
-            // INSERT OR IGNORE on deterministic id from (ref, signalKind, at)).
-            // scoreDelta stores the normalized signal value [0,1]; the EWMA does
-            // the smoothing, so a true delta is not needed here and would be derivable.
+            // (a) LOG-FIRST: append the ledger row (the declared source of truth,
+            // foldable by rebuildState) BEFORE the EWMA cache update. A crash after
+            // this append but before setEwma is a recoverable under-count
+            // (rebuildState restores the cache from the log); a crash before it leaves
+            // no sentinel so a retry re-runs cleanly. Idempotent via INSERT OR IGNORE
+            // on deterministic id (ref, signalKind, at). scoreDelta stores the
+            // normalized signal value [0,1]; the EWMA does the smoothing.
             yield* store.append({
               at,
               signalKind: sig.kind,
@@ -138,6 +161,20 @@ export class Survey extends Effect.Tag("luna/Survey")<Survey, SurveyApi>() {
               ewmaAfter,
               ref: sig.ref,
             })
+
+            // (b) Commit the EWMA cache (forward-only fast path; the log above is the
+            // recovery source if this never lands).
+            if (ewmaAfter !== null) {
+              yield* store.setEwma(ewmaAfter)
+            }
+
+            // (c) Per-belief track record — for belief-bound signals
+            // (belief_validation always; outreach_welcome when beliefId is present).
+            if (sig.beliefId !== undefined && sig.verdict !== undefined) {
+              const validation: BeliefValidation = { at, verdict: sig.verdict, via: sig.via }
+              yield* writer.recordValidation(sig.beliefId, validation)
+              yield* applyActivationPolicy(sig.beliefId, sig.verdict)
+            }
           }
         })
 
