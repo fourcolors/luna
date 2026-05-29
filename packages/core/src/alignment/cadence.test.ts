@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest"
 import {
   updateEwma, nextSurveyAt, signalValueForVerdict,
-  ALPHA_UP, ALPHA_DOWN, MIN_INTERVAL_DAYS, MAX_INTERVAL_DAYS,
+  ALPHA_UP, ALPHA_DOWN, MIN_INTERVAL_DAYS, MAX_INTERVAL_DAYS, INTERVAL_CURVE,
 } from "./cadence.js"
 
 const DAY = 86_400_000
@@ -53,7 +53,14 @@ describe("nextSurveyAt — interval curve + FAST CLAWBACK (§2.1)", () => {
     let ewma = 0.0
     ewma = updateEwma(ewma, 1) // good survey 1
     ewma = updateEwma(ewma, 1) // good survey 2
-    expect(nextSurveyAt(ewma, 0) / DAY).toBeLessThan(MAX_INTERVAL_DAYS / 3)
+    // Tight margin (actual ≈1.62d): catches ALPHA_UP inflation, not just a wide cap.
+    expect(nextSurveyAt(ewma, 0) / DAY).toBeLessThan(3)
+  })
+  // Pin the convexity directly so a revert to a linear curve (1) fails an
+  // explicit assertion, not only the pipeline test. Quadratic (2) still meets
+  // the ≤2-survey clawback threshold, so it is the correct floor.
+  it("interval curve is convex (≥2) — a linear revert is a safety regression", () => {
+    expect(INTERVAL_CURVE).toBeGreaterThanOrEqual(2)
   })
   it("interval is monotone in alignment", () => {
     expect(nextSurveyAt(0.5, 0)).toBeGreaterThan(nextSurveyAt(0.0, 0))

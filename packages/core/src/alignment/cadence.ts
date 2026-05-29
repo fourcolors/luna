@@ -8,6 +8,13 @@
  *   2. "Fast clawback" — convex interval curve keeps cadence near MIN across
  *      most of the ewma range; even from converged full trust (ewma=1.0) two
  *      worst-case surveys snap the interval back to the ~1-day floor.
+ *
+ * DETECTION-LATENCY CAVEAT: clawback completes in ≤2 surveys, but from
+ * converged trust the *next* survey is ~30 days out — so worst-case wall-clock
+ * from drift → floor-cadence is ~30d + clawback. This is an inherent property
+ * of the pure cadence controller. An out-of-band immediate trigger for the
+ * riskiest signals (the §2.3 outreach_welcome bypass-the-clock path) is a
+ * survey-service concern, not this module's.
  */
 import type { BeliefVerdict } from "../beliefs/types.js"
 
@@ -69,7 +76,11 @@ export function signalValueForVerdict(input: {
   verdict?: BeliefVerdict
   score?: number
 }): number {
-  if (input.score !== undefined) return clamp01(input.score)
+  if (input.score !== undefined) {
+    // NaN/non-finite would poison the EWMA forever (clamp01(NaN)=NaN, and all
+    // NaN comparisons are false) → fall back to neutral.
+    return Number.isFinite(input.score) ? clamp01(input.score) : 0.5
+  }
   switch (input.verdict) {
     case "confirmed":
       return 1
