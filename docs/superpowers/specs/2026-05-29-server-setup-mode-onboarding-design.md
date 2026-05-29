@@ -39,7 +39,11 @@ This **replaces** today's `buildMain` "zero accounts → hard-exit" guard (the O
 The server stays up and serves a **token-gated** (`UI_WS_TOKEN`) install UI on the normal port; **chat is disabled** (capabilities advertise `setup` instead of `chat`). The install UI hosts a guided flow + the embedded terminal (§C). Security: the embedded terminal can run `claude`, so it MUST be token-gated — an open setup terminal on a network port is effectively remote code execution. Same Bearer/token gate as the chat WS.
 
 ### C. Embedded web terminal
-The server spawns **`claude setup-token`** in a pty and streams it over WebSocket to an **xterm.js** terminal in the install UI — **reusing Luna's existing pty/shell bridge** (`createLocalShellBridge` from `@luna/ui-ws`, already imported by chat-server) rather than building pty-over-WS from scratch (a plan task must confirm the bridge can host an arbitrary interactive pty like `claude`, not only the sandboxed shell tool; if not, a thin dedicated pty-WS bridge modeled on it). Flow: the terminal shows the `setup-token` prompt + a URL; the operator opens the URL in *their* browser, enters claude.ai credentials, authorizes, and pastes the returned code into the terminal. On success (`claude auth status` → `loggedIn:true`): seed the `claude-code:login` account if absent (reuse `addAccount`), then **restart** (§D).
+The server runs **`claude setup-token`** in a real pty and streams it over WebSocket to an **xterm.js** terminal in the install UI.
+
+**Pty mechanism — resolved by spike (2026-05-29):** `createLocalShellBridge` is **NOT reusable** (it's a request/response in-memory broker — `child_process.spawn`, bounded buffer, no pty, no streaming). And **`node-pty` fails under Bun on the Linux container** (native build errors — `gyp ERR! not ok`; no loadable `pty.node`). The viable mechanism is the **util-linux `script` command** (present, 2.39.3): `child_process.spawn("script", ["-qec", "<LUNA_CLAUDE_CODE_EXECUTABLE> setup-token", "/dev/null"])` — verified to allocate a real TTY (`/dev/pts/N`) and stream bidirectionally under Bun, **with no native dependency and no build toolchain**. So #1b builds a small `script`-pty↔WS bridge (stdout→`pty-output` frame; `pty-input`→the process stdin; `pty-resize`→env/`COLUMNS`/`LINES` or a `kill -WINCH`), plus an `@xterm/xterm` client (the only net-new dep, pure JS). A plan task confirms `script` is in the OCI image too (Debian/Ubuntu base → util-linux present; ensure it) and that stdin forwarding reaches claude.
+
+**Flow:** the terminal shows the `setup-token` prompt + a URL; the operator opens the URL in *their* browser, enters claude.ai credentials, authorizes, and pastes the returned code into the terminal. On success (`claude auth status` → `loggedIn:true`): seed the `claude-code:login` account if absent (reuse `addAccount`), then **restart** (§D).
 
 ### D. Restart as the sole transition (simpler AND more resilient)
 There is **no live mode-flip**. Both transitions are a restart, after which the gate (§A) re-decides:
@@ -75,7 +79,7 @@ The setup UI + embedded terminal are gated by the static `UI_WS_TOKEN` (transpor
 
 ## 8. Key risks
 
-- **pty-over-WS reuse** — `createLocalShellBridge` may be scoped to the sandboxed shell *tool*, not an arbitrary interactive `claude` pty. First plan task: confirm it can host `claude`; else build a thin dedicated bridge modeled on it. Don't assume.
+- **pty mechanism — resolved (spike).** `createLocalShellBridge` is not reusable and `node-pty` fails to build/load under Bun on the container; the chosen mechanism is the util-linux **`script`** command (verified: real TTY + streams under Bun, no native dep). Residual: confirm `script` is in the OCI image and that stdin written to the spawned `script` process reaches claude's pty (a plan task).
 - **OAuth round-trip in the embedded terminal** — `setup-token`'s paste-back must work through the xterm.js↔pty path; the real-box acceptance (§7) is the gate, not mocked tests.
 - **Security** — the setup terminal is effectively RCE if unauthenticated; it MUST be `UI_WS_TOKEN`-gated (§4.B). A plan task asserts an unauthenticated setup-WS connection is rejected.
 - **Gate replaces the boot guard** — touches `chat-server` boot (`buildMain`); re-verify the boot smokes for both modes; no tsc gate there.
