@@ -1,8 +1,10 @@
 # Easy Onboarding & Resilient Access (#1 + #3) — Design
 
 **Date:** 2026-05-29
-**Status:** Approved design, revised after advisor review (pending final spec review)
-**Relation:** Companion to `2026-05-29-portable-luna-server-installer-design.md`. This is piece **#1 (dead-simple Claude login)** + **#3 (optional Tailscale / optional 1Password)** of the "make Luna easy for people" decomposition. Pieces **#2 (operator username/password)** and **#4 (container secret system + plugins)** are separate follow-on specs. This spec **retires** the installer spec's §12 "subscription-login-in-a-container is awkward" risk and replaces its §5.1 clunky interactive step. It also **upgrades** the installer spec's §6 `luna doctor` credential probe (see §6 below).
+**Status:** Partially superseded — see note below.
+**Relation:** Companion to `2026-05-29-portable-luna-server-installer-design.md`.
+
+> **⚠️ #1 reshaped & superseded (2026-05-29).** The primary onboarding is now a **GUI server setup-mode**, designed in `2026-05-29-server-setup-mode-onboarding-design.md` (the operator logs in via an embedded `claude` web terminal; the readiness gate + restart-as-transition replace the CLI flow). The `luna login` **CLI** described below (§4) is retained only as the **power-user / headless** alternative. This spec's still-current content is **#3** (optional Tailscale/1Password + resilience defaults, §5–§6) plus the `setup-token`/`auth status` findings that the new #1 spec also relies on. Pieces **#2** and **#4** remain separate follow-on specs.
 
 ---
 
