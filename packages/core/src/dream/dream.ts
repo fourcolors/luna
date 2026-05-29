@@ -19,7 +19,7 @@ import type { DreamOp, DreamOpKind, DreamInputs } from "./types.js"
  * Still HELD as 'proposed' (no survey to catch a bad apply yet): memory_staleness,
  * memory_contradiction.
  */
-const AUTO_APPLY: ReadonlySet<DreamOpKind> = new Set<DreamOpKind>([
+const MATERIALIZE_OPS: ReadonlySet<DreamOpKind> = new Set<DreamOpKind>([
   "memory_dedup",
   "belief_candidate",
 ])
@@ -39,7 +39,7 @@ export const applyOps = (dreamId: string, ops: ReadonlyArray<DreamOp>) =>
     const now = yield* clock.nowMs()
 
     for (const op of ops) {
-      if (AUTO_APPLY.has(op.kind)) {
+      if (MATERIALIZE_OPS.has(op.kind)) {
         // Idempotent state-set: null after = delete; else upsert to desired state.
         if (op.after === null) {
           yield* mem.delete(op.targetId)

@@ -138,6 +138,30 @@ describe("revert", () => {
     expect(out.row?.status).toBe("reverted")
   })
 
+  it("revert undoes a materialized belief_candidate (deletes the proposed record)", async () => {
+    const candidate = makeBeliefRecord({ statement: "x", confidence: 0.6, domain: "comms", now: 0 })
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const mem = yield* MemoryRouterTag
+          const store = yield* DreamStore
+          yield* applyOps("dream-0-100", [
+            { kind: "belief_candidate", targetId: candidate.id, before: null, after: candidate, rationale: "pattern" },
+          ])
+          const rowId = (yield* store.list({ dreamId: "dream-0-100" }))[0]!.id
+          const reverted = yield* revert(rowId)
+          const afterRevert = yield* mem.get(candidate.id)
+          const row = yield* store.get(rowId)
+          return { reverted, afterRevert, status: row?.status }
+        }),
+        FakeMemory([]),
+      ),
+    )
+    expect(out.reverted).toBe(true)
+    expect(out.afterRevert).toBeNull()        // proposed belief deleted
+    expect(out.status).toBe("reverted")        // audit row flipped
+  })
+
   it("refuses to revert a proposed (never-applied) row", async () => {
     const out = await Effect.runPromise(
       provide(
