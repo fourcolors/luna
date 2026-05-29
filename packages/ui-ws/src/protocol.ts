@@ -36,6 +36,7 @@ export interface HelloFrame {
     readonly chat: boolean
     readonly streamingDeltas: boolean
     readonly localShell: boolean
+    readonly setup: boolean
   }
 }
 

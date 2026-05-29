@@ -259,7 +259,7 @@ describe("S4 — selectedAccountId survives unrelated frames", () => {
       type: "hello",
       protocolVersion: 2,
       kinds: [],
-      capabilities: { chat: true, streamingDeltas: true },
+      capabilities: { chat: true, streamingDeltas: true, setup: false },
     }
     state = reduce(state, hello)
     expect(getSelected(state)).toBe("a2")

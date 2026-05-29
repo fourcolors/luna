@@ -38,12 +38,12 @@ describe("reducer", () => {
         type: "hello",
         protocolVersion: 2,
         kinds: ["ToolCall", "Error"],
-        capabilities: { chat: true, streamingDeltas: true },
+        capabilities: { chat: true, streamingDeltas: true, setup: false },
       } as ServerFrame,
     )
     expect(s1.advertisedKinds).toEqual(["ToolCall", "Error"])
     expect(s1.closeReason).toBeNull()
-    expect(s1.capabilities).toEqual({ chat: true, streamingDeltas: true })
+    expect(s1.capabilities).toEqual({ chat: true, streamingDeltas: true, setup: false })
   })
 
   it("event prepends and tracks seenKinds (dedup)", () => {
