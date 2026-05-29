@@ -9,8 +9,20 @@ import { DreamStore } from "./dream-store.js"
 import { DreamReasoner } from "./reasoner.js"
 import type { DreamOp, DreamOpKind, DreamInputs } from "./types.js"
 
-/** Phase 1: the ONLY op kind safe to auto-apply without survey/undo coverage. */
-const AUTO_APPLY: ReadonlySet<DreamOpKind> = new Set<DreamOpKind>(["memory_dedup"])
+/**
+ * Ops materialized to the store (vs. held as 'proposed' audit rows).
+ *  - memory_dedup: idempotent delete of an exact duplicate (Phase 1).
+ *  - belief_candidate: stage a PROPOSED belief record (Phase 2 §7.2). Safe to
+ *    auto-write because a proposed belief is inert — only ACTIVE beliefs are
+ *    injected, and activation stays gated on the Phase 3 survey. Undoable via
+ *    revert (before:null → delete).
+ * Still HELD as 'proposed' (no survey to catch a bad apply yet): memory_staleness,
+ * memory_contradiction.
+ */
+const MATERIALIZE_OPS: ReadonlySet<DreamOpKind> = new Set<DreamOpKind>([
+  "memory_dedup",
+  "belief_candidate",
+])
 
 /**
  * Apply a reasoner's ops. Auto-applies exact-dedup (idempotent state-set);
@@ -27,7 +39,7 @@ export const applyOps = (dreamId: string, ops: ReadonlyArray<DreamOp>) =>
     const now = yield* clock.nowMs()
 
     for (const op of ops) {
-      if (AUTO_APPLY.has(op.kind)) {
+      if (MATERIALIZE_OPS.has(op.kind)) {
         // Idempotent state-set: null after = delete; else upsert to desired state.
         if (op.after === null) {
           yield* mem.delete(op.targetId)
