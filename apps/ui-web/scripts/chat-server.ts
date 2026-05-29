@@ -133,13 +133,17 @@ import {
   }
   applyRuntimePathEnvDefaults(resolveRuntimePaths())
 }
-import { Effect, Layer, ManagedRuntime, Option } from "effect"
+import { Effect, Layer, ManagedRuntime, Option, Stream } from "effect"
 import {
   AccountBroker,
   AccountBrokerLayer,
   AgentNotesService,
+  BELIEF_KIND,
+  BELIEF_NAMESPACE,
   Clock,
   DEFAULT_UI_KINDS,
+  DreamCronLayer,
+  DreamStore,
   EnvSecretProvider,
   NoopTracerLayer,
   ObservabilityService,
@@ -149,6 +153,7 @@ import {
   TelemetryPlatform,
   TelemetryService,
   UIService,
+  composeBeliefsSection,
   makeDuckDbLayer,
   makeTelemetrySqlite,
   readKeychainToken,
@@ -162,14 +167,14 @@ import {
   resolveSandboxLocalShell,
 } from "./sandbox-local-shell.js"
 export { loadDna } from "./dna-loader.js"
-import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
+import { DreamReasonerDefault, SDKAdapter, SDKClient } from "@luna/adapter-sdk"
 import {
   ChatService,
   ThreadToolsProviderTag,
   type ThreadToolsProvider,
 } from "@luna/chat-service"
 import { createLocalShellBridge, startUIWebSocketServer } from "@luna/ui-ws"
-import { LunaSqliteBootstrapLive } from "@luna/memory"
+import { LunaSqliteBootstrapLive, MemoryRouterTag } from "@luna/memory"
 import {
   MemoryRouterLayer,
   MemoryToolsLayer,
@@ -222,7 +227,7 @@ const reattachSandbox = (threadId: string): void => {
  * onBound callback that binds the session id into obs/local-shell tools and
  * (when enabled) attaches the sandbox local-shell + registers its reattacher.
  */
-const ThreadToolsProviderLayer = () =>
+export const ThreadToolsProviderLayer = () =>
   Layer.effect(
     ThreadToolsProviderTag,
     Effect.gen(function* () {
@@ -254,6 +259,33 @@ const ThreadToolsProviderLayer = () =>
           : `disabled (${sandboxLocalShell.reason})`,
       )
 
+      // Phase 3 D5: fetch active beliefs at BOOT into a snapshot.
+      // decorate() is SYNCHRONOUS (chat-service/src/types.ts:227 —
+      // `decorate: (opts) => ThreadToolsBinding`), so it cannot run an
+      // async mem.query() itself. We fetch here (Effect.gen — fully async
+      // context) and close over the snapshot so decorate reads it
+      // synchronously. composeBeliefsSection filters to ACTIVE + ranks;
+      // returns "" when no active beliefs so the existing .filter(length>0)
+      // drops the section cleanly.
+      //
+      // FRESHNESS NOTE (v1 boot-snapshot limitation): a belief activated
+      // by the survey appears only after the NEXT server restart. A per-
+      // thread live refresh requires an out-of-band Ref update fiber —
+      // deferred as an openConcern, NOT silently dropped. This is strictly
+      // better than Phase-2's always-empty section.
+      const mem = yield* MemoryRouterTag
+      const beliefRecordsChunk = yield* mem
+        .query({ namespace: BELIEF_NAMESPACE, kind: BELIEF_KIND })
+        .pipe(Stream.runCollect)
+      const beliefsSnapshot = Array.from(beliefRecordsChunk)
+      console.log(
+        "[luna/boot] beliefs injected:",
+        beliefsSnapshot.filter(
+          (r) => (r.content as { status?: string }).status === "active",
+        ).length,
+        "active",
+      )
+
       const provider: ThreadToolsProvider = {
         decorate: (opts) => {
           const memoryThreadTools = memTools.createSessionBinding()
@@ -269,9 +301,14 @@ const ThreadToolsProviderLayer = () =>
               localShellThreadTools.serverName,
             ].join(", "),
           )
+          // Sync read of the boot snapshot — composeBeliefsSection filters
+          // to ACTIVE records, ranks by strength, and renders the section.
+          // Returns "" when beliefsSnapshot has no active records.
+          const beliefsContent = composeBeliefsSection(beliefsSnapshot, Date.now())
           const systemPrompt = [
             dnaContent,
             sessionMetadata,
+            beliefsContent, // Phase 3 D5: ranked active beliefs section
             opts.systemPrompt,
             memoryThreadTools.systemPromptAddendum,
             schedulerThreadTools.systemPromptAddendum,
@@ -364,6 +401,51 @@ const discoverOpTokens: Effect.Effect<ReadonlyArray<DiscoveredOpToken>> =
     return found
   })
 
+// ── Dream cron sub-layer factory (exported for boot smoke) ──────────────
+//
+// Phase 3 D1: exported so the boot smoke can import THIS symbol and verify
+// the real wiring shape — NOT a hand-copied mirror. The smoke uses node-
+// runnable doubles (DreamStore.Memory, FakeMemoryRouter, SessionStore.Default,
+// SDKClient.fake, Clock.Default) while keeping DreamReasonerDefault (real)
+// so the SDKClient+MemoryRouter requirements are preserved in the proof.
+//
+// DreamReasonerDefault requires BOTH SDKClient AND MemoryRouter (it closes
+// over both at build time so reason()'s R channel is never).
+export interface BuildDreamCronLayerOpts {
+  readonly expr: string
+  readonly sdkClientL: Layer.Layer<SDKClient>
+  readonly memoryRouterL: Layer.Layer<import("@luna/memory").MemoryRouter>
+  readonly storeL: Layer.Layer<SessionStore>
+  readonly clockL: Layer.Layer<Clock>
+  /**
+   * DreamStore layer to use. The live boot passes
+   * `DreamStore.makeLayer(paths.lunaDbPath).pipe(Layer.provide(clockL))`
+   * (which requires LunaSqliteBootstrap, satisfied at the bottom of
+   * buildServerLayer). The boot smoke passes `DreamStore.Memory` (no SQLite
+   * needed) to keep the smoke node-runnable.
+   */
+  readonly dreamStoreL: Layer.Layer<DreamStore>
+}
+
+export const buildDreamCronLayer = (opts: BuildDreamCronLayerOpts) => {
+  const { expr, sdkClientL, memoryRouterL, storeL, clockL, dreamStoreL } = opts
+  // DreamReasonerDefault requires BOTH SDKClient AND MemoryRouter (closes over
+  // both at build time so reason()'s R channel is never). SDKClient is the real
+  // dependency this smoke proves is satisfiable — SDKClient.fake keeps it real
+  // while making zero model calls.
+  const dreamReasonerL = DreamReasonerDefault.pipe(
+    Layer.provide(sdkClientL),
+    Layer.provide(memoryRouterL),
+  )
+  return DreamCronLayer(expr).pipe(
+    Layer.provide(dreamStoreL),
+    Layer.provide(dreamReasonerL),
+    Layer.provide(storeL),
+    Layer.provide(memoryRouterL),
+    Layer.provide(clockL),
+  )
+}
+
 // ── Layer wiring ────────────────────────────────────────────────────────
 //
 // Phase 25d: SecretProvider chain is RoutedOpSecretProvider →
@@ -371,7 +453,7 @@ const discoverOpTokens: Effect.Effect<ReadonlyArray<DiscoveredOpToken>> =
 // OnePasswordSecretProvider built inline; the routed wrapper dispatches
 // based on the ref scheme (op://, luna-op://<label>/...) per
 // DESIGN.md §2.2.11. No fall-through across OP accounts.
-const buildBaseLayer = (
+export const buildBaseLayer = (
   opTokens: ReadonlyArray<DiscoveredOpToken>,
 ): Layer.Layer<
   | UIService
@@ -482,9 +564,26 @@ const buildBaseLayer = (
   // LunaSqliteBootstrap flows up and is satisfied at the bottom of
   // buildServerLayer, same as every other SQLite-backed layer here.
   const threadToolsL = ThreadToolsProviderLayer().pipe(
+    Layer.provide(memoryRouterL), // REQUIRED: satisfies MemoryRouterTag inside the layer (siblings don't cross-wire)
     Layer.provide(obsL),
     Layer.provide(clockL),
   )
+
+  // Phase 3 D1: nightly Dream cron. DreamCronLayer provides its OWN
+  // JobScheduler+TriggerAgent (a second instance — harmless, like memoryRouterL).
+  // DreamReasonerDefault (from adapter-sdk) requires both SDKClient + MemoryRouter;
+  // we close over the boot's sdkClientL + memoryRouterL. DreamStore uses luna.db.
+  // LunaSqliteBootstrap is satisfied at the bottom of buildServerLayer, same as
+  // every other SQLite-backed layer here.
+  const dreamStoreL = DreamStore.makeLayer(paths.lunaDbPath).pipe(Layer.provide(clockL))
+  const dreamCronL = buildDreamCronLayer({
+    expr: "0 3 * * *",
+    sdkClientL,
+    memoryRouterL,
+    storeL,
+    clockL,
+    dreamStoreL,
+  })
 
   const chatL = Layer.provideMerge(
     ChatService.Default,
@@ -510,6 +609,7 @@ const buildBaseLayer = (
     telPlatformL,
     noopTracerL,
     agentNotesL,
+    dreamCronL, // Phase 3 D1: forces the cron to register at boot
   )
 }
 

@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@luna/core": "workspace:*",
+    "@luna/memory": "workspace:*",
     "effect": "^3.21.0"
   },
   "peerDependencies": {
