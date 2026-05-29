@@ -69,6 +69,7 @@ import {
   formatMemoryRecordEmbeddingInput,
   hashEmbeddingInput,
 } from "./sqlite-vector-maintenance.js"
+import { backfillHnswIfEmpty } from "./hnsw-backfill.js"
 
 export interface SqliteVectorBackendApi {
   readonly backendName: "sqlite-vector"
@@ -220,6 +221,9 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
 
         const db = new Database(dbPath)
         db.run("PRAGMA foreign_keys = ON")
+        // Wait for a contended write lock (e.g. a concurrent `luna memory`
+        // maintenance connection) rather than failing fast with SQLITE_BUSY.
+        db.run("PRAGMA busy_timeout = 5000")
         ensureMemoryVectorSchema(db)
         yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
 
@@ -231,19 +235,18 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
           try {
             ;(db as unknown as { loadExtension: (p: string) => void })
               .loadExtension(vlInit.path)
-            // Did the v-table already exist on this DB? If yes (re-open of a
-            // Phase-27 db) we must NOT run the full backfill — the v-table
-            // already has rows and re-inserting would duplicate (and a
-            // SELECT-from-vtable is not supported by vectorlite, so we can't
-            // diff easily). If NO (fresh db OR pre-Phase-27 db with rows in
-            // memory_vectors but no v-table), we backfill once after CREATE.
+            // If a v-table from a DIFFERENT embedding dimension persists on
+            // this DB, drop it (and its triggers) so it can be recreated at
+            // the current width. The backfill below repopulates regardless of
+            // whether the v-table is freshly created or pre-existing — it
+            // self-probes for an empty graph — so no create-vs-reopen flag is
+            // needed beyond this dimension-mismatch check.
             const existingHnsw = db
               .query(
                 `SELECT sql FROM sqlite_master
                   WHERE type='table' AND name='memory_vectors_hnsw'`,
               )
               .get() as { sql: string | null } | null | undefined
-            let hnswExisted = existingHnsw != null
             if (
               existingHnsw?.sql != null &&
               !existingHnsw.sql.includes(`float32[${embedder.dimension}]`)
@@ -252,7 +255,6 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
               db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ad`)
               db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_au`)
               db.run(`DROP TABLE IF EXISTS memory_vectors_hnsw`)
-              hnswExisted = false
             }
             // Create the HNSW v-table mirroring memory_vectors by rowid.
             // max_elements is required at create-time; 100k is well above any
@@ -281,20 +283,25 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
                     VALUES (new.rowid, new.embedding);
                 END;
             `)
-            if (!hnswExisted) {
-              // First creation on this DB. Backfill any pre-existing
-              // memory_vectors rows (covers pre-Phase-27 dbs and dbs where
-              // the v-table was dropped). Vectorlite v-tables don't support
-              // generic SELECT, so we read the source side and INSERT … SELECT.
-              db.run(
-                `INSERT INTO memory_vectors_hnsw(rowid, embedding)
-                   SELECT rowid, embedding FROM memory_vectors
-                    WHERE dimension = ${embedder.dimension}`,
-              )
-            }
+            // Backfill the HNSW v-table on every connection open (Phase 27d
+            // bug fix). Vectorlite v-tables without `index_file_path` are
+            // memory-only AND per-connection: the schema persists across
+            // restarts/connections, but the in-memory graph does not — so each
+            // new connection sees an empty index until it rebuilds.
+            // `backfillHnswIfEmpty` self-probes with any stored embedding (k=1)
+            // and only writes when the graph is empty — idempotent on an
+            // already-populated connection, harmless when no source rows exist.
+            backfillHnswIfEmpty(db, embedder.dimension)
             hnswEnabled = true
           } catch (cause) {
-            warnFallbackOnce(`loadExtension failed: ${String(cause)}`)
+            // The extension loaded but v-table setup or the backfill failed
+            // (e.g. max_elements exceeded, or an unreadable embedding). Tear
+            // the half-built v-table down and fall back to naive cosine — a
+            // correct, if slower, search path — rather than serve an
+            // incomplete index. The cause string carries the specific error.
+            warnFallbackOnce(
+              `HNSW unavailable (extension load, v-table setup, or backfill failed); using naive cosine ranking: ${String(cause)}`,
+            )
             // Best-effort cleanup so the half-created v-table + triggers
             // don't break subsequent put()s. If these fail (e.g. extension
             // never actually loaded), ignore — the next open will retry.
