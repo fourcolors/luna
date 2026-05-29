@@ -840,10 +840,24 @@ const bootstrap = async (): Promise<void> => {
   const serverLayer = buildServerLayer(baseLayer)
   const runtime = ManagedRuntime.make(Layer.mergeAll(serverLayer, baseLayer))
 
-  process.on("SIGINT", () => {
-    console.log("\n👋 shutting down")
+  // Graceful shutdown on BOTH signals. Interactive use sends SIGINT;
+  // systemd `stop`/`restart` sends SIGTERM. Both must run runtime.dispose()
+  // so the ManagedRuntime releases its layer scope finalizers — notably
+  // db.close(), which is what makes vectorlite serialize the HNSW sidecar
+  // (memory.db.hnsw.bin) and re-chmod it 0o600. Without a SIGTERM handler the
+  // process is hard-killed under systemd, db.close() never runs, the sidecar
+  // is never written, and every boot pays the full backfill cost again.
+  // The guard makes a second signal (or SIGINT-then-SIGTERM) a no-op so
+  // dispose() can't run twice.
+  let shuttingDown = false
+  const shutdown = (signal: NodeJS.Signals) => {
+    if (shuttingDown) return
+    shuttingDown = true
+    console.log(`\n👋 shutting down (${signal})`)
     void runtime.dispose().then(() => process.exit(0))
-  })
+  }
+  process.on("SIGINT", () => shutdown("SIGINT"))
+  process.on("SIGTERM", () => shutdown("SIGTERM"))
 
   // runPromise keeps the event loop alive until the effect resolves (which
   // it never does because of Effect.never). runFork returns immediately,
