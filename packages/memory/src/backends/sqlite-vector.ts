@@ -245,6 +245,16 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
         // succeeded earlier (process-wide setCustomSQLite), each Database
         // needs its own loadExtension() call.
         let hnswEnabled = false
+        // Drop the HNSW v-table + its three sync triggers. Shared by the
+        // spec-mismatch path, corruption recovery, and the catch-block
+        // teardown so the four DROPs can't drift out of sync. Defined out
+        // here (not inside the try) so the catch handler can see it.
+        const dropHnswObjects = (): void => {
+          db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ai`)
+          db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ad`)
+          db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_au`)
+          db.run(`DROP TABLE IF EXISTS memory_vectors_hnsw`)
+        }
         if (vlInit.ok) {
           try {
             ;(db as unknown as { loadExtension: (p: string) => void })
@@ -273,6 +283,16 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
             // wrong sidecar path) must be torn down before CREATE — the
             // `IF NOT EXISTS` clause turns CREATE into a no-op when the
             // table already exists, regardless of its parameters.
+            // Single-quote-escaped sidecar path as it appears VERBATIM in
+            // `sqlite_master.sql` — sqlite stores the CREATE text we typed,
+            // with embedded `'` doubled. Both the CREATE below and the
+            // existing-spec match must use this form; comparing against the
+            // raw path would spuriously miss any dbPath containing an
+            // apostrophe (`/Users/o'brien/...`), forcing a needless
+            // DROP+recreate on every open and defeating persistence.
+            const escapedSidecar =
+              sidecarPath !== null ? sidecarPath.replace(/'/g, "''") : null
+
             const existingHnsw = db
               .query(
                 `SELECT sql FROM sqlite_master
@@ -281,19 +301,16 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
               .get() as { sql: string | null } | null | undefined
             const existingMatches = (sql: string): boolean => {
               if (!sql.includes(`float32[${embedder.dimension}]`)) return false
-              if (sidecarPath === null) {
+              if (escapedSidecar === null) {
                 // We want memory-only. Existing must not reference a path.
                 return !/'[^']+'/.test(sql)
               }
-              // We want a specific sidecar path. Existing must literally
-              // include it (the path is stored verbatim in sqlite_master).
-              return sql.includes(sidecarPath)
+              // We want a specific sidecar path. Match the escaped literal
+              // as stored verbatim in sqlite_master (handles apostrophes).
+              return sql.includes(escapedSidecar)
             }
             if (existingHnsw?.sql != null && !existingMatches(existingHnsw.sql)) {
-              db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ai`)
-              db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ad`)
-              db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_au`)
-              db.run(`DROP TABLE IF EXISTS memory_vectors_hnsw`)
+              dropHnswObjects()
             }
 
             // CREATE + corruption recovery.
@@ -307,23 +324,25 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
             // stored embedding — that's where corruption surfaces. If
             // the probe throws AND we have a sidecar, we treat it as
             // corruption: drop everything, discard the sidecar, and
-            // retry CREATE empty. The unconditional
-            // `backfillHnswIfEmpty` call below rebuilds the graph from
-            // `memory_vectors` (the canonical source of truth) and
-            // vectorlite re-serializes a healthy sidecar on close.
+            // retry CREATE empty. `knownPopulated` stays false on this
+            // path, so the `backfillHnswIfEmpty` call below rebuilds the
+            // graph from `memory_vectors` (the canonical source of truth)
+            // and vectorlite re-serializes a healthy sidecar on close.
             //
             // The retry is bounded to a single attempt — if recreating
             // also throws, the surrounding try/catch falls back to the
             // naive in-process cosine path.
-            const createSql =
-              sidecarPath !== null
-                ? `CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors_hnsw
-                     USING vectorlite(embedding float32[${embedder.dimension}],
-                                      hnsw(max_elements=100000),
-                                      '${sidecarPath.replace(/'/g, "''")}')`
-                : `CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors_hnsw
-                     USING vectorlite(embedding float32[${embedder.dimension}],
-                                      hnsw(max_elements=100000))`
+            // max_elements is required at create-time; 100k is well above any
+            // realistic single-process working set and small in memory. The
+            // optional third arg is the sidecar `index_file_path` (omitted for
+            // the memory-only path).
+            const createSql = `CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors_hnsw
+                 USING vectorlite(embedding float32[${embedder.dimension}],
+                                  hnsw(max_elements=100000)${
+                                    escapedSidecar !== null
+                                      ? `,\n                                  '${escapedSidecar}'`
+                                      : ""
+                                  })`
             db.run(createSql)
 
             // Sidecar corruption probe: only meaningful when we have a
@@ -331,6 +350,12 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
             // there's nothing to test the v-table with). With either
             // condition false, the unconditional backfill below covers
             // the legitimate empty case.
+            //
+            // The probe doubles as the emptiness check the backfill below
+            // would otherwise re-run: when it recalls ≥1 row the persisted
+            // graph is healthy AND populated, so `backfillHnswIfEmpty` would
+            // no-op — we set `knownPopulated` and skip its redundant probe.
+            let knownPopulated = false
             if (sidecarPath !== null) {
               const probeRow = db
                 .query(
@@ -340,19 +365,19 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
                 .get() as { embedding: Uint8Array } | null | undefined
               if (probeRow?.embedding != null) {
                 try {
-                  db.query(
-                    `SELECT rowid FROM memory_vectors_hnsw
-                      WHERE knn_search(embedding, knn_param(?, 1))`,
-                  ).all(probeRow.embedding)
+                  const hits = db
+                    .query(
+                      `SELECT rowid FROM memory_vectors_hnsw
+                        WHERE knn_search(embedding, knn_param(?, 1))`,
+                    )
+                    .all(probeRow.embedding) as Array<unknown>
+                  knownPopulated = hits.length > 0
                 } catch (probeCause) {
                   warnFallbackOnce(
                     `HNSW sidecar appears corrupt; discarding and rebuilding from memory_vectors: ${String(probeCause)}`,
                   )
                   try {
-                    db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ai`)
-                    db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ad`)
-                    db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_au`)
-                    db.run(`DROP TABLE IF EXISTS memory_vectors_hnsw`)
+                    dropHnswObjects()
                   } catch {
                     /* best-effort */
                   }
@@ -384,12 +409,13 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
             `)
             // Backfill is now (a) the one-time first-boot population
             // and (b) the corruption-recovery rebuild — both no-ops on
-            // a healthy persisted index, because `backfillHnswIfEmpty`
-            // self-probes the v-table first and only writes when empty.
-            // We keep this call unconditionally so the legacy
-            // memory-only path (sidecar=null) and the new persistent
-            // path share the same correctness guarantee.
-            backfillHnswIfEmpty(db, embedder.dimension)
+            // a healthy persisted index. We skip it only when the probe
+            // above already proved the graph populated; every other path
+            // (sidecar=null, healthy-but-empty, post-recovery) still runs
+            // it, so the legacy memory-only and new persistent paths share
+            // the same correctness guarantee. `backfillHnswIfEmpty` also
+            // self-probes, so the skip is an optimization, not a contract.
+            if (!knownPopulated) backfillHnswIfEmpty(db, embedder.dimension)
 
             // Tighten sidecar permissions to 0o600 so the persisted
             // graph inherits the same owner-only access posture as
@@ -413,10 +439,7 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
             // don't break subsequent put()s. If these fail (e.g. extension
             // never actually loaded), ignore — the next open will retry.
             try {
-              db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ai`)
-              db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ad`)
-              db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_au`)
-              db.run(`DROP TABLE IF EXISTS memory_vectors_hnsw`)
+              dropHnswObjects()
             } catch {
               /* best-effort */
             }

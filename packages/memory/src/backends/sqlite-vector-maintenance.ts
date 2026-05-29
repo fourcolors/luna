@@ -3,6 +3,7 @@ import { Effect } from "effect"
 import { MemoryBackendError, type EmbedderApi } from "@luna/core"
 import { initVectorlite } from "./vectorlite-init.js"
 import { probeHnswPopulation, backfillHnswRows } from "./hnsw-backfill.js"
+import { deriveHnswSidecarPath, secureSidecar } from "./hnsw-sidecar.js"
 
 type BunStatement = {
   readonly get: (...p: unknown[]) => unknown
@@ -399,6 +400,22 @@ async function openDb(dbPath: string): Promise<BunDatabase> {
   return db
 }
 
+/**
+ * Close a maintenance connection and re-tighten the HNSW sidecar to 0o600.
+ *
+ * The v-table's `index_file_path` is baked into its `sqlite_master` schema by
+ * the backend, so a maintenance connection that touches `memory_vectors_hnsw`
+ * (status probe/backfill, reembed's trigger-driven mutations) makes vectorlite
+ * REWRITE the sidecar on close — at the process umask (typically 0644), which
+ * would silently undo the backend's owner-only posture. Re-chmod after close so
+ * `luna memory status`/`reembed` can't loosen the persisted graph's perms.
+ */
+function closeAndSecureSidecar(db: BunDatabase, dbPath: string): void {
+  db.close()
+  const sidecar = deriveHnswSidecarPath(dbPath)
+  if (sidecar !== null) secureSidecar(sidecar)
+}
+
 export function getMemoryVectorStatus(args: {
   readonly dbPath: string
   readonly embedder: EmbedderApi
@@ -459,7 +476,7 @@ export function getMemoryVectorStatus(args: {
         },
         catch: (cause) => asError("status", cause),
       }),
-    (db) => Effect.sync(() => db.close()),
+    (db) => Effect.sync(() => closeAndSecureSidecar(db, args.dbPath)),
   )
 }
 
@@ -609,6 +626,6 @@ export function reembedMemoryVectors(args: {
           rows,
         }
       }),
-    (db) => Effect.sync(() => db.close()),
+    (db) => Effect.sync(() => closeAndSecureSidecar(db, args.dbPath)),
   )
 }

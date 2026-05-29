@@ -908,10 +908,10 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     // Phase 27e: with index_file_path, vectorlite writes the graph to disk
     // on db.close() and loads it on the next open — no backfill required.
     // This scenario asserts the persistence contract: insert N records,
-    // close, reopen WITHOUT clearing the v-table, and verify
-    // `backfillHnswIfEmpty` returns false on reopen (probe finds rows
-    // already there). Pre-Phase-27e this would have returned true on
-    // every reopen because the in-memory graph was wiped.
+    // close, reopen on a FRESH direct connection, and verify the v-table
+    // already recalls all N rows BEFORE any backfill runs (Phase 2 below
+    // probes the raw v-table directly). Pre-Phase-27e that probe would have
+    // returned 0 rows because the in-memory graph was wiped on close.
     const initMod = await import("../src/backends/vectorlite-init.js")
     const probe = initMod.initVectorlite()
     if (!probe.ok) {
@@ -1223,7 +1223,7 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     }
   })
 
-      it("Atomicity #1: embed failure leaves no keyed row (put fails before any DB write)", async () => {
+  it("Atomicity #1: embed failure leaves no keyed row (put fails before any DB write)", async () => {
     const FailEmbedderLayer = Layer.succeed(EmbedderService, {
       provider: "fail",
       model: "fail",
