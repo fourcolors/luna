@@ -140,6 +140,8 @@ import {
   AgentNotesService,
   Clock,
   DEFAULT_UI_KINDS,
+  DreamCronLayer,
+  DreamStore,
   EnvSecretProvider,
   NoopTracerLayer,
   ObservabilityService,
@@ -162,7 +164,7 @@ import {
   resolveSandboxLocalShell,
 } from "./sandbox-local-shell.js"
 export { loadDna } from "./dna-loader.js"
-import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
+import { DreamReasonerDefault, SDKAdapter, SDKClient } from "@luna/adapter-sdk"
 import {
   ChatService,
   ThreadToolsProviderTag,
@@ -364,6 +366,51 @@ const discoverOpTokens: Effect.Effect<ReadonlyArray<DiscoveredOpToken>> =
     return found
   })
 
+// ── Dream cron sub-layer factory (exported for boot smoke) ──────────────
+//
+// Phase 3 D1: exported so the boot smoke can import THIS symbol and verify
+// the real wiring shape — NOT a hand-copied mirror. The smoke uses node-
+// runnable doubles (DreamStore.Memory, FakeMemoryRouter, SessionStore.Default,
+// SDKClient.fake, Clock.Default) while keeping DreamReasonerDefault (real)
+// so the SDKClient+MemoryRouter requirements are preserved in the proof.
+//
+// DreamReasonerDefault requires BOTH SDKClient AND MemoryRouter (it closes
+// over both at build time so reason()'s R channel is never).
+export interface BuildDreamCronLayerOpts {
+  readonly expr: string
+  readonly sdkClientL: Layer.Layer<SDKClient>
+  readonly memoryRouterL: Layer.Layer<import("@luna/memory").MemoryRouter>
+  readonly storeL: Layer.Layer<SessionStore>
+  readonly clockL: Layer.Layer<Clock>
+  /**
+   * DreamStore layer to use. The live boot passes
+   * `DreamStore.makeLayer(paths.lunaDbPath).pipe(Layer.provide(clockL))`
+   * (which requires LunaSqliteBootstrap, satisfied at the bottom of
+   * buildServerLayer). The boot smoke passes `DreamStore.Memory` (no SQLite
+   * needed) to keep the smoke node-runnable.
+   */
+  readonly dreamStoreL: Layer.Layer<DreamStore>
+}
+
+export const buildDreamCronLayer = (opts: BuildDreamCronLayerOpts) => {
+  const { expr, sdkClientL, memoryRouterL, storeL, clockL, dreamStoreL } = opts
+  // DreamReasonerDefault requires BOTH SDKClient AND MemoryRouter (closes over
+  // both at build time so reason()'s R channel is never). SDKClient is the real
+  // dependency this smoke proves is satisfiable — SDKClient.fake keeps it real
+  // while making zero model calls.
+  const dreamReasonerL = DreamReasonerDefault.pipe(
+    Layer.provide(sdkClientL),
+    Layer.provide(memoryRouterL),
+  )
+  return DreamCronLayer(expr).pipe(
+    Layer.provide(dreamStoreL),
+    Layer.provide(dreamReasonerL),
+    Layer.provide(storeL),
+    Layer.provide(memoryRouterL),
+    Layer.provide(clockL),
+  )
+}
+
 // ── Layer wiring ────────────────────────────────────────────────────────
 //
 // Phase 25d: SecretProvider chain is RoutedOpSecretProvider →
@@ -371,7 +418,7 @@ const discoverOpTokens: Effect.Effect<ReadonlyArray<DiscoveredOpToken>> =
 // OnePasswordSecretProvider built inline; the routed wrapper dispatches
 // based on the ref scheme (op://, luna-op://<label>/...) per
 // DESIGN.md §2.2.11. No fall-through across OP accounts.
-const buildBaseLayer = (
+export const buildBaseLayer = (
   opTokens: ReadonlyArray<DiscoveredOpToken>,
 ): Layer.Layer<
   | UIService
@@ -486,6 +533,22 @@ const buildBaseLayer = (
     Layer.provide(clockL),
   )
 
+  // Phase 3 D1: nightly Dream cron. DreamCronLayer provides its OWN
+  // JobScheduler+TriggerAgent (a second instance — harmless, like memoryRouterL).
+  // DreamReasonerDefault (from adapter-sdk) requires both SDKClient + MemoryRouter;
+  // we close over the boot's sdkClientL + memoryRouterL. DreamStore uses luna.db.
+  // LunaSqliteBootstrap is satisfied at the bottom of buildServerLayer, same as
+  // every other SQLite-backed layer here.
+  const dreamStoreL = DreamStore.makeLayer(paths.lunaDbPath).pipe(Layer.provide(clockL))
+  const dreamCronL = buildDreamCronLayer({
+    expr: "0 3 * * *",
+    sdkClientL,
+    memoryRouterL,
+    storeL,
+    clockL,
+    dreamStoreL,
+  })
+
   const chatL = Layer.provideMerge(
     ChatService.Default,
     Layer.mergeAll(
@@ -510,6 +573,7 @@ const buildBaseLayer = (
     telPlatformL,
     noopTracerL,
     agentNotesL,
+    dreamCronL, // Phase 3 D1: forces the cron to register at boot
   )
 }
 
