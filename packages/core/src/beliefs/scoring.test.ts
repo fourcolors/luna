@@ -34,6 +34,43 @@ describe("beliefStrength", () => {
     expect(confirmed).toBeGreaterThan(0.8) // > neutral
     expect(rejected).toBeLessThan(0.8) // < neutral
   })
+  it("single corrected verdict floors the factor at 0.25", () => {
+    // net = -1, net/count = -1 → 1 + (-1) = 0 → clamped to floor 0.25
+    const s = beliefStrength(
+      { ...base, validationHistory: [{ at: 0, verdict: "corrected", via: "survey" }] }, 0, 0)
+    expect(s).toBeCloseTo(0.8 * 0.25, 5) // 0.2
+  })
+  it("corrected + confirmed nets to neutral (1.0)", () => {
+    // net = -1 + 1 = 0 → factor 1.0
+    const s = beliefStrength(
+      {
+        ...base,
+        validationHistory: [
+          { at: 0, verdict: "corrected", via: "survey" },
+          { at: 0, verdict: "confirmed", via: "survey" },
+        ],
+      },
+      0,
+      0,
+    )
+    expect(s).toBeCloseTo(0.8, 5)
+  })
+  it("two confirmed votes absorb one rejection (net 0 → neutral)", () => {
+    // net = +1 + 1 - 2 = 0 → factor 1.0
+    const s = beliefStrength(
+      {
+        ...base,
+        validationHistory: [
+          { at: 0, verdict: "confirmed", via: "survey" },
+          { at: 0, verdict: "confirmed", via: "survey" },
+          { at: 0, verdict: "rejected", via: "survey" },
+        ],
+      },
+      0,
+      0,
+    )
+    expect(s).toBeCloseTo(0.8, 5)
+  })
 })
 
 describe("rankByStrength", () => {
@@ -42,5 +79,27 @@ describe("rankByStrength", () => {
     const weak = makeBeliefRecord({ statement: "weak", confidence: 0.2, domain: "d", status: "active", now: 0 })
     const ranked = rankByStrength([weak, strong], 0)
     expect(ranked.map((r) => r.id)).toEqual([strong.id, weak.id])
+  })
+  it("fresher record ranks first when confidence is equal", () => {
+    // makeBeliefRecord's `now` sets updatedAt → same confidence, different age
+    const old = makeBeliefRecord({ statement: "old", confidence: 0.8, domain: "d", status: "active", now: 0 })
+    const fresh = makeBeliefRecord({ statement: "fresh", confidence: 0.8, domain: "d", status: "active", now: 45 * DAY })
+    const ranked = rankByStrength([old, fresh], 45 * DAY)
+    expect(ranked.map((r) => r.id)).toEqual([fresh.id, old.id])
+  })
+  it("breaks ties deterministically by id.localeCompare (smaller id first)", () => {
+    // identical confidence + updatedAt + empty validation → identical strength
+    const a = makeBeliefRecord({ statement: "alpha", confidence: 0.8, domain: "d", status: "active", now: 0 })
+    const b = makeBeliefRecord({ statement: "beta", confidence: 0.8, domain: "d", status: "active", now: 0 })
+    const [smaller, larger] = [a.id, b.id].sort((x, y) => x.localeCompare(y))
+    const ranked = rankByStrength([a, b], 0)
+    expect(ranked.map((r) => r.id)).toEqual([smaller, larger])
+  })
+  it("does not mutate the input array", () => {
+    const weak = makeBeliefRecord({ statement: "weak", confidence: 0.2, domain: "d", status: "active", now: 0 })
+    const strong = makeBeliefRecord({ statement: "strong", confidence: 0.9, domain: "d", status: "active", now: 0 })
+    const input = [weak, strong]
+    rankByStrength(input, 0)
+    expect(input.map((r) => r.id)).toEqual([weak.id, strong.id]) // original order intact
   })
 })

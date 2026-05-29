@@ -3,15 +3,16 @@ import { readBelief } from "./types.js"
 import type { BeliefContent } from "./types.js"
 
 const DAY = 86_400_000
-/** Beyond this age, recency hits the floor. */
+/** Linear-decay denominator; recency floors at RECENCY_FLOOR before this age (≈81d). */
 const STALE_HORIZON_DAYS = 90
 /** Recency never zeroes a belief — an old but confident belief still counts. */
 const RECENCY_FLOOR = 0.1
 
 /**
  * Belief strength — the eviction + ranking key. Higher = keep / inject first.
- * `confidence × recencyFactor × validationFactor`, all bounded so no single
- * term can zero the product (the spec's "× validation-track-record" trap:
+ * `confidence × recencyFactor × validationFactor`, where recency and validation
+ * are floor-bounded so neither alone can zero a belief with non-zero confidence
+ * (the spec's "× validation-track-record" trap:
  * validationHistory is empty until Phase 3, so it MUST be neutral, not 0).
  */
 export function beliefStrength(
