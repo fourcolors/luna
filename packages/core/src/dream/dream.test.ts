@@ -8,6 +8,7 @@ import { applyOps, revert, deriveDreamId, runDream } from "./dream.js"
 import type { DreamOp } from "./types.js"
 import { SessionStore } from "../session/session-store.js"
 import { FakeReasoner } from "./reasoner.js"
+import { makeBeliefRecord } from "../beliefs/types.js"
 
 // Minimal Ref-backed memory router double (only the methods applyOps uses).
 const FakeMemory = (initial: ReadonlyArray<MemoryRecord> = []) =>
@@ -73,7 +74,6 @@ describe("applyOps", () => {
           const store = yield* DreamStore
           const ops: DreamOp[] = [
             { kind: "memory_staleness", targetId: "dup-1", before: rec("dup-1"), after: { ...rec("dup-1"), content: { updated: true } }, rationale: "stale" },
-            { kind: "belief_candidate", targetId: "new-belief", before: null, after: { statement: "x" }, rationale: "pattern" },
             { kind: "memory_contradiction", targetId: "other-1", before: null, after: { resolved: true }, rationale: "conflict" },
           ]
           yield* applyOps("dream-0-100", ops)
@@ -84,9 +84,33 @@ describe("applyOps", () => {
       ),
     )
     expect(out.untouched).not.toBeNull() // staleness was NOT applied
-    expect(out.rows).toHaveLength(3)
+    expect(out.rows).toHaveLength(2)
     expect(out.rows.every((r) => r.status === "proposed")).toBe(true)
     expect(out.rows.every((r) => r.appliedAt === null)).toBe(true)
+  })
+
+  it("materializes belief_candidate as a proposed belief record (audit 'applied')", async () => {
+    const candidate = makeBeliefRecord({ statement: "Operator prefers terse answers", confidence: 0.6, domain: "comms", now: 0 })
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const mem = yield* MemoryRouterTag
+          const store = yield* DreamStore
+          const ops: DreamOp[] = [
+            { kind: "belief_candidate", targetId: candidate.id, before: null, after: candidate, rationale: "recurring pattern across 3 sessions" },
+          ]
+          yield* applyOps("dream-0-100", ops)
+          const stored = yield* mem.get(candidate.id)
+          const rows = yield* store.list({ dreamId: "dream-0-100" })
+          return { stored, rows }
+        }),
+        FakeMemory([]),
+      ),
+    )
+    expect(out.stored).not.toBeNull() // belief record written
+    expect((out.stored!.content as { status: string }).status).toBe("proposed")
+    expect(out.rows).toHaveLength(1)
+    expect(out.rows[0]?.status).toBe("applied") // op applied (undoable)
   })
 })
 
