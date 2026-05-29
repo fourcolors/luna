@@ -17,7 +17,7 @@
  *
  * Tagged-union error kind matches `ChatErrorKind` in @luna/chat-service.
  */
-import type { ObsEvent, ChatMessage, SessionSummary } from "@luna/core"
+import type { ObsEvent, ChatMessage, SessionSummary, SurveyItem, SurveyVerdict } from "@luna/core"
 import type { Artifact } from "@luna/chat-service"
 
 export const UI_WS_PROTOCOL_VERSION = 2 as const
@@ -194,6 +194,28 @@ export interface MemorySearchErrorFrame {
   readonly kind: MemorySearchErrorKind
 }
 
+/* ── alignment survey (Phase 3 D3) ──────────────────────────────────── */
+
+/**
+ * Server-pushed check-in (spec §3.3). Sent after `hello` when a survey is due
+ * (connection-time due-check, D-LOCK-1). `issuedAt` is the stable idempotency
+ * anchor — the client echoes it on every verdict's `at` (D-LOCK-5) so a
+ * re-delivered answer never double-moves the EWMA. The server also pins `at`
+ * server-side as defence-in-depth.
+ *
+ * NOTE: There is NO dismiss/snooze frame (Execution Correction #1). Dismiss is
+ * a client-side no-op — an unanswered survey simply re-surfaces on the next
+ * connection-time due-check. Only an answered survey (which always carries the
+ * mandatory task_quality item) advances the schedule via getLastSurveyAt.
+ */
+export interface SurveyRequestFrame {
+  readonly type: "survey-request"
+  /** Server clock at issue. The idempotency anchor for all verdicts (D-LOCK-5). */
+  readonly issuedAt: number
+  /** Items to present: ALWAYS one task_quality item, then ≤3 belief items (D-LOCK-3/4). */
+  readonly items: ReadonlyArray<SurveyItem>
+}
+
 export type ServerFrame =
   | HelloFrame
   | EventFrame
@@ -215,6 +237,7 @@ export type ServerFrame =
   | LocalShellStatusFrame
   | MemorySearchResultFrame
   | MemorySearchErrorFrame
+  | SurveyRequestFrame
 
 /* -------------------------------------------------------------------------- */
 /* Client → server                                                            */
@@ -304,6 +327,26 @@ export interface MemorySearchRequestFrame {
   readonly topK?: number
 }
 
+/**
+ * The operator's answers to one survey (client→server, Phase 3 D3).
+ *
+ * `issuedAt` MUST equal the SurveyRequestFrame's `issuedAt` — the server
+ * stamps every verdict's `at` to `frame.issuedAt` (D-LOCK-5), overriding
+ * whatever the client sends, so a replaying client cannot double-move the EWMA.
+ * `via` is always "survey" for these verdicts.
+ *
+ * There is NO survey-dismiss frame (Execution Correction #1): dismiss is a
+ * client-side no-op — the modal closes, nothing is sent, and the next
+ * connection-time due-check re-surfaces the unanswered survey.
+ */
+export interface SurveyResponseFrame {
+  readonly type: "survey-response"
+  /** Must match the corresponding SurveyRequestFrame.issuedAt (D-LOCK-5). */
+  readonly issuedAt: number
+  /** The operator's answers. Server pins each verdict.at to this issuedAt. */
+  readonly verdicts: ReadonlyArray<SurveyVerdict>
+}
+
 export type ClientFrame =
   | PongFrame
   | ByeFrame
@@ -316,3 +359,4 @@ export type ClientFrame =
   | LocalShellCapabilityFrame
   | LocalShellResultFrame
   | MemorySearchRequestFrame
+  | SurveyResponseFrame
