@@ -203,6 +203,11 @@ export interface MemorySearchErrorFrame {
  * re-delivered answer never double-moves the EWMA. The server also pins `at`
  * server-side as defence-in-depth.
  *
+ * `surveyId` uniquely identifies this survey instance on the wire (used to
+ * correlate a SurveyResponseFrame back to its originating push). It is minted
+ * by the server at push time (derived from `issuedAt`); T3 boot wiring can
+ * ignore or log it — `issuedAt` is the idempotency key used by processVerdict.
+ *
  * NOTE: There is NO dismiss/snooze frame (Execution Correction #1). Dismiss is
  * a client-side no-op — an unanswered survey simply re-surfaces on the next
  * connection-time due-check. Only an answered survey (which always carries the
@@ -210,6 +215,8 @@ export interface MemorySearchErrorFrame {
  */
 export interface SurveyRequestFrame {
   readonly type: "survey-request"
+  /** Unique survey instance id (minted server-side from issuedAt). */
+  readonly surveyId: string
   /** Server clock at issue. The idempotency anchor for all verdicts (D-LOCK-5). */
   readonly issuedAt: number
   /** Items to present: ALWAYS one task_quality item, then ≤3 belief items (D-LOCK-3/4). */
@@ -330,9 +337,10 @@ export interface MemorySearchRequestFrame {
 /**
  * The operator's answers to one survey (client→server, Phase 3 D3).
  *
- * `issuedAt` MUST equal the SurveyRequestFrame's `issuedAt` — the server
- * stamps every verdict's `at` to `frame.issuedAt` (D-LOCK-5), overriding
- * whatever the client sends, so a replaying client cannot double-move the EWMA.
+ * `surveyId` MUST match the SurveyRequestFrame.surveyId. `issuedAt` MUST
+ * equal the SurveyRequestFrame's `issuedAt` — the server stamps every
+ * verdict's `at` to `frame.issuedAt` (D-LOCK-5), overriding whatever the
+ * client sends, so a replaying client cannot double-move the EWMA.
  * `via` is always "survey" for these verdicts.
  *
  * There is NO survey-dismiss frame (Execution Correction #1): dismiss is a
@@ -341,6 +349,8 @@ export interface MemorySearchRequestFrame {
  */
 export interface SurveyResponseFrame {
   readonly type: "survey-response"
+  /** Echoes back SurveyRequestFrame.surveyId for correlation. */
+  readonly surveyId: string
   /** Must match the corresponding SurveyRequestFrame.issuedAt (D-LOCK-5). */
   readonly issuedAt: number
   /** The operator's answers. Server pins each verdict.at to this issuedAt. */

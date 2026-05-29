@@ -29,6 +29,7 @@ describe("survey wire frames (D-LOCK-7 — plain TS unions, NO Effect Schema)", 
     it("is a member of ServerFrame and preserves .type through JSON roundtrip", () => {
       const f: ServerFrame = {
         type: "survey-request",
+        surveyId: "survey-1000",
         issuedAt: 1_000,
         items: [
           {
@@ -42,11 +43,16 @@ describe("survey wire frames (D-LOCK-7 — plain TS unions, NO Effect Schema)", 
       const roundtripped = JSON.parse(JSON.stringify(f)) as ServerFrame
       expect(roundtripped).toEqual(f)
       expect(roundtripped.type).toBe("survey-request")
+      if (roundtripped.type === "survey-request") {
+        expect(roundtripped.surveyId).toBe("survey-1000")
+        expect(roundtripped.issuedAt).toBe(1_000)
+      }
     })
 
     it("SurveyRequestFrame with belief_validation item round-trips intact", () => {
       const f: SurveyRequestFrame = {
         type: "survey-request",
+        surveyId: "survey-2000",
         issuedAt: 2_000,
         items: [
           {
@@ -66,6 +72,7 @@ describe("survey wire frames (D-LOCK-7 — plain TS unions, NO Effect Schema)", 
       }
       const rt = JSON.parse(JSON.stringify(f)) as SurveyRequestFrame
       expect(rt).toEqual(f)
+      expect(rt.surveyId).toBe("survey-2000")
       expect(rt.issuedAt).toBe(2_000)
       expect(rt.items).toHaveLength(2)
     })
@@ -75,6 +82,7 @@ describe("survey wire frames (D-LOCK-7 — plain TS unions, NO Effect Schema)", 
     it("is a member of ClientFrame and preserves .type through JSON roundtrip", () => {
       const f: ClientFrame = {
         type: "survey-response",
+        surveyId: "survey-1000",
         issuedAt: 1_000,
         verdicts: [
           {
@@ -90,11 +98,15 @@ describe("survey wire frames (D-LOCK-7 — plain TS unions, NO Effect Schema)", 
       const roundtripped = JSON.parse(JSON.stringify(f)) as ClientFrame
       expect(roundtripped).toEqual(f)
       expect(roundtripped.type).toBe("survey-response")
+      if (roundtripped.type === "survey-response") {
+        expect(roundtripped.surveyId).toBe("survey-1000")
+      }
     })
 
     it("issuedAt anchor invariant: every verdict.at equals frame.issuedAt (D-LOCK-5)", () => {
       const f: SurveyResponseFrame = {
         type: "survey-response",
+        surveyId: "survey-3000",
         issuedAt: 3_000,
         verdicts: [
           { itemId: "sq-3000", kind: "task_quality", ref: "task_quality", score: 0.75, via: "survey", at: 3_000 },
@@ -103,11 +115,13 @@ describe("survey wire frames (D-LOCK-7 — plain TS unions, NO Effect Schema)", 
       }
       // The client SHOULD send at == issuedAt; server ALSO pins it (defence-in-depth).
       expect(f.verdicts.every((v) => v.at === f.issuedAt)).toBe(true)
+      expect(f.surveyId).toBe("survey-3000")
     })
 
     it("SurveyResponseFrame with multiple verdicts round-trips intact", () => {
       const f: SurveyResponseFrame = {
         type: "survey-response",
+        surveyId: "survey-5000",
         issuedAt: 5_000,
         verdicts: [
           { itemId: "sq-5000", kind: "task_quality", ref: "task_quality", score: 0.5, via: "survey", at: 5_000 },
@@ -116,6 +130,7 @@ describe("survey wire frames (D-LOCK-7 — plain TS unions, NO Effect Schema)", 
       }
       const rt = JSON.parse(JSON.stringify(f)) as SurveyResponseFrame
       expect(rt).toEqual(f)
+      expect(rt.surveyId).toBe("survey-5000")
       expect(rt.verdicts).toHaveLength(2)
     })
   })
@@ -189,6 +204,7 @@ describe("survey wire frames (D-LOCK-7 — plain TS unions, NO Effect Schema)", 
       // The server-side due-check re-surfaces it on the next connection.
       const validSurveyClientFrame: ClientFrame = {
         type: "survey-response",
+        surveyId: "survey-1000",
         issuedAt: 1_000,
         verdicts: [],
       }

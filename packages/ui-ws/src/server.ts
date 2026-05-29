@@ -81,10 +81,13 @@ export interface SurveyWsHandle {
    * each verdict's `at` to `issuedAt` before calling this (D-LOCK-5), so
    * re-delivering the same `survey-response` frame is a no-op server-side.
    *
-   * `issuedAt` — the stable survey timestamp (from the SurveyRequestFrame).
+   * `surveyId` — the wire-level survey instance id (from SurveyResponseFrame).
+   * `issuedAt` — the stable survey timestamp (from the SurveyRequestFrame);
+   *   this is the idempotency anchor used by survey.ts (ref, signalKind, at).
    * `verdicts` — already-pinned: each `v.at` has been set to `issuedAt`.
    */
   readonly submitVerdicts: (
+    surveyId: string,
     issuedAt: number,
     verdicts: ReadonlyArray<SurveyVerdict>,
   ) => import("effect").Effect.Effect<void, unknown>
@@ -414,6 +417,8 @@ export const startUIWebSocketServer = (
         // Phase 3 D3 (D-LOCK-1): push a survey check-in if one is due.
         // Fire-and-forget — a survey failure must never take down the connection.
         // `now` is captured once and becomes `issuedAt` (D-LOCK-5 anchor).
+        // surveyId is derived from issuedAt (unique per survey instance; T3
+        // wiring can ignore it — issuedAt is the processVerdict idempotency key).
         if (survey !== null) {
           const s = survey
           const now = Date.now()
@@ -423,6 +428,7 @@ export const startUIWebSocketServer = (
                 if (pending !== null) {
                   send(ws, {
                     type: "survey-request",
+                    surveyId: `survey-${pending.issuedAt}`,
                     issuedAt: pending.issuedAt,
                     items: pending.items,
                   })
@@ -794,7 +800,7 @@ export const startUIWebSocketServer = (
                       ...v,
                       at: frame.issuedAt,
                     }))
-                    yield* survey.submitVerdicts(frame.issuedAt, pinnedVerdicts).pipe(
+                    yield* survey.submitVerdicts(frame.surveyId, frame.issuedAt, pinnedVerdicts).pipe(
                       Effect.catchAllCause(() => Effect.void),
                     )
                     return
