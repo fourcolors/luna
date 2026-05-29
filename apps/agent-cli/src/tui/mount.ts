@@ -26,6 +26,7 @@ import {
   setLocalShellEnabled,
 } from "../chat/local-shell.js"
 import { parseChatArgs } from "../chat/args.js"
+import type { SurveyVerdict } from "@luna/core"
 
 const DEFAULT_MODEL = "claude-sonnet-4-5"
 
@@ -152,6 +153,12 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
     if (!accepted) store.appendSystem(`local shell: ${msg}`)
   })
 
+  // Phase 3 D3: wire survey check-in frames → store signal.
+  session.on("survey", (pending) => {
+    dbg(`evt survey surveyId=${(pending as unknown as { surveyId?: string }).surveyId ?? "?"} items=${pending.items.length}`)
+    store.setSurvey(pending)
+  })
+
   // Local-shell request handler.
   const { approveLocalCommand } = await import("../luna.js") as {
     approveLocalCommand: (command: string) => Promise<boolean>
@@ -275,7 +282,20 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
       renderer.keyInput.on("keypress", handleKey)
     }
 
-    return createComponent(App, { store, onSubmit: submit })
+    // Phase 3 D3: survey submit/dismiss handlers.
+    const onSurveySubmit = (surveyId: string, issuedAt: number, verdicts: ReadonlyArray<SurveyVerdict>): void => {
+      dbg(`survey submit surveyId=${surveyId} issuedAt=${issuedAt} verdicts=${verdicts.length}`)
+      session.sendSurveyResponse(surveyId, issuedAt, verdicts)
+      store.setSurvey(null) // close the modal
+    }
+
+    const onSurveyDismiss = (): void => {
+      dbg("survey dismiss (no-op — resurfaces next connection)")
+      session.dismissSurvey() // intentional no-op
+      store.setSurvey(null) // close the modal
+    }
+
+    return createComponent(App, { store, onSubmit: submit, onSurveySubmit, onSurveyDismiss })
   }
 
   // Mount TUI — render() resolves immediately after setup.
