@@ -96,6 +96,7 @@ export interface HelloFrame {
   readonly capabilities: {
     readonly chat: boolean
     readonly streamingDeltas: boolean
+    readonly setup: boolean
   }
 }
 export interface EventFrame {

@@ -47,7 +47,7 @@ export interface UIState {
   readonly lastPingAt: string | null
   readonly closeReason: string | null
   /** Server-advertised capabilities. */
-  readonly capabilities: { readonly chat: boolean; readonly streamingDeltas: boolean }
+  readonly capabilities: { readonly chat: boolean; readonly streamingDeltas: boolean; readonly setup: boolean }
   /** Sidebar projection — most-recently-active first (server orders). */
   readonly threadList: ReadonlyArray<SessionSummary>
   /** Per-thread state, keyed by threadId. */
@@ -73,7 +73,7 @@ export const initialState: UIState = {
   lastDrop: null,
   lastPingAt: null,
   closeReason: null,
-  capabilities: { chat: false, streamingDeltas: false },
+  capabilities: { chat: false, streamingDeltas: false, setup: false },
   threadList: [],
   threads: new Map(),
   selectedThreadId: null,

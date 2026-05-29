@@ -396,6 +396,8 @@ export const startUIWebSocketServer = (
             chat: chat !== null,
             streamingDeltas: chat !== null,
             localShell: localShellBridge !== null,
+            // setup-mode = started without a chat service
+            setup: chat === null,
           },
         })
 

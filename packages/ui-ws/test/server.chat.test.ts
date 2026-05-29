@@ -342,6 +342,8 @@ describe("UIWebSocketServer (chat routing)", () => {
     if (frames[0]?.type === "hello") {
       expect(frames[0].capabilities.chat).toBe(true)
       expect(frames[0].capabilities.streamingDeltas).toBe(true)
+      // setup-mode is OFF when a chat service is bound (chat !== null).
+      expect(frames[0].capabilities.setup).toBe(false)
     }
   })
 
