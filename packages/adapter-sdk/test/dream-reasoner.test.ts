@@ -174,11 +174,47 @@ describe("DreamReasonerDefault", () => {
     }
   })
 
-  it("no success-result message in SDK stream → DreamError", async () => {
+  it("no success-result message in SDK stream → typed DreamError (not a defect)", async () => {
     const exit = await Effect.runPromiseExit(
       runReason(EMPTY_INPUTS, fakeClientNoSuccess(), FakeMemory()),
     )
     expect(exit._tag).toBe("Failure")
+    if (exit._tag === "Failure") {
+      const maybeError = Cause.failureOption(exit.cause)
+      expect(maybeError._tag).toBe("Some")
+      if (maybeError._tag === "Some") {
+        const error = maybeError.value
+        expect(error._tag).toBe("DreamError")
+        expect(error).toBeInstanceOf(DreamError)
+        expect((error as DreamError).op).toBe("reason")
+      }
+    }
+  })
+
+  it("SDK stream throws mid-iteration → typed DreamError (not a defect/crash)", async () => {
+    // The fake's `throwAfter: 1` yields one message then throws inside the async
+    // generator — exercising the Stream.fromAsyncIterable error mapper. The error
+    // MUST surface on the typed E channel (DreamError), never as a defect.
+    const sdkThrows = SDKClient.fake((_params) =>
+      makeFakeQuery({
+        messages: [makeAssistantMessage("sid", "partial", "uuid-3")],
+        throwAfter: 1,
+      }).query,
+    )
+    const exit = await Effect.runPromiseExit(
+      runReason(EMPTY_INPUTS, sdkThrows, FakeMemory()),
+    )
+    expect(exit._tag).toBe("Failure")
+    if (exit._tag === "Failure") {
+      const maybeError = Cause.failureOption(exit.cause)
+      expect(maybeError._tag).toBe("Some")
+      if (maybeError._tag === "Some") {
+        const error = maybeError.value
+        expect(error._tag).toBe("DreamError")
+        expect(error).toBeInstanceOf(DreamError)
+        expect((error as DreamError).op).toBe("reason")
+      }
+    }
   })
 
   it("rejects ops with an unknown kind → DreamError", async () => {
