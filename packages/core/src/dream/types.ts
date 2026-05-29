@@ -10,7 +10,7 @@ export type DreamOpKind =
   | "memory_dedup" // exact-duplicate removal — the ONLY auto-applied kind in Phase 1
   | "memory_staleness" // proposed + held until Phase 3 survey
   | "memory_contradiction" // proposed + held
-  | "belief_candidate" // proposed + held (beliefs are Phase 2)
+  | "belief_candidate" // Phase 2 §7.2: auto-materialized as a PROPOSED belief record (inert until Phase 3 activation); undoable via revert
 
 export interface DreamOp {
   readonly kind: DreamOpKind
