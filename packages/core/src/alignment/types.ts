@@ -95,3 +95,12 @@ export class AlignmentError extends Data.TaggedError("AlignmentError")<{
   readonly message: string
   readonly cause?: unknown
 }> {}
+
+/** What pendingSurvey returns: the items to ask + the stable issue timestamp. */
+export interface PendingSurvey {
+  /** Server clock at issue. Stamped onto every returned verdict's `at`
+   *  (idempotency anchor — spec-delta D-LOCK-5). All items share it. */
+  readonly issuedAt: number
+  /** The check-in items: ALWAYS one task_quality item, then ≤cap belief items. */
+  readonly items: ReadonlyArray<SurveyItem>
+}

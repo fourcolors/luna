@@ -324,3 +324,83 @@ describe("Survey.nextSurvey", () => {
     expect(at).toBe(1000 + 86_400_000)
   })
 })
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Survey.pendingSurvey (D-LOCK-2/3/4)
+// ──────────────────────────────────────────────────────────────────────────────
+describe("Survey.pendingSurvey (D-LOCK-2/3/4)", () => {
+  const proposed = (statement: string) =>
+    makeBeliefRecord({ statement, confidence: 0.7, domain: "comms", status: "proposed", now: 0 })
+
+  it("cold start (no task_quality rows): survey is DUE and includes a task_quality item", async () => {
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const survey = yield* Survey
+          return yield* survey.pendingSurvey(5000)
+        }),
+        FakeMemory([]),
+      ),
+    )
+    expect(out).not.toBeNull()
+    expect(out!.issuedAt).toBe(5000)
+    expect(out!.items.some((i) => i.kind === "task_quality")).toBe(true)
+  })
+
+  it("ALWAYS carries exactly one task_quality item (the D-LOCK-2 precondition)", async () => {
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const survey = yield* Survey
+          return yield* survey.pendingSurvey(5000)
+        }),
+        FakeMemory([proposed("a"), proposed("b")]),
+      ),
+    )
+    expect(out!.items.filter((i) => i.kind === "task_quality")).toHaveLength(1)
+  })
+
+  it("caps proposed beliefs at 3 (D-LOCK-3); overflow rolls to next survey", async () => {
+    const beliefs = ["a", "b", "c", "d", "e"].map(proposed)
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const survey = yield* Survey
+          return yield* survey.pendingSurvey(5000)
+        }),
+        FakeMemory(beliefs),
+      ),
+    )
+    expect(out!.items.filter((i) => i.kind === "belief_validation")).toHaveLength(3)
+  })
+
+  it("no proposed beliefs: when due, still surfaces the task_quality item only", async () => {
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const survey = yield* Survey
+          return yield* survey.pendingSurvey(5000)
+        }),
+        FakeMemory([]),
+      ),
+    )
+    expect(out!.items).toHaveLength(1)
+    expect(out!.items[0]?.kind).toBe("task_quality")
+  })
+
+  it("not due: returns null when now < lastSurveyAt + interval", async () => {
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const survey = yield* Survey
+          // record a task_quality verdict at t=1000 → lastSurveyAt=1000, ewma climbs
+          yield* survey.processVerdict({ itemId: "i", kind: "task_quality", ref: "task_quality", score: 1, via: "survey", at: 1000 })
+          // ask again immediately at t=1001 — far inside the (≥1 day) interval
+          return yield* survey.pendingSurvey(1001)
+        }),
+        FakeMemory([]),
+      ),
+    )
+    expect(out).toBeNull()
+  })
+})

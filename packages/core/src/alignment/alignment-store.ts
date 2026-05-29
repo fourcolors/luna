@@ -66,6 +66,13 @@ export interface AlignmentStoreApi {
   readonly setEwma: (ewma: number) => Effect.Effect<void, AlignmentError>
   /** Recompute the EWMA cache from the EWMA-eligible log rows; returns it. */
   readonly rebuildState: () => Effect.Effect<number, AlignmentError>
+  /**
+   * The timestamp of the last completed survey, DERIVED as MAX(at) over
+   * task_quality rows (D-LOCK-2 — every survey carries exactly one
+   * task_quality item, so those rows ARE survey-completion markers; no
+   * schema migration needed). Returns 0 cold (no rows → survey due now).
+   */
+  readonly getLastSurveyAt: Effect.Effect<number, AlignmentError>
 }
 
 export class AlignmentStore extends Effect.Tag("luna/AlignmentStore")<
@@ -117,7 +124,15 @@ export class AlignmentStore extends Effect.Tag("luna/AlignmentStore")<
           return last
         })
 
-      return { append, list, getEwma, setEwma, rebuildState } satisfies AlignmentStoreApi
+      const getLastSurveyAt: AlignmentStoreApi["getLastSurveyAt"] = Ref.get(rows).pipe(
+        Effect.map((rs) =>
+          rs
+            .filter((r) => r.signalKind === "task_quality")
+            .reduce((max, r) => Math.max(max, r.at), 0),
+        ),
+      )
+
+      return { append, list, getEwma, setEwma, rebuildState, getLastSurveyAt } satisfies AlignmentStoreApi
     }),
   )
 
@@ -184,6 +199,9 @@ export class AlignmentStore extends Effect.Tag("luna/AlignmentStore")<
           VALUES (?, ?, ?, ?, ?, ?)
         `)
         const getEwmaStmt = db.query(`SELECT ewma FROM alignment_state WHERE id = 1`)
+        const lastSurveyStmt = db.query(
+          `SELECT MAX(at) AS m FROM alignment_log WHERE signal_kind = 'task_quality'`,
+        )
         const setEwmaStmt = db.query(`
           INSERT INTO alignment_state (id, ewma, updated_at) VALUES (1, ?, ?)
           ON CONFLICT(id) DO UPDATE SET ewma = excluded.ewma, updated_at = excluded.updated_at
@@ -243,7 +261,12 @@ export class AlignmentStore extends Effect.Tag("luna/AlignmentStore")<
             return last
           })
 
-        return { append, list, getEwma, setEwma, rebuildState } satisfies AlignmentStoreApi
+        const getLastSurveyAt: AlignmentStoreApi["getLastSurveyAt"] = wrap("getLastSurveyAt", () => {
+          const r = lastSurveyStmt.get() as { m: number | null } | undefined
+          return r?.m ?? 0
+        })
+
+        return { append, list, getEwma, setEwma, rebuildState, getLastSurveyAt } satisfies AlignmentStoreApi
       }),
     )
   }
