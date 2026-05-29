@@ -107,7 +107,7 @@
  * think-time between turns can be hours — chat is the canonical case
  * the flag exists for.
  */
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, writeSync } from "node:fs"
 import { dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
@@ -133,22 +133,30 @@ import {
   }
   applyRuntimePathEnvDefaults(resolveRuntimePaths())
 }
-import { Effect, Layer, ManagedRuntime, Option } from "effect"
+import { Effect, Layer, ManagedRuntime, Option, Stream } from "effect"
 import {
   AccountBroker,
   AccountBrokerLayer,
   AgentNotesService,
+  AlignmentStore,
+  BELIEF_KIND,
+  BELIEF_NAMESPACE,
+  BeliefWriter,
   Clock,
   DEFAULT_UI_KINDS,
+  DreamCronLayer,
+  DreamStore,
   EnvSecretProvider,
   NoopTracerLayer,
   ObservabilityService,
   OnePasswordSecretProvider,
   RoutedOpSecretProvider,
   SessionStore,
+  Survey,
   TelemetryPlatform,
   TelemetryService,
   UIService,
+  composeBeliefsSection,
   makeDuckDbLayer,
   makeTelemetrySqlite,
   readKeychainToken,
@@ -162,14 +170,14 @@ import {
   resolveSandboxLocalShell,
 } from "./sandbox-local-shell.js"
 export { loadDna } from "./dna-loader.js"
-import { SDKAdapter, SDKClient } from "@luna/adapter-sdk"
+import { DreamReasonerDefault, SDKAdapter, SDKClient } from "@luna/adapter-sdk"
 import {
   ChatService,
   ThreadToolsProviderTag,
   type ThreadToolsProvider,
 } from "@luna/chat-service"
 import { createLocalShellBridge, startUIWebSocketServer } from "@luna/ui-ws"
-import { LunaSqliteBootstrapLive } from "@luna/memory"
+import { LunaSqliteBootstrapLive, MemoryRouterTag } from "@luna/memory"
 import {
   MemoryRouterLayer,
   MemoryToolsLayer,
@@ -209,6 +217,10 @@ const reattachSandbox = (threadId: string): void => {
   if (reattach !== undefined) reattach()
 }
 
+/** How often the belief-injection holder refreshes from the MemoryRouter (ms).
+ *  30 s in production; callers may pass a smaller value for smoke tests. */
+const BELIEF_REFRESH_INTERVAL_MS = 30_000
+
 /**
  * ThreadToolsProviderLayer — the single source of per-thread tool wiring.
  *
@@ -221,9 +233,12 @@ const reattachSandbox = (threadId: string): void => {
  * prompt (DNA + runtime metadata + tool addenda + caller prompt), and an
  * onBound callback that binds the session id into obs/local-shell tools and
  * (when enabled) attaches the sandbox local-shell + registers its reattacher.
+ *
+ * @param refreshIntervalMs - how often to re-query active beliefs (default
+ *   BELIEF_REFRESH_INTERVAL_MS = 30 s). Pass a small value in smoke tests.
  */
-const ThreadToolsProviderLayer = () =>
-  Layer.effect(
+export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFRESH_INTERVAL_MS) =>
+  Layer.scoped(
     ThreadToolsProviderTag,
     Effect.gen(function* () {
       const memTools = yield* MemoryToolsService
@@ -254,6 +269,58 @@ const ThreadToolsProviderLayer = () =>
           : `disabled (${sandboxLocalShell.reason})`,
       )
 
+      // Phase 3 D5 → T3b: live belief-injection refresh holder.
+      //
+      // decorate() is SYNCHRONOUS (chat-service/src/types.ts — decorate
+      // returns a value, cannot yield/await). We keep the sync read via a
+      // plain mutable closure variable that a background fiber refreshes.
+      //
+      // Design:
+      //   - `let beliefsContent = ""` — the holder; decorate() reads it
+      //     directly (safe: JS is single-threaded, no torn reads).
+      //   - `refreshBeliefs` queries MemoryRouter, renders the section,
+      //     and assigns `beliefsContent = rendered` (closes over the `let`).
+      //   - Run refreshBeliefs ONCE at boot (correct from t=0).
+      //   - Fork a supervised loop: sleep(interval) → refreshBeliefs, forever.
+      //     forkScoped ties the fiber to THIS layer's Scope (Layer.scoped
+      //     provides the Scope; it is interrupted on layer release — no
+      //     unmanaged/leaked fiber). Layer.scoped is required; Layer.effect
+      //     does not supply a Scope and forkScoped would fail to build.
+      //
+      // Net: a belief activated by a survey appears in the NEXT thread
+      // WITHOUT a server restart (within ~refreshIntervalMs, default 30s).
+      const mem = yield* MemoryRouterTag
+
+      // Plain mutable holder — read synchronously by decorate().
+      let beliefsContent = ""
+
+      // Effect that re-queries and re-renders the active beliefs section.
+      const refreshBeliefs = Effect.gen(function* () {
+        const chunk = yield* mem
+          .query({ namespace: BELIEF_NAMESPACE, kind: BELIEF_KIND })
+          .pipe(Stream.runCollect)
+        const records = Array.from(chunk)
+        beliefsContent = composeBeliefsSection(records, Date.now())
+        console.log(
+          "[luna/beliefs] refreshed:",
+          records.filter(
+            (r) => (r.content as { status?: string }).status === "active",
+          ).length,
+          "active belief(s)",
+        )
+      })
+
+      // Boot: run once so the holder is populated before any thread starts.
+      yield* refreshBeliefs
+
+      // Fork the refresh loop into the layer scope — supervised, cleaned
+      // up when the layer releases. No bare Effect.runFork (would leak).
+      yield* Effect.forkScoped(
+        Effect.forever(
+          Effect.sleep(refreshIntervalMs).pipe(Effect.zipRight(refreshBeliefs)),
+        ),
+      )
+
       const provider: ThreadToolsProvider = {
         decorate: (opts) => {
           const memoryThreadTools = memTools.createSessionBinding()
@@ -269,9 +336,13 @@ const ThreadToolsProviderLayer = () =>
               localShellThreadTools.serverName,
             ].join(", "),
           )
+          // Sync read of the live-refresh holder — refreshed every
+          // refreshIntervalMs by the background fiber above. Returns "" when
+          // no active beliefs (the .filter(length>0) below drops it cleanly).
           const systemPrompt = [
             dnaContent,
             sessionMetadata,
+            beliefsContent, // Phase 3 D5: ranked active beliefs section
             opts.systemPrompt,
             memoryThreadTools.systemPromptAddendum,
             schedulerThreadTools.systemPromptAddendum,
@@ -364,6 +435,79 @@ const discoverOpTokens: Effect.Effect<ReadonlyArray<DiscoveredOpToken>> =
     return found
   })
 
+// ── Dream cron sub-layer factory (exported for boot smoke) ──────────────
+//
+// Phase 3 D1: exported so the boot smoke can import THIS symbol and verify
+// the real wiring shape — NOT a hand-copied mirror. The smoke uses node-
+// runnable doubles (DreamStore.Memory, FakeMemoryRouter, SessionStore.Default,
+// SDKClient.fake, Clock.Default) while keeping DreamReasonerDefault (real)
+// so the SDKClient+MemoryRouter requirements are preserved in the proof.
+//
+// DreamReasonerDefault requires BOTH SDKClient AND MemoryRouter (it closes
+// over both at build time so reason()'s R channel is never).
+export interface BuildDreamCronLayerOpts {
+  readonly expr: string
+  readonly sdkClientL: Layer.Layer<SDKClient>
+  readonly memoryRouterL: Layer.Layer<import("@luna/memory").MemoryRouter>
+  readonly storeL: Layer.Layer<SessionStore>
+  readonly clockL: Layer.Layer<Clock>
+  /**
+   * DreamStore layer to use. The live boot passes
+   * `DreamStore.makeLayer(paths.lunaDbPath).pipe(Layer.provide(clockL))`
+   * (which requires LunaSqliteBootstrap, satisfied at the bottom of
+   * buildServerLayer). The boot smoke passes `DreamStore.Memory` (no SQLite
+   * needed) to keep the smoke node-runnable.
+   */
+  readonly dreamStoreL: Layer.Layer<DreamStore>
+}
+
+export const buildDreamCronLayer = (opts: BuildDreamCronLayerOpts) => {
+  const { expr, sdkClientL, memoryRouterL, storeL, clockL, dreamStoreL } = opts
+  // DreamReasonerDefault requires BOTH SDKClient AND MemoryRouter (closes over
+  // both at build time so reason()'s R channel is never). SDKClient is the real
+  // dependency this smoke proves is satisfiable — SDKClient.fake keeps it real
+  // while making zero model calls.
+  const dreamReasonerL = DreamReasonerDefault.pipe(
+    Layer.provide(sdkClientL),
+    Layer.provide(memoryRouterL),
+  )
+  return DreamCronLayer(expr).pipe(
+    Layer.provide(dreamStoreL),
+    Layer.provide(dreamReasonerL),
+    Layer.provide(storeL),
+    Layer.provide(memoryRouterL),
+    Layer.provide(clockL),
+  )
+}
+
+// ── Survey sub-layer factory (exported for boot smoke) ──────────────────
+//
+// Phase 3 D3: exported so the boot smoke can import THIS symbol and verify
+// the real wiring shape. Mirrors buildDreamCronLayer's shape exactly.
+//
+// Survey.Default requires AlignmentStore + BeliefWriter + Clock + MemoryRouter.
+// BeliefWriter.Default requires MemoryRouter + Clock.
+// AlignmentStore.makeLayer(dbPath) requires Clock + LunaSqliteBootstrap.
+//
+// The smoke passes AlignmentStore.Memory (no SQLite) + a Ref-backed FakeMemory
+// MemoryRouter while keeping the real Survey.Default so the real dep graph is
+// proven composable. `as never` on the Memory double sidesteps the param-type
+// narrowing (same pattern as dream-cron-boot.smoke.ts).
+export interface BuildSurveyLayerOpts {
+  readonly alignmentStoreL: Layer.Layer<AlignmentStore, import("effect").ConfigError, Clock | import("@luna/memory").LunaSqliteBootstrap>
+  readonly beliefWriterL: Layer.Layer<BeliefWriter, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
+  readonly memoryRouterL: Layer.Layer<import("@luna/memory").MemoryRouter, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
+  readonly clockL: Layer.Layer<Clock>
+}
+
+export const buildSurveyLayer = (opts: BuildSurveyLayerOpts) =>
+  Survey.Default.pipe(
+    Layer.provide(opts.alignmentStoreL),
+    Layer.provide(opts.beliefWriterL),
+    Layer.provide(opts.memoryRouterL),
+    Layer.provide(opts.clockL),
+  )
+
 // ── Layer wiring ────────────────────────────────────────────────────────
 //
 // Phase 25d: SecretProvider chain is RoutedOpSecretProvider →
@@ -371,7 +515,7 @@ const discoverOpTokens: Effect.Effect<ReadonlyArray<DiscoveredOpToken>> =
 // OnePasswordSecretProvider built inline; the routed wrapper dispatches
 // based on the ref scheme (op://, luna-op://<label>/...) per
 // DESIGN.md §2.2.11. No fall-through across OP accounts.
-const buildBaseLayer = (
+export const buildBaseLayer = (
   opTokens: ReadonlyArray<DiscoveredOpToken>,
 ): Layer.Layer<
   | UIService
@@ -482,9 +626,35 @@ const buildBaseLayer = (
   // LunaSqliteBootstrap flows up and is satisfied at the bottom of
   // buildServerLayer, same as every other SQLite-backed layer here.
   const threadToolsL = ThreadToolsProviderLayer().pipe(
+    Layer.provide(memoryRouterL), // REQUIRED: satisfies MemoryRouterTag inside the layer (siblings don't cross-wire)
     Layer.provide(obsL),
     Layer.provide(clockL),
   )
+
+  // Phase 3 D1: nightly Dream cron. DreamCronLayer provides its OWN
+  // JobScheduler+TriggerAgent (a second instance — harmless, like memoryRouterL).
+  // DreamReasonerDefault (from adapter-sdk) requires both SDKClient + MemoryRouter;
+  // we close over the boot's sdkClientL + memoryRouterL. DreamStore uses luna.db.
+  // LunaSqliteBootstrap is satisfied at the bottom of buildServerLayer, same as
+  // every other SQLite-backed layer here.
+  const dreamStoreL = DreamStore.makeLayer(paths.lunaDbPath).pipe(Layer.provide(clockL))
+  const dreamCronL = buildDreamCronLayer({
+    expr: "0 3 * * *",
+    sdkClientL,
+    memoryRouterL,
+    storeL,
+    clockL,
+    dreamStoreL,
+  })
+
+  // Phase 3 D3: Survey layer for the WS-mediated check-in. AlignmentStore and
+  // BeliefWriter both use memoryRouterL + clockL from the same boot identities
+  // (so survey-activated beliefs + D5 injection read the SAME router).
+  // LunaSqliteBootstrap satisfied at the bottom of buildServerLayer, same as
+  // every other SQLite-backed layer here.
+  const alignmentStoreL = AlignmentStore.makeLayer(paths.lunaDbPath).pipe(Layer.provide(clockL))
+  const beliefWriterL = BeliefWriter.Default.pipe(Layer.provide(memoryRouterL), Layer.provide(clockL))
+  const surveyL = buildSurveyLayer({ alignmentStoreL, beliefWriterL, memoryRouterL, clockL })
 
   const chatL = Layer.provideMerge(
     ChatService.Default,
@@ -510,6 +680,8 @@ const buildBaseLayer = (
     telPlatformL,
     noopTracerL,
     agentNotesL,
+    dreamCronL, // Phase 3 D1: forces the cron to register at boot
+    surveyL,    // Phase 3 D3: Survey available for buildServerLayer to resolve + pass to the WS server
   )
 }
 
@@ -540,6 +712,23 @@ const buildServerLayer = (
       // binding, so the WS server can use the service handle directly.
       const chat = yield* ChatService
       const broker = yield* AccountBroker
+      const surveyService = yield* Survey // Phase 3 D3
+
+      // Phase 3 D3: build the SurveyWsHandle adapter. SurveyApi has
+      // pendingSurvey + processVerdict; SurveyWsHandle needs pendingSurvey +
+      // submitVerdicts. submitVerdicts pins every verdict's `at` to `issuedAt`
+      // (D-LOCK-5) and processes them sequentially.
+      const surveyHandle = {
+        pendingSurvey: (now: number) => surveyService.pendingSurvey(now),
+        submitVerdicts: (
+          _surveyId: string,
+          issuedAt: number,
+          verdicts: ReadonlyArray<import("@luna/core").SurveyVerdict>,
+        ) =>
+          Effect.forEach(verdicts, (v) => surveyService.processVerdict({ ...v, at: issuedAt }), {
+            discard: true,
+          }),
+      }
 
       // tRPC control server — port 4754, alongside the WebSocket server.
       // Exposes control.restart / control.status / control.version.
@@ -553,6 +742,7 @@ const buildServerLayer = (
         pingIntervalMs: 5000,
         chatService: chat,
         accountBroker: broker,
+        survey: surveyHandle, // Phase 3 D3: resolved handle
         localShellBridge,
         onLocalShellRelease: reattachSandbox,
       })
@@ -650,10 +840,29 @@ const bootstrap = async (): Promise<void> => {
   const serverLayer = buildServerLayer(baseLayer)
   const runtime = ManagedRuntime.make(Layer.mergeAll(serverLayer, baseLayer))
 
-  process.on("SIGINT", () => {
-    console.log("\n👋 shutting down")
+  // Graceful shutdown on BOTH signals. Interactive use sends SIGINT;
+  // systemd `stop`/`restart` sends SIGTERM. Both must run runtime.dispose()
+  // so the ManagedRuntime releases its layer scope finalizers — notably
+  // db.close(), which is what makes vectorlite serialize the HNSW sidecar
+  // (memory.db.hnsw.bin) and re-chmod it 0o600. Without a SIGTERM handler the
+  // process is hard-killed under systemd, db.close() never runs, the sidecar
+  // is never written, and every boot pays the full backfill cost again.
+  // The guard makes a second signal (or SIGINT-then-SIGTERM) a no-op so
+  // dispose() can't run twice.
+  let shuttingDown = false
+  const shutdown = (signal: NodeJS.Signals) => {
+    if (shuttingDown) return
+    shuttingDown = true
+    // Synchronous write to stdout fd — `console.log` to a PIPE (systemd
+    // captures stdout via a pipe, not a TTY) is async, so the buffered
+    // line is lost when `process.exit(0)` truncates it below. writeSync
+    // flushes before the dispose/exit, so the shutdown is observable in
+    // journald.
+    writeSync(1, `\n👋 shutting down (${signal})\n`)
     void runtime.dispose().then(() => process.exit(0))
-  })
+  }
+  process.on("SIGINT", () => shutdown("SIGINT"))
+  process.on("SIGTERM", () => shutdown("SIGTERM"))
 
   // runPromise keeps the event loop alive until the effect resolves (which
   // it never does because of Effect.never). runFork returns immediately,

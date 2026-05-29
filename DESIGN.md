@@ -775,6 +775,34 @@ the current drift.
   N ∈ {100, 500, 1k, 5k}, vs the naive path's ~372ms p95 at N=1k. The
   hybrid leg's vec component now uses the HNSW path; the BM25 (FTS5) leg
   is unchanged.
+- **Phase 27d — HNSW backfill on reopen (shipped, PR #3).** Vectorlite
+  v-tables created without `index_file_path` are memory-only AND per-
+  connection. The previous `if (!hnswExisted)` backfill gate keyed on
+  schema presence in `sqlite_master`, which stays true after first
+  creation — so post-restart boots silently skipped the backfill and
+  vec search returned 0 hits for every record predating the connection.
+  Fix: `backfillHnswIfEmpty` self-probes the v-table with any stored
+  embedding (k=1) and INSERTs all `memory_vectors` rows when the probe
+  returns empty. Called from both `SqliteVectorBackend.make` and
+  `sqlite-vector-maintenance.openDb`. `MemoryVectorHnswStatus.indexedCount`
+  exposes the real graph population so `luna memory status` can
+  distinguish schema-present-but-empty from healthy.
+- **Phase 27e — persistent HNSW via sidecar (shipped).** Backfill is
+  correct but pays O(N · log N · M) per connection open. With vectorlite's
+  `index_file_path` argument the graph serializes to a sidecar file on
+  `db.close()` and reloads on next open — backfill becomes a no-op on a
+  healthy persisted index. Sidecar lives at `${dbPath}.hnsw.bin`, mode
+  `0o600`. Migration path: a legacy memory-only v-table on disk is
+  detected by inspecting its `sqlite_master.sql` for an embedded path
+  literal; mismatches trigger DROP+recreate, and `backfillHnswIfEmpty`
+  rebuilds from `memory_vectors`. Corruption recovery: vectorlite defers
+  index-file deserialization to the first `knn_search`, so the backend
+  probes after CREATE; if the probe throws, the sidecar is discarded,
+  the v-table is recreated, and the canonical `memory_vectors` table
+  drives the rebuild. In-memory and `:memory:` DBs continue to use the
+  legacy memory-only v-table (sidecar path = `null`) and rely on the
+  per-open backfill — they cost nothing extra and the persistence
+  contract doesn't apply to ephemeral storage.
 - **Per-backend tuning knobs** (TTL, eviction policy, encryption-at-rest)
   remain backend-private until a real caller demands a uniform surface.
 

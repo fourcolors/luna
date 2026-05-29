@@ -48,6 +48,50 @@ import {
   type ClientFrame,
   type ServerFrame,
 } from "./protocol.js"
+import type { SurveyItem, SurveyVerdict } from "@luna/core"
+
+/**
+ * Resolved Survey handle for the WS server (Phase 3 D3). Passed as a plain
+ * handle (NOT a Tag) so the server's environment doesn't grow a Survey
+ * dependency — mirrors the accountBroker pattern exactly.
+ *
+ * When provided:
+ *   - After `hello`, the server fire-and-forgets a `pendingSurvey(now)` call;
+ *     if due it pushes a `survey-request` frame.
+ *   - Inbound `survey-response` frames are routed to `submitVerdicts`, which
+ *     pins every verdict's `at` to `frame.issuedAt` before calling
+ *     processVerdict (D-LOCK-5 idempotency — a re-delivered answer cannot
+ *     double-move the EWMA because survey.ts keys on (ref, signalKind, at)).
+ *
+ * NO snooze handle (Execution Correction #1): dismiss is a client-side no-op.
+ */
+export interface SurveyWsHandle {
+  /**
+   * Check whether a survey is due at `now` and return its items + issuedAt,
+   * or null if not due. Called once on connect (fire-and-forget).
+   */
+  readonly pendingSurvey: (
+    now: number,
+  ) => import("effect").Effect.Effect<
+    { readonly issuedAt: number; readonly items: ReadonlyArray<SurveyItem> } | null,
+    unknown
+  >
+  /**
+   * Process all verdicts from a single survey response. The server PINS
+   * each verdict's `at` to `issuedAt` before calling this (D-LOCK-5), so
+   * re-delivering the same `survey-response` frame is a no-op server-side.
+   *
+   * `surveyId` — the wire-level survey instance id (from SurveyResponseFrame).
+   * `issuedAt` — the stable survey timestamp (from the SurveyRequestFrame);
+   *   this is the idempotency anchor used by survey.ts (ref, signalKind, at).
+   * `verdicts` — already-pinned: each `v.at` has been set to `issuedAt`.
+   */
+  readonly submitVerdicts: (
+    surveyId: string,
+    issuedAt: number,
+    verdicts: ReadonlyArray<SurveyVerdict>,
+  ) => import("effect").Effect.Effect<void, unknown>
+}
 
 export interface UIWebSocketServerConfig {
   /** TCP port. Default: 4753 (UISE). */
@@ -126,6 +170,20 @@ export interface UIWebSocketServerConfig {
    * disables its own local-shell.
    */
   readonly onLocalShellRelease?: (threadId: string) => void
+  /**
+   * Optional Survey handle (Phase 3 D3). When provided, the server:
+   *   - Pushes a `survey-request` frame after `hello` if a survey is due
+   *     (connection-time due-check — fire-and-forget, like account-list).
+   *   - Routes inbound `survey-response` frames → submitVerdicts, with
+   *     every verdict's `at` pinned to `frame.issuedAt` server-side (D-LOCK-5).
+   *
+   * Pass the RESOLVED handle (not the Tag) so the server's env stays narrow.
+   * Absent = no survey push, no routing (graceful degradation).
+   *
+   * NO snooze/dismiss config (Execution Correction #1): dismiss is a client
+   * no-op; only answered surveys advance the schedule via getLastSurveyAt.
+   */
+  readonly survey?: SurveyWsHandle
 }
 
 export interface UIWebSocketServerHandle {
@@ -218,6 +276,7 @@ export const startUIWebSocketServer = (
     const kindsList: ReadonlyArray<string> = config.advertisedKinds ?? []
     const chat = config.chatService ?? null
     const localShellBridge = config.localShellBridge ?? null
+    const survey = config.survey ?? null
 
     const httpServer = http.createServer((req, res) => {
       if (req.url === "/healthz") {
@@ -352,6 +411,30 @@ export const startUIWebSocketServer = (
                 send(ws, { type: "account-list", accounts })
               }),
             ),
+          )
+        }
+
+        // Phase 3 D3 (D-LOCK-1): push a survey check-in if one is due.
+        // Fire-and-forget — a survey failure must never take down the connection.
+        // `now` is captured once and becomes `issuedAt` (D-LOCK-5 anchor).
+        // surveyId is derived from issuedAt (unique per survey instance; T3
+        // wiring can ignore it — issuedAt is the processVerdict idempotency key).
+        if (survey !== null) {
+          const s = survey
+          const now = Date.now()
+          Effect.runFork(
+            Effect.flatMap(s.pendingSurvey(now), (pending) =>
+              Effect.sync(() => {
+                if (pending !== null) {
+                  send(ws, {
+                    type: "survey-request",
+                    surveyId: `survey-${pending.issuedAt}`,
+                    issuedAt: pending.issuedAt,
+                    items: pending.items,
+                  })
+                }
+              }),
+            ).pipe(Effect.catchAllCause(() => Effect.void)),
           )
         }
 
@@ -547,7 +630,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null) {
+        if (chat !== null || localShellBridge !== null || survey !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -703,6 +786,23 @@ export const startUIWebSocketServer = (
                   case "interrupt": {
                     if (chat === null) return
                     yield* chat.interrupt(frame.threadId)
+                    return
+                  }
+                  case "survey-response": {
+                    if (survey === null) return
+                    // Phase 3 D3 — D-LOCK-5 idempotency: pin EVERY verdict's `at`
+                    // to the survey's `issuedAt` SERVER-SIDE. The client SHOULD
+                    // already echo issuedAt, but the server overwrites it so a
+                    // buggy or replaying client cannot double-move the EWMA.
+                    // survey.ts keys idempotency on (ref, signalKind, at) —
+                    // re-delivering the same frame with the same issuedAt is a no-op.
+                    const pinnedVerdicts = frame.verdicts.map((v) => ({
+                      ...v,
+                      at: frame.issuedAt,
+                    }))
+                    yield* survey.submitVerdicts(frame.surveyId, frame.issuedAt, pinnedVerdicts).pipe(
+                      Effect.catchAllCause(() => Effect.void),
+                    )
                     return
                   }
                 }
