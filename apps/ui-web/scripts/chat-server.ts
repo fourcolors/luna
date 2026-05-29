@@ -138,8 +138,10 @@ import {
   AccountBroker,
   AccountBrokerLayer,
   AgentNotesService,
+  AlignmentStore,
   BELIEF_KIND,
   BELIEF_NAMESPACE,
+  BeliefWriter,
   Clock,
   DEFAULT_UI_KINDS,
   DreamCronLayer,
@@ -150,6 +152,7 @@ import {
   OnePasswordSecretProvider,
   RoutedOpSecretProvider,
   SessionStore,
+  Survey,
   TelemetryPlatform,
   TelemetryService,
   UIService,
@@ -446,6 +449,34 @@ export const buildDreamCronLayer = (opts: BuildDreamCronLayerOpts) => {
   )
 }
 
+// ── Survey sub-layer factory (exported for boot smoke) ──────────────────
+//
+// Phase 3 D3: exported so the boot smoke can import THIS symbol and verify
+// the real wiring shape. Mirrors buildDreamCronLayer's shape exactly.
+//
+// Survey.Default requires AlignmentStore + BeliefWriter + Clock + MemoryRouter.
+// BeliefWriter.Default requires MemoryRouter + Clock.
+// AlignmentStore.makeLayer(dbPath) requires Clock + LunaSqliteBootstrap.
+//
+// The smoke passes AlignmentStore.Memory (no SQLite) + a Ref-backed FakeMemory
+// MemoryRouter while keeping the real Survey.Default so the real dep graph is
+// proven composable. `as never` on the Memory double sidesteps the param-type
+// narrowing (same pattern as dream-cron-boot.smoke.ts).
+export interface BuildSurveyLayerOpts {
+  readonly alignmentStoreL: Layer.Layer<AlignmentStore, import("effect").ConfigError, Clock | import("@luna/memory").LunaSqliteBootstrap>
+  readonly beliefWriterL: Layer.Layer<BeliefWriter, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
+  readonly memoryRouterL: Layer.Layer<import("@luna/memory").MemoryRouter, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
+  readonly clockL: Layer.Layer<Clock>
+}
+
+export const buildSurveyLayer = (opts: BuildSurveyLayerOpts) =>
+  Survey.Default.pipe(
+    Layer.provide(opts.alignmentStoreL),
+    Layer.provide(opts.beliefWriterL),
+    Layer.provide(opts.memoryRouterL),
+    Layer.provide(opts.clockL),
+  )
+
 // ── Layer wiring ────────────────────────────────────────────────────────
 //
 // Phase 25d: SecretProvider chain is RoutedOpSecretProvider →
@@ -585,6 +616,15 @@ export const buildBaseLayer = (
     dreamStoreL,
   })
 
+  // Phase 3 D3: Survey layer for the WS-mediated check-in. AlignmentStore and
+  // BeliefWriter both use memoryRouterL + clockL from the same boot identities
+  // (so survey-activated beliefs + D5 injection read the SAME router).
+  // LunaSqliteBootstrap satisfied at the bottom of buildServerLayer, same as
+  // every other SQLite-backed layer here.
+  const alignmentStoreL = AlignmentStore.makeLayer(paths.lunaDbPath).pipe(Layer.provide(clockL))
+  const beliefWriterL = BeliefWriter.Default.pipe(Layer.provide(memoryRouterL), Layer.provide(clockL))
+  const surveyL = buildSurveyLayer({ alignmentStoreL, beliefWriterL, memoryRouterL, clockL })
+
   const chatL = Layer.provideMerge(
     ChatService.Default,
     Layer.mergeAll(
@@ -610,6 +650,7 @@ export const buildBaseLayer = (
     noopTracerL,
     agentNotesL,
     dreamCronL, // Phase 3 D1: forces the cron to register at boot
+    surveyL,    // Phase 3 D3: Survey available for buildServerLayer to resolve + pass to the WS server
   )
 }
 
@@ -640,6 +681,23 @@ const buildServerLayer = (
       // binding, so the WS server can use the service handle directly.
       const chat = yield* ChatService
       const broker = yield* AccountBroker
+      const surveyService = yield* Survey // Phase 3 D3
+
+      // Phase 3 D3: build the SurveyWsHandle adapter. SurveyApi has
+      // pendingSurvey + processVerdict; SurveyWsHandle needs pendingSurvey +
+      // submitVerdicts. submitVerdicts pins every verdict's `at` to `issuedAt`
+      // (D-LOCK-5) and processes them sequentially.
+      const surveyHandle = {
+        pendingSurvey: (now: number) => surveyService.pendingSurvey(now),
+        submitVerdicts: (
+          _surveyId: string,
+          issuedAt: number,
+          verdicts: ReadonlyArray<import("@luna/core").SurveyVerdict>,
+        ) =>
+          Effect.forEach(verdicts, (v) => surveyService.processVerdict({ ...v, at: issuedAt }), {
+            discard: true,
+          }),
+      }
 
       // tRPC control server — port 4754, alongside the WebSocket server.
       // Exposes control.restart / control.status / control.version.
@@ -653,6 +711,7 @@ const buildServerLayer = (
         pingIntervalMs: 5000,
         chatService: chat,
         accountBroker: broker,
+        survey: surveyHandle, // Phase 3 D3: resolved handle
         localShellBridge,
         onLocalShellRelease: reattachSandbox,
       })
