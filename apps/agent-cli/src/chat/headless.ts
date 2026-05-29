@@ -2,6 +2,61 @@ import { EventEmitter } from "node:events"
 import type { ClientFrame, ServerFrame, MemorySearchResultFrame, MemorySearchErrorFrame } from "@luna/ui-ws"
 import type { LunaWsClient } from "./ws-client.js"
 import { parseSlashCommand, type SlashCommand } from "./slash.js"
+import type { PendingSurvey, SurveyItem, SurveyVerdict } from "@luna/core"
+
+/** The operator's per-item answers collected by the SurveyModal. */
+export type SurveyAnswers = {
+  /** The selected 1–5 Likert score for the task_quality item (null = not answered). */
+  readonly likert: number | null
+  /** Per-belief answers keyed by beliefId. */
+  readonly beliefAnswers: Record<string, "confirmed" | "corrected" | "rejected">
+}
+
+/**
+ * Pure verdict-assembly function (extracted so it can be unit-tested without
+ * rendering). Maps SurveyAnswers + items + issuedAt → SurveyVerdict[].
+ *
+ * task_quality: score = (n-1)/4 (D-LOCK-4; 1→0.0 … 5→1.0).
+ * belief_validation: maps confirmed/corrected/rejected to `verdict` field.
+ * Every verdict stamps at=issuedAt (D-LOCK-5 idempotency anchor).
+ * Unanswered items (null likert, missing beliefAnswer) are omitted.
+ */
+export const buildSurveyVerdicts = (
+  items: ReadonlyArray<SurveyItem>,
+  answers: SurveyAnswers,
+  issuedAt: number,
+): ReadonlyArray<SurveyVerdict> => {
+  const out: SurveyVerdict[] = []
+  for (const item of items) {
+    if (item.kind === "task_quality") {
+      const n = answers.likert
+      if (n !== null) {
+        out.push({
+          itemId: item.id,
+          kind: "task_quality",
+          ref: item.ref,
+          score: (n - 1) / 4,
+          via: "survey",
+          at: issuedAt,
+        })
+      }
+    } else if (item.kind === "belief_validation" && item.beliefId !== undefined) {
+      const ans = answers.beliefAnswers[item.beliefId]
+      if (ans !== undefined) {
+        out.push({
+          itemId: item.id,
+          kind: "belief_validation",
+          ref: item.ref,
+          beliefId: item.beliefId,
+          verdict: ans,
+          via: "survey",
+          at: issuedAt,
+        })
+      }
+    }
+  }
+  return out
+}
 
 export type AssistantTurnState = {
   readonly turnId: string
@@ -33,6 +88,8 @@ export type LunaHeadlessEvents = {
   errorText: (text: string) => void
   toolCall: (e: { toolCallId: string; name: string; input: unknown; turnId: string }) => void
   toolResult: (e: { toolCallId: string; status: "ok" | "error"; output: string; truncated: boolean }) => void
+  /** Phase 3 D3: server-pushed survey check-in is due; populate the modal. */
+  survey: (pending: PendingSurvey) => void
 }
 
 export type LunaHeadlessConfig = {
@@ -85,6 +142,35 @@ export class LunaHeadlessSession extends EventEmitter {
 
   get threadId(): string | null { return this.currentThreadId }
   get fatalReason(): string | null { return this.fatalMessage }
+
+  /**
+   * Send the operator's survey answers. Stamps every verdict's `at` to
+   * `issuedAt` (D-LOCK-5 — the server re-pins it too, defence-in-depth).
+   * `surveyId` echoes the SurveyRequestFrame.surveyId for correlation.
+   */
+  sendSurveyResponse(
+    surveyId: string,
+    issuedAt: number,
+    verdicts: ReadonlyArray<SurveyVerdict>,
+  ): void {
+    this.client.send({
+      type: "survey-response",
+      surveyId,
+      issuedAt,
+      verdicts: verdicts.map((v) => ({ ...v, at: issuedAt })),
+    })
+  }
+
+  /**
+   * Dismiss (no-op): close the survey modal WITHOUT sending any frame.
+   * Per Execution Correction #1: dismiss = client-side no-op. The survey
+   * re-surfaces on the next connection-time due-check. No snooze frame.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  dismissSurvey(): void {
+    // Intentional no-op: nothing is sent; the unanswered survey re-surfaces
+    // on the next connection-time due-check (D-LOCK-6 revised).
+  }
 
   sendUser(text: string): void {
     const trimmed = text.trim()
@@ -320,6 +406,12 @@ export class LunaHeadlessSession extends EventEmitter {
           toolCallId: frame.toolCallId, status: frame.status,
           output: frame.output, truncated: frame.truncated,
         })
+        return
+      case "survey-request":
+        // Phase 3 D3: server-pushed check-in. Emit the PendingSurvey payload
+        // (issuedAt + items) so the TUI can show the modal. D-LOCK-8: this
+        // case is added manually (no exhaustiveness guard on the switch).
+        this.emit("survey", { issuedAt: frame.issuedAt, items: frame.items })
         return
     }
   }

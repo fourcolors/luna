@@ -1,5 +1,5 @@
 /**
- * belief-injection-boot.smoke.ts — boot-risk verification for D5.
+ * belief-injection-boot.smoke.ts — boot-risk verification for D5 + T3b.
  *
  * chat-server.ts has NO tsc gate (root tsconfig excludes apps/ui-web/**;
  * the file is in scripts/, Bun-transpiled), so a missing service in the
@@ -8,16 +8,21 @@
  * `ThreadToolsProviderLayer` factory — not a hand-copied mirror. A typo
  * or missing import in the actual edited code makes THIS smoke FAIL.
  *
- * Two assertions (per the BOOT-GATING CORRECTION):
- *   (a) decorate() does NOT throw at runSync — the load-bearing check.
- *       A missing MemoryRouterTag in the layer causes the layer build
- *       (or decorate) to blow up. Removing Layer.provide(seededMem)
- *       MUST make this smoke FAIL with a missing-MemoryRouter defect.
- *   (b) The returned systemPrompt contains "## What I believe about Operator"
- *       when one ACTIVE belief is seeded in the Ref-backed FakeMemory.
+ * Two assertions:
+ *   CHECK 1 (initial render / D5): build the REAL ThreadToolsProviderLayer
+ *     with a seeded ACTIVE belief in a FakeMemory MemoryRouter; assert
+ *     decorate() output contains "## What I believe about Operator" + the
+ *     belief statement, and decorate() does NOT throw at runSync.
+ *     Regression guard: removing Layer.provide(seededMem) MUST make this FAIL.
  *
- * Regression-guard discipline: verified ONCE that removing
- * Layer.provide(seededMem) makes the smoke FAIL → restored.
+ *   CHECK 2 (live refresh / T3b): build with NO active belief (decorate()
+ *     initially has no beliefs section); ADD an active belief to the mutable
+ *     backing store; trigger one refresh tick via Effect.sleep; assert
+ *     decorate() NOW contains the newly-added belief.
+ *     This proves the holder refreshes live — a survey-activated belief
+ *     appears in the next thread WITHOUT a server restart.
+ *     Regression guard: removing the forkScoped refresh loop (leaving only
+ *     the boot snapshot) MUST make this FAIL (added belief never appears).
  *
  * Run: bun run apps/ui-web/scripts/smoke/belief-injection-boot.smoke.ts
  * Exit 0 = PASS, non-zero = FAIL
@@ -31,7 +36,29 @@ import { Effect, Layer, ManagedRuntime, Ref, Stream } from "effect"
 import { ThreadToolsProviderLayer } from "../chat-server.js"
 
 // ---------------------------------------------------------------------------
-// One seeded ACTIVE belief
+// Helpers
+// ---------------------------------------------------------------------------
+
+const clockL = Clock.Default
+const obsL = ObservabilityService.makeLayer({
+  logToConsole: false,
+  jsonlPath: "/tmp/luna-smoke-belief-obs.jsonl",
+}).pipe(Layer.provide(clockL))
+
+/** Build the common provide-chain around a given memoryL + interval. */
+const buildLayer = (
+  memoryL: Layer.Layer<typeof MemoryRouterTag.Service, never, never>,
+  refreshIntervalMs: number,
+) =>
+  ThreadToolsProviderLayer(refreshIntervalMs).pipe(
+    Layer.provide(memoryL as never),
+    Layer.provide(obsL),
+    Layer.provide(clockL),
+    Layer.provide(LunaSqliteBootstrapLive),
+  )
+
+// ---------------------------------------------------------------------------
+// CHECK 1: initial render — seeded ACTIVE belief present at boot
 // ---------------------------------------------------------------------------
 
 const seeded = makeBeliefRecord({
@@ -42,10 +69,11 @@ const seeded = makeBeliefRecord({
   now: 0,
 })
 
-// ---------------------------------------------------------------------------
-// Ref-backed FakeMemory that returns the seeded belief on query()
-// ---------------------------------------------------------------------------
-
+/**
+ * Ref-backed FakeMemory seeded with one active belief. Used for CHECK 1.
+ * Removing Layer.provide(seededMem) from buildLayer MUST make CHECK 1 FAIL
+ * with a missing-MemoryRouter defect.
+ */
 const seededMem = Layer.effect(
   MemoryRouterTag,
   Effect.gen(function* () {
@@ -65,68 +93,145 @@ const seededMem = Layer.effect(
           ),
         ),
       search: () => Stream.empty,
-      // MemoryRouter interface also requires backendFor + exportAll in the
-      // full router, but ThreadToolsProviderLayer only calls query() for the
-      // belief snapshot and put()/get() never — cast to satisfy the tag.
     } as never
   }),
 )
 
+async function check1(): Promise<void> {
+  console.log("\n[smoke] --- CHECK 1: initial render (boot belief present) ---")
+  const rt = ManagedRuntime.make(buildLayer(seededMem, 30_000))
+  try {
+    await rt.runPromise(
+      Effect.gen(function* () {
+        const provider = yield* ThreadToolsProviderTag
+        const binding = provider.decorate({} as never)
+        const sp = binding.systemPrompt ?? ""
+        if (!sp.includes("## What I believe about Operator")) {
+          throw new Error(
+            `[check 1] beliefs section missing from decorate() output.\n` +
+              `systemPrompt (first 500 chars): ${sp.slice(0, 500)}`,
+          )
+        }
+        console.log(
+          "[check 1] decorate() systemPrompt contains '## What I believe about Operator' ✓",
+        )
+      }),
+    )
+  } finally {
+    await rt.dispose()
+  }
+  console.log("[smoke] CHECK 1 PASS ✓")
+}
+
 // ---------------------------------------------------------------------------
-// Minimal obs layer (needed by MemoryToolsLayer() inside ThreadToolsProviderLayer)
+// CHECK 2: live refresh — belief added AFTER boot appears after one tick
 // ---------------------------------------------------------------------------
 
-const clockL = Clock.Default
-const obsL = ObservabilityService.makeLayer({
-  logToConsole: false,
-  jsonlPath: "/tmp/luna-smoke-belief-obs.jsonl",
-}).pipe(Layer.provide(clockL))
+/**
+ * Mutable plain array used as the backing store for CHECK 2's FakeMemory.
+ * Plain array (not Ref) so the outer scope can push records directly —
+ * that's deterministic and doesn't require any Effect coordination.
+ */
+let liveRecords: MemoryRecord[] = []
 
-// ---------------------------------------------------------------------------
-// Build the REAL provider layer — same provide-chain shape as the live boot.
-// Removing Layer.provide(seededMem) MUST make this smoke FAIL.
-// ---------------------------------------------------------------------------
-
-const threadToolsL = ThreadToolsProviderLayer().pipe(
-  Layer.provide(seededMem), // ← regression guard: remove this → MUST FAIL (Service not found: luna/MemoryRouter)
-  Layer.provide(obsL),
-  Layer.provide(clockL),
-  Layer.provide(LunaSqliteBootstrapLive), // needed by MemoryToolsLayer + ObsToolsLayer internally
+const liveMem = Layer.effect(
+  MemoryRouterTag,
+  Effect.gen(function* () {
+    // No initial records — decorate() at boot should have no beliefs section.
+    return {
+      put: (r: MemoryRecord) => Effect.sync(() => { liveRecords.push(r) }),
+      get: (_id: string) => Effect.succeed(null),
+      delete: () => Effect.succeed(false),
+      // query reads from the plain mutable array — reflects pushes immediately.
+      query: () => Stream.fromIterable(liveRecords),
+      search: () => Stream.empty,
+    } as never
+  }),
 )
 
-// ---------------------------------------------------------------------------
-// Main assertion
-// ---------------------------------------------------------------------------
+async function check2(): Promise<void> {
+  console.log("\n[smoke] --- CHECK 2: live refresh (belief added post-boot appears) ---")
 
-const main = Effect.gen(function* () {
-  // (a) resolve the provider — forces the layer build (MemoryRouterTag must
-  //     be satisfied or this throws with a missing-service defect)
-  const provider = yield* ThreadToolsProviderTag
+  // Use a tiny interval so the smoke test is fast and deterministic.
+  const TEST_INTERVAL_MS = 20
 
-  // (b) call decorate() synchronously — it must not throw
-  const binding = provider.decorate({} as never)
+  const rt = ManagedRuntime.make(buildLayer(liveMem, TEST_INTERVAL_MS))
+  try {
+    await rt.runPromise(
+      Effect.gen(function* () {
+        const provider = yield* ThreadToolsProviderTag
 
-  // (c) assert the beliefs section is present
-  const sp = binding.systemPrompt ?? ""
-  if (!sp.includes("## What I believe about Operator")) {
-    throw new Error(
-      `[smoke] beliefs section missing from decorate() output.\n` +
-        `systemPrompt (first 500 chars): ${sp.slice(0, 500)}`,
+        // At boot (before any tick), the holder is populated from the
+        // boot-time refreshBeliefs run — with no records, it's "".
+        const spBefore = provider.decorate({} as never).systemPrompt ?? ""
+        if (spBefore.includes("## What I believe about Operator")) {
+          throw new Error(
+            "[check 2] beliefs section should be ABSENT before adding a belief",
+          )
+        }
+        console.log("[check 2] before refresh: no beliefs section ✓")
+
+        // Now add an active belief to the mutable backing store.
+        const added = makeBeliefRecord({
+          statement: "Operator prefers live belief injection",
+          confidence: 0.85,
+          domain: "comms",
+          status: "active",
+          now: 0,
+        })
+        liveRecords.push(added)
+        console.log("[check 2] pushed active belief to live backing store ✓")
+
+        // Wait for ≥1 refresh tick (TEST_INTERVAL_MS is 20ms; sleep 3x that).
+        yield* Effect.sleep(TEST_INTERVAL_MS * 3)
+
+        // The refresh fiber has now run at least once — the holder should
+        // contain the newly-added belief.
+        const spAfter = provider.decorate({} as never).systemPrompt ?? ""
+        if (!spAfter.includes("## What I believe about Operator")) {
+          throw new Error(
+            "[check 2] beliefs section STILL absent after refresh tick — " +
+              "live refresh fiber did not pick up the added belief.\n" +
+              `systemPrompt (first 500 chars): ${spAfter.slice(0, 500)}`,
+          )
+        }
+        if (!spAfter.includes("Operator prefers live belief injection")) {
+          throw new Error(
+            "[check 2] belief statement not found after refresh.\n" +
+              `systemPrompt (first 500 chars): ${spAfter.slice(0, 500)}`,
+          )
+        }
+        console.log(
+          "[check 2] after refresh: '## What I believe about Operator' present ✓",
+        )
+        console.log("[check 2] after refresh: belief statement present ✓")
+      }),
     )
+  } finally {
+    // Reset mutable state so re-runs are independent.
+    liveRecords = []
+    await rt.dispose()
   }
-  console.log("[smoke] decorate() systemPrompt contains '## What I believe about Operator' ✓")
-})
+  console.log("[smoke] CHECK 2 PASS ✓")
+}
 
-const rt = ManagedRuntime.make(threadToolsL)
-rt.runPromise(main)
-  .then(() => rt.dispose())
-  .then(() => {
+// ---------------------------------------------------------------------------
+// Run both checks sequentially, then report
+// ---------------------------------------------------------------------------
+
+async function main() {
+  try {
+    await check1()
+    await check2()
     console.log(
-      "[smoke] PASS — real ThreadToolsProviderLayer builds (MemoryRouterTag satisfied) + active belief injected into systemPrompt",
+      "\n[smoke] PASS — real ThreadToolsProviderLayer builds (MemoryRouterTag satisfied); " +
+        "initial render ✓ + live belief-refresh ✓",
     )
     process.exit(0)
-  })
-  .catch((err: unknown) => {
-    console.error("[smoke] FAIL:", err)
+  } catch (err: unknown) {
+    console.error("\n[smoke] FAIL:", err)
     process.exit(1)
-  })
+  }
+}
+
+void main()

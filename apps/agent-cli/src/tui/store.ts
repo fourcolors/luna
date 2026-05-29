@@ -8,6 +8,7 @@ import {
   applyToolCall,
   applyToolResult,
 } from "./timeline.js"
+import type { PendingSurvey } from "@luna/core"
 
 export type ConnectionState = "connecting" | "up" | "down" | "fatal"
 
@@ -19,6 +20,16 @@ export const createTuiStore = () => {
   const [localShellEnabled, setLocalShellEnabled] = createSignal<boolean>(false)
   const [inputDraft, setInputDraft] = createSignal<string>("")
   const [fatalReason, setFatalReason] = createSignal<string | null>(null)
+  /** Phase 3 D3: active survey check-in, or null when none is pending. */
+  const [survey, setSurvey] = createSignal<PendingSurvey | null>(null)
+
+  /**
+   * Phase 3 D3 — exclusive-focus gate.
+   * True when the chat input should be active (no survey modal open).
+   * Drives the <Show> guard in App.tsx so Input is not mounted while a survey
+   * owns keypress handling.
+   */
+  const chatInputActive = (): boolean => survey() === null
 
   // Counter used to mint synthetic turn ids for system/error lines so they each
   // become their own assistant-style block in the transcript.
@@ -71,6 +82,8 @@ export const createTuiStore = () => {
     localShellEnabled, setLocalShellEnabled,
     inputDraft, setInputDraft,
     fatalReason, setFatalReason,
+    survey, setSurvey,
+    chatInputActive,
   }
 }
 

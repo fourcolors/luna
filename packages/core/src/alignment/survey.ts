@@ -57,7 +57,7 @@ import type { MemoryBackendError } from "../errors.js"
 import { AlignmentStore } from "./alignment-store.js"
 import { updateEwma, nextSurveyAt, signalValueForVerdict } from "./cadence.js"
 import { AlignmentError, EWMA_ELIGIBLE } from "./types.js"
-import type { AlignmentSignal, SurveyVerdict } from "./types.js"
+import type { AlignmentSignal, PendingSurvey, SurveyItem, SurveyVerdict } from "./types.js"
 
 /**
  * Pure router: a verdict → the typed signal(s) it produces. task_quality and
@@ -83,6 +83,13 @@ export function signalsForVerdict(v: SurveyVerdict): ReadonlyArray<AlignmentSign
 export interface SurveyApi {
   readonly processVerdict: (v: SurveyVerdict) => Effect.Effect<void, AlignmentError | MemoryBackendError>
   readonly nextSurvey: (lastSurveyAt: number) => Effect.Effect<number, AlignmentError>
+  /**
+   * Decide whether a survey is due (now ≥ lastSurveyAt + cadence interval) and,
+   * if so, source its items: ALWAYS one task_quality item (D-LOCK-2 precondition)
+   * + up to 3 PROPOSED beliefs (D-LOCK-3). Returns null when not due.
+   * The `issuedAt` is the idempotency anchor stamped onto every verdict (D-LOCK-5).
+   */
+  readonly pendingSurvey: (now: number) => Effect.Effect<PendingSurvey | null, AlignmentError | MemoryBackendError>
 }
 
 export class Survey extends Effect.Tag("luna/Survey")<Survey, SurveyApi>() {
@@ -181,7 +188,50 @@ export class Survey extends Effect.Tag("luna/Survey")<Survey, SurveyApi>() {
       const nextSurvey = (lastSurveyAt: number) =>
         store.getEwma.pipe(Effect.map((ewma) => nextSurveyAt(ewma, lastSurveyAt)))
 
-      return { processVerdict, nextSurvey } satisfies SurveyApi
+      const BELIEFS_PER_SURVEY = 3 // D-LOCK-3
+      const TASK_QUALITY_PROMPT = "How aligned have I been with what you wanted lately?"
+
+      const pendingSurvey = (now: number) =>
+        Effect.gen(function* () {
+          const lastSurveyAt = yield* store.getLastSurveyAt
+          // COLD START (§2.4 "boots dormant → surveys daily" = first contact is
+          // DUE, not epoch + 1 day). lastSurveyAt === 0 reliably means "never
+          // surveyed" — any real survey writes a task_quality row with at > 0.
+          // Without this guard, dueAt = nextSurveyAt(0, 0) = MIN_INTERVAL_DAYS*DAY =
+          // 86_400_000, so the first survey would not fire until now ≥ 1 day
+          // (epoch), which is wrong AND makes synthetic-clock tests (small `now`)
+          // never due. Treat lastSurveyAt === 0 as immediately due.
+          if (lastSurveyAt !== 0) {
+            const dueAt = yield* nextSurvey(lastSurveyAt)
+            if (now < dueAt) return null
+          }
+
+          // ALWAYS one task_quality item (D-LOCK-2 precondition / D-LOCK-4 scale).
+          // ref = "task_quality" (a stable, belief-less ref); the TUI maps a 1–5
+          // Likert to score = (n-1)/4.
+          const taskItem: SurveyItem = {
+            id: `sq-${now}`,
+            kind: "task_quality",
+            prompt: TASK_QUALITY_PROMPT,
+            ref: "task_quality",
+          }
+
+          // Up to 3 PROPOSED beliefs (D-LOCK-3). Overflow rolls to next survey.
+          const proposed = yield* writer.listByStatus("proposed")
+          const beliefItems: ReadonlyArray<SurveyItem> = proposed
+            .slice(0, BELIEFS_PER_SURVEY)
+            .map((rec) => ({
+              id: `bv-${rec.id}-${now}`,
+              kind: "belief_validation" as const,
+              prompt: readBelief(rec).statement,
+              ref: rec.id,
+              beliefId: rec.id,
+            }))
+
+          return { issuedAt: now, items: [taskItem, ...beliefItems] } satisfies PendingSurvey
+        })
+
+      return { processVerdict, nextSurvey, pendingSurvey } satisfies SurveyApi
     }),
   )
 }
