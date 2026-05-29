@@ -2,22 +2,26 @@ import { Effect, Layer, Stream } from "effect"
 import { MemoryRouterTag } from "@luna/memory"
 import type { MemoryRecord } from "@luna/memory"
 import { Clock } from "../clock.js"
+import type { MemoryBackendError } from "../errors.js"
 import { BELIEF_CAP, BELIEF_KIND, BELIEF_NAMESPACE, readBelief } from "./types.js"
 import type { BeliefContent, BeliefStatus } from "./types.js"
 import { rankByStrength } from "./scoring.js"
 
+// Error channel carries MemoryBackendError (propagated from MemoryRouter ops),
+// matching the DreamStore idiom of surfacing backend errors in the API. Success
+// types are intentionally minimal; enriching them is deferred to Phase 3.
 export interface BeliefWriterApi {
   /** All belief records in the operator namespace. */
-  readonly listAll: () => Effect.Effect<ReadonlyArray<MemoryRecord>>
+  readonly listAll: () => Effect.Effect<ReadonlyArray<MemoryRecord>, MemoryBackendError>
   /** Active beliefs only (the injected set). */
-  readonly listActive: () => Effect.Effect<ReadonlyArray<MemoryRecord>>
-  readonly listByStatus: (status: BeliefStatus) => Effect.Effect<ReadonlyArray<MemoryRecord>>
+  readonly listActive: () => Effect.Effect<ReadonlyArray<MemoryRecord>, MemoryBackendError>
+  readonly listByStatus: (status: BeliefStatus) => Effect.Effect<ReadonlyArray<MemoryRecord>, MemoryBackendError>
   /** Stage a candidate as a `proposed` record (Dream's promotion target). */
-  readonly stageProposed: (rec: MemoryRecord) => Effect.Effect<void>
+  readonly stageProposed: (rec: MemoryRecord) => Effect.Effect<void, MemoryBackendError>
   /** proposed → active. Enforces the ≤20 active cap (evicts the weakest). */
-  readonly activateBelief: (id: string) => Effect.Effect<boolean>
+  readonly activateBelief: (id: string) => Effect.Effect<boolean, MemoryBackendError>
   /** any → retired (record persists for audit/undo). */
-  readonly retireBelief: (id: string) => Effect.Effect<boolean>
+  readonly retireBelief: (id: string) => Effect.Effect<boolean, MemoryBackendError>
 }
 
 export class BeliefWriter extends Effect.Tag("luna/BeliefWriter")<
@@ -61,6 +65,10 @@ export class BeliefWriter extends Effect.Tag("luna/BeliefWriter")<
           // Enforce the cap on the ACTIVE set only: keep the strongest
           // BELIEF_CAP active, retire the rest (weakest-first).
           const active = yield* listActive()
+          // NOTE: if the just-activated belief is weaker than all BELIEF_CAP incumbents,
+          // it is itself the loser and gets retired in this same call — activate→retire.
+          // We still return `true` (the activation happened); callers needing to confirm
+          // the belief stayed active should check listActive(). (Phase 3 may enrich this.)
           if (active.length > BELIEF_CAP) {
             const now = yield* clock.nowMs()
             const ranked = rankByStrength(active, now)
@@ -71,7 +79,7 @@ export class BeliefWriter extends Effect.Tag("luna/BeliefWriter")<
           return true
         })
 
-      return { listAll, listActive, listByStatus, stageProposed, activateBelief, retireBelief }
+      return { listAll, listActive, listByStatus, stageProposed, activateBelief, retireBelief } satisfies BeliefWriterApi
     }),
   )
 }

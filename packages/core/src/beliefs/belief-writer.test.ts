@@ -44,8 +44,11 @@ const FakeMemory = (initial: ReadonlyArray<MemoryRecord> = []) =>
     }),
   )
 
-const provide = <A, E>(eff: Effect.Effect<A, E, any>, mem: Layer.Layer<any>) =>
-  eff.pipe(Effect.provide(BeliefWriter.Default), Effect.provide(mem), Effect.provide(Clock.Default))
+const provide = <A, E>(
+  eff: Effect.Effect<A, E, any>,
+  mem: Layer.Layer<any>,
+  clock: Layer.Layer<Clock> = Clock.Default,
+) => eff.pipe(Effect.provide(BeliefWriter.Default), Effect.provide(mem), Effect.provide(clock))
 
 describe("BeliefWriter", () => {
   it("activateBelief flips proposed → active", async () => {
@@ -122,5 +125,82 @@ describe("BeliefWriter", () => {
     )
     expect(out).not.toBeNull()
     expect(readBelief(out!).status).toBe("proposed")
+  })
+
+  it("activating a belief weaker than all incumbents self-evicts (activate→retire)", async () => {
+    const actives = Array.from({ length: BELIEF_CAP }, (_, i) =>
+      makeBeliefRecord({ statement: `b${i}`, confidence: 0.9 - i * 0.01, domain: "d", status: "active", now: 0 }),
+    )
+    // proposed newcomer weaker than every incumbent
+    const newcomer = makeBeliefRecord({ statement: "newcomer", confidence: 0.1, domain: "d", status: "proposed", now: 0 })
+    const strongest = actives[0]!
+
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const w = yield* BeliefWriter
+          const activated = yield* w.activateBelief(newcomer.id)
+          const active = yield* w.listActive()
+          const mem = yield* MemoryRouterTag
+          const newcomerRec = yield* mem.get(newcomer.id)
+          const strongestRec = yield* mem.get(strongest.id)
+          return {
+            activated,
+            activeCount: active.length,
+            newcomerStatus: readBelief(newcomerRec!).status,
+            strongestStatus: readBelief(strongestRec!).status,
+          }
+        }),
+        FakeMemory([...actives, newcomer]),
+        // Fixed clock at 0 neutralizes the recency-decay differential between
+        // updatedAt:0 incumbents and the freshly-activated newcomer, so ranking
+        // reduces to pure confidence — the 0.1 newcomer is genuinely weakest.
+        Clock.Test(0),
+      ),
+    )
+    expect(out.activated).toBe(true) // activation happened
+    expect(out.activeCount).toBe(BELIEF_CAP) // still 20
+    expect(out.newcomerStatus).toBe("retired") // self-evicted
+    expect(out.strongestStatus).toBe("active") // incumbent retained
+  })
+
+  it("re-activating an already-active belief does not cause spurious eviction", async () => {
+    const actives = Array.from({ length: BELIEF_CAP - 1 }, (_, i) =>
+      makeBeliefRecord({ statement: `b${i}`, confidence: 0.9 - i * 0.01, domain: "d", status: "active", now: 0 }),
+    )
+    const proposed = makeBeliefRecord({ statement: "p", confidence: 0.95, domain: "d", status: "proposed", now: 0 })
+
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const w = yield* BeliefWriter
+          yield* w.activateBelief(proposed.id) // 19 → 20 active
+          yield* w.activateBelief(proposed.id) // already active; must not evict
+          const active = yield* w.listActive()
+          const mem = yield* MemoryRouterTag
+          const rec = yield* mem.get(proposed.id)
+          return { activeCount: active.length, status: readBelief(rec!).status }
+        }),
+        FakeMemory([...actives, proposed]),
+      ),
+    )
+    expect(out.activeCount).toBe(BELIEF_CAP) // still 20
+    expect(out.status).toBe("active") // belief stayed active
+  })
+
+  it("missing / non-belief id returns false for activate and retire", async () => {
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const w = yield* BeliefWriter
+          const activated = yield* w.activateBelief("missing-id")
+          const retired = yield* w.retireBelief("missing-id")
+          return { activated, retired }
+        }),
+        FakeMemory([]),
+      ),
+    )
+    expect(out.activated).toBe(false)
+    expect(out.retired).toBe(false)
   })
 })
