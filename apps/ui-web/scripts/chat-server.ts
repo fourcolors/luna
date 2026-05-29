@@ -217,6 +217,10 @@ const reattachSandbox = (threadId: string): void => {
   if (reattach !== undefined) reattach()
 }
 
+/** How often the belief-injection holder refreshes from the MemoryRouter (ms).
+ *  30 s in production; callers may pass a smaller value for smoke tests. */
+const BELIEF_REFRESH_INTERVAL_MS = 30_000
+
 /**
  * ThreadToolsProviderLayer — the single source of per-thread tool wiring.
  *
@@ -229,9 +233,12 @@ const reattachSandbox = (threadId: string): void => {
  * prompt (DNA + runtime metadata + tool addenda + caller prompt), and an
  * onBound callback that binds the session id into obs/local-shell tools and
  * (when enabled) attaches the sandbox local-shell + registers its reattacher.
+ *
+ * @param refreshIntervalMs - how often to re-query active beliefs (default
+ *   BELIEF_REFRESH_INTERVAL_MS = 30 s). Pass a small value in smoke tests.
  */
-export const ThreadToolsProviderLayer = () =>
-  Layer.effect(
+export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFRESH_INTERVAL_MS) =>
+  Layer.scoped(
     ThreadToolsProviderTag,
     Effect.gen(function* () {
       const memTools = yield* MemoryToolsService
@@ -262,31 +269,56 @@ export const ThreadToolsProviderLayer = () =>
           : `disabled (${sandboxLocalShell.reason})`,
       )
 
-      // Phase 3 D5: fetch active beliefs at BOOT into a snapshot.
-      // decorate() is SYNCHRONOUS (chat-service/src/types.ts:227 —
-      // `decorate: (opts) => ThreadToolsBinding`), so it cannot run an
-      // async mem.query() itself. We fetch here (Effect.gen — fully async
-      // context) and close over the snapshot so decorate reads it
-      // synchronously. composeBeliefsSection filters to ACTIVE + ranks;
-      // returns "" when no active beliefs so the existing .filter(length>0)
-      // drops the section cleanly.
+      // Phase 3 D5 → T3b: live belief-injection refresh holder.
       //
-      // FRESHNESS NOTE (v1 boot-snapshot limitation): a belief activated
-      // by the survey appears only after the NEXT server restart. A per-
-      // thread live refresh requires an out-of-band Ref update fiber —
-      // deferred as an openConcern, NOT silently dropped. This is strictly
-      // better than Phase-2's always-empty section.
+      // decorate() is SYNCHRONOUS (chat-service/src/types.ts — decorate
+      // returns a value, cannot yield/await). We keep the sync read via a
+      // plain mutable closure variable that a background fiber refreshes.
+      //
+      // Design:
+      //   - `let beliefsContent = ""` — the holder; decorate() reads it
+      //     directly (safe: JS is single-threaded, no torn reads).
+      //   - `refreshBeliefs` queries MemoryRouter, renders the section,
+      //     and assigns `beliefsContent = rendered` (closes over the `let`).
+      //   - Run refreshBeliefs ONCE at boot (correct from t=0).
+      //   - Fork a supervised loop: sleep(interval) → refreshBeliefs, forever.
+      //     forkScoped ties the fiber to THIS layer's Scope (Layer.scoped
+      //     provides the Scope; it is interrupted on layer release — no
+      //     unmanaged/leaked fiber). Layer.scoped is required; Layer.effect
+      //     does not supply a Scope and forkScoped would fail to build.
+      //
+      // Net: a belief activated by a survey appears in the NEXT thread
+      // WITHOUT a server restart (within ~refreshIntervalMs, default 30s).
       const mem = yield* MemoryRouterTag
-      const beliefRecordsChunk = yield* mem
-        .query({ namespace: BELIEF_NAMESPACE, kind: BELIEF_KIND })
-        .pipe(Stream.runCollect)
-      const beliefsSnapshot = Array.from(beliefRecordsChunk)
-      console.log(
-        "[luna/boot] beliefs injected:",
-        beliefsSnapshot.filter(
-          (r) => (r.content as { status?: string }).status === "active",
-        ).length,
-        "active",
+
+      // Plain mutable holder — read synchronously by decorate().
+      let beliefsContent = ""
+
+      // Effect that re-queries and re-renders the active beliefs section.
+      const refreshBeliefs = Effect.gen(function* () {
+        const chunk = yield* mem
+          .query({ namespace: BELIEF_NAMESPACE, kind: BELIEF_KIND })
+          .pipe(Stream.runCollect)
+        const records = Array.from(chunk)
+        beliefsContent = composeBeliefsSection(records, Date.now())
+        console.log(
+          "[luna/beliefs] refreshed:",
+          records.filter(
+            (r) => (r.content as { status?: string }).status === "active",
+          ).length,
+          "active belief(s)",
+        )
+      })
+
+      // Boot: run once so the holder is populated before any thread starts.
+      yield* refreshBeliefs
+
+      // Fork the refresh loop into the layer scope — supervised, cleaned
+      // up when the layer releases. No bare Effect.runFork (would leak).
+      yield* Effect.forkScoped(
+        Effect.forever(
+          Effect.sleep(refreshIntervalMs).pipe(Effect.zipRight(refreshBeliefs)),
+        ),
       )
 
       const provider: ThreadToolsProvider = {
@@ -304,10 +336,9 @@ export const ThreadToolsProviderLayer = () =>
               localShellThreadTools.serverName,
             ].join(", "),
           )
-          // Sync read of the boot snapshot — composeBeliefsSection filters
-          // to ACTIVE records, ranks by strength, and renders the section.
-          // Returns "" when beliefsSnapshot has no active records.
-          const beliefsContent = composeBeliefsSection(beliefsSnapshot, Date.now())
+          // Sync read of the live-refresh holder — refreshed every
+          // refreshIntervalMs by the background fiber above. Returns "" when
+          // no active beliefs (the .filter(length>0) below drops it cleanly).
           const systemPrompt = [
             dnaContent,
             sessionMetadata,
