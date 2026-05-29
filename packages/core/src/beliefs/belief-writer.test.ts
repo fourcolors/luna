@@ -5,6 +5,7 @@ import { MemoryRouterTag } from "@luna/memory"
 import type { MemoryQuery, MemoryRecord } from "@luna/memory"
 import { BeliefWriter } from "./belief-writer.js"
 import { makeBeliefRecord, readBelief, BELIEF_CAP } from "./types.js"
+import type { BeliefValidation } from "./types.js"
 
 // Ref-backed memory router double with a working query (namespace/kind/since).
 const FakeMemory = (initial: ReadonlyArray<MemoryRecord> = []) =>
@@ -202,5 +203,73 @@ describe("BeliefWriter", () => {
     )
     expect(out.activated).toBe(false)
     expect(out.retired).toBe(false)
+  })
+
+  it("recordValidation appends to validationHistory and persists", async () => {
+    const b = makeBeliefRecord({ statement: "s", confidence: 0.7, domain: "d", status: "active", now: 0 })
+    const v: BeliefValidation = { at: 5, verdict: "confirmed", via: "survey" }
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const w = yield* BeliefWriter
+          yield* w.recordValidation(b.id, v)
+          const mem = yield* MemoryRouterTag
+          return yield* mem.get(b.id)
+        }),
+        FakeMemory([b]),
+      ),
+    )
+    expect(readBelief(out!).validationHistory).toEqual([v])
+  })
+
+  it("recordValidation is idempotent — appending the same validation twice yields ONE entry", async () => {
+    const b = makeBeliefRecord({ statement: "s", confidence: 0.7, domain: "d", status: "active", now: 0 })
+    const v: BeliefValidation = { at: 5, verdict: "confirmed", via: "survey" }
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const w = yield* BeliefWriter
+          yield* w.recordValidation(b.id, v)
+          yield* w.recordValidation(b.id, v) // identical (at, verdict, via) — must be deduped
+          const mem = yield* MemoryRouterTag
+          return yield* mem.get(b.id)
+        }),
+        FakeMemory([b]),
+      ),
+    )
+    expect(readBelief(out!).validationHistory).toHaveLength(1)
+    expect(readBelief(out!).validationHistory).toEqual([v])
+  })
+
+  it("recordValidation allows distinct entries with different (at, verdict, via)", async () => {
+    const b = makeBeliefRecord({ statement: "s", confidence: 0.7, domain: "d", status: "active", now: 0 })
+    const v1: BeliefValidation = { at: 5, verdict: "confirmed", via: "survey" }
+    const v2: BeliefValidation = { at: 10, verdict: "corrected", via: "outreach" }
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const w = yield* BeliefWriter
+          yield* w.recordValidation(b.id, v1)
+          yield* w.recordValidation(b.id, v2)
+          const mem = yield* MemoryRouterTag
+          return yield* mem.get(b.id)
+        }),
+        FakeMemory([b]),
+      ),
+    )
+    expect(readBelief(out!).validationHistory).toHaveLength(2)
+  })
+
+  it("recordValidation returns false for missing / non-belief id", async () => {
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const w = yield* BeliefWriter
+          return yield* w.recordValidation("missing-id", { at: 1, verdict: "confirmed", via: "survey" })
+        }),
+        FakeMemory([]),
+      ),
+    )
+    expect(out).toBe(false)
   })
 })
