@@ -70,6 +70,11 @@ import {
   hashEmbeddingInput,
 } from "./sqlite-vector-maintenance.js"
 import { backfillHnswIfEmpty } from "./hnsw-backfill.js"
+import {
+  deriveHnswSidecarPath,
+  discardSidecar,
+  secureSidecar,
+} from "./hnsw-sidecar.js"
 
 export interface SqliteVectorBackendApi {
   readonly backendName: "sqlite-vector"
@@ -225,7 +230,16 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
         // maintenance connection) rather than failing fast with SQLITE_BUSY.
         db.run("PRAGMA busy_timeout = 5000")
         ensureMemoryVectorSchema(db)
-        yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
+        // Compute the HNSW sidecar path up-front so the close-time
+        // chmod can see it (vectorlite writes the file on db.close()).
+        // Null for in-memory / special-URI DBs — secureSidecar no-ops.
+        const sidecarPath = deriveHnswSidecarPath(dbPath)
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            db.close()
+            if (sidecarPath !== null) secureSidecar(sidecarPath)
+          }),
+        )
 
         // Try to load the extension on this connection. Even if vlInit
         // succeeded earlier (process-wide setCustomSQLite), each Database
@@ -235,34 +249,119 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
           try {
             ;(db as unknown as { loadExtension: (p: string) => void })
               .loadExtension(vlInit.path)
-            // If a v-table from a DIFFERENT embedding dimension persists on
-            // this DB, drop it (and its triggers) so it can be recreated at
-            // the current width. The backfill below repopulates regardless of
-            // whether the v-table is freshly created or pre-existing — it
-            // self-probes for an empty graph — so no create-vs-reopen flag is
-            // needed beyond this dimension-mismatch check.
+            // Sidecar policy (Phase 27e — persistent HNSW):
+            //
+            // Vectorlite's third CREATE-time argument is the
+            // `index_file_path` — when provided, vectorlite loads the
+            // graph from the file on connection open and rewrites it on
+            // close. With persistence active the per-connection backfill
+            // cost (O(N · log N · M) per open) becomes a one-time
+            // construction cost amortized across every subsequent boot
+            // and every short-lived maintenance connection.
+            //
+            // `sidecarPath` is hoisted above the finalizer so close-time
+            // chmod can see it. It is null for in-memory / special-URI
+            // DBs (`:memory:`, `""`, anything starting with `:`); the
+            // legacy memory-only v-table is created in that case and
+            // the backfill below still self-heals on every open. For
+            // disk-backed DBs the sidecar lives next to the db file
+            // (`memory.db.hnsw.bin`) so it's globbable for backup ops.
+
+            // Drop-and-recreate trigger: a v-table from a prior boot
+            // that doesn't match the current spec (different embedding
+            // dimension, OR memory-only when we now want a sidecar, OR
+            // wrong sidecar path) must be torn down before CREATE — the
+            // `IF NOT EXISTS` clause turns CREATE into a no-op when the
+            // table already exists, regardless of its parameters.
             const existingHnsw = db
               .query(
                 `SELECT sql FROM sqlite_master
                   WHERE type='table' AND name='memory_vectors_hnsw'`,
               )
               .get() as { sql: string | null } | null | undefined
-            if (
-              existingHnsw?.sql != null &&
-              !existingHnsw.sql.includes(`float32[${embedder.dimension}]`)
-            ) {
+            const existingMatches = (sql: string): boolean => {
+              if (!sql.includes(`float32[${embedder.dimension}]`)) return false
+              if (sidecarPath === null) {
+                // We want memory-only. Existing must not reference a path.
+                return !/'[^']+'/.test(sql)
+              }
+              // We want a specific sidecar path. Existing must literally
+              // include it (the path is stored verbatim in sqlite_master).
+              return sql.includes(sidecarPath)
+            }
+            if (existingHnsw?.sql != null && !existingMatches(existingHnsw.sql)) {
               db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ai`)
               db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ad`)
               db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_au`)
               db.run(`DROP TABLE IF EXISTS memory_vectors_hnsw`)
             }
-            // Create the HNSW v-table mirroring memory_vectors by rowid.
-            // max_elements is required at create-time; 100k is well above any
-            // realistic single-process working set and small in memory.
-            db.run(
-              `CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors_hnsw
-                 USING vectorlite(embedding float32[${embedder.dimension}], hnsw(max_elements=100000))`,
-            )
+
+            // CREATE + corruption recovery.
+            //
+            // Vectorlite defers sidecar-file deserialization: CREATE
+            // VIRTUAL TABLE succeeds even when the file is garbage, and
+            // the deserialization error ("Failed to load index from
+            // file: Index seems to be corrupted or unsupported") fires
+            // on the first knn_search / INSERT against the v-table.
+            // So we CREATE, then probe with knn_search(k=1) against any
+            // stored embedding — that's where corruption surfaces. If
+            // the probe throws AND we have a sidecar, we treat it as
+            // corruption: drop everything, discard the sidecar, and
+            // retry CREATE empty. The unconditional
+            // `backfillHnswIfEmpty` call below rebuilds the graph from
+            // `memory_vectors` (the canonical source of truth) and
+            // vectorlite re-serializes a healthy sidecar on close.
+            //
+            // The retry is bounded to a single attempt — if recreating
+            // also throws, the surrounding try/catch falls back to the
+            // naive in-process cosine path.
+            const createSql =
+              sidecarPath !== null
+                ? `CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors_hnsw
+                     USING vectorlite(embedding float32[${embedder.dimension}],
+                                      hnsw(max_elements=100000),
+                                      '${sidecarPath.replace(/'/g, "''")}')`
+                : `CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors_hnsw
+                     USING vectorlite(embedding float32[${embedder.dimension}],
+                                      hnsw(max_elements=100000))`
+            db.run(createSql)
+
+            // Sidecar corruption probe: only meaningful when we have a
+            // sidecar AND at least one source row exists (otherwise
+            // there's nothing to test the v-table with). With either
+            // condition false, the unconditional backfill below covers
+            // the legitimate empty case.
+            if (sidecarPath !== null) {
+              const probeRow = db
+                .query(
+                  `SELECT embedding FROM memory_vectors
+                    WHERE dimension = ${embedder.dimension} LIMIT 1`,
+                )
+                .get() as { embedding: Uint8Array } | null | undefined
+              if (probeRow?.embedding != null) {
+                try {
+                  db.query(
+                    `SELECT rowid FROM memory_vectors_hnsw
+                      WHERE knn_search(embedding, knn_param(?, 1))`,
+                  ).all(probeRow.embedding)
+                } catch (probeCause) {
+                  warnFallbackOnce(
+                    `HNSW sidecar appears corrupt; discarding and rebuilding from memory_vectors: ${String(probeCause)}`,
+                  )
+                  try {
+                    db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ai`)
+                    db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ad`)
+                    db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_au`)
+                    db.run(`DROP TABLE IF EXISTS memory_vectors_hnsw`)
+                  } catch {
+                    /* best-effort */
+                  }
+                  discardSidecar(sidecarPath)
+                  db.run(createSql)
+                }
+              }
+            }
+
             // AFTER triggers keep HNSW in sync with memory_vectors. The FTS5
             // triggers from MIGRATION fire independently — both run per row
             // mutation; vectorlite is happy inside trigger bodies (verified).
@@ -283,15 +382,23 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
                     VALUES (new.rowid, new.embedding);
                 END;
             `)
-            // Backfill the HNSW v-table on every connection open (Phase 27d
-            // bug fix). Vectorlite v-tables without `index_file_path` are
-            // memory-only AND per-connection: the schema persists across
-            // restarts/connections, but the in-memory graph does not — so each
-            // new connection sees an empty index until it rebuilds.
-            // `backfillHnswIfEmpty` self-probes with any stored embedding (k=1)
-            // and only writes when the graph is empty — idempotent on an
-            // already-populated connection, harmless when no source rows exist.
+            // Backfill is now (a) the one-time first-boot population
+            // and (b) the corruption-recovery rebuild — both no-ops on
+            // a healthy persisted index, because `backfillHnswIfEmpty`
+            // self-probes the v-table first and only writes when empty.
+            // We keep this call unconditionally so the legacy
+            // memory-only path (sidecar=null) and the new persistent
+            // path share the same correctness guarantee.
             backfillHnswIfEmpty(db, embedder.dimension)
+
+            // Tighten sidecar permissions to 0o600 so the persisted
+            // graph inherits the same owner-only access posture as
+            // memory.db. Vectorlite creates the file on first close, so
+            // this chmod is best-effort — if the file doesn't exist
+            // yet (no rows ever inserted, or the close that materializes
+            // it hasn't happened), the helper silently no-ops. The
+            // finalizer below also chmods on close.
+            if (sidecarPath !== null) secureSidecar(sidecarPath)
             hnswEnabled = true
           } catch (cause) {
             // The extension loaded but v-table setup or the backfill failed

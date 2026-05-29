@@ -904,7 +904,326 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     }
   })
 
-    it("Atomicity #1: embed failure leaves no keyed row (put fails before any DB write)", async () => {
+  it("Scenario 7k: HNSW v-table persists across connection close via sidecar file", async () => {
+    // Phase 27e: with index_file_path, vectorlite writes the graph to disk
+    // on db.close() and loads it on the next open — no backfill required.
+    // This scenario asserts the persistence contract: insert N records,
+    // close, reopen WITHOUT clearing the v-table, and verify
+    // `backfillHnswIfEmpty` returns false on reopen (probe finds rows
+    // already there). Pre-Phase-27e this would have returned true on
+    // every reopen because the in-memory graph was wiped.
+    const initMod = await import("../src/backends/vectorlite-init.js")
+    const probe = initMod.initVectorlite()
+    if (!probe.ok) {
+      // eslint-disable-next-line no-console
+      console.log(`[hnsw-persist] skipping — vectorlite unavailable: ${probe.reason}`)
+      return
+    }
+
+    const fs = await import("node:fs")
+    const os = await import("node:os")
+    const path = await import("node:path")
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "luna-hnsw-persist-"))
+    const dbPath = path.join(tmp, "vectors.db")
+    const sidecar = `${dbPath}.hnsw.bin`
+
+    try {
+      // Phase 1: open + populate + close. The finalizer runs db.close(),
+      // which makes vectorlite flush the HNSW graph to the sidecar.
+      const layer1 = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            for (let i = 0; i < 3; i++) {
+              yield* b.put(
+                makeRecord({
+                  id: `persist-${i}`,
+                  namespace: "ps",
+                  kind: "note",
+                  content: { text: `payload ${i} sidecar persistence` },
+                }),
+              )
+            }
+          }),
+        ).pipe(Effect.provide(layer1)),
+      )
+
+      // The sidecar must now exist and have non-zero size.
+      expect(fs.existsSync(sidecar)).toBe(true)
+      expect(fs.statSync(sidecar).size).toBeGreaterThan(0)
+      // Permissions tightened to owner-only.
+      expect(fs.statSync(sidecar).mode & 0o777).toBe(0o600)
+
+      // Phase 2: open a direct connection, load vectorlite, and probe the
+      // v-table. With persistence active, the v-table should be populated
+      // immediately — no backfill yet.
+      const bunSqlite = (await import("bun:sqlite" as string)) as {
+        Database: new (p: string) => {
+          run: (sql: string) => void
+          query: (sql: string) => {
+            get: (...p: unknown[]) => unknown
+            all: (...p: unknown[]) => unknown[]
+            run: (...p: unknown[]) => { changes: number }
+          }
+          loadExtension: (p: string) => void
+          close: () => void
+        }
+      }
+      const direct = new bunSqlite.Database(dbPath)
+      direct.loadExtension(probe.path)
+      const sample = direct
+        .query(`SELECT embedding FROM memory_vectors LIMIT 1`)
+        .get() as { embedding: Uint8Array } | null
+      if (sample == null) throw new Error("no source rows")
+      const hits = direct
+        .query(
+          `SELECT rowid FROM memory_vectors_hnsw
+            WHERE knn_search(embedding, knn_param(?, 10))`,
+        )
+        .all(sample.embedding) as Array<{ rowid: number }>
+      // The persisted graph round-tripped — all 3 rows visible BEFORE the
+      // backend's own backfill could re-run.
+      expect(hits.length).toBe(3)
+      direct.close()
+
+      // Phase 3: reopen via the backend. Vec search must work directly.
+      const layer2 = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      const ids = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            const arr = yield* Stream.runCollect(
+              b.search({
+                queryText: "payload 0 sidecar persistence",
+                namespace: "ps",
+                topK: 10,
+                mode: "vec",
+              }),
+            )
+            return Array.from(arr).map((r) => r.record.id).sort()
+          }),
+        ).pipe(Effect.provide(layer2)),
+      )
+      expect(ids).toEqual(["persist-0", "persist-1", "persist-2"])
+    } finally {
+      try {
+        fs.rmSync(tmp, { recursive: true, force: true })
+      } catch {
+        /* ignore */
+      }
+    }
+  })
+
+  it("Scenario 7l: migration drops a legacy memory-only v-table and recreates with sidecar", async () => {
+    // Phase 27e: existing DBs in the wild have a memory-only v-table
+    // (created prior to the sidecar fix). On first boot under the new
+    // code, the existingMatches() check must detect the missing path,
+    // drop the legacy v-table, recreate with sidecar, and backfill from
+    // memory_vectors. We assert the sidecar materialises and the
+    // memory_vectors_hnsw entry in sqlite_master now mentions the path.
+    const initMod = await import("../src/backends/vectorlite-init.js")
+    const probe = initMod.initVectorlite()
+    if (!probe.ok) {
+      // eslint-disable-next-line no-console
+      console.log(`[hnsw-migrate] skipping — vectorlite unavailable: ${probe.reason}`)
+      return
+    }
+
+    const fs = await import("node:fs")
+    const os = await import("node:os")
+    const path = await import("node:path")
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "luna-hnsw-migrate-"))
+    const dbPath = path.join(tmp, "vectors.db")
+    const sidecar = `${dbPath}.hnsw.bin`
+
+    try {
+      // Build a "pre-sidecar" DB: open via backend, then drop+recreate the
+      // v-table without the path so it matches what's on disk for legacy
+      // installs. (We rely on the backend to put memory_vectors rows
+      // first, then mutate the v-table behind its back.)
+      const layerSeed = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            for (let i = 0; i < 2; i++) {
+              yield* b.put(
+                makeRecord({
+                  id: `legacy-${i}`,
+                  namespace: "lg",
+                  kind: "note",
+                  content: { text: `legacy ${i} pre-sidecar marker` },
+                }),
+              )
+            }
+          }),
+        ).pipe(Effect.provide(layerSeed)),
+      )
+
+      // Remove the sidecar we just created and rewrite the v-table as
+      // memory-only — mimicking a legacy on-disk DB.
+      try {
+        fs.unlinkSync(sidecar)
+      } catch {
+        /* ignore */
+      }
+      const bunSqlite = (await import("bun:sqlite" as string)) as {
+        Database: new (p: string) => {
+          run: (sql: string) => void
+          query: (sql: string) => { get: () => unknown }
+          loadExtension: (p: string) => void
+          close: () => void
+        }
+      }
+      const direct = new bunSqlite.Database(dbPath)
+      direct.loadExtension(probe.path)
+      direct.run("DROP TRIGGER IF EXISTS memory_vectors_hnsw_ai")
+      direct.run("DROP TRIGGER IF EXISTS memory_vectors_hnsw_ad")
+      direct.run("DROP TRIGGER IF EXISTS memory_vectors_hnsw_au")
+      direct.run("DROP TABLE IF EXISTS memory_vectors_hnsw")
+      direct.run(
+        `CREATE VIRTUAL TABLE memory_vectors_hnsw
+           USING vectorlite(embedding float32[64], hnsw(max_elements=100000))`,
+      )
+      direct.close()
+      expect(fs.existsSync(sidecar)).toBe(false)
+
+      // Now reopen via the backend — migration must drop+recreate with
+      // the sidecar, backfill, and search must recall both legacy rows.
+      const layerMigrate = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      const ids = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            const arr = yield* Stream.runCollect(
+              b.search({
+                queryText: "legacy 0 pre-sidecar marker",
+                namespace: "lg",
+                topK: 10,
+                mode: "vec",
+              }),
+            )
+            return Array.from(arr).map((r) => r.record.id).sort()
+          }),
+        ).pipe(Effect.provide(layerMigrate)),
+      )
+      expect(ids).toEqual(["legacy-0", "legacy-1"])
+
+      // Sidecar should now exist with the migrated graph.
+      expect(fs.existsSync(sidecar)).toBe(true)
+      expect(fs.statSync(sidecar).size).toBeGreaterThan(0)
+    } finally {
+      try {
+        fs.rmSync(tmp, { recursive: true, force: true })
+      } catch {
+        /* ignore */
+      }
+    }
+  })
+
+  it("Scenario 7m: corrupted sidecar is discarded and rebuilt from memory_vectors", async () => {
+    // Phase 27e corruption-recovery guarantee. If the sidecar is
+    // truncated or partially flushed (e.g. process killed -9 mid-close),
+    // vectorlite's CREATE throws when loading the file. The backend
+    // catches, calls discardSidecar, retries CREATE, and falls through
+    // to backfillHnswIfEmpty — so the canonical source of truth
+    // (`memory_vectors`) regenerates the graph rather than the backend
+    // silently degrading to BM25-only.
+    const initMod = await import("../src/backends/vectorlite-init.js")
+    const probe = initMod.initVectorlite()
+    if (!probe.ok) {
+      // eslint-disable-next-line no-console
+      console.log(`[hnsw-corrupt] skipping — vectorlite unavailable: ${probe.reason}`)
+      return
+    }
+
+    const fs = await import("node:fs")
+    const os = await import("node:os")
+    const path = await import("node:path")
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "luna-hnsw-corrupt-"))
+    const dbPath = path.join(tmp, "vectors.db")
+    const sidecar = `${dbPath}.hnsw.bin`
+
+    try {
+      // Phase 1: populate.
+      const layer1 = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            for (let i = 0; i < 3; i++) {
+              yield* b.put(
+                makeRecord({
+                  id: `corrupt-${i}`,
+                  namespace: "cor",
+                  kind: "note",
+                  content: { text: `recovery ${i} marker` },
+                }),
+              )
+            }
+          }),
+        ).pipe(Effect.provide(layer1)),
+      )
+      expect(fs.existsSync(sidecar)).toBe(true)
+      const originalSize = fs.statSync(sidecar).size
+
+      // Phase 2: corrupt the sidecar by overwriting it with garbage bytes.
+      fs.writeFileSync(sidecar, Buffer.from([0xff, 0x00, 0xde, 0xad, 0xbe, 0xef]))
+      expect(fs.statSync(sidecar).size).toBeLessThan(originalSize)
+
+      // Phase 3: reopen. The backend must recover.
+      const layer2 = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      const ids = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            const arr = yield* Stream.runCollect(
+              b.search({
+                queryText: "recovery 0 marker",
+                namespace: "cor",
+                topK: 10,
+                mode: "vec",
+              }),
+            )
+            return Array.from(arr).map((r) => r.record.id).sort()
+          }),
+        ).pipe(Effect.provide(layer2)),
+      )
+      expect(ids).toEqual(["corrupt-0", "corrupt-1", "corrupt-2"])
+
+      // After recovery the sidecar should have been rebuilt — size back
+      // to non-trivial.
+      expect(fs.existsSync(sidecar)).toBe(true)
+      expect(fs.statSync(sidecar).size).toBeGreaterThan(100)
+    } finally {
+      try {
+        fs.rmSync(tmp, { recursive: true, force: true })
+      } catch {
+        /* ignore */
+      }
+    }
+  })
+
+      it("Atomicity #1: embed failure leaves no keyed row (put fails before any DB write)", async () => {
     const FailEmbedderLayer = Layer.succeed(EmbedderService, {
       provider: "fail",
       model: "fail",
