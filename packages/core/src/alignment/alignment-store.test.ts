@@ -100,7 +100,7 @@ describe("getLastSurveyAt (derived, no migration — D-LOCK-2)", () => {
     expect(out).toBe(0)
   })
 
-  it("returns MAX(at) of task_quality rows; ignores belief_validation rows", async () => {
+  it("returns MAX(at) of task_quality rows; ignores belief_validation AND outreach_welcome rows", async () => {
     const out = await Effect.runPromise(
       provide(Effect.gen(function* () {
         const s = yield* AlignmentStore
@@ -108,6 +108,9 @@ describe("getLastSurveyAt (derived, no migration — D-LOCK-2)", () => {
         yield* s.append(row({ ref: "task:2", signalKind: "task_quality", at: 3000, ewmaAfter: 0.6 }))
         // a later belief_validation row must NOT count as a survey-completion marker
         yield* s.append(row({ ref: "b:1", signalKind: "belief_validation", at: 9000, ewmaAfter: null }))
+        // a later outreach_welcome row — EWMA-eligible, but NOT a survey marker — must
+        // ALSO be ignored (the other "wrongly counted" door, since it's EWMA-eligible)
+        yield* s.append(row({ ref: "o:1", signalKind: "outreach_welcome", at: 12000, ewmaAfter: 0.7 }))
         return yield* s.getLastSurveyAt
       })),
     )

@@ -360,18 +360,24 @@ describe("Survey.pendingSurvey (D-LOCK-2/3/4)", () => {
     expect(out!.items.filter((i) => i.kind === "task_quality")).toHaveLength(1)
   })
 
-  it("caps proposed beliefs at 3 (D-LOCK-3); overflow rolls to next survey", async () => {
+  it("caps proposed beliefs at 3 (D-LOCK-3); overflow rolls to next survey (all stay proposed — read-only)", async () => {
     const beliefs = ["a", "b", "c", "d", "e"].map(proposed)
     const out = await Effect.runPromise(
       provide(
         Effect.gen(function* () {
           const survey = yield* Survey
-          return yield* survey.pendingSurvey(5000)
+          const pending = yield* survey.pendingSurvey(5000)
+          // pendingSurvey is READ-ONLY: it sources items but never mutates the
+          // beliefs. The 2 overflow beliefs (and the 3 surfaced) all stay proposed.
+          const writer = yield* BeliefWriter
+          const stillProposed = (yield* writer.listByStatus("proposed")).length
+          return { pending, stillProposed }
         }),
         FakeMemory(beliefs),
       ),
     )
-    expect(out!.items.filter((i) => i.kind === "belief_validation")).toHaveLength(3)
+    expect(out.pending!.items.filter((i) => i.kind === "belief_validation")).toHaveLength(3)
+    expect(out.stillProposed).toBe(5) // none promoted/retired — pendingSurvey did not mutate
   })
 
   it("no proposed beliefs: when due, still surfaces the task_quality item only", async () => {

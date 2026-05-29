@@ -89,4 +89,22 @@ d("AlignmentStore (sqlite)", () => {
     expect(out.rebuilt).toBe(0.75) // last EWMA-eligible row's ewmaAfter
     expect(out.afterRebuild).toBe(0.75)
   })
+
+  it("getLastSurveyAt returns 0 cold, then MAX(at) over task_quality only (sqlite ≡ Memory)", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const store = yield* AlignmentStore
+        const cold = yield* store.getLastSurveyAt
+        yield* store.append(row({ ref: "task:1", signalKind: "task_quality", at: 1000, ewmaAfter: 0.5 }))
+        yield* store.append(row({ ref: "task:2", signalKind: "task_quality", at: 3000, ewmaAfter: 0.6 }))
+        // later non-survey rows must NOT advance the marker
+        yield* store.append(row({ ref: "b:1", signalKind: "belief_validation", at: 9000, ewmaAfter: null }))
+        yield* store.append(row({ ref: "o:1", signalKind: "outreach_welcome", at: 12000, ewmaAfter: 0.7 }))
+        const warm = yield* store.getLastSurveyAt
+        return { cold, warm }
+      }),
+    )
+    expect(out.cold).toBe(0) // empty store → due now
+    expect(out.warm).toBe(3000) // MAX over task_quality only
+  })
 })
