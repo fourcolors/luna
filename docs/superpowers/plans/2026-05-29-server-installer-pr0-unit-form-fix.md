@@ -18,11 +18,11 @@
 - `apps/ui-web/package.json`'s `server:chat` script is literally `bun run scripts/chat-server.ts`. Running that **directly** as `ExecStart`, with `WorkingDirectory` set to `apps/ui-web`, makes the chat-server bun process the MainPID → it gets SIGTERM → graceful shutdown works. Verified empirically on jax-box: `--filter` → sidecar never written across 4 restarts; direct-exec → sidecar written at `0600`.
 - **Behavior-preserving precondition:** the two `process.cwd()` consumers are `apps/ui-web/scripts/sandbox-local-shell.ts` (preserved by setting `WorkingDirectory=…/apps/ui-web`) and `packages/chat-service/src/chat-service.ts:294` (`opts.cwd ?? process.env["LUNA_REPO_ROOT"] ?? process.cwd()`), which is safe because the rendered `.env` sets `LUNA_REPO_ROOT`. The existing test at `test/deploy-scripts.test.ts` already asserts `LUNA_REPO_ROOT=` is in the rendered output — that assertion is the acceptance check for the precondition; do not remove it.
 
-## Scope boundary (do NOT touch)
+## Scope boundary
 
-- Do **not** edit `apps/ui-web/package.json`'s `server:chat` script.
-- Do **not** edit README.md / CLAUDE.md / the chat-server.ts header comment.
-- `apps/ui-web/scripts/__tests__/rename-chat-server.test.ts` pins the string `bun run --filter '@luna/ui-web' server:chat` in those docs and **must stay green**. If it goes red, you touched something out of scope.
+- Do **not** edit `apps/ui-web/package.json`'s `server:chat` script (it legitimately stays `bun run scripts/chat-server.ts` for interactive/dev use).
+- Do **not** edit README.md / DESIGN.md / CLAUDE.md / the chat-server.ts header comment.
+- **`apps/ui-web/scripts/__tests__/rename-chat-server.test.ts` (correction):** this test has a `describe("scripts/luna-server-install")` block whose assertion `expect(read("scripts/luna-server-install")).toContain("server:chat")` pins the *old* unit form. Because PR 0 changes `luna-server-install` to invoke `scripts/chat-server.ts` directly, **that one assertion must be updated** (it's a test of the file we're changing — in scope). Its `package.json` / README / DESIGN.md assertions stay **untouched and green** (PR 0 doesn't change those). Net: update exactly one assertion in this file; if any *other* assertion in it goes red, you touched something out of scope.
 
 ## Files
 
@@ -131,7 +131,31 @@ bun run test test/deploy-scripts.test.ts
 
 Expected: PASS (all assertions green, including the tightened WorkingDirectory and both ExecStart assertions).
 
-- [ ] **Step 4: Confirm the scope-boundary test stayed green**
+- [ ] **Step 4: Update the obsolete `luna-server-install` assertion in `rename-chat-server.test.ts`**
+
+That test's `describe("scripts/luna-server-install")` block asserts the file routes through `server:chat`, which PR 0 removes. Update that **one** assertion to pin the new direct-exec form. Change:
+
+```ts
+    it("starts the chat server through the canonical server:chat script", () => {
+      expect(read("scripts/luna-server-install")).toContain(
+        "server:chat",
+      );
+    });
+```
+
+to:
+
+```ts
+    it("starts the chat server via direct script exec, not the server:chat filter wrapper", () => {
+      expect(read("scripts/luna-server-install")).toContain(
+        "run scripts/chat-server.ts",
+      );
+    });
+```
+
+Leave the sibling `not.toContain("dev:server:chat")` assertion and all package.json/README/DESIGN.md assertions in this file untouched.
+
+- [ ] **Step 5: Run the rename test and verify it's fully green**
 
 Run:
 
@@ -139,12 +163,12 @@ Run:
 bun run test apps/ui-web/scripts/__tests__/rename-chat-server.test.ts
 ```
 
-Expected: PASS. This test pins `bun run --filter '@luna/ui-web' server:chat` in README/CLAUDE.md and the package.json `server:chat` script — none of which this PR touches. If it FAILS, you edited something out of scope; revert that edit.
+Expected: PASS (all assertions). If any assertion *other than* the one you just edited fails, you touched something out of scope — revert that.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add scripts/luna-server-install test/deploy-scripts.test.ts
+git add scripts/luna-server-install test/deploy-scripts.test.ts apps/ui-web/scripts/__tests__/rename-chat-server.test.ts
 git commit -m "fix(install): render direct-exec chat-server unit so SIGTERM reaches it
 
 render_service emitted ExecStart=bun run --filter @luna/ui-web server:chat,
