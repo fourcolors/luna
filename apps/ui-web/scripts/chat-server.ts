@@ -133,11 +133,13 @@ import {
   }
   applyRuntimePathEnvDefaults(resolveRuntimePaths())
 }
-import { Effect, Layer, ManagedRuntime, Option } from "effect"
+import { Effect, Layer, ManagedRuntime, Option, Stream } from "effect"
 import {
   AccountBroker,
   AccountBrokerLayer,
   AgentNotesService,
+  BELIEF_KIND,
+  BELIEF_NAMESPACE,
   Clock,
   DEFAULT_UI_KINDS,
   DreamCronLayer,
@@ -151,6 +153,7 @@ import {
   TelemetryPlatform,
   TelemetryService,
   UIService,
+  composeBeliefsSection,
   makeDuckDbLayer,
   makeTelemetrySqlite,
   readKeychainToken,
@@ -171,7 +174,7 @@ import {
   type ThreadToolsProvider,
 } from "@luna/chat-service"
 import { createLocalShellBridge, startUIWebSocketServer } from "@luna/ui-ws"
-import { LunaSqliteBootstrapLive } from "@luna/memory"
+import { LunaSqliteBootstrapLive, MemoryRouterTag } from "@luna/memory"
 import {
   MemoryRouterLayer,
   MemoryToolsLayer,
@@ -224,7 +227,7 @@ const reattachSandbox = (threadId: string): void => {
  * onBound callback that binds the session id into obs/local-shell tools and
  * (when enabled) attaches the sandbox local-shell + registers its reattacher.
  */
-const ThreadToolsProviderLayer = () =>
+export const ThreadToolsProviderLayer = () =>
   Layer.effect(
     ThreadToolsProviderTag,
     Effect.gen(function* () {
@@ -256,6 +259,33 @@ const ThreadToolsProviderLayer = () =>
           : `disabled (${sandboxLocalShell.reason})`,
       )
 
+      // Phase 3 D5: fetch active beliefs at BOOT into a snapshot.
+      // decorate() is SYNCHRONOUS (chat-service/src/types.ts:227 —
+      // `decorate: (opts) => ThreadToolsBinding`), so it cannot run an
+      // async mem.query() itself. We fetch here (Effect.gen — fully async
+      // context) and close over the snapshot so decorate reads it
+      // synchronously. composeBeliefsSection filters to ACTIVE + ranks;
+      // returns "" when no active beliefs so the existing .filter(length>0)
+      // drops the section cleanly.
+      //
+      // FRESHNESS NOTE (v1 boot-snapshot limitation): a belief activated
+      // by the survey appears only after the NEXT server restart. A per-
+      // thread live refresh requires an out-of-band Ref update fiber —
+      // deferred as an openConcern, NOT silently dropped. This is strictly
+      // better than Phase-2's always-empty section.
+      const mem = yield* MemoryRouterTag
+      const beliefRecordsChunk = yield* mem
+        .query({ namespace: BELIEF_NAMESPACE, kind: BELIEF_KIND })
+        .pipe(Stream.runCollect)
+      const beliefsSnapshot = Array.from(beliefRecordsChunk)
+      console.log(
+        "[luna/boot] beliefs injected:",
+        beliefsSnapshot.filter(
+          (r) => (r.content as { status?: string }).status === "active",
+        ).length,
+        "active",
+      )
+
       const provider: ThreadToolsProvider = {
         decorate: (opts) => {
           const memoryThreadTools = memTools.createSessionBinding()
@@ -271,9 +301,14 @@ const ThreadToolsProviderLayer = () =>
               localShellThreadTools.serverName,
             ].join(", "),
           )
+          // Sync read of the boot snapshot — composeBeliefsSection filters
+          // to ACTIVE records, ranks by strength, and renders the section.
+          // Returns "" when beliefsSnapshot has no active records.
+          const beliefsContent = composeBeliefsSection(beliefsSnapshot, Date.now())
           const systemPrompt = [
             dnaContent,
             sessionMetadata,
+            beliefsContent, // Phase 3 D5: ranked active beliefs section
             opts.systemPrompt,
             memoryThreadTools.systemPromptAddendum,
             schedulerThreadTools.systemPromptAddendum,
@@ -529,6 +564,7 @@ export const buildBaseLayer = (
   // LunaSqliteBootstrap flows up and is satisfied at the bottom of
   // buildServerLayer, same as every other SQLite-backed layer here.
   const threadToolsL = ThreadToolsProviderLayer().pipe(
+    Layer.provide(memoryRouterL), // REQUIRED: satisfies MemoryRouterTag inside the layer (siblings don't cross-wire)
     Layer.provide(obsL),
     Layer.provide(clockL),
   )
