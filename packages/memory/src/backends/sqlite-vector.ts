@@ -69,6 +69,7 @@ import {
   formatMemoryRecordEmbeddingInput,
   hashEmbeddingInput,
 } from "./sqlite-vector-maintenance.js"
+import { backfillHnswIfEmpty } from "./hnsw-backfill.js"
 
 export interface SqliteVectorBackendApi {
   readonly backendName: "sqlite-vector"
@@ -281,17 +282,20 @@ export class SqliteVectorBackend extends Effect.Tag("luna/SqliteVectorBackend")<
                     VALUES (new.rowid, new.embedding);
                 END;
             `)
-            if (!hnswExisted) {
-              // First creation on this DB. Backfill any pre-existing
-              // memory_vectors rows (covers pre-Phase-27 dbs and dbs where
-              // the v-table was dropped). Vectorlite v-tables don't support
-              // generic SELECT, so we read the source side and INSERT … SELECT.
-              db.run(
-                `INSERT INTO memory_vectors_hnsw(rowid, embedding)
-                   SELECT rowid, embedding FROM memory_vectors
-                    WHERE dimension = ${embedder.dimension}`,
-              )
-            }
+            // Backfill HNSW v-table on every connection open (Phase 27d
+            // bug fix). Vectorlite v-tables without `index_file_path` are
+            // memory-only AND per-connection: the schema persists across
+            // restarts/connections, but the in-memory graph does not. The
+            // previous `if (!hnswExisted)` gate keyed on sqlite_master,
+            // which always reports the schema present after first creation
+            // — so subsequent boots silently skipped the backfill and vec
+            // search returned 0 hits for every record predating the
+            // current connection. `backfillHnswIfEmpty` self-probes the
+            // v-table with any stored embedding (k=1) and only writes when
+            // the probe returns zero hits — idempotent on already-populated
+            // connections, harmless when no source rows exist.
+            void hnswExisted // intentionally unused — kept for read clarity of the create-vs-reopen split above
+            backfillHnswIfEmpty(db, embedder.dimension)
             hnswEnabled = true
           } catch (cause) {
             warnFallbackOnce(`loadExtension failed: ${String(cause)}`)

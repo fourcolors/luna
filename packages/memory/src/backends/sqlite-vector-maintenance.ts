@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import { Effect } from "effect"
 import { MemoryBackendError, type EmbedderApi } from "@luna/core"
 import { initVectorlite } from "./vectorlite-init.js"
+import { backfillHnswIfEmpty } from "./hnsw-backfill.js"
 
 type BunStatement = {
   readonly get: (...p: unknown[]) => unknown
@@ -66,6 +67,15 @@ export interface MemoryVectorHnswStatus {
   readonly present: boolean
   readonly dimension: number | null
   readonly compatible: boolean | null
+  /**
+   * `null` when `present` is false (no v-table) or when the index is
+   * unprobeable (compat mismatch / extension not loaded). Otherwise the
+   * number of source rows the index can recall — measured by issuing
+   * `knn_search` with `k = totalVectors` against any stored embedding.
+   * Used to detect the memory-only-HNSW-after-restart failure mode
+   * (schema persists, in-memory graph is empty).
+   */
+  readonly indexedCount: number | null
 }
 
 export interface MemoryVectorStatus {
@@ -264,13 +274,53 @@ function getHnswStatus(db: BunDatabase, embedder: EmbedderApi): MemoryVectorHnsw
     )
     .get() as SqliteMasterRow | null | undefined
   if (row === null || row === undefined) {
-    return { present: false, dimension: null, compatible: null }
+    return {
+      present: false,
+      dimension: null,
+      compatible: null,
+      indexedCount: null,
+    }
   }
   const dimension = parseHnswDimension(row.sql)
+  const compatible = dimension === embedder.dimension
+  // Probe the HNSW v-table to see how many rows it can actually recall.
+  // Vectorlite v-tables don't support generic SELECT, so we ask for the
+  // top-K against any stored embedding with K = totalVectors. If the
+  // extension is not loaded or the dimension is incompatible, knn_search
+  // throws — caught and reported as `null` (unknown).
+  let indexedCount: number | null = null
+  if (compatible) {
+    try {
+      const sample = db
+        .query(
+          `SELECT embedding FROM memory_vectors
+            WHERE dimension = ${embedder.dimension} LIMIT 1`,
+        )
+        .get() as { embedding: Uint8Array } | null | undefined
+      if (sample?.embedding == null) {
+        indexedCount = 0
+      } else {
+        const totalRow = db
+          .query(`SELECT count(*) AS c FROM memory_vectors`)
+          .get() as { c: number }
+        const k = Math.max(1, totalRow.c)
+        const hits = db
+          .query(
+            `SELECT rowid FROM memory_vectors_hnsw
+              WHERE knn_search(embedding, knn_param(?, ?))`,
+          )
+          .all(sample.embedding, k) as Array<{ rowid: number }>
+        indexedCount = hits.length
+      }
+    } catch {
+      indexedCount = null
+    }
+  }
   return {
     present: true,
     dimension,
-    compatible: dimension === embedder.dimension,
+    compatible,
+    indexedCount,
   }
 }
 
@@ -329,7 +379,10 @@ function auditRow(row: VectorAuditRow, embedder: EmbedderApi): MemoryVectorStatu
   }
 }
 
-async function openDb(dbPath: string): Promise<BunDatabase> {
+async function openDb(
+  dbPath: string,
+  opts?: { readonly backfillDimension?: number },
+): Promise<BunDatabase> {
   const vlInit = initVectorlite()
   const bunSqlite = (await import("bun:sqlite" as string)) as {
     Database: new (p: string) => BunDatabase
@@ -338,6 +391,19 @@ async function openDb(dbPath: string): Promise<BunDatabase> {
   db.run("PRAGMA foreign_keys = ON")
   if (vlInit.ok) {
     db.loadExtension?.(vlInit.path)
+    // Vectorlite v-tables are per-connection memory-only without
+    // `index_file_path`, so this fresh maintenance connection sees an
+    // empty HNSW even when the source rows exist. Backfill so status /
+    // reembed see an accurate populated view, matching whatever the
+    // long-lived backend connection holds.
+    if (opts?.backfillDimension !== undefined) {
+      try {
+        backfillHnswIfEmpty(db, opts.backfillDimension)
+      } catch {
+        // Best-effort — diagnostic code must not crash if HNSW state is
+        // wedged. The status probe downstream will report indexedCount=null.
+      }
+    }
   }
   return db
 }
@@ -348,7 +414,7 @@ export function getMemoryVectorStatus(args: {
 }): Effect.Effect<MemoryVectorStatus, MemoryBackendError> {
   return Effect.acquireUseRelease(
     Effect.tryPromise({
-      try: () => openDb(args.dbPath),
+      try: () => openDb(args.dbPath, { backfillDimension: args.embedder.dimension }),
       catch: (cause) => asError("status.open", cause),
     }),
     (db) =>
@@ -415,7 +481,7 @@ export function reembedMemoryVectors(args: {
 }): Effect.Effect<MemoryReembedResult, MemoryBackendError> {
   return Effect.acquireUseRelease(
     Effect.tryPromise({
-      try: () => openDb(args.dbPath),
+      try: () => openDb(args.dbPath, { backfillDimension: args.embedder.dimension }),
       catch: (cause) => asError("reembed.open", cause),
     }),
     (db) =>

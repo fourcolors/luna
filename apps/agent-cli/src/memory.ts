@@ -159,8 +159,20 @@ function formatStatus(
   if (!status.hnsw.present) {
     lines.push("HNSW: not present")
   } else {
+    const indexed =
+      status.hnsw.indexedCount === null
+        ? "unknown"
+        : `${status.hnsw.indexedCount}/${status.totalVectors}`
+    const healthy =
+      status.hnsw.indexedCount !== null &&
+      status.hnsw.indexedCount >= status.totalVectors
+    const warn =
+      status.hnsw.indexedCount !== null &&
+      status.hnsw.indexedCount < status.totalVectors
+        ? " ⚠️  empty/stale — run `luna memory reembed --force` to rebuild"
+        : ""
     lines.push(
-      `HNSW: dimension=${status.hnsw.dimension ?? "unknown"} compatible=${status.hnsw.compatible ? "yes" : "no"}`,
+      `HNSW: dimension=${status.hnsw.dimension ?? "unknown"} compatible=${status.hnsw.compatible ? "yes" : "no"} indexed=${indexed}${healthy ? "" : warn}`,
     )
   }
   lines.push("Groups:")

@@ -774,7 +774,137 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
   // BEGIN IMMEDIATE transaction wrapped in Effect.uninterruptible. A failed
   // embed must leave the DB completely untouched — no half-state.
 
-  it("Atomicity #1: embed failure leaves no keyed row (put fails before any DB write)", async () => {
+  it("Scenario 7j: HNSW backfill repopulates on reopen when v-table is empty", async () => {
+    // Regression for the memory-only-HNSW-after-restart failure mode
+    // (vectorlite without `index_file_path` keeps schema across restarts
+    // but wipes the in-memory graph). Prior to the fix, the backfill was
+    // gated on `hnswExisted` (schema presence in sqlite_master), so any
+    // record written in a previous process was silently invisible to
+    // vec search after restart — hybrid degraded to BM25-only and the
+    // RRF score collapsed to 1/(60+1) ≈ 0.0164.
+    //
+    // This test only runs when vectorlite is actually wired up on the
+    // machine; if init failed (no extension), naive cosine takes the
+    // search path and the bug doesn't apply.
+    const initMod = await import("../src/backends/vectorlite-init.js")
+    const probe = initMod.initVectorlite()
+    if (!probe.ok) {
+      // eslint-disable-next-line no-console
+      console.log(`[hnsw-reopen] skipping — vectorlite unavailable: ${probe.reason}`)
+      return
+    }
+
+    const fs = await import("node:fs")
+    const os = await import("node:os")
+    const path = await import("node:path")
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "luna-hnsw-reopen-"))
+    const dbPath = path.join(tmp, "vectors.db")
+
+    try {
+      // Phase 1: open backend, insert records, close. The HNSW v-table
+      // gets populated via the AFTER INSERT trigger in this process.
+      const layer1 = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            for (let i = 0; i < 3; i++) {
+              yield* b.put(
+                makeRecord({
+                  id: `restart-${i}`,
+                  namespace: "rs",
+                  kind: "note",
+                  content: { text: `payload ${i} keyword echo` },
+                }),
+              )
+            }
+          }),
+        ).pipe(Effect.provide(layer1)),
+      )
+
+      // Phase 2: simulate the post-restart state. The v-table SCHEMA
+      // persists in sqlite_master but the in-memory HNSW graph does not.
+      // We model that by opening the file directly and DROPping +
+      // recreating the v-table (without triggers being available to
+      // re-populate). The next backend boot must detect the emptiness
+      // and backfill from memory_vectors.
+      const bunSqlite = (await import("bun:sqlite" as string)) as {
+        Database: new (p: string) => {
+          run: (sql: string) => void
+          query: (sql: string) => {
+            get: () => unknown
+            all: (...p: unknown[]) => unknown[]
+            run: (...p: unknown[]) => { changes: number }
+          }
+          loadExtension: (p: string) => void
+          close: () => void
+        }
+      }
+      const direct = new bunSqlite.Database(dbPath)
+      direct.loadExtension(probe.path)
+      // Drop triggers + v-table to clear the in-memory HNSW state, then
+      // recreate empty (matching the post-restart situation: schema
+      // present, graph empty, triggers also re-created by backend init).
+      direct.run("DROP TRIGGER IF EXISTS memory_vectors_hnsw_ai")
+      direct.run("DROP TRIGGER IF EXISTS memory_vectors_hnsw_ad")
+      direct.run("DROP TRIGGER IF EXISTS memory_vectors_hnsw_au")
+      direct.run("DROP TABLE IF EXISTS memory_vectors_hnsw")
+      // Match StubEmbedderLayer's dimension (64) — see core embedder.ts.
+      direct.run(
+        `CREATE VIRTUAL TABLE memory_vectors_hnsw
+           USING vectorlite(embedding float32[64], hnsw(max_elements=100000))`,
+      )
+      // Sanity: v-table is empty.
+      const sample = direct
+        .query(`SELECT embedding FROM memory_vectors LIMIT 1`)
+        .get() as { embedding: Uint8Array } | null
+      if (sample) {
+        const hits = direct
+          .query(
+            `SELECT rowid FROM memory_vectors_hnsw
+              WHERE knn_search(embedding, knn_param(?, 1))`,
+          )
+          .all(sample.embedding) as Array<{ rowid: number }>
+        expect(hits.length).toBe(0)
+      }
+      direct.close()
+
+      // Phase 3: reopen via SqliteVectorBackend. The new emptiness-aware
+      // backfill must populate HNSW so vec search recalls all 3 rows.
+      const layer2 = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      const ids = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            const arr = yield* Stream.runCollect(
+              b.search({
+                queryText: "payload 0 keyword echo",
+                namespace: "rs",
+                topK: 10,
+                mode: "vec",
+              }),
+            )
+            return Array.from(arr).map((r) => r.record.id).sort()
+          }),
+        ).pipe(Effect.provide(layer2)),
+      )
+      expect(ids).toEqual(["restart-0", "restart-1", "restart-2"])
+    } finally {
+      try {
+        fs.rmSync(tmp, { recursive: true, force: true })
+      } catch {
+        /* ignore */
+      }
+    }
+  })
+
+    it("Atomicity #1: embed failure leaves no keyed row (put fails before any DB write)", async () => {
     const FailEmbedderLayer = Layer.succeed(EmbedderService, {
       provider: "fail",
       model: "fail",

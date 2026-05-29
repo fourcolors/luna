@@ -204,6 +204,10 @@ d("sqlite-vector maintenance", () => {
         present: true,
         dimension: 64,
         compatible: true,
+        // Phase 27d: status now reports actual HNSW population. The
+        // maintenance openDb runs the backfill on its fresh connection,
+        // so the v-table mirrors the 1 row in memory_vectors.
+        indexedCount: 1,
       })
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
