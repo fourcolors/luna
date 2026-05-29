@@ -4,7 +4,7 @@ import type { MemoryRecord } from "@luna/memory"
 import { Clock } from "../clock.js"
 import type { MemoryBackendError } from "../errors.js"
 import { BELIEF_CAP, BELIEF_KIND, BELIEF_NAMESPACE, readBelief } from "./types.js"
-import type { BeliefContent, BeliefStatus } from "./types.js"
+import type { BeliefContent, BeliefStatus, BeliefValidation } from "./types.js"
 import { rankByStrength } from "./scoring.js"
 
 // Error channel carries MemoryBackendError (propagated from MemoryRouter ops),
@@ -22,6 +22,17 @@ export interface BeliefWriterApi {
   readonly activateBelief: (id: string) => Effect.Effect<boolean, MemoryBackendError>
   /** any → retired (record persists for audit/undo). */
   readonly retireBelief: (id: string) => Effect.Effect<boolean, MemoryBackendError>
+  /**
+   * Append a validation entry to a belief's per-belief track record.
+   * Idempotent on (at, verdict, via): re-appending an identical validation is a
+   * no-op (returns true without writing), so retried survey verdicts never
+   * duplicate the history. Distinct entries with different tuples are allowed.
+   * Returns false if the belief id is missing or not a belief record.
+   */
+  readonly recordValidation: (
+    id: string,
+    validation: BeliefValidation,
+  ) => Effect.Effect<boolean, MemoryBackendError>
 }
 
 export class BeliefWriter extends Effect.Tag("luna/BeliefWriter")<
@@ -79,7 +90,28 @@ export class BeliefWriter extends Effect.Tag("luna/BeliefWriter")<
           return true
         })
 
-      return { listAll, listActive, listByStatus, stageProposed, activateBelief, retireBelief } satisfies BeliefWriterApi
+      const recordValidation = (id: string, validation: BeliefValidation) =>
+        Effect.gen(function* () {
+          const rec = yield* mem.get(id)
+          if (rec === null || rec.kind !== BELIEF_KIND) return false
+          const prev = readBelief(rec)
+          // Idempotency: dedup on (at, verdict, via) — the stable tuple available
+          // in BeliefValidation. A retry supplying the same validation is a no-op
+          // (post-condition already holds); updating updatedAt on a no-op is avoided.
+          const alreadyPresent = prev.validationHistory.some(
+            (e) => e.at === validation.at && e.verdict === validation.verdict && e.via === validation.via,
+          )
+          if (alreadyPresent) return true
+          const now = yield* clock.nowMs()
+          const content: BeliefContent = {
+            ...prev,
+            validationHistory: [...prev.validationHistory, validation],
+          }
+          yield* mem.put({ ...rec, content, updatedAt: now })
+          return true
+        })
+
+      return { listAll, listActive, listByStatus, stageProposed, activateBelief, retireBelief, recordValidation } satisfies BeliefWriterApi
     }),
   )
 }
