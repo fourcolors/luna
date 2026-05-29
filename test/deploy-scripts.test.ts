@@ -323,9 +323,9 @@ exit 1
     })
 
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain("WorkingDirectory=" + join(temp, "repo"))
+    expect(result.stdout).toContain("WorkingDirectory=" + join(temp, "repo", "apps", "ui-web"))
     expect(result.stdout).toContain("EnvironmentFile=" + join(temp, "state", ".env"))
-    expect(result.stdout).toContain("ExecStart=/root/.bun/bin/bun run --filter @luna/ui-web server:chat")
+    expect(result.stdout).toContain("ExecStart=/root/.bun/bin/bun run scripts/chat-server.ts")
     expect(result.stdout).toContain("LUNA_REPO_ROOT=" + join(temp, "repo"))
     expect(result.stdout).toContain("LUNA_PROFILE=stable")
     expect(result.stdout).toContain("LUNA_CHAT_SERVER_NAME=luna-chat-server")
@@ -461,7 +461,7 @@ exit 0
     })
 
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain("ExecStart=/root/.bun/bin/bun run --filter @luna/ui-web server:chat")
+    expect(result.stdout).toContain("ExecStart=/root/.bun/bin/bun run scripts/chat-server.ts")
   })
 
   it("server install replaces stale Claude Code overrides with the repo-bundled Linux binary", () => {

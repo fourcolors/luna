@@ -131,9 +131,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=${REPO_DIR}
+WorkingDirectory=${REPO_DIR}/apps/ui-web
 EnvironmentFile=${ENV_FILE}
-ExecStart=${bun_bin} run --filter @luna/ui-web server:chat
+ExecStart=${bun_bin} run scripts/chat-server.ts
 Restart=always
 RestartSec=5
 
