@@ -107,7 +107,7 @@
  * think-time between turns can be hours — chat is the canonical case
  * the flag exists for.
  */
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, writeSync } from "node:fs"
 import { dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
@@ -853,7 +853,12 @@ const bootstrap = async (): Promise<void> => {
   const shutdown = (signal: NodeJS.Signals) => {
     if (shuttingDown) return
     shuttingDown = true
-    console.log(`\n👋 shutting down (${signal})`)
+    // Synchronous write to stdout fd — `console.log` to a PIPE (systemd
+    // captures stdout via a pipe, not a TTY) is async, so the buffered
+    // line is lost when `process.exit(0)` truncates it below. writeSync
+    // flushes before the dispose/exit, so the shutdown is observable in
+    // journald.
+    writeSync(1, `\n👋 shutting down (${signal})\n`)
     void runtime.dispose().then(() => process.exit(0))
   }
   process.on("SIGINT", () => shutdown("SIGINT"))
