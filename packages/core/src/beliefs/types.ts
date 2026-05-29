@@ -78,7 +78,7 @@ export function makeBeliefRecord(input: {
     kind: BELIEF_KIND,
     content,
     tags: [input.domain],
-    now: input.now,
+    ...(input.now !== undefined ? { now: input.now } : {}),
   })
 }
 
