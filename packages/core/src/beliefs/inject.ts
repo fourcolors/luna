@@ -20,12 +20,14 @@ export function composeBeliefsSection(
     .slice(0, topN)
     .map((r) => {
       const c = readBelief(r)
-      return `- (${c.confidence.toFixed(2)}, ${c.domain}) ${c.statement}`
+      const statement = c.statement.replace(/\s+/g, " ").trim()
+      return `- (${c.confidence.toFixed(2)}, ${c.domain}) ${statement}`
     })
+  if (lines.length === 0) return ""
 
   return [
     "## What I believe about Operator",
-    "A validated, evolving model of Operator. Weight these but stay open to correction.",
+    "An evolving model of Operator from observed sessions. Weight these but stay open to correction.",
     ...lines,
   ].join("\n")
 }
