@@ -32,7 +32,7 @@ import {
 import { createLocalShellBridge } from "../src/local-shell-bridge.js"
 import type { ObsEvent } from "@luna/core"
 import { startUIWebSocketServer } from "../src/server.js"
-import type { ClientFrame, ServerFrame } from "../src/protocol.js"
+import type { ClientFrame, ServerFrame, PtyOutputFrame } from "../src/protocol.js"
 
 const TOKEN = "test-token-1234567890" // ≥16 chars
 
@@ -509,6 +509,72 @@ describe("UIWebSocketServer", () => {
       }
     })
   }
+
+  it("invokes setupPty on connection and routes pty-input/pty-resize frames, and closes setupPty on disconnect", async () => {
+    let connectCalled = false
+    let writeCalledWith: string | null = null
+    let resizeCalledWith: [number, number] | null = null
+    let closeCalled = false
+    let sendFn: ((frame: PtyOutputFrame) => void) | null = null
+
+    const mockPty = {
+      onConnect: (send: (frame: PtyOutputFrame) => void) => {
+        connectCalled = true
+        sendFn = send
+        return {
+          write: (utf8: string) => {
+            writeCalledWith = utf8
+          },
+          resize: (cols: number, rows: number) => {
+            resizeCalledWith = [cols, rows]
+          },
+          close: () => {
+            closeCalled = true
+          },
+        }
+      },
+    }
+
+    rig = await startRig(undefined, { setupPty: mockPty })
+
+    const headers = { authorization: `Bearer ${TOKEN}` }
+    const ws = new WebSocket(rig.url, { headers })
+
+    const frames: ServerFrame[] = []
+    const openP = new Promise<void>((resolve) => ws.on("open", resolve))
+    ws.on("message", (raw) => {
+      frames.push(JSON.parse(raw.toString()))
+    })
+
+    await openP
+    expect(connectCalled).toBe(true)
+    expect(frames[0]?.type).toBe("hello")
+    if (frames[0]?.type === "hello") {
+      expect(frames[0].capabilities.setup).toBe(true)
+    }
+
+    // Verify pty-output sent from server is received by client
+    expect(sendFn).toBeDefined()
+    sendFn!({ type: "pty-output", data: Buffer.from("hello pty").toString("base64") })
+    
+    await new Promise((r) => setTimeout(r, 100))
+    expect(frames[1]).toEqual({ type: "pty-output", data: Buffer.from("hello pty").toString("base64") })
+
+    // Send pty-input from client
+    ws.send(JSON.stringify({ type: "pty-input", data: Buffer.from("user typed").toString("base64") }))
+    await new Promise((r) => setTimeout(r, 100))
+    expect(writeCalledWith).toBe("user typed")
+
+    // Send pty-resize from client
+    ws.send(JSON.stringify({ type: "pty-resize", cols: 100, rows: 30 }))
+    await new Promise((r) => setTimeout(r, 100))
+    expect(resizeCalledWith).toEqual([100, 30])
+
+    // Disconnect client
+    ws.close()
+    await new Promise((r) => setTimeout(r, 100))
+    expect(closeCalled).toBe(true)
+  })
 
   it("fan-out: two clients each receive the same event", async () => {
     rig = await startRig()

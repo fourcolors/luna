@@ -38,7 +38,7 @@ export const MarkdownView: Component<Props> = (props) => {
             // For inline code the hast node is an element whose first child
             // is a text node; for fenced blocks it is a `code` element whose
             // first child carries the raw source.
-            const hast = (codeProps as Record<string, unknown>).node as
+            const hast = (codeProps as unknown as Record<string, unknown>).node as
               | { children?: Array<{ value?: string }> }
               | undefined
             const source = (hast?.children?.[0]?.value ?? "").replace(/\n$/, "")

@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "bun --filter @luna/ui-web dev",
     "beforeBuildCommand": "bun --filter @luna/ui-web build",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://localhost:5174",
     "frontendDist": "../../ui-web/dist"
   },
   "app": {
