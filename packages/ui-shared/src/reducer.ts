@@ -291,6 +291,10 @@ export const reduce = (state: UIState, action: Action): UIState => {
         // On reconnect, user's prior selection is preserved as-is.
       }
     }
+    case "pty-output":
+      // pty output is consumed by the setup terminal directly off the
+      // transport (streamy frame), not folded into store state.
+      return state
   }
 }
 
