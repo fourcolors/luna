@@ -140,13 +140,16 @@ export interface UIWebSocketServerConfig {
    * The base obs path (event/drop/ping) keeps working unchanged when
    * this is unset. Pass the resolved service handle (not the Tag) so
    * the server's environment doesn't grow a `ChatService` dependency.
+   * Pass `null` explicitly in setup-mode (same as absent — server
+   * advertises `setup:true, chat:false`).
    */
-  readonly chatService?: ChatService
+  readonly chatService?: ChatService | null
   /**
    * Optional AccountBroker handle. When provided, the server sends an
    * `account-list` frame to each client immediately after the `hello`
    * frame, populated with all "anthropic"-kind accounts. If absent, no
    * `account-list` is sent (graceful degradation).
+   * Pass `null` explicitly in setup-mode (same as absent).
    */
   readonly accountBroker?: {
     readonly list: (kindFilter?: string) => import("effect").Effect.Effect<ReadonlyArray<{
@@ -155,13 +158,14 @@ export interface UIWebSocketServerConfig {
       readonly kind: string
       readonly health: string
     }>>
-  }
+  } | null
   /**
    * Optional local-shell bridge. When provided, clients may advertise
    * terminal execution capability and receive local-shell request frames
    * from MCP tools bound to the same thread.
+   * Pass `null` explicitly in setup-mode (same as absent).
    */
-  readonly localShellBridge?: LocalShellBridge
+  readonly localShellBridge?: LocalShellBridge | null
   /**
    * Fired when a local-shell client releases its slot — either by sending
    * `local-shell-capability { enabled: false }` or by disconnecting. Used
@@ -179,11 +183,12 @@ export interface UIWebSocketServerConfig {
    *
    * Pass the RESOLVED handle (not the Tag) so the server's env stays narrow.
    * Absent = no survey push, no routing (graceful degradation).
+   * Pass `null` explicitly in setup-mode (same as absent).
    *
    * NO snooze/dismiss config (Execution Correction #1): dismiss is a client
    * no-op; only answered surveys advance the schedule via getLastSurveyAt.
    */
-  readonly survey?: SurveyWsHandle
+  readonly survey?: SurveyWsHandle | null
 }
 
 export interface UIWebSocketServerHandle {
