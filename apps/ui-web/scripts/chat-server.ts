@@ -725,7 +725,13 @@ const installShutdown = (rt: { dispose: () => Promise<unknown> }): void => {
 // Layer requirement chain:
 //   startUIWebSocketServer → UIService → ObservabilityService → Clock
 //   startControlServer     → (none — pure Bun.serve call)
-const buildSetupServerLayer = (): Layer.Layer<never> => {
+//
+// `wsPort`/`controlPort` default to the production ports. Pass 0 in
+// tests/smokes to let the OS pick an ephemeral port (avoids conflicts).
+export const buildSetupServerLayer = (
+  wsPort: number = 4753,
+  controlPort: number = 4754,
+): Layer.Layer<never, Error> => {
   const clockL = Clock.Default
   const paths = resolveRuntimePaths()
   const obsL = ObservabilityService.makeLayer({
@@ -738,9 +744,9 @@ const buildSetupServerLayer = (): Layer.Layer<never> => {
   )
   return Layer.scopedDiscard(
     Effect.gen(function* () {
-      yield* startControlServer(4754)
+      yield* startControlServer(controlPort)
       yield* startUIWebSocketServer({
-        port: 4753,
+        port: wsPort,
         ...(BIND_HOST !== undefined ? { host: BIND_HOST } : {}),
         token: TOKEN,
         advertisedKinds: DEFAULT_UI_KINDS,
@@ -849,7 +855,7 @@ const buildMain = (
     const breakdown = Array.from(counts.entries())
       .map(([k, n]) => `${k}×${n}`)
       .join(", ")
-    console.log(`[accounts] ${accounts.length} hydrated: ${breakdown}`)
+    console.log(`[accounts] ${accounts.length} hydrated: ${breakdown || "none"}`)
 
     // Phase 25d: warn on luna-op://<label>/... refs whose label is
     // not in the registered OP keychain set. Soft warning — operator
