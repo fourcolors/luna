@@ -23,6 +23,7 @@
 import { createSignal, For, Show } from "solid-js"
 import { onMount } from "solid-js"
 import { useRenderer } from "@opentui/solid"
+import { createTextAttributes } from "@opentui/core"
 import type { PendingSurvey, SurveyVerdict, SurveyItem } from "@luna/core"
 import { buildSurveyVerdicts, type SurveyAnswers } from "../chat/headless.js"
 
@@ -110,7 +111,7 @@ export const SurveyModal = (props: SurveyModalProps) => {
 
   return (
     <box style={{ borderStyle: "double", flexDirection: "column", padding: 1, position: "absolute", top: 0, left: 0, right: 0 }}>
-      <text style={{ fg: "#00FF87", bold: true }}>{"=== Luna check-in ==="}</text>
+      <text style={{ fg: "#00FF87", attributes: createTextAttributes({ bold: true }) }}>{"=== Luna check-in ==="}</text>
       <text style={{ fg: "#888888" }}>{"Enter to submit  |  Esc to dismiss (resurfaces next session)"}</text>
 
       {/* task_quality section */}

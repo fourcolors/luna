@@ -37,6 +37,7 @@
     "**/node_modules",
     "**/*.test.ts",
     "apps/ui-web/**",
+    "apps/agent-cli/**",
     "packages/ui-shared-solid/**"
   ]
 }
