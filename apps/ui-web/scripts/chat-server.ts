@@ -788,7 +788,7 @@ export const buildSetupServerLayer = (
 
   return Layer.scopedDiscard(
     Effect.gen(function* () {
-      yield* startControlServer(controlPort)
+      yield* startControlServer(controlPort, TOKEN)
       yield* startUIWebSocketServer({
         port: wsPort,
         ...(BIND_HOST !== undefined ? { host: BIND_HOST } : {}),
@@ -846,8 +846,9 @@ const buildServerLayer = (
       }
 
       // tRPC control server — port 4754, alongside the WebSocket server.
-      // Exposes control.restart / control.status / control.version.
-      yield* startControlServer(4754)
+      // Exposes control.restart / control.status / control.version. Bound to
+      // loopback + gated by the same bearer token as the WS server (TOKEN).
+      yield* startControlServer(4754, TOKEN)
 
       return yield* startUIWebSocketServer({
         port: 4753,

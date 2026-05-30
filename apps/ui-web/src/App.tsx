@@ -41,19 +41,27 @@ import { SetupTerminal, b64ToBytes } from "./SetupTerminal"
 
 const CONTROL_URL = "http://127.0.0.1:4754/trpc"
 
-/** Call control.restart mutation via raw fetch (tRPC v11: mutations = POST). */
-async function restartServer(): Promise<void> {
+/** Call control.restart mutation via raw fetch (tRPC v11: mutations = POST).
+ *  The control server is loopback-bound and bearer-gated by the same token as
+ *  the WS connection, so we attach it here. */
+async function restartServer(token: string): Promise<void> {
   await fetch(`${CONTROL_URL}/control.restart`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
     body: JSON.stringify({ json: null }),
   })
 }
 
 /** Call control.status query via raw fetch (tRPC v11: queries = GET). */
-async function fetchServerStatus(): Promise<{ uptime: number; startedAt: string; version: string } | null> {
+async function fetchServerStatus(token: string): Promise<{ uptime: number; startedAt: string; version: string } | null> {
   try {
-    const res = await fetch(`${CONTROL_URL}/control.status?input=${encodeURIComponent(JSON.stringify({ json: null }))}`)
+    const res = await fetch(
+      `${CONTROL_URL}/control.status?input=${encodeURIComponent(JSON.stringify({ json: null }))}`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    )
     const json = await res.json() as { result?: { data?: { uptime: number; startedAt: string; version: string } } }
     return json.result?.data ?? null
   } catch {
@@ -437,7 +445,7 @@ export const App: Component = () => {
               onClick={async () => {
                 setRestarting(true)
                 try {
-                  await restartServer()
+                  await restartServer(cfg().token)
                   // Disconnect WebSocket — server is going down.
                   // Auto-reconnect banner will appear after the server respawns.
                   transport.disconnect()
