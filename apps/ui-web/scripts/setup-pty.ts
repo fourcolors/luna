@@ -50,7 +50,12 @@ export const spawnSetupPty = (opts: SpawnSetupPtyOpts): SetupPty => {
   // emits an 'error' event that would otherwise become an uncaught exception
   // and could crash the process. Swallow it — best-effort.
   child.stdin?.on("error", () => { /* best-effort: stdin may close when the child exits */ })
-  child.on("exit", (code) => opts.onExit(code ?? 1))
+  // A spawn failure (e.g. util-linux `script` missing) emits 'error' on the
+  // child — NOT 'exit'/'close'. With no listener Node throws it as an uncaught
+  // exception that would crash the setup-mode server. Degrade to onExit(1) so
+  // the caller can report a clean failure and the process stays alive.
+  child.on("error", () => opts.onExit(1))
+  child.on("close", (code) => opts.onExit(code ?? 1))
   return {
     write: (utf8) => { child.stdin?.write(utf8) },
     resize: (_cols, _rows) => {
