@@ -185,6 +185,23 @@ export interface AccountListFrame {
   }>
 }
 
+/** Server→client: a chunk of pty stdout, base64-encoded (raw bytes, may include control codes). */
+export interface PtyOutputFrame {
+  readonly type: "pty-output"
+  readonly data: string
+}
+/** Client→server: keystrokes for the pty stdin, base64-encoded. */
+export interface PtyInputFrame {
+  readonly type: "pty-input"
+  readonly data: string
+}
+/** Client→server: terminal resize. */
+export interface PtyResizeFrame {
+  readonly type: "pty-resize"
+  readonly cols: number
+  readonly rows: number
+}
+
 export type ServerFrame =
   | HelloFrame
   | EventFrame
@@ -200,6 +217,7 @@ export type ServerFrame =
   | AssistantErrorFrame
   | ArtifactsExtractedFrame
   | AccountListFrame
+  | PtyOutputFrame
 
 /* Client → server frames */
 
@@ -252,3 +270,5 @@ export type ClientFrame =
   | NewThreadFrame
   | UserMessageFrame
   | InterruptFrame
+  | PtyInputFrame
+  | PtyResizeFrame
