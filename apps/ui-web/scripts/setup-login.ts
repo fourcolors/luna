@@ -156,7 +156,7 @@ export const onLoginAttemptComplete = (opts: OnLoginCompleteOpts): void => {
   // Tell the client before exiting so the browser terminal doesn't just go
   // dead — the server will respawn and the next connection enters normal mode.
   send(ptyNote("\r\n[setup] Login successful — restarting into normal mode…\r\n"))
-  // Schedule the exit one tick later so the synchronous ws.send above flushes
-  // the frame to the socket before the process terminates.
-  setImmediate(() => exit(0))
+  // Schedule the exit 150ms later so the synchronous ws.send above flushes
+  // the frame to the socket and the OS TCP buffers drain before the process terminates.
+  setTimeout(() => exit(0), 150)
 }

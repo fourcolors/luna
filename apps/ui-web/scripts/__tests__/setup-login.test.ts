@@ -98,8 +98,8 @@ const captureFrames = () => {
   return { send, frames, texts }
 }
 
-/** Resolve after the current macrotask so a setImmediate-deferred exit fires. */
-const flushTick = () => new Promise<void>((resolve) => setImmediate(resolve))
+/** Resolve after the 150ms timeout so the deferred exit fires. */
+const flushTick = () => new Promise<void>((resolve) => setTimeout(resolve, 200))
 
 // ── test cases ────────────────────────────────────────────────────────────────
 
