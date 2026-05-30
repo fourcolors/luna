@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Luna - Draggable Moon Concept</title>
+  
+  <!-- Modern Premium Typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+  
+  <style>
+    :root {
+      --font-display: 'Outfit', sans-serif;
+      --font-body: 'Plus Jakarta Sans', sans-serif;
+      
+      /* Color Palette */
+      --bg-space: #05070f;
+      --moon-glow: rgba(186, 218, 255, 0.35);
+      --moon-bright: #f0f6ff;
+      --moon-shadow: #101428;
+      --primary: #8ab4f8;
+      --primary-glow: rgba(138, 180, 248, 0.2);
+      
+      /* Glassmorphism */
+      --glass-bg: rgba(13, 17, 33, 0.45);
+      --glass-border: rgba(255, 255, 255, 0.08);
+      --glass-glow: rgba(138, 180, 248, 0.03);
+    }
+    
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+    
+    body {
+      background-color: var(--bg-space);
+      background-image: 
+        radial-gradient(circle at 20% 30%, rgba(20, 30, 70, 0.4) 0%, transparent 50%),
+        radial-gradient(circle at 80% 70%, rgba(40, 20, 80, 0.35) 0%, transparent 50%),
+        radial-gradient(1px 1px at 10% 10%, #fff 100%, transparent),
+        radial-gradient(1px 1px at 30% 50%, #fff 100%, transparent),
+        radial-gradient(2px 2px at 50% 20%, rgba(255, 255, 255, 0.7) 100%, transparent),
+        radial-gradient(1px 1px at 70% 80%, #fff 100%, transparent),
+        radial-gradient(2px 2px at 90% 40%, rgba(255, 255, 255, 0.5) 100%, transparent);
+      background-attachment: fixed;
+      font-family: var(--font-body);
+      color: #e2e8f0;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    /* Header & Instructions */
+    header {
+      position: absolute;
+      top: 40px;
+      text-align: center;
+      z-index: 10;
+      pointer-events: none;
+    }
+    
+    h1 {
+      font-family: var(--font-display);
+      font-weight: 800;
+      font-size: 2.2rem;
+      letter-spacing: -0.02em;
+      background: linear-gradient(135deg, #ffffff 30%, #a5c7fc 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 8px;
+    }
+    
+    p.subtitle {
+      font-size: 0.95rem;
+      color: #94a3b8;
+      font-weight: 300;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    
+    /* Concept Info Cards */
+    .controls-info {
+      position: absolute;
+      bottom: 30px;
+      display: flex;
+      gap: 16px;
+      z-index: 10;
+      pointer-events: none;
+    }
+    
+    .info-tag {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      color: #64748b;
+      backdrop-filter: blur(10px);
+    }
+    
+    /* The Interactive Moon Sphere */
+    .moon-container {
+      position: absolute;
+      width: 120px;
+      height: 120px;
+      cursor: grab;
+      z-index: 100;
+      touch-action: none;
+      /* Dynamic properties will be driven by JS */
+      transform: translate3d(0, 0, 0);
+      will-change: transform;
+    }
+    
+    .moon-container:active {
+      cursor: grabbing;
+    }
+    
+    .moon-wrapper {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+      transition: transform 0.2s cubic-bezier(0.25, 0.8, 0.25, 1);
+    }
+    
+    /* Glowing atmospheric aura */
+    .moon-glow {
+      position: absolute;
+      top: -15px;
+      left: -15px;
+      right: -15px;
+      bottom: -15px;
+      background: radial-gradient(circle, var(--moon-glow) 0%, rgba(138, 180, 248, 0) 70%);
+      border-radius: 50%;
+      pointer-events: none;
+      opacity: 0.85;
+      transition: opacity 0.3s ease, transform 0.3s ease;
+      z-index: 1;
+    }
+    
+    .moon-container:hover .moon-glow {
+      opacity: 1;
+      transform: scale(1.05);
+    }
+    
+    /* Moon base sphere with light gradient shading */
+    .moon-sphere {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+      overflow: hidden;
+      z-index: 2;
+      background: radial-gradient(circle at 35% 35%, var(--moon-bright) 0%, #d0e1fd 35%, #7aa4e8 65%, var(--moon-shadow) 100%);
+      box-shadow: 
+        inset -8px -8px 24px rgba(0, 0, 0, 0.85),
+        inset 8px 8px 16px rgba(255, 255, 255, 0.6),
+        0 8px 24px rgba(0, 0, 0, 0.5);
+    }
+    
+    /* Crater details layer that supports mouse parallax rotation */
+    .moon-craters {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      opacity: 0.38;
+      mix-blend-mode: multiply;
+      transform: translate3d(var(--px, 0px), var(--py, 0px), 0) scale(1.02);
+      transition: transform 0.15s cubic-bezier(0.25, 0.8, 0.25, 1);
+    }
+    
+    /* Atmospheric highlight layer */
+    .moon-rim-light {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+      box-shadow: inset 4px 4px 10px rgba(255, 255, 255, 0.45);
+      z-index: 3;
+      pointer-events: none;
+    }
+    
+    /* Click to open badge */
+    .click-badge {
+      position: absolute;
+      bottom: -32px;
+      left: 50%;
+      transform: translateX(-50%) scale(0.9);
+      background: rgba(138, 180, 248, 0.15);
+      border: 1px solid rgba(138, 180, 248, 0.3);
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 0.68rem;
+      color: #a5c7fc;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease, transform 0.3s ease;
+      white-space: nowrap;
+      z-index: 10;
+    }
+    
+    .moon-container:hover .click-badge {
+      opacity: 1;
+      transform: translateX(-50%) scale(1);
+    }
+    
+    /* Elegant Glassmorphic Chat Panel */
+    .chat-panel {
+      position: absolute;
+      width: 360px;
+      height: 480px;
+      background: var(--glass-bg);
+      border: 1px solid var(--glass-border);
+      border-radius: 24px;
+      box-shadow: 
+        0 16px 40px rgba(0, 0, 0, 0.4),
+        inset 0 0 20px var(--glass-glow);
+      backdrop-filter: blur(24px) saturate(180%);
+      -webkit-backdrop-filter: blur(24px) saturate(180%);
+      z-index: 50;
+      opacity: 0;
+      transform: scale(0.92) translate3d(var(--cx, 0px), var(--cy, 0px), 0);
+      pointer-events: none;
+      transition: 
+        opacity 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+        transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      will-change: transform, opacity;
+    }
+    
+    .chat-panel.active {
+      opacity: 1;
+      transform: scale(1) translate3d(var(--cx, 0px), var(--cy, 0px), 0);
+      pointer-events: all;
+    }
+    
+    /* Chat Header */
+    .chat-header {
+      padding: 18px 20px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    
+    .chat-title-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    
+    .chat-avatar {
+      width: 32px;
+      height: 32px;
+      background: radial-gradient(circle, #e6f0ff 0%, #8ab4f8 100%);
+      border-radius: 50%;
+      box-shadow: 0 0 10px rgba(138, 180, 248, 0.4);
+    }
+    
+    .chat-meta h2 {
+      font-family: var(--font-display);
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #fff;
+    }
+    
+    .chat-meta span {
+      font-size: 0.7rem;
+      color: #34d399;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    
+    .chat-meta span::before {
+      content: '';
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      background: #10b981;
+      border-radius: 50%;
+      box-shadow: 0 0 6px #10b981;
+    }
+    
+    .close-btn {
+      background: none;
+      border: none;
+      color: #64748b;
+      cursor: pointer;
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      transition: background 0.2s, color 0.2s;
+    }
+    
+    .close-btn:hover {
+      background: rgba(255, 255, 255, 0.05);
+      color: #f1f5f9;
+    }
+    
+    /* Messages Container */
+    .chat-messages {
+      flex: 1;
+      padding: 20px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+    }
+    
+    .chat-messages::-webkit-scrollbar {
+      width: 4px;
+    }
+    
+    .chat-messages::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 2px;
+    }
+    
+    /* Individual Bubbles */
+    .msg {
+      max-width: 80%;
+      padding: 10px 14px;
+      border-radius: 16px;
+      font-size: 0.88rem;
+      line-height: 1.4;
+      animation: msgAppear 0.25s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
+      transform-origin: bottom left;
+    }
+    
+    @keyframes msgAppear {
+      from { opacity: 0; transform: scale(0.9) translateY(10px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+    
+    .msg.user {
+      align-self: flex-end;
+      background: linear-gradient(135deg, #4f46e5 0%, #3b82f6 100%);
+      color: #ffffff;
+      border-bottom-right-radius: 4px;
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15);
+      transform-origin: bottom right;
+    }
+    
+    .msg.assistant {
+      align-self: flex-start;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      color: #e2e8f0;
+      border-bottom-left-radius: 4px;
+    }
+    
+    /* Streaming typing indicator */
+    .typing-dots {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+      padding: 4px 0;
+    }
+    
+    .dot {
+      width: 6px;
+      height: 6px;
+      background: #94a3b8;
+      border-radius: 50%;
+      animation: dotPulse 1.4s infinite ease-in-out;
+    }
+    
+    .dot:nth-child(2) { animation-delay: 0.2s; }
+    .dot:nth-child(3) { animation-delay: 0.4s; }
+    
+    @keyframes dotPulse {
+      0%, 100% { transform: scale(0.6); opacity: 0.4; }
+      50% { transform: scale(1.2); opacity: 1; }
+    }
+    
+    /* Input Area */
+    .chat-input-area {
+      padding: 16px 20px 20px;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      display: flex;
+      gap: 10px;
+    }
+    
+    .input-wrapper {
+      flex: 1;
+      position: relative;
+    }
+    
+    .chat-input {
+      width: 100%;
+      height: 42px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 14px;
+      padding: 0 16px;
+      font-family: var(--font-body);
+      font-size: 0.88rem;
+      color: #fff;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+    }
+    
+    .chat-input:focus {
+      border-color: rgba(138, 180, 248, 0.4);
+      background: rgba(255, 255, 255, 0.05);
+      box-shadow: 0 0 12px rgba(138, 180, 248, 0.05);
+    }
+    
+    .chat-input::placeholder {
+      color: #475569;
+    }
+    
+    .send-btn {
+      width: 42px;
+      height: 42px;
+      background: #8ab4f8;
+      border: none;
+      border-radius: 14px;
+      color: #05070f;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s active;
+    }
+    
+    .send-btn:hover {
+      background: #a5c7fc;
+    }
+    
+    .send-btn:active {
+      transform: scale(0.96);
+    }
+    
+    .send-btn svg {
+      width: 18px;
+      height: 18px;
+      fill: currentColor;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>luna · moon</h1>
+    <p class="subtitle">Draggable Desktop Concept UI</p>
+  </header>
+
+  <!-- The Draggable Moon Widget -->
+  <div class="moon-container" id="moon">
+    <div class="moon-wrapper" id="moon-wrapper">
+      <div class="moon-glow"></div>
+      <div class="moon-sphere">
+        <!-- SVG craters mapped to rotate with mouse-parallax movement -->
+        <svg class="moon-craters" viewBox="0 0 100 100">
+          <!-- Main Crater A -->
+          <circle cx="35" cy="40" r="14" fill="#000" />
+          <circle cx="37" cy="42" r="12" fill="#7ba3e5" opacity="0.3"/>
+          <circle cx="33" cy="38" r="13" fill="#fff" opacity="0.15"/>
+          
+          <!-- Crater B -->
+          <circle cx="65" cy="30" r="8" fill="#000" />
+          <circle cx="66" cy="31" r="7" fill="#7ba3e5" opacity="0.3"/>
+          
+          <!-- Crater C -->
+          <circle cx="50" cy="70" r="10" fill="#000" />
+          <circle cx="51" cy="71" r="9" fill="#7ba3e5" opacity="0.3"/>
+          
+          <!-- Minor details / debris dots -->
+          <circle cx="20" cy="60" r="3" fill="#000" opacity="0.7" />
+          <circle cx="75" cy="65" r="4" fill="#000" opacity="0.7" />
+          <circle cx="48" cy="22" r="2.5" fill="#000" opacity="0.7" />
+        </svg>
+        <div class="moon-rim-light"></div>
+      </div>
+      <div class="click-badge">Talk to Luna</div>
+    </div>
+  </div>
+
+  <!-- The Floating Chat Panel -->
+  <div class="chat-panel" id="chat-panel">
+    <div class="chat-header">
+      <div class="chat-title-group">
+        <div class="chat-avatar"></div>
+        <div class="chat-meta">
+          <h2>Luna Companion</h2>
+          <span>Connected</span>
+        </div>
+      </div>
+      <button class="close-btn" id="close-chat" aria-label="Close Chat">
+        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+    </div>
+    
+    <div class="chat-messages" id="chat-messages">
+      <div class="msg assistant">
+        Hello! I'm Luna. You can drag me around your screen, or drop me anywhere. How can I help you from the desktop today?
+      </div>
+    </div>
+    
+    <form class="chat-input-area" id="chat-form">
+      <div class="input-wrapper">
+        <input type="text" class="chat-input" id="message-input" placeholder="Type a message..." autocomplete="off">
+      </div>
+      <button type="submit" class="send-btn" aria-label="Send message">
+        <svg viewBox="0 0 24 24">
+          <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+        </svg>
+      </button>
+    </form>
+  </div>
+
+  <div class="controls-info">
+    <div class="info-tag">Drag moon anywhere</div>
+    <div class="info-tag">Hover for 3D parallax</div>
+    <div class="info-tag">Click moon to chat</div>
+  </div>
+
+  <script>
+    const moon = document.getElementById('moon');
+    const moonWrapper = document.getElementById('moon-wrapper');
+    const craters = document.querySelector('.moon-craters');
+    const chatPanel = document.getElementById('chat-panel');
+    const closeChat = document.getElementById('close-chat');
+    const chatForm = document.getElementById('chat-form');
+    const messageInput = document.getElementById('message-input');
+    const chatMessages = document.getElementById('chat-messages');
+
+    // Initialize Moon Position
+    // Place it centered vertically, slightly to the left
+    let posX = window.innerWidth / 2 - 60;
+    let posY = window.innerHeight / 2 - 80;
+    
+    let isDragging = false;
+    let dragStartX = 0;
+    let dragStartY = 0;
+    
+    // Physics variables (spring inertia)
+    let targetX = posX;
+    let targetY = posY;
+    let currentX = posX;
+    let currentY = posY;
+    const lerpCoeff = 0.12; // Controls glide friction
+    
+    function updateMoonPosition() {
+      moon.style.left = `${posX}px`;
+      moon.style.top = `${posY}px`;
+      
+      // Update Chat Panel location relative to the moon
+      // Position it 20px off to the right of the moon, centered vertically
+      const cx = posX + 140;
+      const cy = posY - 180;
+      chatPanel.style.setProperty('--cx', `${cx}px`);
+      chatPanel.style.setProperty('--cy', `${cy}px`);
+    }
+    
+    // Initial Placement
+    updateMoonPosition();
+
+    // ── Mouse/Pointer Drag Event Handlers ─────────────────────────────────────
+    moon.addEventListener('pointerdown', (e) => {
+      // Ignore click if clicking the click badge
+      if (e.target.classList.contains('click-badge')) return;
+      
+      isDragging = true;
+      dragStartX = e.clientX - posX;
+      dragStartY = e.clientY - posY;
+      moon.setPointerCapture(e.pointerId);
+      
+      // Scale down slightly on press for tactile feedback
+      moonWrapper.style.transform = 'scale(0.93)';
+    });
+
+    moon.addEventListener('pointermove', (e) => {
+      if (isDragging) {
+        posX = e.clientX - dragStartX;
+        posY = e.clientY - dragStartY;
+        
+        // Bounds checking (keep moon fully inside viewport)
+        posX = Math.max(0, Math.min(window.innerWidth - 120, posX));
+        posY = Math.max(0, Math.min(window.innerHeight - 120, posY));
+        
+        updateMoonPosition();
+      } else {
+        // Hover Parallax effect (3D illusion)
+        const rect = moon.getBoundingClientRect();
+        const moonCenterX = rect.left + rect.width / 2;
+        const moonCenterY = rect.top + rect.height / 2;
+        
+        const deltaX = e.clientX - moonCenterX;
+        const deltaY = e.clientY - moonCenterY;
+        
+        // Limit the shift amplitude (max 10px shift)
+        const maxShift = 10;
+        const dist = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+        const ratio = Math.min(1, dist / 150); // scales strength within 150px
+        
+        const shiftX = (deltaX / 150) * maxShift * ratio;
+        const shiftY = (deltaY / 150) * maxShift * ratio;
+        
+        craters.style.setProperty('--px', `${shiftX}px`);
+        craters.style.setProperty('--py', `${shiftY}px`);
+        
+        // Tilt the wrapper slightly towards cursor
+        const tiltX = -(deltaY / 150) * 8 * ratio;
+        const tiltY = (deltaX / 150) * 8 * ratio;
+        moonWrapper.style.transform = `rotateX(${tiltX}deg) rotateY(${tiltY}deg) scale(1.02)`;
+      }
+    });
+
+    moon.addEventListener('pointerup', (e) => {
+      if (!isDragging) return;
+      isDragging = false;
+      moon.releasePointerCapture(e.pointerId);
+      
+      // Reset wrapper transform
+      moonWrapper.style.transform = 'none';
+      
+      // If we barely moved, register this as a Click / Toggle Chat
+      const deltaPressX = Math.abs((e.clientX - dragStartX) - posX);
+      const deltaPressY = Math.abs((e.clientY - dragStartY) - posY);
+      if (deltaPressX < 3 && deltaPressY < 3) {
+        toggleChat();
+      }
+    });
+
+    // Reset parallax on mouse leave
+    moon.addEventListener('pointerleave', () => {
+      if (!isDragging) {
+        craters.style.setProperty('--px', '0px');
+        craters.style.setProperty('--py', '0px');
+        moonWrapper.style.transform = 'none';
+      }
+    });
+
+    // ── Chat Panel Management ────────────────────────────────────────────────
+    function toggleChat() {
+      const isActive = chatPanel.classList.contains('active');
+      if (isActive) {
+        chatPanel.classList.remove('active');
+      } else {
+        // Re-align and show
+        updateMoonPosition();
+        chatPanel.classList.add('active');
+        messageInput.focus();
+      }
+    }
+    
+    closeChat.addEventListener('click', () => {
+      chatPanel.classList.remove('active');
+    });
+
+    // ── Simulated Chat Bot Integration ──────────────────────────────────────
+    const LUNA_RESPONSES = [
+      "I'm listening! In the final app, this chat streams directly from our local Claude instance using high-concurrency Effect fibers.",
+      "That's correct! Since we'll read `~/.luna/.last-thread-default`, I'll automatically sync up with whatever you just did in your terminal CLI.",
+      "Yes, the UI is completely built with Solid.js inside the monorepo, meaning we get native performance and share `@luna/ui-shared` protocol contracts.",
+      "Dragging me around the screen uses pointer event capturing, which maps beautifully to Tauri's frameless transparent windows.",
+      "Awesome! Let me know if you want me to write the Tauri project scaffolding next."
+    ];
+    let responseIndex = 0;
+
+    chatForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const text = messageInput.value.trim();
+      if (!text) return;
+      
+      // Append User message
+      appendMessage('user', text);
+      messageInput.value = '';
+      
+      // Auto Scroll
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+      
+      // Trigger Typing Indicator
+      const typingIndicator = showTypingIndicator();
+      
+      // Simulate Bot Stream/Typing delay
+      setTimeout(() => {
+        typingIndicator.remove();
+        
+        const responseText = LUNA_RESPONSES[responseIndex];
+        responseIndex = (responseIndex + 1) % LUNA_RESPONSES.length;
+        
+        appendMessage('assistant', responseText);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+      }, 1500);
+    });
+
+    function appendMessage(role, text) {
+      const msgDiv = document.createElement('div');
+      msgDiv.className = `msg ${role}`;
+      msgDiv.textContent = text;
+      chatMessages.appendChild(msgDiv);
+    }
+    
+    function showTypingIndicator() {
+      const indicatorDiv = document.createElement('div');
+      indicatorDiv.className = 'msg assistant';
+      indicatorDiv.innerHTML = `
+        <div class="typing-dots">
+          <div class="dot"></div>
+          <div class="dot"></div>
+          <div class="dot"></div>
+        </div>
+      `;
+      chatMessages.appendChild(indicatorDiv);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+      return indicatorDiv;
+    }
+
+    // Adapt layout on window resize (keep moon in viewport)
+    window.addEventListener('resize', () => {
+      posX = Math.max(0, Math.min(window.innerWidth - 120, posX));
+      posY = Math.max(0, Math.min(window.innerHeight - 120, posY));
+      updateMoonPosition();
+    });
+  </script>
+</body>
+</html>

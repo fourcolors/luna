@@ -1,0 +1,1075 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Luna Moon Native Companion</title>
+  
+  <!-- Premium Modern Typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+  
+  <style>
+    :root {
+      --font-display: 'Outfit', sans-serif;
+      --font-body: 'Plus Jakarta Sans', sans-serif;
+      
+      --moon-glow: rgba(186, 218, 255, 0.4);
+      --moon-bright: #f0f6ff;
+      --moon-shadow: #0f1225;
+      
+      /* Glassmorphism settings for native widget */
+      --glass-bg: rgba(10, 14, 28, 0.72);
+      --glass-border: rgba(255, 255, 255, 0.1);
+      --glass-glow: rgba(138, 180, 248, 0.04);
+      --primary: #8ab4f8;
+    }
+    
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+    
+    /* Make the base window canvas transparent */
+    html, body {
+      background: rgba(0, 0, 0, 0.005) !important;
+      height: 100vh;
+      width: 100vw;
+      overflow: hidden;
+      font-family: var(--font-body);
+      color: #f1f5f9;
+      position: relative;
+    }
+    
+    /* 
+      Draggable Moon Widget 
+      Adding data-tauri-drag-region tells Tauri to drag the native window 
+      when clicking and dragging this element.
+    */
+    .moon-container {
+      position: absolute;
+      left: 15px;
+      top: 15px;
+      width: 110px;
+      height: 110px;
+      cursor: grab;
+      z-index: 100;
+      touch-action: none;
+    }
+    
+    .moon-container:active {
+      cursor: grabbing;
+    }
+    
+    .moon-wrapper {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+      transition: transform 0.2s cubic-bezier(0.25, 0.8, 0.25, 1);
+      pointer-events: auto; /* Active pointer events prevent click-through */
+    }
+    
+    /* Beautiful Atmospheric Glow */
+    .moon-glow {
+      position: absolute;
+      top: -12px;
+      left: -12px;
+      right: -12px;
+      bottom: -12px;
+      background: radial-gradient(circle, var(--moon-glow) 0%, rgba(138, 180, 248, 0) 70%);
+      border-radius: 50%;
+      opacity: 0.9;
+      transition: opacity 0.3s ease, transform 0.3s ease;
+      z-index: 1;
+    }
+    
+    .moon-container:hover .moon-glow {
+      opacity: 1;
+      transform: scale(1.08);
+    }
+    
+    /* Base Moon Sphere with transparency */
+    .moon-sphere {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 2;
+      background: transparent !important;
+      box-shadow: none !important;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: auto;
+    }
+    
+    /* Moon SVG Crescent shape styling */
+    .moon-svg {
+      width: 100%;
+      height: 100%;
+      filter: drop-shadow(0 6px 16px rgba(138, 180, 248, 0.45));
+      transform: translate3d(var(--px, 0px), var(--py, 0px), 0) rotate(var(--rot, 0deg));
+      transition: transform 0.15s cubic-bezier(0.25, 0.8, 0.25, 1);
+      pointer-events: auto;
+    }
+
+    
+    /* 
+      Floating Glassmorphic Chat Panel
+      Positioned immediately to the right of the moon inside the transparent Tauri window
+    */
+    .chat-panel {
+      position: absolute;
+      left: 145px;
+      top: 15px;
+      width: 380px;
+      height: 480px;
+      background: var(--glass-bg);
+      border: 1px solid var(--glass-border);
+      border-radius: 20px;
+      box-shadow: 
+        0 20px 50px rgba(0, 0, 0, 0.6),
+        inset 0 0 15px var(--glass-glow);
+      backdrop-filter: blur(28px) saturate(200%);
+      -webkit-backdrop-filter: blur(28px) saturate(200%);
+      z-index: 50;
+      opacity: 0;
+      transform: scale(0.95) translateX(-20px);
+      pointer-events: none;
+      transition: 
+        opacity 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+        transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    
+    .chat-panel.active {
+      opacity: 1;
+      transform: scale(1) translateX(0);
+      pointer-events: all;
+    }
+    
+    /* Header (Supports Dragging Window too!) */
+    .chat-header {
+      padding: 14px 18px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: move;
+    }
+    
+    .chat-title-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      pointer-events: none;
+    }
+    
+    .chat-avatar {
+      width: 28px;
+      height: 28px;
+      background: radial-gradient(circle, #f0f6ff 0%, #8ab4f8 100%);
+      border-radius: 50%;
+      box-shadow: 0 0 8px rgba(138, 180, 248, 0.4);
+    }
+    
+    .chat-meta h2 {
+      font-family: var(--font-display);
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: #fff;
+    }
+    
+    .chat-meta span {
+      font-size: 0.65rem;
+      color: #34d399;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    
+    .chat-meta span::before {
+      content: '';
+      display: inline-block;
+      width: 5px;
+      height: 5px;
+      background: #10b981;
+      border-radius: 50%;
+      box-shadow: 0 0 5px #10b981;
+    }
+    
+    .close-btn {
+      background: none;
+      border: none;
+      color: #64748b;
+      cursor: pointer;
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      transition: background 0.2s, color 0.2s;
+    }
+    
+    .close-btn:hover {
+      background: rgba(255, 255, 255, 0.05);
+      color: #f1f5f9;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .settings-btn {
+      background: none;
+      border: none;
+      color: #64748b;
+      cursor: pointer;
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      transition: background 0.2s, color 0.2s, transform 0.3s ease;
+    }
+    
+    .settings-btn:hover {
+      background: rgba(255, 255, 255, 0.05);
+      color: #f1f5f9;
+      transform: rotate(45deg);
+    }
+
+    /* Settings panel overlay styling */
+    .settings-panel {
+      position: absolute;
+      top: 57px; /* directly below header */
+      left: 0;
+      width: 100%;
+      height: calc(100% - 57px);
+      background: rgba(10, 14, 28, 0.95);
+      backdrop-filter: blur(28px);
+      -webkit-backdrop-filter: blur(28px);
+      z-index: 60;
+      display: flex;
+      flex-direction: column;
+      transform: translateY(100%);
+      transition: transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+      padding: 20px;
+    }
+    
+    .settings-panel.active {
+      transform: translateY(0);
+    }
+    
+    .settings-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    
+    .settings-content h3 {
+      font-family: var(--font-display);
+      font-size: 1.05rem;
+      font-weight: 800;
+      color: #fff;
+      margin-bottom: 4px;
+    }
+    
+    .setting-item {
+      display: flex;
+      align-items: center;
+      justify-content: justify;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      padding: 12px 14px;
+      border-radius: 12px;
+      gap: 12px;
+    }
+    
+    .setting-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      flex: 1;
+    }
+    
+    .setting-label {
+      font-family: var(--font-display);
+      font-size: 0.86rem;
+      font-weight: 600;
+      color: #f1f5f9;
+    }
+    
+    .setting-desc {
+      font-size: 0.70rem;
+      color: #64748b;
+      line-height: 1.3;
+    }
+    
+    /* Toggle switch design (macOS style) */
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 42px;
+      height: 22px;
+      flex-shrink: 0;
+    }
+    
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: rgba(255, 255, 255, 0.15);
+      transition: .3s cubic-bezier(0.25, 0.8, 0.25, 1);
+      border-radius: 34px;
+    }
+    
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 16px;
+      width: 16px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: .3s cubic-bezier(0.25, 0.8, 0.25, 1);
+      border-radius: 50%;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    }
+    
+    input:checked + .slider {
+      background-color: #8ab4f8;
+    }
+    
+    input:checked + .slider:before {
+      transform: translateX(20px);
+    }
+    
+    /* Shortcut recorder styles */
+    .shortcut-recorder-group {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    
+    .shortcut-input {
+      width: 90px;
+      height: 30px;
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 8px;
+      text-align: center;
+      font-family: var(--font-body);
+      font-size: 0.78rem;
+      color: #8ab4f8;
+      font-weight: 600;
+      outline: none;
+    }
+    
+    .shortcut-input.recording {
+      border-color: #ef4444;
+      color: #ef4444;
+      animation: shortcutPulse 1s infinite alternate;
+    }
+    
+    @keyframes shortcutPulse {
+      from { box-shadow: 0 0 2px rgba(239, 68, 68, 0.2); }
+      to { box-shadow: 0 0 8px rgba(239, 68, 68, 0.5); }
+    }
+    
+    .record-btn {
+      height: 30px;
+      padding: 0 12px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 8px;
+      color: #e2e8f0;
+      font-size: 0.72rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    
+    .record-btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
+    
+    .settings-footer {
+      display: flex;
+      justify-content: flex-end;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      padding-top: 12px;
+    }
+    
+    .save-settings-btn {
+      padding: 8px 20px;
+      background: #8ab4f8;
+      border: none;
+      border-radius: 8px;
+      color: #0a0e1c;
+      font-family: var(--font-display);
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    
+    .save-settings-btn:hover {
+      background: #a5c7fc;
+    }
+    
+    /* Messages Stream */
+    .chat-messages {
+      flex: 1;
+      padding: 16px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    
+    .msg {
+      max-width: 82%;
+      padding: 9px 13px;
+      border-radius: 14px;
+      font-size: 0.84rem;
+      line-height: 1.45;
+      animation: msgAppear 0.2s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
+      transform-origin: bottom left;
+    }
+    
+    @keyframes msgAppear {
+      from { opacity: 0; transform: scale(0.92) translateY(8px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+    
+    .msg.user {
+      align-self: flex-end;
+      background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+      color: #ffffff;
+      border-bottom-right-radius: 4px;
+      box-shadow: 0 3px 10px rgba(37, 99, 235, 0.15);
+      transform-origin: bottom right;
+    }
+    
+    .msg.assistant {
+      align-self: flex-start;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      color: #e2e8f0;
+      border-bottom-left-radius: 4px;
+    }
+    
+    /* Typing indicator dots */
+    .typing-dots {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+      padding: 3px 0;
+    }
+    
+    .dot {
+      width: 5px;
+      height: 5px;
+      background: #94a3b8;
+      border-radius: 50%;
+      animation: dotPulse 1.4s infinite ease-in-out;
+    }
+    .dot:nth-child(2) { animation-delay: 0.2s; }
+    .dot:nth-child(3) { animation-delay: 0.4s; }
+    
+    @keyframes dotPulse {
+      0%, 100% { transform: scale(0.6); opacity: 0.4; }
+      50% { transform: scale(1.2); opacity: 1; }
+    }
+    
+    /* Input Area */
+    .chat-input-area {
+      padding: 12px 16px 16px;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      display: flex;
+      gap: 8px;
+    }
+    
+    .chat-input {
+      flex: 1;
+      height: 38px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 10px;
+      padding: 0 14px;
+      font-family: var(--font-body);
+      font-size: 0.84rem;
+      color: #fff;
+      outline: none;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    
+    .chat-input:focus {
+      border-color: rgba(138, 180, 248, 0.35);
+      background: rgba(255, 255, 255, 0.05);
+    }
+    
+    .chat-input::placeholder {
+      color: #475569;
+    }
+    
+    .send-btn {
+      width: 38px;
+      height: 38px;
+      background: #8ab4f8;
+      border: none;
+      border-radius: 10px;
+      color: #0a0e1c;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    
+    .send-btn:hover {
+      background: #a5c7fc;
+    }
+    
+    .send-btn svg {
+      width: 16px;
+      height: 16px;
+      fill: currentColor;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- The Draggable Moon -->
+  <div class="moon-container" id="moon" data-tauri-drag-region>
+    <div class="moon-wrapper" id="moon-wrapper">
+      <div class="moon-glow"></div>
+      <div class="moon-sphere">
+        <!-- Premium Crescent Moon SVG with a glowing lunar gradient and cute craters -->
+        <svg class="moon-svg" viewBox="0 0 100 100">
+          <defs>
+            <linearGradient id="crescent-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#ffffff" />
+              <stop offset="35%" stop-color="#e2ecfd" />
+              <stop offset="70%" stop-color="#8ab4f8" />
+              <stop offset="100%" stop-color="#1b2a4a" />
+            </linearGradient>
+            <filter id="glow-filter" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur stdDeviation="3" result="blur" />
+              <feComposite in="SourceGraphic" in2="blur" operator="over" />
+            </filter>
+          </defs>
+          <!-- Crescent Path: perfectly smooth golden/blue crescent curve -->
+          <path d="M 62 12 A 38 38 0 1 0 88 62 A 30 30 0 1 1 62 12 Z" fill="url(#crescent-grad)" filter="url(#glow-filter)" />
+          <!-- Cute Craters inside the crescent body -->
+          <circle cx="40" cy="42" r="4.5" fill="#05070f" opacity="0.35" />
+          <circle cx="34" cy="60" r="3.5" fill="#05070f" opacity="0.35" />
+          <circle cx="48" cy="28" r="3" fill="#05070f" opacity="0.35" />
+          <circle cx="28" cy="48" r="2.5" fill="#05070f" opacity="0.3" />
+        </svg>
+      </div>
+    </div>
+  </div>
+
+  <!-- The Glassmorphic Chat Panel -->
+  <div class="chat-panel" id="chat-panel">
+    <!-- Chat Header supports dragging the native window too! -->
+    <div class="chat-header" data-tauri-drag-region>
+      <div class="chat-title-group">
+        <div class="chat-avatar"></div>
+        <div class="chat-meta">
+          <h2>Luna Companion</h2>
+          <span>Connected (Mock)</span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="settings-btn" id="toggle-settings" aria-label="Settings">
+          <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
+        <button class="close-btn" id="close-chat" aria-label="Close Chat">
+          <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+    </div>
+    
+    <!-- Settings Panel (Overlays chat content) -->
+    <div class="settings-panel" id="settings-panel">
+      <div class="settings-content">
+        <h3>App Settings</h3>
+        
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Always on Top</span>
+            <span class="setting-desc">Keep Luna floating above other windows</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="always-on-top-toggle" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+        
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Close on Click Away</span>
+            <span class="setting-desc">Collapse chat automatically when unfocused</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="close-on-blur-toggle">
+            <span class="slider"></span>
+          </label>
+        </div>
+        
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Global Shortcut</span>
+            <span class="setting-desc">Press shortcut to toggle Luna window</span>
+          </div>
+          <div class="shortcut-recorder-group">
+            <input type="text" class="shortcut-input" id="shortcut-input" readonly value="⌥Space">
+            <button type="button" class="record-btn" id="record-shortcut-btn">Record</button>
+          </div>
+        </div>
+        
+      </div>
+      
+      <div class="settings-footer">
+        <button class="save-settings-btn" id="close-settings-btn">Done</button>
+      </div>
+    </div>
+    
+    <div class="chat-messages" id="chat-messages">
+      <div class="msg assistant">
+        Hey there! I am your native macOS Luna companion. Drag me anywhere on your screens, or click me to toggle this chat widget!
+      </div>
+    </div>
+    
+    <form class="chat-input-area" id="chat-form">
+      <input type="text" class="chat-input" id="message-input" placeholder="Type a message..." autocomplete="off">
+      <button type="submit" class="send-btn" aria-label="Send message">
+        <svg viewBox="0 0 24 24">
+          <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+        </svg>
+      </button>
+    </form>
+  </div>
+
+  <script>
+    const moon = document.getElementById('moon');
+    const moonWrapper = document.getElementById('moon-wrapper');
+    const moonSvg = document.querySelector('.moon-svg');
+    const chatPanel = document.getElementById('chat-panel');
+    const closeChat = document.getElementById('close-chat');
+    const chatForm = document.getElementById('chat-form');
+    const messageInput = document.getElementById('message-input');
+    const chatMessages = document.getElementById('chat-messages');
+
+    let pressStartTime = 0;
+    let pressStartX = 0;
+    let pressStartY = 0;
+
+    const chatHeader = document.querySelector('.chat-header');
+
+    // =========================================================================
+    // ── LUNA COMPANION NATIVE MODULE ─────────────────────────────────────────
+    // =========================================================================
+
+    /**
+     * Styled, formatted console logger for native-web runtime monitoring.
+     */
+    const Logger = {
+      prefix: '%c[Luna Companion]',
+      style: 'color: #8ab4f8; font-weight: bold; background: rgba(138, 180, 248, 0.08); padding: 2px 6px; border-radius: 4px;',
+      
+      info(message, ...args) {
+        console.log(this.prefix, this.style, message, ...args);
+      },
+      warn(message, ...args) {
+        console.warn('%c[Luna Warning]', 'color: #f59e0b; font-weight: bold;', message, ...args);
+      },
+      error(message, ...args) {
+        console.error('%c[Luna Error]', 'color: #ef4444; font-weight: bold;', message, ...args);
+      }
+    };
+
+    /**
+     * DOM references cache.
+     */
+    const DOM = {
+      moon: document.getElementById('moon'),
+      moonWrapper: document.getElementById('moon-wrapper'),
+      moonSvg: document.querySelector('.moon-svg'),
+      chatPanel: document.getElementById('chat-panel'),
+      chatHeader: document.querySelector('.chat-header'),
+      closeChat: document.getElementById('close-chat'),
+      chatForm: document.getElementById('chat-form'),
+      messageInput: document.getElementById('message-input'),
+      chatMessages: document.getElementById('chat-messages'),
+      toggleSettings: document.getElementById('toggle-settings'),
+      settingsPanel: document.getElementById('settings-panel'),
+      closeSettingsBtn: document.getElementById('close-settings-btn'),
+      alwaysOnTopToggle: document.getElementById('always-on-top-toggle'),
+      closeOnBlurToggle: document.getElementById('close-on-blur-toggle'),
+      shortcutInput: document.getElementById('shortcut-input'),
+      recordShortcutBtn: document.getElementById('record-shortcut-btn')
+    };
+
+    /**
+     * Shared state manager.
+     */
+    const State = {
+      pressStartTime: 0,
+      pressStartX: 0,
+      pressStartY: 0,
+      isRecordingShortcut: false,
+      responseIndex: 0
+    };
+
+    /**
+     * Tauri Window & OS integration services.
+     */
+    const TauriService = {
+      async setWindowSize(width, height) {
+        if (!window.__TAURI__) return;
+        try {
+          const { getCurrentWindow, LogicalSize } = window.__TAURI__.window;
+          const appWindow = getCurrentWindow();
+          await appWindow.setSize(new LogicalSize(width, height));
+          Logger.info(`Resized window logical boundary: ${width}x${height}`);
+        } catch (e) {
+          Logger.error("Tauri window resizing failure:", e);
+        }
+      },
+
+      async applyAlwaysOnTop(enabled) {
+        if (!window.__TAURI__) return;
+        try {
+          const { getCurrentWindow } = window.__TAURI__.window;
+          const appWindow = getCurrentWindow();
+          await appWindow.setAlwaysOnTop(enabled);
+          Logger.info(`Window alwaysOnTop state updated: ${enabled}`);
+        } catch (e) {
+          Logger.error("Tauri window always-on-top updates failure:", e);
+        }
+      },
+
+      startDragging() {
+        if (window.__TAURI__) {
+          try {
+            window.__TAURI__.window.getCurrentWindow().startDragging();
+            Logger.info("Initiated native window dragging region");
+          } catch (e) {
+            Logger.error("Tauri window dragging error:", e);
+          }
+        }
+      }
+    };
+
+    /**
+     * Chat Messaging & Mock stream engine.
+     */
+    const ChatEngine = {
+      responses: [
+        "I am rendering natively under macOS using Tauri's lightweight WebKit wrapper. The window is 100% transparent!",
+        "I see you! Because my moon element has the `data-tauri-drag-region` attribute, dragging the moon itself moves my whole native window across your desktop.",
+        "In our final implementation, I will watch `~/.luna/.last-thread-default` to automatically load whichever thread you're currently interacting with in your terminal CLI.",
+        "Yes! Our styling uses backdrop-filters for that ultra-premium frosted glassmorphism which fits perfectly with macOS Dark Mode.",
+        "Tell my developer if you like this native layout, and we can hook up the real WebSocket channel next!"
+      ],
+
+      appendMessage(role, text) {
+        const msgDiv = document.createElement('div');
+        msgDiv.className = `msg ${role}`;
+        msgDiv.textContent = text;
+        DOM.chatMessages.appendChild(msgDiv);
+      },
+
+      showTypingIndicator() {
+        const indicatorDiv = document.createElement('div');
+        indicatorDiv.className = 'msg assistant';
+        indicatorDiv.innerHTML = `
+          <div class="typing-dots">
+            <div class="dot"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+          </div>
+        `;
+        DOM.chatMessages.appendChild(indicatorDiv);
+        DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+        return indicatorDiv;
+      },
+
+      handleSubmit(e) {
+        e.preventDefault();
+        const text = DOM.messageInput.value.trim();
+        if (!text) return;
+        
+        Logger.info(`Appended user message: "${text}"`);
+        this.appendMessage('user', text);
+        DOM.messageInput.value = '';
+        DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+        
+        const typingIndicator = this.showTypingIndicator();
+        
+        setTimeout(() => {
+          typingIndicator.remove();
+          const responseText = this.responses[State.responseIndex];
+          State.responseIndex = (State.responseIndex + 1) % this.responses.length;
+          
+          this.appendMessage('assistant', responseText);
+          Logger.info(`Appended assistant stream message: "${responseText}"`);
+          DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+        }, 1400);
+      }
+    };
+
+    /**
+     * Settings configurations and state synchronization.
+     */
+    const SettingsEngine = {
+      load() {
+        Logger.info("Loading saved settings from localStorage...");
+        const savedAlwaysOnTop = localStorage.getItem('luna_always_on_top');
+        if (savedAlwaysOnTop !== null) {
+          DOM.alwaysOnTopToggle.checked = savedAlwaysOnTop === 'true';
+          TauriService.applyAlwaysOnTop(DOM.alwaysOnTopToggle.checked);
+        } else {
+          DOM.alwaysOnTopToggle.checked = true;
+          TauriService.applyAlwaysOnTop(true);
+        }
+
+        const savedCloseOnBlur = localStorage.getItem('luna_close_on_blur');
+        if (savedCloseOnBlur !== null) {
+          DOM.closeOnBlurToggle.checked = savedCloseOnBlur === 'true';
+        } else {
+          DOM.closeOnBlurToggle.checked = false;
+        }
+
+        const savedShortcut = localStorage.getItem('luna_global_shortcut');
+        if (savedShortcut !== null) {
+          DOM.shortcutInput.value = savedShortcut;
+        }
+        Logger.info("Settings synchronized successfully");
+      },
+
+      toggle() {
+        DOM.settingsPanel.classList.toggle('active');
+        Logger.info("Settings tab visibility toggled");
+      },
+
+      close() {
+        DOM.settingsPanel.classList.remove('active');
+        Logger.info("Settings tab closed");
+      },
+
+      handleAlwaysOnTopChange() {
+        const enabled = DOM.alwaysOnTopToggle.checked;
+        localStorage.setItem('luna_always_on_top', String(enabled));
+        TauriService.applyAlwaysOnTop(enabled);
+      },
+
+      handleCloseOnBlurChange() {
+        localStorage.setItem('luna_close_on_blur', String(DOM.closeOnBlurToggle.checked));
+        Logger.info(`Close on blur changed: ${DOM.closeOnBlurToggle.checked}`);
+      },
+
+      startRecordingShortcut() {
+        State.isRecordingShortcut = true;
+        DOM.recordShortcutBtn.textContent = 'Cancel';
+        DOM.shortcutInput.classList.add('recording');
+        DOM.shortcutInput.value = 'Press keys...';
+        Logger.warn("Global shortcut recording active: listening to key combination");
+      },
+
+      stopRecordingShortcut(cancelled = false) {
+        State.isRecordingShortcut = false;
+        DOM.recordShortcutBtn.textContent = 'Record';
+        DOM.shortcutInput.classList.remove('recording');
+        if (cancelled) {
+          const savedShortcut = localStorage.getItem('luna_global_shortcut') || '⌥Space';
+          DOM.shortcutInput.value = savedShortcut;
+          Logger.info("Global shortcut recording cancelled");
+        }
+      },
+
+      handleKeyDown(e) {
+        if (!State.isRecordingShortcut) return;
+        
+        e.preventDefault();
+        e.stopPropagation();
+
+        const key = e.key;
+        if (['Control', 'Shift', 'Alt', 'Meta'].includes(key)) {
+          return; // modifier-only wait
+        }
+
+        let shortcut = '';
+        if (e.ctrlKey) shortcut += '⌃';
+        if (e.altKey) shortcut += '⌥';
+        if (e.shiftKey) shortcut += '⇧';
+        if (e.metaKey) shortcut += '⌘';
+
+        let keyName = key.toUpperCase();
+        if (key === ' ') keyName = 'Space';
+        
+        shortcut += keyName;
+
+        DOM.shortcutInput.value = shortcut;
+        localStorage.setItem('luna_global_shortcut', shortcut);
+        Logger.info(`Dynamic hotkey mapping resolved and saved: "${shortcut}"`);
+        
+        this.stopRecordingShortcut(false);
+      }
+    };
+
+    /**
+     * UI Parallax & Window state transitions.
+     */
+    const UIController = {
+      async toggleChat() {
+        const isActive = DOM.chatPanel.classList.contains('active');
+        if (isActive) {
+          DOM.chatPanel.classList.remove('active');
+          Logger.info("Initiated chat collapse transition");
+          setTimeout(() => {
+            TauriService.setWindowSize(140, 140);
+          }, 300);
+        } else {
+          await TauriService.setWindowSize(560, 520);
+          DOM.chatPanel.classList.add('active');
+          DOM.messageInput.focus();
+          Logger.info("Chat expand transition completed");
+        }
+      },
+
+      handlePointerDown(e) {
+        State.pressStartTime = Date.now();
+        State.pressStartX = e.clientX;
+        State.pressStartY = e.clientY;
+        DOM.moonWrapper.style.transform = 'scale(0.92)';
+        TauriService.startDragging();
+      },
+
+      handlePointerMove(e) {
+        const rect = DOM.moon.getBoundingClientRect();
+        const moonCenterX = rect.left + rect.width / 2;
+        const moonCenterY = rect.top + rect.height / 2;
+        
+        const deltaX = e.clientX - moonCenterX;
+        const deltaY = e.clientY - moonCenterY;
+        
+        const maxShift = 6;
+        const dist = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+        const ratio = Math.min(1, dist / 120);
+        
+        const shiftX = (deltaX / 120) * maxShift * ratio;
+        const shiftY = (deltaY / 120) * maxShift * ratio;
+        
+        DOM.moonSvg.style.setProperty('--px', `${shiftX}px`);
+        DOM.moonSvg.style.setProperty('--py', `${shiftY}px`);
+        
+        const tiltX = -(deltaY / 120) * 8 * ratio;
+        const tiltY = (deltaX / 120) * 8 * ratio;
+        const rot = (deltaX / 120) * 4 * ratio;
+        
+        DOM.moonSvg.style.setProperty('--rot', `${rot}deg`);
+        
+        const scale = (Date.now() - State.pressStartTime < 200 && e.buttons === 1) ? 0.92 : 1.04;
+        DOM.moonWrapper.style.transform = `rotateX(${tiltX}deg) rotateY(${tiltY}deg) scale(${scale})`;
+      },
+
+      handlePointerUp(e) {
+        DOM.moonWrapper.style.transform = 'none';
+        const duration = Date.now() - State.pressStartTime;
+        const distMove = Math.sqrt(Math.pow(e.clientX - State.pressStartX, 2) + Math.pow(e.clientY - State.pressStartY, 2));
+        
+        if (duration < 280 && distMove < 5) {
+          this.toggleChat();
+        }
+      },
+
+      handlePointerLeave() {
+        DOM.moonSvg.style.setProperty('--px', '0px');
+        DOM.moonSvg.style.setProperty('--py', '0px');
+        DOM.moonSvg.style.setProperty('--rot', '0deg');
+        DOM.moonWrapper.style.transform = 'none';
+      },
+
+      handleBlur() {
+        if (DOM.closeOnBlurToggle.checked && DOM.chatPanel.classList.contains('active') && !State.isRecordingShortcut) {
+          Logger.info("Focus click-away blur event fired: collapsing companion");
+          DOM.settingsPanel.classList.remove('active');
+          DOM.chatPanel.classList.remove('active');
+          setTimeout(() => {
+            TauriService.setWindowSize(140, 140);
+          }, 300);
+        }
+      }
+    };
+
+    // =========================================================================
+    // ── INITIALIZATION & BINDINGS ────────────────────────────────────────────
+    // =========================================================================
+
+    // Moon Events
+    DOM.moon.addEventListener('pointerdown', (e) => UIController.handlePointerDown(e));
+    DOM.moon.addEventListener('pointermove', (e) => UIController.handlePointerMove(e));
+    DOM.moon.addEventListener('pointerup', (e) => UIController.handlePointerUp(e));
+    DOM.moon.addEventListener('pointerleave', () => UIController.handlePointerLeave());
+    DOM.chatHeader.addEventListener('pointerdown', () => TauriService.startDragging());
+
+    // Chat Panel Controls
+    DOM.closeChat.addEventListener('click', () => UIController.toggleChat());
+    DOM.chatForm.addEventListener('submit', (e) => ChatEngine.handleSubmit(e));
+
+    // Settings Panel Controls
+    DOM.toggleSettings.addEventListener('click', () => SettingsEngine.toggle());
+    DOM.closeSettingsBtn.addEventListener('click', () => SettingsEngine.close());
+    DOM.alwaysOnTopToggle.addEventListener('change', () => SettingsEngine.handleAlwaysOnTopChange());
+    DOM.closeOnBlurToggle.addEventListener('change', () => SettingsEngine.handleCloseOnBlurChange());
+    
+    DOM.recordShortcutBtn.addEventListener('click', () => {
+      if (State.isRecordingShortcut) {
+        SettingsEngine.stopRecordingShortcut(true);
+      } else {
+        SettingsEngine.startRecordingShortcut();
+      }
+    });
+
+    // Window and Input Event Listeners
+    window.addEventListener('blur', () => UIController.handleBlur());
+    window.addEventListener('keydown', (e) => SettingsEngine.handleKeyDown(e));
+
+    // Boot App Settings
+    SettingsEngine.load();
+  </script>
+</body>
+</html>
