@@ -1,20 +1,32 @@
 /**
- * setup-mode-boot.smoke.ts — gate-logic verification for Task 3 (boot-time
- * credential readiness gate).
+ * setup-mode-boot.smoke.ts — gate-logic + layer-build verification for Task 3
+ * (boot-time credential readiness gate).
  *
  * chat-server.ts has NO tsc gate (root tsconfig excludes apps/ui-web/**;
  * the file is in scripts/, Bun-transpiled), so a broken import or wrong
- * argument shape in the live boot crashes silently. This smoke imports the
- * REAL exported gate functions and exercises all three decision paths:
+ * argument shape in the live boot crashes silently. This smoke:
  *
- *   1. No accounts → setup
- *   2. claude-code:login account + auth status ok:false → setup
- *   3. claude-code:login account + auth status ok:true → normal
+ *   1. Tests the three decision paths of the credential gate (pure functions,
+ *      no network / disk required).
+ *   2. Actually BUILDS the setup-mode ManagedRuntime on ephemeral ports and
+ *      disposes it — this proves the requirement chain (UIService →
+ *      ObservabilityService → Clock) is correctly satisfied and that passing
+ *      null for chatService/accountBroker/survey/localShellBridge is
+ *      type-correct and accepted by startUIWebSocketServer.
  *
- * Run: bun run apps/ui-web/scripts/smoke/setup-mode-boot.smoke.ts
+ * Regression guard: removing `.pipe(Layer.provide(uiL))` from
+ * buildSetupServerLayer MUST make this smoke FAIL with a missing-UIService
+ * defect. Verify once (delete → FAIL → restore) before committing.
+ *
+ * Run: LUNA_UI_WS_TOKEN=smoke-test-token-ok bun run apps/ui-web/scripts/smoke/setup-mode-boot.smoke.ts
+ * (UI_WS_TOKEN / LUNA_UI_WS_TOKEN must be ≥16 chars — required by startUIWebSocketServer)
  * Exit 0 = PASS, non-zero = FAIL.
  */
 import { decideMode, probeCredentialReadiness } from "../credential-readiness.js"
+import { buildSetupServerLayer } from "../chat-server.js"
+import { Effect, ManagedRuntime } from "effect"
+
+// ── Part 1: credential gate decision paths ────────────────────────────────
 
 // Case 1: no accounts → setup
 const empty = probeCredentialReadiness({
@@ -45,4 +57,20 @@ const ok = probeCredentialReadiness({
 if (decideMode(ok) !== "normal") throw new Error("expected normal for healthy login")
 console.log("[smoke] case 3 OK: healthy login → normal")
 
-console.log("[smoke] setup-mode gate OK")
+// ── Part 2: layer build + dispose ─────────────────────────────────────────
+//
+// Use port 0 for WS (OS picks an ephemeral port). Control server uses
+// Bun.serve with no scope finalizer so we pass a fixed port here — but
+// since the smoke process exits after dispose(), there is no port leak.
+// We still avoid 4754 to not conflict with a running server.
+const rt = ManagedRuntime.make(buildSetupServerLayer(0, 14754))
+rt.runPromise(Effect.void)
+  .then(() => rt.dispose())
+  .then(() => {
+    console.log("[smoke] setup-mode gate OK")
+    process.exit(0)
+  })
+  .catch((err: unknown) => {
+    console.error("[smoke] FAIL — setup-mode layer build defect:", err)
+    process.exit(1)
+  })
