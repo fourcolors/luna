@@ -4,9 +4,24 @@
 use tauri::Manager;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
+#[tauri::command]
+fn get_last_thread_id() -> Option<String> {
+    if let Ok(home) = std::env::var("HOME") {
+        let path = std::path::PathBuf::from(home).join(".luna").join(".last-thread-default");
+        if let Ok(content) = std::fs::read_to_string(path) {
+            let thread_id = content.trim().to_string();
+            if !thread_id.is_empty() {
+                return Some(thread_id);
+            }
+        }
+    }
+    None
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![get_last_thread_id])
         .setup(|app| {
             // Register a universal system-wide global shortcut to toggle Luna window.
             // Attempts a self-healing fallback chain to avoid macOS key collisions.

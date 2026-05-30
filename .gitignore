@@ -12,3 +12,4 @@ pnpm-lock.yaml
 
 # Local-only symlink to ~/.luna/CLAUDE.md (Operator's box only)
 /CLAUDE.md
+HANDOFF_NOTES.md

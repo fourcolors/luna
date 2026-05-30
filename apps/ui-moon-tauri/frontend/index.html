@@ -190,7 +190,6 @@
     
     .chat-meta span {
       font-size: 0.65rem;
-      color: #34d399;
       display: flex;
       align-items: center;
       gap: 4px;
@@ -201,9 +200,37 @@
       display: inline-block;
       width: 5px;
       height: 5px;
-      background: #10b981;
       border-radius: 50%;
+    }
+    
+    .chat-meta span.connected {
+      color: #34d399;
+    }
+    .chat-meta span.connected::before {
+      background: #10b981;
       box-shadow: 0 0 5px #10b981;
+    }
+    
+    .chat-meta span.disconnected {
+      color: #f87171;
+    }
+    .chat-meta span.disconnected::before {
+      background: #ef4444;
+      box-shadow: 0 0 5px #ef4444;
+    }
+    
+    .chat-meta span.connecting {
+      color: #fbbf24;
+      animation: pulseConnecting 1s infinite alternate;
+    }
+    .chat-meta span.connecting::before {
+      background: #f59e0b;
+      box-shadow: 0 0 5px #f59e0b;
+    }
+    
+    @keyframes pulseConnecting {
+      from { opacity: 0.6; }
+      to { opacity: 1; }
     }
     
     .close-btn {
@@ -278,6 +305,22 @@
       display: flex;
       flex-direction: column;
       gap: 16px;
+      overflow-y: auto;
+      padding-right: 6px;
+    }
+    
+    .settings-content::-webkit-scrollbar {
+      width: 6px;
+    }
+    .settings-content::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .settings-content::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.12);
+      border-radius: 3px;
+    }
+    .settings-content::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.22);
     }
     
     .settings-content h3 {
@@ -558,6 +601,29 @@
       width: 16px;
       height: 16px;
       fill: currentColor;
+    
+    .setting-item.flex-column {
+      flex-direction: column;
+      align-items: stretch;
+    }
+    
+    .premium-text-input {
+      width: 100%;
+      height: 32px;
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 8px;
+      padding: 0 10px;
+      font-family: var(--font-body);
+      font-size: 0.8rem;
+      color: #e2e8f0;
+      outline: none;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    
+    .premium-text-input:focus {
+      border-color: rgba(138, 180, 248, 0.4);
+      background: rgba(0, 0, 0, 0.45);
     }
   </style>
 </head>
@@ -602,10 +668,16 @@
         <div class="chat-avatar"></div>
         <div class="chat-meta">
           <h2>Luna Companion</h2>
-          <span>Connected (Mock)</span>
+          <span id="connection-status" class="disconnected">Disconnected</span>
         </div>
       </div>
       <div class="header-actions">
+        <button class="settings-btn" id="new-chat" aria-label="New conversation" title="New conversation">
+          <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+        </button>
         <button class="settings-btn" id="toggle-settings" aria-label="Settings">
           <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3"></circle>
@@ -657,6 +729,22 @@
             <input type="text" class="shortcut-input" id="shortcut-input" readonly value="⌥Space">
             <button type="button" class="record-btn" id="record-shortcut-btn">Record</button>
           </div>
+        </div>
+
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">WebSocket Server URL</span>
+            <span class="setting-desc">Luna Central server WebSocket address</span>
+          </div>
+          <input type="text" id="ws-url-input" class="premium-text-input" placeholder="ws://127.0.0.1:4753/ui">
+        </div>
+
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">Auth Token</span>
+            <span class="setting-desc">Optional authentication bearer token</span>
+          </div>
+          <input type="password" id="ws-token-input" class="premium-text-input" placeholder="Enter token (optional)...">
         </div>
         
       </div>
@@ -734,12 +822,16 @@
       messageInput: document.getElementById('message-input'),
       chatMessages: document.getElementById('chat-messages'),
       toggleSettings: document.getElementById('toggle-settings'),
+      newChat: document.getElementById('new-chat'),
       settingsPanel: document.getElementById('settings-panel'),
       closeSettingsBtn: document.getElementById('close-settings-btn'),
       alwaysOnTopToggle: document.getElementById('always-on-top-toggle'),
       closeOnBlurToggle: document.getElementById('close-on-blur-toggle'),
       shortcutInput: document.getElementById('shortcut-input'),
-      recordShortcutBtn: document.getElementById('record-shortcut-btn')
+      recordShortcutBtn: document.getElementById('record-shortcut-btn'),
+      wsUrlInput: document.getElementById('ws-url-input'),
+      wsTokenInput: document.getElementById('ws-token-input'),
+      connectionStatus: document.getElementById('connection-status')
     };
 
     /**
@@ -750,7 +842,17 @@
       pressStartX: 0,
       pressStartY: 0,
       isRecordingShortcut: false,
-      responseIndex: 0
+      ws: null,
+      activeThreadId: null,
+      activeTurnId: null,
+      wsUrl: 'ws://127.0.0.1:4753/ui',
+      wsToken: '',
+      reconnectAttempts: 0,
+      isManuallyClosing: false,
+      pendingUserMessage: null,
+      // Set true when the user switches servers so the next syncThread()
+      // ignores the (non-server-scoped) last-thread file and lists fresh.
+      skipLastThreadFile: false
     };
 
     /**
@@ -794,17 +896,252 @@
     };
 
     /**
-     * Chat Messaging & Mock stream engine.
+     * Real WebSocket connection manager and wire protocol implementation.
+     */
+    const WebSocketEngine = {
+      connect() {
+        if (State.ws) {
+          this.disconnect();
+        }
+
+        Logger.info(`Connecting to WebSocket: ${State.wsUrl}`);
+        this.updateStatus('connecting', 'Connecting...');
+        State.isManuallyClosing = false;
+
+        const sep = State.wsUrl.includes('?') ? '&' : '?';
+        const fullUrl = State.wsToken
+          ? `${State.wsUrl}${sep}token=${encodeURIComponent(State.wsToken)}`
+          : State.wsUrl;
+
+        try {
+          State.ws = new WebSocket(fullUrl);
+        } catch (e) {
+          Logger.error("WebSocket creation error:", e);
+          this.updateStatus('disconnected', 'Connection Error');
+          this.scheduleReconnect();
+          return;
+        }
+
+        State.ws.addEventListener('open', () => {
+          Logger.info("WebSocket connected successfully");
+          State.reconnectAttempts = 0;
+          this.updateStatus('connected', 'Connected');
+          
+          // Trigger thread synchronization on connect
+          this.syncThread();
+        });
+
+        State.ws.addEventListener('message', (event) => {
+          try {
+            const frame = JSON.parse(event.data);
+            this.handleFrame(frame);
+          } catch (e) {
+            Logger.warn("Malformed WebSocket frame dropped:", e);
+          }
+        });
+
+        State.ws.addEventListener('close', (event) => {
+          Logger.warn(`WebSocket closed. Code: ${event.code}, Reason: ${event.reason}`);
+          this.updateStatus('disconnected', 'Disconnected');
+          if (!State.isManuallyClosing) {
+            this.scheduleReconnect();
+          }
+        });
+
+        State.ws.addEventListener('error', (event) => {
+          Logger.error("WebSocket transport error occurred");
+          this.updateStatus('disconnected', 'Error');
+        });
+      },
+
+      disconnect() {
+        if (State.ws) {
+          Logger.info("Disconnecting WebSocket client manually");
+          State.isManuallyClosing = true;
+          try {
+            State.ws.close();
+          } catch (e) {
+            // ignore
+          }
+          State.ws = null;
+        }
+      },
+
+      send(frame) {
+        if (State.ws && State.ws.readyState === WebSocket.OPEN) {
+          try {
+            State.ws.send(JSON.stringify(frame));
+          } catch (e) {
+            Logger.error("Failed to send frame over WebSocket:", e);
+          }
+        } else {
+          Logger.warn("Attempted to send frame while WebSocket was not OPEN", frame);
+        }
+      },
+
+      updateStatus(statusClass, text) {
+        DOM.connectionStatus.className = statusClass;
+        DOM.connectionStatus.textContent = text;
+      },
+
+      scheduleReconnect() {
+        const delay = Math.min(1000 * Math.pow(2, State.reconnectAttempts), 16000);
+        State.reconnectAttempts++;
+        Logger.info(`Scheduling reconnect attempt #${State.reconnectAttempts} in ${delay}ms`);
+        setTimeout(() => {
+          if (!State.ws || State.ws.readyState === WebSocket.CLOSED) {
+            this.connect();
+          }
+        }, delay);
+      },
+
+      async syncThread() {
+        // The last-thread file (~/.luna/.last-thread-default) is NOT scoped per
+        // server. After switching servers its thread belongs to the old server's
+        // DB ("unknown thread" here), so skip it once and list fresh instead.
+        const skipFile = State.skipLastThreadFile;
+        State.skipLastThreadFile = false;
+
+        // First invoke get_last_thread_id Tauri command
+        let lastThreadId = null;
+        if (!skipFile && window.__TAURI__) {
+          try {
+            lastThreadId = await window.__TAURI__.core.invoke('get_last_thread_id');
+            Logger.info(`Tauri get_last_thread_id returned: ${lastThreadId}`);
+          } catch (e) {
+            Logger.error("Failed to invoke get_last_thread_id via Tauri:", e);
+          }
+        }
+
+        if (lastThreadId) {
+          State.activeThreadId = lastThreadId;
+          Logger.info(`Syncing: subscribing to terminal thread "${lastThreadId}"`);
+          this.send({ type: 'subscribe-thread', threadId: lastThreadId });
+        } else {
+          // If no active thread ID from the terminal, request the thread list
+          Logger.info("No active thread found from terminal; listing threads instead");
+          this.send({ type: 'list-threads' });
+        }
+      },
+
+      handleFrame(frame) {
+        Logger.info(`Received frame type: "${frame.type}"`, frame);
+
+        switch (frame.type) {
+          case 'hello':
+            // authenticated successfully, wait for list-threads or subscribe-thread response
+            break;
+
+          case 'thread-list': {
+            // If we don't have an active thread subscribed yet, subscribe to the most recent one
+            const threads = frame.threads || [];
+            if (!State.activeThreadId && threads.length > 0) {
+              const mostRecent = threads[0];
+              State.activeThreadId = mostRecent.id;
+              Logger.info(`No active thread; auto-subscribing to most recent thread "${mostRecent.id}"`);
+              this.send({ type: 'subscribe-thread', threadId: mostRecent.id });
+            } else if (!State.activeThreadId) {
+              // No threads exist! Let's start a brand new thread.
+              Logger.info("No threads exist on the server; creating a brand new thread");
+              this.send({ type: 'new-thread' });
+            }
+            break;
+          }
+
+          case 'thread-created':
+            // A new thread was created (either by us or elsewhere)
+            if (!State.activeThreadId || State.activeThreadId !== frame.thread.id) {
+              State.activeThreadId = frame.thread.id;
+              Logger.info(`Auto-subscribing to newly created thread "${frame.thread.id}"`);
+              this.send({ type: 'subscribe-thread', threadId: frame.thread.id });
+              
+              if (State.pendingUserMessage) {
+                const text = State.pendingUserMessage;
+                State.pendingUserMessage = null;
+                // Wait slightly for subscription to settle, then send message
+                setTimeout(() => {
+                  this.send({
+                    type: 'user-message',
+                    threadId: State.activeThreadId,
+                    text: text
+                  });
+                }, 100);
+              }
+            }
+            break;
+
+          case 'thread-snapshot':
+            // Clear current messages and load snapshot
+            DOM.chatMessages.innerHTML = '';
+            if (frame.messages && frame.messages.length > 0) {
+              for (const msg of frame.messages) {
+                ChatEngine.appendMessage(msg.role, msg.text);
+              }
+            } else {
+              ChatEngine.appendMessage('assistant', 'This thread is empty. Type a message below to start chatting!');
+            }
+            DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+            break;
+
+          case 'assistant-delta': {
+            // Dynamic premium streaming message update!
+            State.activeTurnId = frame.turnId;
+            let lastMsg = DOM.chatMessages.lastElementChild;
+            
+            // If the last message is an assistant message and not a user one, append to it.
+            if (lastMsg && lastMsg.classList.contains('assistant')) {
+              // Check if it's the typing indicator container (which has class assistant but contains .typing-dots)
+              if (lastMsg.querySelector('.typing-dots')) {
+                // Replace typing indicator with the first delta
+                lastMsg.innerHTML = '';
+                lastMsg.textContent = frame.text;
+              } else {
+                // Append delta text
+                lastMsg.textContent += frame.text;
+              }
+            } else {
+              // Create new assistant message
+              ChatEngine.appendMessage('assistant', frame.text);
+            }
+            DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+            break;
+          }
+
+          case 'assistant-done':
+            // Finalize streaming turn
+            State.activeTurnId = null;
+            // Force a clean sync of the UI to make sure the final structured message matches
+            if (frame.message) {
+              let lastMsg = DOM.chatMessages.lastElementChild;
+              if (lastMsg && lastMsg.classList.contains('assistant') && !lastMsg.querySelector('.typing-dots')) {
+                lastMsg.textContent = frame.message.text;
+              }
+            }
+            DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+            break;
+
+          case 'assistant-error':
+            State.activeTurnId = null;
+            // Remove typing indicator if any
+            let lastMsg = DOM.chatMessages.lastElementChild;
+            if (lastMsg && lastMsg.querySelector('.typing-dots')) {
+              lastMsg.remove();
+            }
+            ChatEngine.appendMessage('assistant', `⚠️ Error: ${frame.error.message}`);
+            DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+            break;
+
+          case 'user-accepted':
+            // The user message was accepted by the server. Remove typing indicator when streaming starts
+            break;
+        }
+      }
+    };
+
+    /**
+     * Chat Messaging & WebSocket submission engine.
      */
     const ChatEngine = {
-      responses: [
-        "I am rendering natively under macOS using Tauri's lightweight WebKit wrapper. The window is 100% transparent!",
-        "I see you! Because my moon element has the `data-tauri-drag-region` attribute, dragging the moon itself moves my whole native window across your desktop.",
-        "In our final implementation, I will watch `~/.luna/.last-thread-default` to automatically load whichever thread you're currently interacting with in your terminal CLI.",
-        "Yes! Our styling uses backdrop-filters for that ultra-premium frosted glassmorphism which fits perfectly with macOS Dark Mode.",
-        "Tell my developer if you like this native layout, and we can hook up the real WebSocket channel next!"
-      ],
-
       appendMessage(role, text) {
         const msgDiv = document.createElement('div');
         msgDiv.className = `msg ${role}`;
@@ -827,6 +1164,27 @@
         return indicatorDiv;
       },
 
+      /**
+       * Reset to a brand-new, empty conversation on the CURRENT server.
+       * Clears the visible transcript + thread state, then asks the server for
+       * a fresh thread (the 'thread-created' handler auto-subscribes). Same
+       * server, clean slate, no reconnect.
+       */
+      newConversation() {
+        Logger.info("Clearing conversation -> requesting a new thread");
+        State.activeThreadId = null;
+        State.activeTurnId = null;
+        State.pendingUserMessage = null;
+        DOM.chatMessages.innerHTML = '';
+        this.appendMessage('assistant', 'New conversation started. Type a message below!');
+        DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+        if (State.ws && State.ws.readyState === WebSocket.OPEN) {
+          WebSocketEngine.send({ type: 'new-thread' });
+        } else {
+          Logger.warn("Not connected; cleared locally. A new thread is created on next connect.");
+        }
+      },
+
       handleSubmit(e) {
         e.preventDefault();
         const text = DOM.messageInput.value.trim();
@@ -837,17 +1195,22 @@
         DOM.messageInput.value = '';
         DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
         
-        const typingIndicator = this.showTypingIndicator();
+        // Show typing indicator
+        this.showTypingIndicator();
         
-        setTimeout(() => {
-          typingIndicator.remove();
-          const responseText = this.responses[State.responseIndex];
-          State.responseIndex = (State.responseIndex + 1) % this.responses.length;
-          
-          this.appendMessage('assistant', responseText);
-          Logger.info(`Appended assistant stream message: "${responseText}"`);
-          DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
-        }, 1400);
+        // Send user message over the real WebSocket!
+        if (State.activeThreadId) {
+          WebSocketEngine.send({
+            type: 'user-message',
+            threadId: State.activeThreadId,
+            text: text
+          });
+        } else {
+          // If we don't have a thread subscribed yet, we create a thread first, then send
+          Logger.warn("No active thread subscribed; queuing message and creating new thread");
+          WebSocketEngine.send({ type: 'new-thread' });
+          State.pendingUserMessage = text;
+        }
       }
     };
 
@@ -877,7 +1240,30 @@
         if (savedShortcut !== null) {
           DOM.shortcutInput.value = savedShortcut;
         }
+
+        // Load WebSocket configurations
+        const savedWsUrl = localStorage.getItem('luna_ws_url');
+        if (savedWsUrl !== null) {
+          State.wsUrl = savedWsUrl;
+          DOM.wsUrlInput.value = savedWsUrl;
+        } else {
+          State.wsUrl = 'ws://127.0.0.1:4753/ui';
+          DOM.wsUrlInput.value = 'ws://127.0.0.1:4753/ui';
+        }
+
+        const savedWsToken = localStorage.getItem('luna_ws_token');
+        if (savedWsToken !== null) {
+          State.wsToken = savedWsToken;
+          DOM.wsTokenInput.value = savedWsToken;
+        } else {
+          State.wsToken = '';
+          DOM.wsTokenInput.value = '';
+        }
+
         Logger.info("Settings synchronized successfully");
+
+        // Establish the initial WebSocket connection!
+        WebSocketEngine.connect();
       },
 
       toggle() {
@@ -888,6 +1274,29 @@
       close() {
         DOM.settingsPanel.classList.remove('active');
         Logger.info("Settings tab closed");
+
+        // Save the WS configuration changes and reconnect if they changed!
+        const newUrl = DOM.wsUrlInput.value.trim() || 'ws://127.0.0.1:4753/ui';
+        const newToken = DOM.wsTokenInput.value.trim();
+        
+        if (newUrl !== State.wsUrl || newToken !== State.wsToken) {
+          Logger.info("WebSocket connection settings changed; reconnecting...");
+          State.wsUrl = newUrl;
+          State.wsToken = newToken;
+          localStorage.setItem('luna_ws_url', newUrl);
+          localStorage.setItem('luna_ws_token', newToken);
+          // Thread IDs are scoped to a server's DB. After switching servers the
+          // previous thread does not exist here, so reset thread state, ignore
+          // the cross-server last-thread file, and clear the transcript before
+          // reconnecting. (Transient network reconnects go through connect()
+          // directly and intentionally keep the current thread.)
+          State.activeThreadId = null;
+          State.activeTurnId = null;
+          State.pendingUserMessage = null;
+          State.skipLastThreadFile = true;
+          DOM.chatMessages.innerHTML = '';
+          WebSocketEngine.connect();
+        }
       },
 
       handleAlwaysOnTopChange() {
@@ -967,6 +1376,9 @@
           DOM.chatPanel.classList.add('active');
           DOM.messageInput.focus();
           Logger.info("Chat expand transition completed");
+          
+          // Re-sync thread on opening chat widget to keep up with terminal changes!
+          WebSocketEngine.syncThread();
         }
       },
 
@@ -1048,6 +1460,7 @@
 
     // Chat Panel Controls
     DOM.closeChat.addEventListener('click', () => UIController.toggleChat());
+    DOM.newChat.addEventListener('click', () => ChatEngine.newConversation());
     DOM.chatForm.addEventListener('submit', (e) => ChatEngine.handleSubmit(e));
 
     // Settings Panel Controls
