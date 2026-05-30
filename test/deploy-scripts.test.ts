@@ -585,6 +585,7 @@ exit 0
   it("script entrypoints are executable", () => {
     for (const script of [
       "install.sh",
+      "install-mac.command",
       "scripts/luna-container-create",
       "scripts/luna-server-install",
     ]) {
