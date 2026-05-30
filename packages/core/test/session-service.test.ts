@@ -63,6 +63,25 @@ describe("SessionService", () => {
     expect(out.status).toBe("active")
   })
 
+  it("close after resume closes again (does not silently no-op)", async () => {
+    // Regression: `close` guards on an in-process `closedIds` set; `resume`
+    // reactivates the store but must also clear the guard, else a resumed
+    // session can never be closed again and leaks as "active" forever.
+    const result = await run(
+      Effect.gen(function* () {
+        const svc = yield* SessionService
+        const store = yield* SessionStore
+        const s = yield* svc.open({ model: "m" })
+        yield* svc.close(s.id)
+        yield* svc.resume(s.id)
+        yield* svc.close(s.id) // must take effect, not no-op on the stale guard
+        return yield* store.get(s.id)
+      }),
+    )
+    expect(result?.status).toBe("closed")
+    expect(result?.endedAt).toBe(1_700_000_000_000)
+  })
+
   it("fork creates child with parentSessionId link", async () => {
     const child = await run(
       Effect.gen(function* () {
