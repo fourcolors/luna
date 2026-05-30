@@ -20,7 +20,7 @@
  *   - useRef<TransportHandle> → composable owns the live handle internally
  *   - useEffect cleanup on unmount is implicit via composable.onCleanup
  */
-import { type Component, For, Show, createEffect, createMemo, createSignal } from "solid-js"
+import { type Component, For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js"
 import {
   filterEvents,
   type ClientFrame,
@@ -37,6 +37,7 @@ import {
   createUiStore,
   type SlashCommand,
 } from "@luna/ui-shared-solid"
+import { SetupTerminal, b64ToBytes } from "./SetupTerminal"
 
 const CONTROL_URL = "http://127.0.0.1:4754/trpc"
 
@@ -137,8 +138,25 @@ export const App: Component = () => {
     store.dispatch({ tag: "select-account", accountId: cfg().selectedAccountId })
   }
 
+  // Registered by the mounted SetupTerminal; receives raw pty bytes.
+  // Kept outside signals — concurrent chunks in one tick must not be lost.
+  let ptyWrite: ((bytes: Uint8Array) => void) | null = null
+  // Pre-mount buffer: pty-output frames can arrive after setupMode flips true
+  // but before SetupTerminal's onMount registers ptyWrite (the FIRST chunk is
+  // the login URL). Buffer them and drain on register so nothing is dropped.
+  let ptyWriteQueue: Uint8Array[] = []
+
   const transport = createTransport({
     onFrame: (frame) => {
+      if (frame.type === "pty-output") {
+        // Decode base64 → raw bytes; pass directly to xterm (Uint8Array).
+        // Do NOT route through the store — the reducer intentionally ignores
+        // pty-output and a signal would lose concurrent chunks in one tick.
+        const bytes = b64ToBytes(frame.data)
+        if (ptyWrite) ptyWrite(bytes)
+        else ptyWriteQueue.push(bytes)
+        return
+      }
       store.dispatch(frame)
       // Sidebar freshness: any frame that mutates a thread's last-message
       // metadata should refresh the list. Server orders by lastMessageAt,
@@ -177,6 +195,14 @@ export const App: Component = () => {
     transport.connect(c.url, c.token)
   }
   const onDisconnect = (): void => transport.disconnect()
+
+  // Auto-connect on mount if we have a valid token (>= 16 chars)
+  onMount(() => {
+    const c = cfg()
+    if (c.token && c.token.length >= 16) {
+      onConnect()
+    }
+  })
 
   const allKinds = createMemo(() => {
     const set = new Set<string>(store.state.advertisedKinds)
@@ -263,6 +289,9 @@ export const App: Component = () => {
   const chatEnabled = createMemo(
     () => isConnected() && store.state.capabilities.chat,
   )
+  const setupMode = createMemo(
+    () => isConnected() && store.state.capabilities.setup,
+  )
   const selectedThread = createMemo(() =>
     store.state.selectedThreadId !== null
       ? (store.state.threads.get(store.state.selectedThreadId) ?? null)
@@ -300,18 +329,20 @@ export const App: Component = () => {
               ⚙ Settings
             </button>
           </Show>
-          <button
-            class={`chip ${pane() === "chat" ? "active" : ""}`}
-            onClick={() => setPane("chat")}
-          >
-            Chat
-          </button>
-          <button
-            class={`chip ${pane() === "obs" ? "active" : ""}`}
-            onClick={() => setPane("obs")}
-          >
-            Events
-          </button>
+          <Show when={!setupMode()}>
+            <button
+              class={`chip ${pane() === "chat" ? "active" : ""}`}
+              onClick={() => setPane("chat")}
+            >
+              Chat
+            </button>
+            <button
+              class={`chip ${pane() === "obs" ? "active" : ""}`}
+              onClick={() => setPane("obs")}
+            >
+              Events
+            </button>
+          </Show>
         </div>
         <Show when={showSettings()}>
           <div class="row settings-row">
@@ -470,51 +501,67 @@ export const App: Component = () => {
       </header>
 
       <Show
-        when={pane() === "chat"}
+        when={setupMode()}
         fallback={
-          <ObsPanel
-            allKinds={allKinds()}
-            selectedKinds={selectedKinds()}
-            toggleKind={toggleKind}
-            clearKinds={() => setSelectedKinds(new Set())}
-            filtered={filtered()}
-            totalEvents={store.state.events.length}
-            lastDrop={store.state.lastDrop}
-            droppedTotal={store.state.droppedTotal}
-            lastPingAt={store.state.lastPingAt}
-          />
-        }
-      >
-        <div
-          class={`chat-layout${
-            selectedThread() && selectedThread()!.artifacts.length > 0
-              ? " with-artifacts"
-              : ""
-          }`}
-        >
-          <Sidebar
-            threads={store.state.threadList}
-            threadViews={store.state.threads}
-            selectedId={store.state.selectedThreadId}
-            onSelect={selectThread}
-            onNew={chatEnabled() ? newThread : null}
-          />
-          <ChatPanel
-            thread={selectedThread()}
-            onSend={sendUserMessage}
-            onInterrupt={interrupt}
-            onCommand={handleCommand}
-            disabled={!chatEnabled()}
-            enterToSend={cfg().enterToSend}
-          />
           <Show
-            when={
-              selectedThread() && selectedThread()!.artifacts.length > 0
+            when={pane() === "chat"}
+            fallback={
+              <ObsPanel
+                allKinds={allKinds()}
+                selectedKinds={selectedKinds()}
+                toggleKind={toggleKind}
+                clearKinds={() => setSelectedKinds(new Set())}
+                filtered={filtered()}
+                totalEvents={store.state.events.length}
+                lastDrop={store.state.lastDrop}
+                droppedTotal={store.state.droppedTotal}
+                lastPingAt={store.state.lastPingAt}
+              />
             }
           >
-            <ArtifactPanel artifacts={selectedThread()!.artifacts} />
+            <div
+              class={`chat-layout${
+                selectedThread() && selectedThread()!.artifacts.length > 0
+                  ? " with-artifacts"
+                  : ""
+              }`}
+            >
+              <Sidebar
+                threads={store.state.threadList}
+                threadViews={store.state.threads}
+                selectedId={store.state.selectedThreadId}
+                onSelect={selectThread}
+                onNew={chatEnabled() ? newThread : null}
+              />
+              <ChatPanel
+                thread={selectedThread()}
+                onSend={sendUserMessage}
+                onInterrupt={interrupt}
+                onCommand={handleCommand}
+                disabled={!chatEnabled()}
+                enterToSend={cfg().enterToSend}
+              />
+              <Show
+                when={
+                  selectedThread() && selectedThread()!.artifacts.length > 0
+                }
+              >
+                <ArtifactPanel artifacts={selectedThread()!.artifacts} />
+              </Show>
+            </div>
           </Show>
-        </div>
+        }
+      >
+        <SetupTerminal
+          send={send}
+          registerWrite={(fn) => {
+            ptyWrite = fn
+            if (fn) {
+              for (const b of ptyWriteQueue) fn(b)
+              ptyWriteQueue = []
+            }
+          }}
+        />
       </Show>
     </div>
   )
