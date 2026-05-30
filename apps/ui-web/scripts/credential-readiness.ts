@@ -42,19 +42,34 @@ const defaultReadAccounts = (dbPath: string): ReadonlyArray<AccountRow> => {
   }
 }
 
-const defaultAuthStatus = (claudeExe: string): { ok: boolean } => {
-  const r = spawnSync(claudeExe, ["auth", "status", "--json"], {
+/**
+ * Probe `claude auth status --json` and return whether the session is logged
+ * in. Exported so setup-login.ts can reuse it after a `claude setup-token`
+ * exit without duplicating the spawnSync logic.
+ *
+ * @param claudeExe - path or name of the claude executable
+ * @param _spawnSync - test seam (defaults to node:child_process spawnSync)
+ */
+export const probeAuthLoggedIn = (
+  claudeExe: string,
+  _spawnSync: typeof spawnSync = spawnSync,
+): boolean => {
+  const r = _spawnSync(claudeExe, ["auth", "status", "--json"], {
     encoding: "utf8",
     timeout: AUTH_PROBE_TIMEOUT_MS,
     env: process.env,
   })
-  if (r.status !== 0 || typeof r.stdout !== "string") return { ok: false }
+  if (r.status !== 0 || typeof r.stdout !== "string") return false
   try {
-    return { ok: (JSON.parse(r.stdout) as { loggedIn?: boolean }).loggedIn === true }
+    return (JSON.parse(r.stdout) as { loggedIn?: boolean }).loggedIn === true
   } catch {
-    return { ok: false }
+    return false
   }
 }
+
+const defaultAuthStatus = (claudeExe: string): { ok: boolean } => ({
+  ok: probeAuthLoggedIn(claudeExe),
+})
 
 export const decideMode = (r: Readiness): Mode => (r.ready ? "normal" : "setup")
 
