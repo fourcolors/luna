@@ -200,7 +200,10 @@ import {
 import { startControlServer } from "@luna/control-server"
 import { resolveOpAccounts } from "./op-accounts.js"
 import { resolveUiWsToken } from "./ui-ws-token.js"
-import { decideMode, probeCredentialReadiness } from "./credential-readiness.js"
+import { decideMode, probeCredentialReadiness, probeAuthLoggedIn } from "./credential-readiness.js"
+import { spawnSetupPty } from "./setup-pty.js"
+import { onLoginAttemptComplete } from "./setup-login.js"
+import type { PtyOutputFrame } from "@luna/ui-ws"
 
 const TOKEN = resolveUiWsToken()
 const BIND_HOST = process.env["LUNA_UI_WS_HOST"]?.trim() || undefined
@@ -728,9 +731,21 @@ const installShutdown = (rt: { dispose: () => Promise<unknown> }): void => {
 //
 // `wsPort`/`controlPort` default to the production ports. Pass 0 in
 // tests/smokes to let the OS pick an ephemeral port (avoids conflicts).
+//
+// Task 1b: `setupPtyFactory` is a test seam. Production passes NO arg
+// (undefined) → the real factory built from CLAUDE_EXE + paths.lunaDbPath is
+// used. Pass an explicit factory in tests/smokes to avoid spawning real
+// `claude` / calling real process.exit; pass `null` to wire no pty at all.
 export const buildSetupServerLayer = (
   wsPort: number = 4753,
   controlPort: number = 4754,
+  setupPtyFactory?: {
+    onConnect: (send: (frame: PtyOutputFrame) => void) => {
+      write: (utf8: string) => void
+      resize: (cols: number, rows: number) => void
+      close: () => void
+    }
+  } | null,
 ): Layer.Layer<never, Error> => {
   const clockL = Clock.Default
   const paths = resolveRuntimePaths()
@@ -742,6 +757,35 @@ export const buildSetupServerLayer = (
     Layer.provide(obsL),
     Layer.provide(clockL),
   )
+
+  // Build the per-connection pty factory that runs `claude setup-token` and,
+  // on exit, checks login status → seeds the account row → restarts (exit 0).
+  // When a factory is explicitly passed (test seam), use it as-is.
+  // When undefined (production), build the real one from the environment.
+  // When null, wire no setupPty (explicit opt-out for callers that want setup-
+  // mode without a pty — e.g. smoke tests that don't want to spawn claude).
+  const CLAUDE_EXE = process.env["LUNA_CLAUDE_CODE_EXECUTABLE"]?.trim() || "claude"
+  const resolvedSetupPty =
+    setupPtyFactory !== undefined
+      ? setupPtyFactory   // caller-supplied (or explicit null)
+      : {
+          onConnect: (send: (frame: PtyOutputFrame) => void) => {
+            const pty = spawnSetupPty({
+              // Single-quote-escape so a path with spaces is safe inside the shell string.
+              command: `'${CLAUDE_EXE.replace(/'/g, "'\\''")}' setup-token`,
+              onData: (b64) => send({ type: "pty-output", data: b64 }),
+              onExit: () => {
+                onLoginAttemptComplete({
+                  send,
+                  checkLoggedIn: () => probeAuthLoggedIn(CLAUDE_EXE),
+                  dbPath: paths.lunaDbPath,
+                })
+              },
+            })
+            return { write: pty.write, resize: pty.resize, close: pty.close }
+          },
+        }
+
   return Layer.scopedDiscard(
     Effect.gen(function* () {
       yield* startControlServer(controlPort)
@@ -755,6 +799,7 @@ export const buildSetupServerLayer = (
         accountBroker: null,
         survey: null,
         localShellBridge: null,
+        setupPty: resolvedSetupPty,
       })
     }),
   ).pipe(Layer.provide(uiL))
