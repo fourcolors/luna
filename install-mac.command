@@ -25,15 +25,36 @@ warn() { printf "${YELLOW}warning: %b${NC}\n" "$*" >&2; }
 error() { printf "${RED}error: %b${NC}\n" "$*" >&2; }
 die() { error "$*"; exit 1; }
 
+check_port() {
+  local port=$1
+  local name=$2
+  if lsof -i :"$port" >/dev/null 2>&1; then
+    local pid
+    pid=$(lsof -t -i :"$port" || true)
+    if [[ -n "$pid" ]]; then
+      warn "Port $port ($name) is already in use by PID $pid."
+      read -p "Would you like to stop this process and continue? [y/N]: " -r KILL_ANS
+      if [[ "$KILL_ANS" =~ ^[Yy]$ ]]; then
+        info "Stopping process $pid..."
+        kill -9 "$pid" || true
+        sleep 1
+      else
+        die "Port $port ($name) is occupied. Please free the port or stop the conflicting service, then run this installer again."
+      fi
+    fi
+  fi
+}
+
 clear
-# Premium ASCII Banner
-printf "${CYAN}%b${NC}" "
-██╗     ██╗   ██╗███╗   ██╗ █████╗ 
-██║     ██║   ██║████╗  ██║██╔══██╗
-██║     ██║   ██║██╔██╗ ██║███████║
-██║     ██║   ██║██║╚██╗██║██╔══██║
-███████╗╚██████╔╝██║ ╚████║██║  ██║
-╚══════╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═╝
+# Premium ASCII Banner with Luna Moon
+printf "${CYAN}%s${NC}\n" "
+██╗     ██╗   ██╗███╗   ██╗ █████╗       _.._
+██║     ██║   ██║████╗  ██║██╔══██╗    .' .-'\\\`
+██║     ██║   ██║██╔██╗ ██║███████║   /  /
+██║     ██║   ██║██║╚██╗██║██╔══██║  |  |
+███████╗╚██████╔╝██║ ╚████║██║  ██║   \\\\  \\\\
+╚══════╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═╝    '. '-,_
+                                         \\\`''\\\`
 "
 printf "${BOLD}${GREEN}      Luna Premium macOS Onboarding & Installer${NC}\n"
 printf "--------------------------------------------------------\n\n"
@@ -81,6 +102,10 @@ ENV_FILE="$LUNA_DATA/.env"
 
 case "$SELECTION" in
   1)
+    info "Probing local ports to prevent conflict crash-loops..."
+    check_port 4753 "Luna Chat Server"
+    check_port 5173 "Vite Web UI"
+
     info "Starting Complete Desktop Install..."
     
     # Run the core installer script against current directory
@@ -101,7 +126,7 @@ case "$SELECTION" in
       chmod 600 "$ENV_FILE"
       
       # Upsert token
-      tmp_env="$(mktemp)"
+      tmp_env="$(mktemp "$LUNA_DATA/env.tmp.XXXXXX")"
       awk -v token="$TOKEN" '
         BEGIN { replaced = 0 }
         index($0, "UI_WS_TOKEN=") == 1 { print "UI_WS_TOKEN=" token; replaced = 1; next }
@@ -112,7 +137,7 @@ case "$SELECTION" in
       chmod 600 "$ENV_FILE"
       
       # Also update client settings
-      tmp_env2="$(mktemp)"
+      tmp_env2="$(mktemp "$LUNA_DATA/env.tmp.XXXXXX")"
       awk -v token="$TOKEN" '
         BEGIN { replaced = 0 }
         index($0, "LUNA_STABLE_UI_WS_TOKEN=") == 1 { print "LUNA_STABLE_UI_WS_TOKEN=" token; replaced = 1; next }
@@ -139,8 +164,17 @@ case "$SELECTION" in
     disown $UI_PID
     
     success "Local processes booted successfully."
-    info "Waiting for servers to initialize..."
-    sleep 3
+    info "Waiting for web UI server to start (http://localhost:5173)..."
+    count=0
+    max_wait=20
+    while ! curl -fs http://localhost:5173 >/dev/null 2>&1; do
+      sleep 0.5
+      count=$((count + 1))
+      if [[ $count -ge $max_wait ]]; then
+        warn "Web UI server is taking longer than expected to start. Launching browser anyway..."
+        break
+      fi
+    done
     
     info "Opening your default browser to the web chat interface..."
     open "http://localhost:5173"
