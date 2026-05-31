@@ -46,10 +46,13 @@ port_guard_warn() { printf 'port-guard: %s\n' "$*" >&2; }
 port_guard_info() { printf 'port-guard: %s\n' "$*" >&2; }
 
 # port_guard_port_free <port>
-# True when nothing is LISTENing on <port>. Probes the PORT (not `kill -0 <pid>`)
-# so liveness checking and signalling stay independent.
+# True when nothing is LISTENing on 127.0.0.1:<port>. Scoped to LOOPBACK on
+# purpose (see ensure_port_free): a listener on a different address — e.g.
+# Tailscale serving the port on a tailnet address — does not conflict with the
+# local server's loopback bind. Probes the PORT (not `kill -0 <pid>`) so liveness
+# checking and signalling stay independent.
 port_guard_port_free() {
-  ! lsof -i :"$1" -sTCP:LISTEN >/dev/null 2>&1
+  ! lsof -i @127.0.0.1:"$1" -sTCP:LISTEN >/dev/null 2>&1
 }
 
 # port_guard_stop_pid <pid> <port>
@@ -94,9 +97,13 @@ port_guard_stop_pid() {
 ensure_port_free() {
   local port="$1" name="$2" luna_dir="$3"
 
+  # Scope the probe to 127.0.0.1: the local server binds loopback, so a listener
+  # on a *different* address — e.g. Tailscale serving :"$port" on a tailnet
+  # address — does NOT conflict with our bind and must not trip the guard (which
+  # would otherwise refuse the install). Only a loopback listener really blocks us.
   local pid
-  pid="$(lsof -t -i :"$port" -sTCP:LISTEN 2>/dev/null | head -1 || true)"
-  [[ -n "$pid" ]] || return 0 # nothing listening — port is free
+  pid="$(lsof -t -i @127.0.0.1:"$port" -sTCP:LISTEN 2>/dev/null | head -1 || true)"
+  [[ -n "$pid" ]] || return 0 # nothing on loopback:port — free for our bind
 
   local cmd
   cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"

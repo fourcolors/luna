@@ -1074,6 +1074,25 @@ exit 0
       expect(signals).toContain("kill -KILL 28274") // then escalate
     })
 
+    it("ignores a tailnet-only listener — a loopback bind is still free (Tailscale on :4753)", () => {
+      const temp = makeTempDir()
+      const log = join(temp, "kill.log")
+      // Models a Tailscale box: something LISTENs on :4753 at a tailnet address
+      // (found by the any-address `-t -i :port` query) but NOTHING is on
+      // 127.0.0.1:port. The local server binds loopback, so the guard must scope
+      // its probe to @127.0.0.1 — a tailnet-address listener must NOT block it.
+      const result = runGuard(
+        `LOG="${log}"; : > "$LOG"\n`
+        + `lsof() { case "$*" in *@127.0.0.1*) ;; *) echo 28274 ;; esac; }\n`
+        + `ps() { echo "$FOREIGN_CMD"; }\n`
+        + `kill() { echo "kill $*" >> "$LOG"; }\n`
+        + `ensure_port_free 4753 "Luna Chat Server" "$DIR"; echo "rc=$?"`,
+        { env: { DIR, FOREIGN_CMD: TAILSCALE_CMD } },
+      )
+      expect(rcOf(result)).toBe("0") // loopback free → install proceeds
+      expect(readFileSync(log, "utf8")).toBe("") // nothing signalled
+    })
+
     it("install-mac.command wires the guard and no longer blind-kills", () => {
       const script = readFileSync(join(repoRoot, "install-mac.command"), "utf8")
       expect(script).toContain("source scripts/lib/port-guard.sh")
