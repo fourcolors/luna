@@ -34,6 +34,10 @@ source scripts/lib/gen-token.sh
 # including, on a Tailscale box, the daemon that reaches a remote Luna (#7).
 source scripts/lib/port-guard.sh
 
+# Renders the launchd LaunchAgent that supervises the chat server, so it survives
+# login/crash and the in-app Restart button works (defines render_launchd_plist, #2).
+source scripts/lib/launchd-plist.sh
+
 clear
 # Premium ASCII Banner with Luna Moon
 printf "${CYAN}%s${NC}\n" "
@@ -91,12 +95,20 @@ ENV_FILE="$LUNA_DATA/.env"
 
 case "$SELECTION" in
   1)
+    # launchd identifiers for the supervised chat server (#2). Defined up front so
+    # the early bootout below and the bootstrap later share them.
+    LAUNCHD_LABEL="com.user.luna-chat-server"
+    LAUNCHD_DOMAIN="gui/$(id -u)"
+    # If a prior install left a launchd-supervised chat server, remove it FIRST so
+    # the port guard below isn't fighting launchd's KeepAlive respawn (#2/#7).
+    launchctl bootout "$LAUNCHD_DOMAIN/$LAUNCHD_LABEL" 2>/dev/null || true
+
     info "Probing local ports to prevent conflict crash-loops..."
     # Identity-checked + graceful: only stop a stale instance of THIS install
     # (SIGTERM-first); refuse and abort if a FOREIGN process holds the port —
     # e.g. on a box where Tailscale binds :4753 to reach a remote Luna (#7).
     ensure_port_free 4753 "Luna Chat Server" "$LUNA_DIR" || exit 1
-    ensure_port_free 5173 "Vite Web UI" "$LUNA_DIR" || exit 1
+    ensure_port_free 5174 "Vite Web UI" "$LUNA_DIR" || exit 1
 
     info "Starting Complete Desktop Install..."
     
@@ -117,7 +129,9 @@ case "$SELECTION" in
     mkdir -p "$LUNA_DATA" "$LUNA_DATA/logs" "$LUNA_DATA/run" "$LUNA_DATA/claude"
     
     # Seed a secure, random UI WebSocket token if one doesn't exist
-    if [[ ! -f "$ENV_FILE" ]] || ! grep -q "UI_WS_TOKEN=" "$ENV_FILE" 2>/dev/null; then
+    # Anchor ^UI_WS_TOKEN= so a pre-existing .env carrying only a profiled
+    # LUNA_*_UI_WS_TOKEN= line doesn't substring-match and suppress the seed (#6).
+    if [[ ! -f "$ENV_FILE" ]] || ! grep -q "^UI_WS_TOKEN=" "$ENV_FILE" 2>/dev/null; then
       info "Generating a secure, random 32-character UI WebSocket token..."
       # Clean 32-char hex via the shared SIGPIPE-safe generator.
       TOKEN="$(gen_ui_ws_token)"
@@ -126,7 +140,12 @@ case "$SELECTION" in
       touch "$ENV_FILE"
       chmod 600 "$ENV_FILE"
       
-      # Upsert token
+      # Upsert the CANONICAL single-box token (finding #6). UI_WS_TOKEN is the
+      # server's own secret AND the value the CLI's default "stable" profile
+      # resolves via its UI_WS_TOKEN dotenv fallback — so on this one-box install
+      # this single write feeds both reader and writer. No redundant per-profile
+      # LUNA_STABLE_UI_WS_TOKEN copy is needed (that name is for REMOTE clients,
+      # written by install.sh, where a client box has no local server token).
       tmp_env="$(mktemp "$LUNA_DATA/env.tmp.XXXXXX")"
       awk -v token="$TOKEN" '
         BEGIN { replaced = 0 }
@@ -136,39 +155,41 @@ case "$SELECTION" in
       ' "$ENV_FILE" > "$tmp_env"
       mv "$tmp_env" "$ENV_FILE"
       chmod 600 "$ENV_FILE"
-      
-      # Also update client settings
-      tmp_env2="$(mktemp "$LUNA_DATA/env.tmp.XXXXXX")"
-      awk -v token="$TOKEN" '
-        BEGIN { replaced = 0 }
-        index($0, "LUNA_STABLE_UI_WS_TOKEN=") == 1 { print "LUNA_STABLE_UI_WS_TOKEN=" token; replaced = 1; next }
-        { print }
-        END { if (replaced == 0) print "LUNA_STABLE_UI_WS_TOKEN=" token }
-      ' "$ENV_FILE" > "$tmp_env2"
-      mv "$tmp_env2" "$ENV_FILE"
-      chmod 600 "$ENV_FILE"
     fi
     
     # Read the token for background startup injection
     TOKEN=$(awk -F= '$1 == "UI_WS_TOKEN" {print $2}' "$ENV_FILE")
     
-    info "Launching local Luna chat server natively in the background..."
-    # Start chat server
-    nohup bun run --cwd "$LUNA_DIR/apps/ui-web" scripts/chat-server.ts > "$LUNA_DATA/logs/server.log" 2>&1 &
-    SERVER_PID=$!
-    disown $SERVER_PID
+    info "Installing a launchd LaunchAgent so the chat server is supervised..."
+    # Supervise the chat server via launchd (finding #2): it survives login and
+    # crashes, and the in-app Restart button works — control.restart kickstarts
+    # this exact label in the gui/<uid> domain. Replaces the old unsupervised
+    # nohup. The server reads its token from ~/.luna/.env via LUNA_HOME (set in
+    # the plist), so no token is baked into the LaunchAgent.
+    BUN_BIN="$(command -v bun)"
+    PLIST_FILE="$LUNA_DATA/$LAUNCHD_LABEL.plist"
+    render_launchd_plist "$BUN_BIN" "$LUNA_DIR" "$LUNA_DATA" > "$PLIST_FILE"
+    chmod 644 "$PLIST_FILE"
+    # bootout any prior instance, clear a lingering disable, then bootstrap into
+    # the gui/<uid> domain (modern launchctl; load/unload are deprecated).
+    launchctl bootout "$LAUNCHD_DOMAIN/$LAUNCHD_LABEL" 2>/dev/null || true
+    launchctl enable "$LAUNCHD_DOMAIN/$LAUNCHD_LABEL" 2>/dev/null || true
+    launchctl bootstrap "$LAUNCHD_DOMAIN" "$PLIST_FILE" \
+      || die "Could not load the Luna LaunchAgent. Run manually: launchctl bootstrap $LAUNCHD_DOMAIN '$PLIST_FILE'"
+    success "Chat server is supervised by launchd (Restart button now works)."
     
     info "Launching local Vite web UI dev server in the background..."
-    # Start Vite web app
+    # Start the Vite dev server on :5174 — the port vite.config.ts actually
+    # binds (an earlier installer assumed the wrong port and never reached it).
     VITE_UI_WS_TOKEN="$TOKEN" nohup bun run --cwd "$LUNA_DIR/apps/ui-web" dev > "$LUNA_DATA/logs/ui.log" 2>&1 &
     UI_PID=$!
     disown $UI_PID
-    
+
     success "Local processes booted successfully."
-    info "Waiting for web UI server to start (http://localhost:5173)..."
+    info "Waiting for web UI server to start (http://localhost:5174)..."
     count=0
     max_wait=20
-    while ! curl -fs http://localhost:5173 >/dev/null 2>&1; do
+    while ! curl -fs http://localhost:5174 >/dev/null 2>&1; do
       sleep 0.5
       count=$((count + 1))
       if [[ $count -ge $max_wait ]]; then
@@ -178,14 +199,14 @@ case "$SELECTION" in
     done
     
     info "Opening your default browser to the web chat interface..."
-    open "http://localhost:5173"
+    open "http://localhost:5174"
     
     success "Complete desktop installation finished successfully!"
     printf "\n"
     printf "  - Client Wrapper: ${CYAN}luna chat${NC}\n"
     printf "  - Server log:     ${CYAN}tail -f ~/.luna/logs/server.log${NC}\n"
     printf "  - UI log:         ${CYAN}tail -f ~/.luna/logs/ui.log${NC}\n"
-    printf "  - Web Chat URL:   ${CYAN}http://localhost:5173${NC}\n\n"
+    printf "  - Web Chat URL:   ${CYAN}http://localhost:5174${NC}\n\n"
     printf "${GREEN}If the credential was missing, the web page will guide you through Claude subscription login in setup-mode. Paste the authorization token into the embedded terminal to complete onboarding!${NC}\n"
     ;;
 

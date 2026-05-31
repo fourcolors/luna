@@ -9,8 +9,8 @@
 # on whatever process held the port. That is dangerous on two counts:
 #   1. It never checks WHAT it is killing. On a machine that reaches a remote
 #      Luna over Tailscale, the Tailscale daemon binds :4753 on the tailnet
-#      address — so the installer would offer to SIGKILL Tailscale. Port 5173 is
-#      the stock Vite default and collides with unrelated dev servers too.
+#      address — so the installer would offer to SIGKILL Tailscale. The Vite UI
+#      port (5174) collides with unrelated dev servers too.
 #   2. SIGKILL is wrong even for a genuine stale Luna server: it cannot be
 #      trapped, so it bypasses chat-server.ts's SIGTERM handler (installShutdown)
 #      → runtime.dispose() / db.close() never runs → the vectorlite HNSW sidecar
@@ -31,7 +31,8 @@ port_guard_is_luna_cmd() {
   # or a different Luna checkout) won't be running out of the user's install path.
   [[ -n "$luna_dir" && "$cmd" == *"$luna_dir"* ]] || return 1
   # …and be one of our two known server entrypoints (see install-mac.command:
-  # `scripts/chat-server.ts` for :4753, `apps/ui-web … dev` for vite on :5173).
+  # `scripts/chat-server.ts` for :4753, `apps/ui-web … dev` for vite on :5174).
+  # The `*\ dev*` glob also matches `dev:preview`, so either UI launch is covered.
   case "$cmd" in
     *chat-server.ts*) return 0 ;;
     *apps/ui-web*\ dev*) return 0 ;;

@@ -620,6 +620,47 @@ exit 0
     expect(script).toContain("--stable-fallback-url ws://127.0.0.1:4753/ui")
   })
 
+  it("desktop install probes/serves the Vite UI on the correct port (5174, not 5173)", () => {
+    const script = readFileSync(join(repoRoot, "install-mac.command"), "utf8")
+    // Pre-existing bug the review caught: vite.config.ts binds the dev server on
+    // 5174, but the installer probed/polled/opened 5173 (which Vite never bound).
+    // All five references corrected to 5174.
+    expect(script).not.toContain("5173")
+    expect(script).toContain("http://localhost:5174")
+    expect(script).toContain('ensure_port_free 5174 "Vite Web UI" "$LUNA_DIR"')
+    // Decision latch (#3): keep the plain Vite dev server, NOT dev:preview —
+    // `vite preview` is not a production server and would bake the token into
+    // on-disk dist/. Do not let a refactor silently re-introduce it.
+    expect(script).not.toContain("dev:preview")
+  })
+
+  it("desktop install writes only the canonical UI_WS_TOKEN, not a redundant LUNA_STABLE_UI_WS_TOKEN", () => {
+    const script = readFileSync(join(repoRoot, "install-mac.command"), "utf8")
+    // Finding #6: UI_WS_TOKEN is the canonical single-box token. The server reads
+    // it (resolveUiWsToken) and the CLI's stable profile resolves the SAME value
+    // via its UI_WS_TOKEN dotenv fallback — so the second hand-synced awk write of
+    // LUNA_STABLE_UI_WS_TOKEN was pure duplication. Keep the canonical write;
+    // drop the redundant one. (Readers still accept the old name for back-compat,
+    // so existing on-disk .env files keep working — that invariant is unchanged.)
+    expect(script).toContain('print "UI_WS_TOKEN=" token')
+    // The redundant awk WRITE of LUNA_STABLE_UI_WS_TOKEN must be gone. We forbid
+    // the awk print statement specifically (not any mention) so the documenting
+    // comment that names LUNA_STABLE_UI_WS_TOKEN's remote-client role can stay.
+    expect(script).not.toContain('print "LUNA_STABLE_UI_WS_TOKEN=" token')
+    expect(script).not.toContain('index($0, "LUNA_STABLE_UI_WS_TOKEN=")')
+  })
+
+  it("anchors the token-seed guard so a profiled LUNA_*_UI_WS_TOKEN line can't suppress the canonical write", () => {
+    const script = readFileSync(join(repoRoot, "install-mac.command"), "utf8")
+    // Finding #6 follow-up: now that UI_WS_TOKEN is the SOLE canonical write, the
+    // "do we already have a token?" guard must anchor ^UI_WS_TOKEN=. An unanchored
+    // substring match also matches LUNA_STABLE_UI_WS_TOKEN= / LUNA_DEV_UI_WS_TOKEN=,
+    // so a pre-existing .env carrying only a profiled name would skip the seed and
+    // boot the server with NO UI_WS_TOKEN (resolveUiWsToken then throws).
+    expect(script).toContain('grep -q "^UI_WS_TOKEN="')
+    expect(script).not.toContain('grep -q "UI_WS_TOKEN="')
+  })
+
   it("gen-token.sh emits a clean 32-char lowercase-hex token (SIGPIPE-safe, actually random)", () => {
     const result = runScript("scripts/lib/gen-token.sh", [])
     expect(result.status).toBe(0)
@@ -776,10 +817,150 @@ exit 0
       const script = readFileSync(join(repoRoot, "install-mac.command"), "utf8")
       expect(script).toContain("source scripts/lib/port-guard.sh")
       expect(script).toContain('ensure_port_free 4753 "Luna Chat Server" "$LUNA_DIR"')
-      expect(script).toContain('ensure_port_free 5173 "Vite Web UI" "$LUNA_DIR"')
+      expect(script).toContain('ensure_port_free 5174 "Vite Web UI" "$LUNA_DIR"')
       // The dangerous old behavior must be gone for good (finding #7).
       expect(script).not.toContain("kill -9")
       expect(script).not.toContain("check_port")
+    })
+  })
+
+  describe("luna-deploy env writes are atomic (finding: cross-filesystem mv)", () => {
+    const LIB = join(repoRoot, "scripts/lib/luna-deploy.sh")
+
+    // Source the lib in a fresh bash, mock `mktemp` to record the argument it is
+    // invoked with (while delegating to the real binary), then run `body`. A
+    // non-atomic write calls `mktemp` with NO argument → the temp file lands in
+    // the system temp dir (a different filesystem from the target), so the
+    // follow-up `mv` is a copy-then-delete that can lose the .env on a crash.
+    // The fix passes `mktemp "$env_file.XXXXXXXX"` so the temp file is created
+    // beside the target and the rename is atomic.
+    const runDeploy = (body: string, env: Record<string, string | undefined>) =>
+      spawnSync(
+        "bash",
+        [
+          "-c",
+          `set -uo pipefail; source "${LIB}"\n`
+          + `mktemp() { printf '%s\\n' "$*" >> "$MKTEMP_LOG"; command mktemp "$@"; }\n`
+          + body,
+        ],
+        { cwd: repoRoot, encoding: "utf8", env: { ...process.env, ...env } },
+      )
+
+    it("upsert creates its temp file beside the target .env (same filesystem)", () => {
+      const temp = makeTempDir()
+      const envFile = join(temp, ".env")
+      const mktempLog = join(temp, "mktemp-args.log")
+
+      const result = runDeploy(
+        `luna_upsert_env "$ENV_FILE" FOO bar; echo "rc=$?"`,
+        { ENV_FILE: envFile, MKTEMP_LOG: mktempLog },
+      )
+
+      expect(result.stdout).toContain("rc=0")
+      // Every mktemp call must target the .env's own directory, never the
+      // empty-arg (system temp) form.
+      const args = readFileSync(mktempLog, "utf8").trim().split("\n").filter(Boolean)
+      expect(args.length).toBeGreaterThan(0)
+      for (const arg of args) {
+        expect(arg.startsWith(envFile)).toBe(true)
+      }
+      // The write itself must still be correct.
+      expect(readFileSync(envFile, "utf8")).toContain("FOO=bar")
+    })
+
+    it("remove creates its temp file beside the target .env (same filesystem)", () => {
+      const temp = makeTempDir()
+      const envFile = join(temp, ".env")
+      const mktempLog = join(temp, "mktemp-args.log")
+      writeFileSync(envFile, ["FOO=bar", "BAZ=qux", ""].join("\n"))
+
+      const result = runDeploy(
+        `luna_remove_env "$ENV_FILE" FOO; echo "rc=$?"`,
+        { ENV_FILE: envFile, MKTEMP_LOG: mktempLog },
+      )
+
+      expect(result.stdout).toContain("rc=0")
+      const args = readFileSync(mktempLog, "utf8").trim().split("\n").filter(Boolean)
+      expect(args.length).toBeGreaterThan(0)
+      for (const arg of args) {
+        expect(arg.startsWith(envFile)).toBe(true)
+      }
+      // The removal itself must still be correct.
+      const written = readFileSync(envFile, "utf8")
+      expect(written).not.toContain("FOO=bar")
+      expect(written).toContain("BAZ=qux")
+    })
+  })
+
+  describe("launchd-plist (finding #2: supervise the desktop chat server)", () => {
+    const LIB = join(repoRoot, "scripts/lib/launchd-plist.sh")
+    const BUN = "/Users/me/.bun/bin/bun"
+    const DIR = "/Users/me/luna"
+    const HOME = "/Users/me/.luna"
+
+    const render = () =>
+      spawnSync(
+        "bash",
+        ["-c", `set -euo pipefail; source "${LIB}"; render_launchd_plist "${BUN}" "${DIR}" "${HOME}"`],
+        { cwd: repoRoot, encoding: "utf8" },
+      )
+
+    it("uses the exact label control.restart kickstarts (com.user.luna-chat-server)", () => {
+      const r = render()
+      expect(r.status).toBe(0)
+      expect(r.stdout).toContain("<key>Label</key>")
+      expect(r.stdout).toContain("<string>com.user.luna-chat-server</string>")
+    })
+
+    it("launches the chat server via bun with the right cwd", () => {
+      const r = render()
+      expect(r.stdout).toContain(`<string>${BUN}</string>`)
+      expect(r.stdout).toContain(`<string>${DIR}/apps/ui-web</string>`)
+      expect(r.stdout).toContain("<string>scripts/chat-server.ts</string>")
+    })
+
+    it("supervises via KeepAlive SuccessfulExit=false — NOT systemd's Restart key", () => {
+      const r = render()
+      expect(r.stdout).toContain("<key>KeepAlive</key>")
+      expect(r.stdout).toContain("<key>SuccessfulExit</key>")
+      expect(r.stdout).toContain("<key>RunAtLoad</key>")
+      // launchd has no `Restart`/`OnFailure` key — that was the sketch's systemd-ism.
+      expect(r.stdout).not.toContain("OnFailure")
+      expect(r.stdout).not.toContain("<key>Restart</key>")
+    })
+
+    it("routes logs to the luna home and sets LUNA_HOME / CLAUDE_CONFIG_DIR / PATH", () => {
+      const r = render()
+      expect(r.stdout).toContain(`<string>${HOME}/logs/server.log</string>`)
+      expect(r.stdout).toContain("<key>LUNA_HOME</key>")
+      expect(r.stdout).toContain(`<string>${HOME}</string>`)
+      expect(r.stdout).toContain("<key>CLAUDE_CONFIG_DIR</key>")
+      expect(r.stdout).toContain(`<string>${HOME}/claude</string>`)
+      expect(r.stdout).toContain("<key>PATH</key>")
+    })
+
+    it("emits a plist that passes plutil -lint (valid property list)", () => {
+      const r = render()
+      const tmp = makeTempDir()
+      const plistPath = join(tmp, "luna.plist")
+      writeFileSync(plistPath, r.stdout)
+      const lint = spawnSync("plutil", ["-lint", plistPath], { encoding: "utf8" })
+      expect(lint.status, lint.stdout + lint.stderr).toBe(0)
+      expect(lint.stdout).toContain("OK")
+    })
+
+    it("desktop install supervises the chat server via launchd, not unsupervised nohup", () => {
+      const script = readFileSync(join(repoRoot, "install-mac.command"), "utf8")
+      expect(script).toContain("source scripts/lib/launchd-plist.sh")
+      expect(script).toContain("render_launchd_plist")
+      // Modern launchctl (bootstrap/bootout, not the deprecated load/unload) into
+      // the gui/<uid> domain that control.restart's kickstart targets.
+      expect(script).toContain("launchctl bootstrap")
+      expect(script).toContain("launchctl bootout")
+      expect(script).toContain("com.user.luna-chat-server")
+      // The old UNSUPERVISED nohup launch of the chat server must be gone (the
+      // Vite UI may still use nohup — this only targets the chat-server line).
+      expect(script).not.toMatch(/nohup bun run [^\n]*chat-server\.ts/)
     })
   })
 

@@ -47,8 +47,12 @@ luna_upsert_env() {
   touch "$env_file"
   chmod 600 "$env_file"
 
+  # Create the temp file beside the target so the rename below is an atomic,
+  # same-filesystem operation. A system `mktemp` (e.g. /tmp) can be on a
+  # different filesystem, turning `mv` into a non-atomic copy-then-delete that
+  # can lose the .env entirely if the process is killed mid-write.
   local tmp
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$env_file.XXXXXXXX")"
   awk -v key="$key" -v value="$value" '
     BEGIN { replaced = 0 }
     index($0, key "=") == 1 { print key "=" value; replaced = 1; next }
@@ -70,8 +74,9 @@ luna_remove_env() {
 
   [[ -f "$env_file" ]] || return 0
 
+  # Temp file beside the target → atomic same-filesystem rename (see luna_upsert_env).
   local tmp
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$env_file.XXXXXXXX")"
   awk -v key="$key" '
     index($0, key "=") == 1 { next }
     { print }
@@ -163,6 +168,9 @@ luna_env_has_nonempty_key() {
   return 1
 }
 
+# True if the server's UI WebSocket secret is present in the given .env.
+# UI_WS_TOKEN is the canonical name; LUNA_UI_WS_TOKEN is a back-compat alias.
+# Accept BOTH — never drop a name, so older on-disk .env files still pass (#6).
 luna_env_has_token() {
   luna_env_has_nonempty_key "$1" UI_WS_TOKEN LUNA_UI_WS_TOKEN
 }
