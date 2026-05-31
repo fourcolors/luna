@@ -298,6 +298,151 @@ exit 1
     expect(result.stderr).toContain("Incus CLI not found")
   })
 
+  it("container creation fails early when the in-container install never rendered its systemd unit", () => {
+    const temp = makeTempDir()
+    const bin = join(temp, "bin")
+    const repo = join(temp, "repo")
+    const state = join(temp, "state")
+    mkdirSync(bin, { recursive: true })
+    mkdirSync(join(repo, ".git"), { recursive: true })
+    // A permissive fake incus: succeeds for the whole orchestration EXCEPT it
+    // reports the in-container install never created /root/.luna/.env. `info`
+    // with no arg passes the daemon-reachable probe; `info <instance>` fails so
+    // the instance is treated as new (not an early no-op exit). `config set`
+    // reads the cloud-init heredoc off stdin so the piped write can't SIGPIPE
+    // the script under pipefail.
+    writeFileSync(join(bin, "incus"), `#!/usr/bin/env bash
+set -uo pipefail
+cmd="\${1:-}"
+if [[ "$#" -gt 0 ]]; then shift; fi
+case "$cmd" in
+  info)
+    # No remaining arg → daemon reachability probe (succeed). With an instance
+    # name → existence probe (fail, so the instance is treated as new).
+    [[ "$#" -eq 0 ]] && exit 0
+    exit 1
+    ;;
+  storage) exit 0 ;;
+  network) exit 0 ;;
+  profile)
+    case "$*" in
+      "device get default root pool") printf 'default\\n'; exit 0 ;;
+      "device get default root path") printf '/\\n'; exit 0 ;;
+      "device get default eth0 network") printf 'incusbr0\\n'; exit 0 ;;
+    esac
+    exit 0
+    ;;
+  config)
+    [[ "\${1:-}" == "set" ]] && cat >/dev/null
+    exit 0
+    ;;
+  exec)
+    case "$*" in
+      # Install failed before write_service → no unit under /etc/systemd/system.
+      # /root/.luna/.env DOES exist (host-written + bind-mounted), so it must NOT
+      # be what gates the check — only the in-container-FS unit is a valid signal.
+      *"test -f /etc/systemd/system/"*) exit 1 ;;
+    esac
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+`)
+    const chmod = spawnSync("chmod", ["+x", join(bin, "incus")])
+    expect(chmod.status).toBe(0)
+
+    const result = runScript("scripts/luna-container-create", [
+      "--profile",
+      "dev",
+      "--name",
+      "luna-dev",
+      "--repo-path",
+      repo,
+      "--state-path",
+      state,
+      "--token",
+      "test-token-1234567890-secret",
+      "--skip-clone",
+    ], {
+      env: {
+        PATH: `${bin}:/usr/bin:/bin`,
+      },
+    })
+
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain("In-container luna-server-install failed")
+    expect(result.stderr).toContain("incus logs")
+  })
+
+  it("container creation writes a new UI_WS_TOKEN without leaking it to stdout/stderr", () => {
+    const temp = makeTempDir()
+    const bin = join(temp, "bin")
+    const repo = join(temp, "repo")
+    const state = join(temp, "state")
+    const token = "test-container-token-sentinel-88888888"
+    mkdirSync(bin, { recursive: true })
+    mkdirSync(join(repo, ".git"), { recursive: true })
+    // Fully permissive fake incus: the entire non-dry-run orchestration succeeds
+    // (info no-arg = daemon reachable; info <instance> = new; config set drains
+    // the cloud-init heredoc off stdin; every exec/probe — including the post-
+    // cloud-init `test -f /etc/systemd/system/<service>` install-success check —
+    // returns 0) so the script reaches the real token-write codepath and exits 0.
+    writeFileSync(join(bin, "incus"), `#!/usr/bin/env bash
+set -uo pipefail
+cmd="\${1:-}"
+if [[ "$#" -gt 0 ]]; then shift; fi
+case "$cmd" in
+  info)
+    [[ "$#" -eq 0 ]] && exit 0
+    exit 1
+    ;;
+  storage) exit 0 ;;
+  network) exit 0 ;;
+  profile)
+    case "$*" in
+      "device get default root pool") printf 'default\\n'; exit 0 ;;
+      "device get default root path") printf '/\\n'; exit 0 ;;
+      "device get default eth0 network") printf 'incusbr0\\n'; exit 0 ;;
+    esac
+    exit 0
+    ;;
+  config)
+    [[ "\${1:-}" == "set" ]] && cat >/dev/null
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+`)
+    const chmod = spawnSync("chmod", ["+x", join(bin, "incus")])
+    expect(chmod.status).toBe(0)
+
+    const result = runScript("scripts/luna-container-create", [
+      "--profile",
+      "dev",
+      "--name",
+      "luna-dev",
+      "--repo-path",
+      repo,
+      "--state-path",
+      state,
+      "--token",
+      token,
+      "--skip-clone",
+    ], {
+      env: {
+        PATH: `${bin}:/usr/bin:/bin`,
+      },
+    })
+
+    expect(result.status, result.stderr).toBe(0)
+    // The token lands only in the chmod-600 .env, never on the console.
+    expect(result.stdout).not.toContain(token)
+    expect(result.stderr).not.toContain(token)
+    expect(readFileSync(join(state, ".env"), "utf8")).toContain(
+      `UI_WS_TOKEN=${token}`,
+    )
+  })
+
   it("server install dry-run renders the systemd service and preserves token secrecy", () => {
     const temp = makeTempDir()
     const token = "server-token-1234567890-secret"
@@ -521,6 +666,122 @@ exit 0
     expect(result.stderr).toContain("removing stale LUNA_CLAUDE_CODE_EXECUTABLE")
     expect(readFileSync(join(state, ".env"), "utf8")).toContain(
       `LUNA_CLAUDE_CODE_EXECUTABLE=${bundledClaude}`,
+    )
+  })
+
+  it("server install is idempotent — a second run on the same box changes nothing", () => {
+    const temp = makeTempDir()
+    const repo = join(temp, "repo")
+    const state = join(temp, "state")
+    const serviceDir = join(temp, "systemd")
+    const bin = join(temp, "bin")
+    const bun = join(bin, "bun")
+    const bundledClaude = join(
+      repo,
+      "node_modules",
+      ".bun",
+      "@anthropic-ai+claude-agent-sdk-linux-x64@0.2.119",
+      "node_modules",
+      "@anthropic-ai",
+      "claude-agent-sdk-linux-x64",
+      "claude",
+    )
+    mkdirSync(join(repo, ".git"), { recursive: true })
+    mkdirSync(join(bundledClaude, ".."), { recursive: true })
+    mkdirSync(state, { recursive: true })
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(bun, "#!/usr/bin/env bash\nexit 0\n")
+    writeFileSync(join(bin, "systemctl"), "#!/usr/bin/env bash\nexit 0\n")
+    writeFileSync(bundledClaude, "#!/usr/bin/env bash\nexit 0\n")
+    spawnSync("chmod", ["+x", bun, join(bin, "systemctl"), bundledClaude])
+    writeFileSync(
+      join(state, ".env"),
+      [
+        "UI_WS_TOKEN=server-token-1234567890-secret",
+        "LUNA_CLAUDE_CODE_EXECUTABLE=/does/not/exist/claude",
+        "",
+      ].join("\n"),
+    )
+
+    const args = [
+      "--profile",
+      "stable",
+      "--repo-dir",
+      repo,
+      "--luna-home",
+      state,
+      "--service-dir",
+      serviceDir,
+      "--skip-deps",
+      "--no-enable",
+      "--no-start",
+    ]
+    const env = {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: bun,
+    }
+
+    const first = runScript("scripts/luna-server-install", args, { env })
+    expect(first.status, first.stderr).toBe(0)
+    // First run repairs the stale executable override.
+    expect(first.stderr).toContain("removing stale LUNA_CLAUDE_CODE_EXECUTABLE")
+    const envAfterFirst = readFileSync(join(state, ".env"), "utf8")
+    const serviceFile = join(serviceDir, "luna-chat-server.service")
+    const serviceAfterFirst = readFileSync(serviceFile, "utf8")
+    expect(envAfterFirst).toContain(`LUNA_CLAUDE_CODE_EXECUTABLE=${bundledClaude}`)
+
+    const second = runScript("scripts/luna-server-install", args, { env })
+    expect(second.status, second.stderr).toBe(0)
+    // Nothing stale remains, so the repair message must NOT reappear.
+    expect(second.stderr).not.toContain("removing stale")
+    // State is byte-for-byte identical after the second run.
+    expect(readFileSync(join(state, ".env"), "utf8")).toBe(envAfterFirst)
+    expect(readFileSync(serviceFile, "utf8")).toBe(serviceAfterFirst)
+  })
+
+  it("server install writes a new UI_WS_TOKEN without leaking it to stdout/stderr", () => {
+    const temp = makeTempDir()
+    const repo = join(temp, "repo")
+    const state = join(temp, "state")
+    const serviceDir = join(temp, "systemd")
+    const bin = join(temp, "bin")
+    const bun = join(bin, "bun")
+    const token = "test-server-token-sentinel-99999999"
+    mkdirSync(join(repo, ".git"), { recursive: true })
+    mkdirSync(state, { recursive: true })
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(bun, "#!/usr/bin/env bash\nexit 0\n")
+    writeFileSync(join(bin, "systemctl"), "#!/usr/bin/env bash\nexit 0\n")
+    spawnSync("chmod", ["+x", bun, join(bin, "systemctl")])
+    // No pre-existing .env → the script takes the real token-write codepath.
+
+    const result = runScript("scripts/luna-server-install", [
+      "--profile",
+      "stable",
+      "--repo-dir",
+      repo,
+      "--luna-home",
+      state,
+      "--service-dir",
+      serviceDir,
+      "--token",
+      token,
+      "--skip-deps",
+      "--no-enable",
+      "--no-start",
+    ], {
+      env: {
+        PATH: `${bin}:/usr/bin:/bin`,
+        LUNA_TEST_BUN_PATH: bun,
+      },
+    })
+
+    expect(result.status, result.stderr).toBe(0)
+    // The token is written to the chmod-600 .env, never echoed to the console.
+    expect(result.stdout).not.toContain(token)
+    expect(result.stderr).not.toContain(token)
+    expect(readFileSync(join(state, ".env"), "utf8")).toContain(
+      `UI_WS_TOKEN=${token}`,
     )
   })
 
