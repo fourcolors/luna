@@ -220,6 +220,17 @@ export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
     ])
   const urls = uniqueList([url, ...splitListSetting(fallbackUrlSetting?.value)])
 
+  // Token resolution chain (finding #6 naming map). Highest precedence first:
+  //   --token                        explicit flag.
+  //   LUNA_<PROFILE>_UI_WS_TOKEN     the per-profile secret to PRESENT to that
+  //                                  server (env, then dotenv). On a REMOTE setup
+  //                                  the stable/dev tokens differ and live here.
+  //   LUNA_UI_WS_TOKEN / UI_WS_TOKEN generic fallbacks (env, then dotenv). The
+  //                                  trailing UI_WS_TOKEN dotenv entry is what lets
+  //                                  a single-box install resolve the SAME canonical
+  //                                  UI_WS_TOKEN the server reads — so the installer
+  //                                  need not also write LUNA_STABLE_UI_WS_TOKEN.
+  // Do NOT remove any candidate: existing ~/.luna/.env files rely on every name.
   const tokenSetting = selectSetting([
     { name: "--token", value: input.args.token },
     { name: profiled("UI_WS_TOKEN"), value: input.env[profiled("UI_WS_TOKEN")] },

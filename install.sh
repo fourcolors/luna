@@ -200,6 +200,12 @@ upsert_env "LUNA_STABLE_WS_URL" "$STABLE_WS_URL"
 upsert_env "LUNA_STABLE_FALLBACK_WS_URL" "$STABLE_FALLBACK_WS_URL"
 upsert_env "LUNA_DEV_WS_URL" "$DEV_WS_URL"
 upsert_env "LUNA_DEV_FALLBACK_WS_URL" "$DEV_FALLBACK_WS_URL"
+# Per-profile CLIENT tokens (finding #6): the secret this Mac PRESENTS to the
+# stable vs dev server. These are for REMOTE clients, where each server has its
+# own UI_WS_TOKEN and the client box has none of its own. On a single-box desktop
+# install these are left empty (upsert_env no-ops) — install-mac.command instead
+# writes the canonical UI_WS_TOKEN, which the CLI's stable profile resolves via
+# its UI_WS_TOKEN dotenv fallback. Per-profile names stay accepted by all readers.
 upsert_env "LUNA_STABLE_UI_WS_TOKEN" "$STABLE_TOKEN"
 upsert_env "LUNA_DEV_UI_WS_TOKEN" "$DEV_TOKEN"
 upsert_env "LUNA_STABLE_START_MODE" "$STABLE_START_MODE"
