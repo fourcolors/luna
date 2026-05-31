@@ -1007,9 +1007,10 @@ exit 0
     it("leaves a free port alone — never signals anything", () => {
       const temp = makeTempDir()
       const log = join(temp, "kill.log")
+      // No conflicting (loopback/wildcard) listener on the port → nothing to do.
       const result = runGuard(
         `LOG="${log}"; : > "$LOG"\n`
-        + `lsof() { return 1; }\n`
+        + `port_guard_conflicting_pid() { return 0; }\n` // empty → no conflict
         + `ps() { echo "$LUNA_CMD"; }\n`
         + `kill() { echo "kill $*" >> "$LOG"; }\n`
         + `ensure_port_free 4753 "Chat" "$DIR"; echo "rc=$?"`,
@@ -1023,8 +1024,10 @@ exit 0
       const temp = makeTempDir()
       const log = join(temp, "kill.log")
       const result = runGuard(
+        // A loopback/wildcard listener exists (conflicting PID) but ps reveals it
+        // is foreign → refuse without signalling.
         `LOG="${log}"; : > "$LOG"\n`
-        + `lsof() { [[ "$1" == "-t" ]] && echo 28274; return 0; }\n`
+        + `port_guard_conflicting_pid() { echo 28274; }\n`
         + `ps() { echo "$FOREIGN_CMD"; }\n`
         + `kill() { echo "kill $*" >> "$LOG"; }\n`
         + `ensure_port_free 4753 "Chat" "$DIR"; echo "rc=$?"`,
@@ -1040,9 +1043,10 @@ exit 0
       const temp = makeTempDir()
       const log = join(temp, "kill.log")
       const result = runGuard(
-        // -t query → the stale PID; the port-free re-check → free (TERM worked).
+        // conflicting_pid → the stale PID; the port-free re-check → free (TERM worked).
         `LOG="${log}"; : > "$LOG"\n`
-        + `lsof() { if [[ "$1" == "-t" ]]; then echo 28274; return 0; fi; return 1; }\n`
+        + `port_guard_conflicting_pid() { echo 28274; }\n`
+        + `port_guard_port_free() { return 0; }\n` // free after SIGTERM
         + `ps() { echo "$LUNA_CMD"; }\n`
         + `kill() { echo "kill $*" >> "$LOG"; }\n`
         + `ensure_port_free 4753 "Chat" "$DIR"; echo "rc=$?"`,
@@ -1060,9 +1064,10 @@ exit 0
       const log = join(temp, "kill.log")
       const killed = join(temp, "killed.flag")
       const result = runGuard(
-        // Port stays held until a SIGKILL is observed (stateful mock).
+        // Port stays held (not free) until a SIGKILL is observed (stateful mock).
         `LOG="${log}"; : > "$LOG"\n`
-        + `lsof() { if [[ "$1" == "-t" ]]; then echo 28274; return 0; fi; [[ -f "${killed}" ]] && return 1 || return 0; }\n`
+        + `port_guard_conflicting_pid() { echo 28274; }\n`
+        + `port_guard_port_free() { [[ -f "${killed}" ]] && return 0 || return 1; }\n`
         + `ps() { echo "$LUNA_CMD"; }\n`
         + `kill() { echo "kill $*" >> "$LOG"; case "$*" in *-KILL*) : > "${killed}" ;; esac; }\n`
         + `ensure_port_free 4753 "Chat" "$DIR"; echo "rc=$?"`,
@@ -1074,23 +1079,47 @@ exit 0
       expect(signals).toContain("kill -KILL 28274") // then escalate
     })
 
-    it("ignores a tailnet-only listener — a loopback bind is still free (Tailscale on :4753)", () => {
-      const temp = makeTempDir()
-      const log = join(temp, "kill.log")
-      // Models a Tailscale box: something LISTENs on :4753 at a tailnet address
-      // (found by the any-address `-t -i :port` query) but NOTHING is on
-      // 127.0.0.1:port. The local server binds loopback, so the guard must scope
-      // its probe to @127.0.0.1 — a tailnet-address listener must NOT block it.
+    // Unit-level: port_guard_conflicting_pid reads the real bind ADDRESS from an
+    // lsof LISTEN listing and classifies it. A loopback (127.0.0.1 / [::1]) or
+    // wildcard (* / 0.0.0.0 / [::]) bind WOULD block a fresh LOCAL bind → return
+    // its PID. A specific non-loopback address (a Tailscale tailnet IP) would NOT
+    // → return empty. Mocks lsof to emit a realistic macOS LISTEN row; the field
+    // layout ($2=PID, $9=NAME=addr:port, $10=(LISTEN)) was captured live.
+    const conflictPid = (name: string) =>
+      runGuard(
+        `lsof() { printf '%s\\n' `
+        + `"COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME" `
+        + `"bun 41589 me 7u IPv4 0x0 0t0 TCP ${name} (LISTEN)"; }\n`
+        + `port_guard_conflicting_pid 4753`,
+      ).stdout.trim()
+
+    it("port_guard_conflicting_pid: a loopback/wildcard bind conflicts (returns the PID)", () => {
+      expect(conflictPid("127.0.0.1:4753")).toBe("41589") // loopback v4
+      expect(conflictPid("[::1]:4753")).toBe("41589") //     loopback v6
+      expect(conflictPid("*:5174")).toBe("41589") //         vite wildcard
+      expect(conflictPid("0.0.0.0:5174")).toBe("41589") //   wildcard v4
+      expect(conflictPid("[::]:5174")).toBe("41589") //      wildcard v6
+    })
+
+    it("port_guard_conflicting_pid: a tailnet-only listener does NOT conflict (empty)", () => {
+      expect(conflictPid("100.79.223.97:4753")).toBe("") //               Tailscale v4
+      expect(conflictPid("[fd7a:115c:a1e0::5c01:df9a]:4753")).toBe("") // Tailscale v6
+    })
+
+    it("port_guard_conflicting_pid: scans PAST leading tailnet rows to a later loopback row", () => {
+      // The real :4753 listing on a Tailscale box: two tailnet rows BEFORE the
+      // loopback row (captured live). The classifier must scan past the
+      // non-conflicting rows and still return the loopback PID — not short-circuit
+      // empty on the first row, and not return Tailscale's PID.
       const result = runGuard(
-        `LOG="${log}"; : > "$LOG"\n`
-        + `lsof() { case "$*" in *@127.0.0.1*) ;; *) echo 28274 ;; esac; }\n`
-        + `ps() { echo "$FOREIGN_CMD"; }\n`
-        + `kill() { echo "kill $*" >> "$LOG"; }\n`
-        + `ensure_port_free 4753 "Luna Chat Server" "$DIR"; echo "rc=$?"`,
-        { env: { DIR, FOREIGN_CMD: TAILSCALE_CMD } },
+        `lsof() { printf '%s\\n' `
+        + `"COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME" `
+        + `"IPNExtens 28274 me 28u IPv4 0x0 0t0 TCP 100.79.223.97:4753 (LISTEN)" `
+        + `"IPNExtens 28274 me 30u IPv6 0x0 0t0 TCP [fd7a:115c:a1e0::5c01:df9a]:4753 (LISTEN)" `
+        + `"bun 41589 me 7u IPv4 0x0 0t0 TCP 127.0.0.1:4753 (LISTEN)"; }\n`
+        + `port_guard_conflicting_pid 4753`,
       )
-      expect(rcOf(result)).toBe("0") // loopback free → install proceeds
-      expect(readFileSync(log, "utf8")).toBe("") // nothing signalled
+      expect(result.stdout.trim()).toBe("41589") // the loopback bun, not Tailscale 28274
     })
 
     it("install-mac.command wires the guard and no longer blind-kills", () => {
