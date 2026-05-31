@@ -85,8 +85,13 @@ printf "      - Configures URLs and access tokens.\n\n"
 printf "  ${BOLD}[3] Separated Client / Server (Advanced / Custom)${NC}\n"
 printf "      - Installs client wrapper only.\n"
 printf "      - Prints manual server deployment instructions.\n\n"
+printf "  ${BOLD}[4] Luna Moon — native floating widget (Recommended)${NC}\n"
+printf "      - Installs and starts the supervised local server (launchd).\n"
+printf "      - Launches the Luna Moon floating widget.\n"
+printf "      - Token is auto-configured — no settings to paste.\n"
+printf "      - Requires Rust/cargo + cargo-tauri.\n\n"
 
-read -p "Selection [1-3]: " -r SELECTION
+read -p "Selection [1-4]: " -r SELECTION
 printf "\n"
 
 LUNA_DIR="$(pwd)"
@@ -249,6 +254,101 @@ case "$SELECTION" in
     printf "     ${CYAN}scripts/luna-server-install --profile stable --token '<ui-ws-token>'${NC}\n\n"
     printf "  3. Set up the local Mac client to point to the remote host:\n"
     printf "     ${CYAN}luna chat --stable-url ws://<remote-ip>:4753/ui${NC}\n\n"
+    ;;
+
+  4)
+    info "Starting Luna Moon native widget install..."
+
+    # Prerequisites: Rust toolchain + cargo-tauri CLI.
+    command -v cargo >/dev/null 2>&1 \
+      || die "Rust/cargo is required. Install it from https://rustup.rs and re-run."
+    command -v cargo-tauri >/dev/null 2>&1 \
+      || die "cargo-tauri CLI is required: cargo install tauri-cli  (then re-run)"
+
+    # Core client install: clone/pull, bun install, write .env with localhost URLs.
+    chmod +x install.sh
+    ./install.sh --luna-dir "$LUNA_DIR" \
+      --stable-url ws://127.0.0.1:4753/ui \
+      --stable-fallback-url ws://127.0.0.1:4753/ui
+
+    # Ensure state dirs exist.
+    mkdir -p "$LUNA_DATA" "$LUNA_DATA/logs" "$LUNA_DATA/run" "$LUNA_DATA/claude"
+
+    # Seed the canonical token if not already present.
+    if [[ ! -f "$ENV_FILE" ]] || ! grep -q "^UI_WS_TOKEN=" "$ENV_FILE" 2>/dev/null; then
+      info "Generating a secure UI WebSocket token..."
+      TOKEN="$(gen_ui_ws_token)"
+      touch "$ENV_FILE"
+      chmod 600 "$ENV_FILE"
+      tmp_env="$(mktemp "$LUNA_DATA/env.tmp.XXXXXX")"
+      awk -v t="$TOKEN" '
+        BEGIN { r=0 }
+        index($0, "UI_WS_TOKEN=") == 1 { print "UI_WS_TOKEN=" t; r=1; next }
+        { print }
+        END { if (r == 0) print "UI_WS_TOKEN=" t }
+      ' "$ENV_FILE" > "$tmp_env"
+      mv "$tmp_env" "$ENV_FILE"
+      chmod 600 "$ENV_FILE"
+    fi
+    TOKEN="$(awk -F= '$1 == "UI_WS_TOKEN" {print $2}' "$ENV_FILE")"
+
+    # Boot the supervised chat server via launchd (same path as option 1).
+    LAUNCHD_LABEL="com.user.luna-chat-server"
+    LAUNCHD_DOMAIN="gui/$(id -u)"
+    launchctl bootout "$LAUNCHD_DOMAIN/$LAUNCHD_LABEL" 2>/dev/null || true
+
+    info "Installing a launchd LaunchAgent for the chat server..."
+    BUN_BIN="$(command -v bun)"
+    PLIST_FILE="$LUNA_DATA/$LAUNCHD_LABEL.plist"
+    render_launchd_plist "$BUN_BIN" "$LUNA_DIR" "$LUNA_DATA" > "$PLIST_FILE"
+    chmod 644 "$PLIST_FILE"
+    launchctl bootout  "$LAUNCHD_DOMAIN/$LAUNCHD_LABEL" 2>/dev/null || true
+    launchctl enable   "$LAUNCHD_DOMAIN/$LAUNCHD_LABEL" 2>/dev/null || true
+    launchctl bootstrap "$LAUNCHD_DOMAIN" "$PLIST_FILE" \
+      || die "Could not load the Luna LaunchAgent. Try: launchctl bootstrap $LAUNCHD_DOMAIN '$PLIST_FILE'"
+    success "Chat server is supervised by launchd."
+
+    # Wait for the server to bind on loopback.
+    info "Waiting for chat server to start (ws://127.0.0.1:4753)..."
+    count=0
+    max_wait=30
+    while ! lsof -t -i @127.0.0.1:4753 -sTCP:LISTEN >/dev/null 2>&1; do
+      sleep 0.5
+      count=$((count + 1))
+      if [[ $count -ge $max_wait ]]; then
+        warn "Server is taking longer than expected. Launching the widget anyway..."
+        break
+      fi
+    done
+
+    # First-run credential hint: if luna.db doesn't exist the server is in
+    # setup-mode and the moon widget won't be able to chat yet.
+    if [[ ! -s "$LUNA_DATA/luna.db" ]]; then
+      warn "No Claude account found — the server is in setup-mode."
+      warn "Open the web UI to log in first, then the widget will be ready to chat."
+      info "Starting Vite web UI for one-time Claude login..."
+      VITE_UI_WS_TOKEN="$TOKEN" nohup bun run --cwd "$LUNA_DIR/apps/ui-web" dev \
+        > "$LUNA_DATA/logs/ui.log" 2>&1 &
+      disown $!
+      open "http://localhost:5174"
+      info "Log in via the browser, then relaunch the installer to start Luna Moon."
+    fi
+
+    # Launch the Luna Moon native widget via tauri dev.
+    # The Rust backend will emit a 'luna-config' event to the webview, seeding
+    # the token from ~/.luna/.env so no manual settings-panel input is needed.
+    info "Launching Luna Moon native widget (this may take a moment on first compile)..."
+    cargo tauri dev \
+      --manifest-path "$LUNA_DIR/apps/ui-moon-tauri/src-tauri/Cargo.toml" \
+      > "$LUNA_DATA/logs/moon.log" 2>&1 &
+    MOON_PID=$!
+    disown $MOON_PID
+
+    success "Luna Moon is starting!"
+    printf "\n"
+    printf "  - The floating moon widget will appear shortly (press CmdOrCtrl+Shift+K to toggle).\n"
+    printf "  - Server log: ${CYAN}tail -f ~/.luna/logs/server.log${NC}\n"
+    printf "  - Moon log:   ${CYAN}tail -f ~/.luna/logs/moon.log${NC}\n\n"
     ;;
 
   *)

@@ -1273,6 +1273,41 @@ exit 0
     })
   })
 
+  describe("luna-moon native widget (install option 4)", () => {
+    it("install-mac.command wires option 4 for the moon widget (cargo tauri dev + cargo-tauri check)", () => {
+      const script = readFileSync(join(repoRoot, "install-mac.command"), "utf8")
+      // Option 4 must check for cargo and cargo-tauri prerequisites.
+      expect(script).toContain("cargo-tauri")
+      expect(script).toContain("cargo tauri dev")
+      // The option must show a user-visible label identifying it as the moon widget path.
+      expect(script).toContain("Luna Moon")
+    })
+
+    it("moon widget Rust backend emits the luna-config startup event", () => {
+      const rustSrc = readFileSync(
+        join(repoRoot, "apps/ui-moon-tauri/src-tauri/src/main.rs"),
+        "utf8",
+      )
+      // The Rust backend must emit a "luna-config" event seeding the token from
+      // ~/.luna/.env so the widget connects without manual settings-panel input.
+      expect(rustSrc).toContain('"luna-config"')
+      expect(rustSrc).toContain("UI_WS_TOKEN=")
+    })
+
+    it("moon widget frontend listens for the luna-config event and seeds localStorage", () => {
+      const html = readFileSync(
+        join(repoRoot, "apps/ui-moon-tauri/frontend/index.html"),
+        "utf8",
+      )
+      // The JS must listen for the Tauri event and save the token to localStorage
+      // so re-launches remember it without re-emitting.
+      expect(html).toContain("listen('luna-config'")
+      expect(html).toContain("luna_ws_token")
+      // The __TAURI__ guard must be present so the page still loads in a plain browser.
+      expect(html).toContain("window.__TAURI__")
+    })
+  })
+
   it("script entrypoints are executable", () => {
     for (const script of [
       "install.sh",

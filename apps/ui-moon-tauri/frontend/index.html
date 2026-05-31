@@ -1483,6 +1483,34 @@
 
     // Boot App Settings
     SettingsEngine.load();
+
+    // Auto-wire the server token from ~/.luna/.env via a Tauri startup event.
+    // The Rust backend (main.rs) reads UI_WS_TOKEN from ~/.luna/.env at launch
+    // and emits "luna-config" here. We guard with window.__TAURI__ so the page
+    // still loads in a plain browser during frontend development.
+    //
+    // Token priority: if localStorage already has a token (from a previous run
+    // or manual settings-panel entry), we don't overwrite it — the user's
+    // explicit choice takes precedence over the auto-seeded value.
+    if (window.__TAURI__ && window.__TAURI__.event) {
+      window.__TAURI__.event.listen('luna-config', ({ payload }) => {
+        if (payload.wsToken && !State.wsToken) {
+          State.wsToken = payload.wsToken
+          State.wsUrl = payload.wsUrl || State.wsUrl
+          // Update the settings panel inputs so the user can see what was loaded.
+          if (DOM.wsUrlInput)   DOM.wsUrlInput.value   = State.wsUrl
+          if (DOM.wsTokenInput) DOM.wsTokenInput.value = State.wsToken
+          // Persist to localStorage so re-launches don't need a re-emit.
+          localStorage.setItem('luna_ws_token', State.wsToken)
+          localStorage.setItem('luna_ws_url',   State.wsUrl)
+          Logger.info('luna-config: token seeded from ~/.luna/.env, connecting...')
+          // Attempt to connect now that the token is available.
+          if (!State.ws || State.ws.readyState > WebSocket.OPEN) {
+            WebSocketEngine.connect()
+          }
+        }
+      })
+    }
   </script>
 </body>
 </html>

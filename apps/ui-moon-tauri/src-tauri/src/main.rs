@@ -66,6 +66,46 @@ fn main() {
                 eprintln!("System Settings -> Privacy & Security -> Accessibility");
                 eprintln!("==========================================================================\n");
             }
+
+            // Seed the UI WebSocket token from ~/.luna/.env into the frontend's
+            // localStorage via a "luna-config" Tauri event. This bridges the gap
+            // between the installer (which writes UI_WS_TOKEN to ~/.luna/.env) and
+            // the widget (which reads its token from localStorage). The JS listener
+            // receives this event and saves the token so subsequent launches don't
+            // need a re-emit. The wsUrl is also sent so a future installer could
+            // point moon at a different server address without a UI_WS_TOKEN= prefix.
+            //
+            // We emit after the window is created rather than before show(), so the
+            // JS event listener has time to register. If the event arrives before
+            // the listener is registered (race), localStorage will be empty on that
+            // launch and the user can paste the token into settings — subsequent
+            // launches will use the cached value regardless.
+            if let Ok(home) = std::env::var("HOME") {
+                let env_path = std::path::PathBuf::from(&home)
+                    .join(".luna")
+                    .join(".env");
+                if let Ok(contents) = std::fs::read_to_string(&env_path) {
+                    for line in contents.lines() {
+                        if let Some(token) = line.strip_prefix("UI_WS_TOKEN=") {
+                            let token = token.trim().to_string();
+                            if !token.is_empty() {
+                                // Using emit_to so only the main window receives it;
+                                // emit() would broadcast to all windows.
+                                let _ = app.emit_to(
+                                    tauri::EventTarget::labeled("main"),
+                                    "luna-config",
+                                    serde_json::json!({
+                                        "wsToken": token,
+                                        "wsUrl": "ws://127.0.0.1:4753/ui"
+                                    }),
+                                );
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())
