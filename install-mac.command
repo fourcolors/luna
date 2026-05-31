@@ -25,25 +25,14 @@ warn() { printf "${YELLOW}warning: %b${NC}\n" "$*" >&2; }
 error() { printf "${RED}error: %b${NC}\n" "$*" >&2; }
 die() { error "$*"; exit 1; }
 
-check_port() {
-  local port=$1
-  local name=$2
-  if lsof -i :"$port" >/dev/null 2>&1; then
-    local pid
-    pid=$(lsof -t -i :"$port" || true)
-    if [[ -n "$pid" ]]; then
-      warn "Port $port ($name) is already in use by PID $pid."
-      read -p "Would you like to stop this process and continue? [y/N]: " -r KILL_ANS
-      if [[ "$KILL_ANS" =~ ^[Yy]$ ]]; then
-        info "Stopping process $pid..."
-        kill -9 "$pid" || true
-        sleep 1
-      else
-        die "Port $port ($name) is occupied. Please free the port or stop the conflicting service, then run this installer again."
-      fi
-    fi
-  fi
-}
+# Shared, SIGPIPE-safe UI-WS-token generator (defines gen_ui_ws_token).
+# Sourced, not executed (the script already cd'd to its own dir above).
+source scripts/lib/gen-token.sh
+
+# Identity-checked, graceful port-conflict guard (defines ensure_port_free).
+# Supersedes the old preflight that force-killed whatever held the port —
+# including, on a Tailscale box, the daemon that reaches a remote Luna (#7).
+source scripts/lib/port-guard.sh
 
 clear
 # Premium ASCII Banner with Luna Moon
@@ -103,23 +92,35 @@ ENV_FILE="$LUNA_DATA/.env"
 case "$SELECTION" in
   1)
     info "Probing local ports to prevent conflict crash-loops..."
-    check_port 4753 "Luna Chat Server"
-    check_port 5173 "Vite Web UI"
+    # Identity-checked + graceful: only stop a stale instance of THIS install
+    # (SIGTERM-first); refuse and abort if a FOREIGN process holds the port —
+    # e.g. on a box where Tailscale binds :4753 to reach a remote Luna (#7).
+    ensure_port_free 4753 "Luna Chat Server" "$LUNA_DIR" || exit 1
+    ensure_port_free 5173 "Vite Web UI" "$LUNA_DIR" || exit 1
 
     info "Starting Complete Desktop Install..."
     
     # Run the core installer script against current directory
     chmod +x install.sh
-    ./install.sh --luna-dir "$LUNA_DIR"
-    
+    # Finding #4: a desktop install runs the server locally, so point the CLI at
+    # the local server instead of install.sh's remote jax-box default. Override
+    # BOTH the primary and fallback URL — leaving the fallback default would
+    # re-leak ws://jax-box.local:4753/ui as the CLI's second connection target.
+    # Use 127.0.0.1 (not localhost): the server binds IPv4 127.0.0.1, and
+    # `localhost` can resolve to IPv6 ::1 first on macOS and miss it. The two
+    # identical URLs dedup to a single entry in the CLI's url list.
+    ./install.sh --luna-dir "$LUNA_DIR" \
+      --stable-url ws://127.0.0.1:4753/ui \
+      --stable-fallback-url ws://127.0.0.1:4753/ui
+
     # Make sure required state paths exist
     mkdir -p "$LUNA_DATA" "$LUNA_DATA/logs" "$LUNA_DATA/run" "$LUNA_DATA/claude"
     
     # Seed a secure, random UI WebSocket token if one doesn't exist
     if [[ ! -f "$ENV_FILE" ]] || ! grep -q "UI_WS_TOKEN=" "$ENV_FILE" 2>/dev/null; then
       info "Generating a secure, random 32-character UI WebSocket token..."
-      # Create random hex token
-      TOKEN=$(LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom | head -c 32 || echo "luna_local_ui_websocket_token_secure_hex")
+      # Clean 32-char hex via the shared SIGPIPE-safe generator.
+      TOKEN="$(gen_ui_ws_token)"
       
       # Use temp file to safely upsert
       touch "$ENV_FILE"

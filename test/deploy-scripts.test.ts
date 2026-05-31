@@ -582,6 +582,207 @@ exit 0
     expect(result.stdout).toContain("LUNA_DEV_FALLBACK_START_SSH=admin@lan.example.test")
   })
 
+  it("installer honors a localhost stable override without leaking jax-box", () => {
+    const temp = makeTempDir()
+
+    const result = runScript("install.sh", [
+      "--dry-run",
+      "--luna-dir",
+      join(temp, "repo"),
+      "--bin-dir",
+      join(temp, "bin"),
+      "--stable-url",
+      "ws://127.0.0.1:4753/ui",
+      "--stable-fallback-url",
+      "ws://127.0.0.1:4753/ui",
+    ], {
+      env: {
+        LUNA_TEST_BUN_PATH: "/opt/homebrew/bin/bun",
+      },
+    })
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("LUNA_STABLE_WS_URL=ws://127.0.0.1:4753/ui")
+    expect(result.stdout).toContain("LUNA_STABLE_FALLBACK_WS_URL=ws://127.0.0.1:4753/ui")
+    // The stable URL lines must not carry jax-box (the dev lines still may —
+    // there is no local dev server to point at, see install-mac.command option 1).
+    expect(result.stdout).not.toContain("LUNA_STABLE_WS_URL=ws://jax-box")
+    expect(result.stdout).not.toContain("LUNA_STABLE_FALLBACK_WS_URL=ws://jax-box")
+  })
+
+  it("desktop install points the CLI at the local server, not jax-box", () => {
+    const script = readFileSync(join(repoRoot, "install-mac.command"), "utf8")
+    // A "Complete Desktop Install" runs the chat server locally, so the CLI must
+    // be pointed at 127.0.0.1 — not install.sh's remote jax-box default (finding
+    // #4). Override BOTH the primary and fallback URL or the fallback re-leaks
+    // jax-box.local as the CLI's second connection target.
+    expect(script).toContain("--stable-url ws://127.0.0.1:4753/ui")
+    expect(script).toContain("--stable-fallback-url ws://127.0.0.1:4753/ui")
+  })
+
+  it("gen-token.sh emits a clean 32-char lowercase-hex token (SIGPIPE-safe, actually random)", () => {
+    const result = runScript("scripts/lib/gen-token.sh", [])
+    expect(result.status).toBe(0)
+    // Clean 32-char hex — NOT the old `tr | head` pipeline that tripped
+    // `set -o pipefail` and appended a constant fallback suffix.
+    expect(result.stdout.trim()).toMatch(/^[a-f0-9]{32}$/)
+    // Two runs must differ — proves it is real randomness, not a constant.
+    const second = runScript("scripts/lib/gen-token.sh", [])
+    expect(second.stdout.trim()).not.toBe(result.stdout.trim())
+  })
+
+  describe("port-guard (finding #7: no blind kill -9 on port conflict)", () => {
+    const LIB = join(repoRoot, "scripts/lib/port-guard.sh")
+
+    // Source the lib in a fresh bash and run `body`. Mocks for lsof/ps/kill can
+    // be defined inside `body` BEFORE behavior runs — shell functions shadow the
+    // builtins/PATH, so signals and lookups are observable without real processes.
+    const runGuard = (
+      body: string,
+      opts: { readonly input?: string; readonly env?: Record<string, string | undefined> } = {},
+    ) =>
+      spawnSync("bash", ["-c", `set -uo pipefail; source "${LIB}"; ${body}`], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        input: opts.input,
+        env: { ...process.env, ...opts.env },
+      })
+
+    // Guard with `command -v` so a missing matcher prints MISSING (not FOREIGN) —
+    // otherwise the "foreign" tests would pass for the wrong reason (undefined
+    // function → `if` falls to `else` → FOREIGN). MISSING fails every assertion.
+    const verdict =
+      'command -v port_guard_is_luna_cmd >/dev/null || { echo MISSING; exit 0; }; '
+      + 'if port_guard_is_luna_cmd "$CMD" "$DIR"; then echo LUNA; else echo FOREIGN; fi'
+
+    it("recognizes THIS install's chat-server as Luna", () => {
+      const result = runGuard(verdict, {
+        env: {
+          CMD: "bun run --cwd /Users/me/luna/apps/ui-web scripts/chat-server.ts",
+          DIR: "/Users/me/luna",
+        },
+      })
+      expect(result.stdout.trim()).toBe("LUNA")
+    })
+
+    it("treats the real Tailscale IPNExtension as foreign — never killable", () => {
+      const result = runGuard(verdict, {
+        env: {
+          // The actual command holding :4753 on Mr. Cobb's Mac (captured via ps).
+          CMD: '/Applications/Tailscale.app/Contents/PlugIns/IPNExtension.appex/Contents/MacOS/IPNExtension -AppleLanguages ("en-US")',
+          DIR: "/Users/me/luna",
+        },
+      })
+      expect(result.stdout.trim()).toBe("FOREIGN")
+    })
+
+    it("treats a chat-server from a DIFFERENT install dir as foreign", () => {
+      const result = runGuard(verdict, {
+        env: {
+          CMD: "bun run --cwd /Users/other/luna/apps/ui-web scripts/chat-server.ts",
+          DIR: "/Users/me/luna",
+        },
+      })
+      expect(result.stdout.trim()).toBe("FOREIGN")
+    })
+
+    it("recognizes THIS install's vite web UI dev server as Luna", () => {
+      const result = runGuard(verdict, {
+        env: {
+          CMD: "bun run --cwd /Users/me/luna/apps/ui-web dev",
+          DIR: "/Users/me/luna",
+        },
+      })
+      expect(result.stdout.trim()).toBe("LUNA")
+    })
+
+    const rcOf = (r: { stdout: string }) => r.stdout.match(/rc=(\d+)/)?.[1]
+    const DIR = "/Users/me/luna"
+    const LUNA_CMD = "bun run --cwd /Users/me/luna/apps/ui-web scripts/chat-server.ts"
+    const TAILSCALE_CMD =
+      '/Applications/Tailscale.app/Contents/PlugIns/IPNExtension.appex/Contents/MacOS/IPNExtension -AppleLanguages ("en-US")'
+
+    it("leaves a free port alone — never signals anything", () => {
+      const temp = makeTempDir()
+      const log = join(temp, "kill.log")
+      const result = runGuard(
+        `LOG="${log}"; : > "$LOG"\n`
+        + `lsof() { return 1; }\n`
+        + `ps() { echo "$LUNA_CMD"; }\n`
+        + `kill() { echo "kill $*" >> "$LOG"; }\n`
+        + `ensure_port_free 4753 "Chat" "$DIR"; echo "rc=$?"`,
+        { env: { DIR, LUNA_CMD } },
+      )
+      expect(rcOf(result)).toBe("0")
+      expect(readFileSync(log, "utf8")).toBe("") // no kill of any kind
+    })
+
+    it("REFUSES a foreign holder (Tailscale) — never sends a signal", () => {
+      const temp = makeTempDir()
+      const log = join(temp, "kill.log")
+      const result = runGuard(
+        `LOG="${log}"; : > "$LOG"\n`
+        + `lsof() { [[ "$1" == "-t" ]] && echo 28274; return 0; }\n`
+        + `ps() { echo "$FOREIGN_CMD"; }\n`
+        + `kill() { echo "kill $*" >> "$LOG"; }\n`
+        + `ensure_port_free 4753 "Chat" "$DIR"; echo "rc=$?"`,
+        { env: { DIR, FOREIGN_CMD: TAILSCALE_CMD } },
+      )
+      expect(rcOf(result)).toBe("1") // refused → caller aborts
+      expect(readFileSync(log, "utf8")).toBe("") // Tailscale is NEVER signalled
+      expect(result.stderr).toContain("held by another process")
+      expect(result.stderr).toContain("IPNExtension")
+    })
+
+    it("stops a stale Luna gracefully — SIGTERM, no SIGKILL when it exits", () => {
+      const temp = makeTempDir()
+      const log = join(temp, "kill.log")
+      const result = runGuard(
+        // -t query → the stale PID; the port-free re-check → free (TERM worked).
+        `LOG="${log}"; : > "$LOG"\n`
+        + `lsof() { if [[ "$1" == "-t" ]]; then echo 28274; return 0; fi; return 1; }\n`
+        + `ps() { echo "$LUNA_CMD"; }\n`
+        + `kill() { echo "kill $*" >> "$LOG"; }\n`
+        + `ensure_port_free 4753 "Chat" "$DIR"; echo "rc=$?"`,
+        { input: "y\n", env: { DIR, LUNA_CMD, LUNA_PORT_GUARD_TIMEOUT: "3" } },
+      )
+      expect(rcOf(result)).toBe("0")
+      const killed = readFileSync(log, "utf8")
+      expect(killed).toContain("kill -TERM 28274")
+      expect(killed).not.toContain("-KILL")
+      expect(killed).not.toContain("-9")
+    })
+
+    it("escalates to SIGKILL only when a stale Luna refuses to exit", () => {
+      const temp = makeTempDir()
+      const log = join(temp, "kill.log")
+      const killed = join(temp, "killed.flag")
+      const result = runGuard(
+        // Port stays held until a SIGKILL is observed (stateful mock).
+        `LOG="${log}"; : > "$LOG"\n`
+        + `lsof() { if [[ "$1" == "-t" ]]; then echo 28274; return 0; fi; [[ -f "${killed}" ]] && return 1 || return 0; }\n`
+        + `ps() { echo "$LUNA_CMD"; }\n`
+        + `kill() { echo "kill $*" >> "$LOG"; case "$*" in *-KILL*) : > "${killed}" ;; esac; }\n`
+        + `ensure_port_free 4753 "Chat" "$DIR"; echo "rc=$?"`,
+        { input: "y\n", env: { DIR, LUNA_CMD, LUNA_PORT_GUARD_TIMEOUT: "1" } },
+      )
+      expect(rcOf(result)).toBe("0")
+      const signals = readFileSync(log, "utf8")
+      expect(signals).toContain("kill -TERM 28274") // graceful first
+      expect(signals).toContain("kill -KILL 28274") // then escalate
+    })
+
+    it("install-mac.command wires the guard and no longer blind-kills", () => {
+      const script = readFileSync(join(repoRoot, "install-mac.command"), "utf8")
+      expect(script).toContain("source scripts/lib/port-guard.sh")
+      expect(script).toContain('ensure_port_free 4753 "Luna Chat Server" "$LUNA_DIR"')
+      expect(script).toContain('ensure_port_free 5173 "Vite Web UI" "$LUNA_DIR"')
+      // The dangerous old behavior must be gone for good (finding #7).
+      expect(script).not.toContain("kill -9")
+      expect(script).not.toContain("check_port")
+    })
+  })
+
   it("script entrypoints are executable", () => {
     for (const script of [
       "install.sh",
