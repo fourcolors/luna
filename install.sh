@@ -182,7 +182,9 @@ upsert_env() {
   touch "$ENV_FILE"
   chmod 600 "$ENV_FILE"
   local tmp
-  tmp="$(mktemp)"
+  # Same-dir temp so the mv below is an atomic rename(2) on one filesystem;
+  # a system-temp mktemp risks a cross-filesystem (non-atomic) mv.
+  tmp="$(mktemp "$LUNA_DATA/.env.tmp.XXXXXX")"
   awk -v key="$key" -v value="$value" '
     BEGIN { replaced = 0 }
     index($0, key "=") == 1 { print key "=" value; replaced = 1; next }
