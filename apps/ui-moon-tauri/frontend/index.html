@@ -852,7 +852,12 @@
       pendingUserMessage: null,
       // Set true when the user switches servers so the next syncThread()
       // ignores the (non-server-scoped) last-thread file and lists fresh.
-      skipLastThreadFile: false
+      skipLastThreadFile: false,
+      // Per-turn inactivity watchdog handle (fix-3). null when no turn is in flight.
+      turnTimeout: null,
+      // Connection generation counter (fix-6). Bumped each connect(); each
+      // socket's handlers capture their gen and ignore events if superseded.
+      connGen: 0
     };
 
     /**
@@ -904,6 +909,12 @@
           this.disconnect();
         }
 
+        // fix-6: each connect() bumps the generation. Handlers attached below
+        // capture this gen; a superseded socket's late async events (which
+        // cannot be detached because they were added via addEventListener) are
+        // ignored once a newer connect() has incremented State.connGen.
+        const myGen = ++State.connGen;
+
         Logger.info(`Connecting to WebSocket: ${State.wsUrl}`);
         this.updateStatus('connecting', 'Connecting...');
         State.isManuallyClosing = false;
@@ -923,6 +934,7 @@
         }
 
         State.ws.addEventListener('open', () => {
+          if (myGen !== State.connGen) return;
           Logger.info("WebSocket connected successfully");
           State.reconnectAttempts = 0;
           this.updateStatus('connected', 'Connected');
@@ -932,6 +944,7 @@
         });
 
         State.ws.addEventListener('message', (event) => {
+          if (myGen !== State.connGen) return;
           try {
             const frame = JSON.parse(event.data);
             this.handleFrame(frame);
@@ -941,20 +954,39 @@
         });
 
         State.ws.addEventListener('close', (event) => {
+          if (myGen !== State.connGen) return;            // fix-6 gen gate — MUST be first line
           Logger.warn(`WebSocket closed. Code: ${event.code}, Reason: ${event.reason}`);
           this.updateStatus('disconnected', 'Disconnected');
+          this.clearTurnTimeout();                         // fix-3 — no leaked timer across reconnects
+          if (State.activeTurnId) {                        // only decorate an actually in-flight turn
+            State.activeTurnId = null;
+            const last = DOM.chatMessages.lastElementChild;
+            if (last && last.querySelector('.typing-dots')) {
+              last.remove();
+              ChatEngine.appendMessage('assistant', '⚠️ Connection lost — try again.');
+              DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+            }
+          }
           if (!State.isManuallyClosing) {
             this.scheduleReconnect();
           }
         });
 
         State.ws.addEventListener('error', (event) => {
+          if (myGen !== State.connGen) return;
           Logger.error("WebSocket transport error occurred");
           this.updateStatus('disconnected', 'Error');
         });
       },
 
       disconnect() {
+        // Full teardown of connection + turn state. Clearing the watchdog here
+        // (not only in the close handler) is load-bearing: on a server-switch
+        // mid-turn the old socket's close event is gen-gated and returns early,
+        // so the close-handler's clearTurnTimeout() never runs — without this
+        // line the 90s timer leaks and later fires a false "No response" on the
+        // new server. Any caller of disconnect() now cancels the timer.
+        this.clearTurnTimeout();
         if (State.ws) {
           Logger.info("Disconnecting WebSocket client manually");
           State.isManuallyClosing = true;
@@ -982,6 +1014,32 @@
       updateStatus(statusClass, text) {
         DOM.connectionStatus.className = statusClass;
         DOM.connectionStatus.textContent = text;
+      },
+
+      clearTurnTimeout() {
+        if (State.turnTimeout) {
+          clearTimeout(State.turnTimeout);
+          State.turnTimeout = null;
+        }
+      },
+
+      startTurnTimeout() {
+        this.clearTurnTimeout();
+        State.turnTimeout = setTimeout(() => {
+          State.turnTimeout = null;
+          // Self-suppress on the typing-dots, NOT on activeTurnId: the dots are
+          // shown the instant a message is sent (handleSubmit), whereas
+          // activeTurnId is only set once the FIRST assistant-delta arrives — so
+          // a server that hangs without streaming a single token (the exact case
+          // this watchdog exists to catch) still has activeTurnId === null. If
+          // the dots are gone, the turn already resolved and we stay silent.
+          const last = DOM.chatMessages.lastElementChild;
+          if (!last || !last.querySelector('.typing-dots')) return;
+          State.activeTurnId = null;
+          last.remove();
+          ChatEngine.appendMessage('assistant', '⚠️ No response from the server — try again.');
+          DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+        }, 90000);
       },
 
       scheduleReconnect() {
@@ -1086,6 +1144,7 @@
           case 'assistant-delta': {
             // Dynamic premium streaming message update!
             State.activeTurnId = frame.turnId;
+            this.startTurnTimeout();
             let lastMsg = DOM.chatMessages.lastElementChild;
             
             // If the last message is an assistant message and not a user one, append to it.
@@ -1107,21 +1166,31 @@
             break;
           }
 
-          case 'assistant-done':
+          case 'assistant-done': {
             // Finalize streaming turn
             State.activeTurnId = null;
-            // Force a clean sync of the UI to make sure the final structured message matches
-            if (frame.message) {
-              let lastMsg = DOM.chatMessages.lastElementChild;
-              if (lastMsg && lastMsg.classList.contains('assistant') && !lastMsg.querySelector('.typing-dots')) {
-                lastMsg.textContent = frame.message.text;
+            this.clearTurnTimeout();
+            // Force a clean sync of the UI to make sure the final structured message matches.
+            // Also handle the zero-delta path: a turn that went straight from
+            // showTypingIndicator() to assistant-done still has spinning dots.
+            let doneMsg = DOM.chatMessages.lastElementChild;
+            if (doneMsg && doneMsg.classList.contains('assistant') && doneMsg.querySelector('.typing-dots')) {
+              if (frame.message && frame.message.text) {
+                doneMsg.innerHTML = '';
+                doneMsg.textContent = frame.message.text;
+              } else {
+                doneMsg.remove();
               }
+            } else if (frame.message && doneMsg && doneMsg.classList.contains('assistant')) {
+              doneMsg.textContent = frame.message.text;
             }
             DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
             break;
+          }
 
           case 'assistant-error':
             State.activeTurnId = null;
+            this.clearTurnTimeout();
             // Remove typing indicator if any
             let lastMsg = DOM.chatMessages.lastElementChild;
             if (lastMsg && lastMsg.querySelector('.typing-dots')) {
@@ -1174,6 +1243,7 @@
         Logger.info("Clearing conversation -> requesting a new thread");
         State.activeThreadId = null;
         State.activeTurnId = null;
+        WebSocketEngine.clearTurnTimeout();
         State.pendingUserMessage = null;
         DOM.chatMessages.innerHTML = '';
         this.appendMessage('assistant', 'New conversation started. Type a message below!');
@@ -1197,7 +1267,8 @@
         
         // Show typing indicator
         this.showTypingIndicator();
-        
+        WebSocketEngine.startTurnTimeout();
+
         // Send user message over the real WebSocket!
         if (State.activeThreadId) {
           WebSocketEngine.send({
@@ -1504,10 +1575,12 @@
           localStorage.setItem('luna_ws_token', State.wsToken)
           localStorage.setItem('luna_ws_url',   State.wsUrl)
           Logger.info('luna-config: token seeded from ~/.luna/.env, connecting...')
-          // Attempt to connect now that the token is available.
-          if (!State.ws || State.ws.readyState > WebSocket.OPEN) {
-            WebSocketEngine.connect()
-          }
+          // Reconnect unconditionally so the freshly-seeded token is applied to
+          // the live connection. connect() disconnects-first, cleanly tearing
+          // down any tokenless CONNECTING/OPEN socket from SettingsEngine.load();
+          // the fix-6 gen gate ensures that torn-down socket's async 'close'
+          // cannot fire a spurious reconnect.
+          WebSocketEngine.connect()
         }
       })
     }
