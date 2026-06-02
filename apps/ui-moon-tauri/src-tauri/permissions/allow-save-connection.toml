@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-save-connection"
+description = "Allows writing the mode-600 WS connection file"
+
+[permission.commands]
+allow = [
+  "save_connection"
+]

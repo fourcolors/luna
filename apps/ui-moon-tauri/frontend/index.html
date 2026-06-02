@@ -1289,7 +1289,27 @@
      * Settings configurations and state synchronization.
      */
     const SettingsEngine = {
-      load() {
+      // Persist the (url, token) PAIR to the mode-600 ~/.luna/moon-connection.json
+      // via the Rust save_connection command (keeps the token out of the
+      // XSS-reachable localStorage). No-op outside Tauri so the page still works
+      // in a plain browser during frontend dev.
+      // Returns true if the secure-file write succeeded, false otherwise (or when
+      // not under Tauri). Callers use the result to avoid purging the only
+      // surviving copy of the token before it is safely persisted.
+      async persistConnection(url, token) {
+        if (!(window.__TAURI__ && window.__TAURI__.core)) return false;
+        try {
+          // NOTE: invoke arg keys are the Rust param names (url/token), which are
+          // distinct from the file's JSON keys (wsUrl/wsToken).
+          await window.__TAURI__.core.invoke('save_connection', { url, token });
+          return true;
+        } catch (e) {
+          Logger.error("Failed to invoke save_connection via Tauri:", e);
+          return false;
+        }
+      },
+
+      async load() {
         Logger.info("Loading saved settings from localStorage...");
         const savedAlwaysOnTop = localStorage.getItem('luna_always_on_top');
         if (savedAlwaysOnTop !== null) {
@@ -1312,24 +1332,71 @@
           DOM.shortcutInput.value = savedShortcut;
         }
 
-        // Load WebSocket configurations
-        const savedWsUrl = localStorage.getItem('luna_ws_url');
-        if (savedWsUrl !== null) {
-          State.wsUrl = savedWsUrl;
-          DOM.wsUrlInput.value = savedWsUrl;
+        // Load WebSocket configurations.
+        //
+        // The token must NOT live in localStorage (XSS-reachable). Under Tauri it
+        // is read from the mode-600 ~/.luna/moon-connection.json via load_connection;
+        // the (non-secret) URL may still be cached in localStorage as a convenience.
+        // Outside Tauri we degrade to localStorage so frontend dev keeps working.
+        let loadedUrl = null;
+        let loadedToken = null;
+
+        if (window.__TAURI__ && window.__TAURI__.core) {
+          try {
+            const conn = await window.__TAURI__.core.invoke('load_connection');
+            if (conn) {
+              // File keys are camelCase (wsUrl/wsToken), matching save_connection
+              // and the luna-config emit.
+              if (typeof conn.wsUrl === 'string' && conn.wsUrl) loadedUrl = conn.wsUrl;
+              if (typeof conn.wsToken === 'string') loadedToken = conn.wsToken;
+            }
+          } catch (e) {
+            Logger.error("Failed to invoke load_connection via Tauri:", e);
+          }
+
+          // ONE-TIME MIGRATION: if a stale plaintext token still sits in
+          // localStorage (older builds wrote it there), move it into the secure
+          // file and purge the localStorage copy. Only migrate when the file had
+          // nothing, so an explicit file value always wins.
+          const legacyToken = localStorage.getItem('luna_ws_token');
+          if (legacyToken !== null) {
+            if (loadedToken === null) {
+              // Use the legacy token for THIS session regardless of write outcome.
+              loadedToken = legacyToken;
+              const migrateUrl = loadedUrl || localStorage.getItem('luna_ws_url') || 'ws://127.0.0.1:4753/ui';
+              const migrated = await this.persistConnection(migrateUrl, legacyToken);
+              if (loadedUrl === null) loadedUrl = migrateUrl;
+              if (migrated) {
+                // Only purge the plaintext copy once the secure file actually
+                // holds it — otherwise a failed write would lose the token
+                // permanently (it would retry on the next launch instead).
+                localStorage.removeItem('luna_ws_token');
+                Logger.info("Migrated legacy localStorage WS token into ~/.luna/moon-connection.json");
+              } else {
+                Logger.warn("Legacy WS token migration write failed; leaving localStorage copy for retry next launch");
+              }
+            } else {
+              // The secure file is already authoritative; the stale plaintext
+              // copy is safe to purge unconditionally.
+              localStorage.removeItem('luna_ws_token');
+            }
+          }
         } else {
-          State.wsUrl = 'ws://127.0.0.1:4753/ui';
-          DOM.wsUrlInput.value = 'ws://127.0.0.1:4753/ui';
+          // Plain browser (frontend dev): degrade to localStorage.
+          const savedWsToken = localStorage.getItem('luna_ws_token');
+          if (savedWsToken !== null) loadedToken = savedWsToken;
         }
 
-        const savedWsToken = localStorage.getItem('luna_ws_token');
-        if (savedWsToken !== null) {
-          State.wsToken = savedWsToken;
-          DOM.wsTokenInput.value = savedWsToken;
-        } else {
-          State.wsToken = '';
-          DOM.wsTokenInput.value = '';
-        }
+        // URL: prefer the value from the secure file, then localStorage, then default.
+        const savedWsUrl = localStorage.getItem('luna_ws_url');
+        const resolvedUrl = loadedUrl || savedWsUrl || 'ws://127.0.0.1:4753/ui';
+        State.wsUrl = resolvedUrl;
+        DOM.wsUrlInput.value = resolvedUrl;
+
+        // Token: from secure file (or localStorage fallback off-Tauri), else empty.
+        const resolvedToken = loadedToken !== null ? loadedToken : '';
+        State.wsToken = resolvedToken;
+        DOM.wsTokenInput.value = resolvedToken;
 
         Logger.info("Settings synchronized successfully");
 
@@ -1354,8 +1421,12 @@
           Logger.info("WebSocket connection settings changed; reconnecting...");
           State.wsUrl = newUrl;
           State.wsToken = newToken;
+          // URL is non-secret; keep it in localStorage as a convenience. The
+          // TOKEN goes only to the mode-600 secure file under Tauri (never
+          // localStorage). persistConnection writes the full pair so the URL is
+          // also recovered from the file on next launch even off-localStorage.
           localStorage.setItem('luna_ws_url', newUrl);
-          localStorage.setItem('luna_ws_token', newToken);
+          this.persistConnection(newUrl, newToken);
           // Thread IDs are scoped to a server's DB. After switching servers the
           // previous thread does not exist here, so reset thread state, ignore
           // the cross-server last-thread file, and clear the transcript before
@@ -1552,8 +1623,12 @@
     window.addEventListener('blur', () => UIController.handleBlur());
     window.addEventListener('keydown', (e) => SettingsEngine.handleKeyDown(e));
 
-    // Boot App Settings
-    SettingsEngine.load();
+    // Boot App Settings. load() is now async (it reads the token from the
+    // mode-600 secure file via load_connection). Capture the promise so the
+    // luna-config listener below can await it before evaluating its
+    // token-precedence guard — otherwise the still-pending load would leave
+    // State.wsToken empty and the .env seed would clobber a stored token.
+    const settingsLoaded = SettingsEngine.load();
 
     // Auto-wire the server token from ~/.luna/.env via a Tauri startup event.
     // The Rust backend (main.rs) reads UI_WS_TOKEN from ~/.luna/.env at launch
@@ -1564,15 +1639,21 @@
     // or manual settings-panel entry), we don't overwrite it — the user's
     // explicit choice takes precedence over the auto-seeded value.
     if (window.__TAURI__ && window.__TAURI__.event) {
-      window.__TAURI__.event.listen('luna-config', ({ payload }) => {
+      window.__TAURI__.event.listen('luna-config', async ({ payload }) => {
+        // Wait for the (now async) settings load to finish populating
+        // State.wsToken before checking the precedence guard, so a token
+        // restored from the secure file is not clobbered by the .env seed.
+        await settingsLoaded
         if (payload.wsToken && !State.wsToken) {
           State.wsToken = payload.wsToken
           State.wsUrl = payload.wsUrl || State.wsUrl
           // Update the settings panel inputs so the user can see what was loaded.
           if (DOM.wsUrlInput)   DOM.wsUrlInput.value   = State.wsUrl
           if (DOM.wsTokenInput) DOM.wsTokenInput.value = State.wsToken
-          // Persist to localStorage so re-launches don't need a re-emit.
-          localStorage.setItem('luna_ws_token', State.wsToken)
+          // Persist the seeded token to the mode-600 secure file (NOT
+          // localStorage) so re-launches don't need a re-emit. URL is a
+          // non-secret convenience cache.
+          await SettingsEngine.persistConnection(State.wsUrl, State.wsToken)
           localStorage.setItem('luna_ws_url',   State.wsUrl)
           Logger.info('luna-config: token seeded from ~/.luna/.env, connecting...')
           // Reconnect unconditionally so the freshly-seeded token is applied to
