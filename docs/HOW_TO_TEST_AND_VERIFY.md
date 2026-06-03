@@ -19,22 +19,35 @@ the WS bearer token is the only auth layer.)
 
 ## 1. `luna doctor` — the fastest "is it working?" check
 
-From the luna repo (`apps/agent-cli`):
+From the luna repo (`apps/agent-cli`). Use an **unambiguous tailnet address** —
+the host's Tailscale IP (`100.x`) or full `host.<tailnet>.ts.net` MagicDNS name —
+for a fully-green run:
 ```
-bun run src/luna.ts doctor --url ws://jax-box:4753/ui --token <master-token>
+bun run src/luna.ts doctor --url ws://100.93.215.30:4753/ui --token <master-token>
 ```
 Expected (healthy server):
 ```
-luna doctor — profile=stable url=ws://jax-box:4753/ui
+luna doctor — profile=stable url=ws://100.93.215.30:4753/ui
 [ OK ] L1 REACH  server reachable (/healthz 200)
 [ OK ] L2 TOKEN  token accepted (WS upgrade 101)
 [ OK ] L3 MODE   chat ready (protocol v2)
 [ OK ] L4 CHAT   active chat probe succeeded (assistant responded)
 [ OK ] PASS — connection healthy; `luna chat` should work        (exit 0)
 ```
+NOTE — **a bare MagicDNS short name (e.g. `ws://jax-box:4753/ui`) ALSO prints a
+transport WARN** and is otherwise identical:
+```
+[WARN] L1 REACH  'jax-box' is not loopback/Tailscale — this plaintext ws:// connection (token in URL) relies on Tailscale/a private interface for security
+```
+This is benign and exit-0: doctor can't confirm a *dotless* name is a tailnet
+address (it could be a LAN/`/etc/hosts` name), so it warns conservatively. If
+`jax-box` is your MagicDNS name the connection IS over Tailscale — use the `100.x`
+IP or full `*.ts.net` name to silence it.
+
 Failure modes it distinguishes (each tested live):
 - **Bad/rotated token** → `[FAIL] L2 TOKEN  token REJECTED — rotated/invalid; re-pair`  (exit 1)
 - **Server down / unreachable** → `[FAIL] L1 REACH  server DOWN or host unreachable — is Tailscale up?`  (exit 1, fast)
+- **Non-tailnet/loopback host** → `[WARN] L1 REACH  '<host>' is not loopback/Tailscale …`  (exit 0, soft — transport-security nudge)
 - **Claude login lapsed** → `[FAIL] L4 CHAT  server can't reach Claude — run claude setup-token on the server`
 - **Slow first turn (cold start)** → `[WARN] L4 CHAT  no response within 60s — re-run`  (exit 0, soft — not a hard fail)
 
@@ -100,7 +113,7 @@ temporarily rename a frame `type` literal in `packages/ui-ws/src/protocol.ts` (e
 ## 6. Verifying a live master deploy (the dogfood pattern)
 Master is updated manually for now (the `--user` unit, see §4). After any deploy:
 1. `ssh root@jax-box` then `XDG_RUNTIME_DIR=/run/user/0 systemctl --user is-active luna-chat-server.service` → `active`, NRestarts not climbing.
-2. **Authoritative check — drive a real turn, don't trust /healthz**: `luna doctor --url ws://jax-box:4753/ui --token <master-token>` → all 4 green, run it 2–3× (cold start can WARN on the first).
+2. **Authoritative check — drive a real turn, don't trust /healthz**: `luna doctor --url ws://jax-box:4753/ui --token <master-token>` → L1–L4 OK (the bare `jax-box` short name also prints the benign transport WARN — see §1; use the `100.x` IP or full `*.ts.net` name for a fully-green run), run it 2–3× (cold start can WARN on L4 the first time).
    This is what verified the dev→master promotion deploy — `/healthz` was 200 even though
    `bun install --frozen-lockfile` warned; only doctor's L4 real chat turn proved the server actually works.
 
