@@ -35,7 +35,8 @@ fn connection_path() -> Result<std::path::PathBuf, String> {
 
 #[tauri::command]
 fn save_connection(url: String, token: String) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
     let path = connection_path()?;
     if let Some(dir) = path.parent() {
@@ -50,9 +51,23 @@ fn save_connection(url: String, token: String) -> Result<(), String> {
     }))
     .map_err(|e| format!("serialize failed: {}", e))?;
 
-    std::fs::write(&path, body).map_err(|e| format!("write failed: {}", e))?;
+    // Create the file mode 0600 FROM BIRTH so the WS token never has a transient
+    // world-readable (0644) window before a chmod. This matches the hardened CLI
+    // path (pair-writers.ts) which creates at 0600 from the start. `.mode()` is
+    // honored on creation only (subject to umask); the set_permissions below is a
+    // belt-and-suspenders guarantee regardless of process umask.
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|e| format!("open failed: {}", e))?;
+    file.write_all(body.as_bytes())
+        .map_err(|e| format!("write failed: {}", e))?;
 
-    // Tighten perms AFTER writing so the secret is only ever owner-readable.
+    // Re-assert 0600 so the secret is only ever owner-readable even if the file
+    // pre-existed with looser perms (OpenOptions.mode only applies on creation).
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
         .map_err(|e| format!("chmod failed: {}", e))?;
 
