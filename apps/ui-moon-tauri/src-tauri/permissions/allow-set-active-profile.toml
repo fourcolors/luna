@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-set-active-profile"
+description = "Allows switching the active channel profile in the mode-600 WS connection file"
+
+[permission.commands]
+allow = [
+  "set_active_profile"
+]

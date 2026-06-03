@@ -43,6 +43,15 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         <div class="chat-meta">
           <h2>Luna Companion</h2>
           <span id="connection-status" class="connecting">Connecting...</span>
+          <!-- Active channel (stable / dev), additive. Kept as a <small>, NOT a
+               <span>, so the \`.chat-meta span::before\` dot rule doesn't draw a
+               status dot next to it. Hidden until a profile is resolved so older
+               state degrades gracefully. -->
+          <small id="active-profile" title="Active channel: stable">stable</small>
+          <!-- Build identity from the server's hello frame (additive). Kept as a
+               <small>, NOT a <span>, so the \`.chat-meta span::before\` dot rule
+               doesn't draw a status dot next to it. Hidden until populated. -->
+          <small id="build-sha" hidden=""></small>
         </div>
       </div>
       <div class="header-actions">
@@ -105,10 +114,21 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
           </div>
         </div>
 
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Channel</span>
+            <span class="setting-desc">Switch this moon between the stable and dev servers</span>
+          </div>
+          <select id="channel-select" class="channel-select">
+            <option value="stable">Stable</option>
+            <option value="dev">Dev</option>
+          </select>
+        </div>
+
         <div class="setting-item flex-column">
           <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
             <span class="setting-label">WebSocket Server URL</span>
-            <span class="setting-desc">Luna Central server WebSocket address</span>
+            <span class="setting-desc">Luna Central server WebSocket address (for the selected channel)</span>
           </div>
           <input type="text" id="ws-url-input" class="premium-text-input" placeholder="ws://127.0.0.1:4753/ui">
         </div>
@@ -191,6 +211,15 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         <div class="chat-meta">
           <h2>Luna Companion</h2>
           <span id="connection-status" class="connecting">Connecting...</span>
+          <!-- Active channel (stable / dev), additive. Kept as a <small>, NOT a
+               <span>, so the \`.chat-meta span::before\` dot rule doesn't draw a
+               status dot next to it. Hidden until a profile is resolved so older
+               state degrades gracefully. -->
+          <small id="active-profile" title="Active channel: stable">stable</small>
+          <!-- Build identity from the server's hello frame (additive). Kept as a
+               <small>, NOT a <span>, so the \`.chat-meta span::before\` dot rule
+               doesn't draw a status dot next to it. Hidden until populated. -->
+          <small id="build-sha" hidden=""></small>
         </div>
       </div>
       <div class="header-actions">
@@ -253,10 +282,21 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
           </div>
         </div>
 
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Channel</span>
+            <span class="setting-desc">Switch this moon between the stable and dev servers</span>
+          </div>
+          <select id="channel-select" class="channel-select">
+            <option value="stable">Stable</option>
+            <option value="dev">Dev</option>
+          </select>
+        </div>
+
         <div class="setting-item flex-column">
           <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
             <span class="setting-label">WebSocket Server URL</span>
-            <span class="setting-desc">Luna Central server WebSocket address</span>
+            <span class="setting-desc">Luna Central server WebSocket address (for the selected channel)</span>
           </div>
           <input type="text" id="ws-url-input" class="premium-text-input" placeholder="ws://127.0.0.1:4753/ui">
         </div>

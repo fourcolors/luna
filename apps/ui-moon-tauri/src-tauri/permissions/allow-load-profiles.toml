@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-load-profiles"
+description = "Allows listing the channel profiles + active profile from the mode-600 WS connection file"
+
+[permission.commands]
+allow = [
+  "load_profiles"
+]

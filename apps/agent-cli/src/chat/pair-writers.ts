@@ -104,26 +104,106 @@ export const upsertEnv = (homeDir: string, key: string, value: string): void => 
   writeAtomic0600(dir, path, contents)
 }
 
+export const DEFAULT_MOON_PROFILE = "stable"
+
+/** A single channel's creds inside moon-connection.json. */
+interface MoonProfile {
+  readonly wsUrl: string
+  readonly wsToken: string
+}
+
+/** The new (additive) on-disk shape of moon-connection.json. */
+interface MoonConnectionFile {
+  activeProfile: string
+  profiles: Record<string, MoonProfile>
+}
+
 /**
- * Write ~/.luna/moon-connection.json with the EXACT camelCase shape the Moon
- * widget's Rust save_connection writes. Compact (no trailing newline) to
- * byte-match `serde_json::to_string`. Atomic + 0600.
+ * Read + MIGRATE the existing moon-connection.json into the new
+ * {activeProfile, profiles} shape. Backward-read-compatible (must never throw
+ * or fail-closed on the running user's flat file):
+ *   - new format ({profiles} + {activeProfile}) -> used verbatim.
+ *   - legacy flat {wsUrl, wsToken}             -> profiles.stable, active=stable.
+ *   - missing / empty / garbage                -> empty profiles, active=stable.
+ * Mirrors the Rust normalize_profiles() so both writers agree.
+ */
+const readMoonConnection = (homeDir: string): MoonConnectionFile => {
+  const path = moonConnectionPath(homeDir)
+  let parsed: unknown
+  try {
+    if (!existsSync(path)) return { activeProfile: DEFAULT_MOON_PROFILE, profiles: {} }
+    parsed = JSON.parse(readFileSync(path, "utf8"))
+  } catch {
+    // Unreadable / unparseable -> behave as no connection (never throw).
+    return { activeProfile: DEFAULT_MOON_PROFILE, profiles: {} }
+  }
+  if (parsed === null || typeof parsed !== "object") {
+    return { activeProfile: DEFAULT_MOON_PROFILE, profiles: {} }
+  }
+  const obj = parsed as Record<string, unknown>
+
+  // New format: both keys present and well-typed.
+  if (
+    typeof obj["activeProfile"] === "string" &&
+    obj["profiles"] !== null &&
+    typeof obj["profiles"] === "object"
+  ) {
+    return {
+      activeProfile: obj["activeProfile"] as string,
+      profiles: { ...(obj["profiles"] as Record<string, MoonProfile>) },
+    }
+  }
+
+  // Legacy flat format: carry it into the stable slot, preserving any extra keys
+  // so the Moon's load_connection returns the same creds for the running user.
+  if ("wsUrl" in obj || "wsToken" in obj) {
+    return {
+      activeProfile: DEFAULT_MOON_PROFILE,
+      profiles: { [DEFAULT_MOON_PROFILE]: obj as unknown as MoonProfile },
+    }
+  }
+
+  return { activeProfile: DEFAULT_MOON_PROFILE, profiles: {} }
+}
+
+/**
+ * Write ~/.luna/moon-connection.json in the new (additive) {activeProfile,
+ * profiles} shape, into the named `profile` slot, PRESERVING every OTHER
+ * existing profile and migrating a legacy flat file first. This fixes the bug
+ * where `luna pair --profile dev` clobbered the Moon's stable connection.
  *
- * KEY ORDER: Moon's serde_json is built WITHOUT the `preserve_order` feature
- * (confirmed: indexmap is not a serde_json dependency in its Cargo.lock), so
- * its BTreeMap-backed Map serializes keys in SORTED order — "wsToken" before
- * "wsUrl" (T < U). We emit the same sorted order so the file byte-matches the
- * Rust writer. (Functionally, Moon's load_connection uses from_str, which is
- * order-independent — but byte-matching keeps the two writers indistinguishable
- * on disk, which is what the pairing contract asks for.)
+ * activeProfile is switched to `profile` ONLY when `activate` is true OR there
+ * was no prior file (first-ever pairing must point active at the just-paired
+ * channel, else the Moon would have a creds-less active "stable" and could not
+ * connect). When a prior activeProfile already exists, a non-activating pair
+ * leaves it untouched — so pairing dev never hijacks a running stable Moon.
+ *
+ * Atomic + 0600. (Unlike the legacy flat writer this is no longer byte-matched
+ * to the Rust serde output — the new format is nested and Moon's load uses
+ * order-independent from_str, so functional equality is the contract.)
  */
 export const writeMoonConnection = (
   homeDir: string,
   wsUrl: string,
   wsToken: string,
+  options?: { readonly profile?: string; readonly activate?: boolean },
 ): void => {
   const dir = ensureLunaDir(homeDir)
   const path = moonConnectionPath(homeDir)
-  const contents = JSON.stringify({ wsToken, wsUrl })
+  const profile = options?.profile?.trim() || DEFAULT_MOON_PROFILE
+
+  const hadFile = existsSync(path)
+  const current = readMoonConnection(homeDir)
+  current.profiles = { ...current.profiles, [profile]: { wsUrl, wsToken } }
+  // First-ever pairing -> active follows the just-paired profile. Otherwise only
+  // switch when explicitly asked, so we never hijack the running channel.
+  if (!hadFile || options?.activate) {
+    current.activeProfile = profile
+  }
+
+  const contents = JSON.stringify({
+    activeProfile: current.activeProfile,
+    profiles: current.profiles,
+  })
   writeAtomic0600(dir, path, contents)
 }
