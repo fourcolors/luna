@@ -14,7 +14,16 @@ BRANCH="${LUNA_BRANCH:-}"
 REPO_PATH=""
 STATE_PATH=""
 HOST="${LUNA_HOST:-jax-box}"
-LISTEN_ADDR="${LUNA_LISTEN_ADDR:-0.0.0.0}"
+# Host-side proxy exposure — THE real network-exposure knob. When unset, it is
+# auto-resolved after arg parsing (luna_resolve_bind_addr): the host's Tailscale
+# IP if a tailnet is present (so a fresh container serves tailnet peers out of the
+# box), else loopback. The WS layer is plaintext ws:// with the token in the URL,
+# so a public 0.0.0.0 proxy listen leaks the token to anything on the wire —
+# reaching 0.0.0.0 must be a CONSCIOUS choice (--i-understand-public, or an
+# explicit 0.0.0.0 via LUNA_LISTEN_ADDR / --listen-addr). An explicit env/flag
+# value always wins over auto-resolution.
+LISTEN_ADDR="${LUNA_LISTEN_ADDR:-}"
+I_UNDERSTAND_PUBLIC=false
 HOST_WS_PORT=""
 HOST_CONTROL_PORT=""
 TOKEN="${LUNA_UI_WS_TOKEN:-}"
@@ -43,7 +52,12 @@ Options:
   --repo-path <path>           Host repo path mounted at /root/luna.
   --state-path <path>          Host state path mounted at /root/.luna.
   --host <hostname>            Hostname clients use. Default: jax-box.
-  --listen-addr <addr>         Host listen address for proxies. Default: 0.0.0.0.
+  --listen-addr <addr>         Host listen address for proxies. Default: auto —
+                               the host's Tailscale IP if a tailnet is present
+                               (serves remote clients), else 127.0.0.1 loopback.
+  --i-understand-public        Expose the host proxies on 0.0.0.0 (all interfaces).
+                               UNSAFE without Tailscale/a private interface: ws://
+                               is plaintext and carries the token in the URL.
   --host-ws-port <port>        Host WebSocket proxy port.
   --host-control-port <port>   Host control proxy port.
   --token <token>              UI WebSocket token to write if no token exists.
@@ -79,6 +93,7 @@ while [[ $# -gt 0 ]]; do
     --state-path) STATE_PATH="${2:?missing --state-path value}"; shift 2 ;;
     --host) HOST="${2:?missing --host value}"; shift 2 ;;
     --listen-addr) LISTEN_ADDR="${2:?missing --listen-addr value}"; shift 2 ;;
+    --i-understand-public) I_UNDERSTAND_PUBLIC=true; LISTEN_ADDR="0.0.0.0"; shift ;;
     --host-ws-port) HOST_WS_PORT="${2:?missing --host-ws-port value}"; shift 2 ;;
     --host-control-port) HOST_CONTROL_PORT="${2:?missing --host-control-port value}"; shift 2 ;;
     --token) TOKEN="${2:?missing --token value}"; shift 2 ;;
@@ -97,6 +112,24 @@ while [[ $# -gt 0 ]]; do
 done
 
 luna_validate_profile "$PROFILE"
+
+# When neither LUNA_LISTEN_ADDR nor --listen-addr chose a host-proxy listen,
+# auto-resolve it: the host's Tailscale IP if a tailnet is present (so a fresh
+# container serves tailnet peers), else loopback with a warning.
+if [[ -z "$LISTEN_ADDR" ]]; then
+  LISTEN_ADDR="$(luna_resolve_bind_addr)"
+fi
+
+# Loud one-line warning whenever the EFFECTIVE host-proxy listen is the public
+# wildcard. The WS layer is plaintext ws:// with the token in the URL, so a
+# 0.0.0.0 proxy listen has no transport confidentiality and MUST sit behind
+# Tailscale/a private interface. --i-understand-public is the explicit opt-in;
+# an explicit LUNA_LISTEN_ADDR / --listen-addr of 0.0.0.0 is also honored (and
+# warned about).
+if [[ "$LISTEN_ADDR" == "0.0.0.0" ]]; then
+  luna_warn "exposing host proxy on 0.0.0.0 (public): plaintext ws:// + token-in-URL has NO transport confidentiality — MUST be behind Tailscale or a private interface (opt-in via --i-understand-public)"
+fi
+: "$I_UNDERSTAND_PUBLIC"
 
 if [[ -z "$BRANCH" ]]; then
   if [[ "$PROFILE" == "stable" ]]; then
@@ -211,7 +244,13 @@ packages:
   - git
   - unzip
 runcmd:
-  - [ bash, -lc, "/root/luna/scripts/luna-server-install --profile ${PROFILE} --repo-dir /root/luna --luna-home /root/.luna" ]
+  # --bind-host 127.0.0.1 is explicit and load-bearing: the in-container chat
+  # server must bind loopback (the Incus host proxy is the sole ingress and
+  # targets 127.0.0.1 inside the container). It also keeps the in-container
+  # install from auto-resolving a bind — there is no tailnet inside the
+  # container, so leaving it unset would emit a misleading "no Tailscale" warn.
+  # Public exposure is controlled at the HOST proxy (--listen-addr), not here.
+  - [ bash, -lc, "/root/luna/scripts/luna-server-install --profile ${PROFILE} --repo-dir /root/luna --luna-home /root/.luna --bind-host 127.0.0.1" ]
 EOF
 }
 
@@ -265,7 +304,12 @@ luna_run mkdir -p "$STATE_PATH" "$STATE_PATH/claude" "$STATE_PATH/logs" "$STATE_
 luna_remove_env "$STATE_PATH/.env" "LUNA_CLAUDE_CODE_EXECUTABLE"
 luna_upsert_env "$STATE_PATH/.env" "CLAUDE_CONFIG_DIR" "/root/.luna/claude"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_REPO_ROOT" "/root/luna"
-luna_upsert_env "$STATE_PATH/.env" "LUNA_UI_WS_HOST" "0.0.0.0"
+# In-container chat-server bind. The Incus proxy device is the SOLE ingress and
+# it connects to 127.0.0.1:4753 inside the container (see `connect=tcp:127.0.0.1`
+# below), so loopback is strictly safer than 0.0.0.0 with zero functional loss —
+# nothing else can reach the in-container server. Public exposure is governed by
+# the host-side --listen-addr / --i-understand-public knob, not this bind.
+luna_upsert_env "$STATE_PATH/.env" "LUNA_UI_WS_HOST" "127.0.0.1"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_PROFILE" "$PROFILE"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_CHAT_SERVER_NAME" "$CHAT_SERVER_NAME"
 luna_upsert_env "$STATE_PATH/.env" "LUNA_HOME" "$CONTAINER_LUNA_HOME"

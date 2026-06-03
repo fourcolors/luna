@@ -118,6 +118,30 @@ export const redactUrl = (url: string): string => {
 }
 
 /**
+ * Pure: classify a hostname as a "transport-safe" target — one where the
+ * plaintext ws:// + token-in-URL connection is NOT exposed to an untrusted
+ * network. Safe = loopback (127.0.0.1/localhost) OR a Tailscale tailnet target
+ * (the 100.64.0.0/10 CGNAT range, or a *.ts.net MagicDNS name). Anything else
+ * relies on Tailscale being up (or a private interface) for confidentiality.
+ *
+ * The CGNAT test is the FULL /10 (100.64.0.0–100.127.255.255), not a `100.*`
+ * prefix: public 100.0–100.63 / 100.128+ are NOT Tailscale.
+ */
+export const isTransportSafeHost = (hostname: string): boolean => {
+  const host = hostname.toLowerCase()
+  if (host === "127.0.0.1" || host === "localhost" || host === "::1") return true
+  if (host.endsWith(".ts.net")) return true
+  // CGNAT 100.64.0.0/10 → first octet 100, second octet in [64, 127].
+  const m = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(host)
+  if (m !== null) {
+    const a = Number(m[1])
+    const b = Number(m[2])
+    if (a === 100 && b >= 64 && b <= 127) return true
+  }
+  return false
+}
+
+/**
  * Pure: given the layered probe outcomes, produce one scannable line per
  * layer (OK/FAIL marker + remedy on failure), a final summary line, and a
  * scriptable exit code (0 iff every layer passed).
@@ -134,6 +158,23 @@ export const renderVerdicts = (
   let firstFailure: string | null = null
   if (reach.kind === "ok") {
     lines.push(`${PASS} L1 REACH  server reachable (/healthz 200)`)
+    // Transport-security WARN: a reachable server on a non-loopback,
+    // non-Tailscale host means this plaintext ws:// connection (token in the
+    // URL) has no transport confidentiality of its own — it relies on Tailscale
+    // (or a private interface) being up. Surface the host ONLY (never ctx.url —
+    // it carries ?token=…). Stays a WARN: does NOT set firstFailure, does NOT
+    // change the exit code.
+    let warnHost: string | null = null
+    try {
+      warnHost = new URL(ctx.url).hostname
+    } catch {
+      warnHost = null
+    }
+    if (warnHost !== null && !isTransportSafeHost(warnHost)) {
+      lines.push(
+        `${WARN} L1 REACH  '${warnHost}' is not loopback/Tailscale — this plaintext ws:// connection (token in URL) relies on Tailscale/a private interface for security`,
+      )
+    }
   } else {
     const remedy =
       reach.kind === "refused"

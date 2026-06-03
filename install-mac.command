@@ -25,6 +25,81 @@ warn() { printf "${YELLOW}warning: %b${NC}\n" "$*" >&2; }
 error() { printf "${RED}error: %b${NC}\n" "$*" >&2; }
 die() { error "$*"; exit 1; }
 
+# Claude Code CLI preflight (#24). Options 1 & 4 boot a local Luna server whose
+# in-browser setup-mode login shells out to `claude setup-token`; without the
+# `claude` binary that flow dead-ends on a clean Mac. Mirror the server's own
+# resolver order (scripts/lib/luna-deploy.sh: luna_find_claude_executable):
+#   1) an explicit, executable LUNA_CLAUDE_CODE_EXECUTABLE, then
+#   2) `claude` on PATH, then
+#   3) a known install path the official Claude Code installer uses.
+# The known-path fallback is load-bearing: double-clicked from Finder this
+# script runs with a minimal PATH (~/.local/bin and ~/.claude/local are NOT on
+# it), so a correctly-installed `claude` would false-fail a bare `command -v`.
+# Use ${VAR:-} so the optional env var doesn't trip `set -u` when unset.
+#
+# On success the absolute, resolved path is printed to stdout so the caller can
+# persist it (see persist_claude_executable). This is required for closure, not
+# cosmetic: the launchd-supervised server (scripts/lib/launchd-plist.sh) runs
+# with a hardcoded minimal PATH that does NOT include ~/.local/bin or
+# ~/.claude/local, so a server that spawns bare `claude` would still dead-end
+# even after this preflight "passes" via the known-path fallback.
+resolve_claude_cli() {
+  if [[ -n "${LUNA_CLAUDE_CODE_EXECUTABLE:-}" && -x "${LUNA_CLAUDE_CODE_EXECUTABLE:-}" ]]; then
+    printf '%s\n' "${LUNA_CLAUDE_CODE_EXECUTABLE}"
+    return 0
+  fi
+  if command -v claude >/dev/null 2>&1; then
+    command -v claude
+    return 0
+  fi
+  local candidate
+  for candidate in "$HOME/.local/bin/claude" "$HOME/.claude/local/claude"; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Fail-fast preflight: die with guidance if no usable `claude` binary exists.
+require_claude_cli() {
+  if resolve_claude_cli >/dev/null; then
+    return 0
+  fi
+  info "The in-app login runs \`claude setup-token\` inside the embedded terminal — this preflight only needs the \`claude\` binary present."
+  die "Claude Code CLI required for the in-app login — install it from https://claude.ai/code, then re-run this installer (it will run \`claude setup-token\` for you in the embedded terminal)."
+}
+
+# Persist the resolved `claude` absolute path into ~/.luna/.env as
+# LUNA_CLAUDE_CODE_EXECUTABLE so the launchd-supervised server (which runs with a
+# minimal PATH that omits ~/.local/bin and ~/.claude/local) can still spawn the
+# binary for `claude setup-token`. chat-server.ts loads ~/.luna/.env on boot and
+# only fills keys NOT already in its env; the plist doesn't set this key, so this
+# value wins. Must be called AFTER install.sh + the token upsert so it isn't
+# clobbered. Always pins the resolved ABSOLUTE path (idempotent upsert) so the
+# server never depends on its own PATH containing `claude`; no-ops only if
+# nothing resolves (require_claude_cli already died in that case for opts 1/4).
+persist_claude_executable() {
+  local env_file="$1"
+  local resolved
+  resolved="$(resolve_claude_cli)" || return 0
+
+  mkdir -p "$(dirname "$env_file")"
+  touch "$env_file"
+  chmod 600 "$env_file"
+  local tmp
+  tmp="$(mktemp "$(dirname "$env_file")/env.tmp.XXXXXX")"
+  awk -v val="$resolved" '
+    BEGIN { replaced = 0 }
+    index($0, "LUNA_CLAUDE_CODE_EXECUTABLE=") == 1 { print "LUNA_CLAUDE_CODE_EXECUTABLE=" val; replaced = 1; next }
+    { print }
+    END { if (replaced == 0) print "LUNA_CLAUDE_CODE_EXECUTABLE=" val }
+  ' "$env_file" > "$tmp"
+  mv "$tmp" "$env_file"
+  chmod 600 "$env_file"
+}
+
 # Shared, SIGPIPE-safe UI-WS-token generator (defines gen_ui_ws_token).
 # Sourced, not executed (the script already cd'd to its own dir above).
 source scripts/lib/gen-token.sh
@@ -100,6 +175,10 @@ ENV_FILE="$LUNA_DATA/.env"
 
 case "$SELECTION" in
   1)
+    # Fail fast BEFORE mutating any launchd/port state: a desktop install boots a
+    # local server whose in-app login needs the `claude` CLI (#24).
+    require_claude_cli
+
     # launchd identifiers for the supervised chat server (#2). Defined up front so
     # the early bootout below and the bootstrap later share them.
     LAUNCHD_LABEL="com.user.luna-chat-server"
@@ -164,7 +243,12 @@ case "$SELECTION" in
     
     # Read the token for background startup injection
     TOKEN=$(awk -F= '$1 == "UI_WS_TOKEN" {print $2}' "$ENV_FILE")
-    
+
+    # Persist the resolved `claude` path so the launchd server (minimal PATH) can
+    # run setup-token (#24). Done AFTER the token upsert so neither clobbers the
+    # other; both feed the same ~/.luna/.env the server loads on boot.
+    persist_claude_executable "$ENV_FILE"
+
     info "Installing a launchd LaunchAgent so the chat server is supervised..."
     # Supervise the chat server via launchd (finding #2): it survives login and
     # crashes, and the in-app Restart button works — control.restart kickstarts
@@ -265,6 +349,10 @@ case "$SELECTION" in
     command -v cargo-tauri >/dev/null 2>&1 \
       || die "cargo-tauri CLI is required: cargo install tauri-cli  (then re-run)"
 
+    # The Moon widget boots the same local server, so its setup-mode login also
+    # needs the `claude` CLI — check before booting anything (#24).
+    require_claude_cli
+
     # Core client install: clone/pull, bun install, write .env with localhost URLs.
     chmod +x install.sh
     ./install.sh --luna-dir "$LUNA_DIR" \
@@ -291,6 +379,10 @@ case "$SELECTION" in
       chmod 600 "$ENV_FILE"
     fi
     TOKEN="$(awk -F= '$1 == "UI_WS_TOKEN" {print $2}' "$ENV_FILE")"
+
+    # Persist the resolved `claude` path so the launchd server (minimal PATH) can
+    # run setup-token (#24) — same reasoning as option 1.
+    persist_claude_executable "$ENV_FILE"
 
     # Boot the supervised chat server via launchd (same path as option 1).
     LAUNCHD_LABEL="com.user.luna-chat-server"

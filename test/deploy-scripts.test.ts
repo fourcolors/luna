@@ -26,6 +26,11 @@ const runScript = (
 ) => {
   const env = {
     ...process.env,
+    // Hermetic default: pin the bind/listen auto-resolver to its loopback
+    // fallback so the suite never depends on whether THIS machine has a tailnet
+    // up (luna_resolve_bind_addr shells out to `tailscale` only when this is
+    // unset). Tests that exercise tailnet detection override this with an IP.
+    LUNA_TAILSCALE_IP: "",
     ...options.env,
   }
   return spawnSync("bash", [join(repoRoot, script), ...args], {
@@ -130,12 +135,135 @@ exit 1
     expect(result.stdout).toContain("Branch: dev")
     expect(result.stdout).toContain("git clone --branch dev")
     expect(result.stdout).toContain("security.nesting=true")
-    expect(result.stdout).toContain("listen=tcp:0.0.0.0:5753")
+    // BLOCKER #25: the host-proxy listen auto-resolves — the host's Tailscale IP
+    // if a tailnet is present, else LOOPBACK (never the public wildcard). The
+    // test harness pins LUNA_TAILSCALE_IP="" (no tailnet), so this exercises the
+    // loopback fallback; the tailnet-detected path has its own test below.
+    expect(result.stdout).toContain("listen=tcp:127.0.0.1:5753")
+    expect(result.stdout).not.toContain("listen=tcp:0.0.0.0:5753")
     expect(result.stdout).toContain("connect=tcp:127.0.0.1:4753")
     expect(result.stdout).toContain("path=/root/luna")
     expect(result.stdout).toContain("LUNA_DEV_WS_URL=ws://jax-box:5753/ui")
+    // The in-container chat server also binds loopback (the Incus proxy is the
+    // sole ingress and targets 127.0.0.1) — never 0.0.0.0.
+    expect(result.stdout).toContain("LUNA_UI_WS_HOST=127.0.0.1")
+    expect(result.stdout).not.toContain("LUNA_UI_WS_HOST=0.0.0.0")
+    // The loopback fallback warns the operator the server is local-only (so a
+    // missing tailnet is never a silent surprise) — but it is NOT the public
+    // 0.0.0.0 "no transport confidentiality" warning.
+    expect(result.stderr).toContain("no Tailscale interface detected")
+    expect(result.stderr).not.toContain("NO transport confidentiality")
     expect(result.stdout).not.toContain(token)
     expect(result.stdout).toContain("<redacted>")
+  })
+
+  it("container auto-resolves the host-proxy listen to the Tailscale IP when a tailnet is present", () => {
+    const temp = makeTempDir()
+    const token = "test-token-1234567890-secret"
+
+    const result = runScript(
+      "scripts/luna-container-create",
+      [
+        "--dry-run",
+        "--profile",
+        "dev",
+        "--name",
+        "luna-dev",
+        "--repo-path",
+        join(temp, "repo"),
+        "--state-path",
+        join(temp, "state"),
+        "--host",
+        "jax-box",
+        "--host-ws-port",
+        "5753",
+        "--host-control-port",
+        "5754",
+        "--token",
+        token,
+      ],
+      // A tailnet IS present (CGNAT 100.64.0.0/10): the host proxy binds it so
+      // tailnet peers reach the server out of the box — the primary deployment.
+      { env: { LUNA_TAILSCALE_IP: "100.64.0.7" } },
+    )
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("listen=tcp:100.64.0.7:5753")
+    expect(result.stdout).toContain("listen=tcp:100.64.0.7:5754")
+    expect(result.stdout).not.toContain("listen=tcp:127.0.0.1:5753")
+    // The in-container bind stays loopback (the proxy targets 127.0.0.1).
+    expect(result.stdout).toContain("LUNA_UI_WS_HOST=127.0.0.1")
+    // Binding the tailnet is safe + intended: no fallback warn, no public warn.
+    expect(result.stderr).not.toContain("no Tailscale interface detected")
+    expect(result.stderr).not.toContain("NO transport confidentiality")
+  })
+
+  it("container --i-understand-public opts into a 0.0.0.0 proxy listen with a loud warning", () => {
+    const temp = makeTempDir()
+    const token = "test-token-1234567890-secret"
+
+    const result = runScript("scripts/luna-container-create", [
+      "--dry-run",
+      "--profile",
+      "dev",
+      "--name",
+      "luna-dev",
+      "--repo-path",
+      join(temp, "repo"),
+      "--state-path",
+      join(temp, "state"),
+      "--host",
+      "jax-box",
+      "--host-ws-port",
+      "5753",
+      "--host-control-port",
+      "5754",
+      "--token",
+      token,
+      "--i-understand-public",
+    ])
+
+    expect(result.status).toBe(0)
+    // The conscious opt-in restores the public wildcard listen...
+    expect(result.stdout).toContain("listen=tcp:0.0.0.0:5753")
+    expect(result.stdout).toContain("listen=tcp:0.0.0.0:5754")
+    // ...and prints the loud one-line transport-security warning (to stderr, so
+    // it never collides with the stdout plan and never carries the token).
+    expect(result.stderr).toContain("0.0.0.0")
+    expect(result.stderr).toContain("NO transport confidentiality")
+    expect(result.stderr).toContain("Tailscale")
+    expect(result.stderr).not.toContain(token)
+    // The in-container bind stays loopback regardless of host-proxy exposure.
+    expect(result.stdout).toContain("LUNA_UI_WS_HOST=127.0.0.1")
+  })
+
+  it("container --listen-addr 0.0.0.0 (explicit) is honored AND warned about", () => {
+    const temp = makeTempDir()
+    const token = "test-token-1234567890-secret"
+
+    const result = runScript("scripts/luna-container-create", [
+      "--dry-run",
+      "--profile",
+      "dev",
+      "--name",
+      "luna-dev",
+      "--repo-path",
+      join(temp, "repo"),
+      "--state-path",
+      join(temp, "state"),
+      "--host-ws-port",
+      "5753",
+      "--host-control-port",
+      "5754",
+      "--token",
+      token,
+      "--listen-addr",
+      "0.0.0.0",
+    ])
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("listen=tcp:0.0.0.0:5753")
+    expect(result.stderr).toContain("NO transport confidentiality")
   })
 
   it("container dry-run writes an Incus runtime scope marker", () => {
@@ -481,6 +609,153 @@ esac
     expect(result.stdout).toContain("LUNA_EVENTS_JSONL_PATH=" + join(temp, "state", "events.jsonl"))
     expect(result.stdout).toContain("UI_WS_TOKEN=<redacted>")
     expect(result.stdout).not.toContain(token)
+    // BLOCKER #25: the chat-server bind auto-resolves — the host's Tailscale IP
+    // if a tailnet is present, else LOOPBACK. The harness pins LUNA_TAILSCALE_IP=""
+    // (no tailnet), so this exercises the loopback fallback. It warns the server
+    // is local-only, but never the public 0.0.0.0 "no transport confidentiality".
+    expect(result.stdout).toContain("LUNA_UI_WS_HOST=127.0.0.1")
+    expect(result.stdout).not.toContain("LUNA_UI_WS_HOST=0.0.0.0")
+    expect(result.stderr).toContain("no Tailscale interface detected")
+    expect(result.stderr).not.toContain("NO transport confidentiality")
+  })
+
+  it("server install auto-resolves the bind to the Tailscale IP when a tailnet is present", () => {
+    const temp = makeTempDir()
+    const token = "server-token-1234567890-secret"
+
+    const result = runScript(
+      "scripts/luna-server-install",
+      [
+        "--dry-run",
+        "--profile",
+        "stable",
+        "--repo-dir",
+        join(temp, "repo"),
+        "--luna-home",
+        join(temp, "state"),
+        "--service-dir",
+        join(temp, "systemd"),
+        "--token",
+        token,
+        "--skip-deps",
+        "--no-enable",
+        "--no-start",
+      ],
+      {
+        env: {
+          LUNA_TEST_BUN_PATH: "/root/.bun/bin/bun",
+          // A tailnet IS present: a fresh bare-host install serves tailnet peers
+          // out of the box without any flag — the primary remote deployment.
+          LUNA_TAILSCALE_IP: "100.64.0.7",
+        },
+      },
+    )
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("LUNA_UI_WS_HOST=100.64.0.7")
+    expect(result.stdout).not.toContain("LUNA_UI_WS_HOST=127.0.0.1")
+    // Binding the tailnet is safe + intended: no fallback warn, no public warn.
+    expect(result.stderr).not.toContain("no Tailscale interface detected")
+    expect(result.stderr).not.toContain("NO transport confidentiality")
+    expect(result.stderr).not.toContain(token)
+  })
+
+  it("server install --i-understand-public binds 0.0.0.0 with a loud warning", () => {
+    const temp = makeTempDir()
+    const token = "server-token-1234567890-secret"
+
+    const result = runScript("scripts/luna-server-install", [
+      "--dry-run",
+      "--profile",
+      "stable",
+      "--repo-dir",
+      join(temp, "repo"),
+      "--luna-home",
+      join(temp, "state"),
+      "--service-dir",
+      join(temp, "systemd"),
+      "--token",
+      token,
+      "--skip-deps",
+      "--no-enable",
+      "--no-start",
+      "--i-understand-public",
+    ], {
+      env: {
+        LUNA_TEST_BUN_PATH: "/root/.bun/bin/bun",
+      },
+    })
+
+    expect(result.status).toBe(0)
+    // The conscious opt-in restores the public wildcard bind...
+    expect(result.stdout).toContain("LUNA_UI_WS_HOST=0.0.0.0")
+    // ...and prints the loud one-line transport-security warning to stderr (so
+    // it never collides with the stdout plan and never carries the token).
+    expect(result.stderr).toContain("0.0.0.0")
+    expect(result.stderr).toContain("NO transport confidentiality")
+    expect(result.stderr).toContain("Tailscale")
+    expect(result.stderr).not.toContain(token)
+  })
+
+  it("server install --bind-host 0.0.0.0 (explicit) is honored AND warned about", () => {
+    const temp = makeTempDir()
+
+    const result = runScript("scripts/luna-server-install", [
+      "--dry-run",
+      "--profile",
+      "stable",
+      "--repo-dir",
+      join(temp, "repo"),
+      "--luna-home",
+      join(temp, "state"),
+      "--service-dir",
+      join(temp, "systemd"),
+      "--token",
+      "server-token-1234567890-secret",
+      "--skip-deps",
+      "--no-enable",
+      "--no-start",
+      "--bind-host",
+      "0.0.0.0",
+    ], {
+      env: {
+        LUNA_TEST_BUN_PATH: "/root/.bun/bin/bun",
+      },
+    })
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("LUNA_UI_WS_HOST=0.0.0.0")
+    expect(result.stderr).toContain("NO transport confidentiality")
+  })
+
+  it("server install honors an explicit LUNA_UI_WS_HOST env (loopback stays quiet)", () => {
+    const temp = makeTempDir()
+
+    const result = runScript("scripts/luna-server-install", [
+      "--dry-run",
+      "--profile",
+      "stable",
+      "--repo-dir",
+      join(temp, "repo"),
+      "--luna-home",
+      join(temp, "state"),
+      "--service-dir",
+      join(temp, "systemd"),
+      "--token",
+      "server-token-1234567890-secret",
+      "--skip-deps",
+      "--no-enable",
+      "--no-start",
+    ], {
+      env: {
+        LUNA_TEST_BUN_PATH: "/root/.bun/bin/bun",
+        LUNA_UI_WS_HOST: "127.0.0.1",
+      },
+    })
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("LUNA_UI_WS_HOST=127.0.0.1")
+    expect(result.stderr).not.toContain("NO transport confidentiality")
   })
 
   it("server install dry-run writes dev chat-server runtime metadata", () => {

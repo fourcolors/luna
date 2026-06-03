@@ -15,7 +15,15 @@ LUNA_HOME="${LUNA_HOME:-/root/.luna}"
 SERVICE_DIR="${LUNA_SERVICE_DIR:-/etc/systemd/system}"
 SERVICE_NAME=""
 TOKEN="${UI_WS_TOKEN:-${LUNA_UI_WS_TOKEN:-}}"
-BIND_HOST="${LUNA_UI_WS_HOST:-0.0.0.0}"
+# The chat server's own bind. When unset, it is auto-resolved after arg parsing
+# (luna_resolve_bind_addr): the host's Tailscale IP if a tailnet is present (so a
+# fresh remote install serves tailnet peers out of the box), else loopback. The
+# WS layer is plaintext ws:// with the token in the URL, so a public 0.0.0.0 bind
+# leaks the token to anything on the wire — reaching 0.0.0.0 must be a CONSCIOUS
+# choice (--i-understand-public, or an explicit 0.0.0.0 via LUNA_UI_WS_HOST /
+# --bind-host). An explicit env/flag value always wins over auto-resolution.
+BIND_HOST="${LUNA_UI_WS_HOST:-}"
+I_UNDERSTAND_PUBLIC=false
 DRY_RUN=false
 SKIP_DEPS=false
 ENABLE_SERVICE=true
@@ -40,7 +48,12 @@ Options:
   --service-name <name>     Override generated unit name.
   --token <token>           UI WebSocket token to write if no token exists.
   --rotate-token            Replace existing UI token with --token.
-  --bind-host <host>        LUNA_UI_WS_HOST value. Default: 0.0.0.0.
+  --bind-host <host>        LUNA_UI_WS_HOST value. Default: auto — the host's
+                            Tailscale IP if a tailnet is present (serves remote
+                            peers), else 127.0.0.1 loopback.
+  --i-understand-public     Bind the chat server to 0.0.0.0 (all interfaces).
+                            UNSAFE without Tailscale/a private interface: ws://
+                            is plaintext and carries the token in the URL.
   --embedder <name>         Memory embedder: stub or ollama. Omitted preserves/defaults.
   --ollama-base-url <url>   Ollama base URL for LUNA_EMBEDDER=ollama.
   --ollama-embed-model <m>  Ollama embedding model. Default in code: embeddinggemma.
@@ -69,6 +82,7 @@ while [[ $# -gt 0 ]]; do
     --token) TOKEN="${2:?missing --token value}"; shift 2 ;;
     --rotate-token) ROTATE_TOKEN=true; shift ;;
     --bind-host) BIND_HOST="${2:?missing --bind-host value}"; shift 2 ;;
+    --i-understand-public) I_UNDERSTAND_PUBLIC=true; BIND_HOST="0.0.0.0"; shift ;;
     --embedder) EMBEDDER="${2:?missing --embedder value}"; shift 2 ;;
     --ollama-base-url) OLLAMA_BASE_URL="${2:?missing --ollama-base-url value}"; shift 2 ;;
     --ollama-embed-model) OLLAMA_EMBED_MODEL="${2:?missing --ollama-embed-model value}"; shift 2 ;;
@@ -83,6 +97,23 @@ while [[ $# -gt 0 ]]; do
 done
 
 luna_validate_profile "$PROFILE"
+
+# When neither LUNA_UI_WS_HOST nor --bind-host chose a bind, auto-resolve it:
+# the host's Tailscale IP if a tailnet is present (so a fresh remote install
+# serves tailnet peers), else loopback with a warning (luna_resolve_bind_addr).
+if [[ -z "$BIND_HOST" ]]; then
+  BIND_HOST="$(luna_resolve_bind_addr)"
+fi
+
+# Loud one-line warning whenever the EFFECTIVE bind is the public wildcard. The
+# WS layer is plaintext ws:// with the token in the URL, so 0.0.0.0 has no
+# transport confidentiality and MUST sit behind Tailscale/a private interface.
+# --i-understand-public is the explicit opt-in; an explicit LUNA_UI_WS_HOST /
+# --bind-host of 0.0.0.0 is also honored (and warned about).
+if [[ "$BIND_HOST" == "0.0.0.0" ]]; then
+  luna_warn "binding chat server to 0.0.0.0 (public): plaintext ws:// + token-in-URL has NO transport confidentiality — MUST be behind Tailscale or a private interface (opt-in via --i-understand-public)"
+fi
+: "$I_UNDERSTAND_PUBLIC"
 
 if [[ -z "$SERVICE_NAME" ]]; then
   SERVICE_NAME="$(luna_service_name "$PROFILE")"
@@ -164,6 +195,9 @@ if [[ "$DRY_RUN" == false ]]; then
 fi
 
 luna_run mkdir -p "$LUNA_HOME" "$LUNA_HOME/claude" "$LUNA_HOME/logs" "$LUNA_HOME/run"
+# Harden the Claude OAuth credential dir: owner-only (700). It holds the
+# high-value Claude.ai subscription token, so deny group/other entirely.
+luna_run chmod 700 "$LUNA_HOME/claude"
 
 luna_upsert_env "$ENV_FILE" "CLAUDE_CONFIG_DIR" "$LUNA_HOME/claude"
 luna_upsert_env "$ENV_FILE" "LUNA_REPO_ROOT" "$REPO_DIR"

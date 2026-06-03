@@ -198,6 +198,40 @@ luna_chat_server_name() {
   printf '%s\n' "${service_name%.service}"
 }
 
+# Resolve a safe default bind/listen address for a remote-serving install when
+# the operator did NOT choose one explicitly. Returns the host's Tailscale IPv4
+# if a tailnet is present (the normal remote-serving case: reachable by tailnet
+# peers over an encrypted link, never exposed on the public wire), else loopback
+# 127.0.0.1 with a warning that the server will be local-only. Explicit
+# env/flag/--i-understand-public always win in the caller; this only fills the
+# unset default. The IP is printed to stdout; any warning goes to stderr
+# (luna_warn), so `addr="$(luna_resolve_bind_addr)"` captures only the address.
+#
+# Why auto-detect: the primary Luna deployment is "server on a Linux box, reached
+# from the Mac over Tailscale." A loopback-only default would make that documented
+# path bind 127.0.0.1 and refuse every tailnet peer — a fresh remote install dead
+# out of the box. Binding the tailnet interface makes the primary case Just Work
+# while staying off any public interface.
+#
+# Test seam: if LUNA_TAILSCALE_IP is set (even to empty), its value is used
+# verbatim instead of shelling out to `tailscale` — lets tests pin the outcome
+# deterministically (same pattern as LUNA_TEST_BUN_PATH below). An empty value
+# forces the loopback fallback; a tailnet IP exercises the detected path.
+luna_resolve_bind_addr() {
+  local ts=""
+  if [[ "${LUNA_TAILSCALE_IP+set}" == "set" ]]; then
+    ts="$LUNA_TAILSCALE_IP"
+  elif command -v tailscale >/dev/null 2>&1; then
+    ts="$(tailscale ip -4 2>/dev/null | head -1 || true)"
+  fi
+  if [[ -n "$ts" ]]; then
+    printf '%s' "$ts"
+    return 0
+  fi
+  luna_warn "no Tailscale interface detected — binding to loopback (127.0.0.1); the server will be reachable only from this machine. To serve remote clients, bring Tailscale up and re-run, pass an explicit address (--bind-host/--listen-addr <tailnet-ip>), or pass --i-understand-public for an (unsafe) public 0.0.0.0 bind."
+  printf '127.0.0.1'
+}
+
 luna_find_bun() {
   if [[ -n "${LUNA_TEST_BUN_PATH:-}" ]]; then
     printf '%s\n' "$LUNA_TEST_BUN_PATH"

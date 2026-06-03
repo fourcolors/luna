@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   doctorChatArgs,
   healthzUrlFor,
+  isTransportSafeHost,
   type ProbeOutcomes,
   redactUrl,
   renderVerdicts,
@@ -10,6 +11,41 @@ import {
 const ctx = { profileName: "stable", url: "ws://127.0.0.1:4753/ui" }
 
 const reportFor = (outcomes: ProbeOutcomes) => renderVerdicts(outcomes, ctx)
+
+describe("luna doctor — isTransportSafeHost (pure)", () => {
+  it("treats loopback as safe", () => {
+    expect(isTransportSafeHost("127.0.0.1")).toBe(true)
+    expect(isTransportSafeHost("localhost")).toBe(true)
+    expect(isTransportSafeHost("::1")).toBe(true)
+  })
+
+  it("treats *.ts.net MagicDNS names as safe", () => {
+    expect(isTransportSafeHost("jax-box.tail1234.ts.net")).toBe(true)
+    expect(isTransportSafeHost("LUNA.TS.NET")).toBe(true)
+  })
+
+  it("treats the full 100.64.0.0/10 CGNAT range as safe (incl. boundaries)", () => {
+    expect(isTransportSafeHost("100.64.0.0")).toBe(true) // low boundary
+    expect(isTransportSafeHost("100.64.0.7")).toBe(true) // the deploy-script default
+    expect(isTransportSafeHost("100.127.255.255")).toBe(true) // high boundary
+    expect(isTransportSafeHost("100.100.100.100")).toBe(true) // mid-range
+  })
+
+  it("rejects 100.x addresses OUTSIDE the /10 (off-by-one guards)", () => {
+    expect(isTransportSafeHost("100.63.255.255")).toBe(false) // just below /10
+    expect(isTransportSafeHost("100.128.0.0")).toBe(false) // just above /10
+    expect(isTransportSafeHost("100.0.0.1")).toBe(false) // public 100.0
+    expect(isTransportSafeHost("100.200.0.1")).toBe(false) // public 100.200
+  })
+
+  it("rejects ordinary public / LAN hosts", () => {
+    expect(isTransportSafeHost("jax-box")).toBe(false)
+    expect(isTransportSafeHost("example.com")).toBe(false)
+    expect(isTransportSafeHost("203.0.113.5")).toBe(false)
+    expect(isTransportSafeHost("192.168.1.10")).toBe(false)
+    expect(isTransportSafeHost("10.0.0.5")).toBe(false)
+  })
+})
 
 describe("luna doctor — renderVerdicts (pure)", () => {
   it("all-green (L4 ok) → exit 0 and a PASS summary, all layers shown", () => {
