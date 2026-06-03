@@ -227,7 +227,18 @@
       background: #f59e0b;
       box-shadow: 0 0 5px #f59e0b;
     }
-    
+
+    /* Protocol version-skew warning (client/server wire drift). Hard-to-miss
+       amber dot that PERSISTS while connected, since the in-transcript banner
+       lives in #chat-messages which gets wiped on thread-snapshot/new-chat. */
+    .chat-meta span.version-warning {
+      color: #fbbf24;
+    }
+    .chat-meta span.version-warning::before {
+      background: #f59e0b;
+      box-shadow: 0 0 6px #f59e0b;
+    }
+
     @keyframes pulseConnecting {
       from { opacity: 0.6; }
       to { opacity: 1; }
@@ -787,6 +798,22 @@
     const chatHeader = document.querySelector('.chat-header');
 
     // =========================================================================
+    // ⚠️  WIRE PROTOCOL VERSION — SECOND SOURCE OF TRUTH (KEEP IN SYNC!)  ⚠️
+    // =========================================================================
+    // This MUST match `UI_WS_PROTOCOL_VERSION` in
+    //   packages/ui-ws/src/protocol.ts
+    // index.html is plain vanilla JS with NO imports/build step, so the server's
+    // version constant cannot be imported — it is duplicated here by necessity.
+    //
+    // This literal is INHERENT DRIFT: the server-side snapshot test
+    //   packages/ui-ws/test/frame-set.protocol.test.ts
+    // pins the frame-type SET + the server's version, but it does NOT and CANNOT
+    // see this client-side number. If you bump UI_WS_PROTOCOL_VERSION on the
+    // server, BUMP THIS TOO. The only mitigation is this loud comment + the
+    // runtime hello-handshake check below (which warns the operator on mismatch).
+    const MOON_EXPECTED_PROTOCOL_VERSION = 2;
+
+    // =========================================================================
     // ── LUNA COMPANION NATIVE MODULE ─────────────────────────────────────────
     // =========================================================================
 
@@ -857,7 +884,10 @@
       turnTimeout: null,
       // Connection generation counter (fix-6). Bumped each connect(); each
       // socket's handlers capture their gen and ignore events if superseded.
-      connGen: 0
+      connGen: 0,
+      // version-skew: true once a protocol-version mismatch banner has been
+      // shown, so reconnects (which re-deliver `hello`) don't stack duplicates.
+      protocolNoticeShown: false
     };
 
     /**
@@ -1016,6 +1046,71 @@
         DOM.connectionStatus.textContent = text;
       },
 
+      /**
+       * VERSION-SKEW defence (client half). At hello, compare the server's
+       * advertised protocol version against MOON_EXPECTED_PROTOCOL_VERSION.
+       *
+       * Philosophy: a desktop chat widget that REFUSES to connect over a version
+       * bump is worse than one that connects with a loud warning. So we never
+       * block — we WARN and keep chatting enabled. Three cases:
+       *
+       *   1. present + mismatch → amber 'version-warning' dot (persists while
+       *      connected) + a persistent in-transcript banner. Idempotent: the
+       *      State flag stops reconnects from stacking duplicate banners.
+       *   2. present + match    → no-op (leave the 'connected' status untouched).
+       *   3. absent (older server that predates protocolVersion) → a single soft
+       *      one-line note, NOT a hard banner — don't break against old servers.
+       */
+      checkProtocolVersion(frame) {
+        const serverVersion = frame.protocolVersion;
+
+        // Case 3: absent — older server. Soft note only, once.
+        if (serverVersion === undefined || serverVersion === null) {
+          if (!State.protocolNoticeShown) {
+            State.protocolNoticeShown = true;
+            Logger.warn(
+              `Server did not advertise a protocol version; expected v${MOON_EXPECTED_PROTOCOL_VERSION}. ` +
+              `Assuming compatible (older server). Some features may differ.`
+            );
+            ChatEngine.appendMessage(
+              'assistant',
+              `ℹ️ Connected to an older server that does not report its protocol version (this app expects v${MOON_EXPECTED_PROTOCOL_VERSION}).`
+            );
+          }
+          return;
+        }
+
+        // Case 2: match — nothing to do. Leave 'connected' as set by 'open'.
+        if (serverVersion === MOON_EXPECTED_PROTOCOL_VERSION) {
+          return;
+        }
+
+        // Case 1: present + MISMATCH — warn loudly, but keep chatting enabled.
+        Logger.error(
+          `Protocol version mismatch: this app expects v${MOON_EXPECTED_PROTOCOL_VERSION} ` +
+          `but the server speaks v${serverVersion}. Update Luna Moon (or the server).`
+        );
+        // Persistent, hard-to-miss dot. Survives transcript wipes (snapshot/new-chat).
+        this.updateStatus('version-warning', `Connected (protocol v${serverVersion} ≠ v${MOON_EXPECTED_PROTOCOL_VERSION})`);
+
+        // Idempotent banner: skip if already shown this connection-run AND the
+        // node still exists, so reconnect/hello replay never stacks duplicates.
+        const bannerId = 'protocol-mismatch-banner';
+        if (State.protocolNoticeShown && document.getElementById(bannerId)) {
+          return;
+        }
+        State.protocolNoticeShown = true;
+        const banner = document.createElement('div');
+        banner.id = bannerId;
+        banner.className = 'msg assistant';
+        banner.textContent =
+          `⚠️ Version mismatch: this app expects protocol v${MOON_EXPECTED_PROTOCOL_VERSION} ` +
+          `but the server speaks v${serverVersion}. Update Luna Moon (or the server). ` +
+          `Some features may not work.`;
+        DOM.chatMessages.appendChild(banner);
+        DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+      },
+
       clearTurnTimeout() {
         if (State.turnTimeout) {
           clearTimeout(State.turnTimeout);
@@ -1087,7 +1182,11 @@
 
         switch (frame.type) {
           case 'hello':
-            // authenticated successfully, wait for list-threads or subscribe response
+            // authenticated successfully. The chat flow (syncThread →
+            // list-threads/subscribe) is kicked off by the socket 'open'
+            // handler, NOT here — so this version check is purely additive and
+            // does not gate or regress the existing hello behavior.
+            this.checkProtocolVersion(frame);
             break;
 
           case 'thread-list': {
