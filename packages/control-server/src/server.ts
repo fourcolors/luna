@@ -19,7 +19,7 @@
  */
 import { Effect } from "effect"
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch"
-import { appRouter } from "./router.js"
+import { createAppRouter } from "./router.js"
 
 // Minimal Bun global shim — keeps @types/bun out of the root tsconfig.
 declare const Bun: {
@@ -62,11 +62,16 @@ export const isAuthorized = (
  * `token` (the LUNA_UI_WS_TOKEN). Returns an Effect that synchronously starts
  * the Bun HTTP server and resolves to `{ port }`. The server continues running
  * in the Bun event loop — no need to await or park.
+ *
+ * `buildSha` (optional) is the git short-SHA of this build, surfaced in
+ * `control.status`. Omitted → "unknown" (additive; older callers unaffected).
  */
 export function startControlServer(
   port: number,
   token: string,
+  buildSha?: string,
 ): Effect.Effect<{ port: number }> {
+  const router = createAppRouter(buildSha)
   return Effect.sync(() => {
     Bun.serve({
       port,
@@ -87,7 +92,7 @@ export function startControlServer(
         return fetchRequestHandler({
           endpoint: "/trpc",
           req,
-          router: appRouter,
+          router,
           createContext: () => ({}),
           responseMeta() {
             return { headers: CORS_HEADERS }

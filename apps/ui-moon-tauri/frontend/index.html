@@ -239,6 +239,17 @@
       box-shadow: 0 0 6px #f59e0b;
     }
 
+    /* Server build short-SHA (from the hello frame). Small + dim + monospace
+       so it sits unobtrusively next to the connection status. No dot (it is a
+       <small>, not a span). Hidden via [hidden] until the hello frame supplies
+       a buildSha. */
+    .chat-meta small#build-sha {
+      font-size: 0.6rem;
+      color: rgba(255, 255, 255, 0.35);
+      font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+      letter-spacing: 0.02em;
+    }
+
     @keyframes pulseConnecting {
       from { opacity: 0.6; }
       to { opacity: 1; }
@@ -680,6 +691,10 @@
         <div class="chat-meta">
           <h2>Luna Companion</h2>
           <span id="connection-status" class="disconnected">Disconnected</span>
+          <!-- Build identity from the server's hello frame (additive). Kept as a
+               <small>, NOT a <span>, so the `.chat-meta span::before` dot rule
+               doesn't draw a status dot next to it. Hidden until populated. -->
+          <small id="build-sha" hidden></small>
         </div>
       </div>
       <div class="header-actions">
@@ -858,7 +873,8 @@
       recordShortcutBtn: document.getElementById('record-shortcut-btn'),
       wsUrlInput: document.getElementById('ws-url-input'),
       wsTokenInput: document.getElementById('ws-token-input'),
-      connectionStatus: document.getElementById('connection-status')
+      connectionStatus: document.getElementById('connection-status'),
+      buildSha: document.getElementById('build-sha')
     };
 
     /**
@@ -1111,6 +1127,28 @@
         DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
       },
 
+      /**
+       * Build identity (additive). The server's hello frame MAY carry a
+       * `buildSha` (git short-SHA of the running build). When present, show it
+       * as small dim text next to the connection dot; when absent (older
+       * server, or a server with no git context), keep the element hidden so
+       * nothing changes for older servers. Degrades gracefully.
+       */
+      applyBuildSha(frame) {
+        const el = DOM.buildSha;
+        if (!el) return;
+        const sha = frame && typeof frame.buildSha === 'string' ? frame.buildSha.trim() : '';
+        if (sha) {
+          el.textContent = `build ${sha}`;
+          el.title = `Server build: ${sha}`;
+          el.hidden = false;
+        } else {
+          el.textContent = '';
+          el.removeAttribute('title');
+          el.hidden = true;
+        }
+      },
+
       clearTurnTimeout() {
         if (State.turnTimeout) {
           clearTimeout(State.turnTimeout);
@@ -1187,6 +1225,8 @@
             // handler, NOT here — so this version check is purely additive and
             // does not gate or regress the existing hello behavior.
             this.checkProtocolVersion(frame);
+            // Additive: show the server's build short-SHA when advertised.
+            this.applyBuildSha(frame);
             break;
 
           case 'thread-list': {

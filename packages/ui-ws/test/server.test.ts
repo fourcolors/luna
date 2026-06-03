@@ -559,6 +559,34 @@ describe("UIWebSocketServer", () => {
     expect(await res.json()).toEqual({ status: "ok", mode: "setup", credentialOk: false })
   })
 
+  it("surfaces buildSha in /readyz and the hello frame when threaded in (build identity, additive)", async () => {
+    // Presence path for both ui-ws surfaces — the absence path is already
+    // covered by the two /readyz tests above (which omit buildSha and pin the
+    // exact {status,mode,credentialOk} shape). Here we thread it and assert it
+    // lands in BOTH /readyz JSON and the connect-time hello frame.
+    rig = await startRig(undefined, { buildSha: "testsha" })
+
+    const res = await fetch(rig.url.replace("ws://", "http://").replace("/ui", "/readyz"))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      status: "ok",
+      mode: "normal",
+      credentialOk: true,
+      buildSha: "testsha",
+    })
+
+    const frames = await collectFrames(
+      rig.url,
+      { authorization: `Bearer ${TOKEN}` },
+      1,
+    )
+    if (frames[0]?.type === "hello") {
+      expect(frames[0].buildSha).toBe("testsha")
+    } else {
+      throw new Error("expected hello frame")
+    }
+  })
+
   it("refuses to start with token shorter than 16 chars", async () => {
     const baseLayer = makeFullLayer()
     const badLayer = Layer.scoped(

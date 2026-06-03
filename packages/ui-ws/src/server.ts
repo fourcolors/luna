@@ -129,6 +129,13 @@ export interface UIWebSocketServerConfig {
    */
   readonly advertisedKinds?: ReadonlyArray<string>
   /**
+   * Git short-SHA of the running server build. When provided, it is echoed
+   * in the `hello` frame's `buildSha` field and in `/readyz` JSON so any
+   * surface can tell which commit is running. Additive — absent = field
+   * omitted from both (older clients/consumers ignore it).
+   */
+  readonly buildSha?: string
+  /**
    * Optional ChatService binding. When provided, the server:
    *   - flips `capabilities.chat` and `capabilities.streamingDeltas` to
    *     `true` in the hello frame
@@ -303,6 +310,7 @@ export const startUIWebSocketServer = (
     const localShellBridge = config.localShellBridge ?? null
     const survey = config.survey ?? null
     const setupPty = config.setupPty ?? null
+    const buildSha = config.buildSha
 
     const httpServer = http.createServer((req, res) => {
       if (req.url === "/healthz") {
@@ -320,7 +328,18 @@ export const startUIWebSocketServer = (
         // consumers; this endpoint is what luna-update-server's gate inspects.
         const mode = setupPty != null ? "setup" : "normal"
         res.writeHead(200, { "content-type": "application/json" })
-        res.end(JSON.stringify({ status: "ok", mode, credentialOk: mode === "normal" }))
+        // `buildSha` is additive: included only when the caller threaded it in
+        // (production does; test rigs don't). Absent → field omitted, so older
+        // /readyz consumers and the existing {status,mode,credentialOk} shape
+        // are unaffected.
+        res.end(
+          JSON.stringify({
+            status: "ok",
+            mode,
+            credentialOk: mode === "normal",
+            ...(buildSha !== undefined ? { buildSha } : {}),
+          }),
+        )
         return
       }
       if (req.url === path) {
@@ -427,6 +446,10 @@ export const startUIWebSocketServer = (
           type: "hello",
           protocolVersion: UI_WS_PROTOCOL_VERSION,
           kinds: kindsList,
+          // Additive build identity (no protocol bump). Conditional-spread so
+          // an absent buildSha leaves the field off entirely — older clients
+          // ignore it; newer clients against an old server simply see nothing.
+          ...(buildSha !== undefined ? { buildSha } : {}),
           // Capabilities reflect what was bound at startup. When a
           // ChatService is passed in `config.chatService`, the inbound
           // router below handles subscribe/send/interrupt and translates

@@ -108,6 +108,7 @@
  * the flag exists for.
  */
 import { existsSync, readFileSync, writeSync } from "node:fs"
+import { execFileSync } from "node:child_process"
 import { dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
@@ -207,6 +208,37 @@ import type { PtyOutputFrame } from "@luna/ui-ws"
 
 const TOKEN = resolveUiWsToken()
 const BIND_HOST = process.env["LUNA_UI_WS_HOST"]?.trim() || undefined
+
+/**
+ * Resolve the git short-SHA of THIS build, ONCE at process startup. Surfaced
+ * at runtime (/readyz, hello frame, control.status) so any operator can tell
+ * which commit a running server is. Resolution order:
+ *   1. LUNA_BUILD_SHA env var (set by deploy scripts / containers where .git
+ *      may be absent) — trimmed; an empty value falls through.
+ *   2. `git rev-parse --short HEAD` — wrapped in try/catch so a missing .git
+ *      (or git not on PATH) never crashes boot.
+ *   3. literal "unknown" on any failure.
+ */
+const resolveBuildSha = (): string => {
+  const fromEnv = process.env["LUNA_BUILD_SHA"]?.trim()
+  if (fromEnv) return fromEnv
+  try {
+    // Fixed argv (no shell, no interpolation) — execFileSync throws on a
+    // missing .git or git-not-on-PATH, which the catch turns into "unknown".
+    const sha = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim()
+    return sha || "unknown"
+  } catch {
+    return "unknown"
+  }
+}
+
+/** Git short-SHA of this build — computed once, threaded into the endpoints. */
+const BUILD_SHA = resolveBuildSha()
+
 const localShellBridge = createLocalShellBridge()
 
 // Per-thread sandbox re-attach closures. Module scope (single-process boot)
@@ -788,13 +820,14 @@ export const buildSetupServerLayer = (
 
   return Layer.scopedDiscard(
     Effect.gen(function* () {
-      yield* startControlServer(controlPort, TOKEN)
+      yield* startControlServer(controlPort, TOKEN, BUILD_SHA)
       yield* startUIWebSocketServer({
         port: wsPort,
         ...(BIND_HOST !== undefined ? { host: BIND_HOST } : {}),
         token: TOKEN,
         advertisedKinds: DEFAULT_UI_KINDS,
         pingIntervalMs: 5000,
+        buildSha: BUILD_SHA,
         chatService: null,
         accountBroker: null,
         survey: null,
@@ -848,7 +881,7 @@ const buildServerLayer = (
       // tRPC control server — port 4754, alongside the WebSocket server.
       // Exposes control.restart / control.status / control.version. Bound to
       // loopback + gated by the same bearer token as the WS server (TOKEN).
-      yield* startControlServer(4754, TOKEN)
+      yield* startControlServer(4754, TOKEN, BUILD_SHA)
 
       return yield* startUIWebSocketServer({
         port: 4753,
@@ -856,6 +889,7 @@ const buildServerLayer = (
         token: TOKEN,
         advertisedKinds: DEFAULT_UI_KINDS,
         pingIntervalMs: 5000,
+        buildSha: BUILD_SHA,
         chatService: chat,
         accountBroker: broker,
         survey: surveyHandle, // Phase 3 D3: resolved handle
