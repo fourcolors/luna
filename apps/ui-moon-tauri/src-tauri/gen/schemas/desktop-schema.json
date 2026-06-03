@@ -183,6 +183,18 @@
           "markdownDescription": "Allows reading the CLI thread file"
         },
         {
+          "description": "Allows reading the mode-600 WS connection file",
+          "type": "string",
+          "const": "allow-load-connection",
+          "markdownDescription": "Allows reading the mode-600 WS connection file"
+        },
+        {
+          "description": "Allows writing the mode-600 WS connection file",
+          "type": "string",
+          "const": "allow-save-connection",
+          "markdownDescription": "Allows writing the mode-600 WS connection file"
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

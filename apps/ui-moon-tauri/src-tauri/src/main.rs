@@ -2,6 +2,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use tauri::Manager;
+// `emit_to` lives on the Emitter trait in Tauri 2 (split from Manager). HEAD
+// imported only Manager, so the existing luna-config emit below did not compile.
+// This one-line import is behavior-preserving and unblocks `cargo check`.
+use tauri::Emitter;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 #[tauri::command]
@@ -18,10 +22,58 @@ fn get_last_thread_id() -> Option<String> {
     None
 }
 
+// Resolve ~/.luna/moon-connection.json, the mode-600 store for the (url, token)
+// pair the user typed in the settings panel. This keeps the WS token out of the
+// XSS-reachable webview localStorage while matching the at-rest exposure of the
+// ~/.luna/.env that already holds it.
+fn connection_path() -> Result<std::path::PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|e| format!("HOME not set: {}", e))?;
+    Ok(std::path::PathBuf::from(home)
+        .join(".luna")
+        .join("moon-connection.json"))
+}
+
+#[tauri::command]
+fn save_connection(url: String, token: String) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = connection_path()?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("create dir failed: {}", e))?;
+    }
+
+    // Mirror the JSON shape the frontend expects (and the luna-config emit uses):
+    // camelCase keys so load_connection round-trips identically.
+    let body = serde_json::to_string(&serde_json::json!({
+        "wsUrl": url,
+        "wsToken": token,
+    }))
+    .map_err(|e| format!("serialize failed: {}", e))?;
+
+    std::fs::write(&path, body).map_err(|e| format!("write failed: {}", e))?;
+
+    // Tighten perms AFTER writing so the secret is only ever owner-readable.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| format!("chmod failed: {}", e))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+fn load_connection() -> Option<serde_json::Value> {
+    let path = connection_path().ok()?;
+    let contents = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<serde_json::Value>(&contents).ok()
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![get_last_thread_id])
+        .invoke_handler(tauri::generate_handler![
+            get_last_thread_id,
+            save_connection,
+            load_connection
+        ])
         .setup(|app| {
             // Register a universal system-wide global shortcut to toggle Luna window.
             // Attempts a self-healing fallback chain to avoid macOS key collisions.
@@ -67,13 +119,14 @@ fn main() {
                 eprintln!("==========================================================================\n");
             }
 
-            // Seed the UI WebSocket token from ~/.luna/.env into the frontend's
-            // localStorage via a "luna-config" Tauri event. This bridges the gap
-            // between the installer (which writes UI_WS_TOKEN to ~/.luna/.env) and
-            // the widget (which reads its token from localStorage). The JS listener
-            // receives this event and saves the token so subsequent launches don't
-            // need a re-emit. The wsUrl is also sent so a future installer could
-            // point moon at a different server address without a UI_WS_TOKEN= prefix.
+            // Seed the UI WebSocket token from ~/.luna/.env into the frontend via
+            // a "luna-config" Tauri event. This bridges the gap between the
+            // installer (which writes UI_WS_TOKEN to ~/.luna/.env) and the widget.
+            // The JS listener persists the seeded token via the save_connection
+            // command (mode-600 ~/.luna/moon-connection.json — NOT localStorage,
+            // which is XSS-reachable) so subsequent launches don't need a re-emit.
+            // The wsUrl is also sent so a future installer could point moon at a
+            // different server address without a UI_WS_TOKEN= prefix.
             //
             // We emit after the window is created rather than before show(), so the
             // JS event listener has time to register. If the event arrives before
