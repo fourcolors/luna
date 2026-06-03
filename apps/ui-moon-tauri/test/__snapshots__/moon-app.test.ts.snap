@@ -42,10 +42,16 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         <div class="chat-avatar"></div>
         <div class="chat-meta">
           <h2>Luna Companion</h2>
-          <span>Connected (Mock)</span>
+          <span id="connection-status" class="connecting">Connecting...</span>
         </div>
       </div>
       <div class="header-actions">
+        <button class="settings-btn" id="new-chat" aria-label="New conversation" title="New conversation">
+          <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+        </button>
         <button class="settings-btn" id="toggle-settings" aria-label="Settings">
           <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3"></circle>
@@ -98,6 +104,22 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
             <button type="button" class="record-btn" id="record-shortcut-btn">Record</button>
           </div>
         </div>
+
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">WebSocket Server URL</span>
+            <span class="setting-desc">Luna Central server WebSocket address</span>
+          </div>
+          <input type="text" id="ws-url-input" class="premium-text-input" placeholder="ws://127.0.0.1:4753/ui">
+        </div>
+
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">Auth Token</span>
+            <span class="setting-desc">Optional authentication bearer token</span>
+          </div>
+          <input type="password" id="ws-token-input" class="premium-text-input" placeholder="Enter token (optional)...">
+        </div>
         
       </div>
       
@@ -122,395 +144,7 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
     </form>
   </div>
 
-  <script>
-    const moon = document.getElementById('moon');
-    const moonWrapper = document.getElementById('moon-wrapper');
-    const moonSvg = document.querySelector('.moon-svg');
-    const chatPanel = document.getElementById('chat-panel');
-    const closeChat = document.getElementById('close-chat');
-    const chatForm = document.getElementById('chat-form');
-    const messageInput = document.getElementById('message-input');
-    const chatMessages = document.getElementById('chat-messages');
-
-    let pressStartTime = 0;
-    let pressStartX = 0;
-    let pressStartY = 0;
-
-    const chatHeader = document.querySelector('.chat-header');
-
-    // =========================================================================
-    // ── LUNA COMPANION NATIVE MODULE ─────────────────────────────────────────
-    // =========================================================================
-
-    /**
-     * Styled, formatted console logger for native-web runtime monitoring.
-     */
-    const Logger = {
-      prefix: '%c[Luna Companion]',
-      style: 'color: #8ab4f8; font-weight: bold; background: rgba(138, 180, 248, 0.08); padding: 2px 6px; border-radius: 4px;',
-      
-      info(message, ...args) {
-        console.log(this.prefix, this.style, message, ...args);
-      },
-      warn(message, ...args) {
-        console.warn('%c[Luna Warning]', 'color: #f59e0b; font-weight: bold;', message, ...args);
-      },
-      error(message, ...args) {
-        console.error('%c[Luna Error]', 'color: #ef4444; font-weight: bold;', message, ...args);
-      }
-    };
-
-    /**
-     * DOM references cache.
-     */
-    const DOM = {
-      moon: document.getElementById('moon'),
-      moonWrapper: document.getElementById('moon-wrapper'),
-      moonSvg: document.querySelector('.moon-svg'),
-      chatPanel: document.getElementById('chat-panel'),
-      chatHeader: document.querySelector('.chat-header'),
-      closeChat: document.getElementById('close-chat'),
-      chatForm: document.getElementById('chat-form'),
-      messageInput: document.getElementById('message-input'),
-      chatMessages: document.getElementById('chat-messages'),
-      toggleSettings: document.getElementById('toggle-settings'),
-      settingsPanel: document.getElementById('settings-panel'),
-      closeSettingsBtn: document.getElementById('close-settings-btn'),
-      alwaysOnTopToggle: document.getElementById('always-on-top-toggle'),
-      closeOnBlurToggle: document.getElementById('close-on-blur-toggle'),
-      shortcutInput: document.getElementById('shortcut-input'),
-      recordShortcutBtn: document.getElementById('record-shortcut-btn')
-    };
-
-    /**
-     * Shared state manager.
-     */
-    const State = {
-      pressStartTime: 0,
-      pressStartX: 0,
-      pressStartY: 0,
-      isRecordingShortcut: false,
-      responseIndex: 0
-    };
-
-    /**
-     * Tauri Window & OS integration services.
-     */
-    const TauriService = {
-      async setWindowSize(width, height) {
-        if (!window.__TAURI__) return;
-        try {
-          const { getCurrentWindow, LogicalSize } = window.__TAURI__.window;
-          const appWindow = getCurrentWindow();
-          await appWindow.setSize(new LogicalSize(width, height));
-          Logger.info(\`Resized window logical boundary: \${width}x\${height}\`);
-        } catch (e) {
-          Logger.error("Tauri window resizing failure:", e);
-        }
-      },
-
-      async applyAlwaysOnTop(enabled) {
-        if (!window.__TAURI__) return;
-        try {
-          const { getCurrentWindow } = window.__TAURI__.window;
-          const appWindow = getCurrentWindow();
-          await appWindow.setAlwaysOnTop(enabled);
-          Logger.info(\`Window alwaysOnTop state updated: \${enabled}\`);
-        } catch (e) {
-          Logger.error("Tauri window always-on-top updates failure:", e);
-        }
-      },
-
-      startDragging() {
-        if (window.__TAURI__) {
-          try {
-            window.__TAURI__.window.getCurrentWindow().startDragging();
-            Logger.info("Initiated native window dragging region");
-          } catch (e) {
-            Logger.error("Tauri window dragging error:", e);
-          }
-        }
-      }
-    };
-
-    /**
-     * Chat Messaging & Mock stream engine.
-     */
-    const ChatEngine = {
-      responses: [
-        "I am rendering natively under macOS using Tauri's lightweight WebKit wrapper. The window is 100% transparent!",
-        "I see you! Because my moon element has the \`data-tauri-drag-region\` attribute, dragging the moon itself moves my whole native window across your desktop.",
-        "In our final implementation, I will watch \`~/.luna/.last-thread-default\` to automatically load whichever thread you're currently interacting with in your terminal CLI.",
-        "Yes! Our styling uses backdrop-filters for that ultra-premium frosted glassmorphism which fits perfectly with macOS Dark Mode.",
-        "Tell my developer if you like this native layout, and we can hook up the real WebSocket channel next!"
-      ],
-
-      appendMessage(role, text) {
-        const msgDiv = document.createElement('div');
-        msgDiv.className = \`msg \${role}\`;
-        msgDiv.textContent = text;
-        DOM.chatMessages.appendChild(msgDiv);
-      },
-
-      showTypingIndicator() {
-        const indicatorDiv = document.createElement('div');
-        indicatorDiv.className = 'msg assistant';
-        indicatorDiv.innerHTML = \`
-          <div class="typing-dots">
-            <div class="dot"></div>
-            <div class="dot"></div>
-            <div class="dot"></div>
-          </div>
-        \`;
-        DOM.chatMessages.appendChild(indicatorDiv);
-        DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
-        return indicatorDiv;
-      },
-
-      handleSubmit(e) {
-        e.preventDefault();
-        const text = DOM.messageInput.value.trim();
-        if (!text) return;
-        
-        Logger.info(\`Appended user message: "\${text}"\`);
-        this.appendMessage('user', text);
-        DOM.messageInput.value = '';
-        DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
-        
-        const typingIndicator = this.showTypingIndicator();
-        
-        setTimeout(() => {
-          typingIndicator.remove();
-          const responseText = this.responses[State.responseIndex];
-          State.responseIndex = (State.responseIndex + 1) % this.responses.length;
-          
-          this.appendMessage('assistant', responseText);
-          Logger.info(\`Appended assistant stream message: "\${responseText}"\`);
-          DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
-        }, 1400);
-      }
-    };
-
-    /**
-     * Settings configurations and state synchronization.
-     */
-    const SettingsEngine = {
-      load() {
-        Logger.info("Loading saved settings from localStorage...");
-        const savedAlwaysOnTop = localStorage.getItem('luna_always_on_top');
-        if (savedAlwaysOnTop !== null) {
-          DOM.alwaysOnTopToggle.checked = savedAlwaysOnTop === 'true';
-          TauriService.applyAlwaysOnTop(DOM.alwaysOnTopToggle.checked);
-        } else {
-          DOM.alwaysOnTopToggle.checked = true;
-          TauriService.applyAlwaysOnTop(true);
-        }
-
-        const savedCloseOnBlur = localStorage.getItem('luna_close_on_blur');
-        if (savedCloseOnBlur !== null) {
-          DOM.closeOnBlurToggle.checked = savedCloseOnBlur === 'true';
-        } else {
-          DOM.closeOnBlurToggle.checked = false;
-        }
-
-        const savedShortcut = localStorage.getItem('luna_global_shortcut');
-        if (savedShortcut !== null) {
-          DOM.shortcutInput.value = savedShortcut;
-        }
-        Logger.info("Settings synchronized successfully");
-      },
-
-      toggle() {
-        DOM.settingsPanel.classList.toggle('active');
-        Logger.info("Settings tab visibility toggled");
-      },
-
-      close() {
-        DOM.settingsPanel.classList.remove('active');
-        Logger.info("Settings tab closed");
-      },
-
-      handleAlwaysOnTopChange() {
-        const enabled = DOM.alwaysOnTopToggle.checked;
-        localStorage.setItem('luna_always_on_top', String(enabled));
-        TauriService.applyAlwaysOnTop(enabled);
-      },
-
-      handleCloseOnBlurChange() {
-        localStorage.setItem('luna_close_on_blur', String(DOM.closeOnBlurToggle.checked));
-        Logger.info(\`Close on blur changed: \${DOM.closeOnBlurToggle.checked}\`);
-      },
-
-      startRecordingShortcut() {
-        State.isRecordingShortcut = true;
-        DOM.recordShortcutBtn.textContent = 'Cancel';
-        DOM.shortcutInput.classList.add('recording');
-        DOM.shortcutInput.value = 'Press keys...';
-        Logger.warn("Global shortcut recording active: listening to key combination");
-      },
-
-      stopRecordingShortcut(cancelled = false) {
-        State.isRecordingShortcut = false;
-        DOM.recordShortcutBtn.textContent = 'Record';
-        DOM.shortcutInput.classList.remove('recording');
-        if (cancelled) {
-          const savedShortcut = localStorage.getItem('luna_global_shortcut') || '⌥Space';
-          DOM.shortcutInput.value = savedShortcut;
-          Logger.info("Global shortcut recording cancelled");
-        }
-      },
-
-      handleKeyDown(e) {
-        if (!State.isRecordingShortcut) return;
-        
-        e.preventDefault();
-        e.stopPropagation();
-
-        const key = e.key;
-        if (['Control', 'Shift', 'Alt', 'Meta'].includes(key)) {
-          return; // modifier-only wait
-        }
-
-        let shortcut = '';
-        if (e.ctrlKey) shortcut += '⌃';
-        if (e.altKey) shortcut += '⌥';
-        if (e.shiftKey) shortcut += '⇧';
-        if (e.metaKey) shortcut += '⌘';
-
-        let keyName = key.toUpperCase();
-        if (key === ' ') keyName = 'Space';
-        
-        shortcut += keyName;
-
-        DOM.shortcutInput.value = shortcut;
-        localStorage.setItem('luna_global_shortcut', shortcut);
-        Logger.info(\`Dynamic hotkey mapping resolved and saved: "\${shortcut}"\`);
-        
-        this.stopRecordingShortcut(false);
-      }
-    };
-
-    /**
-     * UI Parallax & Window state transitions.
-     */
-    const UIController = {
-      async toggleChat() {
-        const isActive = DOM.chatPanel.classList.contains('active');
-        if (isActive) {
-          DOM.chatPanel.classList.remove('active');
-          Logger.info("Initiated chat collapse transition");
-          setTimeout(() => {
-            TauriService.setWindowSize(140, 140);
-          }, 300);
-        } else {
-          await TauriService.setWindowSize(560, 520);
-          DOM.chatPanel.classList.add('active');
-          DOM.messageInput.focus();
-          Logger.info("Chat expand transition completed");
-        }
-      },
-
-      handlePointerDown(e) {
-        State.pressStartTime = Date.now();
-        State.pressStartX = e.clientX;
-        State.pressStartY = e.clientY;
-        DOM.moonWrapper.style.transform = 'scale(0.92)';
-        TauriService.startDragging();
-      },
-
-      handlePointerMove(e) {
-        const rect = DOM.moon.getBoundingClientRect();
-        const moonCenterX = rect.left + rect.width / 2;
-        const moonCenterY = rect.top + rect.height / 2;
-        
-        const deltaX = e.clientX - moonCenterX;
-        const deltaY = e.clientY - moonCenterY;
-        
-        const maxShift = 6;
-        const dist = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-        const ratio = Math.min(1, dist / 120);
-        
-        const shiftX = (deltaX / 120) * maxShift * ratio;
-        const shiftY = (deltaY / 120) * maxShift * ratio;
-        
-        DOM.moonSvg.style.setProperty('--px', \`\${shiftX}px\`);
-        DOM.moonSvg.style.setProperty('--py', \`\${shiftY}px\`);
-        
-        const tiltX = -(deltaY / 120) * 8 * ratio;
-        const tiltY = (deltaX / 120) * 8 * ratio;
-        const rot = (deltaX / 120) * 4 * ratio;
-        
-        DOM.moonSvg.style.setProperty('--rot', \`\${rot}deg\`);
-        
-        const scale = (Date.now() - State.pressStartTime < 200 && e.buttons === 1) ? 0.92 : 1.04;
-        DOM.moonWrapper.style.transform = \`rotateX(\${tiltX}deg) rotateY(\${tiltY}deg) scale(\${scale})\`;
-      },
-
-      handlePointerUp(e) {
-        DOM.moonWrapper.style.transform = 'none';
-        const duration = Date.now() - State.pressStartTime;
-        const distMove = Math.sqrt(Math.pow(e.clientX - State.pressStartX, 2) + Math.pow(e.clientY - State.pressStartY, 2));
-        
-        if (duration < 280 && distMove < 5) {
-          this.toggleChat();
-        }
-      },
-
-      handlePointerLeave() {
-        DOM.moonSvg.style.setProperty('--px', '0px');
-        DOM.moonSvg.style.setProperty('--py', '0px');
-        DOM.moonSvg.style.setProperty('--rot', '0deg');
-        DOM.moonWrapper.style.transform = 'none';
-      },
-
-      handleBlur() {
-        if (DOM.closeOnBlurToggle.checked && DOM.chatPanel.classList.contains('active') && !State.isRecordingShortcut) {
-          Logger.info("Focus click-away blur event fired: collapsing companion");
-          DOM.settingsPanel.classList.remove('active');
-          DOM.chatPanel.classList.remove('active');
-          setTimeout(() => {
-            TauriService.setWindowSize(140, 140);
-          }, 300);
-        }
-      }
-    };
-
-    // =========================================================================
-    // ── INITIALIZATION & BINDINGS ────────────────────────────────────────────
-    // =========================================================================
-
-    // Moon Events
-    DOM.moon.addEventListener('pointerdown', (e) => UIController.handlePointerDown(e));
-    DOM.moon.addEventListener('pointermove', (e) => UIController.handlePointerMove(e));
-    DOM.moon.addEventListener('pointerup', (e) => UIController.handlePointerUp(e));
-    DOM.moon.addEventListener('pointerleave', () => UIController.handlePointerLeave());
-    DOM.chatHeader.addEventListener('pointerdown', () => TauriService.startDragging());
-
-    // Chat Panel Controls
-    DOM.closeChat.addEventListener('click', () => UIController.toggleChat());
-    DOM.chatForm.addEventListener('submit', (e) => ChatEngine.handleSubmit(e));
-
-    // Settings Panel Controls
-    DOM.toggleSettings.addEventListener('click', () => SettingsEngine.toggle());
-    DOM.closeSettingsBtn.addEventListener('click', () => SettingsEngine.close());
-    DOM.alwaysOnTopToggle.addEventListener('change', () => SettingsEngine.handleAlwaysOnTopChange());
-    DOM.closeOnBlurToggle.addEventListener('change', () => SettingsEngine.handleCloseOnBlurChange());
-    
-    DOM.recordShortcutBtn.addEventListener('click', () => {
-      if (State.isRecordingShortcut) {
-        SettingsEngine.stopRecordingShortcut(true);
-      } else {
-        SettingsEngine.startRecordingShortcut();
-      }
-    });
-
-    // Window and Input Event Listeners
-    window.addEventListener('blur', () => UIController.handleBlur());
-    window.addEventListener('keydown', (e) => SettingsEngine.handleKeyDown(e));
-
-    // Boot App Settings
-    SettingsEngine.load();
-  </script>
+  <script>/* elided for snapshot */</script>
 "
 `;
 
@@ -556,10 +190,16 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         <div class="chat-avatar"></div>
         <div class="chat-meta">
           <h2>Luna Companion</h2>
-          <span>Connected (Mock)</span>
+          <span id="connection-status" class="connecting">Connecting...</span>
         </div>
       </div>
       <div class="header-actions">
+        <button class="settings-btn" id="new-chat" aria-label="New conversation" title="New conversation">
+          <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+        </button>
         <button class="settings-btn" id="toggle-settings" aria-label="Settings">
           <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3"></circle>
@@ -612,6 +252,22 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
             <button type="button" class="record-btn" id="record-shortcut-btn">Record</button>
           </div>
         </div>
+
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">WebSocket Server URL</span>
+            <span class="setting-desc">Luna Central server WebSocket address</span>
+          </div>
+          <input type="text" id="ws-url-input" class="premium-text-input" placeholder="ws://127.0.0.1:4753/ui">
+        </div>
+
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">Auth Token</span>
+            <span class="setting-desc">Optional authentication bearer token</span>
+          </div>
+          <input type="password" id="ws-token-input" class="premium-text-input" placeholder="Enter token (optional)...">
+        </div>
         
       </div>
       
@@ -636,394 +292,6 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
     </form>
   </div>
 
-  <script>
-    const moon = document.getElementById('moon');
-    const moonWrapper = document.getElementById('moon-wrapper');
-    const moonSvg = document.querySelector('.moon-svg');
-    const chatPanel = document.getElementById('chat-panel');
-    const closeChat = document.getElementById('close-chat');
-    const chatForm = document.getElementById('chat-form');
-    const messageInput = document.getElementById('message-input');
-    const chatMessages = document.getElementById('chat-messages');
-
-    let pressStartTime = 0;
-    let pressStartX = 0;
-    let pressStartY = 0;
-
-    const chatHeader = document.querySelector('.chat-header');
-
-    // =========================================================================
-    // ── LUNA COMPANION NATIVE MODULE ─────────────────────────────────────────
-    // =========================================================================
-
-    /**
-     * Styled, formatted console logger for native-web runtime monitoring.
-     */
-    const Logger = {
-      prefix: '%c[Luna Companion]',
-      style: 'color: #8ab4f8; font-weight: bold; background: rgba(138, 180, 248, 0.08); padding: 2px 6px; border-radius: 4px;',
-      
-      info(message, ...args) {
-        console.log(this.prefix, this.style, message, ...args);
-      },
-      warn(message, ...args) {
-        console.warn('%c[Luna Warning]', 'color: #f59e0b; font-weight: bold;', message, ...args);
-      },
-      error(message, ...args) {
-        console.error('%c[Luna Error]', 'color: #ef4444; font-weight: bold;', message, ...args);
-      }
-    };
-
-    /**
-     * DOM references cache.
-     */
-    const DOM = {
-      moon: document.getElementById('moon'),
-      moonWrapper: document.getElementById('moon-wrapper'),
-      moonSvg: document.querySelector('.moon-svg'),
-      chatPanel: document.getElementById('chat-panel'),
-      chatHeader: document.querySelector('.chat-header'),
-      closeChat: document.getElementById('close-chat'),
-      chatForm: document.getElementById('chat-form'),
-      messageInput: document.getElementById('message-input'),
-      chatMessages: document.getElementById('chat-messages'),
-      toggleSettings: document.getElementById('toggle-settings'),
-      settingsPanel: document.getElementById('settings-panel'),
-      closeSettingsBtn: document.getElementById('close-settings-btn'),
-      alwaysOnTopToggle: document.getElementById('always-on-top-toggle'),
-      closeOnBlurToggle: document.getElementById('close-on-blur-toggle'),
-      shortcutInput: document.getElementById('shortcut-input'),
-      recordShortcutBtn: document.getElementById('record-shortcut-btn')
-    };
-
-    /**
-     * Shared state manager.
-     */
-    const State = {
-      pressStartTime: 0,
-      pressStartX: 0,
-      pressStartY: 0,
-      isRecordingShortcut: false,
-      responseIndex: 0
-    };
-
-    /**
-     * Tauri Window & OS integration services.
-     */
-    const TauriService = {
-      async setWindowSize(width, height) {
-        if (!window.__TAURI__) return;
-        try {
-          const { getCurrentWindow, LogicalSize } = window.__TAURI__.window;
-          const appWindow = getCurrentWindow();
-          await appWindow.setSize(new LogicalSize(width, height));
-          Logger.info(\`Resized window logical boundary: \${width}x\${height}\`);
-        } catch (e) {
-          Logger.error("Tauri window resizing failure:", e);
-        }
-      },
-
-      async applyAlwaysOnTop(enabled) {
-        if (!window.__TAURI__) return;
-        try {
-          const { getCurrentWindow } = window.__TAURI__.window;
-          const appWindow = getCurrentWindow();
-          await appWindow.setAlwaysOnTop(enabled);
-          Logger.info(\`Window alwaysOnTop state updated: \${enabled}\`);
-        } catch (e) {
-          Logger.error("Tauri window always-on-top updates failure:", e);
-        }
-      },
-
-      startDragging() {
-        if (window.__TAURI__) {
-          try {
-            window.__TAURI__.window.getCurrentWindow().startDragging();
-            Logger.info("Initiated native window dragging region");
-          } catch (e) {
-            Logger.error("Tauri window dragging error:", e);
-          }
-        }
-      }
-    };
-
-    /**
-     * Chat Messaging & Mock stream engine.
-     */
-    const ChatEngine = {
-      responses: [
-        "I am rendering natively under macOS using Tauri's lightweight WebKit wrapper. The window is 100% transparent!",
-        "I see you! Because my moon element has the \`data-tauri-drag-region\` attribute, dragging the moon itself moves my whole native window across your desktop.",
-        "In our final implementation, I will watch \`~/.luna/.last-thread-default\` to automatically load whichever thread you're currently interacting with in your terminal CLI.",
-        "Yes! Our styling uses backdrop-filters for that ultra-premium frosted glassmorphism which fits perfectly with macOS Dark Mode.",
-        "Tell my developer if you like this native layout, and we can hook up the real WebSocket channel next!"
-      ],
-
-      appendMessage(role, text) {
-        const msgDiv = document.createElement('div');
-        msgDiv.className = \`msg \${role}\`;
-        msgDiv.textContent = text;
-        DOM.chatMessages.appendChild(msgDiv);
-      },
-
-      showTypingIndicator() {
-        const indicatorDiv = document.createElement('div');
-        indicatorDiv.className = 'msg assistant';
-        indicatorDiv.innerHTML = \`
-          <div class="typing-dots">
-            <div class="dot"></div>
-            <div class="dot"></div>
-            <div class="dot"></div>
-          </div>
-        \`;
-        DOM.chatMessages.appendChild(indicatorDiv);
-        DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
-        return indicatorDiv;
-      },
-
-      handleSubmit(e) {
-        e.preventDefault();
-        const text = DOM.messageInput.value.trim();
-        if (!text) return;
-        
-        Logger.info(\`Appended user message: "\${text}"\`);
-        this.appendMessage('user', text);
-        DOM.messageInput.value = '';
-        DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
-        
-        const typingIndicator = this.showTypingIndicator();
-        
-        setTimeout(() => {
-          typingIndicator.remove();
-          const responseText = this.responses[State.responseIndex];
-          State.responseIndex = (State.responseIndex + 1) % this.responses.length;
-          
-          this.appendMessage('assistant', responseText);
-          Logger.info(\`Appended assistant stream message: "\${responseText}"\`);
-          DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
-        }, 1400);
-      }
-    };
-
-    /**
-     * Settings configurations and state synchronization.
-     */
-    const SettingsEngine = {
-      load() {
-        Logger.info("Loading saved settings from localStorage...");
-        const savedAlwaysOnTop = localStorage.getItem('luna_always_on_top');
-        if (savedAlwaysOnTop !== null) {
-          DOM.alwaysOnTopToggle.checked = savedAlwaysOnTop === 'true';
-          TauriService.applyAlwaysOnTop(DOM.alwaysOnTopToggle.checked);
-        } else {
-          DOM.alwaysOnTopToggle.checked = true;
-          TauriService.applyAlwaysOnTop(true);
-        }
-
-        const savedCloseOnBlur = localStorage.getItem('luna_close_on_blur');
-        if (savedCloseOnBlur !== null) {
-          DOM.closeOnBlurToggle.checked = savedCloseOnBlur === 'true';
-        } else {
-          DOM.closeOnBlurToggle.checked = false;
-        }
-
-        const savedShortcut = localStorage.getItem('luna_global_shortcut');
-        if (savedShortcut !== null) {
-          DOM.shortcutInput.value = savedShortcut;
-        }
-        Logger.info("Settings synchronized successfully");
-      },
-
-      toggle() {
-        DOM.settingsPanel.classList.toggle('active');
-        Logger.info("Settings tab visibility toggled");
-      },
-
-      close() {
-        DOM.settingsPanel.classList.remove('active');
-        Logger.info("Settings tab closed");
-      },
-
-      handleAlwaysOnTopChange() {
-        const enabled = DOM.alwaysOnTopToggle.checked;
-        localStorage.setItem('luna_always_on_top', String(enabled));
-        TauriService.applyAlwaysOnTop(enabled);
-      },
-
-      handleCloseOnBlurChange() {
-        localStorage.setItem('luna_close_on_blur', String(DOM.closeOnBlurToggle.checked));
-        Logger.info(\`Close on blur changed: \${DOM.closeOnBlurToggle.checked}\`);
-      },
-
-      startRecordingShortcut() {
-        State.isRecordingShortcut = true;
-        DOM.recordShortcutBtn.textContent = 'Cancel';
-        DOM.shortcutInput.classList.add('recording');
-        DOM.shortcutInput.value = 'Press keys...';
-        Logger.warn("Global shortcut recording active: listening to key combination");
-      },
-
-      stopRecordingShortcut(cancelled = false) {
-        State.isRecordingShortcut = false;
-        DOM.recordShortcutBtn.textContent = 'Record';
-        DOM.shortcutInput.classList.remove('recording');
-        if (cancelled) {
-          const savedShortcut = localStorage.getItem('luna_global_shortcut') || '⌥Space';
-          DOM.shortcutInput.value = savedShortcut;
-          Logger.info("Global shortcut recording cancelled");
-        }
-      },
-
-      handleKeyDown(e) {
-        if (!State.isRecordingShortcut) return;
-        
-        e.preventDefault();
-        e.stopPropagation();
-
-        const key = e.key;
-        if (['Control', 'Shift', 'Alt', 'Meta'].includes(key)) {
-          return; // modifier-only wait
-        }
-
-        let shortcut = '';
-        if (e.ctrlKey) shortcut += '⌃';
-        if (e.altKey) shortcut += '⌥';
-        if (e.shiftKey) shortcut += '⇧';
-        if (e.metaKey) shortcut += '⌘';
-
-        let keyName = key.toUpperCase();
-        if (key === ' ') keyName = 'Space';
-        
-        shortcut += keyName;
-
-        DOM.shortcutInput.value = shortcut;
-        localStorage.setItem('luna_global_shortcut', shortcut);
-        Logger.info(\`Dynamic hotkey mapping resolved and saved: "\${shortcut}"\`);
-        
-        this.stopRecordingShortcut(false);
-      }
-    };
-
-    /**
-     * UI Parallax & Window state transitions.
-     */
-    const UIController = {
-      async toggleChat() {
-        const isActive = DOM.chatPanel.classList.contains('active');
-        if (isActive) {
-          DOM.chatPanel.classList.remove('active');
-          Logger.info("Initiated chat collapse transition");
-          setTimeout(() => {
-            TauriService.setWindowSize(140, 140);
-          }, 300);
-        } else {
-          await TauriService.setWindowSize(560, 520);
-          DOM.chatPanel.classList.add('active');
-          DOM.messageInput.focus();
-          Logger.info("Chat expand transition completed");
-        }
-      },
-
-      handlePointerDown(e) {
-        State.pressStartTime = Date.now();
-        State.pressStartX = e.clientX;
-        State.pressStartY = e.clientY;
-        DOM.moonWrapper.style.transform = 'scale(0.92)';
-        TauriService.startDragging();
-      },
-
-      handlePointerMove(e) {
-        const rect = DOM.moon.getBoundingClientRect();
-        const moonCenterX = rect.left + rect.width / 2;
-        const moonCenterY = rect.top + rect.height / 2;
-        
-        const deltaX = e.clientX - moonCenterX;
-        const deltaY = e.clientY - moonCenterY;
-        
-        const maxShift = 6;
-        const dist = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-        const ratio = Math.min(1, dist / 120);
-        
-        const shiftX = (deltaX / 120) * maxShift * ratio;
-        const shiftY = (deltaY / 120) * maxShift * ratio;
-        
-        DOM.moonSvg.style.setProperty('--px', \`\${shiftX}px\`);
-        DOM.moonSvg.style.setProperty('--py', \`\${shiftY}px\`);
-        
-        const tiltX = -(deltaY / 120) * 8 * ratio;
-        const tiltY = (deltaX / 120) * 8 * ratio;
-        const rot = (deltaX / 120) * 4 * ratio;
-        
-        DOM.moonSvg.style.setProperty('--rot', \`\${rot}deg\`);
-        
-        const scale = (Date.now() - State.pressStartTime < 200 && e.buttons === 1) ? 0.92 : 1.04;
-        DOM.moonWrapper.style.transform = \`rotateX(\${tiltX}deg) rotateY(\${tiltY}deg) scale(\${scale})\`;
-      },
-
-      handlePointerUp(e) {
-        DOM.moonWrapper.style.transform = 'none';
-        const duration = Date.now() - State.pressStartTime;
-        const distMove = Math.sqrt(Math.pow(e.clientX - State.pressStartX, 2) + Math.pow(e.clientY - State.pressStartY, 2));
-        
-        if (duration < 280 && distMove < 5) {
-          this.toggleChat();
-        }
-      },
-
-      handlePointerLeave() {
-        DOM.moonSvg.style.setProperty('--px', '0px');
-        DOM.moonSvg.style.setProperty('--py', '0px');
-        DOM.moonSvg.style.setProperty('--rot', '0deg');
-        DOM.moonWrapper.style.transform = 'none';
-      },
-
-      handleBlur() {
-        if (DOM.closeOnBlurToggle.checked && DOM.chatPanel.classList.contains('active') && !State.isRecordingShortcut) {
-          Logger.info("Focus click-away blur event fired: collapsing companion");
-          DOM.settingsPanel.classList.remove('active');
-          DOM.chatPanel.classList.remove('active');
-          setTimeout(() => {
-            TauriService.setWindowSize(140, 140);
-          }, 300);
-        }
-      }
-    };
-
-    // =========================================================================
-    // ── INITIALIZATION & BINDINGS ────────────────────────────────────────────
-    // =========================================================================
-
-    // Moon Events
-    DOM.moon.addEventListener('pointerdown', (e) => UIController.handlePointerDown(e));
-    DOM.moon.addEventListener('pointermove', (e) => UIController.handlePointerMove(e));
-    DOM.moon.addEventListener('pointerup', (e) => UIController.handlePointerUp(e));
-    DOM.moon.addEventListener('pointerleave', () => UIController.handlePointerLeave());
-    DOM.chatHeader.addEventListener('pointerdown', () => TauriService.startDragging());
-
-    // Chat Panel Controls
-    DOM.closeChat.addEventListener('click', () => UIController.toggleChat());
-    DOM.chatForm.addEventListener('submit', (e) => ChatEngine.handleSubmit(e));
-
-    // Settings Panel Controls
-    DOM.toggleSettings.addEventListener('click', () => SettingsEngine.toggle());
-    DOM.closeSettingsBtn.addEventListener('click', () => SettingsEngine.close());
-    DOM.alwaysOnTopToggle.addEventListener('change', () => SettingsEngine.handleAlwaysOnTopChange());
-    DOM.closeOnBlurToggle.addEventListener('change', () => SettingsEngine.handleCloseOnBlurChange());
-    
-    DOM.recordShortcutBtn.addEventListener('click', () => {
-      if (State.isRecordingShortcut) {
-        SettingsEngine.stopRecordingShortcut(true);
-      } else {
-        SettingsEngine.startRecordingShortcut();
-      }
-    });
-
-    // Window and Input Event Listeners
-    window.addEventListener('blur', () => UIController.handleBlur());
-    window.addEventListener('keydown', (e) => SettingsEngine.handleKeyDown(e));
-
-    // Boot App Settings
-    SettingsEngine.load();
-  </script>
+  <script>/* elided for snapshot */</script>
 "
 `;

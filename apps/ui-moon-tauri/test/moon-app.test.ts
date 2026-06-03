@@ -149,8 +149,14 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   // ───────────────────────────────────────────────────────────────────────────
   // Behavioral Feature: Messaging & Responses
   // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Chat Input & Streaming Mock Responses', () => {
-    it('Scenario: User submits a text message -> Message is appended, input cleared, and mock streaming response loads', () => {
+  describe('Feature: Chat Input & Turn Watchdog', () => {
+    // The old mock that faked an assistant reply via setTimeout is gone — the
+    // real app sends the message over a WebSocket and waits for server frames.
+    // In jsdom there is no server and the internal frame handler isn't exposed,
+    // so this exercises the REAL fallback: submit behavior + the 90s turn
+    // watchdog (WebSocketEngine.startTurnTimeout) that clears a stuck spinner
+    // and surfaces a visible "no response" error instead of hanging forever.
+    it('Scenario: User submits a text message -> message appended, input cleared, typing indicator shown; then the turn watchdog surfaces a no-response error', () => {
       const chatPanel = document.getElementById('chat-panel')
       const chatForm = document.getElementById('chat-form')
       const messageInput = document.getElementById('message-input') as HTMLInputElement
@@ -159,7 +165,6 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       // Pre-condition: Open the chat and focus input
       chatPanel!.classList.add('active')
       expect(chatMessages).not.toBeNull()
-      const initialMessageCount = chatMessages!.querySelectorAll('.msg').length
 
       // 1. User types "How does this look?" and submits
       messageInput.value = 'How does this look?'
@@ -174,22 +179,24 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(userMessage).not.toBeNull()
       expect(userMessage!.textContent).toBe('How does this look?')
 
-      // Verification C: Typing indicator dots should be active
+      // Verification C: Typing indicator dots should be active (turn in flight)
       const typingIndicator = chatMessages!.querySelector('.typing-dots')
       expect(typingIndicator).not.toBeNull()
 
-      // 2. Fast forward timers to simulate assistant latency (1400ms delay in code)
-      vi.advanceTimersByTime(1500)
+      // 2. No server reply arrives (no WS in jsdom). Fast-forward past the 90s
+      //    turn watchdog so it fires.
+      vi.advanceTimersByTime(90000)
 
-      // Verification D: Typing indicator should be removed
+      // Verification D: the watchdog clears the stuck typing indicator (no
+      //    endless spinner — the resume/robustness fix).
       const postTypingIndicator = chatMessages!.querySelector('.typing-dots')
       expect(postTypingIndicator).toBeNull()
 
-      // Verification E: Mock assistant response should be appended
-      const assistantMessages = chatMessages!.querySelectorAll('.msg.assistant')
-      // Initial welcome message + 1 reply = 2 assistant messages
-      expect(assistantMessages.length).toBe(2)
-      expect(assistantMessages[1].textContent).toContain('Tauri')
+      // Verification E: and surfaces a visible "no response" error as the last
+      //    assistant message (real timeout behavior, not a mock reply).
+      const lastMsg = chatMessages!.lastElementChild
+      expect(lastMsg!.classList.contains('assistant')).toBe(true)
+      expect(lastMsg!.textContent).toContain('No response from the server')
     })
   })
 
@@ -197,25 +204,31 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   // Feature: Visual DOM Structure Snapshots
   // ───────────────────────────────────────────────────────────────────────────
   describe('Feature: Visual DOM Structure Snapshots', () => {
+    // Snapshot the structural DOM only — elide the inline <script> body. These
+    // assert "visual structure", but document.body.innerHTML also contains the
+    // entire app script, so any JS edit (resume fix, version-skew banner, async
+    // load_connection) spuriously breaks them. Stripping the script source keeps
+    // them a real structure check, not a "source unchanged" tripwire.
+    const structuralDom = (html: string) =>
+      html.replace(/(<script\b[^>]*>)[\s\S]*?(<\/script>)/gi, '$1/* elided for snapshot */$2')
+
     it('Scenario: Closed State Snapshot matches the exact design pattern', () => {
-      const containerHtml = document.body.innerHTML
-      expect(containerHtml).toMatchSnapshot()
+      expect(structuralDom(document.body.innerHTML)).toMatchSnapshot()
     })
 
     it('Scenario: Open State Snapshot matches the exact design pattern', async () => {
       const moon = document.getElementById('moon')
       const pointerDown = new MouseEvent('pointerdown', { bubbles: true, clientX: 100, clientY: 100 })
       const pointerUp = new MouseEvent('pointerup', { bubbles: true, clientX: 100, clientY: 100 })
-      
+
       moon!.dispatchEvent(pointerDown)
       vi.advanceTimersByTime(50)
       moon!.dispatchEvent(pointerUp)
-      
+
       await Promise.resolve()
       await Promise.resolve()
 
-      const containerHtml = document.body.innerHTML
-      expect(containerHtml).toMatchSnapshot()
+      expect(structuralDom(document.body.innerHTML)).toMatchSnapshot()
     })
   })
 
