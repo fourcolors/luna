@@ -1082,9 +1082,10 @@ via subsequent valid event landing in the bucket.
    over the live `@luna/ui-web` Solid app; plugin play separate
    package; full acceptance test bundle) are roadmap-revisable —
    wait for Operator's direction. Apps in tree: `apps/ui-web`
-   (SolidJS, canonical), `apps/ui-tauri` (Tauri shell),
-   `apps/agent-cli`. The legacy `apps/ui-web-react` scaffold was
-   removed 2026-04-27.
+   (SolidJS, canonical), `apps/ui-moon-tauri` (Tauri moon
+   widget), `apps/agent-cli`. The legacy `apps/ui-web-react`
+   scaffold was removed 2026-04-27; the `apps/ui-tauri` desktop
+   shell was removed 2026-06-03.
 
 ---
 

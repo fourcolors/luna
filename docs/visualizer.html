@@ -227,7 +227,6 @@ flowchart TB
   UISH["@luna/ui-shared<br/>react-markdown + shiki"]:::pkg
 
   UIWEB["apps/ui-web"]:::app
-  UITAU["apps/ui-tauri"]:::app
   CLI["apps/agent-cli"]:::app
 
   CORE --> EFFECT
@@ -242,7 +241,6 @@ flowchart TB
   UIWS --> CORE
   UIWEB --> UIWS
   UIWEB --> UISH
-  UITAU --> UIWEB
   CLI --> ADAPTER
 
   classDef ext fill:#1b2027,stroke:#8b949e,color:#8b949e,stroke-dasharray:3 3
@@ -470,7 +468,7 @@ sequenceDiagram
         <div style="color:var(--accent); font-size:11px; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px;">UI</div>
         <div><strong>React 18 + Vite</strong> — both UIs</div>
         <div><strong>react-markdown + Shiki</strong> — render + highlight</div>
-        <div><strong>Tauri 2</strong> — native shell (ui-tauri)</div>
+        <div><strong>Tauri 2</strong> — native widget shell (ui-moon-tauri)</div>
       </div>
       <div>
         <div style="color:var(--accent); font-size:11px; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px;">Future (per DESIGN.md)</div>
@@ -517,7 +515,7 @@ const RUNTIMES = [
   ["2.2.3",  "Configuration",  "Typed config via effect/Schema, layered sources.",  "Schema-validated config from env, file, and CLI. Layered: defaults → file → env → flag. No untyped reads."],
   ["2.2.4",  "Sandbox",        "Isolated execution for untrusted scripts/skills.",  "OS-level isolation (subprocess + restricted env) for skill scripts. Resource caps + egress allowlist."],
   ["2.2.5",  "Workflows",      "@effect/workflow + @effect/cluster wrapper.",     "Durable state machines for multi-step orchestration. Beta-quality. Survives restart, replays from event log."],
-  ["2.2.6",  "UI",             "Tauri+React; consumes observability stream.",     "ui-web (:5173) is the chat surface — React + Vite + react-markdown + Shiki. ui-tauri wraps the same bundle as a native macOS app."],
+  ["2.2.6",  "UI",             "Tauri+React; consumes observability stream.",     "ui-web (:5173) is the chat surface — React + Vite + react-markdown + Shiki."],
   ["2.2.7",  "Observability",  "Structured events + OTEL traces.",                 "Every Service emits typed events. Traces span module boundaries via @effect/opentelemetry."],
   ["2.2.8",  "Telemetry",      "Metrics/logs to DuckDB + OTLP.",                   "Counters/histograms exported to DuckDB locally + OTLP for cloud sinks. Cost + latency dashboards."],
   ["2.2.9",  "Network Security","Mediated HTTP, egress allowlists, TLS pinning.",  "All outbound HTTP through a mediator with allowlist. TLS pinning for high-value endpoints (Anthropic, 1Password)."],
@@ -536,7 +534,6 @@ const WORKSPACE = [
   ["pkg",  "@luna/ui-ws",       "WebSocket server + protocol.",                                  "packages/ui-ws/"],
   ["pkg",  "@luna/ui-shared",   "react-markdown + Shiki — shared across UIs.",                   "packages/ui-shared/"],
   ["app",  "apps/ui-web",                   "Chat UI on :5173 + chat-server (WebSocket :4753).",         "apps/ui-web/"],
-  ["app",  "apps/ui-tauri",                 "Tauri 2 native shell wrapping the Vite bundle.",                "apps/ui-tauri/"],
   ["app",  "apps/agent-cli",                "CLI client for the agent.",                                     "apps/agent-cli/"],
 ];
 

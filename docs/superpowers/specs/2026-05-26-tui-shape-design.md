@@ -27,7 +27,7 @@ A separate process is finishing work on `master`. This spec targets the `dev` br
 ## Non-Goals
 
 - No replacement for `ui-web`. The web client continues to evolve independently.
-- No support for Tauri. `apps/ui-tauri` is dormant; we stop designing around it.
+- No support for Tauri. `apps/ui-tauri` is dormant; we stop designing around it. *(Update 2026-06-03: `apps/ui-tauri` has since been removed from the tree.)*
 - No mouse support in v1.
 - No node-pty / vt100 integration tests.
 - No second renderer (we do not abstract the component tree to render to DOM and terminal both).
