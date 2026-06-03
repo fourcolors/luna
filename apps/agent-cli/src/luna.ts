@@ -4,6 +4,7 @@ import { createReadStream, createWriteStream, openSync } from "node:fs"
 import { createInterface } from "node:readline/promises"
 import { accountCommand } from "./commands/account/index.js"
 import { chatCommand } from "./commands/chat.js"
+import { doctorCommand } from "./commands/doctor.js"
 import { memoryCommand } from "./commands/memory.js"
 
 export const approveLocalCommand = async (command: string): Promise<boolean> => {
@@ -37,6 +38,7 @@ const root = defineCommand({
     chat: chatCommand,
     account: accountCommand,
     memory: memoryCommand,
+    doctor: doctorCommand,
   },
 })
 
