@@ -597,8 +597,15 @@ esac
 
     expect(result.status).toBe(0)
     expect(result.stdout).toContain("WorkingDirectory=" + join(temp, "repo", "apps", "ui-web"))
-    expect(result.stdout).toContain("EnvironmentFile=" + join(temp, "state", ".env"))
+    expect(result.stdout).toContain("EnvironmentFile=-" + join(temp, "state", ".env"))
     expect(result.stdout).toContain("ExecStart=/root/.bun/bin/bun run scripts/chat-server.ts")
+    // #28: HOME and PATH are load-bearing — systemd 259 sets neither for a root
+    // system service, so omitting them silently lands the server in setup-mode.
+    expect(result.stdout).toContain("Environment=HOME=")
+    expect(result.stdout).toContain("Environment=PATH=/root/.bun/bin:")
+    expect(result.stdout).toContain("Environment=CLAUDE_CONFIG_DIR=" + join(temp, "state", "claude"))
+    expect(result.stdout).toContain("StandardOutput=append:" + join(temp, "state", "logs", "luna-chat-server.log"))
+    expect(result.stdout).toContain("StandardError=append:" + join(temp, "state", "logs", "luna-chat-server-error.log"))
     expect(result.stdout).toContain("LUNA_REPO_ROOT=" + join(temp, "repo"))
     expect(result.stdout).toContain("LUNA_PROFILE=stable")
     expect(result.stdout).toContain("LUNA_CHAT_SERVER_NAME=luna-chat-server")

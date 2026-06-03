@@ -154,6 +154,14 @@ write_service() {
 
 render_service() {
   local bun_bin="$1"
+  local bun_dir
+  bun_dir="$(dirname "$bun_bin")"
+  # HOME and PATH are LOAD-BEARING for a system service: systemd (verified on
+  # systemd 259) sets NO $HOME for a root service and a PATH without the Bun dir.
+  # Bun/claude/credential paths rely on $HOME (~/.bun, ~/.claude), so omitting it
+  # silently lands the server in setup-mode. CLAUDE_CONFIG_DIR is also redundantly
+  # set here (in addition to .env) so a missing .env can't strand the credential
+  # dir. Logs go to append-files (not journald) to match the operator workflow.
   cat <<EOF
 [Unit]
 Description=Luna chat server (${PROFILE})
@@ -163,10 +171,15 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${REPO_DIR}/apps/ui-web
-EnvironmentFile=${ENV_FILE}
+Environment=HOME=${HOME}
+Environment=PATH=${bun_dir}:/usr/local/bin:/usr/bin:/bin
+Environment=CLAUDE_CONFIG_DIR=${LUNA_HOME}/claude
+EnvironmentFile=-${ENV_FILE}
 ExecStart=${bun_bin} run scripts/chat-server.ts
 Restart=always
-RestartSec=5
+RestartSec=2
+StandardOutput=append:${LUNA_HOME}/logs/${CHAT_SERVER_NAME}.log
+StandardError=append:${LUNA_HOME}/logs/${CHAT_SERVER_NAME}-error.log
 
 [Install]
 WantedBy=multi-user.target
