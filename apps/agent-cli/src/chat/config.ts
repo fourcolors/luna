@@ -139,11 +139,11 @@ const isUnderDangerousLocalShellRoot = (cwd: string, root: string): boolean => {
     || normalizedCwd.startsWith(`${normalizedRoot}/`)
 }
 
-const isValidProfileName = (value: string): boolean => /^[A-Za-z][A-Za-z0-9_-]*$/.test(value)
+export const isValidProfileName = (value: string): boolean => /^[A-Za-z][A-Za-z0-9_-]*$/.test(value)
 
-const normalizeProfileName = (value: string): string => value.toLowerCase()
+export const normalizeProfileName = (value: string): string => value.toLowerCase()
 
-const profileEnvPrefix = (profileName: string): string =>
+export const profileEnvPrefix = (profileName: string): string =>
   `LUNA_${profileName.toUpperCase().replace(/-/g, "_")}`
 
 export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {

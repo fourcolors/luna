@@ -4,7 +4,9 @@ import { createReadStream, createWriteStream, openSync } from "node:fs"
 import { createInterface } from "node:readline/promises"
 import { accountCommand } from "./commands/account/index.js"
 import { chatCommand } from "./commands/chat.js"
+import { doctorCommand } from "./commands/doctor.js"
 import { memoryCommand } from "./commands/memory.js"
+import { pairCommand } from "./commands/pair.js"
 
 export const approveLocalCommand = async (command: string): Promise<boolean> => {
   let input: ReturnType<typeof createReadStream> | undefined
@@ -37,6 +39,8 @@ const root = defineCommand({
     chat: chatCommand,
     account: accountCommand,
     memory: memoryCommand,
+    doctor: doctorCommand,
+    pair: pairCommand,
   },
 })
 
