@@ -11,6 +11,8 @@
     "core:window:allow-set-always-on-top",
     "allow-get-last-thread-id",
     "allow-save-connection",
-    "allow-load-connection"
+    "allow-load-connection",
+    "allow-load-profiles",
+    "allow-set-active-profile"
   ]
 }

@@ -153,6 +153,42 @@ exit 0
   return { bin, systemctlLog, curlLog, bunLog }
 }
 
+// Add an `incus` stub into an existing stub bin so the --incus LIVE path can be
+// exercised hermetically (the repo's verify design expected a stub `incus`). The
+// script invokes `incus exec <container> -- <cmd...>`; the stub strips everything
+// up to and including `--` and runs <cmd...> LOCALLY, so the in-container
+// systemctl/curl/bun calls hit the SAME PATH stubs as bare-host. git still runs
+// for-real on the host work-repo (the script keeps git host-side), so the curl
+// stub's HEAD-based readiness verdict works unchanged.
+//
+// The ONE special case: the claude re-pin is `incus exec <c> -- bash -lc
+// 'source /root/luna/... && luna_configure_claude_executable ...'`. Running that
+// payload on the test host would fail (no /root/luna), spuriously triggering
+// rollback. So the stub treats an in-container re-pin as a hermetic no-op —
+// mirroring that on a real container it just rewrites the container .env.
+const addIncusStub = (bin: string, incusLog: string) => {
+  writeFileSync(
+    join(bin, "incus"),
+    `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${incusLog}"
+# Only 'incus exec <container> -- <cmd...>' is used; strip up to and incl. '--'.
+if [[ "$1" == "exec" ]]; then
+  shift            # drop 'exec'
+  shift            # drop <container>
+  [[ "$1" == "--" ]] && shift   # drop '--'
+  # Hermetic no-op for the in-container claude re-pin (would need /root/luna).
+  if [[ "$1" == "bash" && "$*" == *"luna_configure_claude_executable"* ]]; then
+    exit 0
+  fi
+  "$@"             # run the in-container command against the PATH stubs
+  exit $?
+fi
+exit 0
+`,
+  )
+  spawnSync("chmod", ["+x", join(bin, "incus")])
+}
+
 const runUpdate = (
   args: ReadonlyArray<string>,
   env: Record<string, string | undefined> = {},
@@ -602,20 +638,86 @@ exit 0
     expect(restarts).toBe(1)
   })
 
-  it("--incus exits non-zero at parse with not-supported message, nothing runs", () => {
+  it("--incus --dry-run plans git-on-host + bun/restart/probe in-container, changes NOTHING", () => {
+    // The incus path routes correctly: git ops on the HOST repo mount, but bun
+    // install / daemon-reload / restart / readiness curl INSIDE the container via
+    // `incus exec`. --dry-run must PRINT that exact plan and execute nothing. We
+    // pass --repo-dir explicitly so the host git ops drive the real test work-repo
+    // (the auto-derived /root/luna/<profile>/repo would not exist here).
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const headBefore = git(work, "rev-parse", "HEAD")
+    // No PATH stubs needed: dry-run prints commands via luna_run and never execs
+    // incus/systemctl/curl. git runs for real on the host work-repo (read-only:
+    // rev-parse/hash-object), which is exactly the routing we want to prove.
+    const r = runUpdate([
+      "--dry-run",
+      "--profile",
+      "dev",
+      "--incus",
+      "luna-dev",
+      "--repo-dir",
+      work,
+      "--ref",
+      "origin/master",
+      "--luna-home",
+      join(temp, "state"),
+      "--service-dir",
+      join(temp, "systemd"),
+    ], { LUNA_TEST_BUN_PATH: "/root/.bun/bin/bun" })
+
+    expect(r.status, r.stderr).toBe(0)
+    // Routing: git fetch/reset run on the HOST (luna_run prints them unwrapped,
+    // NOT behind `incus exec`), against the host repo path.
+    expect(r.stdout).toContain(`git -C ${work} fetch origin`)
+    expect(r.stdout).toContain(`git -C ${work} reset --hard origin/master`)
+    // bun install runs INSIDE the container, cwd = the in-container repo /root/luna.
+    expect(r.stdout).toContain("incus exec luna-dev -- /root/.bun/bin/bun install --cwd /root/luna --frozen-lockfile")
+    // daemon-reload + restart of the dev unit run INSIDE the container.
+    expect(r.stdout).toContain("incus exec luna-dev -- systemctl daemon-reload")
+    expect(r.stdout).toContain("incus exec luna-dev -- systemctl restart luna-dev-chat-server.service")
+    // claude re-pin routed INTO the container (not a host-side path write). The
+    // bash -lc payload is %q-escaped by luna_run, so match the function name +
+    // in-container .env path on their own (spaces are backslash-escaped there).
+    expect(r.stdout).toContain("incus exec luna-dev -- bash -lc")
+    expect(r.stdout).toContain("luna_configure_claude_executable")
+    expect(r.stdout).toContain("/root/.luna/.env")
+    // Readiness probe targets the container-internal port 4753 (NOT a host proxy).
+    expect(r.stdout).toContain("127.0.0.1:4753/healthz")
+    expect(r.stdout).toContain("ROLLED BACK")
+    expect(r.stdout).toContain("exit 2")
+    // Nothing executed: HEAD unchanged, no state/systemd dir written.
+    expect(git(work, "rev-parse", "HEAD")).toBe(headBefore)
+    expect(headBefore).not.toBe(targetSha) // sanity: an update WOULD move it
+    expect(existsSync(join(temp, "state"))).toBe(false)
+    expect(existsSync(join(temp, "systemd", "luna-dev-chat-server.service"))).toBe(false)
+  })
+
+  it("--incus LIVE happy path: readiness OK in-container → exit 0, restart via incus exec", () => {
+    // Exercise the incus path for REAL (not just the printed plan): an `incus`
+    // stub strips up to `--` and runs the in-container command against the same
+    // systemctl/curl/bun stubs. git runs host-side on the work-repo, the readiness
+    // curl is healthy at target → update applied, exit 0, no rollback.
     const temp = makeTempDir()
     const { work, prevSha, targetSha } = makeDeployRepo(temp)
     const serviceDir = join(temp, "systemd")
-    writeUnit(serviceDir)
-    const { bin, systemctlLog, curlLog, bunLog } = makeStubBin(temp, {
+    // Dev profile unit; the in-container unit-guard test -f runs locally via stub.
+    writeUnit(serviceDir, "luna-dev-chat-server.service")
+    const { bin, systemctlLog, bunLog } = makeStubBin(temp, {
       repo: work,
       prevSha,
       targetSha,
       readyAtTarget: true,
-      readyAtPrev: true,
+      readyAtPrev: false,
     })
+    const incusLog = join(temp, "incus.log")
+    addIncusStub(bin, incusLog)
 
     const r = runUpdate([
+      "--profile",
+      "dev",
+      "--incus",
+      "luna-dev",
       "--repo-dir",
       work,
       "--ref",
@@ -624,22 +726,82 @@ exit 0
       join(temp, "state"),
       "--service-dir",
       serviceDir,
-      "--incus",
-      "somecontainer",
+      "--readiness-timeout",
+      "2",
+      "--readiness-interval",
+      "0.3",
     ], {
       PATH: `${bin}:/usr/bin:/bin`,
       LUNA_TEST_BUN_PATH: join(bin, "bun"),
     })
 
-    // Must exit non-zero and print the not-supported message.
-    expect(r.status).not.toBe(0)
-    expect(r.stderr).toContain("not supported in v1")
-    // No side effects: no state dir, git HEAD unchanged, no stub logs written.
-    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
-    expect(existsSync(join(temp, "state"))).toBe(false)
-    expect(existsSync(systemctlLog)).toBe(false)
-    expect(existsSync(curlLog)).toBe(false)
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    expect(r.stdout).toContain(`updated ${prevSha} -> ${targetSha}`)
+    // The host checkout actually moved forward to the target (host git ran).
+    expect(git(work, "rev-parse", "HEAD")).toBe(targetSha)
+    // The restart was routed through `incus exec` (not a bare host systemctl).
+    const incus = readFileSync(incusLog, "utf8")
+    expect(incus).toContain("exec luna-dev -- systemctl restart luna-dev-chat-server.service")
+    expect(incus).toContain("exec luna-dev -- systemctl daemon-reload")
+    // bun.lock identical prev↔target → install skipped (incus bun never invoked).
     expect(existsSync(bunLog)).toBe(false)
+    expect(r.stdout).toContain("skipping bun install")
+    // Exactly one restart cycle (no rollback) — counted from the in-container log.
+    const restarts = (readFileSync(systemctlLog, "utf8").match(/restart/g) ?? []).length
+    expect(restarts).toBe(1)
+  })
+
+  it("--incus LIVE readiness FAIL → rollback to PREV in-container, restart again, exit 1", () => {
+    // The incus path's whole point is auto-rollback. Healthy only at PREV: the new
+    // HEAD never passes the in-container readiness probe → rollback resets the host
+    // checkout to PREV and restarts the container unit again → exit 1.
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir, "luna-dev-chat-server.service")
+    const { bin, systemctlLog } = makeStubBin(temp, {
+      repo: work,
+      prevSha,
+      targetSha,
+      readyAtTarget: false,
+      readyAtPrev: true,
+    })
+    const incusLog = join(temp, "incus.log")
+    addIncusStub(bin, incusLog)
+
+    const r = runUpdate([
+      "--profile",
+      "dev",
+      "--incus",
+      "luna-dev",
+      "--repo-dir",
+      work,
+      "--ref",
+      "origin/master",
+      "--luna-home",
+      join(temp, "state"),
+      "--service-dir",
+      serviceDir,
+      "--readiness-timeout",
+      "1",
+      "--readiness-interval",
+      "0.3",
+    ], {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(1)
+    expect(r.stderr).toContain("ROLLED BACK")
+    expect(r.stderr).toContain(prevSha)
+    // The host checkout ended back at PREV (rollback git reset --hard ran on host).
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
+    // Two restart cycles (failed update + rollback), both via incus exec.
+    const restarts = (readFileSync(systemctlLog, "utf8").match(/restart/g) ?? []).length
+    expect(restarts).toBe(2)
+    expect(readFileSync(incusLog, "utf8")).toContain(
+      "exec luna-dev -- systemctl restart luna-dev-chat-server.service",
+    )
   })
 
   it("crash-loop (NRestarts climbing) treated as failure → rollback, exit 1", () => {

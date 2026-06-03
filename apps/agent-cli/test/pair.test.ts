@@ -100,24 +100,66 @@ describe("pair-writers: writeMoonConnection", () => {
     rmSync(home, { recursive: true, force: true })
   })
 
-  it("writes the exact camelCase shape Moon's Rust save_connection uses, mode 600", () => {
+  it("writes the new {activeProfile, profiles} shape; first pairing activates the profile, mode 600", () => {
     writeMoonConnection(home, "wss://host:4753/ui", "secrettoken")
     const path = moonConnectionPath(home)
-    const raw = readFileSync(path, "utf8")
-    // Byte-match Rust serde_json::to_string WITHOUT preserve_order: compact,
-    // keys in SORTED order (wsToken before wsUrl). See writeMoonConnection.
-    expect(raw).toBe('{"wsToken":"secrettoken","wsUrl":"wss://host:4753/ui"}')
-    expect(JSON.parse(raw)).toEqual({ wsUrl: "wss://host:4753/ui", wsToken: "secrettoken" })
+    const parsed = JSON.parse(readFileSync(path, "utf8"))
+    // First-ever pairing -> default profile "stable" becomes the active channel.
+    expect(parsed).toEqual({
+      activeProfile: "stable",
+      profiles: { stable: { wsUrl: "wss://host:4753/ui", wsToken: "secrettoken" } },
+    })
     expect(mode(path)).toBe(0o600)
   })
 
-  it("overwrites cleanly on a re-pair (rotation)", () => {
-    writeMoonConnection(home, "wss://host/ui", "tokenA")
-    writeMoonConnection(home, "wss://other/ui", "tokenB")
-    expect(JSON.parse(readFileSync(moonConnectionPath(home), "utf8"))).toEqual({
-      wsUrl: "wss://other/ui",
-      wsToken: "tokenB",
-    })
+  it("honors a custom profile slot and activates it on a first (fileless) pairing", () => {
+    writeMoonConnection(home, "ws://127.0.0.1:5753/ui", "devtok", { profile: "dev" })
+    const parsed = JSON.parse(readFileSync(moonConnectionPath(home), "utf8"))
+    expect(parsed.activeProfile).toBe("dev")
+    expect(parsed.profiles.dev).toEqual({ wsUrl: "ws://127.0.0.1:5753/ui", wsToken: "devtok" })
+  })
+
+  it("pairing dev PRESERVES an existing stable profile and does NOT change the active channel", () => {
+    // Pair stable first (becomes active), then pair dev without --activate.
+    writeMoonConnection(home, "ws://jax-box:4753/ui", "stabletok", { profile: "stable" })
+    writeMoonConnection(home, "ws://jax-box:5753/ui", "devtok", { profile: "dev" })
+    const parsed = JSON.parse(readFileSync(moonConnectionPath(home), "utf8"))
+    // The running stable moon is NOT hijacked.
+    expect(parsed.activeProfile).toBe("stable")
+    // Both channels' creds coexist (the clobber bug is fixed).
+    expect(parsed.profiles.stable).toEqual({ wsUrl: "ws://jax-box:4753/ui", wsToken: "stabletok" })
+    expect(parsed.profiles.dev).toEqual({ wsUrl: "ws://jax-box:5753/ui", wsToken: "devtok" })
+  })
+
+  it("--activate (options.activate) switches the active channel to the just-paired profile", () => {
+    writeMoonConnection(home, "ws://jax-box:4753/ui", "stabletok", { profile: "stable" })
+    writeMoonConnection(home, "ws://jax-box:5753/ui", "devtok", { profile: "dev", activate: true })
+    const parsed = JSON.parse(readFileSync(moonConnectionPath(home), "utf8"))
+    expect(parsed.activeProfile).toBe("dev")
+    expect(parsed.profiles.stable).toEqual({ wsUrl: "ws://jax-box:4753/ui", wsToken: "stabletok" })
+  })
+
+  it("MIGRATES a legacy flat file into profiles.stable, preserving its creds", () => {
+    // Simulate the running user's REAL legacy file shape (flat camelCase).
+    const path = moonConnectionPath(home)
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, '{"wsToken":"legacytok","wsUrl":"ws://jax-box:4753/ui"}')
+    // Now pair the dev channel — must migrate the legacy file first, then add dev.
+    writeMoonConnection(home, "ws://jax-box:5753/ui", "devtok", { profile: "dev" })
+    const parsed = JSON.parse(readFileSync(path, "utf8"))
+    // Legacy creds preserved under stable; stable stays active (file pre-existed).
+    expect(parsed.activeProfile).toBe("stable")
+    expect(parsed.profiles.stable).toEqual({ wsToken: "legacytok", wsUrl: "ws://jax-box:4753/ui" })
+    expect(parsed.profiles.dev).toEqual({ wsUrl: "ws://jax-box:5753/ui", wsToken: "devtok" })
+  })
+
+  it("overwrites a profile's slot cleanly on a re-pair (rotation), keeping other profiles", () => {
+    writeMoonConnection(home, "ws://jax-box:4753/ui", "stabletok", { profile: "stable" })
+    writeMoonConnection(home, "ws://jax-box:5753/ui", "devA", { profile: "dev" })
+    writeMoonConnection(home, "ws://jax-box:5753/ui", "devB", { profile: "dev" })
+    const parsed = JSON.parse(readFileSync(moonConnectionPath(home), "utf8"))
+    expect(parsed.profiles.dev.wsToken).toBe("devB")
+    expect(parsed.profiles.stable.wsToken).toBe("stabletok")
   })
 })
 
@@ -180,8 +222,8 @@ describe("pair: runPair (verify injected, no live server)", () => {
     expect(mode(lunaEnvPath(home))).toBe(0o600)
 
     expect(JSON.parse(readFileSync(moonConnectionPath(home), "utf8"))).toEqual({
-      wsUrl: "wss://host:4753/ui",
-      wsToken: "tok123456789",
+      activeProfile: "stable",
+      profiles: { stable: { wsUrl: "wss://host:4753/ui", wsToken: "tok123456789" } },
     })
     expect(mode(moonConnectionPath(home))).toBe(0o600)
   })
@@ -272,6 +314,41 @@ describe("pair: runPair (verify injected, no live server)", () => {
     expect(env).not.toContain("oldtoken1")
     expect(env).toContain("newtoken2")
     expect(env.match(/_UI_WS_TOKEN=/g)?.length).toBe(1)
-    expect(JSON.parse(readFileSync(moonConnectionPath(home), "utf8")).wsToken).toBe("newtoken2")
+    expect(JSON.parse(readFileSync(moonConnectionPath(home), "utf8")).profiles.stable.wsToken).toBe(
+      "newtoken2",
+    )
+  })
+
+  it("luna pair --profile dev does NOT clobber a previously paired stable channel", async () => {
+    // Pair stable first (activates stable), then pair dev WITHOUT --activate.
+    await runPair(
+      { url: "ws://jax-box:4753/ui", token: "stabletoken1", profile: "stable" },
+      { homeDir: home, cwd: home, env: {}, verify: stubVerify },
+    )
+    await runPair(
+      { url: "ws://jax-box:5753/ui", token: "devtoken1", profile: "dev" },
+      { homeDir: home, cwd: home, env: {}, verify: stubVerify },
+    )
+    const moon = JSON.parse(readFileSync(moonConnectionPath(home), "utf8"))
+    // Active channel unchanged (the running stable moon is not hijacked).
+    expect(moon.activeProfile).toBe("stable")
+    // Both channels coexist — the clobber bug is fixed.
+    expect(moon.profiles.stable).toEqual({ wsUrl: "ws://jax-box:4753/ui", wsToken: "stabletoken1" })
+    expect(moon.profiles.dev).toEqual({ wsUrl: "ws://jax-box:5753/ui", wsToken: "devtoken1" })
+  })
+
+  it("--activate switches the moon's active channel to the just-paired profile", async () => {
+    await runPair(
+      { url: "ws://jax-box:4753/ui", token: "stabletoken1", profile: "stable" },
+      { homeDir: home, cwd: home, env: {}, verify: stubVerify },
+    )
+    const res = await runPair(
+      { url: "ws://jax-box:5753/ui", token: "devtoken1", profile: "dev", activate: true },
+      { homeDir: home, cwd: home, env: {}, verify: stubVerify },
+    )
+    expect(res.exitCode).toBe(0)
+    const moon = JSON.parse(readFileSync(moonConnectionPath(home), "utf8"))
+    expect(moon.activeProfile).toBe("dev")
+    expect(moon.profiles.stable.wsToken).toBe("stabletoken1")
   })
 })

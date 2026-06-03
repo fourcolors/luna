@@ -31,6 +31,12 @@ export interface HelloFrame {
   readonly protocolVersion: typeof UI_WS_PROTOCOL_VERSION
   /** ObsEvent kinds advertised. */
   readonly kinds: ReadonlyArray<string>
+  /**
+   * Git short-SHA of the running server build (e.g. "ae44d29"). OPTIONAL and
+   * additive — older servers omit it and older clients ignore it, so no
+   * protocol bump is needed. Lets a client display which build it's talking to.
+   */
+  readonly buildSha?: string
   /** Capability flags so older clients can negotiate down. */
   readonly capabilities: {
     readonly chat: boolean

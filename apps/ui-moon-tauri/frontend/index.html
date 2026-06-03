@@ -239,6 +239,27 @@
       box-shadow: 0 0 6px #f59e0b;
     }
 
+    /* Server build short-SHA (from the hello frame). Small + dim + monospace
+       so it sits unobtrusively next to the connection status. No dot (it is a
+       <small>, not a span). Hidden via [hidden] until the hello frame supplies
+       a buildSha. */
+    .chat-meta small#build-sha {
+      font-size: 0.6rem;
+      color: rgba(255, 255, 255, 0.35);
+      font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+      letter-spacing: 0.02em;
+    }
+
+    /* Active channel label (stable/dev). Slightly brighter than build-sha so the
+       user can tell at a glance which server the moon is pointed at. Capitalized
+       so it reads "stable · ..." cleanly next to the build SHA. */
+    .chat-meta small#active-profile {
+      font-size: 0.6rem;
+      color: rgba(138, 180, 248, 0.7);
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
     @keyframes pulseConnecting {
       from { opacity: 0.6; }
       to { opacity: 1; }
@@ -636,6 +657,34 @@
       border-color: rgba(138, 180, 248, 0.4);
       background: rgba(0, 0, 0, 0.45);
     }
+
+    /* Channel (stable/dev) dropdown — compact, matches the toggle column. */
+    .channel-select {
+      height: 30px;
+      min-width: 92px;
+      flex-shrink: 0;
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 8px;
+      padding: 0 10px;
+      font-family: var(--font-body);
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #8ab4f8;
+      outline: none;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+    }
+
+    .channel-select:focus {
+      border-color: rgba(138, 180, 248, 0.4);
+      background: rgba(0, 0, 0, 0.45);
+    }
+
+    .channel-select option {
+      background: #0a0e1c;
+      color: #e2e8f0;
+    }
   </style>
 </head>
 <body>
@@ -680,6 +729,15 @@
         <div class="chat-meta">
           <h2>Luna Companion</h2>
           <span id="connection-status" class="disconnected">Disconnected</span>
+          <!-- Active channel (stable / dev), additive. Kept as a <small>, NOT a
+               <span>, so the `.chat-meta span::before` dot rule doesn't draw a
+               status dot next to it. Hidden until a profile is resolved so older
+               state degrades gracefully. -->
+          <small id="active-profile" hidden></small>
+          <!-- Build identity from the server's hello frame (additive). Kept as a
+               <small>, NOT a <span>, so the `.chat-meta span::before` dot rule
+               doesn't draw a status dot next to it. Hidden until populated. -->
+          <small id="build-sha" hidden></small>
         </div>
       </div>
       <div class="header-actions">
@@ -742,10 +800,21 @@
           </div>
         </div>
 
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Channel</span>
+            <span class="setting-desc">Switch this moon between the stable and dev servers</span>
+          </div>
+          <select id="channel-select" class="channel-select">
+            <option value="stable">Stable</option>
+            <option value="dev">Dev</option>
+          </select>
+        </div>
+
         <div class="setting-item flex-column">
           <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
             <span class="setting-label">WebSocket Server URL</span>
-            <span class="setting-desc">Luna Central server WebSocket address</span>
+            <span class="setting-desc">Luna Central server WebSocket address (for the selected channel)</span>
           </div>
           <input type="text" id="ws-url-input" class="premium-text-input" placeholder="ws://127.0.0.1:4753/ui">
         </div>
@@ -858,7 +927,10 @@
       recordShortcutBtn: document.getElementById('record-shortcut-btn'),
       wsUrlInput: document.getElementById('ws-url-input'),
       wsTokenInput: document.getElementById('ws-token-input'),
-      connectionStatus: document.getElementById('connection-status')
+      channelSelect: document.getElementById('channel-select'),
+      connectionStatus: document.getElementById('connection-status'),
+      activeProfile: document.getElementById('active-profile'),
+      buildSha: document.getElementById('build-sha')
     };
 
     /**
@@ -874,6 +946,10 @@
       activeTurnId: null,
       wsUrl: 'ws://127.0.0.1:4753/ui',
       wsToken: '',
+      // Active channel (stable / dev). Resolved from moon-connection.json's
+      // activeProfile via load_profiles; defaults to "stable" off-Tauri / when
+      // no file exists. Surfaced in the header next to the connection dot.
+      activeProfile: 'stable',
       reconnectAttempts: 0,
       isManuallyClosing: false,
       pendingUserMessage: null,
@@ -1111,6 +1187,28 @@
         DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
       },
 
+      /**
+       * Build identity (additive). The server's hello frame MAY carry a
+       * `buildSha` (git short-SHA of the running build). When present, show it
+       * as small dim text next to the connection dot; when absent (older
+       * server, or a server with no git context), keep the element hidden so
+       * nothing changes for older servers. Degrades gracefully.
+       */
+      applyBuildSha(frame) {
+        const el = DOM.buildSha;
+        if (!el) return;
+        const sha = frame && typeof frame.buildSha === 'string' ? frame.buildSha.trim() : '';
+        if (sha) {
+          el.textContent = `build ${sha}`;
+          el.title = `Server build: ${sha}`;
+          el.hidden = false;
+        } else {
+          el.textContent = '';
+          el.removeAttribute('title');
+          el.hidden = true;
+        }
+      },
+
       clearTurnTimeout() {
         if (State.turnTimeout) {
           clearTimeout(State.turnTimeout);
@@ -1187,6 +1285,8 @@
             // handler, NOT here — so this version check is purely additive and
             // does not gate or regress the existing hello behavior.
             this.checkProtocolVersion(frame);
+            // Additive: show the server's build short-SHA when advertised.
+            this.applyBuildSha(frame);
             break;
 
           case 'thread-list': {
@@ -1399,12 +1499,103 @@
         if (!(window.__TAURI__ && window.__TAURI__.core)) return false;
         try {
           // NOTE: invoke arg keys are the Rust param names (url/token), which are
-          // distinct from the file's JSON keys (wsUrl/wsToken).
+          // distinct from the file's JSON keys (wsUrl/wsToken). The Rust
+          // save_connection writes into the ACTIVE profile slot, preserving the
+          // other channel's creds.
           await window.__TAURI__.core.invoke('save_connection', { url, token });
           return true;
         } catch (e) {
           Logger.error("Failed to invoke save_connection via Tauri:", e);
           return false;
+        }
+      },
+
+      // Reflect the active channel (stable/dev) in the header AND keep the
+      // settings dropdown in sync. Degrades gracefully: hides the header label
+      // when no profile is known. The header reads e.g. "stable" and sits next
+      // to the build SHA element ("stable · 66a57ce") that Feature 1 added.
+      renderActiveProfile() {
+        const profile = (State.activeProfile || '').trim();
+        const el = DOM.activeProfile;
+        if (el) {
+          if (profile) {
+            el.textContent = profile;
+            el.title = `Active channel: ${profile}`;
+            el.hidden = false;
+          } else {
+            el.textContent = '';
+            el.removeAttribute('title');
+            el.hidden = true;
+          }
+        }
+        // Keep the dropdown selection in sync. If the active profile isn't one
+        // of the preset options (custom profile), add it so the value sticks.
+        if (DOM.channelSelect && profile) {
+          const hasOption = Array.from(DOM.channelSelect.options).some((o) => o.value === profile);
+          if (!hasOption) {
+            const opt = document.createElement('option');
+            opt.value = profile;
+            opt.textContent = profile.charAt(0).toUpperCase() + profile.slice(1);
+            DOM.channelSelect.appendChild(opt);
+          }
+          DOM.channelSelect.value = profile;
+        }
+      },
+
+      // User picked a different channel in Settings. Persist the switch via the
+      // Rust set_active_profile command (which returns the now-active creds),
+      // then reconnect the SAME WebSocketEngine.connect path with those creds.
+      // skipLastThreadFile guards against resubscribing to a stale cross-server
+      // thread id. No app restart.
+      async switchChannel(profile) {
+        const next = (profile || '').trim();
+        if (!next || next === State.activeProfile) return;
+        Logger.info(`Switching channel to "${next}"`);
+
+        if (!(window.__TAURI__ && window.__TAURI__.core)) {
+          // Off-Tauri (frontend dev): just track the selection locally.
+          State.activeProfile = next;
+          this.renderActiveProfile();
+          return;
+        }
+
+        let creds;
+        try {
+          creds = await window.__TAURI__.core.invoke('set_active_profile', { name: next });
+        } catch (e) {
+          Logger.error("Failed to invoke set_active_profile via Tauri:", e);
+          // Revert the dropdown to the still-active profile on failure.
+          this.renderActiveProfile();
+          return;
+        }
+
+        State.activeProfile = next;
+        // creds is {wsUrl, wsToken}; either may be empty if that channel hasn't
+        // been paired yet. Apply whatever we got and let the user fill in the
+        // rest via the URL/token inputs.
+        State.wsUrl = (creds && creds.wsUrl) ? creds.wsUrl : '';
+        State.wsToken = (creds && typeof creds.wsToken === 'string') ? creds.wsToken : '';
+        if (DOM.wsUrlInput) DOM.wsUrlInput.value = State.wsUrl;
+        if (DOM.wsTokenInput) DOM.wsTokenInput.value = State.wsToken;
+        // URL is a non-secret convenience cache; mirror the new channel's URL.
+        localStorage.setItem('luna_ws_url', State.wsUrl);
+        this.renderActiveProfile();
+
+        // Thread IDs are scoped to a server's DB — after a server switch the old
+        // thread doesn't exist here. Reset thread state, ignore the cross-server
+        // last-thread file once, and clear the transcript before reconnecting.
+        State.activeThreadId = null;
+        State.activeTurnId = null;
+        State.pendingUserMessage = null;
+        State.skipLastThreadFile = true;
+        DOM.chatMessages.innerHTML = '';
+
+        if (State.wsUrl) {
+          WebSocketEngine.connect();
+        } else {
+          Logger.warn(`Channel "${next}" has no server URL yet; enter one in Settings to connect.`);
+          WebSocketEngine.disconnect();
+          WebSocketEngine.updateStatus('disconnected', 'Disconnected');
         }
       },
 
@@ -1453,6 +1644,19 @@
             Logger.error("Failed to invoke load_connection via Tauri:", e);
           }
 
+          // Resolve the ACTIVE channel (stable/dev) for the header + dropdown.
+          // load_profiles migrates a legacy flat file in memory and never writes,
+          // so this is read-only and safe for the running user. Degrades to the
+          // default "stable" on any failure.
+          try {
+            const prof = await window.__TAURI__.core.invoke('load_profiles');
+            if (prof && typeof prof.activeProfile === 'string' && prof.activeProfile) {
+              State.activeProfile = prof.activeProfile;
+            }
+          } catch (e) {
+            Logger.error("Failed to invoke load_profiles via Tauri:", e);
+          }
+
           // ONE-TIME MIGRATION: if a stale plaintext token still sits in
           // localStorage (older builds wrote it there), move it into the secure
           // file and purge the localStorage copy. Only migrate when the file had
@@ -1496,6 +1700,9 @@
         const resolvedToken = loadedToken !== null ? loadedToken : '';
         State.wsToken = resolvedToken;
         DOM.wsTokenInput.value = resolvedToken;
+
+        // Reflect the active channel in the header + keep the dropdown in sync.
+        this.renderActiveProfile();
 
         Logger.info("Settings synchronized successfully");
 
@@ -1709,6 +1916,9 @@
     DOM.closeSettingsBtn.addEventListener('click', () => SettingsEngine.close());
     DOM.alwaysOnTopToggle.addEventListener('change', () => SettingsEngine.handleAlwaysOnTopChange());
     DOM.closeOnBlurToggle.addEventListener('change', () => SettingsEngine.handleCloseOnBlurChange());
+    if (DOM.channelSelect) {
+      DOM.channelSelect.addEventListener('change', (e) => SettingsEngine.switchChannel(e.target.value));
+    }
     
     DOM.recordShortcutBtn.addEventListener('click', () => {
       if (State.isRecordingShortcut) {

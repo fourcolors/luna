@@ -96,6 +96,14 @@ export interface PairInput {
   readonly url?: string
   readonly token?: string
   readonly profile?: string
+  /**
+   * When true, ALSO switch the Moon's active channel to the just-paired profile
+   * (writes moon-connection.json's activeProfile). Off by default so pairing
+   * `dev` never hijacks a running `stable` Moon — the user switches channels in
+   * the Moon's Settings. (A first-ever pairing always activates regardless,
+   * since there is no prior active channel to preserve.)
+   */
+  readonly activate?: boolean
 }
 
 export interface PairResult {
@@ -152,7 +160,10 @@ const defaultVerify: PairVerify = async ({ profileName, homeDir, cwd, env }) => 
  * either way, since pairing is config and the verify is informational.
  */
 export const runPair = async (
-  input: Required<Pick<PairInput, "url" | "token">> & { readonly profile?: string },
+  input: Required<Pick<PairInput, "url" | "token">> & {
+    readonly profile?: string
+    readonly activate?: boolean
+  },
   deps: {
     readonly homeDir: string
     readonly cwd: string
@@ -193,17 +204,27 @@ export const runPair = async (
   const tokenKey = `${prefix}_UI_WS_TOKEN`
 
   // Write both client configs (atomic, mode 0600). Idempotent: a re-run with a
-  // new token cleanly overwrites both (rotation recovery).
+  // new token cleanly overwrites the profile's slot (rotation recovery). The
+  // Moon writer writes into profiles.<profileName>, PRESERVING other channels'
+  // creds and migrating a legacy flat file first.
   upsertEnv(deps.homeDir, urlKey, url)
   upsertEnv(deps.homeDir, tokenKey, token)
-  writeMoonConnection(deps.homeDir, url, token)
+  const activate = input.activate === true
+  writeMoonConnection(deps.homeDir, url, token, { profile: profileName, activate })
 
   // Redact any ?token= in the displayed URL (a user could pass the token in the
   // url query form). Same leak class already fixed in doctor's output.
   lines.push(`paired profile '${profileName}' → ${redactUrl(url)}`)
   lines.push(`  token: ${redactToken(token)}`)
   lines.push(`  wrote ~/.luna/.env (${urlKey}, ${tokenKey})`)
-  lines.push("  wrote ~/.luna/moon-connection.json (wsUrl, wsToken)")
+  lines.push(`  wrote ~/.luna/moon-connection.json (profiles.${profileName})`)
+  if (activate) {
+    lines.push(`  set the Moon's active channel to '${profileName}'`)
+  } else {
+    lines.push(
+      `  (did not change the Moon's active channel — switch to '${profileName}' in the Moon's Settings, or re-run with --activate)`,
+    )
+  }
   lines.push("")
   lines.push("verifying connection…")
 
@@ -244,6 +265,11 @@ export const pairCommand = defineCommand({
       type: "string",
       description: `named profile to write into ~/.luna/.env (default: ${DEFAULT_PAIR_PROFILE})`,
     },
+    activate: {
+      type: "boolean",
+      description:
+        "also switch the Moon's active channel to the just-paired profile (default: false — pairing does not hijack the running Moon's channel)",
+    },
   },
   async run({ args }) {
     // Interactive fill-in for any missing value (scriptable when both passed).
@@ -257,7 +283,7 @@ export const pairCommand = defineCommand({
     }
 
     const result = await runPair(
-      { url, token, profile: args.profile },
+      { url, token, profile: args.profile, activate: args.activate === true },
       { homeDir: homedir(), cwd: process.cwd(), env: process.env },
     )
 

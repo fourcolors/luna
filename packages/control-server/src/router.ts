@@ -21,7 +21,17 @@ const PKG_VERSION = "0.0.1"
 /** Service label used in launchctl commands. */
 const CHAT_SERVICE_LABEL = "com.user.luna-chat-server"
 
-export const appRouter = t.router({
+/**
+ * Build the control-plane router. `buildSha` is the git short-SHA of the
+ * running server build, surfaced in `control.status` so operators can tell
+ * which commit is live. Defaults to "unknown" — the boot entry threads the
+ * resolved value in via `startControlServer(port, token, buildSha)`. Kept as a
+ * factory (rather than a static object) so the SHA can be injected at boot
+ * without a context type; the static `appRouter` export below preserves the
+ * existing import shape for tests and the `AppRouter` type.
+ */
+export const createAppRouter = (buildSha: string = "unknown") =>
+  t.router({
   control: t.router({
     /**
      * Restart the chat server via launchctl.
@@ -54,6 +64,9 @@ export const appRouter = t.router({
         uptime: uptimeSec,
         startedAt: new Date(MODULE_START_MS).toISOString(),
         version: PKG_VERSION,
+        // Git short-SHA of this build (or "unknown"). Additive — older
+        // clients ignore the extra field.
+        buildSha,
       }
     }),
 
@@ -64,6 +77,13 @@ export const appRouter = t.router({
       version: PKG_VERSION,
     })),
   }),
-})
+  })
+
+/**
+ * Static router instance — preserves the existing `appRouter` import shape for
+ * tests (`appRouter.createCaller`) and the fetch adapter. The default "unknown"
+ * buildSha applies here; the live server uses `createAppRouter(buildSha)`.
+ */
+export const appRouter = createAppRouter()
 
 export type AppRouter = typeof appRouter
