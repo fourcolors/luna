@@ -1,0 +1,388 @@
+#!/usr/bin/env bash
+# Update an installed Luna server to a target git ref, with auto-rollback.
+#
+# This is the "update the backend over time" half of the install/update plan.
+# Today, updating Luna means SSHing in and running git pull + bun install +
+# systemctl restart by hand, with no safety net. This script makes that one
+# repeatable command that AUTOMATICALLY ROLLS BACK if the new version fails its
+# readiness probe — so a bad update can't take the server down.
+#
+# Two host shapes share one code path via a "runner" prefix:
+#   - bare-host (default): run git/bun/systemctl/curl directly (as root on the box).
+#   - --incus <container>: run those same steps via `incus exec <container> -- ...`.
+#
+# v1 targets the SYSTEM systemd unit (the unit luna-server-install renders under
+# /etc/systemd/system). A host running a hand-edited `systemctl --user` unit
+# (like the current jax master) is OUT OF SCOPE for v1 — the script refuses to
+# proceed rather than silently restart the wrong scope (see the user-unit guard).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/luna-deploy.sh
+source "$SCRIPT_DIR/lib/luna-deploy.sh"
+
+export HOME="${HOME:-/root}"
+
+PROFILE="${LUNA_PROFILE:-stable}"
+REPO_DIR="${LUNA_REPO_DIR:-/root/luna}"
+LUNA_HOME="${LUNA_HOME:-/root/.luna}"
+SERVICE_DIR="${LUNA_SERVICE_DIR:-/etc/systemd/system}"
+SERVICE_NAME=""
+REF=""
+INCUS_CONTAINER=""
+DRY_RUN=false
+ROLLBACK=true
+# Readiness probe knobs (overridable so the hermetic tests run in ~seconds and
+# never hang). curl is bounded per-attempt by --max-time; the overall poll is
+# bounded by READINESS_TIMEOUT. Probe target port defaults to the chat server's
+# WebSocket/health port (4753).
+READINESS_PORT="${LUNA_READINESS_PORT:-4753}"
+READINESS_TIMEOUT="${LUNA_READINESS_TIMEOUT:-60}"
+READINESS_INTERVAL="${LUNA_READINESS_INTERVAL:-2}"
+READINESS_CURL_MAX_TIME="${LUNA_READINESS_CURL_MAX_TIME:-5}"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/luna-update-server [options]
+
+Updates an installed Luna server to a target git ref. After restarting the
+service it runs a bounded readiness probe; if the new version fails to come up
+healthy it AUTOMATICALLY ROLLS BACK to the previous commit and restarts again.
+
+Options:
+  --profile <name>          Runtime profile -> unit name. Default: stable.
+  --repo-dir <path>         Server git clone to update. Default: /root/luna.
+  --luna-home <path>        Luna state path (holds .env). Default: /root/.luna.
+  --ref <git-ref>           Target ref to update to.
+                            Default: origin/<current-branch>, or origin/master
+                            if the checkout is detached.
+  --service-dir <path>      systemd unit directory. Default: /etc/systemd/system.
+  --service-name <name>     Override generated unit name.
+  --incus <container>       (not yet supported in v1) Incus-container update
+                            with in-container claude re-pin is a planned
+                            follow-up; this flag is refused at parse time.
+  --readiness-timeout <s>   Overall readiness poll budget. Default: 60.
+  --readiness-interval <s>  Seconds between readiness attempts. Default: 2.
+  --readiness-port <port>   Port for the /healthz probe. Default: 4753.
+  --no-rollback             Do not auto-roll-back on readiness failure (advanced).
+  --dry-run                 Print the plan and change NOTHING.
+  -h, --help                Show this help.
+
+Exit codes:
+  0  updated and healthy.
+  1  preflight error, OR readiness failed but rollback succeeded.
+  2  CRITICAL: readiness failed AND rollback also failed (server may be down;
+     manual intervention required).
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --profile) PROFILE="${2:?missing --profile value}"; shift 2 ;;
+    --repo-dir) REPO_DIR="${2:?missing --repo-dir value}"; shift 2 ;;
+    --luna-home) LUNA_HOME="${2:?missing --luna-home value}"; shift 2 ;;
+    --ref) REF="${2:?missing --ref value}"; shift 2 ;;
+    --service-dir) SERVICE_DIR="${2:?missing --service-dir value}"; shift 2 ;;
+    --service-name) SERVICE_NAME="${2:?missing --service-name value}"; shift 2 ;;
+    --incus) luna_die "--incus is not supported in v1 — luna-update-server currently updates a bare-host (systemd system unit) server only; incus-container update + in-container claude re-pin is a planned follow-up" ;;
+    --readiness-timeout) READINESS_TIMEOUT="${2:?missing --readiness-timeout value}"; shift 2 ;;
+    --readiness-interval) READINESS_INTERVAL="${2:?missing --readiness-interval value}"; shift 2 ;;
+    --readiness-port) READINESS_PORT="${2:?missing --readiness-port value}"; shift 2 ;;
+    --no-rollback) ROLLBACK=false; shift ;;
+    --dry-run) DRY_RUN=true; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) luna_die "unknown option: $1" ;;
+  esac
+done
+
+luna_validate_profile "$PROFILE"
+
+if [[ -z "$SERVICE_NAME" ]]; then
+  SERVICE_NAME="$(luna_service_name "$PROFILE")"
+fi
+
+ENV_FILE="$LUNA_HOME/.env"
+SERVICE_FILE="$SERVICE_DIR/$SERVICE_NAME"
+
+# --- runner: the single seam that makes bare-host and incus share one path ----
+# run_target executes a command on the update target. Bare-host -> direct; incus
+# -> wrapped in `incus exec <container> --`. Every git/bun/systemctl/curl call
+# (including the readiness probe) routes through this so the sequence is written
+# once. In --dry-run it prints (via luna_run) and executes nothing.
+run_target() {
+  if [[ -n "$INCUS_CONTAINER" ]]; then
+    luna_run incus exec "$INCUS_CONTAINER" -- "$@"
+  else
+    luna_run "$@"
+  fi
+}
+
+# Same as run_target but used where we need the command's STDOUT captured even
+# in non-dry-run (e.g. rev-parse / hash-object). These are read-only probes, so
+# in --dry-run we still run them when possible to compute a realistic plan, but
+# they are guarded by callers that only invoke them when the repo is real.
+run_target_capture() {
+  if [[ -n "$INCUS_CONTAINER" ]]; then
+    incus exec "$INCUS_CONTAINER" -- "$@"
+  else
+    "$@"
+  fi
+}
+
+git_target() {
+  run_target git -C "$REPO_DIR" "$@"
+}
+
+git_target_capture() {
+  run_target_capture git -C "$REPO_DIR" "$@"
+}
+
+# --- preflight ----------------------------------------------------------------
+
+luna_info "Updating Luna server profile: $PROFILE"
+printf 'Repo: %s\n' "$REPO_DIR"
+printf 'Service: %s\n' "$SERVICE_FILE"
+if [[ -n "$INCUS_CONTAINER" ]]; then
+  printf 'Target: incus container %s\n' "$INCUS_CONTAINER"
+else
+  printf 'Target: bare host\n'
+fi
+
+# The repo must be a git clone in BOTH modes — updating a non-clone is
+# meaningless. In dry-run on the bare host we still check (cheap, local); in
+# incus dry-run we can't reach the container FS, so we only print intent.
+if [[ "$INCUS_CONTAINER" == "" ]]; then
+  [[ -d "$REPO_DIR/.git" ]] || luna_die "$REPO_DIR is not a git clone"
+elif [[ "$DRY_RUN" == false ]]; then
+  incus exec "$INCUS_CONTAINER" -- test -d "$REPO_DIR/.git" ||
+    luna_die "$REPO_DIR is not a git clone inside container $INCUS_CONTAINER"
+fi
+
+# User-unit trap (memory): jax master runs a hand-edited `systemctl --user` unit,
+# NOT a system unit under /etc/systemd/system. This script targets the SYSTEM
+# unit. If that unit file is absent, refuse — restarting the wrong scope (or
+# spawning a competing :4753 listener) is exactly the failure we must avoid.
+# Guard runs in non-dry-run only (dry-run touches nothing and just prints).
+if [[ "$DRY_RUN" == false ]]; then
+  if [[ -n "$INCUS_CONTAINER" ]]; then
+    incus exec "$INCUS_CONTAINER" -- test -f "$SERVICE_FILE" ||
+      luna_die "system unit $SERVICE_FILE not found in container $INCUS_CONTAINER; \
+a --user unit host is out of scope for v1 (will not restart the wrong scope)"
+  else
+    [[ -f "$SERVICE_FILE" ]] ||
+      luna_die "system unit $SERVICE_FILE not found; a --user unit host (e.g. the \
+current jax master) is out of scope for v1 (will not restart the wrong scope)"
+  fi
+fi
+
+# Resolve the default ref now that we know the repo is real. Default to the
+# remote-tracking branch of the current checkout; fall back to origin/master if
+# detached. Only the bare-host / non-dry path can read HEAD reliably; otherwise
+# fall back to origin/master so the plan is still printable.
+if [[ -z "$REF" ]]; then
+  CUR_BRANCH=""
+  if [[ "$INCUS_CONTAINER" == "" && -d "$REPO_DIR/.git" ]]; then
+    CUR_BRANCH="$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  fi
+  if [[ -n "$CUR_BRANCH" && "$CUR_BRANCH" != "HEAD" ]]; then
+    REF="origin/$CUR_BRANCH"
+  else
+    REF="origin/master"
+  fi
+fi
+printf 'Target ref: %s\n' "$REF"
+
+BUN_BIN="$(luna_find_bun)"
+
+# --- helpers: lockfile-change detection (portable; no sha256sum) --------------
+# git hash-object is the portable "hash of bun.lock" (matches the spec's "hash"
+# wording) and avoids sha256sum, which does NOT exist on macOS where the
+# hermetic test runs the real script. Empty string if the file is missing.
+lockfile_hash() {
+  if run_target_capture test -f "$REPO_DIR/bun.lock" 2>/dev/null; then
+    run_target_capture git -C "$REPO_DIR" hash-object "$REPO_DIR/bun.lock" 2>/dev/null || printf ''
+  else
+    printf ''
+  fi
+}
+
+# --- readiness probe (the gate for rollback) ----------------------------------
+# Bounded, never hangs. A failing probe is a NON-FATAL signal here — callers MUST
+# invoke this as `if ! readiness_ok; then ...`, never bare, or `set -e` aborts
+# before rollback can run. Returns 0 only when ALL hold within the budget:
+#   - systemctl is-active <unit> == active
+#   - the unit's NRestarts did not climb since restart (it didn't crash-loop)
+#   - curl http://127.0.0.1:<port>/healthz returns HTTP 200
+# The probe runs THROUGH the runner, so in --incus it curls 127.0.0.1 INSIDE the
+# container (not the host's proxied port). Today /healthz is bare liveness; if it
+# later reports mode/credential this is where to deepen the gate.
+readiness_restart_baseline() {
+  # NRestarts after the restart we just issued; "0" if unknown.
+  local n
+  n="$(run_target_capture systemctl show "$SERVICE_NAME" --property=NRestarts --value 2>/dev/null || printf '0')"
+  [[ "$n" =~ ^[0-9]+$ ]] || n="0"
+  printf '%s' "$n"
+}
+
+readiness_ok() {
+  local baseline="$1"
+  local deadline=$((SECONDS + READINESS_TIMEOUT))
+  local active nrestarts http
+  while (( SECONDS < deadline )); do
+    active="$(run_target_capture systemctl is-active "$SERVICE_NAME" 2>/dev/null || printf 'unknown')"
+    if [[ "$active" == "active" ]]; then
+      # Did it crash-loop since restart? NRestarts climbing => not healthy.
+      nrestarts="$(run_target_capture systemctl show "$SERVICE_NAME" --property=NRestarts --value 2>/dev/null || printf '0')"
+      [[ "$nrestarts" =~ ^[0-9]+$ ]] || nrestarts="0"
+      if (( nrestarts <= baseline )); then
+        http="$(run_target_capture curl -fsS -o /dev/null -w '%{http_code}' \
+          --max-time "$READINESS_CURL_MAX_TIME" \
+          "http://127.0.0.1:${READINESS_PORT}/healthz" 2>/dev/null || printf '000')"
+        if [[ "$http" == "200" ]]; then
+          return 0
+        fi
+      fi
+    fi
+    sleep "$READINESS_INTERVAL"
+  done
+  return 1
+}
+
+# --- apply: deploy-semantics update to a ref ----------------------------------
+# This is a DEPLOY checkout, not a dev tree, so `git reset --hard <ref>` is the
+# clean, deterministic update (no merge surprises). git fetch origin brings the
+# ref up to date first UNLESS --no-fetch is passed (used by the rollback path,
+# which rolls back to a LOCAL sha already in the repo — no network needed, and
+# the fetch failing for a network reason should not prevent rollback recovery).
+# Re-pinning the Claude executable is intentional: deps can move on `bun install`
+# and the override path goes stale — without re-pinning the server boots but
+# cannot spawn `claude` (a REAL incident this session).
+# Every mutating step is `cmd || return 1` so a command-level failure (a bad
+# `bun install`, a refused `systemctl restart`, an out-of-sync frozen lockfile)
+# becomes a RETURN VALUE the caller routes into rollback — NOT a `set -e` abort
+# that would skip rollback entirely. `|| return 1` is safe under `set -e` in any
+# call context (it is the rightmost element of an OR list).
+apply_ref() {
+  local target="$1"
+  local prev_lock_hash="$2"
+  local no_fetch="${3:-}"
+  if [[ "$no_fetch" != "--no-fetch" ]]; then
+    git_target fetch origin || return 1
+  fi
+  git_target reset --hard "$target" || return 1
+
+  local new_lock_hash
+  new_lock_hash="$(lockfile_hash)"
+  if [[ "$new_lock_hash" != "$prev_lock_hash" ]]; then
+    luna_info "bun.lock changed -> bun install --frozen-lockfile"
+    run_target "$BUN_BIN" install --cwd "$REPO_DIR" --frozen-lockfile || return 1
+  else
+    luna_info "bun.lock unchanged -> skipping bun install"
+  fi
+
+  # Re-pin LUNA_CLAUDE_CODE_EXECUTABLE (no-op in dry-run). Deps can move on
+  # `bun install` and the override path goes stale — without re-pinning the
+  # server boots but cannot spawn `claude` (a REAL incident this session).
+  # --incus is refused at parse time (v1 bare-host only), so this is always
+  # the local bare-host path.
+  luna_configure_claude_executable "$ENV_FILE" "$REPO_DIR" || return 1
+}
+
+restart_service() {
+  run_target systemctl daemon-reload || return 1
+  run_target systemctl restart "$SERVICE_NAME" || return 1
+}
+
+# --- plan / dry-run -----------------------------------------------------------
+if [[ "$DRY_RUN" == true ]]; then
+  luna_info "Plan (dry-run — nothing will be executed):"
+  PREV="(current HEAD)"
+  if [[ "$INCUS_CONTAINER" == "" && -d "$REPO_DIR/.git" ]]; then
+    PREV="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || printf '(current HEAD)')"
+  fi
+  printf '1. record PREV = %s and bun.lock hash\n' "$PREV"
+  printf '2. fetch origin + reset --hard to %s\n' "$REF"
+  printf '3. if bun.lock changed: %s install --cwd %s --frozen-lockfile (else skip)\n' "$BUN_BIN" "$REPO_DIR"
+  printf '4. re-pin LUNA_CLAUDE_CODE_EXECUTABLE in %s\n' "$ENV_FILE"
+  printf '5. systemctl daemon-reload + restart %s\n' "$SERVICE_NAME"
+  printf '6. readiness probe: is-active + NRestarts-stable + curl http://127.0.0.1:%s/healthz==200 (<=%ss)\n' \
+    "$READINESS_PORT" "$READINESS_TIMEOUT"
+  if [[ "$ROLLBACK" == true ]]; then
+    printf '7. on readiness FAIL: reset --hard PREV, re-install if lock reverted, re-pin claude, restart, re-probe (ROLLED BACK)\n'
+    printf '   if rollback also fails: CRITICAL, exit 2\n'
+  else
+    printf '7. rollback DISABLED (--no-rollback): on readiness FAIL, exit 1 without reverting\n'
+  fi
+  # Show the concrete commands that WOULD run, executing nothing.
+  git_target fetch origin
+  git_target reset --hard "$REF"
+  run_target "$BUN_BIN" install --cwd "$REPO_DIR" --frozen-lockfile
+  restart_service
+  luna_info "Dry run complete; no changes made."
+  exit 0
+fi
+
+# --- rollback ----------------------------------------------------------------
+# Single rollback path used for EVERY forward failure — whether the new version
+# failed its health probe OR a forward command (bun install / restart) errored.
+# Returns nothing: it always exits. Exit 1 = recovered to PREV; exit 2 = CRITICAL
+# (rollback itself failed, by command error OR by failing its own health probe).
+do_rollback() {
+  luna_warn "ROLLING BACK to $PREV"
+  local ok=true
+  apply_ref "$PREV" "$(lockfile_hash)" --no-fetch || ok=false
+  if [[ "$ok" == true ]]; then
+    restart_service || ok=false
+  fi
+  if [[ "$ok" == true ]]; then
+    local rollback_baseline
+    rollback_baseline="$(readiness_restart_baseline)"
+    if readiness_ok "$rollback_baseline"; then
+      luna_warn "update to $REF failed — ROLLED BACK to $PREV ($SERVICE_NAME healthy)"
+      exit 1
+    fi
+  fi
+  printf 'CRITICAL: update to %s failed AND rollback to %s also failed — server may be DOWN. Manual intervention required (check: systemctl status %s; journalctl -u %s).\n' \
+    "$REF" "$PREV" "$SERVICE_NAME" "$SERVICE_NAME" >&2
+  exit 2
+}
+
+# Handle a forward-path failure: roll back if enabled, else die at the new ref.
+fail_forward() {
+  local reason="$1"
+  luna_warn "update to $REF failed: $reason (HEAD=${NEW_HEAD:-$REF})"
+  if [[ "$ROLLBACK" == false ]]; then
+    luna_die "$reason and --no-rollback set; server left at ${NEW_HEAD:-$REF} (may be unhealthy)"
+  fi
+  do_rollback
+}
+
+# --- live update --------------------------------------------------------------
+PREV="$(git_target_capture rev-parse HEAD)"
+[[ -n "$PREV" ]] || luna_die "could not read current HEAD in $REPO_DIR"
+PREV_LOCK_HASH="$(lockfile_hash)"
+luna_info "Current HEAD: $PREV"
+NEW_HEAD=""
+
+# A forward command-level failure (fetch/reset/install) routes into rollback —
+# NOT a `set -e` abort. This is the whole point of auto-rollback.
+if ! apply_ref "$REF" "$PREV_LOCK_HASH"; then
+  fail_forward "apply to $REF errored"
+fi
+NEW_HEAD="$(git_target_capture rev-parse HEAD)"
+luna_info "Checked out: $NEW_HEAD"
+
+if ! restart_service; then
+  fail_forward "service restart errored"
+fi
+# Capture NRestarts right AFTER issuing the restart; require it not to climb
+# during the probe window (a climbing count means the unit is crash-looping).
+RESTART_BASELINE="$(readiness_restart_baseline)"
+
+if readiness_ok "$RESTART_BASELINE"; then
+  luna_info "updated $PREV -> $NEW_HEAD ($SERVICE_NAME healthy)"
+  exit 0
+fi
+
+fail_forward "failed readiness"
