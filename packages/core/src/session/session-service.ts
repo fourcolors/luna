@@ -115,6 +115,14 @@ export class SessionService extends Effect.Service<SessionService>()(
           }
           if (row.status === "closed") {
             yield* store.setStatus(id, "active", null)
+            // Clear the in-process double-close guard so a subsequent close()
+            // actually takes effect. Without this, close() short-circuits on
+            // the stale id and the resumed session leaks as "active" forever.
+            yield* Ref.update(closedIds, (s) => {
+              const next = new Set(s)
+              next.delete(id)
+              return next
+            })
             return (yield* store.get(id))!
           }
           return row

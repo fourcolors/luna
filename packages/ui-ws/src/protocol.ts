@@ -36,6 +36,7 @@ export interface HelloFrame {
     readonly chat: boolean
     readonly streamingDeltas: boolean
     readonly localShell: boolean
+    readonly setup: boolean
   }
 }
 
@@ -223,6 +224,23 @@ export interface SurveyRequestFrame {
   readonly items: ReadonlyArray<SurveyItem>
 }
 
+/** Server→client: a chunk of pty stdout, base64-encoded (raw bytes, may include control codes). */
+export interface PtyOutputFrame {
+  readonly type: "pty-output"
+  readonly data: string
+}
+/** Client→server: keystrokes for the pty stdin, base64-encoded. */
+export interface PtyInputFrame {
+  readonly type: "pty-input"
+  readonly data: string
+}
+/** Client→server: terminal resize. */
+export interface PtyResizeFrame {
+  readonly type: "pty-resize"
+  readonly cols: number
+  readonly rows: number
+}
+
 export type ServerFrame =
   | HelloFrame
   | EventFrame
@@ -245,6 +263,7 @@ export type ServerFrame =
   | MemorySearchResultFrame
   | MemorySearchErrorFrame
   | SurveyRequestFrame
+  | PtyOutputFrame
 
 /* -------------------------------------------------------------------------- */
 /* Client → server                                                            */
@@ -370,3 +389,5 @@ export type ClientFrame =
   | LocalShellResultFrame
   | MemorySearchRequestFrame
   | SurveyResponseFrame
+  | PtyInputFrame
+  | PtyResizeFrame

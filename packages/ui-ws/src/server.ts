@@ -47,6 +47,7 @@ import {
   UI_WS_PROTOCOL_VERSION,
   type ClientFrame,
   type ServerFrame,
+  type PtyOutputFrame,
 } from "./protocol.js"
 import type { SurveyItem, SurveyVerdict } from "@luna/core"
 
@@ -140,13 +141,16 @@ export interface UIWebSocketServerConfig {
    * The base obs path (event/drop/ping) keeps working unchanged when
    * this is unset. Pass the resolved service handle (not the Tag) so
    * the server's environment doesn't grow a `ChatService` dependency.
+   * Pass `null` explicitly in setup-mode (same as absent — server
+   * advertises `setup:true, chat:false`).
    */
-  readonly chatService?: ChatService
+  readonly chatService?: ChatService | null
   /**
    * Optional AccountBroker handle. When provided, the server sends an
    * `account-list` frame to each client immediately after the `hello`
    * frame, populated with all "anthropic"-kind accounts. If absent, no
    * `account-list` is sent (graceful degradation).
+   * Pass `null` explicitly in setup-mode (same as absent).
    */
   readonly accountBroker?: {
     readonly list: (kindFilter?: string) => import("effect").Effect.Effect<ReadonlyArray<{
@@ -155,13 +159,14 @@ export interface UIWebSocketServerConfig {
       readonly kind: string
       readonly health: string
     }>>
-  }
+  } | null
   /**
    * Optional local-shell bridge. When provided, clients may advertise
    * terminal execution capability and receive local-shell request frames
    * from MCP tools bound to the same thread.
+   * Pass `null` explicitly in setup-mode (same as absent).
    */
-  readonly localShellBridge?: LocalShellBridge
+  readonly localShellBridge?: LocalShellBridge | null
   /**
    * Fired when a local-shell client releases its slot — either by sending
    * `local-shell-capability { enabled: false }` or by disconnecting. Used
@@ -179,11 +184,31 @@ export interface UIWebSocketServerConfig {
    *
    * Pass the RESOLVED handle (not the Tag) so the server's env stays narrow.
    * Absent = no survey push, no routing (graceful degradation).
+   * Pass `null` explicitly in setup-mode (same as absent).
    *
    * NO snooze/dismiss config (Execution Correction #1): dismiss is a client
    * no-op; only answered surveys advance the schedule via getLastSurveyAt.
    */
-  readonly survey?: SurveyWsHandle
+  readonly survey?: SurveyWsHandle | null
+  /**
+   * Optional setup-mode pty factory. When provided:
+   *   - The server registers an inbound message handler even when chat /
+   *     localShellBridge / survey are all null (setup-mode), so the client can
+   *     send pty-input and pty-resize frames.
+   *   - Per connection, `onConnect` is called with a `send` callback that
+   *     pushes `pty-output` frames to the client. The returned handles are used
+   *     to forward inbound `pty-input` (→ write) and `pty-resize` (→ resize).
+   *   - On ws close, the returned `close` handle is called to tear down the pty.
+   *
+   * Pass `null` explicitly when not in setup-mode.
+   */
+  readonly setupPty?: {
+    onConnect: (send: (frame: PtyOutputFrame) => void) => {
+      write: (utf8: string) => void
+      resize: (cols: number, rows: number) => void
+      close: () => void
+    }
+  } | null
 }
 
 export interface UIWebSocketServerHandle {
@@ -277,6 +302,7 @@ export const startUIWebSocketServer = (
     const chat = config.chatService ?? null
     const localShellBridge = config.localShellBridge ?? null
     const survey = config.survey ?? null
+    const setupPty = config.setupPty ?? null
 
     const httpServer = http.createServer((req, res) => {
       if (req.url === "/healthz") {
@@ -396,6 +422,8 @@ export const startUIWebSocketServer = (
             chat: chat !== null,
             streamingDeltas: chat !== null,
             localShell: localShellBridge !== null,
+            // setup-mode = started without a chat service
+            setup: chat === null,
           },
         })
 
@@ -436,6 +464,34 @@ export const startUIWebSocketServer = (
               }),
             ).pipe(Effect.catchAllCause(() => Effect.void)),
           )
+        }
+
+        // Setup-mode pty: start the pty for this connection when configured.
+        // The factory hands us write/resize/close handles; we give it a send
+        // callback so it can stream pty-output frames to this client.
+        // setupHandle is kept in the per-connection closure so the inbound
+        // message handler (pty-input / pty-resize) and the teardown finalizer
+        // can reach it without any shared mutable state outside the connection.
+        let setupHandle:
+          | {
+              write: (utf8: string) => void
+              resize: (cols: number, rows: number) => void
+              close: () => void
+            }
+          | undefined
+        if (setupPty != null) {
+          try {
+            setupHandle = setupPty.onConnect((frame) => send(ws, frame))
+          } catch (e) {
+            console.error("[setup-pty] failed to start:", e)
+          }
+        }
+        // Tear the pty down via a connection-scope finalizer (mirrors the
+        // localShellBridge finalizer below). This covers ALL teardown paths —
+        // normal ws close, server-shutdown scope interrupt, and defects —
+        // without manual ws.on("close"/"error") handling. close() is idempotent.
+        if (setupHandle != null) {
+          yield* Effect.addFinalizer(() => Effect.sync(() => setupHandle?.close()))
         }
 
         // Per-connection chat state.
@@ -630,7 +686,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null || survey !== null) {
+        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -805,6 +861,29 @@ export const startUIWebSocketServer = (
                     )
                     return
                   }
+                  case "pty-input": {
+                    setupHandle?.write(Buffer.from(frame.data, "base64").toString())
+                    return
+                  }
+                  case "pty-resize": {
+                    setupHandle?.resize(frame.cols, frame.rows)
+                    return
+                  }
+                  default: {
+                    // Unknown/unrecognized frame type. Surface it instead of
+                    // dropping silently: a client sending a mistyped frame
+                    // (e.g. "subscribe-thread" instead of "subscribe") would
+                    // otherwise hang with no signal on either side. We log and
+                    // ignore — no error frame is sent back (no generic
+                    // malformed-frame reply type, and echoing could DoS-amplify
+                    // a buggy client). `frame` is narrowed to `never` here by
+                    // the exhaustive union, so read the type via a cast.
+                    const unknownType = (frame as { readonly type?: unknown }).type
+                    console.error(
+                      `[ui-ws] ignoring unknown client frame type: ${String(unknownType)}`,
+                    )
+                    return
+                  }
                 }
               })
 
@@ -812,7 +891,8 @@ export const startUIWebSocketServer = (
           })
         }
 
-        // Wire ws close → resolve the close deferred.
+        // Wire ws close → resolve the close deferred. The setup pty is torn
+        // down by the connection-scope finalizer above (covers all paths).
         ws.on("close", () => {
           Effect.runFork(Deferred.succeed(closed, void 0))
         })

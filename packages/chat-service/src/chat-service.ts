@@ -471,6 +471,22 @@ export class ChatService extends Effect.Service<ChatService>()(
               ...(opts.resumeFromSessionId !== undefined
                 ? { resumeFromSessionId: opts.resumeFromSessionId }
                 : {}),
+              // §12.2 #2: the adapter mirrors every message to SessionStore
+              // (the authoritative log). A write failure must not kill the
+              // turn, but it must be OBSERVABLE — surface it on the obs stream
+              // (Events tab) + a telemetry counter, not just the logger.
+              onMirrorError: (_msg, cause) =>
+                Effect.gen(function* () {
+                  yield* inc("luna.chat.mirror_failures.total")
+                  yield* obs.emit({
+                    kind: "Error",
+                    ts: new Date().toISOString(),
+                    level: "error",
+                    errorTag: "ChatMirrorAppendFailed",
+                    message: `SessionStore mirror append failed: ${String(cause).slice(0, 200)}`,
+                    context: { threadId: id },
+                  })
+                }).pipe(Effect.catchAllCause(() => Effect.void)),
             })
             .pipe(Scope.extend(threadScope), Effect.orDie)
 
@@ -661,6 +677,15 @@ export class ChatService extends Effect.Service<ChatService>()(
             // Final result message — emit CostAccrued + SessionEnd. No ChatFrame
             // is published for result (it's metadata only), but obs consumers
             // (the Events tab) need these signals to show session lifecycle.
+            //
+            // A `result` reliably terminates a turn, so reset the in-flight turn
+            // state here. The assistant branch also resets on its success path,
+            // but turns that end WITHOUT a findable assistant message (aborted
+            // turn, or a swallowed store-append) never reach that reset — and
+            // then the next turn's first delta would append to this turn's
+            // leftover text under a stale turnId. Resetting here closes that gap.
+            yield* Ref.set(args.inFlightTurnId, null)
+            yield* Ref.set(args.inFlightText, "")
             const m = args.msg as {
               usage?: {
                 input_tokens?: number
@@ -860,6 +885,12 @@ export class ChatService extends Effect.Service<ChatService>()(
             turnId,
             error: { kind: "interrupted", message: "user interrupted" },
           })
+          // Clear the in-flight turn state AFTER the error frame reads turnId.
+          // An interrupted turn typically ends without a `result`/`assistant`
+          // message, so without this reset the next turn's first delta would
+          // append to this turn's leftover text under the stale turnId.
+          yield* Ref.set(entry.inFlightTurnId, null)
+          yield* Ref.set(entry.inFlightText, "")
           yield* inc("luna.chat.interrupts.total")
         })
 

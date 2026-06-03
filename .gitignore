@@ -12,3 +12,12 @@ pnpm-lock.yaml
 
 # Local-only symlink to ~/.luna/CLAUDE.md (Operator's box only)
 /CLAUDE.md
+
+# Scratch space for ad-hoc scripts, notes, and review artifacts
+.scratch/
+
+# Local-only Claude Code agent state (settings.json is tracked; these are not)
+.claude/agent-memory/
+.claude/software-engineering/
+.claude/scheduled_tasks.lock
+.claude/settings.local.json

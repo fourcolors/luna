@@ -1,0 +1,15 @@
+{
+  "name": "@luna/ui-moon-tauri",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0",
+    "jsdom": "^29.1.1"
+  }
+}

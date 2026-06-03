@@ -279,6 +279,42 @@ describe("SDKAdapter (fake SDK)", () => {
     )
     expect(count).toBe(1)
   })
+
+  it("reports mirror append failures to onMirrorError instead of swallowing them, and still yields the stream", async () => {
+    const messages = [
+      makeAssistantMessage(sid, "hello", "u1"),
+      makeResultMessage(sid, "u2"),
+    ]
+    const fake = makeFakeQuery({ messages })
+    const mirrorErrors: unknown[] = []
+
+    const streamed = await runScoped(
+      Effect.gen(function* () {
+        // Intentionally DO NOT create the session — the in-memory store's
+        // appendMessage then fails with IntegrityError on every message,
+        // exercising the mirror's failure path (§12.2 #2 authoritative log).
+        const adapter = yield* SDKAdapter
+        const out = yield* adapter.query({
+          sessionId: sid,
+          prompt: emptyPrompt,
+          sessionOptions: { model: "claude-test", idleTimeoutMs: 5_000 },
+          onMirrorError: (_msg, cause) =>
+            Effect.sync(() => {
+              mirrorErrors.push(cause)
+            }),
+        })
+        const chunk = yield* Stream.runCollect(out)
+        return Array.from(chunk).length
+      }),
+      SDKClient.fake(() => fake.query),
+    )
+
+    // The stream still yields every message (a mirror-write failure must not
+    // kill the user's turn) ...
+    expect(streamed).toBe(2)
+    // ... but the loss is now observed, not silently swallowed.
+    expect(mirrorErrors.length).toBe(2)
+  })
 })
 
 // Marker: the SessionService export is used implicitly to keep the workspace

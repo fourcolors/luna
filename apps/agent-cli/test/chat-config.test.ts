@@ -501,4 +501,85 @@ describe("luna chat config", () => {
       rmSync(home, { recursive: true, force: true })
     }
   })
+
+  // Finding #6 resolution matrix — CHARACTERIZATION of the CLI's token chain so a
+  // future change cannot silently break which secret the client presents. The
+  // winner is decided by POSITION in the chain (config.ts), and env precedes
+  // dotenv for every name. With the default profile (stable), profiled("UI_WS_TOKEN")
+  // = LUNA_STABLE_UI_WS_TOKEN. These must stay green as-is; a failure means the
+  // chain changed — reconcile against config.ts, never loosen an assertion.
+  describe("token resolution matrix (CLI, profile=stable)", () => {
+    const base = { homeDir: "/tmp/home", cwd: "/work" } as const
+    const stableArgs = parseChatArgs(["chat"])
+
+    it("defaults to the stable profile", () => {
+      const cfg = loadChatConfig({
+        args: stableArgs,
+        env: {},
+        dotenv: { UI_WS_TOKEN: "canon-token-12345678" },
+        ...base,
+      })
+      expect(cfg.profileName).toBe("stable")
+    })
+
+    it("UI_WS_TOKEN-only in dotenv → resolves via the trailing UI_WS_TOKEN fallback (the canonical single-box case)", () => {
+      // This is the case the whole finding-#6 design rests on: the installer
+      // writes only UI_WS_TOKEN, and the stable profile still resolves it here.
+      const cfg = loadChatConfig({
+        args: stableArgs,
+        env: {},
+        dotenv: { UI_WS_TOKEN: "canon-token-12345678" },
+        ...base,
+      })
+      expect(cfg.token).toBe("canon-token-12345678")
+      expect(cfg.validationErrors).toEqual([])
+    })
+
+    it("LUNA_UI_WS_TOKEN-only in dotenv → resolves via the generic alias", () => {
+      const cfg = loadChatConfig({
+        args: stableArgs,
+        env: {},
+        dotenv: { LUNA_UI_WS_TOKEN: "alias-token-12345678" },
+        ...base,
+      })
+      expect(cfg.token).toBe("alias-token-12345678")
+      expect(cfg.validationErrors).toEqual([])
+    })
+
+    it("LUNA_STABLE_UI_WS_TOKEN-only in dotenv → resolves via the profiled candidate (the remote-client name)", () => {
+      const cfg = loadChatConfig({
+        args: stableArgs,
+        env: {},
+        dotenv: { LUNA_STABLE_UI_WS_TOKEN: "stable-token-1234567" },
+        ...base,
+      })
+      expect(cfg.token).toBe("stable-token-1234567")
+      expect(cfg.validationErrors).toEqual([])
+    })
+
+    it("all-present in env → the profiled LUNA_STABLE_UI_WS_TOKEN wins by chain position", () => {
+      const cfg = loadChatConfig({
+        args: stableArgs,
+        env: {
+          LUNA_STABLE_UI_WS_TOKEN: "stable-env-token-12",
+          LUNA_UI_WS_TOKEN: "alias-env-token-123",
+          UI_WS_TOKEN: "canon-env-token-123",
+        },
+        dotenv: {},
+        ...base,
+      })
+      expect(cfg.token).toBe("stable-env-token-12")
+      expect(cfg.validationErrors).toEqual([])
+    })
+
+    it("env beats dotenv for the same profiled name", () => {
+      const cfg = loadChatConfig({
+        args: stableArgs,
+        env: { LUNA_STABLE_UI_WS_TOKEN: "stable-env-token-12" },
+        dotenv: { LUNA_STABLE_UI_WS_TOKEN: "stable-file-token-1" },
+        ...base,
+      })
+      expect(cfg.token).toBe("stable-env-token-12")
+    })
+  })
 })

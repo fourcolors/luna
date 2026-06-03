@@ -37,11 +37,14 @@ export const MarkdownView: Component<Props> = (props) => {
             // from the hast node that solid-markdown always passes as `node`.
             // For inline code the hast node is an element whose first child
             // is a text node; for fenced blocks it is a `code` element whose
-            // first child carries the raw source.
-            const hast = (codeProps as Record<string, unknown>).node as
-              | { children?: Array<{ value?: string }> }
-              | undefined
-            const source = (hast?.children?.[0]?.value ?? "").replace(/\n$/, "")
+            // first child carries the raw source. `node` is typed as a hast
+            // `Element` whose children are `Comment | Element | Text`; only
+            // the text node carries `value`, so narrow on `type` before read.
+            const first = codeProps.node.children?.[0]
+            const source = (first?.type === "text" ? first.value : "").replace(
+              /\n$/,
+              "",
+            )
             // Inline code (no class) → render as <code>
             if (!cls) {
               return <code>{source}</code>

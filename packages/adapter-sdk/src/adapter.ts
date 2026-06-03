@@ -81,6 +81,16 @@ export interface QueryRequest {
    * Callback is best-effort: errors must not poison the message stream.
    */
   readonly onSdkSessionId?: (sdkSessionId: string) => void
+  /**
+   * Invoked when the §12.2 #2 SessionStore mirror write fails for a message.
+   * The stream still yields the message — a mirror-write failure must not kill
+   * the user's turn — but the loss is no longer swallowed silently. Defaults to
+   * logging the cause via `Effect.logError`. Best-effort: must not fail.
+   */
+  readonly onMirrorError?: (
+    msg: SDKMessage,
+    cause: unknown,
+  ) => Effect.Effect<void>
 }
 
 interface HookRegistration {
@@ -118,6 +128,20 @@ export interface SDKAdapterService {
     sessionId: string,
   ) => Effect.Effect<Query | null, never>
 }
+
+/**
+ * Default mirror-failure handler: log the loss instead of swallowing it.
+ * Overridable per-query via `QueryRequest.onMirrorError`.
+ */
+const defaultMirrorError = (
+  msg: SDKMessage,
+  cause: unknown,
+): Effect.Effect<void> =>
+  Effect.logError(
+    `[SDKAdapter] SessionStore mirror append failed (message ${sdkMessageId(
+      msg,
+    )}); message was streamed but NOT persisted: ${String(cause)}`,
+  )
 
 /**
  * Shared adapter body. The only thing that differs between `Default` and
@@ -460,7 +484,15 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
                   kind: sdkMessageKind(msg),
                   payload: msg,
                 })
-                .pipe(Effect.catchAll(() => Effect.void)),
+                // The mirror is the authoritative log (§12.2 #2). A write
+                // failure must NOT kill the user's turn (the message is still
+                // streamed), but it must NOT be swallowed silently either —
+                // surface it to onMirrorError (default: Effect.logError).
+                .pipe(
+                  Effect.catchAll((cause) =>
+                    (req.onMirrorError ?? defaultMirrorError)(msg, cause),
+                  ),
+                ),
             ),
           )
 

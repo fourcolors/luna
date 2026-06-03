@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-load-connection"
+description = "Allows reading the mode-600 WS connection file"
+
+[permission.commands]
+allow = [
+  "load_connection"
+]

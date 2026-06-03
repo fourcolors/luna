@@ -82,6 +82,21 @@ const makeResultMessage = (sessionId: string, uuid: string): SDKMessage =>
     num_turns: 1,
     result: "ok",
   }) as unknown as SDKMessage
+
+const makeStreamEvent = (
+  sessionId: string,
+  uuid: string,
+  text: string,
+): SDKMessage =>
+  ({
+    type: "stream_event",
+    session_id: sessionId,
+    uuid,
+    event: {
+      type: "content_block_delta",
+      delta: { type: "text_delta", text },
+    },
+  }) as unknown as SDKMessage
 import { ChatService, type ChatFrame } from "../src/index.js"
 
 // No-op MemoryRouter: sim tests never call searchMemory; they just need
@@ -478,6 +493,155 @@ describe("ChatService (Tier-2 sim)", () => {
       }
       expect(done.turnId).toBe("delta-1")
       expect(done.message.text).toBe("OK")
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "resets in-flight turn state when a turn ends without a final assistant message (no cross-turn delta bleed)",
+    async () => {
+      // Turn 1 streams deltas + result but NO final `assistant` message (an
+      // aborted-style turn). The in-flight reset lives only in the assistant
+      // branch, so without a result-branch reset, turn 2's deltas inherit
+      // turn 1's stale turnId + accumulated text.
+      const fakeLayer = SDKClient.fake((p) => {
+        const sessionId = (p as { sessionId?: string }).sessionId ?? "thr-?"
+        let turn = 0
+        async function* gen(): AsyncGenerator<SDKMessage, void> {
+          for await (const _u of p.prompt as AsyncIterable<SDKUserMessage>) {
+            turn += 1
+            if (turn === 1) {
+              yield makeStreamEvent(sessionId, "t1d1", "A")
+              yield makeStreamEvent(sessionId, "t1d2", "B")
+              yield makeResultMessage(sessionId, "t1-result")
+            } else {
+              yield makeStreamEvent(sessionId, "t2d1", "X")
+              yield makeStreamEvent(sessionId, "t2d2", "Y")
+              yield makeAssistantMessage(sessionId, "XY", "t2-assistant")
+              yield makeResultMessage(sessionId, "t2-result")
+            }
+          }
+        }
+        const it = gen()
+        return Object.assign(it, {
+          interrupt: async () => {},
+          setPermissionMode: async () => {},
+          setModel: async () => {},
+          setMaxThinkingTokens: async () => {},
+          supplyToolPermissionResponse: async () => {},
+          mcpServerStatus: async () => ({}),
+        } as Partial<Query>) as Query
+      })
+
+      const deltas = await runScoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const t = yield* chat.createThread({
+            model: "claude-test",
+            title: "reset",
+          })
+          const sub = chat.subscribe(t.id)
+          const fiber = yield* Effect.fork(
+            sub.pipe(
+              Stream.filter((f) => f.type === "assistant-delta"),
+              Stream.take(4),
+              Stream.runCollect,
+            ),
+          )
+          yield* Effect.sleep("30 millis")
+          yield* chat.send(t.id, "turn one")
+          yield* Effect.sleep("40 millis")
+          yield* chat.send(t.id, "turn two")
+          const chunk = yield* Fiber.join(fiber)
+          return Array.from(Chunk.toReadonlyArray(chunk))
+        }),
+        fakeLayer,
+      )
+
+      // The last two deltas belong to turn 2 — they MUST carry turn 2's id and
+      // fresh text, not turn 1's leftovers.
+      const turn2 = deltas.slice(2)
+      expect(
+        turn2.map((f) => (f.type === "assistant-delta" ? f.turnId : "?")),
+      ).toEqual(["t2d1", "t2d1"])
+      expect(
+        turn2.map((f) => (f.type === "assistant-delta" ? f.text : "?")),
+      ).toEqual(["X", "XY"])
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "interrupt() resets in-flight turn state so the next turn's deltas are not corrupted",
+    async () => {
+      // Turn 1 emits one delta then stalls (no result/assistant) — an in-flight
+      // turn. The user hits Stop (interrupt), then sends a new turn. interrupt()
+      // must clear the in-flight turn state, else turn 2's first delta inherits
+      // turn 1's stale turnId + text. This path has NO result, so ONLY the
+      // interrupt() reset (not the result-branch reset) can cover it.
+      const fakeLayer = SDKClient.fake((p) => {
+        const sessionId = (p as { sessionId?: string }).sessionId ?? "thr-?"
+        let turn = 0
+        async function* gen(): AsyncGenerator<SDKMessage, void> {
+          for await (const _u of p.prompt as AsyncIterable<SDKUserMessage>) {
+            turn += 1
+            if (turn === 1) {
+              yield makeStreamEvent(sessionId, "i1d1", "A")
+              // no result/assistant — the turn stays in-flight until interrupt
+            } else {
+              yield makeStreamEvent(sessionId, "i2d1", "X")
+              yield makeStreamEvent(sessionId, "i2d2", "Y")
+              yield makeAssistantMessage(sessionId, "XY", "i2-assistant")
+              yield makeResultMessage(sessionId, "i2-result")
+            }
+          }
+        }
+        const it = gen()
+        return Object.assign(it, {
+          interrupt: async () => {},
+          setPermissionMode: async () => {},
+          setModel: async () => {},
+          setMaxThinkingTokens: async () => {},
+          supplyToolPermissionResponse: async () => {},
+          mcpServerStatus: async () => ({}),
+        } as Partial<Query>) as Query
+      })
+
+      const deltas = await runScoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const t = yield* chat.createThread({
+            model: "claude-test",
+            title: "int-reset",
+          })
+          const sub = chat.subscribe(t.id)
+          const fiber = yield* Effect.fork(
+            sub.pipe(
+              Stream.filter((f) => f.type === "assistant-delta"),
+              Stream.take(3),
+              Stream.runCollect,
+            ),
+          )
+          yield* Effect.sleep("30 millis")
+          yield* chat.send(t.id, "turn one")
+          yield* Effect.sleep("30 millis")
+          yield* chat.interrupt(t.id)
+          yield* Effect.sleep("10 millis")
+          yield* chat.send(t.id, "turn two")
+          const chunk = yield* Fiber.join(fiber)
+          return Array.from(Chunk.toReadonlyArray(chunk))
+        }),
+        fakeLayer,
+      )
+
+      // turn 1 produced exactly one delta; the rest belong to turn 2.
+      const turn2 = deltas.slice(1)
+      expect(
+        turn2.map((f) => (f.type === "assistant-delta" ? f.turnId : "?")),
+      ).toEqual(["i2d1", "i2d1"])
+      expect(
+        turn2.map((f) => (f.type === "assistant-delta" ? f.text : "?")),
+      ).toEqual(["X", "XY"])
     },
     { timeout: 10_000 },
   )

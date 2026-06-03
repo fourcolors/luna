@@ -41,9 +41,15 @@ describe("rename: dev-server-chat -> chat-server", () => {
   });
 
   describe("scripts/luna-server-install", () => {
-    it("starts the chat server through the canonical server:chat script", () => {
+    it("starts the chat server via direct script exec, not the server:chat filter wrapper", () => {
       expect(read("scripts/luna-server-install")).toContain(
-        "server:chat",
+        "run scripts/chat-server.ts",
+      );
+    });
+
+    it("does NOT use the --filter server:chat wrapper form", () => {
+      expect(read("scripts/luna-server-install")).not.toContain(
+        "--filter @luna/ui-web server:chat",
       );
     });
 

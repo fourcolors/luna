@@ -229,6 +229,8 @@ describe("UIWebSocketServer", () => {
       expect(frames[0].capabilities.chat).toBe(false)
       expect(frames[0].capabilities.streamingDeltas).toBe(false)
       expect(frames[0].capabilities.localShell).toBe(false)
+      // setup-mode = started WITHOUT a chat service (chat === null).
+      expect(frames[0].capabilities.setup).toBe(true)
     }
   })
 

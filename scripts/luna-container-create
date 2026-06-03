@@ -325,8 +325,18 @@ luna_run incus config device add "$INSTANCE" "control${HOST_CONTROL_PORT}" proxy
 
 luna_run incus start "$INSTANCE"
 luna_run incus exec "$INSTANCE" -- cloud-init status --wait
-luna_run incus exec "$INSTANCE" -- test -w /root/luna
+# cloud-init can report success even when a runcmd task failed internally. Fail
+# early with an actionable hint if the in-container luna-server-install never got
+# far enough to render its systemd unit. Probe the unit under /etc/systemd/system
+# — a CONTAINER-FS-only artifact the in-container install uniquely produces. (Do
+# NOT probe /root/.luna/.env: $STATE_PATH is bind-mounted there and host-written
+# before the container boots, so it exists regardless of install success.)
 STATUS_SERVICE="$(luna_service_name "$PROFILE")"
+if [[ "$DRY_RUN" == false ]]; then
+  incus exec "$INSTANCE" -- test -f "/etc/systemd/system/$STATUS_SERVICE" ||
+    luna_die "In-container luna-server-install failed: systemd unit $STATUS_SERVICE not rendered. Check 'incus logs $INSTANCE' for details."
+fi
+luna_run incus exec "$INSTANCE" -- test -w /root/luna
 luna_run incus exec "$INSTANCE" -- systemctl status "$STATUS_SERVICE"
 
 luna_info "Container ready"

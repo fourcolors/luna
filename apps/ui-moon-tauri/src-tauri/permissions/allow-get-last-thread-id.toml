@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-get-last-thread-id"
+description = "Allows reading the CLI thread file"
+
+[permission.commands]
+allow = [
+  "get_last_thread_id"
+]

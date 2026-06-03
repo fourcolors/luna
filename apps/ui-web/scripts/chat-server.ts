@@ -200,6 +200,10 @@ import {
 import { startControlServer } from "@luna/control-server"
 import { resolveOpAccounts } from "./op-accounts.js"
 import { resolveUiWsToken } from "./ui-ws-token.js"
+import { decideMode, probeCredentialReadiness, probeAuthLoggedIn } from "./credential-readiness.js"
+import { spawnSetupPty } from "./setup-pty.js"
+import { onLoginAttemptComplete } from "./setup-login.js"
+import type { PtyOutputFrame } from "@luna/ui-ws"
 
 const TOKEN = resolveUiWsToken()
 const BIND_HOST = process.env["LUNA_UI_WS_HOST"]?.trim() || undefined
@@ -690,6 +694,117 @@ class ServerHandle extends Effect.Tag("dev/ChatServerHandle")<
   { readonly port: number; readonly host: string }
 >() {}
 
+// ── Graceful shutdown helper ─────────────────────────────────────────────
+//
+// Factored out so both normal-mode and setup-mode boots share the same
+// SIGINT/SIGTERM wiring without code duplication. The `rt` arg is any
+// object with a `dispose()` method — works for ManagedRuntime.
+const installShutdown = (rt: { dispose: () => Promise<unknown> }): void => {
+  let shuttingDown = false
+  const shutdown = (signal: NodeJS.Signals): void => {
+    if (shuttingDown) return
+    shuttingDown = true
+    // Synchronous write to stdout fd — `console.log` to a PIPE (systemd
+    // captures stdout via a pipe, not a TTY) is async, so the buffered
+    // line is lost when `process.exit(0)` truncates it below. writeSync
+    // flushes before the dispose/exit, so the shutdown is observable in
+    // journald.
+    writeSync(1, `\n👋 shutting down (${signal})\n`)
+    void rt.dispose().then(() => process.exit(0))
+  }
+  process.on("SIGINT", () => shutdown("SIGINT"))
+  process.on("SIGTERM", () => shutdown("SIGTERM"))
+}
+
+// ── Setup-mode minimal layer ──────────────────────────────────────────────
+//
+// Started when the boot-time credential gate decides mode === "setup":
+// no accounts seeded, or the claude-code:login token is lapsed. Serves
+// only the WS server (advertising setup:true, chat:false) + the control
+// server so the UI can guide the user through login. No chat/dream/
+// survey/memory/SDK layers are constructed — so this layer starts even
+// without a configured luna.db.
+//
+// Layer requirement chain:
+//   startUIWebSocketServer → UIService → ObservabilityService → Clock
+//   startControlServer     → (none — pure Bun.serve call)
+//
+// `wsPort`/`controlPort` default to the production ports. Pass 0 in
+// tests/smokes to let the OS pick an ephemeral port (avoids conflicts).
+//
+// Task 1b: `setupPtyFactory` is a test seam. Production passes NO arg
+// (undefined) → the real factory built from CLAUDE_EXE + paths.lunaDbPath is
+// used. Pass an explicit factory in tests/smokes to avoid spawning real
+// `claude` / calling real process.exit; pass `null` to wire no pty at all.
+export const buildSetupServerLayer = (
+  wsPort: number = 4753,
+  controlPort: number = 4754,
+  setupPtyFactory?: {
+    onConnect: (send: (frame: PtyOutputFrame) => void) => {
+      write: (utf8: string) => void
+      resize: (cols: number, rows: number) => void
+      close: () => void
+    }
+  } | null,
+): Layer.Layer<never, Error> => {
+  const clockL = Clock.Default
+  const paths = resolveRuntimePaths()
+  const obsL = ObservabilityService.makeLayer({
+    logToConsole: false,
+    jsonlPath: paths.eventsJsonlPath,
+  }).pipe(Layer.provide(clockL))
+  const uiL = UIService.makeLayer().pipe(
+    Layer.provide(obsL),
+    Layer.provide(clockL),
+  )
+
+  // Build the per-connection pty factory that runs `claude setup-token` and,
+  // on exit, checks login status → seeds the account row → restarts (exit 0).
+  // When a factory is explicitly passed (test seam), use it as-is.
+  // When undefined (production), build the real one from the environment.
+  // When null, wire no setupPty (explicit opt-out for callers that want setup-
+  // mode without a pty — e.g. smoke tests that don't want to spawn claude).
+  const CLAUDE_EXE = process.env["LUNA_CLAUDE_CODE_EXECUTABLE"]?.trim() || "claude"
+  const resolvedSetupPty =
+    setupPtyFactory !== undefined
+      ? setupPtyFactory   // caller-supplied (or explicit null)
+      : {
+          onConnect: (send: (frame: PtyOutputFrame) => void) => {
+            const pty = spawnSetupPty({
+              // Single-quote-escape so a path with spaces is safe inside the shell string.
+              command: `'${CLAUDE_EXE.replace(/'/g, "'\\''")}' setup-token`,
+              onData: (b64) => send({ type: "pty-output", data: b64 }),
+              onExit: () => {
+                onLoginAttemptComplete({
+                  send,
+                  checkLoggedIn: () => probeAuthLoggedIn(CLAUDE_EXE),
+                  dbPath: paths.lunaDbPath,
+                })
+              },
+            })
+            return { write: pty.write, resize: pty.resize, close: pty.close }
+          },
+        }
+
+  return Layer.scopedDiscard(
+    Effect.gen(function* () {
+      yield* startControlServer(controlPort, TOKEN)
+      yield* startUIWebSocketServer({
+        port: wsPort,
+        ...(BIND_HOST !== undefined ? { host: BIND_HOST } : {}),
+        token: TOKEN,
+        advertisedKinds: DEFAULT_UI_KINDS,
+        pingIntervalMs: 5000,
+        chatService: null,
+        accountBroker: null,
+        survey: null,
+        localShellBridge: null,
+        setupPty: resolvedSetupPty,
+      })
+    }),
+  ).pipe(Layer.provide(uiL))
+}
+
 // Server reads ChatService from its env, then passes the resolved
 // service handle to startUIWebSocketServer via config. This keeps the
 // server effect's requirements narrow (it doesn't itself depend on
@@ -731,8 +846,9 @@ const buildServerLayer = (
       }
 
       // tRPC control server — port 4754, alongside the WebSocket server.
-      // Exposes control.restart / control.status / control.version.
-      yield* startControlServer(4754)
+      // Exposes control.restart / control.status / control.version. Bound to
+      // loopback + gated by the same bearer token as the WS server (TOKEN).
+      yield* startControlServer(4754, TOKEN)
 
       return yield* startUIWebSocketServer({
         port: 4753,
@@ -775,12 +891,7 @@ const buildMain = (
     const accounts = yield* broker._inspect()
     if (accounts.length === 0) {
       console.error(
-        "❌ ConfigError: no accounts seeded. Run the agent-cli to add one:\n\n" +
-          SEED_HINT +
-          "\n\nThen restart this server. (CLI inserts require a restart.)",
-      )
-      return yield* Effect.fail(
-        new Error("no accounts seeded — see seed-CLI hint above"),
+        "⚠️ normal-mode reached with 0 accounts — readiness gate bypassed; restart to enter setup-mode",
       )
     }
     const counts = new Map<string, number>()
@@ -790,7 +901,7 @@ const buildMain = (
     const breakdown = Array.from(counts.entries())
       .map(([k, n]) => `${k}×${n}`)
       .join(", ")
-    console.log(`[accounts] ${accounts.length} hydrated: ${breakdown}`)
+    console.log(`[accounts] ${accounts.length} hydrated: ${breakdown || "none"}`)
 
     // Phase 25d: warn on luna-op://<label>/... refs whose label is
     // not in the registered OP keychain set. Soft warning — operator
@@ -836,6 +947,28 @@ const bootstrap = async (): Promise<void> => {
     )
   }
   const opLabelsRegistered = opTokens.map((t) => t.label)
+
+  // ── Boot-time credential gate ────────────────────────────────────────────
+  // Probe credential readiness BEFORE building any chat layers. If the gate
+  // says "setup" (no accounts, or the claude-code:login token is lapsed),
+  // start a minimal WS+control layer that serves the setup UI without
+  // attempting to build chat/dream/survey/memory/SDK layers. The UI guides
+  // the operator through login; a restart re-decides the mode.
+  const paths = resolveRuntimePaths()
+  const claudeExe = process.env["LUNA_CLAUDE_CODE_EXECUTABLE"]?.trim() || "claude"
+  const mode = decideMode(probeCredentialReadiness({ dbPath: paths.lunaDbPath, claudeExe }))
+  if (mode === "setup") {
+    writeSync(1, "\n🔧 setup-mode: model credential not usable — serving setup UI (log in to continue)\n")
+    const setupRuntime = ManagedRuntime.make(buildSetupServerLayer())
+    installShutdown(setupRuntime)
+    setupRuntime.runPromise(Effect.never).catch((err) => {
+      console.error("❌ setup-mode server crashed:", err)
+      process.exit(1)
+    })
+    return
+  }
+
+  // ── Normal mode ──────────────────────────────────────────────────────────
   const baseLayer = buildBaseLayer(opTokens)
   const serverLayer = buildServerLayer(baseLayer)
   const runtime = ManagedRuntime.make(Layer.mergeAll(serverLayer, baseLayer))
@@ -849,20 +982,7 @@ const bootstrap = async (): Promise<void> => {
   // is never written, and every boot pays the full backfill cost again.
   // The guard makes a second signal (or SIGINT-then-SIGTERM) a no-op so
   // dispose() can't run twice.
-  let shuttingDown = false
-  const shutdown = (signal: NodeJS.Signals) => {
-    if (shuttingDown) return
-    shuttingDown = true
-    // Synchronous write to stdout fd — `console.log` to a PIPE (systemd
-    // captures stdout via a pipe, not a TTY) is async, so the buffered
-    // line is lost when `process.exit(0)` truncates it below. writeSync
-    // flushes before the dispose/exit, so the shutdown is observable in
-    // journald.
-    writeSync(1, `\n👋 shutting down (${signal})\n`)
-    void runtime.dispose().then(() => process.exit(0))
-  }
-  process.on("SIGINT", () => shutdown("SIGINT"))
-  process.on("SIGTERM", () => shutdown("SIGTERM"))
+  installShutdown(runtime)
 
   // runPromise keeps the event loop alive until the effect resolves (which
   // it never does because of Effect.never). runFork returns immediately,

@@ -118,6 +118,13 @@ export class NetSecClient extends Effect.Tag(
             const fetchInit: RequestInit = {
               method,
               signal: controller.signal,
+              // Strict mode: the allowlist is the entire egress control, and it
+              // is checked ONLY against the initial url. A 3xx redirecting to a
+              // non-allowlisted host would be transparently followed and slip
+              // past the allowlist — so fail closed and never follow redirects
+              // under strict mode. (Open pass-through mode allows all egress,
+              // so default redirect handling is fine there.)
+              ...(strictMode ? { redirect: "error" as const } : {}),
               ...(opts?.headers !== undefined ? { headers: opts.headers } : {}),
               ...(opts?.body !== undefined ? { body: opts.body } : {}),
             }

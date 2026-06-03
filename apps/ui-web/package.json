@@ -14,9 +14,11 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "shiki": "^4.0.2",
     "solid-js": "^1.9.12",
-    "solid-markdown": "^2.1.1",
-    "shiki": "^4.0.2"
+    "solid-markdown": "^2.1.1"
   },
   "devDependencies": {
     "@luna/adapter-sdk": "workspace:*",

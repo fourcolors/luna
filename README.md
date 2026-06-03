@@ -85,6 +85,16 @@ apps/
 Luna is a monorepo. A clone contains the terminal client, web UI, server
 runtime, shared packages, and host/container setup scripts.
 
+### Quick Start (macOS Double-Click)
+
+If you are on macOS, the absolute easiest way to install and run Luna is by double-clicking the installer script:
+1. Double-click the `install-mac.command` file at the root of the cloned repository.
+2. Select Option **[1] Complete Desktop Install** to automatically install the terminal client, spin up the chat-server and web UI in the background, and open your browser to the chat interface.
+
+---
+
+### Terminal Client (macOS Manual)
+
 Install the terminal client on a Mac:
 
 ```bash
