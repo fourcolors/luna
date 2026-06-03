@@ -1074,7 +1074,7 @@
         if (lastThreadId) {
           State.activeThreadId = lastThreadId;
           Logger.info(`Syncing: subscribing to terminal thread "${lastThreadId}"`);
-          this.send({ type: 'subscribe-thread', threadId: lastThreadId });
+          this.send({ type: 'subscribe', threadId: lastThreadId });
         } else {
           // If no active thread ID from the terminal, request the thread list
           Logger.info("No active thread found from terminal; listing threads instead");
@@ -1087,7 +1087,7 @@
 
         switch (frame.type) {
           case 'hello':
-            // authenticated successfully, wait for list-threads or subscribe-thread response
+            // authenticated successfully, wait for list-threads or subscribe response
             break;
 
           case 'thread-list': {
@@ -1097,7 +1097,7 @@
               const mostRecent = threads[0];
               State.activeThreadId = mostRecent.id;
               Logger.info(`No active thread; auto-subscribing to most recent thread "${mostRecent.id}"`);
-              this.send({ type: 'subscribe-thread', threadId: mostRecent.id });
+              this.send({ type: 'subscribe', threadId: mostRecent.id });
             } else if (!State.activeThreadId) {
               // No threads exist! Let's start a brand new thread.
               Logger.info("No threads exist on the server; creating a brand new thread");
@@ -1111,7 +1111,7 @@
             if (!State.activeThreadId || State.activeThreadId !== frame.thread.id) {
               State.activeThreadId = frame.thread.id;
               Logger.info(`Auto-subscribing to newly created thread "${frame.thread.id}"`);
-              this.send({ type: 'subscribe-thread', threadId: frame.thread.id });
+              this.send({ type: 'subscribe', threadId: frame.thread.id });
               
               if (State.pendingUserMessage) {
                 const text = State.pendingUserMessage;
