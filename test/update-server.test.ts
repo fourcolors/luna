@@ -80,6 +80,9 @@ const makeStubBin = (
     readonly targetSha: string
     readonly readyAtTarget: boolean
     readonly readyAtPrev: boolean
+    // #28: simulate a deploy that boots (healthz 200) but lands in SETUP-mode at
+    // the target SHA — /readyz reports mode=setup, so the deepened gate must FAIL.
+    readonly setupAtTarget?: boolean
   },
 ) => {
   const bin = join(root, "bin")
@@ -104,19 +107,32 @@ esac
   )
 
   // curl: read the repo's live HEAD; emit 200 only at the SHA(s) marked ready.
+  // Answers BOTH /healthz (bare code) and /readyz (JSON body + newline + code),
+  // mirroring the two curl -w contracts the readiness gate uses.
   writeFileSync(
     join(bin, "curl"),
     `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "${curlLog}"
 head="$(git -C "${opts.repo}" rev-parse HEAD 2>/dev/null || printf 'unknown')"
 code='503'
+mode='normal'
 if [[ "$head" == "${opts.targetSha}" && "${opts.readyAtTarget ? "1" : "0"}" == "1" ]]; then
   code='200'
 fi
 if [[ "$head" == "${opts.prevSha}" && "${opts.readyAtPrev ? "1" : "0"}" == "1" ]]; then
   code='200'
 fi
-# Mirror curl -w '%{http_code}' contract: print the code to stdout. Exit 0 so
+# #28: a deploy that boots into setup-mode answers /healthz 200 but /readyz setup.
+if [[ "$head" == "${opts.targetSha}" && "${opts.setupAtTarget ? "1" : "0"}" == "1" ]]; then
+  code='200'; mode='setup'
+fi
+if [[ "$*" == *"/readyz"* ]]; then
+  # Mirror curl -sS -w '\\n%{http_code}' on /readyz: JSON body, newline, code.
+  okbool='true'; [[ "$mode" == 'setup' ]] && okbool='false'
+  printf '{"status":"ok","mode":"%s","credentialOk":%s}\\n%s' "$mode" "$okbool" "$code"
+  exit 0
+fi
+# /healthz: mirror -o /dev/null -w '%{http_code}' → print just the code. Exit 0 so
 # the script's own [[ "$http" == "200" ]] gate (not curl's rc) decides.
 printf '%s' "$code"
 exit 0
@@ -416,7 +432,11 @@ exit 0
       join(bin, "curl"),
       `#!/usr/bin/env bash
 head="$(git -C "${work}" rev-parse HEAD 2>/dev/null || echo unknown)"
-[[ "$head" == "${prevSha}" ]] && printf '200' || printf '503'
+code='503'; [[ "$head" == "${prevSha}" ]] && code='200'
+if [[ "$*" == *"/readyz"* ]]; then
+  printf '{"status":"ok","mode":"normal","credentialOk":true}\\n%s' "$code"; exit 0
+fi
+printf '%s' "$code"
 exit 0
 `,
     )
@@ -498,6 +518,47 @@ exit 0
     // Two restart cycles: the failed update + the rollback.
     const restarts = (readFileSync(systemctlLog, "utf8").match(/restart/g) ?? []).length
     expect(restarts).toBe(2)
+  })
+
+  it("#28 deepened gate: deploy boots into SETUP-mode (healthz 200 but readyz setup) → rollback, exit 1", () => {
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    // The new HEAD is ALIVE (healthz 200) but lands in setup-mode (readyz reports
+    // mode=setup) — a credential-lapsed boot the old liveness-only gate would have
+    // falsely accepted. PREV is a healthy normal-mode build, so rollback recovers.
+    const { bin, systemctlLog } = makeStubBin(temp, {
+      repo: work,
+      prevSha,
+      targetSha,
+      readyAtTarget: false,
+      readyAtPrev: true,
+      setupAtTarget: true,
+    })
+
+    const r = runUpdate([
+      "--repo-dir",
+      work,
+      "--ref",
+      "origin/master",
+      "--luna-home",
+      join(temp, "state"),
+      "--service-dir",
+      serviceDir,
+      "--readiness-timeout",
+      "1",
+      "--readiness-interval",
+      "0.3",
+    ], {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+    })
+
+    // The setup-mode boot is NOT accepted: gate fails → rollback to PREV (normal).
+    expect(r.status, r.stdout + r.stderr).toBe(1)
+    expect(r.stderr).toContain("ROLLED BACK")
+    expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
   })
 
   it("readiness FAIL with --no-rollback → exit 1, NO revert", () => {
@@ -643,6 +704,9 @@ esac
       join(bin, "curl"),
       `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "${curlLog}"
+if [[ "$*" == *"/readyz"* ]]; then
+  printf '{"status":"ok","mode":"normal","credentialOk":true}\\n200'; exit 0
+fi
 printf '200'
 exit 0
 `,

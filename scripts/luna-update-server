@@ -214,9 +214,13 @@ lockfile_hash() {
 #   - systemctl is-active <unit> == active
 #   - the unit's NRestarts did not climb since restart (it didn't crash-loop)
 #   - curl http://127.0.0.1:<port>/healthz returns HTTP 200
+#   - curl /readyz reports "mode":"normal" (NOT setup-mode) — see below
 # The probe runs THROUGH the runner, so in --incus it curls 127.0.0.1 INSIDE the
-# container (not the host's proxied port). Today /healthz is bare liveness; if it
-# later reports mode/credential this is where to deepen the gate.
+# container (not the host's proxied port). /healthz is bare liveness (a setup-mode
+# server answers it 200 too), so the gate ALSO checks /readyz, which reports the
+# boot mode. Back-compat: a server without /readyz (older build — e.g. a rollback
+# target) returns 404, and the gate falls back to liveness-only so update-server
+# can still drive pre-/readyz deploys.
 readiness_restart_baseline() {
   # NRestarts after the restart we just issued; "0" if unknown.
   local n
@@ -240,7 +244,24 @@ readiness_ok() {
           --max-time "$READINESS_CURL_MAX_TIME" \
           "http://127.0.0.1:${READINESS_PORT}/healthz" 2>/dev/null || printf '000')"
         if [[ "$http" == "200" ]]; then
-          return 0
+          # Deepened gate (#28): /healthz 200 alone can't tell a NORMAL server from
+          # a SETUP-mode one (a credential-lapsed server still answers 200). Require
+          # /readyz to confirm normal mode. No -f, so a non-2xx still yields a body
+          # + code; a connection failure falls through to '000'.
+          readyz="$(run_target_capture curl -sS -w '\n%{http_code}' \
+            --max-time "$READINESS_CURL_MAX_TIME" \
+            "http://127.0.0.1:${READINESS_PORT}/readyz" 2>/dev/null || printf '\n000')"
+          local rcode="${readyz##*$'\n'}"
+          # Older server without /readyz (e.g. a rollback target): fall back to
+          # liveness-only so update-server can still drive pre-/readyz builds.
+          if [[ "$rcode" == "404" || "$rcode" == "000" ]]; then
+            return 0
+          fi
+          # /readyz present: ready ONLY if it reports normal mode. A setup-mode
+          # body (credential not usable) is NOT ready → keep polling → rollback.
+          if printf '%s' "$readyz" | grep -q '"mode":"normal"'; then
+            return 0
+          fi
         fi
       fi
     fi

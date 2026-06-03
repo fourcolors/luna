@@ -541,6 +541,24 @@ describe("UIWebSocketServer", () => {
     expect(await res.text()).toBe("ok")
   })
 
+  it("/readyz reports normal mode (no setupPty) — the update-server readiness signal", async () => {
+    rig = await startRig()
+    const res = await fetch(rig.url.replace("ws://", "http://").replace("/ui", "/readyz"))
+    expect(res.status).toBe(200)
+    expect(res.headers.get("content-type")).toContain("application/json")
+    expect(await res.json()).toEqual({ status: "ok", mode: "normal", credentialOk: true })
+  })
+
+  it("/readyz reports setup mode when setupPty is set (credential gate not passed)", async () => {
+    const setupPty = {
+      onConnect: () => ({ write: () => {}, resize: () => {}, close: () => {} }),
+    }
+    rig = await startRig(undefined, { setupPty })
+    const res = await fetch(rig.url.replace("ws://", "http://").replace("/ui", "/readyz"))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ status: "ok", mode: "setup", credentialOk: false })
+  })
+
   it("refuses to start with token shorter than 16 chars", async () => {
     const baseLayer = makeFullLayer()
     const badLayer = Layer.scoped(

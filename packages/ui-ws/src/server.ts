@@ -310,6 +310,19 @@ export const startUIWebSocketServer = (
         res.end("ok")
         return
       }
+      if (req.url === "/readyz") {
+        // Deeper-than-liveness readiness (#28): distinguishes a NORMAL chat server
+        // from a SETUP-mode server (which also answers /healthz 200). The mode is
+        // derived from the boot config — chat-server starts setup-mode with
+        // `setupPty` set + `chatService: null`, and normal-mode with `chatService`
+        // set. credentialOk tracks normal mode (only reached past the boot-time
+        // credential gate). Additive: /healthz keeps returning "ok" for liveness
+        // consumers; this endpoint is what luna-update-server's gate inspects.
+        const mode = setupPty != null ? "setup" : "normal"
+        res.writeHead(200, { "content-type": "application/json" })
+        res.end(JSON.stringify({ status: "ok", mode, credentialOk: mode === "normal" }))
+        return
+      }
       if (req.url === path) {
         // GET on the WS path without upgrade headers → 426.
         res.writeHead(426, { "content-type": "text/plain" })
