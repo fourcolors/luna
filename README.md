@@ -42,7 +42,7 @@ client installer does not read or write Claude OAuth tokens.
 - **Agent SDK:** [Anthropic Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk)
 - **Database:** SQLite via `@effect/sql-sqlite-bun` · Vectorlite for HNSW vector search
 - **Testing:** Vitest
-- **UI:** Solid.js (web) · Tauri (desktop shell + Luna Moon floating widget) · the `luna` terminal client
+- **UI:** Solid.js (web) · Luna Moon floating widget (Tauri) · the `luna` terminal client
 
 ## Architecture
 
@@ -78,7 +78,6 @@ apps/
   agent-cli/      — the `luna` terminal client (chat, doctor, pair, account, memory)
   ui-web/         — Solid.js web chat interface (Vite dev server on :5174)
   ui-moon-tauri/  — Luna Moon: a small transparent floating-widget desktop app (Tauri)
-  ui-tauri/       — full-window desktop chat shell (Tauri)
 ```
 
 ### The apps, at a glance
@@ -88,7 +87,6 @@ apps/
 | `agent-cli` | The `luna` CLI you install on your Mac. `luna chat` opens a terminal chat; `luna doctor` runs a connection preflight; `luna pair` points the CLI + Moon widget at a server in one command. |
 | `ui-web` | The Solid.js web chat UI, served by Vite on `http://localhost:5174`. This is also where first-run Claude subscription login happens. |
 | `ui-moon-tauri` | "Luna Moon" — a small (140×140), transparent, always-on-top floating crescent widget. Click it for a chat panel; toggle with `Cmd/Ctrl+Shift+K`. |
-| `ui-tauri` | A full-window (1280×800) native desktop chat shell. |
 
 The LLM behind every surface is **cloud Claude via your Claude.ai subscription**
 (see [Authentication](#authentication)); the server reaches it through the
@@ -98,7 +96,7 @@ Local Ollama is used only for memory embeddings, not for chat.
 ## Quick Start
 
 Luna is a monorepo. A clone contains the terminal client, web UI, the desktop
-widgets, the server runtime, shared packages, and host/container setup scripts.
+widget, the server runtime, shared packages, and host/container setup scripts.
 
 **Step 0 — clone the repo.** Everything below assumes you have a local clone:
 

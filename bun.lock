@@ -42,13 +42,6 @@
         "jsdom": "^29.1.1",
       },
     },
-    "apps/ui-tauri": {
-      "name": "@luna/ui-tauri",
-      "version": "0.0.1",
-      "devDependencies": {
-        "@tauri-apps/cli": "^2.1.0",
-      },
-    },
     "apps/ui-web": {
       "name": "@luna/ui-web",
       "version": "0.0.1",
@@ -469,8 +462,6 @@
     "@luna/ui-shared": ["@luna/ui-shared@workspace:packages/ui-shared"],
 
     "@luna/ui-shared-solid": ["@luna/ui-shared-solid@workspace:packages/ui-shared-solid"],
-
-    "@luna/ui-tauri": ["@luna/ui-tauri@workspace:apps/ui-tauri"],
 
     "@luna/ui-web": ["@luna/ui-web@workspace:apps/ui-web"],
 
