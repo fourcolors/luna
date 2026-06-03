@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Luna — System Architecture</title>
+<style>
+  :root {
+    --bg: #0f1320;
+    --bg2: #161b2e;
+    --panel: #ffffff;
+    --ink: #1c2233;
+    --ink-soft: #4a5267;
+    --line: #e4e7f0;
+    --line-soft: #eef0f6;
+    --accent: #6c7cff;      /* periwinkle */
+    --moon: #f4d58d;        /* moonlight */
+    --green: #1f9d63;
+    --green-bg: #e7f6ee;
+    --amber: #b6791f;
+    --amber-bg: #fdf3e2;
+    --gray: #6b7280;
+    --gray-bg: #eef0f4;
+    --code: #f5f6fb;
+    --radius: 12px;
+    --maxw: 1180px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font: 16px/1.62 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    background: #f7f8fc;
+    -webkit-font-smoothing: antialiased;
+  }
+  code, kbd, .mono { font-family: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; font-size: 0.86em; }
+  code { background: var(--code); padding: 1px 6px; border-radius: 5px; color: #344; border: 1px solid var(--line); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ---- Hero ---- */
+  header.hero {
+    background: radial-gradient(1200px 500px at 80% -10%, #2a335a 0%, var(--bg) 55%), var(--bg);
+    color: #e8ebf7;
+    padding: 56px 24px 44px;
+    border-bottom: 1px solid #222a45;
+    position: relative;
+    overflow: hidden;
+  }
+  .hero .wrap { max-width: var(--maxw); margin: 0 auto; position: relative; z-index: 2; }
+  .hero .moon {
+    position: absolute; top: 36px; right: 8%; width: 96px; height: 96px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #fff6dd, var(--moon) 60%, #d9b25e);
+    box-shadow: 0 0 60px 12px rgba(244,213,141,.35), inset -16px -10px 0 0 rgba(15,19,32,.92);
+    z-index: 1;
+  }
+  .hero h1 { font-size: 2.5rem; margin: 0 0 6px; letter-spacing: -0.02em; font-weight: 720; }
+  .hero h1 .glyph { color: var(--moon); }
+  .hero .tagline { font-size: 1.18rem; color: #b9c0dd; margin: 0 0 18px; max-width: 760px; }
+  .hero .meta { font-size: 0.82rem; color: #8a93b8; display: flex; gap: 18px; flex-wrap: wrap; }
+  .hero .meta b { color: #cdd3ee; font-weight: 600; }
+
+  /* ---- Layout ---- */
+  .shell { max-width: var(--maxw); margin: 0 auto; display: grid; grid-template-columns: 232px 1fr; gap: 36px; padding: 0 24px; }
+  nav.toc {
+    position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto;
+    padding: 28px 0 40px; font-size: 0.85rem;
+  }
+  nav.toc .grp { text-transform: uppercase; letter-spacing: .08em; font-size: .68rem; color: var(--gray); margin: 18px 0 6px; font-weight: 700; }
+  nav.toc a { display: block; color: var(--ink-soft); padding: 4px 10px; border-radius: 6px; border-left: 2px solid transparent; }
+  nav.toc a:hover { background: #eef0f8; text-decoration: none; color: var(--ink); }
+  main { padding: 28px 0 80px; min-width: 0; }
+
+  section { margin: 0 0 44px; scroll-margin-top: 14px; }
+  section > h2 { font-size: 1.55rem; margin: 8px 0 4px; letter-spacing: -0.01em; border-bottom: 2px solid var(--line); padding-bottom: 8px; }
+  section > h2 .num { color: var(--accent); font-weight: 700; margin-right: 10px; font-size: 1.1rem; }
+  h3 { font-size: 1.12rem; margin: 26px 0 6px; }
+  p { margin: 10px 0; }
+  ul, ol { margin: 10px 0; padding-left: 22px; }
+  li { margin: 4px 0; }
+
+  .lead { font-size: 1.06rem; color: var(--ink-soft); }
+
+  /* ---- Cards / grid ---- */
+  .grid { display: grid; gap: 16px; margin: 18px 0; }
+  .grid.c2 { grid-template-columns: repeat(2, 1fr); }
+  .grid.c3 { grid-template-columns: repeat(3, 1fr); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; }
+  .card h4 { margin: 0 0 6px; font-size: 1rem; }
+  .card p { margin: 4px 0; font-size: 0.92rem; color: var(--ink-soft); }
+  .card .mono { color: var(--accent); font-size: .8rem; }
+
+  /* ---- Badges ---- */
+  .badge { display: inline-block; font-size: .68rem; font-weight: 700; letter-spacing: .03em; padding: 2px 8px; border-radius: 999px; vertical-align: middle; text-transform: uppercase; }
+  .b-impl { background: var(--green-bg); color: var(--green); }
+  .b-asp { background: var(--amber-bg); color: var(--amber); }
+  .b-stub { background: var(--gray-bg); color: var(--gray); }
+
+  /* ---- Callouts ---- */
+  .note { border-radius: 10px; padding: 12px 16px; margin: 16px 0; font-size: 0.93rem; border: 1px solid; }
+  .note.info { background: #eef1ff; border-color: #cfd6ff; }
+  .note.warn { background: var(--amber-bg); border-color: #f0dcb4; color: #5e4413; }
+  .note.ok { background: var(--green-bg); border-color: #bfe6cf; color: #134a30; }
+  .note b { font-weight: 700; }
+
+  /* ---- Tables ---- */
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 0.9rem; background: var(--panel); border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  th { background: #f2f4fb; font-size: .76rem; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft); }
+  tr:last-child td { border-bottom: none; }
+  td .mono { color: #4254c4; }
+
+  /* ---- Diagram frame ---- */
+  figure { margin: 22px 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; overflow-x: auto; }
+  figure svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+  figcaption { text-align: center; font-size: 0.82rem; color: var(--gray); margin-top: 10px; }
+
+  /* SVG shared text */
+  svg text { font-family: -apple-system, "Segoe UI", sans-serif; }
+  .svg-box { fill: #fff; stroke: #c7cce0; stroke-width: 1.5; }
+  .svg-box-accent { fill: #eef1ff; stroke: var(--accent); stroke-width: 1.5; }
+  .svg-box-moon { fill: #fdf6e3; stroke: #d9b25e; stroke-width: 1.5; }
+  .svg-box-store { fill: #e7f6ee; stroke: var(--green); stroke-width: 1.5; }
+  .svg-t { fill: #1c2233; font-size: 13px; }
+  .svg-tb { fill: #1c2233; font-size: 13px; font-weight: 700; }
+  .svg-ts { fill: #5a6b8c; font-size: 11px; }
+  .svg-sub { fill: #6b7280; font-size: 11px; }
+  .svg-arrow { stroke: #8a93b8; stroke-width: 1.6; fill: none; marker-end: url(#arr); }
+  .svg-arrow-a { stroke: var(--accent); stroke-width: 1.8; fill: none; marker-end: url(#arrA); }
+  .svg-lbl { fill: #6b7280; font-size: 10.5px; }
+
+  hr { border: none; border-top: 1px solid var(--line); margin: 34px 0; }
+  .small { font-size: 0.85rem; color: var(--gray); }
+  footer.docfoot { background: var(--bg); color: #aab2d6; padding: 28px 24px; font-size: 0.85rem; }
+  footer.docfoot .wrap { max-width: var(--maxw); margin: 0 auto; }
+  footer.docfoot a { color: #c3cbf0; }
+  footer.docfoot code { background: #1d2440; color: #cdd6ff; border-color: #2a3258; }
+
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; margin: 14px 0; font-size: .85rem; align-items: center; }
+
+  @media (max-width: 920px) {
+    .shell { grid-template-columns: 1fr; }
+    nav.toc { position: static; height: auto; border-bottom: 1px solid var(--line); }
+    .grid.c2, .grid.c3 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="moon" aria-hidden="true"></div>
+  <div class="wrap">
+    <h1><span class="glyph">🌙</span> Luna — System Architecture</h1>
+    <p class="tagline">A modular, <b>local-first</b> AI agent framework built on Effect-TS and Bun. A cloud Claude model is the substrate; Luna owns the runtime, persistent memory, tools, multi-account brokering, and a nightly self-alignment loop — reachable from a CLI, a web UI, and a floating desktop widget over your own private network.</p>
+    <div class="meta">
+      <span><b>Substrate:</b> Effect v3 · Bun · SQLite</span>
+      <span><b>Model:</b> Claude (Agent SDK, subprocess)</span>
+      <span><b>State:</b> <code>~/.luna/</code></span>
+      <span><b>Generated:</b> 2026-06-03, from the codebase</span>
+    </div>
+  </div>
+</header>
+
+<div class="shell">
+  <nav class="toc">
+    <div class="grp">Foundations</div>
+    <a href="#overview">1 · What Luna Is</a>
+    <a href="#substrate">2 · Substrate &amp; Principles</a>
+    <a href="#map">3 · System Map</a>
+    <a href="#layout">4 · Repository Layout</a>
+    <div class="grp">Runtime</div>
+    <a href="#runtime">5 · Chat Runtime &amp; Turn Lifecycle</a>
+    <a href="#llm">6 · The LLM, Accounts &amp; Credentials</a>
+    <a href="#memory">7 · Memory &amp; Persistence</a>
+    <a href="#tools">8 · Tools, Scheduler &amp; Shell</a>
+    <a href="#observability">9 · Observability &amp; Telemetry</a>
+    <a href="#alignment">10 · The Alignment Loop</a>
+    <div class="grp">Surfaces</div>
+    <a href="#clients">11 · Client Surfaces</a>
+    <a href="#protocol">12 · WebSocket Protocol v2</a>
+    <a href="#boot">13 · Boot Modes &amp; Readiness</a>
+    <div class="grp">Operations</div>
+    <a href="#deployment">14 · Deployment Topology</a>
+    <a href="#security">15 · Security Model</a>
+    <a href="#lifecycle">16 · Install &amp; Update</a>
+    <a href="#ci">17 · CI &amp; Verification</a>
+    <a href="#status">18 · Implementation Status</a>
+  </nav>
+
+  <main>
+
+  <div class="legend">
+    <span><span class="badge b-impl">Implemented</span> wired &amp; working</span>
+    <span><span class="badge b-asp">Partial / Aspirational</span> machinery present, not fully wired</span>
+    <span><span class="badge b-stub">Stub</span> stand-in for a future component</span>
+  </div>
+  <p class="small">This document is grounded in the source tree (DESIGN.md, DNA.md, and file-level analysis of every package). Where intent and reality diverge, reality is labelled.</p>
+
+  <!-- 1 -->
+  <section id="overview">
+    <h2><span class="num">1</span>What Luna Is</h2>
+    <p class="lead">Luna is <b>not a chatbot wrapper</b>. It is an agent <em>framework</em>: a composition of Effect-TS service layers — account brokering, a session store, plug-and-play memory, telemetry, a chat surface, and MCP tool servers — that runs on your own machine and drives a Claude model as its reasoning substrate.</p>
+    <div class="grid c3">
+      <div class="card"><h4>🏠 Local-first</h4><p>All durable state lives in <code>~/.luna/</code>. SQLite is the system of record. Nothing leaves the box unless a tool call explicitly sends it.</p></div>
+      <div class="card"><h4>⚡ Bun-native</h4><p>The runtime is Bun, not Node. <code>bun:sqlite</code> is the driver; the Vectorlite HNSW extension is loaded at process boot for semantic memory.</p></div>
+      <div class="card"><h4>🧩 Modular (Effect v3)</h4><p>Every capability is an <code>Effect.Service</code> Layer with a typed interface, composed into a single <code>ManagedRuntime</code> at the server boundary.</p></div>
+      <div class="card"><h4>🔑 Multi-account</h4><p>An <code>AccountBroker</code> routes queries across Anthropic accounts by label, with secrets resolved from 1Password / env / file at acquire-time.</p></div>
+      <div class="card"><h4>🧠 Persistent memory</h4><p>Hybrid BM25 + vector (HNSW) recall over SQLite. The agent searches before answering and saves durable facts as it learns them.</p></div>
+      <div class="card"><h4>🌗 Self-aligning</h4><p>A nightly <em>Dream</em> proposes beliefs about the operator; a survey confirms them; confirmed beliefs inject into every new conversation.</p></div>
+    </div>
+    <div class="note info">
+      <b>Identity.</b> Luna presents as "Luna," not Claude. <code>DNA.md</code> — Luna's self-description — is loaded into the system prompt of every thread. The Claude model is "the substrate, not the identity: a human is not their neurons; Luna is not its weights."
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section id="substrate">
+    <h2><span class="num">2</span>Substrate &amp; Principles</h2>
+    <p>Three frozen substrate decisions (from <code>DESIGN.md §0</code>) drive everything downstream:</p>
+    <table>
+      <tr><th>Decision</th><th>Choice</th><th>Why</th></tr>
+      <tr><td><b>Effect version</b></td><td class="mono">Effect v3 stable (^3.21)</td><td>Two required packages (<code>@effect/workflow</code>, <code>@effect/cluster</code>) are v3-only; Schema is bundled as <code>effect/Schema</code>. v4 migration deferred to milestone M5.</td></tr>
+      <tr><td><b>Account rotation</b></td><td class="mono">Per-query SDK env overlay</td><td>The broker rotates the OAuth token per <code>query()</code> via <code>options.env.CLAUDE_CODE_OAUTH_TOKEN</code> — no subprocess respawn.</td></tr>
+      <tr><td><b>Build model</b></td><td>Frozen architecture, revisable implementation</td><td>The module list, topology, persistence schema, and SDK contract are the contract; per-module signatures and UI evolve per phase.</td></tr>
+    </table>
+    <h3>Operating principles (from <code>DNA.md</code>)</h3>
+    <ul>
+      <li><b>Verify before claiming</b> — every architectural claim needs a <code>§</code>-anchor or a <code>file:line</code>. "I think" is a signal to go check.</li>
+      <li><b>Ask before irreversible / externally-visible actions</b> — deleting, rotating secrets, publishing, spending, or contacting people.</li>
+      <li><b>Decompose until certain, then compose upward</b> — lock each small piece with a test before composing it into the next layer.</li>
+      <li><b>Tests close every task</b> — "done" means a passing test or a verifiable outcome.</li>
+    </ul>
+  </section>
+
+  <!-- 3 -->
+  <section id="map">
+    <h2><span class="num">3</span>System Map</h2>
+    <p>Three planes: <b>clients</b> speak one WebSocket protocol to the <b>chat server</b>, a single Effect runtime that brokers a Claude subprocess and reads/writes four local stores. Ollama (local) serves embeddings; Claude (cloud) serves reasoning.</p>
+    <figure>
+      <svg viewBox="0 0 980 620" role="img" aria-label="Luna system map">
+        <defs>
+          <marker id="arr" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#8a93b8"/></marker>
+          <marker id="arrA" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#6c7cff"/></marker>
+        </defs>
+
+        <!-- Clients plane -->
+        <text x="20" y="30" class="svg-tb">CLIENTS</text>
+        <rect x="20" y="40" width="170" height="54" rx="9" class="svg-box"/>
+        <text x="105" y="63" text-anchor="middle" class="svg-tb">luna CLI</text>
+        <text x="105" y="80" text-anchor="middle" class="svg-sub">chat · doctor · pair</text>
+        <rect x="287" y="40" width="170" height="54" rx="9" class="svg-box"/>
+        <text x="372" y="63" text-anchor="middle" class="svg-tb">Moon widget</text>
+        <text x="372" y="80" text-anchor="middle" class="svg-sub">Tauri · floating</text>
+        <rect x="555" y="40" width="170" height="54" rx="9" class="svg-box"/>
+        <text x="640" y="63" text-anchor="middle" class="svg-tb">ui-web</text>
+        <text x="640" y="80" text-anchor="middle" class="svg-sub">Solid · :5174</text>
+
+        <!-- protocol bar -->
+        <rect x="20" y="120" width="705" height="34" rx="8" class="svg-box-accent"/>
+        <text x="372" y="142" text-anchor="middle" class="svg-tb">WebSocket protocol v2  ·  token auth  ·  /healthz · /readyz</text>
+        <line x1="105" y1="94" x2="105" y2="120" class="svg-arrow-a"/>
+        <line x1="372" y1="94" x2="372" y2="120" class="svg-arrow-a"/>
+        <line x1="640" y1="94" x2="640" y2="120" class="svg-arrow-a"/>
+
+        <!-- server box -->
+        <rect x="20" y="186" width="705" height="300" rx="12" fill="#f7f8ff" stroke="#c7cce0" stroke-width="1.5"/>
+        <text x="36" y="208" class="svg-tb">chat-server  ·  ManagedRuntime (Effect layer graph)</text>
+        <line x1="372" y1="154" x2="372" y2="186" class="svg-arrow-a"/>
+
+        <!-- inner services -->
+        <rect x="40" y="224" width="150" height="48" rx="8" class="svg-box"/><text x="115" y="245" text-anchor="middle" class="svg-t">ui-ws server</text><text x="115" y="261" text-anchor="middle" class="svg-sub">frames · fan-out</text>
+        <rect x="205" y="224" width="150" height="48" rx="8" class="svg-box"/><text x="280" y="245" text-anchor="middle" class="svg-t">ChatService</text><text x="280" y="261" text-anchor="middle" class="svg-sub">threads · queues</text>
+        <rect x="370" y="224" width="150" height="48" rx="8" class="svg-box"/><text x="445" y="245" text-anchor="middle" class="svg-t">SDKAdapter</text><text x="445" y="261" text-anchor="middle" class="svg-sub">+ AccountBroker</text>
+        <rect x="535" y="224" width="170" height="48" rx="8" class="svg-box-moon"/><text x="620" y="245" text-anchor="middle" class="svg-t">SDKClient</text><text x="620" y="261" text-anchor="middle" class="svg-sub">spawns claude</text>
+
+        <rect x="40" y="288" width="150" height="48" rx="8" class="svg-box"/><text x="115" y="309" text-anchor="middle" class="svg-t">MemoryRouter</text><text x="115" y="325" text-anchor="middle" class="svg-sub">HNSW + BM25</text>
+        <rect x="205" y="288" width="150" height="48" rx="8" class="svg-box"/><text x="280" y="309" text-anchor="middle" class="svg-t">Tool servers</text><text x="280" y="325" text-anchor="middle" class="svg-sub">MCP · 12 tools</text>
+        <rect x="370" y="288" width="150" height="48" rx="8" class="svg-box"/><text x="445" y="309" text-anchor="middle" class="svg-t">Observability</text><text x="445" y="325" text-anchor="middle" class="svg-sub">PubSub · events</text>
+        <rect x="535" y="288" width="170" height="48" rx="8" class="svg-box"/><text x="620" y="309" text-anchor="middle" class="svg-t">Scheduler</text><text x="620" y="325" text-anchor="middle" class="svg-sub">cron · triggers</text>
+
+        <rect x="40" y="352" width="230" height="48" rx="8" class="svg-box"/><text x="155" y="373" text-anchor="middle" class="svg-t">Dream · Beliefs · Survey · EWMA</text><text x="155" y="389" text-anchor="middle" class="svg-sub">the alignment loop</text>
+        <rect x="285" y="352" width="200" height="48" rx="8" class="svg-box"/><text x="385" y="373" text-anchor="middle" class="svg-t">SessionStore</text><text x="385" y="389" text-anchor="middle" class="svg-sub">append-only log</text>
+        <rect x="500" y="352" width="205" height="48" rx="8" class="svg-box"/><text x="602" y="373" text-anchor="middle" class="svg-t">SecretProvider · Telemetry</text><text x="602" y="389" text-anchor="middle" class="svg-sub">1Password · counters</text>
+
+        <text x="36" y="430" class="svg-sub">control-server (tRPC, :4754) — restart · status · version</text>
+        <rect x="40" y="438" width="665" height="34" rx="8" class="svg-box-accent"/>
+        <text x="372" y="459" text-anchor="middle" class="svg-t">all layers built bottom-up · Vectorlite swapped in before the first DB open</text>
+
+        <!-- external -->
+        <text x="770" y="30" class="svg-tb">EXTERNAL</text>
+        <rect x="770" y="224" width="190" height="48" rx="8" class="svg-box-moon"/>
+        <text x="865" y="245" text-anchor="middle" class="svg-tb">Claude (cloud)</text><text x="865" y="261" text-anchor="middle" class="svg-sub">OAuth subscription</text>
+        <line x1="705" y1="248" x2="770" y2="248" class="svg-arrow"/>
+        <rect x="770" y="288" width="190" height="48" rx="8" class="svg-box"/>
+        <text x="865" y="309" text-anchor="middle" class="svg-t">Ollama (local)</text><text x="865" y="325" text-anchor="middle" class="svg-sub">embeddings :11434</text>
+        <line x1="190" y1="312" x2="220" y2="312" stroke="#8a93b8" stroke-width="1.6" fill="none"/>
+        <path d="M220,312 L240,312 L240,520 L905,520 L905,336" class="svg-arrow"/>
+
+        <!-- data stores -->
+        <text x="20" y="514" class="svg-tb">LOCAL STORES  ·  ~/.luna/</text>
+        <rect x="20" y="524" width="165" height="74" rx="9" class="svg-box-store"/>
+        <text x="102" y="548" text-anchor="middle" class="svg-tb">luna.db</text><text x="102" y="566" text-anchor="middle" class="svg-sub">OLTP · accounts,</text><text x="102" y="581" text-anchor="middle" class="svg-sub">threads, beliefs…</text>
+        <rect x="200" y="524" width="165" height="74" rx="9" class="svg-box-store"/>
+        <text x="282" y="548" text-anchor="middle" class="svg-tb">memory.db</text><text x="282" y="566" text-anchor="middle" class="svg-sub">vectors · HNSW</text><text x="282" y="581" text-anchor="middle" class="svg-sub">+ FTS5</text>
+        <rect x="380" y="524" width="175" height="74" rx="9" class="svg-box"/>
+        <text x="467" y="548" text-anchor="middle" class="svg-tb">analytics.duckdb</text><text x="467" y="566" text-anchor="middle" class="svg-sub">telemetry</text><text x="467" y="581" text-anchor="middle" class="svg-sub">(bun:sqlite stub)</text>
+        <rect x="570" y="524" width="155" height="74" rx="9" class="svg-box"/>
+        <text x="647" y="548" text-anchor="middle" class="svg-tb">events.jsonl</text><text x="647" y="566" text-anchor="middle" class="svg-sub">raw event log</text>
+        <line x1="115" y1="400" x2="110" y2="524" class="svg-arrow"/>
+        <line x1="385" y1="400" x2="300" y2="524" class="svg-arrow"/>
+        <line x1="445" y1="336" x2="467" y2="524" class="svg-arrow"/>
+        <line x1="445" y1="336" x2="647" y2="524" class="svg-arrow"/>
+      </svg>
+      <figcaption>Clients → WebSocket v2 → the chat-server Effect runtime → a Claude subprocess + local SQLite stores. Ollama serves embeddings.</figcaption>
+    </figure>
+  </section>
+
+  <!-- 4 -->
+  <section id="layout">
+    <h2><span class="num">4</span>Repository Layout</h2>
+    <p>A Bun workspace monorepo: <code>packages/*</code> (libraries) and <code>apps/*</code> (executables). Domain primitives live in <code>@luna/core</code>; everything else composes them.</p>
+    <h3>Packages — the framework</h3>
+    <table>
+      <tr><th>Package</th><th>Responsibility</th></tr>
+      <tr><td class="mono">@luna/core</td><td>Domain primitives: <code>AccountBroker</code>, <code>SessionStore</code>, <code>ObservabilityService</code>, <code>TelemetryService</code>, <code>SecretProvider</code>, <code>Clock</code>, and the alignment services (Dream / Beliefs / Survey / AlignmentStore). The DB schemas live here.</td></tr>
+      <tr><td class="mono">@luna/adapter-sdk</td><td>Effect ↔ Claude Agent SDK bridge. <code>SDKClient</code> wraps <code>query()</code>; <code>SDKAdapter.WithBroker</code> is the production layer that overlays the OAuth token per call. Houses the Dream reasoner.</td></tr>
+      <tr><td class="mono">@luna/chat-service</td><td>Per-thread state machine: an inbox <code>Queue</code>, a <code>PubSub&lt;ChatFrame&gt;</code>, persistence, and the <code>ThreadToolsProvider</code> that injects MCP servers + system prompt per thread.</td></tr>
+      <tr><td class="mono">@luna/control-server</td><td>tRPC sidecar on <code>:4754</code> for process control (restart / status / version). <span class="badge b-asp">macOS-only</span> restart shells <code>launchctl</code>; not wired to systemd.</td></tr>
+      <tr><td class="mono">@luna/memory</td><td>The memory abstraction: <code>MemoryRouter</code> + backends (in-memory, file, sqlite, <b>sqlite-vector</b>). Owns <code>memory.db</code>, the embedder selection, and the Vectorlite HNSW bootstrap.</td></tr>
+      <tr><td class="mono">@luna/memory-tools</td><td>The MCP memory tools (<code>memory_save</code>, <code>memory_search</code>, <code>memory_delete</code>) + the system-prompt addendum that tells the agent to use them.</td></tr>
+      <tr><td class="mono">@luna/tools</td><td>Tool-building infrastructure: <code>defineTool()</code>, <code>makeSdkMcpServer()</code>, and interceptor combinators (deny / allow / redact). Not a tool source itself.</td></tr>
+      <tr><td class="mono">@luna/scheduler-tools</td><td>Cron scheduling tools (<code>schedule_create / list / cancel</code>) over a <code>TriggerAgent</code> + <code>JobScheduler</code>.</td></tr>
+      <tr><td class="mono">@luna/local-shell-tools</td><td><code>local_shell_run</code> — forwards a command over a WS bridge to the attached terminal client for per-request approval.</td></tr>
+      <tr><td class="mono">@luna/observability-tools</td><td>Self-inspection tools (<code>obs_note</code>, <code>obs_session_explain</code>, <code>obs_session_anomalies</code>, …) querying the agent's own telemetry.</td></tr>
+      <tr><td class="mono">@luna/ui-ws</td><td>The WebSocket server + the authoritative wire protocol (<code>protocol.ts</code>, <code>UI_WS_PROTOCOL_VERSION = 2</code>).</td></tr>
+      <tr><td class="mono">@luna/ui-shared</td><td>Framework-agnostic client core: <code>browserWebSocketTransport</code>, the pure state <code>reduce</code>r, browser-safe wire types.</td></tr>
+      <tr><td class="mono">@luna/ui-shared-solid</td><td>Solid.js component library (ChatPanel, Sidebar, ObsPanel, AccountSwitcher) + reducer-backed store + transport composable.</td></tr>
+    </table>
+    <h3>Apps — the executables</h3>
+    <table>
+      <tr><th>App</th><th>What it is</th></tr>
+      <tr><td class="mono">apps/agent-cli</td><td>The <code>luna</code> CLI — the operator's command surface: chat (Ink TUI), account, memory, doctor, pair. Also hosts the local-shell bridge endpoint the agent calls back into.</td></tr>
+      <tr><td class="mono">apps/ui-web</td><td>The Solid.js web UI (Vite, <code>:5174</code>) + <code>scripts/chat-server.ts</code>, the boot entry point that assembles the whole runtime.</td></tr>
+      <tr><td class="mono">apps/ui-moon-tauri</td><td>The floating crescent "Moon" widget — a Tauri shell around a single dependency-free HTML file.</td></tr>
+    </table>
+    <div class="note info"><b>Where the server actually lives.</b> The server is not its own app — it is <code>apps/ui-web/scripts/chat-server.ts</code>, run with <code>bun run scripts/chat-server.ts</code>. It composes the package layers into a single <code>ManagedRuntime</code> and starts the WebSocket (<code>:4753</code>) and control (<code>:4754</code>) servers.</div>
+  </section>
+
+  <!-- 5 -->
+  <section id="runtime">
+    <h2><span class="num">5</span>Chat Runtime &amp; the Turn Lifecycle</h2>
+    <p>A "thread" is a long-lived Effect scope. When created, <code>ChatService</code> wires a prompt <code>Queue</code> into <code>SDKAdapter.query()</code>, which holds a streaming connection to a Claude subprocess for the life of the thread. A user message is just an offer to that queue; the assistant's reply streams back through a producer/consumer pipe and fans out to every subscribed client.</p>
+    <figure>
+      <svg viewBox="0 0 940 430" role="img" aria-label="Chat turn lifecycle">
+        <defs>
+          <marker id="arr2" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#8a93b8"/></marker>
+        </defs>
+        <!-- lifelines -->
+        <g font-size="12">
+          <rect x="20"  y="20" width="120" height="34" rx="7" class="svg-box-accent"/><text x="80"  y="42" text-anchor="middle" class="svg-tb">Client</text>
+          <rect x="180" y="20" width="120" height="34" rx="7" class="svg-box"/><text x="240" y="42" text-anchor="middle" class="svg-tb">ui-ws</text>
+          <rect x="340" y="20" width="130" height="34" rx="7" class="svg-box"/><text x="405" y="42" text-anchor="middle" class="svg-tb">ChatService</text>
+          <rect x="510" y="20" width="130" height="34" rx="7" class="svg-box"/><text x="575" y="42" text-anchor="middle" class="svg-tb">SDKAdapter</text>
+          <rect x="680" y="20" width="120" height="34" rx="7" class="svg-box"/><text x="740" y="42" text-anchor="middle" class="svg-tb">AccountBroker</text>
+          <rect x="820" y="20" width="100" height="34" rx="7" class="svg-box-moon"/><text x="870" y="42" text-anchor="middle" class="svg-tb">claude</text>
+        </g>
+        <g stroke="#d4d8ea" stroke-width="1.2" stroke-dasharray="3 4">
+          <line x1="80" y1="54" x2="80" y2="410"/>
+          <line x1="240" y1="54" x2="240" y2="410"/>
+          <line x1="405" y1="54" x2="405" y2="410"/>
+          <line x1="575" y1="54" x2="575" y2="410"/>
+          <line x1="740" y1="54" x2="740" y2="410"/>
+          <line x1="870" y1="54" x2="870" y2="410"/>
+        </g>
+        <g class="svg-lbl">
+          <line x1="80"  y1="80"  x2="240" y2="80"  class="svg-arrow"/><text x="86" y="74">user-message {threadId, text}</text>
+          <line x1="240" y1="108" x2="405" y2="108" class="svg-arrow"/><text x="246" y="102">chat.send()</text>
+          <line x1="405" y1="136" x2="240" y2="136" class="svg-arrow"/><text x="250" y="130">user-accepted (echo + seq)</text>
+          <line x1="240" y1="150" x2="80"  y2="150" class="svg-arrow"/>
+          <text x="340" y="172" text-anchor="middle">persist to SessionStore, then Queue.offer →</text>
+          <line x1="575" y1="196" x2="740" y2="196" class="svg-arrow"/><text x="581" y="190">acquireSession({model})</text>
+          <line x1="740" y1="224" x2="575" y2="224" class="svg-arrow"/><text x="581" y="218">credential + token overlay</text>
+          <line x1="575" y1="252" x2="870" y2="252" class="svg-arrow"/><text x="600" y="246">query() → spawns subprocess</text>
+          <line x1="870" y1="288" x2="575" y2="288" class="svg-arrow"/><text x="620" y="282">stream: deltas → assistant</text>
+          <line x1="575" y1="316" x2="405" y2="316" class="svg-arrow"/><text x="430" y="310">mirror to store + project</text>
+          <line x1="405" y1="344" x2="240" y2="344" class="svg-arrow"/><text x="246" y="338">assistant-delta · assistant-done</text>
+          <line x1="240" y1="372" x2="80"  y2="372" class="svg-arrow"/><text x="86" y="366">fan-out to every subscriber</text>
+          <line x1="870" y1="400" x2="575" y2="400" class="svg-arrow"/><text x="600" y="394">result → CostAccrued / SessionEnd</text>
+        </g>
+      </svg>
+      <figcaption>A single turn. The user message is persisted <em>before</em> being offered to the SDK; the broker overlays the OAuth token per call; assistant output streams back as cumulative deltas then a final done frame.</figcaption>
+    </figure>
+    <h3>Key mechanics</h3>
+    <ul>
+      <li><b>Per-thread streaming connection.</b> The adapter converts the inbox <code>Queue</code> to an <code>AsyncIterable</code> and runs the SDK's <code>for await</code> loop as a detached producer feeding an unbounded queue; the consumer is an Effect <code>Stream</code>. Idle-timeout is disabled for chat threads.</li>
+      <li><b>Persist-then-offer.</b> The user turn is written to <code>SessionStore</code> before it reaches the model, and every SDK message is mirrored to the store as it streams — so reconnecting clients get an accurate snapshot.</li>
+      <li><b>Message dispatch.</b> <code>stream_event</code> → <code>assistant-delta</code> (cumulative text); <code>assistant</code> → <code>assistant-done</code> + <code>tool-call</code> frames; <code>user</code> → <code>tool-result</code>; <code>result</code> → cost + session-end observability events.</li>
+      <li><b>Bottom-up layer order.</b> <code>LunaSqliteBootstrap</code> is provided last so it builds <em>first</em> — swapping in the Vectorlite-capable SQLite before any <code>new Database()</code> opens.</li>
+    </ul>
+  </section>
+
+  <!-- 6 -->
+  <section id="llm">
+    <h2><span class="num">6</span>The LLM, Accounts &amp; Credentials</h2>
+    <p>Luna never spawns the model directly. The <code>@anthropic-ai/claude-agent-sdk</code> owns the subprocess; Luna supplies the executable path and the credential overlay.</p>
+    <h3>How <code>claude</code> is invoked</h3>
+    <ul>
+      <li><code>SDKClient</code> calls the SDK's <code>query()</code>, which spawns the binary at <code>LUNA_CLAUDE_CODE_EXECUTABLE</code> (default: <code>claude</code> on PATH) lazily on the first stream pull.</li>
+      <li>The subprocess path matters operationally: a launchd/systemd service runs with a minimal <code>PATH</code>, so the installers persist an <em>absolute</em> executable path into <code>~/.luna/.env</code>.</li>
+    </ul>
+    <h3>Three credential paths</h3>
+    <table>
+      <tr><th>secret_ref</th><th>Mechanism</th><th>Status</th></tr>
+      <tr><td class="mono">claude-code:login</td><td>No env overlay; the binary reads its own OAuth from <code>CLAUDE_CONFIG_DIR</code> (<code>~/.luna/claude</code>). Set up via <code>claude setup-token</code>.</td><td><span class="badge b-impl">Implemented</span></td></tr>
+      <tr><td class="mono">op:// · luna-op:// · env:</td><td><code>SecretProvider</code> resolves the ref to a redacted token, overlaid as <code>CLAUDE_CODE_OAUTH_TOKEN</code> in the SDK env. 1Password routing is per-account-label.</td><td><span class="badge b-impl">Implemented</span></td></tr>
+      <tr><td class="mono">setup PTY</td><td>In setup-mode, <code>claude setup-token</code> runs in a pty streamed to the client so the operator can complete the interactive login.</td><td><span class="badge b-impl">Implemented</span></td></tr>
+    </table>
+    <h3>The AccountBroker</h3>
+    <p>Hydrated from the <code>accounts</code> table at boot. Each <code>acquireSession()</code> picks an account and registers a finalizer that decrements its in-flight count when the query scope closes.</p>
+    <ul>
+      <li><span class="badge b-impl">Implemented</span> <b>Load-balanced rotation</b> — lowest in-flight, then least-recently-used.</li>
+      <li><span class="badge b-impl">Implemented</span> <b>Sticky-pin</b> — chat threads bind to one account so the SDK's conversation cache stays warm across turns.</li>
+      <li><span class="badge b-asp">Aspirational</span> <b>Cooldown on rate-limit (429)</b> — the filtering machinery exists, but no production path calls <code>report({kind:"rate_limit"})</code>, and cooldowns are in-memory only (lost on restart). Today a 429 keeps re-picking the same account.</li>
+    </ul>
+  </section>
+
+  <!-- 7 -->
+  <section id="memory">
+    <h2><span class="num">7</span>Memory &amp; Persistence</h2>
+    <p>Four files under <code>~/.luna/</code>, each with a distinct job. SQLite is the system of record everywhere; "DuckDB" is currently a SQLite stand-in.</p>
+    <table>
+      <tr><th>Store</th><th>Engine</th><th>Holds</th><th>Status</th></tr>
+      <tr><td class="mono">luna.db</td><td>SQLite (WAL)</td><td><b>OLTP.</b> A multi-tenant file with a per-component migration ledger (<code>schema_versions</code>): <code>accounts</code>, <code>sessions</code>, <code>messages</code>, <code>cost_events</code>, <code>telemetry_counters</code>, <code>dream_audit</code>, <code>alignment_log</code>/<code>alignment_state</code>, <code>agent_notes</code>, <code>session_history</code>.</td><td><span class="badge b-impl">Implemented</span></td></tr>
+      <tr><td class="mono">memory.db</td><td>SQLite + Vectorlite</td><td><b>Semantic memory.</b> <code>memory_keyed</code> (records), <code>memory_vectors</code> (embedding BLOBs + provenance), <code>memory_fts</code> (FTS5/BM25), and <code>memory_vectors_hnsw</code> (Vectorlite HNSW with a <code>0600</code> sidecar).</td><td><span class="badge b-impl">Implemented</span></td></tr>
+      <tr><td class="mono">analytics.duckdb</td><td>bun:sqlite (stand-in)</td><td><b>Telemetry.</b> Normalized <code>events</code> + a <code>sessions</code> projection for cross-domain queries. Named <code>.duckdb</code>; real DuckDB is a one-line swap when needed.</td><td><span class="badge b-stub">Stub</span></td></tr>
+      <tr><td class="mono">events.jsonl</td><td>append-only JSONL</td><td><b>Raw event log.</b> Every <code>ObsEvent</code> as one JSON line — the human-readable audit trail. Unbounded (no rotation yet).</td><td><span class="badge b-impl">Implemented</span></td></tr>
+    </table>
+    <h3>The memory abstraction</h3>
+    <p><code>MemoryRouter</code> maps a namespace pattern to a backend. In production there is exactly one rule — <code>{ "*" → SqliteVectorBackend }</code> — so all memory lands in <code>memory.db</code>. Writes route by namespace; reads-by-id fall through all backends; vector search dispatches to vector-capable backends.</p>
+    <h3>Embeddings &amp; hybrid search</h3>
+    <ul>
+      <li><b>Embedder.</b> <code>LUNA_EMBEDDER=ollama</code> → real Ollama (model <code>embeddinggemma</code>, <code>http://127.0.0.1:11434</code>, vectors L2-normalized). Any other value → a deterministic FNV stub (dim 64) used in tests/offline. <span class="badge b-asp">Note</span> a typo in the env var <em>silently</em> falls back to the stub.</li>
+      <li><b>HNSW.</b> The Vectorlite extension is bootstrapped once per process; the index is backfilled on connection open and persisted to a sidecar. If the extension can't load, it <b>degrades gracefully</b> to naive in-process cosine.</li>
+      <li><b>Hybrid recall.</b> <code>memory_search</code> runs both vector KNN and FTS5 BM25, then fuses with Reciprocal Rank Fusion (RRF).</li>
+      <li><b>Injection is active, not passive.</b> Memory is reached through MCP tools; the agent must <em>call</em> <code>memory_search</code> — context is not auto-prepended. A system-prompt addendum instructs it to search before answering and save durable facts.</li>
+    </ul>
+  </section>
+
+  <!-- 8 -->
+  <section id="tools">
+    <h2><span class="num">8</span>Tools, Scheduler &amp; Shell</h2>
+    <p>The agent has <b>12 callable tools</b> across four MCP servers, all auto-loaded onto every thread. <code>@luna/tools</code> is the builder/policy layer, not a tool source.</p>
+    <div class="grid c2">
+      <div class="card"><h4>🧠 Memory <span class="mono">mcp__memory__*</span></h4><p><code>memory_save</code> · <code>memory_search</code> · <code>memory_delete</code></p></div>
+      <div class="card"><h4>⏰ Scheduler <span class="mono">mcp__scheduler__*</span></h4><p><code>schedule_create</code> · <code>schedule_list</code> · <code>schedule_cancel</code></p></div>
+      <div class="card"><h4>💻 Local shell <span class="mono">mcp__local_shell__*</span></h4><p><code>local_shell_run</code> — execute in the attached terminal, with approval</p></div>
+      <div class="card"><h4>🔭 Observability <span class="mono">mcp__observability__*</span></h4><p><code>obs_note</code> · <code>obs_notes_recent</code> · <code>obs_session_explain</code> · <code>obs_session_anomalies</code> · <code>obs_sessions_search</code></p></div>
+    </div>
+    <h3>Scheduler</h3>
+    <p><span class="badge b-impl">Implemented</span> Cron triggers (5-field, parsed by <code>effect/Cron</code>) drive a <code>TriggerAgent</code> that submits jobs to a bounded <code>JobScheduler</code> pool. <span class="badge b-asp">Not yet</span> jobs are <b>not persisted</b> — they live in the layer scope and are lost on restart (the nightly Dream cron is re-registered at boot, so it survives). Stream triggers exist internally but aren't exposed as a tool; file-watch triggers are not implemented.</p>
+    <h3>Local shell</h3>
+    <p>The agent doesn't run shell commands itself. <code>local_shell_run</code> sends a request over a WebSocket <b>bridge</b> to the attached <code>luna</code> terminal client, which prompts the operator for approval (default) or auto-approves inside a trusted container session. Results stream back. A bound thread owns the shell slot for its lifetime.</p>
+  </section>
+
+  <!-- 9 -->
+  <section id="observability">
+    <h2><span class="num">9</span>Observability &amp; Telemetry</h2>
+    <p>One source, two sinks. <code>ObservabilityService</code> is an in-memory <code>PubSub</code>; every component emits structured <code>ObsEvent</code>s (SessionStart/End, ToolCall, CostAccrued, AccountSwitch, RetrievalCall, Error, …) fire-and-forget — observability must never crash the host.</p>
+    <ul>
+      <li><b>Sink 1 — <code>events.jsonl</code></b>: a background daemon appends each event as a JSON line (raw audit trail).</li>
+      <li><b>Sink 2 — <code>analytics.duckdb</code></b>: <code>EventSink</code> normalizes each event into a flat <code>events</code> row; <code>SessionSync</code> projects session lifecycle into a <code>sessions</code> table. The agent introspects these via the <code>obs_*</code> tools — the substrate for self-improvement.</li>
+    </ul>
+    <div class="note warn"><b>Deferred:</b> OTLP / OpenTelemetry export is aspirational, gated on a v3-compatible <code>@effect/opentelemetry</code> release. Telemetry today is local-only.</div>
+  </section>
+
+  <!-- 10 -->
+  <section id="alignment">
+    <h2><span class="num">10</span>The Alignment Loop</h2>
+    <p class="lead">Luna's distinguishing capability: a closed loop that learns durable <em>beliefs</em> about the operator and feeds them back into every conversation — with a human confirmation gate, calibrated cadence, and no restart required. Proven end-to-end by <code>loop.e2e.test.ts</code>.</p>
+    <figure>
+      <svg viewBox="0 0 880 360" role="img" aria-label="The alignment loop">
+        <defs><marker id="arr3" markerWidth="10" markerHeight="10" refX="7" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6c7cff"/></marker></defs>
+        <!-- nodes around a cycle -->
+        <rect x="40" y="150" width="170" height="64" rx="10" class="svg-box-moon"/>
+        <text x="125" y="178" text-anchor="middle" class="svg-tb">1 · Dream</text>
+        <text x="125" y="196" text-anchor="middle" class="svg-sub">nightly 3am cron</text>
+        <text x="125" y="209" text-anchor="middle" class="svg-sub">reads sessions+memory</text>
+
+        <rect x="280" y="40" width="180" height="64" rx="10" class="svg-box"/>
+        <text x="370" y="68" text-anchor="middle" class="svg-tb">2 · Proposed beliefs</text>
+        <text x="370" y="86" text-anchor="middle" class="svg-sub">staged, inert</text>
+        <text x="370" y="99" text-anchor="middle" class="svg-sub">(status: proposed)</text>
+
+        <rect x="540" y="40" width="180" height="64" rx="10" class="svg-box-accent"/>
+        <text x="630" y="64" text-anchor="middle" class="svg-tb">3 · Survey</text>
+        <text x="630" y="82" text-anchor="middle" class="svg-sub">TUI modal · operator</text>
+        <text x="630" y="95" text-anchor="middle" class="svg-sub">confirm/correct/reject</text>
+
+        <rect x="660" y="150" width="180" height="64" rx="10" class="svg-box"/>
+        <text x="750" y="174" text-anchor="middle" class="svg-tb">4 · Activate / EWMA</text>
+        <text x="750" y="192" text-anchor="middle" class="svg-sub">confirmed→active (≤20)</text>
+        <text x="750" y="205" text-anchor="middle" class="svg-sub">task_quality→cadence</text>
+
+        <rect x="540" y="260" width="180" height="64" rx="10" class="svg-box-store"/>
+        <text x="630" y="288" text-anchor="middle" class="svg-tb">5 · Inject (30s)</text>
+        <text x="630" y="306" text-anchor="middle" class="svg-sub">active beliefs →</text>
+        <text x="630" y="319" text-anchor="middle" class="svg-sub">system prompt</text>
+
+        <rect x="280" y="260" width="180" height="64" rx="10" class="svg-box"/>
+        <text x="370" y="288" text-anchor="middle" class="svg-tb">6 · Live threads</text>
+        <text x="370" y="306" text-anchor="middle" class="svg-sub">conversations create</text>
+        <text x="370" y="319" text-anchor="middle" class="svg-sub">new sessions…</text>
+
+        <g stroke="#6c7cff" stroke-width="2" fill="none" marker-end="url(#arr3)">
+          <path d="M205,165 C250,110 250,90 280,80"/>
+          <path d="M460,72 L540,72"/>
+          <path d="M720,95 C760,115 765,125 760,150"/>
+          <path d="M750,214 C745,245 720,255 720,258"/>
+          <path d="M540,300 L460,300"/>
+          <path d="M285,295 C200,280 170,250 150,218"/>
+        </g>
+        <text x="440" y="350" text-anchor="middle" class="svg-sub">…and those sessions feed the next night's Dream — closing the loop.</text>
+      </svg>
+      <figcaption>Dream → proposed beliefs → human survey → activation + EWMA cadence → 30-second injection → live threads → (next) Dream.</figcaption>
+    </figure>
+    <h3>Stage by stage</h3>
+    <ol>
+      <li><b>Dream</b> <span class="badge b-impl">Implemented</span> — a 3am cron (<code>0 3 * * *</code>) gathers sessions + operator memories since a watermark, asks the model (via the SDK) to emit a strict JSON array of ops, and materializes them. <code>memory_dedup</code> auto-applies; <code>belief_candidate</code> is staged as <code>proposed</code> (inert). <span class="badge b-asp">Partial</span> staleness/contradiction ops are logged but never auto-applied.</li>
+      <li><b>Survey</b> <span class="badge b-impl">Implemented</span> — on WS connect, if due (by the EWMA cadence), the server pushes a <code>survey-request</code>: one mandatory <em>task-quality</em> Likert item plus up to three proposed beliefs. A keyboard-driven TUI modal collects verdicts. The <code>issuedAt</code> timestamp is the idempotency anchor for replay safety.</li>
+      <li><b>Calibrate &amp; activate</b> <span class="badge b-impl">Implemented</span> — verdicts route through <code>processVerdict</code> with a log-first, idempotent write. Task-quality updates an EWMA with <em>asymmetric</em> smoothing (slow to trust, fast to claw back) that sets the next survey cadence (1–30 days). <code>confirmed</code> → activate (capped at 20, weakest evicted); <code>rejected</code> → retire; <code>corrected</code> → stays proposed. <span class="badge b-asp">Gap</span> correction text is not fed back to Dream.</li>
+      <li><b>Inject</b> <span class="badge b-impl">Implemented</span> — a background fiber refreshes the active-belief set every 30 seconds and composes a <em>"What I believe about Operator"</em> section ranked by confidence × recency × validation history. Each new thread reads it at creation — so a freshly-confirmed belief lands in the next conversation, no restart.</li>
+    </ol>
+    <div class="note ok"><b>Why this is safe.</b> Beliefs only influence behavior after a human confirms them; EWMA is conservative (slow up, fast down); every signal write is idempotent on <code>issuedAt</code>; and the EWMA explicitly <em>excludes</em> belief-validation signals to keep cadence and belief-trust as separate axes.</div>
+  </section>
+
+  <!-- 11 -->
+  <section id="clients">
+    <h2><span class="num">11</span>Client Surfaces</h2>
+    <p>Three clients, one protocol. They differ in framework and ergonomics, not in how they talk to the server. The <b>Moon widget is the native desktop surface going forward</b> — the standalone full-window Tauri shell (<code>ui-tauri</code>) was retired in its favor, so there is one Tauri app, not two.</p>
+    <div class="grid c2">
+      <div class="card">
+        <h4>⌨️ <code>luna</code> CLI <span class="badge b-impl">Implemented</span></h4>
+        <p>The operator's command surface (citty). <code>chat</code> (Ink TUI, readline fallback), <code>account add/list/rm</code>, <code>memory status/reembed</code>, <code>doctor</code> (4-layer preflight), <code>pair</code> (write configs + verify). Also hosts the local-shell bridge endpoint.</p>
+      </div>
+      <div class="card">
+        <h4>🌙 Moon widget <span class="badge b-impl">Implemented</span> <span class="badge b-impl">Primary desktop UI</span></h4>
+        <p>Luna's native desktop client: a 140×140 transparent, always-on-top crescent (Tauri 2) that expands to a chat panel. A single dependency-free HTML file — no build step. Global shortcut <kbd>⌘/Ctrl+Shift+K</kbd> (self-healing chain). Connection stored at <code>~/.luna/moon-connection.json</code> (<code>0600</code>); token kept out of localStorage. A 90s turn watchdog prevents endless spinners.</p>
+      </div>
+      <div class="card">
+        <h4>🖥️ ui-web <span class="badge b-impl">Implemented</span></h4>
+        <p>The full Solid.js web UI on Vite <code>:5174</code>. Chat + observability panes, an account switcher, the setup-mode terminal (xterm.js), and the alignment survey modal. Config in localStorage; auto-connects when a ≥16-char token is present.</p>
+      </div>
+    </div>
+    <p class="small"><b>Shared core.</b> <code>@luna/ui-shared</code> supplies the transport + pure reducer; <code>@luna/ui-shared-solid</code> supplies the components. Caveat: the browser-safe <code>wire.ts</code> mirror omits several newer frames (local-shell, tool-call/result, memory-search, survey), so Solid clients see a narrower union than the server defines.</p>
+  </section>
+
+  <!-- 12 -->
+  <section id="protocol">
+    <h2><span class="num">12</span>The WebSocket Protocol (v2)</h2>
+    <p>A single tagged-union protocol over one WebSocket per connection. <code>UI_WS_PROTOCOL_VERSION = 2</code>. The first frame is always <code>hello</code>, carrying the version + capability flags.</p>
+    <h3>Authentication &amp; readiness</h3>
+    <ul>
+      <li><b>Token, two forms:</b> <code>Authorization: Bearer &lt;token&gt;</code> (Node/CLI) or <code>?token=…</code> query (browsers, which can't set headers). Compared in constant time; the server refuses to start with a token under 16 chars (fail-closed).</li>
+      <li><b>Unauthenticated probes:</b> <code>GET /healthz</code> → <code>200 "ok"</code> (liveness); <code>GET /readyz</code> → JSON <code>{status, mode, credentialOk}</code> (distinguishes setup vs normal mode).</li>
+      <li><b>Rejections:</b> bad token on upgrade → <code>HTTP 401</code> + socket destroy; wrong path → 404; non-upgrade GET to the WS path → 426.</li>
+      <li><b>Version skew:</b> the Moon client compares the <code>hello</code> version to a hardcoded expectation and shows an amber warning on mismatch — but <em>never blocks</em> the connection.</li>
+    </ul>
+    <div class="grid c2">
+      <div class="card">
+        <h4>Server → Client frames</h4>
+        <p class="small"><code>hello</code>, <code>event</code>, <code>drop</code>, <code>ping</code>, <code>bye</code>, <code>thread-list</code>, <code>thread-created</code>, <code>thread-snapshot</code>, <code>user-accepted</code>, <code>assistant-delta</code>, <code>assistant-done</code>, <code>assistant-error</code>, <code>artifacts-extracted</code>, <code>tool-call</code>, <code>tool-result</code>, <code>account-list</code>, <code>local-shell-request</code>, <code>local-shell-status</code>, <code>memory-search-result</code>, <code>memory-search-error</code>, <code>survey-request</code>, <code>pty-output</code></p>
+      </div>
+      <div class="card">
+        <h4>Client → Server frames</h4>
+        <p class="small"><code>pong</code>, <code>bye</code>, <code>subscribe</code>, <code>unsubscribe</code>, <code>list-threads</code>, <code>new-thread</code>, <code>user-message</code>, <code>interrupt</code>, <code>local-shell-capability</code>, <code>local-shell-result</code>, <code>memory-search-request</code>, <code>survey-response</code>, <code>pty-input</code>, <code>pty-resize</code></p>
+      </div>
+    </div>
+    <p class="small">Reconnect dedupe: <code>thread-snapshot</code> carries <code>throughSeq</code>, live frames carry <code>seq</code>; clients drop anything they've already seen.</p>
+  </section>
+
+  <!-- 13 -->
+  <section id="boot">
+    <h2><span class="num">13</span>Boot Modes &amp; Readiness</h2>
+    <p>At boot, a <b>credential gate</b> decides which of two servers to build. This is why <code>/healthz</code> alone is insufficient to declare a deploy healthy — a credential-lapsed server still answers <code>200</code>.</p>
+    <table>
+      <tr><th></th><th>Setup mode</th><th>Normal mode</th></tr>
+      <tr><td><b>Trigger</b></td><td>No accounts, or the <code>claude-code:login</code> account fails <code>claude auth status</code></td><td>A usable credential is present</td></tr>
+      <tr><td><b>Serves</b></td><td>A minimal layer + a <code>claude setup-token</code> pty over WS — operator logs in, then restarts</td><td>The full runtime: ChatService, broker, memory, scheduler, Dream/Survey</td></tr>
+      <tr><td><b><code>/readyz</code></b></td><td class="mono">{mode:"setup", credentialOk:false}</td><td class="mono">{mode:"normal", credentialOk:true}</td></tr>
+    </table>
+    <div class="note info"><b>The deepened readiness gate.</b> <code>/readyz</code> derives its mode from the boot configuration. <code>luna-update-server</code>'s rollback gate requires <code>mode:"normal"</code> (not merely a 200) — so a deploy that boots into setup-mode is rejected and rolled back, rather than silently accepted. Older servers without <code>/readyz</code> fall back to liveness-only for compatibility.</div>
+  </section>
+
+  <!-- 14 -->
+  <section id="deployment">
+    <h2><span class="num">14</span>Deployment Topology</h2>
+    <p>The intended deployment: a Mac runs the <b>clients</b>, a separate Linux box runs the <b>server</b>, and they meet over a <b>Tailscale</b> tailnet. Two profiles coexist on the server: a bare-host <em>stable</em> (master) and an Incus-contained <em>dev</em>.</p>
+    <figure>
+      <svg viewBox="0 0 900 360" role="img" aria-label="Deployment topology">
+        <defs><marker id="arr4" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#8a93b8"/></marker></defs>
+        <!-- Mac -->
+        <rect x="24" y="60" width="220" height="240" rx="12" class="svg-box-accent"/>
+        <text x="134" y="86" text-anchor="middle" class="svg-tb">Operator's Mac</text>
+        <rect x="48" y="104" width="172" height="40" rx="8" class="svg-box"/><text x="134" y="129" text-anchor="middle" class="svg-t">luna CLI</text>
+        <rect x="48" y="154" width="172" height="40" rx="8" class="svg-box"/><text x="134" y="179" text-anchor="middle" class="svg-t">Moon widget</text>
+        <rect x="48" y="204" width="172" height="40" rx="8" class="svg-box"/><text x="134" y="229" text-anchor="middle" class="svg-t">ui-web</text>
+        <text x="134" y="278" text-anchor="middle" class="svg-sub">~/.luna/.env · moon-connection.json</text>
+
+        <!-- Tailscale -->
+        <rect x="300" y="150" width="120" height="60" rx="30" class="svg-box-moon"/>
+        <text x="360" y="178" text-anchor="middle" class="svg-tb">Tailscale</text>
+        <text x="360" y="195" text-anchor="middle" class="svg-sub">private tailnet</text>
+        <line x1="244" y1="180" x2="300" y2="180" class="svg-arrow"/>
+        <text x="262" y="172" class="svg-lbl">ws://</text>
+
+        <!-- jax box -->
+        <rect x="476" y="40" width="280" height="280" rx="12" class="svg-box"/>
+        <text x="616" y="66" text-anchor="middle" class="svg-tb">jax-box (Linux)</text>
+        <rect x="496" y="84" width="240" height="74" rx="9" class="svg-box-accent"/>
+        <text x="616" y="108" text-anchor="middle" class="svg-tb">stable (master)</text>
+        <text x="616" y="126" text-anchor="middle" class="svg-sub">systemd unit · :4753</text>
+        <text x="616" y="142" text-anchor="middle" class="svg-sub">/root/luna/stable/repo</text>
+        <rect x="496" y="170" width="240" height="74" rx="9" class="svg-box"/>
+        <text x="616" y="194" text-anchor="middle" class="svg-tb">dev</text>
+        <text x="616" y="212" text-anchor="middle" class="svg-sub">Incus container · :5753</text>
+        <text x="616" y="228" text-anchor="middle" class="svg-sub">host proxy → 127.0.0.1</text>
+        <rect x="496" y="256" width="240" height="44" rx="9" class="svg-box-store"/>
+        <text x="616" y="282" text-anchor="middle" class="svg-t">~/.luna/ stores + claude binary</text>
+        <line x1="420" y1="172" x2="496" y2="120" class="svg-arrow"/>
+        <line x1="420" y1="188" x2="496" y2="205" class="svg-arrow"/>
+
+        <!-- cloud -->
+        <rect x="788" y="84" width="96" height="74" rx="12" class="svg-box-moon"/>
+        <text x="836" y="116" text-anchor="middle" class="svg-tb">Claude</text>
+        <text x="836" y="133" text-anchor="middle" class="svg-sub">cloud</text>
+        <line x1="736" y1="120" x2="788" y2="120" class="svg-arrow"/>
+        <text x="744" y="112" class="svg-lbl">OAuth</text>
+      </svg>
+      <figcaption>Clients on the Mac reach the server over Tailscale; the server spawns the Claude binary against a cloud subscription. Plaintext <code>ws://</code> is safe only because the tailnet is the transport.</figcaption>
+    </figure>
+    <ul>
+      <li><b>stable / master</b> — a standard systemd <em>system</em> unit (<code>luna-chat-server.service</code>), repo at <code>/root/luna/stable/repo</code>, on <code>:4753</code>. The unit explicitly sets <code>HOME</code>/<code>PATH</code> (a root systemd service gets neither by default on modern systemd).</li>
+      <li><b>dev</b> — an Incus container reached through a host proxy; the in-container server binds loopback and exposure is controlled at the host-proxy layer.</li>
+      <li><b>Bind posture</b> — the installers auto-resolve the bind to the host's Tailscale IP when a tailnet is present (so remote clients reach it), else loopback; a public <code>0.0.0.0</code> bind requires an explicit, warned opt-in.</li>
+    </ul>
+  </section>
+
+  <!-- 15 -->
+  <section id="security">
+    <h2><span class="num">15</span>Security Model</h2>
+    <div class="grid c2">
+      <div class="card"><h4>🔒 Transport = Tailscale</h4><p>The WebSocket layer is plaintext <code>ws://</code> with the token in the URL — it has <b>no transport confidentiality on its own</b> and is meant to run behind a Tailscale tailnet. <code>luna doctor</code> warns when a client points at a non-tailnet, non-loopback host.</p></div>
+      <div class="card"><h4>🎟️ One auth layer</h4><p>A bearer token (≥16 chars, constant-time compared) is the only auth. The server fails closed if it's unset. Token rotation is a re-<code>pair</code> away.</p></div>
+      <div class="card"><h4>🗝️ Server-side credentials</h4><p>The Claude OAuth credential lives only on the server (<code>CLAUDE_CONFIG_DIR</code>, dir <code>0700</code>). Clients never read or write it. Account secrets resolve from 1Password/env/file at acquire-time and are <code>Redacted</code> in memory — never logged.</p></div>
+      <div class="card"><h4>📁 Secrets at 0600</h4><p><code>~/.luna/.env</code> and <code>moon-connection.json</code> are created mode <code>0600</code> from birth; the HNSW sidecar is re-tightened to <code>0600</code> after every close.</p></div>
+    </div>
+    <div class="note warn"><b>Honest caveats.</b> Plaintext <code>ws://</code> + token-in-URL is only safe inside a private network. A public <code>0.0.0.0</code> bind is a loud, deliberate opt-in. The local-shell tool can run arbitrary commands on the client host — gated by per-request approval, but powerful by design.</div>
+  </section>
+
+  <!-- 16 -->
+  <section id="lifecycle">
+    <h2><span class="num">16</span>Install &amp; Update Lifecycle</h2>
+    <p>One toolkit installs the client, the server, or both — and updates the server safely over time.</p>
+    <table>
+      <tr><th>Tool</th><th>Role</th></tr>
+      <tr><td class="mono">install-mac.command</td><td>Mac double-click installer: a menu for the full desktop install, a remote client, a split client/server, or the Moon widget. Preflights <code>git</code>/<code>bun</code>/<code>cargo</code>/<code>claude</code>.</td></tr>
+      <tr><td class="mono">install.sh</td><td>Any-platform CLI-only install — drops a <code>~/.local/bin/luna</code> wrapper.</td></tr>
+      <tr><td class="mono">scripts/luna-server-install</td><td>Installs the bare-host systemd <em>system</em> unit (sets HOME/PATH/logs, chmods the claude config dir).</td></tr>
+      <tr><td class="mono">scripts/luna-container-create</td><td>Provisions the Incus container + host proxies via cloud-init.</td></tr>
+      <tr><td class="mono">scripts/luna-update-server</td><td>One rollback-safe command: fetch → reset → install-if-lockfile-changed → re-pin claude → restart → readiness probe (<code>is-active</code> + NRestarts-stable + <code>/healthz</code> 200 + <code>/readyz</code> mode=normal) → <b>auto-rollback</b> to PREV on failure.</td></tr>
+      <tr><td class="mono">luna pair / luna doctor</td><td><code>pair</code> writes both client configs + verifies; <code>doctor</code> runs a 4-layer preflight (reach → token → mode → a real chat turn).</td></tr>
+    </table>
+    <p class="small">The <code>luna doctor</code> L4 "real chat turn" is the authoritative health check — it's what gates the live deploy cutover, because only an actual round-trip proves the credential path and Claude spawn work under the live unit's environment.</p>
+  </section>
+
+  <!-- 17 -->
+  <section id="ci">
+    <h2><span class="num">17</span>CI &amp; Verification</h2>
+    <p>CI (<code>.github/workflows/ci.yml</code>) runs on every push/PR with two <b>hard gates</b> and two documented known-red baselines.</p>
+    <div class="grid c2">
+      <div class="card"><h4>✅ Hard gates (block merge)</h4><p><b>Frozen lockfile</b> — <code>bun install --frozen-lockfile</code> catches lockfile drift.<br><b>Secret scan</b> — fails on bare 40+ hex tokens, real <code>sk-ant-</code> keys, or access/refresh-token literals in tracked files.</p></div>
+      <div class="card"><h4>⚠️ Known-red baselines (surfaced, non-blocking)</h4><p><b>typecheck</b> — a documented pre-existing <code>tsc</code> baseline.<br><b>test</b> — the full suite has known env failures (bun:sqlite/jsdom). Run for visibility, ratcheted to green over time.</p></div>
+    </div>
+    <p>Beyond CI, the deploy-risk gate is the set of <b>boot smokes</b> — real-layer <code>ManagedRuntime</code> builds for setup and normal mode — because <code>chat-server.ts</code> has no <code>tsc</code> gate of its own. The smokes prove the layer graph actually assembles before any deploy.</p>
+  </section>
+
+  <!-- 18 -->
+  <section id="status">
+    <h2><span class="num">18</span>Implementation Status</h2>
+    <p>The honest ledger — what's wired end-to-end versus present-but-not-fully-connected. This is the gap between <code>DESIGN.md</code> (frozen intent) and the running system.</p>
+    <table>
+      <tr><th>Capability</th><th>Status</th><th>Note</th></tr>
+      <tr><td>Chat turn pipeline (WS → SDK → claude → stream back)</td><td><span class="badge b-impl">Implemented</span></td><td>The hot path is fully wired and proven live.</td></tr>
+      <tr><td>Multi-account load-balance + sticky-pin</td><td><span class="badge b-impl">Implemented</span></td><td>—</td></tr>
+      <tr><td>Cooldown-based rotation on 429</td><td><span class="badge b-asp">Aspirational</span></td><td>Machinery present; no production trigger; in-memory only.</td></tr>
+      <tr><td>Hybrid HNSW + BM25 memory, Ollama embeddings</td><td><span class="badge b-impl">Implemented</span></td><td>Graceful degradation to naive cosine if Vectorlite is absent.</td></tr>
+      <tr><td>The alignment loop (Dream → Survey → activate → inject)</td><td><span class="badge b-impl">Implemented</span></td><td>End-to-end; <code>corrected</code>-verdict feedback to Dream is the one gap.</td></tr>
+      <tr><td>Cron scheduler</td><td><span class="badge b-impl">Implemented</span></td><td>Jobs not persisted across restart (Dream cron re-registers at boot).</td></tr>
+      <tr><td>analytics.duckdb</td><td><span class="badge b-stub">Stub</span></td><td>bun:sqlite stand-in; real DuckDB is a one-line swap.</td></tr>
+      <tr><td>OTLP / OpenTelemetry export</td><td><span class="badge b-asp">Deferred</span></td><td>Awaiting a v3-compatible <code>@effect/opentelemetry</code>.</td></tr>
+      <tr><td>Local-shell container auto-approve sandbox</td><td><span class="badge b-asp">Aspirational</span></td><td>Bridge + approval implemented; no bundled sandbox runtime.</td></tr>
+      <tr><td>control-server restart on Linux</td><td><span class="badge b-asp">Partial</span></td><td>Hardcoded <code>launchctl</code> (macOS); not wired to systemd.</td></tr>
+      <tr><td>Teams · Workflows · Labs/Dojo · Gateway · Screen capture</td><td><span class="badge b-asp">Designed</span></td><td>In <code>DESIGN.md §2</code> as frozen inventory; not yet built.</td></tr>
+    </table>
+  </section>
+
+  <hr>
+  <p class="small">Cross-references: <code>DESIGN.md</code> (frozen architecture contract), <code>DNA.md</code> (Luna's identity), <code>docs/HOW_TO_TEST_AND_VERIFY.md</code>, <code>docs/INSTALL_AND_UPDATE_PLAN.md</code>, <code>docs/container-runtime.md</code>, <code>docs/jax-box-deploy.md</code>. Authoritative source for any claim here is the cited package under <code>packages/</code> or <code>apps/</code>.</p>
+
+  </main>
+</div>
+
+<footer class="docfoot">
+  <div class="wrap">
+    <p>🌙 <b>Luna — System Architecture.</b> Generated from the codebase on 2026-06-03. This document describes the system as <em>implemented</em>; where intent (DESIGN.md) and reality diverge, the reality is labelled with a status badge. State lives in <code>~/.luna/</code>; the substrate is a Claude model, but the identity, runtime, memory, and tools are Luna's own.</p>
+  </div>
+</footer>
+
+</body>
+</html>
