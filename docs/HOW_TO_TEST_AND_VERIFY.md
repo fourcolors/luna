@@ -10,7 +10,10 @@ Shipped & live on `master` (`82600a3`), deployed to the jax server (`2aac5d2` ru
 - version-skew defenses (client protocol check + frame-set snapshot test + server unknown-frame log)
 - Moon hardening (#9 connection robustness, #10 secure mode-600 token store, resume-thread fix)
 
-Current server WS tokens (jax): master `2349697a3875dcecb2431a6965b54cd59aa1806da3bd62d4f54b94a4d2166cf6` (port 4753), dev `00781935b18b8255e7bd381d6e398d64d528de45ef9ded8415d73f5c2af97f4a` (port 5753).
+Server WS tokens are NOT stored here — read them from each server's `~/.luna/.env`
+(`grep ^UI_WS_TOKEN= ~/.luna/.env` on the box), or just use `luna pair` which wires
+them for you. master = port 4753, dev = port 5753 on jax. (Never commit a real token;
+the WS bearer token is the only auth layer.)
 
 ---
 
