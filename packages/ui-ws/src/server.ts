@@ -869,6 +869,21 @@ export const startUIWebSocketServer = (
                     setupHandle?.resize(frame.cols, frame.rows)
                     return
                   }
+                  default: {
+                    // Unknown/unrecognized frame type. Surface it instead of
+                    // dropping silently: a client sending a mistyped frame
+                    // (e.g. "subscribe-thread" instead of "subscribe") would
+                    // otherwise hang with no signal on either side. We log and
+                    // ignore — no error frame is sent back (no generic
+                    // malformed-frame reply type, and echoing could DoS-amplify
+                    // a buggy client). `frame` is narrowed to `never` here by
+                    // the exhaustive union, so read the type via a cast.
+                    const unknownType = (frame as { readonly type?: unknown }).type
+                    console.error(
+                      `[ui-ws] ignoring unknown client frame type: ${String(unknownType)}`,
+                    )
+                    return
+                  }
                 }
               })
 
