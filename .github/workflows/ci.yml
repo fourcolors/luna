@@ -1,0 +1,120 @@
+# Luna CI
+#
+# HARD GATES (these MUST stay green — a red here blocks the merge):
+#   1. bun install --frozen-lockfile  — fails the build if bun.lock is out of
+#      sync with package.json. This is the exact failure that reached master
+#      this session (lockfile drift); the frozen install would have caught it.
+#   2. secret-scan                    — greps tracked files for high-entropy
+#      secrets (bare 64-hex WS tokens, real `sk-ant-` keys, access/refresh
+#      token literals). Tuned to catch this session's leaked WS token
+#      (`master \`2349697a…\`` in a .md) WITHOUT tripping on the legitimate
+#      `sk-ant-oat-totally-bogus` test fixtures / redaction docs in the repo.
+#
+# KNOWN-RED (surfaced, but NOT allowed to fail the build yet — continue-on-error):
+#   3. typecheck — there is a DOCUMENTED pre-existing `tsc` baseline (duckdb +
+#      agent-cli). chat-server.ts has no tsc gate at all. We run it so the
+#      output is visible in the logs and regressions are noticeable, but we do
+#      not block on it until the baseline is burned down.
+#   4. test — `bun run test` (vitest) has a DOCUMENTED known-red baseline of
+#      bun:sqlite / jsdom env failures. We run the full suite to surface it,
+#      but do not hard-fail CI on it yet.
+#
+# Rationale: lockfile drift and leaked secrets are correctness/safety issues
+# that reached master with no automated guard, so they are the hard gates.
+# typecheck/test are run for visibility and ratcheted to green over time.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          # Pin to the bun that wrote bun.lock. The repo uses the TEXT lockfile
+          # ("lockfileVersion": 1 JSON), which requires bun >= 1.2 — bun 1.1.x
+          # uses the binary bun.lockb and would make --frozen-lockfile below
+          # fail for the wrong reason. (engines says >=1.1.0, but the lockfile
+          # format is the binding constraint.)
+          bun-version: "1.3.14"
+
+      # HARD GATE 1: lockfile drift. --frozen-lockfile errors if bun.lock does
+      # not match package.json instead of silently rewriting it.
+      - name: Install (frozen lockfile — HARD GATE)
+        run: bun install --frozen-lockfile
+
+      # HARD GATE 2: secret scan over GIT-TRACKED files only.
+      # We feed `git ls-files` into grep so the scan surface is exactly what is
+      # committed — this is reproducible on a fresh checkout and naturally
+      # excludes node_modules/, dist/, build artifacts (e.g. Rust `target/`),
+      # and anything gitignored. We additionally drop the lockfile, which
+      # carries hex-ish integrity hashes. Aggregates hits across patterns and
+      # fails once at the end.
+      - name: Secret scan (HARD GATE)
+        run: |
+          set -uo pipefail
+          # Scan surface = git-tracked files only (reproducible on a fresh
+          # checkout; excludes node_modules/, dist/, build artifacts like Rust
+          # target/, and anything gitignored). git itself drops lockfiles via
+          # the `:!*.lock` pathspec (bun.lock carries hex-ish integrity hashes).
+          # `git ls-files -z | xargs -0 grep` is portable across BSD/GNU and
+          # avoids ARG_MAX on large trees.
+          echo "secret-scan: scanning $(git ls-files -- ':!*.lock' | wc -l | tr -d ' ') tracked files"
+
+          fail=0
+          scan() { # $1=label  $2=ERE pattern
+            local label="$1" pat="$2" out
+            out=$(git ls-files -z -- ':!*.lock' | xargs -0 grep -HInE "$pat" 2>/dev/null) || true
+            if [ -n "$out" ]; then
+              echo "::error::secret-scan tripped [$label]"
+              echo "$out"
+              fail=1
+            else
+              echo "ok [$label]"
+            fi
+          }
+
+          # (a) Bare high-entropy hex run (>=40). Catches this session's leaked
+          #     WS bearer tokens (64-hex in backticks in a .md). The repo has
+          #     NO legitimate >=40-hex strings outside the (excluded) lockfile.
+          scan "hex-run"          '[0-9a-f]{40,}'
+          # (b) Spec's token-adjacent hex (kept as a complementary signal; on
+          #     its own it MISSES the real leak, which had words between
+          #     "tokens" and the hex — hence (a) above is the primary guard).
+          scan "token-adjacent"   "(token|TOKEN)[\"': =]+[0-9a-f]{40,}"
+          # (c) Real Anthropic keys: sk-ant- followed by a long high-entropy
+          #     run. Does NOT match the short hyphenated `sk-ant-oat-totally-
+          #     bogus-...` test fixtures / redaction docs already in the repo.
+          scan "sk-ant-key"       'sk-ant-[A-Za-z0-9]{4,}[A-Za-z0-9_-]{30,}'
+          # (d) access/refresh token literals assigned a long value (not the
+          #     bare identifiers, which can legitimately appear in code).
+          scan "token-literal"    "(accessToken|refreshToken)[\"': =]+[A-Za-z0-9_.-]{20,}"
+
+          if [ "$fail" -ne 0 ]; then
+            echo
+            echo "Secret scan FAILED. A high-entropy secret appears in a tracked file."
+            echo "Scrub it from the working tree AND git history, rotate the secret, then re-push."
+            exit 1
+          fi
+          echo "Secret scan clean."
+
+      # KNOWN-RED (surfaced, not blocking): pre-existing tsc baseline.
+      - name: Typecheck (known-red baseline — non-blocking)
+        continue-on-error: true
+        run: bun run typecheck
+
+      # KNOWN-RED (surfaced, not blocking): bun:sqlite / jsdom env failures.
+      - name: Test (known-red baseline — non-blocking)
+        continue-on-error: true
+        run: bun run test

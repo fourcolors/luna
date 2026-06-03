@@ -105,11 +105,13 @@ Master is updated manually for now (the `--user` unit, see §4). After any deplo
    `bun install --frozen-lockfile` warned; only doctor's L4 real chat turn proved the server actually works.
 
 ## Known follow-ups (not blocking, tracked)
-- **bun.lock** is missing some transitive deps (e.g. `@csstools/css-calc`, `@exodus/bytes`) so
-  `bun install --frozen-lockfile` warns. Benign (node_modules satisfies boot+chat; doctor green), but
-  a clean non-frozen `bun install` + commit will clear it. Needs a working bun env (the dev Mac
-  sandbox fails on cache perms).
+- **bun.lock** — ✅ RESOLVED (commit `59d8018`): the missing transitive deps were added by a clean
+  non-frozen `bun install` (with a fresh writable cache dir to dodge the Mac sandbox cache-perm
+  failure), so `bun install --frozen-lockfile` now exits 0 on a clean machine. CI enforces this as a
+  hard gate (`.github/workflows/ci.yml`).
 - **master `--user` → system unit**: normalize it so `luna-update-server` (with rollback) drives
   future master deploys instead of the manual path.
-- **Design-spec branches** `feat/setup-mode-1b` + `feat/portable-server-installer` hold unmerged
-  specs (portable installer / dual-runtime / setup-mode) — a deliberate keep-or-merge decision, not stale.
+- **Design-spec branches** `feat/setup-mode-1b` + `feat/portable-server-installer` still hold unmerged
+  CODE (their implementations are superseded by what shipped on master). Their DESIGN docs were
+  cherry-picked onto master under `docs/superpowers/` (each carries a `Status:` note) — the branches
+  remain only as a keep-or-prune decision for the code, not the specs.

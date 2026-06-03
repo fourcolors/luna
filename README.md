@@ -29,11 +29,11 @@ Under the hood, Luna runs on the [Claude Code Agent SDK](https://docs.anthropic.
 
 **You need:**
 - A [Claude.ai](https://claude.ai) subscription (Pro or higher)
-- [Claude Code](https://claude.ai/code) installed and logged in (`claude login`)
+- The [Claude Code](https://claude.ai/code) CLI installed and authenticated via `claude setup-token`
 
-Install the Claude Code CLI and authenticate it on the machine that will run
-the Luna server. The client installer does not read or write Claude OAuth
-tokens.
+Install the `claude` CLI and run `claude setup-token` on the machine that will
+run the Luna server — this is the OAuth login the `AccountBroker` brokers. The
+client installer does not read or write Claude OAuth tokens.
 
 ## Stack
 
@@ -42,7 +42,7 @@ tokens.
 - **Agent SDK:** [Anthropic Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk)
 - **Database:** SQLite via `@effect/sql-sqlite-bun` · Vectorlite for HNSW vector search
 - **Testing:** Vitest
-- **UI:** Solid.js (web) · Tauri (desktop shell)
+- **UI:** Solid.js (web) · Tauri (desktop shell + Luna Moon floating widget) · the `luna` terminal client
 
 ## Architecture
 
@@ -75,47 +75,92 @@ packages/
   ui-shared/      — shared UI primitives
   ui-ws/          — WebSocket server for UI
 apps/
-  ui-web/         — Solid.js web chat interface
-  ui-tauri/       — Tauri desktop shell
-  agent-cli/      — reference CLI composition
+  agent-cli/      — the `luna` terminal client (chat, doctor, pair, account, memory)
+  ui-web/         — Solid.js web chat interface (Vite dev server on :5174)
+  ui-moon-tauri/  — Luna Moon: a small transparent floating-widget desktop app (Tauri)
+  ui-tauri/       — full-window desktop chat shell (Tauri)
 ```
 
-## Install
+### The apps, at a glance
 
-Luna is a monorepo. A clone contains the terminal client, web UI, server
-runtime, shared packages, and host/container setup scripts.
+| App | What it is |
+|-----|------------|
+| `agent-cli` | The `luna` CLI you install on your Mac. `luna chat` opens a terminal chat; `luna doctor` runs a connection preflight; `luna pair` points the CLI + Moon widget at a server in one command. |
+| `ui-web` | The Solid.js web chat UI, served by Vite on `http://localhost:5174`. This is also where first-run Claude subscription login happens. |
+| `ui-moon-tauri` | "Luna Moon" — a small (140×140), transparent, always-on-top floating crescent widget. Click it for a chat panel; toggle with `Cmd/Ctrl+Shift+K`. |
+| `ui-tauri` | A full-window (1280×800) native desktop chat shell. |
 
-### Quick Start (macOS Double-Click)
+The LLM behind every surface is **cloud Claude via your Claude.ai subscription**
+(see [Authentication](#authentication)); the server reaches it through the
+`claude` CLI, so the server machine must be logged in with `claude setup-token`.
+Local Ollama is used only for memory embeddings, not for chat.
 
-If you are on macOS, the absolute easiest way to install and run Luna is by double-clicking the installer script:
-1. Double-click the `install-mac.command` file at the root of the cloned repository.
-2. Select Option **[1] Complete Desktop Install** to automatically install the terminal client, spin up the chat-server and web UI in the background, and open your browser to the chat interface.
+## Quick Start
 
----
+Luna is a monorepo. A clone contains the terminal client, web UI, the desktop
+widgets, the server runtime, shared packages, and host/container setup scripts.
 
-### Terminal Client (macOS Manual)
-
-Install the terminal client on a Mac:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/fourcolors/luna/master/install.sh | bash
-```
-
-Or clone and run locally:
+**Step 0 — clone the repo.** Everything below assumes you have a local clone:
 
 ```bash
 git clone https://github.com/fourcolors/luna.git ~/Projects/luna
-bash ~/Projects/luna/install.sh
+cd ~/Projects/luna
 ```
 
-The installer clones the monorepo, installs dependencies, creates `~/.luna/`,
-and writes a `luna` wrapper that runs the terminal client:
+You also need [Bun](https://bun.sh) (the installers will install it for you if
+it is missing) and, on the machine that runs the server, the `claude` CLI
+logged in with `claude setup-token` (see [Authentication](#authentication)).
+
+### macOS: double-click installer
+
+The easiest path on macOS is the interactive installer at the repo root.
+Double-click **`install-mac.command`** in Finder (or run `./install-mac.command`
+from Terminal in the clone) and pick a profile:
+
+| Option | What it does | Extra requirements |
+|--------|--------------|--------------------|
+| **[1] Complete Desktop Install** | Installs the `luna` CLI, starts the chat server (supervised by launchd) and the Vite web UI on your Mac, and opens `http://localhost:5174`. | `claude setup-token` login on first run |
+| **[2] Remote Server Client** | Installs the `luna` CLI only and points it at a remote Luna server (prompts for the WebSocket URL + token). | a running remote server |
+| **[3] Separated Client / Server** | Installs the `luna` CLI wrapper only and prints manual server-deploy instructions. | — |
+| **[4] Luna Moon — floating widget** | Starts the supervised local server (launchd) and launches the **Luna Moon** native floating widget; the token is auto-configured. | the **Rust toolchain** ([rustup](https://rustup.rs) + `cargo install tauri-cli`) **and** the `claude` CLI |
+
+Option 4 compiles the Tauri app on first launch via `cargo tauri dev`, so the
+Rust toolchain (`cargo`) and the `cargo-tauri` CLI must be installed first; the
+installer aborts with instructions if either is missing. The widget can only
+chat once the server has a logged-in Claude account, so on a fresh box it opens
+the web UI for a one-time `claude setup-token` login before starting the moon.
+
+### Any platform: terminal client only
+
+To install just the `luna` terminal client, run `install.sh` from the clone (or
+pipe it from GitHub):
+
+```bash
+bash ~/Projects/luna/install.sh
+# or:
+curl -fsSL https://raw.githubusercontent.com/fourcolors/luna/master/install.sh | bash
+```
+
+The installer clones/updates the monorepo, installs dependencies, creates
+`~/.luna/`, and writes a `luna` wrapper onto your PATH (`~/.local/bin/luna`).
+Run `bash install.sh --help` to see all flags (custom clone path, server URLs,
+tokens, dry-run).
 
 After install:
 ```bash
 luna chat        # stable runtime
 luna chat --dev  # dev runtime
+luna doctor      # connection preflight: server reachable? token good? chat ready?
+luna pair        # point the CLI + Moon widget at a server in one command
 ```
+
+If you are connecting to a remote server, `luna pair --url ws://<host>:4753/ui
+--token <ui-ws-token>` writes both `~/.luna/.env` and the Moon connection file,
+then runs `luna doctor` to confirm the link is green. See
+[How to test & verify](./docs/HOW_TO_TEST_AND_VERIFY.md) for the full
+verification playbook (doctor failure modes, pairing, boot smokes).
+
+### Server and container setup
 
 Server and container setup are separate, explicit operations:
 
@@ -129,6 +174,17 @@ The clone includes scripts for Linux hosts:
 scripts/luna-server-install --help
 scripts/luna-container-create --help
 ```
+
+> **Networking / security model — Tailscale is the transport.** The WebSocket
+> layer is plaintext `ws://` with the bearer token in the URL, so it has no
+> transport confidentiality on its own and is meant to run **behind a
+> [Tailscale](https://tailscale.com) tailnet**. The install scripts reflect this:
+> when a tailnet is present they auto-bind the host's Tailscale IP (so a remote
+> Mac reaches the server with no extra flags), otherwise they bind loopback and
+> warn. Exposing the server on a public interface (`0.0.0.0`) is a deliberate,
+> warned opt-in (`--i-understand-public`) and is unsafe without a private network
+> in front of it. `luna doctor` warns if you point a client at a non-tailnet,
+> non-loopback host.
 
 ## Runtime model
 
@@ -228,13 +284,18 @@ Known local caveat: some DuckDB/telemetry tests currently fail under Vitest
 when it cannot load `bun:sqlite`. Use the focused checks above for deployment
 script changes until that test-runner issue is fixed.
 
+For the full verification playbook — `luna doctor` failure modes, `luna pair`,
+the `luna-update-server` rollback flow, the green test baseline, and the
+ManagedRuntime boot smokes — see
+[How to test & verify](./docs/HOW_TO_TEST_AND_VERIFY.md).
+
 ### Dev servers
 
 ```bash
 # Web UI (Vite, hot reload)
 bun run --filter '@luna/ui-web' dev
 
-# Chat backend (requires Claude Code login)
+# Chat backend (requires the `claude` CLI logged in via `claude setup-token`)
 bun run --filter '@luna/ui-web' server:chat
 ```
 
