@@ -20,7 +20,7 @@
       --moon-shadow: #0f1225;
       
       /* Glassmorphism settings for native widget */
-      --glass-bg: rgba(10, 14, 28, 0.72);
+      --glass-bg: rgba(10, 14, 28, 0.92);
       --glass-border: rgba(255, 255, 255, 0.1);
       --glass-glow: rgba(138, 180, 248, 0.04);
       --primary: #8ab4f8;
@@ -128,23 +128,43 @@
       position: absolute;
       left: 145px;
       top: 15px;
-      width: 380px;
-      height: 480px;
+      /* Fill the window (right/bottom instead of fixed width/height) so dragging the
+         corner grip — which resizes the native window — grows the whole panel, and the
+         flex:1 messages area (the reading surface) grows with it. */
+      right: 15px;
+      bottom: 15px;
+      min-width: 300px;
+      min-height: 360px;
       background: var(--glass-bg);
-      border: 1px solid var(--glass-border);
-      border-radius: 20px;
-      box-shadow: 
-        0 20px 50px rgba(0, 0, 0, 0.6),
-        inset 0 0 15px var(--glass-glow);
-      backdrop-filter: blur(28px) saturate(200%);
-      -webkit-backdrop-filter: blur(28px) saturate(200%);
+      /* Edge treatment (researched). A real `border` draws its arc at the BORDER-box radius,
+         while overflow:hidden clips content at the PADDING-box radius (radius - border-width),
+         and an inset ring sits at a 3rd radius -> THREE concentric corner arcs that read as
+         "two borders"/tearing on Retina. With border-width:0 the clip radius == border-box
+         radius, so all arcs collapse onto ONE. The glass double-edge is now drawn purely with
+         spread-only (blur:0) box-shadow rings that ride that single radius -- a thin OUTER
+         hairline + a fuller INNER ring. (No border / mask / filter -> no extra compositing.) */
+      border-radius: 56px 56px 64px 64px;   /* TL TR BR BL — all rounded, a touch more on the two BOTTOM corners */
+      /* Low-offset, near-symmetric drop shadow. A big downward offset (was 0 16px) piles dark
+         blur under the BOTTOM corners only, so the bottom corners read as pointed while the top
+         ones look round. A small offset keeps all four corners even. No outer/non-inset ring
+         (its corner geometry doesn't track border-radius and pokes a point); the glass edge is
+         an INSET ring, which is clipped to the rounded corner and can't create a point. */
+      box-shadow:
+        0 4px 24px rgba(0, 0, 0, 0.38),                 /* soft, near-symmetric drop shadow */
+        inset 0 0 0 1px rgba(255, 255, 255, 0.06),      /* inner highlight ring (the glass edge) */
+        inset 0 0 16px var(--glass-glow);               /* faint inner glow */
+      /* No backdrop-filter: on a transparent macOS WKWebView window it intermittently
+         composites the whole panel to fully transparent after a repaint. The solid
+         --glass-bg below keeps the panel looking like dark glass without that bug. */
       z-index: 50;
       opacity: 0;
-      transform: scale(0.95) translateX(-20px);
+      /* Opacity-only entrance (NO transform). A transform promotes the panel to a GPU layer
+         for the animation's duration, and a composited rounded-corner clip is aliased (1-bit)
+         over a transparent window -> the old scale/slide entrance re-jagged the corners for
+         ~300ms every open. With no transform anywhere, the panel never leaves WebKit's AA'd
+         paint path, so corners stay smooth at rest AND through the fade. */
       pointer-events: none;
-      transition: 
-        opacity 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
-        transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+      transition: opacity 0.3s ease;
       display: flex;
       flex-direction: column;
       overflow: hidden;
@@ -152,10 +172,31 @@
     
     .chat-panel.active {
       opacity: 1;
-      transform: scale(1) translateX(0);
       pointer-events: all;
     }
-    
+
+    /* Corner grip: drag to resize the whole panel (triggers native window resize).
+       Visible little handle, inset from the rounded corner so it reads clearly and
+       sits in the panel's hittable area. */
+    .resize-grip {
+      position: absolute;
+      right: 16px;
+      bottom: 16px;
+      width: 16px;
+      height: 16px;
+      z-index: 70;
+      cursor: nwse-resize;
+      pointer-events: auto;
+      border-radius: 4px;
+      opacity: 0.6;
+      transition: opacity 0.15s ease;
+      /* two short diagonal grip ticks */
+      background:
+        linear-gradient(135deg, transparent 44%, rgba(255, 255, 255, 0.7) 44%, rgba(255, 255, 255, 0.7) 54%, transparent 54%) no-repeat,
+        linear-gradient(135deg, transparent 66%, rgba(255, 255, 255, 0.7) 66%, rgba(255, 255, 255, 0.7) 76%, transparent 76%) no-repeat;
+    }
+    .resize-grip:hover { opacity: 0.95; }
+
     /* Header (Supports Dragging Window too!) */
     .chat-header {
       padding: 14px 18px;
@@ -318,8 +359,7 @@
       width: 100%;
       height: calc(100% - 57px);
       background: rgba(10, 14, 28, 0.95);
-      backdrop-filter: blur(28px);
-      -webkit-backdrop-filter: blur(28px);
+      /* No backdrop-filter — see .chat-panel: WKWebView transparency punch-through. */
       z-index: 60;
       display: flex;
       flex-direction: column;
@@ -556,6 +596,46 @@
       color: #e2e8f0;
       border-bottom-left-radius: 4px;
     }
+
+    /* Markdown rendering inside assistant bubbles (mirrors ui-web's .markdown conventions) */
+    .msg.assistant > :first-child { margin-top: 0; }
+    .msg.assistant > :last-child { margin-bottom: 0; }
+    .msg.assistant p { margin: 0.5em 0; white-space: pre-wrap; } /* keep single newlines */
+    .msg.assistant h1, .msg.assistant h2, .msg.assistant h3 {
+      margin: 0.6em 0 0.3em;
+      line-height: 1.25;
+      font-weight: 700;
+    }
+    .msg.assistant h1 { font-size: 1.2em; }
+    .msg.assistant h2 { font-size: 1.12em; }
+    .msg.assistant h3 { font-size: 1.05em; }
+    .msg.assistant ul, .msg.assistant ol { margin: 0.4em 0; padding-left: 1.3em; }
+    .msg.assistant li { margin: 0.15em 0; }
+    .msg.assistant a { color: #8ab4f8; text-decoration: none; }
+    .msg.assistant a:hover { text-decoration: underline; }
+    .msg.assistant strong { font-weight: 700; }
+    .msg.assistant em { font-style: italic; }
+    .msg.assistant code {
+      background: rgba(255, 255, 255, 0.1);
+      padding: 0.1em 0.35em;
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.86em;
+    }
+    .msg.assistant pre {
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      padding: 9px 11px;
+      border-radius: 8px;
+      overflow-x: auto;      /* long code lines scroll instead of widening the bubble */
+      margin: 0.5em 0;
+    }
+    .msg.assistant pre code {
+      background: none;
+      padding: 0;
+      font-size: 0.82em;
+      line-height: 1.45;
+    }
     
     /* Typing indicator dots */
     .typing-dots {
@@ -582,21 +662,27 @@
     
     /* Input Area */
     .chat-input-area {
-      padding: 12px 16px 16px;
+      padding: 12px 24px 26px; /* extra side + bottom padding so the input box & send button clear the rounded bottom corners */
       border-top: 1px solid rgba(255, 255, 255, 0.05);
       display: flex;
+      align-items: flex-end; /* keep the send button at the bottom as the textarea is dragged taller */
       gap: 8px;
     }
     
     .chat-input {
       flex: 1;
-      height: 38px;
+      min-height: 38px;        /* one-line floor (was the fixed height) */
+      max-height: 320px;       /* cap so a few lines of message history stay visible in the 480px panel */
+      height: 38px;            /* initial size; native resize overrides this inline */
+      resize: vertical;        /* drag the bottom-right corner to grow the box */
+      overflow-y: auto;        /* scroll inside once content exceeds the dragged height */
       background: rgba(255, 255, 255, 0.03);
       border: 1px solid rgba(255, 255, 255, 0.08);
       border-radius: 10px;
-      padding: 0 14px;
+      padding: 9px 14px;       /* vertical padding now matters for multi-line text */
       font-family: var(--font-body);
       font-size: 0.84rem;
+      line-height: 1.4;
       color: #fff;
       outline: none;
       transition: border-color 0.2s, background 0.2s;
@@ -841,13 +927,16 @@
     </div>
     
     <form class="chat-input-area" id="chat-form">
-      <input type="text" class="chat-input" id="message-input" placeholder="Type a message..." autocomplete="off">
+      <textarea class="chat-input" id="message-input" placeholder="Type a message..." rows="1" autocomplete="off"></textarea>
       <button type="submit" class="send-btn" aria-label="Send message">
         <svg viewBox="0 0 24 24">
           <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
         </svg>
       </button>
     </form>
+    <!-- Drag this corner to resize the whole panel. It triggers a native window resize
+         (the window is frameless, so it has no OS resize edges of its own). -->
+    <div class="resize-grip" id="resize-grip" title="Drag to resize" aria-hidden="true"></div>
   </div>
 
   <script>
@@ -970,8 +1059,13 @@
      * Tauri Window & OS integration services.
      */
     const TauriService = {
+      // Last logical window size we requested. Kept current by setWindowSize so the
+      // resize grip can read the starting size synchronously (no awaited IPC on grab).
+      lastSize: { w: 140, h: 140 },
+
       async setWindowSize(width, height) {
         if (!window.__TAURI__) return;
+        this.lastSize = { w: width, h: height };
         try {
           const { getCurrentWindow, LogicalSize } = window.__TAURI__.window;
           const appWindow = getCurrentWindow();
@@ -1004,6 +1098,8 @@
           }
         }
       }
+      // Note: corner resize is NOT done via the native startResizeDragging (unreliable on
+      // a borderless macOS window); the resize-grip handler drives setWindowSize directly.
     };
 
     /**
@@ -1332,7 +1428,7 @@
             DOM.chatMessages.innerHTML = '';
             if (frame.messages && frame.messages.length > 0) {
               for (const msg of frame.messages) {
-                ChatEngine.appendMessage(msg.role, msg.text);
+                ChatEngine.appendMessage(msg.role, msg.text, msg.role === 'assistant');
               }
             } else {
               ChatEngine.appendMessage('assistant', 'This thread is empty. Type a message below to start chatting!');
@@ -1375,13 +1471,14 @@
             let doneMsg = DOM.chatMessages.lastElementChild;
             if (doneMsg && doneMsg.classList.contains('assistant') && doneMsg.querySelector('.typing-dots')) {
               if (frame.message && frame.message.text) {
-                doneMsg.innerHTML = '';
-                doneMsg.textContent = frame.message.text;
+                // Final, canonical text -> render Markdown (streaming was plain text).
+                doneMsg.innerHTML = renderMarkdown(frame.message.text);
               } else {
                 doneMsg.remove();
               }
             } else if (frame.message && doneMsg && doneMsg.classList.contains('assistant')) {
-              doneMsg.textContent = frame.message.text;
+              // Replace the plain streamed text with the Markdown-rendered final form.
+              doneMsg.innerHTML = renderMarkdown(frame.message.text ?? doneMsg.textContent);
             }
             DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
             break;
@@ -1407,14 +1504,114 @@
     };
 
     /**
+     * Minimal, security-first Markdown -> HTML for assistant messages.
+     *
+     * Strategy: pull code spans/blocks out FIRST, then HTML-escape EVERYTHING
+     * (incl. `"` for attribute safety), then apply a fixed set of transforms that
+     * only ever emit tags/attributes we control. Because the source is escaped
+     * before any transform runs, model output cannot inject raw HTML or
+     * event-handler attributes. The two attribute surfaces are locked down:
+     *   - link href: scheme allowlist (http/https/mailto) + plain-text fallback
+     *   - code-fence language: allowlisted to [A-Za-z0-9] before -> class="language-X"
+     * Covers fenced+inline code, bold, italic, links, h1-h3, blockquote,
+     * unordered/ordered lists, paragraphs. (No tables/nesting/reference links v1.)
+     */
+    function renderMarkdown(src) {
+      const FENCE = '\uE000', CODE = '\uE001'; // sentinels survive escaping & match no inline regex
+      const fences = [], spans = [];
+      let text = String(src == null ? '' : src).replace(/\r\n?/g, '\n');
+
+      // 1) Extract fenced code blocks (raw contents stashed, re-escaped on re-insert)
+      text = text.replace(/```([^\n`]*)\n?([\s\S]*?)```/g, (_m, lang, code) => {
+        const safeLang = /^[A-Za-z0-9]+$/.test(lang.trim()) ? lang.trim() : '';
+        fences.push({ lang: safeLang, code: code.replace(/\n+$/, '') });
+        return `\n${FENCE}${fences.length - 1}${FENCE}\n`;
+      });
+      // 2) Extract inline code
+      text = text.replace(/`([^`\n]+)`/g, (_m, code) => {
+        spans.push(code);
+        return `${CODE}${spans.length - 1}${CODE}`;
+      });
+
+      // 3) Escape ALL HTML (incl. quotes -> closes the attribute-breakout surface)
+      const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      text = esc(text);
+
+      // 4) Inline transforms — run on already-escaped text, emit only safe tags
+      const inline = (s) => {
+        // links [label](url): validate scheme; on failure render as plain text
+        s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label, url) =>
+          /^(https?:|mailto:)/i.test(url) ? `<a href="${url}">${label}</a>` : `${label} (${url})`);
+        s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        s = s.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+        s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+        s = s.replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>');
+        return s;
+      };
+
+      // 5) Block assembly, line by line
+      const lines = text.split('\n');
+      let html = '', para = [], i = 0;
+      const flush = () => { if (para.length) { html += `<p>${inline(para.join('\n'))}</p>`; para = []; } };
+      while (i < lines.length) {
+        const line = lines[i];
+        const fm = line.match(new RegExp(`^${FENCE}(\\d+)${FENCE}$`));
+        if (fm) {
+          flush();
+          const f = fences[+fm[1]];
+          const cls = f.lang ? ` class="language-${f.lang}"` : '';
+          html += `<pre><code${cls}>${esc(f.code)}</code></pre>`;
+          i++; continue;
+        }
+        if (/^\s*$/.test(line)) { flush(); i++; continue; }
+        const hm = line.match(/^(#{1,3})\s+(.*)$/);
+        if (hm) { flush(); html += `<h${hm[1].length}>${inline(hm[2])}</h${hm[1].length}>`; i++; continue; }
+        if (/^&gt;\s?/.test(line)) {
+          flush();
+          const q = [];
+          while (i < lines.length && /^&gt;\s?/.test(lines[i])) { q.push(lines[i].replace(/^&gt;\s?/, '')); i++; }
+          html += `<blockquote>${inline(q.join('\n'))}</blockquote>`;
+          continue;
+        }
+        if (/^\s*[-*+]\s+/.test(line)) {
+          flush();
+          const items = [];
+          while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*[-*+]\s+/, '')); i++; }
+          html += `<ul>${items.map((it) => `<li>${inline(it)}</li>`).join('')}</ul>`;
+          continue;
+        }
+        if (/^\s*\d+\.\s+/.test(line)) {
+          flush();
+          const items = [];
+          while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*\d+\.\s+/, '')); i++; }
+          html += `<ol>${items.map((it) => `<li>${inline(it)}</li>`).join('')}</ol>`;
+          continue;
+        }
+        para.push(line); i++;
+      }
+      flush();
+
+      // 6) Re-insert inline code with escaped contents
+      return html.replace(new RegExp(`${CODE}(\\d+)${CODE}`, 'g'), (_m, n) => `<code>${esc(spans[+n])}</code>`);
+    }
+
+    /**
      * Chat Messaging & WebSocket submission engine.
      */
     const ChatEngine = {
-      appendMessage(role, text) {
+      // render=true renders Markdown into the bubble (assistant only); default stays
+      // plain textContent so user messages and status/error strings remain literal.
+      appendMessage(role, text, render = false) {
         const msgDiv = document.createElement('div');
         msgDiv.className = `msg ${role}`;
-        msgDiv.textContent = text;
+        if (render && role === 'assistant') {
+          msgDiv.innerHTML = renderMarkdown(text);
+        } else {
+          msgDiv.textContent = text;
+        }
         DOM.chatMessages.appendChild(msgDiv);
+        return msgDiv;
       },
 
       showTypingIndicator() {
@@ -1905,11 +2102,74 @@
     DOM.moon.addEventListener('pointerup', (e) => UIController.handlePointerUp(e));
     DOM.moon.addEventListener('pointerleave', () => UIController.handlePointerLeave());
     DOM.chatHeader.addEventListener('pointerdown', () => TauriService.startDragging());
+    // Corner grip: drag to resize the whole panel.
+    // We resize the window OURSELVES via setSize (the same call that grows the window
+    // on chat-open, so it's known to work) instead of the native startResizeDragging,
+    // which is unreliable on a borderless/decorations:false macOS window. Each pointermove
+    // sets newSize = sizeAtGrab + (pointer screen-delta); screen coords are used so the
+    // math is immune to the window/grip shifting under the cursor as it grows.
+    const resizeGrip = document.getElementById('resize-grip');
+    if (resizeGrip) {
+      const MIN_W = 360, MIN_H = 360;
+      let resizing = false, startX = 0, startY = 0, startW = 0, startH = 0;
+      let pendingW = 0, pendingH = 0, rafId = 0;
+
+      const flush = () => {
+        rafId = 0;
+        TauriService.setWindowSize(pendingW, pendingH);
+      };
+
+      // Grab synchronously: read the cached size + pointer position and arm immediately,
+      // so even the very first move during a fast drag is counted (no awaited IPC here).
+      resizeGrip.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!window.__TAURI__) return;
+        startW = TauriService.lastSize.w;
+        startH = TauriService.lastSize.h;
+        startX = e.screenX;
+        startY = e.screenY;
+        resizing = true;
+        try { resizeGrip.setPointerCapture(e.pointerId); } catch (_) {}
+      });
+
+      resizeGrip.addEventListener('pointermove', (e) => {
+        if (!resizing) return;
+        pendingW = Math.max(MIN_W, Math.round(startW + (e.screenX - startX)));
+        pendingH = Math.max(MIN_H, Math.round(startH + (e.screenY - startY)));
+        if (!rafId) rafId = requestAnimationFrame(flush);
+      });
+
+      const endResize = (e) => {
+        if (!resizing) return;
+        resizing = false;
+        if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+        try { resizeGrip.releasePointerCapture(e.pointerId); } catch (_) {}
+      };
+      resizeGrip.addEventListener('pointerup', endResize);
+      resizeGrip.addEventListener('pointercancel', endResize);
+    }
 
     // Chat Panel Controls
     DOM.closeChat.addEventListener('click', () => UIController.toggleChat());
     DOM.newChat.addEventListener('click', () => ChatEngine.newConversation());
     DOM.chatForm.addEventListener('submit', (e) => ChatEngine.handleSubmit(e));
+    // Textarea: Enter sends, Shift+Enter inserts a newline (a textarea otherwise newlines on Enter).
+    DOM.messageInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        ChatEngine.handleSubmit(e);
+      }
+    });
+    // Markdown links must never navigate the webview in place (that would replace the
+    // moon UI). preventDefault() keeps the widget intact; window.open is best-effort
+    // (no opener/shell plugin is installed, so external open may be a no-op — that's fine).
+    DOM.chatMessages.addEventListener('click', (e) => {
+      const a = e.target.closest && e.target.closest('a[href]');
+      if (!a) return;
+      e.preventDefault();
+      try { window.open(a.href, '_blank', 'noopener'); } catch (_) { /* inert link; UI preserved */ }
+    });
 
     // Settings Panel Controls
     DOM.toggleSettings.addEventListener('click', () => SettingsEngine.toggle());
