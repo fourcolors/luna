@@ -12,6 +12,13 @@ tauri = { version = "2", features = ["macos-private-api"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-global-shortcut = "2.3.2"
+tauri-plugin-dialog = "2"
+# Local-shell executor: async spawn with a bounded timeout + piped output.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "process", "time", "io-util"] }
+
+[target.'cfg(unix)'.dependencies]
+# kill(2) the child's process group on timeout (mirrors the CLI's detached spawn).
+libc = "0.2"
 
 [features]
 default = ["custom-protocol"]

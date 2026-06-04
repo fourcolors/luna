@@ -13,6 +13,9 @@
     "allow-save-connection",
     "allow-load-connection",
     "allow-load-profiles",
-    "allow-set-active-profile"
+    "allow-set-active-profile",
+    "allow-local-shell-exec",
+    "allow-get-platform",
+    "dialog:allow-open"
   ]
 }

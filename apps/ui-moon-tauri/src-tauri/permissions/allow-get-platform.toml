@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-get-platform"
+description = "Allows reading the client OS identifier (macos/linux/windows)"
+
+[permission.commands]
+allow = [
+  "get_platform"
+]

@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-local-shell-exec"
+description = "Allows running a shell command on the client machine via the local-shell bridge"
+
+[permission.commands]
+allow = [
+  "local_shell_exec"
+]
