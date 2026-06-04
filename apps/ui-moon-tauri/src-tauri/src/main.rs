@@ -483,6 +483,50 @@ mod tests {
         assert!(profile_connection(&profiles, "stable").is_some());
     }
 
+    // END-TO-END toggle persistence: the exact chain the Settings dropdown
+    // invokes (set_active_profile -> persist_profiles -> connection_path/$HOME).
+    // The pure-function tests above never touch this because the #[tauri::command]
+    // fns are HOME-dependent — so we redirect HOME to a temp dir and drive the
+    // real command. This is the test that decides whether the reported
+    // "in-app channel toggle doesn't persist" is a code bug.
+    #[test]
+    fn set_active_profile_persists_to_disk_and_preserves_both_channels() {
+        let orig_home = std::env::var("HOME").ok();
+        let dir = std::env::temp_dir().join(format!("luna-moon-toggle-{}", std::process::id()));
+        let luna = dir.join(".luna");
+        std::fs::create_dir_all(&luna).unwrap();
+        std::env::set_var("HOME", &dir);
+
+        // Seed a realistic moon-connection.json: active=stable, BOTH channels paired.
+        let seed = r#"{"activeProfile":"stable","profiles":{"stable":{"wsUrl":"ws://jax-box:4753/ui","wsToken":"stok"},"dev":{"wsUrl":"ws://jax-box:5753/ui","wsToken":"dtok"}}}"#;
+        std::fs::write(luna.join("moon-connection.json"), seed).unwrap();
+
+        // Toggle stable -> dev (what the dropdown `change` handler invokes).
+        let creds = set_active_profile("dev".to_string()).expect("switch to dev ok");
+        assert_eq!(creds["wsToken"], json!("dtok"), "returns the now-active dev creds");
+
+        // The file on disk must now read activeProfile=dev with BOTH profiles intact.
+        let after = read_connection_value().expect("file present after toggle");
+        let (active, profiles) = normalize_profiles(&after);
+        assert_eq!(active, "dev", "activeProfile PERSISTED to disk after toggle");
+        assert!(profile_connection(&profiles, "stable").is_some(), "stable creds preserved");
+        assert!(profile_connection(&profiles, "dev").is_some(), "dev creds preserved");
+
+        // Toggle back dev -> stable; must flip on disk again with no creds lost.
+        set_active_profile("stable".to_string()).expect("switch back ok");
+        let back = read_connection_value().unwrap();
+        let (active2, profiles2) = normalize_profiles(&back);
+        assert_eq!(active2, "stable", "activeProfile flips back to stable on disk");
+        assert!(profile_connection(&profiles2, "dev").is_some(), "dev creds still preserved");
+
+        // Restore HOME so we don't disturb any other (parallel) test.
+        match orig_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn write_atomic_0600_round_trips_and_sets_mode() {
         use std::os::unix::fs::PermissionsExt;
