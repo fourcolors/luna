@@ -362,4 +362,110 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(windowConfig.decorations).toBe(false)
     })
   })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: Live-streaming markdown render
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Streaming markdown formatting', () => {
+    // The pure helpers + StreamRender are exposed via window.__MoonInternals
+    // (test-only hook) — production code never reads it.
+    const internals = (): {
+      closeOpenFences: (s: string) => string
+      renderMarkdown: (s: string) => string
+      renderMarkdownStreaming: (s: string) => string
+      StreamRender: {
+        schedule: (b: HTMLElement) => void
+        cancel: (b: HTMLElement) => void
+        append: (b: HTMLElement, delta: string) => void
+        reset: (b: HTMLElement, text: string) => void
+        finalize: (b: HTMLElement, finalText: string) => void
+      }
+    } => (window as any).__MoonInternals
+
+    beforeEach(() => {
+      // Stub requestAnimationFrame to run synchronously so the test can
+      // observe the render without waiting for an actual frame. The real
+      // runtime uses rAF for coalescing; here we want determinism.
+      vi.useRealTimers()
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => {
+        cb(0)
+        return 1
+      }
+      ;(window as any).cancelAnimationFrame = () => {}
+    })
+
+    it('Scenario: closeOpenFences auto-closes a dangling ``` so partial code renders as code', () => {
+      const { closeOpenFences } = internals()
+      const partial = 'before\n\`\`\`ts\nconst x = 1'
+      expect(closeOpenFences(partial)).toBe(
+        'before\n\`\`\`ts\nconst x = 1\n\`\`\`',
+      )
+    })
+
+    it('Scenario: balanced fences pass through unchanged', () => {
+      const { closeOpenFences } = internals()
+      const balanced = '\`\`\`js\nfoo\n\`\`\`'
+      expect(closeOpenFences(balanced)).toBe(balanced)
+    })
+
+    it('Scenario: renderMarkdownStreaming emits <pre><code> for in-progress fences', () => {
+      const { renderMarkdownStreaming } = internals()
+      const partial = 'see:\n\`\`\`ts\nconst x = 1'
+      const html = renderMarkdownStreaming(partial)
+      expect(html).toContain('<pre><code')
+      expect(html).toContain('class="language-ts"')
+      expect(html).toContain('const x = 1')
+    })
+
+    it('Scenario: assistant-delta path renders <strong> live, not raw asterisks', () => {
+      const { StreamRender } = internals()
+      const bubble = document.createElement('div')
+      bubble.className = 'msg assistant'
+      document.body.appendChild(bubble)
+
+      // First delta: seed the bubble (mirrors the typing-dots → first-delta branch).
+      StreamRender.reset(bubble, 'Hello, **wor')
+      // Mid-stream: partial bold marker still open — raw text is acceptable here.
+      expect(bubble.dataset.streamRaw).toBe('Hello, **wor')
+
+      // Next delta: completes the bold marker. Bold should render live.
+      StreamRender.append(bubble, 'ld**!')
+      expect(bubble.dataset.streamRaw).toBe('Hello, **world**!')
+      expect(bubble.innerHTML).toContain('<strong>world</strong>')
+      // The original raw markers must not appear in the rendered HTML.
+      expect(bubble.innerHTML).not.toContain('**world**')
+    })
+
+    it('Scenario: assistant-delta path keeps an in-progress code block as <pre><code>', () => {
+      const { StreamRender } = internals()
+      const bubble = document.createElement('div')
+      bubble.className = 'msg assistant'
+      document.body.appendChild(bubble)
+
+      // Stream a fence opener and partial body — no closer yet.
+      StreamRender.reset(bubble, 'Here is code:\n\`\`\`ts\nconst x = 1')
+      expect(bubble.innerHTML).toContain('<pre><code')
+      expect(bubble.innerHTML).toContain('const x = 1')
+
+      // Append more code; still no closer; still rendered as code.
+      StreamRender.append(bubble, '\nconst y = 2')
+      expect(bubble.innerHTML).toContain('const y = 2')
+      // Should NOT have rendered the body as a paragraph.
+      expect(bubble.innerHTML).not.toMatch(/<p>const y = 2<\/p>/)
+    })
+
+    it('Scenario: finalize cancels pending frames and writes the canonical text', () => {
+      const { StreamRender } = internals()
+      const bubble = document.createElement('div')
+      bubble.className = 'msg assistant'
+      document.body.appendChild(bubble)
+
+      StreamRender.reset(bubble, 'partial **bold')
+      // Finalize with the canonical text the server sent on assistant-done.
+      StreamRender.finalize(bubble, 'final **bold** text')
+      expect(bubble.innerHTML).toContain('<strong>bold</strong>')
+      // Raw-text dataset should be cleared after finalize.
+      expect(bubble.dataset.streamRaw).toBeUndefined()
+    })
+  })
 })

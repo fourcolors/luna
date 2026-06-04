@@ -1806,48 +1806,53 @@
             break;
 
           case 'assistant-delta': {
-            // Dynamic premium streaming message update!
+            // Stream markdown live, one render per animation frame.
+            // The bubble carries `data-stream-raw` as the accumulated
+            // source-of-truth; StreamRender re-parses it through
+            // renderMarkdownStreaming() (closeOpenFences + renderMarkdown)
+            // so partial code fences stay formatted as code instead of
+            // flickering between code and prose as the closer arrives.
             State.activeTurnId = frame.turnId;
             this.startTurnTimeout();
             let lastMsg = DOM.chatMessages.lastElementChild;
-            
-            // If the last message is an assistant message and not a user one, append to it.
+
             if (lastMsg && lastMsg.classList.contains('assistant')) {
-              // Check if it's the typing indicator container (which has class assistant but contains .typing-dots)
               if (lastMsg.querySelector('.typing-dots')) {
-                // Replace typing indicator with the first delta
+                // First delta of the turn — drop the typing dots and seed
+                // the streaming buffer with the initial delta text.
                 lastMsg.innerHTML = '';
-                lastMsg.textContent = frame.text;
+                StreamRender.reset(lastMsg, frame.text);
               } else {
-                // Append delta text
-                lastMsg.textContent += frame.text;
+                StreamRender.append(lastMsg, frame.text);
               }
             } else {
-              // Create new assistant message
-              ChatEngine.appendMessage('assistant', frame.text);
+              // No assistant bubble yet (rare; usually typing dots exist).
+              // Append an empty assistant bubble and seed it with the delta.
+              ChatEngine.appendMessage('assistant', '');
+              const fresh = DOM.chatMessages.lastElementChild;
+              StreamRender.reset(fresh, frame.text);
             }
             DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
             break;
           }
 
           case 'assistant-done': {
-            // Finalize streaming turn
+            // Finalize streaming turn. StreamRender.finalize cancels any
+            // pending rAF render and writes the canonical text so a late
+            // frame can't clobber the final state.
             State.activeTurnId = null;
             this.clearTurnTimeout();
-            // Force a clean sync of the UI to make sure the final structured message matches.
-            // Also handle the zero-delta path: a turn that went straight from
-            // showTypingIndicator() to assistant-done still has spinning dots.
             let doneMsg = DOM.chatMessages.lastElementChild;
             if (doneMsg && doneMsg.classList.contains('assistant') && doneMsg.querySelector('.typing-dots')) {
               if (frame.message && frame.message.text) {
-                // Final, canonical text -> render Markdown (streaming was plain text).
-                doneMsg.innerHTML = renderMarkdown(frame.message.text);
+                // Zero-delta path: typing dots straight to done.
+                StreamRender.finalize(doneMsg, frame.message.text);
               } else {
                 doneMsg.remove();
               }
             } else if (frame.message && doneMsg && doneMsg.classList.contains('assistant')) {
-              // Replace the plain streamed text with the Markdown-rendered final form.
-              doneMsg.innerHTML = renderMarkdown(frame.message.text ?? doneMsg.textContent);
+              // Streaming finished — reconcile with canonical message text.
+              StreamRender.finalize(doneMsg, frame.message.text ?? (doneMsg.dataset.streamRaw ?? doneMsg.textContent));
             }
             DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
             break;
@@ -1963,6 +1968,95 @@
 
       // 6) Re-insert inline code with escaped contents
       return html.replace(new RegExp(`${CODE}(\\d+)${CODE}`, 'g'), (_m, n) => `<code>${esc(spans[+n])}</code>`);
+    }
+
+    /**
+     * Streaming-safe wrapper around renderMarkdown(). An in-progress stream
+     * routinely contains an unbalanced ``` opener; without intervention the
+     * fence regex inside renderMarkdown() fails to match, so everything
+     * after the opener renders as raw paragraphs/lists and then suddenly
+     * snaps into a <pre><code> block once the closer arrives. We pre-close
+     * the dangling fence so the parser always sees a balanced document.
+     * Mirrors closeOpenFences() in packages/ui-shared/src/streaming.ts.
+     */
+    function closeOpenFences(src) {
+      if (!src) return src;
+      const m = src.match(/```/g);
+      if (!m || m.length % 2 === 0) return src;
+      return src.endsWith('\n') ? `${src}\`\`\`` : `${src}\n\`\`\``;
+    }
+    function renderMarkdownStreaming(src) {
+      return renderMarkdown(closeOpenFences(src));
+    }
+
+    /**
+     * Coalesces rapid assistant-delta updates into one re-render per
+     * animation frame, keyed per-bubble. Without this, a fast token
+     * stream re-parses the message ~50× per second and the cumulative
+     * cost of HTML-escape + fence/inline regex passes shows up as
+     * scroll-jank on long messages. With rAF, multiple deltas in the
+     * same 16ms slice collapse to a single innerHTML swap.
+     *
+     * Each bubble carries `data-stream-raw` (the cumulative raw text) and
+     * `data-stream-frame` (the pending rAF id, if any). `schedule()` is
+     * idempotent within a frame; `flush()` forces an immediate render
+     * (used by assistant-done so the final canonical text wins the race
+     * against a still-pending frame).
+     */
+    const StreamRender = {
+      schedule(bubble) {
+        if (!bubble) return;
+        if (bubble.dataset.streamFrame) return; // already pending this frame
+        // Mark the bubble as having a scheduled frame BEFORE calling rAF
+        // so the in-flight flag is correct from both directions: the rAF
+        // callback can clear it (real browser, callback fires next frame),
+        // AND a test that runs rAF callbacks synchronously still observes
+        // a consistent state. The provisional 'pending' value is replaced
+        // with the actual frame id, unless the callback already cleared
+        // it (synchronous-rAF mock path).
+        bubble.dataset.streamFrame = 'pending';
+        const id = requestAnimationFrame(() => {
+          delete bubble.dataset.streamFrame;
+          const raw = bubble.dataset.streamRaw ?? '';
+          bubble.innerHTML = renderMarkdownStreaming(raw);
+        });
+        if (bubble.dataset.streamFrame === 'pending') {
+          bubble.dataset.streamFrame = String(id);
+        }
+      },
+      cancel(bubble) {
+        if (!bubble || !bubble.dataset.streamFrame) return;
+        cancelAnimationFrame(Number(bubble.dataset.streamFrame));
+        delete bubble.dataset.streamFrame;
+      },
+      append(bubble, delta) {
+        if (!bubble) return;
+        bubble.dataset.streamRaw = (bubble.dataset.streamRaw ?? '') + delta;
+        this.schedule(bubble);
+      },
+      reset(bubble, text) {
+        if (!bubble) return;
+        bubble.dataset.streamRaw = text ?? '';
+        this.schedule(bubble);
+      },
+      finalize(bubble, finalText) {
+        if (!bubble) return;
+        this.cancel(bubble);
+        delete bubble.dataset.streamRaw;
+        bubble.innerHTML = renderMarkdown(finalText ?? '');
+      },
+    };
+
+    // Test-only hook: expose the streaming-render helpers under a single
+    // namespace so jsdom tests can unit-exercise closeOpenFences /
+    // renderMarkdownStreaming / StreamRender without reaching into the
+    // WebSocket frame pipeline. Production code never reads this.
+    if (typeof window !== 'undefined') {
+      window.__MoonInternals = window.__MoonInternals || {};
+      window.__MoonInternals.closeOpenFences = closeOpenFences;
+      window.__MoonInternals.renderMarkdown = renderMarkdown;
+      window.__MoonInternals.renderMarkdownStreaming = renderMarkdownStreaming;
+      window.__MoonInternals.StreamRender = StreamRender;
     }
 
     /**
