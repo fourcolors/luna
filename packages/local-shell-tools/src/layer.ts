@@ -25,13 +25,19 @@ export class LocalShellToolsService extends Effect.Tag(
 )<LocalShellToolsService, LocalShellToolsConfig>() {}
 
 export const LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM =
-  "You have one local shell MCP server (`local_shell`) with tool " +
-  "`mcp__local_shell__local_shell_run(command, cwd?, timeout_ms?)`. Use this fully " +
-  "qualified MCP tool name exactly; do not call bare `local_shell_run`. It requests command " +
-  "execution in the current thread's local shell binding. The binding may be Operator's " +
-  "attached Luna terminal client or an auto-approved Luna container sandbox. Commands " +
-  "normally require explicit user approval in that terminal before they run. A trusted " +
-  "container session may advertise auto approval; in that mode commands run inside the " +
+  "You have one local shell MCP server (`local_shell`) with tools " +
+  "`mcp__local_shell__local_shell_run(command, cwd?, timeout_ms?)` and " +
+  "`mcp__local_shell__local_shell_list_roots()`. Use these fully qualified MCP tool names " +
+  "exactly; do not call the bare names. They operate on the current thread's local shell " +
+  "binding. The binding may be Operator's attached Luna terminal client or an auto-approved " +
+  "Luna container sandbox. " +
+  "The client may attach one or more working-directory roots (specific folders) and/or grant " +
+  "full-machine access. Call `local_shell_list_roots` first to see what is attached, then pass " +
+  "a `cwd` inside one of the attached roots: commands whose working directory is inside a root " +
+  "are auto-approved by the client. A command outside every attached root may be denied " +
+  "outright (e.g. in the desktop widget) or require explicit per-command approval (e.g. the " +
+  "terminal client); when `fullAccess` is true the client allows any working directory. A " +
+  "trusted container session may advertise auto approval; in that mode commands run inside the " +
   "attached container without a per-command prompt. " +
   "If the local shell client is unavailable, no session is bound, or the user denied " +
   "approval, report that the command could not run and do not claim local execution " +

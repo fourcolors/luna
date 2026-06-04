@@ -1,14 +1,52 @@
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
+import { posix as pathPosix } from "node:path"
 
 export type LocalShellApprovalMode = "prompt" | "auto"
 
 export interface LocalShellState {
   readonly enabled: boolean
+  /**
+   * Explicitly attached auto-approve folders (absolute paths). MAY be empty:
+   * auto-approval is opt-in, so a plain `--local-shell` with no attached folder
+   * prompts for every command. roots[0], when present, is the default cwd.
+   */
+  readonly roots: ReadonlyArray<string>
+  /** When true, commands may run in any directory (no scope gate). */
+  readonly fullAccess: boolean
+  /** Default working directory for a request that omits cwd (= roots[0] ?? launch cwd). */
   readonly cwd: string
   readonly approvalMode: LocalShellApprovalMode
   readonly clientId: string
   readonly platform: NodeJS.Platform
+}
+
+/** True when `cwd` is `root` or a descendant of it (posix subtree match). */
+export const isCwdWithinRoot = (cwd: string, root: string): boolean => {
+  if (!cwd.startsWith("/") || !root.startsWith("/")) return false
+  // path.posix.normalize PRESERVES a trailing slash, so strip it (mapping the
+  // filesystem root back to "/") before comparing — otherwise "/work/" never
+  // matches "/work".
+  const strip = (p: string): string => pathPosix.normalize(p).replace(/\/+$/, "") || "/"
+  const normalizedCwd = strip(cwd)
+  const normalizedRoot = strip(root)
+  if (normalizedRoot === "/") return true // root "/" contains everything
+  return normalizedCwd === normalizedRoot
+    || normalizedCwd.startsWith(`${normalizedRoot}/`)
+}
+
+/**
+ * True when a requested `cwd` falls within any attached root. An undefined cwd
+ * means "use the client default" (roots[0] when attached, else the launch cwd):
+ * that default is in-scope only when at least one root is attached, so an empty
+ * scope is never auto-approved (auto-approval is opt-in).
+ */
+export const isCwdWithinRoots = (
+  cwd: string | undefined,
+  roots: ReadonlyArray<string>,
+): boolean => {
+  if (cwd === undefined) return roots.length > 0
+  return roots.some((root) => isCwdWithinRoot(cwd, root))
 }
 
 export interface LocalCommandRequest {
@@ -43,6 +81,10 @@ export interface ExecuteLocalCommandOptions {
 
 export interface MakeLocalShellStateOptions {
   readonly enabled: boolean
+  /** Explicitly attached auto-approve folders. MAY be empty (default: prompt). */
+  readonly roots: ReadonlyArray<string>
+  readonly fullAccess: boolean
+  /** Launch/default working directory used when no root is attached (= cfg.cwd). */
   readonly cwd: string
   readonly approvalMode: LocalShellApprovalMode
 }
@@ -55,7 +97,10 @@ export const makeLocalShellState = (
   options: MakeLocalShellStateOptions,
 ): LocalShellState => ({
   enabled: options.enabled,
-  cwd: options.cwd,
+  roots: options.roots,
+  fullAccess: options.fullAccess,
+  // Default working directory: the first attached root if any, else the launch cwd.
+  cwd: options.roots[0] ?? options.cwd,
   approvalMode: options.approvalMode,
   clientId: `cli_${randomUUID().replaceAll("-", "")}`,
   platform: process.platform,
@@ -67,6 +112,44 @@ export const setLocalShellEnabled = (
 ): LocalShellState => ({
   ...state,
   enabled,
+})
+
+/** Replace the attached roots (may be empty). cwd follows roots[0], else stays. */
+export const setLocalShellRoots = (
+  state: LocalShellState,
+  roots: ReadonlyArray<string>,
+): LocalShellState => ({
+  ...state,
+  roots,
+  cwd: roots[0] ?? state.cwd,
+})
+
+/** Add a root (deduped). */
+export const addLocalShellRoot = (
+  state: LocalShellState,
+  root: string,
+): LocalShellState =>
+  state.roots.includes(root)
+    ? state
+    : setLocalShellRoots(state, [...state.roots, root])
+
+/** Remove a root; the attached set may become empty (auto-approval is opt-in). */
+export const removeLocalShellRoot = (
+  state: LocalShellState,
+  root: string,
+): LocalShellState =>
+  setLocalShellRoots(
+    state,
+    state.roots.filter((existing) => existing !== root),
+  )
+
+/** Toggle full-machine access. */
+export const setLocalShellFullAccess = (
+  state: LocalShellState,
+  fullAccess: boolean,
+): LocalShellState => ({
+  ...state,
+  fullAccess,
 })
 
 export const truncateOutput = (output: string, maxBytes: number): string => {

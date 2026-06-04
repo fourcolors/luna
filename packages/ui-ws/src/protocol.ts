@@ -341,7 +341,25 @@ export interface LocalShellCapabilityFrame {
   readonly replaceable?: boolean
   readonly clientId: string
   readonly platform: string
+  /**
+   * Back-compat default working directory. Always present (= `roots[0]` when a
+   * client attaches multiple roots, else the single attached directory). Older
+   * clients send only this; newer clients also send `roots`/`fullAccess`.
+   */
   readonly cwd: string
+  /**
+   * The set of attached folders the client exposes to the server (absolute
+   * paths). When omitted, treat as `[cwd]` (a single-root client). Use
+   * `capabilityRoots()` from "./local-shell-bridge.js" to normalize.
+   */
+  readonly roots?: ReadonlyArray<string>
+  /**
+   * Full-machine access — the client lets the server run commands in any
+   * working directory (semantically root `/`). When true, `roots` is advisory
+   * (the agent may still be told about attached folders) but no scope gate
+   * applies. When omitted, treat as `false`.
+   */
+  readonly fullAccess?: boolean
 }
 
 export interface LocalShellResultFrame {

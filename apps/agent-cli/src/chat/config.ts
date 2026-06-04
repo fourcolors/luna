@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { dirname, join, posix as pathPosix } from "node:path"
+import { dirname, join, posix as pathPosix, resolve } from "node:path"
 import type { ChatArgs, StartMode } from "./args.js"
 
 const LAST_THREAD_VALID = /^[A-Za-z0-9_-]{4,128}$/
@@ -53,6 +53,15 @@ export interface ChatConfig {
    */
   readonly threadIdAutoResumed: boolean
   readonly localShellInitial: boolean
+  /**
+   * Explicitly attached local-shell auto-approve roots (absolute). Sourced from
+   * `--dir`/`LUNA_LOCAL_SHELL_DIRS`. MAY be empty — auto-approval is opt-in, so a
+   * plain `--local-shell` prompts per command. Commands whose cwd is inside a
+   * root are auto-approved; others prompt. See isCwdWithinRoots in local-shell.ts.
+   */
+  readonly roots: ReadonlyArray<string>
+  /** Grant full-machine local-shell access (`--full-access`). */
+  readonly fullAccess: boolean
   readonly dangerouslyAutoApproveLocalShell: boolean
   readonly dangerousLocalShellRoot: string
   readonly startMode: StartMode
@@ -193,6 +202,33 @@ export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
       existsSync(dangerousMarkerPath) &&
       isUnderDangerousLocalShellRoot(input.cwd, dangerousLocalShellRoot)
   }
+
+  // Attached local-shell scope (desktop/operator model, distinct from the
+  // heavily-gated container auto-approve above). `--dir` (repeatable) and the
+  // LOCAL_SHELL_DIRS env give the working-directory roots; default to [cwd] so
+  // existing single-dir behavior is preserved. `--full-access` / *_FULL_ACCESS
+  // grants any-directory access.
+  const fullAccessSetting = selectSetting([
+    { name: "--full-access", value: input.args.fullAccess === true ? "1" : undefined },
+    { name: profiled("LOCAL_SHELL_FULL_ACCESS"), value: input.env[profiled("LOCAL_SHELL_FULL_ACCESS")] },
+    { name: profiled("LOCAL_SHELL_FULL_ACCESS"), value: input.dotenv[profiled("LOCAL_SHELL_FULL_ACCESS")] },
+    { name: "LUNA_LOCAL_SHELL_FULL_ACCESS", value: input.env["LUNA_LOCAL_SHELL_FULL_ACCESS"] },
+    { name: "LUNA_LOCAL_SHELL_FULL_ACCESS", value: input.dotenv["LUNA_LOCAL_SHELL_FULL_ACCESS"] },
+  ])
+  const fullAccess = fullAccessSetting !== undefined && isTruthy(fullAccessSetting.value)
+  const dirsFromEnv = splitListSetting(
+    selectSetting([
+      { name: profiled("LOCAL_SHELL_DIRS"), value: input.env[profiled("LOCAL_SHELL_DIRS")] },
+      { name: profiled("LOCAL_SHELL_DIRS"), value: input.dotenv[profiled("LOCAL_SHELL_DIRS")] },
+      { name: "LUNA_LOCAL_SHELL_DIRS", value: input.env["LUNA_LOCAL_SHELL_DIRS"] },
+      { name: "LUNA_LOCAL_SHELL_DIRS", value: input.dotenv["LUNA_LOCAL_SHELL_DIRS"] },
+    ])?.value,
+  )
+  const requestedDirs = [...(input.args.dirs ?? []), ...dirsFromEnv]
+  // Attached auto-approve roots — explicitly opted in via --dir/LOCAL_SHELL_DIRS.
+  // MAY be empty: a plain `--local-shell` keeps prompting per command (the
+  // default working directory is still input.cwd; see makeLocalShellState).
+  const roots = uniqueList(requestedDirs.map((dir) => resolve(input.cwd, dir)))
 
   const urlSetting = selectSetting([
     { name: "--url", value: input.args.url },
@@ -335,6 +371,8 @@ export const loadChatConfig = (input: LoadChatConfigInput): ChatConfig => {
     threadIdAutoResumed,
     newThread: input.args.newThread ?? threadId === null,
     localShellInitial: input.args.localShell ?? false,
+    roots,
+    fullAccess,
     dangerouslyAutoApproveLocalShell,
     dangerousLocalShellRoot,
     startMode,
@@ -356,4 +394,5 @@ export const redactedConfigSummary = (cfg: ChatConfig): string =>
     `startMode=${cfg.startMode}`,
     `localShell=${cfg.localShellInitial ? "on" : "off"}`,
     `localShellApproval=${cfg.dangerouslyAutoApproveLocalShell ? "auto" : "prompt"}`,
+    `localShellRoots=${cfg.fullAccess ? "full-access" : cfg.roots.length}`,
   ].join(" ")

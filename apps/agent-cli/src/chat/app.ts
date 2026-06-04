@@ -1,5 +1,5 @@
 import { homedir } from "node:os"
-import { posix as pathPosix } from "node:path"
+import { join, posix as pathPosix, resolve as resolvePath } from "node:path"
 import type { Readable, Writable } from "node:stream"
 import type { ServerFrame } from "@luna/ui-ws"
 import { createLineReader, writeError, writeOut as write, writeErr } from "../views/readline.js"
@@ -12,10 +12,14 @@ import {
   writeLastThread,
 } from "./config.js"
 import {
+  addLocalShellRoot,
   executeLocalCommand,
+  isCwdWithinRoots,
   makeLocalShellState,
+  removeLocalShellRoot,
   sanitizeLocalCommandEnv,
   setLocalShellEnabled,
+  setLocalShellFullAccess,
   type LocalCommandResult,
   type LocalShellState,
 } from "./local-shell.js"
@@ -59,6 +63,8 @@ const USAGE = [
   "  --new                       force creation of a new thread",
   "  --local-shell               enable local shell capability",
   "  --no-local-shell            disable local shell capability",
+  "  --dir <path>                attach a working-directory root (repeatable)",
+  "  --full-access               allow local shell in any directory (whole machine)",
   "  --dangerously-auto-approve-local-shell",
   "                              auto-approve local shell requests in a marked container",
   "  --start-mode <mode>         recovery mode: local, ssh, or none",
@@ -81,6 +87,19 @@ const waitBounded = async (promise: Promise<unknown>, timeoutMs: number): Promis
   await Promise.race([promise.then(() => undefined, () => undefined), delay(timeoutMs)])
 }
 
+/** Resolve a user-supplied attach path: expand a leading `~` then make absolute. */
+export const resolveAttachRoot = (raw: string, cwd: string, homeDir: string): string => {
+  const expanded =
+    raw === "~" ? homeDir : raw.startsWith("~/") ? join(homeDir, raw.slice(2)) : raw
+  return resolvePath(cwd, expanded)
+}
+
+/** Human-readable summary of the attached local-shell scope. */
+export const localShellScopeSummary = (localShell: LocalShellState): string => {
+  if (localShell.fullAccess) return "full machine access"
+  return `${localShell.roots.length} folder(s): ${localShell.roots.join(", ")}`
+}
+
 const sendLocalShellCapability = (
   client: LunaWsClient,
   threadId: string | null,
@@ -95,6 +114,8 @@ const sendLocalShellCapability = (
     clientId: localShell.clientId,
     platform: localShell.platform,
     cwd: localShell.cwd,
+    roots: localShell.roots,
+    fullAccess: localShell.fullAccess,
   })
 }
 
@@ -231,6 +252,8 @@ export async function runLunaCli(
 
   let localShell = makeLocalShellState({
     enabled: cfg.localShellInitial,
+    roots: cfg.roots,
+    fullAccess: cfg.fullAccess,
     cwd: cfg.cwd,
     approvalMode: cfg.dangerouslyAutoApproveLocalShell ? "auto" : "prompt",
   })
@@ -275,16 +298,24 @@ export async function runLunaCli(
       return
     }
 
+    // Desktop scope model: auto-approve when the container path is active, when
+    // full-machine access is granted, or when the requested cwd is inside an
+    // attached root. Otherwise fall back to the per-command prompt.
+    const autoApprove =
+      cfg.dangerouslyAutoApproveLocalShell ||
+      localShell.fullAccess ||
+      isCwdWithinRoots(frame.cwd, localShell.roots)
+
     const controller = new AbortController()
     localShellControllers.add(controller)
     const task = (async (): Promise<void> => {
       const result = await executeLocalCommand({
         request: frame,
-        cwd: cfg.cwd,
+        cwd: localShell.cwd,
         env: localCommandEnv,
         timeoutMs: DEFAULT_LOCAL_COMMAND_TIMEOUT_MS,
         maxOutputBytes: MAX_LOCAL_COMMAND_OUTPUT_BYTES,
-        approve: cfg.dangerouslyAutoApproveLocalShell
+        approve: autoApprove
           ? async () => true
           : io.approveLocalCommand ?? (async () => false),
         signal: controller.signal,
@@ -392,7 +423,27 @@ export async function runLunaCli(
         continue
       }
       if (command.type === "local-shell-status") {
-        write(io, `local shell: ${localShell.enabled ? "on" : "off"}\n`)
+        write(io, `local shell: ${localShell.enabled ? "on" : "off"} (${localShellScopeSummary(localShell)})\n`)
+        sendLocalShellCapability(client, session.threadId, localShell)
+        continue
+      }
+      if (command.type === "local-shell-attach") {
+        const root = resolveAttachRoot(command.root, io.cwd, homeDir)
+        localShell = addLocalShellRoot(localShell, root)
+        write(io, `local shell attached: ${root}\n`)
+        sendLocalShellCapability(client, session.threadId, localShell)
+        continue
+      }
+      if (command.type === "local-shell-detach") {
+        const root = resolveAttachRoot(command.root, io.cwd, homeDir)
+        localShell = removeLocalShellRoot(localShell, root)
+        write(io, `local shell detached: ${root} (${localShellScopeSummary(localShell)})\n`)
+        sendLocalShellCapability(client, session.threadId, localShell)
+        continue
+      }
+      if (command.type === "local-shell-full-access") {
+        localShell = setLocalShellFullAccess(localShell, command.enabled)
+        write(io, `local shell full access: ${command.enabled ? "on" : "off"}\n`)
         sendLocalShellCapability(client, session.threadId, localShell)
         continue
       }

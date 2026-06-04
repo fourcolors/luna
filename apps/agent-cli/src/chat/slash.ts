@@ -8,6 +8,9 @@ export type SlashCommand =
   | { readonly type: "quit" }
   | { readonly type: "local-shell"; readonly action: "on" | "off" }
   | { readonly type: "local-shell-status" }
+  | { readonly type: "local-shell-attach"; readonly root: string }
+  | { readonly type: "local-shell-detach"; readonly root: string }
+  | { readonly type: "local-shell-full-access"; readonly enabled: boolean }
   | { readonly type: "error"; readonly message: string }
 
 export const HELP_TEXT = [
@@ -20,7 +23,10 @@ export const HELP_TEXT = [
   "/exit - quit Luna",
   "/local-shell on - enable local shell execution",
   "/local-shell off - disable local shell execution",
-  "/local-shell status - show local shell status",
+  "/local-shell status - show local shell status and attached folders",
+  "/local-shell add <path> - attach a working-directory root",
+  "/local-shell rm <path> - detach a working-directory root",
+  "/local-shell full-access <on|off> - allow local shell in any directory",
 ].join("\n")
 
 export { SLASH_COMMANDS, type SlashSpec } from "./slash-registry.js"
@@ -33,16 +39,40 @@ const splitCommand = (line: string): readonly [string, string] => {
 }
 
 const parseLocalShell = (rest: string): SlashCommand => {
-  switch (rest) {
+  const [sub, arg] = splitCommand(rest)
+  switch (sub) {
     case "on":
     case "off":
-      return { type: "local-shell", action: rest }
+      return { type: "local-shell", action: sub }
+    case "":
     case "status":
       return { type: "local-shell-status" }
+    case "add":
+    case "attach":
+      if (arg.length === 0) {
+        return { type: "error", message: "/local-shell add requires a path" }
+      }
+      return { type: "local-shell-attach", root: arg }
+    case "rm":
+    case "remove":
+    case "detach":
+      if (arg.length === 0) {
+        return { type: "error", message: "/local-shell rm requires a path" }
+      }
+      return { type: "local-shell-detach", root: arg }
+    case "full-access":
+      if (arg === "on" || arg === "off") {
+        return { type: "local-shell-full-access", enabled: arg === "on" }
+      }
+      return {
+        type: "error",
+        message: "/local-shell full-access requires on or off",
+      }
     default:
       return {
         type: "error",
-        message: "local shell supports only on, off, and status",
+        message:
+          "local shell supports on, off, status, add <path>, rm <path>, full-access <on|off>",
       }
   }
 }

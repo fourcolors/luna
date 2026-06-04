@@ -3,10 +3,16 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
+  addLocalShellRoot,
   executeLocalCommand,
+  isCwdWithinRoot,
+  isCwdWithinRoots,
   makeLocalShellState,
+  removeLocalShellRoot,
   sanitizeLocalCommandEnv,
   setLocalShellEnabled,
+  setLocalShellFullAccess,
+  setLocalShellRoots,
   truncateOutput,
 } from "../src/chat/local-shell.js"
 
@@ -37,9 +43,17 @@ const waitFor = async <T>(promise: Promise<T>, timeoutMs = 1_000): Promise<T> =>
 describe("local shell state", () => {
   it("starts disabled and toggles enabled without mutating the original", () => {
     const cwd = "/tmp/luna"
-    const state = makeLocalShellState({ enabled: false, cwd, approvalMode: "prompt" })
+    const state = makeLocalShellState({
+      enabled: false,
+      roots: [cwd],
+      fullAccess: false,
+      cwd,
+      approvalMode: "prompt",
+    })
     expect(state.enabled).toBe(false)
     expect(state.cwd).toBe(cwd)
+    expect(state.roots).toEqual([cwd])
+    expect(state.fullAccess).toBe(false)
     expect(state.approvalMode).toBe("prompt")
     expect(state.clientId).toMatch(/^cli_/)
     expect(state.platform).toBe(process.platform)
@@ -51,6 +65,90 @@ describe("local shell state", () => {
     expect(enabled.clientId).toBe(state.clientId)
     expect(enabled.platform).toBe(state.platform)
     expect(state.enabled).toBe(false)
+  })
+
+  it("defaults cwd to the first attached root, else the launch cwd", () => {
+    const state = makeLocalShellState({
+      enabled: true,
+      roots: ["/work/a", "/work/b"],
+      fullAccess: false,
+      cwd: "/launch",
+      approvalMode: "prompt",
+    })
+    expect(state.cwd).toBe("/work/a") // first attached root wins
+    expect(state.roots).toEqual(["/work/a", "/work/b"])
+
+    // No attached roots (opt-in auto-approval): roots stays empty, cwd is the
+    // launch directory, and commands will prompt per command.
+    const empty = makeLocalShellState({
+      enabled: true,
+      roots: [],
+      fullAccess: true,
+      cwd: "/launch",
+      approvalMode: "prompt",
+    })
+    expect(empty.roots).toEqual([])
+    expect(empty.cwd).toBe("/launch")
+    expect(empty.fullAccess).toBe(true)
+  })
+})
+
+describe("local shell scope helpers", () => {
+  it("isCwdWithinRoot matches a root and its descendants only", () => {
+    expect(isCwdWithinRoot("/work", "/work")).toBe(true)
+    expect(isCwdWithinRoot("/work/sub/dir", "/work")).toBe(true)
+    expect(isCwdWithinRoot("/work/../work/x", "/work")).toBe(true) // normalized
+    expect(isCwdWithinRoot("/workshop", "/work")).toBe(false) // prefix, not subtree
+    expect(isCwdWithinRoot("/other", "/work")).toBe(false)
+    expect(isCwdWithinRoot("/work", "/work/")).toBe(true) // trailing slash on root
+    expect(isCwdWithinRoot("relative", "/work")).toBe(false) // non-absolute cwd
+    expect(isCwdWithinRoot("/work", "relative")).toBe(false) // non-absolute root
+  })
+
+  it("isCwdWithinRoots is true within any root, gated by opt-in for an undefined cwd", () => {
+    const roots = ["/work/a", "/work/b"]
+    expect(isCwdWithinRoots(undefined, roots)).toBe(true) // default cwd = roots[0], in scope
+    expect(isCwdWithinRoots(undefined, [])).toBe(false) // no root attached → not auto-approved
+    expect(isCwdWithinRoots("/work/a", roots)).toBe(true)
+    expect(isCwdWithinRoots("/work/b/deep", roots)).toBe(true)
+    expect(isCwdWithinRoots("/work/c", roots)).toBe(false)
+    expect(isCwdWithinRoots("/etc", roots)).toBe(false)
+    expect(isCwdWithinRoots("/anywhere", [])).toBe(false) // no roots → nothing in scope
+  })
+
+  it("mutation helpers add/remove/dedupe roots and toggle full access immutably", () => {
+    const base = makeLocalShellState({
+      enabled: true,
+      roots: ["/work/a"],
+      fullAccess: false,
+      cwd: "/launch",
+      approvalMode: "prompt",
+    })
+
+    const added = addLocalShellRoot(base, "/work/b")
+    expect(added.roots).toEqual(["/work/a", "/work/b"])
+    expect(base.roots).toEqual(["/work/a"]) // original untouched
+
+    // Adding a duplicate returns the same state reference (no-op).
+    expect(addLocalShellRoot(added, "/work/a")).toBe(added)
+
+    const removed = removeLocalShellRoot(added, "/work/a")
+    expect(removed.roots).toEqual(["/work/b"])
+    expect(removed.cwd).toBe("/work/b")
+
+    // Removing the last root empties the auto-approve scope (opt-in model); cwd
+    // falls back to the last known default.
+    const emptied = removeLocalShellRoot(removed, "/work/b")
+    expect(emptied.roots).toEqual([])
+    expect(emptied.cwd).toBe("/work/b")
+
+    const full = setLocalShellFullAccess(base, true)
+    expect(full.fullAccess).toBe(true)
+    expect(base.fullAccess).toBe(false)
+
+    const replaced = setLocalShellRoots(base, ["/x", "/y"])
+    expect(replaced.roots).toEqual(["/x", "/y"])
+    expect(replaced.cwd).toBe("/x")
   })
 })
 

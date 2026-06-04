@@ -14,6 +14,41 @@ describe("chat slash commands", () => {
     expect(parseSlashCommand("/local-shell status")).toEqual({
       type: "local-shell-status",
     })
+    // Bare /local-shell shows status rather than erroring.
+    expect(parseSlashCommand("/local-shell")).toEqual({
+      type: "local-shell-status",
+    })
+  })
+
+  it("parses local shell scope subcommands", () => {
+    expect(parseSlashCommand("/local-shell add /Users/me/proj")).toEqual({
+      type: "local-shell-attach",
+      root: "/Users/me/proj",
+    })
+    expect(parseSlashCommand("/local-shell attach ~/code")).toEqual({
+      type: "local-shell-attach",
+      root: "~/code",
+    })
+    expect(parseSlashCommand("/local-shell rm /Users/me/proj")).toEqual({
+      type: "local-shell-detach",
+      root: "/Users/me/proj",
+    })
+    expect(parseSlashCommand("/local-shell full-access on")).toEqual({
+      type: "local-shell-full-access",
+      enabled: true,
+    })
+    expect(parseSlashCommand("/local-shell full-access off")).toEqual({
+      type: "local-shell-full-access",
+      enabled: false,
+    })
+    expect(parseSlashCommand("/local-shell add")).toEqual({
+      type: "error",
+      message: "/local-shell add requires a path",
+    })
+    expect(parseSlashCommand("/local-shell full-access maybe")).toEqual({
+      type: "error",
+      message: "/local-shell full-access requires on or off",
+    })
   })
 
   it("parses thread and lifecycle commands", () => {
@@ -36,10 +71,11 @@ describe("chat slash commands", () => {
     })
   })
 
-  it("rejects local shell run commands", () => {
+  it("rejects unknown local shell subcommands", () => {
     expect(parseSlashCommand("/local-shell run pwd")).toEqual({
       type: "error",
-      message: "local shell supports only on, off, and status",
+      message:
+        "local shell supports on, off, status, add <path>, rm <path>, full-access <on|off>",
     })
   })
 

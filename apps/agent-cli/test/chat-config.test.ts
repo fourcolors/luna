@@ -43,6 +43,51 @@ describe("luna chat config", () => {
     })
   })
 
+  it("parses repeated --dir and --full-access", () => {
+    expect(
+      parseChatArgs(["chat", "--dir", "/a", "--dir", "/b", "--full-access"]),
+    ).toMatchObject({ command: "chat", dirs: ["/a", "/b"], fullAccess: true, unknown: [] })
+    expect(parseChatArgs(["chat", "--dir=/c"])).toMatchObject({ dirs: ["/c"] })
+    expect(parseChatArgs(["chat", "--dir"]).unknown).toContain("--dir requires a value")
+  })
+
+  it("resolves attached roots from --dir (relative to cwd) and --full-access; empty by default", () => {
+    const base = {
+      env: { LUNA_UI_WS_TOKEN: "tok-123456" },
+      dotenv: {},
+      homeDir: "/tmp/home",
+      cwd: "/work",
+    }
+    // Plain --local-shell attaches nothing (opt-in auto-approval).
+    const plain = loadChatConfig({ args: parseChatArgs(["chat", "--local-shell"]), ...base })
+    expect(plain.roots).toEqual([])
+    expect(plain.fullAccess).toBe(false)
+
+    // Absolute stays absolute; relative resolves against cwd; order preserved.
+    const withDirs = loadChatConfig({
+      args: parseChatArgs(["chat", "--dir", "/abs", "--dir", "rel", "--full-access"]),
+      ...base,
+    })
+    expect(withDirs.roots).toEqual(["/abs", "/work/rel"])
+    expect(withDirs.fullAccess).toBe(true)
+  })
+
+  it("reads attached roots and full-access from env (LOCAL_SHELL_DIRS / FULL_ACCESS)", () => {
+    const cfg = loadChatConfig({
+      args: parseChatArgs(["chat", "--local-shell"]),
+      env: {
+        LUNA_UI_WS_TOKEN: "tok-123456",
+        LUNA_LOCAL_SHELL_DIRS: "/a, /b",
+        LUNA_LOCAL_SHELL_FULL_ACCESS: "1",
+      },
+      dotenv: {},
+      homeDir: "/tmp/home",
+      cwd: "/work",
+    })
+    expect(cfg.roots).toEqual(["/a", "/b"])
+    expect(cfg.fullAccess).toBe(true)
+  })
+
   it("applies precedence flags over env over dotenv over defaults", () => {
     const args = parseChatArgs([
       "chat",

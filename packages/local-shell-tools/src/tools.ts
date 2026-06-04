@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import { z } from "zod"
 import { defineTool, ToolError } from "@luna/tools"
-import type { LocalShellBridge } from "@luna/ui-ws"
+import { capabilityRoots, type LocalShellBridge } from "@luna/ui-ws"
 
 const DEFAULT_TIMEOUT_MS = 120_000
 const MAX_TIMEOUT_MS = 120_000
@@ -93,5 +93,44 @@ export const makeLocalShellTools = (
       }),
   })
 
-  return [run] as const
+  const listRoots = defineTool({
+    name: "local_shell_list_roots",
+    description:
+      "List the working-directory roots the attached Luna terminal client currently exposes. " +
+      "Call this before running local commands so you pass a `cwd` inside an attached root: " +
+      "commands whose working directory is inside a root are auto-approved by the client, while " +
+      "commands outside every root may be denied or require explicit user approval. " +
+      "`fullAccess: true` means the client allows any working directory (no scope gate).",
+    inputSchema: {},
+    ...LOCAL_SHELL_TOOL_DISCOVERY,
+    handler: () =>
+      Effect.gen(function* () {
+        const threadId = currentThreadId()
+        if (!threadId) {
+          return yield* Effect.fail(
+            new ToolError({
+              tool: "local_shell_list_roots",
+              op: "local_shell.list_roots",
+              cause: "no local shell session is bound",
+            }),
+          )
+        }
+        const capability = bridge.getCapability(threadId)
+        if (capability === null || !capability.enabled) {
+          return { attached: false, roots: [], fullAccess: false } as const
+        }
+        const scope = capabilityRoots(capability)
+        return {
+          attached: true,
+          roots: scope.roots,
+          fullAccess: scope.fullAccess,
+          // Default working directory — use this as `cwd` when no root is
+          // attached (roots is empty); commands there may still require approval.
+          cwd: capability.cwd,
+          platform: capability.platform,
+        } as const
+      }),
+  })
+
+  return [run, listRoots] as const
 }

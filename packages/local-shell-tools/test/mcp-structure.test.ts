@@ -143,24 +143,27 @@ describe("LocalShellToolsLayer - structural invariants", () => {
     expect(typeof (serverConfig as { instance?: unknown }).instance).toBe("object")
   })
 
-  it("makeLocalShellTools exposes local_shell_run", () => {
+  it("makeLocalShellTools exposes local_shell_run and local_shell_list_roots", () => {
     const bridge = createLocalShellBridge()
     const tools = makeLocalShellTools(bridge, () => "thr_1")
 
-    expect(tools).toHaveLength(1)
+    expect(tools).toHaveLength(2)
     expect(tools.map((tool) => (tool as unknown as { name: string }).name)).toEqual([
       "local_shell_run",
+      "local_shell_list_roots",
     ])
   })
 
-  it("makeLocalShellTools marks local_shell_run as eagerly loaded", () => {
+  it("marks both local shell tools as eagerly loaded", () => {
     const bridge = createLocalShellBridge()
     const tools = makeLocalShellTools(bridge, () => "thr_1")
-    const meta = (tools[0] as unknown as { _meta?: Record<string, unknown> })._meta
 
-    expect(meta).toMatchObject({ "anthropic/alwaysLoad": true })
-    expect(typeof meta?.["anthropic/searchHint"]).toBe("string")
-    expect((meta?.["anthropic/searchHint"] as string).length).toBeGreaterThan(0)
+    for (const tool of tools) {
+      const meta = (tool as unknown as { _meta?: Record<string, unknown> })._meta
+      expect(meta).toMatchObject({ "anthropic/alwaysLoad": true })
+      expect(typeof meta?.["anthropic/searchHint"]).toBe("string")
+      expect((meta?.["anthropic/searchHint"] as string).length).toBeGreaterThan(0)
+    }
   })
 })
 

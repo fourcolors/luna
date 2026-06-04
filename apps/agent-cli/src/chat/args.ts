@@ -10,6 +10,10 @@ export interface ChatArgs {
   readonly threadId?: string
   readonly newThread?: boolean
   readonly localShell?: boolean
+  /** Attached local-shell working-directory roots (repeatable `--dir`). */
+  readonly dirs?: ReadonlyArray<string>
+  /** Grant the server full-machine local-shell access (`--full-access`). */
+  readonly fullAccess?: boolean
   readonly dangerouslyAutoApproveLocalShell?: boolean
   readonly startMode?: StartMode
   readonly startCommand?: string
@@ -62,6 +66,8 @@ export const parseChatArgs = (argv: ReadonlyArray<string>): ChatArgs => {
     threadId?: string
     newThread?: boolean
     localShell?: boolean
+    dirs?: string[]
+    fullAccess?: boolean
     dangerouslyAutoApproveLocalShell?: boolean
     startMode?: StartMode
     startCommand?: string
@@ -123,6 +129,16 @@ export const parseChatArgs = (argv: ReadonlyArray<string>): ChatArgs => {
         break
       case "--no-local-shell":
         out.localShell = false
+        break
+      case "--dir": {
+        const r = readValue(argv, i, "--dir")
+        if ("error" in r) out.unknown.push(r.error)
+        else (out.dirs ??= []).push(r.value)
+        i = r.nextIndex
+        break
+      }
+      case "--full-access":
+        out.fullAccess = true
         break
       case "--dangerously-auto-approve-local-shell":
         out.dangerouslyAutoApproveLocalShell = true

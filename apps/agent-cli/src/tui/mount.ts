@@ -16,14 +16,22 @@ import {
   writeLastThread,
   clearLastThread,
 } from "../chat/config.js"
-import { connectWithRecovery } from "../chat/app.js"
+import {
+  connectWithRecovery,
+  localShellScopeSummary,
+  resolveAttachRoot,
+} from "../chat/app.js"
 import { LunaHeadlessSession } from "../chat/headless.js"
 import { parseSlashCommand } from "../chat/slash.js"
 import {
+  addLocalShellRoot,
   executeLocalCommand,
+  isCwdWithinRoots,
   makeLocalShellState,
+  removeLocalShellRoot,
   sanitizeLocalCommandEnv,
   setLocalShellEnabled,
+  setLocalShellFullAccess,
 } from "../chat/local-shell.js"
 import { parseChatArgs } from "../chat/args.js"
 import type { SurveyVerdict } from "@luna/core"
@@ -165,6 +173,8 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
   }
   let localShell = makeLocalShellState({
     enabled: cfg.localShellInitial,
+    roots: cfg.roots,
+    fullAccess: cfg.fullAccess,
     cwd: cfg.cwd,
     approvalMode: cfg.dangerouslyAutoApproveLocalShell ? "auto" : "prompt",
   })
@@ -182,6 +192,8 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
       clientId: localShell.clientId,
       platform: localShell.platform,
       cwd: localShell.cwd,
+      roots: localShell.roots,
+      fullAccess: localShell.fullAccess,
     })
   }
   session.on("threadChange", (id) => sendLocalShellCapability(id))
@@ -201,14 +213,18 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
       })
       return
     }
+    const autoApprove =
+      cfg.dangerouslyAutoApproveLocalShell ||
+      localShell.fullAccess ||
+      isCwdWithinRoots(frame.cwd, localShell.roots)
     void (async () => {
       const result = await executeLocalCommand({
         request: frame,
-        cwd: cfg.cwd,
+        cwd: localShell.cwd,
         env: localCommandEnv,
         timeoutMs: 30_000,
         maxOutputBytes: 64 * 1024,
-        approve: cfg.dangerouslyAutoApproveLocalShell ? async () => true : approveLocalCommand,
+        approve: autoApprove ? async () => true : approveLocalCommand,
         signal: new AbortController().signal,
       })
       client.send(result)
@@ -240,7 +256,27 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
       return
     }
     if (parsed.type === "local-shell-status") {
-      store.appendSystem(`local shell: ${localShell.enabled ? "on" : "off"}`)
+      store.appendSystem(`local shell: ${localShell.enabled ? "on" : "off"} (${localShellScopeSummary(localShell)})`)
+      sendLocalShellCapability(store.threadId())
+      return
+    }
+    if (parsed.type === "local-shell-attach") {
+      const root = resolveAttachRoot(parsed.root, process.cwd(), home)
+      localShell = addLocalShellRoot(localShell, root)
+      store.appendSystem(`local shell attached: ${root}`)
+      sendLocalShellCapability(store.threadId())
+      return
+    }
+    if (parsed.type === "local-shell-detach") {
+      const root = resolveAttachRoot(parsed.root, process.cwd(), home)
+      localShell = removeLocalShellRoot(localShell, root)
+      store.appendSystem(`local shell detached: ${root} (${localShellScopeSummary(localShell)})`)
+      sendLocalShellCapability(store.threadId())
+      return
+    }
+    if (parsed.type === "local-shell-full-access") {
+      localShell = setLocalShellFullAccess(localShell, parsed.enabled)
+      store.appendSystem(`local shell full access: ${parsed.enabled ? "on" : "off"}`)
       sendLocalShellCapability(store.threadId())
       return
     }

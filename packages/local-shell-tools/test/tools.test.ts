@@ -248,4 +248,71 @@ describe("local shell tools", () => {
     expect(description).toContain("auto-approved")
     expect(description).not.toContain("asks the user for approval before")
   })
+
+  it("local_shell_list_roots reports not-attached when no client is bound", async () => {
+    const bridge = createLocalShellBridge()
+    const [, listRootsTool] = makeLocalShellTools(bridge, () => "thr_1")
+
+    const parsed = parseTextResult<{
+      attached: boolean
+      roots: string[]
+      fullAccess: boolean
+    }>((await listRootsTool.handler({}, undefined)) as ToolCallResult)
+    expect(parsed).toEqual({ attached: false, roots: [], fullAccess: false })
+  })
+
+  it("local_shell_list_roots returns attached roots, fullAccess, cwd and platform", async () => {
+    const bridge = createLocalShellBridge()
+    bridge.setCapability(
+      {
+        type: "local-shell-capability",
+        threadId: "thr_1",
+        enabled: true,
+        clientId: "cli_1",
+        platform: "darwin",
+        cwd: "/work/a",
+        roots: ["/work/a", "/work/b"],
+        fullAccess: false,
+      },
+      () => undefined,
+    )
+    const [, listRootsTool] = makeLocalShellTools(bridge, () => "thr_1")
+
+    const parsed = parseTextResult<Record<string, unknown>>(
+      (await listRootsTool.handler({}, undefined)) as ToolCallResult,
+    )
+    expect(parsed).toEqual({
+      attached: true,
+      roots: ["/work/a", "/work/b"],
+      fullAccess: false,
+      cwd: "/work/a",
+      platform: "darwin",
+    })
+  })
+
+  it("local_shell_list_roots reads a legacy cwd-only capability as a single root", async () => {
+    const bridge = createLocalShellBridge()
+    bridge.setCapability(
+      {
+        type: "local-shell-capability",
+        threadId: "thr_1",
+        enabled: true,
+        clientId: "cli_1",
+        platform: "linux",
+        cwd: "/legacy",
+      },
+      () => undefined,
+    )
+    const [, listRootsTool] = makeLocalShellTools(bridge, () => "thr_1")
+
+    const parsed = parseTextResult<Record<string, unknown>>(
+      (await listRootsTool.handler({}, undefined)) as ToolCallResult,
+    )
+    expect(parsed).toMatchObject({
+      attached: true,
+      roots: ["/legacy"],
+      fullAccess: false,
+      cwd: "/legacy",
+    })
+  })
 })

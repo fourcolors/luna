@@ -10,6 +10,27 @@ export type SendLocalShellFrame = (
   frame: LocalShellRequestFrame | LocalShellStatusFrame,
 ) => void
 
+/** The attached scope a capability frame advertises, normalized for back-compat. */
+export interface CapabilityScope {
+  /** Attached folder roots (absolute paths). At least one entry for an enabled client. */
+  readonly roots: ReadonlyArray<string>
+  /** When true, the client allows commands in any working directory. */
+  readonly fullAccess: boolean
+}
+
+/**
+ * Normalize a capability frame's scope. A LEGACY client omits `roots` entirely
+ * (`undefined`) — read that as a single-root attachment `[cwd]`. A NEW client
+ * always sends `roots`, so an empty array means "nothing attached" and is
+ * preserved as-is (auto-approval is opt-in; an empty scope prompts/denies).
+ */
+export const capabilityRoots = (
+  frame: LocalShellCapabilityFrame,
+): CapabilityScope => ({
+  roots: frame.roots ?? [frame.cwd],
+  fullAccess: frame.fullAccess ?? false,
+})
+
 interface RegisteredClient {
   readonly capability: LocalShellCapabilityFrame
   readonly send: SendLocalShellFrame

@@ -1,5 +1,45 @@
 import { describe, expect, it } from "vitest"
-import { createLocalShellBridge } from "../src/local-shell-bridge.js"
+import {
+  capabilityRoots,
+  createLocalShellBridge,
+} from "../src/local-shell-bridge.js"
+import type { LocalShellCapabilityFrame } from "../src/protocol.js"
+
+const baseCapability = (
+  extra: Partial<LocalShellCapabilityFrame>,
+): LocalShellCapabilityFrame => ({
+  type: "local-shell-capability",
+  threadId: "thr_1",
+  enabled: true,
+  clientId: "cli_1",
+  platform: "darwin",
+  cwd: "/work",
+  ...extra,
+})
+
+describe("capabilityRoots", () => {
+  it("reads a LEGACY (roots-absent) frame as a single-root [cwd] attachment", () => {
+    expect(capabilityRoots(baseCapability({ cwd: "/legacy" }))).toEqual({
+      roots: ["/legacy"],
+      fullAccess: false,
+    })
+  })
+
+  it("preserves an EMPTY roots list from a new client (opt-in auto-approval)", () => {
+    expect(capabilityRoots(baseCapability({ roots: [], cwd: "/launch" }))).toEqual({
+      roots: [],
+      fullAccess: false,
+    })
+  })
+
+  it("passes through attached roots and the fullAccess flag", () => {
+    expect(
+      capabilityRoots(
+        baseCapability({ roots: ["/a", "/b"], fullAccess: true, cwd: "/a" }),
+      ),
+    ).toEqual({ roots: ["/a", "/b"], fullAccess: true })
+  })
+})
 
 describe("local shell bridge", () => {
   it("registers one client per thread", () => {

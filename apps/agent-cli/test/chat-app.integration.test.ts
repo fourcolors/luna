@@ -408,6 +408,8 @@ describe("luna chat app", () => {
       clientId: expect.any(String),
       platform: process.platform,
       cwd: approvedRoot,
+      roots: [],
+      fullAccess: false,
     })
 
     stdin.write("/quit\n")
@@ -647,6 +649,8 @@ describe("luna chat app", () => {
       clientId: expect.any(String),
       platform: process.platform,
       cwd: process.cwd(),
+      roots: [],
+      fullAccess: false,
     })
   })
 
