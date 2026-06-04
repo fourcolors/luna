@@ -156,8 +156,14 @@ export const runDream = (now: number) =>
     const store = yield* DreamStore
     const reasoner = yield* DreamReasoner
     const watermark = (yield* store.getWatermark) ?? 0
+    yield* Effect.logInfo(
+      `[luna/dream] runDream(${now}) starting; watermark=${watermark}`,
+    )
 
     const inputs = yield* gatherInputs(watermark, now)
+    yield* Effect.logInfo(
+      `[luna/dream] runDream: gathered ${inputs.sessions.length} session(s) and ${inputs.memories.length} memory record(s)`,
+    )
 
     // Cutoff = the latest lastMessageAt actually processed this cycle (spec
     // §3.1.1 step 5). Keying dreamId + the watermark advance on processed data
@@ -176,7 +182,14 @@ export const runDream = (now: number) =>
     // Advance to the latest processed lastMessageAt (no-op when no new sessions),
     // LAST — a crash before this re-runs the same window safely.
     yield* store.setWatermark(cutoff)
-  })
+    yield* Effect.logInfo(
+      `[luna/dream] runDream: completed dreamId=${dreamId}; ops=${ops.length}; watermark advanced to ${cutoff}`,
+    )
+  }).pipe(
+    Effect.tapErrorCause((cause) =>
+      Effect.logError(`[luna/dream] runDream FAILED`, { cause }),
+    ),
+  )
 
 /**
  * Register a nightly (or custom cron) dream on the given TriggerAgent.

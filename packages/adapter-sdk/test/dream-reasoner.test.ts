@@ -226,4 +226,85 @@ describe("DreamReasonerDefault", () => {
     )
     expect(exit._tag).toBe("Failure")
   })
+
+  // -------------------------------------------------------------------------
+  // REGRESSION: the silent-3am-failure bug.
+  //
+  // Before the fix, DreamReasonerDefault called sdk.query({ prompt, options:{
+  // maxTurns:1 } }) with NO pathToClaudeCodeExecutable. On the production
+  // container the SDK's bundled musl binary isn't executable, so the cron
+  // failed every night with "Claude Code native binary not found", swallowed
+  // by the trigger agent. ChatService.callSDK reads LUNA_CLAUDE_CODE_EXECUTABLE
+  // for chat; dream now reads it too. This test captures the params the
+  // reasoner hands to the SDK and asserts the env var is propagated.
+  // -------------------------------------------------------------------------
+  describe("env injection (regression: silent 3am failure)", () => {
+    /** Capture-only SDKClient.fake that records the last params it saw. */
+    const recordingClient = (
+      sink: { last: { prompt: unknown; options: unknown } | null },
+    ): Layer.Layer<SDKClient> =>
+      SDKClient.fake((params) => {
+        sink.last = { prompt: params.prompt, options: params.options }
+        const r = { ...makeResultMessage("sid", "uuid-cap"), result: "[]" }
+        return makeFakeQuery({ messages: [r] }).query
+      })
+
+    it("propagates LUNA_CLAUDE_CODE_EXECUTABLE → options.pathToClaudeCodeExecutable", async () => {
+      const sink: { last: { prompt: unknown; options: unknown } | null } = {
+        last: null,
+      }
+      const prev = process.env["LUNA_CLAUDE_CODE_EXECUTABLE"]
+      process.env["LUNA_CLAUDE_CODE_EXECUTABLE"] = "/usr/local/bin/claude-test"
+      try {
+        await Effect.runPromise(
+          runReason(EMPTY_INPUTS, recordingClient(sink), FakeMemory()),
+        )
+      } finally {
+        if (prev === undefined) delete process.env["LUNA_CLAUDE_CODE_EXECUTABLE"]
+        else process.env["LUNA_CLAUDE_CODE_EXECUTABLE"] = prev
+      }
+      expect(sink.last).not.toBeNull()
+      const opts = sink.last!.options as {
+        readonly maxTurns?: number
+        readonly pathToClaudeCodeExecutable?: string
+      }
+      expect(opts.maxTurns).toBe(1)
+      expect(opts.pathToClaudeCodeExecutable).toBe("/usr/local/bin/claude-test")
+    })
+
+    it("omits pathToClaudeCodeExecutable when the env var is unset (preserves prior behavior)", async () => {
+      const sink: { last: { prompt: unknown; options: unknown } | null } = {
+        last: null,
+      }
+      const prev = process.env["LUNA_CLAUDE_CODE_EXECUTABLE"]
+      delete process.env["LUNA_CLAUDE_CODE_EXECUTABLE"]
+      try {
+        await Effect.runPromise(
+          runReason(EMPTY_INPUTS, recordingClient(sink), FakeMemory()),
+        )
+      } finally {
+        if (prev !== undefined) process.env["LUNA_CLAUDE_CODE_EXECUTABLE"] = prev
+      }
+      const opts = sink.last!.options as Record<string, unknown>
+      expect("pathToClaudeCodeExecutable" in opts).toBe(false)
+    })
+
+    it("treats a whitespace-only env var as unset", async () => {
+      const sink: { last: { prompt: unknown; options: unknown } | null } = {
+        last: null,
+      }
+      const prev = process.env["LUNA_CLAUDE_CODE_EXECUTABLE"]
+      process.env["LUNA_CLAUDE_CODE_EXECUTABLE"] = "   "
+      try {
+        await Effect.runPromise(
+          runReason(EMPTY_INPUTS, recordingClient(sink), FakeMemory()),
+        )
+      } finally {
+        if (prev === undefined) delete process.env["LUNA_CLAUDE_CODE_EXECUTABLE"]
+        else process.env["LUNA_CLAUDE_CODE_EXECUTABLE"] = prev
+      }
+      const opts = sink.last!.options as Record<string, unknown>
+      expect("pathToClaudeCodeExecutable" in opts).toBe(false)
+    })
+  })
 })
