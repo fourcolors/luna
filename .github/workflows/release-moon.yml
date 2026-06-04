@@ -1,0 +1,68 @@
+# Release Moon — builds the Luna Moon desktop app and publishes a GitHub Release
+# with the Tauri v2 auto-updater artifacts (.app.tar.gz + .sig + latest.json).
+#
+# Trigger: push a tag like `moon-v0.0.2`. SEPARATE from ci.yml (which runs on
+# push/PR, not tags) so the two never overlap.
+#
+# Prereqs (one-time): repo secrets TAURI_SIGNING_PRIVATE_KEY +
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD (the updater minisign keypair). The matching
+# public key is baked into apps/ui-moon-tauri/src-tauri/tauri.conf.json
+# (plugins.updater.pubkey). No Apple notarization yet — the bundle is ad-hoc
+# signed (tauri.conf bundle.macOS.signingIdentity "-").
+#
+# NOTE: editing this file requires pushing over the SSH remote — the gh HTTPS
+# token lacks the `workflow` scope.
+
+name: Release Moon
+
+on:
+  push:
+    tags:
+      - "moon-v*"
+
+permissions:
+  contents: write # tauri-action needs this to create the Release
+
+jobs:
+  release-moon:
+    runs-on: macos-14 # Apple Silicon (arm64)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          # Match ci.yml / the bun that wrote the text lockfile.
+          bun-version: "1.3.14"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/ui-moon-tauri/src-tauri
+
+      - name: Install JS deps (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      - name: Build, sign, and publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/ui-moon-tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: "Luna Moon ${{ github.ref_name }}"
+          # MUST be false/false — a draft or prerelease makes the
+          # releases/latest/download/latest.json endpoint 404, so the updater
+          # would silently never find an update.
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          args: --target aarch64-apple-darwin

@@ -907,6 +907,16 @@
       line-height: 1.3;
     }
 
+    /* Update-check result line under the "App Updates" row. Neutral by default;
+       JS recolors it green (up to date) or amber (update available / error). */
+    .update-status {
+      display: block;
+      margin-top: 4px;
+      font-size: 0.72rem;
+      color: #9fb4d8;
+      line-height: 1.3;
+    }
+
     /* Whole chat panel highlights while a file is dragged over it. */
     .chat-panel.drag-over .chat-input-area {
       outline: 1.5px dashed rgba(138, 180, 248, 0.6);
@@ -1092,6 +1102,15 @@
           </select>
         </div>
 
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">App Updates</span>
+            <span class="setting-desc">Check GitHub for a newer Luna Moon build</span>
+            <span class="update-status" id="update-status" hidden></span>
+          </div>
+          <button type="button" class="record-btn" id="check-update-btn">Check</button>
+        </div>
+
         <div class="setting-item flex-column">
           <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
             <span class="setting-label">WebSocket Server URL</span>
@@ -1237,6 +1256,8 @@
       wsTokenInput: document.getElementById('ws-token-input'),
       channelSelect: document.getElementById('channel-select'),
       channelError: document.getElementById('channel-error'),
+      checkUpdateBtn: document.getElementById('check-update-btn'),
+      updateStatus: document.getElementById('update-status'),
       connectionStatus: document.getElementById('connection-status'),
       activeProfile: document.getElementById('active-profile'),
       buildSha: document.getElementById('build-sha'),
@@ -1806,48 +1827,53 @@
             break;
 
           case 'assistant-delta': {
-            // Dynamic premium streaming message update!
+            // Stream markdown live, one render per animation frame.
+            // The bubble carries `data-stream-raw` as the accumulated
+            // source-of-truth; StreamRender re-parses it through
+            // renderMarkdownStreaming() (closeOpenFences + renderMarkdown)
+            // so partial code fences stay formatted as code instead of
+            // flickering between code and prose as the closer arrives.
             State.activeTurnId = frame.turnId;
             this.startTurnTimeout();
             let lastMsg = DOM.chatMessages.lastElementChild;
-            
-            // If the last message is an assistant message and not a user one, append to it.
+
             if (lastMsg && lastMsg.classList.contains('assistant')) {
-              // Check if it's the typing indicator container (which has class assistant but contains .typing-dots)
               if (lastMsg.querySelector('.typing-dots')) {
-                // Replace typing indicator with the first delta
+                // First delta of the turn — drop the typing dots and seed
+                // the streaming buffer with the initial delta text.
                 lastMsg.innerHTML = '';
-                lastMsg.textContent = frame.text;
+                StreamRender.reset(lastMsg, frame.text);
               } else {
-                // Append delta text
-                lastMsg.textContent += frame.text;
+                StreamRender.append(lastMsg, frame.text);
               }
             } else {
-              // Create new assistant message
-              ChatEngine.appendMessage('assistant', frame.text);
+              // No assistant bubble yet (rare; usually typing dots exist).
+              // Append an empty assistant bubble and seed it with the delta.
+              ChatEngine.appendMessage('assistant', '');
+              const fresh = DOM.chatMessages.lastElementChild;
+              StreamRender.reset(fresh, frame.text);
             }
             DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
             break;
           }
 
           case 'assistant-done': {
-            // Finalize streaming turn
+            // Finalize streaming turn. StreamRender.finalize cancels any
+            // pending rAF render and writes the canonical text so a late
+            // frame can't clobber the final state.
             State.activeTurnId = null;
             this.clearTurnTimeout();
-            // Force a clean sync of the UI to make sure the final structured message matches.
-            // Also handle the zero-delta path: a turn that went straight from
-            // showTypingIndicator() to assistant-done still has spinning dots.
             let doneMsg = DOM.chatMessages.lastElementChild;
             if (doneMsg && doneMsg.classList.contains('assistant') && doneMsg.querySelector('.typing-dots')) {
               if (frame.message && frame.message.text) {
-                // Final, canonical text -> render Markdown (streaming was plain text).
-                doneMsg.innerHTML = renderMarkdown(frame.message.text);
+                // Zero-delta path: typing dots straight to done.
+                StreamRender.finalize(doneMsg, frame.message.text);
               } else {
                 doneMsg.remove();
               }
             } else if (frame.message && doneMsg && doneMsg.classList.contains('assistant')) {
-              // Replace the plain streamed text with the Markdown-rendered final form.
-              doneMsg.innerHTML = renderMarkdown(frame.message.text ?? doneMsg.textContent);
+              // Streaming finished — reconcile with canonical message text.
+              StreamRender.finalize(doneMsg, frame.message.text ?? (doneMsg.dataset.streamRaw ?? doneMsg.textContent));
             }
             DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
             break;
@@ -1963,6 +1989,95 @@
 
       // 6) Re-insert inline code with escaped contents
       return html.replace(new RegExp(`${CODE}(\\d+)${CODE}`, 'g'), (_m, n) => `<code>${esc(spans[+n])}</code>`);
+    }
+
+    /**
+     * Streaming-safe wrapper around renderMarkdown(). An in-progress stream
+     * routinely contains an unbalanced ``` opener; without intervention the
+     * fence regex inside renderMarkdown() fails to match, so everything
+     * after the opener renders as raw paragraphs/lists and then suddenly
+     * snaps into a <pre><code> block once the closer arrives. We pre-close
+     * the dangling fence so the parser always sees a balanced document.
+     * Mirrors closeOpenFences() in packages/ui-shared/src/streaming.ts.
+     */
+    function closeOpenFences(src) {
+      if (!src) return src;
+      const m = src.match(/```/g);
+      if (!m || m.length % 2 === 0) return src;
+      return src.endsWith('\n') ? `${src}\`\`\`` : `${src}\n\`\`\``;
+    }
+    function renderMarkdownStreaming(src) {
+      return renderMarkdown(closeOpenFences(src));
+    }
+
+    /**
+     * Coalesces rapid assistant-delta updates into one re-render per
+     * animation frame, keyed per-bubble. Without this, a fast token
+     * stream re-parses the message ~50× per second and the cumulative
+     * cost of HTML-escape + fence/inline regex passes shows up as
+     * scroll-jank on long messages. With rAF, multiple deltas in the
+     * same 16ms slice collapse to a single innerHTML swap.
+     *
+     * Each bubble carries `data-stream-raw` (the cumulative raw text) and
+     * `data-stream-frame` (the pending rAF id, if any). `schedule()` is
+     * idempotent within a frame; `flush()` forces an immediate render
+     * (used by assistant-done so the final canonical text wins the race
+     * against a still-pending frame).
+     */
+    const StreamRender = {
+      schedule(bubble) {
+        if (!bubble) return;
+        if (bubble.dataset.streamFrame) return; // already pending this frame
+        // Mark the bubble as having a scheduled frame BEFORE calling rAF
+        // so the in-flight flag is correct from both directions: the rAF
+        // callback can clear it (real browser, callback fires next frame),
+        // AND a test that runs rAF callbacks synchronously still observes
+        // a consistent state. The provisional 'pending' value is replaced
+        // with the actual frame id, unless the callback already cleared
+        // it (synchronous-rAF mock path).
+        bubble.dataset.streamFrame = 'pending';
+        const id = requestAnimationFrame(() => {
+          delete bubble.dataset.streamFrame;
+          const raw = bubble.dataset.streamRaw ?? '';
+          bubble.innerHTML = renderMarkdownStreaming(raw);
+        });
+        if (bubble.dataset.streamFrame === 'pending') {
+          bubble.dataset.streamFrame = String(id);
+        }
+      },
+      cancel(bubble) {
+        if (!bubble || !bubble.dataset.streamFrame) return;
+        cancelAnimationFrame(Number(bubble.dataset.streamFrame));
+        delete bubble.dataset.streamFrame;
+      },
+      append(bubble, delta) {
+        if (!bubble) return;
+        bubble.dataset.streamRaw = (bubble.dataset.streamRaw ?? '') + delta;
+        this.schedule(bubble);
+      },
+      reset(bubble, text) {
+        if (!bubble) return;
+        bubble.dataset.streamRaw = text ?? '';
+        this.schedule(bubble);
+      },
+      finalize(bubble, finalText) {
+        if (!bubble) return;
+        this.cancel(bubble);
+        delete bubble.dataset.streamRaw;
+        bubble.innerHTML = renderMarkdown(finalText ?? '');
+      },
+    };
+
+    // Test-only hook: expose the streaming-render helpers under a single
+    // namespace so jsdom tests can unit-exercise closeOpenFences /
+    // renderMarkdownStreaming / StreamRender without reaching into the
+    // WebSocket frame pipeline. Production code never reads this.
+    if (typeof window !== 'undefined') {
+      window.__MoonInternals = window.__MoonInternals || {};
+      window.__MoonInternals.closeOpenFences = closeOpenFences;
+      window.__MoonInternals.renderMarkdown = renderMarkdown;
+      window.__MoonInternals.renderMarkdownStreaming = renderMarkdownStreaming;
+      window.__MoonInternals.StreamRender = StreamRender;
     }
 
     /**
@@ -2704,6 +2819,84 @@
         }
       },
 
+      // ---- App self-update (GitHub Releases, via the Rust updater commands) ----
+      // Sets the small status line in the App Updates settings row.
+      setUpdateStatus(text, kind) {
+        const el = DOM.updateStatus;
+        if (!el) return;
+        el.textContent = text;
+        el.hidden = false;
+        el.style.color =
+          kind === 'ok' ? '#34d399' :          // green: up to date
+          kind === 'available' ? '#fbbf24' :   // amber: update / error
+          '#9fb4d8';                           // neutral: checking / N/A
+      },
+
+      // Ask the Rust `check_for_update` command (which hits GitHub Releases'
+      // latest.json). `silent` boot checks stay quiet unless an update exists;
+      // the manual "Check" button reports up-to-date / failures too.
+      async checkForUpdate(silent = false) {
+        const core = window.__TAURI__ && window.__TAURI__.core;
+        if (!core) {
+          if (!silent) this.setUpdateStatus('Updates are only available in the desktop app.', 'neutral');
+          return null;
+        }
+        if (!silent) this.setUpdateStatus('Checking…', 'neutral');
+        try {
+          const info = await core.invoke('check_for_update');
+          if (info && info.version) {
+            this.setUpdateStatus(`Update available: v${info.version}`, 'available');
+            this.showUpdateBanner(info);
+            return info;
+          }
+          if (!silent) this.setUpdateStatus('Up to date ✓', 'ok');
+          return null;
+        } catch (e) {
+          Logger.error('check_for_update failed:', e);
+          if (!silent) this.setUpdateStatus(`Update check failed: ${e}`, 'available');
+          return null;
+        }
+      },
+
+      // Persistent in-chat banner offering one-click update. Idempotent so a
+      // boot check + a manual check don't stack duplicates.
+      showUpdateBanner(info) {
+        const bannerId = 'update-available-banner';
+        if (document.getElementById(bannerId)) return;
+        const banner = document.createElement('div');
+        banner.id = bannerId;
+        banner.className = 'msg assistant';
+        const label = document.createElement('span');
+        label.textContent = `🌙 A new Luna Moon is available (v${info.version}). `;
+        banner.appendChild(label);
+        const btn = document.createElement('button');
+        btn.textContent = 'Update & Restart';
+        btn.style.cssText =
+          'margin-top:6px;display:inline-block;padding:4px 10px;border:none;border-radius:6px;' +
+          'background:#8ab4f8;color:#0a0e1c;font-size:0.78rem;font-weight:600;cursor:pointer;';
+        btn.addEventListener('click', () => this.installUpdate(btn));
+        banner.appendChild(document.createElement('br'));
+        banner.appendChild(btn);
+        DOM.chatMessages.appendChild(banner);
+        DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+      },
+
+      // Download + install + relaunch via the Rust `install_update` command.
+      // On success the app re-execs, so the invoke typically never resolves.
+      async installUpdate(btn) {
+        const core = window.__TAURI__ && window.__TAURI__.core;
+        if (!core) return;
+        if (btn) { btn.disabled = true; btn.textContent = 'Updating…'; }
+        this.setUpdateStatus('Downloading update…', 'neutral');
+        try {
+          await core.invoke('install_update');
+        } catch (e) {
+          Logger.error('install_update failed:', e);
+          this.setUpdateStatus(`Update failed: ${e}`, 'available');
+          if (btn) { btn.disabled = false; btn.textContent = 'Update & Restart'; }
+        }
+      },
+
       handleAlwaysOnTopChange() {
         const enabled = DOM.alwaysOnTopToggle.checked;
         localStorage.setItem('luna_always_on_top', String(enabled));
@@ -3017,7 +3210,10 @@
     if (DOM.channelSelect) {
       DOM.channelSelect.addEventListener('change', (e) => SettingsEngine.switchChannel(e.target.value));
     }
-    
+    if (DOM.checkUpdateBtn) {
+      DOM.checkUpdateBtn.addEventListener('click', () => SettingsEngine.checkForUpdate(false));
+    }
+
     DOM.recordShortcutBtn.addEventListener('click', () => {
       if (State.isRecordingShortcut) {
         SettingsEngine.stopRecordingShortcut(true);
@@ -3036,6 +3232,11 @@
     // token-precedence guard — otherwise the still-pending load would leave
     // State.wsToken empty and the .env seed would clobber a stored token.
     const settingsLoaded = SettingsEngine.load();
+
+    // Silent self-update check shortly after boot (let the WS connect first).
+    // Surfaces an in-chat "Update & Restart" banner only if a newer signed
+    // build exists on GitHub Releases; stays quiet otherwise.
+    setTimeout(() => { SettingsEngine.checkForUpdate(true); }, 4000);
 
     // Auto-wire the server token from ~/.luna/.env via a Tauri startup event.
     // The Rust backend (main.rs) reads UI_WS_TOKEN from ~/.luna/.env at launch

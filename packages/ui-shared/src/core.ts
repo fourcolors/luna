@@ -25,6 +25,7 @@ export {
   type PendingAttachment,
 } from "./attachments.js"
 export { downloadArtifact } from "./artifact-download.js"
+export { closeOpenFences } from "./streaming.js"
 export {
   initialState,
   reduce,

@@ -315,10 +315,42 @@ export const DreamReasonerDefault: Layer.Layer<
     const sdk = yield* SDKClient
     const mem = yield* MemoryRouterTag
 
+    /**
+     * The SDK package ships per-arch native binaries under
+     * @anthropic-ai/claude-agent-sdk-linux-x64{-musl}/. In a Bun-installed
+     * monorepo on a glibc Linux container, the SDK's default lookup picks
+     * the musl variant which is not executable, so `query()` throws:
+     *
+     *   ReferenceError: Claude Code native binary not found at
+     *   …/claude-agent-sdk-linux-x64-musl@…/claude. Please specify a valid
+     *   path with options.pathToClaudeCodeExecutable.
+     *
+     * The live server already exports LUNA_CLAUDE_CODE_EXECUTABLE
+     * (/usr/local/bin/claude on the container) and ChatService.callSDK
+     * reads it on every chat turn. Dream did NOT — so every 3am cron tick
+     * was firing, throwing this exact error, getting swallowed by the
+     * trigger agent's Effect.either, and leaving dream_state + dream_audit
+     * empty with zero log lines. This line is the fix: same env var, same
+     * shape, read at call time so tests can override it.
+     */
+    const pathToClaudeCodeExecutable =
+      process.env["LUNA_CLAUDE_CODE_EXECUTABLE"]?.trim() || undefined
+
     const reason: DreamReasonerApi["reason"] = (inputs: DreamInputs) =>
       Effect.gen(function* () {
         const prompt = buildDreamPrompt(inputs)
-        const query = yield* sdk.query({ prompt, options: { maxTurns: 1 } })
+        yield* Effect.logInfo("[luna/dream] reasoner.reason: starting", {
+          sessions: inputs.sessions.length,
+          memories: inputs.memories.length,
+          pathToClaudeCodeExecutable: pathToClaudeCodeExecutable ?? "(unset)",
+        })
+        const query = yield* sdk.query({
+          prompt,
+          options: {
+            maxTurns: 1,
+            ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
+          },
+        })
         const resultText = yield* collectResultText(query)
         const rawOps = yield* parseRawOps(resultText)
         const ops: DreamOp[] = []
@@ -326,6 +358,9 @@ export const DreamReasonerDefault: Layer.Layer<
           const op = yield* materializeOp(raw, mem)
           ops.push(op)
         }
+        yield* Effect.logInfo(
+          `[luna/dream] reasoner.reason: returning ${ops.length} op(s)`,
+        )
         return ops as ReadonlyArray<DreamOp>
       })
 
