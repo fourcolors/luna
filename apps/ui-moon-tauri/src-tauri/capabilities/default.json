@@ -16,6 +16,8 @@
     "allow-set-active-profile",
     "allow-local-shell-exec",
     "allow-get-platform",
+    "allow-check-for-update",
+    "allow-install-update",
     "dialog:allow-open"
   ]
 }

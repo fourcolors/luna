@@ -7,6 +7,55 @@ use tauri::Manager;
 // This one-line import is behavior-preserving and unblocks `cargo check`.
 use tauri::Emitter;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+// Self-update: `app.updater()` (check) + `update.download_and_install()` come
+// from UpdaterExt; `app.restart()` is built into the AppHandle (no process plugin).
+use tauri_plugin_updater::UpdaterExt;
+
+/// What the frontend needs to render the "update available" banner. Returned by
+/// `check_for_update`; `None` means the app is already current.
+#[derive(serde::Serialize)]
+struct UpdateInfo {
+    version: String,
+    /// Release notes (the updater's `body` field), if the release set one.
+    notes: Option<String>,
+}
+
+/// Ask the GitHub Releases `latest.json` whether a newer signed build exists.
+/// Returns `Ok(None)` when up to date so the UI can stay silent. Network / config
+/// errors come back as `Err(String)` rather than panicking the command.
+#[tauri::command]
+async fn check_for_update(app: tauri::AppHandle) -> Result<Option<UpdateInfo>, String> {
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await.map_err(|e| e.to_string())? {
+        Some(update) => Ok(Some(UpdateInfo {
+            version: update.version.clone(),
+            notes: update.body.clone(),
+        })),
+        None => Ok(None),
+    }
+}
+
+/// Download + swap in the latest signed build, then relaunch into it. The
+/// minisign signature is verified against `plugins.updater.pubkey` before the
+/// swap. `app.restart()` never returns (it re-execs), so the trailing `Ok`
+/// is only reached if no update was pending.
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no update available".to_string())?;
+
+    // No-op progress + finish callbacks; the UI relaunches rather than showing a bar.
+    update
+        .download_and_install(|_chunk, _total| {}, || {})
+        .await
+        .map_err(|e| e.to_string())?;
+
+    app.restart();
+}
 
 #[tauri::command]
 fn get_last_thread_id() -> Option<String> {
@@ -469,6 +518,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_last_thread_id,
             save_connection,
@@ -476,7 +526,9 @@ fn main() {
             load_profiles,
             set_active_profile,
             local_shell_exec,
-            get_platform
+            get_platform,
+            check_for_update,
+            install_update
         ])
         .setup(|app| {
             // Register a universal system-wide global shortcut to toggle Luna window.

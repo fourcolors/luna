@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-install-update"
+description = "Allows downloading + installing an available update, then relaunching"
+
+[permission.commands]
+allow = [
+  "install_update"
+]
