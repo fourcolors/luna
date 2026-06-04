@@ -29,12 +29,14 @@ import {
 } from "solid-js"
 import {
   ALLOWED_ATTACH_TYPES,
+  closeOpenFences,
   deriveTitle,
   fileToAttachment,
   type ChatAttachment,
   type PendingAttachment,
   type ThreadView,
 } from "@luna/ui-shared/core"
+import { MarkdownView } from "./MarkdownView.jsx"
 import { MessageBubble } from "./MessageBubble.jsx"
 
 /** Commands recognised in the composer (slash-prefixed). */
@@ -225,7 +227,15 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
               {(inFlight) => (
                 <div class="bubble assistant in-flight">
                   <div class="bubble-role">assistant</div>
-                  <div class="bubble-text">{inFlight().text}</div>
+                  {/*
+                    Stream markdown live: closeOpenFences() auto-completes
+                    an unclosed ``` so the in-progress code block renders as
+                    a code block instead of flickering into prose. Inline
+                    emphasis (**bold**, *italic*, `code`) self-balances on
+                    the next delta — we accept the brief raw-character
+                    window as the cost of not over-engineering.
+                  */}
+                  <MarkdownView text={closeOpenFences(inFlight().text)} />
                   <div class="muted small">streaming…</div>
                 </div>
               )}

@@ -3,11 +3,13 @@
  * markdown with Shiki-highlighted fenced code blocks. Mirrors
  * packages/ui-shared/src/MarkdownView.tsx (React).
  *
- * Streaming policy (carried over from React version): the parent only
- * mounts MarkdownView for FINALIZED assistant messages. The in-flight
- * bubble keeps rendering plain text so high-frequency delta updates
- * don't churn Shiki tokenization or flicker between code/prose as
- * fences open.
+ * Streaming policy: used for BOTH finalized assistant messages AND the
+ * in-flight bubble (ChatPanel.tsx). Callers rendering in-flight text
+ * should run it through `closeOpenFences()` from `@luna/ui-shared/core`
+ * first, so an unbalanced ``` opener doesn't flicker the rest of the
+ * message between code and prose as fences open/close. Inline emphasis
+ * is short and self-balancing, so we tolerate the keystroke-window of
+ * raw `**foo` characters rather than over-engineering.
  */
 import { type Component } from "solid-js"
 import { SolidMarkdown } from "solid-markdown"
