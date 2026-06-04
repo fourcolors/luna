@@ -667,6 +667,7 @@
       display: flex;
       flex-direction: column; /* error + strip stack above the composer row */
       gap: 8px;
+      position: relative; /* anchor for the absolutely-positioned scope menu popover */
     }
 
     /* Horizontal row holding the attach button, text input and send button. */
@@ -675,7 +676,65 @@
       gap: 8px;
       align-items: flex-end; /* send/attach stay at the bottom as the textarea grows */
     }
-    
+
+    /* "+" machine-access button + its popover menu (local-shell attach). */
+    .scope-btn {
+      width: 38px;
+      height: 38px;
+      flex: 0 0 auto;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 10px;
+      color: #8ab4f8;
+      font-size: 20px;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.2s, border-color 0.2s, color 0.2s;
+    }
+    .scope-btn:hover { background: rgba(255, 255, 255, 0.09); }
+    .scope-btn.active {
+      background: rgba(138, 180, 248, 0.18);
+      border-color: rgba(138, 180, 248, 0.5);
+      color: #c7dbff;
+    }
+    .scope-menu {
+      position: absolute;
+      left: 24px;
+      bottom: 74px;
+      min-width: 230px;
+      background: var(--glass-bg);
+      border: 1px solid var(--glass-border);
+      border-radius: 12px;
+      padding: 6px;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+      z-index: 80;
+      display: none;
+    }
+    .scope-menu.open { display: block; }
+    .scope-menu-hint {
+      padding: 6px 10px 4px;
+      font-size: 0.68rem;
+      color: #64748b;
+    }
+    .scope-menu-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 9px 10px;
+      border-radius: 8px;
+      font-size: 0.82rem;
+      color: #e8eefc;
+      cursor: pointer;
+      user-select: none;
+    }
+    .scope-menu-item:hover { background: rgba(255, 255, 255, 0.06); }
+    .scope-menu-check { color: #8ab4f8; font-weight: 700; opacity: 0; }
+    .scope-menu-item.checked .scope-menu-check { opacity: 1; }
+
     .chat-input {
       flex: 1;
       min-height: 38px;        /* one-line floor (was the fixed height) */
@@ -1065,8 +1124,17 @@
     <form class="chat-input-area" id="chat-form">
       <div class="attach-error" id="attach-error" hidden></div>
       <div class="attachments-strip" id="attachments-strip" hidden></div>
+      <!-- Machine-access popover, anchored to .chat-input-area (position:relative). -->
+      <div class="scope-menu" id="scope-menu" role="menu" aria-hidden="true">
+        <div class="scope-menu-hint">Let Luna read &amp; run anything on this Mac</div>
+        <div class="scope-menu-item" id="scope-full-access" role="menuitemcheckbox" aria-checked="false" tabindex="0">
+          <span>Full machine access</span>
+          <span class="scope-menu-check" aria-hidden="true">✓</span>
+        </div>
+      </div>
       <div class="composer-row">
         <input type="file" id="file-input" multiple hidden>
+        <button type="button" class="scope-btn" id="scope-btn" aria-label="Machine access" title="Let Luna access this machine">+</button>
         <button type="button" class="attach-btn" id="attach-btn" aria-label="Attach files" title="Attach files">
           <!-- paperclip -->
           <svg viewBox="0 0 24 24">
@@ -1171,7 +1239,10 @@
       channelError: document.getElementById('channel-error'),
       connectionStatus: document.getElementById('connection-status'),
       activeProfile: document.getElementById('active-profile'),
-      buildSha: document.getElementById('build-sha')
+      buildSha: document.getElementById('build-sha'),
+      scopeBtn: document.getElementById('scope-btn'),
+      scopeMenu: document.getElementById('scope-menu'),
+      scopeFullAccess: document.getElementById('scope-full-access')
     };
 
     /**
@@ -1208,7 +1279,19 @@
       connGen: 0,
       // version-skew: true once a protocol-version mismatch banner has been
       // shown, so reconnects (which re-deliver `hello`) don't stack duplicates.
-      protocolNoticeShown: false
+      protocolNoticeShown: false,
+      // local-shell: the machine-access scope this client advertises. roots are
+      // explicitly attached folders (auto-approve set, may be empty); fullAccess
+      // lets Luna run anywhere. enabled = fullAccess || roots.length > 0.
+      localShell: {
+        enabled: false,
+        roots: [],
+        fullAccess: false,
+        platform: 'unknown',
+        clientId: 'moon_' + ((window.crypto && crypto.randomUUID)
+          ? crypto.randomUUID().replace(/-/g, '')
+          : Math.random().toString(36).slice(2))
+      }
     };
 
     /**
@@ -1256,6 +1339,129 @@
       }
       // Note: corner resize is NOT done via the native startResizeDragging (unreliable on
       // a borderless macOS window); the resize-grip handler drives setWindowSize directly.
+    };
+
+    /**
+     * Local-shell client: advertises this machine's access scope to the server
+     * and runs the commands the server requests, via the local_shell_exec Tauri
+     * command. Soft scope + opt-in auto-approve (mirrors the CLI): a command is
+     * auto-approved only when full access is on or its cwd is inside an attached
+     * root; everything else is denied (moon has no per-command approval modal).
+     */
+    const LocalShell = {
+      // Minimal posix path normalize for absolute paths (collapse //, ., ..).
+      normalize(p) {
+        const out = [];
+        for (const seg of String(p).split('/')) {
+          if (seg === '' || seg === '.') continue;
+          if (seg === '..') { out.pop(); continue; }
+          out.push(seg);
+        }
+        return '/' + out.join('/');
+      },
+      withinRoot(cwd, root) {
+        if (!cwd.startsWith('/') || !root.startsWith('/')) return false;
+        const c = this.normalize(cwd);
+        const r = this.normalize(root);
+        if (r === '/') return true; // "/" contains everything
+        return c === r || c.startsWith(r + '/');
+      },
+      // An undefined cwd means "use the client default" (roots[0]); in scope only
+      // when at least one root is attached (auto-approval is opt-in).
+      withinRoots(cwd, roots) {
+        if (cwd == null) return roots.length > 0;
+        return roots.some((r) => this.withinRoot(cwd, r));
+      },
+      recomputeEnabled() {
+        const ls = State.localShell;
+        ls.enabled = ls.fullAccess || ls.roots.length > 0;
+      },
+      async refreshPlatform() {
+        if (!(window.__TAURI__ && window.__TAURI__.core)) return;
+        try {
+          State.localShell.platform = await window.__TAURI__.core.invoke('get_platform');
+        } catch (e) {
+          Logger.error('Failed to invoke get_platform via Tauri:', e);
+        }
+      },
+      // Tell the server this client's current scope. Sent when a thread becomes
+      // active and on every scope change. Harmless to re-send (server keys on
+      // clientId); an enabled:false frame releases the server's slot.
+      sendCapability() {
+        if (!State.activeThreadId) return;
+        const ls = State.localShell;
+        WebSocketEngine.send({
+          type: 'local-shell-capability',
+          threadId: State.activeThreadId,
+          enabled: ls.enabled,
+          approvalMode: 'prompt',
+          clientId: ls.clientId,
+          platform: ls.platform,
+          cwd: ls.roots[0] || '/',
+          roots: ls.roots,
+          fullAccess: ls.fullAccess
+        });
+        Logger.info(`local-shell capability sent (enabled=${ls.enabled}, fullAccess=${ls.fullAccess}, roots=${ls.roots.length})`);
+      },
+      // Run a server-requested command, ALWAYS replying with a result frame so the
+      // server bridge never hangs on a pending request.
+      async handleRequest(frame) {
+        const reply = (res) => WebSocketEngine.send(Object.assign({
+          type: 'local-shell-result',
+          requestId: frame.requestId,
+          threadId: frame.threadId
+        }, res));
+        const denied = (stderr) => reply({
+          approved: false, exitCode: null, stdout: '', stderr, durationMs: 0, timedOut: false
+        });
+
+        const ls = State.localShell;
+        if (!ls.enabled) return denied('local shell disabled');
+        const approved = ls.fullAccess || this.withinRoots(frame.cwd ?? null, ls.roots);
+        if (!approved) return denied('command outside attached scope');
+        if (!(window.__TAURI__ && window.__TAURI__.core)) {
+          return denied('local shell unavailable (no Tauri runtime)');
+        }
+        try {
+          const r = await window.__TAURI__.core.invoke('local_shell_exec', {
+            command: frame.command,
+            cwd: frame.cwd ?? null,
+            timeoutMs: frame.timeoutMs ?? null
+          });
+          reply({
+            approved: true,
+            exitCode: r.exitCode,
+            stdout: r.stdout,
+            stderr: r.stderr,
+            durationMs: r.durationMs,
+            timedOut: r.timedOut
+          });
+        } catch (e) {
+          // exec failure (not a command non-zero exit) — still an approved attempt.
+          reply({ approved: true, exitCode: null, stdout: '', stderr: 'local shell exec failed: ' + String(e), durationMs: 0, timedOut: false });
+        }
+      },
+      toggleFullAccess() {
+        const ls = State.localShell;
+        ls.fullAccess = !ls.fullAccess;
+        this.recomputeEnabled();
+        this.updateUI();
+        this.sendCapability();
+      },
+      updateUI() {
+        const ls = State.localShell;
+        const anyScope = ls.fullAccess || ls.roots.length > 0;
+        if (DOM.scopeBtn) DOM.scopeBtn.classList.toggle('active', anyScope);
+        if (DOM.scopeFullAccess) {
+          DOM.scopeFullAccess.classList.toggle('checked', ls.fullAccess);
+          DOM.scopeFullAccess.setAttribute('aria-checked', String(ls.fullAccess));
+        }
+      },
+      openMenu(open) {
+        if (!DOM.scopeMenu) return;
+        DOM.scopeMenu.classList.toggle('open', open);
+        DOM.scopeMenu.setAttribute('aria-hidden', String(!open));
+      }
     };
 
     /**
@@ -1591,6 +1797,12 @@
               ChatEngine.appendMessage('assistant', 'This thread is empty. Type a message below to start chatting!');
             }
             DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+            // Thread is live — (re)advertise our local-shell scope for it.
+            LocalShell.sendCapability();
+            break;
+
+          case 'local-shell-request':
+            LocalShell.handleRequest(frame);
             break;
 
           case 'assistant-delta': {
@@ -2697,6 +2909,27 @@
       resizeGrip.addEventListener('pointerup', endResize);
       resizeGrip.addEventListener('pointercancel', endResize);
     }
+
+    // Local-shell machine-access controls ("+" button + popover menu).
+    LocalShell.refreshPlatform();
+    if (DOM.scopeBtn) {
+      DOM.scopeBtn.addEventListener('click', (e) => {
+        e.stopPropagation(); // don't let the document outside-click handler re-close it
+        LocalShell.openMenu(!DOM.scopeMenu.classList.contains('open'));
+      });
+    }
+    if (DOM.scopeFullAccess) {
+      DOM.scopeFullAccess.addEventListener('click', () => LocalShell.toggleFullAccess());
+      DOM.scopeFullAccess.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); LocalShell.toggleFullAccess(); }
+      });
+    }
+    // Close the scope menu on an outside click (clicks inside it are ignored).
+    document.addEventListener('click', (e) => {
+      if (!DOM.scopeMenu || !DOM.scopeMenu.classList.contains('open')) return;
+      if (DOM.scopeMenu.contains(e.target) || (DOM.scopeBtn && DOM.scopeBtn.contains(e.target))) return;
+      LocalShell.openMenu(false);
+    });
 
     // Chat Panel Controls
     DOM.closeChat.addEventListener('click', () => UIController.toggleChat());
