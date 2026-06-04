@@ -30,13 +30,12 @@ export interface ChatToolUse {
 }
 
 /**
- * An image attachment on a user turn. `mediaType` is constrained to the four
- * types accepted by the Anthropic API base64 image source. `data` is raw
- * base64 (no `data:` URI prefix). v1 scope: images only — PDF is a
- * different SDK source shape and is out of scope.
+ * A file attachment on a user turn. Images use the four base64 image media
+ * types (stored as `image` content blocks); PDFs use `application/pdf` (stored
+ * as `document` blocks). `data` is raw base64 (no `data:` URI prefix).
  */
 export interface ChatAttachment {
-  readonly mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+  readonly mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "application/pdf"
   readonly data: string
 }
 
@@ -145,9 +144,9 @@ const ALLOWED_MEDIA_TYPES = new Set<string>([
 ])
 
 /**
- * Pull image attachment blocks out of a user payload's content array.
- * Only extracts base64 image sources matching the Anthropic API's allowed
- * media types. Empty array for non-user or non-attachment-bearing payloads.
+ * Pull file attachment blocks out of a user payload's content array: base64
+ * `image` blocks (allow-listed image media types) and base64 `document` blocks
+ * (`application/pdf`). Empty array for non-user or non-attachment-bearing payloads.
  */
 function extractAttachments(payload: unknown): ReadonlyArray<ChatAttachment> {
   if (!isObj(payload)) return []
@@ -158,14 +157,20 @@ function extractAttachments(payload: unknown): ReadonlyArray<ChatAttachment> {
   const out: ChatAttachment[] = []
   for (const block of content) {
     if (!isObj(block)) continue
-    if (block["type"] !== "image") continue
+    const type = block["type"]
+    if (type !== "image" && type !== "document") continue
     const source = block["source"]
     if (!isObj(source)) continue
     if (source["type"] !== "base64") continue
     const mt = source["media_type"]
     const data = source["data"]
-    if (typeof mt !== "string" || !ALLOWED_MEDIA_TYPES.has(mt)) continue
-    if (typeof data !== "string") continue
+    if (typeof mt !== "string" || typeof data !== "string") continue
+    if (type === "image") {
+      if (!ALLOWED_MEDIA_TYPES.has(mt)) continue
+    } else {
+      // document block — PDFs only
+      if (mt !== "application/pdf") continue
+    }
     out.push({ mediaType: mt as ChatAttachment["mediaType"], data })
   }
   return out

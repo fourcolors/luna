@@ -156,15 +156,17 @@ export const truncateOutput = (
   return { output: out, truncated }
 }
 
-/** Synthesize an SDKUserMessage envelope from text + optional image attachments.
+/** Synthesize an SDKUserMessage envelope from text + optional file attachments.
  *
  * When attachments are present, we build a content-block array per the
- * Anthropic API spec: text block first (omitted if empty), then one image
- * block per attachment in document order.
+ * Anthropic API spec: text block first (omitted if empty), then one block per
+ * attachment in document order — an `image` block for the four image media
+ * types, or a `document` block for `application/pdf` (verified to pass through
+ * the Agent SDK to the model).
  *
  * The SDK accepts both:
  *   content: string                      (text-only shortcut)
- *   content: Array<ContentBlockParam>    (structured, required for images)
+ *   content: Array<ContentBlockParam>    (structured, required for attachments)
  */
 const buildUserMessage = (
   text: string,
@@ -181,16 +183,24 @@ const buildUserMessage = (
   type ContentBlock =
     | { type: "text"; text: string }
     | { type: "image"; source: { type: "base64"; media_type: string; data: string } }
+    | { type: "document"; source: { type: "base64"; media_type: "application/pdf"; data: string } }
 
   const content: ContentBlock[] = []
   if (text.length > 0) {
     content.push({ type: "text", text })
   }
   for (const a of attachments) {
-    content.push({
-      type: "image",
-      source: { type: "base64", media_type: a.mediaType, data: a.data },
-    })
+    if (a.mediaType === "application/pdf") {
+      content.push({
+        type: "document",
+        source: { type: "base64", media_type: "application/pdf", data: a.data },
+      })
+    } else {
+      content.push({
+        type: "image",
+        source: { type: "base64", media_type: a.mediaType, data: a.data },
+      })
+    }
   }
   return {
     type: "user",

@@ -186,6 +186,45 @@ describe("projectOne", () => {
     ])
   })
 
+  it("extracts PDF document attachments on user turns", () => {
+    const payload = {
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "read this" },
+          {
+            type: "document",
+            source: { type: "base64", media_type: "application/pdf", data: "JVBER" },
+          },
+        ],
+      },
+    }
+    const out = projectOne(stored("u-pdf", 0, "user", payload))
+    expect(out?.text).toBe("read this")
+    expect(out?.attachments).toEqual([
+      { mediaType: "application/pdf", data: "JVBER" },
+    ])
+  })
+
+  it("skips malformed document blocks (non-pdf, missing source) without throwing", () => {
+    const payload = {
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "hi" },
+          { type: "document", source: { type: "base64", media_type: "text/plain", data: "Cg==" } },
+          { type: "document" },
+          { type: "document", source: { type: "url", media_type: "application/pdf" } },
+        ],
+      },
+    }
+    const out = projectOne(stored("u-baddoc", 0, "user", payload))
+    expect(out?.text).toBe("hi")
+    expect(out?.attachments).toEqual([])
+  })
+
   it("keeps image-only user turns (no text, only attachments)", () => {
     const payload = {
       type: "user",

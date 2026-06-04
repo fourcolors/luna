@@ -48,12 +48,12 @@ export interface ChatToolUse {
 }
 
 /**
- * Image attachment on a user turn. `data` is raw base64 (no `data:` prefix).
- * Constrained to the four media types the Anthropic API accepts for base64
- * image sources.
+ * File attachment on a user turn. `data` is raw base64 (no `data:` prefix).
+ * Images use the four base64 image media types; PDFs use `application/pdf`
+ * (the Anthropic `document` content-block path).
  */
 export interface ChatAttachment {
-  readonly mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+  readonly mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "application/pdf"
   readonly data: string
 }
 

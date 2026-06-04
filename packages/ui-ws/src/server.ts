@@ -241,10 +241,11 @@ const send = (ws: WebSocket, frame: ServerFrame): void => {
  * image type, oversized payload, or non-string data. Returns a human-readable
  * error message on failure, or null on success.
  *
- * Limits mirror the UI client (apps/ui-web/src/App.tsx):
- *   - mediaType ∈ { image/jpeg, image/png, image/gif, image/webp }
+ * Limits follow the Anthropic content-block limits:
+ *   - mediaType ∈ { image/jpeg, image/png, image/gif, image/webp, application/pdf }
  *   - data: base64 string
- *   - decoded size ≤ 4 MB per attachment
+ *   - decoded size ≤ 10 MB per image, ≤ 20 MB per PDF
+ *   - turn total decoded ≤ 20 MB (base64 ≈ 27 MB, under the 32 MB API request ceiling)
  *   - ≤ 8 attachments per turn (defence-in-depth on top of maxPayload)
  */
 const ALLOWED_ATTACH_MEDIA_TYPES = new Set<string>([
@@ -252,8 +253,11 @@ const ALLOWED_ATTACH_MEDIA_TYPES = new Set<string>([
   "image/png",
   "image/gif",
   "image/webp",
+  "application/pdf",
 ])
-const MAX_ATTACH_RAW_BYTES = 4 * 1024 * 1024
+const MAX_IMAGE_RAW_BYTES = 10 * 1024 * 1024 // Anthropic per-image base64 limit
+const MAX_PDF_RAW_BYTES = 20 * 1024 * 1024   // PDFs are large and can't be downscaled
+const MAX_TURN_RAW_BYTES = 20 * 1024 * 1024  // sum of decoded; base64 ≈ 27 MB < 32 MB request ceiling
 const MAX_ATTACHMENTS_PER_TURN = 8
 
 const validateAttachments = (
@@ -263,6 +267,7 @@ const validateAttachments = (
   if (atts.length > MAX_ATTACHMENTS_PER_TURN) {
     return `too many attachments: ${atts.length} (max ${MAX_ATTACHMENTS_PER_TURN})`
   }
+  let totalBytes = 0
   for (let i = 0; i < atts.length; i++) {
     const a = atts[i]!
     if (typeof a.mediaType !== "string" || !ALLOWED_ATTACH_MEDIA_TYPES.has(a.mediaType)) {
@@ -274,9 +279,14 @@ const validateAttachments = (
     // base64 decoded size ≈ length * 3/4. Use a fast bound check rather
     // than actually decoding (avoids allocating the buffer just to size it).
     const approxBytes = Math.floor(a.data.length * 3 / 4)
-    if (approxBytes > MAX_ATTACH_RAW_BYTES) {
-      return `attachment[${i}]: too large (${approxBytes} bytes; max ${MAX_ATTACH_RAW_BYTES})`
+    const cap = a.mediaType === "application/pdf" ? MAX_PDF_RAW_BYTES : MAX_IMAGE_RAW_BYTES
+    if (approxBytes > cap) {
+      return `attachment[${i}]: too large (${approxBytes} bytes; max ${cap})`
     }
+    totalBytes += approxBytes
+  }
+  if (totalBytes > MAX_TURN_RAW_BYTES) {
+    return `attachments total too large (${totalBytes} bytes; max ${MAX_TURN_RAW_BYTES})`
   }
   return null
 }
@@ -353,11 +363,12 @@ export const startUIWebSocketServer = (
     })
 
     // Cap inbound message size. Base-limit was 64KB for text-only frames.
-    // With image attachments (max 4MB raw ≈ 5.4MB base64 per image) we
-    // raise to 8MB — enough for one typical image plus JSON overhead.
-    // Still well below the ws default (100MB). Oversize frames still close
+    // Images downscale client-side, but PDFs ride through whole — a turn can
+    // carry up to ~20MB decoded (≈27MB base64) plus JSON, so we raise to 32MB
+    // (matching the Anthropic 32MB request ceiling; validateAttachments is the
+    // real gate). Still below the ws default (100MB). Oversize frames close
     // with 1009; the UI validates pre-flight so hitting this is exceptional.
-    const wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 })
+    const wss = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024 * 1024 })
 
     // Constant-time string compare for the auth check. The token is short
     // (≥16 chars) and the listener is 127.0.0.1-bound, so timing-attack

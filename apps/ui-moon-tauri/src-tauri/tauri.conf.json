@@ -23,7 +23,8 @@
         "transparent": true,
         "alwaysOnTop": true,
         "fullscreen": false,
-        "visible": true
+        "visible": true,
+        "dragDropEnabled": false
       }
     ],
     "security": {

@@ -665,8 +665,15 @@
       padding: 12px 24px 26px; /* extra side + bottom padding so the input box & send button clear the rounded bottom corners */
       border-top: 1px solid rgba(255, 255, 255, 0.05);
       display: flex;
-      align-items: flex-end; /* keep the send button at the bottom as the textarea is dragged taller */
+      flex-direction: column; /* error + strip stack above the composer row */
       gap: 8px;
+    }
+
+    /* Horizontal row holding the attach button, text input and send button. */
+    .composer-row {
+      display: flex;
+      gap: 8px;
+      align-items: flex-end; /* send/attach stay at the bottom as the textarea grows */
     }
     
     .chat-input {
@@ -719,7 +726,124 @@
       width: 16px;
       height: 16px;
       fill: currentColor;
-    
+    }
+
+    /* Attach (paperclip) button — quieter sibling of the send button. */
+    .attach-btn {
+      width: 38px;
+      height: 38px;
+      flex: 0 0 auto;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 10px;
+      color: #8ab4f8;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.2s, border-color 0.2s;
+    }
+
+    .attach-btn:hover {
+      background: rgba(255, 255, 255, 0.06);
+      border-color: rgba(138, 180, 248, 0.35);
+    }
+
+    .attach-btn svg {
+      width: 17px;
+      height: 17px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    /* Strip of pending-attachment chips above the input row. */
+    .attachments-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .attachment-chip {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 160px;
+      padding: 4px 8px 4px 4px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 8px;
+      font-size: 0.72rem;
+      color: #cbd5e1;
+    }
+
+    .attachment-chip img.att-thumb {
+      width: 34px;
+      height: 34px;
+      object-fit: cover;
+      border-radius: 5px;
+      display: block;
+    }
+
+    .attachment-chip .att-icon {
+      width: 34px;
+      height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(138, 180, 248, 0.12);
+      border-radius: 5px;
+      font-size: 0.62rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      color: #8ab4f8;
+      text-transform: uppercase;
+    }
+
+    .attachment-chip .att-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .attachment-chip .att-remove {
+      flex: 0 0 auto;
+      width: 16px;
+      height: 16px;
+      margin-left: 2px;
+      border: none;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.12);
+      color: #e2e8f0;
+      font-size: 0.7rem;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .attachment-chip .att-remove:hover {
+      background: rgba(248, 113, 113, 0.7);
+    }
+
+    /* Validation / rejection messages (e.g. unsupported binary types). */
+    .attach-error {
+      font-size: 0.72rem;
+      color: #f87171;
+      line-height: 1.3;
+    }
+
+    /* Whole chat panel highlights while a file is dragged over it. */
+    .chat-panel.drag-over .chat-input-area {
+      outline: 1.5px dashed rgba(138, 180, 248, 0.6);
+      outline-offset: -4px;
+      border-radius: 10px;
+    }
+
     .setting-item.flex-column {
       flex-direction: column;
       align-items: stretch;
@@ -927,12 +1051,23 @@
     </div>
     
     <form class="chat-input-area" id="chat-form">
-      <textarea class="chat-input" id="message-input" placeholder="Type a message..." rows="1" autocomplete="off"></textarea>
-      <button type="submit" class="send-btn" aria-label="Send message">
-        <svg viewBox="0 0 24 24">
-          <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
-        </svg>
-      </button>
+      <div class="attach-error" id="attach-error" hidden></div>
+      <div class="attachments-strip" id="attachments-strip" hidden></div>
+      <div class="composer-row">
+        <input type="file" id="file-input" multiple hidden>
+        <button type="button" class="attach-btn" id="attach-btn" aria-label="Attach files" title="Attach files">
+          <!-- paperclip -->
+          <svg viewBox="0 0 24 24">
+            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+          </svg>
+        </button>
+        <textarea class="chat-input" id="message-input" placeholder="Type a message..." rows="1" autocomplete="off"></textarea>
+        <button type="submit" class="send-btn" aria-label="Send message">
+          <svg viewBox="0 0 24 24">
+            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+          </svg>
+        </button>
+      </div>
     </form>
     <!-- Drag this corner to resize the whole panel. It triggers a native window resize
          (the window is frameless, so it has no OS resize edges of its own). -->
@@ -1006,6 +1141,10 @@
       chatForm: document.getElementById('chat-form'),
       messageInput: document.getElementById('message-input'),
       chatMessages: document.getElementById('chat-messages'),
+      fileInput: document.getElementById('file-input'),
+      attachBtn: document.getElementById('attach-btn'),
+      attachmentsStrip: document.getElementById('attachments-strip'),
+      attachError: document.getElementById('attach-error'),
       toggleSettings: document.getElementById('toggle-settings'),
       newChat: document.getElementById('new-chat'),
       settingsPanel: document.getElementById('settings-panel'),
@@ -1042,6 +1181,10 @@
       reconnectAttempts: 0,
       isManuallyClosing: false,
       pendingUserMessage: null,
+      // True while a native file-picker dialog is open. The OS dialog blurs
+      // our window, which would otherwise trip close-on-blur and collapse the
+      // chat out from under the upload. Guarded in UIController.handleBlur.
+      suppressBlurClose: false,
       // Set true when the user switches servers so the next syncThread()
       // ignores the (non-server-scoped) last-thread file and lists fresh.
       skipLastThreadFile: false,
@@ -1409,14 +1552,15 @@
               this.send({ type: 'subscribe', threadId: frame.thread.id });
               
               if (State.pendingUserMessage) {
-                const text = State.pendingUserMessage;
+                const pending = State.pendingUserMessage;
                 State.pendingUserMessage = null;
                 // Wait slightly for subscription to settle, then send message
                 setTimeout(() => {
                   this.send({
                     type: 'user-message',
                     threadId: State.activeThreadId,
-                    text: text
+                    text: pending.text,
+                    ...(pending.attachments ? { attachments: pending.attachments } : {})
                   });
                 }, 100);
               }
@@ -1597,18 +1741,374 @@
     }
 
     /**
+     * File / image attachment composer state.
+     *
+     * Phase 1: images become Anthropic image content-blocks (the server
+     * already accepts these on the user-message frame); text/code files are
+     * folded into the outgoing message text. PDFs and arbitrary binaries are
+     * politely declined until the server document path / blob store land
+     * (see docs/moon-uploads-design.md).
+     */
+    const Attachments = {
+      // Mirror server-side validateAttachments (packages/ui-ws/src/server.ts).
+      IMAGE_TYPES: new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']),
+      MAX_IMAGE_BYTES: 4 * 1024 * 1024,   // 4 MB — matches server MAX_ATTACH_RAW_BYTES
+      MAX_TEXT_BYTES: 256 * 1024,         // fold-as-text guard (keeps prompts sane)
+      MAX_PER_TURN: 8,                    // matches MAX_ATTACHMENTS_PER_TURN
+      // Downscale every non-GIF image so its long edge ≤ this before sending.
+      // 1568px is the universal model-native resolution (Luna pools models, so
+      // we take the safe lower bound, not Opus's 2576) — larger is wasted bytes +
+      // tokens. Downscaling keeps images under MAX_IMAGE_BYTES, so the server
+      // contract (4 MB cap, 8 MB WS frame) needs NO change for the image path.
+      MAX_EDGE: 1568,
+      // Reject absurd originals before trying to decode them into a canvas.
+      HARD_INPUT_BYTES: 40 * 1024 * 1024,
+      TEXT_EXTS: new Set([
+        'txt','md','markdown','csv','tsv','json','yaml','yml','xml','html','htm',
+        'css','js','mjs','cjs','ts','tsx','jsx','py','rb','go','rs','java','kt',
+        'c','h','cc','cpp','hpp','cs','php','swift','sh','bash','zsh','sql','toml',
+        'ini','cfg','conf','env','log','tex','r','lua','pl','dart','vue','svelte'
+      ]),
+      // Server accepts application/pdf document blocks as of the PDF slice
+      // (protocol.ts + server.ts + buildUserMessage; SDK passthrough spiked).
+      PDF_ENABLED: true,
+      MAX_PDF_BYTES: 20 * 1024 * 1024,    // matches server MAX_PDF_RAW_BYTES
+      // Decoded-bytes budget for one turn. Mirrors server MAX_TURN_RAW_BYTES.
+      // MUST be enforced client-side: a turn whose base64 exceeds the 32MB WS
+      // maxPayload is dropped with code 1009 BEFORE validateAttachments runs, so
+      // the server can't return a friendly error — only this guard can.
+      MAX_TURN_BYTES: 20 * 1024 * 1024,
+
+      items: [],
+
+      newId() {
+        return `att_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+      },
+
+      classify(file) {
+        if (this.IMAGE_TYPES.has(file.type)) return 'image';
+        if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) return 'pdf';
+        const ext = (file.name.split('.').pop() || '').toLowerCase();
+        if ((file.type && file.type.startsWith('text/')) || this.TEXT_EXTS.has(ext)) return 'text';
+        return 'binary';
+      },
+
+      readBase64(file) {
+        return new Promise((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(String(r.result).split(',')[1] || '');
+          r.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+          r.readAsDataURL(file);
+        });
+      },
+
+      readText(file) {
+        return new Promise((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(String(r.result));
+          r.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+          r.readAsText(file);
+        });
+      },
+
+      readDataUrl(file) {
+        return new Promise((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(String(r.result));
+          r.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+          r.readAsDataURL(file);
+        });
+      },
+
+      loadImage(src) {
+        return new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = () => reject(new Error('Could not decode image'));
+          img.src = src;
+        });
+      },
+
+      b64Bytes(b64) {
+        return Math.floor((b64.length * 3) / 4);
+      },
+
+      // Reject before a turn's total base64 would exceed the WS frame ceiling
+      // (which drops the socket with 1009 before the server can respond).
+      guardTurnTotal(b64) {
+        const used = this.items.reduce((n, a) => n + (a.data ? this.b64Bytes(a.data) : 0), 0);
+        if (used + this.b64Bytes(b64) > this.MAX_TURN_BYTES) {
+          throw new Error('Attachments too large for one message (max ~20 MB total).');
+        }
+      },
+
+      /**
+       * Downscale an image to MAX_EDGE on its long side and return base64,
+       * preserving png/jpeg/webp type. GUARANTEES the result is ≤ MAX_IMAGE_BYTES
+       * (falls back to JPEG / steps quality down if a re-encoded PNG is still
+       * heavy), so the image path never needs a server-side cap change.
+       * Canvas isn't tainted here because the source is a same-origin data: URL.
+       */
+      async processImage(file) {
+        const dataUrl = await this.readDataUrl(file);
+        const img = await this.loadImage(dataUrl);
+        const longEdge = Math.max(img.naturalWidth, img.naturalHeight);
+        const original = dataUrl.split(',')[1] || '';
+
+        // Already within budget — send the bytes untouched.
+        if (longEdge <= this.MAX_EDGE && this.b64Bytes(original) <= this.MAX_IMAGE_BYTES) {
+          return { mediaType: file.type, data: original };
+        }
+
+        const scale = Math.min(1, this.MAX_EDGE / longEdge);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        // Re-encode, preserving type where the canvas supports it.
+        let outType = (file.type === 'image/png' || file.type === 'image/webp') ? file.type : 'image/jpeg';
+        let quality = 0.92;
+        let data = canvas.toDataURL(outType, quality).split(',')[1] || '';
+
+        // PNG ignores quality; if still heavy, fall back to JPEG.
+        if (outType === 'image/png' && this.b64Bytes(data) > this.MAX_IMAGE_BYTES) {
+          outType = 'image/jpeg';
+          data = canvas.toDataURL(outType, quality).split(',')[1] || '';
+        }
+        // JPEG/WebP honour quality — step down until under the cap.
+        while (this.b64Bytes(data) > this.MAX_IMAGE_BYTES && quality > 0.4) {
+          quality -= 0.15;
+          data = canvas.toDataURL(outType, quality).split(',')[1] || '';
+        }
+        return { mediaType: outType, data };
+      },
+
+      async addFiles(fileList) {
+        const files = Array.from(fileList || []);
+        if (files.length === 0) return;
+        const errors = [];
+        for (const file of files) {
+          if (this.items.length >= this.MAX_PER_TURN) {
+            errors.push(`Max ${this.MAX_PER_TURN} attachments per message.`);
+            break;
+          }
+          try {
+            await this.addOne(file);
+          } catch (e) {
+            errors.push(e && e.message ? e.message : String(e));
+          }
+        }
+        this.setError(errors.length ? errors.join(' · ') : null);
+        this.render();
+      },
+
+      async addOne(file) {
+        const kind = this.classify(file);
+        if (kind === 'image') {
+          if (file.size > this.HARD_INPUT_BYTES) {
+            throw new Error(`Image too large to process: ${file.name}`);
+          }
+          if (file.type === 'image/gif') {
+            // Animated GIFs can't be canvas-downscaled (frames flatten) —
+            // size-check against the cap instead.
+            if (file.size > this.MAX_IMAGE_BYTES) {
+              throw new Error(`GIF too large (max 4 MB): ${file.name}`);
+            }
+            const data = await this.readBase64(file);
+            this.guardTurnTotal(data);
+            this.items.push({ id: this.newId(), kind, name: file.name, mediaType: file.type, data });
+          } else {
+            // Downscale to model-native resolution; guaranteed ≤ MAX_IMAGE_BYTES.
+            const out = await this.processImage(file);
+            this.guardTurnTotal(out.data);
+            this.items.push({ id: this.newId(), kind, name: file.name, mediaType: out.mediaType, data: out.data });
+          }
+        } else if (kind === 'text') {
+          if (file.size > this.MAX_TEXT_BYTES) {
+            throw new Error(`Text file too large (max 256 KB): ${file.name}`);
+          }
+          const text = await this.readText(file);
+          this.items.push({ id: this.newId(), kind, name: file.name, text });
+        } else if (kind === 'pdf') {
+          // Phase-1b: flip PDF_ENABLED once the server accepts document blocks
+          // (protocol.ts + validateAttachments + buildUserMessage). Until then,
+          // decline politely rather than send a frame the server will reject.
+          if (!this.PDF_ENABLED) {
+            throw new Error(`PDF support is coming in the next update: ${file.name}`);
+          }
+          if (file.size > this.MAX_PDF_BYTES) {
+            throw new Error(`PDF too large (max 20 MB): ${file.name}`);
+          }
+          const data = await this.readBase64(file);
+          this.guardTurnTotal(data);
+          this.items.push({ id: this.newId(), kind, name: file.name, mediaType: 'application/pdf', data });
+        } else {
+          // Phase 2: needs a blob store before Luna can hold a binary.
+          throw new Error(`Luna can't read ${file.name} yet — file storage is coming.`);
+        }
+      },
+
+      remove(id) {
+        this.items = this.items.filter((a) => a.id !== id);
+        this.setError(null);
+        this.render();
+      },
+
+      clear() {
+        this.items = [];
+        this.setError(null);
+        this.render();
+      },
+
+      hasAny() {
+        return this.items.length > 0;
+      },
+
+      /**
+       * Base64 attachments for the user-message frame's `attachments` field.
+       * Images today; PDFs join once PDF_ENABLED + the server document path land.
+       */
+      wireAttachments() {
+        const atts = this.items
+          .filter((a) => a.kind === 'image' || a.kind === 'pdf')
+          .map((a) => ({ mediaType: a.mediaType, data: a.data }));
+        return atts.length ? atts : undefined;
+      },
+
+      /** Text/code files, folded into one string appended to the message text. */
+      textBlock() {
+        const texts = this.items.filter((a) => a.kind === 'text');
+        if (texts.length === 0) return '';
+        return texts.map((a) => formatTextAttachment(a.name, a.text)).join('\n\n');
+      },
+
+      /** Lightweight descriptors for rendering the sent user bubble. */
+      previews() {
+        return this.items.map((a) => ({
+          kind: a.kind,
+          name: a.name,
+          src: a.kind === 'image' ? `data:${a.mediaType};base64,${a.data}` : null
+        }));
+      },
+
+      setError(msg) {
+        if (!msg) {
+          DOM.attachError.hidden = true;
+          DOM.attachError.textContent = '';
+        } else {
+          DOM.attachError.textContent = msg;
+          DOM.attachError.hidden = false;
+        }
+      },
+
+      render() {
+        const strip = DOM.attachmentsStrip;
+        strip.innerHTML = '';
+        if (this.items.length === 0) {
+          strip.hidden = true;
+          return;
+        }
+        strip.hidden = false;
+        for (const a of this.items) {
+          const chip = document.createElement('div');
+          chip.className = 'attachment-chip';
+
+          if (a.kind === 'image') {
+            const img = document.createElement('img');
+            img.className = 'att-thumb';
+            img.src = `data:${a.mediaType};base64,${a.data}`;
+            img.alt = a.name;
+            chip.appendChild(img);
+          } else {
+            const icon = document.createElement('span');
+            icon.className = 'att-icon';
+            icon.textContent = (a.name.split('.').pop() || 'file').slice(0, 4);
+            chip.appendChild(icon);
+          }
+
+          const name = document.createElement('span');
+          name.className = 'att-name';
+          name.textContent = a.name;
+          chip.appendChild(name);
+
+          const remove = document.createElement('button');
+          remove.type = 'button';
+          remove.className = 'att-remove';
+          remove.setAttribute('aria-label', `Remove ${a.name}`);
+          remove.textContent = '×';
+          remove.addEventListener('click', () => this.remove(a.id));
+          chip.appendChild(remove);
+
+          strip.appendChild(chip);
+        }
+      }
+    };
+
+    /**
+     * Render an attached text/code file into the outgoing message text.
+     *
+     * ── DESIGN DECISION (yours, Mr. Cobb) ─────────────────────────────────
+     * When a user attaches `report.csv` or `main.py`, its contents get folded
+     * into the prompt text we send to Claude. HOW we wrap it materially
+     * changes how reliably the model treats it as a discrete file vs. blurs it
+     * into your instructions. Options worth weighing:
+     *   • XML-style tags  <file name="x">…</file>  — Claude is trained to
+     *     respect these as hard delimiters; robust against prompt-bleed.
+     *   • Fenced code block  ```name … ```          — familiar, but breaks if
+     *     the file itself contains a ``` fence.
+     *   • Plain header + body                        — simplest, weakest
+     *     boundary.
+     * Default below uses XML-style tags. This is the lever on how Claude
+     * perceives attached files — tune to taste.
+     * ──────────────────────────────────────────────────────────────────────
+     */
+    function formatTextAttachment(name, content) {
+      return `<attached-file name="${name}">\n${content}\n</attached-file>`;
+    }
+
+    /**
      * Chat Messaging & WebSocket submission engine.
      */
     const ChatEngine = {
-      // render=true renders Markdown into the bubble (assistant only); default stays
-      // plain textContent so user messages and status/error strings remain literal.
-      appendMessage(role, text, render = false) {
+      // render=true renders Markdown into the bubble (assistant only); default
+      // stays plain textContent so user messages + status/error strings remain
+      // literal. previews (optional) appends a tray of attachment thumbnails.
+      appendMessage(role, text, render = false, previews = null) {
         const msgDiv = document.createElement('div');
         msgDiv.className = `msg ${role}`;
         if (render && role === 'assistant') {
           msgDiv.innerHTML = renderMarkdown(text);
-        } else {
+        } else if (text) {
           msgDiv.textContent = text;
+        }
+        if (previews && previews.length > 0) {
+          const tray = document.createElement('div');
+          tray.className = 'attachments-strip';
+          tray.hidden = false;
+          tray.style.marginTop = text ? '8px' : '0';
+          for (const p of previews) {
+            const chip = document.createElement('div');
+            chip.className = 'attachment-chip';
+            if (p.kind === 'image' && p.src) {
+              const img = document.createElement('img');
+              img.className = 'att-thumb';
+              img.src = p.src;
+              img.alt = p.name;
+              chip.appendChild(img);
+            } else {
+              const icon = document.createElement('span');
+              icon.className = 'att-icon';
+              icon.textContent = (p.name.split('.').pop() || 'file').slice(0, 4);
+              chip.appendChild(icon);
+            }
+            const name = document.createElement('span');
+            name.className = 'att-name';
+            name.textContent = p.name;
+            chip.appendChild(name);
+            tray.appendChild(chip);
+          }
+          msgDiv.appendChild(tray);
         }
         DOM.chatMessages.appendChild(msgDiv);
         return msgDiv;
@@ -1653,14 +2153,23 @@
 
       handleSubmit(e) {
         e.preventDefault();
-        const text = DOM.messageInput.value.trim();
-        if (!text) return;
-        
-        Logger.info(`Appended user message: "${text}"`);
-        this.appendMessage('user', text);
+        const typed = DOM.messageInput.value.trim();
+        const folded = Attachments.textBlock();
+        const wire = Attachments.wireAttachments();
+        const previews = Attachments.previews();
+
+        // The wire text carries typed input PLUS folded file contents; the
+        // visible bubble shows only what the user typed (folded files would
+        // bury the conversation transcript).
+        const wireText = [typed, folded].filter(Boolean).join('\n\n');
+        if (!wireText && !wire) return;   // nothing to send
+
+        Logger.info(`Appended user message: "${typed}" (+${previews.length} attachment(s))`);
+        this.appendMessage('user', typed, false, previews);
         DOM.messageInput.value = '';
+        Attachments.clear();
         DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
-        
+
         // Show typing indicator
         this.showTypingIndicator();
         WebSocketEngine.startTurnTimeout();
@@ -1670,13 +2179,14 @@
           WebSocketEngine.send({
             type: 'user-message',
             threadId: State.activeThreadId,
-            text: text
+            text: wireText,
+            ...(wire ? { attachments: wire } : {})
           });
         } else {
           // If we don't have a thread subscribed yet, we create a thread first, then send
           Logger.warn("No active thread subscribed; queuing message and creating new thread");
           WebSocketEngine.send({ type: 'new-thread' });
-          State.pendingUserMessage = text;
+          State.pendingUserMessage = { text: wireText, attachments: wire };
         }
       }
     };
@@ -2081,7 +2591,7 @@
       },
 
       handleBlur() {
-        if (DOM.closeOnBlurToggle.checked && DOM.chatPanel.classList.contains('active') && !State.isRecordingShortcut) {
+        if (DOM.closeOnBlurToggle.checked && DOM.chatPanel.classList.contains('active') && !State.isRecordingShortcut && !State.suppressBlurClose) {
           Logger.info("Focus click-away blur event fired: collapsing companion");
           DOM.settingsPanel.classList.remove('active');
           DOM.chatPanel.classList.remove('active');
@@ -2169,6 +2679,63 @@
       if (!a) return;
       e.preventDefault();
       try { window.open(a.href, '_blank', 'noopener'); } catch (_) { /* inert link; UI preserved */ }
+    });
+
+    // ---- Attachment composer wiring ----
+    // Open the native file picker. The OS dialog blurs our window, so guard
+    // close-on-blur until focus returns (else the chat collapses mid-pick).
+    DOM.attachBtn.addEventListener('click', () => {
+      State.suppressBlurClose = true;
+      DOM.fileInput.click();
+    });
+    window.addEventListener('focus', () => {
+      // Re-arm close-on-blur once the picker dialog has closed (or cancelled).
+      setTimeout(() => { State.suppressBlurClose = false; }, 150);
+    });
+    DOM.fileInput.addEventListener('change', (e) => {
+      const files = e.target.files;
+      if (files && files.length) Attachments.addFiles(files);
+      e.target.value = '';            // allow re-picking the same file
+      State.suppressBlurClose = false;
+    });
+
+    // Paste an image straight into the composer (e.g. a screenshot).
+    DOM.messageInput.addEventListener('paste', (e) => {
+      const cd = e.clipboardData;
+      if (!cd) return;
+      const imageFiles = Array.from(cd.items)
+        .filter((it) => Attachments.IMAGE_TYPES.has(it.type))
+        .map((it) => it.getAsFile())
+        .filter(Boolean);
+      if (imageFiles.length > 0) {
+        e.preventDefault();           // don't also paste the filename string
+        Attachments.addFiles(imageFiles);
+      }
+    });
+
+    // Drag-and-drop onto the chat panel. dragDropEnabled:false in tauri.conf
+    // hands OS file drops to the webview, so these HTML5 events fire normally.
+    // A depth counter avoids flicker as the pointer crosses child elements.
+    let dragDepth = 0;
+    DOM.chatPanel.addEventListener('dragenter', (e) => {
+      e.preventDefault();
+      dragDepth++;
+      DOM.chatPanel.classList.add('drag-over');
+    });
+    DOM.chatPanel.addEventListener('dragover', (e) => {
+      e.preventDefault();             // required to allow a drop
+    });
+    DOM.chatPanel.addEventListener('dragleave', (e) => {
+      e.preventDefault();
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) DOM.chatPanel.classList.remove('drag-over');
+    });
+    DOM.chatPanel.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dragDepth = 0;
+      DOM.chatPanel.classList.remove('drag-over');
+      const files = e.dataTransfer && e.dataTransfer.files;
+      if (files && files.length) Attachments.addFiles(files);
     });
 
     // Settings Panel Controls
