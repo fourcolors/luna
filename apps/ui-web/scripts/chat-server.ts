@@ -310,7 +310,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       // of truth in her system prompt (not optional shell-read).
       // Returns null when no active workspaces are registered; the
       // .filter() below drops it cleanly in that case.
-      const workspacesContent = loadWorkspaces(paths.lunaDbPath)
+      const workspacesContent = loadWorkspaces(resolveRuntimePaths().lunaDbPath)
       const sessionMetadata = buildSessionMetadata()
       const sandboxLocalShell = resolveSandboxLocalShell()
       console.log(
