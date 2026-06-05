@@ -447,6 +447,19 @@ export async function runLunaCli(
         sendLocalShellCapability(client, session.threadId, localShell)
         continue
       }
+      if (command.type === "copy") {
+        // The legacy readline UI does not retain a timeline, so /copy cannot
+        // assemble assistant text here. Point users at the TUI; the new TUI is
+        // the default surface as of Phase 25e.
+        writeError(io, "/copy is only available in the TUI (drop --no-tui)")
+        continue
+      }
+      if (command.type === "select") {
+        // /select toggles OpenTUI mouse capture, which doesn't exist in the
+        // legacy readline UI — terminal-native selection already works there.
+        writeError(io, "/select is only meaningful in the TUI; readline UI already uses native terminal selection")
+        continue
+      }
       if (command.type === "error") {
         writeError(io, command.message)
         continue

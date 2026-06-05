@@ -21,3 +21,6 @@ pnpm-lock.yaml
 .claude/software-engineering/
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
+
+# Local-only scratch for things like issue bodies waiting to be filed
+/.local/

@@ -12,6 +12,7 @@ export const StatusBar = (props: StatusBarProps) => {
       idStr +
       " · shell " +
       (props.store.localShellEnabled() ? "on" : "off") +
+      (props.store.selectionMode() ? " · SELECT (F2 to resume)" : "") +
       " · " +
       props.store.connection()
     )

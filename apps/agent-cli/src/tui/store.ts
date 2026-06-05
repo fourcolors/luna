@@ -22,6 +22,13 @@ export const createTuiStore = () => {
   const [fatalReason, setFatalReason] = createSignal<string | null>(null)
   /** Phase 3 D3: active survey check-in, or null when none is pending. */
   const [survey, setSurvey] = createSignal<PendingSurvey | null>(null)
+  /**
+   * #17 follow-up: terminal-native selection mode. When true, OpenTUI mouse
+   * capture is disabled so the operator can drag-select text and copy it
+   * with the terminal's own clipboard binding. Mouse-driven scroll stops
+   * working while this is on; keyboard scroll still works.
+   */
+  const [selectionMode, setSelectionMode] = createSignal<boolean>(false)
 
   /**
    * Phase 3 D3 — exclusive-focus gate.
@@ -83,6 +90,7 @@ export const createTuiStore = () => {
     inputDraft, setInputDraft,
     fatalReason, setFatalReason,
     survey, setSurvey,
+    selectionMode, setSelectionMode,
     chatInputActive,
   }
 }

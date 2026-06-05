@@ -11,6 +11,21 @@ export type SlashCommand =
   | { readonly type: "local-shell-attach"; readonly root: string }
   | { readonly type: "local-shell-detach"; readonly root: string }
   | { readonly type: "local-shell-full-access"; readonly enabled: boolean }
+  | {
+      readonly type: "copy"
+      /**
+       * "last" → copy the most recent assistant message only.
+       * "messages" → copy the last `count` blocks of any kind.
+       * "thread" → copy the entire visible thread.
+       */
+      readonly target: "last" | "messages" | "thread"
+      readonly count: number
+    }
+  | {
+      readonly type: "select"
+      /** "on" enables selection mode, "off" disables it, "toggle" flips state. */
+      readonly mode: "on" | "off" | "toggle"
+    }
   | { readonly type: "error"; readonly message: string }
 
 export const HELP_TEXT = [
@@ -21,6 +36,11 @@ export const HELP_TEXT = [
   "/interrupt - interrupt the current response",
   "/quit - quit Luna",
   "/exit - quit Luna",
+  "/copy - copy the last assistant message to the system clipboard",
+  "/copy <N> - copy the last N messages",
+  "/copy thread - copy the entire visible thread",
+  "/select - toggle terminal-native selection mode (or F2)",
+  "/select on|off - explicitly enable or disable selection mode",
   "/local-shell on - enable local shell execution",
   "/local-shell off - disable local shell execution",
   "/local-shell status - show local shell status and attached folders",
@@ -77,6 +97,35 @@ const parseLocalShell = (rest: string): SlashCommand => {
   }
 }
 
+const parseCopy = (rest: string): SlashCommand => {
+  const arg = rest.trim()
+  if (arg.length === 0) {
+    return { type: "copy", target: "last", count: 1 }
+  }
+  if (arg.toLowerCase() === "thread") {
+    return { type: "copy", target: "thread", count: 0 }
+  }
+  // Must be a positive integer.
+  if (/^\d+$/.test(arg)) {
+    const n = Number.parseInt(arg, 10)
+    if (n >= 1) return { type: "copy", target: "messages", count: n }
+  }
+  return {
+    type: "error",
+    message: "/copy takes no argument, a positive integer, or 'thread'",
+  }
+}
+
+const parseSelect = (rest: string): SlashCommand => {
+  const arg = rest.trim().toLowerCase()
+  if (arg === "" || arg === "toggle") {
+    return { type: "select", mode: "toggle" }
+  }
+  if (arg === "on") return { type: "select", mode: "on" }
+  if (arg === "off") return { type: "select", mode: "off" }
+  return { type: "error", message: "/select takes no arg, 'on', 'off', or 'toggle'" }
+}
+
 export const parseSlashCommand = (line: string): SlashCommand => {
   if (!line.startsWith("/")) return { type: "message", text: line }
 
@@ -98,6 +147,11 @@ export const parseSlashCommand = (line: string): SlashCommand => {
     case "/quit":
     case "/exit":
       return { type: "quit" }
+    case "/copy":
+      return parseCopy(rest)
+    case "/select":
+    case "/selection":
+      return parseSelect(rest)
     case "/local-shell":
       return parseLocalShell(rest)
     default:

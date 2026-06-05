@@ -4,6 +4,13 @@ import { render, useRenderer } from "@opentui/solid"
 import type { CliRenderer } from "@opentui/core"
 import { createComponent } from "solid-js"
 import { createTuiStore } from "./store.js"
+import { selectForCopy, type CopyTarget } from "./copy.js"
+import {
+  writeToClipboard,
+  makeSpawnRunner,
+  makeOsc52Writer,
+} from "./clipboard.js"
+import { applySelection, describeSelection } from "./selection.js"
 
 const DEBUG_LOG = process.env["LUNA_TUI_DEBUG"]
 const dbg = (msg: string): void => {
@@ -233,6 +240,25 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
 
   const sessionLoop = session.run()
 
+  /**
+   * Apply a selection-mode action. Flips OpenTUI mouse capture, updates the
+   * store flag (so StatusBar can render the indicator), and posts a system
+   * message describing the new state. Safe to call before the renderer is
+   * mounted — falls back to a notice line if the ref isn't ready yet.
+   */
+  const applySelectionMode = (action: "on" | "off" | "toggle"): void => {
+    const t = applySelection(store.selectionMode(), action)
+    if (!t.changed) {
+      store.appendSystem(`selection mode already ${t.next ? "on" : "off"}`)
+      return
+    }
+    if (rendererRef !== undefined && rendererRef !== null) {
+      rendererRef.useMouse = !t.next
+    }
+    store.setSelectionMode(t.next)
+    store.appendSystem(describeSelection(t.next))
+  }
+
   // Submit handler: parse slash commands and dispatch.
   const submit = (text: string) => {
     const trimmed = text.trim()
@@ -280,6 +306,41 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
       sendLocalShellCapability(store.threadId())
       return
     }
+    if (parsed.type === "copy") {
+      const spec: CopyTarget =
+        parsed.target === "last"
+          ? { target: "last", count: 1 }
+          : parsed.target === "thread"
+            ? { target: "thread", count: 0 }
+            : { target: "messages", count: parsed.count }
+      const text = selectForCopy(store.timeline(), spec)
+      if (text.length === 0) {
+        store.appendSystem("copy: nothing to copy yet")
+        return
+      }
+      void (async () => {
+        const result = await writeToClipboard(
+          text,
+          { platform: process.platform, env: process.env },
+          { spawn: makeSpawnRunner(), osc52: makeOsc52Writer() },
+        )
+        if (result.ok) {
+          const bytes = Buffer.byteLength(text, "utf8")
+          store.appendSystem(`copy: ${bytes}B via ${result.via}`)
+        } else {
+          store.appendSystem(`copy failed: ${result.error}`)
+        }
+      })()
+      return
+    }
+    if (parsed.type === "select") {
+      applySelectionMode(parsed.mode)
+      return
+    }
+    if (parsed.type === "error") {
+      store.appendSystem(parsed.message)
+      return
+    }
     if (parsed.type === "message") {
       store.appendUser(trimmed)
       dbg(`appendUser done`)
@@ -302,6 +363,12 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
       dbg(`key: ctrl-c quit`)
       session.beginQuit()
       void client.close().then(() => { rendererRef?.destroy() })
+      return
+    }
+    if (evt.name === "f2") {
+      dbg(`key: f2 toggle selection mode`)
+      applySelectionMode("toggle")
+      return
     }
   }
 
