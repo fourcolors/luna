@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events"
-import type { ClientFrame, ServerFrame, MemorySearchResultFrame, MemorySearchErrorFrame } from "@luna/ui-ws"
+import type { ClientFrame, ServerFrame, MemorySearchResultFrame, MemorySearchErrorFrame, ClientInfo } from "@luna/ui-ws"
 import type { LunaWsClient } from "./ws-client.js"
 import { parseSlashCommand, type SlashCommand } from "./slash.js"
 import type { PendingSurvey, SurveyItem, SurveyVerdict } from "@luna/core"
@@ -101,6 +101,11 @@ export type LunaHeadlessConfig = {
   readonly newThread?: boolean
   readonly saveLastThread: (threadId: string) => void
   readonly clearLastThread: () => void
+  /**
+   * Optional client identity stamped on every user-message frame. Lets the
+   * server (and Luna) see which surface the operator is typing through.
+   */
+  readonly clientInfo?: ClientInfo
 }
 
 export class LunaHeadlessSession extends EventEmitter {
@@ -115,6 +120,7 @@ export class LunaHeadlessSession extends EventEmitter {
   private fatalMessage: string | null = null
   private readonly saveLastThread: (threadId: string) => void
   private readonly clearLastThread: () => void
+  private readonly clientInfo: ClientInfo | undefined
 
   constructor(cfg: LunaHeadlessConfig) {
     super()
@@ -125,6 +131,7 @@ export class LunaHeadlessSession extends EventEmitter {
     this.pendingAutoResumedThreadId = cfg.autoResumedThreadId ?? null
     this.saveLastThread = cfg.saveLastThread
     this.clearLastThread = cfg.clearLastThread
+    this.clientInfo = cfg.clientInfo
     if (cfg.newThread === true) {
       this.client.send({ type: "new-thread", model: this.model })
     } else if (this.currentThreadId !== null) {
@@ -179,7 +186,12 @@ export class LunaHeadlessSession extends EventEmitter {
       this.pendingUserMessages.push(text)
       return
     }
-    this.client.send({ type: "user-message", threadId: this.currentThreadId, text })
+    this.client.send({
+      type: "user-message",
+      threadId: this.currentThreadId,
+      text,
+      ...(this.clientInfo !== undefined ? { client: this.clientInfo } : {}),
+    })
     this.emit("userMessageSent")
   }
 
@@ -317,7 +329,12 @@ export class LunaHeadlessSession extends EventEmitter {
     while (this.pendingUserMessages.length > 0) {
       const text = this.pendingUserMessages.shift()
       if (text !== undefined) {
-        this.client.send({ type: "user-message", threadId: this.currentThreadId, text })
+        this.client.send({
+          type: "user-message",
+          threadId: this.currentThreadId,
+          text,
+          ...(this.clientInfo !== undefined ? { client: this.clientInfo } : {}),
+        })
         this.emit("userMessageSent")
       }
     }

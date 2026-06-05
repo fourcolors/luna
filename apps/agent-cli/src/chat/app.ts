@@ -27,6 +27,7 @@ import { runRecovery } from "./recovery.js"
 import { HELP_TEXT, parseSlashCommand } from "./slash.js"
 import { LunaWsClient } from "./ws-client.js"
 import { LunaHeadlessSession } from "./headless.js"
+import { buildClientInfo } from "./client-info.js"
 
 export type LunaCliIO = {
   stdin: Readable
@@ -267,6 +268,7 @@ export async function runLunaCli(
     client,
     profileName: cfg.profileName,
     model: io.env["LUNA_MODEL"] ?? DEFAULT_MODEL,
+    clientInfo: buildClientInfo({ legacy: true }),
     initialThreadId: cfg.threadId,
     autoResumedThreadId: cfg.threadIdAutoResumed ? cfg.threadId : null,
     newThread: cfg.newThread,

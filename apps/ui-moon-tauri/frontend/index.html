@@ -1269,6 +1269,20 @@
     /**
      * Shared state manager.
      */
+    /**
+     * Client-identity blob stamped on every user-message frame so the server
+     * (and Luna) can tell the moon Tauri client apart from the web UI or
+     * agent-cli TUI. Additive in the @luna/ui-ws protocol; older servers
+     * ignore the field.
+     */
+    const MoonClient = {
+      CLIENT_INFO: {
+        name: 'luna-moon',
+        version: '0.0.1',
+        platform: 'tauri-darwin',
+      },
+    };
+
     const State = {
       pressStartTime: 0,
       pressStartX: 0,
@@ -1800,6 +1814,7 @@
                     type: 'user-message',
                     threadId: State.activeThreadId,
                     text: pending.text,
+                    client: MoonClient.CLIENT_INFO,
                     ...(pending.attachments ? { attachments: pending.attachments } : {})
                   });
                 }, 100);
@@ -2520,6 +2535,7 @@
             type: 'user-message',
             threadId: State.activeThreadId,
             text: wireText,
+            client: MoonClient.CLIENT_INFO,
             ...(wire ? { attachments: wire } : {})
           });
         } else {

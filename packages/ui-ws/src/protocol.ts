@@ -316,6 +316,29 @@ export interface WireAttachment {
   readonly data: string
 }
 
+/**
+ * Small identity blob clients attach to each user-message so the server (and
+ * Luna) can see *which* surface the operator is typing through — e.g. the
+ * agent-cli TUI, the web UI, the Tauri "moon" client, etc.
+ *
+ * Additive and optional: older clients omit it; older servers ignore it.
+ * No protocol bump required.
+ *
+ * Conventions for `name`:
+ *   - "luna-tui"     — apps/agent-cli TUI
+ *   - "luna-web"     — apps/ui-web (browser)
+ *   - "luna-moon"    — apps/ui-moon-tauri (desktop)
+ *   - "luna-tauri"   — apps/ui-tauri (legacy wrapper)
+ * Anything else is accepted; the server treats it as a string.
+ */
+export interface ClientInfo {
+  readonly name: string
+  /** Semver, git short-sha, or build id. */
+  readonly version?: string
+  /** "darwin" | "linux" | "win32" | "browser" | "ios" | "android" | etc. */
+  readonly platform?: string
+}
+
 export interface UserMessageFrame {
   readonly type: "user-message"
   readonly threadId: string
@@ -326,6 +349,13 @@ export interface UserMessageFrame {
    * with `assistant-error{kind:"sdk"}`.
    */
   readonly attachments?: ReadonlyArray<WireAttachment>
+  /**
+   * Optional client-identity hint (see `ClientInfo`). When present, the
+   * server prepends a one-line `[client: …]` marker to the user text before
+   * handing it to the model so Luna can see which surface the operator is
+   * using. Absent → server passes text through unmodified.
+   */
+  readonly client?: ClientInfo
 }
 
 export interface InterruptFrame {

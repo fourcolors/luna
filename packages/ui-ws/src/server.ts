@@ -869,6 +869,7 @@ export const startUIWebSocketServer = (
                       frame.threadId,
                       frame.text,
                       frame.attachments,
+                      frame.client,
                     )
                     if (Option.isNone(result)) {
                       // Unknown thread — surface explicitly so the
