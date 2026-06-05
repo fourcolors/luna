@@ -29,6 +29,7 @@ import {
   resolveAttachRoot,
 } from "../chat/app.js"
 import { LunaHeadlessSession } from "../chat/headless.js"
+import { buildClientInfo } from "../chat/client-info.js"
 import { parseSlashCommand } from "../chat/slash.js"
 import {
   addLocalShellRoot,
@@ -126,6 +127,7 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
     client,
     profileName: cfg.profileName,
     model: process.env["LUNA_MODEL"] ?? DEFAULT_MODEL,
+    clientInfo: buildClientInfo(),
     initialThreadId: cfg.threadId,
     autoResumedThreadId: cfg.threadIdAutoResumed ? cfg.threadId : null,
     newThread: cfg.newThread,

@@ -245,6 +245,17 @@ export interface NewThreadFrame {
   readonly tags?: ReadonlyArray<string>
   readonly systemPrompt?: string
 }
+/**
+ * Small identity blob clients attach to each user-message so the server (and
+ * Luna) can tell which surface the operator is typing through. Mirrors the
+ * `ClientInfo` interface in `@luna/ui-ws/protocol`. Additive / optional.
+ */
+export interface ClientInfo {
+  readonly name: string
+  readonly version?: string
+  readonly platform?: string
+}
+
 export interface UserMessageFrame {
   readonly type: "user-message"
   readonly threadId: string
@@ -255,6 +266,8 @@ export interface UserMessageFrame {
    * scope for v1. The server validates media types and rejects unknowns.
    */
   readonly attachments?: ReadonlyArray<ChatAttachment>
+  /** See @luna/ui-ws ClientInfo. Mirrored here to keep ui-shared standalone. */
+  readonly client?: ClientInfo
 }
 export interface InterruptFrame {
   readonly type: "interrupt"

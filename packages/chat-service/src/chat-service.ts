@@ -168,6 +168,11 @@ export const truncateOutput = (
  *   content: string                      (text-only shortcut)
  *   content: Array<ContentBlockParam>    (structured, required for attachments)
  */
+import { applyClientMarker, type ClientMarkerInput } from "./client-marker.js"
+
+/** Re-exported for callers that want the same shape. */
+export type ClientHint = ClientMarkerInput
+
 const buildUserMessage = (
   text: string,
   attachments?: ReadonlyArray<{ readonly mediaType: string; readonly data: string }>,
@@ -801,6 +806,7 @@ export class ChatService extends Effect.Service<ChatService>()(
         threadId: string,
         text: string,
         attachments?: ReadonlyArray<{ readonly mediaType: string; readonly data: string }>,
+        client?: ClientHint,
       ): Effect.Effect<Option.Option<ChatMessage>, never> =>
         Effect.gen(function* () {
           const m = yield* Ref.get(threads)
@@ -822,7 +828,8 @@ export class ChatService extends Effect.Service<ChatService>()(
 
           const ts = yield* clock.nowMs()
           const messageId = `usr_${ts.toString(36)}_${Math.random().toString(36).slice(2, 6)}`
-          const userPayload = buildUserMessage(text, attachments)
+          const markedText = applyClientMarker(text, client)
+          const userPayload = buildUserMessage(markedText, attachments)
 
           const stored = yield* store
             .appendMessage({

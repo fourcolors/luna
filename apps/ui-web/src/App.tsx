@@ -245,6 +245,15 @@ export const App: Component = () => {
     })
   }
 
+  // Client-identity stamp so Luna can see which surface the operator is
+  // typing through. Hardcoded here since detection at runtime in a browser
+  // is unreliable; if we ever ship a build sha, fold it into `version`.
+  const CLIENT_INFO = {
+    name: "luna-web",
+    version: "0.0.1",
+    platform: "browser",
+  } as const
+
   const sendUserMessage = (
     threadId: string,
     text: string,
@@ -254,6 +263,7 @@ export const App: Component = () => {
       type: "user-message",
       threadId,
       text,
+      client: CLIENT_INFO,
       ...(attachments ? { attachments } : {}),
     })
   }
