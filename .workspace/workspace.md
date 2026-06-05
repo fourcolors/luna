@@ -61,17 +61,55 @@ Issues themselves live in GitHub, not here. Don't duplicate that table.
    a passing test or a clear verifiable outcome.
 3. Typecheck (`bun run typecheck`) and the affected vitest suites green.
 4. Push, open a PR against `dev`. CI runs typecheck + tests.
-5. Merge to `dev`. Deploy to luna-dev container on jax-box:
-   - `ssh root@jax-box "cd /root/luna/dev/repo && git pull --ff-only"`
-   - `bun install` (only when lockfile changed)
-   - `systemctl restart luna-dev-chat-server.service`
+5. Merge to `dev`. Deploy to luna-dev container on jax-box. The repo
+   lives at `/root/luna/dev/repo` on the host and is bind-mounted to
+   `/root/luna` inside the `luna-dev` container, so the pull happens
+   host-side and the restart happens container-side:
+   - `cd /root/luna/dev/repo && git pull --ff-only` (run on the
+     jax-box host — `ssh root@jax-box` if you're elsewhere).
+   - `bun install` (only when `bun.lock` changed; run inside the
+     container if `node_modules` is container-local — `incus exec
+     luna-dev -- bash -c 'cd /root/luna && bun install'`).
+   - `incus exec luna-dev -- systemctl restart luna-dev-chat-server.service`
+   - **Verify** with `incus exec luna-dev -- journalctl -u
+     luna-dev-chat-server.service --no-pager -n 30` and
+     `curl -sS http://localhost:5753/healthz`. Service shows `active`
+     but a boot exception can still crash-loop — read the journal
+     before declaring success.
 6. Smoke-test via `luna chat --dev`. Verify the new behavior end-to-end.
 7. **Stop and wait for operator approval** before promoting to master.
    Operator sometimes wants to live with dev for a beat first.
 8. Promote: fast-forward `master` → `dev`, push, pull on jax-box's
-   stable repo, restart `luna-chat-server.service`. **Warning:**
+   stable repo (`cd /root/luna/stable/repo && git pull --ff-only`),
+   restart with `systemctl restart luna-chat-server.service` (stable
+   runs directly on the host, no `incus exec` prefix). **Warning:**
    restarting stable kills any active operator session connected via
    the stable channel. Tell the operator before doing this.
+
+### First-time workspace registration on a new channel
+
+A fresh `luna.db` has the `workspaces` table (the chat-server's
+migration creates it at boot) but no rows. Until a row is registered,
+the workspaces system-prompt inject (`workspaces-loader`) returns
+`null` and Luna's context window has no inlined `workspace.md`.
+
+To register the `luna` workspace on a freshly-deployed channel, run
+the bootstrap script against that channel's `~/.luna/luna.db`:
+
+```bash
+# Dev container:
+incus exec luna-dev -- bash -c 'cd /root/luna && bun run scripts/bootstrap-workspace.ts \
+  --slug luna --path /root/luna'
+
+# Stable (host-direct):
+cd /root/luna/stable/repo && bun run scripts/bootstrap-workspace.ts \
+  --slug luna --path /root/luna/stable/repo
+```
+
+The script is idempotent: re-running updates the row in place
+(preserving `created_at`, refreshing `updated_at` and `summary` from
+the current `workspace.md`'s first paragraph). Restart the chat-server
+afterwards to pick the row up in the next thread's system prompt.
 
 ### Filing follow-ups
 
