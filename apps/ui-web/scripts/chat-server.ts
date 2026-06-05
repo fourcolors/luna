@@ -139,6 +139,7 @@ import {
   AccountBroker,
   AccountBrokerLayer,
   AgentNotesService,
+  WorkspaceRegistryService,
   AlignmentStore,
   BELIEF_KIND,
   BELIEF_NAMESPACE,
@@ -650,6 +651,16 @@ export const buildBaseLayer = (
     // (same pattern as all other SQLite layers in this server).
   )
 
+  // WorkspaceRegistryService: SQLite-backed table of known workspaces
+  // (slug/path/summary/status) in luna.db. Side-effect Layer at boot — it
+  // forces the `workspaces` table migration to run so SYSTEM.md §Workspaces
+  // discovery (`SELECT … FROM workspaces`) actually returns rows.
+  // LunaSqliteBootstrap is satisfied at the bottom of buildServerLayer,
+  // same as every other SQLite-backed layer here.
+  const workspacesL = WorkspaceRegistryService.makeLayer(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
+
   // MemoryRouter for ChatService.searchMemory (the WS-mediated context
   // panel). ChatService.Default `yield*`s MemoryRouterTag, so the router
   // MUST be in its layer graph or the runtime build fails at boot — which
@@ -723,6 +734,7 @@ export const buildBaseLayer = (
     telPlatformL,
     noopTracerL,
     agentNotesL,
+    workspacesL,
     dreamCronL, // Phase 3 D1: forces the cron to register at boot
     surveyL,    // Phase 3 D3: Survey available for buildServerLayer to resolve + pass to the WS server
   )
