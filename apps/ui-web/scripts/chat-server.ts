@@ -165,12 +165,14 @@ import {
   validateAccountsTableLabels,
 } from "@luna/core"
 import { loadDna } from "./dna-loader.js"
+import { loadSystem } from "./system-loader.js"
 import { buildSessionMetadata } from "./runtime-metadata.js"
 import {
   attachSandboxLocalShell,
   resolveSandboxLocalShell,
 } from "./sandbox-local-shell.js"
 export { loadDna } from "./dna-loader.js"
+export { loadSystem } from "./system-loader.js"
 import { DreamReasonerDefault, SDKAdapter, SDKClient } from "@luna/adapter-sdk"
 import {
   ChatService,
@@ -296,6 +298,10 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       // apps/ui-web/scripts/chat-server.ts → DNA.md is 3 levels up.
       const __scriptDir = dirname(fileURLToPath(import.meta.url))
       const dnaContent = loadDna(__scriptDir)
+      // SYSTEM.md describes Luna's runtime mechanics (workspaces, paths,
+      // memory, observability). Absence is non-fatal — boot continues
+      // with identity-only context. See system-loader.ts for resolution.
+      const systemContent = loadSystem(__scriptDir)
       const sessionMetadata = buildSessionMetadata()
       const sandboxLocalShell = resolveSandboxLocalShell()
       console.log(
@@ -377,6 +383,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
           // no active beliefs (the .filter(length>0) below drops it cleanly).
           const systemPrompt = [
             dnaContent,
+            systemContent, // SYSTEM.md: runtime mechanics (workspaces, paths)
             sessionMetadata,
             beliefsContent, // Phase 3 D5: ranked active beliefs section
             opts.systemPrompt,
