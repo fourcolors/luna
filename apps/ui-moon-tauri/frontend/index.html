@@ -1330,6 +1330,55 @@
     };
 
     /**
+     * Persisted chat-panel size.
+     *
+     * The user can drag the corner resize-grip to grow the chat panel; we
+     * remember that size so the next open is the same size, not the 560x520
+     * default. Stored in localStorage under "luna.moon.chatSize" (same place
+     * as luna_always_on_top, luna_close_on_blur, etc.). Survives app restart;
+     * scoped per-WebView; no Tauri IPC.
+     *
+     * Always clamped to [MIN_W..MAX_W] x [MIN_H..MAX_H] on both load and save
+     * so a corrupted stored value (or a screen-config change that shrank the
+     * monitor) can't trap the panel offscreen / sub-minimum.
+     */
+    const PanelSize = {
+      STORAGE_KEY: 'luna.moon.chatSize',
+      DEFAULT_W: 560,
+      DEFAULT_H: 520,
+      MIN_W: 360,
+      MIN_H: 360,
+      MAX_W: 2000,
+      MAX_H: 2000,
+
+      clamp(w, h) {
+        const cw = Number.isFinite(w) ? Math.max(this.MIN_W, Math.min(this.MAX_W, Math.round(w))) : this.DEFAULT_W;
+        const ch = Number.isFinite(h) ? Math.max(this.MIN_H, Math.min(this.MAX_H, Math.round(h))) : this.DEFAULT_H;
+        return { w: cw, h: ch };
+      },
+
+      load() {
+        try {
+          const raw = localStorage.getItem(this.STORAGE_KEY);
+          if (!raw) return { w: this.DEFAULT_W, h: this.DEFAULT_H };
+          const parsed = JSON.parse(raw);
+          return this.clamp(parsed && parsed.w, parsed && parsed.h);
+        } catch (_) {
+          return { w: this.DEFAULT_W, h: this.DEFAULT_H };
+        }
+      },
+
+      save(w, h) {
+        try {
+          const c = this.clamp(w, h);
+          localStorage.setItem(this.STORAGE_KEY, JSON.stringify(c));
+        } catch (_) {
+          // Quota or disabled storage: silent no-op (resize still works in-session).
+        }
+      }
+    };
+
+    /**
      * Tauri Window & OS integration services.
      */
     const TauriService = {
@@ -2986,7 +3035,11 @@
             TauriService.setWindowSize(140, 140);
           }, 300);
         } else {
-          await TauriService.setWindowSize(560, 520);
+          // Restore the user's last dragged size (or 560x520 if none saved).
+          // Done BEFORE adding .active so the panel's open animation runs inside
+          // the final window bounds — no mid-animation reflow.
+          const { w, h } = PanelSize.load();
+          await TauriService.setWindowSize(w, h);
           DOM.chatPanel.classList.add('active');
           DOM.messageInput.focus();
           Logger.info("Chat expand transition completed");
@@ -3113,6 +3166,13 @@
         if (!resizing) return;
         resizing = false;
         if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+        // Persist the final dragged size so the next chat open reuses it.
+        // pendingW/H hold the most recent rAF target; if the user never moved
+        // (pointerdown -> pointerup with no move), fall back to lastSize so we
+        // don't save a {0,0} pair.
+        const finalW = pendingW || TauriService.lastSize.w;
+        const finalH = pendingH || TauriService.lastSize.h;
+        PanelSize.save(finalW, finalH);
         try { resizeGrip.releasePointerCapture(e.pointerId); } catch (_) {}
       };
       resizeGrip.addEventListener('pointerup', endResize);

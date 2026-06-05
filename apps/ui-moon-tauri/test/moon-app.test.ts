@@ -48,6 +48,9 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
     const scriptMatch = htmlContent.match(/<script>([\s\S]*?)<\/script>/)
     const jsCode = scriptMatch ? scriptMatch[1] : ''
     
+    // Clean localStorage so persisted-prefs tests don't leak across cases.
+    localStorage.clear()
+
     // Execute JS code inside the JSDOM window context
     const runScript = new Function(jsCode)
     runScript()
@@ -143,6 +146,71 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       
       // Verification: Window should shrink back to 140x140
       expect(mockSetSize).toHaveBeenCalledWith({ type: 'Logical', width: 140, height: 140 })
+    })
+
+    it('Scenario: Reopens to the previously persisted chat size instead of the 560x520 default', async () => {
+      const chatPanel = document.getElementById('chat-panel')
+      const moon = document.getElementById('moon')
+      const mockSetSize = (window as any).__TAURI__.mockSetSize
+
+      // Seed the persisted size BEFORE the user opens the panel.
+      // (PanelSize.load() runs inside toggleChat's expand branch, so seeding
+      //  after script execution still works — it's read on each open.)
+      localStorage.setItem('luna.moon.chatSize', JSON.stringify({ w: 720, h: 640 }))
+
+      // Quick click on the moon -> toggleChat() opens the panel.
+      moon!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 100, clientY: 100 }))
+      vi.advanceTimersByTime(50)
+      moon!.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: 100, clientY: 100 }))
+
+      // Flush the awaited setSize inside toggleChat.
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(chatPanel!.classList.contains('active')).toBe(true)
+      // Opens at the persisted size, NOT 560x520.
+      expect(mockSetSize).toHaveBeenCalledWith({ type: 'Logical', width: 720, height: 640 })
+    })
+
+    it('Scenario: Reopens at MIN bounds when localStorage holds a sub-minimum size (clamp on load)', async () => {
+      const moon = document.getElementById('moon')
+      const mockSetSize = (window as any).__TAURI__.mockSetSize
+
+      // Hostile / stale value: smaller than MIN. PanelSize.clamp() should floor it
+      // to (360, 360) on load so the panel can never open below its minimum bounds.
+      localStorage.setItem('luna.moon.chatSize', JSON.stringify({ w: 100, h: 100 }))
+
+      moon!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 100, clientY: 100 }))
+      vi.advanceTimersByTime(50)
+      moon!.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: 100, clientY: 100 }))
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(mockSetSize).toHaveBeenCalledWith({ type: 'Logical', width: 360, height: 360 })
+    })
+
+    it('Scenario: Releasing the resize grip persists the final dragged size to localStorage', () => {
+      const grip = document.getElementById('resize-grip')
+      expect(grip).not.toBeNull()
+
+      // pointerdown captures startW = TauriService.lastSize.w (140 on boot)
+      //   and startX/startY = the pointer's screen coords.
+      grip!.dispatchEvent(new MouseEvent('pointerdown', {
+        bubbles: true, clientX: 0, clientY: 0, screenX: 100, screenY: 100,
+      }))
+      // pointermove computes pendingW = max(MIN_W=360, round(140 + dx)),
+      //   pendingH = max(MIN_H=360, round(140 + dy)). With dx=dy=400 -> 540, 540.
+      grip!.dispatchEvent(new MouseEvent('pointermove', {
+        bubbles: true, clientX: 0, clientY: 0, screenX: 500, screenY: 500,
+      }))
+      // pointerup -> endResize -> PanelSize.save(pendingW, pendingH).
+      grip!.dispatchEvent(new MouseEvent('pointerup', {
+        bubbles: true, clientX: 0, clientY: 0, screenX: 500, screenY: 500,
+      }))
+
+      const stored = localStorage.getItem('luna.moon.chatSize')
+      expect(stored).not.toBeNull()
+      expect(JSON.parse(stored!)).toEqual({ w: 540, h: 540 })
     })
   })
 
