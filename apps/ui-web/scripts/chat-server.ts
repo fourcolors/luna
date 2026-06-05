@@ -167,6 +167,7 @@ import {
 } from "@luna/core"
 import { loadDna } from "./dna-loader.js"
 import { loadSystem } from "./system-loader.js"
+import { loadWorkspaces } from "./workspaces-loader.js"
 import { buildSessionMetadata } from "./runtime-metadata.js"
 import {
   attachSandboxLocalShell,
@@ -174,6 +175,7 @@ import {
 } from "./sandbox-local-shell.js"
 export { loadDna } from "./dna-loader.js"
 export { loadSystem } from "./system-loader.js"
+export { loadWorkspaces } from "./workspaces-loader.js"
 import { DreamReasonerDefault, SDKAdapter, SDKClient } from "@luna/adapter-sdk"
 import {
   ChatService,
@@ -303,6 +305,12 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       // memory, observability). Absence is non-fatal — boot continues
       // with identity-only context. See system-loader.ts for resolution.
       const systemContent = loadSystem(__scriptDir)
+      // Workspaces inject: query luna.db for active workspaces and
+      // inline each one's workspace.md so Luna always has the source
+      // of truth in her system prompt (not optional shell-read).
+      // Returns null when no active workspaces are registered; the
+      // .filter() below drops it cleanly in that case.
+      const workspacesContent = loadWorkspaces(paths.lunaDbPath)
       const sessionMetadata = buildSessionMetadata()
       const sandboxLocalShell = resolveSandboxLocalShell()
       console.log(
@@ -385,6 +393,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
           const systemPrompt = [
             dnaContent,
             systemContent, // SYSTEM.md: runtime mechanics (workspaces, paths)
+            workspacesContent, // active workspaces' workspace.md inlined at boot
             sessionMetadata,
             beliefsContent, // Phase 3 D5: ranked active beliefs section
             opts.systemPrompt,
