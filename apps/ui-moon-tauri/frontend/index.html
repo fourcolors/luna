@@ -381,17 +381,37 @@
       padding-right: 6px;
     }
     
-    .settings-content::-webkit-scrollbar {
+    /* Dark-glass scrollbar styling — applied to every scrolling container in
+       the moon (chat history, code blocks inside assistant messages, the
+       textarea composer, and the settings panel). Without this list, any
+       container we add later falls back to the default WKWebView/macOS
+       scrollbar, which renders as a bright white strip against the dark
+       backdrop and looks broken. `width` covers vertical, `height` covers
+       horizontal (assistant `<pre>` blocks scroll horizontally). */
+    .settings-content::-webkit-scrollbar,
+    .chat-messages::-webkit-scrollbar,
+    .chat-input::-webkit-scrollbar,
+    .msg.assistant pre::-webkit-scrollbar {
       width: 6px;
+      height: 6px;
     }
-    .settings-content::-webkit-scrollbar-track {
+    .settings-content::-webkit-scrollbar-track,
+    .chat-messages::-webkit-scrollbar-track,
+    .chat-input::-webkit-scrollbar-track,
+    .msg.assistant pre::-webkit-scrollbar-track {
       background: transparent;
     }
-    .settings-content::-webkit-scrollbar-thumb {
+    .settings-content::-webkit-scrollbar-thumb,
+    .chat-messages::-webkit-scrollbar-thumb,
+    .chat-input::-webkit-scrollbar-thumb,
+    .msg.assistant pre::-webkit-scrollbar-thumb {
       background: rgba(255, 255, 255, 0.12);
       border-radius: 3px;
     }
-    .settings-content::-webkit-scrollbar-thumb:hover {
+    .settings-content::-webkit-scrollbar-thumb:hover,
+    .chat-messages::-webkit-scrollbar-thumb:hover,
+    .chat-input::-webkit-scrollbar-thumb:hover,
+    .msg.assistant pre::-webkit-scrollbar-thumb:hover {
       background: rgba(255, 255, 255, 0.22);
     }
     
@@ -1276,9 +1296,14 @@
      * ignore the field.
      */
     const MoonClient = {
+      // NOTE: bumped manually with each tauri.conf.json/Cargo.toml version
+      // bump until we plumb the bundle version through to the WebView. The
+      // server uses this field to label the client in its identity tag; an
+      // out-of-sync value is cosmetic but lies to the operator about which
+      // build they're talking to.
       CLIENT_INFO: {
         name: 'luna-moon',
-        version: '0.0.1',
+        version: '0.0.4',
         platform: 'tauri-darwin',
       },
     };
