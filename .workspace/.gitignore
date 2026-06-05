@@ -1,0 +1,4 @@
+# The workspace's own SQLite brain is per-install, not per-commit.
+workspace.db
+workspace.db-shm
+workspace.db-wal
