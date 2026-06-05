@@ -12,5 +12,6 @@ export const SLASH_COMMANDS: readonly SlashSpec[] = [
   { name: "/interrupt",   description: "interrupt the current response" },
   { name: "/quit",        description: "quit Luna" },
   { name: "/exit",        description: "quit Luna" },
+  { name: "/copy",        description: "copy assistant output to clipboard", argHint: "[N|thread]" },
   { name: "/local-shell", description: "toggle, scope, or check local shell", argHint: "<on|off|status|add <path>|rm <path>|full-access <on|off>>" },
 ]

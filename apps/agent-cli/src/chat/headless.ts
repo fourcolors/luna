@@ -262,8 +262,12 @@ export class LunaHeadlessSession extends EventEmitter {
       case "message":
         this.sendUser(cmd.text)
         break
+      case "copy":
       case "local-shell":
       case "local-shell-status":
+      case "local-shell-attach":
+      case "local-shell-detach":
+      case "local-shell-full-access":
       case "error":
         // Forwarded to caller — local-shell semantics still live in chat/app.ts
         // for v1; Phase 2 moves them inside the headless session.

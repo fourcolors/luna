@@ -447,6 +447,13 @@ export async function runLunaCli(
         sendLocalShellCapability(client, session.threadId, localShell)
         continue
       }
+      if (command.type === "copy") {
+        // The legacy readline UI does not retain a timeline, so /copy cannot
+        // assemble assistant text here. Point users at the TUI; the new TUI is
+        // the default surface as of Phase 25e.
+        writeError(io, "/copy is only available in the TUI (drop --no-tui)")
+        continue
+      }
       if (command.type === "error") {
         writeError(io, command.message)
         continue

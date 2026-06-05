@@ -4,6 +4,12 @@ import { render, useRenderer } from "@opentui/solid"
 import type { CliRenderer } from "@opentui/core"
 import { createComponent } from "solid-js"
 import { createTuiStore } from "./store.js"
+import { selectForCopy, type CopyTarget } from "./copy.js"
+import {
+  writeToClipboard,
+  makeSpawnRunner,
+  makeOsc52Writer,
+} from "./clipboard.js"
 
 const DEBUG_LOG = process.env["LUNA_TUI_DEBUG"]
 const dbg = (msg: string): void => {
@@ -278,6 +284,37 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
       localShell = setLocalShellFullAccess(localShell, parsed.enabled)
       store.appendSystem(`local shell full access: ${parsed.enabled ? "on" : "off"}`)
       sendLocalShellCapability(store.threadId())
+      return
+    }
+    if (parsed.type === "copy") {
+      const spec: CopyTarget =
+        parsed.target === "last"
+          ? { target: "last", count: 1 }
+          : parsed.target === "thread"
+            ? { target: "thread", count: 0 }
+            : { target: "messages", count: parsed.count }
+      const text = selectForCopy(store.timeline(), spec)
+      if (text.length === 0) {
+        store.appendSystem("copy: nothing to copy yet")
+        return
+      }
+      void (async () => {
+        const result = await writeToClipboard(
+          text,
+          { platform: process.platform, env: process.env },
+          { spawn: makeSpawnRunner(), osc52: makeOsc52Writer() },
+        )
+        if (result.ok) {
+          const bytes = Buffer.byteLength(text, "utf8")
+          store.appendSystem(`copy: ${bytes}B via ${result.via}`)
+        } else {
+          store.appendSystem(`copy failed: ${result.error}`)
+        }
+      })()
+      return
+    }
+    if (parsed.type === "error") {
+      store.appendSystem(parsed.message)
       return
     }
     if (parsed.type === "message") {
