@@ -83,3 +83,36 @@ describe("parseSlashCommand — sanity for existing commands", () => {
     expect(c.type).toBe("error")
   })
 })
+
+describe("parseSlashCommand — /select", () => {
+  it("/select with no args → toggle", () => {
+    expect(parseSlashCommand("/select")).toEqual({ type: "select", mode: "toggle" })
+  })
+
+  it("/select toggle → toggle (explicit)", () => {
+    expect(parseSlashCommand("/select toggle")).toEqual({ type: "select", mode: "toggle" })
+  })
+
+  it("/select on → on", () => {
+    expect(parseSlashCommand("/select on")).toEqual({ type: "select", mode: "on" })
+  })
+
+  it("/select off → off", () => {
+    expect(parseSlashCommand("/select off")).toEqual({ type: "select", mode: "off" })
+  })
+
+  it("/selection alias works the same way", () => {
+    expect(parseSlashCommand("/selection")).toEqual({ type: "select", mode: "toggle" })
+    expect(parseSlashCommand("/selection on")).toEqual({ type: "select", mode: "on" })
+  })
+
+  it("/select garbage → error", () => {
+    const c = parseSlashCommand("/select sometimes")
+    expect(c.type).toBe("error")
+  })
+
+  it("/select arg is case-insensitive", () => {
+    expect(parseSlashCommand("/select ON")).toEqual({ type: "select", mode: "on" })
+    expect(parseSlashCommand("/select Off")).toEqual({ type: "select", mode: "off" })
+  })
+})

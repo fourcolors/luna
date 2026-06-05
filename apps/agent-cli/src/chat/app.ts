@@ -454,6 +454,12 @@ export async function runLunaCli(
         writeError(io, "/copy is only available in the TUI (drop --no-tui)")
         continue
       }
+      if (command.type === "select") {
+        // /select toggles OpenTUI mouse capture, which doesn't exist in the
+        // legacy readline UI — terminal-native selection already works there.
+        writeError(io, "/select is only meaningful in the TUI; readline UI already uses native terminal selection")
+        continue
+      }
       if (command.type === "error") {
         writeError(io, command.message)
         continue

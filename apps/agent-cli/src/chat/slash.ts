@@ -21,6 +21,11 @@ export type SlashCommand =
       readonly target: "last" | "messages" | "thread"
       readonly count: number
     }
+  | {
+      readonly type: "select"
+      /** "on" enables selection mode, "off" disables it, "toggle" flips state. */
+      readonly mode: "on" | "off" | "toggle"
+    }
   | { readonly type: "error"; readonly message: string }
 
 export const HELP_TEXT = [
@@ -34,6 +39,8 @@ export const HELP_TEXT = [
   "/copy - copy the last assistant message to the system clipboard",
   "/copy <N> - copy the last N messages",
   "/copy thread - copy the entire visible thread",
+  "/select - toggle terminal-native selection mode (or F2)",
+  "/select on|off - explicitly enable or disable selection mode",
   "/local-shell on - enable local shell execution",
   "/local-shell off - disable local shell execution",
   "/local-shell status - show local shell status and attached folders",
@@ -109,6 +116,16 @@ const parseCopy = (rest: string): SlashCommand => {
   }
 }
 
+const parseSelect = (rest: string): SlashCommand => {
+  const arg = rest.trim().toLowerCase()
+  if (arg === "" || arg === "toggle") {
+    return { type: "select", mode: "toggle" }
+  }
+  if (arg === "on") return { type: "select", mode: "on" }
+  if (arg === "off") return { type: "select", mode: "off" }
+  return { type: "error", message: "/select takes no arg, 'on', 'off', or 'toggle'" }
+}
+
 export const parseSlashCommand = (line: string): SlashCommand => {
   if (!line.startsWith("/")) return { type: "message", text: line }
 
@@ -132,6 +149,9 @@ export const parseSlashCommand = (line: string): SlashCommand => {
       return { type: "quit" }
     case "/copy":
       return parseCopy(rest)
+    case "/select":
+    case "/selection":
+      return parseSelect(rest)
     case "/local-shell":
       return parseLocalShell(rest)
     default:

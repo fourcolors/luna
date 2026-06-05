@@ -263,6 +263,7 @@ export class LunaHeadlessSession extends EventEmitter {
         this.sendUser(cmd.text)
         break
       case "copy":
+      case "select":
       case "local-shell":
       case "local-shell-status":
       case "local-shell-attach":
