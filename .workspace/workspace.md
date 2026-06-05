@@ -33,7 +33,14 @@ notes — not to anything in Luna's runtime state (that's `~/.luna/`).
 
 The workspace's brain (`workspace.db`) tracks development entities.
 v1 schema is intentionally empty — add tables as concrete needs appear,
-don't pre-design. Expected first entrants when they're actually useful:
+don't pre-design.
+
+**The `workspace.db` file does not exist on disk until something opens
+it.** That is the correct state for v1, not a missing-file bug. The
+first time code (or `sqlite3` from the shell) opens it, bun:sqlite
+creates the file and the first migration adds the first table.
+
+Expected first entrants when they're actually useful:
 
 - **decisions** — non-obvious design calls worth re-finding by topic.
   Likely shape: `id`, `topic`, `decision`, `rationale`, `created_at`,
@@ -85,7 +92,35 @@ Without these, the next thread can't reconstruct what got done.
 
 ## Pointers
 
-- Repo paths: dev = `/root/luna/dev/repo`, stable = `/root/luna/stable/repo`.
-- Ports: dev = `5753`, stable = `5754`.
-- Services: `luna-dev-chat-server.service`, `luna-chat-server.service`.
-- GitHub: `fourcolors/luna`.
+Two channels run on jax-box. The dev channel runs inside an incus
+container (`luna-dev`); the stable channel runs directly on the host.
+Paths therefore depend on whose POV is asking.
+
+**Host POV (where deploys land, where you run `git pull` for a channel):**
+
+- Dev repo:     `/root/luna/dev/repo`     (cloned from `origin/dev`).
+- Stable repo:  `/root/luna/stable/repo`  (cloned from `origin/master`).
+- Dev `~/.luna`:    `/root/.luna-dev/` (bind-mounted into the container).
+- Stable `~/.luna`: `/root/.luna/`     (the host's own; stable runs as root on the host).
+
+**Dev container POV (where dev-Luna sees her filesystem):**
+
+- Repo:       `/root/luna/`  (bind-mount of host `/root/luna/dev/repo`).
+- `~/.luna/`: `/root/.luna/` (bind-mount of host `/root/.luna-dev/`).
+
+So when dev-Luna says her repo is at `/root/luna`, she is correct — that
+is the same physical files as the host's `/root/luna/dev/repo`. The
+deploy commands target the host paths; introspection from inside the
+container targets the container paths.
+
+**Stable POV** is identical to host POV (no container indirection).
+
+**Ports + services:**
+
+- Dev:    port `5753`, `luna-dev-chat-server.service` (inside the
+  `luna-dev` container — restart via `incus exec luna-dev -- systemctl
+  restart luna-dev-chat-server.service`).
+- Stable: port `5754`, `luna-chat-server.service` (on the host —
+  restart via `systemctl restart luna-chat-server.service`).
+
+**GitHub:** `fourcolors/luna`.
