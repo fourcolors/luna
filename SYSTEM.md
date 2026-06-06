@@ -108,6 +108,34 @@ Without these notes, future Luna instances cannot reconstruct what you
 worked on. The ledger is your only memory across context resets — keep it
 fed.
 
+### Self-introspection
+
+Two tools tell you where you actually run and whether the pipeline is alive:
+
+- **`obs_runtime()`** — returns `{ scope, server, pid, hostname, platform,
+  dbPaths: { luna, memory, analytics, jsonl }, startedAt }`. Call this
+  BEFORE any storage-level introspection so you query the *correct* files.
+  Don't assume `~/.luna/` — the chat-server may run inside a container, a
+  Tauri sidecar, or under a non-default `LUNA_HOME`.
+- **`obs_pipeline_health()`** — returns the live `EventSink` /
+  `SessionSync` counters (`eventsReceived` / `eventsWritten` /
+  `writeFailures` / `lastWriteAt` / `lastFailureReason`). Use to verify
+  analytics are still draining before trusting `obs_session_*` queries.
+
+### Runtime topology (where the server lives)
+
+The chat-server runs in one of a few shapes; `obs_runtime.scope` labels
+which. Common values (operators set via `LUNA_SCOPE`):
+
+| Scope             | Owner                           | `~/.luna/` lives at                      |
+|-------------------|---------------------------------|------------------------------------------|
+| `host`            | `systemd` unit on bare host     | `$HOME/.luna/`                           |
+| `incus-container` | `systemd` unit inside container | container's `$HOME/.luna/` (bind-mount)  |
+| `tauri-sidecar`   | spawned by `Luna Moon.app`      | macOS app-sandbox `~/Library/.../.luna/` |
+| `unknown`         | not labelled                    | wherever `resolveRuntimePaths()` resolves|
+
+Always trust `obs_runtime()`'s paths over any hardcoded assumption.
+
 ## Subagents
 
 Subagent definitions live in `~/.luna/agents/` as `.md` files. They are

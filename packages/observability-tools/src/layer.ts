@@ -119,7 +119,10 @@ export const OBS_SYSTEM_PROMPT_ADDENDUM =
   "- `mcp__observability__obs_pipeline_health()` — live state of the EventSink/SessionSync " +
   "  ingestion daemons (eventsReceived / eventsWritten / writeFailures / lastWriteAt / " +
   "  lastFailureReason). Use to verify analytics are still draining before trusting " +
-  "  obs_session_* results, or when investigating silent observability failures."
+  "  obs_session_* results, or when investigating silent observability failures.\n" +
+  "- `mcp__observability__obs_runtime()` — report where the chat-server lives on disk " +
+  "  (scope, pid, hostname, paths of luna.db/memory.db/analytics.duckdb/events.jsonl). " +
+  "  Use BEFORE storage-level introspection so you query the correct files."
 
 // ── MCP server builder ─────────────────────────────────────────────────────────
 
@@ -144,6 +147,12 @@ export interface ObsToolsLayerOptions {
    * In tests, use a smaller value (e.g. 64) to keep memory low.
    */
   readonly duckDbQueueCapacity?: number
+  /**
+   * Optional probe that builds a fresh RuntimeSnapshot per `obs_runtime`
+   * call. Wired by chat-server; omitted in tools-only tests (the tool
+   * then reports `available: false`).
+   */
+  readonly runtimeProbe?: () => import("./tools.js").RuntimeSnapshot
 }
 
 /**
@@ -204,10 +213,13 @@ export const ObsToolsLayer = (
           sessionCell.value = id
         }
 
-        const tools = makeObsTools(notes, analytics, currentSessionId, {
-          eventSink: eventSink.health,
-          sessionSync: sessionSync.health,
-        })
+        const tools = makeObsTools(
+          notes,
+          analytics,
+          currentSessionId,
+          { eventSink: eventSink.health, sessionSync: sessionSync.health },
+          opts?.runtimeProbe ?? null,
+        )
         const server = buildObsMcpServer(tools)
 
         return {

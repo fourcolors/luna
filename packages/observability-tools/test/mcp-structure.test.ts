@@ -4,7 +4,7 @@
  *   1. ObsToolsLayer() builds and provides ObsToolsService with correct shape.
  *   2. buildObsMcpServer(tools) returns type='sdk', name='observability'.
  *   3. makeObsTools exposes exactly the 5 expected tool names in order.
- *   4. OBS_SYSTEM_PROMPT_ADDENDUM is non-empty and mentions all 6 tools.
+ *   4. OBS_SYSTEM_PROMPT_ADDENDUM is non-empty and mentions all 7 tools.
  *   5. bindSession() is a callable function.
  *
  * Uses ":memory:" databases and follows the scheduler-tools structural test pattern.
@@ -126,7 +126,7 @@ describe("ObsToolsLayer — structural invariants", () => {
     expect(typeof (serverConfig as { instance?: unknown }).instance).toBe("object")
   })
 
-  it("makeObsTools exposes exactly 6 tools in the correct order", async () => {
+  it("makeObsTools exposes exactly 7 tools in the correct order", async () => {
     const tools = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -137,7 +137,7 @@ describe("ObsToolsLayer — structural invariants", () => {
       ).pipe(Effect.provide(obsStack)),
     )
 
-    expect(tools).toHaveLength(6)
+    expect(tools).toHaveLength(7)
     const names = tools.map((t) => (t as unknown as { name: string }).name)
     expect(names).toEqual([
       "obs_note",
@@ -146,6 +146,7 @@ describe("ObsToolsLayer — structural invariants", () => {
       "obs_session_anomalies",
       "obs_sessions_search",
       "obs_pipeline_health",
+      "obs_runtime",
     ])
   })
 
@@ -209,6 +210,9 @@ describe("ObsToolsService — constant invariants (all runtimes)", () => {
     )
     expect(OBS_SYSTEM_PROMPT_ADDENDUM).toContain(
       "mcp__observability__obs_pipeline_health",
+    )
+    expect(OBS_SYSTEM_PROMPT_ADDENDUM).toContain(
+      "mcp__observability__obs_runtime",
     )
     expect(OBS_SYSTEM_PROMPT_ADDENDUM).toContain("fully qualified")
   })

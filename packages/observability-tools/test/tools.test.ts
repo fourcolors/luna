@@ -590,3 +590,93 @@ describe("obs_pipeline_health", () => {
     expect(payload.sessionSync.eventsWritten).toBe(4)
   })
 })
+
+// ── obs_runtime ────────────────────────────────────────────────────────────────
+
+describe("obs_runtime", () => {
+  it("reports available=false when no probe is wired (issue #12)", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const { tools } = yield* buildTools()
+        return yield* Effect.promise(() =>
+          getTool(tools, "obs_runtime").handler({}, undefined),
+        )
+      }),
+    )
+    const payload = parseOk<{ available: boolean }>(result)
+    expect(payload.available).toBe(false)
+  })
+
+  it("returns the probe's snapshot when wired", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const notes = yield* AgentNotesService
+        const analytics = yield* AnalyticsService
+        const tools = makeObsTools(notes, analytics, () => null, {}, () => ({
+          scope: "test-host",
+          server: "luna-chat-server",
+          pid: 12345,
+          hostname: "test-machine",
+          platform: "darwin",
+          arch: "arm64",
+          nodeVersion: "v20.0.0",
+          bunVersion: "1.3.14",
+          startedAt: "2026-06-06T07:00:00.000Z",
+          dbPaths: {
+            luna: "/tmp/luna.db",
+            memory: "/tmp/memory.db",
+            analytics: "/tmp/analytics.duckdb",
+            jsonl: "/tmp/events.jsonl",
+          },
+        }))
+        const tool = tools.find(
+          (t) => (t as unknown as { name: string }).name === "obs_runtime",
+        ) as unknown as { handler: (a: unknown, b: unknown) => Promise<unknown> }
+        return yield* Effect.promise(() => tool.handler({}, undefined))
+      }),
+    )
+    const payload = parseOk<{
+      available: boolean
+      scope: string
+      pid: number
+      dbPaths: { luna: string; analytics: string }
+    }>(result)
+    expect(payload.available).toBe(true)
+    expect(payload.scope).toBe("test-host")
+    expect(payload.pid).toBe(12345)
+    expect(payload.dbPaths.luna).toBe("/tmp/luna.db")
+    expect(payload.dbPaths.analytics).toBe("/tmp/analytics.duckdb")
+  })
+
+  it("rebuilds the snapshot on each call (live probe, not frozen)", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const notes = yield* AgentNotesService
+        const analytics = yield* AnalyticsService
+        let counter = 0
+        const tools = makeObsTools(notes, analytics, () => null, {}, () => ({
+          scope: "test",
+          server: "x",
+          pid: ++counter,
+          hostname: "h",
+          platform: "darwin",
+          arch: "arm64",
+          nodeVersion: "v0",
+          bunVersion: null,
+          startedAt: "2026-06-06T07:00:00.000Z",
+          dbPaths: { luna: "a", memory: "b", analytics: "c", jsonl: "d" },
+        }))
+        const tool = tools.find(
+          (t) => (t as unknown as { name: string }).name === "obs_runtime",
+        ) as unknown as { handler: (a: unknown, b: unknown) => Promise<unknown> }
+        const first = yield* Effect.promise(() => tool.handler({}, undefined))
+        const second = yield* Effect.promise(() => tool.handler({}, undefined))
+        return [first, second]
+      }),
+    )
+    const first = parseOk<{ pid: number }>(result[0])
+    const second = parseOk<{ pid: number }>(result[1])
+    expect(first.pid).toBe(1)
+    expect(second.pid).toBe(2)
+  })
+})

@@ -108,6 +108,7 @@
  * the flag exists for.
  */
 import { existsSync, readFileSync, writeSync } from "node:fs"
+import { hostname } from "node:os"
 import { execFileSync } from "node:child_process"
 import { dirname } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -444,8 +445,36 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
     Layer.provide(MemoryToolsLayer()),
     Layer.provide(SchedulerToolsLayer()),
     Layer.provide(LocalShellToolsLayer({ bridge: localShellBridge })),
-    Layer.provide(ObsToolsLayer()),
+    Layer.provide(ObsToolsLayer({ runtimeProbe: buildChatServerRuntimeProbe })),
   )
+
+// Build a fresh RuntimeSnapshot per `obs_runtime` call (issue #12). Reads
+// from process.env so it reflects whatever the chat-server's resolved
+// paths are at call time, not a stale snapshot from boot. `scope` falls
+// back to "unknown" because reliable in-process auto-detection of
+// incus-container vs tauri-sidecar vs host is fragile; operators set
+// LUNA_SCOPE explicitly in their deploy unit.
+const CHAT_SERVER_BOOTED_AT_ISO = new Date().toISOString()
+const buildChatServerRuntimeProbe = () => {
+  const paths = resolveRuntimePaths()
+  return {
+    scope: process.env["LUNA_SCOPE"] ?? "unknown",
+    server: "luna-chat-server",
+    pid: process.pid,
+    hostname: hostname(),
+    platform: process.platform,
+    arch: process.arch,
+    nodeVersion: process.versions.node,
+    bunVersion: process.versions.bun ?? null,
+    startedAt: CHAT_SERVER_BOOTED_AT_ISO,
+    dbPaths: {
+      luna: paths.lunaDbPath,
+      memory: paths.memoryDbPath,
+      analytics: paths.analyticsDbPath,
+      jsonl: paths.eventsJsonlPath,
+    },
+  }
+}
 
 // ── Multi-account 1Password bootstrap (Phase 25c) ───────────────────────
 //
