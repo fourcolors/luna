@@ -21,7 +21,7 @@ import * as path from "node:path"
 import * as fs from "node:fs"
 
 import { ObservabilityService } from "../observability/observability.js"
-import { DuckDbService, makeDuckDbLayer } from "../db/duckdb-service.js"
+import { DuckDbError, DuckDbService, makeDuckDbLayer } from "../db/duckdb-service.js"
 import { Clock } from "../clock.js"
 import { SessionSync } from "./session-sync.js"
 
@@ -369,6 +369,100 @@ describe("SessionSync", () => {
       expect(beta.id).toBe("sess-beta")
       expect(beta.model).toBe("claude-opus-4")
       expect(beta.status).toBe("active")
+    })
+  })
+
+  // ── Health counters (issue #11) ──────────────────────────────────────────
+
+  it("health() reports eventsReceived + eventsWritten after Start/End", async () => {
+    await withTempDb(async (dbPath) => {
+      const snap = await runWithLayer(dbPath)(
+        Effect.gen(function* () {
+          const obs = yield* ObservabilityService
+          const sync = yield* SessionSync
+
+          yield* obs.emit({
+            ts: "2024-07-01T00:00:00.000Z",
+            kind: "SessionStart",
+            level: "info",
+            sessionId: "sess-hs1",
+            model: "claude-3-5-sonnet",
+          })
+          yield* obs.emit({
+            ts: "2024-07-01T00:00:05.000Z",
+            kind: "SessionEnd",
+            level: "info",
+            sessionId: "sess-hs1",
+            durationMs: 5000,
+          })
+          // Non-session events MUST NOT count
+          yield* obs.emit({
+            ts: "2024-07-01T00:00:06.000Z",
+            kind: "Error",
+            level: "error",
+            errorTag: "ignore",
+            message: "x",
+          })
+
+          yield* Effect.sleep("20 millis")
+          return yield* sync.health
+        }),
+      )
+
+      expect(snap.eventsReceived).toBe(2)
+      expect(snap.eventsWritten).toBe(2)
+      expect(snap.writeFailures).toBe(0)
+      expect(snap.lastWriteAt).toBe("2024-07-01T00:00:05.000Z")
+    })
+  })
+
+  it("health() reports writeFailures when DuckDB write fails", async () => {
+    await withTempDb(async (_dbPath) => {
+      const failing = Layer.succeed(DuckDbService, {
+        exec: () => Effect.void,
+        write: () =>
+          Effect.fail(new DuckDbError({ op: "write", message: "boom" })),
+        query: () => Effect.succeed([]),
+        migrate: () => Effect.void,
+      })
+      const clockLayer = Clock.Default
+      const obsLayer = ObservabilityService.Default.pipe(Layer.provide(clockLayer))
+      const sLayer = SessionSync.makeLayer().pipe(
+        Layer.provide(Layer.mergeAll(obsLayer, failing, clockLayer)),
+      )
+      const composed = Layer.mergeAll(clockLayer, obsLayer, failing, sLayer)
+
+      const snap = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const obs = yield* ObservabilityService
+            const sync = yield* SessionSync
+
+            yield* obs.emit({
+              ts: "2024-07-02T00:00:00.000Z",
+              kind: "SessionStart",
+              level: "info",
+              sessionId: "sess-fail",
+              model: "claude-3-5-sonnet",
+            })
+            yield* Effect.sleep("20 millis")
+            return yield* sync.health
+          }).pipe(
+            Effect.provide(
+              composed as Layer.Layer<
+                ObservabilityService | DuckDbService | SessionSync,
+                never,
+                never
+              >,
+            ),
+          ),
+        ),
+      )
+
+      expect(snap.eventsReceived).toBe(1)
+      expect(snap.eventsWritten).toBe(0)
+      expect(snap.writeFailures).toBe(1)
+      expect(snap.lastFailureReason).toContain("boom")
     })
   })
 })

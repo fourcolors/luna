@@ -36,7 +36,13 @@ import { Effect } from "effect"
 import { z } from "zod"
 import { defineTool, ToolError } from "@luna/tools"
 import type { JSONOutput } from "@luna/tools"
-import type { AgentNote, AgentNotesApi, AnalyticsApi } from "@luna/core"
+import type {
+  AgentNote,
+  AgentNotesApi,
+  AnalyticsApi,
+  EventSinkHealth,
+  SessionSyncHealth,
+} from "@luna/core"
 
 // ── Input schemas ─────────────────────────────────────────────────────────────
 
@@ -160,11 +166,23 @@ const OBS_TOOL_DISCOVERY = {
  * at tool-call time, letting the chat-server set the binding after the thread
  * has been created.
  */
+/**
+ * Health getters for the EventSink and SessionSync side-effect services.
+ * `null` means the running configuration doesn't include that service
+ * (e.g. a tools-only test), and `obs_pipeline_health` will report it as
+ * "unavailable" instead of returning fabricated zero counters.
+ */
+export interface PipelineHealthSources {
+  readonly eventSink?: Effect.Effect<EventSinkHealth> | null
+  readonly sessionSync?: Effect.Effect<SessionSyncHealth> | null
+}
+
 export const makeObsTools = (
   notes: AgentNotesApi,
   analytics: AnalyticsApi,
   /** Returns the current session id (or null if unknown). */
   currentSessionId: () => string | null,
+  pipelineHealth: PipelineHealthSources = {},
 ) => {
   // ── obs_note ────────────────────────────────────────────────────────────────
 
@@ -446,11 +464,57 @@ export const makeObsTools = (
       }),
   })
 
+  // ── obs_pipeline_health ─────────────────────────────────────────────────────
+
+  const obsPipelineHealth = defineTool({
+    name: "obs_pipeline_health",
+    description:
+      "Report the live state of the observability ingestion pipeline " +
+      "(EventSink → DuckDB events table, SessionSync → DuckDB sessions table). " +
+      "Returns per-sink { eventsReceived, eventsWritten, writeFailures, " +
+      "lastWriteAt, lastFailureReason }, or null when that sink isn't wired " +
+      "into the current process. Use this when answering 'is analytics still " +
+      "draining?' or when investigating why obs_session_* queries return empty.",
+    inputSchema: {},
+    ...OBS_TOOL_DISCOVERY,
+    handler: () =>
+      Effect.gen(function* () {
+        const toJson = (
+          h: { eventsReceived: number; eventsWritten: number; writeFailures: number; lastWriteAt: string | null; lastFailureReason: string | null } | null,
+        ): JSONOutput => h === null ? null : {
+          eventsReceived: h.eventsReceived,
+          eventsWritten: h.eventsWritten,
+          writeFailures: h.writeFailures,
+          lastWriteAt: h.lastWriteAt,
+          lastFailureReason: h.lastFailureReason,
+        }
+
+        const eventSink = pipelineHealth.eventSink
+          ? yield* pipelineHealth.eventSink.pipe(
+              Effect.map((h) => h as EventSinkHealth | null),
+              Effect.catchAllCause(() => Effect.succeed<EventSinkHealth | null>(null)),
+            )
+          : null
+        const sessionSync = pipelineHealth.sessionSync
+          ? yield* pipelineHealth.sessionSync.pipe(
+              Effect.map((h) => h as SessionSyncHealth | null),
+              Effect.catchAllCause(() => Effect.succeed<SessionSyncHealth | null>(null)),
+            )
+          : null
+        const result: { eventSink: JSONOutput; sessionSync: JSONOutput } = {
+          eventSink: toJson(eventSink),
+          sessionSync: toJson(sessionSync),
+        }
+        return result
+      }),
+  })
+
   return [
     obsNote,
     obsNotesRecent,
     obsSessionExplain,
     obsSessionAnomalies,
     obsSessionsSearch,
+    obsPipelineHealth,
   ] as const
 }
