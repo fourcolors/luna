@@ -218,7 +218,7 @@ describe("obs_notes_recent", () => {
     expect(notes.every((n) => n.kind === "goal_declared")).toBe(true)
   })
 
-  it("Given no current session and no filter, Then returns empty array", async () => {
+  it("Given no notes anywhere and no filter, Then returns empty array", async () => {
     const result = await run(
       Effect.gen(function* () {
         const { tools } = yield* buildTools(null) // null = no session
@@ -230,6 +230,38 @@ describe("obs_notes_recent", () => {
     const notes = parseOk<Array<unknown>>(result)
     expect(Array.isArray(notes)).toBe(true)
     expect(notes.length).toBe(0)
+  })
+
+  it("Given notes in OTHER sessions and no filter, Then returns globally recent notes (the context-recovery path; issue #10)", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        // Seed notes under one session, then ask from a "no-current-session"
+        // tool surface — like a fresh chat thread querying historical context.
+        const seeded = yield* buildTools("sess-history")
+        yield* Effect.promise(() =>
+          getTool(seeded.tools, "obs_note").handler(
+            { kind: "reflection", summary: "old reflection" },
+            undefined,
+          ),
+        )
+        yield* Effect.promise(() =>
+          getTool(seeded.tools, "obs_note").handler(
+            { kind: "progress", summary: "old progress" },
+            undefined,
+          ),
+        )
+
+        // Same AgentNotesService instance via the test layer — fresh "no-session" surface.
+        const { tools } = yield* buildTools(null)
+        return yield* Effect.promise(() =>
+          getTool(tools, "obs_notes_recent").handler({}, undefined),
+        )
+      }),
+    )
+    const notes = parseOk<Array<{ summary: string }>>(result)
+    expect(notes.length).toBeGreaterThanOrEqual(2)
+    expect(notes.map((n) => n.summary)).toContain("old reflection")
+    expect(notes.map((n) => n.summary)).toContain("old progress")
   })
 })
 

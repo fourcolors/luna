@@ -40,6 +40,15 @@ export interface AgentNotesApi {
     limit?: number,
   ) => Effect.Effect<ReadonlyArray<AgentNote>, NoteError>
 
+  /**
+   * Return the most-recent `limit` notes across ALL sessions, newest first.
+   * Used by `obs_notes_recent()` when no session_id / kind filter is supplied
+   * — the documented "what was I working on?" context-recovery path.
+   */
+  readonly getRecentAcrossSessions: (
+    limit?: number,
+  ) => Effect.Effect<ReadonlyArray<AgentNote>, NoteError>
+
   readonly getChain: (
     sessionId: string,
   ) => Effect.Effect<ReadonlyArray<AgentNote>, NoteError>

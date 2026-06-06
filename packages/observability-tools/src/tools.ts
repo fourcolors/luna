@@ -267,26 +267,23 @@ export const makeObsTools = (
               ),
             )
         } else {
-          // No filter — use current session if available, else all recent by
-          // passing a sentinel. getRecent requires a sessionId, so fall back
-          // to an empty list when sessionId is unknown.
-          const sid = currentSessionId()
-          if (sid) {
-            noteList = yield* notes
-              .getRecent(sid, limit)
-              .pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new ToolError({
-                      tool: "obs_notes_recent",
-                      op: "getRecent",
-                      cause,
-                    }),
-                ),
-              )
-          } else {
-            noteList = []
-          }
+          // No filter — return globally most-recent notes across ALL sessions.
+          // This is the documented "what was I working on?" context-recovery
+          // path; previously this branch returned `[]` if no current session,
+          // and current-session-only otherwise, both of which defeat the
+          // tool's purpose after a context reset. See issue #10.
+          noteList = yield* notes
+            .getRecentAcrossSessions(limit)
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ToolError({
+                    tool: "obs_notes_recent",
+                    op: "getRecentAcrossSessions",
+                    cause,
+                  }),
+              ),
+            )
         }
 
         return noteList.slice(0, limit).map((n) => ({
