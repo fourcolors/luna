@@ -177,12 +177,40 @@ export interface PipelineHealthSources {
   readonly sessionSync?: Effect.Effect<SessionSyncHealth> | null
 }
 
+/**
+ * Snapshot of the live chat-server process: where it runs, who it is on
+ * disk, when it booted. Returned by `obs_runtime` so any Luna instance can
+ * self-locate without ssh — see issue #12.
+ *
+ * The factory (a thunk, not a static snapshot) is resolved at each tool
+ * call so a freshly-rotated session id / DB path / scope is reflected.
+ */
+export interface RuntimeSnapshot {
+  readonly scope: string
+  readonly server: string
+  readonly pid: number
+  readonly hostname: string
+  readonly platform: string
+  readonly arch: string
+  readonly nodeVersion: string
+  readonly bunVersion: string | null
+  readonly startedAt: string
+  readonly dbPaths: {
+    readonly luna: string | null
+    readonly memory: string | null
+    readonly analytics: string | null
+    readonly jsonl: string | null
+  }
+}
+
 export const makeObsTools = (
   notes: AgentNotesApi,
   analytics: AnalyticsApi,
   /** Returns the current session id (or null if unknown). */
   currentSessionId: () => string | null,
   pipelineHealth: PipelineHealthSources = {},
+  /** Returns a fresh RuntimeSnapshot per call; `null` if not wired. */
+  runtimeProbe: (() => RuntimeSnapshot) | null = null,
 ) => {
   // ── obs_note ────────────────────────────────────────────────────────────────
 
@@ -464,7 +492,47 @@ export const makeObsTools = (
       }),
   })
 
-  // ── obs_pipeline_health ─────────────────────────────────────────────────────
+  // ── obs_runtime ─────────────────────────────────────────────────────────────
+
+  const obsRuntime = defineTool({
+    name: "obs_runtime",
+    description:
+      "Report where the running chat-server lives and which files it owns " +
+      "on disk: scope (host / incus-container / tauri-sidecar / etc.), pid, " +
+      "hostname, platform, and the absolute paths of luna.db, memory.db, " +
+      "analytics.duckdb, and events.jsonl. Use this BEFORE running storage-" +
+      "level introspection so you query the correct files — see issue #12.",
+    inputSchema: {},
+    ...OBS_TOOL_DISCOVERY,
+    handler: () =>
+      Effect.gen(function* () {
+        if (runtimeProbe === null) {
+          return { available: false as const, reason: "no runtime probe wired" }
+        }
+        const snap = runtimeProbe()
+        const payload: JSONOutput = {
+          available: true,
+          scope: snap.scope,
+          server: snap.server,
+          pid: snap.pid,
+          hostname: snap.hostname,
+          platform: snap.platform,
+          arch: snap.arch,
+          nodeVersion: snap.nodeVersion,
+          bunVersion: snap.bunVersion,
+          startedAt: snap.startedAt,
+          dbPaths: {
+            luna: snap.dbPaths.luna,
+            memory: snap.dbPaths.memory,
+            analytics: snap.dbPaths.analytics,
+            jsonl: snap.dbPaths.jsonl,
+          },
+        }
+        return payload
+      }),
+  })
+
+    // ── obs_pipeline_health ─────────────────────────────────────────────────────
 
   const obsPipelineHealth = defineTool({
     name: "obs_pipeline_health",
@@ -516,5 +584,6 @@ export const makeObsTools = (
     obsSessionAnomalies,
     obsSessionsSearch,
     obsPipelineHealth,
+    obsRuntime,
   ] as const
 }
