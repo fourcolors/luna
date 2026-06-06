@@ -721,6 +721,18 @@ export const buildBaseLayer = (
     Layer.provide(memoryRouterL), // REQUIRED: satisfies MemoryRouterTag inside the layer (siblings don't cross-wire)
     Layer.provide(obsL),
     Layer.provide(clockL),
+    // Phase 14b (commit 57def9d) added EventSink + SessionSync as deps of
+    // ObsToolsLayer (for the obs_pipeline_health tool's live counters).
+    // ThreadToolsProviderLayer transitively pulls ObsToolsService, so those
+    // requirements bubble up here too. telPlatformL outputs the EventSink +
+    // SessionSync services; provide it explicitly to threadToolsL so the
+    // top-level Layer.mergeAll doesn't need to play dependency-router across
+    // siblings (mergeAll deliberately doesn't cross-wire — that's the
+    // failure mode that left a fresh boot crashing with
+    // "Service not found: luna/EventSink" on every restart from
+    // c5dc3b3 onward, with the running long-lived process hiding the
+    // regression in-memory).
+    Layer.provide(telPlatformL),
   )
 
   // Phase 3 D1: nightly Dream cron. DreamCronLayer provides its OWN
