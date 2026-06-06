@@ -24,7 +24,7 @@
  *               (inside subscribeEvents).
  *   §16      — SessionSync emits NO observability events itself.
  */
-import { Effect, Layer, Stream } from "effect"
+import { Effect, Layer, Ref, Stream } from "effect"
 import { Clock } from "../clock.js"
 import { DuckDbService } from "../db/duckdb-service.js"
 import { ObservabilityService } from "../observability/observability.js"
@@ -62,11 +62,31 @@ const UPDATE_SESSION_SQL = `
   WHERE id = ?
 `
 
+// ── Health counters ───────────────────────────────────────────────────────────
+
+/**
+ * Snapshot of the SessionSync's internal state. Exposed via the
+ * `SessionSync.health` Effect for self-introspection (issue #11). Only
+ * SessionStart / SessionEnd events are processed; `eventsReceived` counts
+ * those two kinds, NOT every observability event seen on the stream.
+ */
+export interface SessionSyncHealth {
+  readonly eventsReceived: number
+  readonly eventsWritten: number
+  readonly writeFailures: number
+  readonly lastWriteAt: string | null
+  readonly lastFailureReason: string | null
+}
+
+interface SessionSyncApi {
+  readonly health: Effect.Effect<SessionSyncHealth>
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 export class SessionSync extends Effect.Tag("luna/SessionSync")<
   SessionSync,
-  Record<string, never>
+  SessionSyncApi
 >() {
   static makeLayer(): Layer.Layer<
     SessionSync,
@@ -78,6 +98,56 @@ export class SessionSync extends Effect.Tag("luna/SessionSync")<
       Effect.gen(function* () {
         const obs = yield* ObservabilityService
         const db = yield* DuckDbService
+
+        // ── 0. Health counters ──────────────────────────────────────────────
+        // See EventSink.makeLayer for the rationale.
+        const stateRef = yield* Ref.make<SessionSyncHealth>({
+          eventsReceived: 0,
+          eventsWritten: 0,
+          writeFailures: 0,
+          lastWriteAt: null,
+          lastFailureReason: null,
+        })
+        const firstFailureLoggedRef = yield* Ref.make(false)
+
+        // Helper: count a write attempt, log first failure once.
+        const recordWrite = (
+          writeEff: Effect.Effect<unknown, unknown>,
+          ts: string,
+        ) =>
+          Ref.update(stateRef, (h) => ({
+            ...h,
+            eventsReceived: h.eventsReceived + 1,
+          })).pipe(
+            Effect.zipRight(writeEff),
+            Effect.tap(() =>
+              Ref.update(stateRef, (h) => ({
+                ...h,
+                eventsWritten: h.eventsWritten + 1,
+                lastWriteAt: ts,
+              })),
+            ),
+            Effect.catchAllCause((cause) =>
+              Effect.gen(function* () {
+                const reason = cause.toString().slice(0, 240)
+                yield* Ref.update(stateRef, (h) => ({
+                  ...h,
+                  writeFailures: h.writeFailures + 1,
+                  lastFailureReason: reason,
+                }))
+                const already = yield* Ref.getAndSet(
+                  firstFailureLoggedRef,
+                  true,
+                )
+                if (!already) {
+                  yield* Effect.logError(
+                    "SessionSync: first DuckDB write failure (subsequent silently counted)",
+                    { reason },
+                  )
+                }
+              }),
+            ),
+          )
 
         // ── 1. Run schema migration at boot ─────────────────────────────────
         yield* db.migrate("session-sync", 1, SESSIONS_SCHEMA_V1).pipe(
@@ -102,37 +172,40 @@ export class SessionSync extends Effect.Tag("luna/SessionSync")<
                     ? JSON.stringify(event.tags)
                     : null
 
-                return db
-                  .write(INSERT_SESSION_SQL, [
+                return recordWrite(
+                  db.write(INSERT_SESSION_SQL, [
                     event.sessionId,
                     event.parentId ?? null,
                     event.model,
                     event.title ?? null,
                     tagsJson,
                     event.ts,
-                  ])
-                  .pipe(Effect.catchAllCause(() => Effect.void))
+                  ]),
+                  event.ts,
+                )
               }
 
               if (event.kind === "SessionEnd") {
-                return db
-                  .write(UPDATE_SESSION_SQL, [
+                return recordWrite(
+                  db.write(UPDATE_SESSION_SQL, [
                     event.ts,
                     event.durationMs,
                     event.sessionId,
-                  ])
-                  .pipe(Effect.catchAllCause(() => Effect.void))
+                  ]),
+                  event.ts,
+                )
               }
 
-              // All other event kinds — ignore
+              // All other event kinds — ignore (not counted).
               return Effect.void
             }),
             Effect.catchAllCause(() => Effect.void),
           ),
         )
 
-        // Service value is void — SessionSync is purely a side-effect Layer.
-        return {} as Record<string, never>
+        return {
+          health: Ref.get(stateRef),
+        } satisfies SessionSyncApi
       }),
     )
   }

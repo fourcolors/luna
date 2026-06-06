@@ -42,7 +42,9 @@ import {
   Clock,
   ConfigError,
   DuckDbService,
+  EventSink,
   LunaSqliteBootstrap,
+  SessionSync,
   makeDuckDbLayer,
 } from "@luna/core"
 import { makeSdkMcpServer } from "@luna/tools"
@@ -113,7 +115,11 @@ export const OBS_SYSTEM_PROMPT_ADDENDUM =
   "  or long duration. Entry point for daily feedback loops.\n" +
   "- `mcp__observability__obs_sessions_search(session_id?, tool_name?, start_time?, end_time?, limit?)` — " +
   "  search session history; returns session-level summaries (tool call counts, error/success " +
-  "  counts, duration). Use for general-purpose session search and pattern detection."
+  "  counts, duration). Use for general-purpose session search and pattern detection.\n" +
+  "- `mcp__observability__obs_pipeline_health()` — live state of the EventSink/SessionSync " +
+  "  ingestion daemons (eventsReceived / eventsWritten / writeFailures / lastWriteAt / " +
+  "  lastFailureReason). Use to verify analytics are still draining before trusting " +
+  "  obs_session_* results, or when investigating silent observability failures."
 
 // ── MCP server builder ─────────────────────────────────────────────────────────
 
@@ -160,7 +166,7 @@ export const ObsToolsLayer = (
 ): Layer.Layer<
   ObsToolsService,
   ConfigError,
-  Clock | LunaSqliteBootstrap
+  Clock | LunaSqliteBootstrap | EventSink | SessionSync
 > => {
   const lunaDbPath = opts?.lunaDbPath ?? resolveLunaDbPath()
   const analyticsDbPath = opts?.analyticsDbPath ?? resolveAnalyticsDbPath()
@@ -185,6 +191,10 @@ export const ObsToolsLayer = (
     Effect.gen(function* () {
       const notes = yield* AgentNotesService
       const analytics = yield* AnalyticsService
+      // Health getters for obs_pipeline_health — Effect tags resolved here
+      // so each tool call observes the live counters, not a frozen snapshot.
+      const eventSink = yield* EventSink
+      const sessionSync = yield* SessionSync
 
       const createConfig = (): ObsToolsSessionConfig => {
         // Mutable session-id cell. Closed over by one thread's tool handlers.
@@ -194,7 +204,10 @@ export const ObsToolsLayer = (
           sessionCell.value = id
         }
 
-        const tools = makeObsTools(notes, analytics, currentSessionId)
+        const tools = makeObsTools(notes, analytics, currentSessionId, {
+          eventSink: eventSink.health,
+          sessionSync: sessionSync.health,
+        })
         const server = buildObsMcpServer(tools)
 
         return {

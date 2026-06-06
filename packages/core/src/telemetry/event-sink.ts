@@ -23,7 +23,7 @@
  *   §3.4 #4  — Layer.scoped scope handles subscription cleanup via addFinalizer.
  *   §16      — EventSink emits NO observability events itself (no circular loop).
  */
-import { Effect, Layer, Stream } from "effect"
+import { Effect, Layer, Ref, Stream } from "effect"
 import { Clock } from "../clock.js"
 import { DuckDbService } from "../db/duckdb-service.js"
 import { ObservabilityService } from "../observability/observability.js"
@@ -139,11 +139,33 @@ const INSERT_SQL = `
   ON CONFLICT(id) DO NOTHING
 `
 
+// ── Health counters ───────────────────────────────────────────────────────────
+
+/**
+ * Snapshot of the EventSink's internal state. Exposed via the
+ * `EventSink.health` Effect for self-introspection (issue #11: silent
+ * failure invisible). `eventsReceived` counts every event that came off
+ * the subscription stream; `eventsWritten` counts successful DuckDB
+ * inserts; `writeFailures` counts swallowed errors. `lastWriteAt` and
+ * `lastFailureReason` are tracked across the process lifetime.
+ */
+export interface EventSinkHealth {
+  readonly eventsReceived: number
+  readonly eventsWritten: number
+  readonly writeFailures: number
+  readonly lastWriteAt: string | null
+  readonly lastFailureReason: string | null
+}
+
+interface EventSinkApi {
+  readonly health: Effect.Effect<EventSinkHealth>
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 export class EventSink extends Effect.Tag("luna/EventSink")<
   EventSink,
-  Record<string, never>
+  EventSinkApi
 >() {
   static makeLayer(): Layer.Layer<
     EventSink,
@@ -155,6 +177,19 @@ export class EventSink extends Effect.Tag("luna/EventSink")<
       Effect.gen(function* () {
         const obs = yield* ObservabilityService
         const db = yield* DuckDbService
+
+        // ── 0. Health counters ──────────────────────────────────────────────
+        // Tracked across the process lifetime so the operator can ask
+        // "are events actually landing in DuckDB?" via the obs_pipeline_health
+        // tool, instead of having to side-channel ssh and run COUNT(*).
+        const stateRef = yield* Ref.make<EventSinkHealth>({
+          eventsReceived: 0,
+          eventsWritten: 0,
+          writeFailures: 0,
+          lastWriteAt: null,
+          lastFailureReason: null,
+        })
+        const firstFailureLoggedRef = yield* Ref.make(false)
 
         // ── 1. Run schema migration at boot ─────────────────────────────────
         yield* db.migrate("event-sink", 1, EVENTS_SCHEMA_V1).pipe(
@@ -168,35 +203,72 @@ export class EventSink extends Effect.Tag("luna/EventSink")<
 
         // ── 3. Background daemon fiber ───────────────────────────────────────
         // forkDaemon per §3.4 #1 (not forkScoped).
-        // Write errors are swallowed — fire-and-forget per §16.
+        // Write errors are swallowed — fire-and-forget per §16 — but we now
+        // count them and log the FIRST failure once per process so a broken
+        // pipeline is at least visible in stderr.
         yield* Effect.forkDaemon(
           stream.pipe(
             Stream.runForEach((event: ObsEvent) => {
               const row = normalizeEvent(event)
-              return db.write(INSERT_SQL, [
-                row.id,
-                row.ts,
-                row.kind,
-                row.level,
-                row.session_id,
-                row.team,
-                row.workflow_id,
-                row.tool_name,
-                row.duration_ms,
-                row.status,
-                row.estimated_usd,
-                row.tokens_in,
-                row.tokens_out,
-                row.error_tag,
-                row.raw_json,
-              ]).pipe(Effect.catchAllCause(() => Effect.void))
+              return Ref.update(stateRef, (h) => ({
+                ...h,
+                eventsReceived: h.eventsReceived + 1,
+              })).pipe(
+                Effect.zipRight(
+                  db.write(INSERT_SQL, [
+                    row.id,
+                    row.ts,
+                    row.kind,
+                    row.level,
+                    row.session_id,
+                    row.team,
+                    row.workflow_id,
+                    row.tool_name,
+                    row.duration_ms,
+                    row.status,
+                    row.estimated_usd,
+                    row.tokens_in,
+                    row.tokens_out,
+                    row.error_tag,
+                    row.raw_json,
+                  ]),
+                ),
+                Effect.tap(() =>
+                  Ref.update(stateRef, (h) => ({
+                    ...h,
+                    eventsWritten: h.eventsWritten + 1,
+                    lastWriteAt: row.ts,
+                  })),
+                ),
+                Effect.catchAllCause((cause) =>
+                  Effect.gen(function* () {
+                    const reason = cause.toString().slice(0, 240)
+                    yield* Ref.update(stateRef, (h) => ({
+                      ...h,
+                      writeFailures: h.writeFailures + 1,
+                      lastFailureReason: reason,
+                    }))
+                    const alreadyLogged = yield* Ref.getAndSet(
+                      firstFailureLoggedRef,
+                      true,
+                    )
+                    if (!alreadyLogged) {
+                      yield* Effect.logError(
+                        "EventSink: first DuckDB write failure (subsequent silently counted)",
+                        { reason },
+                      )
+                    }
+                  }),
+                ),
+              )
             }),
             Effect.catchAllCause(() => Effect.void),
           ),
         )
 
-        // Service value is void — EventSink is purely a side-effect Layer.
-        return {} as Record<string, never>
+        return {
+          health: Ref.get(stateRef),
+        } satisfies EventSinkApi
       }),
     )
   }

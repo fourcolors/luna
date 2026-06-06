@@ -362,4 +362,104 @@ describe("EventSink", () => {
       expect(parsed.ts).toBe("2024-06-15T12:34:56.789Z")
     })
   })
+
+  // ── 7. Health counters ───────────────────────────────────────────────────
+
+  it("health() reports eventsReceived + eventsWritten after successful writes", async () => {
+    await withTempDb(async (dbPath) => {
+      const snap = await runWithLayer(dbPath)(
+        Effect.gen(function* () {
+          const obs = yield* ObservabilityService
+          const sink = yield* EventSink
+
+          yield* obs.emit({
+            ts: "2024-07-01T00:00:00.000Z",
+            kind: "SessionStart",
+            level: "info",
+            sessionId: "sess-h1",
+            model: "claude-3-5-sonnet",
+          })
+          yield* obs.emit({
+            ts: "2024-07-01T00:00:01.000Z",
+            kind: "Error",
+            level: "error",
+            errorTag: "noop",
+            message: "x",
+          })
+
+          yield* Effect.sleep("20 millis")
+          return yield* sink.health
+        }),
+      )
+
+      expect(snap.eventsReceived).toBe(2)
+      expect(snap.eventsWritten).toBe(2)
+      expect(snap.writeFailures).toBe(0)
+      expect(snap.lastWriteAt).toBe("2024-07-01T00:00:01.000Z")
+      expect(snap.lastFailureReason).toBeNull()
+    })
+  })
+
+  it("health() reports writeFailures + lastFailureReason when DuckDB write fails (issue #11)", async () => {
+    await withTempDb(async (_dbPath) => {
+      const failingDuckDb = Layer.succeed(DuckDbService, {
+        exec: () => Effect.void,
+        write: () =>
+          Effect.fail(new DuckDbError({ op: "write", message: "forced failure" })),
+        query: () => Effect.succeed([]),
+        migrate: () => Effect.void,
+      })
+      const clockLayer = Clock.Default
+      const obsLayer = ObservabilityService.Default.pipe(Layer.provide(clockLayer))
+      const eventSinkLayer = EventSink.makeLayer().pipe(
+        Layer.provide(Layer.mergeAll(obsLayer, failingDuckDb, clockLayer)),
+      )
+      const composedLayer = Layer.mergeAll(
+        clockLayer,
+        obsLayer,
+        failingDuckDb,
+        eventSinkLayer,
+      )
+
+      const snap = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const obs = yield* ObservabilityService
+            const sink = yield* EventSink
+
+            yield* obs.emit({
+              ts: "2024-07-02T00:00:00.000Z",
+              kind: "Error",
+              level: "error",
+              errorTag: "boom",
+              message: "x",
+            })
+            yield* obs.emit({
+              ts: "2024-07-02T00:00:01.000Z",
+              kind: "Error",
+              level: "error",
+              errorTag: "boom2",
+              message: "y",
+            })
+
+            yield* Effect.sleep("20 millis")
+            return yield* sink.health
+          }).pipe(
+            Effect.provide(
+              composedLayer as Layer.Layer<
+                ObservabilityService | DuckDbService | EventSink,
+                never,
+                never
+              >,
+            ),
+          ),
+        ),
+      )
+
+      expect(snap.eventsReceived).toBe(2)
+      expect(snap.eventsWritten).toBe(0)
+      expect(snap.writeFailures).toBe(2)
+      expect(snap.lastFailureReason).toContain("forced failure")
+    })
+  })
 })

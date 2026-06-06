@@ -4,7 +4,7 @@
  *   1. ObsToolsLayer() builds and provides ObsToolsService with correct shape.
  *   2. buildObsMcpServer(tools) returns type='sdk', name='observability'.
  *   3. makeObsTools exposes exactly the 5 expected tool names in order.
- *   4. OBS_SYSTEM_PROMPT_ADDENDUM is non-empty and mentions all 5 tools.
+ *   4. OBS_SYSTEM_PROMPT_ADDENDUM is non-empty and mentions all 6 tools.
  *   5. bindSession() is a callable function.
  *
  * Uses ":memory:" databases and follows the scheduler-tools structural test pattern.
@@ -16,7 +16,13 @@ import {
   AnalyticsService,
   Clock,
   DuckDbService,
+  EventSink,
+  ObservabilityService,
+  SessionSync,
+  TelemetryPlatform,
+  TelemetryService,
   makeDuckDbLayer,
+  makeTelemetrySqlite,
 } from "@luna/core"
 import { LunaSqliteBootstrapLive } from "@luna/memory"
 import {
@@ -29,15 +35,34 @@ import { makeObsTools } from "../src/tools.js"
 
 // ── Layer helpers ─────────────────────────────────────────────────────────────
 
-const makeTestLayer = () =>
-  ObsToolsLayer({
+const makeTestLayer = () => {
+  // ObsToolsLayer now requires EventSink + SessionSync for obs_pipeline_health.
+  // Wire the full TelemetryPlatform (EventSink + SessionSync + friends) on top
+  // of an in-memory DuckDB + Observability + Telemetry stack.
+  const clockL = Clock.Default
+  const sqliteBootL = LunaSqliteBootstrapLive
+  const duckL = makeDuckDbLayer({ dbPath: ":memory:", writeQueueCapacity: 64 })
+  const obsL = ObservabilityService.Default.pipe(Layer.provide(clockL))
+  const telemetryL = makeTelemetrySqlite(":memory:").pipe(
+    Layer.provide(clockL),
+    Layer.provide(sqliteBootL),
+  )
+  const telPlatformL = TelemetryPlatform.pipe(
+    Layer.provide(Layer.mergeAll(obsL, duckL, telemetryL, clockL)),
+  )
+  return ObsToolsLayer({
     lunaDbPath: ":memory:",
     analyticsDbPath: ":memory:",
     duckDbQueueCapacity: 64,
   }).pipe(
-    Layer.provide(Clock.Default),
-    Layer.provide(LunaSqliteBootstrapLive),
+    Layer.provide(telPlatformL),
+    Layer.provide(obsL),
+    Layer.provide(duckL),
+    Layer.provide(telemetryL),
+    Layer.provide(clockL),
+    Layer.provide(sqliteBootL),
   )
+}
 
 const duckDbL = makeDuckDbLayer({ dbPath: ":memory:", writeQueueCapacity: 64 })
 const analyticsL = AnalyticsService.makeLayer({ dbPath: ":memory:" }).pipe(
@@ -101,7 +126,7 @@ describe("ObsToolsLayer — structural invariants", () => {
     expect(typeof (serverConfig as { instance?: unknown }).instance).toBe("object")
   })
 
-  it("makeObsTools exposes exactly 5 tools in the correct order", async () => {
+  it("makeObsTools exposes exactly 6 tools in the correct order", async () => {
     const tools = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -112,7 +137,7 @@ describe("ObsToolsLayer — structural invariants", () => {
       ).pipe(Effect.provide(obsStack)),
     )
 
-    expect(tools).toHaveLength(5)
+    expect(tools).toHaveLength(6)
     const names = tools.map((t) => (t as unknown as { name: string }).name)
     expect(names).toEqual([
       "obs_note",
@@ -120,6 +145,7 @@ describe("ObsToolsLayer — structural invariants", () => {
       "obs_session_explain",
       "obs_session_anomalies",
       "obs_sessions_search",
+      "obs_pipeline_health",
     ])
   })
 
@@ -180,6 +206,9 @@ describe("ObsToolsService — constant invariants (all runtimes)", () => {
     )
     expect(OBS_SYSTEM_PROMPT_ADDENDUM).toContain(
       "mcp__observability__obs_sessions_search",
+    )
+    expect(OBS_SYSTEM_PROMPT_ADDENDUM).toContain(
+      "mcp__observability__obs_pipeline_health",
     )
     expect(OBS_SYSTEM_PROMPT_ADDENDUM).toContain("fully qualified")
   })

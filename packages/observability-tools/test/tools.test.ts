@@ -531,3 +531,62 @@ describe("bindSession", () => {
     expect(result.found).toBe(true)
   })
 })
+
+// ── obs_pipeline_health ────────────────────────────────────────────────────────
+
+describe("obs_pipeline_health", () => {
+  it("returns nulls for sinks not provided (issue #11)", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        // buildTools wires NO health sources -> tool should report both null.
+        const { tools } = yield* buildTools()
+        return yield* Effect.promise(() =>
+          getTool(tools, "obs_pipeline_health").handler({}, undefined),
+        )
+      }),
+    )
+    const payload = parseOk<{
+      eventSink: unknown
+      sessionSync: unknown
+    }>(result)
+    expect(payload.eventSink).toBeNull()
+    expect(payload.sessionSync).toBeNull()
+  })
+
+  it("returns the live health snapshot when sinks are wired", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const notes = yield* AgentNotesService
+        const analytics = yield* AnalyticsService
+        // Synthetic EventSinkHealth + SessionSyncHealth via Effect.succeed.
+        const tools = makeObsTools(notes, analytics, () => null, {
+          eventSink: Effect.succeed({
+            eventsReceived: 12,
+            eventsWritten: 10,
+            writeFailures: 2,
+            lastWriteAt: "2026-06-06T00:00:00.000Z",
+            lastFailureReason: "duckdb lock",
+          }),
+          sessionSync: Effect.succeed({
+            eventsReceived: 4,
+            eventsWritten: 4,
+            writeFailures: 0,
+            lastWriteAt: "2026-06-06T00:00:01.000Z",
+            lastFailureReason: null,
+          }),
+        })
+        const tool = tools.find(
+          (t) => (t as unknown as { name: string }).name === "obs_pipeline_health",
+        ) as unknown as { handler: (a: unknown, b: unknown) => Promise<unknown> }
+        return yield* Effect.promise(() => tool.handler({}, undefined))
+      }),
+    )
+    const payload = parseOk<{
+      eventSink: { eventsReceived: number; writeFailures: number }
+      sessionSync: { eventsWritten: number }
+    }>(result)
+    expect(payload.eventSink.eventsReceived).toBe(12)
+    expect(payload.eventSink.writeFailures).toBe(2)
+    expect(payload.sessionSync.eventsWritten).toBe(4)
+  })
+})

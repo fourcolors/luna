@@ -7,9 +7,9 @@ export type {
   TelemetryApi,
   TelemetryConfig,
 } from "./types.js"
-export { EventSink } from "./event-sink.js"
+export { EventSink, type EventSinkHealth } from "./event-sink.js"
 export { EventCounter } from "./event-counter.js"
-export { SessionSync } from "./session-sync.js"
+export { SessionSync, type SessionSyncHealth } from "./session-sync.js"
 export { MetricsFlusher } from "./metrics-flusher.js"
 export type { MetricsFlusherConfig } from "./metrics-flusher.js"
 export { TelemetryPlatform } from "./telemetry-platform.js"
