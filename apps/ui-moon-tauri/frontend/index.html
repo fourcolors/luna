@@ -1927,6 +1927,10 @@
             DOM.chatMessages.innerHTML = '';
             if (frame.messages && frame.messages.length > 0) {
               for (const msg of frame.messages) {
+                // Skip empty/whitespace-only messages — server-side history
+                // can include tool-only assistant turns with no visible text,
+                // and rendering them as empty bubbles is the bug we're fixing.
+                if (!msg.text || !String(msg.text).trim()) continue;
                 ChatEngine.appendMessage(msg.role, msg.text, msg.role === 'assistant');
               }
             } else {
@@ -1955,7 +1959,13 @@
             if (lastMsg && lastMsg.classList.contains('assistant')) {
               if (lastMsg.querySelector('.typing-dots')) {
                 // First delta of the turn — drop the typing dots and seed
-                // the streaming buffer with the initial delta text.
+                // the streaming buffer with the initial delta text. Guard:
+                // if frame.text is empty/null, we'd strip the dots and be
+                // left with a permanently empty bubble (no dots, no text,
+                // no rich block). Leave the dots until a delta with real
+                // content arrives — they're doing useful work as a visible
+                // "still working" cue.
+                if (!frame.text) break;
                 lastMsg.innerHTML = '';
                 StreamRender.reset(lastMsg, frame.text);
               } else {
@@ -1993,11 +2003,14 @@
             } else if (frame.message && doneMsg && doneMsg.classList.contains('assistant')) {
               // Streaming finished — reconcile with canonical message text.
               StreamRender.finalize(doneMsg, frame.message.text ?? (doneMsg.dataset.streamRaw ?? doneMsg.textContent));
-              // Drop the bubble if finalize wrote nothing visible. Covers the
-              // tool-use-only / empty-text turn where deltas drove the bubble
-              // to empty content and never produced anything to read.
-              if (ChatEngine.isVisuallyEmpty(doneMsg)) doneMsg.remove();
             }
+            // ALWAYS sweep trailing visually-empty assistant bubbles, regardless
+            // of which branch above ran (or whether either ran at all). Covers:
+            //   - frame.message falsy (no canonical text -> finalize branch skipped)
+            //   - tool-only / sub-turn streams that never produced visible text
+            //   - thread-snapshot replays that left empty bubbles in the tail
+            //   - upgrades from older moons that had leaked empty bubbles
+            ChatEngine.sweepTrailingEmptyAssistantBubbles();
             DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
             break;
           }
@@ -2010,6 +2023,9 @@
             if (lastMsg && lastMsg.querySelector('.typing-dots')) {
               lastMsg.remove();
             }
+            // Also sweep any trailing empty assistant bubbles from a partial
+            // stream that errored before producing content.
+            ChatEngine.sweepTrailingEmptyAssistantBubbles();
             ChatEngine.appendMessage('assistant', `⚠️ Error: ${frame.error.message}`);
             DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
             break;
@@ -2247,6 +2263,7 @@
       window.__MoonInternals.renderMarkdownStreaming = renderMarkdownStreaming;
       window.__MoonInternals.StreamRender = StreamRender;
       window.__MoonInternals.isVisuallyEmpty = (b) => ChatEngine.isVisuallyEmpty(b);
+      window.__MoonInternals.sweepTrailingEmptyAssistantBubbles = () => ChatEngine.sweepTrailingEmptyAssistantBubbles();
     }
 
     /**
@@ -2585,14 +2602,30 @@
       // literal. previews (optional) appends a tray of attachment thumbnails.
       // True when an assistant bubble carries nothing the operator could read:
       // no textContent (after trim) and no rich blocks (images, code, tables,
-      // lists, links). Used to GC empty bubbles after a finalize() that wrote
-      // an empty string — without this the bubble lingers as a small empty
-      // rounded rectangle between real messages.
+      // lists, links, attachments, typing-dots). Used to GC empty bubbles
+      // after a finalize() that wrote an empty string — without this the
+      // bubble lingers as a small empty rounded rectangle between real
+      // messages. Typing-dots count as NOT empty: they're a visible
+      // "still working" cue, and the sweep walks past them so an
+      // in-flight turn isn't accidentally GC'd.
       isVisuallyEmpty(bubble) {
         if (!bubble) return false;
         if (bubble.textContent && bubble.textContent.trim().length > 0) return false;
-        if (bubble.querySelector('img, pre, table, ul, ol, a, .attachments-strip')) return false;
+        if (bubble.querySelector('img, pre, table, ul, ol, a, .attachments-strip, .typing-dots')) return false;
         return true;
+      },
+
+      // Walk backward from the tail of the chat-messages list and remove any
+      // trailing assistant bubble that isVisuallyEmpty considers empty. Stops
+      // at the first non-empty assistant bubble or any non-assistant bubble
+      // (typically a user message). Idempotent — safe to call multiple times.
+      sweepTrailingEmptyAssistantBubbles() {
+        let tail = DOM.chatMessages.lastElementChild;
+        while (tail && tail.classList && tail.classList.contains('assistant') && this.isVisuallyEmpty(tail)) {
+          const prev = tail.previousElementSibling;
+          tail.remove();
+          tail = prev;
+        }
       },
 
       appendMessage(role, text, render = false, previews = null) {

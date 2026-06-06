@@ -611,5 +611,86 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
         expect(isVisuallyEmpty(b)).toBe(false)
       }
     })
+
+    it('Scenario: isVisuallyEmpty returns false for a typing-dots bubble (in-flight turn cue)', () => {
+      const isVisuallyEmpty = (internals() as any).isVisuallyEmpty
+      const b = document.createElement('div')
+      b.innerHTML = '<div class="typing-dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>'
+      // Typing-dots have no textContent and no img/pre/etc, but they ARE a
+      // visible "still working" indicator — the sweep must skip them so an
+      // in-flight turn isn't GC'd before its first delta with real text.
+      expect(isVisuallyEmpty(b)).toBe(false)
+    })
+
+    // ── sweepTrailingEmptyAssistantBubbles ────────────────────────────────
+    it('Scenario: sweepTrailingEmptyAssistantBubbles removes consecutive empty assistant tail bubbles', () => {
+      const { sweepTrailingEmptyAssistantBubbles } = internals() as any
+      const chat = document.getElementById('chat-messages')!
+      // Real content + 3 trailing empties.
+      chat.innerHTML = ''
+      const real = document.createElement('div'); real.className = 'msg assistant'; real.innerHTML = '<p>hello</p>'
+      chat.appendChild(real)
+      for (let i = 0; i < 3; i++) {
+        const empty = document.createElement('div'); empty.className = 'msg assistant'
+        chat.appendChild(empty)
+      }
+      expect(chat.children.length).toBe(4)
+      sweepTrailingEmptyAssistantBubbles()
+      expect(chat.children.length).toBe(1)
+      expect(chat.children[0]).toBe(real)
+    })
+
+    it('Scenario: sweepTrailingEmptyAssistantBubbles stops at the first non-empty bubble (does NOT eat real content)', () => {
+      const { sweepTrailingEmptyAssistantBubbles } = internals() as any
+      const chat = document.getElementById('chat-messages')!
+      chat.innerHTML = ''
+      const a = document.createElement('div'); a.className = 'msg assistant'; a.innerHTML = '<p>one</p>'
+      const b = document.createElement('div'); b.className = 'msg assistant'  // empty
+      const c = document.createElement('div'); c.className = 'msg assistant'; c.innerHTML = '<p>two</p>'  // not at tail
+      const tail = document.createElement('div'); tail.className = 'msg assistant'  // empty at tail
+      chat.appendChild(a); chat.appendChild(b); chat.appendChild(c); chat.appendChild(tail)
+
+      sweepTrailingEmptyAssistantBubbles()
+      // Only the trailing empty gets removed; the interior empty (b) survives
+      // because the walk stops at c (non-empty assistant).
+      expect(chat.children.length).toBe(3)
+      expect(chat.children[chat.children.length - 1]).toBe(c)
+    })
+
+    it('Scenario: sweepTrailingEmptyAssistantBubbles stops at a non-assistant bubble (e.g. user message)', () => {
+      const { sweepTrailingEmptyAssistantBubbles } = internals() as any
+      const chat = document.getElementById('chat-messages')!
+      chat.innerHTML = ''
+      const user = document.createElement('div'); user.className = 'msg user'; user.textContent = 'hi'
+      chat.appendChild(user)
+      // No trailing assistant bubble at all -> sweep is a no-op.
+      sweepTrailingEmptyAssistantBubbles()
+      expect(chat.children.length).toBe(1)
+      expect(chat.children[0]).toBe(user)
+    })
+
+    it('Scenario: sweepTrailingEmptyAssistantBubbles preserves a typing-dots bubble at the tail', () => {
+      const { sweepTrailingEmptyAssistantBubbles } = internals() as any
+      const chat = document.getElementById('chat-messages')!
+      chat.innerHTML = ''
+      const dots = document.createElement('div'); dots.className = 'msg assistant'
+      dots.innerHTML = '<div class="typing-dots"><div class="dot"></div></div>'
+      chat.appendChild(dots)
+      sweepTrailingEmptyAssistantBubbles()
+      // Typing-dots aren't visually empty per isVisuallyEmpty, so they stay.
+      expect(chat.children.length).toBe(1)
+    })
+
+    it('Scenario: sweepTrailingEmptyAssistantBubbles handles a chat list with ONLY empty assistant bubbles', () => {
+      const { sweepTrailingEmptyAssistantBubbles } = internals() as any
+      const chat = document.getElementById('chat-messages')!
+      chat.innerHTML = ''
+      for (let i = 0; i < 4; i++) {
+        const empty = document.createElement('div'); empty.className = 'msg assistant'
+        chat.appendChild(empty)
+      }
+      sweepTrailingEmptyAssistantBubbles()
+      expect(chat.children.length).toBe(0)
+    })
   })
 })
