@@ -140,6 +140,7 @@ import {
   AccountBroker,
   AccountBrokerLayer,
   AgentNotesService,
+  JobsStoreService,
   WorkspaceRegistryService,
   AlignmentStore,
   BELIEF_KIND,
