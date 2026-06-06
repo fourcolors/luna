@@ -882,11 +882,11 @@
 
     .chat-input {
       flex: 1;
-      min-height: 38px;        /* one-line floor (was the fixed height) */
-      max-height: 320px;       /* cap so a few lines of message history stay visible in the 480px panel */
-      height: 38px;            /* initial size; native resize overrides this inline */
-      resize: vertical;        /* drag the bottom-right corner to grow the box */
-      overflow-y: auto;        /* scroll inside once content exceeds the dragged height */
+      min-height: 38px;        /* one-line floor */
+      max-height: 320px;       /* cap so a few lines of chat history stay visible in the 480px panel */
+      height: 38px;            /* initial size; ChatEngine.autoGrowMessageInput resizes inline as you type */
+      resize: none;            /* auto-grow recomputes height on every input — manual drag would fight it */
+      overflow-y: auto;        /* once content exceeds max-height (320px), scroll inside */
       background: rgba(255, 255, 255, 0.03);
       border: 1px solid rgba(255, 255, 255, 0.08);
       border-radius: 10px;
@@ -2390,6 +2390,7 @@
       window.__MoonInternals.sweepTrailingEmptyAssistantBubbles = () => ChatEngine.sweepTrailingEmptyAssistantBubbles();
       window.__MoonInternals.appendToolCallCard = (f) => ChatEngine.appendToolCallCard(f);
       window.__MoonInternals.attachToolResult = (f) => ChatEngine.attachToolResult(f);
+      window.__MoonInternals.autoGrowMessageInput = () => ChatEngine.autoGrowMessageInput();
     }
 
     /**
@@ -2911,6 +2912,23 @@
         return msgDiv;
       },
 
+      // Resize the message-input textarea to fit its content as the operator
+      // types, capped at the CSS max-height (320px) — past which it falls back
+      // to scrolling internally. Without this, multi-line input scrolls inside
+      // the bar instead of growing the composer, which makes editing a long
+      // message painful. Called on input, paste, and after each send (to snap
+      // back to the one-line floor).
+      autoGrowMessageInput() {
+        const ta = DOM.messageInput;
+        if (!ta) return;
+        // Collapse first so scrollHeight reflects content height, not the
+        // currently-set style.height.
+        ta.style.height = 'auto';
+        const MIN = 38, MAX = 320;
+        const next = Math.max(MIN, Math.min(MAX, ta.scrollHeight));
+        ta.style.height = next + 'px';
+      },
+
       showTypingIndicator() {
         const indicatorDiv = document.createElement('div');
         indicatorDiv.className = 'msg assistant';
@@ -2964,6 +2982,7 @@
         Logger.info(`Appended user message: "${typed}" (+${previews.length} attachment(s))`);
         this.appendMessage('user', typed, false, previews);
         DOM.messageInput.value = '';
+        this.autoGrowMessageInput(); // snap back to the one-line floor after send
         Attachments.clear();
         DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
 
@@ -3604,6 +3623,8 @@
         ChatEngine.handleSubmit(e);
       }
     });
+    // Auto-grow on every content change: typing, deleting, IME composition.
+    DOM.messageInput.addEventListener('input', () => ChatEngine.autoGrowMessageInput());
     // Markdown links must never navigate the webview in place (that would replace the
     // moon UI). preventDefault() keeps the widget intact; window.open is best-effort
     // (no opener/shell plugin is installed, so external open may be a no-op — that's fine).
@@ -3634,6 +3655,7 @@
 
     // Paste an image straight into the composer (e.g. a screenshot).
     DOM.messageInput.addEventListener('paste', (e) => {
+      queueMicrotask(() => ChatEngine.autoGrowMessageInput());
       const cd = e.clipboardData;
       if (!cd) return;
       const imageFiles = Array.from(cd.items)

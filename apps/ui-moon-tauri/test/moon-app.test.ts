@@ -831,5 +831,43 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(chat.children.length).toBe(1)
       expect((chat.children[0] as HTMLElement).classList.contains('tool-call-card')).toBe(true)
     })
+
+    // ── Textarea auto-grow ────────────────────────────────────────────────
+    it('Scenario: autoGrowMessageInput grows the textarea to fit multi-line content (jsdom-driven scrollHeight)', () => {
+      const { autoGrowMessageInput } = internals() as any
+      const ta = document.getElementById('message-input') as HTMLTextAreaElement
+      expect(ta).not.toBeNull()
+      // jsdom's scrollHeight is read-only and reflects the textarea's intrinsic
+      // content size; we don't get real layout, so we monkey-patch a stable
+      // scrollHeight to drive the helper. This exercises the clamp logic.
+      Object.defineProperty(ta, 'scrollHeight', { configurable: true, get: () => 120 })
+      autoGrowMessageInput()
+      expect(ta.style.height).toBe('120px')
+    })
+
+    it('Scenario: autoGrowMessageInput clamps to the 320px max (long content scrolls inside)', () => {
+      const { autoGrowMessageInput } = internals() as any
+      const ta = document.getElementById('message-input') as HTMLTextAreaElement
+      Object.defineProperty(ta, 'scrollHeight', { configurable: true, get: () => 999 })
+      autoGrowMessageInput()
+      expect(ta.style.height).toBe('320px')
+    })
+
+    it('Scenario: autoGrowMessageInput snaps to the 38px floor when content is short / empty', () => {
+      const { autoGrowMessageInput } = internals() as any
+      const ta = document.getElementById('message-input') as HTMLTextAreaElement
+      Object.defineProperty(ta, 'scrollHeight', { configurable: true, get: () => 10 })
+      autoGrowMessageInput()
+      expect(ta.style.height).toBe('38px')
+    })
+
+    it('Scenario: typing into the textarea (input event) triggers auto-grow', () => {
+      const ta = document.getElementById('message-input') as HTMLTextAreaElement
+      // Drive autoGrow via the bound input event (proves the listener is wired).
+      Object.defineProperty(ta, 'scrollHeight', { configurable: true, get: () => 85 })
+      ta.value = 'line1\nline2\nline3'
+      ta.dispatchEvent(new Event('input', { bubbles: true }))
+      expect(ta.style.height).toBe('85px')
+    })
   })
 })
