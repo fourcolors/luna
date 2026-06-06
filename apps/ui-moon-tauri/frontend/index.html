@@ -1428,7 +1428,7 @@
       // build they're talking to.
       CLIENT_INFO: {
         name: 'luna-moon',
-        version: '0.0.9',
+        version: '0.0.10',
         platform: 'tauri-darwin',
       },
     };
@@ -1912,18 +1912,18 @@
         this.clearTurnTimeout();
         State.turnTimeout = setTimeout(() => {
           State.turnTimeout = null;
-          // Self-suppress on the typing-dots, NOT on activeTurnId: the dots are
-          // shown the instant a message is sent (handleSubmit), whereas
-          // activeTurnId is only set once the FIRST assistant-delta arrives — so
-          // a server that hangs without streaming a single token (the exact case
-          // this watchdog exists to catch) still has activeTurnId === null. If
-          // the dots are gone, the turn already resolved and we stay silent.
-          const last = DOM.chatMessages.lastElementChild;
-          if (!last || !last.querySelector('.typing-dots')) return;
+          // Self-suppress unless the pending-assistant placeholder is still
+          // active. activeTurnId is set on the FIRST assistant-delta — a server
+          // that hangs without ever streaming a token (the exact case this
+          // watchdog exists to catch) still has activeTurnId === null but DOES
+          // have a pending-assistant turn in ChatState. Once the placeholder
+          // has been claimed by a real turn (assistant-delta arrived) we leave
+          // any in-flight rendering alone.
+          if (!ChatState._findPending() && !State.activeTurnId) return;
           State.activeTurnId = null;
-          last.remove();
-          ChatEngine.appendMessage('assistant', '⚠️ No response from the server — try again.');
-          DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+          ChatState.dropPendingAssistant();
+          ChatState.appendBanner('⚠️ No response from the server — try again.');
+          ChatLoop.flush();
         }, 90000);
       },
 
@@ -2021,154 +2021,73 @@
             }
             break;
 
-          case 'thread-snapshot':
-            // Clear current messages and load snapshot
-            DOM.chatMessages.innerHTML = '';
-            if (frame.messages && frame.messages.length > 0) {
-              for (const msg of frame.messages) {
-                // Skip empty/whitespace-only messages — server-side history
-                // can include tool-only assistant turns with no visible text,
-                // and rendering them as empty bubbles is the bug we're fixing.
-                if (!msg.text || !String(msg.text).trim()) continue;
-                ChatEngine.appendMessage(msg.role, msg.text, msg.role === 'assistant');
-              }
-            } else {
-              ChatEngine.appendMessage('assistant', 'This thread is empty. Type a message below to start chatting!');
+          case 'thread-snapshot': {
+            // Whole-history replay from the server. Build state from scratch
+            // and flush a single render — ChatRenderer reconciles the entire
+            // chat-messages container against ChatState in one pass.
+            ChatState.reset();
+            ChatState.loadHistory(frame.messages || []);
+            if (ChatState.turns.length === 0) {
+              ChatState.appendBanner('This thread is empty. Type a message below to start chatting!');
             }
-            DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
-            // Thread is live — (re)advertise our local-shell scope for it.
+            ChatLoop.flush();
             LocalShell.sendCapability();
             break;
+          }
 
           case 'local-shell-request':
             LocalShell.handleRequest(frame);
             break;
 
           case 'assistant-delta': {
-            // Stream markdown live, one render per animation frame.
-            // The bubble carries `data-stream-raw` as the accumulated
-            // source-of-truth; StreamRender re-parses it through
-            // renderMarkdownStreaming() (closeOpenFences + renderMarkdown)
-            // so partial code fences stay formatted as code instead of
-            // flickering between code and prose as the closer arrives.
+            // Append delta to the active assistant turn. The reducer creates
+            // a fresh text segment if the last segment is a closed text or a
+            // tool card; otherwise it extends the in-progress text segment.
+            // The renderer paints the result on the next animation frame.
             State.activeTurnId = frame.turnId;
             this.startTurnTimeout();
-            let lastMsg = DOM.chatMessages.lastElementChild;
-
-            // Re-use the tail only if it's a streaming TEXT bubble. tool-call
-            // cards are also .msg.assistant but their inner <details>/<summary>
-            // structure must not be overwritten by StreamRender — when text
-            // deltas follow a tool result, we open a fresh text bubble instead.
-            const canReuse = lastMsg
-              && lastMsg.classList.contains('assistant')
-              && !lastMsg.classList.contains('tool-call-card');
-
-            if (canReuse) {
-              if (lastMsg.querySelector('.typing-dots')) {
-                // First delta of the turn — drop the typing dots and seed
-                // the streaming buffer with the initial delta text. Guard:
-                // empty frame.text would strip the dots and leave a
-                // permanently empty bubble; leave the dots until real text.
-                if (!frame.text) break;
-                lastMsg.innerHTML = '';
-                lastMsg.dataset.turnId = String(frame.turnId || '');
-                StreamRender.reset(lastMsg, frame.text);
-              } else {
-                StreamRender.append(lastMsg, frame.text);
-              }
-            } else {
-              // Either no last assistant bubble, OR the last one is a tool
-              // card (so subsequent text starts a new text bubble after it).
-              // Guard: empty frame.text would make a perma-empty bubble.
-              if (!frame.text) break;
-              ChatEngine.appendMessage('assistant', '');
-              const fresh = DOM.chatMessages.lastElementChild;
-              fresh.dataset.turnId = String(frame.turnId || '');
-              StreamRender.reset(fresh, frame.text);
-            }
-            DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+            ChatState.applyDelta(frame.turnId, frame.text || '');
+            ChatLoop.schedule();
             break;
           }
 
           case 'assistant-done': {
-            // Finalize streaming turn. StreamRender.finalize cancels any
-            // pending rAF render and writes the canonical text so a late
-            // frame can't clobber the final state.
-            const doneTurnId = State.activeTurnId;
-            State.activeTurnId = null;
+            // Finalize the active turn. flush() forces an immediate render so
+            // a still-pending rAF frame can't overwrite the closed state.
             this.clearTurnTimeout();
-            let doneMsg = DOM.chatMessages.lastElementChild;
-            if (doneMsg && doneMsg.classList.contains('assistant') && doneMsg.querySelector('.typing-dots')) {
-              if (frame.message && frame.message.text) {
-                // Zero-delta path: typing dots straight to done.
-                StreamRender.finalize(doneMsg, frame.message.text);
-              } else {
-                doneMsg.remove();
-              }
-            } else if (doneMsg && doneMsg.classList.contains('assistant') && !doneMsg.classList.contains('tool-call-card')) {
-              // Did this turn include any tool calls?
-              // If so, frame.message.text is the canonical FULL message text
-              // (incl. all segments split across tool calls). Earlier text
-              // bubbles in the turn already hold the earlier segments, so
-              // overwriting THIS bubble with the full canonical would
-              // duplicate everything visible above. Use the bubble's own
-              // streamRaw instead — that's just this segment's text.
-              let hasToolCallsInTurn = false;
-              if (doneTurnId) {
-                const allCards = DOM.chatMessages.querySelectorAll('.tool-call-card');
-                for (const c of allCards) {
-                  if (c.dataset.turnId === String(doneTurnId)) { hasToolCallsInTurn = true; break; }
-                }
-              }
-              if (hasToolCallsInTurn) {
-                StreamRender.finalize(doneMsg, doneMsg.dataset.streamRaw ?? doneMsg.textContent);
-              } else if (frame.message) {
-                StreamRender.finalize(doneMsg, frame.message.text ?? (doneMsg.dataset.streamRaw ?? doneMsg.textContent));
-              }
-            }
-            // ALWAYS sweep trailing visually-empty assistant bubbles.
-            ChatEngine.sweepTrailingEmptyAssistantBubbles();
-            DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+            const doneTurnId = frame.turnId || State.activeTurnId;
+            State.activeTurnId = null;
+            ChatState.finishTurn(doneTurnId, frame.message ? frame.message.text : null);
+            ChatLoop.flush();
             break;
           }
 
-          case 'assistant-error':
-            State.activeTurnId = null;
+          case 'assistant-error': {
             this.clearTurnTimeout();
-            // Remove typing indicator if any
-            let lastMsg = DOM.chatMessages.lastElementChild;
-            if (lastMsg && lastMsg.querySelector('.typing-dots')) {
-              lastMsg.remove();
-            }
-            // Also sweep any trailing empty assistant bubbles from a partial
-            // stream that errored before producing content.
-            ChatEngine.sweepTrailingEmptyAssistantBubbles();
-            ChatEngine.appendMessage('assistant', `⚠️ Error: ${frame.error.message}`);
-            DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+            const errTurnId = frame.turnId || State.activeTurnId;
+            State.activeTurnId = null;
+            ChatState.failTurn(errTurnId, frame.error && frame.error.message);
+            ChatLoop.flush();
             break;
+          }
 
           case 'tool-call': {
-            // A tool the assistant is invoking. Render an inline collapsible
-            // card with its name + JSON input. A later tool-result frame with
-            // the same toolCallId attaches the output panel.
-            // If the tail is a typing-dots-only bubble, drop it — the dots
-            // claimed "still thinking", but visible work has started.
-            const tail = DOM.chatMessages.lastElementChild;
-            if (tail && tail.classList.contains('assistant') && tail.querySelector('.typing-dots') && tail.children.length === 1) {
-              tail.remove();
-            }
-            ChatEngine.appendToolCallCard(frame);
-            DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+            // Tool the assistant is invoking. Reducer appends a tool segment
+            // to the active turn (closing any open text segment first).
+            ChatState.applyToolCall(frame.turnId, frame.toolCallId, frame.name, frame.input);
+            ChatLoop.schedule();
             break;
           }
 
           case 'tool-result': {
-            // Pair with the previously-emitted tool-call (by toolCallId) and
-            // attach the result panel inside its card. If no matching card is
-            // found (e.g. the tool-call frame was missed), silently drop —
-            // there's nothing to render against.
-            ChatEngine.attachToolResult(frame);
-            DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+            // Pair with the previously-emitted tool-call by toolCallId.
+            ChatState.applyToolResult(
+              frame.toolCallId,
+              frame.status === 'ok',
+              frame.output,
+              frame.truncated
+            );
+            ChatLoop.schedule();
             break;
           }
 
@@ -2350,21 +2269,20 @@
      * (used by assistant-done so the final canonical text wins the race
      * against a still-pending frame).
      */
+    // StandaloneBubbleStream — markdown streaming for a single arbitrary
+    // DOM element. After the thread-state refactor, production rendering
+    // goes through ChatState + ChatRenderer; this helper exists only so the
+    // pure-render test suite (and any future ad-hoc UI) can stream markdown
+    // into a free-standing <div>. Each call coalesces via rAF; finalize()
+    // cancels any pending frame and writes canonical text.
     const StreamRender = {
       schedule(bubble) {
         if (!bubble) return;
-        if (bubble.dataset.streamFrame) return; // already pending this frame
-        // Mark the bubble as having a scheduled frame BEFORE calling rAF
-        // so the in-flight flag is correct from both directions: the rAF
-        // callback can clear it (real browser, callback fires next frame),
-        // AND a test that runs rAF callbacks synchronously still observes
-        // a consistent state. The provisional 'pending' value is replaced
-        // with the actual frame id, unless the callback already cleared
-        // it (synchronous-rAF mock path).
+        if (bubble.dataset.streamFrame) return;
         bubble.dataset.streamFrame = 'pending';
         const id = requestAnimationFrame(() => {
           delete bubble.dataset.streamFrame;
-          const raw = bubble.dataset.streamRaw ?? '';
+          const raw = bubble.dataset.streamRaw != null ? bubble.dataset.streamRaw : '';
           bubble.innerHTML = renderMarkdownStreaming(raw);
         });
         if (bubble.dataset.streamFrame === 'pending') {
@@ -2378,21 +2296,22 @@
       },
       append(bubble, delta) {
         if (!bubble) return;
-        bubble.dataset.streamRaw = (bubble.dataset.streamRaw ?? '') + delta;
+        bubble.dataset.streamRaw = (bubble.dataset.streamRaw != null ? bubble.dataset.streamRaw : '') + String(delta || '');
         this.schedule(bubble);
       },
       reset(bubble, text) {
         if (!bubble) return;
-        bubble.dataset.streamRaw = text ?? '';
+        bubble.dataset.streamRaw = text != null ? text : '';
         this.schedule(bubble);
       },
       finalize(bubble, finalText) {
         if (!bubble) return;
         this.cancel(bubble);
         delete bubble.dataset.streamRaw;
-        bubble.innerHTML = renderMarkdown(finalText ?? '');
+        bubble.innerHTML = renderMarkdown(finalText != null ? finalText : '');
       },
     };
+
 
     // Test-only hook: expose the streaming-render helpers under a single
     // namespace so jsdom tests can unit-exercise closeOpenFences /
@@ -2747,51 +2666,456 @@
     /**
      * Chat Messaging & WebSocket submission engine.
      */
-    const ChatEngine = {
-      // render=true renders Markdown into the bubble (assistant only); default
-      // stays plain textContent so user messages + status/error strings remain
-      // literal. previews (optional) appends a tray of attachment thumbnails.
-      // True when an assistant bubble carries nothing the operator could read:
-      // no textContent (after trim) and no rich blocks. Treats typing-dots and
-      // tool-call-cards as NOT empty (they're visible work indicators); used
-      // by the sweep to GC text-only empty bubbles without nuking adjacent
-      // tool work or in-flight turns.
-      isVisuallyEmpty(bubble) {
-        if (!bubble) return false;
-        // A tool-call-card is itself a content node — sweep should leave it.
-        if (bubble.classList && bubble.classList.contains('tool-call-card')) return false;
-        if (bubble.textContent && bubble.textContent.trim().length > 0) return false;
-        if (bubble.querySelector('img, pre, table, ul, ol, a, .attachments-strip, .typing-dots, .tool-call-card')) return false;
-        return true;
+
+    // ========================================================================
+    // CHAT MODEL  ─  source-of-truth turn/segment data structure.
+    //
+    // Before the moon-thread-state refactor, the renderer used the DOM itself
+    // as the source-of-truth (data-stream-raw on bubbles, tail-walking to find
+    // the "last assistant text bubble that isn't a tool-card", three different
+    // paths inside assistant-done to reconstruct final text). That worked but
+    // every new turn shape needed a new branch, and racy paths re-emerged
+    // each time the wire protocol gained a frame variant.
+    //
+    // The new design splits concerns:
+    //
+    //   wire frames -> ChatState (pure reducer) -> ChatRenderer (pure DOM diff)
+    //
+    // ChatState owns Turn[] (user + assistant + system banner). It exposes
+    // small methods for each kind of update (applyDelta, applyToolCall,
+    // applyToolResult, finishTurn, failTurn, appendUser, appendBanner,
+    // beginPendingAssistant). It never touches the DOM.
+    //
+    // ChatRenderer reads ChatState.turns and reconciles them against the
+    // chat-messages container. It's the ONLY code that writes to that
+    // container. Each turn carries a stable `key`; the renderer matches
+    // existing DOM children by `data-turn-key`, removes orphans, and updates
+    // the rest in place.
+    //
+    // ChatLoop coalesces multiple state updates into one rAF-deferred render.
+    // assistant-delta calls schedule(); assistant-done calls flush() so a
+    // pending frame can't overwrite the final canonical state.
+    // ========================================================================
+    // Minimal CSS attribute-value escaper for selectors built from
+    // server-provided ids. ".tool-call-card[data-tool-call-id="${esc(id)}"]" is
+    // safe against quote / backslash injection. We avoid window.CSS.escape
+    // because tauri's older WebKit on some macOS versions doesn't expose it.
+    function CSS_escape(s) {
+      // Escape backslash and double-quote so the value embeds safely
+      // inside [data-attr="..."] attribute selectors.
+      return String(s).replace(/["\\]/g, '\\$&');
+    }
+
+    const ChatState = {
+      turns: [],
+      // Turn shape:
+      //   { key, role: 'user' | 'assistant', status: 'streaming' | 'done' | 'error' | 'banner',
+      //     segments: Segment[], previews?, turnId?, fullText?, errorText? }
+      // Segment shape:
+      //   { kind: 'text', raw: string, done: boolean }
+      //   { kind: 'tool', id: string, name: string, input: any, result?: {ok,output,truncated} | null }
+
+      reset() {
+        this.turns = [];
       },
 
-      // Walk backward from the tail of the chat-messages list and remove any
-      // trailing assistant bubble that isVisuallyEmpty considers empty. Stops
-      // at the first non-empty assistant bubble OR any non-assistant bubble
-      // (user msg, tool-call-card, etc.). Idempotent.
-      sweepTrailingEmptyAssistantBubbles() {
-        let tail = DOM.chatMessages.lastElementChild;
-        while (
-          tail && tail.classList &&
-          tail.classList.contains('assistant') &&
-          !tail.classList.contains('tool-call-card') &&  // tool cards aren't 'empty assistant text'
-          this.isVisuallyEmpty(tail)
-        ) {
-          const prev = tail.previousElementSibling;
-          tail.remove();
-          tail = prev;
+      loadHistory(messages) {
+        this.turns = [];
+        if (!Array.isArray(messages)) return;
+        let i = 0;
+        for (const msg of messages) {
+          // Skip empty/whitespace-only messages — server-side history can
+          // include tool-only assistant turns with no visible text.
+          if (!msg || !msg.text || !String(msg.text).trim()) continue;
+          this.turns.push({
+            key: 'h-' + (i++),
+            role: msg.role === 'user' ? 'user' : 'assistant',
+            status: 'done',
+            segments: [{ kind: 'text', raw: String(msg.text), done: true }],
+            previews: null,
+          });
         }
       },
 
-      // Render one tool-call card in the chat. Pure DOM construction (no
-      // innerHTML with interpolated payload — name/input come from the
-      // server but we treat them as untrusted text and escape via textContent
-      // / pre.textContent). Returns the card element.
-      appendToolCallCard(frame) {
-        const card = document.createElement('div');
-        card.className = 'msg assistant tool-call-card';
-        card.dataset.toolCallId = String(frame.toolCallId || '');
-        card.dataset.turnId = String(frame.turnId || '');
+      appendUser(text, previews) {
+        const t = String(text ?? '');
+        this.turns.push({
+          key: 'u-' + Date.now() + '-' + this.turns.length,
+          role: 'user',
+          status: 'done',
+          segments: t ? [{ kind: 'text', raw: t, done: true }] : [],
+          previews: previews || null,
+        });
+      },
+
+      appendBanner(text) {
+        const t = String(text ?? '');
+        this.turns.push({
+          key: 'b-' + Date.now() + '-' + this.turns.length,
+          role: 'assistant',
+          status: 'banner',
+          segments: t ? [{ kind: 'text', raw: t, done: true }] : [],
+          previews: null,
+        });
+      },
+
+      // Insert a pending streaming-turn placeholder. Renderer shows typing
+      // dots when the tail is a streaming turn with zero text content. On the
+      // first assistant-delta with a real turnId, beginAssistantTurn() upgrades
+      // the placeholder by writing its real key.
+      beginPendingAssistant() {
+        const tail = this.turns[this.turns.length - 1];
+        if (tail && tail.key === 'pending-assistant') return tail;
+        const t = {
+          key: 'pending-assistant',
+          role: 'assistant',
+          status: 'streaming',
+          segments: [],
+          turnId: '',
+          previews: null,
+        };
+        this.turns.push(t);
+        return t;
+      },
+
+      beginAssistantTurn(turnId) {
+        // If there's a pending placeholder, claim it.
+        if (turnId) {
+          const tail = this.turns[this.turns.length - 1];
+          if (tail && tail.key === 'pending-assistant') {
+            tail.key = 't-' + turnId;
+            tail.turnId = String(turnId);
+            return tail;
+          }
+        }
+        // Otherwise find an existing matching turn.
+        const existing = this._findTurn(turnId);
+        if (existing) return existing;
+        // Or create a new one.
+        const t = {
+          key: turnId ? 't-' + turnId : 'pending-assistant',
+          role: 'assistant',
+          status: 'streaming',
+          segments: [],
+          turnId: String(turnId || ''),
+          previews: null,
+        };
+        this.turns.push(t);
+        return t;
+      },
+
+      applyDelta(turnId, text) {
+        if (!text) return;
+        const turn = this.beginAssistantTurn(turnId);
+        const last = turn.segments[turn.segments.length - 1];
+        if (last && last.kind === 'text' && !last.done) {
+          last.raw += text;
+        } else {
+          turn.segments.push({ kind: 'text', raw: text, done: false });
+        }
+      },
+
+      applyToolCall(turnId, toolCallId, name, input) {
+        const turn = this.beginAssistantTurn(turnId);
+        // Close any open text segment so subsequent deltas start a fresh one.
+        for (const s of turn.segments) if (s.kind === 'text') s.done = true;
+        turn.segments.push({
+          kind: 'tool',
+          id: String(toolCallId || ''),
+          name: String(name || 'tool'),
+          input: input,
+          result: null,
+        });
+      },
+
+      applyToolResult(toolCallId, ok, output, truncated) {
+        const id = String(toolCallId || '');
+        if (!id) return;
+        for (const turn of this.turns) {
+          for (const seg of turn.segments) {
+            if (seg.kind === 'tool' && seg.id === id) {
+              seg.result = {
+                ok: !!ok,
+                output: String(output ?? ''),
+                truncated: !!truncated,
+              };
+              return;
+            }
+          }
+        }
+      },
+
+      finishTurn(turnId, fullText) {
+        const turn = this._findTurn(turnId) || this._findPending();
+        if (!turn) return;
+        // Close all open text segments.
+        for (const s of turn.segments) if (s.kind === 'text') s.done = true;
+        // Drop the turn entirely if it has no visible content (zero text + zero tools).
+        // This replaces sweepTrailingEmptyAssistantBubbles.
+        if (turn.segments.length === 0) {
+          const idx = this.turns.indexOf(turn);
+          if (idx >= 0) this.turns.splice(idx, 1);
+          return;
+        }
+        turn.status = 'done';
+        if (fullText != null) turn.fullText = String(fullText);
+      },
+
+      failTurn(turnId, errorText) {
+        let turn = this._findTurn(turnId) || this._findPending();
+        if (!turn) {
+          // No active turn — push a fresh error turn so the operator sees it.
+          turn = {
+            key: 'err-' + Date.now() + '-' + this.turns.length,
+            role: 'assistant',
+            status: 'error',
+            segments: [],
+            turnId: '',
+            previews: null,
+          };
+          this.turns.push(turn);
+        }
+        for (const s of turn.segments) if (s.kind === 'text') s.done = true;
+        turn.status = 'error';
+        turn.errorText = String(errorText || 'Unknown error');
+      },
+
+      // Remove a pending-assistant placeholder if present. Used by the
+      // turn-timeout watchdog to clear stuck "luna is thinking" dots before
+      // appending its "no response" banner.
+      dropPendingAssistant() {
+        const tail = this.turns[this.turns.length - 1];
+        if (tail && tail.key === 'pending-assistant') {
+          this.turns.pop();
+          return true;
+        }
+        return false;
+      },
+
+      _findTurn(turnId) {
+        if (!turnId) return null;
+        const key = 't-' + turnId;
+        for (let i = this.turns.length - 1; i >= 0; i--) {
+          if (this.turns[i].key === key) return this.turns[i];
+        }
+        return null;
+      },
+
+      _findPending() {
+        const tail = this.turns[this.turns.length - 1];
+        if (tail && tail.key === 'pending-assistant') return tail;
+        return null;
+      },
+    };
+
+    // ========================================================================
+    // CHAT RENDERER  ─  pure DOM diff from ChatState. The ONLY writer to
+    // #chat-messages. Idempotent: render(root) twice in a row is a no-op.
+    // ========================================================================
+    // ========================================================================
+    // CHAT RENDERER  ─  pure DOM diff from ChatState. The ONLY writer to
+    // #chat-messages. Idempotent: render(root) twice in a row is a no-op.
+    //
+    // Each item in ChatState produces ONE OR MORE sibling children under the
+    // chat-messages container, keyed by `data-msg-key`:
+    //
+    //   * user turn         -> 1 child  (.msg.user)
+    //   * banner            -> 1 child  (.msg.assistant)
+    //   * error             -> 1 child  (.msg.assistant)
+    //   * streaming/empty   -> 1 child  (typing dots, .msg.assistant)
+    //   * text segment      -> 1 child  (.msg.assistant, markdown body)
+    //   * tool segment      -> 1 child  (.msg.assistant.tool-call-card)
+    //
+    // The renderer matches existing DOM children by `data-msg-key` and reuses
+    // them when present, so the typing-dots->first-text transition happens
+    // in place (no flicker) and tool cards keep their <details> open state
+    // across re-renders.
+    // ========================================================================
+    const ChatRenderer = {
+      render(root) {
+        const wanted = this._plan();
+        const wantedKeys = new Set();
+        for (const w of wanted) wantedKeys.add(w.key);
+
+        // 1. Drop orphan children.
+        for (let i = root.children.length - 1; i >= 0; i--) {
+          const child = root.children[i];
+          const key = child.dataset ? child.dataset.msgKey : null;
+          if (!key || !wantedKeys.has(key)) child.remove();
+        }
+
+        // 2. Reconcile in order. Reuse a node if its key matches; else
+        //    look ahead for a matching node and move it; else create one.
+        for (let i = 0; i < wanted.length; i++) {
+          const w = wanted[i];
+          let node = root.children[i];
+          if (!node || node.dataset.msgKey !== w.key) {
+            // Look ahead — maybe the right node is further down (insertion
+            // case). If found, move it. Else create.
+            let found = null;
+            for (let j = i + 1; j < root.children.length; j++) {
+              if (root.children[j].dataset && root.children[j].dataset.msgKey === w.key) {
+                found = root.children[j];
+                break;
+              }
+            }
+            if (found) {
+              root.insertBefore(found, root.children[i] || null);
+              node = found;
+            } else {
+              node = document.createElement('div');
+              node.dataset.msgKey = w.key;
+              if (i >= root.children.length) root.appendChild(node);
+              else root.insertBefore(node, root.children[i]);
+            }
+          }
+          this._paint(w, node);
+        }
+      },
+
+      // Build the desired-children intent list from ChatState.turns.
+      _plan() {
+        const out = [];
+        for (const turn of ChatState.turns) {
+          if (turn.role === 'user') {
+            out.push({ key: turn.key + '|u', kind: 'user', turn: turn, seg: null });
+            continue;
+          }
+          if (turn.status === 'banner') {
+            out.push({ key: turn.key + '|b', kind: 'banner', turn: turn, seg: null });
+            continue;
+          }
+          if (turn.status === 'error') {
+            out.push({ key: turn.key + '|e', kind: 'error', turn: turn, seg: null });
+            continue;
+          }
+          // Assistant: streaming or done.
+          if (turn.segments.length === 0) {
+            // Streaming with no segments yet -> typing dots.
+            out.push({ key: turn.key + '|typing', kind: 'typing', turn: turn, seg: null });
+            continue;
+          }
+          for (let i = 0; i < turn.segments.length; i++) {
+            const seg = turn.segments[i];
+            if (seg.kind === 'text') {
+              out.push({ key: turn.key + '|t' + i, kind: 'text', turn: turn, seg: seg });
+            } else {
+              out.push({ key: turn.key + '|k' + (seg.id || i), kind: 'tool', turn: turn, seg: seg });
+            }
+          }
+        }
+        return out;
+      },
+
+      _paint(w, node) {
+        // Compute desired className.
+        let cls;
+        switch (w.kind) {
+          case 'user':    cls = 'msg user'; break;
+          case 'banner':  cls = 'msg assistant'; break;
+          case 'error':   cls = 'msg assistant error'; break;
+          case 'typing':  cls = 'msg assistant'; break;
+          case 'text':    cls = 'msg assistant'; break;
+          case 'tool':    cls = 'msg assistant tool-call-card'; break;
+        }
+        if (node.className !== cls) node.className = cls;
+
+        // Carry turn-id and turn-key on the node so legacy DOM consumers
+        // (and tests) can correlate sibling children back to their turn.
+        const turnId = w.turn && w.turn.turnId ? String(w.turn.turnId) : '';
+        if (turnId && node.dataset.turnId !== turnId) node.dataset.turnId = turnId;
+
+        // Signature check — skip work if visible content is unchanged.
+        const sig = this._sigOf(w);
+        if (node.dataset.sig === sig) return;
+        node.dataset.sig = sig;
+
+        switch (w.kind) {
+          case 'user':    return this._paintUser(w, node);
+          case 'banner':  return this._paintBanner(w, node);
+          case 'error':   return this._paintError(w, node);
+          case 'typing':  return this._paintTyping(node);
+          case 'text':    return this._paintText(w, node);
+          case 'tool':    return this._paintTool(w, node);
+        }
+      },
+
+      _sigOf(w) {
+        const t = w.turn;
+        if (w.kind === 'user') {
+          let text = '';
+          for (const s of t.segments) if (s.kind === 'text') text += s.raw;
+          return 'U|' + text + '|' + (t.previews ? t.previews.length : 0);
+        }
+        if (w.kind === 'banner') {
+          let text = '';
+          for (const s of t.segments) if (s.kind === 'text') text += s.raw;
+          return 'B|' + text;
+        }
+        if (w.kind === 'error') return 'E|' + (t.errorText || '');
+        if (w.kind === 'typing') return 'TYP';
+        if (w.kind === 'text') return 'T|' + (w.seg.done ? '1' : '0') + '|' + w.seg.raw;
+        // tool
+        const s = w.seg;
+        let inputSig;
+        try { inputSig = JSON.stringify(s.input); } catch (_) { inputSig = String(s.input); }
+        if (s.result) {
+          return 'K|' + s.id + '|' + s.name + '|' + inputSig + '|R|'
+            + (s.result.ok ? '1' : '0') + '|' + s.result.output
+            + '|' + (s.result.truncated ? '1' : '0');
+        }
+        return 'K|' + s.id + '|' + s.name + '|' + inputSig + '|P';
+      },
+
+      _paintUser(w, node) {
+        node.textContent = '';
+        let text = '';
+        for (const s of w.turn.segments) if (s.kind === 'text') text += s.raw;
+        if (text) node.appendChild(document.createTextNode(text));
+        if (w.turn.previews && w.turn.previews.length) {
+          node.appendChild(this._buildPreviewTray(w.turn.previews, !!text));
+        }
+      },
+
+      _paintBanner(w, node) {
+        // Banner text is plain — no markdown — so the operator can read e.g.
+        // "Connection lost — try again." literally.
+        node.textContent = '';
+        let text = '';
+        for (const s of w.turn.segments) if (s.kind === 'text') text += s.raw;
+        if (text) node.appendChild(document.createTextNode(text));
+      },
+
+      _paintError(w, node) {
+        node.textContent = '⚠️ Error: ' + (w.turn.errorText || '');
+      },
+
+      _paintTyping(node) {
+        node.innerHTML = '<div class="typing-dots">'
+          + '<div class="dot"></div>'
+          + '<div class="dot"></div>'
+          + '<div class="dot"></div>'
+          + '</div>';
+      },
+
+      _paintText(w, node) {
+        const seg = w.seg;
+        const fn = seg.done ? renderMarkdown : renderMarkdownStreaming;
+        node.innerHTML = fn(seg.raw);
+        // Legacy hook: mirror the raw stream text to a dataset attribute so
+        // anything (tests, the old protocol's `data-stream-raw` snoops) can
+        // still read it. Authoritative source is ChatState.
+        node.dataset.streamRaw = seg.raw;
+      },
+
+      _paintTool(w, node) {
+        // The bubble itself plays the role of the old `tool-call-card`. We
+        // build a fresh <details> tree each render — cheap, and lets the
+        // operator's <details open> choice reset on result-arrival (which is
+        // the right UX: the result is the interesting moment).
+        const seg = w.seg;
+        node.textContent = '';
+        if (seg.id) node.dataset.toolCallId = seg.id;
 
         const details = document.createElement('details');
         const summary = document.createElement('summary');
@@ -2808,12 +3132,21 @@
 
         const name = document.createElement('span');
         name.className = 'tool-card-name';
-        name.textContent = String(frame.name || 'tool');
+        name.textContent = seg.name;
         summary.appendChild(name);
 
         const status = document.createElement('span');
-        status.className = 'tool-card-status tool-card-status-pending';
-        status.textContent = '…';
+        status.className = 'tool-card-status';
+        if (!seg.result) {
+          status.classList.add('tool-card-status-pending');
+          status.textContent = '…';
+        } else if (seg.result.ok) {
+          status.classList.add('tool-card-status-ok');
+          status.textContent = '✓';
+        } else {
+          status.classList.add('tool-card-status-error');
+          status.textContent = '✗';
+        }
         summary.appendChild(status);
 
         details.appendChild(summary);
@@ -2828,152 +3161,176 @@
 
         const input = document.createElement('pre');
         input.className = 'tool-card-input';
-        try {
-          input.textContent = JSON.stringify(frame.input, null, 2);
-        } catch (_) {
-          input.textContent = String(frame.input);
-        }
+        try { input.textContent = JSON.stringify(seg.input, null, 2); }
+        catch (_) { input.textContent = String(seg.input); }
         body.appendChild(input);
 
-        // Result panel is appended on tool-result; reserve no node here.
-        details.appendChild(body);
-        card.appendChild(details);
+        if (seg.result) {
+          const rLabel = document.createElement('div');
+          rLabel.className = 'tool-card-section-label';
+          rLabel.textContent = 'result';
+          body.appendChild(rLabel);
 
-        DOM.chatMessages.appendChild(card);
-        return card;
+          const output = document.createElement('pre');
+          output.className = 'tool-card-output';
+          output.textContent = seg.result.output;
+          body.appendChild(output);
+
+          if (seg.result.truncated) {
+            const trunc = document.createElement('div');
+            trunc.className = 'tool-card-truncated';
+            trunc.textContent = '(output truncated)';
+            body.appendChild(trunc);
+          }
+        }
+
+        details.appendChild(body);
+        node.appendChild(details);
       },
 
-      // Attach a result panel to the matching tool-call card. CSS-escapes the
-      // id since it comes from the server (lookup is via attribute selector).
+      _buildPreviewTray(previews, hasText) {
+        const tray = document.createElement('div');
+        tray.className = 'attachments-strip';
+        tray.hidden = false;
+        tray.style.marginTop = hasText ? '8px' : '0';
+        for (const p of previews) {
+          const chip = document.createElement('div');
+          chip.className = 'attachment-chip';
+          if (p.kind === 'image' && p.src) {
+            const img = document.createElement('img');
+            img.className = 'att-thumb';
+            img.src = p.src;
+            img.alt = p.name;
+            chip.appendChild(img);
+          } else {
+            const icon = document.createElement('span');
+            icon.className = 'att-icon';
+            icon.textContent = (p.name.split('.').pop() || 'file').slice(0, 4);
+            chip.appendChild(icon);
+          }
+          const name = document.createElement('span');
+          name.className = 'att-name';
+          name.textContent = p.name;
+          chip.appendChild(name);
+          tray.appendChild(chip);
+        }
+        return tray;
+      },
+    };
+
+    // ========================================================================
+    // CHAT LOOP  ─  rAF-coalesced render scheduler. schedule() is idempotent
+    // within a frame; flush() forces synchronous render (used by frames where
+    // a still-pending frame could otherwise clobber final state).
+    // ========================================================================
+    const ChatLoop = {
+      _pending: 0,
+      schedule() {
+        if (this._pending) return;
+        // Sentinel-first so a synchronously-firing rAF (as used by jsdom test
+        // mocks) clears the flag before the outer assignment can stomp it.
+        this._pending = -1;
+        const id = requestAnimationFrame(() => {
+          this._pending = 0;
+          this._render();
+        });
+        // If the callback already cleared _pending (sync rAF), leave it; else
+        // record the real frame id so flush() can cancel.
+        if (this._pending === -1) this._pending = id || -1;
+      },
+      flush() {
+        if (this._pending && this._pending > 0) {
+          cancelAnimationFrame(this._pending);
+        }
+        this._pending = 0;
+        this._render();
+      },
+      _render() {
+        if (!DOM.chatMessages) return;
+        ChatRenderer.render(DOM.chatMessages);
+        DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+      },
+    };
+
+    const ChatEngine = {
+      // ----------------------------------------------------------------------
+      // Chat-bubble surface. After the thread-state refactor, this object is
+      // a thin adapter: it routes user/banner messages and tool frames into
+      // ChatState, then asks ChatLoop to render. It NO LONGER writes to the
+      // chat-messages container directly. Legacy method names are preserved
+      // so callers (and tests) don't have to change.
+      // ----------------------------------------------------------------------
+
+      // Legacy predicate. State has no concept of "visually empty" — empty
+      // turns are dropped at finishTurn time. Kept here as `false` so any
+      // remaining callers see "this bubble is not empty" and proceed.
+      isVisuallyEmpty() { return false; },
+
+      // Legacy sweep. ChatState.finishTurn already drops zero-content turns
+      // before the renderer ever paints them, so there's nothing to sweep.
+      // Kept as a no-op for backward callers.
+      sweepTrailingEmptyAssistantBubbles() {},
+
+      // Route a frame's tool-call into ChatState. Returns the newly-rendered
+      // card element (test ergonomics).
+      appendToolCallCard(frame) {
+        ChatState.applyToolCall(frame.turnId, frame.toolCallId, frame.name, frame.input);
+        ChatLoop.flush();
+        return DOM.chatMessages.querySelector(
+          '.tool-call-card[data-tool-call-id="' + CSS_escape(String(frame.toolCallId || '')) + '"]'
+        );
+      },
+
+      // Route a frame's tool-result into ChatState. Returns the now-updated
+      // card element, or null if no matching tool-call had been emitted.
       attachToolResult(frame) {
+        ChatState.applyToolResult(
+          frame.toolCallId,
+          frame.status === 'ok',
+          frame.output,
+          frame.truncated
+        );
+        ChatLoop.flush();
         const id = String(frame.toolCallId || '');
         if (!id) return null;
-        // Use [data-...="..."] with manual escaping (CSS.escape isn't always
-        // available in older WebKit; we keep this branch simple).
-        const cards = DOM.chatMessages.querySelectorAll('.tool-call-card');
-        let card = null;
-        for (const c of cards) {
-          if (c.dataset.toolCallId === id) { card = c; break; }
-        }
-        if (!card) return null;
-
-        // Flip the status pill from pending → ok / error.
-        const status = card.querySelector('.tool-card-status');
-        if (status) {
-          status.classList.remove('tool-card-status-pending');
-          if (frame.status === 'ok') {
-            status.classList.add('tool-card-status-ok');
-            status.textContent = '✓';
-          } else {
-            status.classList.add('tool-card-status-error');
-            status.textContent = '✗';
-          }
-        }
-
-        const body = card.querySelector('.tool-card-body');
-        if (!body) return card;
-
-        // Don't double-append if we already attached this result.
-        if (body.querySelector('.tool-card-output')) return card;
-
-        const resultLabel = document.createElement('div');
-        resultLabel.className = 'tool-card-section-label';
-        resultLabel.textContent = 'result';
-        body.appendChild(resultLabel);
-
-        const output = document.createElement('pre');
-        output.className = 'tool-card-output';
-        output.textContent = String(frame.output ?? '');
-        body.appendChild(output);
-
-        if (frame.truncated) {
-          const trunc = document.createElement('div');
-          trunc.className = 'tool-card-truncated';
-          trunc.textContent = '(output truncated)';
-          body.appendChild(trunc);
-        }
-
-        return card;
+        return DOM.chatMessages.querySelector(
+          '.tool-call-card[data-tool-call-id="' + CSS_escape(id) + '"]'
+        );
       },
 
+      // Append a user, assistant-banner, or system message. The fourth
+      // argument (previews) is honored for user messages.
       appendMessage(role, text, render = false, previews = null) {
-        const msgDiv = document.createElement('div');
-        msgDiv.className = `msg ${role}`;
-        if (render && role === 'assistant') {
-          msgDiv.innerHTML = renderMarkdown(text);
-        } else if (text) {
-          msgDiv.textContent = text;
+        if (role === 'user') {
+          ChatState.appendUser(text, previews);
+        } else {
+          // Assistant role here is used for banners / status lines / errors,
+          // NOT streaming assistant turns (those go through the WS handler).
+          ChatState.appendBanner(text);
         }
-        if (previews && previews.length > 0) {
-          const tray = document.createElement('div');
-          tray.className = 'attachments-strip';
-          tray.hidden = false;
-          tray.style.marginTop = text ? '8px' : '0';
-          for (const p of previews) {
-            const chip = document.createElement('div');
-            chip.className = 'attachment-chip';
-            if (p.kind === 'image' && p.src) {
-              const img = document.createElement('img');
-              img.className = 'att-thumb';
-              img.src = p.src;
-              img.alt = p.name;
-              chip.appendChild(img);
-            } else {
-              const icon = document.createElement('span');
-              icon.className = 'att-icon';
-              icon.textContent = (p.name.split('.').pop() || 'file').slice(0, 4);
-              chip.appendChild(icon);
-            }
-            const name = document.createElement('span');
-            name.className = 'att-name';
-            name.textContent = p.name;
-            chip.appendChild(name);
-            tray.appendChild(chip);
-          }
-          msgDiv.appendChild(tray);
-        }
-        DOM.chatMessages.appendChild(msgDiv);
-        return msgDiv;
+        ChatLoop.flush();
+        return DOM.chatMessages.lastElementChild;
       },
 
-      // Resize the message-input textarea to fit its content as the operator
-      // types, capped at the CSS max-height (320px) — past which it falls back
-      // to scrolling internally. Without this, multi-line input scrolls inside
-      // the bar instead of growing the composer, which makes editing a long
-      // message painful. Called on input, paste, and after each send (to snap
-      // back to the one-line floor).
+      // Auto-grow the message-input textarea (unchanged from pre-refactor).
       autoGrowMessageInput() {
         const ta = DOM.messageInput;
         if (!ta) return;
-        // Collapse first so scrollHeight reflects content height, not the
-        // currently-set style.height.
         ta.style.height = 'auto';
         const MIN = 38, MAX = 320;
         const next = Math.max(MIN, Math.min(MAX, ta.scrollHeight));
         ta.style.height = next + 'px';
       },
 
+      // Push a pending-assistant turn so the renderer paints typing dots
+      // immediately after the operator hits send. The first assistant-delta
+      // upgrades the placeholder into a real turn keyed by turnId.
       showTypingIndicator() {
-        const indicatorDiv = document.createElement('div');
-        indicatorDiv.className = 'msg assistant';
-        indicatorDiv.innerHTML = `
-          <div class="typing-dots">
-            <div class="dot"></div>
-            <div class="dot"></div>
-            <div class="dot"></div>
-          </div>
-        `;
-        DOM.chatMessages.appendChild(indicatorDiv);
-        DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
-        return indicatorDiv;
+        ChatState.beginPendingAssistant();
+        ChatLoop.flush();
+        return DOM.chatMessages.lastElementChild;
       },
 
-      /**
-       * Reset to a brand-new, empty conversation on the CURRENT server.
-       * Clears the visible transcript + thread state, then asks the server for
-       * a fresh thread (the 'thread-created' handler auto-subscribes). Same
-       * server, clean slate, no reconnect.
-       */
       newConversation() {
         Logger.info("Clearing conversation -> requesting a new thread");
         State.activeThreadId = null;
@@ -3787,6 +4144,18 @@
           WebSocketEngine.connect()
         }
       })
+    }
+
+    // ── Late-bound test hooks for the post-refactor modules ────────────────
+    // ChatState / ChatRenderer / ChatLoop / ChatEngine are declared further
+    // down in the script than the early __MoonInternals export. Re-attach
+    // here so jsdom tests can poke them as live bindings.
+    if (typeof window !== 'undefined') {
+      window.__MoonInternals = window.__MoonInternals || {};
+      Object.defineProperty(window.__MoonInternals, 'ChatState',    { configurable: true, get: () => ChatState });
+      Object.defineProperty(window.__MoonInternals, 'ChatRenderer', { configurable: true, get: () => ChatRenderer });
+      Object.defineProperty(window.__MoonInternals, 'ChatLoop',     { configurable: true, get: () => ChatLoop });
+      Object.defineProperty(window.__MoonInternals, 'ChatEngine',   { configurable: true, get: () => ChatEngine });
     }
   </script>
 </body>

@@ -118,11 +118,21 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
           <div class="setting-info">
             <span class="setting-label">Channel</span>
             <span class="setting-desc">Switch this moon between the stable and dev servers</span>
+            <span class="channel-error" id="channel-error" hidden=""></span>
           </div>
           <select id="channel-select" class="channel-select">
             <option value="stable">Stable</option>
             <option value="dev">Dev</option>
           </select>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">App Updates</span>
+            <span class="setting-desc">Check GitHub for a newer Luna Moon build</span>
+            <span class="update-status" id="update-status" hidden=""></span>
+          </div>
+          <button type="button" class="record-btn" id="check-update-btn">Check</button>
         </div>
 
         <div class="setting-item flex-column">
@@ -155,13 +165,36 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
     </div>
     
     <form class="chat-input-area" id="chat-form">
-      <input type="text" class="chat-input" id="message-input" placeholder="Type a message..." autocomplete="off">
-      <button type="submit" class="send-btn" aria-label="Send message">
-        <svg viewBox="0 0 24 24">
-          <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
-        </svg>
-      </button>
+      <div class="attach-error" id="attach-error" hidden=""></div>
+      <div class="attachments-strip" id="attachments-strip" hidden=""></div>
+      <!-- Machine-access popover, anchored to .chat-input-area (position:relative). -->
+      <div class="scope-menu" id="scope-menu" role="menu" aria-hidden="true">
+        <div class="scope-menu-hint">Let Luna read &amp; run anything on this Mac</div>
+        <div class="scope-menu-item" id="scope-full-access" role="menuitemcheckbox" aria-checked="false" tabindex="0">
+          <span>Full machine access</span>
+          <span class="scope-menu-check" aria-hidden="true">✓</span>
+        </div>
+      </div>
+      <div class="composer-row">
+        <input type="file" id="file-input" multiple="" hidden="">
+        <button type="button" class="scope-btn" id="scope-btn" aria-label="Machine access" title="Let Luna access this machine">+</button>
+        <button type="button" class="attach-btn" id="attach-btn" aria-label="Attach files" title="Attach files">
+          <!-- paperclip -->
+          <svg viewBox="0 0 24 24">
+            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+          </svg>
+        </button>
+        <textarea class="chat-input" id="message-input" placeholder="Type a message..." rows="1" autocomplete="off"></textarea>
+        <button type="submit" class="send-btn" aria-label="Send message">
+          <svg viewBox="0 0 24 24">
+            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
+          </svg>
+        </button>
+      </div>
     </form>
+    <!-- Drag this corner to resize the whole panel. It triggers a native window resize
+         (the window is frameless, so it has no OS resize edges of its own). -->
+    <div class="resize-grip" id="resize-grip" title="Drag to resize" aria-hidden="true"></div>
   </div>
 
   <script>/* elided for snapshot */</script>
@@ -286,11 +319,21 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
           <div class="setting-info">
             <span class="setting-label">Channel</span>
             <span class="setting-desc">Switch this moon between the stable and dev servers</span>
+            <span class="channel-error" id="channel-error" hidden=""></span>
           </div>
           <select id="channel-select" class="channel-select">
             <option value="stable">Stable</option>
             <option value="dev">Dev</option>
           </select>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">App Updates</span>
+            <span class="setting-desc">Check GitHub for a newer Luna Moon build</span>
+            <span class="update-status" id="update-status" hidden=""></span>
+          </div>
+          <button type="button" class="record-btn" id="check-update-btn">Check</button>
         </div>
 
         <div class="setting-item flex-column">
@@ -323,13 +366,36 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
     </div>
     
     <form class="chat-input-area" id="chat-form">
-      <input type="text" class="chat-input" id="message-input" placeholder="Type a message..." autocomplete="off">
-      <button type="submit" class="send-btn" aria-label="Send message">
-        <svg viewBox="0 0 24 24">
-          <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
-        </svg>
-      </button>
+      <div class="attach-error" id="attach-error" hidden=""></div>
+      <div class="attachments-strip" id="attachments-strip" hidden=""></div>
+      <!-- Machine-access popover, anchored to .chat-input-area (position:relative). -->
+      <div class="scope-menu" id="scope-menu" role="menu" aria-hidden="true">
+        <div class="scope-menu-hint">Let Luna read &amp; run anything on this Mac</div>
+        <div class="scope-menu-item" id="scope-full-access" role="menuitemcheckbox" aria-checked="false" tabindex="0">
+          <span>Full machine access</span>
+          <span class="scope-menu-check" aria-hidden="true">✓</span>
+        </div>
+      </div>
+      <div class="composer-row">
+        <input type="file" id="file-input" multiple="" hidden="">
+        <button type="button" class="scope-btn" id="scope-btn" aria-label="Machine access" title="Let Luna access this machine">+</button>
+        <button type="button" class="attach-btn" id="attach-btn" aria-label="Attach files" title="Attach files">
+          <!-- paperclip -->
+          <svg viewBox="0 0 24 24">
+            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+          </svg>
+        </button>
+        <textarea class="chat-input" id="message-input" placeholder="Type a message..." rows="1" autocomplete="off"></textarea>
+        <button type="submit" class="send-btn" aria-label="Send message">
+          <svg viewBox="0 0 24 24">
+            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
+          </svg>
+        </button>
+      </div>
     </form>
+    <!-- Drag this corner to resize the whole panel. It triggers a native window resize
+         (the window is frameless, so it has no OS resize edges of its own). -->
+    <div class="resize-grip" id="resize-grip" title="Drag to resize" aria-hidden="true"></div>
   </div>
 
   <script>/* elided for snapshot */</script>

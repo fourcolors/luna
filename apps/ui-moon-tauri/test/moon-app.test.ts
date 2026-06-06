@@ -583,116 +583,7 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
     })
 
     // ── Empty-bubble cleanup ──────────────────────────────────────────────
-    it('Scenario: isVisuallyEmpty returns true for an empty bubble', () => {
-      const isVisuallyEmpty = (internals() as any).isVisuallyEmpty
-      const bubble = document.createElement('div')
-      expect(isVisuallyEmpty(bubble)).toBe(true)
-    })
-
-    it('Scenario: isVisuallyEmpty returns true for a whitespace-only bubble', () => {
-      const isVisuallyEmpty = (internals() as any).isVisuallyEmpty
-      const bubble = document.createElement('div')
-      bubble.innerHTML = '   \n   '
-      expect(isVisuallyEmpty(bubble)).toBe(true)
-    })
-
-    it('Scenario: isVisuallyEmpty returns false for a bubble with text content', () => {
-      const isVisuallyEmpty = (internals() as any).isVisuallyEmpty
-      const bubble = document.createElement('div')
-      bubble.innerHTML = '<p>hi</p>'
-      expect(isVisuallyEmpty(bubble)).toBe(false)
-    })
-
-    it('Scenario: isVisuallyEmpty returns false for a bubble with a rich block (table/img/pre/ul/a)', () => {
-      const isVisuallyEmpty = (internals() as any).isVisuallyEmpty
-      for (const html of ['<table></table>', '<img src="x">', '<pre></pre>', '<ul></ul>', '<a href="#"></a>']) {
-        const b = document.createElement('div')
-        b.innerHTML = html
-        expect(isVisuallyEmpty(b)).toBe(false)
-      }
-    })
-
-    it('Scenario: isVisuallyEmpty returns false for a typing-dots bubble (in-flight turn cue)', () => {
-      const isVisuallyEmpty = (internals() as any).isVisuallyEmpty
-      const b = document.createElement('div')
-      b.innerHTML = '<div class="typing-dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>'
-      // Typing-dots have no textContent and no img/pre/etc, but they ARE a
-      // visible "still working" indicator — the sweep must skip them so an
-      // in-flight turn isn't GC'd before its first delta with real text.
-      expect(isVisuallyEmpty(b)).toBe(false)
-    })
-
     // ── sweepTrailingEmptyAssistantBubbles ────────────────────────────────
-    it('Scenario: sweepTrailingEmptyAssistantBubbles removes consecutive empty assistant tail bubbles', () => {
-      const { sweepTrailingEmptyAssistantBubbles } = internals() as any
-      const chat = document.getElementById('chat-messages')!
-      // Real content + 3 trailing empties.
-      chat.innerHTML = ''
-      const real = document.createElement('div'); real.className = 'msg assistant'; real.innerHTML = '<p>hello</p>'
-      chat.appendChild(real)
-      for (let i = 0; i < 3; i++) {
-        const empty = document.createElement('div'); empty.className = 'msg assistant'
-        chat.appendChild(empty)
-      }
-      expect(chat.children.length).toBe(4)
-      sweepTrailingEmptyAssistantBubbles()
-      expect(chat.children.length).toBe(1)
-      expect(chat.children[0]).toBe(real)
-    })
-
-    it('Scenario: sweepTrailingEmptyAssistantBubbles stops at the first non-empty bubble (does NOT eat real content)', () => {
-      const { sweepTrailingEmptyAssistantBubbles } = internals() as any
-      const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
-      const a = document.createElement('div'); a.className = 'msg assistant'; a.innerHTML = '<p>one</p>'
-      const b = document.createElement('div'); b.className = 'msg assistant'  // empty
-      const c = document.createElement('div'); c.className = 'msg assistant'; c.innerHTML = '<p>two</p>'  // not at tail
-      const tail = document.createElement('div'); tail.className = 'msg assistant'  // empty at tail
-      chat.appendChild(a); chat.appendChild(b); chat.appendChild(c); chat.appendChild(tail)
-
-      sweepTrailingEmptyAssistantBubbles()
-      // Only the trailing empty gets removed; the interior empty (b) survives
-      // because the walk stops at c (non-empty assistant).
-      expect(chat.children.length).toBe(3)
-      expect(chat.children[chat.children.length - 1]).toBe(c)
-    })
-
-    it('Scenario: sweepTrailingEmptyAssistantBubbles stops at a non-assistant bubble (e.g. user message)', () => {
-      const { sweepTrailingEmptyAssistantBubbles } = internals() as any
-      const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
-      const user = document.createElement('div'); user.className = 'msg user'; user.textContent = 'hi'
-      chat.appendChild(user)
-      // No trailing assistant bubble at all -> sweep is a no-op.
-      sweepTrailingEmptyAssistantBubbles()
-      expect(chat.children.length).toBe(1)
-      expect(chat.children[0]).toBe(user)
-    })
-
-    it('Scenario: sweepTrailingEmptyAssistantBubbles preserves a typing-dots bubble at the tail', () => {
-      const { sweepTrailingEmptyAssistantBubbles } = internals() as any
-      const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
-      const dots = document.createElement('div'); dots.className = 'msg assistant'
-      dots.innerHTML = '<div class="typing-dots"><div class="dot"></div></div>'
-      chat.appendChild(dots)
-      sweepTrailingEmptyAssistantBubbles()
-      // Typing-dots aren't visually empty per isVisuallyEmpty, so they stay.
-      expect(chat.children.length).toBe(1)
-    })
-
-    it('Scenario: sweepTrailingEmptyAssistantBubbles handles a chat list with ONLY empty assistant bubbles', () => {
-      const { sweepTrailingEmptyAssistantBubbles } = internals() as any
-      const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
-      for (let i = 0; i < 4; i++) {
-        const empty = document.createElement('div'); empty.className = 'msg assistant'
-        chat.appendChild(empty)
-      }
-      sweepTrailingEmptyAssistantBubbles()
-      expect(chat.children.length).toBe(0)
-    })
-
     // ── Tool-call card rendering ──────────────────────────────────────────
     it('Scenario: appendToolCallCard renders a collapsible card with the tool name + JSON input + pending status', () => {
       const { appendToolCallCard } = internals() as any
@@ -802,34 +693,6 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       })
       expect(ret).toBeNull()
       expect(chat.children.length).toBe(0)
-    })
-
-    it('Scenario: tool-call card is NOT considered visually empty by the sweep', () => {
-      const { isVisuallyEmpty, appendToolCallCard, sweepTrailingEmptyAssistantBubbles } = internals() as any
-      const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
-      const card = appendToolCallCard({
-        type: 'tool-call', threadId: 't', turnId: 't', toolCallId: 'c1', name: 'Read', input: {},
-      })
-      expect(isVisuallyEmpty(card)).toBe(false)
-      // Trailing-sweep should not touch tool-call cards either.
-      sweepTrailingEmptyAssistantBubbles()
-      expect(chat.children.length).toBe(1)
-    })
-
-    it('Scenario: sweep stops at a tool-call card (does NOT eat real tool work)', () => {
-      const { appendToolCallCard, sweepTrailingEmptyAssistantBubbles } = internals() as any
-      const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
-      // tool-call (rich content) + trailing empty assistant bubble
-      appendToolCallCard({ type: 'tool-call', threadId: 't', turnId: 't', toolCallId: 'a', name: 'X', input: {} })
-      const empty = document.createElement('div'); empty.className = 'msg assistant'
-      chat.appendChild(empty)
-      expect(chat.children.length).toBe(2)
-      sweepTrailingEmptyAssistantBubbles()
-      // The empty bubble is gone; the tool-call card remains.
-      expect(chat.children.length).toBe(1)
-      expect((chat.children[0] as HTMLElement).classList.contains('tool-call-card')).toBe(true)
     })
 
     // ── Regression: text after tool round-trip (moon-009 fix) ─────────────
@@ -1030,6 +893,215 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       ta.value = 'line1\nline2\nline3'
       ta.dispatchEvent(new Event('input', { bubbles: true }))
       expect(ta.style.height).toBe('85px')
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: ChatState reducer (post-refactor data model)
+  //
+  // ChatState is the source-of-truth for the chat transcript. The renderer is
+  // a pure function of state, so any bug-class involving "DOM and the streaming
+  // buffer disagree" is captured here at the reducer level.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: ChatState reducer', () => {
+    const state = () => (window as any).__MoonInternals.ChatState
+
+    beforeEach(() => {
+      state().reset()
+    })
+
+    it('reset() empties the transcript', () => {
+      state().appendUser('hi', null)
+      state().reset()
+      expect(state().turns).toEqual([])
+    })
+
+    it('appendUser pushes a user turn with a done text segment', () => {
+      state().appendUser('hello', null)
+      const t = state().turns[0]
+      expect(t.role).toBe('user')
+      expect(t.status).toBe('done')
+      expect(t.segments).toHaveLength(1)
+      expect(t.segments[0]).toMatchObject({ kind: 'text', raw: 'hello', done: true })
+    })
+
+    it('appendBanner pushes an assistant banner turn (no streaming)', () => {
+      state().appendBanner('New conversation')
+      const t = state().turns[0]
+      expect(t.role).toBe('assistant')
+      expect(t.status).toBe('banner')
+      expect(t.segments[0].raw).toBe('New conversation')
+    })
+
+    it('beginPendingAssistant followed by applyDelta upgrades the placeholder in place', () => {
+      state().beginPendingAssistant()
+      expect(state().turns[0].key).toBe('pending-assistant')
+      state().applyDelta('turn-42', 'Hi')
+      expect(state().turns).toHaveLength(1)
+      expect(state().turns[0].key).toBe('t-turn-42')
+      expect(state().turns[0].segments[0].raw).toBe('Hi')
+    })
+
+    it('applyDelta accumulates into a single text segment when nothing else has happened', () => {
+      state().applyDelta('t1', 'Hello, ')
+      state().applyDelta('t1', '**wor')
+      state().applyDelta('t1', 'ld**!')
+      const segs = state().turns[0].segments
+      expect(segs).toHaveLength(1)
+      expect(segs[0].raw).toBe('Hello, **world**!')
+      expect(segs[0].done).toBe(false)
+    })
+
+    it('applyToolCall closes the open text segment so the next delta starts a fresh one', () => {
+      state().applyDelta('t1', 'Looking up ')
+      state().applyToolCall('t1', 'tc-1', 'bash', { cmd: 'ls' })
+      state().applyDelta('t1', 'Found 3 lines.')
+      const segs = state().turns[0].segments
+      expect(segs.map((s: any) => s.kind)).toEqual(['text', 'tool', 'text'])
+      expect(segs[0].raw).toBe('Looking up ')
+      expect(segs[0].done).toBe(true)
+      expect(segs[1]).toMatchObject({ kind: 'tool', id: 'tc-1', name: 'bash' })
+      expect(segs[2].raw).toBe('Found 3 lines.')
+    })
+
+    it('applyToolResult pairs by toolCallId regardless of position', () => {
+      state().applyToolCall('t1', 'tc-A', 'lsroot', {})
+      state().applyToolCall('t1', 'tc-B', 'cat', {})
+      state().applyToolResult('tc-B', true, 'second body', false)
+      const segs = state().turns[0].segments
+      expect(segs[0].result).toBeNull()
+      expect(segs[1].result).toEqual({ ok: true, output: 'second body', truncated: false })
+    })
+
+    it('finishTurn marks the turn done and closes any open text segment', () => {
+      state().applyDelta('t1', 'partial')
+      state().finishTurn('t1', null)
+      const t = state().turns[0]
+      expect(t.status).toBe('done')
+      expect(t.segments[0].done).toBe(true)
+    })
+
+    it('finishTurn drops a turn that produced no visible content (replaces sweep)', () => {
+      state().beginPendingAssistant()
+      state().finishTurn('t-missing', null)
+      // pending placeholder gets finished and dropped (zero segments).
+      expect(state().turns).toHaveLength(0)
+    })
+
+    it('failTurn surfaces an error turn even when no active turn was in flight', () => {
+      state().failTurn(null, 'connection reset')
+      const t = state().turns[0]
+      expect(t.status).toBe('error')
+      expect(t.errorText).toBe('connection reset')
+    })
+
+    it('dropPendingAssistant removes the watchdog placeholder', () => {
+      state().beginPendingAssistant()
+      const dropped = state().dropPendingAssistant()
+      expect(dropped).toBe(true)
+      expect(state().turns).toHaveLength(0)
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: ChatRenderer + ChatLoop (end-to-end via __MoonInternals.handleFrame)
+  //
+  // These tests exercise the wire-frame -> reducer -> renderer pipeline that
+  // production uses. They replace the older DOM-poke tests for the removed
+  // sweepTrailingEmptyAssistantBubbles / isVisuallyEmpty helpers.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: end-to-end frame pipeline', () => {
+    const M = () => (window as any).__MoonInternals
+    let chat: HTMLElement
+
+    beforeEach(() => {
+      // Synchronous rAF so we observe each frame's effect immediately.
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      ;(window as any).cancelAnimationFrame = () => {}
+      M().ChatState.reset()
+      chat = document.getElementById('chat-messages') as HTMLElement
+      chat.innerHTML = ''
+    })
+
+    it('thread-snapshot with messages renders one bubble per non-empty message', () => {
+      M().handleFrame({
+        type: 'thread-snapshot',
+        messages: [
+          { role: 'user', text: 'hi there' },
+          { role: 'assistant', text: 'hello back' },
+          { role: 'assistant', text: '   ' },                  // whitespace-only — skipped
+        ],
+      })
+      expect(chat.children.length).toBe(2)
+      expect(chat.children[0].className).toBe('msg user')
+      expect(chat.children[1].className).toBe('msg assistant')
+    })
+
+    it('assistant-delta after a tool-call opens a fresh text bubble; the card is preserved', () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Looking up ' })
+      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'tc-1', name: 'bash', input: { cmd: 'ls' } })
+      M().handleFrame({ type: 'tool-result', toolCallId: 'tc-1', status: 'ok', output: 'a\nb\n' })
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Found 2 lines.' })
+
+      expect(chat.children.length).toBe(3)
+      expect(chat.children[0].className).toBe('msg assistant')
+      expect(chat.children[1].className).toBe('msg assistant tool-call-card')
+      expect(chat.children[2].className).toBe('msg assistant')
+
+      // The middle child is a real tool-card with <details><summary>.
+      const card = chat.children[1] as HTMLElement
+      expect(card.querySelector('details > summary')).not.toBeNull()
+      expect(card.querySelector('.tool-card-status-ok')).not.toBeNull()
+      expect(card.querySelector('.tool-card-output')!.textContent).toBe('a\nb\n')
+
+      // The trailing text bubble has the right body.
+      expect(chat.children[2].textContent).toContain('Found 2 lines.')
+    })
+
+    it('assistant-done with no preceding delta drops the empty placeholder (no ghost bubble)', () => {
+      M().ChatState.beginPendingAssistant()
+      M().ChatLoop.flush()
+      expect(chat.querySelector('.typing-dots')).not.toBeNull()
+
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: '' } })
+      expect(chat.children.length).toBe(0)
+    })
+
+    it('assistant-done after streaming finalizes the text (markdown rendered) and clears typing dots', () => {
+      M().ChatState.beginPendingAssistant()
+      M().ChatLoop.flush()
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Hello **world**' })
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'Hello **world**' } })
+
+      expect(chat.querySelector('.typing-dots')).toBeNull()
+      expect(chat.children.length).toBe(1)
+      expect(chat.children[0].innerHTML).toContain('<strong>world</strong>')
+    })
+
+    it('assistant-error surfaces a visible error turn, clears typing dots', () => {
+      M().ChatState.beginPendingAssistant()
+      M().ChatLoop.flush()
+      M().handleFrame({ type: 'assistant-error', turnId: 't1', error: { message: 'rate limited' } })
+      expect(chat.querySelector('.typing-dots')).toBeNull()
+      expect(chat.children.length).toBe(1)
+      expect(chat.children[0].textContent).toContain('rate limited')
+      expect(chat.children[0].className).toContain('error')
+    })
+
+    it('a delta that arrives empty does NOT pollute the transcript', () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: '' })
+      expect(M().ChatState.turns).toHaveLength(0)
+      expect(chat.children.length).toBe(0)
+    })
+
+    it('finishTurn with an empty server message text does NOT wipe streamed content', () => {
+      // Regression for the "??" foot-gun. Server sometimes sends
+      // `message.text === ""` on assistant-done; the renderer must still show
+      // the segments accumulated from the delta stream.
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'streamed answer' })
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: '' } })
+      expect(chat.children.length).toBe(1)
+      expect(chat.children[0].textContent).toContain('streamed answer')
     })
   })
 })
