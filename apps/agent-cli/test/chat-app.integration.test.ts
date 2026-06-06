@@ -202,11 +202,16 @@ describe("luna chat app", () => {
       type: "new-thread",
       model: "claude-sonnet-4-5",
     })
-    expect(chat.received).toContainEqual({
-      type: "user-message",
-      threadId: "thr_1",
-      text: "hello",
-    })
+    // PR #26 adds the `client` identity blob to every user-message frame;
+    // `objectContaining` lets us pin the meaningful fields without coupling
+    // to that envelope's exact shape.
+    expect(chat.received).toContainEqual(
+      expect.objectContaining({
+        type: "user-message",
+        threadId: "thr_1",
+        text: "hello",
+      }),
+    )
     expect(output).toContain("Hi from Luna")
   })
 
@@ -580,8 +585,12 @@ describe("luna chat app", () => {
     stdin.end()
 
     await expect(waitFor(done, 500)).resolves.toEqual({ exitCode: 0 })
-    expect(received).toContainEqual({ type: "user-message", threadId: "thr_1", text: "one" })
-    expect(received).toContainEqual({ type: "user-message", threadId: "thr_1", text: "two" })
+    expect(received).toContainEqual(
+      expect.objectContaining({ type: "user-message", threadId: "thr_1", text: "one" }),
+    )
+    expect(received).toContainEqual(
+      expect.objectContaining({ type: "user-message", threadId: "thr_1", text: "two" }),
+    )
     expect(output.read()).toContain("reply 1")
     expect(output.read()).toContain("reply 2")
   })
