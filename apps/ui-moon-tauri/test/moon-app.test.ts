@@ -1314,5 +1314,113 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
     })
   })
 
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: handleSubmit single-fire guard (no double-send)
+  //
+  // The user observed in production that messages from the Moon were being
+  // processed multiple times. The most likely client-side amplifier is a
+  // double-fire of handleSubmit (WKWebView quirks, button double-tap, or
+  // future re-wiring). These tests pin a microtask-scoped single-fire guard
+  // in place: no matter how many times handleSubmit is invoked synchronously
+  // for the same user action, exactly ONE user-message frame goes on the wire.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: handleSubmit single-fire guard', () => {
+    const M = () => (window as any).__MoonInternals
+
+    const setActiveThread = (id: string) => {
+      // thread-created sets activeThreadId without needing a live ws.
+      M().handleFrame({ type: 'thread-created', thread: { id } })
+    }
+
+    const userMessageSends = (spy: any) =>
+      spy.mock.calls.filter((c: any[]) => (c[0] as any).type === 'user-message')
+
+    beforeEach(() => {
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      ;(window as any).cancelAnimationFrame = () => {}
+      // Reset chat state + textarea so the suite is independent.
+      const m = M()
+      if (m?.ChatState?.reset) m.ChatState.reset()
+      const ta = document.getElementById('message-input') as HTMLTextAreaElement
+      if (ta) ta.value = ''
+    })
+
+    it('Scenario: a single Enter keypress in the textarea fires exactly ONE user-message frame', () => {
+      const m = M()
+      setActiveThread('thread-A')
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      const ta = document.getElementById('message-input') as HTMLTextAreaElement
+      ta.value = 'hi luna'
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+
+      expect(userMessageSends(sendSpy).length).toBe(1)
+    })
+
+    it('Scenario: a single form-submit fires exactly ONE user-message frame', () => {
+      const m = M()
+      setActiveThread('thread-A')
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      const ta = document.getElementById('message-input') as HTMLTextAreaElement
+      ta.value = 'hi luna'
+      document.getElementById('chat-form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+
+      expect(userMessageSends(sendSpy).length).toBe(1)
+    })
+
+    it('Scenario: keydown Enter IMMEDIATELY followed by a synthetic form-submit fires exactly ONE user-message frame (WKWebView implicit-submission defence)', () => {
+      const m = M()
+      setActiveThread('thread-A')
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      const ta = document.getElementById('message-input') as HTMLTextAreaElement
+      ta.value = 'hi luna'
+      // Simulate the worst case: both event paths fire from a single key press.
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+      document.getElementById('chat-form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+
+      expect(userMessageSends(sendSpy).length).toBe(1)
+    })
+
+    it('Scenario: calling ChatEngine.handleSubmit() synchronously twice fires exactly ONE user-message frame', () => {
+      const m = M()
+      setActiveThread('thread-A')
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      const ta = document.getElementById('message-input') as HTMLTextAreaElement
+      ta.value = 'hi luna'
+      const evtA = new Event('submit', { bubbles: true, cancelable: true })
+      const evtB = new Event('submit', { bubbles: true, cancelable: true })
+      // Direct synchronous double-call (the failure mode the microtask guard
+      // covers — fires that the empty-textarea downstream check could miss
+      // for e.g. attachment-only sends or the no-active-thread branch).
+      m.ChatEngine.handleSubmit(evtA)
+      m.ChatEngine.handleSubmit(evtB)
+
+      expect(userMessageSends(sendSpy).length).toBe(1)
+    })
+
+    it('Scenario: two intentional submits separated by a microtask DO both fire (guard self-clears)', async () => {
+      const m = M()
+      setActiveThread('thread-A')
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      const ta = document.getElementById('message-input') as HTMLTextAreaElement
+      ta.value = 'first'
+      document.getElementById('chat-form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      // queueMicrotask in handleSubmit clears the flag; wait one microtask.
+      await Promise.resolve()
+      ta.value = 'second'
+      document.getElementById('chat-form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+
+      const sends = userMessageSends(sendSpy)
+      expect(sends.length).toBe(2)
+      expect((sends[0][0] as any).text).toBe('first')
+      expect((sends[1][0] as any).text).toBe('second')
+    })
+  })
+
   })
 })

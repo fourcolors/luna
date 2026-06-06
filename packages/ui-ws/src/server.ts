@@ -552,6 +552,18 @@ export const startUIWebSocketServer = (
         const chatFibers = yield* Ref.make<
           ReadonlyMap<string, Fiber.RuntimeFiber<unknown, unknown>>
         >(new Map())
+        // Per-connection mutex for subscribeChatThread. The map check + fiber
+        // fork + Ref.update is NOT atomic against a `Ref<Map<...>>`; without
+        // serialization, two concurrent subscribeChatThread(t) calls (e.g.
+        // server auto-subscribe from `new-thread` racing with the client's
+        // explicit `subscribe` frame fired from its `thread-created`
+        // handler) can BOTH pass the `m.has(threadId)` check, BOTH fork a
+        // PubSub-forwarding fiber, and BOTH overwrite each other in the
+        // map. From then on every assistant-delta / user-accepted /
+        // assistant-done is sent to the wire TWICE — the user-reported
+        // "messages being processed multiple times" bug. The semaphore
+        // makes check-and-stake atomic at the connection level.
+        const subscribeMutex = yield* Effect.makeSemaphore(1)
         if (chat !== null) {
           yield* Effect.addFinalizer(() =>
             Effect.gen(function* () {
@@ -665,6 +677,7 @@ export const startUIWebSocketServer = (
         const subscribeChatThread = (
           threadId: string,
         ): Effect.Effect<void, never> =>
+          subscribeMutex.withPermits(1)(
           Effect.gen(function* () {
             if (chat === null) return
             const m = yield* Ref.get(chatFibers)
@@ -707,7 +720,8 @@ export const startUIWebSocketServer = (
                 }),
               )
             })
-          })
+          }),
+          )
 
         const unsubscribeChatThread = (
           threadId: string,
