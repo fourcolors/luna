@@ -28,12 +28,14 @@
  */
 import {
   Deferred,
+  Duration,
   Effect,
   Fiber,
   Layer,
   Option,
   Ref,
   Runtime,
+  Schedule,
   Stream,
 } from "effect"
 import type * as Scope from "effect/Scope"
@@ -69,7 +71,20 @@ import type { SurveyItem, SurveyVerdict } from "@luna/core"
 export interface SurveyWsHandle {
   /**
    * Check whether a survey is due at `now` and return its items + issuedAt,
-   * or null if not due. Called once on connect (fire-and-forget).
+   * or null if not due.
+   *
+   * Called by the server at two moments:
+   *   1. once at connection-time (right after `hello`), and
+   *   2. periodically thereafter for the lifetime of the connection
+   *      (default cadence: every 60s; configurable via
+   *      UIWebSocketServerConfig.surveyPollIntervalMs).
+   *
+   * The recurring re-check exists for long-lived clients (e.g. the Moon
+   * desktop app, which stays connected for hours/days): without it a
+   * survey that becomes due mid-session — typically after the nightly
+   * dream-cron proposes new beliefs — would never reach the operator.
+   * Fire-and-forget at the call site, so backend failures here never tear
+   * down the connection.
    */
   readonly pendingSurvey: (
     now: number,
@@ -120,6 +135,17 @@ export interface UIWebSocketServerConfig {
    * Keep-alive ping interval (ms). 0 disables. Default: 30_000.
    */
   readonly pingIntervalMs?: number
+  /**
+   * Per-connection survey re-check cadence (ms). 0 disables the recurring
+   * poller (the connection-time check still runs). Default: 60_000.
+   *
+   * Lower values reduce the latency between a survey becoming due and a
+   * `survey-request` frame reaching a long-lived client (e.g. Moon), at
+   * the cost of one extra alignment-store read per connection per tick.
+   * Tests use a very small value (e.g. 50ms) so the poller is observable
+   * within a vitest's time budget.
+   */
+  readonly surveyPollIntervalMs?: number
   /**
    * Kinds advertised in the `hello` frame. Should match the kind
    * whitelist configured on `UIService.makeLayer`. The server itself
@@ -489,28 +515,71 @@ export const startUIWebSocketServer = (
           )
         }
 
-        // Phase 3 D3 (D-LOCK-1): push a survey check-in if one is due.
-        // Fire-and-forget — a survey failure must never take down the connection.
-        // `now` is captured once and becomes `issuedAt` (D-LOCK-5 anchor).
-        // surveyId is derived from issuedAt (unique per survey instance; T3
-        // wiring can ignore it — issuedAt is the processVerdict idempotency key).
+        // Phase 3 D3 (D-LOCK-1) + long-lived-client survey poller.
+        //
+        // At connect time, push a survey check-in if one is due (the original
+        // Phase 3 D3 behavior). THEN keep checking every
+        // `surveyPollIntervalMs` (default 60s) for the lifetime of this
+        // connection, so a survey that becomes due MID-SESSION still reaches
+        // the operator without a reconnect.
+        //
+        // Why this matters: the TUI works fine without a poller because every
+        // `luna chat` invocation creates a fresh connection (the connect-time
+        // check fires every time). The Moon desktop client, by contrast,
+        // stays connected for hours/days — without the poller, anything the
+        // nightly dream-cron proposes is invisible until the operator
+        // restarts Moon. See the dream/survey feedback-loop notes in the
+        // luna workspace's processes.
+        //
+        // Dedup: `lastSentIssuedAt` is per-connection state. We only push
+        // when `pending.issuedAt` differs from the last value we sent — so
+        // the operator does not see the same panel rebuild on every tick
+        // while they're still answering the current one. The client treats
+        // the panel as idempotent on issuedAt anyway (PR #36's
+        // SurveyEngine.show replaces the active panel only if the new
+        // issuedAt differs).
+        //
+        // Scope: both fibers are forked into the connection scope via
+        // Effect.fork, so closing the connection interrupts them. No
+        // detached `Effect.runFork` here — that would let the poller
+        // outlive its ws.
+        //
+        // Errors: pendingSurvey failures (alignment-store IO, etc.) collapse
+        // to Effect.void via catchAllCause. A transient backend hiccup must
+        // never tear down the connection or stop future ticks.
         if (survey !== null) {
           const s = survey
-          const now = Date.now()
-          Effect.runFork(
-            Effect.flatMap(s.pendingSurvey(now), (pending) =>
-              Effect.sync(() => {
-                if (pending !== null) {
-                  send(ws, {
-                    type: "survey-request",
-                    surveyId: `survey-${pending.issuedAt}`,
-                    issuedAt: pending.issuedAt,
-                    items: pending.items,
-                  })
-                }
-              }),
-            ).pipe(Effect.catchAllCause(() => Effect.void)),
-          )
+          let lastSentIssuedAt = 0
+
+          const checkAndPush = Effect.gen(function* () {
+            const pending = yield* s.pendingSurvey(Date.now())
+            if (pending !== null && pending.issuedAt !== lastSentIssuedAt) {
+              send(ws, {
+                type: "survey-request",
+                surveyId: `survey-${pending.issuedAt}`,
+                issuedAt: pending.issuedAt,
+                items: pending.items,
+              })
+              lastSentIssuedAt = pending.issuedAt
+            }
+          }).pipe(Effect.catchAllCause(() => Effect.void))
+
+          // 1. Immediate connect-time check (preserves Phase 3 D3 latency).
+          yield* Effect.fork(checkAndPush)
+
+          // 2. Recurring re-check. 0 disables the poller (tests / setup-mode
+          //    use this); otherwise we re-check on a fixed cadence for the
+          //    lifetime of the connection scope. `Schedule.spaced` waits
+          //    the interval BEFORE the first repeat, so the recurring fiber
+          //    never duplicates the immediate check above on the same tick.
+          const surveyPollMs = config.surveyPollIntervalMs ?? 60_000
+          if (surveyPollMs > 0) {
+            yield* Effect.fork(
+              checkAndPush.pipe(
+                Effect.repeat(Schedule.spaced(Duration.millis(surveyPollMs))),
+              ),
+            )
+          }
         }
 
         // Setup-mode pty: start the pty for this connection when configured.
