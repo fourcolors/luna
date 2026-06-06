@@ -692,5 +692,144 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       sweepTrailingEmptyAssistantBubbles()
       expect(chat.children.length).toBe(0)
     })
+
+    // ── Tool-call card rendering ──────────────────────────────────────────
+    it('Scenario: appendToolCallCard renders a collapsible card with the tool name + JSON input + pending status', () => {
+      const { appendToolCallCard } = internals() as any
+      const chat = document.getElementById('chat-messages')!
+      chat.innerHTML = ''
+      const card = appendToolCallCard({
+        type: 'tool-call',
+        threadId: 't1', turnId: 'turn-1', toolCallId: 'call-1',
+        name: 'Read', input: { file_path: '/etc/hosts' },
+      })
+      expect(card).not.toBeNull()
+      expect(chat.children.length).toBe(1)
+      expect(chat.children[0]).toBe(card)
+      expect(card.classList.contains('tool-call-card')).toBe(true)
+      expect(card.dataset.toolCallId).toBe('call-1')
+      expect(card.dataset.turnId).toBe('turn-1')
+      // Tool name is shown in the summary.
+      expect(card.querySelector('.tool-card-name')!.textContent).toBe('Read')
+      // Status starts in pending state.
+      const status = card.querySelector('.tool-card-status')!
+      expect(status.classList.contains('tool-card-status-pending')).toBe(true)
+      // Input is rendered as pretty JSON inside a <pre>.
+      const input = card.querySelector('.tool-card-input')!
+      expect(input.textContent).toContain('"file_path"')
+      expect(input.textContent).toContain('/etc/hosts')
+      // No result panel yet.
+      expect(card.querySelector('.tool-card-output')).toBeNull()
+    })
+
+    it('Scenario: appendToolCallCard escapes the tool name + input (no XSS via name/input)', () => {
+      const { appendToolCallCard } = internals() as any
+      const chat = document.getElementById('chat-messages')!
+      chat.innerHTML = ''
+      const card = appendToolCallCard({
+        type: 'tool-call',
+        threadId: 't', turnId: 't', toolCallId: 'c',
+        name: '<script>alert(1)</script>',
+        input: { sneaky: '<img src=x onerror=alert(1)>' },
+      })
+      // The script tag should be rendered as text, not actually injected.
+      expect(card.querySelector('script')).toBeNull()
+      expect(card.querySelector('img')).toBeNull()
+      expect(card.querySelector('.tool-card-name')!.textContent).toBe('<script>alert(1)</script>')
+    })
+
+    it('Scenario: attachToolResult flips the matching cards status pill to OK and appends the output', () => {
+      const { appendToolCallCard, attachToolResult } = internals() as any
+      const chat = document.getElementById('chat-messages')!
+      chat.innerHTML = ''
+      appendToolCallCard({
+        type: 'tool-call',
+        threadId: 't', turnId: 't', toolCallId: 'call-A',
+        name: 'Bash', input: { command: 'pwd' },
+      })
+      const card = attachToolResult({
+        type: 'tool-result',
+        threadId: 't', toolCallId: 'call-A',
+        status: 'ok', output: '/home/op', truncated: false,
+      })
+      expect(card).not.toBeNull()
+      const status = card.querySelector('.tool-card-status')!
+      expect(status.classList.contains('tool-card-status-ok')).toBe(true)
+      expect(status.classList.contains('tool-card-status-pending')).toBe(false)
+      const output = card.querySelector('.tool-card-output')!
+      expect(output.textContent).toBe('/home/op')
+      expect(card.querySelector('.tool-card-truncated')).toBeNull()
+    })
+
+    it('Scenario: attachToolResult with status=error flips the pill to error', () => {
+      const { appendToolCallCard, attachToolResult } = internals() as any
+      const chat = document.getElementById('chat-messages')!
+      chat.innerHTML = ''
+      appendToolCallCard({
+        type: 'tool-call', threadId: 't', turnId: 't', toolCallId: 'call-X',
+        name: 'Bash', input: { command: 'false' },
+      })
+      const card = attachToolResult({
+        type: 'tool-result', threadId: 't', toolCallId: 'call-X',
+        status: 'error', output: 'exit 1', truncated: false,
+      })
+      const status = card.querySelector('.tool-card-status')!
+      expect(status.classList.contains('tool-card-status-error')).toBe(true)
+      expect(status.textContent).toBe('✗')
+    })
+
+    it('Scenario: attachToolResult shows a truncated-output hint when frame.truncated is true', () => {
+      const { appendToolCallCard, attachToolResult } = internals() as any
+      const chat = document.getElementById('chat-messages')!
+      chat.innerHTML = ''
+      appendToolCallCard({ type: 'tool-call', threadId: 't', turnId: 't', toolCallId: 'big', name: 'Read', input: {} })
+      const card = attachToolResult({
+        type: 'tool-result', threadId: 't', toolCallId: 'big',
+        status: 'ok', output: 'lots...', truncated: true,
+      })
+      const trunc = card.querySelector('.tool-card-truncated')!
+      expect(trunc).not.toBeNull()
+      expect(trunc.textContent).toMatch(/truncated/i)
+    })
+
+    it('Scenario: attachToolResult is a no-op when no matching tool-call card exists', () => {
+      const { attachToolResult } = internals() as any
+      const chat = document.getElementById('chat-messages')!
+      chat.innerHTML = ''
+      const ret = attachToolResult({
+        type: 'tool-result', threadId: 't', toolCallId: 'missing',
+        status: 'ok', output: 'x', truncated: false,
+      })
+      expect(ret).toBeNull()
+      expect(chat.children.length).toBe(0)
+    })
+
+    it('Scenario: tool-call card is NOT considered visually empty by the sweep', () => {
+      const { isVisuallyEmpty, appendToolCallCard, sweepTrailingEmptyAssistantBubbles } = internals() as any
+      const chat = document.getElementById('chat-messages')!
+      chat.innerHTML = ''
+      const card = appendToolCallCard({
+        type: 'tool-call', threadId: 't', turnId: 't', toolCallId: 'c1', name: 'Read', input: {},
+      })
+      expect(isVisuallyEmpty(card)).toBe(false)
+      // Trailing-sweep should not touch tool-call cards either.
+      sweepTrailingEmptyAssistantBubbles()
+      expect(chat.children.length).toBe(1)
+    })
+
+    it('Scenario: sweep stops at a tool-call card (does NOT eat real tool work)', () => {
+      const { appendToolCallCard, sweepTrailingEmptyAssistantBubbles } = internals() as any
+      const chat = document.getElementById('chat-messages')!
+      chat.innerHTML = ''
+      // tool-call (rich content) + trailing empty assistant bubble
+      appendToolCallCard({ type: 'tool-call', threadId: 't', turnId: 't', toolCallId: 'a', name: 'X', input: {} })
+      const empty = document.createElement('div'); empty.className = 'msg assistant'
+      chat.appendChild(empty)
+      expect(chat.children.length).toBe(2)
+      sweepTrailingEmptyAssistantBubbles()
+      // The empty bubble is gone; the tool-call card remains.
+      expect(chat.children.length).toBe(1)
+      expect((chat.children[0] as HTMLElement).classList.contains('tool-call-card')).toBe(true)
+    })
   })
 })

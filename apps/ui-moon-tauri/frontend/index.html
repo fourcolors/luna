@@ -391,27 +391,35 @@
     .settings-content::-webkit-scrollbar,
     .chat-messages::-webkit-scrollbar,
     .chat-input::-webkit-scrollbar,
-    .msg.assistant pre::-webkit-scrollbar {
+    .msg.assistant pre::-webkit-scrollbar,
+    .tool-card-input::-webkit-scrollbar,
+    .tool-card-output::-webkit-scrollbar {
       width: 6px;
       height: 6px;
     }
     .settings-content::-webkit-scrollbar-track,
     .chat-messages::-webkit-scrollbar-track,
     .chat-input::-webkit-scrollbar-track,
-    .msg.assistant pre::-webkit-scrollbar-track {
+    .msg.assistant pre::-webkit-scrollbar-track,
+    .tool-card-input::-webkit-scrollbar-track,
+    .tool-card-output::-webkit-scrollbar-track {
       background: transparent;
     }
     .settings-content::-webkit-scrollbar-thumb,
     .chat-messages::-webkit-scrollbar-thumb,
     .chat-input::-webkit-scrollbar-thumb,
-    .msg.assistant pre::-webkit-scrollbar-thumb {
+    .msg.assistant pre::-webkit-scrollbar-thumb,
+    .tool-card-input::-webkit-scrollbar-thumb,
+    .tool-card-output::-webkit-scrollbar-thumb {
       background: rgba(255, 255, 255, 0.12);
       border-radius: 3px;
     }
     .settings-content::-webkit-scrollbar-thumb:hover,
     .chat-messages::-webkit-scrollbar-thumb:hover,
     .chat-input::-webkit-scrollbar-thumb:hover,
-    .msg.assistant pre::-webkit-scrollbar-thumb:hover {
+    .msg.assistant pre::-webkit-scrollbar-thumb:hover,
+    .tool-card-input::-webkit-scrollbar-thumb:hover,
+    .tool-card-output::-webkit-scrollbar-thumb:hover {
       background: rgba(255, 255, 255, 0.22);
     }
     
@@ -641,6 +649,97 @@
     }
     .msg.assistant table tr:nth-child(even) td {
       background: rgba(255, 255, 255, 0.02);
+    }
+
+    /* Tool-call cards — collapsible per-tool blocks emitted between assistant
+       text bubbles. Each card represents one ToolCallFrame; a matching
+       ToolResultFrame later attaches a .tool-card-result panel inside. Uses
+       native <details>/<summary> for the collapse so the keyboard a11y and
+       browser open-state restoration come for free.
+       Left-aligned like assistant bubbles but with a denser/quieter chrome
+       so the operator's eye can skip past a long chain of tool calls without
+       feeling like a wall of message bubbles. */
+    .msg.tool-call-card {
+      align-self: flex-start;
+      max-width: 92%;
+      padding: 0;
+      background: rgba(255, 255, 255, 0.025);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 10px;
+      overflow: hidden;
+      font-size: 0.82rem;
+    }
+    .msg.tool-call-card details > summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 6px 10px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      user-select: none;
+      color: #c9d4ee;
+      font-weight: 500;
+    }
+    .msg.tool-call-card details > summary::-webkit-details-marker { display: none; }
+    .msg.tool-call-card .tool-card-chevron {
+      display: inline-block;
+      transition: transform 120ms ease;
+      width: 10px;
+      text-align: center;
+      color: #8aa0c9;
+      font-size: 0.75rem;
+    }
+    .msg.tool-call-card details[open] .tool-card-chevron { transform: rotate(90deg); }
+    .msg.tool-call-card .tool-card-icon { opacity: 0.85; }
+    .msg.tool-call-card .tool-card-name {
+      font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+      font-size: 0.80rem;
+      color: #e6ecf8;
+    }
+    .msg.tool-call-card .tool-card-status {
+      margin-left: auto;
+      font-size: 0.72rem;
+      padding: 1px 6px;
+      border-radius: 8px;
+      letter-spacing: 0.02em;
+    }
+    .msg.tool-call-card .tool-card-status-ok    { background: rgba(52, 211, 153, 0.14); color: #6ee7b7; }
+    .msg.tool-call-card .tool-card-status-error { background: rgba(248, 113, 113, 0.18); color: #fda4af; }
+    .msg.tool-call-card .tool-card-status-pending { background: rgba(251, 191, 36, 0.16); color: #fcd34d; }
+    .msg.tool-call-card .tool-card-body {
+      padding: 4px 10px 10px 10px;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .msg.tool-call-card .tool-card-section-label {
+      font-size: 0.70rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #8aa0c9;
+      opacity: 0.85;
+    }
+    .msg.tool-call-card .tool-card-input,
+    .msg.tool-call-card .tool-card-output {
+      margin: 0;
+      padding: 6px 8px;
+      background: rgba(0, 0, 0, 0.22);
+      border-radius: 6px;
+      font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+      font-size: 0.74rem;
+      line-height: 1.4;
+      color: #d3dcef;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 200px;
+      overflow: auto;
+    }
+    .msg.tool-call-card .tool-card-truncated {
+      font-size: 0.68rem;
+      color: #8aa0c9;
+      opacity: 0.7;
+      margin-top: -4px;
     }
 
     /* Markdown rendering inside assistant bubbles (mirrors ui-web's .markdown conventions) */
@@ -2030,6 +2129,31 @@
             DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
             break;
 
+          case 'tool-call': {
+            // A tool the assistant is invoking. Render an inline collapsible
+            // card with its name + JSON input. A later tool-result frame with
+            // the same toolCallId attaches the output panel.
+            // If the tail is a typing-dots-only bubble, drop it — the dots
+            // claimed "still thinking", but visible work has started.
+            const tail = DOM.chatMessages.lastElementChild;
+            if (tail && tail.classList.contains('assistant') && tail.querySelector('.typing-dots') && tail.children.length === 1) {
+              tail.remove();
+            }
+            ChatEngine.appendToolCallCard(frame);
+            DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+            break;
+          }
+
+          case 'tool-result': {
+            // Pair with the previously-emitted tool-call (by toolCallId) and
+            // attach the result panel inside its card. If no matching card is
+            // found (e.g. the tool-call frame was missed), silently drop —
+            // there's nothing to render against.
+            ChatEngine.attachToolResult(frame);
+            DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+            break;
+          }
+
           case 'user-accepted':
             // The user message was accepted by the server. Remove typing indicator when streaming starts
             break;
@@ -2264,6 +2388,8 @@
       window.__MoonInternals.StreamRender = StreamRender;
       window.__MoonInternals.isVisuallyEmpty = (b) => ChatEngine.isVisuallyEmpty(b);
       window.__MoonInternals.sweepTrailingEmptyAssistantBubbles = () => ChatEngine.sweepTrailingEmptyAssistantBubbles();
+      window.__MoonInternals.appendToolCallCard = (f) => ChatEngine.appendToolCallCard(f);
+      window.__MoonInternals.attachToolResult = (f) => ChatEngine.attachToolResult(f);
     }
 
     /**
@@ -2601,31 +2727,148 @@
       // stays plain textContent so user messages + status/error strings remain
       // literal. previews (optional) appends a tray of attachment thumbnails.
       // True when an assistant bubble carries nothing the operator could read:
-      // no textContent (after trim) and no rich blocks (images, code, tables,
-      // lists, links, attachments, typing-dots). Used to GC empty bubbles
-      // after a finalize() that wrote an empty string — without this the
-      // bubble lingers as a small empty rounded rectangle between real
-      // messages. Typing-dots count as NOT empty: they're a visible
-      // "still working" cue, and the sweep walks past them so an
-      // in-flight turn isn't accidentally GC'd.
+      // no textContent (after trim) and no rich blocks. Treats typing-dots and
+      // tool-call-cards as NOT empty (they're visible work indicators); used
+      // by the sweep to GC text-only empty bubbles without nuking adjacent
+      // tool work or in-flight turns.
       isVisuallyEmpty(bubble) {
         if (!bubble) return false;
+        // A tool-call-card is itself a content node — sweep should leave it.
+        if (bubble.classList && bubble.classList.contains('tool-call-card')) return false;
         if (bubble.textContent && bubble.textContent.trim().length > 0) return false;
-        if (bubble.querySelector('img, pre, table, ul, ol, a, .attachments-strip, .typing-dots')) return false;
+        if (bubble.querySelector('img, pre, table, ul, ol, a, .attachments-strip, .typing-dots, .tool-call-card')) return false;
         return true;
       },
 
       // Walk backward from the tail of the chat-messages list and remove any
       // trailing assistant bubble that isVisuallyEmpty considers empty. Stops
-      // at the first non-empty assistant bubble or any non-assistant bubble
-      // (typically a user message). Idempotent — safe to call multiple times.
+      // at the first non-empty assistant bubble OR any non-assistant bubble
+      // (user msg, tool-call-card, etc.). Idempotent.
       sweepTrailingEmptyAssistantBubbles() {
         let tail = DOM.chatMessages.lastElementChild;
-        while (tail && tail.classList && tail.classList.contains('assistant') && this.isVisuallyEmpty(tail)) {
+        while (
+          tail && tail.classList &&
+          tail.classList.contains('assistant') &&
+          !tail.classList.contains('tool-call-card') &&  // tool cards aren't 'empty assistant text'
+          this.isVisuallyEmpty(tail)
+        ) {
           const prev = tail.previousElementSibling;
           tail.remove();
           tail = prev;
         }
+      },
+
+      // Render one tool-call card in the chat. Pure DOM construction (no
+      // innerHTML with interpolated payload — name/input come from the
+      // server but we treat them as untrusted text and escape via textContent
+      // / pre.textContent). Returns the card element.
+      appendToolCallCard(frame) {
+        const card = document.createElement('div');
+        card.className = 'msg assistant tool-call-card';
+        card.dataset.toolCallId = String(frame.toolCallId || '');
+        card.dataset.turnId = String(frame.turnId || '');
+
+        const details = document.createElement('details');
+        const summary = document.createElement('summary');
+
+        const chev = document.createElement('span');
+        chev.className = 'tool-card-chevron';
+        chev.textContent = '▸';
+        summary.appendChild(chev);
+
+        const icon = document.createElement('span');
+        icon.className = 'tool-card-icon';
+        icon.textContent = '🛠';
+        summary.appendChild(icon);
+
+        const name = document.createElement('span');
+        name.className = 'tool-card-name';
+        name.textContent = String(frame.name || 'tool');
+        summary.appendChild(name);
+
+        const status = document.createElement('span');
+        status.className = 'tool-card-status tool-card-status-pending';
+        status.textContent = '…';
+        summary.appendChild(status);
+
+        details.appendChild(summary);
+
+        const body = document.createElement('div');
+        body.className = 'tool-card-body';
+
+        const inputLabel = document.createElement('div');
+        inputLabel.className = 'tool-card-section-label';
+        inputLabel.textContent = 'input';
+        body.appendChild(inputLabel);
+
+        const input = document.createElement('pre');
+        input.className = 'tool-card-input';
+        try {
+          input.textContent = JSON.stringify(frame.input, null, 2);
+        } catch (_) {
+          input.textContent = String(frame.input);
+        }
+        body.appendChild(input);
+
+        // Result panel is appended on tool-result; reserve no node here.
+        details.appendChild(body);
+        card.appendChild(details);
+
+        DOM.chatMessages.appendChild(card);
+        return card;
+      },
+
+      // Attach a result panel to the matching tool-call card. CSS-escapes the
+      // id since it comes from the server (lookup is via attribute selector).
+      attachToolResult(frame) {
+        const id = String(frame.toolCallId || '');
+        if (!id) return null;
+        // Use [data-...="..."] with manual escaping (CSS.escape isn't always
+        // available in older WebKit; we keep this branch simple).
+        const cards = DOM.chatMessages.querySelectorAll('.tool-call-card');
+        let card = null;
+        for (const c of cards) {
+          if (c.dataset.toolCallId === id) { card = c; break; }
+        }
+        if (!card) return null;
+
+        // Flip the status pill from pending → ok / error.
+        const status = card.querySelector('.tool-card-status');
+        if (status) {
+          status.classList.remove('tool-card-status-pending');
+          if (frame.status === 'ok') {
+            status.classList.add('tool-card-status-ok');
+            status.textContent = '✓';
+          } else {
+            status.classList.add('tool-card-status-error');
+            status.textContent = '✗';
+          }
+        }
+
+        const body = card.querySelector('.tool-card-body');
+        if (!body) return card;
+
+        // Don't double-append if we already attached this result.
+        if (body.querySelector('.tool-card-output')) return card;
+
+        const resultLabel = document.createElement('div');
+        resultLabel.className = 'tool-card-section-label';
+        resultLabel.textContent = 'result';
+        body.appendChild(resultLabel);
+
+        const output = document.createElement('pre');
+        output.className = 'tool-card-output';
+        output.textContent = String(frame.output ?? '');
+        body.appendChild(output);
+
+        if (frame.truncated) {
+          const trunc = document.createElement('div');
+          trunc.className = 'tool-card-truncated';
+          trunc.textContent = '(output truncated)';
+          body.appendChild(trunc);
+        }
+
+        return card;
       },
 
       appendMessage(role, text, render = false, previews = null) {
