@@ -617,6 +617,32 @@
       border-bottom-left-radius: 4px;
     }
 
+    /* Markdown tables (GFM). Dark-glass: thin separators, transparent
+       background, tight cell padding so the table fits in the 560px-wide
+       panel without forcing a horizontal scrollbar on short rows. */
+    .msg.assistant table {
+      border-collapse: collapse;
+      margin: 6px 0;
+      font-size: 0.88rem;
+      max-width: 100%;
+      display: block;
+      overflow-x: auto;
+    }
+    .msg.assistant table th,
+    .msg.assistant table td {
+      padding: 4px 8px;
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      text-align: left;
+      vertical-align: top;
+    }
+    .msg.assistant table th {
+      background: rgba(255, 255, 255, 0.04);
+      font-weight: 600;
+    }
+    .msg.assistant table tr:nth-child(even) td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
     /* Markdown rendering inside assistant bubbles (mirrors ui-web's .markdown conventions) */
     .msg.assistant > :first-child { margin-top: 0; }
     .msg.assistant > :last-child { margin-bottom: 0; }
@@ -1937,7 +1963,11 @@
               }
             } else {
               // No assistant bubble yet (rare; usually typing dots exist).
-              // Append an empty assistant bubble and seed it with the delta.
+              // Append a fresh assistant bubble and seed it with the delta.
+              // Guard: if frame.text is empty/null/undefined we'd be making
+              // a permanently-empty bubble that lingers between messages —
+              // skip until a delta with real content arrives.
+              if (!frame.text) break;
               ChatEngine.appendMessage('assistant', '');
               const fresh = DOM.chatMessages.lastElementChild;
               StreamRender.reset(fresh, frame.text);
@@ -1963,6 +1993,10 @@
             } else if (frame.message && doneMsg && doneMsg.classList.contains('assistant')) {
               // Streaming finished — reconcile with canonical message text.
               StreamRender.finalize(doneMsg, frame.message.text ?? (doneMsg.dataset.streamRaw ?? doneMsg.textContent));
+              // Drop the bubble if finalize wrote nothing visible. Covers the
+              // tool-use-only / empty-text turn where deltas drove the bubble
+              // to empty content and never produced anything to read.
+              if (ChatEngine.isVisuallyEmpty(doneMsg)) doneMsg.remove();
             }
             DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
             break;
@@ -1998,7 +2032,8 @@
      *   - link href: scheme allowlist (http/https/mailto) + plain-text fallback
      *   - code-fence language: allowlisted to [A-Za-z0-9] before -> class="language-X"
      * Covers fenced+inline code, bold, italic, links, h1-h3, blockquote,
-     * unordered/ordered lists, paragraphs. (No tables/nesting/reference links v1.)
+     * unordered/ordered lists, paragraphs, GFM tables (left/right/center alignment).
+     * (No nested blocks / reference links.)
      */
     function renderMarkdown(src) {
       const FENCE = '\uE000', CODE = '\uE001'; // sentinels survive escaping & match no inline regex
@@ -2070,6 +2105,50 @@
           const items = [];
           while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*\d+\.\s+/, '')); i++; }
           html += `<ol>${items.map((it) => `<li>${inline(it)}</li>`).join('')}</ol>`;
+          continue;
+        }
+        // GFM-style table: a header row of `| col | col |` followed by a
+        // separator row of `|---|---|` (cells may be `:---`, `---:`, `:---:`
+        // for left/right/center alignment). The header row may be empty
+        // cells (`| | |`) — we honour that and emit no <thead> in that case.
+        const sep = lines[i + 1] || '';
+        if (line.includes('|') && /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/.test(sep)) {
+          flush();
+          const splitRow = (row) => row.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+          const aligns = splitRow(sep).map((c) => {
+            const L = c.startsWith(':'), R = c.endsWith(':');
+            if (L && R) return 'center';
+            if (R) return 'right';
+            if (L) return 'left';
+            return null;
+          });
+          const headers = splitRow(line);
+          i += 2;
+          const rows = [];
+          while (i < lines.length && lines[i].includes('|') && !/^\s*$/.test(lines[i]) && !lines[i].match(new RegExp(`^${FENCE}\\d+${FENCE}$`))) {
+            rows.push(splitRow(lines[i]));
+            i++;
+          }
+          const cellStyle = (j) => aligns[j] ? ` style="text-align:${aligns[j]}"` : '';
+          const headerHasContent = headers.some((c) => c.length > 0);
+          let table = '<table>';
+          if (headerHasContent) {
+            table += '<thead><tr>';
+            for (let j = 0; j < headers.length; j++) {
+              table += `<th${cellStyle(j)}>${inline(headers[j])}</th>`;
+            }
+            table += '</tr></thead>';
+          }
+          table += '<tbody>';
+          for (const row of rows) {
+            table += '<tr>';
+            for (let j = 0; j < headers.length; j++) {
+              table += `<td${cellStyle(j)}>${inline(row[j] ?? '')}</td>`;
+            }
+            table += '</tr>';
+          }
+          table += '</tbody></table>';
+          html += table;
           continue;
         }
         para.push(line); i++;
@@ -2167,6 +2246,7 @@
       window.__MoonInternals.renderMarkdown = renderMarkdown;
       window.__MoonInternals.renderMarkdownStreaming = renderMarkdownStreaming;
       window.__MoonInternals.StreamRender = StreamRender;
+      window.__MoonInternals.isVisuallyEmpty = (b) => ChatEngine.isVisuallyEmpty(b);
     }
 
     /**
@@ -2503,6 +2583,18 @@
       // render=true renders Markdown into the bubble (assistant only); default
       // stays plain textContent so user messages + status/error strings remain
       // literal. previews (optional) appends a tray of attachment thumbnails.
+      // True when an assistant bubble carries nothing the operator could read:
+      // no textContent (after trim) and no rich blocks (images, code, tables,
+      // lists, links). Used to GC empty bubbles after a finalize() that wrote
+      // an empty string — without this the bubble lingers as a small empty
+      // rounded rectangle between real messages.
+      isVisuallyEmpty(bubble) {
+        if (!bubble) return false;
+        if (bubble.textContent && bubble.textContent.trim().length > 0) return false;
+        if (bubble.querySelector('img, pre, table, ul, ol, a, .attachments-strip')) return false;
+        return true;
+      },
+
       appendMessage(role, text, render = false, previews = null) {
         const msgDiv = document.createElement('div');
         msgDiv.className = `msg ${role}`;

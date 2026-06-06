@@ -535,5 +535,81 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       // Raw-text dataset should be cleared after finalize.
       expect(bubble.dataset.streamRaw).toBeUndefined()
     })
+
+    // ── GFM Tables ────────────────────────────────────────────────────────
+    it('Scenario: renderMarkdown emits a <table> with <thead> for a GFM table', () => {
+      const { renderMarkdown } = internals()
+      const src = '| Name | Value |\n|------|-------|\n| foo  | 1     |\n| bar  | 2     |'
+      const html = renderMarkdown(src)
+      expect(html).toContain('<table>')
+      expect(html).toContain('<thead>')
+      expect(html).toContain('<th>Name</th>')
+      expect(html).toContain('<th>Value</th>')
+      expect(html).toContain('<tbody>')
+      expect(html).toContain('<td>foo</td>')
+      expect(html).toContain('<td>2</td>')
+    })
+
+    it('Scenario: renderMarkdown emits a <table> WITHOUT <thead> when the header row is empty', () => {
+      const { renderMarkdown } = internals()
+      // This is the exact pattern that rendered as raw pipes in 0.0.4 —
+      // operator wrote a header-less two-column key/value table.
+      const src = '| | |\n|---|---|\n| latest.json version | 0.0.4 |\n| Build time | ~6 min |'
+      const html = renderMarkdown(src)
+      expect(html).toContain('<table>')
+      expect(html).not.toContain('<thead>')
+      expect(html).toContain('<tbody>')
+      expect(html).toContain('<td>latest.json version</td>')
+      expect(html).toContain('<td>0.0.4</td>')
+      expect(html).toContain('<td>Build time</td>')
+      expect(html).toContain('<td>~6 min</td>')
+    })
+
+    it('Scenario: renderMarkdown honours :--- / ---: / :---: alignment in the separator row', () => {
+      const { renderMarkdown } = internals()
+      const src = '| L | R | C |\n|:---|---:|:---:|\n| a | b | c |'
+      const html = renderMarkdown(src)
+      expect(html).toContain('style="text-align:left"')
+      expect(html).toContain('style="text-align:right"')
+      expect(html).toContain('style="text-align:center"')
+    })
+
+    it('Scenario: renderMarkdown applies inline formatting (bold/code) inside table cells', () => {
+      const { renderMarkdown } = internals()
+      const src = '| col |\n|-----|\n| **bold** and `code` |'
+      const html = renderMarkdown(src)
+      expect(html).toContain('<strong>bold</strong>')
+      expect(html).toContain('<code>code</code>')
+    })
+
+    // ── Empty-bubble cleanup ──────────────────────────────────────────────
+    it('Scenario: isVisuallyEmpty returns true for an empty bubble', () => {
+      const isVisuallyEmpty = (internals() as any).isVisuallyEmpty
+      const bubble = document.createElement('div')
+      expect(isVisuallyEmpty(bubble)).toBe(true)
+    })
+
+    it('Scenario: isVisuallyEmpty returns true for a whitespace-only bubble', () => {
+      const isVisuallyEmpty = (internals() as any).isVisuallyEmpty
+      const bubble = document.createElement('div')
+      bubble.innerHTML = '   \n   '
+      expect(isVisuallyEmpty(bubble)).toBe(true)
+    })
+
+    it('Scenario: isVisuallyEmpty returns false for a bubble with text content', () => {
+      const isVisuallyEmpty = (internals() as any).isVisuallyEmpty
+      const bubble = document.createElement('div')
+      bubble.innerHTML = '<p>hi</p>'
+      expect(isVisuallyEmpty(bubble)).toBe(false)
+    })
+
+    it('Scenario: isVisuallyEmpty returns false for a bubble with a rich block (table/img/pre/ul/a)', () => {
+      const isVisuallyEmpty = (internals() as any).isVisuallyEmpty
+      for (const html of ['<table></table>', '<img src="x">', '<pre></pre>', '<ul></ul>', '<a href="#"></a>']) {
+        const b = document.createElement('div')
+        b.innerHTML = html
+        expect(isVisuallyEmpty(b)).toBe(false)
+      }
+    })
   })
 })
