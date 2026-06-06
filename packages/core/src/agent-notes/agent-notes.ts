@@ -99,6 +99,18 @@ export class AgentNotesService extends Effect.Tag("luna/AgentNotesService")<
           }),
         )
 
+      const getRecentAcrossSessions: AgentNotesApi["getRecentAcrossSessions"] = (
+        limit = 20,
+      ) =>
+        Ref.get(store).pipe(
+          Effect.map((map) => {
+            // Reverse before stable sort so equal-ts notes retain DESC insertion order.
+            const notes = Array.from(map.values()).reverse()
+            notes.sort((a, b) => b.ts - a.ts)
+            return notes.slice(0, limit) as ReadonlyArray<AgentNote>
+          }),
+        )
+
       const getChain: AgentNotesApi["getChain"] = (sessionId) =>
         Ref.get(store).pipe(
           Effect.map((map) => {
@@ -144,6 +156,7 @@ export class AgentNotesService extends Effect.Tag("luna/AgentNotesService")<
       return {
         record,
         getRecent,
+        getRecentAcrossSessions,
         getChain,
         getByKind,
         getById,
@@ -229,6 +242,12 @@ export class AgentNotesService extends Effect.Tag("luna/AgentNotesService")<
            ORDER BY ts DESC
            LIMIT ?`,
         )
+        const recentAllStmt = db.query(
+          `SELECT id, session_id, parent_id, kind, summary, payload_json, ts
+           FROM agent_notes
+           ORDER BY ts DESC
+           LIMIT ?`,
+        )
         const byIdStmt = db.query(
           `SELECT id, session_id, parent_id, kind, summary, payload_json, ts
            FROM agent_notes
@@ -311,6 +330,16 @@ export class AgentNotesService extends Effect.Tag("luna/AgentNotesService")<
               new NoteError({ op: "query", message: String(cause), cause }),
           })
 
+        const getRecentAcrossSessions: AgentNotesApi["getRecentAcrossSessions"] = (
+          limit = 20,
+        ) =>
+          Effect.try({
+            try: () =>
+              (recentAllStmt.all(limit) as RawRow[]).map(rowToNote),
+            catch: (cause) =>
+              new NoteError({ op: "query", message: String(cause), cause }),
+          })
+
         const getChain: AgentNotesApi["getChain"] = (sessionId) =>
           Effect.try({
             try: () =>
@@ -363,6 +392,7 @@ export class AgentNotesService extends Effect.Tag("luna/AgentNotesService")<
         return {
           record,
           getRecent,
+          getRecentAcrossSessions,
           getChain,
           getByKind,
           getById,

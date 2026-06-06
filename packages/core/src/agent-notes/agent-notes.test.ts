@@ -324,6 +324,74 @@ describe("AgentNotesService", () => {
     })
   })
 
+  // ── getRecentAcrossSessions ─────────────────────────────────────────────────
+
+  describe("getRecentAcrossSessions", () => {
+    it("returns notes from ALL sessions ordered ts DESC (the empty-filter recovery path)", async () => {
+      const results = await run(
+        Effect.gen(function* () {
+          const svc = yield* AgentNotesService
+          yield* svc.record({ sessionId: "ras-1", kind: "reflection", summary: "first" })
+          yield* svc.record({ sessionId: "ras-2", kind: "progress",   summary: "second" })
+          yield* svc.record({ sessionId: "ras-3", kind: "decision",   summary: "third" })
+          return yield* svc.getRecentAcrossSessions()
+        }),
+      )
+
+      expect(results).toHaveLength(3)
+      // DESC by insertion order (ts ties resolve to insertion-DESC).
+      expect(results[0].summary).toBe("third")
+      expect(results[1].summary).toBe("second")
+      expect(results[2].summary).toBe("first")
+    })
+
+    it("respects the limit when provided", async () => {
+      const results = await run(
+        Effect.gen(function* () {
+          const svc = yield* AgentNotesService
+          for (let i = 0; i < 30; i++) {
+            yield* svc.record({
+              sessionId: `ras-lim-${i % 4}`,
+              kind: "progress",
+              summary: `n-${i}`,
+            })
+          }
+          return yield* svc.getRecentAcrossSessions(5)
+        }),
+      )
+
+      expect(results).toHaveLength(5)
+    })
+
+    it("defaults to a limit of 20", async () => {
+      const results = await run(
+        Effect.gen(function* () {
+          const svc = yield* AgentNotesService
+          for (let i = 0; i < 50; i++) {
+            yield* svc.record({
+              sessionId: "ras-default",
+              kind: "progress",
+              summary: `n-${i}`,
+            })
+          }
+          return yield* svc.getRecentAcrossSessions()
+        }),
+      )
+
+      expect(results).toHaveLength(20)
+    })
+
+    it("returns an empty array when no notes exist", async () => {
+      const results = await run(
+        Effect.gen(function* () {
+          const svc = yield* AgentNotesService
+          return yield* svc.getRecentAcrossSessions()
+        }),
+      )
+      expect(results).toEqual([])
+    })
+  })
+
   // ── getById ─────────────────────────────────────────────────────────────────
 
   describe("getById", () => {
