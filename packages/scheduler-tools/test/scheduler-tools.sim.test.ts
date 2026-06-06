@@ -29,6 +29,7 @@ import {
   Clock,
   JobScheduler,
   JobSchedulerLayer,
+  JobsStoreService,
   TriggerAgent,
   TriggerAgentLayer,
 } from "@luna/core"
@@ -36,12 +37,13 @@ import { makeSchedulerTools } from "../src/tools.js"
 
 /** Provide the scheduler stack with TestClock substituted for real Clock. */
 const withTestScheduler = <A, E>(
-  prog: Effect.Effect<A, E, TriggerAgent | JobScheduler | Clock>,
+  prog: Effect.Effect<A, E, TriggerAgent | JobScheduler | JobsStoreService | Clock>,
 ) =>
   Effect.scoped(
     prog.pipe(
       Effect.provide(TriggerAgentLayer.Default),
       Effect.provide(JobSchedulerLayer.make({ capacity: 16, offerPolicy: "drop-newest" })),
+      Effect.provide(JobsStoreService.Memory),
       Effect.provide(Clock.Default),
       Effect.provide(TestContext.TestContext),
     ),
@@ -54,8 +56,9 @@ describe("scheduler-tools — Tier 2 simulation", () => {
         Effect.gen(function* () {
           const trigger = yield* TriggerAgent
           const sched = yield* JobScheduler
+          const jobsStore = yield* JobsStoreService
           const layerScope = yield* Effect.scope
-          const [createTool] = makeSchedulerTools(trigger, layerScope)
+          const [createTool] = makeSchedulerTools(trigger, layerScope, jobsStore)
 
           const counter = yield* Ref.make(0)
           const done = yield* Deferred.make<void>()
@@ -126,8 +129,9 @@ describe("scheduler-tools — Tier 2 simulation", () => {
         Effect.gen(function* () {
           const trigger = yield* TriggerAgent
           const sched = yield* JobScheduler
+          const jobsStore = yield* JobsStoreService
           const layerScope = yield* Effect.scope
-          const [, , cancelTool] = makeSchedulerTools(trigger, layerScope)
+          const [, , cancelTool] = makeSchedulerTools(trigger, layerScope, jobsStore)
 
           const counter = yield* Ref.make(0)
 
@@ -177,10 +181,12 @@ describe("scheduler-tools — Tier 2 simulation", () => {
       withTestScheduler(
         Effect.gen(function* () {
           const trigger = yield* TriggerAgent
+          const jobsStore = yield* JobsStoreService
           const layerScope = yield* Effect.scope
           const [createTool, listTool, cancelTool] = makeSchedulerTools(
             trigger,
             layerScope,
+            jobsStore,
           )
 
           // Create two schedules.

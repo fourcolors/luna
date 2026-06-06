@@ -401,15 +401,18 @@ CREATE TABLE memory_vectors (                -- when vector backend enabled
   ts            INTEGER NOT NULL
 );
 
--- Jobs & Schedule
+-- Jobs & Schedule  (IMPLEMENTED Phase 12a — packages/core/src/jobs/jobs-store.ts;
+--                   SchedulerToolsLayer boot-reload re-registers every row
+--                   so cron schedules survive chat-server restarts)
 CREATE TABLE jobs (
   id            TEXT PRIMARY KEY,
-  kind          TEXT NOT NULL,               -- cron|oneshot|file-watch
+  kind          TEXT NOT NULL,               -- cron|oneshot|file-watch  (cron only in v1)
   spec          TEXT NOT NULL,
   next_run      INTEGER,
   last_run      INTEGER,
   last_status   TEXT,
   payload_json  TEXT NOT NULL
+  -- Shipped impl adds `created_at` + `updated_at` (additive per §10.3).
 );
 
 -- Account Rotation
