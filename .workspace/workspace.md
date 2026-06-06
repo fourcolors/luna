@@ -70,21 +70,22 @@ Issues themselves live in GitHub, not here. Don't duplicate that table.
    - `bun install` (only when `bun.lock` changed; run inside the
      container if `node_modules` is container-local — `incus exec
      luna-dev -- bash -c 'cd /root/luna && bun install'`).
-   - `incus exec luna-dev -- systemctl restart luna-dev-chat-server.service`
-   - **Verify** with `incus exec luna-dev -- journalctl -u
-     luna-dev-chat-server.service --no-pager -n 30` and
-     `curl -sS http://localhost:5753/healthz`. Service shows `active`
-     but a boot exception can still crash-loop — read the journal
-     before declaring success.
+   - `scripts/restart-channel.sh dev` — guarded restart. Refuses if a
+     WebSocket session is connected to port 5753 (the dev channel) so
+     Luna doesn't silently delete the chat thread she is running in.
+     Pass `--yes` to accept the kill when you intentionally want to
+     restart through your own active session (issue #24).
+   - The script also tails the journal and curls `/healthz`. Service
+     shows `active` even when a boot exception is crash-looping — the
+     `journalctl` output is the real signal.
 6. Smoke-test via `luna chat --dev`. Verify the new behavior end-to-end.
 7. **Stop and wait for operator approval** before promoting to master.
    Operator sometimes wants to live with dev for a beat first.
 8. Promote: fast-forward `master` → `dev`, push, pull on jax-box's
    stable repo (`cd /root/luna/stable/repo && git pull --ff-only`),
-   restart with `systemctl restart luna-chat-server.service` (stable
-   runs directly on the host, no `incus exec` prefix). **Warning:**
-   restarting stable kills any active operator session connected via
-   the stable channel. Tell the operator before doing this.
+   then `scripts/restart-channel.sh stable` (with `--yes` if and only
+   if the operator has consented to ending their stable chat session
+   first). Stable runs directly on the host, no container prefix.
 
 ### First-time workspace registration on a new channel
 
