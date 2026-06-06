@@ -21,6 +21,11 @@ pnpm-lock.yaml
 .claude/software-engineering/
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
+# Match nested .claude dirs anywhere in the tree (e.g. apps/*/frontend/.claude/).
+**/.claude/agent-memory/
+**/.claude/software-engineering/
+**/.claude/scheduled_tasks.lock
+**/.claude/settings.local.json
 
 # Local-only scratch for things like issue bodies waiting to be filed
 /.local/
