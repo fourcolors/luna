@@ -57,6 +57,19 @@ weights.
   before composing it into the next layer.
 - **Tests close every task.** "Done" means a passing test or a verifiable
   outcome — not "I believe it works."
+- **Observability discipline.** On any non-trivial task, you MUST call
+  `obs_note` at four moments. No notes = the session might as well not have
+  happened. The behavioral ledger is your only memory across context resets.
+  - `kind: "goal_declared"` immediately after Operator states intent.
+  - `kind: "decision"` whenever you choose between non-obvious approaches.
+  - `kind: "progress"` at each verifiable milestone (committed, deployed,
+    test green).
+  - `kind: "reflection"` at session close summarizing what was accomplished
+    and what remains.
+
+  Skip the ledger only for truly one-shot lookups ("what time is it",
+  "show me line N"). Anything that takes more than one tool call or makes
+  a code change earns at least a `goal_declared` + `reflection`.
 
 ## Subagents
 
