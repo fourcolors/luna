@@ -1428,7 +1428,7 @@
       // build they're talking to.
       CLIENT_INFO: {
         name: 'luna-moon',
-        version: '0.0.8',
+        version: '0.0.9',
         platform: 'tauri-darwin',
       },
     };
@@ -2055,30 +2055,35 @@
             this.startTurnTimeout();
             let lastMsg = DOM.chatMessages.lastElementChild;
 
-            if (lastMsg && lastMsg.classList.contains('assistant')) {
+            // Re-use the tail only if it's a streaming TEXT bubble. tool-call
+            // cards are also .msg.assistant but their inner <details>/<summary>
+            // structure must not be overwritten by StreamRender — when text
+            // deltas follow a tool result, we open a fresh text bubble instead.
+            const canReuse = lastMsg
+              && lastMsg.classList.contains('assistant')
+              && !lastMsg.classList.contains('tool-call-card');
+
+            if (canReuse) {
               if (lastMsg.querySelector('.typing-dots')) {
                 // First delta of the turn — drop the typing dots and seed
                 // the streaming buffer with the initial delta text. Guard:
-                // if frame.text is empty/null, we'd strip the dots and be
-                // left with a permanently empty bubble (no dots, no text,
-                // no rich block). Leave the dots until a delta with real
-                // content arrives — they're doing useful work as a visible
-                // "still working" cue.
+                // empty frame.text would strip the dots and leave a
+                // permanently empty bubble; leave the dots until real text.
                 if (!frame.text) break;
                 lastMsg.innerHTML = '';
+                lastMsg.dataset.turnId = String(frame.turnId || '');
                 StreamRender.reset(lastMsg, frame.text);
               } else {
                 StreamRender.append(lastMsg, frame.text);
               }
             } else {
-              // No assistant bubble yet (rare; usually typing dots exist).
-              // Append a fresh assistant bubble and seed it with the delta.
-              // Guard: if frame.text is empty/null/undefined we'd be making
-              // a permanently-empty bubble that lingers between messages —
-              // skip until a delta with real content arrives.
+              // Either no last assistant bubble, OR the last one is a tool
+              // card (so subsequent text starts a new text bubble after it).
+              // Guard: empty frame.text would make a perma-empty bubble.
               if (!frame.text) break;
               ChatEngine.appendMessage('assistant', '');
               const fresh = DOM.chatMessages.lastElementChild;
+              fresh.dataset.turnId = String(frame.turnId || '');
               StreamRender.reset(fresh, frame.text);
             }
             DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
@@ -2089,6 +2094,7 @@
             // Finalize streaming turn. StreamRender.finalize cancels any
             // pending rAF render and writes the canonical text so a late
             // frame can't clobber the final state.
+            const doneTurnId = State.activeTurnId;
             State.activeTurnId = null;
             this.clearTurnTimeout();
             let doneMsg = DOM.chatMessages.lastElementChild;
@@ -2099,16 +2105,28 @@
               } else {
                 doneMsg.remove();
               }
-            } else if (frame.message && doneMsg && doneMsg.classList.contains('assistant')) {
-              // Streaming finished — reconcile with canonical message text.
-              StreamRender.finalize(doneMsg, frame.message.text ?? (doneMsg.dataset.streamRaw ?? doneMsg.textContent));
+            } else if (doneMsg && doneMsg.classList.contains('assistant') && !doneMsg.classList.contains('tool-call-card')) {
+              // Did this turn include any tool calls?
+              // If so, frame.message.text is the canonical FULL message text
+              // (incl. all segments split across tool calls). Earlier text
+              // bubbles in the turn already hold the earlier segments, so
+              // overwriting THIS bubble with the full canonical would
+              // duplicate everything visible above. Use the bubble's own
+              // streamRaw instead — that's just this segment's text.
+              let hasToolCallsInTurn = false;
+              if (doneTurnId) {
+                const allCards = DOM.chatMessages.querySelectorAll('.tool-call-card');
+                for (const c of allCards) {
+                  if (c.dataset.turnId === String(doneTurnId)) { hasToolCallsInTurn = true; break; }
+                }
+              }
+              if (hasToolCallsInTurn) {
+                StreamRender.finalize(doneMsg, doneMsg.dataset.streamRaw ?? doneMsg.textContent);
+              } else if (frame.message) {
+                StreamRender.finalize(doneMsg, frame.message.text ?? (doneMsg.dataset.streamRaw ?? doneMsg.textContent));
+              }
             }
-            // ALWAYS sweep trailing visually-empty assistant bubbles, regardless
-            // of which branch above ran (or whether either ran at all). Covers:
-            //   - frame.message falsy (no canonical text -> finalize branch skipped)
-            //   - tool-only / sub-turn streams that never produced visible text
-            //   - thread-snapshot replays that left empty bubbles in the tail
-            //   - upgrades from older moons that had leaked empty bubbles
+            // ALWAYS sweep trailing visually-empty assistant bubbles.
             ChatEngine.sweepTrailingEmptyAssistantBubbles();
             DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
             break;
