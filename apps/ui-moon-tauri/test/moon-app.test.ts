@@ -832,6 +832,168 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect((chat.children[0] as HTMLElement).classList.contains('tool-call-card')).toBe(true)
     })
 
+    // ── Regression: text after tool round-trip (moon-009 fix) ─────────────
+    //
+    // Bug summary: tool-call cards carry className "msg assistant tool-call-card".
+    // Pre-fix, assistant-delta and assistant-done saw the card at the tail,
+    // matched .contains('assistant'), and routed StreamRender at it — which
+    // OVERWROTE the card's <details>/<summary> structure with rendered
+    // markdown text. Visually the card kept its faint chrome but its inner
+    // content was replaced; combined with the card's subtle styling it
+    // looked like "response disappeared" to the operator.
+    //
+    // Canonical fix (commit cf7deed, originally 44a51a9 on jax-box):
+    //   1. assistant-delta only reuses a TEXT bubble (excludes tool-call-card).
+    //      Text bubbles get tagged with data-turn-id at creation.
+    //   2. assistant-done detects whether the turn has any tool-call-cards
+    //      via data-turn-id match. If yes, finalize with the bubble's own
+    //      streamRaw (NOT frame.message.text — that's the FULL multi-segment
+    //      canonical text and using it would duplicate earlier segments).
+    //   3. assistant-done refuses to finalize into a tool-call-card.
+    //
+    // These tests pin all three guarantees.
+    it('Scenario: assistant-delta after a tool-call-card opens a fresh text bubble (does NOT overwrite the card)', () => {
+      const { handleFrame, appendToolCallCard } = internals() as any
+      const chat = document.getElementById('chat-messages')!
+      chat.innerHTML = ''
+
+      // Tool round-trip already happened.
+      appendToolCallCard({
+        type: 'tool-call', threadId: 't', turnId: 'turn-1', toolCallId: 'c1',
+        name: 'Read', input: { path: '/etc/hosts' },
+      })
+      expect(chat.children.length).toBe(1)
+      const card = chat.children[0] as HTMLElement
+      expect(card.classList.contains('tool-call-card')).toBe(true)
+      // <details><summary> structure is the bug's tripwire.
+      expect(card.querySelector('details > summary')).not.toBeNull()
+
+      handleFrame({
+        type: 'assistant-delta', threadId: 't', turnId: 'turn-1',
+        text: 'Here is what I found.',
+      })
+
+      // The card is intact AND a fresh text bubble appears after it.
+      expect(chat.children.length).toBe(2)
+      expect((chat.children[0] as HTMLElement).classList.contains('tool-call-card')).toBe(true)
+      expect((chat.children[0] as HTMLElement).querySelector('details > summary')).not.toBeNull()
+      const fresh = chat.children[1] as HTMLElement
+      expect(fresh.classList.contains('assistant')).toBe(true)
+      expect(fresh.classList.contains('tool-call-card')).toBe(false)
+      expect(fresh.dataset.streamRaw).toBe('Here is what I found.')
+      // Text bubbles MUST be tagged with the turn id so assistant-done can
+      // pair them with any matching tool-call-card during the has-tool-calls
+      // detection step. Missing this tag is what would re-open the
+      // duplication bug.
+      expect(fresh.dataset.turnId).toBe('turn-1')
+    })
+
+    it('Scenario: assistant-done after tool-call+text-stream finalizes with streamRaw (does NOT duplicate via frame.message.text)', () => {
+      const { handleFrame, appendToolCallCard } = internals() as any
+      const chat = document.getElementById('chat-messages')!
+      chat.innerHTML = ''
+
+      // Multi-segment turn: text-before-tool, then tool, then text-after-tool.
+      // Pre-fix bug: assistant-done would write frame.message.text (= the
+      // CONCATENATION of both text segments) into the post-tool bubble,
+      // duplicating the pre-tool text on screen.
+      handleFrame({ type: 'assistant-delta', threadId: 't', turnId: 'turn-1', text: 'Looking that up. ' })
+      appendToolCallCard({
+        type: 'tool-call', threadId: 't', turnId: 'turn-1', toolCallId: 'c1',
+        name: 'Read', input: {},
+      })
+      handleFrame({ type: 'assistant-delta', threadId: 't', turnId: 'turn-1', text: 'Found 3 lines.' })
+
+      // Three children: text1, card, text2 (in that order).
+      expect(chat.children.length).toBe(3)
+      const text2 = chat.children[2] as HTMLElement
+      expect(text2.dataset.streamRaw).toBe('Found 3 lines.')
+
+      // Server sends canonical FULL message text on assistant-done.
+      handleFrame({
+        type: 'assistant-done', threadId: 't', turnId: 'turn-1', seq: 1,
+        message: {
+          id: 'm1', role: 'assistant', seq: 1, createdAt: 0,
+          text: 'Looking that up. Found 3 lines.',
+          content: [
+            { type: 'text', text: 'Looking that up. ' },
+            { type: 'text', text: 'Found 3 lines.' },
+          ],
+        },
+      })
+
+      // Post-fix: each bubble keeps its own segment, no duplication.
+      expect(chat.children.length).toBe(3)
+      const t1 = chat.children[0] as HTMLElement
+      const t2 = chat.children[2] as HTMLElement
+      expect(t1.textContent?.trim()).toBe('Looking that up.')
+      // The post-tool bubble shows ONLY "Found 3 lines." — NOT the full
+      // canonical text "Looking that up. Found 3 lines." which would be
+      // the duplication-bug fingerprint.
+      expect(t2.textContent?.trim()).toBe('Found 3 lines.')
+      expect(t2.textContent).not.toContain('Looking that up.')
+    })
+
+    it('Scenario: assistant-done with tool-call-card as the literal tail does NOT finalize into it', () => {
+      const { handleFrame, appendToolCallCard } = internals() as any
+      const chat = document.getElementById('chat-messages')!
+      chat.innerHTML = ''
+
+      // Turn that ended on a tool with no trailing assistant text. doneMsg
+      // would be the tool-call-card itself. Pre-fix, finalize would write
+      // frame.message.text into the card, clobbering its structure.
+      appendToolCallCard({
+        type: 'tool-call', threadId: 't', turnId: 'turn-1', toolCallId: 'c1',
+        name: 'Bash', input: { command: 'ls' },
+      })
+      const card = chat.children[0] as HTMLElement
+      const detailsBefore = card.querySelector('details')
+      expect(detailsBefore).not.toBeNull()
+
+      handleFrame({
+        type: 'assistant-done', threadId: 't', turnId: 'turn-1', seq: 1,
+        message: {
+          id: 'm1', role: 'assistant', seq: 1, createdAt: 0,
+          text: 'Files: a, b, c.',
+          content: [{ type: 'text', text: 'Files: a, b, c.' }],
+        },
+      })
+
+      // The card is still a card (structure intact). finalize refused to
+      // write into it.
+      expect(card.classList.contains('tool-call-card')).toBe(true)
+      expect(card.querySelector('details')).not.toBeNull()
+      expect(card.querySelector('details > summary')).not.toBeNull()
+    })
+
+    it('Scenario: pre-tool-call typing-dots/delta path still works (regression guard for the simple case)', () => {
+      const { handleFrame } = internals() as any
+      const chat = document.getElementById('chat-messages')!
+      chat.innerHTML = ''
+      const dots = document.createElement('div')
+      dots.className = 'msg assistant'
+      dots.innerHTML = '<div class="typing-dots"><div class="dot"></div></div>'
+      chat.appendChild(dots)
+
+      handleFrame({ type: 'assistant-delta', threadId: 't', turnId: 'x', text: 'Hello.' })
+      handleFrame({
+        type: 'assistant-done', threadId: 't', turnId: 'x', seq: 1,
+        message: {
+          id: 'm', role: 'assistant', seq: 1, createdAt: 0,
+          text: 'Hello.',
+          content: [{ type: 'text', text: 'Hello.' }],
+        },
+      })
+
+      // Same single bubble; no tool-call-card so finalize uses
+      // frame.message.text and the rendered text appears.
+      expect(chat.children.length).toBe(1)
+      const bubble = chat.children[0] as HTMLElement
+      expect(bubble.querySelector('.typing-dots')).toBeNull()
+      expect(bubble.classList.contains('tool-call-card')).toBe(false)
+      expect(bubble.textContent).toContain('Hello.')
+    })
+
     // ── Textarea auto-grow ────────────────────────────────────────────────
     it('Scenario: autoGrowMessageInput grows the textarea to fit multi-line content (jsdom-driven scrollHeight)', () => {
       const { autoGrowMessageInput } = internals() as any

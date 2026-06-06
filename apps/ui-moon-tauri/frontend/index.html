@@ -2409,6 +2409,12 @@
       window.__MoonInternals.appendToolCallCard = (f) => ChatEngine.appendToolCallCard(f);
       window.__MoonInternals.attachToolResult = (f) => ChatEngine.attachToolResult(f);
       window.__MoonInternals.autoGrowMessageInput = () => ChatEngine.autoGrowMessageInput();
+      // Test driver for the frame pipeline: lets jsdom suites feed a ws frame
+      // directly into the WebSocketEngine dispatcher (assistant-delta /
+      // assistant-done / tool-call / tool-result) without standing up a real
+      // socket. Used by the post-tool-text regression tests pinning the
+      // moon-009 fix in place.
+      window.__MoonInternals.handleFrame = (frame) => WebSocketEngine.handleFrame(frame);
     }
 
     /**
