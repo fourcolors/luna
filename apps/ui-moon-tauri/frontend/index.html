@@ -3758,6 +3758,22 @@
 
       handleSubmit(e) {
         e.preventDefault();
+        // Single-fire guard against ANY double-call within the same task tick.
+        // Catches: WKWebView quirks where Enter on a textarea inside a form
+        // with a `type="submit"` button fires BOTH the textarea's keydown
+        // (which calls handleSubmit) AND the form's implicit submit (which
+        // also calls handleSubmit); a button double-tap where the click
+        // dispatches twice; any future re-wiring that double-binds the
+        // submit handler. The textarea-empty check downstream is a soft
+        // dedup but won't catch e.g. attachment-only sends or the
+        // no-active-thread branch that sends a new-thread frame before
+        // clearing state. This flag clears on the next microtask, so two
+        // intentional user submits (button click + button click separated
+        // by reaction time) still both fire.
+        if (this._submitting) return;
+        this._submitting = true;
+        queueMicrotask(() => { this._submitting = false; });
+
         const typed = DOM.messageInput.value.trim();
         const folded = Attachments.textBlock();
         const wire = Attachments.wireAttachments();
