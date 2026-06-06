@@ -1103,5 +1103,216 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(chat.children.length).toBe(1)
       expect(chat.children[0].textContent).toContain('streamed answer')
     })
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: UserAsk / alignment-survey (Phase 3 D3, Moon-side wiring)
+  //
+  // The TUI already paints a survey modal when the server pushes a
+  // `survey-request` frame; this suite is the Moon-UI parity. We drive the
+  // pipeline at the same seam the production WS handler uses
+  // (__MoonInternals.handleFrame), then poke buttons in the panel and assert
+  // the resulting `survey-response` frame.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: UserAsk / alignment-survey panel', () => {
+    const M = () => (window as any).__MoonInternals
+
+    const sampleFrame = () => ({
+      type: 'survey-request',
+      surveyId: 'survey-1700',
+      issuedAt: 1700,
+      items: [
+        { id: 'tq-1', kind: 'task_quality', prompt: 'How did Luna do on the last task?', ref: 'task-99' },
+        { id: 'bv-1', kind: 'belief_validation', prompt: 'Sterling prefers concise replies.',
+          ref: 'belief-7', beliefId: 'belief-7' },
+        { id: 'bv-2', kind: 'belief_validation', prompt: 'Sterling works mostly on macOS.',
+          ref: 'belief-8', beliefId: 'belief-8' },
+      ],
+    })
+
+    beforeEach(() => {
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      ;(window as any).cancelAnimationFrame = () => {}
+      const m = M()
+      if (m && m.ChatState && typeof m.ChatState.reset === 'function') m.ChatState.reset()
+      const panel = document.getElementById('user-ask-panel')
+      if (panel) { panel.hidden = true; }
+      const body = document.getElementById('user-ask-body')
+      if (body) body.innerHTML = ''
+      if (m && m.SurveyEngine) {
+        m.SurveyEngine.pending = null
+        m.SurveyEngine.answers = { likert: null, beliefAnswers: {} }
+      }
+    })
+
+    it('buildSurveyVerdicts maps task_quality (n=4) to score=0.75 and stamps at=issuedAt', () => {
+      const items = sampleFrame().items
+      const verdicts = M().buildSurveyVerdicts(items, { likert: 4, beliefAnswers: {} }, 1700)
+      expect(verdicts).toHaveLength(1)
+      expect(verdicts[0]).toMatchObject({
+        itemId: 'tq-1',
+        kind: 'task_quality',
+        ref: 'task-99',
+        score: 0.75,
+        via: 'survey',
+        at: 1700,
+      })
+    })
+
+    it('buildSurveyVerdicts maps belief answers to verdict + omits unanswered beliefs', () => {
+      const items = sampleFrame().items
+      const verdicts = M().buildSurveyVerdicts(items, {
+        likert: 1,                                                       // → score 0
+        beliefAnswers: { 'belief-7': 'corrected' },                       // belief-8 unanswered
+      }, 1700)
+      expect(verdicts).toHaveLength(2)
+      const tq = verdicts.find((v: any) => v.kind === 'task_quality')
+      const bv = verdicts.find((v: any) => v.kind === 'belief_validation')
+      expect(tq.score).toBe(0)
+      expect(bv).toMatchObject({
+        itemId: 'bv-1', beliefId: 'belief-7', verdict: 'corrected', via: 'survey', at: 1700,
+      })
+    })
+
+    it('Scenario: a survey-request frame reveals the docked user-ask panel with the prompt + 5 Likert buttons + 3 belief buttons', () => {
+      M().handleFrame(sampleFrame())
+
+      const panel = document.getElementById('user-ask-panel') as HTMLElement
+      expect(panel.hidden).toBe(false)
+
+      const body = document.getElementById('user-ask-body') as HTMLElement
+      const items = body.querySelectorAll('.user-ask-item')
+      expect(items.length).toBe(3)
+
+      // Task-quality row exposes 5 Likert buttons.
+      const tqRow = items[0] as HTMLElement
+      expect(tqRow.dataset.kind).toBe('task_quality')
+      expect(tqRow.querySelectorAll('.user-ask-choice[data-likert]').length).toBe(5)
+
+      // Each belief row exposes 3 verdict buttons keyed by beliefId.
+      const bvRow = items[1] as HTMLElement
+      expect(bvRow.dataset.kind).toBe('belief_validation')
+      expect(bvRow.dataset.beliefId).toBe('belief-7')
+      const verdictBtns = bvRow.querySelectorAll('.user-ask-choice[data-verdict]')
+      expect(verdictBtns.length).toBe(3)
+
+      // Submit is disabled until task_quality is answered.
+      const submit = document.getElementById('user-ask-submit') as HTMLButtonElement
+      expect(submit.disabled).toBe(true)
+    })
+
+    it('Scenario: clicking a Likert button selects it visually + enables Submit', () => {
+      M().handleFrame(sampleFrame())
+      const submit = document.getElementById('user-ask-submit') as HTMLButtonElement
+      expect(submit.disabled).toBe(true)
+
+      const tqRow = document.querySelectorAll('.user-ask-item')[0] as HTMLElement
+      const btn3 = tqRow.querySelector('.user-ask-choice[data-likert="3"]') as HTMLButtonElement
+      btn3.click()
+
+      expect(btn3.classList.contains('selected')).toBe(true)
+      expect(submit.disabled).toBe(false)
+      // Other Likert buttons should NOT be selected.
+      const btn1 = tqRow.querySelector('.user-ask-choice[data-likert="1"]') as HTMLButtonElement
+      expect(btn1.classList.contains('selected')).toBe(false)
+    })
+
+    it('Scenario: clicking belief verdict buttons toggles single selection per belief row', () => {
+      M().handleFrame(sampleFrame())
+      const bv1 = document.querySelectorAll('.user-ask-item')[1] as HTMLElement
+      const confirmBtn = bv1.querySelector('.user-ask-choice[data-verdict="confirmed"]') as HTMLButtonElement
+      const rejectBtn  = bv1.querySelector('.user-ask-choice[data-verdict="rejected"]')  as HTMLButtonElement
+
+      confirmBtn.click()
+      expect(confirmBtn.classList.contains('selected')).toBe(true)
+
+      rejectBtn.click()
+      expect(rejectBtn.classList.contains('selected')).toBe(true)
+      expect(confirmBtn.classList.contains('selected')).toBe(false)
+    })
+
+    it('Scenario: Submit sends one survey-response frame and hides the panel', () => {
+      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      M().handleFrame(sampleFrame())
+
+      // Answer task_quality + one belief.
+      const items = document.querySelectorAll('.user-ask-item')
+      ;(items[0].querySelector('.user-ask-choice[data-likert="5"]') as HTMLButtonElement).click()
+      ;(items[1].querySelector('.user-ask-choice[data-verdict="confirmed"]') as HTMLButtonElement).click()
+
+      const submit = document.getElementById('user-ask-submit') as HTMLButtonElement
+      submit.click()
+
+      expect(sendSpy).toHaveBeenCalledTimes(1)
+      const frame = sendSpy.mock.calls[0][0] as any
+      expect(frame.type).toBe('survey-response')
+      expect(frame.surveyId).toBe('survey-1700')
+      expect(frame.issuedAt).toBe(1700)
+      expect(frame.verdicts).toHaveLength(2)
+      const tq = frame.verdicts.find((v: any) => v.kind === 'task_quality')
+      const bv = frame.verdicts.find((v: any) => v.kind === 'belief_validation')
+      expect(tq).toMatchObject({ score: 1, ref: 'task-99', at: 1700 })
+      expect(bv).toMatchObject({ verdict: 'confirmed', beliefId: 'belief-7', at: 1700 })
+
+      // Panel collapses.
+      const panel = document.getElementById('user-ask-panel') as HTMLElement
+      expect(panel.hidden).toBe(true)
+    })
+
+    it('Scenario: Dismiss closes the panel WITHOUT sending any wire frame', () => {
+      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      M().handleFrame(sampleFrame())
+
+      const dismiss = document.getElementById('user-ask-dismiss') as HTMLButtonElement
+      dismiss.click()
+
+      expect(sendSpy).not.toHaveBeenCalled()
+      const panel = document.getElementById('user-ask-panel') as HTMLElement
+      expect(panel.hidden).toBe(true)
+    })
+
+    it('Scenario: Submit is a no-op when task_quality is unanswered (defence in depth past disabled button)', () => {
+      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      M().handleFrame(sampleFrame())
+      // Only answer a belief — leave Likert null.
+      const items = document.querySelectorAll('.user-ask-item')
+      ;(items[1].querySelector('.user-ask-choice[data-verdict="rejected"]') as HTMLButtonElement).click()
+
+      // Call submit() directly (bypassing the disabled button).
+      M().SurveyEngine.submit()
+      expect(sendSpy).not.toHaveBeenCalled()
+
+      // Hint flips to error state.
+      const hint = document.getElementById('user-ask-hint') as HTMLElement
+      expect(hint.classList.contains('error')).toBe(true)
+    })
+
+    it('Scenario: a second survey-request replaces the first cleanly (fresh items, fresh answers)', () => {
+      M().handleFrame(sampleFrame())
+      // Answer the first one.
+      ;(document.querySelector('.user-ask-choice[data-likert="2"]') as HTMLButtonElement).click()
+
+      // Server pushes a NEW survey with a different issuedAt + different items.
+      M().handleFrame({
+        type: 'survey-request',
+        surveyId: 'survey-2200',
+        issuedAt: 2200,
+        items: [
+          { id: 'tq-9', kind: 'task_quality', prompt: 'Fresh check-in', ref: 'task-200' },
+        ],
+      })
+
+      const items = document.querySelectorAll('.user-ask-item')
+      expect(items.length).toBe(1)
+      expect((items[0] as HTMLElement).dataset.itemId).toBe('tq-9')
+
+      // No Likert button should be selected — answers were reset.
+      const selected = document.querySelectorAll('.user-ask-choice.selected')
+      expect(selected.length).toBe(0)
+
+      // Submit is disabled again.
+      const submit = document.getElementById('user-ask-submit') as HTMLButtonElement
+      expect(submit.disabled).toBe(true)
+    })
+  })
+
   })
 })

@@ -164,6 +164,23 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
       </div>
     </div>
     
+    <!-- UserAsk / alignment-survey banner. Hidden by default; SurveyEngine
+         populates and reveals it when a server \`survey-request\` frame
+         arrives. Lives between chat-messages and the input form so it sits
+         where the operator's eye naturally lands when answering. -->
+    <div class="user-ask-panel" id="user-ask-panel" role="dialog" aria-labelledby="user-ask-title" hidden="">
+      <div class="user-ask-header">
+        <span class="user-ask-icon" aria-hidden="true">🌙</span>
+        <h3 class="user-ask-title" id="user-ask-title">Luna is checking in</h3>
+        <button type="button" class="user-ask-dismiss" id="user-ask-dismiss" aria-label="Dismiss check-in">×</button>
+      </div>
+      <div class="user-ask-body" id="user-ask-body"></div>
+      <div class="user-ask-footer">
+        <span class="user-ask-hint" id="user-ask-hint">Rate task quality to submit</span>
+        <button type="button" class="user-ask-submit" id="user-ask-submit" disabled="">Submit</button>
+      </div>
+    </div>
+
     <form class="chat-input-area" id="chat-form">
       <div class="attach-error" id="attach-error" hidden=""></div>
       <div class="attachments-strip" id="attachments-strip" hidden=""></div>
@@ -365,6 +382,23 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
       </div>
     </div>
     
+    <!-- UserAsk / alignment-survey banner. Hidden by default; SurveyEngine
+         populates and reveals it when a server \`survey-request\` frame
+         arrives. Lives between chat-messages and the input form so it sits
+         where the operator's eye naturally lands when answering. -->
+    <div class="user-ask-panel" id="user-ask-panel" role="dialog" aria-labelledby="user-ask-title" hidden="">
+      <div class="user-ask-header">
+        <span class="user-ask-icon" aria-hidden="true">🌙</span>
+        <h3 class="user-ask-title" id="user-ask-title">Luna is checking in</h3>
+        <button type="button" class="user-ask-dismiss" id="user-ask-dismiss" aria-label="Dismiss check-in">×</button>
+      </div>
+      <div class="user-ask-body" id="user-ask-body"></div>
+      <div class="user-ask-footer">
+        <span class="user-ask-hint" id="user-ask-hint">Rate task quality to submit</span>
+        <button type="button" class="user-ask-submit" id="user-ask-submit" disabled="">Submit</button>
+      </div>
+    </div>
+
     <form class="chat-input-area" id="chat-form">
       <div class="attach-error" id="attach-error" hidden=""></div>
       <div class="attachments-strip" id="attachments-strip" hidden=""></div>

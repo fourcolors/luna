@@ -742,6 +742,139 @@
       margin-top: -4px;
     }
 
+    /* ── User-Ask / Survey panel (alignment check-in) ─────────────────────
+       Rendered as a docked banner inside .chat-panel (sibling of
+       .chat-messages, above .chat-input-area). Driven by SurveyEngine in
+       response to a server `survey-request` frame: ALWAYS one task_quality
+       Likert (1-5), followed by ≤3 belief-validation items. Submit echoes
+       a `survey-response` frame; Dismiss is a CLIENT-SIDE no-op (matches
+       TUI semantics — the survey re-surfaces on the next connection-time
+       due-check). */
+    .user-ask-panel {
+      position: relative;
+      margin: 0 10px 8px 10px;
+      padding: 0;
+      background: linear-gradient(135deg, rgba(138, 180, 248, 0.10) 0%, rgba(167, 139, 250, 0.10) 100%);
+      border: 1px solid rgba(138, 180, 248, 0.32);
+      border-radius: 14px;
+      font-size: 0.84rem;
+      color: #e7ecf7;
+      box-shadow: 0 4px 18px rgba(15, 18, 37, 0.35), inset 0 0 0 1px rgba(255,255,255,0.04);
+      animation: msgAppear 0.22s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
+      overflow: hidden;
+    }
+    .user-ask-panel[hidden] { display: none !important; }
+    .user-ask-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .user-ask-icon {
+      font-size: 1.05rem;
+      filter: drop-shadow(0 0 6px rgba(186, 218, 255, 0.55));
+    }
+    .user-ask-title {
+      margin: 0;
+      flex: 1;
+      font-family: var(--font-display);
+      font-weight: 600;
+      font-size: 0.85rem;
+      color: #f0f6ff;
+      letter-spacing: 0.01em;
+    }
+    .user-ask-dismiss {
+      background: transparent;
+      border: none;
+      color: #9aa6c4;
+      font-size: 1.1rem;
+      line-height: 1;
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 6px;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .user-ask-dismiss:hover { background: rgba(255, 255, 255, 0.08); color: #f0f6ff; }
+    .user-ask-body {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 10px 12px;
+      max-height: 240px;
+      overflow-y: auto;
+    }
+    .user-ask-body::-webkit-scrollbar { width: 6px; }
+    .user-ask-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 3px; }
+    .user-ask-item { display: flex; flex-direction: column; gap: 6px; }
+    .user-ask-prompt {
+      font-weight: 500;
+      color: #f0f6ff;
+      line-height: 1.35;
+    }
+    .user-ask-prompt-sub {
+      font-size: 0.74rem;
+      color: #98a3c1;
+      margin-top: 2px;
+    }
+    .user-ask-choices {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .user-ask-choice {
+      flex: 1 1 auto;
+      min-width: 38px;
+      padding: 6px 10px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      color: #d6deef;
+      border-radius: 8px;
+      font-family: var(--font-body);
+      font-size: 0.80rem;
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease, border 0.15s ease, transform 0.1s ease;
+    }
+    .user-ask-choice:hover { background: rgba(138, 180, 248, 0.12); border-color: rgba(138, 180, 248, 0.40); }
+    .user-ask-choice:active { transform: translateY(1px); }
+    .user-ask-choice.selected {
+      background: linear-gradient(135deg, rgba(138, 180, 248, 0.32), rgba(167, 139, 250, 0.32));
+      border-color: rgba(186, 218, 255, 0.55);
+      color: #ffffff;
+      box-shadow: 0 0 0 1px rgba(186, 218, 255, 0.20) inset;
+    }
+    .user-ask-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 12px;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      background: rgba(0, 0, 0, 0.12);
+    }
+    .user-ask-hint {
+      font-size: 0.72rem;
+      color: #98a3c1;
+      flex: 1;
+    }
+    .user-ask-hint.error { color: #fda4af; }
+    .user-ask-submit {
+      padding: 6px 14px;
+      background: linear-gradient(135deg, #8ab4f8 0%, #6c5ce7 100%);
+      color: #0f1225;
+      border: none;
+      border-radius: 8px;
+      font-family: var(--font-display);
+      font-weight: 600;
+      font-size: 0.78rem;
+      cursor: pointer;
+      letter-spacing: 0.02em;
+      transition: filter 0.15s ease, transform 0.1s ease, opacity 0.15s ease;
+    }
+    .user-ask-submit:hover:not(:disabled) { filter: brightness(1.08); }
+    .user-ask-submit:active:not(:disabled) { transform: translateY(1px); }
+    .user-ask-submit:disabled { opacity: 0.45; cursor: not-allowed; }
+
     /* Markdown rendering inside assistant bubbles (mirrors ui-web's .markdown conventions) */
     .msg.assistant > :first-child { margin-top: 0; }
     .msg.assistant > :last-child { margin-bottom: 0; }
@@ -1285,6 +1418,23 @@
       </div>
     </div>
     
+    <!-- UserAsk / alignment-survey banner. Hidden by default; SurveyEngine
+         populates and reveals it when a server `survey-request` frame
+         arrives. Lives between chat-messages and the input form so it sits
+         where the operator's eye naturally lands when answering. -->
+    <div class="user-ask-panel" id="user-ask-panel" role="dialog" aria-labelledby="user-ask-title" hidden>
+      <div class="user-ask-header">
+        <span class="user-ask-icon" aria-hidden="true">🌙</span>
+        <h3 class="user-ask-title" id="user-ask-title">Luna is checking in</h3>
+        <button type="button" class="user-ask-dismiss" id="user-ask-dismiss" aria-label="Dismiss check-in">×</button>
+      </div>
+      <div class="user-ask-body" id="user-ask-body"></div>
+      <div class="user-ask-footer">
+        <span class="user-ask-hint" id="user-ask-hint">Rate task quality to submit</span>
+        <button type="button" class="user-ask-submit" id="user-ask-submit" disabled>Submit</button>
+      </div>
+    </div>
+
     <form class="chat-input-area" id="chat-form">
       <div class="attach-error" id="attach-error" hidden></div>
       <div class="attachments-strip" id="attachments-strip" hidden></div>
@@ -1404,6 +1554,12 @@
       checkUpdateBtn: document.getElementById('check-update-btn'),
       updateStatus: document.getElementById('update-status'),
       connectionStatus: document.getElementById('connection-status'),
+      // Phase 3 D3: UserAsk / survey panel handles.
+      userAskPanel:   document.getElementById('user-ask-panel'),
+      userAskBody:    document.getElementById('user-ask-body'),
+      userAskHint:    document.getElementById('user-ask-hint'),
+      userAskSubmit:  document.getElementById('user-ask-submit'),
+      userAskDismiss: document.getElementById('user-ask-dismiss'),
       activeProfile: document.getElementById('active-profile'),
       buildSha: document.getElementById('build-sha'),
       scopeBtn: document.getElementById('scope-btn'),
@@ -1696,6 +1852,238 @@
         DOM.scopeMenu.classList.toggle('open', open);
         DOM.scopeMenu.setAttribute('aria-hidden', String(!open));
       }
+    };
+
+    /**
+     * Pure helper: map a SurveyAnswers payload + SurveyItems to the wire-shape
+     * SurveyVerdict[] expected by the server. Mirrors the TUI's
+     * apps/agent-cli/src/chat/headless.ts → buildSurveyVerdicts so both
+     * clients submit identical frames for identical answers.
+     *
+     *   - task_quality:    score = (n - 1) / 4 for n ∈ {1..5}; omitted if null.
+     *   - belief_validation: verdict = "confirmed" | "corrected" | "rejected";
+     *     omitted if no answer was selected for that beliefId.
+     *
+     * Every emitted verdict stamps `at = issuedAt` so the server's idempotency
+     * key (ref, signalKind, at) is stable on retry (spec D-LOCK-5).
+     */
+    function buildSurveyVerdicts(items, answers, issuedAt) {
+      const out = [];
+      for (const item of items || []) {
+        if (item.kind === 'task_quality') {
+          const n = answers.likert;
+          if (n !== null && n !== undefined) {
+            out.push({
+              itemId: item.id,
+              kind: 'task_quality',
+              ref: item.ref,
+              score: (n - 1) / 4,
+              via: 'survey',
+              at: issuedAt,
+            });
+          }
+        } else if (item.kind === 'belief_validation' && item.beliefId !== undefined) {
+          const ans = answers.beliefAnswers[item.beliefId];
+          if (ans !== undefined) {
+            out.push({
+              itemId: item.id,
+              kind: 'belief_validation',
+              ref: item.ref,
+              beliefId: item.beliefId,
+              verdict: ans,
+              via: 'survey',
+              at: issuedAt,
+            });
+          }
+        }
+      }
+      return out;
+    }
+
+    /**
+     * UserAsk / alignment-survey UI controller.
+     *
+     * The server fires a `survey-request` frame immediately after `hello` when
+     * a check-in is due. SurveyEngine paints the prompt into the docked
+     * user-ask-panel, collects answers via click handlers, then on Submit
+     * sends a `survey-response` frame whose verdicts are built by the SAME
+     * buildSurveyVerdicts helper the TUI uses. Dismiss is a CLIENT-SIDE no-op:
+     * the panel hides without sending anything, and the server resurfaces the
+     * survey on the next connection-time due-check (Execution Correction #1
+     * in the alignment spec — no dismiss/snooze wire type exists).
+     *
+     * Lifecycle:
+     *   show(frame)  — populate + reveal panel; also auto-opens the chat
+     *                  panel so a closed widget doesn't swallow the prompt.
+     *   submit()     — build verdicts, send frame, hide panel, drop a small
+     *                  confirmation banner into the chat transcript.
+     *   dismiss()    — hide panel only (no wire traffic).
+     */
+    const SurveyEngine = {
+      pending: null,                     // { surveyId, issuedAt, items } | null
+      answers: { likert: null, beliefAnswers: {} },
+
+      show(frame) {
+        if (!frame || !Array.isArray(frame.items)) {
+          Logger.warn('SurveyEngine.show: malformed survey-request frame', frame);
+          return;
+        }
+        this.pending = {
+          surveyId: frame.surveyId || ('survey-' + (frame.issuedAt || Date.now())),
+          issuedAt: frame.issuedAt || Date.now(),
+          items: frame.items,
+        };
+        this.answers = { likert: null, beliefAnswers: {} };
+        this._render();
+        if (DOM.userAskPanel) DOM.userAskPanel.hidden = false;
+        // Auto-open the chat panel so a collapsed moon doesn't hide the ask.
+        try {
+          if (typeof openChatPanel === 'function') openChatPanel();
+          else if (DOM.chatPanel && !DOM.chatPanel.classList.contains('open')) {
+            DOM.chatPanel.classList.add('open');
+          }
+        } catch (_) { /* widget script not loaded in jsdom — non-fatal */ }
+        Logger.info('SurveyEngine: shown', this.pending);
+      },
+
+      hide() {
+        if (DOM.userAskPanel) DOM.userAskPanel.hidden = true;
+        if (DOM.userAskBody) DOM.userAskBody.innerHTML = '';
+        this.pending = null;
+        this.answers = { likert: null, beliefAnswers: {} };
+      },
+
+      submit() {
+        if (!this.pending) return;
+        if (this.answers.likert === null) {
+          // Mandatory task_quality unanswered — guarded by disabled button,
+          // but defend in depth for keyboard / test paths.
+          if (DOM.userAskHint) {
+            DOM.userAskHint.textContent = 'Rate task quality (1–5) before submitting';
+            DOM.userAskHint.classList.add('error');
+          }
+          return;
+        }
+        const verdicts = buildSurveyVerdicts(
+          this.pending.items, this.answers, this.pending.issuedAt
+        );
+        WebSocketEngine.send({
+          type: 'survey-response',
+          surveyId: this.pending.surveyId,
+          issuedAt: this.pending.issuedAt,
+          verdicts: verdicts,
+        });
+        this.hide();
+        // Light confirmation in the transcript so the operator sees their
+        // answer landed (banner = non-streaming assistant bubble).
+        try { ChatState.appendBanner('✓ Thanks — feedback recorded.'); ChatLoop.flush(); }
+        catch (_) { /* ChatState wiring not present in early-boot edge cases */ }
+      },
+
+      dismiss() {
+        // No wire frame. The survey re-surfaces on the next connection-time
+        // due-check (alignment spec Execution Correction #1).
+        this.hide();
+      },
+
+      // Build the panel body: one task_quality row + N belief rows.
+      _render() {
+        const body = DOM.userAskBody;
+        if (!body || !this.pending) return;
+        body.innerHTML = '';
+
+        for (const item of this.pending.items) {
+          const row = document.createElement('div');
+          row.className = 'user-ask-item';
+          row.dataset.itemId = item.id;
+          if (item.beliefId) row.dataset.beliefId = item.beliefId;
+          row.dataset.kind = item.kind;
+
+          const prompt = document.createElement('div');
+          prompt.className = 'user-ask-prompt';
+          prompt.textContent = item.prompt || '';
+          row.appendChild(prompt);
+
+          const choices = document.createElement('div');
+          choices.className = 'user-ask-choices';
+          row.appendChild(choices);
+
+          if (item.kind === 'task_quality') {
+            const sub = document.createElement('div');
+            sub.className = 'user-ask-prompt-sub';
+            sub.textContent = 'How did Luna do? 1 = poor, 5 = great';
+            prompt.appendChild(sub);
+            for (let n = 1; n <= 5; n++) {
+              const btn = document.createElement('button');
+              btn.type = 'button';
+              btn.className = 'user-ask-choice';
+              btn.dataset.likert = String(n);
+              btn.setAttribute('aria-label', 'Rate ' + n + ' out of 5');
+              btn.textContent = String(n);
+              btn.addEventListener('click', () => this._setLikert(n));
+              choices.appendChild(btn);
+            }
+          } else if (item.kind === 'belief_validation' && item.beliefId) {
+            const beliefId = item.beliefId;
+            const verdicts = [
+              { v: 'confirmed', label: 'Confirm' },
+              { v: 'corrected', label: 'Needs tweak' },
+              { v: 'rejected',  label: 'Reject' },
+            ];
+            for (const { v, label } of verdicts) {
+              const btn = document.createElement('button');
+              btn.type = 'button';
+              btn.className = 'user-ask-choice';
+              btn.dataset.verdict = v;
+              btn.textContent = label;
+              btn.addEventListener('click', () => this._setBelief(beliefId, v));
+              choices.appendChild(btn);
+            }
+          }
+
+          body.appendChild(row);
+        }
+        this._refreshSelection();
+      },
+
+      _setLikert(n) {
+        this.answers.likert = n;
+        if (DOM.userAskHint) {
+          DOM.userAskHint.classList.remove('error');
+          DOM.userAskHint.textContent = 'Ready — press Submit';
+        }
+        this._refreshSelection();
+      },
+
+      _setBelief(beliefId, verdict) {
+        this.answers.beliefAnswers[beliefId] = verdict;
+        this._refreshSelection();
+      },
+
+      // Reflect the current `answers` onto button states + Submit enablement.
+      _refreshSelection() {
+        const body = DOM.userAskBody;
+        if (!body) return;
+        const rows = body.querySelectorAll('.user-ask-item');
+        rows.forEach((row) => {
+          const kind = row.dataset.kind;
+          row.querySelectorAll('.user-ask-choice').forEach((btn) => btn.classList.remove('selected'));
+          if (kind === 'task_quality' && this.answers.likert !== null) {
+            const sel = row.querySelector('.user-ask-choice[data-likert="' + this.answers.likert + '"]');
+            if (sel) sel.classList.add('selected');
+          } else if (kind === 'belief_validation') {
+            const beliefId = row.dataset.beliefId;
+            const ans = this.answers.beliefAnswers[beliefId];
+            if (ans) {
+              const sel = row.querySelector('.user-ask-choice[data-verdict="' + ans + '"]');
+              if (sel) sel.classList.add('selected');
+            }
+          }
+        });
+        if (DOM.userAskSubmit) {
+          DOM.userAskSubmit.disabled = (this.answers.likert === null);
+        }
+      },
     };
 
     /**
@@ -2091,6 +2479,14 @@
             break;
           }
 
+          case 'survey-request':
+            // Phase 3 D3: alignment check-in pushed by the server. Hand to
+            // SurveyEngine which paints the docked user-ask-panel; the user
+            // submits with a Submit click (sends `survey-response`) or
+            // dismisses (client-side no-op — resurfaces next connection).
+            SurveyEngine.show(frame);
+            break;
+
           case 'user-accepted':
             // The user message was accepted by the server. Remove typing indicator when streaming starts
             break;
@@ -2334,6 +2730,19 @@
       // socket. Used by the post-tool-text regression tests pinning the
       // moon-009 fix in place.
       window.__MoonInternals.handleFrame = (frame) => WebSocketEngine.handleFrame(frame);
+      window.__MoonInternals.SurveyEngine = SurveyEngine;
+      window.__MoonInternals.buildSurveyVerdicts = buildSurveyVerdicts;
+      window.__MoonInternals.WebSocketEngine = WebSocketEngine;
+    }
+
+    // Wire UserAsk panel buttons (Submit / Dismiss). Safe to bind here because
+    // the DOM is already parsed by the time this <script> executes (inline at
+    // bottom of <body>), and the DOM map captured the handles a few lines up.
+    if (DOM.userAskSubmit) {
+      DOM.userAskSubmit.addEventListener('click', () => SurveyEngine.submit());
+    }
+    if (DOM.userAskDismiss) {
+      DOM.userAskDismiss.addEventListener('click', () => SurveyEngine.dismiss());
     }
 
     /**
