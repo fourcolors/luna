@@ -20,6 +20,7 @@ import { Effect, Fiber, Layer, Ref } from "effect"
 import {
   Clock,
   JobSchedulerLayer,
+  JobsStoreService,
   TriggerAgent,
   TriggerAgentLayer,
 } from "@luna/core"
@@ -43,14 +44,15 @@ function parseErrorResult(r: ToolCallResult): string {
   return r.content?.[0]?.text ?? ""
 }
 
-/** Run a program with TriggerAgent + JobScheduler + Clock in scope. */
+/** Run a program with TriggerAgent + JobScheduler + Clock + JobsStore in scope. */
 const withScheduler = <A>(
-  prog: Effect.Effect<A, unknown, TriggerAgent | Clock | Scope.Scope>,
+  prog: Effect.Effect<A, unknown, TriggerAgent | Clock | JobsStoreService | Scope.Scope>,
 ) =>
   Effect.scoped(
     prog.pipe(
       Effect.provide(TriggerAgentLayer.Default),
       Effect.provide(JobSchedulerLayer.make({ capacity: 16, offerPolicy: "drop-newest" })),
+      Effect.provide(JobsStoreService.Memory),
       Effect.provide(Clock.Default),
     ),
   )
@@ -61,8 +63,9 @@ describe("scheduler tools — Tier 1", () => {
       withScheduler(
         Effect.gen(function* () {
           const trigger = yield* TriggerAgent
+          const jobsStore = yield* JobsStoreService
           const layerScope = yield* Effect.scope
-          const [createTool] = makeSchedulerTools(trigger, layerScope)
+          const [createTool] = makeSchedulerTools(trigger, layerScope, jobsStore)
           return yield* Effect.promise(() =>
             createTool.handler(
               { expr: "0 9 * * 1", label: "weekly-standup" },
@@ -88,8 +91,9 @@ describe("scheduler tools — Tier 1", () => {
       withScheduler(
         Effect.gen(function* () {
           const trigger = yield* TriggerAgent
+          const jobsStore = yield* JobsStoreService
           const layerScope = yield* Effect.scope
-          const [createTool] = makeSchedulerTools(trigger, layerScope)
+          const [createTool] = makeSchedulerTools(trigger, layerScope, jobsStore)
           return yield* Effect.promise(() =>
             createTool.handler({ expr: "not-a-cron-expr" }, undefined),
           )
@@ -105,8 +109,9 @@ describe("scheduler tools — Tier 1", () => {
       withScheduler(
         Effect.gen(function* () {
           const trigger = yield* TriggerAgent
+          const jobsStore = yield* JobsStoreService
           const layerScope = yield* Effect.scope
-          const [, listTool] = makeSchedulerTools(trigger, layerScope)
+          const [, listTool] = makeSchedulerTools(trigger, layerScope, jobsStore)
           return yield* Effect.promise(() => listTool.handler({}, undefined))
         }),
       ),
@@ -120,8 +125,9 @@ describe("scheduler tools — Tier 1", () => {
       withScheduler(
         Effect.gen(function* () {
           const trigger = yield* TriggerAgent
+          const jobsStore = yield* JobsStoreService
           const layerScope = yield* Effect.scope
-          const [createTool, listTool] = makeSchedulerTools(trigger, layerScope)
+          const [createTool, listTool] = makeSchedulerTools(trigger, layerScope, jobsStore)
           yield* Effect.promise(() =>
             createTool.handler({ expr: "*/5 * * * *", label: "poll" }, undefined),
           )
@@ -148,8 +154,9 @@ describe("scheduler tools — Tier 1", () => {
       withScheduler(
         Effect.gen(function* () {
           const trigger = yield* TriggerAgent
+          const jobsStore = yield* JobsStoreService
           const layerScope = yield* Effect.scope
-          const [createTool, listTool, cancelTool] = makeSchedulerTools(trigger, layerScope)
+          const [createTool, listTool, cancelTool] = makeSchedulerTools(trigger, layerScope, jobsStore)
           const created = parseTextResult<{ triggerId: string }>(
             yield* Effect.promise(() =>
               createTool.handler({ expr: "0 * * * *" }, undefined),
@@ -176,8 +183,9 @@ describe("scheduler tools — Tier 1", () => {
       withScheduler(
         Effect.gen(function* () {
           const trigger = yield* TriggerAgent
+          const jobsStore = yield* JobsStoreService
           const layerScope = yield* Effect.scope
-          const [, , cancelTool] = makeSchedulerTools(trigger, layerScope)
+          const [, , cancelTool] = makeSchedulerTools(trigger, layerScope, jobsStore)
           return yield* Effect.promise(() =>
             cancelTool.handler(
               { triggerId: "trigger-does-not-exist" },

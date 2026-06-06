@@ -699,6 +699,16 @@ export const buildBaseLayer = (
     Layer.provide(clockL),
   )
 
+  // JobsStoreService: SQLite-backed `jobs` table (DESIGN.md §5.1) in luna.db.
+  // Required by SchedulerToolsLayer so cron schedules registered via
+  // mcp__scheduler__schedule_create survive chat-server restarts — at next
+  // boot the layer reads every row and re-registers the trigger into a
+  // fresh TriggerAgent. LunaSqliteBootstrap satisfied at the bottom of
+  // buildServerLayer, same pattern as agent-notes / workspaces.
+  const jobsStoreL = JobsStoreService.makeLayer(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
+
   // MemoryRouter for ChatService.searchMemory (the WS-mediated context
   // panel). ChatService.Default `yield*`s MemoryRouterTag, so the router
   // MUST be in its layer graph or the runtime build fails at boot — which
@@ -721,6 +731,9 @@ export const buildBaseLayer = (
     Layer.provide(memoryRouterL), // REQUIRED: satisfies MemoryRouterTag inside the layer (siblings don't cross-wire)
     Layer.provide(obsL),
     Layer.provide(clockL),
+    // JobsStore required by SchedulerToolsLayer for durable cron persistence
+    // (DESIGN.md §5.1). Same cross-sibling-wiring lesson as telPlatformL below.
+    Layer.provide(jobsStoreL),
     // Phase 14b (commit 57def9d) added EventSink + SessionSync as deps of
     // ObsToolsLayer (for the obs_pipeline_health tool's live counters).
     // ThreadToolsProviderLayer transitively pulls ObsToolsService, so those
@@ -785,6 +798,7 @@ export const buildBaseLayer = (
     noopTracerL,
     agentNotesL,
     workspacesL,
+    jobsStoreL,  // Phase 12a: persisted cron schedules (DESIGN §5.1 jobs table)
     dreamCronL, // Phase 3 D1: forces the cron to register at boot
     surveyL,    // Phase 3 D3: Survey available for buildServerLayer to resolve + pass to the WS server
   )

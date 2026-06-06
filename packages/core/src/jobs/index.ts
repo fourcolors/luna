@@ -21,3 +21,10 @@ export {
   JobInterruptedError,
   TriggerError,
 } from "./errors.js"
+export { JobsStoreService } from "./jobs-store.js"
+export {
+  JobsStoreError,
+  type JobKind,
+  type JobsStoreApi,
+  type PersistedJob,
+} from "./jobs-store-types.js"

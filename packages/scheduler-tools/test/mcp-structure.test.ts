@@ -20,6 +20,7 @@ import { Effect, Layer } from "effect"
 import {
   Clock,
   JobSchedulerLayer,
+  JobsStoreService,
   TriggerAgent,
   TriggerAgentLayer,
 } from "@luna/core"
@@ -40,6 +41,11 @@ const schedulerStack = Layer.provide(
   ),
 )
 
+const jobsStoreStack = Layer.provide(
+  JobsStoreService.Memory,
+  Clock.Default,
+)
+
 describe("§4.3 SchedulerToolsLayer — structural invariants", () => {
   it("SchedulerToolsLayer() builds and provides SchedulerToolsService with correct shape", async () => {
     const config = await Effect.runPromise(
@@ -47,7 +53,10 @@ describe("§4.3 SchedulerToolsLayer — structural invariants", () => {
         Effect.gen(function* () {
           return yield* SchedulerToolsService
         }),
-      ).pipe(Effect.provide(SchedulerToolsLayer())),
+      ).pipe(
+        Effect.provide(SchedulerToolsLayer()),
+        Effect.provide(jobsStoreStack),
+      ),
     )
 
     expect(config.serverName).toBe("scheduler")
@@ -73,10 +82,14 @@ describe("§4.3 SchedulerToolsLayer — structural invariants", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const trigger = yield* TriggerAgent
+          const jobsStore = yield* JobsStoreService
           const layerScope = yield* Effect.scope
-          return buildSchedulerMcpServer(trigger, layerScope)
+          return buildSchedulerMcpServer(trigger, layerScope, jobsStore)
         }),
-      ).pipe(Effect.provide(schedulerStack)),
+      ).pipe(
+        Effect.provide(schedulerStack),
+        Effect.provide(jobsStoreStack),
+      ),
     )
 
     expect(serverConfig).not.toBeNull()
@@ -91,10 +104,14 @@ describe("§4.3 SchedulerToolsLayer — structural invariants", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const trigger = yield* TriggerAgent
+          const jobsStore = yield* JobsStoreService
           const layerScope = yield* Effect.scope
-          return makeSchedulerTools(trigger, layerScope)
+          return makeSchedulerTools(trigger, layerScope, jobsStore)
         }),
-      ).pipe(Effect.provide(schedulerStack)),
+      ).pipe(
+        Effect.provide(schedulerStack),
+        Effect.provide(jobsStoreStack),
+      ),
     )
 
     expect(tools).toHaveLength(3)
@@ -107,10 +124,14 @@ describe("§4.3 SchedulerToolsLayer — structural invariants", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const trigger = yield* TriggerAgent
+          const jobsStore = yield* JobsStoreService
           const layerScope = yield* Effect.scope
-          return makeSchedulerTools(trigger, layerScope)
+          return makeSchedulerTools(trigger, layerScope, jobsStore)
         }),
-      ).pipe(Effect.provide(schedulerStack)),
+      ).pipe(
+        Effect.provide(schedulerStack),
+        Effect.provide(jobsStoreStack),
+      ),
     )
 
     for (const tool of tools) {
