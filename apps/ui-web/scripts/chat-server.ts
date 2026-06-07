@@ -176,6 +176,11 @@ import {
 import { loadDna } from "./dna-loader.js"
 import { loadSystem } from "./system-loader.js"
 import { loadWorkspaces } from "./workspaces-loader.js"
+import {
+  buildMainMemoryBlock,
+  loadMainMemory,
+  resolveMainMemoryPath,
+} from "./agent-memory-loader.js"
 import { buildSessionMetadata } from "./runtime-metadata.js"
 import {
   attachSandboxLocalShell,
@@ -184,6 +189,11 @@ import {
 export { loadDna } from "./dna-loader.js"
 export { loadSystem } from "./system-loader.js"
 export { loadWorkspaces } from "./workspaces-loader.js"
+export {
+  buildMainMemoryBlock,
+  loadMainMemory,
+  resolveMainMemoryPath,
+} from "./agent-memory-loader.js"
 import {
   DreamReasonerDefault,
   SDKAdapter,
@@ -326,6 +336,25 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       // Returns null when no active workspaces are registered; the
       // .filter() below drops it cleanly in that case.
       const workspacesContent = loadWorkspaces(resolveRuntimePaths().lunaDbPath)
+      // Luna's main-thread observational memory. Symmetric to subagent
+      // memory but loaded explicitly here (the SDK only auto-loads
+      // `memory: user` on AgentDefinitions, not the top-level session).
+      // Path: $LUNA_HOME/agent-memory/luna-main/MEMORY.md. Absent file →
+      // null → filtered out below; the discipline (see SKILL.md) only
+      // applies when there's something to read.
+      const mainMemoryPath = resolveMainMemoryPath()
+      const mainMemoryContent = (() => {
+        try {
+          const raw = loadMainMemory(mainMemoryPath)
+          return buildMainMemoryBlock(raw, mainMemoryPath)
+        } catch (err) {
+          console.warn(
+            `[luna/boot] failed to load main memory at ${mainMemoryPath}:`,
+            err,
+          )
+          return null
+        }
+      })()
       const sessionMetadata = buildSessionMetadata()
       const sandboxLocalShell = resolveSandboxLocalShell()
       console.log(
@@ -409,6 +438,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             dnaContent,
             systemContent, // SYSTEM.md: runtime mechanics (workspaces, paths)
             workspacesContent, // active workspaces' workspace.md inlined at boot
+            mainMemoryContent, // Luna main thread observational memory
             sessionMetadata,
             beliefsContent, // Phase 3 D5: ranked active beliefs section
             opts.systemPrompt,
