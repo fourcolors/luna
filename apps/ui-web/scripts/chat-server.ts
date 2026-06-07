@@ -165,6 +165,7 @@ import {
   makeTelemetrySqlite,
   readKeychainToken,
   secretProviderFirstOf,
+  JobsStoreService,
   validateAccountsTableLabels,
 } from "@luna/core"
 import { loadDna } from "./dna-loader.js"
