@@ -403,6 +403,11 @@ export const buildWorkflowWorker = (
             kind: "workflow",
             message: `workflow halted at step ${haltedAt} (status=${stepResults[haltedAt!]?.status})`,
             cause: workflowResult,
+            // Pass the partial per-step record through the error channel so
+            // the ticker can still persist `job_runs.steps_json` on halt.
+            // Without this the operator loses the per-step audit trail
+            // exactly when they most need it (a failed run).
+            stepsJson: JSON.stringify(workflowResult),
           }),
         )
       }
