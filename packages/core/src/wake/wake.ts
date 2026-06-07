@@ -249,14 +249,26 @@ export const registerWakeCron = (
     // Capture wake-service env at registration time. Scope is NOT included —
     // the JobScheduler injects a per-job Scope on each tick.
     const ctx = yield* Effect.context<WakeReasoner | WakeLogStore>()
-    return yield* trigger.register({
+    yield* Effect.logInfo(
+      `[luna/wake] registerWakeCron: expr="${expr}" workspaceSlug="${opts.workspaceSlug}" workspacePath="${opts.workspacePath}"`,
+    )
+    const triggerId = yield* trigger.register({
       kind: "cron",
       expr,
       build: () => ({
         run: EffectClock.currentTimeMillis.pipe(
+          Effect.tap((now) =>
+            Effect.logInfo(
+              `[luna/wake] tick: ${new Date(now).toISOString()} workspace=${opts.workspaceSlug}`,
+            ),
+          ),
           Effect.flatMap((now) => runWake(now, opts)),
           Effect.provide(ctx),
         ),
       }),
     })
+    yield* Effect.logInfo(
+      `[luna/wake] registered triggerId=${triggerId} for expr="${expr}"`,
+    )
+    return triggerId
   })
