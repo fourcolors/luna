@@ -19,3 +19,18 @@ export {
   type PromptWorkerLayerOptions,
   type DeliverySink,
 } from "./prompt-worker.js"
+
+export {
+  WorkflowWorkerLayer,
+  buildWorkflowWorker,
+  parseWorkflowPayload,
+  type WorkflowPayload,
+  type WorkflowStep,
+  type ShellStep,
+  type PromptStep,
+  type StepResult,
+  type ShellStepResult,
+  type PromptStepResult,
+  type WorkflowResult,
+  type WorkflowWorkerLayerOptions,
+} from "./workflow-worker.js"

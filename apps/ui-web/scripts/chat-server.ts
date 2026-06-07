@@ -190,6 +190,7 @@ import {
   SDKClient,
   WakeReasonerDefault,
   PromptWorkerLayer,
+  WorkflowWorkerLayer,
 } from "@luna/adapter-sdk"
 import {
   ChatService,
@@ -871,12 +872,15 @@ export const buildBaseLayer = (
   const schedulerV2Enabled =
     process.env["LUNA_SCHEDULER_V2_ENABLED"]?.trim() === "1"
   if (schedulerV2Enabled) {
-    console.log("[luna/sched] V2 ticker ENABLED (LUNA_SCHEDULER_V2_ENABLED=1) — kind=prompt registered")
+    console.log("[luna/sched] V2 ticker ENABLED (LUNA_SCHEDULER_V2_ENABLED=1) — kinds=prompt,workflow registered")
   }
   // V2 registry: empty by default + PromptWorkerLayer registers the
   // 'prompt' worker at boot. Layer.provideMerge so the registry remains
   // visible to JobTickerLayer above it.
-  const workerRegistryL = PromptWorkerLayer().pipe(
+  const workerRegistryL = Layer.merge(
+    PromptWorkerLayer(),
+    WorkflowWorkerLayer(),
+  ).pipe(
     Layer.provideMerge(
       Layer.mergeAll(
         sdkClientL,
