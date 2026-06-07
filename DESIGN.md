@@ -457,6 +457,208 @@ CREATE TABLE schema_versions (
 
 ---
 
+### 5.3 Scheduler V2 — global ticker + DB-as-queue + worker registry (Phase 12b, revisable)
+
+Background: §5.1 reserves a `jobs` table and ships a working durable cron
+registry (`packages/scheduler-tools` boot-reload), but the trigger model is
+**one fiber per cron** (TriggerAgent's `sleep until Cron.next(expr)` loop).
+The `next_run` / `last_run` / `last_status` columns from §5.1 are declared
+but never written. There is no per-fire history. New persisted crons fire
+with `Effect.succeed("${label} tick")` — a no-op — because `schedule_create`
+has no way to express "what should this job DO."
+
+Phase 12b replaces the fiber-per-cron model with an **Oban-style global
+ticker that polls the `jobs` table once per minute, claims due rows, and
+dispatches them to a worker registry keyed by job kind.** Two first-class
+job kinds ship in V1:
+
+- **`prompt`** — spawn `query()` with a system+user prompt + tools; capture
+  the final assistant text; deliver to a configurable sink (`obs_note`,
+  chat thread, file, etc.). Use-case: "every morning give me a daily brief."
+
+- **`workflow`** — run an explicit Effect sequence of typed steps (`shell` /
+  `gh` / `prompt` / …) with per-step durable status. Use-case: full release
+  pipeline (dev → master → tag → restart both servers).
+
+Both are implementations of the same `Worker = (payload) => Effect.Effect<R,E,A>`
+contract; the kind discriminant only selects which worker the registry hands
+the payload to.
+
+#### 5.3.1 Schema (additive per §5.2)
+
+```sql
+-- Extend §5.1 jobs (purely additive; existing rows continue to work).
+ALTER TABLE jobs ADD COLUMN schedule         TEXT;            -- cron expr; NULL for oneshot
+ALTER TABLE jobs ADD COLUMN enabled          INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE jobs ADD COLUMN next_run_at      INTEGER;          -- replaces opportunistic `next_run`
+-- The §5.1 `spec` column is RETAINED for backward compat; new code reads `schedule` first,
+-- falls back to `spec` for unmigrated rows.
+
+-- Per-fire ledger (new).
+CREATE TABLE job_runs (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id       TEXT    NOT NULL REFERENCES jobs(id),
+  started_at   INTEGER NOT NULL,
+  finished_at  INTEGER,
+  status       TEXT    NOT NULL,    -- 'queued' | 'running' | 'success' | 'failed' | 'cancelled'
+  attempt      INTEGER NOT NULL DEFAULT 1,
+  output_text  TEXT,
+  error        TEXT,
+  steps_json   TEXT                  -- per-step status for kind='workflow'
+);
+CREATE INDEX job_runs_job_started_idx ON job_runs(job_id, started_at DESC);
+CREATE INDEX job_runs_status_started_idx ON job_runs(status, started_at DESC);
+```
+
+Migration is gated by a new `schema_versions` row `('jobs', 2)`. Old rows
+keep working: a row with `schedule IS NULL AND spec IS NOT NULL` is treated
+as legacy and migrated to `schedule = spec` on first tick.
+
+#### 5.3.2 JobTicker — semantics
+
+A single supervised fiber, scoped to the chat-server's Layer scope:
+
+```
+Effect.repeat(
+  drainDueJobs(),
+  Schedule.fixed(Duration.seconds(60)),
+)
+```
+
+`drainDueJobs()`:
+
+1. Compute `now`.
+2. `SELECT id, kind, payload_json, schedule, last_run_at FROM jobs
+    WHERE enabled = 1 AND (next_run_at IS NULL OR next_run_at <= ?)`
+3. For each row, recompute `next_run_at = Cron.next(schedule, lastRunAt ?? now)`.
+4. **Atomic claim** (single UPDATE; SQLite gives us the row-level lock via
+   the transaction):
+   ```sql
+   UPDATE jobs SET last_run_at = ?, last_status = 'running',
+                   next_run_at = ?
+                WHERE id = ?
+                  AND (last_run_at IS NULL OR last_run_at < ?)  -- watchdog: drop stragglers older than this tick boundary
+   ```
+   If the UPDATE reports 0 rows changed, another ticker already claimed it
+   (shouldn't happen single-process today; we'll harden when we add
+   distributed coordination in Phase 13).
+5. INSERT a `job_runs` row with `status='running'`.
+6. Submit a `JobSpec` to the existing `JobScheduler` (we KEEP the
+   supervised pool — it's the right primitive for bounded worker
+   parallelism). The spec's `run` is the result of
+   `WorkerRegistry.dispatch(kind, payload)`.
+7. On `Exit`, UPDATE the matching `job_runs` row with `finished_at`,
+   `status`, `output_text`/`error`, and `steps_json`.
+
+The drain is bounded per tick by `JobScheduler` capacity (default 32); excess
+due rows roll into the next tick. A job that runs longer than 60 s does not
+block subsequent ticks — only its OWN re-fire (the row's `next_run_at` won't
+be `≤ now` while the previous attempt is still in flight, since the claim
+already advanced it).
+
+#### 5.3.3 WorkerRegistry contract
+
+```ts
+export interface Worker<R = never> {
+  readonly kind: string                    // 'prompt' | 'workflow' | …
+  readonly run: (payload: unknown, ctx: WorkerContext) => Effect.Effect<WorkerResult, WorkerError, R>
+}
+
+export interface WorkerContext {
+  readonly jobId: string
+  readonly runId: number
+  readonly attempt: number
+  readonly deadline: Date                  // 60s wall-clock budget by default
+}
+
+export interface WorkerResult {
+  readonly outputText: string | null
+  readonly stepsJson?: string              // workflow only
+}
+```
+
+Workers register at boot time via Layer composition:
+
+```ts
+const workersL = Layer.mergeAll(
+  PromptWorker.Layer({ sdkClientL, deliveryStoresL }),
+  WorkflowWorker.Layer({ stepRunnersL }),
+  // future: ShellWorker, HttpWorker, BeliefSweepWorker, …
+)
+```
+
+`WorkerRegistry.dispatch(kind, payload)` looks up the registered worker;
+unknown kinds fail with `WorkerError({ tag: 'unknown_kind', kind })` which
+propagates to the `job_runs` row.
+
+#### 5.3.4 Payload shapes (V1)
+
+```jsonc
+// kind='prompt'
+{
+  "system_prompt": "You are Luna's morning brief generator. …",
+  "user_prompt":   "Generate today's brief.",
+  "model":         "claude-sonnet-4-5",
+  "allowed_tools": ["mcp__memory__memory_search", "mcp__observability__obs_notes_recent"],
+  "deliver_to": {
+    "kind": "obs_note",         // 'obs_note' | 'chat_thread' | 'file' | …
+    "kind_tag": "daily_brief"
+  }
+}
+
+// kind='workflow'
+{
+  "steps": [
+    { "kind": "shell",  "cmd": "git fetch origin && git rev-parse origin/dev" },
+    { "kind": "gh",     "op":  "pr-list",  "args": { "state": "open", "label": "auto-promote" } },
+    { "kind": "prompt", "system": "You are the release gatekeeper. …",
+                        "user":   "Verify the dev branch is safe to promote." },
+    { "kind": "shell",  "cmd": "git push origin dev:master" },
+    { "kind": "shell",  "cmd": "systemctl restart luna-chat-server" }
+  ],
+  "halt_on_failure": true
+}
+```
+
+#### 5.3.5 Cutover plan
+
+V2 ships behind `LUNA_SCHEDULER_V2_ENABLED=1` so it can run **side by side**
+with the existing TriggerAgent. The order of operations:
+
+| Step | Effect |
+|---|---|
+| 1 | Schema migration ships in a release; `jobs` rows get new columns; `job_runs` empty. |
+| 2 | `LUNA_SCHEDULER_V2_ENABLED=1` flips on JobTicker; old TriggerAgent still up. |
+| 3 | Migrate wake → workflow row; dream → prompt row; drop legacy `luna-self-dev` row. |
+| 4 | Disable wake's hardcoded `buildWakeCronLayer` call. Wake now runs through V2. |
+| 5 | Same for dream. |
+| 6 | After ≥24 h clean on dev, remove TriggerAgent + the old per-cron Layers. |
+
+§5.1 jobs columns from V1 (`spec`, `next_run`, `last_run`, `last_status`)
+are kept indefinitely as deprecated synonyms; new code never writes them.
+
+#### 5.3.6 Non-goals (V1)
+
+- Retries with backoff. `attempt` column exists; retry loop is Phase 13.
+- Cross-fire uniqueness / debounce — Phase 13.
+- Sub-minute cron resolution — out of scope; ticker is 60 s.
+- Distributed coordination — single-process; Phase 14 if needed.
+- Workflow DAG (branches/joins) — V1 workflows are linear step lists; DAG
+  is Phase 13+.
+
+#### 5.3.7 Observability
+
+Every tick logs:
+- `[luna/sched] tick claimed=N submitted=N skipped=N` at INFO.
+- `[luna/sched] run id=… kind=… status=…` at INFO per `job_runs` close.
+- `[luna/sched] worker.error kind=… cause=…` at ERROR.
+
+`obs_session_explain` / `obs_sessions_search` continue to work since each
+`prompt`-kind job spawns a SDK session whose events flow through the
+existing analytics pipeline.
+
+---
+
 ## §6. Error Taxonomy (frozen)
 
 Every module defines its error channel as a tagged union of data errors extending `Data.TaggedError`. Errors compose up via `E` in `Effect<A, E, R>`.
