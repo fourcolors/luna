@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Required so WKWebView's JIT works under hardened runtime. Without
+         these the renderer crashes on first JS execution. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- Allow Luna Moon to request mic + camera at runtime (TCC still
+         prompts the user — these entitlements just permit the prompt under
+         hardened runtime). Screen Recording itself is a pure TCC grant and
+         needs NO entitlement. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <key>com.apple.security.device.camera</key>
+    <true/>
+
+    <!-- Allow loading the Tauri sidecar binary (the bundled chat-server) as
+         a child process from the main app. Without this hardened runtime
+         blocks the spawn. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>
