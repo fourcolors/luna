@@ -150,6 +150,8 @@ import {
   DEFAULT_UI_KINDS,
   DreamCronLayer,
   DreamStore,
+  WakeCronLayer,
+  WakeLogStore,
   EnvSecretProvider,
   NoopTracerLayer,
   ObservabilityService,
@@ -179,7 +181,12 @@ import {
 export { loadDna } from "./dna-loader.js"
 export { loadSystem } from "./system-loader.js"
 export { loadWorkspaces } from "./workspaces-loader.js"
-import { DreamReasonerDefault, SDKAdapter, SDKClient } from "@luna/adapter-sdk"
+import {
+  DreamReasonerDefault,
+  SDKAdapter,
+  SDKClient,
+  WakeReasonerDefault,
+} from "@luna/adapter-sdk"
 import {
   ChatService,
   ThreadToolsProviderTag,
@@ -592,6 +599,50 @@ export const buildSurveyLayer = (opts: BuildSurveyLayerOpts) =>
     Layer.provide(opts.clockL),
   )
 
+// ── Wake sub-layer factory ──────────────────────────────────────────────
+//
+// Path A (per Luna self-dev workspace decision log entry "Path A chosen"):
+// at each cron tick, a single-shot WakeReasoner SDK call inspects the
+// workspace's open goals + next_actions + recent wakes and emits a JSON
+// digest into the workspace's `wake_log` table. No autonomous execution
+// — operator (or future Path B multi-turn agent) acts on the digest.
+//
+// Inputs from outside:
+//   - expr            — cron expression for the wake cycle (e.g. "*/30 * * * *").
+//   - workspaceSlug   — slug of the workspace this wake watches.
+//   - workspacePath   — absolute path to that workspace's repo root.
+//                       Reader opens <path>/.workspace/workspace.db.
+//   - sdkClientL      — shared SDKClient layer (real on live boot, fake in smokes).
+//   - clockL          — shared Clock layer (same instance as scheduler clock).
+//
+// WakeReasonerDefault requires SDKClient. WakeLogStore.makeLayer opens
+// workspace.db (which must exist; bootstrap-workspace.ts creates it).
+// WakeCronLayer encapsulates its own JobScheduler+TriggerAgent (same as
+// DreamCronLayer — independent fiber-set keeps wake fires isolated).
+export interface BuildWakeCronLayerOpts {
+  readonly expr: string
+  readonly workspaceSlug: string
+  readonly workspacePath: string
+  readonly sdkClientL: Layer.Layer<SDKClient>
+  readonly clockL: Layer.Layer<Clock>
+}
+
+export const buildWakeCronLayer = (opts: BuildWakeCronLayerOpts) => {
+  const wakeReasonerL = WakeReasonerDefault.pipe(Layer.provide(opts.sdkClientL))
+  const wakeLogStoreL = WakeLogStore.makeLayer(
+    `${opts.workspacePath}/.workspace/workspace.db`,
+  )
+  return WakeCronLayer(opts.expr, {
+    workspaceSlug: opts.workspaceSlug,
+    workspacePath: opts.workspacePath,
+  }).pipe(
+    Layer.provide(wakeReasonerL),
+    Layer.provide(wakeLogStoreL),
+    Layer.provide(opts.clockL),
+  )
+}
+
+
 // ── Layer wiring ────────────────────────────────────────────────────────
 //
 // Phase 25d: SecretProvider chain is RoutedOpSecretProvider →
@@ -766,6 +817,37 @@ export const buildBaseLayer = (
     dreamStoreL,
   })
 
+  // Wake cron (Path A): WakeReasoner inspects the workspace state at each
+  // tick and emits a JSON digest into <workspace>/.workspace/workspace.db's
+  // wake_log table. Controlled by env so operators can disable / retune
+  // without redeploying:
+  //   LUNA_WAKE_ENABLED        — "0" disables the cron entirely (default: enabled)
+  //   LUNA_WAKE_CRON_EXPR      — cron expression (default: "*/30 * * * *")
+  //   LUNA_WAKE_WORKSPACE_SLUG — slug of the workspace to wake (default: "luna")
+  //   LUNA_WAKE_WORKSPACE_PATH — repo root path; falls back to LUNA_REPO_ROOT
+  //                              then process.cwd().
+  // When disabled or the workspace path can't be resolved, the layer is
+  // simply omitted from the mergeAll (no fiber registered).
+  const wakeEnabled = process.env["LUNA_WAKE_ENABLED"]?.trim() !== "0"
+  const wakeExpr =
+    process.env["LUNA_WAKE_CRON_EXPR"]?.trim() || "*/30 * * * *"
+  const wakeWorkspaceSlug =
+    process.env["LUNA_WAKE_WORKSPACE_SLUG"]?.trim() || "luna"
+  const wakeWorkspacePath =
+    process.env["LUNA_WAKE_WORKSPACE_PATH"]?.trim() ||
+    process.env["LUNA_REPO_ROOT"]?.trim() ||
+    process.cwd()
+  const wakeCronL = wakeEnabled
+    ? buildWakeCronLayer({
+        expr: wakeExpr,
+        workspaceSlug: wakeWorkspaceSlug,
+        workspacePath: wakeWorkspacePath,
+        sdkClientL,
+        clockL,
+      })
+    : null
+
+
   // Phase 3 D3: Survey layer for the WS-mediated check-in. AlignmentStore and
   // BeliefWriter both use memoryRouterL + clockL from the same boot identities
   // (so survey-activated beliefs + D5 injection read the SAME router).
@@ -802,6 +884,7 @@ export const buildBaseLayer = (
     workspacesL,
     jobsStoreL,  // Phase 12a: persisted cron schedules (DESIGN §5.1 jobs table)
     dreamCronL, // Phase 3 D1: forces the cron to register at boot
+    wakeCronL ?? Layer.empty, // wake cron: workspace-state digest at each tick (disabled if LUNA_WAKE_ENABLED=0)
     surveyL,    // Phase 3 D3: Survey available for buildServerLayer to resolve + pass to the WS server
   )
 }

@@ -1,0 +1,199 @@
+// packages/core/src/wake/wake-log-store.ts
+//
+// WakeLogStore — append-only ledger of wake cycles, persisted into the
+// workspace-scoped `workspace.db` (NOT luna.db) because wake_log is a
+// workspace artifact, not a Luna-runtime artifact.
+//
+// Schema (created by scripts/bootstrap-workspace.ts):
+//   CREATE TABLE wake_log (
+//     id        INTEGER PRIMARY KEY AUTOINCREMENT,
+//     woke_at   INTEGER NOT NULL,
+//     goal_slug TEXT,
+//     summary   TEXT NOT NULL,
+//     outcome   TEXT NOT NULL,
+//     artifacts TEXT,
+//     FOREIGN KEY (goal_slug) REFERENCES goals(slug)
+//   )
+//
+// bun:sqlite is loaded via dynamic-import-string indirection, mirroring the
+// pattern in jobs-store.ts and agent-notes.ts (the project deliberately
+// avoids @types/bun — see DESIGN.md §6.2).
+import { Effect, Layer, Ref } from "effect"
+import { ConfigError } from "../errors.js"
+import type { WakeLogRow, WakeLogRowInput, WakeOutcome } from "./types.js"
+import { WakeError } from "./types.js"
+
+// ── bun:sqlite minimal shape ────────────────────────────────────────────────
+interface BunDb {
+  run: (sql: string) => void
+  query: (sql: string) => BunStmt
+  close: () => void
+}
+interface BunStmt {
+  get: (...p: unknown[]) => unknown
+  all: (...p: unknown[]) => unknown[]
+  run: (...p: unknown[]) => { changes: number }
+}
+
+export interface WakeLogStoreApi {
+  /** Insert a wake_log row. Returns the new row id. */
+  readonly append: (
+    row: WakeLogRowInput,
+  ) => Effect.Effect<number, WakeError>
+  /** Read the N most recent wake rows, newest first. */
+  readonly recent: (
+    limit: number,
+  ) => Effect.Effect<ReadonlyArray<WakeLogRow>, WakeError>
+}
+
+export class WakeLogStore extends Effect.Tag("luna/WakeLogStore")<
+  WakeLogStore,
+  WakeLogStoreApi
+>() {
+  /**
+   * Live layer opening the given workspace.db. The table must exist (created
+   * by scripts/bootstrap-workspace.ts at workspace creation time). Opening a
+   * workspace.db that doesn't have wake_log will surface as a WakeError on
+   * the first append() call — keeping boot fast and non-blocking when a
+   * workspace isn't yet bootstrapped.
+   */
+  static readonly makeLayer = (
+    dbPath: string,
+  ): Layer.Layer<WakeLogStore, ConfigError> =>
+    Layer.scoped(
+      WakeLogStore,
+      Effect.gen(function* () {
+        const bunSqliteSpec = "bun:sqlite"
+        const mod = yield* Effect.tryPromise({
+          try: () =>
+            import(/* @vite-ignore */ bunSqliteSpec) as Promise<unknown>,
+          catch: (cause) =>
+            new ConfigError({
+              module: "wake-log-store",
+              key: "bun:sqlite",
+              message: `failed to import bun:sqlite: ${String(cause)}`,
+            }),
+        })
+        const Database = (mod as { Database?: unknown }).Database as
+          | (new (p: string) => BunDb)
+          | undefined
+        if (!Database) {
+          return yield* Effect.fail(
+            new ConfigError({
+              module: "wake-log-store",
+              key: "bun:sqlite",
+              message: "bun:sqlite module has no `Database` export",
+            }),
+          )
+        }
+        const db = new Database(dbPath)
+        // Conservative pragmas — match what bootstrap-workspace.ts uses so
+        // we don't fight over journal mode.
+        db.run("PRAGMA journal_mode = WAL")
+        db.run("PRAGMA synchronous = NORMAL")
+        db.run("PRAGMA foreign_keys = ON")
+        // Ensure wake_log exists. The workspace bootstrap script
+        // (scripts/bootstrap-workspace.ts) also creates this table; using
+        // `IF NOT EXISTS` here means either creation order works and an
+        // un-bootstrapped workspace still accepts writes after a wake fires.
+        // Schema must stay in sync with the bootstrap definition.
+        db.run(
+          "CREATE TABLE IF NOT EXISTS wake_log (\n" +
+            "  id        INTEGER PRIMARY KEY AUTOINCREMENT,\n" +
+            "  woke_at   INTEGER NOT NULL,\n" +
+            "  goal_slug TEXT,\n" +
+            "  summary   TEXT NOT NULL,\n" +
+            "  outcome   TEXT NOT NULL,\n" +
+            "  artifacts TEXT\n" +
+            ")",
+        )
+        yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
+
+        const insertStmt = db.query(
+          "INSERT INTO wake_log (woke_at, goal_slug, summary, outcome, artifacts) " +
+            "VALUES (?, ?, ?, ?, ?) RETURNING id",
+        )
+        const recentStmt = db.query(
+          "SELECT id, woke_at, goal_slug, summary, outcome, artifacts " +
+            "FROM wake_log ORDER BY woke_at DESC LIMIT ?",
+        )
+        return {
+          append: (row) =>
+            Effect.try({
+              try: () => {
+                const result = insertStmt.get(
+                  row.wokeAt,
+                  row.goalSlug,
+                  row.summary,
+                  row.outcome,
+                  row.artifacts,
+                ) as { id: number } | null
+                if (result === null) {
+                  throw new Error("wake_log insert returned no id row")
+                }
+                return result.id
+              },
+              catch: (cause) =>
+                new WakeError({
+                  op: "wake-log/append",
+                  message: `failed to append wake_log row: ${String(cause)}`,
+                  cause,
+                }),
+            }),
+          recent: (limit) =>
+            Effect.try({
+              try: () => {
+                const rows = recentStmt.all(limit) as ReadonlyArray<{
+                  id: number
+                  woke_at: number
+                  goal_slug: string | null
+                  summary: string
+                  outcome: string
+                  artifacts: string | null
+                }>
+                return rows.map((r) => ({
+                  id: r.id,
+                  wokeAt: r.woke_at,
+                  goalSlug: r.goal_slug,
+                  summary: r.summary,
+                  outcome: r.outcome as WakeOutcome,
+                  artifacts: r.artifacts ?? "{}",
+                } satisfies WakeLogRow))
+              },
+              catch: (cause) =>
+                new WakeError({
+                  op: "wake-log/recent",
+                  message: `failed to query wake_log: ${String(cause)}`,
+                  cause,
+                }),
+            }),
+        }
+      }),
+    )
+
+  /**
+   * In-memory layer for tests — does not touch disk. Rows live in a Ref so
+   * tests can both write and read back.
+   */
+  static readonly Memory: Layer.Layer<WakeLogStore> = Layer.effect(
+    WakeLogStore,
+    Effect.gen(function* () {
+      const rowsRef = yield* Ref.make<ReadonlyArray<WakeLogRow>>([])
+      const nextIdRef = yield* Ref.make(1)
+      return {
+        append: (row) =>
+          Effect.gen(function* () {
+            const id = yield* Ref.getAndUpdate(nextIdRef, (n) => n + 1)
+            yield* Ref.update(rowsRef, (rs) => [...rs, { id, ...row }])
+            return id
+          }),
+        recent: (limit) =>
+          Ref.get(rowsRef).pipe(
+            Effect.map((rs) =>
+              [...rs].sort((a, b) => b.wokeAt - a.wokeAt).slice(0, limit),
+            ),
+          ),
+      }
+    }),
+  )
+}

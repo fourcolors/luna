@@ -5,3 +5,8 @@ export * from "./message-kind.js"
 export * from "./adapter.js"
 export { loadAgents } from "./agent-loader.js"
 export { DreamReasonerDefault, buildDreamPrompt } from "./dream-reasoner.js"
+export {
+  WakeReasonerDefault,
+  buildWakePrompt,
+  parseDigest as parseWakeDigest,
+} from "./wake-reasoner.js"
