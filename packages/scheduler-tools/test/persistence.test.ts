@@ -151,4 +151,52 @@ describe("scheduler-tools persistence (boot-reload)", () => {
       ).pipe(Effect.provide(jobsStoreMem)),
     )
   })
+
+  // ── Regression for issue #58 ────────────────────────────────────────────
+  //
+  // V1 schedule_create rows MUST opt out of the V2 JobTicker so they don't
+  // produce spurious failed/unknown_kind runs in `job_runs`. We assert two
+  // surfaces of that opt-out:
+  //   (a) boot-reload sets `enabled = false` on the rotated row;
+  //   (b) `listDue` skips the row (the ticker would never claim it).
+  it("(#58) boot-reload sets enabled=false on V1 cron rows so V2 ticker skips them", async () => {
+    const jobsStoreMem = JobsStoreService.Memory.pipe(
+      Layer.provide(Clock.Default),
+    )
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const jobs = yield* JobsStoreService
+          // Seed a V1-style row (enabled defaults to true on record()).
+          yield* jobs.record({
+            id: "trigger-seed-v1",
+            kind: "cron",
+            spec: "*/30 * * * *",
+            payload: { label: "luna-self-dev", source: "scheduler-tools" },
+          })
+          const seeded = yield* jobs.listAll()
+          expect(seeded.length).toBe(1)
+          expect(seeded[0]?.enabled).toBe(true)
+
+          // Boot SchedulerToolsLayer — reload-on-boot should rotate the row
+          // AND flip enabled to false via setV2Fields.
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const _sched = yield* SchedulerToolsService
+              const after = yield* jobs.listAll()
+              expect(after.length).toBe(1)
+              // (a) row is now disabled.
+              expect(after[0]?.enabled).toBe(false)
+
+              // (b) listDue at Number.MAX_SAFE_INTEGER skips disabled rows.
+              const due = yield* jobs.listDue(Number.MAX_SAFE_INTEGER)
+              expect(due.length).toBe(0)
+            }).pipe(
+              Effect.provide(SchedulerToolsLayer()),
+            ),
+          )
+        }),
+      ).pipe(Effect.provide(jobsStoreMem)),
+    )
+  })
 })
