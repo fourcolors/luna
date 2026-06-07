@@ -36,7 +36,9 @@
     "targets": "all",
     "createUpdaterArtifacts": true,
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": "Apple Development: Sterling Cobb (2LLA7M2CD6)",
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.plist"
     },
     "icon": [
       "icons/32x32.png",
