@@ -141,6 +141,9 @@ import {
   AccountBrokerLayer,
   AgentNotesService,
   JobsStoreService,
+  JobTickerLayer,
+  WorkerRegistry,
+  makeWorkerRegistry,
   WorkspaceRegistryService,
   AlignmentStore,
   BELIEF_KIND,
@@ -186,6 +189,8 @@ import {
   SDKAdapter,
   SDKClient,
   WakeReasonerDefault,
+  PromptWorkerLayer,
+  WorkflowWorkerLayer,
 } from "@luna/adapter-sdk"
 import {
   ChatService,
@@ -848,6 +853,50 @@ export const buildBaseLayer = (
     : null
 
 
+  // Phase 12b (scheduler-rebuild) — DESIGN.md §5.3. Behind the
+  // `LUNA_SCHEDULER_V2_ENABLED` flag so we can ship the wiring without
+  // changing runtime behaviour. With the flag OFF (default), the V2 ticker
+  // layer is omitted from the layer graph — no fiber forked, no DB queries
+  // per minute. With the flag ON, a single supervised JobTicker fiber
+  // drains the `jobs` table every 60 s, claims due rows, and dispatches
+  // them through the WorkerRegistry.
+  //
+  // The WorkerRegistry is intentionally EMPTY in this PR. P4 (the `prompt`
+  // worker) and P5 (the `workflow` worker) ship the actual workers behind
+  // the same flag. While the flag is on with an empty registry, due rows
+  // get claimed + their `job_runs` row closes as failed with
+  // `unknown_kind` — visible in the workspace's per-fire ledger but
+  // otherwise harmless. The existing TriggerAgent + wake / dream Layers
+  // continue to fire alongside this; cutover (P6) migrates them to V2 rows
+  // one at a time, then we flip the disable.
+  const schedulerV2Enabled =
+    process.env["LUNA_SCHEDULER_V2_ENABLED"]?.trim() === "1"
+  if (schedulerV2Enabled) {
+    console.log("[luna/sched] V2 ticker ENABLED (LUNA_SCHEDULER_V2_ENABLED=1) — kinds=prompt,workflow registered")
+  }
+  // V2 registry: empty by default + PromptWorkerLayer registers the
+  // 'prompt' worker at boot. Layer.provideMerge so the registry remains
+  // visible to JobTickerLayer above it.
+  const workerRegistryL = Layer.merge(
+    PromptWorkerLayer(),
+    WorkflowWorkerLayer(),
+  ).pipe(
+    Layer.provideMerge(
+      Layer.mergeAll(
+        sdkClientL,
+        makeWorkerRegistry({}),
+        agentNotesL,
+      ),
+    ),
+  )
+  const jobTickerL = schedulerV2Enabled
+    ? JobTickerLayer().pipe(
+        Layer.provide(
+          Layer.mergeAll(jobsStoreL, workerRegistryL, clockL),
+        ),
+      )
+    : null
+
   // Phase 3 D3: Survey layer for the WS-mediated check-in. AlignmentStore and
   // BeliefWriter both use memoryRouterL + clockL from the same boot identities
   // (so survey-activated beliefs + D5 injection read the SAME router).
@@ -885,6 +934,7 @@ export const buildBaseLayer = (
     jobsStoreL,  // Phase 12a: persisted cron schedules (DESIGN §5.1 jobs table)
     dreamCronL, // Phase 3 D1: forces the cron to register at boot
     wakeCronL ?? Layer.empty, // wake cron: workspace-state digest at each tick (disabled if LUNA_WAKE_ENABLED=0)
+    jobTickerL ?? Layer.empty, // Phase 12b V2 ticker: enabled via LUNA_SCHEDULER_V2_ENABLED=1 (DESIGN §5.3)
     surveyL,    // Phase 3 D3: Survey available for buildServerLayer to resolve + pass to the WS server
   )
 }

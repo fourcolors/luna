@@ -582,6 +582,86 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(html).toContain('<code>code</code>')
     })
 
+    // ── Editor-feel code blocks ───────────────────────────────────────────
+    it('Scenario: fenced ```lang block renders inside a .code-block wrapper with a language chip + copy button', () => {
+      const { renderMarkdown } = internals()
+      const html = renderMarkdown('```json\n{ "ok": true }\n```')
+      // Wrapper + header chrome present.
+      expect(html).toContain('<div class="code-block" data-lang="json">')
+      expect(html).toContain('<div class="code-block-header">')
+      expect(html).toContain('<span class="code-block-lang">json</span>')
+      expect(html).toContain('class="code-block-copy"')
+      // Underlying <pre><code> shape preserved for downstream tests/snapshots.
+      expect(html).toContain('<pre><code class="language-json">')
+    })
+
+    it('Scenario: fenced block with no language emits a wrapper but an empty chip (display:none via CSS)', () => {
+      const { renderMarkdown } = internals()
+      const html = renderMarkdown('```\nplain text body\n```')
+      expect(html).toContain('<div class="code-block">')           // no data-lang
+      expect(html).toContain('<span class="code-block-lang"></span>')
+      expect(html).toContain('<pre><code>plain text body</code></pre>')
+    })
+
+    it('Scenario: --- on its own line renders as <hr>', () => {
+      const { renderMarkdown } = internals()
+      const html = renderMarkdown('before\n\n---\n\nafter')
+      expect(html).toContain('<hr>')
+      expect(html).not.toMatch(/<p>-+<\/p>/)
+    })
+
+    it('Scenario: *** and ___ also render as <hr>', () => {
+      const { renderMarkdown } = internals()
+      expect(renderMarkdown('***')).toContain('<hr>')
+      expect(renderMarkdown('___')).toContain('<hr>')
+    })
+
+    it('Scenario: a GFM table separator row is NOT mistaken for a horizontal rule', () => {
+      const { renderMarkdown } = internals()
+      // The --- here is the table separator, not a horizontal rule.
+      // Use a 2-column table — the existing GFM regex requires the
+      // separator row to have ≥2 dash groups (`---|---`), single-col is
+      // intentionally treated as a paragraph.
+      const html = renderMarkdown('| col | other |\n|------|-------|\n| val | x |')
+      expect(html).toContain('<table>')
+      expect(html).not.toContain('<hr>')
+    })
+
+    it('Scenario: enhanceCodeBlocks wires the copy button so a click writes the raw source to navigator.clipboard', async () => {
+      const { renderMarkdown, enhanceCodeBlocks } = internals() as any
+      const host = document.createElement('div')
+      host.innerHTML = renderMarkdown('```bash\necho hi\n```')
+
+      let captured: string | null = null
+      ;(navigator as any).clipboard = {
+        writeText: (t: string) => { captured = t; return Promise.resolve() },
+      }
+
+      enhanceCodeBlocks(host)
+      const btn = host.querySelector('.code-block-copy') as HTMLButtonElement
+      expect(btn).not.toBeNull()
+      btn.click()
+      // Microtask flush so the writeText promise settles.
+      await Promise.resolve()
+      expect(captured).toBe('echo hi')
+    })
+
+    it('Scenario: enhanceCodeBlocks degrades gracefully when window.hljs is undefined (no throw, button still works)', () => {
+      const { renderMarkdown, enhanceCodeBlocks } = internals() as any
+      const prevHljs = (window as any).hljs
+      ;(window as any).hljs = undefined
+      try {
+        const host = document.createElement('div')
+        host.innerHTML = renderMarkdown('```ts\nconst x = 1\n```')
+        expect(() => enhanceCodeBlocks(host)).not.toThrow()
+        // Copy button still gets wired even without highlighter.
+        const btn = host.querySelector('.code-block-copy') as HTMLButtonElement
+        expect(btn.dataset.copyWired).toBe('1')
+      } finally {
+        ;(window as any).hljs = prevHljs
+      }
+    })
+
     // ── Empty-bubble cleanup ──────────────────────────────────────────────
     // ── sweepTrailingEmptyAssistantBubbles ────────────────────────────────
     // ── Tool-call card rendering ──────────────────────────────────────────

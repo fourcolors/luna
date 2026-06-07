@@ -17,6 +17,13 @@
  *   last_status   (string|null)  — "scheduled" | "fired" | "errored"
  *   created_at    (int)          — epoch ms, when row was inserted
  *   updated_at    (int)          — epoch ms, last time any column changed
+ *
+ * Phase 12b (scheduler-rebuild) additive columns — see DESIGN.md §5.3:
+ *   schedule      (string|null) — cron expression (replaces `spec` for new rows)
+ *   enabled       (int)          — 0|1; 0 makes the ticker skip this row
+ *   next_run_at   (int|null)     — when the ticker should next fire this row
+ *
+ * Plus a new `job_runs` table for per-fire audit history (one row per fire).
  */
 import type { Effect } from "effect"
 import { Data } from "effect"
@@ -33,10 +40,40 @@ export interface PersistedJob {
   readonly lastStatus: string | null
   readonly createdAt: number
   readonly updatedAt: number
+
+  // Phase 12b additive columns (DESIGN.md §5.3 / PR #51).
+  // Legacy rows have `schedule = null` — readers fall back to `spec`.
+  // `enabled` defaults to `true`; `nextRunAt` is what the ticker reads.
+  readonly schedule: string | null
+  readonly enabled: boolean
+  readonly nextRunAt: number | null
+}
+
+/**
+ * JobRun — one row per cron fire (or per oneshot dispatch). Written by the
+ * JobTicker (Phase 12b). Used for audit + the daily-brief acceptance test.
+ */
+export type JobRunStatus =
+  | "queued"
+  | "running"
+  | "success"
+  | "failed"
+  | "cancelled"
+
+export interface JobRun {
+  readonly id: number
+  readonly jobId: string
+  readonly startedAt: number
+  readonly finishedAt: number | null
+  readonly status: JobRunStatus
+  readonly attempt: number
+  readonly outputText: string | null
+  readonly error: string | null
+  readonly stepsJson: string | null
 }
 
 export class JobsStoreError extends Data.TaggedError("JobsStoreError")<{
-  readonly op: "record" | "list" | "delete" | "update" | "boot"
+  readonly op: "record" | "list" | "delete" | "update" | "boot" | "claim" | "run_start" | "run_end"
   readonly message: string
   readonly cause?: unknown
 }> {}
@@ -78,4 +115,80 @@ export interface JobsStoreApi {
       readonly lastStatus?: string | null
     },
   ) => Effect.Effect<boolean, JobsStoreError>
+
+  // ── Phase 12b — JobTicker reads ─────────────────────────────────────────
+
+  /**
+   * Set the V2 fields (schedule / enabled / nextRunAt). All three are
+   * independent partial patches. Returns true when a row was updated.
+   * No-op when the id does not exist.
+   */
+  readonly setV2Fields: (
+    id: string,
+    patch: {
+      readonly schedule?: string | null
+      readonly enabled?: boolean
+      readonly nextRunAt?: number | null
+    },
+  ) => Effect.Effect<boolean, JobsStoreError>
+
+  /**
+   * Return every row with `enabled = 1 AND (next_run_at IS NULL OR next_run_at <= now)`.
+   * The ticker calls this at each tick boundary, then `claim()`s each result.
+   */
+  readonly listDue: (
+    now: number,
+  ) => Effect.Effect<ReadonlyArray<PersistedJob>, JobsStoreError>
+
+  /**
+   * Optimistic claim. Writes `last_run = claimAt`, `last_status = "running"`,
+   * `next_run_at = nextRunAt` — but ONLY when the row's `last_run` is still
+   * `previousLastRun` (i.e. no other ticker beat us to it). Returns true on
+   * successful claim. Single-process today; the watchdog also guards against
+   * a future distributed ticker (Phase 14).
+   */
+  readonly claim: (
+    id: string,
+    args: {
+      readonly claimAt: number
+      readonly nextRunAt: number | null
+      readonly previousLastRun: number | null
+    },
+  ) => Effect.Effect<boolean, JobsStoreError>
+
+  // ── Phase 12b — JobRuns CRUD (per-fire audit ledger) ────────────────────
+
+  /**
+   * Insert a new `job_runs` row in `status="running"`. Returns the row
+   * (with its auto-assigned id) so the worker can later close it.
+   */
+  readonly recordRunStart: (input: {
+    readonly jobId: string
+    readonly startedAt: number
+    readonly attempt?: number
+  }) => Effect.Effect<JobRun, JobsStoreError>
+
+  /**
+   * Close a `job_runs` row: write `finished_at`, terminal `status`,
+   * optional `output_text`/`error`/`steps_json`. Returns true on update.
+   */
+  readonly recordRunEnd: (
+    runId: number,
+    end: {
+      readonly finishedAt: number
+      readonly status: Exclude<JobRunStatus, "queued" | "running">
+      readonly outputText?: string | null
+      readonly error?: string | null
+      readonly stepsJson?: string | null
+    },
+  ) => Effect.Effect<boolean, JobsStoreError>
+
+  /**
+   * Recent runs for a given job (descending by started_at). Default limit
+   * `25` — chat surfaces can ask for a tail; the ticker doesn't read this.
+   */
+  readonly listRuns: (
+    jobId: string,
+    limit?: number,
+  ) => Effect.Effect<ReadonlyArray<JobRun>, JobsStoreError>
 }

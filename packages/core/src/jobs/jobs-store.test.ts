@@ -151,4 +151,192 @@ describe("JobsStoreService (Memory layer)", () => {
     })
     await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
   })
+
+  // ── Phase 12b: V2 fields + listDue + claim + job_runs ──────────────────
+
+  it("setV2Fields updates schedule/enabled/nextRunAt partial-patch style", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      yield* store.record({
+        id: "v2-a",
+        kind: "cron",
+        spec: "*/5 * * * *",
+        payload: { label: "v2-a" },
+      })
+      // Patch only `schedule`.
+      const ok = yield* store.setV2Fields("v2-a", { schedule: "*/30 * * * *" })
+      expect(ok).toBe(true)
+      const after1 = yield* store.getById("v2-a")
+      expect(after1?.schedule).toBe("*/30 * * * *")
+      expect(after1?.enabled).toBe(true)
+      expect(after1?.nextRunAt).toBeNull()
+
+      // Patch only `nextRunAt`.
+      yield* store.setV2Fields("v2-a", { nextRunAt: 1_234_567 })
+      const after2 = yield* store.getById("v2-a")
+      expect(after2?.schedule).toBe("*/30 * * * *")  // unchanged
+      expect(after2?.nextRunAt).toBe(1_234_567)
+
+      // Patch enabled=false.
+      yield* store.setV2Fields("v2-a", { enabled: false })
+      const after3 = yield* store.getById("v2-a")
+      expect(after3?.enabled).toBe(false)
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
+  it("listDue returns only enabled rows whose next_run_at is null or <= now", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      yield* store.record({ id: "due-a", kind: "cron", spec: "*", payload: { label: "a" } })
+      yield* store.record({ id: "due-b", kind: "cron", spec: "*", payload: { label: "b" } })
+      yield* store.record({ id: "due-c", kind: "cron", spec: "*", payload: { label: "c" } })
+      // due-a: enabled, no nextRunAt → due immediately.
+      // due-b: enabled, nextRunAt=2000 → due when now>=2000.
+      // due-c: disabled, would otherwise be due.
+      yield* store.setV2Fields("due-b", { nextRunAt: 2000 })
+      yield* store.setV2Fields("due-c", { enabled: false })
+
+      const at1000 = yield* store.listDue(1000)
+      const ids1000 = at1000.map((j) => j.id).sort()
+      expect(ids1000).toEqual(["due-a"])
+
+      const at2500 = yield* store.listDue(2500)
+      const ids2500 = at2500.map((j) => j.id).sort()
+      expect(ids2500).toEqual(["due-a", "due-b"])
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
+  it("claim succeeds when previousLastRun matches; fails when it does not (optimistic lock)", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      yield* store.record({ id: "lock-a", kind: "cron", spec: "*", payload: { label: "a" } })
+
+      // First claim: previousLastRun is null (matches the initial state).
+      const ok1 = yield* store.claim("lock-a", {
+        claimAt: 5000,
+        nextRunAt: 5600,
+        previousLastRun: null,
+      })
+      expect(ok1).toBe(true)
+      const after1 = yield* store.getById("lock-a")
+      expect(after1?.lastRun).toBe(5000)
+      expect(after1?.lastStatus).toBe("running")
+      expect(after1?.nextRunAt).toBe(5600)
+
+      // Second claim with the WRONG previousLastRun (a competing tick) — fails.
+      const ok2 = yield* store.claim("lock-a", {
+        claimAt: 6000,
+        nextRunAt: 6600,
+        previousLastRun: null,                  // wrong; the row's lastRun is 5000 now
+      })
+      expect(ok2).toBe(false)
+
+      // Third claim with the CORRECT previousLastRun — succeeds.
+      const ok3 = yield* store.claim("lock-a", {
+        claimAt: 6000,
+        nextRunAt: 6600,
+        previousLastRun: 5000,
+      })
+      expect(ok3).toBe(true)
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
+  it("claim returns false on missing job (no row to lock)", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const ok = yield* store.claim("ghost", {
+        claimAt: 1,
+        nextRunAt: null,
+        previousLastRun: null,
+      })
+      expect(ok).toBe(false)
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
+  it("recordRunStart + recordRunEnd round-trip; listRuns returns ordered desc", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      yield* store.record({ id: "run-a", kind: "cron", spec: "*", payload: { label: "a" } })
+
+      const r1 = yield* store.recordRunStart({ jobId: "run-a", startedAt: 1000 })
+      expect(r1.status).toBe("running")
+      expect(r1.attempt).toBe(1)
+      expect(r1.finishedAt).toBeNull()
+
+      const r2 = yield* store.recordRunStart({
+        jobId: "run-a",
+        startedAt: 2000,
+        attempt: 2,
+      })
+      expect(r2.attempt).toBe(2)
+      expect(r2.id).not.toBe(r1.id)
+
+      const closed = yield* store.recordRunEnd(r1.id, {
+        finishedAt: 1500,
+        status: "success",
+        outputText: "ok",
+      })
+      expect(closed).toBe(true)
+
+      const all = yield* store.listRuns("run-a")
+      // Ordered by startedAt DESC: r2 (2000) before r1 (1000).
+      expect(all.length).toBe(2)
+      expect(all[0]?.id).toBe(r2.id)
+      expect(all[1]?.id).toBe(r1.id)
+      expect(all[1]?.status).toBe("success")
+      expect(all[1]?.outputText).toBe("ok")
+      expect(all[1]?.finishedAt).toBe(1500)
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
+  it("recordRunEnd returns false for missing run id", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const ok = yield* store.recordRunEnd(99_999, {
+        finishedAt: 0,
+        status: "failed",
+        error: "n/a",
+      })
+      expect(ok).toBe(false)
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
+  it("listRuns respects the limit parameter", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      yield* store.record({ id: "many", kind: "cron", spec: "*", payload: { label: "m" } })
+      for (let i = 0; i < 5; i++) {
+        yield* store.recordRunStart({ jobId: "many", startedAt: i * 100 })
+      }
+      const tail = yield* store.listRuns("many", 2)
+      expect(tail.length).toBe(2)
+      // Ordered by startedAt DESC → 400, 300
+      expect(tail[0]?.startedAt).toBe(400)
+      expect(tail[1]?.startedAt).toBe(300)
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
+  it("listDue ordering: rows with smaller next_run_at come first", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      yield* store.record({ id: "ord-a", kind: "cron", spec: "*", payload: { label: "a" } })
+      yield* store.record({ id: "ord-b", kind: "cron", spec: "*", payload: { label: "b" } })
+      yield* store.record({ id: "ord-c", kind: "cron", spec: "*", payload: { label: "c" } })
+      yield* store.setV2Fields("ord-a", { nextRunAt: 3000 })
+      yield* store.setV2Fields("ord-b", { nextRunAt: 1000 })
+      yield* store.setV2Fields("ord-c", { nextRunAt: 2000 })
+      const due = yield* store.listDue(10_000)
+      const order = due.map((j) => j.id)
+      expect(order).toEqual(["ord-b", "ord-c", "ord-a"])
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
 })

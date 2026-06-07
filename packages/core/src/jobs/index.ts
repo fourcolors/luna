@@ -23,6 +23,22 @@ export {
 } from "./errors.js"
 export { JobsStoreService } from "./jobs-store.js"
 export {
+  JobTicker,
+  JobTickerLayer,
+  type JobTickerApi,
+  type JobTickerOptions,
+  type TickSummary,
+} from "./job-ticker.js"
+export {
+  WorkerRegistry,
+  WorkerError,
+  makeWorkerRegistry,
+  type Worker,
+  type WorkerContext,
+  type WorkerResult,
+  type WorkerRegistryApi,
+} from "./worker-registry.js"
+export {
   JobsStoreError,
   type JobKind,
   type JobsStoreApi,
