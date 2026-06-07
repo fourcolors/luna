@@ -28,7 +28,9 @@
 import type { Effect } from "effect"
 import { Data } from "effect"
 
-export type JobKind = "cron" | "oneshot" | "file-watch"
+// Phase 12b adds "prompt" + "workflow" alongside the V1 kinds. WorkerRegistry
+// dispatches by string, so adding kinds here is the type-system catch-up.
+export type JobKind = "cron" | "oneshot" | "file-watch" | "prompt" | "workflow"
 
 export interface PersistedJob {
   readonly id: string
