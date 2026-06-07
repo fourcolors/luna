@@ -9,6 +9,9 @@ description: >-
   recommends a path. Use it early, not as a post-hoc review.
 model: opus
 effort: max
+memory: user
+skills:
+  - subagent-memory
 tools:
   - Read
   - Grep
