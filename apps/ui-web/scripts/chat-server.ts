@@ -189,6 +189,7 @@ import {
   SDKAdapter,
   SDKClient,
   WakeReasonerDefault,
+  PromptWorkerLayer,
 } from "@luna/adapter-sdk"
 import {
   ChatService,
@@ -870,16 +871,24 @@ export const buildBaseLayer = (
   const schedulerV2Enabled =
     process.env["LUNA_SCHEDULER_V2_ENABLED"]?.trim() === "1"
   if (schedulerV2Enabled) {
-    console.log("[luna/sched] V2 ticker ENABLED (LUNA_SCHEDULER_V2_ENABLED=1) — empty registry until P4+ workers land")
+    console.log("[luna/sched] V2 ticker ENABLED (LUNA_SCHEDULER_V2_ENABLED=1) — kind=prompt registered")
   }
+  // V2 registry: empty by default + PromptWorkerLayer registers the
+  // 'prompt' worker at boot. Layer.provideMerge so the registry remains
+  // visible to JobTickerLayer above it.
+  const workerRegistryL = PromptWorkerLayer().pipe(
+    Layer.provideMerge(
+      Layer.mergeAll(
+        sdkClientL,
+        makeWorkerRegistry({}),
+        agentNotesL,
+      ),
+    ),
+  )
   const jobTickerL = schedulerV2Enabled
     ? JobTickerLayer().pipe(
         Layer.provide(
-          Layer.mergeAll(
-            jobsStoreL,
-            makeWorkerRegistry({}),
-            clockL,
-          ),
+          Layer.mergeAll(jobsStoreL, workerRegistryL, clockL),
         ),
       )
     : null

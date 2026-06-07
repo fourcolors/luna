@@ -10,3 +10,12 @@ export {
   buildWakePrompt,
   parseDigest as parseWakeDigest,
 } from "./wake-reasoner.js"
+
+export {
+  PromptWorkerLayer,
+  buildPromptWorker,
+  parsePromptPayload,
+  type PromptPayload,
+  type PromptWorkerLayerOptions,
+  type DeliverySink,
+} from "./prompt-worker.js"
