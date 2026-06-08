@@ -698,6 +698,7 @@ describe("ChatService (Tier-2 sim)", () => {
         "mcp__scheduler__*",
         "mcp__observability__*",
         "mcp__local_shell__*",
+        "mcp__secret_tools__*",
       ])
       expect(capturedOptions!["strictMcpConfig"]).toBe(true)
       expect(capturedOptions!["env"]).toMatchObject({

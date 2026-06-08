@@ -207,6 +207,41 @@ export interface RegisterOpTokenStatusFrame {
   readonly message: string
 }
 
+/* ── agent-summoned secure secret entry ─────────────────────────────── */
+
+/**
+ * Server→client: the chat agent (via the `request_secret` tool) is asking the
+ * operator to type a secret into a secure field, inline in the conversation.
+ * Additive and optional — gated by handler presence; older clients ignore it.
+ *
+ * The wire carries ONLY a human `prompt` ("Paste your OpenAI API key") and a
+ * human-readable `destinationLabel` ("Store as env:OPENAI_API_KEY") shown for
+ * CONSENT. The structured destination descriptor never crosses the wire — the
+ * server holds it server-side, keyed by `requestId`. The secret VALUE comes
+ * back on `secret-result`; this request frame carries no secret.
+ */
+export interface SecretRequestFrame {
+  readonly type: "secret-request"
+  readonly requestId: string
+  /** What to enter — shown above the secure field. */
+  readonly prompt: string
+  /** Human-readable destination for operator consent (never the raw descriptor). */
+  readonly destinationLabel: string
+}
+
+/**
+ * Server→client ack for a completed `secret-result` (Moon secure-entry panel).
+ * `ok:true` means the secret was stored (the server then defers a restart to
+ * turn-end so discovery/broker re-run); `ok:false` carries a non-sensitive
+ * reason. The secret VALUE is NEVER echoed back here.
+ */
+export interface SecretStatusFrame {
+  readonly type: "secret-status"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly message: string
+}
+
 /* ── memory search ──────────────────────────────────────────────────── */
 
 export interface MemorySearchHit {
@@ -298,6 +333,8 @@ export type ServerFrame =
   | LocalShellRequestFrame
   | LocalShellStatusFrame
   | RegisterOpTokenStatusFrame
+  | SecretRequestFrame
+  | SecretStatusFrame
   | MemorySearchResultFrame
   | MemorySearchErrorFrame
   | SurveyRequestFrame
@@ -459,6 +496,20 @@ export interface RegisterOpTokenFrame {
 }
 
 /**
+ * Client→server: the operator's answer to a `secret-request` (Moon secure
+ * panel). Additive and optional. `secret` is the SENSITIVE value the operator
+ * typed — the server validates/persists it but MUST never log it or persist it
+ * to chat history. When `cancelled` is true, the operator dismissed the panel
+ * and `secret` is absent. `requestId` correlates back to the `secret-request`.
+ */
+export interface SecretResultFrame {
+  readonly type: "secret-result"
+  readonly requestId: string
+  readonly secret?: string
+  readonly cancelled?: boolean
+}
+
+/**
  * The operator's answers to one survey (client→server, Phase 3 D3).
  *
  * `surveyId` MUST match the SurveyRequestFrame.surveyId. `issuedAt` MUST
@@ -494,6 +545,7 @@ export type ClientFrame =
   | LocalShellResultFrame
   | MemorySearchRequestFrame
   | RegisterOpTokenFrame
+  | SecretResultFrame
   | SurveyResponseFrame
   | PtyInputFrame
   | PtyResizeFrame

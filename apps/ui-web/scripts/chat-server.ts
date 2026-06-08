@@ -216,7 +216,11 @@ import {
   ThreadToolsProviderTag,
   type ThreadToolsProvider,
 } from "@luna/chat-service"
-import { createLocalShellBridge, startUIWebSocketServer } from "@luna/ui-ws"
+import {
+  createLocalShellBridge,
+  createSecretRequestBridge,
+  startUIWebSocketServer,
+} from "@luna/ui-ws"
 import { LunaSqliteBootstrapLive, MemoryRouterTag } from "@luna/memory"
 import {
   MemoryRouterLayer,
@@ -237,6 +241,12 @@ import {
   LocalShellToolsLayer,
   LocalShellToolsService,
 } from "@luna/local-shell-tools"
+import {
+  SecretToolsLayer,
+  SecretToolsService,
+  makeRegisterSecret,
+  type SecretDestination,
+} from "@luna/secret-tools"
 import { startControlServer } from "@luna/control-server"
 import {
   resolveOpAccounts,
@@ -329,12 +339,14 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       const schedTools = yield* SchedulerToolsService
       const obsTools = yield* ObsToolsService
       const localShellTools = yield* LocalShellToolsService
+      const secretTools = yield* SecretToolsService
 
       console.log("[luna/boot] MCP servers registered:", [
         memTools.serverName,
         schedTools.serverName,
         obsTools.serverName,
         localShellTools.serverName,
+        secretTools.serverName,
       ].join(", "))
 
       // Luna identity: load DNA.md at boot (prepended to every thread's
@@ -440,6 +452,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
           const schedulerThreadTools = schedTools.createSessionBinding()
           const obsThreadTools = obsTools.createSessionBinding()
           const localShellThreadTools = localShellTools.createSessionBinding()
+          const secretThreadTools = secretTools.createSessionBinding()
           console.log(
             "[luna/thread] wiring MCP servers:",
             [
@@ -447,6 +460,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
               schedulerThreadTools.serverName,
               obsThreadTools.serverName,
               localShellThreadTools.serverName,
+              secretThreadTools.serverName,
             ].join(", "),
           )
           // Sync read of the live-refresh holder — refreshed every
@@ -464,6 +478,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             schedulerThreadTools.systemPromptAddendum,
             obsThreadTools.systemPromptAddendum,
             localShellThreadTools.systemPromptAddendum,
+            secretThreadTools.systemPromptAddendum,
           ]
             .filter((s): s is string => typeof s === "string" && s.length > 0)
             .join("\n\n")
@@ -473,6 +488,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             [schedulerThreadTools.serverName]: schedulerThreadTools.server,
             [obsThreadTools.serverName]: obsThreadTools.server,
             [localShellThreadTools.serverName]: localShellThreadTools.server,
+            [secretThreadTools.serverName]: secretThreadTools.server,
           }
           return {
             mcpServers,
@@ -480,6 +496,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             onBound: (sessionId: string) => {
               obsThreadTools.bindSession(sessionId)
               localShellThreadTools.bindSession(sessionId)
+              secretThreadTools.bindSession(sessionId)
               if (sandboxLocalShell.enabled) {
                 const reattach = () =>
                   attachSandboxLocalShell({
@@ -507,6 +524,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
     Layer.provide(MemoryToolsLayer()),
     Layer.provide(SchedulerToolsLayer()),
     Layer.provide(LocalShellToolsLayer({ bridge: localShellBridge })),
+    Layer.provide(SecretToolsLayer({ bridge: secretRequestBridge })),
     Layer.provide(ObsToolsLayer({ runtimeProbe: buildChatServerRuntimeProbe })),
   )
 
@@ -670,7 +688,16 @@ const CHAT_SERVICE_LABEL = "com.user.luna-chat-server"
  *     A self-SIGTERM there would leave the server dead. So force a restart with
  *     `launchctl kickstart -k` — exactly what control.restart does.
  */
+// Process-wide idempotency: this is invoked from several independent paths
+// (the Settings register-op-token handler, and the secret bridge's per-thread
+// deferred activation). Two triggers within the ~300ms window must NOT each
+// fire a restart — on darwin a second `launchctl kickstart -k` arriving just
+// after the first can kill the freshly respawned process mid-boot (during
+// discoverOpTokens / broker hydration), delaying recovery. First call wins.
+let serverRestartScheduled = false
 const scheduleServerRestart = (): void => {
+  if (serverRestartScheduled) return
+  serverRestartScheduled = true
   setTimeout(() => {
     try {
       if (process.platform === "darwin") {
@@ -695,6 +722,87 @@ const registerOpTokenHandler = makeRegisterOpToken({
   persist: persistOpToken,
   // Defer so the register-op-token-status frame flushes before the socket drops.
   scheduleRestart: scheduleServerRestart,
+  log: (msg) => writeSync(1, `${msg}\n`),
+})
+
+/**
+ * Persist an env-var secret: atomic upsert of `NAME=value` into `~/.luna/.env`
+ * (0600), mirroring the boot loader's parsing (first `=`, trimmed key), then set
+ * `process.env[NAME]` live (EnvSecretProvider reads process.env per-resolve).
+ * The deferred restart covers account-broker hydration. The value is never
+ * logged. Name/value are pre-validated by makeRegisterSecret (no `=`/newline).
+ */
+const persistEnvSecret = (varName: string, value: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    try {
+      const envPath = resolveRuntimePaths().envFilePath
+      let lines: ReadonlyArray<string> = []
+      try {
+        lines = readFileSync(envPath, "utf8").split("\n")
+      } catch {
+        lines = []
+      }
+      let replaced = false
+      const out = lines.map((line) => {
+        const t = line.trim()
+        if (t === "" || t.startsWith("#")) return line
+        const eq = t.indexOf("=")
+        if (eq !== -1 && t.slice(0, eq).trim() === varName) {
+          replaced = true
+          return `${varName}=${value}`
+        }
+        return line
+      })
+      const body = replaced ? out : [...out]
+      if (!replaced) {
+        while (body.length > 0 && body[body.length - 1]!.trim() === "") body.pop()
+        body.push(`${varName}=${value}`)
+      }
+      const content = `${body.join("\n")}\n`
+      mkdirSync(dirname(envPath), { recursive: true, mode: 0o700 })
+      const tmp = `${envPath}.tmp-${process.pid}`
+      writeFileSync(tmp, content, { mode: 0o600 })
+      renameSync(tmp, envPath)
+      chmodSync(envPath, 0o600) // writeFileSync mode is pre-umask; force 0600
+      process.env[varName] = value
+      resolve()
+    } catch (e) {
+      reject(e instanceof Error ? e : new Error(String(e)))
+    }
+  })
+
+// ── Moon agent-summoned secure secret entry ─────────────────────────────
+//
+// The `request_secret` tool (in @luna/secret-tools) calls
+// `secretRequestBridge.request(...)`, which summons a secure field in Moon,
+// awaits the operator's value, hands it to `registerSecret` for storage, and
+// returns ONLY {ok,message} (the value never leaves the bridge). On a
+// successful store the bridge DEFERS activation to the requesting thread's
+// `turn-complete` (so the restart never kills the calling turn).
+//
+// `registerSecret` reuses the same effectful primitives as the Settings
+// `register-op-token` path (op whoami + persistOpToken) plus persistEnvSecret.
+// Supports `op-token` and `env-secret`; an account-pointer destination is
+// added in a later slice. (`file-secret` is intentionally unsupported —
+// FileSecretProvider is not wired into the prod chain.)
+const registerSecret = makeRegisterSecret({
+  isLabelRegistered: (label) => OP_ACCOUNTS.some((a) => a.label === label),
+  validateOpToken: async (token) => {
+    const c = await opWhoami(token)
+    return c.ok ? { ok: true, message: "" } : { ok: false, message: c.message }
+  },
+  persistOpToken,
+  persistEnvSecret,
+  log: (msg) => writeSync(1, `${msg}\n`),
+})
+
+const secretRequestBridge = createSecretRequestBridge({
+  persistSecret: (destination, secret) =>
+    registerSecret(destination as SecretDestination, secret),
+  // Activation = the same supervised restart the Settings path uses, so token
+  // discovery + account-broker hydration re-run with the stored secret. Fired
+  // by the bridge at turn-complete (or its long fallback), never mid-turn.
+  scheduleActivation: scheduleServerRestart,
   log: (msg) => writeSync(1, `${msg}\n`),
 })
 
@@ -1226,6 +1334,9 @@ export const buildSetupServerLayer = (
         accountBroker: null,
         survey: null,
         localShellBridge: null,
+        // No chat in setup-mode → the request_secret tool is never bound, so the
+        // secret bridge has nothing to drive. Disabled here.
+        secretBridge: null,
         setupPty: resolvedSetupPty,
         // Allow OP-token entry in setup-mode too — useful when LUNA_OP_ACCOUNTS
         // is configured but the account still needs its token. The handler
@@ -1295,6 +1406,7 @@ const buildServerLayer = (
         localShellBridge,
         onLocalShellRelease: reattachSandbox,
         registerOpToken: registerOpTokenHandler,
+        secretBridge: secretRequestBridge,
       })
     }),
   ).pipe(
