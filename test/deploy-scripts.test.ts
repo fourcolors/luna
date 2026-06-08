@@ -1110,6 +1110,8 @@ exit 0
       "primary.example.test",
       "--fallback-ssh-host",
       "lan.example.test",
+      "--tailscale-ssh-host",
+      "",
     ], {
       env: {
         LUNA_TEST_BUN_PATH: "/opt/homebrew/bin/bun",
@@ -1123,6 +1125,29 @@ exit 0
     expect(result.stdout).toContain("LUNA_DEV_START_MODE=ssh")
     expect(result.stdout).toContain("LUNA_DEV_START_SSH=admin@primary.example.test")
     expect(result.stdout).toContain("LUNA_DEV_FALLBACK_START_SSH=admin@lan.example.test")
+  })
+
+  it("installer appends the Tailscale recovery target to the LAN fallback by default", () => {
+    const temp = makeTempDir()
+
+    const result = runScript("install.sh", [
+      "--dry-run",
+      "--luna-dir",
+      join(temp, "repo"),
+      "--bin-dir",
+      join(temp, "bin"),
+      "--enable-ssh-recovery",
+    ], {
+      env: {
+        LUNA_TEST_BUN_PATH: "/opt/homebrew/bin/bun",
+      },
+    })
+
+    expect(result.status).toBe(0)
+    // LAN host is tried first; the `jax` alias (resolves via ~/.ssh/config to the
+    // Tailscale host + key) is appended so recovery can still reach the box off-LAN.
+    expect(result.stdout).toContain("LUNA_STABLE_FALLBACK_START_SSH=root@jax-box.local,jax")
+    expect(result.stdout).toContain("LUNA_DEV_FALLBACK_START_SSH=root@jax-box.local,jax")
   })
 
   it("installer honors a localhost stable override without leaking jax-box", () => {

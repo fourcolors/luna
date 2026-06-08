@@ -20,6 +20,7 @@ ENABLE_SSH_RECOVERY="${LUNA_ENABLE_SSH_RECOVERY:-false}"
 SSH_USER="${LUNA_SSH_USER:-root}"
 SSH_HOST="${LUNA_SSH_HOST:-jax-box}"
 FALLBACK_SSH_HOST="${LUNA_FALLBACK_SSH_HOST:-jax-box.local}"
+TAILSCALE_SSH_HOST="${LUNA_TAILSCALE_SSH_HOST:-jax}"
 STABLE_START_MODE="${LUNA_STABLE_START_MODE:-}"
 STABLE_START_COMMAND="${LUNA_STABLE_START_COMMAND:-}"
 STABLE_START_SSH="${LUNA_STABLE_START_SSH:-}"
@@ -54,6 +55,10 @@ Options:
   --ssh-host <host>         Primary SSH recovery host. Default: jax-box.
   --fallback-ssh-host <host>
                              Fallback SSH recovery host. Default: jax-box.local.
+  --tailscale-ssh-host <target>
+                             Extra recovery target appended after the LAN fallback,
+                             resolved via ~/.ssh/config so a Tailscale alias works
+                             when off-LAN. Default: jax. Pass an empty value to omit.
   --stable-start-ssh <target>
                              Stable primary recovery SSH target.
   --stable-fallback-start-ssh <target>
@@ -117,6 +122,7 @@ while [[ $# -gt 0 ]]; do
     --ssh-user) SSH_USER="${2:?missing --ssh-user value}"; shift 2 ;;
     --ssh-host) SSH_HOST="${2:?missing --ssh-host value}"; shift 2 ;;
     --fallback-ssh-host) FALLBACK_SSH_HOST="${2:?missing --fallback-ssh-host value}"; shift 2 ;;
+    --tailscale-ssh-host) TAILSCALE_SSH_HOST="${2-}"; shift 2 ;;
     --stable-start-ssh) STABLE_START_SSH="${2:?missing --stable-start-ssh value}"; shift 2 ;;
     --stable-fallback-start-ssh) STABLE_FALLBACK_START_SSH="${2:?missing --stable-fallback-start-ssh value}"; shift 2 ;;
     --dev-start-ssh) DEV_START_SSH="${2:?missing --dev-start-ssh value}"; shift 2 ;;
@@ -128,14 +134,20 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$ENABLE_SSH_RECOVERY" == true ]]; then
+  # Append an optional Tailscale recovery target after the LAN fallback so the
+  # client can still SSH in and restart a down server when off-LAN. The target
+  # resolves through ~/.ssh/config (e.g. a `jax` alias -> Tailscale host + key).
+  # Empty TAILSCALE_SSH_HOST omits it.
+  ts_suffix=""
+  [[ -n "$TAILSCALE_SSH_HOST" ]] && ts_suffix=",${TAILSCALE_SSH_HOST}"
   STABLE_START_MODE="${STABLE_START_MODE:-ssh}"
   STABLE_START_COMMAND="${STABLE_START_COMMAND:-systemctl --user restart luna-chat-server.service}"
   STABLE_START_SSH="${STABLE_START_SSH:-${SSH_USER}@${SSH_HOST}}"
-  STABLE_FALLBACK_START_SSH="${STABLE_FALLBACK_START_SSH:-${SSH_USER}@${FALLBACK_SSH_HOST}}"
+  STABLE_FALLBACK_START_SSH="${STABLE_FALLBACK_START_SSH:-${SSH_USER}@${FALLBACK_SSH_HOST}${ts_suffix}}"
   DEV_START_MODE="${DEV_START_MODE:-ssh}"
   DEV_START_COMMAND="${DEV_START_COMMAND:-incus exec luna-dev -- systemctl restart luna-dev-chat-server.service}"
   DEV_START_SSH="${DEV_START_SSH:-${SSH_USER}@${SSH_HOST}}"
-  DEV_FALLBACK_START_SSH="${DEV_FALLBACK_START_SSH:-${SSH_USER}@${FALLBACK_SSH_HOST}}"
+  DEV_FALLBACK_START_SSH="${DEV_FALLBACK_START_SSH:-${SSH_USER}@${FALLBACK_SSH_HOST}${ts_suffix}}"
 fi
 
 if [[ "$DRY_RUN" == true ]]; then
