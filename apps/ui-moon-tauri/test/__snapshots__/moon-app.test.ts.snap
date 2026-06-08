@@ -195,6 +195,33 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
       </div>
     </div>
 
+    <!-- Secure secret-entry panel. Hidden by default; SecretPromptEngine
+         populates and reveals it when the server pushes a \`secret-request\`
+         frame. The agent (server) asks for a secret (API key, token, …); the
+         user types it into the password field below and the value is sent back
+         on a single \`secret-result\` frame and then immediately wiped from the
+         input. SECURITY: the typed secret NEVER touches localStorage, a Tauri
+         command, or the chat transcript — it lives only in the input until the
+         OPEN-guarded send, after which the field is cleared one-shot. Mirrors
+         the docked user-ask-panel so it lands where the operator's eye does. -->
+    <div class="secret-prompt-panel" id="secret-prompt-panel" role="dialog" aria-labelledby="secret-prompt-title" hidden="">
+      <div class="user-ask-header">
+        <span class="user-ask-icon" aria-hidden="true">🔐</span>
+        <h3 class="user-ask-title" id="secret-prompt-title">Luna needs a secret</h3>
+        <button type="button" class="user-ask-dismiss" id="secret-prompt-cancel-x" aria-label="Cancel secret entry">×</button>
+      </div>
+      <div class="user-ask-body">
+        <div class="secret-prompt-prompt" id="secret-prompt-prompt"></div>
+        <div class="secret-prompt-consent" id="secret-prompt-consent"></div>
+        <input type="password" id="secret-prompt-input" class="premium-text-input" placeholder="Enter the secret value…" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="user-ask-footer">
+        <span class="user-ask-hint secret-prompt-status" id="secret-prompt-status" hidden=""></span>
+        <button type="button" class="user-ask-dismiss-btn" id="secret-prompt-cancel">Cancel</button>
+        <button type="button" class="user-ask-submit" id="secret-prompt-submit">Submit</button>
+      </div>
+    </div>
+
     <form class="chat-input-area" id="chat-form">
       <div class="attach-error" id="attach-error" hidden=""></div>
       <div class="attachments-strip" id="attachments-strip" hidden=""></div>
@@ -424,6 +451,33 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
       <div class="user-ask-footer">
         <span class="user-ask-hint" id="user-ask-hint">Rate task quality to submit</span>
         <button type="button" class="user-ask-submit" id="user-ask-submit" disabled="">Submit</button>
+      </div>
+    </div>
+
+    <!-- Secure secret-entry panel. Hidden by default; SecretPromptEngine
+         populates and reveals it when the server pushes a \`secret-request\`
+         frame. The agent (server) asks for a secret (API key, token, …); the
+         user types it into the password field below and the value is sent back
+         on a single \`secret-result\` frame and then immediately wiped from the
+         input. SECURITY: the typed secret NEVER touches localStorage, a Tauri
+         command, or the chat transcript — it lives only in the input until the
+         OPEN-guarded send, after which the field is cleared one-shot. Mirrors
+         the docked user-ask-panel so it lands where the operator's eye does. -->
+    <div class="secret-prompt-panel" id="secret-prompt-panel" role="dialog" aria-labelledby="secret-prompt-title" hidden="">
+      <div class="user-ask-header">
+        <span class="user-ask-icon" aria-hidden="true">🔐</span>
+        <h3 class="user-ask-title" id="secret-prompt-title">Luna needs a secret</h3>
+        <button type="button" class="user-ask-dismiss" id="secret-prompt-cancel-x" aria-label="Cancel secret entry">×</button>
+      </div>
+      <div class="user-ask-body">
+        <div class="secret-prompt-prompt" id="secret-prompt-prompt"></div>
+        <div class="secret-prompt-consent" id="secret-prompt-consent"></div>
+        <input type="password" id="secret-prompt-input" class="premium-text-input" placeholder="Enter the secret value…" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="user-ask-footer">
+        <span class="user-ask-hint secret-prompt-status" id="secret-prompt-status" hidden=""></span>
+        <button type="button" class="user-ask-dismiss-btn" id="secret-prompt-cancel">Cancel</button>
+        <button type="button" class="user-ask-submit" id="secret-prompt-submit">Submit</button>
       </div>
     </div>
 

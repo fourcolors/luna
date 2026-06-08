@@ -82,6 +82,8 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "local-shell-request",
   "local-shell-status",
   "register-op-token-status",
+  "secret-request",
+  "secret-status",
   "memory-search-result",
   "memory-search-error",
   "survey-request",
@@ -101,6 +103,7 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "local-shell-result",
   "memory-search-request",
   "register-op-token",
+  "secret-result",
   "survey-response",
   "pty-input",
   "pty-resize",
@@ -181,13 +184,13 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     expect(UI_WS_PROTOCOL_VERSION).toBe(EXPECTED_PROTOCOL_VERSION)
   })
 
-  it("parser self-check: derived counts are sane (24 server, 15 client) — guards the regex itself", () => {
+  it("parser self-check: derived counts are sane (26 server, 16 client) — guards the regex itself", () => {
     // If the regex silently mis-parses, the toEqual above could pass for the
     // wrong reason. Pin the counts so a broken parser is caught here.
-    // Merge of dev (turn-complete) + this branch (register-op-token[-status]):
-    // ServerFrame 22 base + turn-complete + register-op-token-status = 24;
-    // ClientFrame 14 base + register-op-token = 15.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(24)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(15)
+    // Prior base = 24 server / 15 client; the agent-summoned secure-secret-entry
+    // feature adds secret-request + secret-status (server) and secret-result
+    // (client) → 26 server / 16 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(26)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(16)
   })
 })
