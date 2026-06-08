@@ -15,6 +15,13 @@ LUNA_HOME="${LUNA_HOME:-/root/.luna}"
 SERVICE_DIR="${LUNA_SERVICE_DIR:-/etc/systemd/system}"
 SERVICE_NAME=""
 TOKEN="${UI_WS_TOKEN:-${LUNA_UI_WS_TOKEN:-}}"
+# Long-lived Claude model-auth token (a `claude setup-token` value). Taken ONLY
+# from the environment or --claude-token-file — NEVER a positional/value flag —
+# so the secret never lands in argv / shell history / `ps`. When present, the
+# default account is pointed at env:CLAUDE_CODE_OAUTH_TOKEN (durable, no
+# idle-expiry); the value goes to the gitignored .env, never the repo.
+CLAUDE_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}"
+CLAUDE_TOKEN_FILE=""
 # The chat server's own bind. When unset, it is auto-resolved after arg parsing
 # (luna_resolve_bind_addr): the host's Tailscale IP if a tailnet is present (so a
 # fresh remote install serves tailnet peers out of the box), else loopback. The
@@ -48,6 +55,15 @@ Options:
   --service-name <name>     Override generated unit name.
   --token <token>           UI WebSocket token to write if no token exists.
   --rotate-token            Replace existing UI token with --token.
+  --claude-token-file <path>
+                            File holding a long-lived `claude setup-token`
+                            (sk-ant-oat01…). Written to .env as
+                            CLAUDE_CODE_OAUTH_TOKEN and the default account is
+                            pointed at it (durable model auth, no idle-expiry).
+                            The token is NEVER passed as a flag value or printed;
+                            you may also supply it via the CLAUDE_CODE_OAUTH_TOKEN
+                            env var. Omit it to use the interactive
+                            claude-code:login setup flow instead.
   --bind-host <host>        LUNA_UI_WS_HOST value. Default: auto — the host's
                             Tailscale IP if a tailnet is present (serves remote
                             peers), else 127.0.0.1 loopback.
@@ -80,6 +96,7 @@ while [[ $# -gt 0 ]]; do
     --service-dir) SERVICE_DIR="${2:?missing --service-dir value}"; shift 2 ;;
     --service-name) SERVICE_NAME="${2:?missing --service-name value}"; shift 2 ;;
     --token) TOKEN="${2:?missing --token value}"; shift 2 ;;
+    --claude-token-file) CLAUDE_TOKEN_FILE="${2:?missing --claude-token-file value}"; shift 2 ;;
     --rotate-token) ROTATE_TOKEN=true; shift ;;
     --bind-host) BIND_HOST="${2:?missing --bind-host value}"; shift 2 ;;
     --i-understand-public) I_UNDERSTAND_PUBLIC=true; BIND_HOST="0.0.0.0"; shift ;;
@@ -97,6 +114,19 @@ while [[ $# -gt 0 ]]; do
 done
 
 luna_validate_profile "$PROFILE"
+
+# Resolve the Claude token from --claude-token-file (preferred) over the
+# CLAUDE_CODE_OAUTH_TOKEN env var. Strip CR/LF only. Held in memory, never echoed.
+if [[ -n "$CLAUDE_TOKEN_FILE" ]]; then
+  [[ -r "$CLAUDE_TOKEN_FILE" ]] || luna_die "--claude-token-file not readable: $CLAUDE_TOKEN_FILE"
+  CLAUDE_TOKEN="$(cat -- "$CLAUDE_TOKEN_FILE")"
+fi
+# Strip ALL whitespace (CR/LF/tab/space) from whichever source. OAuth setup-tokens
+# contain none, so this just normalizes a file's trailing newline AND makes a
+# blank-but-whitespace value collapse to empty — matching chooseDefaultSecretRef's
+# .trim() in the seed, so the [[ -n ]] gate below can't write a junk token to .env
+# while the seed falls back to claude-code:login.
+CLAUDE_TOKEN="$(printf '%s' "$CLAUDE_TOKEN" | tr -d '[:space:]')"
 
 # When neither LUNA_UI_WS_HOST nor --bind-host chose a bind, auto-resolve it:
 # the host's Tailscale IP if a tailnet is present (so a fresh remote install
@@ -234,11 +264,35 @@ else
   luna_upsert_env "$ENV_FILE" "UI_WS_TOKEN" "$TOKEN"
 fi
 
+# Durable Claude model auth: when a token was supplied, write it to .env (mode
+# 600, gitignored) so the account can point at env:CLAUDE_CODE_OAUTH_TOKEN. The
+# value is never printed; only the upsert helper writes it.
+if [[ -n "$CLAUDE_TOKEN" ]]; then
+  luna_upsert_env "$ENV_FILE" "CLAUDE_CODE_OAUTH_TOKEN" "$CLAUDE_TOKEN"
+  luna_info "Durable Claude token written to .env (account will use env:CLAUDE_CODE_OAUTH_TOKEN)"
+fi
+
 if [[ "$SKIP_DEPS" == false ]]; then
   luna_run "$BUN_BIN" install --cwd "$REPO_DIR" --frozen-lockfile
 fi
 
 luna_configure_claude_executable "$ENV_FILE" "$REPO_DIR"
+
+# Seed the default account so the server boots straight into NORMAL mode rather
+# than setup-mode. Only when a durable token was supplied — otherwise leave the
+# accounts table empty so first boot enters the interactive setup-mode login
+# (which seeds claude-code:login). The token is passed via the subprocess ENV
+# (not argv) and only the POINTER ref is ever written/printed. Non-fatal.
+if [[ -n "$CLAUDE_TOKEN" && "$DRY_RUN" == false ]]; then
+  if ( cd "$REPO_DIR" && CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_TOKEN" LUNA_DB_PATH="$LUNA_HOME/luna.db" \
+        "$BUN_BIN" run apps/ui-web/scripts/seed-default-account.ts "$LUNA_HOME/luna.db" ); then
+    :
+  else
+    luna_warn "default-account seed failed — server may start in setup-mode; re-run apps/ui-web/scripts/seed-default-account.ts after install"
+  fi
+elif [[ -n "$CLAUDE_TOKEN" ]]; then
+  luna_info "[dry-run] would seed default account (secret_ref=env:CLAUDE_CODE_OAUTH_TOKEN)"
+fi
 
 write_service "$BUN_BIN"
 

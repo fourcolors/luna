@@ -16,7 +16,12 @@
  *   3. Logged in, no accounts yet        → one insert, then exit(0)
  */
 import { describe, expect, it, vi } from "vitest"
-import { onLoginAttemptComplete, seedLoginAccount } from "../setup-login.js"
+import {
+  chooseDefaultSecretRef,
+  onLoginAttemptComplete,
+  seedDefaultAccount,
+  seedLoginAccount,
+} from "../setup-login.js"
 import type { PtyOutputFrame } from "@luna/ui-ws"
 
 // ── fake MinimalDb ─────────────────────────────────────────────────────────
@@ -197,5 +202,54 @@ describe("seedLoginAccount (idempotency)", () => {
     expect(row).toBeDefined()
     expect(row?.kind).toBe("anthropic")
     expect(row?.secret_ref).toBe("claude-code:login")
+  })
+})
+
+// NOTE: the sk-ant-oat01-* fixtures below are intentionally SHORT — the CI
+// secret-scan ignores `sk-ant-oat01-` runs under ~30 high-entropy chars. Keep
+// any future fixtures short/obviously-fake so they never trip the hard gate.
+describe("chooseDefaultSecretRef (env-token default policy)", () => {
+  it("points at the env token when CLAUDE_CODE_OAUTH_TOKEN is set", () => {
+    expect(chooseDefaultSecretRef({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" })).toBe(
+      "env:CLAUDE_CODE_OAUTH_TOKEN",
+    )
+  })
+  it("falls back to claude-code:login when unset / empty / whitespace", () => {
+    expect(chooseDefaultSecretRef({})).toBe("claude-code:login")
+    expect(chooseDefaultSecretRef({ CLAUDE_CODE_OAUTH_TOKEN: "" })).toBe("claude-code:login")
+    expect(chooseDefaultSecretRef({ CLAUDE_CODE_OAUTH_TOKEN: "   " })).toBe("claude-code:login")
+  })
+  it("returns only a POINTER — never the token value (no-leak property)", () => {
+    const ref = chooseDefaultSecretRef({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-SECRET-XYZ" })
+    expect(ref).toBe("env:CLAUDE_CODE_OAUTH_TOKEN")
+    expect(ref).not.toContain("SECRET")
+  })
+})
+
+describe("seedDefaultAccount", () => {
+  it("seeds the given pointer ref and reports it", () => {
+    const db = makeFakeDb()
+    const openFn = makeDbFactory(db) as Parameters<typeof seedDefaultAccount>[2]
+    const r = seedDefaultAccount("/fake/luna.db", "env:CLAUDE_CODE_OAUTH_TOKEN", openFn)
+    expect(r).toEqual({ seeded: true, secretRef: "env:CLAUDE_CODE_OAUTH_TOKEN" })
+    expect(db.rows.get("default")?.secret_ref).toBe("env:CLAUDE_CODE_OAUTH_TOKEN")
+  })
+  it("is idempotent — no-op if ANY account already exists", () => {
+    const db = makeFakeDb()
+    const openFn = makeDbFactory(db) as Parameters<typeof seedDefaultAccount>[2]
+    seedDefaultAccount("/fake/luna.db", "claude-code:login", openFn)
+    const r2 = seedDefaultAccount("/fake/luna.db", "env:CLAUDE_CODE_OAUTH_TOKEN", openFn)
+    expect(r2.seeded).toBe(false) // existing account wins; no second row, no overwrite
+    expect(db.rows.size).toBe(1)
+    expect(db.rows.get("default")?.secret_ref).toBe("claude-code:login")
+  })
+  it("only the pointer reaches the DB even when the env holds a real-looking token", () => {
+    const db = makeFakeDb()
+    const openFn = makeDbFactory(db) as Parameters<typeof seedDefaultAccount>[2]
+    const ref = chooseDefaultSecretRef({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-TOPSECRET" })
+    seedDefaultAccount("/fake/luna.db", ref, openFn)
+    const stored = db.rows.get("default")?.secret_ref ?? ""
+    expect(stored).toBe("env:CLAUDE_CODE_OAUTH_TOKEN")
+    expect(stored).not.toContain("TOPSECRET")
   })
 })

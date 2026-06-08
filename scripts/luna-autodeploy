@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+#
+# luna-autodeploy — poll a channel's upstream branch and, when it has MOVED,
+# invoke scripts/luna-update-server to bring the running server to it (fetch +
+# reset + conditional bun install + restart + readiness probe + AUTO-ROLLBACK).
+#
+# This is the pull-based deploy TRIGGER that was the missing glue: GitHub can't
+# reach jax-box (Tailscale) and CI can't reach jax-box, so the box polls GitHub.
+# It is a thin, SAFE wrapper around the already-tested luna-update-server:
+#
+#   * NO-OP (quiet exit 0) when the channel is already at origin/<branch>, so a
+#     frequent timer only ever restarts the server when the branch actually moved.
+#   * CONNECT-AWARE: by default it DEFERS (exit 0, retry next tick) when the
+#     channel has active WebSocket sessions, so it never drops the operator
+#     mid-conversation. Override with --allow-active (or --force).
+#   * The systemd unit log (journalctl -u luna-autodeploy-<profile>) is the audit
+#     trail: each run prints what it did and the from->to SHAs.
+#
+# Designed to be run BOTH ways (per operator choice 2026-06-08):
+#   - DEV   on a systemd timer  (auto-tracks origin/dev), and
+#   - STABLE by hand            (the operator's one-command deploy; NEVER a timer
+#                                — the daily driver must not restart unexpectedly).
+#
+# Usage:
+#   luna-autodeploy <dev|stable> [--force] [--allow-active] [--dry-run]
+#   luna-autodeploy install-timer dev   [--interval <systemd-time, default 3min>]
+#   luna-autodeploy uninstall-timer dev
+#
+# Profile -> config (jax-box topology; override via env if it ever changes):
+#   dev    : host repo /root/luna/dev/repo,    branch dev,    incus container luna-dev, WS :4753 (in container)
+#   stable : host repo /root/luna/stable/repo, branch master, bare-host,                WS :4753 (host)
+#
+# Exit: 0 = up-to-date / deferred / deployed-clean; 1 = update failed but
+# luna-update-server rolled back; 2 = bad usage or CRITICAL (rollback failed).
+set -euo pipefail
+
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+UPDATE_SERVER="$(dirname "$SELF")/luna-update-server"
+
+# ── profile config ───────────────────────────────────────────────────────────
+P_REPO="" P_BRANCH="" P_INCUS="" P_PORT="" ; P_UPDATE_ARGS=()
+profile_config() {
+  case "$1" in
+    dev)
+      P_REPO="${LUNA_DEV_REPO_DIR:-/root/luna/dev/repo}"
+      P_BRANCH="${LUNA_DEV_BRANCH:-dev}"
+      P_INCUS="${LUNA_DEV_INCUS:-luna-dev}"
+      P_PORT="${LUNA_DEV_WS_PORT:-4753}"
+      P_UPDATE_ARGS=(--profile dev --incus "$P_INCUS" --ref "origin/$P_BRANCH")
+      ;;
+    stable)
+      P_REPO="${LUNA_STABLE_REPO_DIR:-/root/luna/stable/repo}"
+      P_BRANCH="${LUNA_STABLE_BRANCH:-master}"
+      P_INCUS=""
+      P_PORT="${LUNA_STABLE_WS_PORT:-4753}"
+      # bare-host: default --repo-dir (/root/luna) has no .git here, so pass it.
+      P_UPDATE_ARGS=(--profile stable --repo-dir "$P_REPO" --ref "origin/$P_BRANCH")
+      ;;
+    *) echo "luna-autodeploy: unknown profile '$1' (want dev|stable)" >&2; exit 2 ;;
+  esac
+}
+
+# Count ESTABLISHED WebSocket connections on the channel port. Dev terminates
+# inside the container (host :5753 is only the incusd proxy), so check there.
+active_ws_count() {
+  local n
+  if [[ -n "$P_INCUS" ]]; then
+    n="$(incus exec "$P_INCUS" -- sh -c "ss -tnH state established '( sport = :$P_PORT )' 2>/dev/null | wc -l" 2>/dev/null || echo 0)"
+  else
+    n="$(ss -tnH state established "( sport = :$P_PORT )" 2>/dev/null | wc -l || echo 0)"
+  fi
+  n="$(printf '%s' "$n" | tr -dc '0-9')"
+  printf '%s' "${n:-0}"
+}
+
+# ── deploy one channel ───────────────────────────────────────────────────────
+FORCE=false ALLOW_ACTIVE=false DRY_RUN=false INTERVAL=""
+
+do_deploy() {
+  local profile="$1"; profile_config "$profile"
+  [[ -x "$UPDATE_SERVER" ]] || { echo "luna-autodeploy: $UPDATE_SERVER not found/executable" >&2; exit 2; }
+  [[ -d "$P_REPO/.git" ]] || { echo "luna-autodeploy: $P_REPO is not a git repo" >&2; exit 2; }
+
+  git -C "$P_REPO" fetch origin "$P_BRANCH" --quiet
+  local local_sha remote_sha
+  local_sha="$(git -C "$P_REPO" rev-parse HEAD)"
+  remote_sha="$(git -C "$P_REPO" rev-parse "origin/$P_BRANCH")"
+
+  if [[ "$local_sha" == "$remote_sha" && "$FORCE" != true ]]; then
+    echo "[autodeploy:$profile] up to date at ${local_sha:0:9} — no-op"
+    return 0
+  fi
+
+  if [[ "$ALLOW_ACTIVE" != true && "$FORCE" != true ]]; then
+    local n; n="$(active_ws_count)"
+    if [[ "$n" -gt 0 ]]; then
+      echo "[autodeploy:$profile] DEFERRED — $n active session(s); will retry next tick (origin ${remote_sha:0:9})"
+      return 0
+    fi
+  fi
+
+  echo "[autodeploy:$profile] deploying ${local_sha:0:9} -> ${remote_sha:0:9} (origin/$P_BRANCH)"
+  if [[ "$DRY_RUN" == true ]]; then
+    echo "[autodeploy:$profile] DRY-RUN: $UPDATE_SERVER ${P_UPDATE_ARGS[*]}"
+    return 0
+  fi
+
+  local rc=0
+  "$UPDATE_SERVER" "${P_UPDATE_ARGS[@]}" || rc=$?
+  case "$rc" in
+    0) echo "[autodeploy:$profile] OK — now at ${remote_sha:0:9}" ;;
+    1) echo "[autodeploy:$profile] ROLLED BACK — update failed, recovered to ${local_sha:0:9}" >&2 ;;
+    *) echo "[autodeploy:$profile] CRITICAL rc=$rc — rollback may have failed; manual attention needed" >&2 ;;
+  esac
+  return "$rc"
+}
+
+# ── systemd timer install (dev only) ─────────────────────────────────────────
+install_timer() {
+  local profile="$1"; profile_config "$profile"
+  if [[ "$profile" != dev ]]; then
+    echo "luna-autodeploy: timers are dev-only by design (stable is one-command: 'luna-autodeploy stable')" >&2
+    exit 2
+  fi
+  local interval="${INTERVAL:-3min}"
+  local svc="/etc/systemd/system/luna-autodeploy-$profile.service"
+  local tmr="/etc/systemd/system/luna-autodeploy-$profile.timer"
+  cat > "$svc" <<EOF
+[Unit]
+Description=Luna auto-deploy ($profile) — pull origin/$P_BRANCH and update if it moved
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# HOME is required so git/gh find credentials for the private remote (see
+# memory: the unit running with HOME unset was a real auth footgun).
+Environment=HOME=/root
+ExecStart=$SELF $profile
+EOF
+  cat > "$tmr" <<EOF
+[Unit]
+Description=Luna auto-deploy ($profile) timer — checks origin/$P_BRANCH every $interval
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=$interval
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now "luna-autodeploy-$profile.timer"
+  echo "luna-autodeploy: installed + enabled luna-autodeploy-$profile.timer (every $interval)"
+  echo "  ExecStart=$SELF $profile"
+  systemctl list-timers "luna-autodeploy-$profile.timer" --no-pager 2>/dev/null | head -3 || true
+}
+
+uninstall_timer() {
+  local profile="$1"
+  systemctl disable --now "luna-autodeploy-$profile.timer" 2>/dev/null || true
+  rm -f "/etc/systemd/system/luna-autodeploy-$profile.timer" "/etc/systemd/system/luna-autodeploy-$profile.service"
+  systemctl daemon-reload
+  echo "luna-autodeploy: removed luna-autodeploy-$profile timer + service"
+}
+
+# ── arg parse + dispatch ─────────────────────────────────────────────────────
+CMD="${1:-}"
+case "$CMD" in
+  install-timer|uninstall-timer)
+    SUBPROFILE="${2:?usage: luna-autodeploy $CMD <dev|stable>}"; shift 2
+    while [[ $# -gt 0 ]]; do case "$1" in --interval) INTERVAL="${2:?}"; shift 2 ;; *) echo "unknown arg: $1" >&2; exit 2 ;; esac; done
+    [[ "$CMD" == install-timer ]] && install_timer "$SUBPROFILE" || uninstall_timer "$SUBPROFILE"
+    ;;
+  dev|stable)
+    shift
+    while [[ $# -gt 0 ]]; do case "$1" in
+      --force) FORCE=true; shift ;;
+      --allow-active) ALLOW_ACTIVE=true; shift ;;
+      --dry-run) DRY_RUN=true; shift ;;
+      *) echo "unknown arg: $1" >&2; exit 2 ;;
+    esac; done
+    do_deploy "$CMD"
+    ;;
+  ""|-h|--help)
+    sed -n '2,40p' "$SELF" | sed 's/^# \{0,1\}//'
+    ;;
+  *) echo "luna-autodeploy: unknown command '$CMD'" >&2; exit 2 ;;
+esac

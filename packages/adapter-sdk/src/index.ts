@@ -34,3 +34,14 @@ export {
   type WorkflowResult,
   type WorkflowWorkerLayerOptions,
 } from "./workflow-worker.js"
+
+export {
+  parseCherry,
+  decideShip,
+  cherryAgainst,
+  openPrCountForHead,
+  guardShip,
+  type CherrySummary,
+  type ShipVerdict,
+  type SkipCause,
+} from "./ship-guard.js"
