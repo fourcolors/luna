@@ -41,16 +41,61 @@ import type { MemoryRecord } from "@luna/memory"
 import { LunaSqliteBootstrapLive } from "@luna/memory"
 import { ThreadToolsProviderTag } from "@luna/chat-service"
 import { Effect, Layer, ManagedRuntime, Ref, Stream } from "effect"
+import { rmSync } from "node:fs"
 import { ThreadToolsProviderLayer } from "../chat-server.js"
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Per-run temp DB paths so the smoke is fully isolated from the operator's
+// real ~/.luna DBs and two concurrent runs never collide.
+//
+// Subtlety: the real ThreadToolsProviderLayer provides ObsToolsLayer
+// INTERNALLY (chat-server.ts:528), and ObsToolsLayer opens its OWN DuckDB at
+// resolveAnalyticsDbPath() + AgentNotes at resolveLunaDbPath() — the DEFAULT
+// ~/.luna/{analytics.duckdb,luna.db}. The provide-chain can't reach those, so
+// we redirect them via the documented env overrides (LUNA_ANALYTICS_DB_PATH /
+// LUNA_DB_PATH, layer.ts:62-74) set BEFORE buildLayer runs (resolve*DbPath is
+// called lazily at ThreadToolsProviderLayer-invocation time, so module-top is
+// in time despite import hoisting). DuckDB holds an exclusive lock file, so
+// without this two concurrent runs deadlock on ~/.luna/analytics.duckdb.lock
+// and every run mutates the operator's real analytics DB. RUN_ID = pid+ts.
+//
+// The telemetry-platform DuckDB (SMOKE_TEL_ANALYTICS_DB) MUST differ from the
+// ObsTools one (SMOKE_OBS_ANALYTICS_DB): they're two separate DuckDbService
+// builds, and same-path-in-one-process self-deadlocks on the lock file.
+const RUN_ID = `${process.pid}-${Date.now()}`
+const SMOKE_LUNA_DB = `/tmp/luna-smoke-belief-luna-${RUN_ID}.db`
+const SMOKE_OBS_ANALYTICS_DB = `/tmp/luna-smoke-belief-obs-analytics-${RUN_ID}.duckdb`
+const SMOKE_TEL_ANALYTICS_DB = `/tmp/luna-smoke-belief-tel-analytics-${RUN_ID}.duckdb`
+const SMOKE_OBS_JSONL = `/tmp/luna-smoke-belief-obs-${RUN_ID}.jsonl`
+process.env["LUNA_DB_PATH"] = SMOKE_LUNA_DB
+process.env["LUNA_ANALYTICS_DB_PATH"] = SMOKE_OBS_ANALYTICS_DB
+
+/** Best-effort removal of this run's temp DB files + their sidecars/locks. */
+const cleanupSmokeArtifacts = (): void => {
+  for (const base of [
+    SMOKE_OBS_JSONL,
+    SMOKE_LUNA_DB,
+    SMOKE_OBS_ANALYTICS_DB,
+    SMOKE_TEL_ANALYTICS_DB,
+  ]) {
+    // DuckDB → <db>.wal/.lock ; bun:sqlite → <db>-wal/-shm.
+    for (const suffix of ["", ".wal", ".lock", "-wal", "-shm"]) {
+      try {
+        rmSync(base + suffix, { force: true })
+      } catch {
+        /* best-effort — never fail the smoke on cleanup */
+      }
+    }
+  }
+}
+
 const clockL = Clock.Default
 const obsL = ObservabilityService.makeLayer({
   logToConsole: false,
-  jsonlPath: "/tmp/luna-smoke-belief-obs.jsonl",
+  jsonlPath: SMOKE_OBS_JSONL,
 }).pipe(Layer.provide(clockL))
 
 // TelemetryPlatform mirror — satisfies the EventSink + SessionSync services.
@@ -66,11 +111,10 @@ const obsL = ObservabilityService.makeLayer({
 // rather than hand-rolling a minimal EventSink+SessionSync pair, because this
 // smoke exists to prove the REAL graph builds AS IT DOES IN PRODUCTION — so it
 // must stay covered if ObsToolsLayer later leans on EventCounter/MetricsFlusher
-// too. DB files go to /tmp (fresh, isolated; migrations are idempotent).
-const duckDbL = makeDuckDbLayer({
-  dbPath: "/tmp/luna-smoke-belief-analytics.duckdb",
-})
-const telemetryL = makeTelemetrySqlite("/tmp/luna-smoke-belief-luna.db").pipe(
+// too. Uses the per-run temp paths declared above (see the RUN_ID block) so
+// each run is fresh, isolated from ~/.luna, and concurrency-safe.
+const duckDbL = makeDuckDbLayer({ dbPath: SMOKE_TEL_ANALYTICS_DB })
+const telemetryL = makeTelemetrySqlite(SMOKE_LUNA_DB).pipe(
   Layer.provide(clockL),
   Layer.provide(LunaSqliteBootstrapLive),
 )
@@ -265,6 +309,7 @@ async function check2(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function main() {
+  let exitCode = 0
   try {
     await check1()
     await check2()
@@ -272,11 +317,18 @@ async function main() {
       "\n[smoke] PASS — real ThreadToolsProviderLayer builds (MemoryRouterTag satisfied); " +
         "initial render ✓ + live belief-refresh ✓",
     )
-    process.exit(0)
   } catch (err: unknown) {
     console.error("\n[smoke] FAIL:", err)
-    process.exit(1)
+    exitCode = 1
+  } finally {
+    // Both runtimes are disposed by here (each check awaits rt.dispose()), so
+    // the DB files are closed and safe to remove. Keeps /tmp tidy and
+    // guarantees the next run is fresh even on a /tmp that isn't auto-cleared.
+    cleanupSmokeArtifacts()
   }
+  // process.exit AFTER the finally — calling it inside the try would terminate
+  // synchronously and skip cleanup.
+  process.exit(exitCode)
 }
 
 void main()
