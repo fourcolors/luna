@@ -45,4 +45,34 @@ describe("loadDna", () => {
     // Pass null to bypass ~/.luna/DNA.md — only the repo-relative path is checked.
     expect(() => loadDna("/nonexistent/path", null)).toThrow()
   })
+
+  it("loadDna: personal ~/.luna/DNA.md takes precedence over repo DNA.md", () => {
+    // Both a personal override and a repo DNA.md exist; personal wins.
+    const scriptDir = path.join(tmpDir, "apps", "ui-web", "scripts")
+    fs.mkdirSync(scriptDir, { recursive: true })
+
+    const repoDna = "You are **Luna** — generic repo identity."
+    fs.writeFileSync(path.join(tmpDir, "DNA.md"), repoDna)
+
+    const personalDna = "You are **Jax** — the Chairman's personal AI agent."
+    const personalPath = path.join(tmpDir, "personal-DNA.md")
+    fs.writeFileSync(personalPath, `  ${personalDna}  `)
+
+    const result = loadDna(scriptDir, personalPath)
+    expect(result).toBe(personalDna)
+    expect(result).not.toContain("Luna")
+  })
+
+  it("loadDna: falls back to repo DNA.md when personal path does not exist", () => {
+    // Personal path is provided but the file is absent — fall through to repo.
+    const scriptDir = path.join(tmpDir, "apps", "ui-web", "scripts")
+    fs.mkdirSync(scriptDir, { recursive: true })
+
+    const repoDna = "You are **Luna** — generic repo identity."
+    fs.writeFileSync(path.join(tmpDir, "DNA.md"), repoDna)
+
+    const absentPersonal = path.join(tmpDir, "nonexistent-personal-DNA.md")
+    const result = loadDna(scriptDir, absentPersonal)
+    expect(result).toBe(repoDna)
+  })
 })
