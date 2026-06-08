@@ -1620,9 +1620,23 @@
           </div>
           <input type="password" id="ws-token-input" class="premium-text-input" placeholder="Enter token (optional)...">
         </div>
-        
+
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">1Password Service Account</span>
+            <span class="setting-desc">Send an <code>ops_…</code> service-account token to the server securely. It is verified and stored on the server — never kept in chat history or on this device.</span>
+          </div>
+          <input type="text" id="op-label-input" class="premium-text-input" placeholder="Account label (e.g. primary)" autocomplete="off" spellcheck="false" style="margin-bottom: 8px;">
+          <input type="password" id="op-token-input" class="premium-text-input" placeholder="ops_… service-account token" autocomplete="off" spellcheck="false">
+          <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+            <button type="button" class="record-btn" id="save-op-token-btn">Save to server</button>
+            <span class="setting-desc" id="op-token-status" style="font-size: 0.75rem;" hidden></span>
+          </div>
+          <span class="setting-desc" style="margin-top: 6px;">Saving verifies the token and briefly restarts the server.</span>
+        </div>
+
       </div>
-      
+
       <div class="settings-footer">
         <button class="save-settings-btn" id="close-settings-btn">Done</button>
       </div>
@@ -1765,6 +1779,10 @@
       recordShortcutBtn: document.getElementById('record-shortcut-btn'),
       wsUrlInput: document.getElementById('ws-url-input'),
       wsTokenInput: document.getElementById('ws-token-input'),
+      opLabelInput: document.getElementById('op-label-input'),
+      opTokenInput: document.getElementById('op-token-input'),
+      saveOpTokenBtn: document.getElementById('save-op-token-btn'),
+      opTokenStatus: document.getElementById('op-token-status'),
       channelSelect: document.getElementById('channel-select'),
       channelError: document.getElementById('channel-error'),
       checkUpdateBtn: document.getElementById('check-update-btn'),
@@ -2733,6 +2751,11 @@
 
           case 'user-accepted':
             // The user message was accepted by the server. Remove typing indicator when streaming starts
+            break;
+
+          case 'register-op-token-status':
+            // Secure-entry ack (Moon 1Password form). Never carries the token.
+            SettingsEngine.handleOpTokenStatus(frame);
             break;
         }
       }
@@ -4465,6 +4488,48 @@
         }
       },
 
+      // ── 1Password service-account token (secure entry) ──────────────────
+      // Sends the token to the server over the authenticated WS on a dedicated
+      // `register-op-token` frame — NEVER the chat stream, localStorage, or the
+      // secure connection file. One-shot: the token field is cleared on send.
+      setOpStatus(msg, kind) {
+        const el = DOM.opTokenStatus;
+        if (!el) return;
+        el.textContent = msg || '';
+        el.hidden = !msg;
+        el.style.color = kind === 'error' ? '#f87171'
+          : kind === 'ok' ? '#4ade80'
+          : '#94a3b8';
+      },
+      submitOpToken() {
+        const label = (DOM.opLabelInput.value || '').trim() || 'primary';
+        const token = DOM.opTokenInput.value || '';
+        if (!token.trim()) { this.setOpStatus('Enter a token first.', 'error'); return; }
+        // Guard on an OPEN socket BEFORE sending: WebSocketEngine.send() logs the
+        // whole frame when the socket is NOT open (which would log the token).
+        // When OPEN it never logs the frame, so this is the only safe path.
+        if (!(State.ws && State.ws.readyState === WebSocket.OPEN)) {
+          this.setOpStatus('Not connected to a server.', 'error');
+          return;
+        }
+        const reqId = 'op_' + ((window.crypto && crypto.randomUUID)
+          ? crypto.randomUUID().replace(/-/g, '')
+          : Math.random().toString(36).slice(2));
+        this._opReqId = reqId;
+        WebSocketEngine.send({ type: 'register-op-token', requestId: reqId, label, token });
+        DOM.opTokenInput.value = '';        // one-shot — never retained client-side
+        this.setOpStatus('Verifying…', 'info');
+      },
+      handleOpTokenStatus(frame) {
+        if (!frame || frame.requestId !== this._opReqId) return;  // ignore stale/unmatched
+        this._opReqId = null;
+        this.setOpStatus(
+          frame.ok ? (frame.message || 'Saved. Restarting…')
+                   : (frame.message || 'Could not save the token.'),
+          frame.ok ? 'ok' : 'error',
+        );
+      },
+
       // User picked a different channel in Settings. Persist the switch via the
       // Rust set_active_profile command (which returns the now-active creds),
       // then reconnect the SAME WebSocketEngine.connect path with those creds.
@@ -4651,6 +4716,10 @@
       close() {
         DOM.settingsPanel.classList.remove('active');
         Logger.info("Settings tab closed");
+
+        // Never retain the OP token in the DOM after the panel closes.
+        if (DOM.opTokenInput) DOM.opTokenInput.value = '';
+        this.setOpStatus('', null);
 
         // Save the WS configuration changes and reconnect if they changed!
         const newUrl = DOM.wsUrlInput.value.trim() || 'ws://127.0.0.1:4753/ui';
@@ -5106,6 +5175,9 @@
     }
     if (DOM.checkUpdateBtn) {
       DOM.checkUpdateBtn.addEventListener('click', () => SettingsEngine.checkForUpdate(false));
+    }
+    if (DOM.saveOpTokenBtn) {
+      DOM.saveOpTokenBtn.addEventListener('click', () => SettingsEngine.submitOpToken());
     }
 
     DOM.recordShortcutBtn.addEventListener('click', () => {

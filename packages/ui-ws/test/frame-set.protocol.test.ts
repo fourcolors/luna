@@ -81,6 +81,7 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "account-list",
   "local-shell-request",
   "local-shell-status",
+  "register-op-token-status",
   "memory-search-result",
   "memory-search-error",
   "survey-request",
@@ -99,6 +100,7 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "local-shell-capability",
   "local-shell-result",
   "memory-search-request",
+  "register-op-token",
   "survey-response",
   "pty-input",
   "pty-resize",
@@ -179,10 +181,13 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     expect(UI_WS_PROTOCOL_VERSION).toBe(EXPECTED_PROTOCOL_VERSION)
   })
 
-  it("parser self-check: derived counts are sane (23 server, 14 client) — guards the regex itself", () => {
+  it("parser self-check: derived counts are sane (24 server, 15 client) — guards the regex itself", () => {
     // If the regex silently mis-parses, the toEqual above could pass for the
     // wrong reason. Pin the counts so a broken parser is caught here.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(23)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(14)
+    // Merge of dev (turn-complete) + this branch (register-op-token[-status]):
+    // ServerFrame 22 base + turn-complete + register-op-token-status = 24;
+    // ClientFrame 14 base + register-op-token = 15.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(24)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(15)
   })
 })

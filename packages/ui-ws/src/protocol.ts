@@ -193,6 +193,20 @@ export interface LocalShellStatusFrame {
   readonly message: string
 }
 
+/**
+ * Server→client ack for a `register-op-token` request (Moon secure-entry).
+ * Additive and optional — no protocol bump. `ok:true` means the token was
+ * verified and persisted (the server typically then restarts to pick it up);
+ * `ok:false` carries a non-sensitive reason in `message`. The token itself is
+ * NEVER echoed back here.
+ */
+export interface RegisterOpTokenStatusFrame {
+  readonly type: "register-op-token-status"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly message: string
+}
+
 /* ── memory search ──────────────────────────────────────────────────── */
 
 export interface MemorySearchHit {
@@ -283,6 +297,7 @@ export type ServerFrame =
   | AccountListFrame
   | LocalShellRequestFrame
   | LocalShellStatusFrame
+  | RegisterOpTokenStatusFrame
   | MemorySearchResultFrame
   | MemorySearchErrorFrame
   | SurveyRequestFrame
@@ -428,6 +443,22 @@ export interface MemorySearchRequestFrame {
 }
 
 /**
+ * Client→server: register a 1Password service-account token for an account
+ * label (Moon secure-entry form). Additive and optional — older servers
+ * ignore it (unknown-frame path logs only the type, never the token).
+ *
+ * `token` is the `ops_…` service-account token. It is SENSITIVE: the server
+ * validates + persists it but must never log it or persist it to chat
+ * history. `requestId` correlates the `register-op-token-status` reply.
+ */
+export interface RegisterOpTokenFrame {
+  readonly type: "register-op-token"
+  readonly requestId: string
+  readonly label: string
+  readonly token: string
+}
+
+/**
  * The operator's answers to one survey (client→server, Phase 3 D3).
  *
  * `surveyId` MUST match the SurveyRequestFrame.surveyId. `issuedAt` MUST
@@ -462,6 +493,7 @@ export type ClientFrame =
   | LocalShellCapabilityFrame
   | LocalShellResultFrame
   | MemorySearchRequestFrame
+  | RegisterOpTokenFrame
   | SurveyResponseFrame
   | PtyInputFrame
   | PtyResizeFrame

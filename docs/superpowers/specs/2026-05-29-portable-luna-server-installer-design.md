@@ -83,6 +83,8 @@ Reuse `CLAUDE_CODE_LOGIN_SECRET_REF`. Luna never touches the token (broker resol
 ### 5.3 op:// → Linux op-token discovery (Core B)
 The `OnePasswordSecretProvider` backend is already platform-agnostic (`op read`, reads `OP_SERVICE_ACCOUNT_TOKEN`). Only discovery is darwin-locked: `chat-server.ts discoverOpTokens` sources tokens only from the macOS keychain. **Core B:** when `process.platform !== 'darwin'`, if `OP_SERVICE_ACCOUNT_TOKEN` is set, push one token under the non-reserved label `primary` (label regex `^[a-z][a-z0-9-]{0,30}$`; `{env,file,op}` reserved). Reverses Phase 25d **on Linux only**. Restrict to service-account tokens (reject interactive `op signin`). op-resolved values still pass the §5.2 value-shape branch. Rotation needs a restart.
 
+> **IMPLEMENTED (divergence from the sketch above).** `discoverOpTokens` now resolves **keychain-first, then a per-label `LUNA_OP_TOKEN_<LABEL>` env var** for every platform — not a non-darwin branch reading the bare `OP_SERVICE_ACCOUNT_TOKEN` under a hardcoded `primary`. Per-label vars were chosen deliberately: the bare `OP_SERVICE_ACCOUNT_TOKEN` collided with the reserved `env` label and could not preserve the multi-account model. Do **not** "fix" the code back to the bare-token sketch. See `apps/ui-web/scripts/op-accounts.ts` (`envTokenFor`, unit-tested) + `discoverOpTokens` in `chat-server.ts`.
+
 ## 6. Credential health check — `luna doctor`
 
 New read-only `luna doctor` (none exists today). **`--check-creds` is the default mode** in v1. Two paths:
