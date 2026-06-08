@@ -416,6 +416,53 @@ describe("luna-update-server", () => {
     expect(r.stdout).toContain("settling 1s")
   })
 
+  it("invalid RESTART_SETTLE_SECS WARNS loudly and no-ops the settle (not a silent skip)", () => {
+    // A bad settle value must not be swallowed silently (which would reintroduce
+    // the WAL/SHM race with no signal). The settle is skipped, but a loud warning
+    // is emitted; the deploy itself still proceeds and succeeds at the target.
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin, systemctlLog } = makeStubBin(temp, {
+      repo: work,
+      prevSha,
+      targetSha,
+      readyAtTarget: true,
+      readyAtPrev: false,
+    })
+
+    const r = runUpdate([
+      "--repo-dir",
+      work,
+      "--ref",
+      "origin/master",
+      "--luna-home",
+      join(temp, "state"),
+      "--service-dir",
+      serviceDir,
+      "--readiness-timeout",
+      "2",
+      "--readiness-interval",
+      "0.3",
+    ], {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      LUNA_RESTART_SETTLE_SECS: "not-a-number", // invalid → must warn, not silently skip
+    })
+
+    // Deploy still succeeds (the bad value degrades to no-settle, it does not abort).
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    // The operator gets a loud signal naming the bad value and the risk.
+    expect(r.stderr).toContain("not-a-number")
+    expect(r.stderr).toContain("SKIPPING the post-stop settle")
+    // No bogus "settling" line — the settle was skipped, not attempted.
+    expect(r.stdout).not.toContain("settling not-a-number")
+    // Stop -> start still happened (one cycle); only the settle was skipped.
+    const cycles = (readFileSync(systemctlLog, "utf8").match(/stop /g) ?? []).length
+    expect(cycles).toBe(1)
+  })
+
   it("runs bun install when bun.lock changed between revisions", () => {
     const temp = makeTempDir()
     // Custom repo where target has a DIFFERENT bun.lock from prev.

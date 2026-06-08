@@ -429,8 +429,22 @@ apply_ref() {
 settle_after_stop() {
   [[ "$DRY_RUN" == true ]] && return 0
   [[ "$RESTART_SETTLE_SECS" == "0" ]] && return 0
+  # Validate BEFORE sleeping. A bare `sleep "$bad" || true` would swallow the
+  # failure of an invalid/negative/empty value and skip the settle SILENTLY —
+  # reintroducing the WAL/SHM race the operator believes they configured away,
+  # with no signal. So reject anything that is not a non-negative number of
+  # seconds (the documented contract for --restart-settle / LUNA_RESTART_SETTLE_SECS)
+  # and WARN loudly, but still no-op + return 0 (set -e / rollback must never trip).
+  if [[ ! "$RESTART_SETTLE_SECS" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    luna_warn "RESTART_SETTLE_SECS='$RESTART_SETTLE_SECS' is not a non-negative number of seconds; SKIPPING the post-stop settle — the DuckDB/SQLite WAL/SHM race may recur. Set --restart-settle / LUNA_RESTART_SETTLE_SECS to a valid value (e.g. 6)."
+    return 0
+  fi
   luna_info "settling ${RESTART_SETTLE_SECS}s after stop so DuckDB/SQLite release WAL/SHM before start"
-  sleep "$RESTART_SETTLE_SECS" || true
+  # Belt-and-suspenders: if sleep STILL fails for some reason, warn (do not
+  # swallow it silently) — but keep returning 0 so the rollback path is intact.
+  if ! sleep "$RESTART_SETTLE_SECS"; then
+    luna_warn "post-stop settle sleep failed (RESTART_SETTLE_SECS='$RESTART_SETTLE_SECS'); proceeding to start WITHOUT a settle — the WAL/SHM race may recur."
+  fi
   return 0
 }
 
