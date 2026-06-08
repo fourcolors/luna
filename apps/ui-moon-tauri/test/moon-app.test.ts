@@ -1475,6 +1475,48 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(tls[0].classList.contains('collapsed')).toBe(true)  // first settled
       expect(tls[1].classList.contains('collapsed')).toBe(false) // second in flight
     })
+
+    // ── Version-skew: grouping is gated on the server's `turn-complete` capability ──
+    // A NEW moon against an OLD server (no turn-complete) must NOT group and must
+    // settle each timeline on its own `assistant-done` — otherwise the grouped
+    // timeline, which only settles on turn-complete, would hang on "Working on it…".
+
+    it('timeline: hello capability turnComplete drives State.serverSupportsTurnComplete', () => {
+      // New server advertises it.
+      M().handleFrame({ type: 'hello', protocolVersion: 2, kinds: [],
+        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false, turnComplete: true } })
+      expect(M().State.serverSupportsTurnComplete).toBe(true)
+      // Old server omits it → falsy.
+      M().handleFrame({ type: 'hello', protocolVersion: 2, kinds: [],
+        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false } })
+      expect(M().State.serverSupportsTurnComplete).toBe(false)
+    })
+
+    it('timeline (old server, no turn-complete): per-turn timelines settle on assistant-done — no hang', () => {
+      // Server advertises NO turn-complete capability.
+      M().handleFrame({ type: 'hello', protocolVersion: 2, kinds: [],
+        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false } })
+      expect(M().State.serverSupportsTurnComplete).toBe(false)
+
+      // Two tool-using assistant turns, distinct turnIds. NO turn-complete is
+      // ever sent (the old server can't emit it).
+      M().handleFrame({ type: 'assistant-delta', turnId: 'A', text: 'one ' })
+      M().handleFrame({ type: 'tool-call', turnId: 'A', toolCallId: 'a', name: 'Read', input: {} })
+      M().handleFrame({ type: 'assistant-done', turnId: 'A', message: { text: 'one' } })
+      M().handleFrame({ type: 'tool-result', toolCallId: 'a', status: 'ok', output: 'r' })
+      M().handleFrame({ type: 'assistant-delta', turnId: 'B', text: 'two ' })
+      M().handleFrame({ type: 'tool-call', turnId: 'B', toolCallId: 'b', name: 'Bash', input: {} })
+      M().handleFrame({ type: 'assistant-done', turnId: 'B', message: { text: 'two' } })
+
+      // NOT grouped → two separate timelines (the pre-grouping behavior), and
+      // BOTH settle (collapse) on their own done despite no turn-complete — so
+      // the UI never hangs on a perpetual "Working on it…" spinner.
+      const tls = Array.from(chat.querySelectorAll('.timeline')) as HTMLElement[]
+      expect(tls.length).toBe(2)
+      expect(tls.every((t) => t.classList.contains('collapsed'))).toBe(true)
+      expect(chat.querySelector('.timeline .typing-dots')).toBeNull()
+      expect(chat.querySelector('.timeline-summary-label')!.textContent).toContain('Worked for')
+    })
   // ───────────────────────────────────────────────────────────────────────────
   // Feature: UserAsk / alignment-survey (Phase 3 D3, Moon-side wiring)
   //

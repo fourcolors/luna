@@ -43,6 +43,14 @@ export interface HelloFrame {
     readonly streamingDeltas: boolean
     readonly localShell: boolean
     readonly setup: boolean
+    /**
+     * Server emits the additive `turn-complete` frame on the SDK terminal
+     * `result` (true whenever chat is bound). Clients that group consecutive
+     * assistant turns into one activity timeline (the moon) gate that grouping
+     * on this flag: an older server omits it, so the client falls back to a
+     * per-turn timeline instead of waiting on a turn-complete that never comes.
+     */
+    readonly turnComplete: boolean
   }
 }
 

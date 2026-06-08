@@ -344,6 +344,9 @@ describe("UIWebSocketServer (chat routing)", () => {
       expect(frames[0].capabilities.streamingDeltas).toBe(true)
       // setup-mode is OFF when a chat service is bound (chat !== null).
       expect(frames[0].capabilities.setup).toBe(false)
+      // turn-complete is emitted whenever chat is bound (gates the moon's
+      // grouped activity timeline on older-server fallback).
+      expect(frames[0].capabilities.turnComplete).toBe(true)
     }
   })
 

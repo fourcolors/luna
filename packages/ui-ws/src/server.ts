@@ -497,6 +497,10 @@ export const startUIWebSocketServer = (
             localShell: localShellBridge !== null,
             // setup-mode = started without a chat service
             setup: chat === null,
+            // Emits `turn-complete` on the SDK `result` whenever chat is bound.
+            // Lets grouping clients (the moon timeline) detect this server can
+            // signal end-of-agentic-turn and enable the grouped/settling view.
+            turnComplete: chat !== null,
           },
         })
 
