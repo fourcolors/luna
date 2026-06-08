@@ -10,6 +10,7 @@
 import { Effect, Clock as EffectClock } from "effect"
 import { readFileSync, existsSync } from "node:fs"
 import type { TriggerAgentApi } from "../jobs/trigger-agent.js"
+import { AgentNotesService } from "../agent-notes/agent-notes.js"
 import { WakeReasoner } from "./reasoner.js"
 import { WakeLogStore } from "./wake-log-store.js"
 import { WakeError } from "./types.js"
@@ -175,29 +176,74 @@ const outcomeFromDigest = (digest: WakeDigest): WakeOutcome =>
  * Run one wake cycle. Reads inputs, calls the reasoner, writes wake_log.
  * Always emits a wake_log row (success, no-op, or error) — never throws.
  */
+/**
+ * Synthetic sessionId used when wake mirrors its digest into agent_notes.
+ * Wake doesn't run inside a chat session — using a stable id groups every
+ * wake fire together for `getRecent('wake-cron', ...)` queries while still
+ * surfacing through the cross-session `getRecentAcrossSessions` path that
+ * `obs_notes_recent` uses by default.
+ */
+const WAKE_SESSION_ID = "wake-cron"
+
 export const runWake = (
   now: number,
   opts: WakeCronOptions,
-): Effect.Effect<void, never, WakeReasoner | WakeLogStore> =>
+): Effect.Effect<
+  void,
+  never,
+  WakeReasoner | WakeLogStore | AgentNotesService
+> =>
   Effect.gen(function* () {
     const reasoner = yield* WakeReasoner
     const store = yield* WakeLogStore
+    const notes = yield* AgentNotesService
+
+    // Helper: mirror a wake row into agent_notes. Always best-effort —
+    // failure here MUST NOT abort the wake cycle, since wake_log is the
+    // primary durable record (workspace-scoped) and agent_notes is the
+    // operator-visibility mirror (luna.db cross-session).
+    const mirrorToNotes = (input: {
+      readonly summary: string
+      readonly outcome: string
+      readonly artifacts: string
+    }) =>
+      Effect.ignore(
+        notes.record({
+          sessionId: WAKE_SESSION_ID,
+          kind: "wake_digest",
+          summary: `[${input.outcome}] ${input.summary}`,
+          payload: {
+            wokeAt: now,
+            workspaceSlug: opts.workspaceSlug,
+            workspacePath: opts.workspacePath,
+            outcome: input.outcome,
+            artifacts: input.artifacts,
+          },
+        }),
+      )
 
     // Step 1: read state. Failure logged + returned early.
     const inputsResult = yield* Effect.either(readWakeInputs(opts))
     if (inputsResult._tag === "Left") {
+      const errSummary = `wake aborted: ${inputsResult.left.message}`
+      const errArtifacts = JSON.stringify({
+        stage: "read-inputs",
+        error: inputsResult.left.message,
+      })
       yield* Effect.ignore(
         store.append({
           wokeAt: now,
           goalSlug: null,
-          summary: `wake aborted: ${inputsResult.left.message}`,
+          summary: errSummary,
           outcome: "error",
-          artifacts: JSON.stringify({
-            stage: "read-inputs",
-            error: inputsResult.left.message,
-          }),
+          artifacts: errArtifacts,
         }),
       )
+      yield* mirrorToNotes({
+        summary: errSummary,
+        outcome: "error",
+        artifacts: errArtifacts,
+      })
       return
     }
     const inputs = inputsResult.right
@@ -205,32 +251,47 @@ export const runWake = (
     // Step 2: reason. Reasoner failure logged + returned.
     const reasonResult = yield* Effect.either(reasoner.reason(inputs))
     if (reasonResult._tag === "Left") {
+      const errSummary = `wake reasoner failed: ${reasonResult.left.message}`
+      const errArtifacts = JSON.stringify({
+        stage: "reason",
+        error: reasonResult.left.message,
+      })
       yield* Effect.ignore(
         store.append({
           wokeAt: now,
           goalSlug: null,
-          summary: `wake reasoner failed: ${reasonResult.left.message}`,
+          summary: errSummary,
           outcome: "error",
-          artifacts: JSON.stringify({
-            stage: "reason",
-            error: reasonResult.left.message,
-          }),
+          artifacts: errArtifacts,
         }),
       )
+      yield* mirrorToNotes({
+        summary: errSummary,
+        outcome: "error",
+        artifacts: errArtifacts,
+      })
       return
     }
     const digest = reasonResult.right
 
     // Step 3: write the successful row.
+    const successSummary = summarizeDigest(digest)
+    const successOutcome = outcomeFromDigest(digest)
+    const successArtifacts = JSON.stringify(digest)
     yield* Effect.ignore(
       store.append({
         wokeAt: now,
         goalSlug: null,
-        summary: summarizeDigest(digest),
-        outcome: outcomeFromDigest(digest),
-        artifacts: JSON.stringify(digest),
+        summary: successSummary,
+        outcome: successOutcome,
+        artifacts: successArtifacts,
       }),
     )
+    yield* mirrorToNotes({
+      summary: successSummary,
+      outcome: successOutcome,
+      artifacts: successArtifacts,
+    })
   })
 
 /**
@@ -248,7 +309,7 @@ export const registerWakeCron = (
   Effect.gen(function* () {
     // Capture wake-service env at registration time. Scope is NOT included —
     // the JobScheduler injects a per-job Scope on each tick.
-    const ctx = yield* Effect.context<WakeReasoner | WakeLogStore>()
+    const ctx = yield* Effect.context<WakeReasoner | WakeLogStore | AgentNotesService>()
     yield* Effect.logInfo(
       `[luna/wake] registerWakeCron: expr="${expr}" workspaceSlug="${opts.workspaceSlug}" workspacePath="${opts.workspacePath}"`,
     )
