@@ -1174,6 +1174,69 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(chat.children.length).toBe(0)
     })
 
+    // Regression: chat-service publishes the CUMULATIVE assistant text on
+    // every `assistant-delta` (chat-service.ts:604 — `text: cumulative`).
+    // ui-shared/reducer.ts mirrors that by REPLACING inFlight.text. The
+    // pre-fix Moon reducer instead APPENDED frame.text to last.raw, which
+    // duplicates the prefix on every delta after the first. Sterling
+    // reported the visible artifact ("HeyHey Sterling — what's on the
+    // agenda?") in luna-moon 0.0.10 on 2026-06-07; this scenario pins it.
+    it('assistant-delta with cumulative text does NOT duplicate the prefix (HeyHey bug)', () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Hey' })
+      M().handleFrame({
+        type: 'assistant-delta', turnId: 't1',
+        text: "Hey Sterling — what's on the agenda?",
+      })
+      M().handleFrame({
+        type: 'assistant-done', turnId: 't1',
+        message: { text: "Hey Sterling — what's on the agenda?" },
+      })
+
+      expect(chat.children.length).toBe(1)
+      const bubble = chat.children[0] as HTMLElement
+      expect(bubble.dataset.streamRaw).toBe("Hey Sterling — what's on the agenda?")
+      // The rendered text must NOT contain the duplicated prefix.
+      expect(bubble.textContent).not.toContain('HeyHey')
+      expect(bubble.textContent).toContain("Hey Sterling — what's on the agenda?")
+    })
+
+    it('many small cumulative deltas accumulate to the correct final text', () => {
+      // 5 deltas, each cumulative-up-to-N. Pre-fix this exploded to
+      // "HHeHelHellHello world" — cascading duplication.
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'H' })
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'He' })
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Hel' })
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Hell' })
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Hello world' })
+      expect(chat.children.length).toBe(1)
+      expect((chat.children[0] as HTMLElement).dataset.streamRaw).toBe('Hello world')
+    })
+
+    it('cumulative deltas spanning a tool call do NOT replay the pre-tool text in the post-tool bubble', () => {
+      // Server cumulative continues to grow across tool calls — chat-service
+      // only resets inFlightText when the final `assistant` SDK message
+      // lands. So the post-tool delta's cumulative includes the pre-tool
+      // prefix. We must subtract that prefix before opening the fresh text
+      // segment, otherwise the user sees "Looking that up. Found 3 lines."
+      // in the post-tool bubble (duplicating the pre-tool text bubble).
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Looking that up. ' })
+      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'tc-1', name: 'bash', input: { cmd: 'ls' } })
+      M().handleFrame({ type: 'tool-result', toolCallId: 'tc-1', status: 'ok', output: 'a\n' })
+      M().handleFrame({
+        type: 'assistant-delta', turnId: 't1',
+        // CUMULATIVE: pre-tool + post-tool text.
+        text: 'Looking that up. Found 3 lines.',
+      })
+
+      expect(chat.children.length).toBe(3)
+      const pre = chat.children[0] as HTMLElement
+      const card = chat.children[1] as HTMLElement
+      const post = chat.children[2] as HTMLElement
+      expect(pre.dataset.streamRaw).toBe('Looking that up. ')
+      expect(card.classList.contains('tool-call-card')).toBe(true)
+      expect(post.dataset.streamRaw).toBe('Found 3 lines.')
+    })
+
     it('finishTurn with an empty server message text does NOT wipe streamed content', () => {
       // Regression for the "??" foot-gun. Server sometimes sends
       // `message.text === ""` on assistant-done; the renderer must still show
