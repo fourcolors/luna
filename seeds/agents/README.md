@@ -27,3 +27,41 @@ agent's system prompt when invoked via the `Agent` tool.
 
 `description` is the **only** thing the parent model uses to decide
 whether to invoke the agent — write it like a router, not a doc.
+
+## Subagent observational memory (opt-in)
+
+Subagents can persist observations across invocations. The Claude Agent SDK
+auto-loads:
+
+- `~/.claude/skills/<name>/SKILL.md` when the agent declares `skills: [<name>]`
+- `~/.claude/agent-memory/<agent-name>/MEMORY.md` when the agent declares
+  `memory: user`
+
+This repo vendors the [`subagent-memory`](../skills/subagent-memory/SKILL.md)
+skill from [fourcolors/skills](https://github.com/fourcolors/skills) at
+`seeds/skills/subagent-memory/`. Install it once with:
+
+```bash
+bun run apps/ui-web/scripts/install-claude-skills.ts
+```
+
+Then any subagent can opt in by adding to its frontmatter:
+
+```yaml
+---
+name: my-agent
+description: "..."
+memory: user
+skills:
+  - subagent-memory
+---
+```
+
+The SDK loads the first 200 lines / 25 KB of `MEMORY.md` into the system
+prompt at invocation. The skill defines the discipline (priority emojis,
+date grouping, observer/reflector passes, compression cliff). The
+subagent uses its own file tools (Write/Edit) to append observations at
+task end.
+
+For the `subagent-memory` repo this corresponds to:
+[`skills/subagent-memory/SKILL.md`](https://github.com/fourcolors/skills/blob/main/skills/subagent-memory/SKILL.md).
