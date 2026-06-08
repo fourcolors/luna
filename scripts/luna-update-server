@@ -69,6 +69,16 @@ READINESS_PORT="${LUNA_READINESS_PORT:-4753}"
 READINESS_TIMEOUT="${LUNA_READINESS_TIMEOUT:-60}"
 READINESS_INTERVAL="${LUNA_READINESS_INTERVAL:-2}"
 READINESS_CURL_MAX_TIME="${LUNA_READINESS_CURL_MAX_TIME:-5}"
+# Post-stop settle (deploy-reliability). We restart the unit as stop -> settle ->
+# start, NOT a fast `systemctl restart`. `systemctl stop` returns once the unit's
+# cgroup is torn down, but the outgoing process's DuckDB/SQLite WAL/SHM handles
+# can take a moment longer to flush+release (async checkpoint, child reaping, and
+# on the --incus bind-mount, host fs cache coherence). A fast `restart` can open
+# the DBs from the new process while those handles are still held, crashing the
+# boot with "unable to open database file" (SQLITE_CANTOPEN) -> the readiness gate
+# then trips a needless auto-rollback. The settle closes that gap. Overridable so
+# the hermetic tests set 0 and stay fast (a real deploy uses the default).
+RESTART_SETTLE_SECS="${LUNA_RESTART_SETTLE_SECS:-6}"
 
 usage() {
   cat <<'EOF'
@@ -102,6 +112,10 @@ Options:
   --readiness-timeout <s>   Overall readiness poll budget. Default: 60.
   --readiness-interval <s>  Seconds between readiness attempts. Default: 2.
   --readiness-port <port>   Port for the /healthz probe. Default: 4753.
+  --restart-settle <s>      Seconds to wait between `systemctl stop` and `start`
+                            so the outgoing process releases its DuckDB/SQLite
+                            WAL/SHM handles before the new one opens them (avoids
+                            SQLITE_CANTOPEN on boot). Default: 6.
   --no-rollback             Do not auto-roll-back on readiness failure (advanced).
   --dry-run                 Print the plan and change NOTHING.
   -h, --help                Show this help.
@@ -126,6 +140,7 @@ while [[ $# -gt 0 ]]; do
     --readiness-timeout) READINESS_TIMEOUT="${2:?missing --readiness-timeout value}"; shift 2 ;;
     --readiness-interval) READINESS_INTERVAL="${2:?missing --readiness-interval value}"; shift 2 ;;
     --readiness-port) READINESS_PORT="${2:?missing --readiness-port value}"; shift 2 ;;
+    --restart-settle) RESTART_SETTLE_SECS="${2:?missing --restart-settle value}"; shift 2 ;;
     --no-rollback) ROLLBACK=false; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -401,9 +416,37 @@ apply_ref() {
   fi
 }
 
+# Settle between stop and start. A bounded, dry-run-aware wait that lets the
+# OUTGOING process finish flushing and release its DuckDB/SQLite WAL/SHM handles
+# before the incoming process opens the DBs. Deliberately a FIXED sleep, not a
+# port/handle poll: the listening port is already gone the instant `systemctl
+# stop` returns, yet the fd release can lag process exit (async WAL checkpoint,
+# child reaping, incus bind-mount fs flush) — none of which the port reflects,
+# and whose DB file paths this script does not know to fuser/lsof against. A
+# short fixed settle is exactly what the manual recovery proved out. ALWAYS
+# returns 0: it sits unguarded between restart_service's two `|| return 1` lines,
+# so a stray non-zero here must never trip set -e / the rollback path.
+settle_after_stop() {
+  [[ "$DRY_RUN" == true ]] && return 0
+  [[ "$RESTART_SETTLE_SECS" == "0" ]] && return 0
+  luna_info "settling ${RESTART_SETTLE_SECS}s after stop so DuckDB/SQLite release WAL/SHM before start"
+  sleep "$RESTART_SETTLE_SECS" || true
+  return 0
+}
+
+# Restart the unit as a CLEAN stop -> settle -> start instead of a fast
+# `systemctl restart`. `systemctl stop` is synchronous (it blocks until the
+# unit's cgroup is fully torn down), so the process is gone when it returns; the
+# settle then covers the lagging WAL/SHM handle release before `systemctl start`
+# reopens the DBs (see RESTART_SETTLE_SECS). Used by BOTH the forward path AND
+# rollback, and by both shapes: run_target routes each systemctl step into the
+# container for --incus, while the settle is a host-side wall-clock wait (the
+# same elapsed time, with no extra incus round-trip).
 restart_service() {
   run_target systemctl daemon-reload || return 1
-  run_target systemctl restart "$SERVICE_NAME" || return 1
+  run_target systemctl stop "$SERVICE_NAME" || return 1
+  settle_after_stop
+  run_target systemctl start "$SERVICE_NAME" || return 1
 }
 
 # --- plan / dry-run -----------------------------------------------------------
@@ -429,7 +472,7 @@ if [[ "$DRY_RUN" == true ]]; then
   else
     printf '4. re-pin LUNA_CLAUDE_CODE_EXECUTABLE in %s\n' "$ENV_FILE"
   fi
-  printf '5. systemctl daemon-reload + restart %s\n' "$SERVICE_NAME"
+  printf '5. systemctl daemon-reload + stop + settle %ss + start %s\n' "$RESTART_SETTLE_SECS" "$SERVICE_NAME"
   printf '6. readiness probe: is-active + NRestarts-stable + curl http://127.0.0.1:%s/healthz==200 + /readyz mode=normal (<=%ss)\n' \
     "$READINESS_PORT" "$READINESS_TIMEOUT"
   if [[ "$ROLLBACK" == true ]]; then
