@@ -266,14 +266,15 @@ describe("ChatService (Tier-2 sim)", () => {
           const subC = chat.subscribe(t2.id)
 
           const TURNS = 3
-          // Each subscriber should see: 1 snapshot + TURNS user-accepted +
-          // TURNS assistant-done = 1 + 6 = 7 frames.
+          // Each subscriber should see, per turn: user-accepted + assistant-done
+          // + turn-complete (the SDK `result`) = 3 frames. Plus 1 snapshot →
+          // 1 + TURNS * 3 = 10 frames.
           // (No assistant-delta frames — fake doesn't emit stream_event.)
           const collectN = (s: Stream.Stream<ChatFrame, never>, n: number) =>
             s.pipe(Stream.take(n), Stream.runCollect)
 
-          const aFiber = yield* Effect.fork(collectN(subA, 1 + TURNS * 2))
-          const bFiber = yield* Effect.fork(collectN(subB, 1 + TURNS * 2))
+          const aFiber = yield* Effect.fork(collectN(subA, 1 + TURNS * 3))
+          const bFiber = yield* Effect.fork(collectN(subB, 1 + TURNS * 3))
           const cFiber = yield* Effect.fork(collectN(subC, 1)) // just snapshot
 
           // Let the forked subscribers attach to their PubSub before any
@@ -306,10 +307,13 @@ describe("ChatService (Tier-2 sim)", () => {
         "snapshot",
         "user-accepted",
         "assistant-done",
+        "turn-complete",
         "user-accepted",
         "assistant-done",
+        "turn-complete",
         "user-accepted",
         "assistant-done",
+        "turn-complete",
       ])
       expect(types(bFrames)).toEqual(types(aFrames))
 

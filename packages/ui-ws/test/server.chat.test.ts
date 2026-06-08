@@ -414,6 +414,7 @@ describe("UIWebSocketServer (chat routing)", () => {
       "thread-snapshot",
       "user-accepted",
       "assistant-done",
+      "turn-complete",
     ])
     const done = frames.find((f) => f.type === "assistant-done")
     if (done?.type === "assistant-done") {

@@ -150,6 +150,14 @@ export interface ToolResultFrame {
   readonly truncated: boolean
 }
 
+/** Marks the true end of an agentic turn (SDK `result`), after every
+ *  intermediate tool step. Lets clients that group consecutive assistant
+ *  turns (the moon timeline) settle that group. Carries no turnId. */
+export interface TurnCompleteFrame {
+  readonly type: "turn-complete"
+  readonly threadId: string
+}
+
 export interface AccountListFrame {
   readonly type: "account-list"
   readonly accounts: ReadonlyArray<{
@@ -263,6 +271,7 @@ export type ServerFrame =
   | ArtifactsExtractedFrame
   | ToolCallFrame
   | ToolResultFrame
+  | TurnCompleteFrame
   | AccountListFrame
   | LocalShellRequestFrame
   | LocalShellStatusFrame

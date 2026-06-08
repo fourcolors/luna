@@ -2675,6 +2675,18 @@
             break;
           }
 
+          case 'turn-complete': {
+            // The whole agentic turn ended (SDK `result`). Settle the trailing
+            // assistant run so its grouped activity timeline auto-collapses to
+            // the "Worked for N steps" pill. This is the ONLY end-of-turn
+            // signal — per-message `assistant-done` fires once per intermediate
+            // step and can't distinguish a tool step from the final answer.
+            this.clearTurnTimeout();
+            ChatState.markRunSettled();
+            ChatLoop.flush();
+            break;
+          }
+
           case 'tool-call': {
             // Tool the assistant is invoking. Reducer appends a tool segment
             // to the active turn (closing any open text segment first).
@@ -3441,7 +3453,16 @@
       // Turn shape:
       //   { key, role: 'user' | 'assistant', status: 'streaming' | 'done' | 'error' | 'banner',
       //     segments: Segment[], previews?, turnId?, errorText?,
-      //     _cumText? (delta-dedup), _timelineCollapsed? (timeline toggle) }
+      //     _cumText? (delta-dedup), _timelineCollapsed? (timeline toggle),
+      //     _settled? (agentic turn fully ended — set on `turn-complete`) }
+      //
+      // GROUPING: one user message drives an "agentic turn" = N SDK assistant
+      // messages, each with its OWN wire turnId → N assistant turns here. The
+      // renderer (_plan) groups the maximal RUN of consecutive assistant turns
+      // into ONE collapsible activity timeline; `turn-complete` (the SDK
+      // `result`, fired once at the true end) flips `_settled` so the run
+      // collapses to its summary pill. Per-message `assistant-done` cannot tell
+      // an intermediate step from the final answer, so it never collapses.
       // Segment shape:
       //   { kind: 'text', raw: string, done: boolean }
       //   { kind: 'tool', id: string, name: string, input: any, result?: {ok,output,truncated} | null }
@@ -3632,6 +3653,21 @@
         turn.errorText = String(errorText || 'Unknown error');
       },
 
+      // Mark the trailing RUN of consecutive assistant turns as settled — the
+      // agentic turn just ended (server `turn-complete`, i.e. the SDK `result`
+      // that fires once after every intermediate tool step). The grouped
+      // activity timeline reads `_settled` to collapse to its summary pill.
+      // Scans from the tail and stops at the first user / banner / error turn,
+      // so prior agentic turns (already settled) and the run boundary are
+      // untouched.
+      markRunSettled() {
+        for (let i = this.turns.length - 1; i >= 0; i--) {
+          const t = this.turns[i];
+          if (t.role !== 'assistant' || t.status === 'banner' || t.status === 'error') break;
+          t._settled = true;
+        }
+      },
+
       // Remove a pending-assistant placeholder if present. Used by the
       // turn-timeout watchdog to clear stuck "luna is thinking" dots before
       // appending its "no response" banner.
@@ -3726,56 +3762,104 @@
       },
 
       // Build the desired-children intent list from ChatState.turns.
+      //
+      // Assistant turns are GROUPED: an agentic turn (one user message) is N SDK
+      // assistant messages, each with its own wire turnId → N ChatState turns.
+      // We collapse the maximal RUN of consecutive assistant turns (broken by a
+      // user turn, banner, or error) into ONE timeline so a multi-step turn
+      // renders as a single collapsible activity, not N stacked timelines.
       _plan() {
         const out = [];
-        for (const turn of ChatState.turns) {
+        const turns = ChatState.turns;
+        let i = 0;
+        while (i < turns.length) {
+          const turn = turns[i];
           if (turn.role === 'user') {
             out.push({ key: turn.key + '|u', kind: 'user', turn: turn, seg: null });
-            continue;
+            i++; continue;
           }
           if (turn.status === 'banner') {
             out.push({ key: turn.key + '|b', kind: 'banner', turn: turn, seg: null });
-            continue;
+            i++; continue;
           }
           if (turn.status === 'error') {
             out.push({ key: turn.key + '|e', kind: 'error', turn: turn, seg: null });
-            continue;
+            i++; continue;
           }
-          // Assistant: streaming or done.
-          if (turn.segments.length === 0) {
-            // Streaming with no segments yet -> typing dots.
-            out.push({ key: turn.key + '|typing', kind: 'typing', turn: turn, seg: null });
-            continue;
+          // Greedily collect the run of consecutive assistant turns.
+          const run = [];
+          while (i < turns.length
+              && turns[i].role === 'assistant'
+              && turns[i].status !== 'banner'
+              && turns[i].status !== 'error') {
+            run.push(turns[i]);
+            i++;
           }
-          // A turn with ANY tool renders its "work" (everything up to & including
-          // the LAST tool — interim text + tool calls) as ONE collapsible timeline
-          // window; the text AFTER the last tool is the "answer", rendered as
-          // normal bubbles below. A pure-text turn (no tool) is unchanged.
-          let lastToolIndex = -1;
-          for (let i = 0; i < turn.segments.length; i++) {
-            if (turn.segments[i].kind === 'tool') lastToolIndex = i;
-          }
-          if (lastToolIndex === -1) {
-            for (let i = 0; i < turn.segments.length; i++) {
-              out.push({ key: turn.key + '|t' + i, kind: 'text', turn: turn, seg: turn.segments[i] });
-            }
-            continue;
-          }
-          out.push({ key: turn.key + '|tl', kind: 'timeline', turn: turn, seg: null, lastToolIndex: lastToolIndex });
-          // Answer = text segments after the last tool. Key by ABSOLUTE index so a
-          // surviving answer window stays stable if a later tool reflows it.
-          for (let i = lastToolIndex + 1; i < turn.segments.length; i++) {
-            const seg = turn.segments[i];
-            if (seg.kind === 'text') {
-              out.push({ key: turn.key + '|t' + i, kind: 'text', turn: turn, seg: seg });
-            }
-          }
+          this._planRun(run, out);
         }
         return out;
       },
 
+      // Plan ONE run of consecutive assistant turns. The run's segments are
+      // flattened (tagged with their source turn so a tool step can resolve its
+      // own turnId). A run with ANY tool renders its "work" (everything up to &
+      // including the LAST tool — interim text + tool calls) as ONE collapsible
+      // timeline; text AFTER the last tool is the "answer", rendered as normal
+      // bubbles below. A run with no tools is plain text bubble(s), unchanged.
+      _planRun(run, out) {
+        const anchor = run[0];
+        // Flatten: [{ seg, turn }] across the whole run.
+        const merged = [];
+        for (const t of run) {
+          for (const s of t.segments) merged.push({ seg: s, turn: t });
+        }
+        if (merged.length === 0) {
+          // Streaming placeholder with nothing yet -> typing dots.
+          out.push({ key: anchor.key + '|typing', kind: 'typing', turn: anchor, seg: null });
+          return;
+        }
+        // Settled = the SDK `result` for this agentic turn arrived
+        // (turn-complete → markRunSettled). The ONLY whole-turn-done signal.
+        // Keyed on the LAST turn (not `.some`): for a normal turn these are
+        // identical (turn-complete marks the whole trailing run). They differ
+        // only if two agentic turns get merged into one run with no user turn
+        // between them (a cross-client send or a proactive server turn — the
+        // moon only makes user turns for its OWN sends). There, keying on the
+        // tail keeps the timeline EXPANDED while the newest turn is still in
+        // flight instead of collapsing on the earlier turn's settle. (Properly
+        // splitting that merge needs a user turn on `user-accepted` — separate.)
+        const settled = run[run.length - 1]._settled === true;
+        let lastToolIndex = -1;
+        for (let k = 0; k < merged.length; k++) {
+          if (merged[k].seg.kind === 'tool') lastToolIndex = k;
+        }
+        if (lastToolIndex === -1) {
+          for (let k = 0; k < merged.length; k++) {
+            out.push({ key: anchor.key + '|t' + k, kind: 'text', turn: merged[k].turn, seg: merged[k].seg });
+          }
+          return;
+        }
+        out.push({
+          key: anchor.key + '|tl', kind: 'timeline', turn: anchor, seg: null,
+          merged: merged, lastToolIndex: lastToolIndex, settled: settled,
+        });
+        // Answer = text after the last tool across the run. Key by ABSOLUTE
+        // merged index so a surviving answer window stays stable if a later
+        // tool reflows the split.
+        for (let k = lastToolIndex + 1; k < merged.length; k++) {
+          const m = merged[k];
+          if (m.seg.kind === 'text') {
+            out.push({ key: anchor.key + '|t' + k, kind: 'text', turn: m.turn, seg: m.seg });
+          }
+        }
+      },
+
       _paint(w, node) {
-        // Compute desired className.
+        // Compute desired className. For a timeline the COLLAPSED state is part
+        // of the class so the className reset below preserves it on a sig-skip
+        // re-paint — otherwise re-rendering a settled (collapsed) timeline when
+        // a LATER turn arrives would wipe `collapsed` (it's only re-applied
+        // inside _paintTimeline, which the sig-skip early-return skips).
         let cls;
         switch (w.kind) {
           case 'user':    cls = 'msg user'; break;
@@ -3783,7 +3867,12 @@
           case 'error':   cls = 'msg assistant error'; break;
           case 'typing':  cls = 'msg assistant'; break;
           case 'text':    cls = 'msg assistant'; break;
-          case 'timeline': cls = 'timeline'; break;
+          case 'timeline': {
+            const collapsed = (w.turn._timelineCollapsed !== undefined)
+              ? w.turn._timelineCollapsed : w.settled;
+            cls = collapsed ? 'timeline collapsed' : 'timeline';
+            break;
+          }
         }
         if (node.className !== cls) node.className = cls;
 
@@ -3823,15 +3912,17 @@
         if (w.kind === 'typing') return 'TYP';
         if (w.kind === 'text') return 'T|' + (w.seg.done ? '1' : '0') + '|' + w.seg.raw;
         if (w.kind === 'timeline') {
-          // Hash the COMPUTED collapsed value (+ status) so the auto-collapse on
-          // streaming->done repaints even while turn._timelineCollapsed is still
-          // undefined; plus every work step's content/status. Pure fn of state.
+          // Hash the COMPUTED collapsed value (+ settled) so the auto-collapse
+          // on `turn-complete` repaints even while turn._timelineCollapsed is
+          // still undefined; plus every work step's content/status across the
+          // merged run. Pure fn of state. (`t` is the run's anchor turn.)
           const collapsed = (t._timelineCollapsed !== undefined)
-            ? t._timelineCollapsed : (t.status === 'done');
-          let sig = 'TL|' + t.status + '|' + (collapsed ? 'c' : 'o') + '|' + w.lastToolIndex;
+            ? t._timelineCollapsed : w.settled;
+          let sig = 'TL|' + (w.settled ? 'S' : 's') + '|' + (collapsed ? 'c' : 'o') + '|' + w.lastToolIndex;
           for (let i = 0; i <= w.lastToolIndex; i++) {
-            const s = t.segments[i];
-            if (!s) continue;
+            const m = w.merged[i];
+            if (!m) continue;
+            const s = m.seg;
             if (s.kind === 'text') {
               sig += '|t' + (s.done ? '1' : '0') + ':' + s.raw;
             } else {
@@ -3972,14 +4063,16 @@
       },
 
       _paintTimeline(w, node) {
-        // Gemini-style collapsible "activity" for a tool-using turn. Collapse
-        // state lives on the turn (ChatState), NOT the DOM, so it survives the
-        // per-frame re-render: default expanded while streaming, auto-collapsed
-        // when done; an explicit user toggle (delegated click) pins it.
-        const turn = w.turn;
+        // Gemini-style collapsible "activity" for a tool-using agentic turn —
+        // ONE timeline over the merged RUN of consecutive assistant turns.
+        // Collapse state lives on the run's anchor turn (ChatState), NOT the
+        // DOM, so it survives the per-frame re-render: expanded while the turn
+        // is in flight, auto-collapsed once `turn-complete` settles it; an
+        // explicit user toggle (delegated click) pins it.
+        const turn = w.turn;          // anchor turn — owns the collapse override
         node.dataset.turnKey = turn.key;
         const collapsed = (turn._timelineCollapsed !== undefined)
-          ? turn._timelineCollapsed : (turn.status === 'done');
+          ? turn._timelineCollapsed : w.settled;
         node.classList.toggle('collapsed', collapsed);
         node.textContent = '';
 
@@ -3992,14 +4085,14 @@
         summary.appendChild(chev);
         const label = document.createElement('span');
         label.className = 'timeline-summary-label';
-        if (turn.status === 'done') {
+        if (w.settled) {
           const n = w.lastToolIndex + 1;
           label.textContent = 'Worked for ' + n + ' step' + (n === 1 ? '' : 's');
         } else {
           label.textContent = 'Working on it…';
         }
         summary.appendChild(label);
-        if (turn.status !== 'done') {
+        if (!w.settled) {
           const dots = document.createElement('div');
           dots.className = 'typing-dots';
           dots.innerHTML = '<div class="dot"></div><div class="dot"></div><div class="dot"></div>';
@@ -4012,8 +4105,9 @@
         const body = document.createElement('div');
         body.className = 'timeline-body';
         for (let i = 0; i <= w.lastToolIndex; i++) {
-          const seg = turn.segments[i];
-          if (!seg) continue;
+          const m = w.merged[i];
+          if (!m) continue;
+          const seg = m.seg;
           const step = document.createElement('div');
           step.className = 'timeline-step';
           const icon = document.createElement('span');
@@ -4023,7 +4117,7 @@
           if (seg.kind === 'tool') {
             const state = !seg.result ? 'pending' : (seg.result.ok ? 'ok' : 'error');
             icon.innerHTML = '<span class="tl-dot ' + state + '"></span>';
-            content.appendChild(this.buildToolStep(seg, turn.turnId));
+            content.appendChild(this.buildToolStep(seg, m.turn.turnId));
           } else {
             icon.textContent = '🌙';
             const txt = document.createElement('div');
@@ -4892,11 +4986,15 @@
       const tlSummary = e.target.closest && e.target.closest('.timeline-summary');
       if (tlSummary) {
         const node = tlSummary.closest('[data-msg-key]');
+        // `turnKey` is the run's ANCHOR turn — it owns the collapse override.
         const turn = node && ChatState.turns.find((t) => t.key === node.dataset.turnKey);
         if (turn) {
-          const cur = (turn._timelineCollapsed !== undefined)
-            ? turn._timelineCollapsed : (turn.status === 'done');
-          turn._timelineCollapsed = !cur;
+          // Pin the OPPOSITE of what's currently rendered. Reading the DOM's
+          // `.collapsed` class (rather than recomputing the auto-default) keeps
+          // the toggle correct regardless of whether the auto value is settled-
+          // driven or a prior explicit pin.
+          const currentlyCollapsed = node.classList.contains('collapsed');
+          turn._timelineCollapsed = !currentlyCollapsed;
           ChatLoop.schedule();
         }
         return;

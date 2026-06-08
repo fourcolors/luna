@@ -77,6 +77,7 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "artifacts-extracted",
   "tool-call",
   "tool-result",
+  "turn-complete",
   "account-list",
   "local-shell-request",
   "local-shell-status",
@@ -178,10 +179,10 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     expect(UI_WS_PROTOCOL_VERSION).toBe(EXPECTED_PROTOCOL_VERSION)
   })
 
-  it("parser self-check: derived counts are sane (22 server, 14 client) — guards the regex itself", () => {
+  it("parser self-check: derived counts are sane (23 server, 14 client) — guards the regex itself", () => {
     // If the regex silently mis-parses, the toEqual above could pass for the
     // wrong reason. Pin the counts so a broken parser is caught here.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(22)
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(23)
     expect(literalsForUnion(src, "ClientFrame")).toHaveLength(14)
   })
 })

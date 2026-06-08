@@ -125,6 +125,20 @@ export interface ChatToolResult {
 }
 
 /**
+ * Marks the true end of an agentic turn — published once when the SDK emits
+ * its terminal `result` message, after every intermediate tool step. An
+ * agentic turn is N SDK assistant messages (each its own `turnId` → its own
+ * `assistant-done`); per-message done can't signal "the whole turn is over".
+ * Clients that group consecutive assistant turns into one view (the moon's
+ * activity timeline) use this to settle that group. Carries no turnId — it
+ * settles whatever the client's trailing in-flight turn is.
+ */
+export interface ChatTurnComplete {
+  readonly type: "turn-complete"
+  readonly threadId: string
+}
+
+/**
  * Union of every frame the per-thread subscribe Stream emits. ui-ws maps
  * this 1:1 to its ServerFrame chat variants.
  */
@@ -137,6 +151,7 @@ export type ChatFrame =
   | ChatArtifactsExtracted
   | ChatToolCall
   | ChatToolResult
+  | ChatTurnComplete
 
 /** Options accepted by `createThread`. Mirrors the subset of SessionOptions
  *  a chat caller cares about; ChatService overlays the chat-required fields
