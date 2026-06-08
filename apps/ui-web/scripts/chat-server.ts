@@ -660,6 +660,13 @@ export interface BuildWakeCronLayerOpts {
   readonly workspacePath: string
   readonly sdkClientL: Layer.Layer<SDKClient>
   readonly clockL: Layer.Layer<Clock>
+  /**
+   * AgentNotesService layer. Each wake fire is mirrored into agent_notes
+   * (kind='wake_digest', sessionId='wake-cron') so the operator sees
+   * recent wake reasoning in obs_notes_recent without querying the
+   * workspace-scoped wake_log table directly.
+   */
+  readonly agentNotesL: Layer.Layer<AgentNotesService>
 }
 
 export const buildWakeCronLayer = (opts: BuildWakeCronLayerOpts) => {
@@ -673,6 +680,7 @@ export const buildWakeCronLayer = (opts: BuildWakeCronLayerOpts) => {
   }).pipe(
     Layer.provide(wakeReasonerL),
     Layer.provide(wakeLogStoreL),
+    Layer.provide(opts.agentNotesL),
     Layer.provide(opts.clockL),
   )
 }
@@ -879,6 +887,7 @@ export const buildBaseLayer = (
         workspacePath: wakeWorkspacePath,
         sdkClientL,
         clockL,
+        agentNotesL,
       })
     : null
 
