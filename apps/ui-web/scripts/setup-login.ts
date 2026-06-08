@@ -81,34 +81,72 @@ export const openSetupDb = (dbPath: string): MinimalDb => {
   return db
 }
 
+/** Pointer to the Claude.ai subscription login cached in CLAUDE_CONFIG_DIR.
+ * It idle-expires (~hours), so it's the FALLBACK default, not the preferred one. */
+export const CLAUDE_CODE_LOGIN_REF = "claude-code:login"
+/** Pointer to a long-lived `claude setup-token` value supplied via the
+ * `CLAUDE_CODE_OAUTH_TOKEN` env var (loaded from the gitignored runtime `.env`).
+ * Durable — does NOT idle-expire. */
+export const ENV_OAUTH_TOKEN_REF = "env:CLAUDE_CODE_OAUTH_TOKEN"
+
 /**
- * Idempotently seed one `anthropic / claude-code:login` row.
+ * Pure policy: choose the default account `secret_ref` from the environment.
+ * When a non-empty `CLAUDE_CODE_OAUTH_TOKEN` is present, point the account at it
+ * (the durable path); otherwise fall back to the interactive subscription login.
  *
- * If a row with `secret_ref = 'claude-code:login'` already exists (the common
- * "lapsed-login re-login" flow), this is a no-op. Otherwise inserts a new row
- * with a fixed id/label so the gate's `SELECT kind, secret_ref FROM accounts`
- * query finds it on the next boot.
+ * Returns only a POINTER string — NEVER the token value — so the result is safe
+ * to log and lives in code/DB without leaking the secret. The secret value
+ * itself stays in the gitignored runtime `.env` and is resolved per-query by the
+ * broker at runtime.
+ */
+export const chooseDefaultSecretRef = (
+  env: Record<string, string | undefined> = process.env,
+): string =>
+  (env.CLAUDE_CODE_OAUTH_TOKEN ?? "").trim().length > 0
+    ? ENV_OAUTH_TOKEN_REF
+    : CLAUDE_CODE_LOGIN_REF
+
+/**
+ * Idempotently seed ONE default account with the given `secret_ref`. No-op if
+ * ANY account already exists, so it never double-seeds regardless of which ref a
+ * prior install/login used. `secret_ref` is a POINTER (`env:VAR` or
+ * `claude-code:login`), NEVER a secret value — this function does not read,
+ * write, or log any token.
  *
- * @param dbPath - path to luna.db
- * @param _openDb - test seam for openSetupDb
+ * @returns whether a row was inserted, plus the ref used (for caller logging).
+ */
+export const seedDefaultAccount = (
+  dbPath: string,
+  secretRef: string,
+  _openDb: (p: string) => MinimalDb = openSetupDb,
+): { readonly seeded: boolean; readonly secretRef: string } => {
+  const db = _openDb(dbPath)
+  try {
+    const row = db.query("SELECT COUNT(*) AS n FROM accounts").get() as
+      | { n: number }
+      | null
+    if ((row?.n ?? 0) > 0) return { seeded: false, secretRef } // any account → no-op
+    db.query(
+      `INSERT INTO accounts (id, label, kind, secret_ref, health, cooldown_ms, usage_json)
+       VALUES (?, ?, ?, ?, ?, NULL, ?)`,
+    ).run("default", "Default", "anthropic", secretRef, "healthy", "{}")
+    return { seeded: true, secretRef }
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * Idempotently seed the interactive-login account (`claude-code:login`). Thin
+ * wrapper over seedDefaultAccount, kept for the setup-mode flow
+ * (onLoginAttemptComplete) where the operator just logged into CLAUDE_CONFIG_DIR
+ * — that flow always wants the login ref, not the env ref.
  */
 export const seedLoginAccount = (
   dbPath: string,
   _openDb: (p: string) => MinimalDb = openSetupDb,
 ): void => {
-  const db = _openDb(dbPath)
-  try {
-    const existing = db
-      .query("SELECT 1 AS x FROM accounts WHERE secret_ref = ? LIMIT 1")
-      .get("claude-code:login")
-    if (existing != null) return // already seeded — idempotent no-op
-    db.query(
-      `INSERT INTO accounts (id, label, kind, secret_ref, health, cooldown_ms, usage_json)
-       VALUES (?, ?, ?, ?, ?, NULL, ?)`,
-    ).run("default", "Default", "anthropic", "claude-code:login", "healthy", "{}")
-  } finally {
-    db.close()
-  }
+  seedDefaultAccount(dbPath, CLAUDE_CODE_LOGIN_REF, _openDb)
 }
 
 export interface OnLoginCompleteOpts {
