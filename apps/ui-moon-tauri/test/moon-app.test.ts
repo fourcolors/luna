@@ -675,8 +675,12 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
         name: 'Read', input: { file_path: '/etc/hosts' },
       })
       expect(card).not.toBeNull()
+      // A single tool call renders as ONE activity-timeline window with the
+      // card nested as a step inside it (expanded while streaming).
       expect(chat.children.length).toBe(1)
-      expect(chat.children[0]).toBe(card)
+      const timeline = chat.children[0] as HTMLElement
+      expect(timeline.classList.contains('timeline')).toBe(true)
+      expect(timeline.contains(card)).toBe(true)
       expect(card.classList.contains('tool-call-card')).toBe(true)
       expect(card.dataset.toolCallId).toBe('call-1')
       expect(card.dataset.turnId).toBe('turn-1')
@@ -806,28 +810,27 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
         name: 'Read', input: { path: '/etc/hosts' },
       })
       expect(chat.children.length).toBe(1)
-      const card = chat.children[0] as HTMLElement
-      expect(card.classList.contains('tool-call-card')).toBe(true)
-      // <details><summary> structure is the bug's tripwire.
-      expect(card.querySelector('details > summary')).not.toBeNull()
+      const timeline = chat.children[0] as HTMLElement
+      expect(timeline.classList.contains('timeline')).toBe(true)
+      // The tool card lives as a step inside the timeline; the <details><summary>
+      // structure is the bug's tripwire (must NOT be overwritten by text).
+      expect(timeline.querySelector('.tool-call-card details > summary')).not.toBeNull()
 
       handleFrame({
         type: 'assistant-delta', threadId: 't', turnId: 'turn-1',
         text: 'Here is what I found.',
       })
 
-      // The card is intact AND a fresh text bubble appears after it.
+      // The timeline (with its card) is intact AND a fresh answer bubble appears
+      // AFTER it for the post-tool text (the work never gets overwritten).
       expect(chat.children.length).toBe(2)
-      expect((chat.children[0] as HTMLElement).classList.contains('tool-call-card')).toBe(true)
-      expect((chat.children[0] as HTMLElement).querySelector('details > summary')).not.toBeNull()
+      expect((chat.children[0] as HTMLElement).classList.contains('timeline')).toBe(true)
+      expect((chat.children[0] as HTMLElement).querySelector('.tool-call-card details > summary')).not.toBeNull()
       const fresh = chat.children[1] as HTMLElement
       expect(fresh.classList.contains('assistant')).toBe(true)
       expect(fresh.classList.contains('tool-call-card')).toBe(false)
       expect(fresh.dataset.streamRaw).toBe('Here is what I found.')
-      // Text bubbles MUST be tagged with the turn id so assistant-done can
-      // pair them with any matching tool-call-card during the has-tool-calls
-      // detection step. Missing this tag is what would re-open the
-      // duplication bug.
+      // The answer bubble carries the turn id so it pairs with its turn.
       expect(fresh.dataset.turnId).toBe('turn-1')
     })
 
@@ -847,10 +850,10 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       })
       handleFrame({ type: 'assistant-delta', threadId: 't', turnId: 'turn-1', text: 'Found 3 lines.' })
 
-      // Three children: text1, card, text2 (in that order).
-      expect(chat.children.length).toBe(3)
-      const text2 = chat.children[2] as HTMLElement
-      expect(text2.dataset.streamRaw).toBe('Found 3 lines.')
+      // [timeline(pre-tool text + card), answer bubble] — 2 children.
+      expect(chat.children.length).toBe(2)
+      const answer = chat.children[1] as HTMLElement
+      expect(answer.dataset.streamRaw).toBe('Found 3 lines.')
 
       // Server sends canonical FULL message text on assistant-done.
       handleFrame({
@@ -865,16 +868,22 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
         },
       })
 
-      // Post-fix: each bubble keeps its own segment, no duplication.
-      expect(chat.children.length).toBe(3)
-      const t1 = chat.children[0] as HTMLElement
-      const t2 = chat.children[2] as HTMLElement
-      expect(t1.textContent?.trim()).toBe('Looking that up.')
+      // Auto-collapses to the summary pill; the answer bubble stays below.
+      expect(chat.children.length).toBe(2)
+      const tl = chat.children[0] as HTMLElement
+      expect(tl.classList.contains('timeline')).toBe(true)
+      expect(tl.classList.contains('collapsed')).toBe(true)
+      const answer2 = chat.children[1] as HTMLElement
       // The post-tool bubble shows ONLY "Found 3 lines." — NOT the full
-      // canonical text "Looking that up. Found 3 lines." which would be
-      // the duplication-bug fingerprint.
-      expect(t2.textContent?.trim()).toBe('Found 3 lines.')
-      expect(t2.textContent).not.toContain('Looking that up.')
+      // canonical text "Looking that up. Found 3 lines." which would be the
+      // duplication-bug fingerprint.
+      expect(answer2.textContent?.trim()).toBe('Found 3 lines.')
+      expect(answer2.textContent).not.toContain('Looking that up.')
+      // The reducer split is the layout-independent dedup fingerprint.
+      const segs = (internals() as any).ChatState.turns[0].segments
+      expect(segs[0]).toMatchObject({ kind: 'text', raw: 'Looking that up. ' })
+      expect(segs[1].kind).toBe('tool')
+      expect(segs[2]).toMatchObject({ kind: 'text', raw: 'Found 3 lines.' })
     })
 
     it('Scenario: assistant-done with tool-call-card as the literal tail does NOT finalize into it', () => {
@@ -889,9 +898,10 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
         type: 'tool-call', threadId: 't', turnId: 'turn-1', toolCallId: 'c1',
         name: 'Bash', input: { command: 'ls' },
       })
-      const card = chat.children[0] as HTMLElement
-      const detailsBefore = card.querySelector('details')
-      expect(detailsBefore).not.toBeNull()
+      expect(chat.children.length).toBe(1)
+      const timeline = chat.children[0] as HTMLElement
+      expect(timeline.classList.contains('timeline')).toBe(true)
+      expect(timeline.querySelector('.tool-call-card details > summary')).not.toBeNull()
 
       handleFrame({
         type: 'assistant-done', threadId: 't', turnId: 'turn-1', seq: 1,
@@ -902,11 +912,18 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
         },
       })
 
-      // The card is still a card (structure intact). finalize refused to
-      // write into it.
-      expect(card.classList.contains('tool-call-card')).toBe(true)
-      expect(card.querySelector('details')).not.toBeNull()
-      expect(card.querySelector('details > summary')).not.toBeNull()
+      // Turn ended on a tool with no trailing text → it auto-collapses to the
+      // pill and the done message.text is written NOWHERE (no finalize-into-card,
+      // no ghost answer bubble).
+      expect(chat.children.length).toBe(1)
+      const tl = chat.children[0] as HTMLElement
+      expect(tl.classList.contains('timeline')).toBe(true)
+      expect(tl.classList.contains('collapsed')).toBe(true)
+      expect(chat.textContent).not.toContain('Files: a, b, c.')
+      // Reducer kept just the tool segment (no spurious text segment).
+      const segs = (internals() as any).ChatState.turns[0].segments
+      expect(segs.length).toBe(1)
+      expect(segs[0].kind).toBe('tool')
     })
 
     it('Scenario: pre-tool-call typing-dots/delta path still works (regression guard for the simple case)', () => {
@@ -1123,19 +1140,23 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       M().handleFrame({ type: 'tool-result', toolCallId: 'tc-1', status: 'ok', output: 'a\nb\n' })
       M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Found 2 lines.' })
 
-      expect(chat.children.length).toBe(3)
-      expect(chat.children[0].className).toBe('msg assistant')
-      expect(chat.children[1].className).toBe('msg assistant tool-call-card')
-      expect(chat.children[2].className).toBe('msg assistant')
+      // Tool-using turn → ONE expanded timeline (the work) + the answer bubble.
+      expect(chat.children.length).toBe(2)
+      const timeline = chat.children[0] as HTMLElement
+      expect(timeline.classList.contains('timeline')).toBe(true)
+      expect(chat.children[1].className).toBe('msg assistant')
 
-      // The middle child is a real tool-card with <details><summary>.
-      const card = chat.children[1] as HTMLElement
+      // The tool card is a real <details><summary> step inside the timeline.
+      const card = timeline.querySelector('.tool-call-card') as HTMLElement
+      expect(card).not.toBeNull()
       expect(card.querySelector('details > summary')).not.toBeNull()
       expect(card.querySelector('.tool-card-status-ok')).not.toBeNull()
       expect(card.querySelector('.tool-card-output')!.textContent).toBe('a\nb\n')
+      // The pre-tool interim text is a step in the timeline.
+      expect(timeline.textContent).toContain('Looking up')
 
-      // The trailing text bubble has the right body.
-      expect(chat.children[2].textContent).toContain('Found 2 lines.')
+      // The trailing answer bubble has the right body.
+      expect(chat.children[1].textContent).toContain('Found 2 lines.')
     })
 
     it('assistant-done with no preceding delta drops the empty placeholder (no ghost bubble)', () => {
@@ -1228,13 +1249,21 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
         text: 'Looking that up. Found 3 lines.',
       })
 
-      expect(chat.children.length).toBe(3)
-      const pre = chat.children[0] as HTMLElement
-      const card = chat.children[1] as HTMLElement
-      const post = chat.children[2] as HTMLElement
-      expect(pre.dataset.streamRaw).toBe('Looking that up. ')
-      expect(card.classList.contains('tool-call-card')).toBe(true)
+      // [timeline(pre-tool text step + card), answer bubble] — 2 children.
+      expect(chat.children.length).toBe(2)
+      const timeline = chat.children[0] as HTMLElement
+      expect(timeline.classList.contains('timeline')).toBe(true)
+      const post = chat.children[1] as HTMLElement
+      // The pre-tool interim text step keeps ONLY its own segment...
+      const preStep = timeline.querySelector('.timeline-step-text') as HTMLElement
+      expect(preStep.dataset.streamRaw).toBe('Looking that up. ')
+      expect(timeline.querySelector('.tool-call-card')).not.toBeNull()
+      // ...and the post-tool answer bubble shows the INCREMENTAL suffix only.
       expect(post.dataset.streamRaw).toBe('Found 3 lines.')
+      // The reducer split is the layout-independent dedup fingerprint.
+      const segs = M().ChatState.turns[0].segments
+      expect(segs[0].raw).toBe('Looking that up. ')
+      expect(segs[2].raw).toBe('Found 3 lines.')
     })
 
     it('finishTurn with an empty server message text does NOT wipe streamed content', () => {
@@ -1245,6 +1274,102 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: '' } })
       expect(chat.children.length).toBe(1)
       expect(chat.children[0].textContent).toContain('streamed answer')
+    })
+
+    // ── Activity timeline (Gemini-style collapsible progress) ─────────────────
+
+    it('timeline: a pure-text turn (no tool) renders a plain bubble, no timeline', () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Just a plain answer.' })
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'Just a plain answer.' } })
+      expect(chat.children.length).toBe(1)
+      expect(chat.querySelector('.timeline')).toBeNull();
+      expect(chat.children[0].className).toBe('msg assistant')
+      expect(chat.children[0].textContent).toContain('Just a plain answer.')
+    })
+
+    it('timeline: interim text + a tool become steps in ONE expanded timeline while streaming', () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Looking that up. ' })
+      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'tc-1', name: 'Google Search', input: { q: 'x' } })
+      M().handleFrame({ type: 'tool-result', toolCallId: 'tc-1', status: 'ok', output: 'done' })
+
+      expect(chat.children.length).toBe(1)
+      const tl = chat.children[0] as HTMLElement
+      expect(tl.classList.contains('timeline')).toBe(true)
+      expect(tl.classList.contains('collapsed')).toBe(false) // expanded while streaming
+      expect((tl.querySelector('.timeline-step-text') as HTMLElement).textContent).toContain('Looking that up.')
+      expect(tl.querySelector('.tool-call-card .tool-card-name')!.textContent).toBe('Google Search')
+      expect(tl.querySelector('.timeline-summary-label')!.textContent).toContain('Working on it')
+    })
+
+    it('timeline: on done, collapses to a summary pill with the answer bubble below', () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Checking. ' })
+      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'tc-1', name: 'Read', input: {} })
+      M().handleFrame({ type: 'tool-result', toolCallId: 'tc-1', status: 'ok', output: 'x' })
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Found 2 lines.' })
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'Checking. Found 2 lines.' } })
+
+      expect(chat.children.length).toBe(2)
+      const tl = chat.children[0] as HTMLElement
+      expect(tl.classList.contains('timeline')).toBe(true)
+      expect(tl.classList.contains('collapsed')).toBe(true)
+      expect(tl.querySelector('.timeline-body')).toBeNull() // collapsed = body hidden
+      const answer = chat.children[1] as HTMLElement
+      expect(answer.className).toBe('msg assistant')
+      expect(answer.textContent).toContain('Found 2 lines.')
+    })
+
+    it('timeline: auto-collapses only on done; summary shows the work-step count', () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'one ' })
+      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'a', name: 'Read', input: {} })
+      M().handleFrame({ type: 'tool-result', toolCallId: 'a', status: 'ok', output: 'r' })
+      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(false)
+
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'one' } })
+      const tl = chat.querySelector('.timeline') as HTMLElement
+      expect(tl.classList.contains('collapsed')).toBe(true)
+      // Work = [text 'one ', tool] = 2 steps.
+      expect(tl.querySelector('.timeline-summary-label')!.textContent).toBe('Worked for 2 steps')
+    })
+
+    it('timeline: clicking the summary toggles collapse', () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'go ' })
+      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'a', name: 'Read', input: {} })
+      M().handleFrame({ type: 'tool-result', toolCallId: 'a', status: 'ok', output: 'r' })
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'go' } })
+
+      const click = () => (chat.querySelector('.timeline-summary') as HTMLElement)
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(true)
+      click()
+      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(false)
+      expect(chat.querySelector('.timeline-body')).not.toBeNull()
+      click()
+      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(true)
+    })
+
+    it('timeline: a user-set collapse survives a later streaming re-render (state lives on the turn)', () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'start ' })
+      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'a', name: 'Read', input: {} })
+      // Streaming + expanded; the user collapses it.
+      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(false)
+      ;(chat.querySelector('.timeline-summary') as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(true)
+
+      // A later frame re-renders the timeline — it MUST stay collapsed because
+      // the flag lives on the turn, not the rebuilt DOM. (The core gotcha.)
+      M().handleFrame({ type: 'tool-result', toolCallId: 'a', status: 'ok', output: 'r' })
+      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'b', name: 'Bash', input: {} })
+      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(true)
+    })
+
+    it('timeline: an error mid-work surfaces the error turn (v1 replaces the timeline)', () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'trying ' })
+      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'a', name: 'Read', input: {} })
+      M().handleFrame({ type: 'assistant-error', turnId: 't1', error: { message: 'boom' } })
+      expect(chat.children.length).toBe(1)
+      expect(chat.children[0].className).toContain('error')
+      expect(chat.children[0].textContent).toContain('boom')
+      expect(chat.querySelector('.timeline')).toBeNull()
     })
   // ───────────────────────────────────────────────────────────────────────────
   // Feature: UserAsk / alignment-survey (Phase 3 D3, Moon-side wiring)
