@@ -231,6 +231,8 @@ describe("UIWebSocketServer", () => {
       expect(frames[0].capabilities.localShell).toBe(false)
       // setup-mode = started WITHOUT a chat service (chat === null).
       expect(frames[0].capabilities.setup).toBe(true)
+      // No chat service → server never emits turn-complete.
+      expect(frames[0].capabilities.turnComplete).toBe(false)
     }
   })
 

@@ -620,33 +620,14 @@ export class ChatService extends Effect.Service<ChatService>()(
             if (stored === null) return
             const projected = projectOne(stored)
             if (projected === null) return
-            yield* Ref.set(args.inFlightTurnId, null)
-            yield* Ref.set(args.inFlightText, "")
-            yield* PubSub.publish(args.pubsub, {
-              type: "assistant-done",
-              threadId: args.threadId,
-              turnId: wireTurnId,
-              seq: stored.seq,
-              message: projected,
-            })
-            yield* inc("luna.chat.assistant_messages.completed")
-            // Post-completion: extract artifacts (substantial code fences,
-            // file-write tool uses) and publish a follow-up frame so the
-            // UI can pin them into a side panel. Pure function — safe to
-            // run inline; no extra fork needed.
-            const artifacts = extractArtifacts(projected)
-            if (artifacts.length > 0) {
-              yield* PubSub.publish(args.pubsub, {
-                type: "artifacts-extracted",
-                threadId: args.threadId,
-                messageId: projected.id,
-                messageSeq: stored.seq,
-                artifacts,
-              })
-            }
-            // Emit ToolCall obs events for each tool_use block in this turn.
-            // durationMs is 0 — the SDK doesn't give start/stop pairs at this
-            // level; status "success" because this is the completed-turn message.
+            // Emit the turn's `tool-call` frames (+ ToolCall obs events) BEFORE
+            // `assistant-done`. Clients apply ChatState synchronously on frame
+            // receipt; `assistant-done` forces an immediate render while
+            // `tool-call` only schedules one — so publishing the tool-call
+            // first guarantees the tool segment is present when the turn is
+            // marked done, avoiding a one-frame text-bubble→timeline flash in
+            // the moon's grouped activity timeline. durationMs is 0 (the SDK
+            // gives no start/stop pairs here); status "success" — completed turn.
             const blocks = (
               args.msg as {
                 message?: {
@@ -686,6 +667,30 @@ export class ChatService extends Effect.Service<ChatService>()(
                 }
               }
             }
+            yield* Ref.set(args.inFlightTurnId, null)
+            yield* Ref.set(args.inFlightText, "")
+            yield* PubSub.publish(args.pubsub, {
+              type: "assistant-done",
+              threadId: args.threadId,
+              turnId: wireTurnId,
+              seq: stored.seq,
+              message: projected,
+            })
+            yield* inc("luna.chat.assistant_messages.completed")
+            // Post-completion: extract artifacts (substantial code fences,
+            // file-write tool uses) and publish a follow-up frame so the
+            // UI can pin them into a side panel. Pure function — safe to
+            // run inline; no extra fork needed.
+            const artifacts = extractArtifacts(projected)
+            if (artifacts.length > 0) {
+              yield* PubSub.publish(args.pubsub, {
+                type: "artifacts-extracted",
+                threadId: args.threadId,
+                messageId: projected.id,
+                messageSeq: stored.seq,
+                artifacts,
+              })
+            }
             return
           }
           if (t === "result") {
@@ -701,6 +706,17 @@ export class ChatService extends Effect.Service<ChatService>()(
             // leftover text under a stale turnId. Resetting here closes that gap.
             yield* Ref.set(args.inFlightTurnId, null)
             yield* Ref.set(args.inFlightText, "")
+            // `result` is the ONLY signal that fires exactly once at the true
+            // end of an agentic turn (after every intermediate tool step). An
+            // agentic turn is N SDK assistant messages, each its own wire turnId
+            // → N `assistant-done` frames; per-message done can't tell the moon
+            // "the whole turn is over". This `turn-complete` frame does — the
+            // moon uses it to settle (collapse + relabel) its grouped activity
+            // timeline. Additive: ui-web is seq-keyed and ignores it.
+            yield* PubSub.publish(args.pubsub, {
+              type: "turn-complete",
+              threadId: args.threadId,
+            })
             const m = args.msg as {
               usage?: {
                 input_tokens?: number

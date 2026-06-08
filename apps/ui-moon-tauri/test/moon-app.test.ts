@@ -675,8 +675,12 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
         name: 'Read', input: { file_path: '/etc/hosts' },
       })
       expect(card).not.toBeNull()
+      // A single tool call renders as ONE activity-timeline window with the
+      // card nested as a step inside it (expanded while streaming).
       expect(chat.children.length).toBe(1)
-      expect(chat.children[0]).toBe(card)
+      const timeline = chat.children[0] as HTMLElement
+      expect(timeline.classList.contains('timeline')).toBe(true)
+      expect(timeline.contains(card)).toBe(true)
       expect(card.classList.contains('tool-call-card')).toBe(true)
       expect(card.dataset.toolCallId).toBe('call-1')
       expect(card.dataset.turnId).toBe('turn-1')
@@ -806,28 +810,27 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
         name: 'Read', input: { path: '/etc/hosts' },
       })
       expect(chat.children.length).toBe(1)
-      const card = chat.children[0] as HTMLElement
-      expect(card.classList.contains('tool-call-card')).toBe(true)
-      // <details><summary> structure is the bug's tripwire.
-      expect(card.querySelector('details > summary')).not.toBeNull()
+      const timeline = chat.children[0] as HTMLElement
+      expect(timeline.classList.contains('timeline')).toBe(true)
+      // The tool card lives as a step inside the timeline; the <details><summary>
+      // structure is the bug's tripwire (must NOT be overwritten by text).
+      expect(timeline.querySelector('.tool-call-card details > summary')).not.toBeNull()
 
       handleFrame({
         type: 'assistant-delta', threadId: 't', turnId: 'turn-1',
         text: 'Here is what I found.',
       })
 
-      // The card is intact AND a fresh text bubble appears after it.
+      // The timeline (with its card) is intact AND a fresh answer bubble appears
+      // AFTER it for the post-tool text (the work never gets overwritten).
       expect(chat.children.length).toBe(2)
-      expect((chat.children[0] as HTMLElement).classList.contains('tool-call-card')).toBe(true)
-      expect((chat.children[0] as HTMLElement).querySelector('details > summary')).not.toBeNull()
+      expect((chat.children[0] as HTMLElement).classList.contains('timeline')).toBe(true)
+      expect((chat.children[0] as HTMLElement).querySelector('.tool-call-card details > summary')).not.toBeNull()
       const fresh = chat.children[1] as HTMLElement
       expect(fresh.classList.contains('assistant')).toBe(true)
       expect(fresh.classList.contains('tool-call-card')).toBe(false)
       expect(fresh.dataset.streamRaw).toBe('Here is what I found.')
-      // Text bubbles MUST be tagged with the turn id so assistant-done can
-      // pair them with any matching tool-call-card during the has-tool-calls
-      // detection step. Missing this tag is what would re-open the
-      // duplication bug.
+      // The answer bubble carries the turn id so it pairs with its turn.
       expect(fresh.dataset.turnId).toBe('turn-1')
     })
 
@@ -847,10 +850,10 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       })
       handleFrame({ type: 'assistant-delta', threadId: 't', turnId: 'turn-1', text: 'Found 3 lines.' })
 
-      // Three children: text1, card, text2 (in that order).
-      expect(chat.children.length).toBe(3)
-      const text2 = chat.children[2] as HTMLElement
-      expect(text2.dataset.streamRaw).toBe('Found 3 lines.')
+      // [timeline(pre-tool text + card), answer bubble] — 2 children.
+      expect(chat.children.length).toBe(2)
+      const answer = chat.children[1] as HTMLElement
+      expect(answer.dataset.streamRaw).toBe('Found 3 lines.')
 
       // Server sends canonical FULL message text on assistant-done.
       handleFrame({
@@ -864,20 +867,28 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
           ],
         },
       })
+      // The agentic turn fully ends (SDK `result`) → settles the run.
+      handleFrame({ type: 'turn-complete', threadId: 't' })
 
-      // Post-fix: each bubble keeps its own segment, no duplication.
-      expect(chat.children.length).toBe(3)
-      const t1 = chat.children[0] as HTMLElement
-      const t2 = chat.children[2] as HTMLElement
-      expect(t1.textContent?.trim()).toBe('Looking that up.')
+      // Auto-collapses to the summary pill; the answer bubble stays below.
+      expect(chat.children.length).toBe(2)
+      const tl = chat.children[0] as HTMLElement
+      expect(tl.classList.contains('timeline')).toBe(true)
+      expect(tl.classList.contains('collapsed')).toBe(true)
+      const answer2 = chat.children[1] as HTMLElement
       // The post-tool bubble shows ONLY "Found 3 lines." — NOT the full
-      // canonical text "Looking that up. Found 3 lines." which would be
-      // the duplication-bug fingerprint.
-      expect(t2.textContent?.trim()).toBe('Found 3 lines.')
-      expect(t2.textContent).not.toContain('Looking that up.')
+      // canonical text "Looking that up. Found 3 lines." which would be the
+      // duplication-bug fingerprint.
+      expect(answer2.textContent?.trim()).toBe('Found 3 lines.')
+      expect(answer2.textContent).not.toContain('Looking that up.')
+      // The reducer split is the layout-independent dedup fingerprint.
+      const segs = (internals() as any).ChatState.turns[0].segments
+      expect(segs[0]).toMatchObject({ kind: 'text', raw: 'Looking that up. ' })
+      expect(segs[1].kind).toBe('tool')
+      expect(segs[2]).toMatchObject({ kind: 'text', raw: 'Found 3 lines.' })
     })
 
-    it('Scenario: assistant-done with tool-call-card as the literal tail does NOT finalize into it', () => {
+    it('Scenario: a turn that ends on a tool settles to the pill on turn-complete (no finalize-into-card)', () => {
       const { handleFrame, appendToolCallCard } = internals() as any
       const chat = document.getElementById('chat-messages')!
       chat.innerHTML = ''
@@ -889,9 +900,10 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
         type: 'tool-call', threadId: 't', turnId: 'turn-1', toolCallId: 'c1',
         name: 'Bash', input: { command: 'ls' },
       })
-      const card = chat.children[0] as HTMLElement
-      const detailsBefore = card.querySelector('details')
-      expect(detailsBefore).not.toBeNull()
+      expect(chat.children.length).toBe(1)
+      const timeline = chat.children[0] as HTMLElement
+      expect(timeline.classList.contains('timeline')).toBe(true)
+      expect(timeline.querySelector('.tool-call-card details > summary')).not.toBeNull()
 
       handleFrame({
         type: 'assistant-done', threadId: 't', turnId: 'turn-1', seq: 1,
@@ -901,12 +913,27 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
           content: [{ type: 'text', text: 'Files: a, b, c.' }],
         },
       })
+      // Per-message done does NOT settle a tool-terminal turn — it's
+      // indistinguishable from an intermediate step until `turn-complete`.
+      expect((chat.children[0] as HTMLElement).classList.contains('collapsed')).toBe(false)
 
-      // The card is still a card (structure intact). finalize refused to
-      // write into it.
-      expect(card.classList.contains('tool-call-card')).toBe(true)
-      expect(card.querySelector('details')).not.toBeNull()
-      expect(card.querySelector('details > summary')).not.toBeNull()
+      // The SDK `result` lands → the run settles even though it ends on a tool.
+      handleFrame({ type: 'turn-complete', threadId: 't' })
+
+      // Settled: collapses to the pill (real "Worked for N steps", no spinner),
+      // and the done message.text is written NOWHERE (no finalize-into-card,
+      // no ghost answer bubble).
+      expect(chat.children.length).toBe(1)
+      const tl = chat.children[0] as HTMLElement
+      expect(tl.classList.contains('timeline')).toBe(true)
+      expect(tl.classList.contains('collapsed')).toBe(true)
+      expect(tl.querySelector('.timeline-summary-label')!.textContent).toBe('Worked for 1 step')
+      expect(tl.querySelector('.typing-dots')).toBeNull() // no perpetual spinner
+      expect(chat.textContent).not.toContain('Files: a, b, c.')
+      // Reducer kept just the tool segment (no spurious text segment).
+      const segs = (internals() as any).ChatState.turns[0].segments
+      expect(segs.length).toBe(1)
+      expect(segs[0].kind).toBe('tool')
     })
 
     it('Scenario: pre-tool-call typing-dots/delta path still works (regression guard for the simple case)', () => {
@@ -1123,19 +1150,23 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       M().handleFrame({ type: 'tool-result', toolCallId: 'tc-1', status: 'ok', output: 'a\nb\n' })
       M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Found 2 lines.' })
 
-      expect(chat.children.length).toBe(3)
-      expect(chat.children[0].className).toBe('msg assistant')
-      expect(chat.children[1].className).toBe('msg assistant tool-call-card')
-      expect(chat.children[2].className).toBe('msg assistant')
+      // Tool-using turn → ONE expanded timeline (the work) + the answer bubble.
+      expect(chat.children.length).toBe(2)
+      const timeline = chat.children[0] as HTMLElement
+      expect(timeline.classList.contains('timeline')).toBe(true)
+      expect(chat.children[1].className).toBe('msg assistant')
 
-      // The middle child is a real tool-card with <details><summary>.
-      const card = chat.children[1] as HTMLElement
+      // The tool card is a real <details><summary> step inside the timeline.
+      const card = timeline.querySelector('.tool-call-card') as HTMLElement
+      expect(card).not.toBeNull()
       expect(card.querySelector('details > summary')).not.toBeNull()
       expect(card.querySelector('.tool-card-status-ok')).not.toBeNull()
       expect(card.querySelector('.tool-card-output')!.textContent).toBe('a\nb\n')
+      // The pre-tool interim text is a step in the timeline.
+      expect(timeline.textContent).toContain('Looking up')
 
-      // The trailing text bubble has the right body.
-      expect(chat.children[2].textContent).toContain('Found 2 lines.')
+      // The trailing answer bubble has the right body.
+      expect(chat.children[1].textContent).toContain('Found 2 lines.')
     })
 
     it('assistant-done with no preceding delta drops the empty placeholder (no ghost bubble)', () => {
@@ -1228,13 +1259,21 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
         text: 'Looking that up. Found 3 lines.',
       })
 
-      expect(chat.children.length).toBe(3)
-      const pre = chat.children[0] as HTMLElement
-      const card = chat.children[1] as HTMLElement
-      const post = chat.children[2] as HTMLElement
-      expect(pre.dataset.streamRaw).toBe('Looking that up. ')
-      expect(card.classList.contains('tool-call-card')).toBe(true)
+      // [timeline(pre-tool text step + card), answer bubble] — 2 children.
+      expect(chat.children.length).toBe(2)
+      const timeline = chat.children[0] as HTMLElement
+      expect(timeline.classList.contains('timeline')).toBe(true)
+      const post = chat.children[1] as HTMLElement
+      // The pre-tool interim text step keeps ONLY its own segment...
+      const preStep = timeline.querySelector('.timeline-step-text') as HTMLElement
+      expect(preStep.dataset.streamRaw).toBe('Looking that up. ')
+      expect(timeline.querySelector('.tool-call-card')).not.toBeNull()
+      // ...and the post-tool answer bubble shows the INCREMENTAL suffix only.
       expect(post.dataset.streamRaw).toBe('Found 3 lines.')
+      // The reducer split is the layout-independent dedup fingerprint.
+      const segs = M().ChatState.turns[0].segments
+      expect(segs[0].raw).toBe('Looking that up. ')
+      expect(segs[2].raw).toBe('Found 3 lines.')
     })
 
     it('finishTurn with an empty server message text does NOT wipe streamed content', () => {
@@ -1245,6 +1284,238 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: '' } })
       expect(chat.children.length).toBe(1)
       expect(chat.children[0].textContent).toContain('streamed answer')
+    })
+
+    // ── Activity timeline (Gemini-style collapsible progress) ─────────────────
+
+    it('timeline: a pure-text turn (no tool) renders a plain bubble, no timeline', () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Just a plain answer.' })
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'Just a plain answer.' } })
+      expect(chat.children.length).toBe(1)
+      expect(chat.querySelector('.timeline')).toBeNull();
+      expect(chat.children[0].className).toBe('msg assistant')
+      expect(chat.children[0].textContent).toContain('Just a plain answer.')
+    })
+
+    it('timeline: interim text + a tool become steps in ONE expanded timeline while streaming', () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Looking that up. ' })
+      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'tc-1', name: 'Google Search', input: { q: 'x' } })
+      M().handleFrame({ type: 'tool-result', toolCallId: 'tc-1', status: 'ok', output: 'done' })
+
+      expect(chat.children.length).toBe(1)
+      const tl = chat.children[0] as HTMLElement
+      expect(tl.classList.contains('timeline')).toBe(true)
+      expect(tl.classList.contains('collapsed')).toBe(false) // expanded while streaming
+      expect((tl.querySelector('.timeline-step-text') as HTMLElement).textContent).toContain('Looking that up.')
+      expect(tl.querySelector('.tool-call-card .tool-card-name')!.textContent).toBe('Google Search')
+      expect(tl.querySelector('.timeline-summary-label')!.textContent).toContain('Working on it')
+    })
+
+    it('timeline: on turn-complete, collapses to a summary pill with the answer bubble below', () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Checking. ' })
+      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'tc-1', name: 'Read', input: {} })
+      M().handleFrame({ type: 'tool-result', toolCallId: 'tc-1', status: 'ok', output: 'x' })
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Found 2 lines.' })
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'Checking. Found 2 lines.' } })
+      M().handleFrame({ type: 'turn-complete', threadId: 't1' })
+
+      expect(chat.children.length).toBe(2)
+      const tl = chat.children[0] as HTMLElement
+      expect(tl.classList.contains('timeline')).toBe(true)
+      expect(tl.classList.contains('collapsed')).toBe(true)
+      expect(tl.querySelector('.timeline-body')).toBeNull() // collapsed = body hidden
+      const answer = chat.children[1] as HTMLElement
+      expect(answer.className).toBe('msg assistant')
+      expect(answer.textContent).toContain('Found 2 lines.')
+    })
+
+    it('timeline: auto-collapses only on turn-complete (per-message done does NOT); shows the work-step count', () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'one ' })
+      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'a', name: 'Read', input: {} })
+      M().handleFrame({ type: 'tool-result', toolCallId: 'a', status: 'ok', output: 'r' })
+      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(false)
+
+      // Per-message `assistant-done` must NOT collapse — in a multi-step turn it
+      // fires once per step and can't tell an intermediate step from the final
+      // answer. Collapsing here would hide running work between steps.
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'one' } })
+      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(false)
+      expect((chat.querySelector('.timeline-summary-label') as HTMLElement).textContent).toContain('Working on it')
+
+      // Only the whole-turn `turn-complete` settles it.
+      M().handleFrame({ type: 'turn-complete', threadId: 't1' })
+      const tl = chat.querySelector('.timeline') as HTMLElement
+      expect(tl.classList.contains('collapsed')).toBe(true)
+      // Work = [text 'one ', tool] = 2 steps.
+      expect(tl.querySelector('.timeline-summary-label')!.textContent).toBe('Worked for 2 steps')
+    })
+
+    it('timeline: clicking the summary toggles collapse', () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'go ' })
+      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'a', name: 'Read', input: {} })
+      M().handleFrame({ type: 'tool-result', toolCallId: 'a', status: 'ok', output: 'r' })
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'go' } })
+      M().handleFrame({ type: 'turn-complete', threadId: 't1' }) // settle → starts collapsed
+
+      const click = () => (chat.querySelector('.timeline-summary') as HTMLElement)
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(true)
+      click()
+      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(false)
+      expect(chat.querySelector('.timeline-body')).not.toBeNull()
+      click()
+      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(true)
+    })
+
+    it('timeline: a user-set collapse survives a later streaming re-render (state lives on the turn)', () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'start ' })
+      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'a', name: 'Read', input: {} })
+      // Streaming + expanded; the user collapses it.
+      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(false)
+      ;(chat.querySelector('.timeline-summary') as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(true)
+
+      // A later frame re-renders the timeline — it MUST stay collapsed because
+      // the flag lives on the turn, not the rebuilt DOM. (The core gotcha.)
+      M().handleFrame({ type: 'tool-result', toolCallId: 'a', status: 'ok', output: 'r' })
+      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'b', name: 'Bash', input: {} })
+      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(true)
+    })
+
+    it('timeline: an error mid-work surfaces the error turn (v1 replaces the timeline)', () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'trying ' })
+      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'a', name: 'Read', input: {} })
+      M().handleFrame({ type: 'assistant-error', turnId: 't1', error: { message: 'boom' } })
+      expect(chat.children.length).toBe(1)
+      expect(chat.children[0].className).toContain('error')
+      expect(chat.children[0].textContent).toContain('boom')
+      expect(chat.querySelector('.timeline')).toBeNull()
+    })
+
+    // ── Multi-step agentic-turn GROUPING (the user-reported bug) ──────────────
+    // An agentic turn is N SDK assistant messages, each with its OWN wire
+    // turnId (the server resets the in-flight turn id per assistant message).
+    // They MUST render as ONE collapsible timeline, not N stacked timelines.
+
+    it('timeline: a multi-step turn with DISTINCT turnIds renders exactly ONE timeline', () => {
+      // Frame order mirrors the reordered server: tool-call BEFORE done.
+      // Step 1 (turnId A): think → tool → done → result.
+      M().handleFrame({ type: 'assistant-delta', turnId: 'A', text: 'Step one. ' })
+      M().handleFrame({ type: 'tool-call', turnId: 'A', toolCallId: 'a', name: 'Read', input: {} })
+      M().handleFrame({ type: 'assistant-done', turnId: 'A', message: { text: 'Step one.' } })
+      M().handleFrame({ type: 'tool-result', toolCallId: 'a', status: 'ok', output: 'ra' })
+      // Step 2 (turnId B): a DIFFERENT turn id.
+      M().handleFrame({ type: 'assistant-delta', turnId: 'B', text: 'Step two. ' })
+      M().handleFrame({ type: 'tool-call', turnId: 'B', toolCallId: 'b', name: 'Bash', input: {} })
+      M().handleFrame({ type: 'assistant-done', turnId: 'B', message: { text: 'Step two.' } })
+      M().handleFrame({ type: 'tool-result', toolCallId: 'b', status: 'ok', output: 'rb' })
+      // Final answer (turnId C): pure text, no tool.
+      M().handleFrame({ type: 'assistant-delta', turnId: 'C', text: 'All done.' })
+      M().handleFrame({ type: 'assistant-done', turnId: 'C', message: { text: 'All done.' } })
+
+      // THE fix: ONE timeline grouping all three turns' work, not three.
+      // (Asserted while still expanded — a collapsed timeline hides its body.)
+      expect(chat.querySelectorAll('.timeline').length).toBe(1)
+      let tl = chat.querySelector('.timeline') as HTMLElement
+      expect(tl.classList.contains('collapsed')).toBe(false)
+      // Both tools are steps inside the single timeline.
+      expect(tl.querySelectorAll('.tool-call-card').length).toBe(2)
+
+      // The whole turn ends → settle → collapse.
+      M().handleFrame({ type: 'turn-complete', threadId: 't1' })
+      expect(chat.querySelectorAll('.timeline').length).toBe(1)
+      tl = chat.querySelector('.timeline') as HTMLElement
+      expect(tl.classList.contains('collapsed')).toBe(true)
+      // Work = [textA, toolA, textB, toolB] = 4 steps.
+      expect(tl.querySelector('.timeline-summary-label')!.textContent).toBe('Worked for 4 steps')
+      // The final answer is the bubble below the pill.
+      const answer = chat.children[chat.children.length - 1] as HTMLElement
+      expect(answer.className).toBe('msg assistant')
+      expect(answer.textContent).toContain('All done.')
+    })
+
+    it('timeline: an intermediate per-message done across turnIds stays EXPANDED (no flicker)', () => {
+      // Step 1 ends (turnId A, ends on a tool) — but the agentic turn is NOT
+      // over (no turn-complete yet). The single timeline must stay expanded so
+      // running work between steps is never hidden.
+      M().handleFrame({ type: 'assistant-delta', turnId: 'A', text: 'Looking. ' })
+      M().handleFrame({ type: 'tool-call', turnId: 'A', toolCallId: 'a', name: 'Read', input: {} })
+      M().handleFrame({ type: 'assistant-done', turnId: 'A', message: { text: 'Looking.' } })
+      M().handleFrame({ type: 'tool-result', toolCallId: 'a', status: 'ok', output: 'ra' })
+
+      expect(chat.querySelectorAll('.timeline').length).toBe(1)
+      const tl = chat.querySelector('.timeline') as HTMLElement
+      expect(tl.classList.contains('collapsed')).toBe(false)
+      expect(tl.querySelector('.timeline-summary-label')!.textContent).toContain('Working on it')
+      expect(tl.querySelector('.typing-dots')).not.toBeNull() // still in flight
+
+      // Step 2 begins under a new turnId — still ONE timeline, still expanded.
+      M().handleFrame({ type: 'assistant-delta', turnId: 'B', text: 'More. ' })
+      M().handleFrame({ type: 'tool-call', turnId: 'B', toolCallId: 'b', name: 'Bash', input: {} })
+      expect(chat.querySelectorAll('.timeline').length).toBe(1)
+      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(false)
+    })
+
+    it('timeline: a new user message starts a fresh run (does NOT merge into the prior turn)', () => {
+      // First agentic turn (tool + settle).
+      M().handleFrame({ type: 'assistant-delta', turnId: 'A', text: 'First. ' })
+      M().handleFrame({ type: 'tool-call', turnId: 'A', toolCallId: 'a', name: 'Read', input: {} })
+      M().handleFrame({ type: 'assistant-done', turnId: 'A', message: { text: 'First.' } })
+      M().handleFrame({ type: 'turn-complete', threadId: 't1' })
+      // A user turn is the run boundary.
+      M().ChatState.appendUser('next question')
+      M().ChatLoop.flush()
+      // Second agentic turn (tool, still in flight).
+      M().handleFrame({ type: 'assistant-delta', turnId: 'B', text: 'Second. ' })
+      M().handleFrame({ type: 'tool-call', turnId: 'B', toolCallId: 'b', name: 'Bash', input: {} })
+
+      // TWO separate timelines — the user turn breaks the run.
+      const tls = Array.from(chat.querySelectorAll('.timeline')) as HTMLElement[]
+      expect(tls.length).toBe(2)
+      expect(tls[0].classList.contains('collapsed')).toBe(true)  // first settled
+      expect(tls[1].classList.contains('collapsed')).toBe(false) // second in flight
+    })
+
+    // ── Version-skew: grouping is gated on the server's `turn-complete` capability ──
+    // A NEW moon against an OLD server (no turn-complete) must NOT group and must
+    // settle each timeline on its own `assistant-done` — otherwise the grouped
+    // timeline, which only settles on turn-complete, would hang on "Working on it…".
+
+    it('timeline: hello capability turnComplete drives State.serverSupportsTurnComplete', () => {
+      // New server advertises it.
+      M().handleFrame({ type: 'hello', protocolVersion: 2, kinds: [],
+        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false, turnComplete: true } })
+      expect(M().State.serverSupportsTurnComplete).toBe(true)
+      // Old server omits it → falsy.
+      M().handleFrame({ type: 'hello', protocolVersion: 2, kinds: [],
+        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false } })
+      expect(M().State.serverSupportsTurnComplete).toBe(false)
+    })
+
+    it('timeline (old server, no turn-complete): per-turn timelines settle on assistant-done — no hang', () => {
+      // Server advertises NO turn-complete capability.
+      M().handleFrame({ type: 'hello', protocolVersion: 2, kinds: [],
+        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false } })
+      expect(M().State.serverSupportsTurnComplete).toBe(false)
+
+      // Two tool-using assistant turns, distinct turnIds. NO turn-complete is
+      // ever sent (the old server can't emit it).
+      M().handleFrame({ type: 'assistant-delta', turnId: 'A', text: 'one ' })
+      M().handleFrame({ type: 'tool-call', turnId: 'A', toolCallId: 'a', name: 'Read', input: {} })
+      M().handleFrame({ type: 'assistant-done', turnId: 'A', message: { text: 'one' } })
+      M().handleFrame({ type: 'tool-result', toolCallId: 'a', status: 'ok', output: 'r' })
+      M().handleFrame({ type: 'assistant-delta', turnId: 'B', text: 'two ' })
+      M().handleFrame({ type: 'tool-call', turnId: 'B', toolCallId: 'b', name: 'Bash', input: {} })
+      M().handleFrame({ type: 'assistant-done', turnId: 'B', message: { text: 'two' } })
+
+      // NOT grouped → two separate timelines (the pre-grouping behavior), and
+      // BOTH settle (collapse) on their own done despite no turn-complete — so
+      // the UI never hangs on a perpetual "Working on it…" spinner.
+      const tls = Array.from(chat.querySelectorAll('.timeline')) as HTMLElement[]
+      expect(tls.length).toBe(2)
+      expect(tls.every((t) => t.classList.contains('collapsed'))).toBe(true)
+      expect(chat.querySelector('.timeline .typing-dots')).toBeNull()
+      expect(chat.querySelector('.timeline-summary-label')!.textContent).toContain('Worked for')
     })
   // ───────────────────────────────────────────────────────────────────────────
   // Feature: UserAsk / alignment-survey (Phase 3 D3, Moon-side wiring)

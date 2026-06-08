@@ -295,6 +295,11 @@ export const reduce = (state: UIState, action: Action): UIState => {
       // pty output is consumed by the setup terminal directly off the
       // transport (streamy frame), not folded into store state.
       return state
+    case "turn-complete":
+      // End-of-agentic-turn marker. ui-web renders from seq-keyed finalized
+      // messages, so the "whole turn is over" signal carries no new state for
+      // it — only the moon's grouped activity timeline needs it. No-op here.
+      return state
   }
 }
 
