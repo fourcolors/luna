@@ -27,7 +27,15 @@
  * Run: bun run apps/ui-web/scripts/smoke/belief-injection-boot.smoke.ts
  * Exit 0 = PASS, non-zero = FAIL
  */
-import { Clock, makeBeliefRecord, ObservabilityService } from "@luna/core"
+import {
+  Clock,
+  JobsStoreService,
+  makeBeliefRecord,
+  makeDuckDbLayer,
+  makeTelemetrySqlite,
+  ObservabilityService,
+  TelemetryPlatform,
+} from "@luna/core"
 import { MemoryRouterTag } from "@luna/memory"
 import type { MemoryRecord } from "@luna/memory"
 import { LunaSqliteBootstrapLive } from "@luna/memory"
@@ -45,6 +53,31 @@ const obsL = ObservabilityService.makeLayer({
   jsonlPath: "/tmp/luna-smoke-belief-obs.jsonl",
 }).pipe(Layer.provide(clockL))
 
+// TelemetryPlatform mirror — satisfies the EventSink + SessionSync services.
+//
+// Phase 14b (chat-server.ts commit 57def9d) made ObsToolsLayer require
+// `EventSink | SessionSync` (the obs_pipeline_health tool reads their live
+// health counters). ThreadToolsProviderLayer `yield*`s ObsToolsService, so
+// those requirements bubble up into THIS smoke's graph. Without them the real
+// layer build crashes at boot with "Service not found: luna/EventSink" — the
+// exact regression chat-server.ts:1078-1089 documents.
+//
+// We reconstruct the production `telPlatformL` (chat-server.ts) verbatim
+// rather than hand-rolling a minimal EventSink+SessionSync pair, because this
+// smoke exists to prove the REAL graph builds AS IT DOES IN PRODUCTION — so it
+// must stay covered if ObsToolsLayer later leans on EventCounter/MetricsFlusher
+// too. DB files go to /tmp (fresh, isolated; migrations are idempotent).
+const duckDbL = makeDuckDbLayer({
+  dbPath: "/tmp/luna-smoke-belief-analytics.duckdb",
+})
+const telemetryL = makeTelemetrySqlite("/tmp/luna-smoke-belief-luna.db").pipe(
+  Layer.provide(clockL),
+  Layer.provide(LunaSqliteBootstrapLive),
+)
+const telPlatformL = TelemetryPlatform.pipe(
+  Layer.provide(Layer.mergeAll(obsL, duckDbL, telemetryL, clockL)),
+)
+
 /** Build the common provide-chain around a given memoryL + interval. */
 const buildLayer = (
   memoryL: Layer.Layer<typeof MemoryRouterTag.Service, never, never>,
@@ -52,6 +85,18 @@ const buildLayer = (
 ) =>
   ThreadToolsProviderLayer(refreshIntervalMs).pipe(
     Layer.provide(memoryL as never),
+    // Mirrors production threadToolsL (chat-server.ts:1089): provide the
+    // telemetry platform so the EventSink/SessionSync requirements pulled in by
+    // ObsToolsService are satisfied instead of crashing the real layer build.
+    Layer.provide(telPlatformL),
+    // SchedulerToolsService (also yielded by ThreadToolsProviderLayer) requires
+    // JobsStoreService for durable cron persistence (chat-server.ts:1077 wires
+    // the SQLite-backed jobsStoreL). This smoke only verifies belief injection,
+    // not job persistence, so the in-memory JobsStoreService.Memory variant
+    // (requires only Clock) satisfies the build-time dependency without a DB
+    // file. Without it the real layer build crashes with
+    // "Service not found: luna/JobsStoreService".
+    Layer.provide(JobsStoreService.Memory),
     Layer.provide(obsL),
     Layer.provide(clockL),
     Layer.provide(LunaSqliteBootstrapLive),
