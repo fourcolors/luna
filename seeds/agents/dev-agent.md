@@ -10,6 +10,9 @@ description: >-
   operations, secrets, destructive migrations, scope creep, real-money
   operations).
 model: sonnet
+memory: user
+skills:
+  - subagent-memory
 ---
 
 # dev-agent

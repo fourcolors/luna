@@ -8,6 +8,9 @@ description: >-
   the deliverable meets the original prompt.
 model: opus
 effort: xhigh
+memory: user
+skills:
+  - subagent-memory
 tools:
   - Read
   - Grep

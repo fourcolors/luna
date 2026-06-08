@@ -360,6 +360,10 @@ describe("real agent files (regression)", () => {
     expect(advisor.model).toBe("opus")
     expect(advisor.effort).toBe("max")
     expect(advisor.tools).toContain("Read")
+    // Memory opt-in shipped in feat/subagents-opt-in-memory — observations
+    // persist across invocations via the SDK's ~/.claude/agent-memory/ path.
+    expect(advisor.memory).toBe("user")
+    expect(advisor.skills).toContain("subagent-memory")
   })
 
   it("auditor.md loads with a non-trivial description", () => {
@@ -370,5 +374,8 @@ describe("real agent files (regression)", () => {
     expect(auditor.description.length).toBeGreaterThan(30)
     expect(auditor.model).toBe("opus")
     expect(auditor.effort).toBe("xhigh")
+    // Same opt-in as advisor.
+    expect(auditor.memory).toBe("user")
+    expect(auditor.skills).toContain("subagent-memory")
   })
 })
