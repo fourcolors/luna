@@ -656,18 +656,93 @@
       background: rgba(255, 255, 255, 0.02);
     }
 
-    /* Tool-call cards — collapsible per-tool blocks emitted between assistant
-       text bubbles. Each card represents one ToolCallFrame; a matching
-       ToolResultFrame later attaches a .tool-card-result panel inside. Uses
-       native <details>/<summary> for the collapse so the keyboard a11y and
-       browser open-state restoration come for free.
-       Left-aligned like assistant bubbles but with a denser/quieter chrome
-       so the operator's eye can skip past a long chain of tool calls without
-       feeling like a wall of message bubbles. */
-    .msg.tool-call-card {
+    /* Activity timeline — Gemini-style collapsible progress for a tool-using
+       turn. While streaming the steps (interim text + tool calls) show on a
+       vertical connector line; on finish the timeline auto-collapses to a
+       one-line summary pill and the final answer renders as a normal bubble
+       below it. Collapse state lives on the turn (ChatState), NOT the DOM, so
+       it survives the per-frame re-render. */
+    .timeline {
       align-self: flex-start;
       width: 92%;
       max-width: 92%;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 12px;
+      overflow: hidden;
+      animation: msgAppear 0.2s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
+      transform-origin: bottom left;
+    }
+    .timeline-summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+      user-select: none;
+      color: #c9d4ee;
+      font-size: 0.82rem;
+      font-weight: 500;
+    }
+    .timeline-summary:hover { background: rgba(255, 255, 255, 0.03); }
+    .timeline-chevron {
+      display: inline-block;
+      transition: transform 160ms ease;
+      width: 12px;
+      text-align: center;
+      color: #8aa0c9;
+      font-size: 0.78rem;
+    }
+    .timeline:not(.collapsed) .timeline-chevron { transform: rotate(90deg); }
+    .timeline-summary-label { flex: 1; min-width: 0; }
+    .timeline-summary .typing-dots { padding: 0; }
+    .timeline-body {
+      position: relative;
+      padding: 6px 12px 12px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    /* the vertical connector line behind the step icons */
+    .timeline-body::before {
+      content: '';
+      position: absolute;
+      left: 21px;
+      top: 2px;
+      bottom: 14px;
+      width: 1px;
+      background: rgba(255, 255, 255, 0.10);
+    }
+    .timeline-step {
+      position: relative;
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+    }
+    .timeline-step-icon {
+      position: relative;
+      z-index: 1;
+      flex: 0 0 18px;
+      width: 18px;
+      height: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.7rem;
+      border-radius: 50%;
+      background: var(--glass-bg, rgba(10, 14, 28, 0.92)); /* occlude the line */
+    }
+    .timeline-step-icon .tl-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .timeline-step-icon .tl-dot.pending { background: #fcd34d; box-shadow: 0 0 6px rgba(251, 191, 36, 0.6); }
+    .timeline-step-icon .tl-dot.ok { background: #6ee7b7; }
+    .timeline-step-icon .tl-dot.error { background: #fda4af; }
+    .timeline-step-content { flex: 1; min-width: 0; padding-top: 1px; }
+    .timeline-step-text { color: #cdd6ea; font-size: 0.82rem; line-height: 1.45; }
+
+    /* Tool-call cards — one per tool invocation, rendered as a timeline step
+       (and reused by the legacy appendToolCallCard/attachToolResult adapters).
+       Native <details>/<summary> gives free keyboard a11y + open-state. */
+    .tool-call-card {
       padding: 0;
       background: rgba(255, 255, 255, 0.025);
       border: 1px solid rgba(255, 255, 255, 0.06);
@@ -675,7 +750,7 @@
       overflow: hidden;
       font-size: 0.82rem;
     }
-    .msg.tool-call-card details > summary {
+    .tool-call-card details > summary {
       list-style: none;
       cursor: pointer;
       padding: 6px 10px;
@@ -686,8 +761,8 @@
       color: #c9d4ee;
       font-weight: 500;
     }
-    .msg.tool-call-card details > summary::-webkit-details-marker { display: none; }
-    .msg.tool-call-card .tool-card-chevron {
+    .tool-call-card details > summary::-webkit-details-marker { display: none; }
+    .tool-call-card .tool-card-chevron {
       display: inline-block;
       transition: transform 120ms ease;
       width: 10px;
@@ -695,39 +770,38 @@
       color: #8aa0c9;
       font-size: 0.75rem;
     }
-    .msg.tool-call-card details[open] .tool-card-chevron { transform: rotate(90deg); }
-    .msg.tool-call-card .tool-card-icon { opacity: 0.85; }
-    .msg.tool-call-card .tool-card-name {
+    .tool-call-card details[open] .tool-card-chevron { transform: rotate(90deg); }
+    .tool-call-card .tool-card-name {
       font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
       font-size: 0.80rem;
       color: #e6ecf8;
     }
-    .msg.tool-call-card .tool-card-status {
+    .tool-call-card .tool-card-status {
       margin-left: auto;
       font-size: 0.72rem;
       padding: 1px 6px;
       border-radius: 8px;
       letter-spacing: 0.02em;
     }
-    .msg.tool-call-card .tool-card-status-ok    { background: rgba(52, 211, 153, 0.14); color: #6ee7b7; }
-    .msg.tool-call-card .tool-card-status-error { background: rgba(248, 113, 113, 0.18); color: #fda4af; }
-    .msg.tool-call-card .tool-card-status-pending { background: rgba(251, 191, 36, 0.16); color: #fcd34d; }
-    .msg.tool-call-card .tool-card-body {
+    .tool-call-card .tool-card-status-ok    { background: rgba(52, 211, 153, 0.14); color: #6ee7b7; }
+    .tool-call-card .tool-card-status-error { background: rgba(248, 113, 113, 0.18); color: #fda4af; }
+    .tool-call-card .tool-card-status-pending { background: rgba(251, 191, 36, 0.16); color: #fcd34d; }
+    .tool-call-card .tool-card-body {
       padding: 4px 10px 10px 10px;
       border-top: 1px solid rgba(255, 255, 255, 0.05);
       display: flex;
       flex-direction: column;
       gap: 8px;
     }
-    .msg.tool-call-card .tool-card-section-label {
+    .tool-call-card .tool-card-section-label {
       font-size: 0.70rem;
       text-transform: uppercase;
       letter-spacing: 0.06em;
       color: #8aa0c9;
       opacity: 0.85;
     }
-    .msg.tool-call-card .tool-card-input,
-    .msg.tool-call-card .tool-card-output {
+    .tool-call-card .tool-card-input,
+    .tool-call-card .tool-card-output {
       margin: 0;
       padding: 6px 8px;
       background: rgba(0, 0, 0, 0.22);
@@ -741,7 +815,7 @@
       max-height: 200px;
       overflow: auto;
     }
-    .msg.tool-call-card .tool-card-truncated {
+    .tool-call-card .tool-card-truncated {
       font-size: 0.68rem;
       color: #8aa0c9;
       opacity: 0.7;
@@ -3366,7 +3440,8 @@
       turns: [],
       // Turn shape:
       //   { key, role: 'user' | 'assistant', status: 'streaming' | 'done' | 'error' | 'banner',
-      //     segments: Segment[], previews?, turnId?, fullText?, errorText? }
+      //     segments: Segment[], previews?, turnId?, errorText?,
+      //     _cumText? (delta-dedup), _timelineCollapsed? (timeline toggle) }
       // Segment shape:
       //   { kind: 'text', raw: string, done: boolean }
       //   { kind: 'tool', id: string, name: string, input: any, result?: {ok,output,truncated} | null }
@@ -3535,7 +3610,7 @@
           return;
         }
         turn.status = 'done';
-        if (fullText != null) turn.fullText = String(fullText);
+        // (fullText arg is unused — the renderer reconstructs from segments.)
       },
 
       failTurn(turnId, errorText) {
@@ -3672,12 +3747,27 @@
             out.push({ key: turn.key + '|typing', kind: 'typing', turn: turn, seg: null });
             continue;
           }
+          // A turn with ANY tool renders its "work" (everything up to & including
+          // the LAST tool — interim text + tool calls) as ONE collapsible timeline
+          // window; the text AFTER the last tool is the "answer", rendered as
+          // normal bubbles below. A pure-text turn (no tool) is unchanged.
+          let lastToolIndex = -1;
           for (let i = 0; i < turn.segments.length; i++) {
+            if (turn.segments[i].kind === 'tool') lastToolIndex = i;
+          }
+          if (lastToolIndex === -1) {
+            for (let i = 0; i < turn.segments.length; i++) {
+              out.push({ key: turn.key + '|t' + i, kind: 'text', turn: turn, seg: turn.segments[i] });
+            }
+            continue;
+          }
+          out.push({ key: turn.key + '|tl', kind: 'timeline', turn: turn, seg: null, lastToolIndex: lastToolIndex });
+          // Answer = text segments after the last tool. Key by ABSOLUTE index so a
+          // surviving answer window stays stable if a later tool reflows it.
+          for (let i = lastToolIndex + 1; i < turn.segments.length; i++) {
             const seg = turn.segments[i];
             if (seg.kind === 'text') {
               out.push({ key: turn.key + '|t' + i, kind: 'text', turn: turn, seg: seg });
-            } else {
-              out.push({ key: turn.key + '|k' + (seg.id || i), kind: 'tool', turn: turn, seg: seg });
             }
           }
         }
@@ -3693,7 +3783,7 @@
           case 'error':   cls = 'msg assistant error'; break;
           case 'typing':  cls = 'msg assistant'; break;
           case 'text':    cls = 'msg assistant'; break;
-          case 'tool':    cls = 'msg assistant tool-call-card'; break;
+          case 'timeline': cls = 'timeline'; break;
         }
         if (node.className !== cls) node.className = cls;
 
@@ -3713,7 +3803,7 @@
           case 'error':   return this._paintError(w, node);
           case 'typing':  return this._paintTyping(node);
           case 'text':    return this._paintText(w, node);
-          case 'tool':    return this._paintTool(w, node);
+          case 'timeline': return this._paintTimeline(w, node);
         }
       },
 
@@ -3732,16 +3822,29 @@
         if (w.kind === 'error') return 'E|' + (t.errorText || '');
         if (w.kind === 'typing') return 'TYP';
         if (w.kind === 'text') return 'T|' + (w.seg.done ? '1' : '0') + '|' + w.seg.raw;
-        // tool
-        const s = w.seg;
-        let inputSig;
-        try { inputSig = JSON.stringify(s.input); } catch (_) { inputSig = String(s.input); }
-        if (s.result) {
-          return 'K|' + s.id + '|' + s.name + '|' + inputSig + '|R|'
-            + (s.result.ok ? '1' : '0') + '|' + s.result.output
-            + '|' + (s.result.truncated ? '1' : '0');
+        if (w.kind === 'timeline') {
+          // Hash the COMPUTED collapsed value (+ status) so the auto-collapse on
+          // streaming->done repaints even while turn._timelineCollapsed is still
+          // undefined; plus every work step's content/status. Pure fn of state.
+          const collapsed = (t._timelineCollapsed !== undefined)
+            ? t._timelineCollapsed : (t.status === 'done');
+          let sig = 'TL|' + t.status + '|' + (collapsed ? 'c' : 'o') + '|' + w.lastToolIndex;
+          for (let i = 0; i <= w.lastToolIndex; i++) {
+            const s = t.segments[i];
+            if (!s) continue;
+            if (s.kind === 'text') {
+              sig += '|t' + (s.done ? '1' : '0') + ':' + s.raw;
+            } else {
+              let inputSig;
+              try { inputSig = JSON.stringify(s.input); } catch (_) { inputSig = String(s.input); }
+              sig += '|k' + s.id + ':' + s.name + ':' + inputSig
+                + (s.result ? (':R' + (s.result.ok ? '1' : '0') + ':' + s.result.output
+                  + ':' + (s.result.truncated ? '1' : '0')) : ':P');
+            }
+          }
+          return sig;
         }
-        return 'K|' + s.id + '|' + s.name + '|' + inputSig + '|P';
+        return 'X|' + w.kind;
       },
 
       _paintUser(w, node) {
@@ -3789,14 +3892,17 @@
         node.dataset.streamRaw = seg.raw;
       },
 
-      _paintTool(w, node) {
-        // The bubble itself plays the role of the old `tool-call-card`. We
-        // build a fresh <details> tree each render — cheap, and lets the
-        // operator's <details open> choice reset on result-arrival (which is
-        // the right UX: the result is the interesting moment).
-        const seg = w.seg;
-        node.textContent = '';
-        if (seg.id) node.dataset.toolCallId = seg.id;
+      // Build one tool card as a self-contained `.tool-call-card` (a <div>
+      // wrapping a native <details>): summary (chevron + name + status pill) +
+      // body (input + result). Carries data-tool-call-id + data-turn-id so the
+      // timeline, the legacy appendToolCallCard/attachToolResult adapters, and
+      // the tests can all find it. Rebuilt fresh each paint (the inner <details>
+      // open-state resets on result arrival — the interesting moment).
+      buildToolStep(seg, turnId) {
+        const card = document.createElement('div');
+        card.className = 'tool-call-card';
+        if (seg.id) card.dataset.toolCallId = String(seg.id);
+        if (turnId) card.dataset.turnId = String(turnId);
 
         const details = document.createElement('details');
         const summary = document.createElement('summary');
@@ -3805,11 +3911,6 @@
         chev.className = 'tool-card-chevron';
         chev.textContent = '▸';
         summary.appendChild(chev);
-
-        const icon = document.createElement('span');
-        icon.className = 'tool-card-icon';
-        icon.textContent = '🛠';
-        summary.appendChild(icon);
 
         const name = document.createElement('span');
         name.className = 'tool-card-name';
@@ -3866,7 +3967,78 @@
         }
 
         details.appendChild(body);
-        node.appendChild(details);
+        card.appendChild(details);
+        return card;
+      },
+
+      _paintTimeline(w, node) {
+        // Gemini-style collapsible "activity" for a tool-using turn. Collapse
+        // state lives on the turn (ChatState), NOT the DOM, so it survives the
+        // per-frame re-render: default expanded while streaming, auto-collapsed
+        // when done; an explicit user toggle (delegated click) pins it.
+        const turn = w.turn;
+        node.dataset.turnKey = turn.key;
+        const collapsed = (turn._timelineCollapsed !== undefined)
+          ? turn._timelineCollapsed : (turn.status === 'done');
+        node.classList.toggle('collapsed', collapsed);
+        node.textContent = '';
+
+        // Summary header (the click target — see the delegated listener).
+        const summary = document.createElement('div');
+        summary.className = 'timeline-summary';
+        const chev = document.createElement('span');
+        chev.className = 'timeline-chevron';
+        chev.textContent = '▸';
+        summary.appendChild(chev);
+        const label = document.createElement('span');
+        label.className = 'timeline-summary-label';
+        if (turn.status === 'done') {
+          const n = w.lastToolIndex + 1;
+          label.textContent = 'Worked for ' + n + ' step' + (n === 1 ? '' : 's');
+        } else {
+          label.textContent = 'Working on it…';
+        }
+        summary.appendChild(label);
+        if (turn.status !== 'done') {
+          const dots = document.createElement('div');
+          dots.className = 'typing-dots';
+          dots.innerHTML = '<div class="dot"></div><div class="dot"></div><div class="dot"></div>';
+          summary.appendChild(dots);
+        }
+        node.appendChild(summary);
+
+        if (collapsed) return; // body hidden — just the summary pill
+
+        const body = document.createElement('div');
+        body.className = 'timeline-body';
+        for (let i = 0; i <= w.lastToolIndex; i++) {
+          const seg = turn.segments[i];
+          if (!seg) continue;
+          const step = document.createElement('div');
+          step.className = 'timeline-step';
+          const icon = document.createElement('span');
+          icon.className = 'timeline-step-icon';
+          const content = document.createElement('div');
+          content.className = 'timeline-step-content';
+          if (seg.kind === 'tool') {
+            const state = !seg.result ? 'pending' : (seg.result.ok ? 'ok' : 'error');
+            icon.innerHTML = '<span class="tl-dot ' + state + '"></span>';
+            content.appendChild(this.buildToolStep(seg, turn.turnId));
+          } else {
+            icon.textContent = '🌙';
+            const txt = document.createElement('div');
+            txt.className = 'timeline-step-text';
+            const fn = seg.done ? renderMarkdown : renderMarkdownStreaming;
+            txt.innerHTML = fn(seg.raw);
+            enhanceCodeBlocks(txt);
+            txt.dataset.streamRaw = seg.raw; // mirror _paintText's legacy hook
+            content.appendChild(txt);
+          }
+          step.appendChild(icon);
+          step.appendChild(content);
+          body.appendChild(step);
+        }
+        node.appendChild(body);
       },
 
       _buildPreviewTray(previews, hasText) {
@@ -3927,9 +4099,16 @@
         this._render();
       },
       _render() {
-        if (!DOM.chatMessages) return;
-        ChatRenderer.render(DOM.chatMessages);
-        DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+        const el = DOM.chatMessages;
+        if (!el) return;
+        // Stick to bottom ONLY if the user was already near the bottom before
+        // this render — so expanding/collapsing an older timeline (or a tool
+        // card) doesn't yank the viewport down. Streaming stays pinned because
+        // the user sits at the bottom while a turn streams.
+        const wasNearBottom =
+          (el.scrollHeight - el.scrollTop - el.clientHeight) <= 40;
+        ChatRenderer.render(el);
+        if (wasNearBottom) el.scrollTop = el.scrollHeight;
       },
     };
 
@@ -4707,6 +4886,21 @@
     // moon UI). preventDefault() keeps the widget intact; window.open is best-effort
     // (no opener/shell plugin is installed, so external open may be a no-op — that's fine).
     DOM.chatMessages.addEventListener('click', (e) => {
+      // Activity-timeline collapse toggle. State lives on the turn (ChatState),
+      // not the DOM, so it survives the per-frame re-render. Delegated here
+      // because _paintTimeline rebuilds the header node every paint.
+      const tlSummary = e.target.closest && e.target.closest('.timeline-summary');
+      if (tlSummary) {
+        const node = tlSummary.closest('[data-msg-key]');
+        const turn = node && ChatState.turns.find((t) => t.key === node.dataset.turnKey);
+        if (turn) {
+          const cur = (turn._timelineCollapsed !== undefined)
+            ? turn._timelineCollapsed : (turn.status === 'done');
+          turn._timelineCollapsed = !cur;
+          ChatLoop.schedule();
+        }
+        return;
+      }
       const a = e.target.closest && e.target.closest('a[href]');
       if (!a) return;
       e.preventDefault();
