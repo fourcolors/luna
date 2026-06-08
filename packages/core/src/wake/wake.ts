@@ -13,6 +13,7 @@ import type { TriggerAgentApi } from "../jobs/trigger-agent.js"
 import { AgentNotesService } from "../agent-notes/agent-notes.js"
 import { WakeReasoner } from "./reasoner.js"
 import { WakeLogStore } from "./wake-log-store.js"
+import { planNextActions } from "./plan-actions.js"
 import { WakeError } from "./types.js"
 import type { WakeDigest, WakeInputs, WakeOutcome } from "./types.js"
 
@@ -292,6 +293,22 @@ export const runWake = (
       outcome: successOutcome,
       artifacts: successArtifacts,
     })
+
+    // Step 4 (Path B): file the reasoner's proposed actions into next_actions so
+    // observation becomes actionable instead of evaporating into wake_log. The
+    // planner dedups against the open actions the reasoner already saw, nulls any
+    // unknown goal_slug (FK-safe), and clamps priority. Best-effort: a filing
+    // failure must NOT poison the cron tick (wake_log already recorded above).
+    if (digest.proposedActions.length > 0) {
+      const planned = planNextActions(
+        digest.proposedActions,
+        inputs.openNextActions,
+        inputs.openGoals.map((g) => g.slug),
+      )
+      if (planned.length > 0) {
+        yield* Effect.ignore(store.appendNextActions(planned, now))
+      }
+    }
   })
 
 /**
