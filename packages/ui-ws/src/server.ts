@@ -40,11 +40,13 @@ import {
 } from "effect"
 import type * as Scope from "effect/Scope"
 import * as http from "node:http"
+import { randomUUID } from "node:crypto"
 import { WebSocketServer, type WebSocket } from "ws"
 import { UIService } from "@luna/core"
 import type { ObsEvent } from "@luna/core"
 import type { ChatService, ChatFrame } from "@luna/chat-service"
 import type { LocalShellBridge } from "./local-shell-bridge.js"
+import type { SecretRequestBridge } from "./secret-request-bridge.js"
 import {
   UI_WS_PROTOCOL_VERSION,
   type ClientFrame,
@@ -265,6 +267,16 @@ export interface UIWebSocketServerConfig {
         readonly token: string
       }) => Promise<{ readonly ok: boolean; readonly message: string }>)
     | null
+  /**
+   * Optional bridge for the Moon agent-summoned secure-secret-entry flow. When
+   * provided, the server registers each subscribing client's send-handle (so
+   * the `request_secret` tool can reach it), routes inbound `secret-result`
+   * frames to `acceptResult`, and signals `notifyTurnComplete` on each
+   * `turn-complete` (so the bridge can fire its deferred activation). The
+   * secret VALUE never passes through this package's logging — `secret-result`
+   * is handed straight to the bridge. Pass `null`/absent to disable.
+   */
+  readonly secretBridge?: SecretRequestBridge | null
 }
 
 export interface UIWebSocketServerHandle {
@@ -370,6 +382,7 @@ export const startUIWebSocketServer = (
     const survey = config.survey ?? null
     const setupPty = config.setupPty ?? null
     const registerOpToken = config.registerOpToken ?? null
+    const secretBridge = config.secretBridge ?? null
     const buildSha = config.buildSha
 
     const httpServer = http.createServer((req, res) => {
@@ -696,6 +709,29 @@ export const startUIWebSocketServer = (
           )
         }
 
+        // Threads this connection registered as the secret-entry target. On
+        // teardown we unregister them — but only if THIS connection is still the
+        // active registration (the bridge compares `secretConnId`), so a stale
+        // connection closing after a reconnect can't wipe the live one.
+        const secretConnId = randomUUID()
+        const secretThreads = new Set<string>()
+        const registerSecretClient = (threadId: string): void => {
+          if (secretBridge === null) return
+          secretThreads.add(threadId)
+          secretBridge.registerClient(threadId, secretConnId, (out) =>
+            send(ws, out),
+          )
+        }
+        if (secretBridge !== null) {
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              for (const threadId of secretThreads) {
+                secretBridge.unregisterClient(threadId, secretConnId)
+              }
+            }),
+          )
+        }
+
         // Single-fiber forwarder. The pattern is: take ONE event from the
         // UIService stream, send it to the ws synchronously, repeat. ws.send
         // is fire-and-forget at the protocol level (the underlying socket
@@ -786,6 +822,13 @@ export const startUIWebSocketServer = (
             const fiber = yield* stream.pipe(
               Stream.runForEach((f) =>
                 Effect.sync(() => {
+                  // A `turn-complete` marks the true end of an agentic turn —
+                  // the safe moment to fire any deferred secret activation for
+                  // this thread (so a restart never kills the calling turn).
+                  // Fire regardless of ws state; it's a server-side signal.
+                  if (f.type === "turn-complete" && secretBridge !== null) {
+                    secretBridge.notifyTurnComplete(f.threadId)
+                  }
                   if (ws.readyState !== ws.OPEN) return
                   send(ws, chatFrameToWire(f))
                 }),
@@ -844,7 +887,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null) {
+        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -902,9 +945,20 @@ export const startUIWebSocketServer = (
                     }
                     return
                   }
+                  case "secret-result": {
+                    // Moon secure-entry answer. Hand the frame straight to the
+                    // bridge — the secret value is never logged or echoed here.
+                    if (secretBridge !== null) {
+                      secretBridge.acceptResult(frame)
+                    }
+                    return
+                  }
                   case "subscribe": {
                     if (chat === null) return
                     yield* subscribeChatThread(frame.threadId)
+                    // Make this connection the secret-entry target for the
+                    // thread, so the agent's `request_secret` tool can reach it.
+                    registerSecretClient(frame.threadId)
                     return
                   }
                   case "unsubscribe": {
@@ -956,8 +1010,12 @@ export const startUIWebSocketServer = (
                     send(ws, { type: "thread-created", thread: summary })
                     // Auto-subscribe so the client doesn't need a
                     // subscribe round-trip before sending the first
-                    // user-message — a common ChatGPT-style pattern.
+                    // user-message — a common ChatGPT-style pattern. Register
+                    // the secret-entry client here too (not just on explicit
+                    // `subscribe`), so a client that trusts auto-subscribe can
+                    // still receive a `request_secret` prompt on this thread.
                     yield* subscribeChatThread(summary.id)
+                    registerSecretClient(summary.id)
                     return
                   }
                   case "user-message": {

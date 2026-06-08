@@ -219,6 +219,7 @@ const LUNA_ALLOWED_MCP_TOOLS = [
   "mcp__scheduler__*",
   "mcp__observability__*",
   "mcp__local_shell__*",
+  "mcp__secret_tools__*",
 ] as const
 
 /**
