@@ -171,6 +171,9 @@ const reloadPersistedCrons = (
           payload: { label, source: row.payload.source ?? "scheduler-tools" },
         }),
       )
+      // Opt the reloaded V1 cron row out of the V2 JobTicker. See the
+      // matching comment in tools.ts schedule_create handler + issue #58.
+      yield* Effect.ignore(jobsStore.setV2Fields(newId, { enabled: false }))
       reloaded++
     }
     if (reloaded > 0 || dropped > 0) {

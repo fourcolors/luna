@@ -66,3 +66,16 @@ jobs:
           prerelease: false
           includeUpdaterJson: true
           args: --target aarch64-apple-darwin
+
+      # Belt-and-suspenders: tauri-action SHOULD mark the new release as latest,
+      # but historically a non-Moon release (e.g. chat-v0.12b) cut between Moon
+      # releases stole the "Latest" flag and broke the updater endpoint
+      # (HTTP 200 but JSON for the wrong release ⇒ "could not fetch valid
+      # release JSON"). This step re-anchors latest to THIS Moon release as
+      # the final action of the workflow. See RELEASES.md "latest invariant".
+      - name: Re-anchor 'Latest' flag to this Moon release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+          gh release edit "${{ github.ref_name }}" --latest --repo "${{ github.repository }}"

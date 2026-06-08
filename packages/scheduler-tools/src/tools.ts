@@ -139,6 +139,18 @@ export const makeSchedulerTools = (
           )
         }
 
+        // Opt this V1 cron row out of the V2 JobTicker. V1 cron rows
+        // (kind="cron") have no worker in WorkerRegistry, so leaving the
+        // row enabled would cause the ticker to claim it every tick and
+        // write a spurious failed/unknown_kind run into job_runs. V1 cron
+        // continues to fire via the in-process TriggerAgent regardless of
+        // the `enabled` flag, so this is purely a V2-ticker opt-out.
+        // Soft failure: if setV2Fields can't run (e.g. DB error), the V1
+        // cron still works; the V2 ticker will just be noisy. See #58.
+        yield* Effect.ignore(
+          jobsStore.setV2Fields(triggerId, { enabled: false }),
+        )
+
         // Retrieve the summary to return registeredAt.
         const summaries = yield* trigger.list
         const summary = summaries.find((s) => s.id === triggerId)
