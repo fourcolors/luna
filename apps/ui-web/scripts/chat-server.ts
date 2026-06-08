@@ -20,8 +20,9 @@
  *
  * Token resolution chain (DESIGN.md §2.2.11), Phase 25d:
  *   1. RoutedOpSecretProvider — wraps N single-account OnePassword
- *      backends, one per `luna.op.<label>` keychain entry found at
- *      boot. Refs are dispatched explicitly:
+ *      backends, one per LUNA_OP_ACCOUNTS label whose token resolved at
+ *      boot (keychain-first, LUNA_OP_TOKEN_<LABEL> fallback). Refs are
+ *      dispatched explicitly:
  *        op://<rest>                    only if exactly 1 account is
  *                                       registered (otherwise hard fail)
  *        luna-op://<label>/<rest>       routed only to <label>; no
@@ -32,8 +33,10 @@
  *
  * The 25c "iterate every OP token" composition is **superseded** by
  * this explicit routing (see HANDOFF.md drift note for 2026-04-28).
- * `OP_SERVICE_ACCOUNT_TOKEN` env-var fallback is dropped — keychain
- * is the single source of truth for service-account tokens.
+ * Service-account tokens are discovered per-label: the macOS keychain
+ * first, then a `LUNA_OP_TOKEN_<LABEL>` env var as a fallback. The bare
+ * `OP_SERVICE_ACCOUNT_TOKEN` env var is NOT used (it collided with the
+ * reserved `env` label).
  *
  * # Account Setup
  *
@@ -59,33 +62,31 @@
  *   - luna-op://primary/<vault-id>/<item-id>/credential
  *   - luna-op://ops/<vault>/<item>/<field>
  *
- * ## macOS Keychain entries (Phase 25c)
+ * ## Service-account tokens (per-label, keychain-first)
  *
- * For multi-account 1Password support, store each service-account
- * token in the macOS keychain. Add an entry with:
- *
- *   security add-generic-password -U \
- *     -s luna.op.<label> -a <label> -w '<ops_-prefixed-token>'
- *
- * Configure the labels this server reads with:
+ * Configure the labels this server reads with a comma-separated list:
  *
  *   LUNA_OP_ACCOUNTS=primary,ops
  *
- * Each plain label maps to `luna.op.<label>` / `<label>`. For custom
- * keychain names, use:
+ * Each label deterministically derives BOTH token backends, so the two
+ * never drift. The label is the single source of truth:
  *
- *   LUNA_OP_ACCOUNTS=primary:com.example.luna.primary:svc-primary
+ *   macOS keychain (preferred) — service `luna.op.<label>`, account `<label>`:
+ *     security add-generic-password -U \
+ *       -s luna.op.<label> -a <label> -w '<ops_-prefixed-token>'
  *
- * Missing entries are non-fatal — the layer is skipped and the boot
- * log lists only the labels that contributed.
+ *   Linux / fallback env var — `LUNA_OP_TOKEN_<LABEL>` (uppercase, '-'→'_'):
+ *     LUNA_OP_TOKEN_PRIMARY=ops_xxxxxxxx
  *
- * Entries are user-scoped: same-user reads do not prompt. Cross-user
- * or launchd-as-different-user execution would require additional ACL
- * setup (e.g. `-T <bun-binary>` at add-time, or "Always Allow" on
- * first prompt). That is out of scope for the dev rig.
+ * `discoverOpTokens` reads the keychain first and falls back to the env
+ * var on a miss (the keychain hard-fails on non-darwin, so Linux always
+ * uses the env var). Accounts with neither source are non-fatal — the
+ * layer is skipped and the boot log lists only contributing labels.
  *
- * `OP_SERVICE_ACCOUNT_TOKEN` env-var fallback is no longer honored
- * (Phase 25d) — keychain is the single source of truth.
+ * Keychain entries are user-scoped: same-user reads do not prompt.
+ * Cross-user or launchd-as-different-user execution would require
+ * additional ACL setup (e.g. `-T <bun-binary>` at add-time, or
+ * "Always Allow" on first prompt). Out of scope for the dev rig.
  *
  * Hot-reload is NOT supported. AccountBroker hydrates the `accounts`
  * table once at Layer construction. To pick up new rows inserted via
@@ -107,9 +108,17 @@
  * think-time between turns can be hours — chat is the canonical case
  * the flag exists for.
  */
-import { existsSync, readFileSync, writeSync } from "node:fs"
-import { hostname } from "node:os"
-import { execFileSync } from "node:child_process"
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs"
+import { hostname, userInfo } from "node:os"
+import { execFileSync, spawn } from "node:child_process"
 import { dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
@@ -229,7 +238,16 @@ import {
   LocalShellToolsService,
 } from "@luna/local-shell-tools"
 import { startControlServer } from "@luna/control-server"
-import { resolveOpAccounts } from "./op-accounts.js"
+import {
+  resolveOpAccounts,
+  envTokenFor,
+  fileTokenFor,
+  tokenFilePathFor,
+} from "./op-accounts.js"
+import {
+  makeRegisterOpToken,
+  type TokenCheck,
+} from "./register-op-token.js"
 import { resolveUiWsToken } from "./ui-ws-token.js"
 import { decideMode, probeCredentialReadiness, probeAuthLoggedIn } from "./credential-readiness.js"
 import { spawnSetupPty } from "./setup-pty.js"
@@ -520,15 +538,15 @@ const buildChatServerRuntimeProbe = () => {
   }
 }
 
-// ── Multi-account 1Password bootstrap (Phase 25c) ───────────────────────
+// ── Multi-account 1Password bootstrap ───────────────────────────────────
 //
-// Operators opt in via LUNA_OP_ACCOUNTS. Each entry maps to a macOS
-// keychain item. Missing entries are non-fatal — the layer is simply
-// skipped and the boot log lists only the labels that contributed.
-//
-// Add a new entry with:
+// Operators opt in via LUNA_OP_ACCOUNTS (comma-separated labels). Each
+// label resolves keychain-first, then a `LUNA_OP_TOKEN_<LABEL>` env var.
+// Missing on both → non-fatal: the layer is skipped and the boot log
+// lists only the labels that contributed. Add a token with either:
 //   security add-generic-password -U \
-//     -s luna.op.<label> -a <label> -w '<ops_-prefixed-token>'
+//     -s luna.op.<label> -a <label> -w '<ops_-prefixed-token>'   (macOS)
+//   LUNA_OP_TOKEN_<LABEL>=ops_xxxxxxxx                           (Linux/fallback)
 const OP_ACCOUNTS = resolveOpAccounts()
 
 interface DiscoveredOpToken {
@@ -537,29 +555,148 @@ interface DiscoveredOpToken {
 }
 
 /**
- * Resolve every OP token we can find from the macOS keychain.
- * Missing keychain entries are non-fatal — they yield None and are
- * filtered out before composition.
+ * Resolve every OP token we can find, in precedence order
+ * keychain → env var → runtime file. Missing sources are non-fatal — an
+ * account with no token in any source is simply skipped.
  *
- * Phase 25d: the OP_SERVICE_ACCOUNT_TOKEN env-var fallback is dropped.
- * Keychain is the single source of truth — using `env` as a label
- * would also collide with the reserved-label set in
- * RoutedOpSecretProvider.
+ * macOS resolves via the Keychain and never consults the others. Linux
+ * containers (no Keychain — `readKeychainToken` hard-fails on non-darwin)
+ * fall through to `LUNA_OP_TOKEN_<LABEL>`, then to the runtime token file
+ * `~/.luna/op-tokens/<label>` written by the Moon secure-entry form.
+ *
+ * Phase 25d dropped the single bare `OP_SERVICE_ACCOUNT_TOKEN` env
+ * fallback (it collided with the reserved `env` label); per-account
+ * sources keyed off the registered label avoid that collision and
+ * preserve the multi-account model. The file is LAST so a runtime-set
+ * token never shadows an operator-provisioned keychain/env token.
  */
 const discoverOpTokens: Effect.Effect<ReadonlyArray<DiscoveredOpToken>> =
   Effect.gen(function* () {
     const found: Array<DiscoveredOpToken> = []
     for (const acct of OP_ACCOUNTS) {
-      const result = yield* readKeychainToken({
+      const keychain = yield* readKeychainToken({
         service: acct.keychainService,
         account: acct.keychainAccount,
       }).pipe(Effect.option)
-      if (Option.isSome(result)) {
-        found.push({ label: acct.label, token: result.value })
+      const token = Option.isSome(keychain)
+        ? keychain.value
+        : envTokenFor(acct) ?? fileTokenFor(acct)
+      if (token !== undefined) {
+        found.push({ label: acct.label, token })
       }
     }
     return found
   })
+
+// ── Moon secure-entry: register-op-token handler ────────────────────────
+//
+// Verifies a 1Password service-account token with `op whoami`, persists it to
+// the platform's preferred store, then self-SIGTERMs so the existing graceful-
+// shutdown handler disposes the runtime and exits 0 — the supervisor
+// (systemd `Restart=always` / launchd `KeepAlive`) relaunches and
+// `discoverOpTokens` re-runs with the new token live. The orchestration
+// (validate → persist → restart, with a bad token NEVER reaching the restart)
+// lives in the unit-tested `makeRegisterOpToken`; here we inject the real
+// effectful steps. The token is never logged.
+
+/** Verify the token authenticates by spawning `op whoami` with it in env. */
+const opWhoami = (token: string): Promise<TokenCheck> =>
+  new Promise((resolve) => {
+    let settled = false
+    const done = (r: TokenCheck): void => {
+      if (!settled) {
+        settled = true
+        resolve(r)
+      }
+    }
+    const child = spawn("op", ["whoami"], {
+      env: { ...process.env, OP_SERVICE_ACCOUNT_TOKEN: token },
+      stdio: ["ignore", "ignore", "ignore"],
+    })
+    child.on("error", (err: NodeJS.ErrnoException) => {
+      done(
+        err.code === "ENOENT"
+          ? { ok: false, message: "1Password CLI ('op') is not installed on the server." }
+          : { ok: false, message: "Could not run 'op' on the server." },
+      )
+    })
+    child.on("close", (code) => {
+      done(
+        code === 0
+          ? { ok: true }
+          : { ok: false, message: "1Password rejected this token." },
+      )
+    })
+  })
+
+/** Persist to keychain (darwin) or an atomic 0600 file (linux/other). */
+const persistOpToken = (label: string, token: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    if (process.platform === "darwin") {
+      const child = spawn(
+        "security",
+        ["add-generic-password", "-U", "-s", `luna.op.${label}`, "-a", label, "-w", token],
+        { stdio: ["ignore", "ignore", "ignore"] },
+      )
+      child.on("error", reject)
+      child.on("close", (code) =>
+        code === 0 ? resolve() : reject(new Error(`security add-generic-password exited ${code}`)),
+      )
+      return
+    }
+    try {
+      const path = tokenFilePathFor(label)
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+      const tmp = `${path}.tmp-${process.pid}`
+      writeFileSync(tmp, token, { mode: 0o600 })
+      renameSync(tmp, path)
+      chmodSync(path, 0o600) // writeFileSync mode is pre-umask; force 0600
+      resolve()
+    } catch (e) {
+      reject(e instanceof Error ? e : new Error(String(e)))
+    }
+  })
+
+const CHAT_SERVICE_LABEL = "com.user.luna-chat-server"
+
+/**
+ * Trigger a supervised restart so `discoverOpTokens` re-runs with the new
+ * token. The mechanism is platform-specific because the supervisors differ:
+ *
+ *   linux/incus — systemd `Restart=always` respawns on ANY exit, so a graceful
+ *     self-SIGTERM (→ dispose → exit 0) is enough.
+ *   darwin — the launchd plist uses `KeepAlive { SuccessfulExit = false }`,
+ *     which DELIBERATELY does NOT respawn a clean exit 0 (anti-restart-loop).
+ *     A self-SIGTERM there would leave the server dead. So force a restart with
+ *     `launchctl kickstart -k` — exactly what control.restart does.
+ */
+const scheduleServerRestart = (): void => {
+  setTimeout(() => {
+    try {
+      if (process.platform === "darwin") {
+        const uid = userInfo().uid
+        spawn("launchctl", ["kickstart", "-k", `gui/${uid}/${CHAT_SERVICE_LABEL}`], {
+          stdio: "ignore",
+          detached: true,
+        }).unref()
+      } else {
+        // systemd Restart=always respawns the exit(0) from the SIGTERM handler.
+        process.kill(process.pid, "SIGTERM")
+      }
+    } catch {
+      process.exit(0)
+    }
+  }, 300)
+}
+
+const registerOpTokenHandler = makeRegisterOpToken({
+  isLabelRegistered: (label) => OP_ACCOUNTS.some((a) => a.label === label),
+  validateToken: opWhoami,
+  persist: persistOpToken,
+  // Defer so the register-op-token-status frame flushes before the socket drops.
+  scheduleRestart: scheduleServerRestart,
+  log: (msg) => writeSync(1, `${msg}\n`),
+})
 
 // ── Dream cron sub-layer factory (exported for boot smoke) ──────────────
 //
@@ -1090,6 +1227,11 @@ export const buildSetupServerLayer = (
         survey: null,
         localShellBridge: null,
         setupPty: resolvedSetupPty,
+        // Allow OP-token entry in setup-mode too — useful when LUNA_OP_ACCOUNTS
+        // is configured but the account still needs its token. The handler
+        // rejects labels not in LUNA_OP_ACCOUNTS, so an unconfigured fresh
+        // server gets an honest "add it to LUNA_OP_ACCOUNTS first" message.
+        registerOpToken: registerOpTokenHandler,
       })
     }),
   ).pipe(Layer.provide(uiL))
@@ -1152,6 +1294,7 @@ const buildServerLayer = (
         survey: surveyHandle, // Phase 3 D3: resolved handle
         localShellBridge,
         onLocalShellRelease: reattachSandbox,
+        registerOpToken: registerOpTokenHandler,
       })
     }),
   ).pipe(
@@ -1228,7 +1371,7 @@ const bootstrap = async (): Promise<void> => {
   // (e.g. AccountBroker) fail later in boot.
   if (opTokens.length === 0) {
     console.log(
-      `[op] 0 providers active — no luna.op.<label> keychain entries found`,
+      `[op] 0 providers active — no keychain entry or LUNA_OP_TOKEN_<LABEL> found for any configured label`,
     )
   } else {
     console.log(
@@ -1283,18 +1426,17 @@ const bootstrap = async (): Promise<void> => {
   // acquireSession (the OnePasswordBackend resolves on demand, by
   // design). When that happens, the broker emits a ConfigError into the
   // SDKAdapter's error channel; the user-facing symptom is a ws-side
-  // error rather than a boot crash. Hint to set OP_SERVICE_ACCOUNT_TOKEN
-  // (preferred — headless service account) or add a `luna.op.<label>`
-  // keychain entry if chat queries fail with a ConfigError tagged
-  // `OnePasswordSecretProvider`.
+  // error rather than a boot crash. Hint to add a `luna.op.<label>`
+  // keychain entry or set `LUNA_OP_TOKEN_<LABEL>` if chat queries fail
+  // with a ConfigError tagged `OnePasswordSecretProvider`.
   runtime.runPromise(buildMain(opLabelsRegistered)).catch((err) => {
     const msg = String(err)
     console.error("❌ chat server crashed:", err)
     if (msg.includes("OnePasswordSecretProvider") || msg.includes("'op'")) {
       console.error(
         "   hint: 1Password CLI not authenticated. Add a " +
-          "luna.op.<label> keychain entry (see header comment) or run " +
-          "`op signin` for interactive use, then restart.",
+          "luna.op.<label> keychain entry or set LUNA_OP_TOKEN_<LABEL> " +
+          "(see header comment), then restart.",
       )
     }
     process.exit(1)
