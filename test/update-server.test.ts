@@ -195,7 +195,10 @@ const runUpdate = (
 ) =>
   spawnSync("bash", [join(repoRoot, "scripts/luna-update-server"), ...args], {
     cwd: repoRoot,
-    env: { ...process.env, ...env },
+    // Default the post-stop settle to 0 so the hermetic suite never sleeps the
+    // 6s production default between stop and start; individual tests override it
+    // (see the stop->settle->start regression test, which sets a real 1s).
+    env: { ...process.env, LUNA_RESTART_SETTLE_SECS: "0", ...env },
     encoding: "utf8",
   })
 
@@ -251,7 +254,9 @@ describe("luna-update-server", () => {
     expect(r.stdout).toContain("bun install")
     expect(r.stdout).toContain("frozen-lockfile")
     expect(r.stdout).toContain("daemon-reload")
-    expect(r.stdout).toContain("restart luna-chat-server.service")
+    // Restart is now a clean stop -> settle -> start, not a fast `systemctl restart`.
+    expect(r.stdout).toContain("stop luna-chat-server.service")
+    expect(r.stdout).toContain("start luna-chat-server.service")
     expect(r.stdout).toContain("readiness probe")
     expect(r.stdout).toContain("ROLLED BACK")
     expect(r.stdout).toContain("exit 2")
@@ -350,12 +355,112 @@ describe("luna-update-server", () => {
     expect(r.stdout).toContain(`updated ${prevSha} -> ${targetSha}`)
     // The checkout actually moved forward to the target.
     expect(git(work, "rev-parse", "HEAD")).toBe(targetSha)
-    // Exactly one restart cycle (no rollback restart).
-    const restarts = (readFileSync(systemctlLog, "utf8").match(/restart/g) ?? []).length
-    expect(restarts).toBe(1)
+    // Exactly one restart cycle (no rollback restart). A cycle is now stop ->
+    // settle -> start, so count `stop ` calls (one per cycle) rather than the
+    // retired `restart` verb.
+    const cycles = (readFileSync(systemctlLog, "utf8").match(/stop /g) ?? []).length
+    expect(cycles).toBe(1)
     // bun.lock is identical between prev and target → install skipped.
     expect(existsSync(bunLog)).toBe(false)
     expect(r.stdout).toContain("skipping bun install")
+  })
+
+  it("restart is a clean stop -> settle -> start (NOT a fast `systemctl restart`)", () => {
+    // Regression for the 2026-06-08 stable-deploy incident: a fast `systemctl
+    // restart` started the new chat-server before the outgoing one released its
+    // DuckDB/SQLite WAL/SHM handles → SQLITE_CANTOPEN on boot → needless rollback.
+    // The fix restarts as stop -> settle -> start. Here we use a real (tiny) 1s
+    // settle to prove the knob is wired, and assert the ordered stop-before-start
+    // sequence with NO fast restart.
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin, systemctlLog } = makeStubBin(temp, {
+      repo: work,
+      prevSha,
+      targetSha,
+      readyAtTarget: true,
+      readyAtPrev: false,
+    })
+
+    const r = runUpdate([
+      "--repo-dir",
+      work,
+      "--ref",
+      "origin/master",
+      "--luna-home",
+      join(temp, "state"),
+      "--service-dir",
+      serviceDir,
+      "--readiness-timeout",
+      "2",
+      "--readiness-interval",
+      "0.3",
+    ], {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      LUNA_RESTART_SETTLE_SECS: "1", // override the suite-default 0 → prove the wait runs
+    })
+
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    const sys = readFileSync(systemctlLog, "utf8")
+    // No fast restart — that overlapping stop+start was the bug.
+    expect(sys).not.toContain("restart luna-chat-server.service")
+    // Clean stop happens, and BEFORE the start.
+    const stopIdx = sys.indexOf("stop luna-chat-server.service")
+    const startIdx = sys.indexOf("start luna-chat-server.service")
+    expect(stopIdx).toBeGreaterThanOrEqual(0)
+    expect(startIdx).toBeGreaterThan(stopIdx)
+    // The settle actually ran between them (the knob is wired into the cycle).
+    expect(r.stdout).toContain("settling 1s")
+  })
+
+  it("invalid RESTART_SETTLE_SECS WARNS loudly and no-ops the settle (not a silent skip)", () => {
+    // A bad settle value must not be swallowed silently (which would reintroduce
+    // the WAL/SHM race with no signal). The settle is skipped, but a loud warning
+    // is emitted; the deploy itself still proceeds and succeeds at the target.
+    const temp = makeTempDir()
+    const { work, prevSha, targetSha } = makeDeployRepo(temp)
+    const serviceDir = join(temp, "systemd")
+    writeUnit(serviceDir)
+    const { bin, systemctlLog } = makeStubBin(temp, {
+      repo: work,
+      prevSha,
+      targetSha,
+      readyAtTarget: true,
+      readyAtPrev: false,
+    })
+
+    const r = runUpdate([
+      "--repo-dir",
+      work,
+      "--ref",
+      "origin/master",
+      "--luna-home",
+      join(temp, "state"),
+      "--service-dir",
+      serviceDir,
+      "--readiness-timeout",
+      "2",
+      "--readiness-interval",
+      "0.3",
+    ], {
+      PATH: `${bin}:/usr/bin:/bin`,
+      LUNA_TEST_BUN_PATH: join(bin, "bun"),
+      LUNA_RESTART_SETTLE_SECS: "not-a-number", // invalid → must warn, not silently skip
+    })
+
+    // Deploy still succeeds (the bad value degrades to no-settle, it does not abort).
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    // The operator gets a loud signal naming the bad value and the risk.
+    expect(r.stderr).toContain("not-a-number")
+    expect(r.stderr).toContain("SKIPPING the post-stop settle")
+    // No bogus "settling" line — the settle was skipped, not attempted.
+    expect(r.stdout).not.toContain("settling not-a-number")
+    // Stop -> start still happened (one cycle); only the settle was skipped.
+    const cycles = (readFileSync(systemctlLog, "utf8").match(/stop /g) ?? []).length
+    expect(cycles).toBe(1)
   })
 
   it("runs bun install when bun.lock changed between revisions", () => {
@@ -551,9 +656,10 @@ exit 0
     expect(r.stderr).toContain(prevSha)
     // The checkout ended back at PREV (rollback git reset --hard worked).
     expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
-    // Two restart cycles: the failed update + the rollback.
-    const restarts = (readFileSync(systemctlLog, "utf8").match(/restart/g) ?? []).length
-    expect(restarts).toBe(2)
+    // Two restart cycles: the failed update + the rollback (count `stop ` calls,
+    // one per stop -> settle -> start cycle).
+    const cycles = (readFileSync(systemctlLog, "utf8").match(/stop /g) ?? []).length
+    expect(cycles).toBe(2)
   })
 
   it("#28 deepened gate: deploy boots into SETUP-mode (healthz 200 but readyz setup) → rollback, exit 1", () => {
@@ -633,9 +739,9 @@ exit 0
     expect(r.stderr).toContain("--no-rollback")
     // Stayed on the (unhealthy) target; never reverted.
     expect(git(work, "rev-parse", "HEAD")).toBe(targetSha)
-    // Only ONE restart — no rollback restart.
-    const restarts = (readFileSync(systemctlLog, "utf8").match(/restart/g) ?? []).length
-    expect(restarts).toBe(1)
+    // Only ONE restart cycle — no rollback restart (count `stop `, one per cycle).
+    const cycles = (readFileSync(systemctlLog, "utf8").match(/stop /g) ?? []).length
+    expect(cycles).toBe(1)
   })
 
   it("--incus --dry-run plans git-on-host + bun/restart/probe in-container, changes NOTHING", () => {
@@ -673,9 +779,11 @@ exit 0
     expect(r.stdout).toContain(`git -C ${work} reset --hard origin/master`)
     // bun install runs INSIDE the container, cwd = the in-container repo /root/luna.
     expect(r.stdout).toContain("incus exec luna-dev -- /root/.bun/bin/bun install --cwd /root/luna --frozen-lockfile")
-    // daemon-reload + restart of the dev unit run INSIDE the container.
+    // daemon-reload + clean stop -> start of the dev unit run INSIDE the container
+    // (the settle is a host-side wait, so it is not an `incus exec` line).
     expect(r.stdout).toContain("incus exec luna-dev -- systemctl daemon-reload")
-    expect(r.stdout).toContain("incus exec luna-dev -- systemctl restart luna-dev-chat-server.service")
+    expect(r.stdout).toContain("incus exec luna-dev -- systemctl stop luna-dev-chat-server.service")
+    expect(r.stdout).toContain("incus exec luna-dev -- systemctl start luna-dev-chat-server.service")
     // claude re-pin routed INTO the container (not a host-side path write). The
     // bash -lc payload is %q-escaped by luna_run, so match the function name +
     // in-container .env path on their own (spaces are backslash-escaped there).
@@ -739,16 +847,19 @@ exit 0
     expect(r.stdout).toContain(`updated ${prevSha} -> ${targetSha}`)
     // The host checkout actually moved forward to the target (host git ran).
     expect(git(work, "rev-parse", "HEAD")).toBe(targetSha)
-    // The restart was routed through `incus exec` (not a bare host systemctl).
+    // The restart (now stop -> start) was routed through `incus exec` (not a bare
+    // host systemctl).
     const incus = readFileSync(incusLog, "utf8")
-    expect(incus).toContain("exec luna-dev -- systemctl restart luna-dev-chat-server.service")
+    expect(incus).toContain("exec luna-dev -- systemctl stop luna-dev-chat-server.service")
+    expect(incus).toContain("exec luna-dev -- systemctl start luna-dev-chat-server.service")
     expect(incus).toContain("exec luna-dev -- systemctl daemon-reload")
     // bun.lock identical prev↔target → install skipped (incus bun never invoked).
     expect(existsSync(bunLog)).toBe(false)
     expect(r.stdout).toContain("skipping bun install")
-    // Exactly one restart cycle (no rollback) — counted from the in-container log.
-    const restarts = (readFileSync(systemctlLog, "utf8").match(/restart/g) ?? []).length
-    expect(restarts).toBe(1)
+    // Exactly one restart cycle (no rollback) — counted from the in-container log
+    // (one `stop ` per stop -> settle -> start cycle).
+    const cycles = (readFileSync(systemctlLog, "utf8").match(/stop /g) ?? []).length
+    expect(cycles).toBe(1)
   })
 
   it("--incus LIVE readiness FAIL → rollback to PREV in-container, restart again, exit 1", () => {
@@ -796,12 +907,13 @@ exit 0
     expect(r.stderr).toContain(prevSha)
     // The host checkout ended back at PREV (rollback git reset --hard ran on host).
     expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
-    // Two restart cycles (failed update + rollback), both via incus exec.
-    const restarts = (readFileSync(systemctlLog, "utf8").match(/restart/g) ?? []).length
-    expect(restarts).toBe(2)
-    expect(readFileSync(incusLog, "utf8")).toContain(
-      "exec luna-dev -- systemctl restart luna-dev-chat-server.service",
-    )
+    // Two restart cycles (failed update + rollback), both via incus exec (one
+    // `stop ` per stop -> settle -> start cycle).
+    const cycles = (readFileSync(systemctlLog, "utf8").match(/stop /g) ?? []).length
+    expect(cycles).toBe(2)
+    const incusOut = readFileSync(incusLog, "utf8")
+    expect(incusOut).toContain("exec luna-dev -- systemctl stop luna-dev-chat-server.service")
+    expect(incusOut).toContain("exec luna-dev -- systemctl start luna-dev-chat-server.service")
   })
 
   it("crash-loop (NRestarts climbing) treated as failure → rollback, exit 1", () => {
@@ -951,8 +1063,9 @@ exit 0
     // Only ONE restart cycle: the forward apply_ref fails at fetch (before
     // restart_service runs), so only the rollback's restart fires. This is the
     // key assertion: exit 1 (not exit 2) proves rollback succeeded without fetch.
-    const restarts = (readFileSync(systemctlLog, "utf8").match(/restart/g) ?? []).length
-    expect(restarts).toBe(1)
+    // (One `stop ` per stop -> settle -> start cycle.)
+    const cycles = (readFileSync(systemctlLog, "utf8").match(/stop /g) ?? []).length
+    expect(cycles).toBe(1)
   })
 
   it("readiness FAIL AND rollback FAIL → CRITICAL, exit 2", () => {
@@ -992,8 +1105,8 @@ exit 0
     expect(r.stderr).toContain("Manual intervention required")
     // Rollback was still ATTEMPTED → it reset to PREV (just didn't come up).
     expect(git(work, "rev-parse", "HEAD")).toBe(prevSha)
-    // Two restart cycles attempted (update + rollback).
-    const restarts = (readFileSync(systemctlLog, "utf8").match(/restart/g) ?? []).length
-    expect(restarts).toBe(2)
+    // Two restart cycles attempted (update + rollback); one `stop ` per cycle.
+    const cycles = (readFileSync(systemctlLog, "utf8").match(/stop /g) ?? []).length
+    expect(cycles).toBe(2)
   })
 })
