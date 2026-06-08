@@ -109,6 +109,15 @@ jobs:
           fi
           echo "Secret scan clean."
 
+      # HARD GATE 3: Moon version triple stays in lockstep. The Tauri version
+      # lives in THREE files (apps/ui-moon-tauri package.json + src-tauri
+      # Cargo.toml + tauri.conf.json). If they drift, the macOS release build
+      # (release-moon.yml) fails AFTER an irreversible `moon-v*` tag push. Catch
+      # the drift here, on every PR, before any tag exists. `bump-moon.ts` is the
+      # single writer that keeps the three in sync.
+      - name: Moon version sync (HARD GATE)
+        run: bun run scripts/bump-moon.ts --check
+
       # KNOWN-RED (surfaced, not blocking): pre-existing tsc baseline.
       - name: Typecheck (known-red baseline — non-blocking)
         continue-on-error: true
