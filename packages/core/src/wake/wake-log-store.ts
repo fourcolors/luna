@@ -44,6 +44,22 @@ export interface WakeLogStoreApi {
   readonly recent: (
     limit: number,
   ) => Effect.Effect<ReadonlyArray<WakeLogRow>, WakeError>
+  /**
+   * File planned actions into the workspace.db `next_actions` table (status
+   * 'todo'). Path-B step 1: this is how a wake reasoner's proposals become
+   * actionable instead of evaporating into wake_log. Caller pre-validates rows
+   * (dedup, FK-safe goalSlug, clamped priority) via `planNextActions`. Returns
+   * the number of rows inserted. The `next_actions` table is created by
+   * scripts/bootstrap-workspace.ts; a missing table surfaces as a WakeError.
+   */
+  readonly appendNextActions: (
+    actions: ReadonlyArray<{
+      readonly goalSlug: string | null
+      readonly action: string
+      readonly priority: number
+    }>,
+    now: number,
+  ) => Effect.Effect<number, WakeError>
 }
 
 export class WakeLogStore extends Effect.Tag("luna/WakeLogStore")<
@@ -117,6 +133,14 @@ export class WakeLogStore extends Effect.Tag("luna/WakeLogStore")<
           "SELECT id, woke_at, goal_slug, summary, outcome, artifacts " +
             "FROM wake_log ORDER BY woke_at DESC LIMIT ?",
         )
+        // next_actions is owned by scripts/bootstrap-workspace.ts (full schema
+        // incl. the goals FK). We do NOT create it here — that would risk schema
+        // drift — so an un-bootstrapped workspace surfaces a WakeError on first
+        // file (caught by runWake; non-poisoning).
+        const insertActionStmt = db.query(
+          "INSERT INTO next_actions (goal_slug, action, status, priority, created_at, updated_at) " +
+            "VALUES (?, ?, 'todo', ?, ?, ?)",
+        )
         return {
           append: (row) =>
             Effect.try({
@@ -167,6 +191,23 @@ export class WakeLogStore extends Effect.Tag("luna/WakeLogStore")<
                   cause,
                 }),
             }),
+          appendNextActions: (actions, now) =>
+            Effect.try({
+              try: () => {
+                let inserted = 0
+                for (const a of actions) {
+                  insertActionStmt.run(a.goalSlug, a.action, a.priority, now, now)
+                  inserted++
+                }
+                return inserted
+              },
+              catch: (cause) =>
+                new WakeError({
+                  op: "wake-log/append-next-actions",
+                  message: `failed to file next_actions: ${String(cause)}`,
+                  cause,
+                }),
+            }),
         }
       }),
     )
@@ -180,6 +221,9 @@ export class WakeLogStore extends Effect.Tag("luna/WakeLogStore")<
     Effect.gen(function* () {
       const rowsRef = yield* Ref.make<ReadonlyArray<WakeLogRow>>([])
       const nextIdRef = yield* Ref.make(1)
+      const filedActionsRef = yield* Ref.make<
+        ReadonlyArray<{ goalSlug: string | null; action: string; priority: number; now: number }>
+      >([])
       return {
         append: (row) =>
           Effect.gen(function* () {
@@ -193,6 +237,11 @@ export class WakeLogStore extends Effect.Tag("luna/WakeLogStore")<
               [...rs].sort((a, b) => b.wokeAt - a.wokeAt).slice(0, limit),
             ),
           ),
+        appendNextActions: (actions, now) =>
+          Ref.update(filedActionsRef, (fs) => [
+            ...fs,
+            ...actions.map((a) => ({ ...a, now })),
+          ]).pipe(Effect.as(actions.length)),
       }
     }),
   )
