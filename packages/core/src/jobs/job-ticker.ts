@@ -231,6 +231,10 @@ export const JobTickerLayer = (
               finishedAt,
               status: "failed",
               error: `${err.reason}: ${err.message}`,
+              // Workers may pass partial output through WorkerError.stepsJson
+              // (e.g. workflow worker on halt) — persist it so the operator
+              // can see which step failed without rerunning.
+              stepsJson: err.stepsJson ?? null,
             }).pipe(Effect.catchAll(() => Effect.void))
           }
         }

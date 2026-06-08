@@ -73,6 +73,13 @@ export class WorkerError extends Data.TaggedError("WorkerError")<{
   readonly kind?: string
   readonly message: string
   readonly cause?: unknown
+  /**
+   * Partial output the worker assembled before failing. Workflow workers
+   * pass their `steps_json` here on halt so the ticker can persist the
+   * per-step audit trail into `job_runs.steps_json` even on failure.
+   * Other worker kinds may leave this undefined.
+   */
+  readonly stepsJson?: string
 }> {}
 
 export interface WorkerRegistryApi {
