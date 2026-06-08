@@ -12,7 +12,7 @@
 // WHY HERE (not in core/wake/): adapter-sdk already depends on @luna/core;
 // core does NOT depend on adapter-sdk. Putting an SDKClient-using impl in
 // core would create a forbidden cycle.
-import { Effect, Layer, Stream } from "effect"
+import { Effect, Layer } from "effect"
 import {
   WakeReasoner,
   WakeError,
@@ -23,8 +23,12 @@ import type {
   WakeProposedAction,
   WakeReasonerApi,
 } from "@luna/core"
-import type { SDKMessage } from "./sdk-client.js"
-import { SDKClient } from "./sdk-client.js"
+import {
+  SDKClient,
+  type SDKClientService,
+  type QueryParams,
+} from "./sdk-client.js"
+import { runBoundedQuery, DEFAULT_QUERY_TIMEOUT_MS } from "./bounded-query.js"
 
 // ---------------------------------------------------------------------------
 // Prompt builder (pure, exported for unit tests)
@@ -96,55 +100,49 @@ export function buildWakePrompt(inputs: WakeInputs): string {
 }
 
 // ---------------------------------------------------------------------------
-// Collect result text from the SDK stream
+// Bounded SDK result collection
 // ---------------------------------------------------------------------------
 
 /**
- * Iterate the Query stream and extract the `.result` string from the
- * type:"result" / subtype:"success" message. Mirrors dream-reasoner's
- * helper; duplicated rather than shared because the error type is Wake-specific.
+ * Run the reasoning turn under a wall-clock deadline (shared `runBoundedQuery`)
+ * and map its outcome onto `WakeError({ op:"wake/sdk-stream", ... })`. A timeout
+ * / stream error / empty stream never crashes the wake cron; on timeout the SDK
+ * subprocess is aborted so a hung turn can't linger as a zombie.
  */
-function collectResultText(
-  query: import("./sdk-client.js").Query,
+function boundedResultText(
+  sdk: SDKClientService,
+  params: QueryParams,
+  timeoutMs: number,
 ): Effect.Effect<string, WakeError> {
-  return Stream.fromAsyncIterable(
-    query,
-    (cause) =>
-      new WakeError({
-        op: "wake/sdk-stream",
-        message: `SDK stream error: ${String(cause)}`,
-        cause,
-      }),
-  ).pipe(
-    Stream.runFold(
-      null as string | null,
-      (acc: string | null, msg: SDKMessage) => {
-        const m = msg as {
-          type?: string
-          subtype?: string
-          result?: string
-        }
-        if (
-          m.type === "result" &&
-          m.subtype === "success" &&
-          typeof m.result === "string"
-        ) {
-          return m.result
-        }
-        return acc
-      },
-    ),
-    Effect.flatMap((result) => {
-      if (result === null) {
-        return Effect.fail(
-          new WakeError({
-            op: "wake/sdk-stream",
-            message:
-              "SDK stream produced no type:result/subtype:success message",
-          }),
-        )
+  return runBoundedQuery(sdk, params, timeoutMs).pipe(
+    Effect.flatMap((outcome): Effect.Effect<string, WakeError> => {
+      switch (outcome._tag) {
+        case "result":
+          return Effect.succeed(outcome.text)
+        case "timeout":
+          return Effect.fail(
+            new WakeError({
+              op: "wake/sdk-stream",
+              message: `SDK query timed out after ${outcome.timeoutMs}ms`,
+            }),
+          )
+        case "error":
+          return Effect.fail(
+            new WakeError({
+              op: "wake/sdk-stream",
+              message: `SDK stream error: ${String(outcome.cause)}`,
+              cause: outcome.cause,
+            }),
+          )
+        case "empty":
+          return Effect.fail(
+            new WakeError({
+              op: "wake/sdk-stream",
+              message:
+                "SDK stream produced no type:result/subtype:success message",
+            }),
+          )
       }
-      return Effect.succeed(result)
     }),
   )
 }
@@ -281,6 +279,18 @@ export const WakeReasonerDefault: Layer.Layer<WakeReasoner, never, SDKClient> =
       const pathToClaudeCodeExecutable =
         process.env["LUNA_CLAUDE_CODE_EXECUTABLE"]?.trim() || undefined
 
+      // Wall-clock ceiling for the single reasoning turn. Wake runs on its own
+      // cron (not the V2 ticker), so a hung turn doesn't stall other jobs — but
+      // without a deadline a wedged turn would leave a zombie subprocess and
+      // skip rescheduling. Overridable via env; defaults to 10 min.
+      const wakeTimeoutMs = (() => {
+        const raw = process.env["LUNA_WAKE_TIMEOUT_MS"]?.trim()
+        const n = raw ? Number(raw) : DEFAULT_QUERY_TIMEOUT_MS
+        return Number.isFinite(n) && n > 0
+          ? Math.trunc(n)
+          : DEFAULT_QUERY_TIMEOUT_MS
+      })()
+
       const reason: WakeReasonerApi["reason"] = (inputs: WakeInputs) =>
         Effect.gen(function* () {
           const prompt = buildWakePrompt(inputs)
@@ -291,16 +301,19 @@ export const WakeReasonerDefault: Layer.Layer<WakeReasoner, never, SDKClient> =
             pathToClaudeCodeExecutable:
               pathToClaudeCodeExecutable ?? "(unset)",
           })
-          const query = yield* sdk.query({
-            prompt,
-            options: {
-              maxTurns: 1,
-              ...(pathToClaudeCodeExecutable
-                ? { pathToClaudeCodeExecutable }
-                : {}),
+          const resultText = yield* boundedResultText(
+            sdk,
+            {
+              prompt,
+              options: {
+                maxTurns: 1,
+                ...(pathToClaudeCodeExecutable
+                  ? { pathToClaudeCodeExecutable }
+                  : {}),
+              },
             },
-          })
-          const resultText = yield* collectResultText(query)
+            wakeTimeoutMs,
+          )
           const digest = yield* parseDigest(inputs.workspaceSlug, resultText)
           yield* Effect.logInfo("[luna/wake] reasoner.reason: digest ready", {
             workspace: inputs.workspaceSlug,

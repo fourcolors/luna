@@ -27,6 +27,7 @@ import {
   makeAssistantMessage,
   makeResultMessage,
 } from "./fake-sdk.js"
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 
 const baseInputs: WakeInputs = {
   workspaceSlug: "luna",
@@ -222,4 +223,46 @@ describe("WakeReasonerDefault", () => {
       expect(result.left.op).toBe("wake/sdk-stream")
     }
   })
+
+  it(
+    "a hung reasoning turn → WakeError(wake/sdk-stream, timed out) + subprocess aborted",
+    async () => {
+      // Faithful hang: yields nothing until aborted. LUNA_WAKE_TIMEOUT_MS is
+      // read at layer-build time, so set it before runReason and restore after.
+      let captured: AbortController | undefined
+      const sdkHang = SDKClient.fake((params) => {
+        const ac = params.options?.abortController as
+          | AbortController
+          | undefined
+        captured = ac
+        async function* gen(): AsyncGenerator<SDKMessage, void> {
+          await new Promise<void>((resolve) => {
+            if (ac?.signal.aborted) return resolve()
+            ac?.signal.addEventListener("abort", () => resolve(), { once: true })
+            setTimeout(resolve, 30_000).unref?.()
+          })
+        }
+        return gen() as unknown as import("../src/sdk-client.js").Query
+      })
+
+      const prev = process.env["LUNA_WAKE_TIMEOUT_MS"]
+      process.env["LUNA_WAKE_TIMEOUT_MS"] = "50"
+      try {
+        const result = await Effect.runPromise(
+          Effect.either(runReason(baseInputs, sdkHang)),
+        )
+        expect(result._tag).toBe("Left")
+        if (result._tag === "Left") {
+          expect(result.left).toBeInstanceOf(WakeError)
+          expect(result.left.op).toBe("wake/sdk-stream")
+          expect(result.left.message).toMatch(/timed out/)
+        }
+        expect(captured?.signal.aborted).toBe(true)
+      } finally {
+        if (prev === undefined) delete process.env["LUNA_WAKE_TIMEOUT_MS"]
+        else process.env["LUNA_WAKE_TIMEOUT_MS"] = prev
+      }
+    },
+    10_000,
+  )
 })

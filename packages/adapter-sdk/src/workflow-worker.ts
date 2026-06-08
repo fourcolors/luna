@@ -26,8 +26,10 @@
  *   - Linear sequence ONLY — no branches, no joins (DAG is Phase 13+).
  *   - halt_on_failure: true (default) stops at first non-zero exit / SDK
  *     fail; false continues and records each step's outcome.
- *   - Each step gets a 5-min default deadline; shell steps can override
- *     via `timeout_ms`.
+ *   - Each step gets a default wall-clock deadline (shell 5 min, prompt
+ *     10 min) that either kind can override via `timeout_ms`. A prompt step
+ *     that exceeds it is recorded `status:"timeout"` and its SDK subprocess
+ *     is aborted — a hung turn cannot wedge the single-fiber V2 ticker.
  *
  * Security note: shell steps execute arbitrary commands via the
  * chat-server's own privileges. Operators MUST treat workflow payloads as
@@ -37,7 +39,7 @@
  * controlled paths.
  */
 import { spawn } from "node:child_process"
-import { Effect, Layer, Stream } from "effect"
+import { Effect, Layer } from "effect"
 import {
   AgentNotesService,
   WorkerRegistry,
@@ -46,7 +48,8 @@ import {
   type Worker,
   type WorkerResult,
 } from "@luna/core"
-import { SDKClient, type SDKClientService, type SDKMessage } from "./sdk-client.js"
+import { SDKClient, type SDKClientService } from "./sdk-client.js"
+import { runBoundedQuery, DEFAULT_QUERY_TIMEOUT_MS } from "./bounded-query.js"
 
 // ── Step types ──────────────────────────────────────────────────────────────
 
@@ -64,6 +67,13 @@ export interface PromptStep {
   readonly model?: string
   readonly allowed_tools?: ReadonlyArray<string>
   readonly max_turns?: number
+  /**
+   * Wall-clock ceiling for the whole agent turn(s), mirroring `ShellStep`.
+   * On expiry the step is recorded `status:"timeout"` and the SDK subprocess
+   * is aborted. Defaults to `DEFAULT_QUERY_TIMEOUT_MS` (10 min) when omitted — a
+   * hung turn must not be able to wedge the single-fiber V2 ticker.
+   */
+  readonly timeout_ms?: number
 }
 
 export type WorkflowStep = ShellStep | PromptStep
@@ -87,7 +97,7 @@ export interface ShellStepResult {
 
 export interface PromptStepResult {
   readonly kind: "prompt"
-  readonly status: "success" | "failed"
+  readonly status: "success" | "failed" | "timeout"
   readonly user_prompt: string
   readonly duration_ms: number
   readonly output_text?: string
@@ -170,6 +180,12 @@ export function parseWorkflowPayload(raw: unknown): WorkflowPayload | string {
         Number.isFinite(s["max_turns"])
       ) {
         out.max_turns = Math.max(1, Math.trunc(s["max_turns"] as number))
+      }
+      if (
+        typeof s["timeout_ms"] === "number" &&
+        Number.isFinite(s["timeout_ms"])
+      ) {
+        out.timeout_ms = Math.max(1, Math.trunc(s["timeout_ms"] as number))
       }
       steps.push(out)
     } else {
@@ -277,7 +293,7 @@ function runShellStep(step: ShellStep): Promise<ShellStepResult> {
   })
 }
 
-// ── Prompt step executor (reuses SDK pattern from prompt-worker) ───────────
+// ── Prompt step executor ────────────────────────────────────────────────────
 
 function runPromptStep(
   step: PromptStep,
@@ -289,8 +305,17 @@ function runPromptStep(
       ? `${step.system_prompt}\n\n${step.user_prompt}`
       : step.user_prompt
 
-    const result = yield* sdk
-      .query({
+    // INVARIANT: the effective timeout MUST stay well under push-through's
+    // worktree-lock staleness (`LOCK_STALE_S`, 3600s). A timed-out prompt step
+    // is non-success → with `halt_on_failure` the workflow stops BEFORE the
+    // gate/ship steps that release the lock, so the lock falls to the staleness
+    // reclaim. The 10-min default leaves a 6× margin. See
+    // apps/ui-web/scripts/push-through-install.ts.
+    const timeoutMs = step.timeout_ms ?? DEFAULT_QUERY_TIMEOUT_MS
+
+    const outcome = yield* runBoundedQuery(
+      sdk,
+      {
         prompt,
         options: {
           maxTurns: step.max_turns ?? 1,
@@ -299,53 +324,43 @@ function runPromptStep(
             : {}),
           ...(step.model ? { model: step.model } : {}),
         },
-      })
-      .pipe(
-        Effect.flatMap((query) =>
-          Stream.fromAsyncIterable(query, (cause) => cause).pipe(
-            Stream.runFold(
-              null as string | null,
-              (acc: string | null, msg: SDKMessage) => {
-                const m = msg as {
-                  type?: string
-                  subtype?: string
-                  result?: string
-                }
-                if (
-                  m.type === "result" &&
-                  m.subtype === "success" &&
-                  typeof m.result === "string"
-                ) {
-                  return m.result
-                }
-                return acc
-              },
-            ),
-          ),
-        ),
-        Effect.either,
-      )
+      },
+      timeoutMs,
+    )
 
     const duration = Date.now() - startMs
-    if (result._tag === "Right" && result.right !== null) {
-      return {
-        kind: "prompt",
-        status: "success",
-        user_prompt: step.user_prompt,
-        duration_ms: duration,
-        output_text: result.right,
-      } satisfies PromptStepResult
-    }
-    return {
+    const base = {
       kind: "prompt",
-      status: "failed",
       user_prompt: step.user_prompt,
       duration_ms: duration,
-      error:
-        result._tag === "Left"
-          ? `sdk error: ${String(result.left)}`
-          : "sdk stream produced no type:result/subtype:success message",
-    } satisfies PromptStepResult
+    } as const
+
+    switch (outcome._tag) {
+      case "result":
+        return {
+          ...base,
+          status: "success",
+          output_text: outcome.text,
+        } satisfies PromptStepResult
+      case "timeout":
+        return {
+          ...base,
+          status: "timeout",
+          error: `prompt step exceeded timeout_ms=${outcome.timeoutMs}`,
+        } satisfies PromptStepResult
+      case "error":
+        return {
+          ...base,
+          status: "failed",
+          error: `sdk error: ${String(outcome.cause)}`,
+        } satisfies PromptStepResult
+      case "empty":
+        return {
+          ...base,
+          status: "failed",
+          error: "sdk stream produced no type:result/subtype:success message",
+        } satisfies PromptStepResult
+    }
   })
 }
 

@@ -21,6 +21,7 @@ import { SDKClient } from "../src/sdk-client.js"
 import { DreamReasonerDefault } from "../src/dream-reasoner.js"
 import { makeFakeQuery, makeAssistantMessage, makeResultMessage } from "./fake-sdk.js"
 import type { DreamInputs } from "@luna/core"
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -216,6 +217,53 @@ describe("DreamReasonerDefault", () => {
       }
     }
   })
+
+  it(
+    "a hung reasoning turn → typed DreamError (timed out) + subprocess aborted",
+    async () => {
+      // Faithful hang: yields nothing until aborted. LUNA_DREAM_TIMEOUT_MS is
+      // read at layer-build time, so set it before runReason and restore after.
+      let captured: AbortController | undefined
+      const sdkHang = SDKClient.fake((params) => {
+        const ac = params.options?.abortController as
+          | AbortController
+          | undefined
+        captured = ac
+        async function* gen(): AsyncGenerator<SDKMessage, void> {
+          await new Promise<void>((resolve) => {
+            if (ac?.signal.aborted) return resolve()
+            ac?.signal.addEventListener("abort", () => resolve(), { once: true })
+            setTimeout(resolve, 30_000).unref?.()
+          })
+        }
+        return gen() as unknown as import("../src/sdk-client.js").Query
+      })
+
+      const prev = process.env["LUNA_DREAM_TIMEOUT_MS"]
+      process.env["LUNA_DREAM_TIMEOUT_MS"] = "50"
+      try {
+        const exit = await Effect.runPromiseExit(
+          runReason(EMPTY_INPUTS, sdkHang, FakeMemory()),
+        )
+        expect(exit._tag).toBe("Failure")
+        if (exit._tag === "Failure") {
+          const maybeError = Cause.failureOption(exit.cause)
+          expect(maybeError._tag).toBe("Some")
+          if (maybeError._tag === "Some") {
+            const error = maybeError.value
+            expect(error).toBeInstanceOf(DreamError)
+            expect((error as DreamError).op).toBe("reason")
+            expect((error as DreamError).message).toMatch(/timed out/)
+          }
+        }
+        expect(captured?.signal.aborted).toBe(true)
+      } finally {
+        if (prev === undefined) delete process.env["LUNA_DREAM_TIMEOUT_MS"]
+        else process.env["LUNA_DREAM_TIMEOUT_MS"] = prev
+      }
+    },
+    10_000,
+  )
 
   it("rejects ops with an unknown kind → DreamError", async () => {
     const json = JSON.stringify([
