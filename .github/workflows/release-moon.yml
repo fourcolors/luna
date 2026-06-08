@@ -49,6 +49,20 @@ jobs:
       - name: Install JS deps (frozen lockfile)
         run: bun install --frozen-lockfile
 
+      # The committed tauri.conf.json signs with the operator's personal
+      # "Apple Development" cert (added in #49 to keep local-rebuild TCC grants
+      # stable — ad-hoc signing changes the CDHash each build and voids Screen
+      # Recording grants). That cert is NOT in the macos-14 runner keychain, so
+      # CI must sign AD-HOC — exactly how moon-v0.0.2..0.0.12 shipped. We rewrite
+      # the bundle.macOS block to ad-hoc in the EPHEMERAL checkout only; the
+      # committed config keeps the real cert for local builds. Updater trust is
+      # minisign (independent of Apple signing), so the ad-hoc bundle still
+      # auto-updates over a real-signed install.
+      - name: Ad-hoc sign for CI (keep the real cert in the committed config)
+        working-directory: apps/ui-moon-tauri/src-tauri
+        run: |
+          node -e 'const fs=require("fs");const f="tauri.conf.json";const c=JSON.parse(fs.readFileSync(f,"utf8"));c.bundle.macOS={signingIdentity:"-"};fs.writeFileSync(f,JSON.stringify(c,null,2)+"\n");console.log("CI macOS signing -> ad-hoc (-)")'
+
       - name: Build, sign, and publish release
         uses: tauri-apps/tauri-action@v0
         env:
