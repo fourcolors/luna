@@ -43,6 +43,14 @@ export interface HelloFrame {
     readonly streamingDeltas: boolean
     readonly localShell: boolean
     readonly setup: boolean
+    /**
+     * Server emits the additive `turn-complete` frame on the SDK terminal
+     * `result` (true whenever chat is bound). Clients that group consecutive
+     * assistant turns into one activity timeline (the moon) gate that grouping
+     * on this flag: an older server omits it, so the client falls back to a
+     * per-turn timeline instead of waiting on a turn-complete that never comes.
+     */
+    readonly turnComplete: boolean
   }
 }
 
@@ -148,6 +156,14 @@ export interface ToolResultFrame {
   readonly status: "ok" | "error"
   readonly output: string
   readonly truncated: boolean
+}
+
+/** Marks the true end of an agentic turn (SDK `result`), after every
+ *  intermediate tool step. Lets clients that group consecutive assistant
+ *  turns (the moon timeline) settle that group. Carries no turnId. */
+export interface TurnCompleteFrame {
+  readonly type: "turn-complete"
+  readonly threadId: string
 }
 
 export interface AccountListFrame {
@@ -263,6 +279,7 @@ export type ServerFrame =
   | ArtifactsExtractedFrame
   | ToolCallFrame
   | ToolResultFrame
+  | TurnCompleteFrame
   | AccountListFrame
   | LocalShellRequestFrame
   | LocalShellStatusFrame

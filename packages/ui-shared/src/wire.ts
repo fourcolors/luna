@@ -185,6 +185,14 @@ export interface AccountListFrame {
   }>
 }
 
+/** Marks the true end of an agentic turn (SDK `result`). Consumed by clients
+ *  that group consecutive assistant turns (the moon timeline); ui-web is
+ *  seq-keyed and treats it as a no-op. */
+export interface TurnCompleteFrame {
+  readonly type: "turn-complete"
+  readonly threadId: string
+}
+
 /** Server→client: a chunk of pty stdout, base64-encoded (raw bytes, may include control codes). */
 export interface PtyOutputFrame {
   readonly type: "pty-output"
@@ -217,6 +225,7 @@ export type ServerFrame =
   | AssistantErrorFrame
   | ArtifactsExtractedFrame
   | AccountListFrame
+  | TurnCompleteFrame
   | PtyOutputFrame
 
 /* Client → server frames */
