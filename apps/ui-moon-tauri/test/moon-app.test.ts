@@ -1836,5 +1836,29 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
     })
   })
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: Long-running turn timeline stays scrollable
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Long-running turn timeline stays scrollable (regression)', () => {
+    // Layout regression guard. jsdom does NO layout, so we can't measure
+    // scrollHeight/clientHeight here — this pins the CSS rule that fixes the bug.
+    //
+    // Bug: `.chat-messages` is `flex:1` AND a column flex container. Its children
+    // default to flex-shrink:1, and a `.timeline` sets `overflow:hidden` (which
+    // gives it an automatic minimum size of 0 per CSS Flexbox §4.5). So on a long
+    // agentic turn, flexbox COMPRESSED the streaming timeline down to its one-line
+    // "Working on it…" summary — clipping every tool step inside it and making
+    // scrollHeight == clientHeight, so .chat-messages could not scroll at all.
+    // The content was rendered but unreachable. Fix: pin the direct children to
+    // flex-shrink:0 so each keeps its natural height and the overflow scrolls.
+    // (Reproduced + fix verified in both WebKit and Blink via a Playwright layout
+    // probe driving the real handleFrame pipeline; see the PR description.)
+    it('Scenario: the stylesheet pins flex-shrink:0 on the direct children of .chat-messages', () => {
+      const style = htmlContent.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? ''
+      const css = style.replace(/\s+/g, ' ') // formatting-robust
+      expect(css).toMatch(/\.chat-messages\s*>\s*\*\s*\{[^}]*flex-shrink:\s*0/)
+    })
+  })
+
   })
 })
