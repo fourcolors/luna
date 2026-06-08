@@ -52,10 +52,14 @@
  *     irrelevant (it only stores the step strings).
  *
  * KNOWN LIMITS / operator-accept-before-relying-heavily (see review 2026-06-08):
- *   - The workflow-worker's prompt step has NO wall-clock timeout and the V2
- *     ticker dispatches INLINE on a single fiber, so a hung agent turn can stall
- *     other V2 jobs. Recommended fast-follow: bound runPromptStep with
- *     Effect.timeout. (Pre-existing for daily-brief/dream too.)
+ *   - The workflow-worker's prompt step now has a wall-clock timeout
+ *     (DEFAULT_PROMPT_TIMEOUT_MS = 10 min, overridable per-step via timeout_ms):
+ *     on expiry the step is recorded status:"timeout" and the SDK subprocess is
+ *     aborted, so a hung agent turn can no longer wedge the single-fiber V2
+ *     ticker. The default sits well under LOCK_STALE_S (3600s) so a timed-out
+ *     run's worktree lock still clears via the staleness reclaim. NOTE the
+ *     `prompt`-kind jobs (daily-brief, dream) are a SEPARATE worker path that
+ *     is still unbounded — propagating the same timeout there is a follow-up.
  *   - No per-action attempt cap: an action the agent can never complete (it
  *     keeps making no commit) is re-selected each cycle, burning a prompt-step
  *     turn. Recommended fast-follow: attempt counter → status='blocked'.

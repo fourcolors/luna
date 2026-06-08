@@ -239,6 +239,70 @@ describe("buildWorkflowWorker — prompt steps", () => {
     await Effect.runPromise(prog.pipe(Effect.provide(Layer.mergeAll(sdkLayer, TestNotes))))
   })
 
+  it(
+    "prompt step exceeding timeout_ms → status='timeout' + aborts the SDK subprocess",
+    async () => {
+      let captured: AbortController | undefined
+
+      // Faithful fake: it yields NOTHING on its own but ends PROMPTLY the
+      // instant its AbortController fires — exactly how the real SDK behaves
+      // (options.abortController → subprocess dies → iterator completes). The
+      // 30s safety-net timer means a broken abort path fails as a vitest
+      // deadline (red), never an infinite hang. This is the empirical proof
+      // that Effect.timeout actually interrupts a wedged Stream pull AND that
+      // the interrupt reaches the subprocess kill signal.
+      const sdkLayer = SDKClient.fake((params) => {
+        const ac = params.options?.abortController as
+          | AbortController
+          | undefined
+        captured = ac
+        async function* gen(): AsyncGenerator<SDKMessage, void> {
+          await new Promise<void>((resolve) => {
+            if (ac?.signal.aborted) return resolve()
+            ac?.signal.addEventListener("abort", () => resolve(), {
+              once: true,
+            })
+            setTimeout(resolve, 30_000).unref?.()
+          })
+          // Aborted → end the stream with no result message.
+        }
+        return gen() as unknown as import("../src/sdk-client.js").Query
+      })
+
+      const prog = Effect.gen(function* () {
+        const sdk = yield* SDKClient
+        const notes = yield* AgentNotesService
+        const worker = buildWorkflowWorker(sdk, notes)
+        const result = yield* Effect.either(
+          worker(
+            {
+              steps: [
+                { kind: "prompt", user_prompt: "hang forever", timeout_ms: 50 },
+              ],
+            },
+            ctx,
+          ),
+        )
+        // halt_on_failure defaults true → a non-success step fails the worker.
+        expect(result._tag).toBe("Left")
+        if (result._tag === "Left") {
+          const cause = result.left.cause as {
+            steps: PromptStepResult[]
+            halted_at: number
+          }
+          expect(cause.steps[0]?.status).toBe("timeout")
+          expect(cause.halted_at).toBe(0)
+        }
+        // The subprocess-kill signal must have fired.
+        expect(captured?.signal.aborted).toBe(true)
+      })
+      await Effect.runPromise(
+        prog.pipe(Effect.provide(Layer.mergeAll(sdkLayer, TestNotes))),
+      )
+    },
+    10_000,
+  )
+
   it("mixed sequence: shell → prompt → shell", async () => {
     const sdkLayer = fakeClientWithText("middle text")
     const prog = Effect.gen(function* () {

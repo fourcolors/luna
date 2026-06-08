@@ -26,8 +26,10 @@
  *   - Linear sequence ONLY — no branches, no joins (DAG is Phase 13+).
  *   - halt_on_failure: true (default) stops at first non-zero exit / SDK
  *     fail; false continues and records each step's outcome.
- *   - Each step gets a 5-min default deadline; shell steps can override
- *     via `timeout_ms`.
+ *   - Each step gets a default wall-clock deadline (shell 5 min, prompt
+ *     10 min) that either kind can override via `timeout_ms`. A prompt step
+ *     that exceeds it is recorded `status:"timeout"` and its SDK subprocess
+ *     is aborted — a hung turn cannot wedge the single-fiber V2 ticker.
  *
  * Security note: shell steps execute arbitrary commands via the
  * chat-server's own privileges. Operators MUST treat workflow payloads as
@@ -37,7 +39,7 @@
  * controlled paths.
  */
 import { spawn } from "node:child_process"
-import { Effect, Layer, Stream } from "effect"
+import { Duration, Effect, Layer, Option, Queue } from "effect"
 import {
   AgentNotesService,
   WorkerRegistry,
@@ -64,6 +66,13 @@ export interface PromptStep {
   readonly model?: string
   readonly allowed_tools?: ReadonlyArray<string>
   readonly max_turns?: number
+  /**
+   * Wall-clock ceiling for the whole agent turn(s), mirroring `ShellStep`.
+   * On expiry the step is recorded `status:"timeout"` and the SDK subprocess
+   * is aborted. Defaults to `DEFAULT_PROMPT_TIMEOUT_MS` when omitted — a hung
+   * turn must not be able to wedge the single-fiber V2 ticker.
+   */
+  readonly timeout_ms?: number
 }
 
 export type WorkflowStep = ShellStep | PromptStep
@@ -87,7 +96,7 @@ export interface ShellStepResult {
 
 export interface PromptStepResult {
   readonly kind: "prompt"
-  readonly status: "success" | "failed"
+  readonly status: "success" | "failed" | "timeout"
   readonly user_prompt: string
   readonly duration_ms: number
   readonly output_text?: string
@@ -170,6 +179,12 @@ export function parseWorkflowPayload(raw: unknown): WorkflowPayload | string {
         Number.isFinite(s["max_turns"])
       ) {
         out.max_turns = Math.max(1, Math.trunc(s["max_turns"] as number))
+      }
+      if (
+        typeof s["timeout_ms"] === "number" &&
+        Number.isFinite(s["timeout_ms"])
+      ) {
+        out.timeout_ms = Math.max(1, Math.trunc(s["timeout_ms"] as number))
       }
       steps.push(out)
     } else {
@@ -279,6 +294,40 @@ function runShellStep(step: ShellStep): Promise<ShellStepResult> {
 
 // ── Prompt step executor (reuses SDK pattern from prompt-worker) ───────────
 
+/**
+ * Default wall-clock ceiling for a prompt step's whole agent turn(s).
+ *
+ * Rationale: the V2 ticker dispatches workers INLINE on a single fiber, so a
+ * hung turn with no deadline blocks EVERY other V2 job (daily-brief, dream,
+ * push-through). 10 min comfortably clears a real `max_turns` run yet bounds
+ * the worst-case stall.
+ *
+ * INVARIANT: this MUST stay well under push-through's worktree-lock staleness
+ * (`LOCK_STALE_S`, 3600s). A timed-out prompt step is non-success → with
+ * `halt_on_failure` the workflow stops BEFORE the gate/ship steps that release
+ * the lock, so the lock falls to the staleness reclaim. 10 min leaves a 6×
+ * margin. See apps/ui-web/scripts/push-through-install.ts.
+ */
+const DEFAULT_PROMPT_TIMEOUT_MS = 10 * 60 * 1000 // 10 min
+
+const abortQuietly = (ac: AbortController): void => {
+  try {
+    ac.abort()
+  } catch {
+    /* already aborted */
+  }
+}
+
+/**
+ * A frame in the detached SDK→consumer channel. The SDK's `for await` runs in
+ * a bare Promise (the producer) and pushes frames onto an Effect Queue; the
+ * Effect consumer reads them via the cleanly-interruptible `Queue.take`.
+ */
+type PromptFrame =
+  | { readonly _tag: "msg"; readonly msg: SDKMessage }
+  | { readonly _tag: "end" }
+  | { readonly _tag: "error"; readonly cause: unknown }
+
 function runPromptStep(
   step: PromptStep,
   sdk: SDKClientService,
@@ -288,52 +337,114 @@ function runPromptStep(
     const prompt = step.system_prompt
       ? `${step.system_prompt}\n\n${step.user_prompt}`
       : step.user_prompt
+    const timeoutMs = step.timeout_ms ?? DEFAULT_PROMPT_TIMEOUT_MS
 
-    const result = yield* sdk
-      .query({
-        prompt,
-        options: {
-          maxTurns: step.max_turns ?? 1,
-          ...(step.allowed_tools
-            ? { allowedTools: [...step.allowed_tools] }
-            : {}),
-          ...(step.model ? { model: step.model } : {}),
-        },
-      })
-      .pipe(
-        Effect.flatMap((query) =>
-          Stream.fromAsyncIterable(query, (cause) => cause).pipe(
-            Stream.runFold(
-              null as string | null,
-              (acc: string | null, msg: SDKMessage) => {
-                const m = msg as {
-                  type?: string
-                  subtype?: string
-                  result?: string
-                }
-                if (
-                  m.type === "result" &&
-                  m.subtype === "success" &&
-                  typeof m.result === "string"
-                ) {
-                  return m.result
-                }
-                return acc
-              },
-            ),
-          ),
-        ),
-        Effect.either,
-      )
+    // The SDK kills its own subprocess when this controller aborts — the same
+    // mechanism the chat adapter relies on (adapter.ts: `options.abortController`
+    // wired to the query Scope). We fire it on timeout / interruption so a hung
+    // turn doesn't leave a headless agent still able to mutate the worktree
+    // after the ticker has moved on; abandoning the fiber alone would NOT stop
+    // the child process.
+    const abort = new AbortController()
+
+    const query = yield* sdk.query({
+      prompt,
+      options: {
+        maxTurns: step.max_turns ?? 1,
+        abortController: abort,
+        ...(step.allowed_tools
+          ? { allowedTools: [...step.allowed_tools] }
+          : {}),
+        ...(step.model ? { model: step.model } : {}),
+      },
+    })
+
+    // Detached producer → interruptible Queue (mirrors adapter.ts). The SDK's
+    // `for await` lives in a bare Promise, NOT an Effect fiber — so when the
+    // deadline fires, `Effect.timeoutOption` interrupts the consumer's
+    // `Queue.take` INSTANTLY instead of deadlocking on the async iterator's
+    // `.return()` cleanup (the failure mode a direct `Stream.fromAsyncIterable`
+    // hits). A wedged producer is orphaned and GC'd once we abort.
+    const queue = yield* Queue.unbounded<PromptFrame>()
+    const runProducer = async () => {
+      try {
+        for await (const msg of query as AsyncIterable<SDKMessage>) {
+          await Effect.runPromise(Queue.offer(queue, { _tag: "msg", msg }))
+        }
+        await Effect.runPromise(Queue.offer(queue, { _tag: "end" }))
+      } catch (cause) {
+        await Effect.runPromise(
+          Queue.offer(queue, { _tag: "error", cause }),
+        ).catch(() => {})
+      }
+    }
+    void runProducer()
+
+    const foldQueue = Effect.gen(function* () {
+      let acc: string | null = null
+      while (true) {
+        const frame = yield* Queue.take(queue)
+        if (frame._tag === "end") return acc
+        if (frame._tag === "error") return yield* Effect.fail(frame.cause)
+        const m = frame.msg as {
+          type?: string
+          subtype?: string
+          result?: string
+        }
+        if (
+          m.type === "result" &&
+          m.subtype === "success" &&
+          typeof m.result === "string"
+        ) {
+          acc = m.result
+        }
+      }
+    })
+
+    const outcome = yield* foldQueue.pipe(
+      // None on timeout (the consumer is interrupted but the OUTER effect
+      // succeeds, so we kill the subprocess explicitly below).
+      Effect.timeoutOption(Duration.millis(timeoutMs)),
+      // Covers the case where the ticker scope is torn down mid-run.
+      Effect.onInterrupt(() => Effect.sync(() => abortQuietly(abort))),
+      Effect.either,
+    )
 
     const duration = Date.now() - startMs
-    if (result._tag === "Right" && result.right !== null) {
+
+    if (outcome._tag === "Left") {
+      // Producer surfaced a stream error.
+      abortQuietly(abort)
+      return {
+        kind: "prompt",
+        status: "failed",
+        user_prompt: step.user_prompt,
+        duration_ms: duration,
+        error: `sdk error: ${String(outcome.left)}`,
+      } satisfies PromptStepResult
+    }
+
+    const opt = outcome.right // Option<string | null>
+    if (Option.isNone(opt)) {
+      // Deadline hit — kill the subprocess so the agent can't keep working
+      // headless, and record a distinct `timeout` status.
+      abortQuietly(abort)
+      return {
+        kind: "prompt",
+        status: "timeout",
+        user_prompt: step.user_prompt,
+        duration_ms: duration,
+        error: `prompt step exceeded timeout_ms=${timeoutMs}`,
+      } satisfies PromptStepResult
+    }
+
+    if (opt.value !== null) {
       return {
         kind: "prompt",
         status: "success",
         user_prompt: step.user_prompt,
         duration_ms: duration,
-        output_text: result.right,
+        output_text: opt.value,
       } satisfies PromptStepResult
     }
     return {
@@ -341,10 +452,7 @@ function runPromptStep(
       status: "failed",
       user_prompt: step.user_prompt,
       duration_ms: duration,
-      error:
-        result._tag === "Left"
-          ? `sdk error: ${String(result.left)}`
-          : "sdk stream produced no type:result/subtype:success message",
+      error: "sdk stream produced no type:result/subtype:success message",
     } satisfies PromptStepResult
   })
 }
