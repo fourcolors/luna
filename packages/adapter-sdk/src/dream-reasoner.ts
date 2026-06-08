@@ -18,7 +18,7 @@
  *      snapshot `before` from memory (idempotency + revert contract).
  *   5. Any parse/validation/memory failure → DreamError (never crashes the cron).
  */
-import { Effect, Layer, Stream } from "effect"
+import { Effect, Layer } from "effect"
 import type { MemoryRecord } from "@luna/memory"
 import { MemoryRouterTag } from "@luna/memory"
 import {
@@ -34,8 +34,12 @@ import type {
   DreamReasonerApi,
 } from "@luna/core"
 import { MemoryBackendError } from "@luna/core"
-import type { SDKMessage } from "./sdk-client.js"
-import { SDKClient } from "./sdk-client.js"
+import {
+  SDKClient,
+  type SDKClientService,
+  type QueryParams,
+} from "./sdk-client.js"
+import { runBoundedQuery, DEFAULT_QUERY_TIMEOUT_MS } from "./bounded-query.js"
 
 // ---------------------------------------------------------------------------
 // Valid op kinds (mirrors DreamOpKind union)
@@ -130,48 +134,49 @@ export function buildDreamPrompt(inputs: DreamInputs): string {
 }
 
 // ---------------------------------------------------------------------------
-// SDK result collection
+// Bounded SDK result collection
 // ---------------------------------------------------------------------------
 
 /**
- * Iterate the Query stream and extract the `.result` string from the
- * `type:"result"` / `subtype:"success"` message.
- * Any other outcome → DreamError({ op:"reason", ... }).
+ * Run the reasoning turn under a wall-clock deadline (shared `runBoundedQuery`)
+ * and map its outcome onto `DreamError({ op:"reason", ... })`. A timeout / stream
+ * error / empty stream never crashes the 3am cron; on timeout the SDK subprocess
+ * is aborted so a hung turn can't linger as a zombie.
  */
-function collectResultText(
-  query: import("./sdk-client.js").Query,
+function boundedResultText(
+  sdk: SDKClientService,
+  params: QueryParams,
+  timeoutMs: number,
 ): Effect.Effect<string, DreamError> {
-  return Stream.fromAsyncIterable(query, (cause) =>
-    new DreamError({
-      op: "reason",
-      message: `SDK stream error: ${String(cause)}`,
-      cause,
-    }),
-  ).pipe(
-    Stream.runFold(
-      null as string | null,
-      (acc: string | null, msg: SDKMessage) => {
-        const m = msg as {
-          type?: string
-          subtype?: string
-          result?: string
-        }
-        if (m.type === "result" && m.subtype === "success" && typeof m.result === "string") {
-          return m.result
-        }
-        return acc
-      },
-    ),
-    Effect.flatMap((result) => {
-      if (result === null) {
-        return Effect.fail(
-          new DreamError({
-            op: "reason",
-            message: "SDK stream produced no type:result/subtype:success message",
-          }),
-        )
+  return runBoundedQuery(sdk, params, timeoutMs).pipe(
+    Effect.flatMap((outcome): Effect.Effect<string, DreamError> => {
+      switch (outcome._tag) {
+        case "result":
+          return Effect.succeed(outcome.text)
+        case "timeout":
+          return Effect.fail(
+            new DreamError({
+              op: "reason",
+              message: `SDK query timed out after ${outcome.timeoutMs}ms`,
+            }),
+          )
+        case "error":
+          return Effect.fail(
+            new DreamError({
+              op: "reason",
+              message: `SDK stream error: ${String(outcome.cause)}`,
+              cause: outcome.cause,
+            }),
+          )
+        case "empty":
+          return Effect.fail(
+            new DreamError({
+              op: "reason",
+              message:
+                "SDK stream produced no type:result/subtype:success message",
+            }),
+          )
       }
-      return Effect.succeed(result)
     }),
   )
 }
@@ -336,6 +341,16 @@ export const DreamReasonerDefault: Layer.Layer<
     const pathToClaudeCodeExecutable =
       process.env["LUNA_CLAUDE_CODE_EXECUTABLE"]?.trim() || undefined
 
+    // Wall-clock ceiling for the single reasoning turn. Dream runs on its own
+    // cron (not the V2 ticker), so a hung turn doesn't stall other jobs — but
+    // without a deadline a wedged 3am turn would leave a zombie subprocess and
+    // never reschedule. Overridable via env; defaults to 10 min.
+    const dreamTimeoutMs = (() => {
+      const raw = process.env["LUNA_DREAM_TIMEOUT_MS"]?.trim()
+      const n = raw ? Number(raw) : DEFAULT_QUERY_TIMEOUT_MS
+      return Number.isFinite(n) && n > 0 ? Math.trunc(n) : DEFAULT_QUERY_TIMEOUT_MS
+    })()
+
     const reason: DreamReasonerApi["reason"] = (inputs: DreamInputs) =>
       Effect.gen(function* () {
         const prompt = buildDreamPrompt(inputs)
@@ -344,14 +359,19 @@ export const DreamReasonerDefault: Layer.Layer<
           memories: inputs.memories.length,
           pathToClaudeCodeExecutable: pathToClaudeCodeExecutable ?? "(unset)",
         })
-        const query = yield* sdk.query({
-          prompt,
-          options: {
-            maxTurns: 1,
-            ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
+        const resultText = yield* boundedResultText(
+          sdk,
+          {
+            prompt,
+            options: {
+              maxTurns: 1,
+              ...(pathToClaudeCodeExecutable
+                ? { pathToClaudeCodeExecutable }
+                : {}),
+            },
           },
-        })
-        const resultText = yield* collectResultText(query)
+          dreamTimeoutMs,
+        )
         const rawOps = yield* parseRawOps(resultText)
         const ops: DreamOp[] = []
         for (const raw of rawOps) {

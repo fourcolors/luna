@@ -263,6 +263,46 @@ describe("buildPromptWorker", () => {
       prog.pipe(Effect.provide(Layer.mergeAll(sdkLayer, TestNotes))),
     )
   })
+
+  it(
+    "payload timeout_ms: a hung turn → WorkerError(worker_failed, timed out) + subprocess aborted",
+    async () => {
+      let captured: AbortController | undefined
+      const sdkLayer = SDKClient.fake((params) => {
+        const ac = params.options?.abortController as
+          | AbortController
+          | undefined
+        captured = ac
+        async function* gen(): AsyncGenerator<SDKMessage, void> {
+          await new Promise<void>((resolve) => {
+            if (ac?.signal.aborted) return resolve()
+            ac?.signal.addEventListener("abort", () => resolve(), { once: true })
+            setTimeout(resolve, 30_000).unref?.()
+          })
+        }
+        return gen() as unknown as import("../src/sdk-client.js").Query
+      })
+      const prog = Effect.gen(function* () {
+        const sdk = yield* SDKClient
+        const notes = yield* AgentNotesService
+        const worker = buildPromptWorker(sdk, notes)
+        const result = yield* Effect.either(
+          worker({ user_prompt: "hang", timeout_ms: 50 }, ctx),
+        )
+        expect(result._tag).toBe("Left")
+        if (result._tag === "Left") {
+          expect(result.left).toBeInstanceOf(WorkerError)
+          expect(result.left.reason).toBe("worker_failed")
+          expect(result.left.message).toMatch(/timed out/)
+        }
+        expect(captured?.signal.aborted).toBe(true)
+      })
+      await Effect.runPromise(
+        prog.pipe(Effect.provide(Layer.mergeAll(sdkLayer, TestNotes))),
+      )
+    },
+    10_000,
+  )
 })
 
 // ── PromptWorkerLayer (end-to-end registration) ─────────────────────────────
