@@ -242,6 +242,29 @@ export interface UIWebSocketServerConfig {
       close: () => void
     }
   } | null
+  /**
+   * Optional handler for the Moon secure-entry `register-op-token` frame.
+   * When provided, an inbound `register-op-token` is routed here; the handler
+   * validates + persists the 1Password service-account token and resolves to a
+   * status the server relays as a `register-op-token-status` frame.
+   *
+   * The `token` is SENSITIVE: the handler MUST NOT log it or include it in the
+   * returned `message`. This package never logs the frame (the unknown-frame
+   * path logs only `frame.type`). The handler should never reject — catch
+   * internally and resolve `{ok:false, message}`.
+   *
+   * Resolving `{ok:true}` typically triggers a server restart (so token
+   * discovery re-runs); that lifecycle decision belongs to the handler/
+   * chat-server, NOT this package. Sequencing is safe: the server sends the
+   * status frame from the resolved value, so schedule any restart with a small
+   * delay after resolving. Pass `null`/absent to disable (frame ignored).
+   */
+  readonly registerOpToken?:
+    | ((input: {
+        readonly label: string
+        readonly token: string
+      }) => Promise<{ readonly ok: boolean; readonly message: string }>)
+    | null
 }
 
 export interface UIWebSocketServerHandle {
@@ -346,6 +369,7 @@ export const startUIWebSocketServer = (
     const localShellBridge = config.localShellBridge ?? null
     const survey = config.survey ?? null
     const setupPty = config.setupPty ?? null
+    const registerOpToken = config.registerOpToken ?? null
     const buildSha = config.buildSha
 
     const httpServer = http.createServer((req, res) => {
@@ -816,7 +840,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null) {
+        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -998,6 +1022,22 @@ export const startUIWebSocketServer = (
                   }
                   case "pty-resize": {
                     setupHandle?.resize(frame.cols, frame.rows)
+                    return
+                  }
+                  case "register-op-token": {
+                    // Moon secure-entry. Route to the injected handler; relay
+                    // its status. The token is sensitive — never logged here,
+                    // and the handler contract forbids echoing it in `message`.
+                    if (registerOpToken === null) return
+                    const result = yield* Effect.promise(() =>
+                      registerOpToken({ label: frame.label, token: frame.token }),
+                    )
+                    send(ws, {
+                      type: "register-op-token-status",
+                      requestId: frame.requestId,
+                      ok: result.ok,
+                      message: result.message,
+                    })
                     return
                   }
                   default: {

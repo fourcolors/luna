@@ -150,9 +150,23 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
           </div>
           <input type="password" id="ws-token-input" class="premium-text-input" placeholder="Enter token (optional)...">
         </div>
-        
+
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">1Password Service Account</span>
+            <span class="setting-desc">Send an <code>ops_…</code> service-account token to the server securely. It is verified and stored on the server — never kept in chat history or on this device.</span>
+          </div>
+          <input type="text" id="op-label-input" class="premium-text-input" placeholder="Account label (e.g. primary)" autocomplete="off" spellcheck="false" style="margin-bottom: 8px;">
+          <input type="password" id="op-token-input" class="premium-text-input" placeholder="ops_… service-account token" autocomplete="off" spellcheck="false">
+          <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+            <button type="button" class="record-btn" id="save-op-token-btn">Save to server</button>
+            <span class="setting-desc" id="op-token-status" style="font-size: 0.75rem;" hidden=""></span>
+          </div>
+          <span class="setting-desc" style="margin-top: 6px;">Saving verifies the token and briefly restarts the server.</span>
+        </div>
+
       </div>
-      
+
       <div class="settings-footer">
         <button class="save-settings-btn" id="close-settings-btn">Done</button>
       </div>
@@ -368,9 +382,23 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
           </div>
           <input type="password" id="ws-token-input" class="premium-text-input" placeholder="Enter token (optional)...">
         </div>
-        
+
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">1Password Service Account</span>
+            <span class="setting-desc">Send an <code>ops_…</code> service-account token to the server securely. It is verified and stored on the server — never kept in chat history or on this device.</span>
+          </div>
+          <input type="text" id="op-label-input" class="premium-text-input" placeholder="Account label (e.g. primary)" autocomplete="off" spellcheck="false" style="margin-bottom: 8px;">
+          <input type="password" id="op-token-input" class="premium-text-input" placeholder="ops_… service-account token" autocomplete="off" spellcheck="false">
+          <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+            <button type="button" class="record-btn" id="save-op-token-btn">Save to server</button>
+            <span class="setting-desc" id="op-token-status" style="font-size: 0.75rem;" hidden=""></span>
+          </div>
+          <span class="setting-desc" style="margin-top: 6px;">Saving verifies the token and briefly restarts the server.</span>
+        </div>
+
       </div>
-      
+
       <div class="settings-footer">
         <button class="save-settings-btn" id="close-settings-btn">Done</button>
       </div>
