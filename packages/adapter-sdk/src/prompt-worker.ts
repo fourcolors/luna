@@ -17,6 +17,7 @@
  *     model?:         string         (e.g. "claude-sonnet-4-5")
  *     allowed_tools?: string[]       (e.g. ["mcp__memory__memory_search"])
  *     max_turns?:     number         (default 1)
+ *     timeout_ms?:    number         (wall-clock; default 10 min)
  *     deliver_to?:    DeliverySink
  *   }
  *
@@ -30,12 +31,13 @@
  *
  * Failure modes:
  *   - bad payload                 → WorkerError(reason:"bad_payload")
- *   - SDK query fails             → WorkerError(reason:"worker_failed", cause)
+ *   - SDK stream errors           → WorkerError(reason:"worker_failed", cause)
+ *   - turn exceeds timeout_ms     → WorkerError(reason:"worker_failed") + subprocess aborted
  *   - SDK yields no success msg   → WorkerError(reason:"worker_failed")
  *   - delivery write fails        → logged at WARN, worker still returns success
  *                                   (the result text is preserved in job_runs.output_text)
  */
-import { Effect, Layer, Stream } from "effect"
+import { Effect, Layer } from "effect"
 import {
   AgentNotesService,
   WorkerRegistry,
@@ -44,7 +46,12 @@ import {
   type Worker,
   type WorkerResult,
 } from "@luna/core"
-import { SDKClient, type SDKClientService, type SDKMessage } from "./sdk-client.js"
+import {
+  SDKClient,
+  type SDKClientService,
+  type QueryParams,
+} from "./sdk-client.js"
+import { runBoundedQuery, DEFAULT_QUERY_TIMEOUT_MS } from "./bounded-query.js"
 
 // ── Public payload types ────────────────────────────────────────────────────
 
@@ -58,6 +65,12 @@ export interface PromptPayload {
   readonly model?: string
   readonly allowed_tools?: ReadonlyArray<string>
   readonly max_turns?: number
+  /**
+   * Wall-clock ceiling for the whole turn. On expiry the worker fails and the
+   * SDK subprocess is aborted, so a hung turn cannot wedge the single-fiber V2
+   * ticker. Defaults to `DEFAULT_QUERY_TIMEOUT_MS` (10 min) when omitted.
+   */
+  readonly timeout_ms?: number
   readonly deliver_to?: DeliverySink
 }
 
@@ -100,6 +113,9 @@ export function parsePromptPayload(raw: unknown): PromptPayload | string {
   if (typeof p["max_turns"] === "number" && Number.isFinite(p["max_turns"])) {
     out.max_turns = Math.max(1, Math.trunc(p["max_turns"] as number))
   }
+  if (typeof p["timeout_ms"] === "number" && Number.isFinite(p["timeout_ms"])) {
+    out.timeout_ms = Math.max(1, Math.trunc(p["timeout_ms"] as number))
+  }
 
   const deliverTo = p["deliver_to"]
   if (typeof deliverTo === "object" && deliverTo !== null) {
@@ -124,48 +140,44 @@ export function parsePromptPayload(raw: unknown): PromptPayload | string {
   return out as PromptPayload
 }
 
-// ── SDK result collector (mirrors wake-reasoner.collectResultText) ─────────
+// ── Bounded SDK result collector ────────────────────────────────────────────
 
 /**
- * Iterate the Query stream and extract the `.result` string from the
- * `type:"result"` / `subtype:"success"` SDK message. Failures are surfaced
- * as `WorkerError({reason:"worker_failed"})` so the ticker writes a typed
- * row to `job_runs.error`.
+ * Run the turn under a wall-clock deadline (shared `runBoundedQuery`) and map
+ * its outcome onto the worker's typed error channel. A timeout / stream error /
+ * empty stream all surface as `WorkerError({reason:"worker_failed"})` so the
+ * ticker writes a typed row to `job_runs.error`. The subprocess is aborted on
+ * timeout, so a hung turn cannot wedge the single-fiber V2 ticker.
  */
-function collectResultText(
-  query: import("./sdk-client.js").Query,
+function boundedResultText(
+  sdk: SDKClientService,
+  params: QueryParams,
+  timeoutMs: number,
 ): Effect.Effect<string, WorkerError> {
-  return Stream.fromAsyncIterable(
-    query,
-    (cause) =>
-      new WorkerError({
-        reason: "worker_failed",
-        kind: "prompt",
-        message: `SDK stream error: ${String(cause)}`,
-        cause,
-      }),
-  ).pipe(
-    Stream.runFold(
-      null as string | null,
-      (acc: string | null, msg: SDKMessage) => {
-        const m = msg as {
-          type?: string
-          subtype?: string
-          result?: string
-        }
-        if (
-          m.type === "result" &&
-          m.subtype === "success" &&
-          typeof m.result === "string"
-        ) {
-          return m.result
-        }
-        return acc
-      },
-    ),
-    Effect.flatMap((result) =>
-      result === null
-        ? Effect.fail(
+  return runBoundedQuery(sdk, params, timeoutMs).pipe(
+    Effect.flatMap((outcome): Effect.Effect<string, WorkerError> => {
+      switch (outcome._tag) {
+        case "result":
+          return Effect.succeed(outcome.text)
+        case "timeout":
+          return Effect.fail(
+            new WorkerError({
+              reason: "worker_failed",
+              kind: "prompt",
+              message: `SDK query timed out after ${outcome.timeoutMs}ms`,
+            }),
+          )
+        case "error":
+          return Effect.fail(
+            new WorkerError({
+              reason: "worker_failed",
+              kind: "prompt",
+              message: `SDK stream error: ${String(outcome.cause)}`,
+              cause: outcome.cause,
+            }),
+          )
+        case "empty":
+          return Effect.fail(
             new WorkerError({
               reason: "worker_failed",
               kind: "prompt",
@@ -173,8 +185,8 @@ function collectResultText(
                 "SDK stream produced no type:result/subtype:success message",
             }),
           )
-        : Effect.succeed(result),
-    ),
+      }
+    }),
   )
 }
 
@@ -206,8 +218,9 @@ export const buildPromptWorker = (
         ? `${parsed.system_prompt}\n\n${parsed.user_prompt}`
         : parsed.user_prompt
 
-      const query = yield* sdk
-        .query({
+      const resultText = yield* boundedResultText(
+        sdk,
+        {
           prompt,
           options: {
             maxTurns: parsed.max_turns ?? 1,
@@ -216,20 +229,9 @@ export const buildPromptWorker = (
               : {}),
             ...(parsed.model ? { model: parsed.model } : {}),
           },
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new WorkerError({
-                reason: "worker_failed",
-                kind: "prompt",
-                message: `SDK query() failed: ${String(cause)}`,
-                cause,
-              }),
-          ),
-        )
-
-      const resultText = yield* collectResultText(query)
+        },
+        parsed.timeout_ms ?? DEFAULT_QUERY_TIMEOUT_MS,
+      )
 
       // Delivery sink — V1: obs_note + log. Failures are non-fatal: the
       // result text still lands in job_runs.output_text below.

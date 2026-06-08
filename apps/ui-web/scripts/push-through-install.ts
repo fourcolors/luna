@@ -52,14 +52,16 @@
  *     irrelevant (it only stores the step strings).
  *
  * KNOWN LIMITS / operator-accept-before-relying-heavily (see review 2026-06-08):
- *   - The workflow-worker's prompt step now has a wall-clock timeout
- *     (DEFAULT_PROMPT_TIMEOUT_MS = 10 min, overridable per-step via timeout_ms):
+ *   - The workflow-worker's prompt step has a wall-clock timeout
+ *     (DEFAULT_QUERY_TIMEOUT_MS = 10 min, overridable per-step via timeout_ms):
  *     on expiry the step is recorded status:"timeout" and the SDK subprocess is
  *     aborted, so a hung agent turn can no longer wedge the single-fiber V2
  *     ticker. The default sits well under LOCK_STALE_S (3600s) so a timed-out
- *     run's worktree lock still clears via the staleness reclaim. NOTE the
- *     `prompt`-kind jobs (daily-brief, dream) are a SEPARATE worker path that
- *     is still unbounded — propagating the same timeout there is a follow-up.
+ *     run's worktree lock still clears via the staleness reclaim — and the
+ *     install asserts the pipeline's total step budget stays under it (see
+ *     assertTimeoutBudget). The `prompt`-kind jobs (daily-brief, dream) share
+ *     the SAME bound now, via the shared runBoundedQuery helper (daily-brief
+ *     overridable per-payload via timeout_ms, dream via LUNA_DREAM_TIMEOUT_MS).
  *   - No per-action attempt cap: an action the agent can never complete (it
  *     keeps making no commit) is re-selected each cycle, burning a prompt-step
  *     turn. Recommended fast-follow: attempt counter → status='blocked'.
@@ -116,6 +118,15 @@ const MAX_TURNS = (() => {
   const n = raw ? Number(raw) : 16
   return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 16
 })()
+// Pin the prompt step's wall-clock deadline explicitly (it would otherwise fall
+// to the worker's DEFAULT_QUERY_TIMEOUT_MS). 10 min clears a max_turns run; the
+// install-time assertTimeoutBudget() guarantees it + the shell steps stay under
+// LOCK_STALE_S so a timed-out run can't outlive its own worktree lock.
+const PROMPT_TIMEOUT_MS = (() => {
+  const raw = process.env.LUNA_PUSH_THROUGH_PROMPT_TIMEOUT_MS
+  const n = raw ? Number(raw) : 600_000
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 600_000
+})()
 
 // ── Pipeline steps ───────────────────────────────────────────────────────────
 //
@@ -137,9 +148,11 @@ const ID_FILE = `/root/.luna-${JOB_ID}-current-id`
 // Acquired AFTER the no-work check so idle heartbeats never touch it; released
 // by the gate's halt paths and by the final step. A crashed run leaves it for
 // the staleness window to reclaim. LOCK_STALE_S MUST exceed the worst-case
-// prompt-step wall time (the prompt step has no deadline of its own).
+// TOTAL run time (sum of every step's timeout). The prompt step is now bounded
+// (PROMPT_TIMEOUT_MS); assertTimeoutBudget() enforces total < LOCK_STALE_S at
+// install time so a timed-out run can never outlive its own lock's reclaim.
 const LOCK_DIR = `/root/.luna-${JOB_ID}.lock.d`
-const LOCK_STALE_S = 3600 // 60 min — comfortably longer than a max_turns run
+const LOCK_STALE_S = 3600 // 60 min — comfortably longer than the step budget
 
 // Step 0 — select work + prepare an isolated branch. Halts (no-op) if nothing
 // is queued. Self-heals the worktree if it doesn't exist yet.
@@ -249,12 +262,41 @@ const buildPayload = () => ({
       system_prompt: SYSTEM_PROMPT,
       model: "claude-sonnet-4-5",
       max_turns: MAX_TURNS,
+      timeout_ms: PROMPT_TIMEOUT_MS,
       allowed_tools: [...ALLOWED_TOOLS],
     },
     { kind: "shell" as const, cmd: STEP_GATE, timeout_ms: 120_000 },
     { kind: "shell" as const, cmd: STEP_SHIP, timeout_ms: 180_000 },
   ],
 })
+
+/**
+ * Code-enforce the worktree-lock invariant: a halted (timed-out / failed) run
+ * stops BEFORE the gate/ship steps that release the lock, so the lock falls to
+ * the LOCK_STALE_S reclaim. If the pipeline's worst-case total run could exceed
+ * LOCK_STALE_S, a concurrent operator one-off could reclaim a STILL-ACTIVE
+ * lock and stomp the shared worktree (the exact 2026-06-08 race the lock
+ * exists to prevent). Every step is bounded (shells via timeout_ms, the prompt
+ * via PROMPT_TIMEOUT_MS), so we can assert the sum stays safely under the
+ * staleness window at install time rather than trusting a comment.
+ */
+const assertTimeoutBudget = (): void => {
+  const totalMs = buildPayload().steps.reduce(
+    (sum, s) => sum + (s.timeout_ms ?? PROMPT_TIMEOUT_MS),
+    0,
+  )
+  const budgetMs = LOCK_STALE_S * 1000
+  // Require a margin (not just <): the staleness clock starts at lock-acquire
+  // (step 0), so the lock must comfortably outlast the whole run.
+  if (totalMs >= budgetMs) {
+    throw new Error(
+      `[push-through-install] timeout budget ${totalMs}ms (sum of step timeouts) ` +
+        `must stay under LOCK_STALE_S=${budgetMs}ms — a timed-out run would outlive ` +
+        `its own worktree lock and risk a concurrent-stomp. Lower PROMPT_TIMEOUT_MS ` +
+        `(env LUNA_PUSH_THROUGH_PROMPT_TIMEOUT_MS) or raise LOCK_STALE_S.`,
+    )
+  }
+}
 
 /**
  * Compute next fire time AS IF the host were UTC (the chat-server runs UTC; the
@@ -291,6 +333,9 @@ const program = Effect.gen(function* () {
     console.log(`[push-through-install] uninstalled '${JOB_ID}' (removed=${removed})`)
     return
   }
+
+  // Fail the install if the step budget could outlive the worktree lock.
+  assertTimeoutBudget()
 
   if (existing && !FORCE) {
     console.log(`[push-through-install] '${JOB_ID}' already installed:`, {
