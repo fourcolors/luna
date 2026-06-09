@@ -26,6 +26,7 @@ import {
   DreamError,
   deriveBeliefId,
   makeBeliefRecord,
+  computeAgreement,
 } from "@luna/core"
 import type {
   DreamInputs,
@@ -50,6 +51,15 @@ const VALID_KINDS: ReadonlySet<string> = new Set<DreamOpKind>([
   "memory_contradiction",
   "belief_candidate",
 ])
+
+/**
+ * Slice B (sampling-based confidence, MEASURE-ONLY): how many UNSEEDED
+ * reasoning passes to run for the SelfCheckGPT-style agreement signal. Pass 1
+ * is the privileged "today's path" that SOLELY materializes ops; passes 2..N
+ * are measurement-only. Overridable via LUNA_DREAM_SAMPLES (read at layer-build
+ * time, mirroring LUNA_DREAM_TIMEOUT_MS); clamps to a positive integer.
+ */
+const DEFAULT_DREAM_SAMPLES = 5
 
 // ---------------------------------------------------------------------------
 // Raw op shape from the model's JSON output
@@ -251,6 +261,23 @@ function parseRawOps(text: string): Effect.Effect<ReadonlyArray<RawOp>, DreamErr
   })
 }
 
+/**
+ * Slice B clustering: derive the belief-candidate `beliefId`s from a parsed pass.
+ * ONLY belief_candidate ops cluster — memory hygiene ops carry a targetId but
+ * are NOT beliefs, so they must not enter the agreement count. The id is
+ * deriveBeliefId(domain, statement), which trims/lowercases/collapses
+ * whitespace, so case/whitespace variants of one statement collapse to one id.
+ */
+function beliefIdsOf(ops: ReadonlyArray<RawOp>): ReadonlyArray<{ readonly beliefId: string }> {
+  const out: Array<{ readonly beliefId: string }> = []
+  for (const raw of ops) {
+    if (raw.kind === "belief_candidate") {
+      out.push({ beliefId: deriveBeliefId(raw.domain, raw.statement) })
+    }
+  }
+  return out
+}
+
 // ---------------------------------------------------------------------------
 // Map RawOp → DreamOp (with before-snapshot for belief_candidate)
 // ---------------------------------------------------------------------------
@@ -351,37 +378,103 @@ export const DreamReasonerDefault: Layer.Layer<
       return Number.isFinite(n) && n > 0 ? Math.trunc(n) : DEFAULT_QUERY_TIMEOUT_MS
     })()
 
+    // Slice B (MEASURE-ONLY): the number of UNSEEDED reasoning passes N for the
+    // sampling-agreement signal. Read at layer-build time (same pattern as the
+    // timeout above); clamp to a sane positive integer, fall back to 5.
+    const dreamSamples = (() => {
+      const raw = process.env["LUNA_DREAM_SAMPLES"]?.trim()
+      const n = raw ? Number(raw) : DEFAULT_DREAM_SAMPLES
+      return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : DEFAULT_DREAM_SAMPLES
+    })()
+
     const reason: DreamReasonerApi["reason"] = (inputs: DreamInputs) =>
       Effect.gen(function* () {
         const prompt = buildDreamPrompt(inputs)
+        const queryParams: QueryParams = {
+          prompt,
+          options: {
+            maxTurns: 1,
+            ...(pathToClaudeCodeExecutable
+              ? { pathToClaudeCodeExecutable }
+              : {}),
+          },
+        }
         yield* Effect.logInfo("[luna/dream] reasoner.reason: starting", {
           sessions: inputs.sessions.length,
           memories: inputs.memories.length,
+          samples: dreamSamples,
           pathToClaudeCodeExecutable: pathToClaudeCodeExecutable ?? "(unset)",
         })
-        const resultText = yield* boundedResultText(
-          sdk,
-          {
-            prompt,
-            options: {
-              maxTurns: 1,
-              ...(pathToClaudeCodeExecutable
-                ? { pathToClaudeCodeExecutable }
-                : {}),
-            },
-          },
-          dreamTimeoutMs,
-        )
-        const rawOps = yield* parseRawOps(resultText)
+
+        // ── PASS 1 — the PRIVILEGED "today's path" (SOLE materializer) ────────
+        // Issued FIRST and SEQUENTIALLY, NOT inside any concurrency: boundedResultText
+        // → parseRawOps → materializeOp, EXACTLY as the single-pass impl. A pass-1
+        // failure (timeout/parse/SDK error) propagates as today's DreamError — no
+        // new failure modes. (Locking pass-1 as the first sdk.query() call is also
+        // what makes the integration test's confidence===0.85 assertion deterministic
+        // against the fake's closure counter.)
+        const pass1Text = yield* boundedResultText(sdk, queryParams, dreamTimeoutMs)
+        const pass1Raw = yield* parseRawOps(pass1Text)
         const ops: DreamOp[] = []
-        for (const raw of rawOps) {
+        for (const raw of pass1Raw) {
           const op = yield* materializeOp(raw, mem)
           ops.push(op)
         }
-        yield* Effect.logInfo(
-          `[luna/dream] reasoner.reason: returning ${ops.length} op(s)`,
+
+        // ── PASSES 2..N — MEASUREMENT-ONLY extras (never materialize) ─────────
+        // Run AFTER pass 1, concurrently with EACH OTHER. Each extra swallows ALL
+        // failures (timeout/parse/SDK error) → `null`, lowering the effective
+        // sample count rather than failing the turn. A surviving extra contributes
+        // its belief-candidate ids (deriveBeliefId) to the agreement count.
+        const extraCount = Math.max(0, dreamSamples - 1)
+        const extraResults =
+          extraCount === 0
+            ? []
+            : yield* Effect.all(
+                Array.from({ length: extraCount }, () =>
+                  boundedResultText(sdk, queryParams, dreamTimeoutMs).pipe(
+                    Effect.flatMap(parseRawOps),
+                    Effect.map(
+                      (raw): ReadonlyArray<{ readonly beliefId: string }> | null =>
+                        beliefIdsOf(raw),
+                    ),
+                    // RESILIENCE: an extra-pass failure is SKIPPED (caught/ignored),
+                    // not propagated — it only lowers the effective N.
+                    Effect.catchAll(() => Effect.succeed(null)),
+                  ),
+                ),
+                { concurrency: "unbounded" },
+              )
+
+        // ── Agreement over ALL surviving passes (pass 1 + surviving extras) ───
+        // sampleCount = the number of passes that did NOT error (an empty-but-
+        // successful pass still counts toward the denominator).
+        const survivingExtras = extraResults.filter(
+          (r): r is ReadonlyArray<{ readonly beliefId: string }> => r !== null,
         )
-        return ops as ReadonlyArray<DreamOp>
+        const pass1Ids = beliefIdsOf(pass1Raw)
+        const passes: ReadonlyArray<ReadonlyArray<{ readonly beliefId: string }>> =
+          [pass1Ids, ...survivingExtras]
+        const agreement = computeAgreement(passes)
+
+        // Attach the MEASURE-ONLY sampling fields to each PASS-1 belief_candidate
+        // op. targetId IS the beliefId. The materialized belief + its verbalized
+        // confidence are UNCHANGED — these fields are additive logging metadata.
+        const withSampling: ReadonlyArray<DreamOp> = ops.map((op) => {
+          if (op.kind !== "belief_candidate") return op
+          const m = agreement.get(op.targetId)
+          return {
+            ...op,
+            sampledConfidence: m?.sampledConfidence,
+            sampleCount: m?.sampleCount,
+          }
+        })
+
+        yield* Effect.logInfo(
+          `[luna/dream] reasoner.reason: returning ${withSampling.length} op(s) ` +
+            `(N=${passes.length} effective sample(s))`,
+        )
+        return withSampling
       })
 
     return { reason } satisfies DreamReasonerApi

@@ -1,13 +1,25 @@
-import { Effect, Stream } from "effect"
+import { Effect, Option, Stream } from "effect"
 import * as EffectClock from "effect/Clock"
 import { MemoryRouterTag } from "@luna/memory"
 import type { MemoryRecord, MemoryRouter } from "@luna/memory"
 import { Clock } from "../clock.js"
+import { CalibrationStore } from "../alignment/calibration-store.js"
+import { classifyTier, revertabilityFor } from "../alignment/tier-classifier.js"
+import { readBelief } from "../beliefs/types.js"
 import { SessionStore } from "../session/session-store.js"
 import type { TriggerAgentApi } from "../jobs/trigger-agent.js"
 import { DreamStore } from "./dream-store.js"
 import { DreamReasoner } from "./reasoner.js"
 import type { DreamOp, DreamOpKind, DreamInputs } from "./types.js"
+
+/**
+ * Slice A detectability heuristic over DreamOpKind (PLACEHOLDER — a decision
+ * needing confirmation; sampling-based detectability is deferred to Slice B).
+ * belief_candidate → 1 (a confidence-bearing proposal we can later score),
+ * everything else → 0.
+ */
+const detectabilityFor = (kind: DreamOpKind): number =>
+  kind === "belief_candidate" ? 1 : 0
 
 /**
  * Ops materialized to the store (vs. held as 'proposed' audit rows).
@@ -38,6 +50,13 @@ export const applyOps = (dreamId: string, ops: ReadonlyArray<DreamOp>) =>
     const clock = yield* Clock
     const now = yield* clock.nowMs()
 
+    // Slice A calibration instrumentation (MEASURE-ONLY). OPTIONAL dependency:
+    // serviceOption keeps applyOps' requirement channel unchanged, so existing
+    // dream layers (DreamStore/MemoryRouter/Clock only) are untouched. The write
+    // is Effect.ignore'd below — a calibration failure can NEVER alter a dream
+    // turn, and nothing ever reads calibration_log back into behavior.
+    const calOpt = yield* Effect.serviceOption(CalibrationStore)
+
     for (const op of ops) {
       if (MATERIALIZE_OPS.has(op.kind)) {
         // Idempotent state-set: null after = delete; else upsert to desired state.
@@ -51,6 +70,46 @@ export const applyOps = (dreamId: string, ops: ReadonlyArray<DreamOp>) =>
           before: op.before, after: op.after, rationale: op.rationale,
           status: "applied", appliedAt: now,
         })
+        // Additive, write-only: log a calibration row for confidence-bearing
+        // belief proposals (the only ops carrying a beliefId + verbalized
+        // confidence). Slice A records the EXISTING verbalized confidence as a
+        // placeholder + the trivial detectability heuristic; sampleCount=1.
+        if (op.kind === "belief_candidate" && op.after !== null && Option.isSome(calOpt)) {
+          const confidence = readBelief(op.after as MemoryRecord).confidence
+          const detectability = detectabilityFor(op.kind)
+          // Slice 3 MEASURE-ONLY: compute the autonomy tier write-only on the
+          // SAME calibration row. stakes is ALWAYS null here (no stakes signal
+          // exists anywhere in the codebase — FLAG), revertability is the
+          // materialized placeholder heuristic, detectability is the existing
+          // Slice A heuristic. HARD invariant: `tier` is NEVER gated and NEVER
+          // read back into behavior — it is recorded purely to learn whether
+          // the boundaries are sane. The whole write stays Effect.ignore'd, so
+          // a tier/calibration failure can never alter a dream turn.
+          const tier = classifyTier({
+            confidence,
+            detectability,
+            revertability: revertabilityFor(op.kind, true), // op is materialized here
+            stakes: null,
+          })
+          yield* calOpt.value
+            .record({
+              dreamId,
+              targetId: op.targetId,
+              beliefId: op.targetId, // belief_candidate targetId IS the belief id
+              proposalAt: now,
+              confidence,
+              detectability,
+              // Slice B MEASURE-ONLY: log the sampling-agreement confidence
+              // ALONGSIDE the verbalized `confidence` above (NOT in place of it),
+              // and the effective sample size. ABSENT (Slice A single pass) ⇒
+              // sampledConfidence null + sampleCount 1, preserving prior behavior.
+              // Write-only; never read back into scoring/injection/strength.
+              sampledConfidence: op.sampledConfidence ?? null,
+              sampleCount: op.sampleCount ?? 1,
+              tier,
+            })
+            .pipe(Effect.ignore)
+        }
       } else {
         yield* store.record({
           dreamId, at: now, op: op.kind, targetId: op.targetId,

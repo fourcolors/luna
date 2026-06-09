@@ -1,0 +1,88 @@
+// packages/core/src/dream/sample-agreement.test.ts
+//
+// RED (PING) for Slice B — sampling-based confidence, MEASURE-ONLY.
+//
+// This file imports `computeAgreement` from ./sample-agreement.js, which does
+// NOT exist yet. It MUST fail at import with
+//   "Cannot find module './sample-agreement.js'"
+// — that is the correct RED reason (the slice's pure unit is missing), NOT a
+// harness error.
+//
+// `computeAgreement` is PURE + TOTAL + synchronous, so this file imports ONLY
+// vitest + sample-agreement.js (no Effect / Clock / SDK), keeping the RED reason
+// unambiguous. The reasoner-integration RED (pass-1 ops materialize unchanged +
+// sampledConfidence/sampleCount attached) lives in
+// packages/adapter-sdk/test/dream-reasoner-sampling.test.ts — that file does NOT
+// import sample-agreement.js and fails by ASSERTION, so it does not collapse at
+// import.
+import { describe, expect, it } from "vitest"
+import { computeAgreement } from "./sample-agreement.js"
+
+// A "pass" is a list of belief candidates; clustering is by `beliefId`
+// (= deriveBeliefId(domain, statement)). computeAgreement only needs the id.
+type Cand = { readonly beliefId: string }
+const c = (beliefId: string): Cand => ({ beliefId })
+
+describe("computeAgreement — pure agreement fraction (MEASURE-ONLY; pure, total)", () => {
+  it("4 of 5 passes contain X → sampledConfidence 0.8, sampleCount 5", () => {
+    // 4 passes contain X, 1 does not. (Z appears once = 0.2; noise irrelevant.)
+    const passes: ReadonlyArray<ReadonlyArray<Cand>> = [
+      [c("X"), c("noise-1")],
+      [c("X")],
+      [c("X"), c("noise-2")],
+      [c("X")],
+      [c("Z")], // no X here
+    ]
+    const out = computeAgreement(passes)
+    const x = out.get("X")
+    expect(x).toBeDefined()
+    expect(x!.sampledConfidence).toBe(0.8) // 4/5, exact in JS
+    expect(x!.sampleCount).toBe(5)
+  })
+
+  it("1 of 5 passes contains Y (a one-off) → sampledConfidence 0.2, sampleCount 5", () => {
+    const passes: ReadonlyArray<ReadonlyArray<Cand>> = [
+      [c("Y")], // only here
+      [c("A")],
+      [c("B")],
+      [c("C")],
+      [c("D")],
+    ]
+    const out = computeAgreement(passes)
+    const y = out.get("Y")
+    expect(y).toBeDefined()
+    expect(y!.sampledConfidence).toBe(0.2) // 1/5, exact in JS
+    expect(y!.sampleCount).toBe(5)
+  })
+
+  it("within-pass dedup: a belief appearing twice in ONE pass counts once for that pass", () => {
+    // pass 1 = [A, A]  (A twice in the SAME pass), pass 2 = [B].
+    // "passes containing" semantics ⇒ A in 1 of 2 passes ⇒ 0.5 (NOT 1.0).
+    // A naive occurrence-counter would wrongly give A = 2/2 = 1.0 — this
+    // fixture discriminates the two.
+    const passes: ReadonlyArray<ReadonlyArray<Cand>> = [
+      [c("A"), c("A")],
+      [c("B")],
+    ]
+    const out = computeAgreement(passes)
+    expect(out.get("A")?.sampledConfidence).toBe(0.5) // 1/2
+    expect(out.get("A")?.sampleCount).toBe(2)
+    expect(out.get("B")?.sampledConfidence).toBe(0.5) // 1/2
+    expect(out.get("B")?.sampleCount).toBe(2)
+  })
+
+  it("empty input → empty map (never divides by zero)", () => {
+    const out = computeAgreement([])
+    expect(out.size).toBe(0)
+  })
+
+  it("a pass that is itself empty still counts toward the denominator", () => {
+    // 3 passes, X in 1 of them, 2 passes empty. X ⇒ 1/3.
+    const passes: ReadonlyArray<ReadonlyArray<Cand>> = [[c("X")], [], []]
+    const out = computeAgreement(passes)
+    expect(out.get("X")?.sampledConfidence).toBeCloseTo(1 / 3, 12)
+    expect(out.get("X")?.sampleCount).toBe(3)
+    // empty passes contribute NO ids to the map.
+    expect(out.size).toBe(1)
+  })
+})

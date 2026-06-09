@@ -22,6 +22,20 @@ export interface DreamOp {
   readonly after: unknown
   /** Why the reasoner proposed this. Stored verbatim for the survey + training. */
   readonly rationale: string
+  /**
+   * Slice B MEASURE-ONLY sampling-agreement confidence for belief_candidate ops.
+   * (# of N reasoning passes whose candidate set contained THIS beliefId) / N.
+   * Purely for logging into calibration_log alongside the verbalized confidence;
+   * ABSENT = today's behavior (Slice A, single pass). NEVER substituted into the
+   * materialized belief's confidence (that would change belief strength).
+   */
+  readonly sampledConfidence?: number
+  /**
+   * Slice B MEASURE-ONLY effective sample size N for belief_candidate ops
+   * (= number of passes that actually produced candidates). ABSENT = Slice A
+   * (treated as 1 by the calibration hook). Logging metadata only.
+   */
+  readonly sampleCount?: number
 }
 
 export type DreamAuditStatus = "applied" | "proposed" | "reverted"

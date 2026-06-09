@@ -9,6 +9,7 @@ import type { DreamOp } from "./types.js"
 import { SessionStore } from "../session/session-store.js"
 import { FakeReasoner } from "./reasoner.js"
 import { makeBeliefRecord } from "../beliefs/types.js"
+import { CalibrationStore } from "../alignment/calibration-store.js"
 
 // Minimal Ref-backed memory router double (only the methods applyOps uses).
 const FakeMemory = (initial: ReadonlyArray<MemoryRecord> = []) =>
@@ -111,6 +112,67 @@ describe("applyOps", () => {
     expect((out.stored!.content as { status: string }).status).toBe("proposed")
     expect(out.rows).toHaveLength(1)
     expect(out.rows[0]?.status).toBe("applied") // op applied (undoable)
+  })
+
+  it("records exactly ONE calibration row — only for the belief_candidate op (write path, measure-only)", async () => {
+    const candidate = makeBeliefRecord({ statement: "Operator prefers terse answers", confidence: 0.6, domain: "comms", now: 0 })
+    const rows = await Effect.runPromise(
+      Effect.gen(function* () {
+        // A dedup op (no beliefId/confidence) and a belief_candidate op in one apply.
+        yield* applyOps("dream-0-100", [
+          { kind: "memory_dedup", targetId: "dup-1", before: rec("dup-1"), after: null, rationale: "dup" },
+          { kind: "belief_candidate", targetId: candidate.id, before: null, after: candidate, rationale: "pattern" },
+        ])
+        const cal = yield* CalibrationStore
+        return yield* cal.list()
+      }).pipe(
+        Effect.provide(DreamStore.Memory),
+        Effect.provide(FakeMemory([rec("dup-1")])),
+        Effect.provide(CalibrationStore.Memory),
+        Effect.provide(Clock.Default),
+      ) as Effect.Effect<any, any, never>,
+    )
+    // Only the belief_candidate logs a calibration row; memory_dedup does NOT.
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.beliefId).toBe(candidate.id)
+    expect(rows[0]?.confidence).toBe(0.6)        // verbalized placeholder, read from the belief
+    expect(rows[0]?.detectability).toBe(1)        // belief_candidate → detectable (heuristic)
+    expect(rows[0]?.sampleCount).toBe(1)          // Slice A placeholder
+    expect(rows[0]?.dreamId).toBe("dream-0-100")
+  })
+
+  // ── Slice 3 RED — tier classifier, MEASURE-ONLY ──────────────────────────────
+  // The SAME additive hook that logs the Slice A calibration row must ALSO
+  // record a measure-only `tier` (write-only, Effect.ignore'd, never read back).
+  // This test does NOT import tier-classifier.js — dream.ts does not import it
+  // in RED, so this file still LOADS and this test fails by ASSERTION (the
+  // recorded row has no `tier` yet). The expected tier is HARDCODED (not
+  // computed via classifyTier) so importing the missing module can't collapse
+  // the whole file and mask the real RED.
+  //
+  // Expected: at the hook, confidence 0.6 (verbalized), detectability 1
+  // (heuristic), revertabilityFor(belief_candidate, true) = 0.9, stakes = null
+  // ⇒ effRev 0.9, confidence 0.6 ⇒ classifyTier ⇒ Tier 1.
+  it("records a measure-only `tier` on the belief_candidate calibration row (Slice 3, write-only)", async () => {
+    const candidate = makeBeliefRecord({ statement: "Operator prefers terse answers", confidence: 0.6, domain: "comms", now: 0 })
+    const rows = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* applyOps("dream-0-100", [
+          { kind: "belief_candidate", targetId: candidate.id, before: null, after: candidate, rationale: "pattern" },
+        ])
+        const cal = yield* CalibrationStore
+        return yield* cal.list()
+      }).pipe(
+        Effect.provide(DreamStore.Memory),
+        Effect.provide(FakeMemory([])),
+        Effect.provide(CalibrationStore.Memory),
+        Effect.provide(Clock.Default),
+      ) as Effect.Effect<any, any, never>,
+    )
+    expect(rows).toHaveLength(1)
+    // tier is OPTIONAL/nullable on the row type; cast because RED has no `tier`
+    // field yet. Hardcoded expected tier — do NOT import classifyTier here.
+    expect((rows[0] as { tier?: number }).tier).toBe(1)
   })
 })
 
