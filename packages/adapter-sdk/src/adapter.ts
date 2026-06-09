@@ -34,13 +34,12 @@ import {
   AccountBroker,
   profileForKind,
   readProviderEnv,
-  resolveChain,
-  readOverflowConfig,
   type AccountBrokerApi,
   type SessionOptions,
 } from "@luna/core"
 import { SDKClient, type QueryParams } from "./sdk-client.js"
 import { buildBrokerEnvOverlay } from "./broker-env-overlay.js"
+import { classifyThrottle } from "./throttle.js"
 import type {
   SDKMessage,
   SDKUserMessage,
@@ -158,6 +157,10 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
       const client = yield* SDKClient
       const store = yield* SessionStore
 
+      // Provider env (gateway URLs + LUNA_MODEL_PROVIDER_MAP) is immutable for
+      // the process — parse once at layer build instead of per turn.
+      const providerEnv = readProviderEnv()
+
       const hooksRef = yield* Ref.make<ReadonlyArray<HookRegistration>>([])
       const permissionCbRef = yield* Ref.make<
         | ((
@@ -265,9 +268,10 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
           // B4: the winning step's effective budget, echoed into the usage
           // report so the meter enforces the PER-STEP overflow-chain budget.
           let acquiredBudgetUsd: number | null = null
-          // B9 gate (review BLOCKER #1): only cool-on-throttle when an overflow
-          // chain exists for the lane (somewhere to fail over to). Set in the
-          // acquire block below; defaults false so the no-chain path never cools.
+          // B9 gate (review BLOCKER #1): only cool-on-throttle when the broker
+          // says failover is VIABLE — the chain can yield a different account
+          // if this one cools. Set from the acquire below; defaults false so
+          // the no-chain path never cools.
           let throttleFailoverPossible = false
           if (broker !== null) {
             // Model string is used for broker policy routing; SDK uses
@@ -275,20 +279,6 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             const brokerModel =
               (req.sessionOptions.sdkOptions?.model as string | undefined) ??
               "default"
-            // B9 gate: a configured chain means the operator opted into
-            // failover, so cooling a throttled account (below) is desired. With
-            // no chain, the old catch was a no-op and the transient simply
-            // retried — preserve that to avoid a self-inflicted single-account
-            // outage on a transient 429/529.
-            const overflowChain = resolveChain(
-              brokerModel,
-              readOverflowConfig(),
-            )
-            // BLOCKER #1 + Copilot: match the broker — `null` OR an empty chain
-            // (`[]`, or one whose steps were all dropped as invalid) means "no
-            // chain", i.e. NO failover. Only then is cooling-on-throttle safe.
-            throttleFailoverPossible =
-              overflowChain !== null && overflowChain.length > 0
             const acquireOpts: {
               model: string
               boundAccountId?: string
@@ -314,15 +304,28 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             // ALWAYS the winning model (used by the B4 result-frame pricing).
             acquiredModel = acq.model
             acquiredBudgetUsd = acq.budgetUsd ?? null
+            // BLOCKER #1, deepened: the broker computed failover VIABILITY at
+            // pick time (chain exists AND another un-cooled target remains with
+            // this account excluded). Chain existence alone was not enough — a
+            // one-account chain cooled its sole account on a transient 429,
+            // manufacturing the exact outage the gate was added to prevent, and
+            // starving the wake/dream lanes sharing that account.
+            throttleFailoverPossible = acq.failoverPossible === true
             // Only WRITE overrides.model when the caller actually supplied a
             // model OR the chain changed it away from the lane default. This
             // keeps the no-chain + caller-omits-model path BYTE-IDENTICAL: today
             // that path leaves Options.model unset, so we must not inject
-            // "default" here.
+            // "default" here. The literal "default" is the broker's default-lane
+            // SENTINEL (same convention as the reasoners' model gate) — it is
+            // never a real model id, so it must not reach the SDK even when a
+            // caller (e.g. a forked recovery thread) supplied it explicitly.
             const callerSuppliedModel =
               (req.sessionOptions.sdkOptions?.model as string | undefined) !==
               undefined
-            if (callerSuppliedModel || acq.model !== brokerModel) {
+            if (
+              (callerSuppliedModel || acq.model !== brokerModel) &&
+              acq.model !== "default"
+            ) {
               overrides.model = acq.model
             }
             // B8: the broker advanced past a previously-used chain step → log a
@@ -351,7 +354,7 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
               // reproduces the prior behavior exactly for anthropic accounts.
               const profile = profileForKind(
                 acq.credential.kind,
-                readProviderEnv(),
+                providerEnv,
               )
               // SECRET HYGIENE: the secret is unwrapped ONLY inside
               // `buildBrokerEnvOverlay` — the single `Redacted.value` site
@@ -382,6 +385,13 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             req.sessionOptions.sdkOptions,
             overrides,
           )
+          // "default" is the broker's default-lane SENTINEL, never a real model
+          // id. A caller-persisted "default" (ui-web custom-model field, a
+          // forked recovery thread) must run on the SDK's own default model —
+          // exactly the pre-provider-seam behavior — not be sent verbatim.
+          if ((mergedOpts as { model?: unknown }).model === "default") {
+            delete (mergedOpts as { model?: unknown }).model
+          }
 
           // Stream → AsyncIterable for the SDK to consume.
           const promptIterable = yield* Stream.toAsyncIterableEffect(req.prompt)
@@ -502,43 +512,30 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
           }
 
           /**
-           * B9: if the terminal stream error looks like a throttle (HTTP 429,
-           * "rate limit", "quota", "overloaded"), additionally report a
-           * rate_limit so the broker cools the account down and the overflow
-           * chain advances on the next acquire. Parses an optional retry-after
-           * (seconds → ms) from the cause when present. Fire-and-forget.
+           * B9: if the terminal stream error classifies as a throttle (shared
+           * `classifyThrottle` — 429/529, rate-limit/overload phrasing, clamped
+           * retry-after), additionally report a rate_limit so the broker cools
+           * the account down and the overflow chain advances on the next
+           * acquire. Fire-and-forget.
            */
           const reportRateLimitIfThrottled = (cause: unknown) => {
             if (broker === null || acquiredAccountId === null) return
-            // BLOCKER #1: only cool when failover is possible (a chain exists).
-            // Without a chain, cooling the sole account on a transient throttle
-            // manufactures a ~60s outage — strictly worse than the pre-change
-            // no-op, and breaks no-config byte-identical behavior.
+            // BLOCKER #1: only cool when failover is VIABLE (another un-cooled
+            // chain target exists — broker-computed at pick time). Otherwise
+            // cooling the sole account on a transient throttle manufactures a
+            // ~60s outage — strictly worse than the pre-change no-op, and
+            // breaks no-config byte-identical behavior.
             if (!throttleFailoverPossible) return
-            const text = String(
-              (cause as { message?: unknown })?.message ?? cause,
-            ).toLowerCase()
-            // #5: word-boundary status codes + explicit throttle phrases, so
-            // "11429 tokens" / "disk quota exceeded" don't false-positive into a
-            // cooldown. Anthropic throttles surface as 429 (rate_limit_error) /
-            // 529 (overloaded_error).
-            const throttled =
-              /\b(429|529)\b/.test(text) ||
-              text.includes("rate limit") ||
-              text.includes("rate_limit") ||
-              text.includes("too many requests") ||
-              text.includes("overloaded")
-            if (!throttled) return
-            // Best-effort retry-after parse: "retry-after: 30" / "retry after 30s".
-            const m = text.match(/retry[-_ ]?after[^0-9]*([0-9]+)/)
-            const retryAfterMs =
-              m && m[1] ? Number(m[1]) * 1000 : undefined
+            const cls = classifyThrottle(cause)
+            if (!cls.throttled) return
             const id = acquiredAccountId
             Effect.runPromise(
               broker.report({
                 accountId: id,
                 kind: "rate_limit",
-                ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+                ...(cls.retryAfterMs !== undefined
+                  ? { retryAfterMs: cls.retryAfterMs }
+                  : {}),
               }),
             ).catch(() => {})
           }

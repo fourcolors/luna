@@ -365,7 +365,11 @@ export class ChatService extends Effect.Service<ChatService>()(
             : {}),
         }
         return {
-          model: opts.model,
+          // Top-level model is consumed by merge-policy / fork / display only
+          // (never the SDK call — that's sdkOptions.model above). "default" is
+          // the broker's default-lane sentinel; the adapter and fork strip it
+          // before the SDK sees it.
+          model: opts.model ?? "default",
           disableIdleTimeout: true,
           ...(opts.title !== undefined ? { title: opts.title } : {}),
           ...(opts.tags !== undefined ? { tags: opts.tags } : {}),
@@ -965,8 +969,14 @@ export class ChatService extends Effect.Service<ChatService>()(
                   ? loadThreadSessionMap(lunaHome)[threadId]
                   : undefined
               if (persistedSdkId !== undefined) {
+                // NO model here: the thread-session-map doesn't persist the
+                // original model, and a hardcoded one now actually ROUTES
+                // (GAP#3 threads model → sdkOptions.model → broker/SDK), so it
+                // would silently switch a recovered thread's model/provider
+                // mid-conversation. Omitting it routes the broker's "default"
+                // lane and leaves the SDK model unset — the SDK resumes the
+                // session with its own persisted settings.
                 yield* createThread({
-                  model: "claude-sonnet-4-5",
                   threadIdOverride: threadId,
                   resumeFromSessionId: persistedSdkId,
                 })

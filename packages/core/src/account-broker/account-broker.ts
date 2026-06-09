@@ -38,12 +38,12 @@ import {
   type SecretRef,
 } from "../secret-provider/index.js"
 import { pickAccount, type AccountRecord } from "./rotation-policy.js"
-import { resolveProfile } from "../provider-profile.js"
+import { readProviderEnv, resolveKind } from "../provider-profile.js"
 import {
-  pickChainTarget,
+  auditOverflowEnv,
+  pickLaneTarget,
   readOverflowConfig,
   resolveChain,
-  type ChainStep,
 } from "../overflow-chain.js"
 import { readRateTable } from "../pricing.js"
 import { applyUsage, readCycleMs } from "./spend-meter.js"
@@ -127,6 +127,13 @@ export interface AcquiredSession {
    * overflow-chain budget (e.g. `[opus($200) → codex($50)]` cools step 0 at its
    * own $200, not the account's). Undefined ⇒ no budget. */
   readonly budgetUsd?: number
+  /** True when the lane's chain could yield a DIFFERENT account if this one
+   * cooled down (computed at pick time, with the winner excluded). This is the
+   * cool-on-throttle gate: callers report `rate_limit` ONLY when this is true,
+   * so a transient 429 never cools an account with nowhere to fail over to —
+   * chain EXISTENCE alone is not enough (a one-account chain has no failover).
+   * Optional for back-compat with test doubles; absent ⇒ treat as false. */
+  readonly failoverPossible?: boolean
 }
 
 export type AccountError = AllAccountsExhaustedError | ConfigError
@@ -191,6 +198,16 @@ const fromAccounts = (
       // the first acquire on a lane that resolves a chain.
       const lastStepRef = yield* Ref.make<ReadonlyMap<string, number>>(new Map())
       const cycleMs = readCycleMs()
+      // Env-derived config is immutable for the process — parse ONCE at layer
+      // build (the per-acquire/per-report re-parse was pure waste) and audit it
+      // here so a mangled LUNA_OVERFLOW_CHAINS surfaces as a boot warning
+      // instead of a silent fallback that sends the lane string as the model.
+      const providerEnv = readProviderEnv()
+      const overflowCfg = readOverflowConfig()
+      const rateTable = readRateTable()
+      for (const finding of auditOverflowEnv(process.env, providerEnv)) {
+        yield* Effect.logWarning(`[AccountBroker] ${finding}`)
+      }
 
       /**
        * Shared acquire core. `pick` runs INSIDE the atomic Ref.modify and
@@ -209,6 +226,7 @@ const fromAccounts = (
           model: string
           stepIndex: number
           budgetUsd?: number | undefined
+          failoverPossible: boolean
         } | null,
       ): Effect.Effect<AcquiredSession, AccountError, Scope.Scope> =>
         Effect.gen(function* () {
@@ -254,6 +272,7 @@ const fromAccounts = (
             credential,
             model: picked.model,
             stepIndex: picked.stepIndex,
+            failoverPossible: picked.failoverPossible,
             ...(picked.budgetUsd !== undefined
               ? { budgetUsd: picked.budgetUsd }
               : {}),
@@ -262,50 +281,31 @@ const fromAccounts = (
 
       /**
        * Provider routing + overflow chain (B6). The model string names a logical
-       * lane; we resolve the lane's chain from `LUNA_OVERFLOW_CHAINS` and walk it
-       * with `pickChainTarget` (REUSING pickAccount's cooldown/LRU/pin logic). No
-       * chain configured ⇒ single-step fallback that is BYTE-IDENTICAL to today:
-       * kind = resolveProfile(model).kind, model = caller's model, stepIndex = 0.
+       * lane; the lane's chain (resolved once at layer build) is walked by the
+       * SHARED `pickLaneTarget` (overflow-chain.ts) — the same pure selection
+       * the SQL broker runs, so the two cannot drift (§7.5). No chain configured
+       * ⇒ single-step fallback that is BYTE-IDENTICAL to today: kind =
+       * resolveProfile(model).kind, model = caller's model, stepIndex = 0.
        */
       const acquireSession: AccountBrokerApi["acquireSession"] = (opts) =>
         Effect.gen(function* () {
           const lane = opts.model
-          const chain = resolveChain(lane, readOverflowConfig())
-          const fallbackKind = resolveProfile(lane).kind
-          const acq = yield* acquireWith(fallbackKind, (accounts, now) => {
-            if (chain === null || chain.length === 0) {
-              // Single-step fallback — identical to the pre-B6 path.
-              const account = pickAccount(
-                accounts,
+          const chain = resolveChain(lane, overflowCfg)
+          const fallbackKind = resolveKind(lane, providerEnv)
+          const acq = yield* acquireWith(fallbackKind, (accounts, now) =>
+            pickLaneTarget(
+              {
+                lane,
+                chain,
                 fallbackKind,
-                now,
-                opts.boundAccountId,
-              )
-              if (account === null) return null
-              return {
-                account,
-                model: lane,
-                stepIndex: 0,
-                // No chain: caller-supplied budget (if any) ?? the account seed.
-                budgetUsd: opts.budgetUsd ?? account.budgetUsd,
-              }
-            }
-            const hit = pickChainTarget(
-              chain as ReadonlyArray<ChainStep>,
+                callerBudgetUsd: opts.budgetUsd,
+                boundId: opts.boundAccountId,
+                providerEnv,
+              },
               accounts,
               now,
-              opts.boundAccountId,
-            )
-            if (hit === null) return null
-            return {
-              account: hit.account,
-              model: hit.step.model,
-              stepIndex: hit.stepIndex,
-              // Per-step budget precedence: chain step → caller → account seed.
-              budgetUsd:
-                hit.step.budgetUsd ?? opts.budgetUsd ?? hit.account.budgetUsd,
-            }
-          })
+            ),
+          )
           // Compute advancedFrom against the lane's last winning step. Only
           // meaningful when a chain exists; the no-chain path keeps stepIndex 0
           // and never advances → advancedFrom stays undefined (back-compat).
@@ -325,7 +325,7 @@ const fromAccounts = (
         acquireWith(`tool-${toolName}`, (accounts, now) => {
           const account = pickAccount(accounts, `tool-${toolName}`, now)
           if (account === null) return null
-          return { account, model: toolName, stepIndex: 0 }
+          return { account, model: toolName, stepIndex: 0, failoverPossible: false }
         }).pipe(Effect.map((acq) => acq.credential))
 
       const report: AccountBrokerApi["report"] = (usage) =>
@@ -337,7 +337,18 @@ const fromAccounts = (
             yield* Ref.update(ref, (accounts) =>
               accounts.map((a) =>
                 a.id === usage.accountId
-                  ? { ...a, cooldownUntilMs: cooldownUntil }
+                  ? {
+                      ...a,
+                      // Never SHORTEN an existing cooldown: a budget cooldown
+                      // (the cycle boundary — possibly days out) must survive a
+                      // transient 429 reported by a still-in-flight turn on the
+                      // same account, or the over-budget account re-enters
+                      // rotation as soon as the short throttle window expires.
+                      cooldownUntilMs: Math.max(
+                        a.cooldownUntilMs ?? 0,
+                        cooldownUntil,
+                      ),
+                    }
                   : a,
               ),
             )
@@ -348,7 +359,6 @@ const fromAccounts = (
           // cycle; if the spend crosses the account's budget, cool it down until
           // the next cycle boundary. A no-budget account accumulates only.
           const now = yield* clock.nowMs()
-          const rateTable = readRateTable()
           yield* Ref.update(ref, (accounts) =>
             accounts.map((a) => {
               if (a.id !== usage.accountId) return a

@@ -438,3 +438,115 @@ describe("applyUsage (pure)", () => {
     expect(u.cooldownUntilMs).toBe(100_000) // 0 + cycleMs
   })
 })
+
+describe("rate_limit vs budget cooldown (never-shorten guard)", () => {
+  it("a transient rate_limit report never SHORTENS an existing budget cooldown", async () => {
+    const CYCLE = 100_000
+    await withEnv({ LUNA_SPEND_CYCLE_MS: String(CYCLE) }, async () => {
+      const clock = makeMockClock(5_000)
+      const seeds: ReadonlyArray<AccountSeed> = [
+        { id: "a1", kind: "anthropic", secretRef: "anth:a1", budgetUsd: 2.0 },
+      ]
+      const out = await Effect.runPromise(
+        Effect.gen(function* () {
+          const broker = yield* AccountBroker
+          // Cross the budget → cooled until the cycle boundary (5000 + CYCLE).
+          yield* broker.report({
+            accountId: "a1",
+            kind: "usage",
+            model: "claude-sonnet-4-5",
+            tokensIn: 1_000_000,
+            tokensOut: 0,
+          })
+          const afterBudget = (yield* broker._inspect()).find(
+            (a) => a.id === "a1",
+          )
+          // A still-in-flight turn 429s → rate_limit with a SHORT retry-after.
+          // Pre-fix this OVERWROTE the budget cooldown (now+30s), re-opening
+          // the over-budget account 30s later.
+          yield* broker.report({
+            accountId: "a1",
+            kind: "rate_limit",
+            retryAfterMs: 30_000,
+          })
+          const afterThrottle = (yield* broker._inspect()).find(
+            (a) => a.id === "a1",
+          )
+          return { afterBudget, afterThrottle }
+        }).pipe(Effect.provide(makeLayer(seeds, clock))),
+      )
+      expect(out.afterBudget?.cooldownUntilMs).toBe(5_000 + CYCLE)
+      expect(out.afterThrottle?.cooldownUntilMs).toBe(5_000 + CYCLE)
+    })
+  })
+
+  it("a rate_limit report still EXTENDS a shorter existing cooldown", async () => {
+    const clock = makeMockClock(0)
+    const seeds: ReadonlyArray<AccountSeed> = [
+      { id: "a1", kind: "anthropic", secretRef: "anth:a1" },
+    ]
+    const a1 = await Effect.runPromise(
+      Effect.gen(function* () {
+        const broker = yield* AccountBroker
+        yield* broker.report({
+          accountId: "a1",
+          kind: "rate_limit",
+          retryAfterMs: 10_000,
+        })
+        yield* broker.report({
+          accountId: "a1",
+          kind: "rate_limit",
+          retryAfterMs: 60_000,
+        })
+        return (yield* broker._inspect()).find((a) => a.id === "a1")
+      }).pipe(Effect.provide(makeLayer(seeds, clock))),
+    )
+    expect(a1?.cooldownUntilMs).toBe(60_000)
+  })
+})
+
+describe("acquireSession failoverPossible (throttle-gate viability)", () => {
+  it("no chain → false; chain with another viable target → true; pinned sole-account chain → false", async () => {
+    const chains = {
+      chains: {
+        "two-step": [
+          { kind: "anthropic", accountId: "a1", model: "m1" },
+          { kind: "anthropic", accountId: "a2", model: "m2" },
+        ],
+        "sole-step": [{ kind: "anthropic", accountId: "a1", model: "m1" }],
+      },
+    }
+    await withEnv(
+      { LUNA_OVERFLOW_CHAINS: JSON.stringify(chains) },
+      async () => {
+        const clock = makeMockClock(0)
+        const seeds: ReadonlyArray<AccountSeed> = [
+          { id: "a1", kind: "anthropic", secretRef: "anth:a1" },
+          { id: "a2", kind: "anthropic", secretRef: "anth:a2" },
+        ]
+        const out = await Effect.runPromise(
+          Effect.gen(function* () {
+            const broker = yield* AccountBroker
+            const noChain = yield* Effect.scoped(
+              broker.acquireSession({ model: "default" }),
+            )
+            const twoStep = yield* Effect.scoped(
+              broker.acquireSession({ model: "two-step" }),
+            )
+            const soleStep = yield* Effect.scoped(
+              broker.acquireSession({ model: "sole-step" }),
+            )
+            return { noChain, twoStep, soleStep }
+          }).pipe(Effect.provide(makeLayer(seeds, clock))),
+        )
+        // No chain ⇒ nothing to fail over to (the no-chain path never cools).
+        expect(out.noChain.failoverPossible).toBe(false)
+        // Two-step chain, second step viable ⇒ cooling a1 has somewhere to go.
+        expect(out.twoStep.failoverPossible).toBe(true)
+        // One pinned step ⇒ cooling its sole account would self-inflict an
+        // outage (the empty-/sole-chain case BLOCKER #1 guards against).
+        expect(out.soleStep.failoverPossible).toBe(false)
+      },
+    )
+  })
+})

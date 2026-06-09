@@ -180,3 +180,115 @@ export function pickChainTarget(
   }
   return null
 }
+
+/** The target a lane pick resolved: the winning account plus the chain
+ * resolution (model/stepIndex/effective budget) and `failoverPossible` —
+ * whether the chain could still yield a DIFFERENT account if this one cooled
+ * down. The adapter's cool-on-throttle gate keys off this so a transient 429
+ * never cools an account with nowhere to fail over to. */
+export interface LanePickTarget {
+  readonly account: AccountRecord
+  readonly model: string
+  readonly stepIndex: number
+  readonly budgetUsd?: number | undefined
+  readonly failoverPossible: boolean
+}
+
+/**
+ * Pure lane→target selection shared by BOTH brokers (in-memory and SQL) so
+ * they stay behaviorally identical (§7.5). Runs inside each broker's atomic
+ * `Ref.modify` pick.
+ *
+ *   - No chain (null/empty) ⇒ single-step fallback byte-identical to the
+ *     pre-chain path: `pickAccount(fallbackKind)`, model = the lane string,
+ *     budget = caller ?? account seed, failoverPossible = false (nothing to
+ *     fail over to — preserves the no-chain B9 no-cool contract).
+ *   - Chain ⇒ walk it via {@link pickChainTarget}; budget precedence is
+ *     step ?? caller ?? account seed. `failoverPossible` is true when the
+ *     chain yields another viable account with the winner excluded.
+ */
+export function pickLaneTarget(
+  args: {
+    readonly lane: string
+    readonly chain: ReadonlyArray<ChainStep> | null
+    readonly fallbackKind: string
+    readonly callerBudgetUsd?: number | undefined
+    readonly boundId?: string | undefined
+    readonly providerEnv?: ProviderEnv
+  },
+  accounts: ReadonlyArray<AccountRecord>,
+  nowMs: number,
+): LanePickTarget | null {
+  const providerEnv = args.providerEnv ?? readProviderEnv()
+  const { chain } = args
+  if (chain === null || chain.length === 0) {
+    const account = pickAccount(accounts, args.fallbackKind, nowMs, args.boundId)
+    if (account === null) return null
+    return {
+      account,
+      model: args.lane,
+      stepIndex: 0,
+      budgetUsd: args.callerBudgetUsd ?? account.budgetUsd,
+      failoverPossible: false,
+    }
+  }
+  const hit = pickChainTarget(chain, accounts, nowMs, args.boundId, providerEnv)
+  if (hit === null) return null
+  // Failover viability: would the chain still find a target if the winning
+  // account were unavailable? (Excluding by id is equivalent to "cooled".)
+  const failoverPossible =
+    pickChainTarget(
+      chain,
+      accounts.filter((a) => a.id !== hit.account.id),
+      nowMs,
+      args.boundId,
+      providerEnv,
+    ) !== null
+  return {
+    account: hit.account,
+    model: hit.step.model,
+    stepIndex: hit.stepIndex,
+    budgetUsd: hit.step.budgetUsd ?? args.callerBudgetUsd ?? hit.account.budgetUsd,
+    failoverPossible,
+  }
+}
+
+/**
+ * Boot-time audit of the overflow-chain env config. Returns human-readable
+ * findings (empty = clean) so the brokers can `logWarning` them at layer
+ * build — previously a mangled `LUNA_OVERFLOW_CHAINS` silently parsed to
+ * `{ chains: {} }` and the lane string itself was sent to the API as the
+ * model, with no diagnostic anywhere.
+ *
+ * Findings:
+ *   - env var set but no lane parsed at all (malformed JSON / wrong shape)
+ *   - a lane whose steps were ALL dropped as invalid (no usable step)
+ *   - {@link validateOverflowConfig} structured-output findings
+ */
+export function auditOverflowEnv(
+  env: Record<string, string | undefined> = process.env,
+  providerEnv: ProviderEnv = readProviderEnv(),
+): string[] {
+  const raw = env["LUNA_OVERFLOW_CHAINS"]?.trim()
+  if (!raw) return []
+  const cfg = readOverflowConfig(env)
+  const lanes = Object.keys(cfg.chains)
+  if (lanes.length === 0) {
+    return [
+      `LUNA_OVERFLOW_CHAINS is set but parsed to no chains — malformed JSON ` +
+        `or wrong shape. Overflow routing is DISABLED; lanes fall back to ` +
+        `single-account routing and the lane string is used as the model.`,
+    ]
+  }
+  const findings: string[] = []
+  for (const lane of lanes) {
+    if ((cfg.chains[lane]?.length ?? 0) === 0) {
+      findings.push(
+        `LUNA_OVERFLOW_CHAINS lane "${lane}" has no valid steps (every step ` +
+          `was dropped — check each step has a non-empty "model").`,
+      )
+    }
+  }
+  findings.push(...validateOverflowConfig(cfg, providerEnv))
+  return findings
+}

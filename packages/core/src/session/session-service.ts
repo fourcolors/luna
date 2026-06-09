@@ -162,10 +162,14 @@ export class SessionService extends Effect.Service<SessionService>()(
             // resolved model never reaches the SDK adapter (which routes the
             // broker + SDK on sdkOptions.model), so it silently routes to the
             // default provider. The explicit overrides.sdkOptions spread still
-            // wins last.
+            // wins last. The literal "default" is the broker's default-lane
+            // sentinel (e.g. a recovered thread with no known model), never a
+            // real model id — don't slot it, or the SDK would receive it.
             sdkOptions: {
               ...(parentOpts?.sdkOptions ?? {}),
-              ...(childModel !== undefined ? { model: childModel } : {}),
+              ...(childModel !== undefined && childModel !== "default"
+                ? { model: childModel }
+                : {}),
               ...(overrides?.systemPrompt !== undefined
                 ? { systemPrompt: overrides.systemPrompt }
                 : {}),

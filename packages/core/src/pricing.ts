@@ -61,11 +61,18 @@ const KIND_DEFAULTS: Record<string, ModelRate> = {
  *
  * Precedence:
  *   1. Any `ollama*` kind → {0,0} (free, regardless of model string).
- *   2. Exact model match — longest RATE_TABLE prefix the (lowercased) id has.
+ *   2. Exact model match — longest `table` prefix the (lowercased) id has.
+ *      `table` defaults to the built-in RATE_TABLE; pass `readRateTable()` to
+ *      honor LUNA_MODEL_RATES overrides (the table is merged OVER the built-in
+ *      one, so a miss there is a miss everywhere — no second scan needed).
  *   3. Kind-default (KIND_DEFAULTS).
  *   4. Sonnet fallback {3,15} — matches observability's unknown default.
  */
-export function rateFor(model: string, kind: string): ModelRate {
+export function rateFor(
+  model: string,
+  kind: string,
+  table: Record<string, ModelRate> = RATE_TABLE,
+): ModelRate {
   // (1) ollama-cloud / ollama-local / any future ollama* kind → free.
   if (kind.toLowerCase().startsWith("ollama")) return FREE_RATE
 
@@ -74,7 +81,7 @@ export function rateFor(model: string, kind: string): ModelRate {
   const m = model.trim().toLowerCase()
   let best: ModelRate | undefined
   let bestLen = -1
-  for (const [prefix, rate] of Object.entries(RATE_TABLE)) {
+  for (const [prefix, rate] of Object.entries(table)) {
     if (m.startsWith(prefix.toLowerCase()) && prefix.length > bestLen) {
       best = rate
       bestLen = prefix.length

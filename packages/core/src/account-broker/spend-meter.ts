@@ -88,7 +88,7 @@ export function applyUsage(
   // (2) Price + accumulate. rateFor honors a runtime-overridden table when the
   // caller passes one (LUNA_MODEL_RATES via readRateTable); otherwise the
   // built-in RATE_TABLE keyed off the model prefix wins.
-  const rate = rateForWithTable(report.model, account.kind, rateTable)
+  const rate = rateFor(report.model, account.kind, rateTable)
   const turnUsd = priceTurnUsd(
     {
       tokensIn: report.tokensIn,
@@ -111,35 +111,4 @@ export function applyUsage(
     return { ...next, cooldownUntilMs: cycleStartMs + cycleMs }
   }
   return next
-}
-
-/**
- * `rateFor` with an optional injected rate table. When a table is provided
- * (e.g. from `readRateTable(env)` to honor LUNA_MODEL_RATES), match the model
- * against IT using the same longest-prefix rule the core `rateFor` uses; the
- * kind-default + ollama short-circuit semantics are preserved by delegating to
- * `rateFor` when the table yields no match.
- */
-function rateForWithTable(
-  model: string,
-  kind: string,
-  table: Record<string, ModelRate> | undefined,
-): ModelRate {
-  if (table === undefined) return rateFor(model, kind)
-  // ollama* kinds are always free, regardless of the table.
-  if (kind.toLowerCase().startsWith("ollama")) {
-    return { pricePerMInput: 0, pricePerMOutput: 0 }
-  }
-  const m = model.trim().toLowerCase()
-  let best: ModelRate | undefined
-  let bestLen = -1
-  for (const [prefix, rate] of Object.entries(table)) {
-    if (m.startsWith(prefix.toLowerCase()) && prefix.length > bestLen) {
-      best = rate
-      bestLen = prefix.length
-    }
-  }
-  if (best) return best
-  // Fall back to core rateFor for the kind-default + Sonnet-fallback tiers.
-  return rateFor(model, kind)
 }

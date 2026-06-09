@@ -913,3 +913,57 @@ d("AccountBrokerLayer.fromSql — spend-meter (B3)", () => {
 
 // satisfy lint for the unused interface in helpers
 void ({} as SecretCallLog)
+
+d("AccountBrokerLayer.fromSql — transient cooldown consumed at hydrate", () => {
+  it("(5b) a persisted rate-limit cooldown applies ONCE: the row is zeroed at hydrate so a second restart does not re-cool", async () => {
+    const dbPath = tmpDb()
+    try {
+      const FIXED = 1_000_000
+      await seedAccountsTable(dbPath, [
+        {
+          id: "a1",
+          kind: "anthropic",
+          secret_ref: "anth:a1",
+          cooldown_ms: 3_600_000, // long retry-after persisted pre-restart
+        },
+      ])
+      const log = await Effect.runPromise(Ref.make<ReadonlyArray<string>>([]))
+      // Boot 1: the remaining cooldown re-anchors to now (the contract) …
+      const boot1 = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const broker = yield* AccountBroker
+            return yield* broker._inspect()
+          }),
+        ).pipe(
+          Effect.provide(
+            buildLayer(dbPath, stubSecretsLayer({ "anth:a1": "x" }, log), FIXED),
+          ),
+        ),
+      )
+      expect(boot1[0]?.cooldownUntilMs).toBe(FIXED + 3_600_000)
+      // … and is CONSUMED: the row is zeroed, so boot 2 (a later restart —
+      // pre-fix this re-cooled a1 for the FULL hour on EVERY boot, an
+      // indefinite lockout under frequent restarts) sees no cooldown.
+      const boot2 = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const broker = yield* AccountBroker
+            return yield* broker._inspect()
+          }),
+        ).pipe(
+          Effect.provide(
+            buildLayer(
+              dbPath,
+              stubSecretsLayer({ "anth:a1": "x" }, log),
+              FIXED + 10_000,
+            ),
+          ),
+        ),
+      )
+      expect(boot2[0]?.cooldownUntilMs).toBeUndefined()
+    } finally {
+      cleanupTmp(dbPath)
+    }
+  })
+})

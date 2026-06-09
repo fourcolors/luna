@@ -157,7 +157,11 @@ export type ChatFrame =
  *  a chat caller cares about; ChatService overlays the chat-required fields
  *  (disableIdleTimeout: true, sdkOptions.includePartialMessages: true). */
 export interface CreateThreadOptions {
-  readonly model: string
+  /** Model for the thread's SDK session. Omitted ⇒ the broker's "default"
+   *  lane + the SDK's own default model (used by restart-recovery, where the
+   *  original model is unknown — a hardcoded one would silently switch the
+   *  resumed conversation's model/provider). */
+  readonly model?: string
   readonly title?: string
   readonly tags?: ReadonlyArray<string>
   readonly parentSessionId?: string

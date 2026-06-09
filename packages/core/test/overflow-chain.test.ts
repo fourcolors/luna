@@ -16,6 +16,8 @@ import {
   resolveChain,
   validateOverflowConfig,
   pickChainTarget,
+  pickLaneTarget,
+  auditOverflowEnv,
 } from "../src/overflow-chain.js"
 import { readProviderEnv } from "../src/provider-profile.js"
 import type { AccountRecord } from "../src/account-broker/rotation-policy.js"
@@ -182,5 +184,108 @@ describe("pickChainTarget — chain walking (reuses pickAccount)", () => {
     ]
     const res = pickChainTarget(steps, accounts, 0, "an2", PROVIDER_ENV)
     expect(res!.account.id).toBe("an2")
+  })
+})
+
+describe("pickLaneTarget — shared lane selection (both brokers)", () => {
+  const lane = "chat"
+  it("no chain: single-step fallback, failoverPossible false, caller budget wins over seed", () => {
+    const accounts = [
+      acct({ id: "a1", kind: "anthropic", budgetUsd: 9 }),
+      acct({ id: "a2", kind: "anthropic" }),
+    ]
+    const hit = pickLaneTarget(
+      { lane, chain: null, fallbackKind: "anthropic", callerBudgetUsd: 2, providerEnv: PROVIDER_ENV },
+      accounts,
+      1_000,
+    )
+    expect(hit).not.toBeNull()
+    expect(hit?.model).toBe(lane)
+    expect(hit?.stepIndex).toBe(0)
+    expect(hit?.budgetUsd).toBe(2)
+    expect(hit?.failoverPossible).toBe(false)
+  })
+
+  it("chain: budget precedence step ?? caller ?? seed, failoverPossible true when another target survives", () => {
+    const chain: ChainStep[] = [
+      { model: "claude-sonnet-4-5", budgetUsd: 5 },
+      { model: "gemini-2.5-flash", kind: "google" },
+    ]
+    const accounts = [
+      acct({ id: "a1", kind: "anthropic" }),
+      acct({ id: "g1", kind: "google" }),
+    ]
+    const hit = pickLaneTarget(
+      { lane, chain, fallbackKind: "anthropic", callerBudgetUsd: 2, providerEnv: PROVIDER_ENV },
+      accounts,
+      1_000,
+    )
+    expect(hit?.stepIndex).toBe(0)
+    expect(hit?.budgetUsd).toBe(5) // step beats caller
+    expect(hit?.failoverPossible).toBe(true) // g1 survives a1's exclusion
+  })
+
+  it("chain whose only viable target is the winner ⇒ failoverPossible false", () => {
+    const chain: ChainStep[] = [
+      { model: "claude-sonnet-4-5" },
+      { model: "gemini-2.5-flash", kind: "google" },
+    ]
+    // No google account exists — the gemini step can never serve.
+    const accounts = [acct({ id: "a1", kind: "anthropic" })]
+    const hit = pickLaneTarget(
+      { lane, chain, fallbackKind: "anthropic", providerEnv: PROVIDER_ENV },
+      accounts,
+      1_000,
+    )
+    expect(hit?.stepIndex).toBe(0)
+    expect(hit?.failoverPossible).toBe(false)
+  })
+})
+
+describe("auditOverflowEnv — boot-time config findings", () => {
+  it("returns no findings when the env var is unset", () => {
+    expect(auditOverflowEnv({}, PROVIDER_ENV)).toEqual([])
+  })
+
+  it("flags a set-but-unparseable LUNA_OVERFLOW_CHAINS (previously silent)", () => {
+    const findings = auditOverflowEnv(
+      { LUNA_OVERFLOW_CHAINS: "{not json" },
+      PROVIDER_ENV,
+    )
+    expect(findings).toHaveLength(1)
+    expect(findings[0]).toContain("parsed to no chains")
+  })
+
+  it("flags a lane whose steps were all dropped as invalid", () => {
+    const findings = auditOverflowEnv(
+      { LUNA_OVERFLOW_CHAINS: JSON.stringify({ wake: [{ kind: "google" }] }) },
+      PROVIDER_ENV,
+    )
+    expect(findings.some((f) => f.includes('lane "wake" has no valid steps'))).toBe(true)
+  })
+
+  it("includes validateOverflowConfig structured-output findings for a clean parse", () => {
+    const findings = auditOverflowEnv(
+      {
+        LUNA_OVERFLOW_CHAINS: JSON.stringify({
+          wake: [{ model: "qwen3:cloud" }],
+        }),
+      },
+      PROVIDER_ENV,
+    )
+    expect(findings.some((f) => f.includes("structuredOutput"))).toBe(true)
+  })
+
+  it("returns no findings for a healthy chat-lane chain", () => {
+    expect(
+      auditOverflowEnv(
+        {
+          LUNA_OVERFLOW_CHAINS: JSON.stringify({
+            chat: [{ model: "claude-sonnet-4-5" }, { model: "gpt-4.1" }],
+          }),
+        },
+        PROVIDER_ENV,
+      ),
+    ).toEqual([])
   })
 })
