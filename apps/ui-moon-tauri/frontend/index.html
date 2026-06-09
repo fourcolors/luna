@@ -5822,7 +5822,7 @@
       let dragging = false, dragX = 0, dragY = 0;
       let velX = 0, velY = 0, lastCX = 0, lastCY = 0;   // smoothed cursor velocity → the throw
       let startX = 0, startY = 0, moved = 0, grabDX = 0, grabDY = 0;
-      let running = false, retracting = false, raf = 0, acc = 0, lastT = 0, calm = 0;
+      let running = false, retracting = false, dropping = false, raf = 0, acc = 0, lastT = 0, calm = 0;
       let live = false, pendingPulse = false;
       let onPull = () => retract(true);   // sensible default (pull → retract+pulse); Phase 6 overrides
       let onRetracted = () => {};         // fires when the rope finishes retracting (Phase 6: restore window)
@@ -5832,14 +5832,14 @@
         ANCHOR_X = r.left + r.width / 2;
         ANCHOR_Y = r.bottom - 6;          // just inside the lower arc
       }
-      // Seed STRAIGHT (kicked out to one side) so gravity swings it down — a
-      // compressed seed would let the constraint pile the rope into a coil.
+      // Seed gathered AT the anchor: the `dropping` phase in loop() lowers the
+      // points straight down to rest (no sideways swing-in — the string just
+      // drops out of the moon). The physics solver doesn't run during the drop,
+      // so the compressed seed can't coil; by handoff the rope is at rest length.
       function initRope() {
         pts = [];
-        const a = 1.15, sx = Math.sin(a), cy = Math.cos(a);
         for (let i = 0; i < N; i++) {
-          const x = ANCHOR_X + i * SEG * sx, y = ANCHOR_Y + i * SEG * cy;
-          pts.push({ x, y, px: x, py: y });
+          pts.push({ x: ANCHOR_X, y: ANCHOR_Y, px: ANCHOR_X, py: ANCHOR_Y });
         }
       }
       function energy() { let e = 0; for (let i = 1; i < N; i++) { const p = pts[i]; e += (p.x - p.px) ** 2 + (p.y - p.py) ** 2; } return e; }
@@ -5980,6 +5980,19 @@
           if (done) return finishRetract();
           raf = requestAnimationFrame(loop); return;
         }
+        if (dropping) {                                     // lower the string straight down
+          let done = true;
+          for (let i = 1; i < N; i++) {
+            const p = pts[i];
+            const ty = ANCHOR_Y + i * SEG;                  // straight-down rest position
+            p.x += (ANCHOR_X - p.x) * 0.16; p.y += (ty - p.y) * 0.16;
+            p.px = p.x; p.py = p.y;                         // no carried velocity: hand off at rest
+            if (Math.abs(ty - p.y) > 1.5 || Math.abs(ANCHOR_X - p.x) > 1.5) done = false;
+          }
+          render();
+          if (done) dropping = false;                       // physics takes over from rest
+          raf = requestAnimationFrame(loop); return;
+        }
         acc += dt; let n = 0;
         while (acc >= FIXED) { physics(FIXED); acc -= FIXED; if (++n > 8) { acc = 0; break; } }
         render();
@@ -5992,7 +6005,7 @@
 
       function show() {
         if (live) return;
-        live = true; retracting = false;
+        live = true; retracting = false; dropping = true;
         updateAnchor();
         initRope();
         layer.style.display = 'block';
@@ -6002,7 +6015,7 @@
       }
       function retract(pulse) {
         if (!live) return;
-        dragging = false; retracting = true;
+        dragging = false; retracting = true; dropping = false;
         moonWrapper.style.transform = '';     // clear any lean before the pulse animation
         pendingPulse = !!pulse;
         start();
@@ -6025,7 +6038,7 @@
       // the window itself as part of the chat-open resize.
       function hideImmediate() {
         if (!live && !running) return;
-        running = false; retracting = false; dragging = false; live = false; pendingPulse = false;
+        running = false; retracting = false; dropping = false; dragging = false; live = false; pendingPulse = false;
         if (raf) cancelAnimationFrame(raf);
         clearRegion();      // string gone: the whole window is interactive again
         layer.style.display = 'none';
@@ -6035,6 +6048,7 @@
 
       bead.addEventListener('pointerdown', (e) => {
         e.preventDefault();
+        dropping = false;                 // grabbed mid-drop: the cursor takes over
         dragging = true; moved = 0; velX = velY = 0;
         startX = lastCX = e.clientX; startY = lastCY = e.clientY;
         const b = pts[N - 1];
