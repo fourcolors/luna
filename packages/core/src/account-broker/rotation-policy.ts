@@ -20,6 +20,21 @@ export interface AccountRecord {
   readonly cooldownUntilMs?: number
   /** Last acquire time for LRU tie-breaking. 0 if never used. */
   readonly lastUsedMs: number
+  /**
+   * Per-account spend ceiling in USD (the B-phase spend-meter). When defined and
+   * the accrued `usage.spentUsd` reaches it, the broker cools the account down
+   * until the next cycle boundary. Undefined ⇒ accumulate-only (telemetry; the
+   * account is never auto-cooled by spend). Chain-step `budgetUsd` is primary;
+   * this seed-level value is the fallback when no chain step names a budget.
+   */
+  readonly budgetUsd?: number
+  /**
+   * Rolling spend accumulator for the current cycle. `cycleStartMs` is the start
+   * of the active window (rolled when `now >= cycleStartMs + CYCLE_MS`);
+   * `spentUsd` is the USD priced from reported token usage since that start.
+   * Undefined until the first `report({kind:"usage"})`.
+   */
+  readonly usage?: { readonly cycleStartMs: number; readonly spentUsd: number }
 }
 
 export const pickAccount = (

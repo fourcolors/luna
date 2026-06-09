@@ -11,7 +11,7 @@
  *     broker.report({kind:"error"}) on terminal stream error.
  */
 import { describe, expect, it } from "vitest"
-import { Effect, Exit, Layer, Scope, Stream } from "effect"
+import { Effect, Exit, Layer, Logger, Scope, Stream } from "effect"
 import {
   SessionStore,
   Clock as CoreClock,
@@ -50,6 +50,38 @@ const makeFakeIterable = (throwOnIterate: boolean): Query => {
   async function* gen(): AsyncGenerator<SDKMessage, void> {
     if (throwOnIterate) throw new Error("fake-sdk: simulated terminal failure")
     return
+  }
+  const iterator = gen()
+  return Object.assign(iterator, {
+    interrupt: async () => {},
+    setPermissionMode: async () => {},
+    setModel: async () => {},
+    setMaxThinkingTokens: async () => {},
+    supplyToolPermissionResponse: async () => {},
+    mcpServerStatus: async () => ({}),
+  } as Partial<Query>) as Query
+}
+
+/** Fake Query that yields ONE result message carrying turn-level token usage. */
+const makeResultWithUsage = (usage: {
+  input_tokens: number
+  output_tokens: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+}): Query => {
+  async function* gen(): AsyncGenerator<SDKMessage, void> {
+    yield {
+      type: "result",
+      subtype: "success",
+      session_id: "sid",
+      uuid: "u-result",
+      is_error: false,
+      duration_ms: 10,
+      duration_api_ms: 5,
+      num_turns: 1,
+      result: "ok",
+      usage,
+    } as unknown as SDKMessage
   }
   const iterator = gen()
   return Object.assign(iterator, {
@@ -133,6 +165,8 @@ const runOneQuery = (
   adapter: typeof SDKAdapter.Service,
   store: typeof SessionStore.Service,
   boundAccountId?: string,
+  /** When set, threads `sdkOptions.model` so the broker routes by this lane. */
+  lane?: string,
 ) =>
   Effect.gen(function* () {
     const localSid = `${sid}-${sidCounter++}`
@@ -144,7 +178,11 @@ const runOneQuery = (
     const out = yield* adapter.query({
       sessionId: localSid,
       prompt: emptyPrompt,
-      sessionOptions: { model: "m", idleTimeoutMs: 5_000 },
+      sessionOptions: {
+        model: "m",
+        idleTimeoutMs: 5_000,
+        ...(lane !== undefined ? { sdkOptions: { model: lane } } : {}),
+      },
       ...(boundAccountId !== undefined ? { boundAccountId } : {}),
     })
     yield* Stream.runDrain(out)
@@ -324,6 +362,130 @@ describe("SDKAdapter rotation simulation (WithBroker)", () => {
       await new Promise((r) => setTimeout(r, 20))
       const errorReports = spy.reports.filter((r) => r.kind === "error")
       expect(errorReports.length).toBeGreaterThanOrEqual(1)
+    }
+  })
+
+  // ── B4: usage reported at the SDK result frame with the WINNING model ──────
+  it("B4: result frame → broker.report({kind:'usage'}) with winning model + token totals", async () => {
+    const spy: BrokerSpy = { reports: [] }
+    // A fake SDK that yields a result message with usage; the env recorder is
+    // not needed here, so build a minimal SDKClient.fake directly.
+    const sdkLayer = SDKClient.fake(() =>
+      makeResultWithUsage({
+        input_tokens: 1234,
+        output_tokens: 56,
+        cache_read_input_tokens: 7,
+        cache_creation_input_tokens: 8,
+      }),
+    )
+    const brokerL = AccountBrokerLayer.fromAccounts(seeds).pipe(
+      Layer.provide(Layer.mergeAll(EnvSecretProvider.Default, CoreClock.Default)),
+    )
+    const spiedBrokerL = reportSpyLayer(spy).pipe(Layer.provide(brokerL))
+    const layer = Layer.provideMerge(
+      SDKAdapter.WithBroker,
+      Layer.mergeAll(sdkLayer, baseLayer, spiedBrokerL),
+    )
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* SDKAdapter
+        const store = yield* SessionStore
+        // The broker routes by `sdkOptions.model` (NOT the top-level model), so
+        // set it there to assert the winning model precisely.
+        const localSid = `${sid}-usage-${sidCounter++}`
+        yield* store.create({
+          id: localSid,
+          options: { model: "claude-sonnet-4-5" },
+          createdAt: 0,
+        })
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const out = yield* adapter.query({
+              sessionId: localSid,
+              prompt: emptyPrompt,
+              sessionOptions: {
+                model: "claude-sonnet-4-5",
+                idleTimeoutMs: 5_000,
+                sdkOptions: { model: "claude-sonnet-4-5" },
+              },
+            })
+            yield* Stream.runDrain(out)
+          }),
+        )
+      }).pipe(Effect.provide(layer)),
+    )
+    // Fire-and-forget — give the producer a tick to flush the usage report.
+    await new Promise((r) => setTimeout(r, 20))
+    const usageReports = spy.reports.filter((r) => r.kind === "usage")
+    expect(usageReports.length).toBe(1)
+    const u = usageReports[0]
+    if (u && u.kind === "usage") {
+      expect(u.model).toBe("claude-sonnet-4-5")
+      expect(u.tokensIn).toBe(1234)
+      expect(u.tokensOut).toBe(56)
+      expect(u.cacheRead).toBe(7)
+      expect(u.cacheWrite).toBe(8)
+    }
+  })
+
+  // ── B8: chain advance emits the warn alert ────────────────────────────────
+  it("B8: overflow chain advance logs a warn alert (step 0 cooled → step 1)", async () => {
+    const chains = {
+      chains: {
+        "chat-lane": [
+          { kind: "anthropic", accountId: "a1", model: "claude-sonnet-4-5" },
+          { kind: "anthropic", accountId: "a2", model: "claude-sonnet-4-5" },
+        ],
+      },
+    }
+    const prevChains = process.env["LUNA_OVERFLOW_CHAINS"]
+    process.env["LUNA_OVERFLOW_CHAINS"] = JSON.stringify(chains)
+    try {
+      const recorder = makeRecordingFake()
+      const spy: BrokerSpy = { reports: [] }
+      const layer = buildLayer(recorder, spy)
+
+      // Capture warn-level log messages emitted during the run. `message` may
+      // be a single value or an array depending on the call — stringify both.
+      const warns: string[] = []
+      const captureLogger = Logger.make(({ logLevel, message }) => {
+        if (logLevel.label !== "WARN") return
+        const text = Array.isArray(message)
+          ? message.map((m) => String(m)).join(" ")
+          : String(message)
+        warns.push(text)
+      })
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const adapter = yield* SDKAdapter
+          const store = yield* SessionStore
+          const broker = yield* AccountBroker
+          // (1) First acquire on the lane → lands step 0 (a1), sets lastStep=0.
+          yield* Effect.scoped(runOneQuery(adapter, store, undefined, "chat-lane"))
+          // Cool a1 so the next acquire must advance to step 1.
+          yield* broker.report({
+            accountId: "a1",
+            kind: "rate_limit",
+            retryAfterMs: 60_000,
+          })
+          // (2) Second acquire → advances to step 1 (a2), advancedFrom=0 → warn.
+          yield* Effect.scoped(runOneQuery(adapter, store, undefined, "chat-lane"))
+        }).pipe(
+          Effect.provide(layer),
+          Effect.provide(Logger.replace(Logger.defaultLogger, captureLogger)),
+        ),
+      )
+
+      const advanceWarn = warns.find((w) =>
+        w.includes("overflow chain advanced"),
+      )
+      expect(advanceWarn).toBeDefined()
+      expect(advanceWarn).toContain("step 0 → 1")
+    } finally {
+      if (prevChains === undefined) delete process.env["LUNA_OVERFLOW_CHAINS"]
+      else process.env["LUNA_OVERFLOW_CHAINS"] = prevChains
     }
   })
 })

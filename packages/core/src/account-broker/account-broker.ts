@@ -20,7 +20,8 @@
  * (§5.1 `accounts` table) is deferred to a later phase.
  *
  * Convention for `kind`:
- *   - `anthropic` → matches `acquireSession({model})`
+ *   - provider kind resolved from the model → matches `acquireSession({model})`
+ *     (resolveProfile: claude/`default` → `anthropic`; gemini-* → `google`; *:cloud → `ollama-cloud`)
  *   - `tool-<toolName>` → matches `acquireTool(toolName)`
  *   `acquireTool("foo")` looks up `kind: "tool-foo"`.
  */
@@ -37,6 +38,15 @@ import {
   type SecretRef,
 } from "../secret-provider/index.js"
 import { pickAccount, type AccountRecord } from "./rotation-policy.js"
+import { resolveProfile } from "../provider-profile.js"
+import {
+  pickChainTarget,
+  readOverflowConfig,
+  resolveChain,
+  type ChainStep,
+} from "../overflow-chain.js"
+import { readRateTable } from "../pricing.js"
+import { applyUsage, readCycleMs } from "./spend-meter.js"
 
 /** Public account summary — no secrets. Used by the account-switcher UI. */
 export interface AccountSummary {
@@ -64,6 +74,19 @@ export type UsageReport =
       readonly kind: "rate_limit"
       readonly retryAfterMs?: number
     }
+  | {
+      /** B-phase spend-meter: token usage for one completed turn. Priced via
+       * priceTurnUsd(rateFor(model, account.kind)) and accumulated against the
+       * account's rolling cycle; if it crosses the account's budget the broker
+       * cools the account down until the next cycle boundary. */
+      readonly accountId: string
+      readonly kind: "usage"
+      readonly model: string
+      readonly tokensIn: number
+      readonly tokensOut: number
+      readonly cacheRead?: number
+      readonly cacheWrite?: number
+    }
 
 /** Seed shape used by the layer factory. */
 export interface AccountSeed {
@@ -71,6 +94,29 @@ export interface AccountSeed {
   readonly label?: string
   readonly kind: string
   readonly secretRef: SecretRef
+  /** Optional per-account spend ceiling in USD (B-phase). Seed-level fallback;
+   * a chain step's `budgetUsd` takes precedence when present. */
+  readonly budgetUsd?: number
+}
+
+/**
+ * Result of acquiring a session credential. Widened in the B-phase to carry the
+ * overflow-chain resolution alongside the credential:
+ *   - `credential` — the resolved {@link Credential} (kind/accountId/secret).
+ *   - `model`      — the model string the SDK should be pointed at for the
+ *     winning chain step (the caller's model when no chain is configured).
+ *   - `stepIndex`  — index of the winning step in the lane's chain (0 when no
+ *     chain — the single-step fallback).
+ *   - `advancedFrom` — the lane's last winning step index when it DIFFERS from
+ *     `stepIndex` (i.e. the chain advanced past a previously-used step), so the
+ *     adapter can emit an AccountSwitch alert. Undefined when no advance / no
+ *     chain.
+ */
+export interface AcquiredSession {
+  readonly credential: Credential
+  readonly model: string
+  readonly stepIndex: number
+  readonly advancedFrom?: number
 }
 
 export type AccountError = AllAccountsExhaustedError | ConfigError
@@ -80,7 +126,7 @@ export interface AccountBrokerApi {
     readonly model: string
     readonly budgetUsd?: number
     readonly boundAccountId?: string
-  }) => Effect.Effect<Credential, AccountError, Scope.Scope>
+  }) => Effect.Effect<AcquiredSession, AccountError, Scope.Scope>
 
   readonly acquireTool: (
     toolName: string,
@@ -127,21 +173,37 @@ const fromAccounts = (
         secretRef: s.secretRef,
         inFlight: 0,
         lastUsedMs: 0,
+        ...(s.budgetUsd !== undefined ? { budgetUsd: s.budgetUsd } : {}),
       }))
       const ref = yield* Ref.make<ReadonlyArray<AccountRecord>>(initial)
+      // B6: last winning step index per lane, so the adapter can detect a chain
+      // advance (advancedFrom !== stepIndex). Keyed by lane name; absent until
+      // the first acquire on a lane that resolves a chain.
+      const lastStepRef = yield* Ref.make<ReadonlyMap<string, number>>(new Map())
+      const cycleMs = readCycleMs()
 
-      const acquireWithKind = (
+      /**
+       * Shared acquire core. `pick` runs INSIDE the atomic Ref.modify and
+       * returns either the chosen target (account + the model/stepIndex the
+       * chain resolved) or null (exhausted → AllAccountsExhaustedError with
+       * `kind`). The inFlight bump + finalizer are identical to the prior
+       * single-kind path; only the selection logic is pluggable.
+       */
+      const acquireWith = (
         kind: string,
-        boundId: string | undefined,
-      ): Effect.Effect<Credential, AccountError, Scope.Scope> =>
+        pick: (
+          accounts: ReadonlyArray<AccountRecord>,
+          now: number,
+        ) => { account: AccountRecord; model: string; stepIndex: number } | null,
+      ): Effect.Effect<AcquiredSession, AccountError, Scope.Scope> =>
         Effect.gen(function* () {
           const now = yield* clock.nowMs()
           // Atomic pick + inFlight bump in a single Ref.modify.
           const picked = yield* Ref.modify(ref, (accounts) => {
-            const chosen = pickAccount(accounts, kind, now, boundId)
+            const chosen = pick(accounts, now)
             if (chosen === null) return [null, accounts] as const
             const next = accounts.map((a) =>
-              a.id === chosen.id
+              a.id === chosen.account.id
                 ? { ...a, inFlight: a.inFlight + 1, lastUsedMs: now }
                 : a,
             )
@@ -156,7 +218,7 @@ const fromAccounts = (
           yield* Effect.addFinalizer(() =>
             Ref.update(ref, (accounts) =>
               accounts.map((a) =>
-                a.id === picked.id
+                a.id === picked.account.id
                   ? { ...a, inFlight: Math.max(0, a.inFlight - 1) }
                   : a,
               ),
@@ -164,35 +226,131 @@ const fromAccounts = (
           )
           // Resolve the secret AFTER the finalizer is registered, so a
           // resolution failure still releases inFlight.
-          const resolved = isClaudeCodeLoginSecretRef(picked.secretRef)
+          const resolved = isClaudeCodeLoginSecretRef(picked.account.secretRef)
             ? Redacted.make("")
-            : yield* secrets.get(picked.secretRef)
-          return {
-            kind: picked.kind,
-            accountId: picked.id,
-            secretRef: picked.secretRef,
+            : yield* secrets.get(picked.account.secretRef)
+          const credential: Credential = {
+            kind: picked.account.kind,
+            accountId: picked.account.id,
+            secretRef: picked.account.secretRef,
             resolvedSecret: resolved,
-          } satisfies Credential
+          }
+          return {
+            credential,
+            model: picked.model,
+            stepIndex: picked.stepIndex,
+          } satisfies AcquiredSession
         })
 
+      /**
+       * Provider routing + overflow chain (B6). The model string names a logical
+       * lane; we resolve the lane's chain from `LUNA_OVERFLOW_CHAINS` and walk it
+       * with `pickChainTarget` (REUSING pickAccount's cooldown/LRU/pin logic). No
+       * chain configured ⇒ single-step fallback that is BYTE-IDENTICAL to today:
+       * kind = resolveProfile(model).kind, model = caller's model, stepIndex = 0.
+       */
       const acquireSession: AccountBrokerApi["acquireSession"] = (opts) =>
-        acquireWithKind("anthropic", opts.boundAccountId)
+        Effect.gen(function* () {
+          const lane = opts.model
+          const chain = resolveChain(lane, readOverflowConfig())
+          const fallbackKind = resolveProfile(lane).kind
+          const acq = yield* acquireWith(fallbackKind, (accounts, now) => {
+            if (chain === null || chain.length === 0) {
+              // Single-step fallback — identical to the pre-B6 path.
+              const account = pickAccount(
+                accounts,
+                fallbackKind,
+                now,
+                opts.boundAccountId,
+              )
+              if (account === null) return null
+              return { account, model: lane, stepIndex: 0 }
+            }
+            const hit = pickChainTarget(
+              chain as ReadonlyArray<ChainStep>,
+              accounts,
+              now,
+              opts.boundAccountId,
+            )
+            if (hit === null) return null
+            return {
+              account: hit.account,
+              model: hit.step.model,
+              stepIndex: hit.stepIndex,
+            }
+          })
+          // Compute advancedFrom against the lane's last winning step. Only
+          // meaningful when a chain exists; the no-chain path keeps stepIndex 0
+          // and never advances → advancedFrom stays undefined (back-compat).
+          if (chain === null || chain.length === 0) return acq
+          const lastMap = yield* Ref.get(lastStepRef)
+          const prev = lastMap.get(lane)
+          yield* Ref.update(lastStepRef, (m) =>
+            new Map(m).set(lane, acq.stepIndex),
+          )
+          if (prev !== undefined && prev !== acq.stepIndex) {
+            return { ...acq, advancedFrom: prev }
+          }
+          return acq
+        })
 
       const acquireTool: AccountBrokerApi["acquireTool"] = (toolName) =>
-        acquireWithKind(`tool-${toolName}`, undefined)
+        acquireWith(`tool-${toolName}`, (accounts, now) => {
+          const account = pickAccount(accounts, `tool-${toolName}`, now)
+          if (account === null) return null
+          return { account, model: toolName, stepIndex: 0 }
+        }).pipe(Effect.map((acq) => acq.credential))
 
       const report: AccountBrokerApi["report"] = (usage) =>
         Effect.gen(function* () {
-          if (usage.kind !== "rate_limit") return
+          if (usage.kind === "rate_limit") {
+            const now = yield* clock.nowMs()
+            const cooldownUntil =
+              now + (usage.retryAfterMs ?? DEFAULT_COOLDOWN_MS)
+            yield* Ref.update(ref, (accounts) =>
+              accounts.map((a) =>
+                a.id === usage.accountId
+                  ? { ...a, cooldownUntilMs: cooldownUntil }
+                  : a,
+              ),
+            )
+            return
+          }
+          if (usage.kind !== "usage") return
+          // B2 spend-meter: price + accumulate against the account's rolling
+          // cycle; if the spend crosses the account's budget, cool it down until
+          // the next cycle boundary. A no-budget account accumulates only.
           const now = yield* clock.nowMs()
-          const cooldownUntil =
-            now + (usage.retryAfterMs ?? DEFAULT_COOLDOWN_MS)
+          const rateTable = readRateTable()
           yield* Ref.update(ref, (accounts) =>
-            accounts.map((a) =>
-              a.id === usage.accountId
-                ? { ...a, cooldownUntilMs: cooldownUntil }
-                : a,
-            ),
+            accounts.map((a) => {
+              if (a.id !== usage.accountId) return a
+              const update = applyUsage(
+                a,
+                {
+                  model: usage.model,
+                  tokensIn: usage.tokensIn,
+                  tokensOut: usage.tokensOut,
+                  ...(usage.cacheRead !== undefined
+                    ? { cacheRead: usage.cacheRead }
+                    : {}),
+                  ...(usage.cacheWrite !== undefined
+                    ? { cacheWrite: usage.cacheWrite }
+                    : {}),
+                },
+                a.budgetUsd,
+                now,
+                cycleMs,
+                rateTable,
+              )
+              return {
+                ...a,
+                usage: update.usage,
+                ...(update.cooldownUntilMs !== undefined
+                  ? { cooldownUntilMs: update.cooldownUntilMs }
+                  : {}),
+              }
+            }),
           )
         })
 

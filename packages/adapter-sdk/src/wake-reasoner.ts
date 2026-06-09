@@ -16,6 +16,10 @@ import { Effect, Layer } from "effect"
 import {
   WakeReasoner,
   WakeError,
+  AccountBroker,
+  CLAUDE_CODE_LOGIN_SECRET_REF,
+  profileForKind,
+  readProviderEnv,
 } from "@luna/core"
 import type {
   WakeDigest,
@@ -29,6 +33,7 @@ import {
   type QueryParams,
 } from "./sdk-client.js"
 import { runBoundedQuery, DEFAULT_QUERY_TIMEOUT_MS } from "./bounded-query.js"
+import { buildBrokerEnvOverlay } from "./broker-env-overlay.js"
 
 // ---------------------------------------------------------------------------
 // Prompt builder (pure, exported for unit tests)
@@ -262,14 +267,28 @@ export function parseDigest(
 // ---------------------------------------------------------------------------
 
 /**
- * Model-backed WakeReasoner. Requires SDKClient. The returned `reason`
- * effect has R=never (SDKClient is closed over at layer build time).
+ * Model-backed WakeReasoner. Requires SDKClient + AccountBroker. The returned
+ * `reason` effect has R=never (both are closed over at layer build time); the
+ * per-turn credential acquire runs inside `Effect.scoped` so the broker's
+ * inFlight finalizer fires at turn end without leaking Scope into R.
  */
-export const WakeReasonerDefault: Layer.Layer<WakeReasoner, never, SDKClient> =
-  Layer.effect(
+export const WakeReasonerDefault: Layer.Layer<
+  WakeReasoner,
+  never,
+  SDKClient | AccountBroker
+> = Layer.effect(
     WakeReasoner,
     Effect.gen(function* () {
       const sdk = yield* SDKClient
+      const broker = yield* AccountBroker
+
+      // Provider-seam routing: the wake cron can run on a cheap model. Pick the
+      // model from LUNA_WAKE_MODEL (falling back to the shared LUNA_REASONER_MODEL);
+      // unset → undefined → broker is acquired with "default" → anthropic
+      // login-ref account → no env overlay, no options.model → today's behavior.
+      const wakeModel =
+        (process.env["LUNA_WAKE_MODEL"] ??
+          process.env["LUNA_REASONER_MODEL"])?.trim() || undefined
 
       // Same Bun-on-linux musl-vs-glibc footgun as dream-reasoner: the SDK
       // ships a per-arch claude binary lookup that resolves to a musl variant
@@ -298,21 +317,66 @@ export const WakeReasonerDefault: Layer.Layer<WakeReasoner, never, SDKClient> =
             workspace: inputs.workspaceSlug,
             goals: inputs.openGoals.length,
             actions: inputs.openNextActions.length,
+            wakeModel: wakeModel ?? "(default)",
             pathToClaudeCodeExecutable:
               pathToClaudeCodeExecutable ?? "(unset)",
           })
-          const resultText = yield* boundedResultText(
-            sdk,
-            {
-              prompt,
-              options: {
-                maxTurns: 1,
-                ...(pathToClaudeCodeExecutable
-                  ? { pathToClaudeCodeExecutable }
-                  : {}),
-              },
-            },
-            wakeTimeoutMs,
+          // Acquire the credential + run the bounded turn inside a single Scope
+          // so the broker's inFlight finalizer (Effect.addFinalizer) decrements
+          // at turn end. Skipping Effect.scoped would leak Scope into the reason
+          // effect's R channel (breaking R=never) and phantom-busy the account.
+          const resultText = yield* Effect.scoped(
+            Effect.gen(function* () {
+              const acq = yield* broker
+                .acquireSession({ model: wakeModel ?? "default" })
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new WakeError({
+                        op: "wake/acquire",
+                        message: `failed to acquire account: ${String(cause)}`,
+                        cause,
+                      }),
+                  ),
+                )
+              return yield* boundedResultText(
+                sdk,
+                {
+                  prompt,
+                  options: {
+                    maxTurns: 1,
+                    ...(pathToClaudeCodeExecutable
+                      ? { pathToClaudeCodeExecutable }
+                      : {}),
+                    // #3 (review MAJOR): set the SDK model whenever the broker
+                    // resolved a NON-"default" model — operator's LUNA_WAKE_MODEL
+                    // OR a chain step. NOT gated on wakeModel: a chain on the
+                    // bare "default" lane routes the credential to a gateway, and
+                    // gating on wakeModel would leave Options.model unset → the
+                    // SDK would hit the gateway with no model. Bare "default"
+                    // (no model, no chain) ⇒ unset, byte-identical to today.
+                    ...(acq.model !== "default" ? { model: acq.model } : {}),
+                    // PROVIDER ROUTING: a non-login credential (any broker
+                    // account with a real secret) gets a provider env overlay
+                    // built at the single Redacted.value site. The login-ref
+                    // sentinel (anthropic ambient login) skips the overlay so
+                    // back-compat behavior is byte-identical to today.
+                    ...(acq.credential.secretRef !== CLAUDE_CODE_LOGIN_SECRET_REF
+                      ? {
+                          env: buildBrokerEnvOverlay(
+                            profileForKind(
+                              acq.credential.kind,
+                              readProviderEnv(),
+                            ),
+                            acq.credential.resolvedSecret,
+                          ),
+                        }
+                      : {}),
+                  },
+                },
+                wakeTimeoutMs,
+              )
+            }),
           )
           const digest = yield* parseDigest(inputs.workspaceSlug, resultText)
           yield* Effect.logInfo("[luna/wake] reasoner.reason: digest ready", {

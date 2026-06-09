@@ -304,6 +304,13 @@ export class ChatService extends Effect.Service<ChatService>()(
         }
         const sdkOptions: Record<string, unknown> = {
           includePartialMessages: true,
+          // GAP#3: the SDK adapter routes by `sdkOptions.model` (the broker reads
+          // it for provider selection AND the SDK uses it as the model). The
+          // top-level `SessionOptions.model` below is consumed only by
+          // merge-policy + session-service.fork() — it never reaches the SDK
+          // call. Without this slot a caller-supplied model is silently dropped
+          // and every thread routes to the broker's default (anthropic).
+          ...(opts.model !== undefined ? { model: opts.model } : {}),
           cwd:
             opts.cwd ??
             process.env["LUNA_REPO_ROOT"] ??

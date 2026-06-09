@@ -1,6 +1,7 @@
 export * from "./sdk-client.js"
 export * from "./merge-options.js"
 export * from "./merge-env.js"
+export { buildBrokerEnvOverlay } from "./broker-env-overlay.js"
 export * from "./message-kind.js"
 export * from "./adapter.js"
 export { loadAgents } from "./agent-loader.js"

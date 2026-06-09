@@ -5,7 +5,7 @@
  * NOT depend on adapter-sdk. Putting an SDKClient-using impl in core would
  * create a forbidden core → adapter-sdk → core cycle. So:
  *   - DreamReasoner Tag + FakeReasoner STAY in core/dream/reasoner.ts (unchanged).
- *   - This module exports DreamReasonerDefault: Layer.Layer<DreamReasoner, never, SDKClient | MemoryRouter>
+ *   - This module exports DreamReasonerDefault: Layer.Layer<DreamReasoner, never, SDKClient | MemoryRouter | AccountBroker>
  *
  * Design (§3.1 Dream engine, §2.3 category boundary):
  *   1. Build a deterministic prompt from DreamInputs (sessions → belief candidates;
@@ -28,6 +28,10 @@ import {
   makeBeliefRecord,
   computeAgreement,
   CalibrationStore,
+  AccountBroker,
+  CLAUDE_CODE_LOGIN_SECRET_REF,
+  profileForKind,
+  readProviderEnv,
 } from "@luna/core"
 import type {
   DreamInputs,
@@ -42,6 +46,7 @@ import {
   type QueryParams,
 } from "./sdk-client.js"
 import { runBoundedQuery, DEFAULT_QUERY_TIMEOUT_MS } from "./bounded-query.js"
+import { buildBrokerEnvOverlay } from "./broker-env-overlay.js"
 
 // ---------------------------------------------------------------------------
 // Valid op kinds (mirrors DreamOpKind union)
@@ -341,18 +346,29 @@ function materializeOp(
 // ---------------------------------------------------------------------------
 
 /**
- * Model-backed DreamReasoner layer. Requires SDKClient + MemoryRouter.
- * The returned `reason` effect has R=never (both are closed over at build time).
+ * Model-backed DreamReasoner layer. Requires SDKClient + MemoryRouter +
+ * AccountBroker. The returned `reason` effect has R=never (all are closed over
+ * at build time); the per-turn credential acquire runs inside `Effect.scoped`
+ * so the broker's inFlight finalizer fires at turn end without leaking Scope.
  */
 export const DreamReasonerDefault: Layer.Layer<
   DreamReasoner,
   never,
-  SDKClient | import("@luna/memory").MemoryRouter
+  SDKClient | import("@luna/memory").MemoryRouter | AccountBroker
 > = Layer.effect(
   DreamReasoner,
   Effect.gen(function* () {
     const sdk = yield* SDKClient
     const mem = yield* MemoryRouterTag
+    const broker = yield* AccountBroker
+
+    // Provider-seam routing: the nightly Dream can run on a cheap model. Pick the
+    // model from LUNA_DREAM_MODEL (falling back to the shared LUNA_REASONER_MODEL);
+    // unset → undefined → broker acquired with "default" → anthropic login-ref
+    // account → no env overlay, no options.model → today's behavior exactly.
+    const dreamModel =
+      (process.env["LUNA_DREAM_MODEL"] ??
+        process.env["LUNA_REASONER_MODEL"])?.trim() || undefined
 
     /**
      * The SDK package ships per-arch native binaries under
@@ -415,6 +431,7 @@ export const DreamReasonerDefault: Layer.Layer<
           sessions: inputs.sessions.length,
           memories: inputs.memories.length,
           samples: dreamSamples,
+          dreamModel: dreamModel ?? "(default)",
           pathToClaudeCodeExecutable: pathToClaudeCodeExecutable ?? "(unset)",
         })
 
@@ -425,7 +442,62 @@ export const DreamReasonerDefault: Layer.Layer<
         // new failure modes. (Locking pass-1 as the first sdk.query() call is also
         // what makes the integration test's confidence===0.85 assertion deterministic
         // against the fake's closure counter.)
-        const pass1Text = yield* boundedResultText(sdk, queryParams, dreamTimeoutMs)
+        //
+        // Acquire the credential + run the bounded turn inside a single Scope so
+        // the broker's inFlight finalizer (Effect.addFinalizer) decrements at
+        // turn end. Skipping Effect.scoped would leak Scope into the reason
+        // effect's R channel (breaking R=never) and phantom-busy the account.
+        const pass1Text = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const acq = yield* broker
+              .acquireSession({ model: dreamModel ?? "default" })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new DreamError({
+                      op: "reason",
+                      message: `failed to acquire account: ${String(cause)}`,
+                      cause,
+                    }),
+                ),
+              )
+            return yield* boundedResultText(
+              sdk,
+              {
+                prompt,
+                options: {
+                  maxTurns: 1,
+                  ...(pathToClaudeCodeExecutable
+                    ? { pathToClaudeCodeExecutable }
+                    : {}),
+                  // #3 (review MAJOR): set the SDK model whenever the broker
+                  // resolved a NON-"default" model — operator's LUNA_DREAM_MODEL
+                  // OR a chain step. NOT gated on dreamModel: a chain on the bare
+                  // "default" lane would otherwise leave Options.model unset and
+                  // the SDK would hit the gateway with no model. Bare "default"
+                  // ⇒ unset, byte-identical to today.
+                  ...(acq.model !== "default" ? { model: acq.model } : {}),
+                  // PROVIDER ROUTING: a non-login credential gets a provider env
+                  // overlay built at the single Redacted.value site. The
+                  // login-ref sentinel (anthropic ambient login) skips the
+                  // overlay so back-compat behavior is byte-identical to today.
+                  ...(acq.credential.secretRef !== CLAUDE_CODE_LOGIN_SECRET_REF
+                    ? {
+                        env: buildBrokerEnvOverlay(
+                          profileForKind(
+                            acq.credential.kind,
+                            readProviderEnv(),
+                          ),
+                          acq.credential.resolvedSecret,
+                        ),
+                      }
+                    : {}),
+                },
+              },
+              dreamTimeoutMs,
+            )
+          }),
+        )
         const pass1Raw = yield* parseRawOps(pass1Text)
         const ops: DreamOp[] = []
         for (const raw of pass1Raw) {

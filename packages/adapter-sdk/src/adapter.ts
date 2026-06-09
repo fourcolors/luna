@@ -23,7 +23,6 @@ import {
   Layer,
   Option,
   Queue,
-  Redacted,
   Ref,
   Scope,
   Stream,
@@ -33,10 +32,15 @@ import {
   SDKError,
   SessionStore,
   AccountBroker,
+  profileForKind,
+  readProviderEnv,
+  resolveChain,
+  readOverflowConfig,
   type AccountBrokerApi,
   type SessionOptions,
 } from "@luna/core"
 import { SDKClient, type QueryParams } from "./sdk-client.js"
+import { buildBrokerEnvOverlay } from "./broker-env-overlay.js"
 import type {
   SDKMessage,
   SDKUserMessage,
@@ -255,12 +259,26 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
            * outcome — see lifecycle comment near `runProducer`.
            */
           let acquiredAccountId: string | null = null
+          // B4: the winning chain step's model, captured so the result-frame
+          // usage report can price the turn against the model actually used.
+          let acquiredModel: string | null = null
+          // B9 gate (review BLOCKER #1): only cool-on-throttle when an overflow
+          // chain exists for the lane (somewhere to fail over to). Set in the
+          // acquire block below; defaults false so the no-chain path never cools.
+          let throttleFailoverPossible = false
           if (broker !== null) {
             // Model string is used for broker policy routing; SDK uses
             // Options.model separately. Default when caller omitted it.
             const brokerModel =
               (req.sessionOptions.sdkOptions?.model as string | undefined) ??
               "default"
+            // B9 gate: a configured chain means the operator opted into
+            // failover, so cooling a throttled account (below) is desired. With
+            // no chain, the old catch was a no-op and the transient simply
+            // retried — preserve that to avoid a self-inflicted single-account
+            // outage on a transient 429/529.
+            throttleFailoverPossible =
+              resolveChain(brokerModel, readOverflowConfig()) !== null
             const acquireOpts: {
               model: string
               boundAccountId?: string
@@ -268,7 +286,7 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             if (req.boundAccountId !== undefined) {
               acquireOpts.boundAccountId = req.boundAccountId
             }
-            const cred = yield* broker
+            const acq = yield* broker
               .acquireSession(acquireOpts)
               .pipe(
                 Effect.mapError(
@@ -280,17 +298,59 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
                     }),
                 ),
               )
-            acquiredAccountId = cred.accountId
-            if (cred.secretRef !== CLAUDE_CODE_LOGIN_SECRET_REF) {
-              // SECRET HYGIENE: `Redacted.value(...)` is unwrapped at this
-              // single overlay-construction site only. The plaintext is
-              // immediately handed to the SDK Options object via merge —
-              // it is NEVER stored in a Ref, NEVER logged, NEVER passed to
-              // anything that stringifies. Any future change to this
-              // location must preserve this invariant.
-              const brokerOwnedEnv: Record<string, string> = {
-                CLAUDE_CODE_OAUTH_TOKEN: Redacted.value(cred.resolvedSecret),
-              }
+            acquiredAccountId = acq.credential.accountId
+            // B7: the broker resolved the winning chain step's model — point the
+            // SDK at it. `mergeOptions` lets overrides win. `acquiredModel` is
+            // ALWAYS the winning model (used by the B4 result-frame pricing).
+            acquiredModel = acq.model
+            // Only WRITE overrides.model when the caller actually supplied a
+            // model OR the chain changed it away from the lane default. This
+            // keeps the no-chain + caller-omits-model path BYTE-IDENTICAL: today
+            // that path leaves Options.model unset, so we must not inject
+            // "default" here.
+            const callerSuppliedModel =
+              (req.sessionOptions.sdkOptions?.model as string | undefined) !==
+              undefined
+            if (callerSuppliedModel || acq.model !== brokerModel) {
+              overrides.model = acq.model
+            }
+            // B8: the broker advanced past a previously-used chain step → log a
+            // warning so an operator sees budget/throttle-driven failover. (The
+            // adapter has no Observability dependency, so this is a log line, not
+            // an emitted AccountSwitch event.) Only fires when a chain is
+            // configured AND the winning step differs from the lane's last.
+            if (
+              acq.advancedFrom !== undefined &&
+              acq.advancedFrom !== acq.stepIndex
+            ) {
+              yield* Effect.logWarning(
+                `[SDKAdapter] overflow chain advanced for lane "${brokerModel}": ` +
+                  `step ${acq.advancedFrom} → ${acq.stepIndex} ` +
+                  `(now using account ${acq.credential.accountId}, model ${acq.model})`,
+              )
+            }
+            if (acq.credential.secretRef !== CLAUDE_CODE_LOGIN_SECRET_REF) {
+              // PROVIDER ROUTING: the credential's KIND (the broker's routing
+              // key for the winning chain step) selects a ProviderProfile that
+              // decides which env var the secret is injected into and whether to
+              // point the SDK at a non-Anthropic base URL. Building from the
+              // credential's kind (NOT resolveProfile(brokerModel)) makes the
+              // overlay follow the account the chain actually picked. The native
+              // Anthropic profile (authVar=CLAUDE_CODE_OAUTH_TOKEN, no baseUrl)
+              // reproduces the prior behavior exactly for anthropic accounts.
+              const profile = profileForKind(
+                acq.credential.kind,
+                readProviderEnv(),
+              )
+              // SECRET HYGIENE: the secret is unwrapped ONLY inside
+              // `buildBrokerEnvOverlay` — the single `Redacted.value` site
+              // (grep-gated). The profile selects the auth-var NAME and adds
+              // non-secret base-URL / extra env; the plaintext is handed
+              // straight to the SDK Options env and never stored/logged.
+              const brokerOwnedEnv = buildBrokerEnvOverlay(
+                profile,
+                acq.credential.resolvedSecret,
+              )
               const callerEnv = req.sessionOptions.sdkOptions?.env as
                 | Readonly<Record<string, string | undefined>>
                 | undefined
@@ -388,9 +448,92 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             }
           }
 
+          /**
+           * B4: spend-meter usage report at the SDK `result` frame. The result
+           * message carries the whole-turn token totals under `.usage` (same
+           * field names chat-service reads). We price the turn against the model
+           * the broker actually picked (`acquiredModel`) and fire-and-forget the
+           * report — same pattern as reportSuccess (errors swallowed; a metering
+           * failure must never poison the user's turn).
+           */
+          const reportUsage = (msg: SDKMessage) => {
+            if (
+              broker === null ||
+              acquiredAccountId === null ||
+              acquiredModel === null
+            ) {
+              return
+            }
+            if (sdkMessageKind(msg) !== "result") return
+            const u = (msg as { usage?: {
+              input_tokens?: number
+              output_tokens?: number
+              cache_creation_input_tokens?: number
+              cache_read_input_tokens?: number
+            } }).usage
+            if (!u) return
+            const id = acquiredAccountId
+            const model = acquiredModel
+            Effect.runPromise(
+              broker.report({
+                accountId: id,
+                kind: "usage",
+                model,
+                tokensIn: u.input_tokens ?? 0,
+                tokensOut: u.output_tokens ?? 0,
+                cacheRead: u.cache_read_input_tokens ?? 0,
+                cacheWrite: u.cache_creation_input_tokens ?? 0,
+              }),
+            ).catch(() => {})
+          }
+
+          /**
+           * B9: if the terminal stream error looks like a throttle (HTTP 429,
+           * "rate limit", "quota", "overloaded"), additionally report a
+           * rate_limit so the broker cools the account down and the overflow
+           * chain advances on the next acquire. Parses an optional retry-after
+           * (seconds → ms) from the cause when present. Fire-and-forget.
+           */
+          const reportRateLimitIfThrottled = (cause: unknown) => {
+            if (broker === null || acquiredAccountId === null) return
+            // BLOCKER #1: only cool when failover is possible (a chain exists).
+            // Without a chain, cooling the sole account on a transient throttle
+            // manufactures a ~60s outage — strictly worse than the pre-change
+            // no-op, and breaks no-config byte-identical behavior.
+            if (!throttleFailoverPossible) return
+            const text = String(
+              (cause as { message?: unknown })?.message ?? cause,
+            ).toLowerCase()
+            // #5: word-boundary status codes + explicit throttle phrases, so
+            // "11429 tokens" / "disk quota exceeded" don't false-positive into a
+            // cooldown. Anthropic throttles surface as 429 (rate_limit_error) /
+            // 529 (overloaded_error).
+            const throttled =
+              /\b(429|529)\b/.test(text) ||
+              text.includes("rate limit") ||
+              text.includes("rate_limit") ||
+              text.includes("too many requests") ||
+              text.includes("overloaded")
+            if (!throttled) return
+            // Best-effort retry-after parse: "retry-after: 30" / "retry after 30s".
+            const m = text.match(/retry[-_ ]?after[^0-9]*([0-9]+)/)
+            const retryAfterMs =
+              m && m[1] ? Number(m[1]) * 1000 : undefined
+            const id = acquiredAccountId
+            Effect.runPromise(
+              broker.report({
+                accountId: id,
+                kind: "rate_limit",
+                ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+              }),
+            ).catch(() => {})
+          }
+
           const runProducer = async () => {
             try {
               for await (const msg of handle as AsyncIterable<SDKMessage>) {
+                // B4: meter the turn at the result frame (fire-and-forget).
+                reportUsage(msg)
                 await Effect.runPromise(
                   Queue.offer(queue, { _tag: "value", value: msg }),
                 )
@@ -399,6 +542,11 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
               await Effect.runPromise(Queue.offer(queue, { _tag: "end" }))
             } catch (cause) {
               reportError()
+              // B9: classify a 429 / quota / overloaded terminal failure and
+              // additionally report it as a rate_limit so the broker cools the
+              // account down (the chain advances on the next acquire). Best-
+              // effort: a classification miss just skips the extra report.
+              reportRateLimitIfThrottled(cause)
               await Effect.runPromise(
                 Queue.offer(queue, {
                   _tag: "error",

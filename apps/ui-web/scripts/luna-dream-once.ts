@@ -30,7 +30,14 @@
  *   /root/.bun/bin/bun run scripts/luna-dream-once.ts
  */
 import { Effect, Layer, ManagedRuntime } from "effect"
-import { Clock, DreamStore, SessionStore, runDream } from "@luna/core"
+import {
+  Clock,
+  DreamStore,
+  SessionStore,
+  runDream,
+  AccountBrokerLayer,
+  EnvSecretProvider,
+} from "@luna/core"
 import { DreamReasonerDefault, SDKClient } from "@luna/adapter-sdk"
 import {
   MemoryRouterLayer,
@@ -61,9 +68,24 @@ const dreamStoreL = DreamStore.makeLayer(paths.lunaDbPath).pipe(
   Layer.provide(clockL),
 )
 const sdkClientL = SDKClient.Default
+
+// A6: DreamReasonerDefault now requires AccountBroker — it acquires a credential
+// per reason() through the provider seam (LUNA_DREAM_MODEL ?? LUNA_REASONER_MODEL).
+// Build the SQL broker (the production path; this script runs under bun, so
+// bun:sqlite is available) hydrated from the same accounts table the live server
+// uses, honoring LUNA_DB_PATH. SecretProvider is EnvSecretProvider here (resolves
+// `env:` refs); the canonical `claude-code:login` accounts skip secret resolution
+// entirely, so with LUNA_DREAM_MODEL unset this reproduces today's ambient-login
+// behavior. (Op-token routing is NOT mirrored here — see the chat-server boot for
+// the full RoutedOp→Env chain; for this debug script env-only resolution suffices.)
+const dbOverride = process.env["LUNA_DB_PATH"]
+const brokerL = AccountBrokerLayer.fromSql(
+  dbOverride !== undefined && dbOverride.length > 0 ? { dbPath: dbOverride } : {},
+).pipe(Layer.provide(EnvSecretProvider.Default), Layer.provide(clockL))
 const dreamReasonerL = DreamReasonerDefault.pipe(
   Layer.provide(sdkClientL),
   Layer.provide(memoryRouterL),
+  Layer.provide(brokerL),
 )
 const base = Layer.mergeAll(
   clockL,

@@ -824,6 +824,15 @@ export interface BuildDreamCronLayerOpts {
   readonly storeL: Layer.Layer<SessionStore>
   readonly clockL: Layer.Layer<Clock>
   /**
+   * AccountBroker layer. A5/A6: DreamReasonerDefault now requires AccountBroker
+   * (it acquires a credential per reason() through the provider seam so the
+   * nightly Dream can run on a cheap model via LUNA_DREAM_MODEL). The live boot
+   * passes the same `brokerL` (AccountBrokerLayer.fromSql) it wires into the
+   * chat adapter; the boot smoke passes a seeded fake broker (fromAccounts) so
+   * the graph still composes without a missing-service defect.
+   */
+  readonly brokerL: Layer.Layer<AccountBroker>
+  /**
    * DreamStore layer to use. The live boot passes
    * `DreamStore.makeLayer(paths.lunaDbPath).pipe(Layer.provide(clockL))`
    * (which requires LunaSqliteBootstrap, satisfied at the bottom of
@@ -850,14 +859,17 @@ export interface BuildDreamCronLayerOpts {
 }
 
 export const buildDreamCronLayer = (opts: BuildDreamCronLayerOpts) => {
-  const { expr, sdkClientL, memoryRouterL, storeL, clockL, dreamStoreL } = opts
-  // DreamReasonerDefault requires BOTH SDKClient AND MemoryRouter (closes over
-  // both at build time so reason()'s R channel is never). SDKClient is the real
-  // dependency this smoke proves is satisfiable — SDKClient.fake keeps it real
-  // while making zero model calls.
+  const { expr, sdkClientL, memoryRouterL, storeL, clockL, dreamStoreL, brokerL } =
+    opts
+  // DreamReasonerDefault requires SDKClient, MemoryRouter AND AccountBroker
+  // (closes over all three at build time so reason()'s R channel is never).
+  // SDKClient is the real dependency this smoke proves is satisfiable —
+  // SDKClient.fake keeps it real while making zero model calls. brokerL is the
+  // provider-seam dependency (A5): the reasoner acquires a credential per turn.
   const dreamReasonerL = DreamReasonerDefault.pipe(
     Layer.provide(sdkClientL),
     Layer.provide(memoryRouterL),
+    Layer.provide(brokerL),
   )
   const base = DreamCronLayer(expr).pipe(
     Layer.provide(dreamStoreL),
@@ -934,10 +946,21 @@ export interface BuildWakeCronLayerOpts {
    * workspace-scoped wake_log table directly.
    */
   readonly agentNotesL: Layer.Layer<AgentNotesService>
+  /**
+   * AccountBroker layer. A5/A6: WakeReasonerDefault now requires AccountBroker
+   * (it acquires a credential per reason() through the provider seam so the
+   * wake cron can run on a cheap model via LUNA_WAKE_MODEL). The live boot
+   * passes the same `brokerL` it wires into the chat adapter; the boot smoke
+   * passes a seeded fake broker (fromAccounts) so the graph still composes.
+   */
+  readonly brokerL: Layer.Layer<AccountBroker>
 }
 
 export const buildWakeCronLayer = (opts: BuildWakeCronLayerOpts) => {
-  const wakeReasonerL = WakeReasonerDefault.pipe(Layer.provide(opts.sdkClientL))
+  const wakeReasonerL = WakeReasonerDefault.pipe(
+    Layer.provide(opts.sdkClientL),
+    Layer.provide(opts.brokerL),
+  )
   const wakeLogStoreL = WakeLogStore.makeLayer(
     `${opts.workspacePath}/.workspace/workspace.db`,
   )
@@ -1133,6 +1156,9 @@ export const buildBaseLayer = (
     clockL,
     dreamStoreL,
     calibrationStoreL,
+    // A5: same broker the chat adapter uses — DreamReasonerDefault acquires a
+    // credential per reason() through the provider seam (LUNA_DREAM_MODEL).
+    brokerL,
   })
 
   // Wake cron (Path A): WakeReasoner inspects the workspace state at each
@@ -1163,6 +1189,9 @@ export const buildBaseLayer = (
         sdkClientL,
         clockL,
         agentNotesL,
+        // A5: same broker the chat adapter uses — WakeReasonerDefault acquires a
+        // credential per reason() through the provider seam (LUNA_WAKE_MODEL).
+        brokerL,
       })
     : null
 

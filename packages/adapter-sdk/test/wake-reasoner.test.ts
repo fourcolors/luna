@@ -14,7 +14,15 @@
  */
 import { describe, expect, it } from "vitest"
 import { Effect, Layer } from "effect"
-import { WakeError, WakeReasoner } from "@luna/core"
+import {
+  WakeError,
+  WakeReasoner,
+  AccountBroker,
+  AccountBrokerLayer,
+  EnvSecretProvider,
+  Clock,
+  CLAUDE_CODE_LOGIN_SECRET_REF,
+} from "@luna/core"
 import type { WakeInputs } from "@luna/core"
 import { SDKClient } from "../src/sdk-client.js"
 import {
@@ -28,6 +36,19 @@ import {
   makeResultMessage,
 } from "./fake-sdk.js"
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk"
+
+// ---------------------------------------------------------------------------
+// Fake AccountBroker (A8/test): WakeReasonerDefault now requires AccountBroker.
+// Seed ONE google account (resolvable via env:WAKE_GOOGLE_TOK) + ONE anthropic
+// login-ref account (the sentinel that skips the env overlay → back-compat).
+// Built from in-memory `fromAccounts` (NO bun:sqlite) + EnvSecretProvider + Clock.
+// ---------------------------------------------------------------------------
+const GOOGLE_TOK_ENV = "WAKE_GOOGLE_TOK"
+const brokerFake = (): Layer.Layer<AccountBroker> =>
+  AccountBrokerLayer.fromAccounts([
+    { id: "g1", kind: "google", secretRef: `env:${GOOGLE_TOK_ENV}` },
+    { id: "a1", kind: "anthropic", secretRef: CLAUDE_CODE_LOGIN_SECRET_REF },
+  ]).pipe(Layer.provide(EnvSecretProvider.Default), Layer.provide(Clock.Default))
 
 const baseInputs: WakeInputs = {
   workspaceSlug: "luna",
@@ -72,11 +93,19 @@ const fakeClientNoSuccess = (): Layer.Layer<SDKClient> =>
     return makeFakeQuery({ messages: [assistantMsg] }).query
   })
 
-const runReason = (inputs: WakeInputs, sdkLayer: Layer.Layer<SDKClient>) =>
+const runReason = (
+  inputs: WakeInputs,
+  sdkLayer: Layer.Layer<SDKClient>,
+  brokerLayer: Layer.Layer<AccountBroker> = brokerFake(),
+) =>
   Effect.gen(function* () {
     const r = yield* WakeReasoner
     return yield* r.reason(inputs)
-  }).pipe(Effect.provide(WakeReasonerDefault), Effect.provide(sdkLayer))
+  }).pipe(
+    Effect.provide(WakeReasonerDefault),
+    Effect.provide(sdkLayer),
+    Effect.provide(brokerLayer),
+  )
 
 describe("buildWakePrompt", () => {
   it("includes workspace slug, md, goals, actions, wakes", () => {
@@ -265,4 +294,111 @@ describe("WakeReasonerDefault", () => {
     },
     10_000,
   )
+
+  // -------------------------------------------------------------------------
+  // PROVIDER SEAM (A3): the wake cron acquires a credential per reason()
+  // through the AccountBroker and routes the SDK at a cheap model via
+  // LUNA_WAKE_MODEL. These tests capture the SDK `options` the reasoner builds.
+  // -------------------------------------------------------------------------
+  describe("provider seam (broker routing)", () => {
+    /** Capture-only SDKClient.fake that records the last options it saw. */
+    const recordingClient = (sink: {
+      last: { options: Record<string, unknown> } | null
+    }): Layer.Layer<SDKClient> =>
+      SDKClient.fake((params) => {
+        sink.last = { options: (params.options ?? {}) as Record<string, unknown> }
+        const r = {
+          ...makeResultMessage("sid", "uuid-cap"),
+          result: JSON.stringify({
+            observations: [],
+            picked_action_id: null,
+            picked_reason: "x",
+            proposed_actions: [],
+          }),
+        }
+        return makeFakeQuery({ messages: [r] }).query
+      })
+
+    it("(a) LUNA_WAKE_MODEL + a google account → options.env has the gateway overlay + options.model set", async () => {
+      const sink: { last: { options: Record<string, unknown> } | null } = {
+        last: null,
+      }
+      const prevModel = process.env["LUNA_WAKE_MODEL"]
+      const prevTok = process.env[GOOGLE_TOK_ENV]
+      process.env["LUNA_WAKE_MODEL"] = "gemini-2.5-flash"
+      process.env[GOOGLE_TOK_ENV] = "google-secret-xyz"
+      try {
+        await Effect.runPromise(runReason(baseInputs, recordingClient(sink)))
+      } finally {
+        if (prevModel === undefined) delete process.env["LUNA_WAKE_MODEL"]
+        else process.env["LUNA_WAKE_MODEL"] = prevModel
+        if (prevTok === undefined) delete process.env[GOOGLE_TOK_ENV]
+        else process.env[GOOGLE_TOK_ENV] = prevTok
+      }
+      const opts = sink.last!.options
+      expect(opts["model"]).toBe("gemini-2.5-flash")
+      const env = opts["env"] as Record<string, string> | undefined
+      expect(env).toBeDefined()
+      // google profile → ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL (gateway).
+      expect(env!["ANTHROPIC_AUTH_TOKEN"]).toBe("google-secret-xyz")
+      expect(env!["ANTHROPIC_BASE_URL"]).toBeDefined()
+    })
+
+    it("(b) BACK-COMPAT: no LUNA_WAKE_MODEL + login-ref anthropic account → options.env undefined AND options.model undefined", async () => {
+      const sink: { last: { options: Record<string, unknown> } | null } = {
+        last: null,
+      }
+      const prevModel = process.env["LUNA_WAKE_MODEL"]
+      const prevReasoner = process.env["LUNA_REASONER_MODEL"]
+      delete process.env["LUNA_WAKE_MODEL"]
+      delete process.env["LUNA_REASONER_MODEL"]
+      try {
+        // Only the anthropic login-ref account is reachable (model "default" →
+        // anthropic kind). No google account is picked.
+        await Effect.runPromise(runReason(baseInputs, recordingClient(sink)))
+      } finally {
+        if (prevModel !== undefined) process.env["LUNA_WAKE_MODEL"] = prevModel
+        if (prevReasoner !== undefined)
+          process.env["LUNA_REASONER_MODEL"] = prevReasoner
+      }
+      const opts = sink.last!.options
+      expect("model" in opts).toBe(false)
+      expect("env" in opts).toBe(false)
+      expect(opts["maxTurns"]).toBe(1)
+    })
+
+    it("(c) EXHAUSTION: broker with no matching account → reason() returns a WakeError (Left), does NOT throw", async () => {
+      const sink: { last: { options: Record<string, unknown> } | null } = {
+        last: null,
+      }
+      // Broker seeded ONLY with an anthropic account; ask for a google model →
+      // no matching account → AllAccountsExhaustedError → mapped to WakeError.
+      const anthropicOnlyBroker: Layer.Layer<AccountBroker> =
+        AccountBrokerLayer.fromAccounts([
+          { id: "a1", kind: "anthropic", secretRef: CLAUDE_CODE_LOGIN_SECRET_REF },
+        ]).pipe(
+          Layer.provide(EnvSecretProvider.Default),
+          Layer.provide(Clock.Default),
+        )
+      const prevModel = process.env["LUNA_WAKE_MODEL"]
+      process.env["LUNA_WAKE_MODEL"] = "gemini-2.5-flash"
+      try {
+        const result = await Effect.runPromise(
+          Effect.either(
+            runReason(baseInputs, recordingClient(sink), anthropicOnlyBroker),
+          ),
+        )
+        expect(result._tag).toBe("Left")
+        if (result._tag === "Left") {
+          expect(result.left).toBeInstanceOf(WakeError)
+          expect(result.left.op).toBe("wake/acquire")
+        }
+        // The SDK was never invoked because acquire failed first.
+        expect(sink.last).toBeNull()
+      } finally {
+        if (prevModel === undefined) delete process.env["LUNA_WAKE_MODEL"]
+        else process.env["LUNA_WAKE_MODEL"] = prevModel
+      }
+    })
+  })
 })

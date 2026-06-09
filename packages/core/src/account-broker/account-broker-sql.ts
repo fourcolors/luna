@@ -56,10 +56,20 @@ import {
   AccountBroker,
   type AccountBrokerApi,
   type AccountError,
+  type AcquiredSession,
   type Credential,
   type AccountSummary,
 } from "./account-broker.js"
 import { pickAccount, type AccountRecord } from "./rotation-policy.js"
+import { resolveProfile } from "../provider-profile.js"
+import {
+  pickChainTarget,
+  readOverflowConfig,
+  resolveChain,
+  type ChainStep,
+} from "../overflow-chain.js"
+import { readRateTable } from "../pricing.js"
+import { applyUsage, readCycleMs } from "./spend-meter.js"
 
 // ── Schema (§5.1, byte-exact columns) ──────────────────────────────────────
 const SCHEMA_V1 = `
@@ -100,6 +110,72 @@ interface AccountsRow {
 
 const cfgErr = (key: string, message: string) =>
   new ConfigError({ module: "account-broker", key, message })
+
+/**
+ * Parse the §5.1 `usage_json` blob into the in-memory spend state. The blob
+ * packs BOTH the rolling accumulator AND the per-account budget (§5.1: no new
+ * column — `budget_usd` lives INSIDE usage_json). Shape (all optional):
+ *   { "cycleStartMs": number, "spentUsd": number, "budgetUsd": number }
+ *
+ * Defensive: malformed / missing JSON ⇒ no usage, no budget (telemetry-only),
+ * mirroring the readOverflowConfig/readRateTable style — never throws.
+ *
+ * `nowMs` + `cycleMs` reset a stale accumulator at hydrate: if the persisted
+ * cycle has already elapsed (`now >= cycleStartMs + cycleMs`), the usage is
+ * dropped so a restart after the cycle boundary starts fresh.
+ */
+function parseUsageJson(
+  raw: string,
+  nowMs: number,
+  cycleMs: number,
+): {
+  usage?: { cycleStartMs: number; spentUsd: number }
+  budgetUsd?: number
+} {
+  if (!raw || raw.trim() === "" || raw.trim() === "{}") return {}
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (parsed === null || typeof parsed !== "object") return {}
+    const o = parsed as Record<string, unknown>
+    const out: {
+      usage?: { cycleStartMs: number; spentUsd: number }
+      budgetUsd?: number
+    } = {}
+    if (typeof o["budgetUsd"] === "number" && Number.isFinite(o["budgetUsd"])) {
+      out.budgetUsd = o["budgetUsd"]
+    }
+    if (
+      typeof o["cycleStartMs"] === "number" &&
+      Number.isFinite(o["cycleStartMs"]) &&
+      typeof o["spentUsd"] === "number" &&
+      Number.isFinite(o["spentUsd"])
+    ) {
+      const cycleStartMs = o["cycleStartMs"]
+      // Reset the accumulator if the persisted cycle has already elapsed.
+      if (nowMs < cycleStartMs + cycleMs) {
+        out.usage = { cycleStartMs, spentUsd: o["spentUsd"] }
+      }
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+/** Serialize the spend state back into the §5.1 `usage_json` blob (budget packed
+ * IN — no new column). Always includes budgetUsd when known so it round-trips. */
+function serializeUsageJson(
+  usage: { cycleStartMs: number; spentUsd: number } | undefined,
+  budgetUsd: number | undefined,
+): string {
+  const o: Record<string, number> = {}
+  if (budgetUsd !== undefined) o["budgetUsd"] = budgetUsd
+  if (usage !== undefined) {
+    o["cycleStartMs"] = usage.cycleStartMs
+    o["spentUsd"] = usage.spentUsd
+  }
+  return JSON.stringify(o)
+}
 
 const defaultDbPath = (): string => path.join(os.homedir(), ".luna", "luna.db")
 
@@ -178,6 +254,8 @@ const fromSql = (
       // when the surrounding scope finalizes.
       yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
 
+      const cycleMs = readCycleMs()
+
       // Hydrate rows → AccountRecord[].
       const rows = db.query("SELECT * FROM accounts").all() as AccountsRow[]
 
@@ -205,6 +283,30 @@ const fromSql = (
           typeof r.cooldown_ms === "number" && r.cooldown_ms > 0
             ? r.cooldown_ms
             : 0
+        // B3: hydrate the spend accumulator + budget from usage_json (budget is
+        // packed IN — §5.1, no new column). A persisted cycle that has already
+        // elapsed is reset to fresh at hydrate.
+        const spend = parseUsageJson(r.usage_json ?? "{}", now, cycleMs)
+        // BLOCKER #2: a BUDGET cooldown is an ABSOLUTE cycle boundary
+        // (cycleStartMs + cycleMs). Re-DERIVE it from the persisted spend state
+        // rather than trusting `cooldown_ms` — which is stored as remaining-ms
+        // and would re-anchor to `now` on every restart, shoving a budget
+        // cooldown forward indefinitely (permanent lockout under frequent
+        // restarts + §7.5 divergence from the in-memory broker). `cooldown_ms`
+        // now carries only TRANSIENT rate-limit cooldowns. parseUsageJson has
+        // already reset a stale cycle, so an over-budget spend here is live.
+        const budgetCooldownUntil =
+          spend.budgetUsd !== undefined &&
+          spend.usage !== undefined &&
+          spend.usage.spentUsd >= spend.budgetUsd
+            ? spend.usage.cycleStartMs + cycleMs
+            : undefined
+        const cooldownUntilMs =
+          budgetCooldownUntil !== undefined
+            ? budgetCooldownUntil
+            : cooldownMs > 0
+              ? now + cooldownMs
+              : undefined
         const record: AccountRecord = {
           id: r.id,
           label: r.label || r.id,
@@ -212,25 +314,36 @@ const fromSql = (
           secretRef: r.secret_ref as SecretRef,
           inFlight: 0,
           lastUsedMs: 0,
-          ...(cooldownMs > 0 ? { cooldownUntilMs: now + cooldownMs } : {}),
+          ...(cooldownUntilMs !== undefined && cooldownUntilMs > now
+            ? { cooldownUntilMs }
+            : {}),
+          ...(spend.budgetUsd !== undefined
+            ? { budgetUsd: spend.budgetUsd }
+            : {}),
+          ...(spend.usage !== undefined ? { usage: spend.usage } : {}),
         }
         initial.push(record)
       }
 
       const ref = yield* Ref.make<ReadonlyArray<AccountRecord>>(initial)
+      // B6: last winning step index per lane (mirror of the in-memory broker).
+      const lastStepRef = yield* Ref.make<ReadonlyMap<string, number>>(new Map())
 
-      // ── Public API (mirrors fromAccounts) ───────────────────────────────
-      const acquireWithKind = (
+      // ── Public API (mirrors fromAccounts, including B6 chain + B3 meter) ──
+      const acquireWith = (
         kind: string,
-        boundId: string | undefined,
-      ): Effect.Effect<Credential, AccountError, Scope.Scope> =>
+        pick: (
+          accounts: ReadonlyArray<AccountRecord>,
+          now: number,
+        ) => { account: AccountRecord; model: string; stepIndex: number } | null,
+      ): Effect.Effect<AcquiredSession, AccountError, Scope.Scope> =>
         Effect.gen(function* () {
           const t = yield* clock.nowMs()
           const picked = yield* Ref.modify(ref, (accounts) => {
-            const chosen = pickAccount(accounts, kind, t, boundId)
+            const chosen = pick(accounts, t)
             if (chosen === null) return [null, accounts] as const
             const next = accounts.map((a) =>
-              a.id === chosen.id
+              a.id === chosen.account.id
                 ? { ...a, inFlight: a.inFlight + 1, lastUsedMs: t }
                 : a,
             )
@@ -244,42 +357,166 @@ const fromSql = (
           yield* Effect.addFinalizer(() =>
             Ref.update(ref, (accounts) =>
               accounts.map((a) =>
-                a.id === picked.id
+                a.id === picked.account.id
                   ? { ...a, inFlight: Math.max(0, a.inFlight - 1) }
                   : a,
               ),
             ),
           )
-          const resolved = isClaudeCodeLoginSecretRef(picked.secretRef)
+          const resolved = isClaudeCodeLoginSecretRef(picked.account.secretRef)
             ? Redacted.make("")
-            : yield* secrets.get(picked.secretRef)
-          return {
-            kind: picked.kind,
-            accountId: picked.id,
-            secretRef: picked.secretRef,
+            : yield* secrets.get(picked.account.secretRef)
+          const credential: Credential = {
+            kind: picked.account.kind,
+            accountId: picked.account.id,
+            secretRef: picked.account.secretRef,
             resolvedSecret: resolved,
-          } satisfies Credential
+          }
+          return {
+            credential,
+            model: picked.model,
+            stepIndex: picked.stepIndex,
+          } satisfies AcquiredSession
         })
 
+      // Provider routing + overflow chain (B6, mirror of the in-memory broker).
+      // No chain configured ⇒ single-step fallback BYTE-IDENTICAL to today.
       const acquireSession: AccountBrokerApi["acquireSession"] = (o) =>
-        acquireWithKind("anthropic", o.boundAccountId)
+        Effect.gen(function* () {
+          const lane = o.model
+          const chain = resolveChain(lane, readOverflowConfig())
+          const fallbackKind = resolveProfile(lane).kind
+          const acq = yield* acquireWith(fallbackKind, (accounts, now) => {
+            if (chain === null || chain.length === 0) {
+              const account = pickAccount(
+                accounts,
+                fallbackKind,
+                now,
+                o.boundAccountId,
+              )
+              if (account === null) return null
+              return { account, model: lane, stepIndex: 0 }
+            }
+            const hit = pickChainTarget(
+              chain as ReadonlyArray<ChainStep>,
+              accounts,
+              now,
+              o.boundAccountId,
+            )
+            if (hit === null) return null
+            return {
+              account: hit.account,
+              model: hit.step.model,
+              stepIndex: hit.stepIndex,
+            }
+          })
+          if (chain === null || chain.length === 0) return acq
+          const lastMap = yield* Ref.get(lastStepRef)
+          const prev = lastMap.get(lane)
+          yield* Ref.update(lastStepRef, (m) =>
+            new Map(m).set(lane, acq.stepIndex),
+          )
+          if (prev !== undefined && prev !== acq.stepIndex) {
+            return { ...acq, advancedFrom: prev }
+          }
+          return acq
+        })
 
       const acquireTool: AccountBrokerApi["acquireTool"] = (toolName) =>
-        acquireWithKind(`tool-${toolName}`, undefined)
+        acquireWith(`tool-${toolName}`, (accounts, now) => {
+          const account = pickAccount(accounts, `tool-${toolName}`, now)
+          if (account === null) return null
+          return { account, model: toolName, stepIndex: 0 }
+        }).pipe(Effect.map((acq) => acq.credential))
+
+      // Write-back helper: persist a single account's mutable fields (§5.1
+      // `usage_json` + `cooldown_ms`) so a budget-exhausted account SURVIVES a
+      // restart still cooled down until the cycle reset. `cooldown_ms` is stored
+      // as remaining ms (it hydrates as `now + cooldown_ms`), matching the boot
+      // contract; a non-cooled account writes 0.
+      const writeBack = (a: AccountRecord, nowMs: number): void => {
+        const usageJson = serializeUsageJson(a.usage, a.budgetUsd)
+        // BLOCKER #2: persist `cooldown_ms` ONLY for TRANSIENT (rate-limit)
+        // cooldowns. A budget cooldown is an absolute cycle boundary re-derived
+        // at hydrate from usage_json, so writing it as remaining-ms here would
+        // re-anchor it forward on restart. A budget-exhausted account writes 0.
+        const budgetExhausted =
+          a.budgetUsd !== undefined &&
+          a.usage !== undefined &&
+          a.usage.spentUsd >= a.budgetUsd
+        const remainingCooldownMs =
+          !budgetExhausted &&
+          a.cooldownUntilMs !== undefined &&
+          a.cooldownUntilMs > nowMs
+            ? a.cooldownUntilMs - nowMs
+            : 0
+        db.query(
+          "UPDATE accounts SET usage_json = ?, cooldown_ms = ? WHERE id = ?",
+        ).run(usageJson, remainingCooldownMs, a.id)
+      }
 
       const report: AccountBrokerApi["report"] = (usage) =>
         Effect.gen(function* () {
-          if (usage.kind !== "rate_limit") return
+          if (usage.kind === "rate_limit") {
+            const t = yield* clock.nowMs()
+            const cooldownUntil =
+              t + (usage.retryAfterMs ?? DEFAULT_COOLDOWN_MS)
+            yield* Ref.update(ref, (accounts) =>
+              accounts.map((a) =>
+                a.id === usage.accountId
+                  ? { ...a, cooldownUntilMs: cooldownUntil }
+                  : a,
+              ),
+            )
+            // Persist the cooldown so a rate-limited account survives restart
+            // (cooldown_ms already round-trips at hydrate).
+            const updated = yield* Ref.get(ref)
+            const acct = updated.find((a) => a.id === usage.accountId)
+            if (acct) yield* Effect.sync(() => writeBack(acct, t))
+            return
+          }
+          if (usage.kind !== "usage") return
+          // B3 spend-meter: same accumulate/exhaust as B2, then write back.
           const t = yield* clock.nowMs()
-          const cooldownUntil =
-            t + (usage.retryAfterMs ?? DEFAULT_COOLDOWN_MS)
+          const rateTable = readRateTable()
           yield* Ref.update(ref, (accounts) =>
-            accounts.map((a) =>
-              a.id === usage.accountId
-                ? { ...a, cooldownUntilMs: cooldownUntil }
-                : a,
-            ),
+            accounts.map((a) => {
+              if (a.id !== usage.accountId) return a
+              const update = applyUsage(
+                a,
+                {
+                  model: usage.model,
+                  tokensIn: usage.tokensIn,
+                  tokensOut: usage.tokensOut,
+                  ...(usage.cacheRead !== undefined
+                    ? { cacheRead: usage.cacheRead }
+                    : {}),
+                  ...(usage.cacheWrite !== undefined
+                    ? { cacheWrite: usage.cacheWrite }
+                    : {}),
+                },
+                a.budgetUsd,
+                t,
+                cycleMs,
+                rateTable,
+              )
+              return {
+                ...a,
+                usage: update.usage,
+                ...(update.cooldownUntilMs !== undefined
+                  ? { cooldownUntilMs: update.cooldownUntilMs }
+                  : {}),
+              }
+            }),
           )
+          // WRITE BACK usage_json + cooldown_ms for the affected account. Even
+          // with no budget this persists spend telemetry (survives restart);
+          // routing is unaffected — pickAccount never reads usage. (Review #7
+          // noted the per-turn write as a benign no-config delta; kept, since
+          // B3.1 asserts telemetry persistence and it's harmless.)
+          const updated = yield* Ref.get(ref)
+          const acct = updated.find((a) => a.id === usage.accountId)
+          if (acct) yield* Effect.sync(() => writeBack(acct, t))
         })
 
       const _inspect: AccountBrokerApi["_inspect"] = () => Ref.get(ref)
