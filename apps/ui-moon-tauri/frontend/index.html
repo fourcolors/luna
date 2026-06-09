@@ -597,7 +597,26 @@
       flex-direction: column;
       gap: 12px;
     }
-    
+
+    /* Every message / timeline is a flex item in this column. Default
+       flex-shrink is 1, so when the combined content is taller than the panel,
+       flexbox COMPRESSES the items to fit instead of letting the container
+       scroll. A `.timeline` sets `overflow:hidden`, which (per the flexbox
+       automatic-minimum-size rule, CSS Flexbox §4.5) lets it be shrunk all the
+       way down to its one-line summary — clipping every tool step inside it AND
+       making scrollHeight == clientHeight, so .chat-messages can't scroll at
+       all. That is the "long task → 'Working on it…' gets cut off and scroll is
+       dead" bug. Pinning flex-shrink:0 keeps each child at its natural height;
+       the overflow then spills into .chat-messages' overflow-y:auto and scrolls
+       normally. (Reproduces identically in Blink and WebKit — it's flex layout,
+       not an engine quirk.)
+       The universal `> *` is intentional: the invariant is that EVERY direct
+       child of the scroll region must keep its natural height so the list
+       scrolls rather than compressing. Scoping this to specific classes (.msg,
+       .timeline, …) would silently re-break the moment a new message/card kind
+       is added under .chat-messages. */
+    .chat-messages > * { flex-shrink: 0; }
+
     .msg {
       max-width: 82%;
       padding: 9px 13px;

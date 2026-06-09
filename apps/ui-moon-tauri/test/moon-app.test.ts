@@ -1836,5 +1836,51 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
     })
   })
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: Long-running turn timeline stays scrollable
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Long-running turn timeline stays scrollable (regression)', () => {
+    // Layout regression guard. jsdom does NO layout, so we can't measure
+    // scrollHeight/clientHeight here — this pins the CSS rule that fixes the bug.
+    //
+    // Bug: `.chat-messages` is `flex:1` AND a column flex container. Its children
+    // default to flex-shrink:1, and a `.timeline` sets `overflow:hidden` (which
+    // gives it an automatic minimum size of 0 per CSS Flexbox §4.5). So on a long
+    // agentic turn, flexbox COMPRESSED the streaming timeline down to its one-line
+    // "Working on it…" summary — clipping every tool step inside it and making
+    // scrollHeight == clientHeight, so .chat-messages could not scroll at all.
+    // The content was rendered but unreachable. Fix: pin the direct children to
+    // flex-shrink:0 so each keeps its natural height and the overflow scrolls.
+    // (Reproduced + fix verified in both WebKit and Blink via a Playwright layout
+    // probe driving the real handleFrame pipeline; see the PR description.)
+    //
+    // We can't measure layout in jsdom, but jsdom DOES resolve getComputedStyle
+    // through the `> *` combinator, so we assert the EFFECTIVE flex-shrink a real
+    // direct child of `.chat-messages` would compute. This is cascade-aware (a
+    // later rule that reset flex-shrink fails this), formatting-agnostic, and
+    // robust to the stylesheet being split across multiple <style> blocks —
+    // unlike a text/regex match.
+    it('Scenario: a direct child of .chat-messages computes flex-shrink:0 (cannot be compressed away)', () => {
+      // Pull EVERY <style> block out of the source and apply them all.
+      const css = [...htmlContent.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)]
+        .map((m) => m[1])
+        .join('\n')
+      const styleEl = document.createElement('style')
+      styleEl.textContent = css
+      document.head.appendChild(styleEl)
+      const probe = document.createElement('div')
+      probe.innerHTML =
+        '<div class="chat-messages"><div class="msg assistant" id="__flexshrink_probe__">x</div></div>'
+      document.body.appendChild(probe)
+      try {
+        const child = document.getElementById('__flexshrink_probe__')!
+        expect(getComputedStyle(child).flexShrink).toBe('0')
+      } finally {
+        styleEl.remove()
+        probe.remove()
+      }
+    })
+  })
+
   })
 })
