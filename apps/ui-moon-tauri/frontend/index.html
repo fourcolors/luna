@@ -124,6 +124,85 @@
       pointer-events: auto;
     }
 
+    /*
+      Floating satellite controls that orbit the moon's lower arc.
+      These are SIBLINGS of .moon-container (NOT children) so they don't inherit
+      its data-tauri-drag-region — Tauri resolves the drag region against the
+      topmost element under the cursor, so a sibling on top (z-index > the
+      container's 100) wins the hit-test and clicks land on the button while the
+      rest of the moon still drags the native window. Positioned absolutely in
+      window coords; all three (and the star's glow) sit inside the 140x140
+      minimized window so nothing clips when the chat panel is closed.
+    */
+    .moon-satellite {
+      position: absolute;
+      z-index: 110;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      cursor: pointer;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 50%;
+      color: #cdd9f5;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35), inset 0 0 6px rgba(138, 180, 248, 0.12);
+      transition: background 0.2s, color 0.2s, transform 0.2s, box-shadow 0.2s;
+      animation: satellite-float 5s ease-in-out infinite;
+    }
+    .moon-satellite:hover {
+      background: rgba(138, 180, 248, 0.2);
+      color: #ffffff;
+      box-shadow: 0 3px 12px rgba(138, 180, 248, 0.4), inset 0 0 8px rgba(138, 180, 248, 0.25);
+    }
+    .moon-satellite svg { width: 14px; height: 14px; display: block; }
+
+    /* New-conversation "+" — lower-right of the moon. */
+    .sat-new-chat { width: 26px; height: 26px; left: 99px; top: 90px; animation-delay: -1.3s; }
+
+    /* Machine-access (computer icon) — lower-left of the moon. Re-glyphed from a
+       "+" so it never reads as a second new-chat button. .active = scope on. */
+    .sat-machine { width: 26px; height: 26px; left: 15px; top: 90px; animation-delay: -2.6s; }
+    .sat-machine.active {
+      background: rgba(138, 180, 248, 0.22);
+      border-color: rgba(138, 180, 248, 0.5);
+      color: #c7dbff;
+    }
+
+    /* Settings — a little gold STAR hovering straight below the moon (the classic
+       crescent-&-star motif). No orb chrome: the star shape itself is the control,
+       and it twinkles instead of bobbing so its hover scale/rotate reads cleanly. */
+    .sat-settings {
+      width: 24px; height: 24px; left: 58px; top: 108px;
+      background: none;
+      border: none;
+      box-shadow: none;
+      color: #ffd97d;
+      animation: satellite-twinkle 3.6s ease-in-out infinite;
+    }
+    .sat-settings svg { width: 20px; height: 20px; }
+    .sat-settings:hover {
+      background: none;
+      box-shadow: none;
+      color: #ffe9a8;
+      transform: scale(1.18) rotate(10deg);
+      /* Pause the twinkle so this hover glow actually wins: a running animation
+         owns the `filter` property and would otherwise override the hover. */
+      animation-play-state: paused;
+      filter: drop-shadow(0 0 9px rgba(255, 217, 125, 0.85));
+    }
+
+    /* Gentle "hovering" bob for the orb satellites; staggered via animation-delay. */
+    @keyframes satellite-float {
+      0%, 100% { transform: translateY(0); }
+      50%      { transform: translateY(-2.5px); }
+    }
+    /* The star pulses its glow rather than moving, so its hover transform is free. */
+    @keyframes satellite-twinkle {
+      0%, 100% { opacity: 0.85; filter: drop-shadow(0 0 4px rgba(255, 217, 125, 0.45)); }
+      50%      { opacity: 1;    filter: drop-shadow(0 0 7px rgba(255, 217, 125, 0.75)); }
+    }
+
     
     /* 
       Floating Glassmorphic Chat Panel
@@ -334,26 +413,6 @@
       display: flex;
       align-items: center;
       gap: 8px;
-    }
-
-    .settings-btn {
-      background: none;
-      border: none;
-      color: #64748b;
-      cursor: pointer;
-      width: 24px;
-      height: 24px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      border-radius: 50%;
-      transition: background 0.2s, color 0.2s, transform 0.3s ease;
-    }
-    
-    .settings-btn:hover {
-      background: rgba(255, 255, 255, 0.05);
-      color: #f1f5f9;
-      transform: rotate(45deg);
     }
 
     /* Settings panel overlay styling */
@@ -1248,40 +1307,21 @@
       align-items: flex-end; /* send/attach stay at the bottom as the textarea grows */
     }
 
-    /* "+" machine-access button + its popover menu (local-shell attach). */
-    .scope-btn {
-      width: 38px;
-      height: 38px;
-      flex: 0 0 auto;
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 10px;
-      color: #8ab4f8;
-      font-size: 20px;
-      line-height: 1;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      transition: background 0.2s, border-color 0.2s, color 0.2s;
-    }
-    .scope-btn:hover { background: rgba(255, 255, 255, 0.09); }
-    .scope-btn.active {
-      background: rgba(138, 180, 248, 0.18);
-      border-color: rgba(138, 180, 248, 0.5);
-      color: #c7dbff;
-    }
+    /* Machine-access popover menu (local-shell attach). The "+" trigger button
+       moved out to orbit the moon as the .sat-machine computer-icon satellite,
+       so this popover is re-anchored to the body just below the moon cluster
+       (it used to be pinned to the composer's bottom-left). */
     .scope-menu {
       position: absolute;
-      left: 24px;
-      bottom: 74px;
+      left: 14px;
+      top: 138px;
       min-width: 230px;
       background: var(--glass-bg);
       border: 1px solid var(--glass-border);
       border-radius: 12px;
       padding: 6px;
       box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
-      z-index: 80;
+      z-index: 200; /* above the satellites (110) and the chat panel (50) */
       display: none;
     }
     .scope-menu.open { display: block; }
@@ -1581,6 +1621,44 @@
     </div>
   </div>
 
+  <!--
+    Satellite controls orbiting the moon's lower arc. Siblings of #moon (NOT
+    children) so they don't sit inside its data-tauri-drag-region. ids + handlers
+    are preserved from their old header/composer homes; only their look + place
+    changed. The scope popover (#scope-menu) was relocated to the body too.
+  -->
+  <!-- Machine access — lower-left. Re-glyphed from "+" to a computer/monitor. -->
+  <button type="button" class="moon-satellite sat-machine" id="scope-btn" aria-label="Machine access" title="Let Luna access this machine">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="3" y="4.5" width="18" height="12" rx="1.8"></rect>
+      <line x1="8.5" y1="20" x2="15.5" y2="20"></line>
+      <line x1="12" y1="16.5" x2="12" y2="20"></line>
+    </svg>
+  </button>
+  <!-- Settings — gold star hovering straight below the moon. -->
+  <button type="button" class="moon-satellite sat-settings" id="toggle-settings" aria-label="Settings" title="Settings">
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M12 2.5l2.6 5.78 6.3.62-4.73 4.2 1.39 6.2L12 16.9l-5.56 2.4 1.39-6.2L3.1 8.9l6.3-.62L12 2.5z"></path>
+    </svg>
+  </button>
+  <!-- New conversation — lower-right. -->
+  <button type="button" class="moon-satellite sat-new-chat" id="new-chat" aria-label="New conversation" title="New conversation">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <line x1="12" y1="5" x2="12" y2="19"></line>
+      <line x1="5" y1="12" x2="19" y2="12"></line>
+    </svg>
+  </button>
+
+  <!-- Machine-access popover, re-anchored to the body just below the moon
+       cluster (it was pinned to .chat-input-area's bottom-left). -->
+  <div class="scope-menu" id="scope-menu" role="menu" aria-hidden="true">
+    <div class="scope-menu-hint">Let Luna read &amp; run anything on this Mac</div>
+    <div class="scope-menu-item" id="scope-full-access" role="menuitemcheckbox" aria-checked="false" tabindex="0">
+      <span>Full machine access</span>
+      <span class="scope-menu-check" aria-hidden="true">✓</span>
+    </div>
+  </div>
+
   <!-- The Glassmorphic Chat Panel -->
   <div class="chat-panel" id="chat-panel">
     <!-- Chat Header supports dragging the native window too! -->
@@ -1602,18 +1680,9 @@
         </div>
       </div>
       <div class="header-actions">
-        <button class="settings-btn" id="new-chat" aria-label="New conversation" title="New conversation">
-          <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="12" y1="5" x2="12" y2="19"></line>
-            <line x1="5" y1="12" x2="19" y2="12"></line>
-          </svg>
-        </button>
-        <button class="settings-btn" id="toggle-settings" aria-label="Settings">
-          <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="3"></circle>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-          </svg>
-        </button>
+        <!-- New-conversation and Settings moved out to orbit the moon as
+             satellites (see #new-chat / #toggle-settings below the moon).
+             Only the close (X) control remains in the header. -->
         <button class="close-btn" id="close-chat" aria-label="Close Chat">
           <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -1772,17 +1841,11 @@
     <form class="chat-input-area" id="chat-form">
       <div class="attach-error" id="attach-error" hidden></div>
       <div class="attachments-strip" id="attachments-strip" hidden></div>
-      <!-- Machine-access popover, anchored to .chat-input-area (position:relative). -->
-      <div class="scope-menu" id="scope-menu" role="menu" aria-hidden="true">
-        <div class="scope-menu-hint">Let Luna read &amp; run anything on this Mac</div>
-        <div class="scope-menu-item" id="scope-full-access" role="menuitemcheckbox" aria-checked="false" tabindex="0">
-          <span>Full machine access</span>
-          <span class="scope-menu-check" aria-hidden="true">✓</span>
-        </div>
-      </div>
+      <!-- (Machine-access "+" and its popover moved out to orbit the moon as the
+           .sat-machine computer-icon satellite; see #scope-btn / #scope-menu near
+           the moon markup above.) -->
       <div class="composer-row">
         <input type="file" id="file-input" multiple hidden>
-        <button type="button" class="scope-btn" id="scope-btn" aria-label="Machine access" title="Let Luna access this machine">+</button>
         <button type="button" class="attach-btn" id="attach-btn" aria-label="Attach files" title="Attach files">
           <!-- paperclip -->
           <svg viewBox="0 0 24 24">
@@ -5335,12 +5398,18 @@
       resizeGrip.addEventListener('pointercancel', endResize);
     }
 
-    // Local-shell machine-access controls ("+" button + popover menu).
+    // Local-shell machine-access controls (computer-icon satellite + popover).
     LocalShell.refreshPlatform();
     if (DOM.scopeBtn) {
-      DOM.scopeBtn.addEventListener('click', (e) => {
+      DOM.scopeBtn.addEventListener('click', async (e) => {
         e.stopPropagation(); // don't let the document outside-click handler re-close it
-        LocalShell.openMenu(!DOM.scopeMenu.classList.contains('open'));
+        const willOpen = !DOM.scopeMenu.classList.contains('open');
+        // The popover is 230px wide — wider than the 140px minimized window — so
+        // open the chat first (which grows the window) before showing the menu.
+        if (willOpen && !DOM.chatPanel.classList.contains('active')) {
+          await UIController.toggleChat();
+        }
+        LocalShell.openMenu(willOpen);
       });
     }
     if (DOM.scopeFullAccess) {
@@ -5358,7 +5427,12 @@
 
     // Chat Panel Controls
     DOM.closeChat.addEventListener('click', () => UIController.toggleChat());
-    DOM.newChat.addEventListener('click', () => ChatEngine.newConversation());
+    DOM.newChat.addEventListener('click', () => {
+      // Satellite now lives outside the chat panel — open it if minimized so the
+      // fresh conversation is actually visible.
+      if (!DOM.chatPanel.classList.contains('active')) UIController.toggleChat();
+      ChatEngine.newConversation();
+    });
     DOM.chatForm.addEventListener('submit', (e) => ChatEngine.handleSubmit(e));
     // Textarea: Enter sends, Shift+Enter inserts a newline (a textarea otherwise newlines on Enter).
     DOM.messageInput.addEventListener('keydown', (e) => {
@@ -5457,7 +5531,15 @@
     });
 
     // Settings Panel Controls
-    DOM.toggleSettings.addEventListener('click', () => SettingsEngine.toggle());
+    DOM.toggleSettings.addEventListener('click', () => {
+      // Toggle FIRST and synchronously — the settings panel lives inside the chat
+      // panel, and the unit test asserts this flips #settings-panel.active on the
+      // same tick. If we just opened it while the chat is minimized, also open the
+      // chat so the panel is actually on screen.
+      const willOpen = !DOM.settingsPanel.classList.contains('active');
+      SettingsEngine.toggle();
+      if (willOpen && !DOM.chatPanel.classList.contains('active')) UIController.toggleChat();
+    });
     DOM.closeSettingsBtn.addEventListener('click', () => SettingsEngine.close());
     DOM.alwaysOnTopToggle.addEventListener('change', () => SettingsEngine.handleAlwaysOnTopChange());
     DOM.closeOnBlurToggle.addEventListener('change', () => SettingsEngine.handleCloseOnBlurChange());
