@@ -5245,10 +5245,16 @@
      * UI Parallax & Window state transitions.
      */
     const UIController = {
-      async toggleChat() {
+      async toggleChat({ sync = true } = {}) {
         const isActive = DOM.chatPanel.classList.contains('active');
         if (isActive) {
           DOM.chatPanel.classList.remove('active');
+          // The settings panel and scope popover now live OUTSIDE #chat-panel
+          // (they orbit the moon), so collapsing the chat no longer hides them
+          // implicitly. Close them here so neither lingers — and so an open scope
+          // popover can't get clipped inside the 140x140 minimized window.
+          LocalShell.openMenu(false);
+          DOM.settingsPanel.classList.remove('active');
           Logger.info("Initiated chat collapse transition");
           setTimeout(() => {
             TauriService.setWindowSize(140, 140);
@@ -5262,9 +5268,13 @@
           DOM.chatPanel.classList.add('active');
           DOM.messageInput.focus();
           Logger.info("Chat expand transition completed");
-          
-          // Re-sync thread on opening chat widget to keep up with terminal changes!
-          WebSocketEngine.syncThread();
+
+          // Re-sync thread on opening chat widget to keep up with terminal
+          // changes — UNLESS the caller is about to start a fresh conversation
+          // (new-chat). syncThread() awaits an IPC then subscribes to the last
+          // thread; that late subscribe would otherwise clobber the brand-new
+          // thread newConversation() just created.
+          if (sync) WebSocketEngine.syncThread();
         }
       },
 
@@ -5325,6 +5335,7 @@
         if (DOM.closeOnBlurToggle.checked && DOM.chatPanel.classList.contains('active') && !State.isRecordingShortcut && !State.suppressBlurClose) {
           Logger.info("Focus click-away blur event fired: collapsing companion");
           DOM.settingsPanel.classList.remove('active');
+          LocalShell.openMenu(false); // hide the moon-anchored scope popover too
           DOM.chatPanel.classList.remove('active');
           setTimeout(() => {
             TauriService.setWindowSize(140, 140);
@@ -5427,10 +5438,14 @@
 
     // Chat Panel Controls
     DOM.closeChat.addEventListener('click', () => UIController.toggleChat());
-    DOM.newChat.addEventListener('click', () => {
+    DOM.newChat.addEventListener('click', async () => {
       // Satellite now lives outside the chat panel — open it if minimized so the
-      // fresh conversation is actually visible.
-      if (!DOM.chatPanel.classList.contains('active')) UIController.toggleChat();
+      // fresh conversation is actually visible. Open with sync:false and AWAIT it
+      // so the open path's syncThread() can't race-subscribe to the old thread
+      // and clobber the new conversation we're about to start.
+      if (!DOM.chatPanel.classList.contains('active')) {
+        await UIController.toggleChat({ sync: false });
+      }
       ChatEngine.newConversation();
     });
     DOM.chatForm.addEventListener('submit', (e) => ChatEngine.handleSubmit(e));
