@@ -1649,7 +1649,14 @@ exit 0
     expect(docs).not.toContain("tailscale ip")
     expect(docs).toContain("http://127.0.0.1:4753/healthz")
     expect(docs).toContain("http://127.0.0.1:5753/healthz")
-    expect(docs).toContain("incus exec luna-stable -- systemctl restart luna-chat-server.service")
+    // Docs must show the SAFE restart: stop -> settle -> start, NOT a fast
+    // `systemctl restart`. A fast restart can start the new chat-server before the
+    // outgoing one releases its DuckDB/SQLite WAL/SHM handles, crashing the boot
+    // with SQLITE_CANTOPEN (the 2026-06-08 stable-deploy incident).
+    expect(docs).toContain("incus exec luna-stable -- systemctl stop luna-chat-server.service")
+    expect(docs).toContain("incus exec luna-stable -- systemctl start luna-chat-server.service")
+    expect(docs).not.toContain("incus exec luna-stable -- systemctl restart luna-chat-server.service")
+    expect(docs).not.toContain("incus exec luna-dev -- systemctl restart luna-dev-chat-server.service")
     expect(docs).not.toContain("systemctl --user restart luna-chat-server.service")
   })
 
