@@ -335,7 +335,12 @@ const fromSql = (
         pick: (
           accounts: ReadonlyArray<AccountRecord>,
           now: number,
-        ) => { account: AccountRecord; model: string; stepIndex: number } | null,
+        ) => {
+          account: AccountRecord
+          model: string
+          stepIndex: number
+          budgetUsd?: number | undefined
+        } | null,
       ): Effect.Effect<AcquiredSession, AccountError, Scope.Scope> =>
         Effect.gen(function* () {
           const t = yield* clock.nowMs()
@@ -376,6 +381,9 @@ const fromSql = (
             credential,
             model: picked.model,
             stepIndex: picked.stepIndex,
+            ...(picked.budgetUsd !== undefined
+              ? { budgetUsd: picked.budgetUsd }
+              : {}),
           } satisfies AcquiredSession
         })
 
@@ -395,7 +403,12 @@ const fromSql = (
                 o.boundAccountId,
               )
               if (account === null) return null
-              return { account, model: lane, stepIndex: 0 }
+              return {
+                account,
+                model: lane,
+                stepIndex: 0,
+                budgetUsd: o.budgetUsd ?? account.budgetUsd,
+              }
             }
             const hit = pickChainTarget(
               chain as ReadonlyArray<ChainStep>,
@@ -408,6 +421,8 @@ const fromSql = (
               account: hit.account,
               model: hit.step.model,
               stepIndex: hit.stepIndex,
+              budgetUsd:
+                hit.step.budgetUsd ?? o.budgetUsd ?? hit.account.budgetUsd,
             }
           })
           if (chain === null || chain.length === 0) return acq
@@ -495,7 +510,7 @@ const fromSql = (
                     ? { cacheWrite: usage.cacheWrite }
                     : {}),
                 },
-                a.budgetUsd,
+                usage.budgetUsd ?? a.budgetUsd,
                 t,
                 cycleMs,
                 rateTable,

@@ -262,6 +262,9 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
           // B4: the winning chain step's model, captured so the result-frame
           // usage report can price the turn against the model actually used.
           let acquiredModel: string | null = null
+          // B4: the winning step's effective budget, echoed into the usage
+          // report so the meter enforces the PER-STEP overflow-chain budget.
+          let acquiredBudgetUsd: number | null = null
           // B9 gate (review BLOCKER #1): only cool-on-throttle when an overflow
           // chain exists for the lane (somewhere to fail over to). Set in the
           // acquire block below; defaults false so the no-chain path never cools.
@@ -277,8 +280,15 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             // no chain, the old catch was a no-op and the transient simply
             // retried — preserve that to avoid a self-inflicted single-account
             // outage on a transient 429/529.
+            const overflowChain = resolveChain(
+              brokerModel,
+              readOverflowConfig(),
+            )
+            // BLOCKER #1 + Copilot: match the broker — `null` OR an empty chain
+            // (`[]`, or one whose steps were all dropped as invalid) means "no
+            // chain", i.e. NO failover. Only then is cooling-on-throttle safe.
             throttleFailoverPossible =
-              resolveChain(brokerModel, readOverflowConfig()) !== null
+              overflowChain !== null && overflowChain.length > 0
             const acquireOpts: {
               model: string
               boundAccountId?: string
@@ -303,6 +313,7 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             // SDK at it. `mergeOptions` lets overrides win. `acquiredModel` is
             // ALWAYS the winning model (used by the B4 result-frame pricing).
             acquiredModel = acq.model
+            acquiredBudgetUsd = acq.budgetUsd ?? null
             // Only WRITE overrides.model when the caller actually supplied a
             // model OR the chain changed it away from the lane default. This
             // keeps the no-chain + caller-omits-model path BYTE-IDENTICAL: today
@@ -483,6 +494,9 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
                 tokensOut: u.output_tokens ?? 0,
                 cacheRead: u.cache_read_input_tokens ?? 0,
                 cacheWrite: u.cache_creation_input_tokens ?? 0,
+                ...(acquiredBudgetUsd !== null
+                  ? { budgetUsd: acquiredBudgetUsd }
+                  : {}),
               }),
             ).catch(() => {})
           }

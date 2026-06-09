@@ -86,6 +86,10 @@ export type UsageReport =
       readonly tokensOut: number
       readonly cacheRead?: number
       readonly cacheWrite?: number
+      /** Effective budget for the winning chain step (step ?? caller ?? account).
+       * The meter uses this (falling back to the account's seed budget) so
+       * PER-STEP overflow-chain budgets are enforced, not just the account's. */
+      readonly budgetUsd?: number
     }
 
 /** Seed shape used by the layer factory. */
@@ -117,6 +121,12 @@ export interface AcquiredSession {
   readonly model: string
   readonly stepIndex: number
   readonly advancedFrom?: number
+  /** Effective spend budget for the winning step: chain-step `budgetUsd` ??
+   * caller's `opts.budgetUsd` ?? the account's seed budget. The adapter echoes
+   * this into the per-turn usage report so the meter enforces the PER-STEP
+   * overflow-chain budget (e.g. `[opus($200) → codex($50)]` cools step 0 at its
+   * own $200, not the account's). Undefined ⇒ no budget. */
+  readonly budgetUsd?: number
 }
 
 export type AccountError = AllAccountsExhaustedError | ConfigError
@@ -194,7 +204,12 @@ const fromAccounts = (
         pick: (
           accounts: ReadonlyArray<AccountRecord>,
           now: number,
-        ) => { account: AccountRecord; model: string; stepIndex: number } | null,
+        ) => {
+          account: AccountRecord
+          model: string
+          stepIndex: number
+          budgetUsd?: number | undefined
+        } | null,
       ): Effect.Effect<AcquiredSession, AccountError, Scope.Scope> =>
         Effect.gen(function* () {
           const now = yield* clock.nowMs()
@@ -239,6 +254,9 @@ const fromAccounts = (
             credential,
             model: picked.model,
             stepIndex: picked.stepIndex,
+            ...(picked.budgetUsd !== undefined
+              ? { budgetUsd: picked.budgetUsd }
+              : {}),
           } satisfies AcquiredSession
         })
 
@@ -264,7 +282,13 @@ const fromAccounts = (
                 opts.boundAccountId,
               )
               if (account === null) return null
-              return { account, model: lane, stepIndex: 0 }
+              return {
+                account,
+                model: lane,
+                stepIndex: 0,
+                // No chain: caller-supplied budget (if any) ?? the account seed.
+                budgetUsd: opts.budgetUsd ?? account.budgetUsd,
+              }
             }
             const hit = pickChainTarget(
               chain as ReadonlyArray<ChainStep>,
@@ -277,6 +301,9 @@ const fromAccounts = (
               account: hit.account,
               model: hit.step.model,
               stepIndex: hit.stepIndex,
+              // Per-step budget precedence: chain step → caller → account seed.
+              budgetUsd:
+                hit.step.budgetUsd ?? opts.budgetUsd ?? hit.account.budgetUsd,
             }
           })
           // Compute advancedFrom against the lane's last winning step. Only
@@ -338,7 +365,10 @@ const fromAccounts = (
                     ? { cacheWrite: usage.cacheWrite }
                     : {}),
                 },
-                a.budgetUsd,
+                // Per-step budget (review/Copilot): the report carries the
+                // winning step's effective budget; fall back to the account's
+                // seed budget when absent.
+                usage.budgetUsd ?? a.budgetUsd,
                 now,
                 cycleMs,
                 rateTable,

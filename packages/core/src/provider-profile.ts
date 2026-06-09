@@ -109,7 +109,11 @@ export function resolveKind(model: string, providerEnv: ProviderEnv): string {
   const m = model.trim()
   const override = providerEnv.modelKindMap[m]
   if (override) return override
-  if (/^claude/i.test(m) || /^anthropic/i.test(m) || ANTHROPIC_ALIASES.has(m)) {
+  if (
+    /^claude/i.test(m) ||
+    /^anthropic/i.test(m) ||
+    ANTHROPIC_ALIASES.has(m.toLowerCase())
+  ) {
     return ANTHROPIC_KIND
   }
   if (/^gemini/i.test(m)) return "google"

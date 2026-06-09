@@ -242,6 +242,65 @@ describe("B2 spend-meter (in-memory)", () => {
 })
 
 describe("B6 overflow-chain fold (in-memory)", () => {
+  it("PER-STEP budgetUsd cools the step's account (account has no seed budget) → chain advances (Copilot #2)", async () => {
+    // Step 0 carries its OWN $1 budget; account a1 has NO seed budget. Spending
+    // > $1 on step 0 must cool a1 via the STEP budget, advancing to step 1 —
+    // this is the `[opus($200) → codex($50)]` headline that the account-only
+    // budget could never deliver.
+    const chains = {
+      chains: {
+        "chat-lane": [
+          {
+            kind: "anthropic",
+            accountId: "a1",
+            model: "claude-sonnet-4-5",
+            budgetUsd: 1.0,
+          },
+          { kind: "google", accountId: "g1", model: "gemini-2.5-flash" },
+        ],
+      },
+    }
+    await withEnv(
+      { LUNA_OVERFLOW_CHAINS: JSON.stringify(chains) },
+      async () => {
+        const clock = makeMockClock(0)
+        const seeds: ReadonlyArray<AccountSeed> = [
+          { id: "a1", kind: "anthropic", secretRef: "anth:a1" }, // NO seed budget
+          { id: "g1", kind: "google", secretRef: "anth:g1" },
+        ]
+        const out = await Effect.runPromise(
+          Effect.gen(function* () {
+            const broker = yield* AccountBroker
+            // (1) Acquire → step 0 (a1); the broker surfaces the step's $1 budget.
+            const first = yield* Effect.scoped(
+              broker.acquireSession({ model: "chat-lane" }),
+            )
+            // (2) A $3 turn (1M Sonnet input tokens) WITH the surfaced step
+            //     budget → exceeds $1 → a1 cools (despite no account budget).
+            yield* broker.report({
+              accountId: "a1",
+              kind: "usage",
+              model: "claude-sonnet-4-5",
+              tokensIn: 1_000_000,
+              tokensOut: 0,
+              budgetUsd: first.budgetUsd,
+            })
+            // (3) Next acquire → a1 is budget-cooled → advance to step 1 (g1).
+            const second = yield* Effect.scoped(
+              broker.acquireSession({ model: "chat-lane" }),
+            )
+            return { first, second }
+          }).pipe(Effect.provide(makeLayer(seeds, clock))),
+        )
+        expect(out.first.credential.accountId).toBe("a1")
+        expect(out.first.budgetUsd).toBe(1.0) // step budget, NOT the account's
+        expect(out.second.credential.accountId).toBe("g1")
+        expect(out.second.stepIndex).toBe(1)
+        expect(out.second.advancedFrom).toBe(0)
+      },
+    )
+  })
+
   it("no chain → single account, model=caller, stepIndex 0, no advancedFrom (byte-identical)", async () => {
     await withEnv({ LUNA_OVERFLOW_CHAINS: undefined }, async () => {
       const clock = makeMockClock(0)
