@@ -18,7 +18,7 @@
  *      snapshot `before` from memory (idempotency + revert contract).
  *   5. Any parse/validation/memory failure → DreamError (never crashes the cron).
  */
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option } from "effect"
 import type { MemoryRecord } from "@luna/memory"
 import { MemoryRouterTag } from "@luna/memory"
 import {
@@ -26,6 +26,8 @@ import {
   DreamError,
   deriveBeliefId,
   makeBeliefRecord,
+  computeAgreement,
+  CalibrationStore,
 } from "@luna/core"
 import type {
   DreamInputs,
@@ -50,6 +52,21 @@ const VALID_KINDS: ReadonlySet<string> = new Set<DreamOpKind>([
   "memory_contradiction",
   "belief_candidate",
 ])
+
+/**
+ * Slice B (sampling-based confidence, MEASURE-ONLY): how many UNSEEDED
+ * reasoning passes to run for the SelfCheckGPT-style agreement signal. Pass 1
+ * is the privileged "today's path" that SOLELY materializes ops; passes 2..N
+ * are measurement-only. Overridable via LUNA_DREAM_SAMPLES (read at layer-build
+ * time, mirroring LUNA_DREAM_TIMEOUT_MS); clamps to a positive integer.
+ */
+const DEFAULT_DREAM_SAMPLES = 5
+/** Defensive upper bound on N: a misconfigured LUNA_DREAM_SAMPLES (e.g. 1000)
+ * must not flood the system with SDK queries — each pass is a real query. */
+const MAX_DREAM_SAMPLES = 10
+/** Bounded concurrency for the measurement-only extra passes (avoid load
+ * spikes / rate limits / memory pressure at high N). */
+const DREAM_SAMPLE_CONCURRENCY = 4
 
 // ---------------------------------------------------------------------------
 // Raw op shape from the model's JSON output
@@ -251,6 +268,23 @@ function parseRawOps(text: string): Effect.Effect<ReadonlyArray<RawOp>, DreamErr
   })
 }
 
+/**
+ * Slice B clustering: derive the belief-candidate `beliefId`s from a parsed pass.
+ * ONLY belief_candidate ops cluster — memory hygiene ops carry a targetId but
+ * are NOT beliefs, so they must not enter the agreement count. The id is
+ * deriveBeliefId(domain, statement), which trims/lowercases/collapses
+ * whitespace, so case/whitespace variants of one statement collapse to one id.
+ */
+function beliefIdsOf(ops: ReadonlyArray<RawOp>): ReadonlyArray<{ readonly beliefId: string }> {
+  const out: Array<{ readonly beliefId: string }> = []
+  for (const raw of ops) {
+    if (raw.kind === "belief_candidate") {
+      out.push({ beliefId: deriveBeliefId(raw.domain, raw.statement) })
+    }
+  }
+  return out
+}
+
 // ---------------------------------------------------------------------------
 // Map RawOp → DreamOp (with before-snapshot for belief_candidate)
 // ---------------------------------------------------------------------------
@@ -351,37 +385,146 @@ export const DreamReasonerDefault: Layer.Layer<
       return Number.isFinite(n) && n > 0 ? Math.trunc(n) : DEFAULT_QUERY_TIMEOUT_MS
     })()
 
+    // Slice B (MEASURE-ONLY): the number of UNSEEDED reasoning passes N for the
+    // sampling-agreement signal. Read at layer-build time (same pattern as the
+    // timeout above). An EXPLICIT finite value < 1 (e.g. "0", "-1" — the natural
+    // "disable sampling" spellings) clamps to 1 = sampling OFF, honoring the
+    // operator's opt-out; only an absent/non-numeric value falls back to the
+    // default. Upper-clamped so a misconfiguration cannot flood SDK queries.
+    const dreamSamples = (() => {
+      const raw = process.env["LUNA_DREAM_SAMPLES"]?.trim()
+      if (!raw) return DEFAULT_DREAM_SAMPLES
+      const n = Number(raw)
+      if (!Number.isFinite(n)) return DEFAULT_DREAM_SAMPLES
+      return Math.max(1, Math.min(Math.trunc(n), MAX_DREAM_SAMPLES))
+    })()
+
     const reason: DreamReasonerApi["reason"] = (inputs: DreamInputs) =>
       Effect.gen(function* () {
         const prompt = buildDreamPrompt(inputs)
+        const queryParams: QueryParams = {
+          prompt,
+          options: {
+            maxTurns: 1,
+            ...(pathToClaudeCodeExecutable
+              ? { pathToClaudeCodeExecutable }
+              : {}),
+          },
+        }
         yield* Effect.logInfo("[luna/dream] reasoner.reason: starting", {
           sessions: inputs.sessions.length,
           memories: inputs.memories.length,
+          samples: dreamSamples,
           pathToClaudeCodeExecutable: pathToClaudeCodeExecutable ?? "(unset)",
         })
-        const resultText = yield* boundedResultText(
-          sdk,
-          {
-            prompt,
-            options: {
-              maxTurns: 1,
-              ...(pathToClaudeCodeExecutable
-                ? { pathToClaudeCodeExecutable }
-                : {}),
-            },
-          },
-          dreamTimeoutMs,
-        )
-        const rawOps = yield* parseRawOps(resultText)
+
+        // ── PASS 1 — the PRIVILEGED "today's path" (SOLE materializer) ────────
+        // Issued FIRST and SEQUENTIALLY, NOT inside any concurrency: boundedResultText
+        // → parseRawOps → materializeOp, EXACTLY as the single-pass impl. A pass-1
+        // failure (timeout/parse/SDK error) propagates as today's DreamError — no
+        // new failure modes. (Locking pass-1 as the first sdk.query() call is also
+        // what makes the integration test's confidence===0.85 assertion deterministic
+        // against the fake's closure counter.)
+        const pass1Text = yield* boundedResultText(sdk, queryParams, dreamTimeoutMs)
+        const pass1Raw = yield* parseRawOps(pass1Text)
         const ops: DreamOp[] = []
-        for (const raw of rawOps) {
+        for (const raw of pass1Raw) {
           const op = yield* materializeOp(raw, mem)
           ops.push(op)
         }
-        yield* Effect.logInfo(
-          `[luna/dream] reasoner.reason: returning ${ops.length} op(s)`,
+
+        // ── PASSES 2..N — MEASUREMENT-ONLY extras (never materialize) ─────────
+        // COST IS CONTINGENT ON THE SINK: the only consumer of the agreement
+        // signal is the calibration log, so extras run ONLY when (a) a
+        // CalibrationStore is actually present in the ambient context (else the
+        // data is dropped on the floor — paying ~N× SDK cost for nothing),
+        // (b) N >= 2 was configured, and (c) pass 1 produced at least one
+        // belief_candidate (agreement can only ever attach to pass-1 belief
+        // ops — on a no-candidate night extras would be pure waste).
+        // serviceOption keeps reason()'s R channel unchanged.
+        const calOpt = yield* Effect.serviceOption(CalibrationStore)
+        const pass1HasCandidates = pass1Raw.some(
+          (r) => r.kind === "belief_candidate",
         )
-        return ops as ReadonlyArray<DreamOp>
+        const samplingActive =
+          Option.isSome(calOpt) && dreamSamples >= 2 && pass1HasCandidates
+        if (dreamSamples >= 2 && !samplingActive) {
+          yield* Effect.logInfo(
+            `[luna/dream] reasoner.reason: sampling extras SKIPPED (` +
+              `${Option.isNone(calOpt) ? "no CalibrationStore sink" : "no pass-1 belief candidates"})`,
+          )
+        }
+
+        // Run AFTER pass 1, concurrently with EACH OTHER. Each extra swallows
+        // ALL failures AND defects (timeout/parse/SDK error/sync throw — a
+        // plain catchAll would miss defects and fail the turn after pass 1
+        // already succeeded) → `null`, lowering the effective N. The whole
+        // extras phase shares ONE additional dreamTimeoutMs deadline, so the
+        // turn's wall-clock ceiling is ≤ 2× dreamTimeoutMs REGARDLESS of N
+        // (without it, batching makes the ceiling (1 + ceil((N-1)/4)) ×
+        // timeout). On phase timeout the completed batches are discarded and
+        // the turn degrades to no sampling fields — never fails.
+        const extraCount = samplingActive ? dreamSamples - 1 : 0
+        const extraResults =
+          extraCount === 0
+            ? []
+            : yield* Effect.all(
+                Array.from({ length: extraCount }, () =>
+                  boundedResultText(sdk, queryParams, dreamTimeoutMs).pipe(
+                    Effect.flatMap(parseRawOps),
+                    Effect.map(
+                      (raw): ReadonlyArray<{ readonly beliefId: string }> | null =>
+                        beliefIdsOf(raw),
+                    ),
+                    // RESILIENCE: an extra-pass failure is SKIPPED — failures
+                    // AND defects — it only lowers the effective N.
+                    Effect.catchAllCause(() => Effect.succeed(null)),
+                  ),
+                ),
+                { concurrency: DREAM_SAMPLE_CONCURRENCY },
+              ).pipe(
+                Effect.timeout(dreamTimeoutMs),
+                Effect.catchAll(() =>
+                  Effect.succeed(
+                    [] as ReadonlyArray<ReadonlyArray<{ readonly beliefId: string }> | null>,
+                  ),
+                ),
+              )
+
+        // ── Agreement over ALL surviving passes (pass 1 + surviving extras) ───
+        // sampleCount = the number of passes that did NOT error (an empty-but-
+        // successful pass still counts toward the denominator). computeAgreement
+        // owns the degenerate-N sentinel: with < 2 surviving passes it returns
+        // an EMPTY map, so the fields below stay ABSENT (identical to Slice A)
+        // rather than logging a meaningless constant-1 "agreement".
+        const survivingExtras = extraResults.filter(
+          (r): r is ReadonlyArray<{ readonly beliefId: string }> => r !== null,
+        )
+        const pass1Ids = beliefIdsOf(pass1Raw)
+        const passes: ReadonlyArray<ReadonlyArray<{ readonly beliefId: string }>> =
+          [pass1Ids, ...survivingExtras]
+        const agreement = computeAgreement(passes)
+
+        // Attach the MEASURE-ONLY sampling fields to each PASS-1 belief_candidate
+        // op. targetId IS the beliefId. The materialized belief + its verbalized
+        // confidence are UNCHANGED — these fields are additive logging metadata
+        // (absent whenever the agreement map is empty).
+        const withSampling: ReadonlyArray<DreamOp> = ops.map((op) => {
+          if (op.kind !== "belief_candidate") return op
+          const m = agreement.get(op.targetId)
+          if (m === undefined) return op
+          return {
+            ...op,
+            sampledConfidence: m.sampledConfidence,
+            sampleCount: m.sampleCount,
+          }
+        })
+
+        yield* Effect.logInfo(
+          `[luna/dream] reasoner.reason: returning ${withSampling.length} op(s) ` +
+            `(N=${passes.length} effective sample(s))`,
+        )
+        return withSampling
       })
 
     return { reason } satisfies DreamReasonerApi

@@ -158,6 +158,7 @@ import {
   BELIEF_KIND,
   BELIEF_NAMESPACE,
   BeliefWriter,
+  CalibrationStore,
   Clock,
   DEFAULT_UI_KINDS,
   DreamCronLayer,
@@ -830,6 +831,22 @@ export interface BuildDreamCronLayerOpts {
    * needed) to keep the smoke node-runnable.
    */
   readonly dreamStoreL: Layer.Layer<DreamStore>
+  /**
+   * MEASURE-ONLY calibration sink (Slices A/3/B). OPTIONAL by design — both
+   * consumers read it via Effect.serviceOption, so it must be present in the
+   * cron fiber's RUNTIME CONTEXT (provided into this composition) to do
+   * anything: applyOps records calibration rows, and the reasoner runs its
+   * N-pass sampling extras ONLY when the sink is present (no sink = extras
+   * skipped, no SDK cost). Omitting it keeps the old graph byte-identical;
+   * applyOps then logs a warning per belief proposal so an unwired sink is
+   * visible in the dream logs. The live boot passes
+   * `CalibrationStore.makeLayer(paths.lunaDbPath).pipe(Layer.provide(clockL))`.
+   */
+  readonly calibrationStoreL?: Layer.Layer<
+    CalibrationStore,
+    import("effect").ConfigError,
+    import("@luna/memory").LunaSqliteBootstrap
+  >
 }
 
 export const buildDreamCronLayer = (opts: BuildDreamCronLayerOpts) => {
@@ -842,13 +859,18 @@ export const buildDreamCronLayer = (opts: BuildDreamCronLayerOpts) => {
     Layer.provide(sdkClientL),
     Layer.provide(memoryRouterL),
   )
-  return DreamCronLayer(expr).pipe(
+  const base = DreamCronLayer(expr).pipe(
     Layer.provide(dreamStoreL),
     Layer.provide(dreamReasonerL),
     Layer.provide(storeL),
     Layer.provide(memoryRouterL),
     Layer.provide(clockL),
   )
+  // serviceOption deps must be IN the composition (not merely somewhere in the
+  // server) for the forked cron fiber to inherit them.
+  return opts.calibrationStoreL === undefined
+    ? base
+    : base.pipe(Layer.provide(opts.calibrationStoreL))
 }
 
 // ── Survey sub-layer factory (exported for boot smoke) ──────────────────
@@ -1096,6 +1118,13 @@ export const buildBaseLayer = (
   // LunaSqliteBootstrap is satisfied at the bottom of buildServerLayer, same as
   // every other SQLite-backed layer here.
   const dreamStoreL = DreamStore.makeLayer(paths.lunaDbPath).pipe(Layer.provide(clockL))
+  // MEASURE-ONLY calibration sink (PR #100): same luna.db, additive
+  // calibration_log table. Presence of this layer is what turns the
+  // instrumentation ON (rows recorded + reasoner sampling extras run);
+  // see BuildDreamCronLayerOpts.calibrationStoreL.
+  const calibrationStoreL = CalibrationStore.makeLayer(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
   const dreamCronL = buildDreamCronLayer({
     expr: "0 3 * * *",
     sdkClientL,
@@ -1103,6 +1132,7 @@ export const buildBaseLayer = (
     storeL,
     clockL,
     dreamStoreL,
+    calibrationStoreL,
   })
 
   // Wake cron (Path A): WakeReasoner inspects the workspace state at each

@@ -1,16 +1,31 @@
-import { Effect, Stream } from "effect"
+import { Effect, Option, Stream } from "effect"
 import * as EffectClock from "effect/Clock"
 import { MemoryRouterTag } from "@luna/memory"
 import type { MemoryRecord, MemoryRouter } from "@luna/memory"
 import { Clock } from "../clock.js"
+import { CalibrationStore } from "../alignment/calibration-store.js"
+import { classifyTier, revertabilityFor } from "../alignment/tier-classifier.js"
+import { readBelief } from "../beliefs/types.js"
 import { SessionStore } from "../session/session-store.js"
 import type { TriggerAgentApi } from "../jobs/trigger-agent.js"
 import { DreamStore } from "./dream-store.js"
 import { DreamReasoner } from "./reasoner.js"
 import type { DreamOp, DreamOpKind, DreamInputs } from "./types.js"
+import { DREAM_OP_TRAITS } from "./types.js"
+
+const OP_KINDS = Object.keys(DREAM_OP_TRAITS) as ReadonlyArray<DreamOpKind>
 
 /**
- * Ops materialized to the store (vs. held as 'proposed' audit rows).
+ * Slice A detectability heuristic (PLACEHOLDER — a decision needing
+ * confirmation). Derived from DREAM_OP_TRAITS — the single exhaustive
+ * op-kind table in types.ts — so a new DreamOpKind can't silently default.
+ */
+const detectabilityFor = (kind: DreamOpKind): number =>
+  DREAM_OP_TRAITS[kind].detectability
+
+/**
+ * Ops materialized to the store (vs. held as 'proposed' audit rows). Derived
+ * from DREAM_OP_TRAITS.materialize:
  *  - memory_dedup: idempotent delete of an exact duplicate (Phase 1).
  *  - belief_candidate: stage a PROPOSED belief record (Phase 2 §7.2). Safe to
  *    auto-write because a proposed belief is inert — only ACTIVE beliefs are
@@ -19,10 +34,9 @@ import type { DreamOp, DreamOpKind, DreamInputs } from "./types.js"
  * Still HELD as 'proposed' (no survey to catch a bad apply yet): memory_staleness,
  * memory_contradiction.
  */
-const MATERIALIZE_OPS: ReadonlySet<DreamOpKind> = new Set<DreamOpKind>([
-  "memory_dedup",
-  "belief_candidate",
-])
+const MATERIALIZE_OPS: ReadonlySet<DreamOpKind> = new Set<DreamOpKind>(
+  OP_KINDS.filter((k) => DREAM_OP_TRAITS[k].materialize),
+)
 
 /**
  * Apply a reasoner's ops. Auto-applies exact-dedup (idempotent state-set);
@@ -38,6 +52,13 @@ export const applyOps = (dreamId: string, ops: ReadonlyArray<DreamOp>) =>
     const clock = yield* Clock
     const now = yield* clock.nowMs()
 
+    // Slice A calibration instrumentation (MEASURE-ONLY). OPTIONAL dependency:
+    // serviceOption keeps applyOps' requirement channel unchanged, so existing
+    // dream layers (DreamStore/MemoryRouter/Clock only) are untouched. The write
+    // is Effect.ignore'd below — a calibration failure can NEVER alter a dream
+    // turn, and nothing ever reads calibration_log back into behavior.
+    const calOpt = yield* Effect.serviceOption(CalibrationStore)
+
     for (const op of ops) {
       if (MATERIALIZE_OPS.has(op.kind)) {
         // Idempotent state-set: null after = delete; else upsert to desired state.
@@ -51,6 +72,62 @@ export const applyOps = (dreamId: string, ops: ReadonlyArray<DreamOp>) =>
           before: op.before, after: op.after, rationale: op.rationale,
           status: "applied", appliedAt: now,
         })
+        // Additive, write-only: log a calibration row for confidence-bearing
+        // belief proposals (the only ops carrying a beliefId + verbalized
+        // confidence). Slice A records the EXISTING verbalized confidence as a
+        // placeholder + the trivial detectability heuristic; sampleCount=1.
+        if (op.kind === "belief_candidate" && op.after !== null) {
+          if (Option.isNone(calOpt)) {
+            // Diagnosability: without this line a missing CalibrationStore
+            // silently no-ops the entire instrumentation (the deploy-shaped
+            // failure: sampling cost paid upstream, zero rows written). Warn —
+            // never fail — so an unwired sink is visible in the dream logs.
+            yield* Effect.logWarning(
+              "[luna/dream] CalibrationStore not provided — calibration row NOT recorded " +
+                `(beliefId=${op.targetId}); wire CalibrationStore.makeLayer into the dream layer to collect ECE data`,
+            )
+          } else {
+            const cal = calOpt.value
+            // The ENTIRE calibration block — input prep (readBelief /
+            // classifyTier can throw on a malformed `after`) AND the write —
+            // lives inside this suspended effect, and the whole thing is
+            // swallowed via catchAllCause (failures AND defects). HARD
+            // invariant: a calibration/tier failure can NEVER alter a dream
+            // turn. (Effect.ignore alone would miss defects, and prep that
+            // throws OUTSIDE the effect would fail the turn.)
+            yield* Effect.suspend(() => {
+              const confidence = readBelief(op.after as MemoryRecord).confidence
+              const detectability = detectabilityFor(op.kind)
+              // Slice 3 MEASURE-ONLY: compute the autonomy tier write-only on
+              // the SAME calibration row. stakes is ALWAYS null here (no stakes
+              // signal exists anywhere in the codebase — FLAG); revertability
+              // is the materialized placeholder heuristic. `tier` is NEVER
+              // gated and NEVER read back into behavior.
+              const tier = classifyTier({
+                confidence,
+                detectability,
+                revertability: revertabilityFor(op.kind, true), // op is materialized here
+                stakes: null,
+              })
+              return cal.record({
+                dreamId,
+                targetId: op.targetId,
+                beliefId: op.targetId, // belief_candidate targetId IS the belief id
+                proposalAt: now,
+                confidence,
+                detectability,
+                // Slice B MEASURE-ONLY: log the sampling-agreement confidence
+                // ALONGSIDE the verbalized `confidence` above (NOT in place of
+                // it), and the effective sample size. ABSENT (single pass) ⇒
+                // sampledConfidence null + sampleCount 1, preserving prior
+                // behavior. Write-only; never read back into behavior.
+                sampledConfidence: op.sampledConfidence ?? null,
+                sampleCount: op.sampleCount ?? 1,
+                tier,
+              })
+            }).pipe(Effect.catchAllCause(() => Effect.void))
+          }
+        }
       } else {
         yield* store.record({
           dreamId, at: now, op: op.kind, targetId: op.targetId,

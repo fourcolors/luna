@@ -1,4 +1,5 @@
 export * from "./types.js"
+export * from "./sample-agreement.js"
 export * from "./dream-store.js"
 export * from "./reasoner.js"
 export * from "./dream.js"
