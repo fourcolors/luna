@@ -125,15 +125,16 @@
     }
 
     /*
-      Floating satellite controls that orbit the moon's lower arc.
-      These are SIBLINGS of .moon-container (NOT children) so they don't inherit
+      Satellite controls (settings gear + new-chat "+") that SPRING OUT from the
+      moon, but only while the moon cluster is hovered (JS toggles body.moon-hovered
+      — see the hover-group wiring; a short hide delay there bridges the gap so
+      moving the cursor onto a sprung icon doesn't dismiss them).
+      They are SIBLINGS of .moon-container (NOT children) so they don't inherit
       its data-tauri-drag-region — Tauri resolves the drag region against the
       topmost element under the cursor, so a sibling on top (z-index > the
       container's 100) wins the hit-test and clicks land on the button while the
-      rest of the moon still drags the native window. Positioned absolutely in
-      window coords; all three (and the star's glow) sit inside the 140x140
-      minimized window so nothing clips when the chat panel is closed.
-    */
+      rest of the moon still drags the native window. (Machine access lives back
+      in the chat composer, not out here.) */
     .moon-satellite {
       position: absolute;
       z-index: 110;
@@ -147,38 +148,42 @@
       border-radius: 50%;
       color: #cdd9f5;
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35), inset 0 0 6px rgba(138, 180, 248, 0.12);
-      transition: background 0.2s, color 0.2s, transform 0.2s, box-shadow 0.2s;
-      animation: satellite-float 5s ease-in-out infinite;
+      /* Hidden + tucked toward the moon by default; springs to its spot on hover.
+         The per-satellite --tx/--ty say which direction it emerges FROM (roughly
+         the moon's centre). transition (not animation) so it can't fight the
+         spring transform. */
+      opacity: 0;
+      pointer-events: none;
+      transform: translate(var(--tx, 0px), var(--ty, -80px)) scale(0.3);
+      transition: opacity 0.18s ease,
+                  transform 0.34s cubic-bezier(0.34, 1.56, 0.64, 1), /* spring overshoot */
+                  background 0.2s, color 0.2s, box-shadow 0.2s;
     }
-    .moon-satellite:hover {
+    .moon-satellite svg { width: 14px; height: 14px; display: block; }
+
+    /* Sprung-out state: visible, interactive, at its real position. */
+    body.moon-hovered .moon-satellite {
+      opacity: 1;
+      pointer-events: auto;
+      transform: none;
+    }
+
+    /* Orb hover (new-chat). Scoped under moon-hovered so it doesn't override the
+       spring transform while hidden. No transform here -> no spring conflict. */
+    body.moon-hovered .moon-satellite:hover {
       background: rgba(138, 180, 248, 0.2);
       color: #ffffff;
       box-shadow: 0 3px 12px rgba(138, 180, 248, 0.4), inset 0 0 8px rgba(138, 180, 248, 0.25);
     }
-    .moon-satellite svg { width: 14px; height: 14px; display: block; }
 
-    /* The three satellites sit in a shallow arc BELOW the moon's body (its
-       visible bottom is ~y112; these start at y127+) so they read as orbiting
-       beneath it rather than sitting on top of it. The taller 140x185 minimized
-       window (see TauriService / tauri.conf) gives them the vertical room. */
-    /* New-conversation "+" — lower-right. */
-    .sat-new-chat { width: 26px; height: 26px; left: 94px; top: 127px; animation-delay: -1.3s; }
+    /* New-conversation "+" — lower-right of the moon, springs from up-left. */
+    .sat-new-chat { width: 26px; height: 26px; left: 92px; top: 138px; --tx: -22px; --ty: -86px; }
 
-    /* Machine-access (computer icon) — lower-left. Re-glyphed from a "+" so it
-       never reads as a second new-chat button. .active = scope on. */
-    .sat-machine { width: 26px; height: 26px; left: 20px; top: 127px; animation-delay: -2.6s; }
-    .sat-machine.active {
-      background: rgba(138, 180, 248, 0.22);
-      border-color: rgba(138, 180, 248, 0.5);
-      color: #c7dbff;
-    }
-
-    /* Settings — a gold GEAR hovering straight below the moon (lowest point of
-       the arc). It keeps the gold glow + twinkle treatment so it still reads as
-       the "magical companion star" the design wanted, but the gear glyph makes
-       its purpose unmistakable. No orb chrome; the glowing gear IS the control. */
+    /* Settings — a gold GEAR below the moon (springs straight up from its centre).
+       Keeps the gold glow + twinkle so it still reads as the "magical companion",
+       but the gear glyph makes its purpose unmistakable. No orb chrome. */
     .sat-settings {
-      width: 30px; height: 30px; left: 55px; top: 137px;
+      width: 30px; height: 30px; left: 52px; top: 138px; --tx: 18px; --ty: -86px;
       background: none;
       border: none;
       box-shadow: none;
@@ -186,26 +191,19 @@
       animation: satellite-twinkle 3.6s ease-in-out infinite;
     }
     .sat-settings svg { width: 22px; height: 22px; }
-    .sat-settings:hover {
-      background: none;
-      box-shadow: none;
+    /* Brighten the gear's glow on hover (scoped under moon-hovered so it beats the
+       spring rule's transform:none; pause the twinkle so this filter wins). */
+    body.moon-hovered .sat-settings:hover {
       color: #ffe9a8;
-      transform: scale(1.18) rotate(10deg);
-      /* Pause the twinkle so this hover glow actually wins: a running animation
-         owns the `filter` property and would otherwise override the hover. */
       animation-play-state: paused;
       filter: drop-shadow(0 0 9px rgba(255, 217, 125, 0.85));
     }
 
-    /* Gentle "hovering" bob for the orb satellites; staggered via animation-delay. */
-    @keyframes satellite-float {
-      0%, 100% { transform: translateY(0); }
-      50%      { transform: translateY(-2.5px); }
-    }
-    /* The star pulses its glow rather than moving, so its hover transform is free. */
+    /* The gear pulses only its GLOW (filter) — never opacity — so hiding it
+       (opacity:0 when not hovered) isn't overridden by the running animation. */
     @keyframes satellite-twinkle {
-      0%, 100% { opacity: 0.85; filter: drop-shadow(0 0 4px rgba(255, 217, 125, 0.45)); }
-      50%      { opacity: 1;    filter: drop-shadow(0 0 7px rgba(255, 217, 125, 0.75)); }
+      0%, 100% { filter: drop-shadow(0 0 4px rgba(255, 217, 125, 0.45)); }
+      50%      { filter: drop-shadow(0 0 7px rgba(255, 217, 125, 0.75)); }
     }
 
     
@@ -1390,21 +1388,43 @@
       align-items: flex-end; /* send/attach stay at the bottom as the textarea grows */
     }
 
-    /* Machine-access popover menu (local-shell attach). The "+" trigger button
-       moved out to orbit the moon as the .sat-machine computer-icon satellite,
-       so this popover is re-anchored to the body just below the moon cluster
-       (it used to be pinned to the composer's bottom-left). */
+    /* Machine-access button (computer icon) — lives in the chat composer next to
+       the attach + send buttons, styled to match them. .active = scope on. */
+    .scope-btn {
+      width: 38px;
+      height: 38px;
+      flex: 0 0 auto;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 10px;
+      color: #8ab4f8;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.2s, border-color 0.2s, color 0.2s;
+    }
+    .scope-btn svg { width: 18px; height: 18px; }
+    .scope-btn:hover { background: rgba(255, 255, 255, 0.09); }
+    .scope-btn.active {
+      background: rgba(138, 180, 248, 0.18);
+      border-color: rgba(138, 180, 248, 0.5);
+      color: #c7dbff;
+    }
+
+    /* Machine-access popover menu, anchored to .chat-input-area's bottom-left
+       (position:relative), opening upward above the composer row. */
     .scope-menu {
       position: absolute;
-      left: 14px;
-      top: 162px; /* just below the lowered computer-icon satellite */
+      left: 24px;
+      bottom: 74px;
       min-width: 230px;
       background: var(--glass-bg);
       border: 1px solid var(--glass-border);
       border-radius: 12px;
       padding: 6px;
       box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
-      z-index: 200; /* above the satellites (110) and the chat panel (50) */
+      z-index: 80;
       display: none;
     }
     .scope-menu.open { display: block; }
@@ -1705,19 +1725,12 @@
   </div>
 
   <!--
-    Satellite controls orbiting the moon's lower arc. Siblings of #moon (NOT
-    children) so they don't sit inside its data-tauri-drag-region. ids + handlers
-    are preserved from their old header/composer homes; only their look + place
-    changed. The scope popover (#scope-menu) was relocated to the body too.
+    Satellite controls (settings gear + new-chat "+") that SPRING OUT from the
+    moon, shown ONLY while the moon cluster is hovered (see the moon-hover wiring
+    in the init section). Siblings of #moon (NOT children) so they don't sit
+    inside its data-tauri-drag-region. Machine access lives back in the chat
+    composer (#scope-btn there), not out here.
   -->
-  <!-- Machine access — lower-left. Re-glyphed from "+" to a computer/monitor. -->
-  <button type="button" class="moon-satellite sat-machine" id="scope-btn" aria-label="Machine access" title="Let Luna access this machine">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <rect x="3" y="4.5" width="18" height="12" rx="1.8"></rect>
-      <line x1="8.5" y1="20" x2="15.5" y2="20"></line>
-      <line x1="12" y1="16.5" x2="12" y2="20"></line>
-    </svg>
-  </button>
   <!-- Settings — gold GEAR hovering straight below the moon (keeps the gold
        glow/twinkle "companion star" treatment via .sat-settings, but the gear
        glyph makes it unmistakably the settings control). Opens the tabbed
@@ -1735,16 +1748,6 @@
       <line x1="5" y1="12" x2="19" y2="12"></line>
     </svg>
   </button>
-
-  <!-- Machine-access popover, re-anchored to the body just below the moon
-       cluster (it was pinned to .chat-input-area's bottom-left). -->
-  <div class="scope-menu" id="scope-menu" role="menu" aria-hidden="true">
-    <div class="scope-menu-hint">Let Luna read &amp; run anything on this Mac</div>
-    <div class="scope-menu-item" id="scope-full-access" role="menuitemcheckbox" aria-checked="false" tabindex="0">
-      <span>Full machine access</span>
-      <span class="scope-menu-check" aria-hidden="true">✓</span>
-    </div>
-  </div>
 
   <!-- Settings: a standalone tabbed modal (body-level overlay). Moved OUT of
        #chat-panel so it floats on top independently of the chat, and so this
@@ -1948,11 +1951,25 @@
     <form class="chat-input-area" id="chat-form">
       <div class="attach-error" id="attach-error" hidden></div>
       <div class="attachments-strip" id="attachments-strip" hidden></div>
-      <!-- (Machine-access "+" and its popover moved out to orbit the moon as the
-           .sat-machine computer-icon satellite; see #scope-btn / #scope-menu near
-           the moon markup above.) -->
+      <!-- Machine-access popover, anchored to .chat-input-area (position:relative),
+           opening upward above the composer row. -->
+      <div class="scope-menu" id="scope-menu" role="menu" aria-hidden="true">
+        <div class="scope-menu-hint">Let Luna read &amp; run anything on this Mac</div>
+        <div class="scope-menu-item" id="scope-full-access" role="menuitemcheckbox" aria-checked="false" tabindex="0">
+          <span>Full machine access</span>
+          <span class="scope-menu-check" aria-hidden="true">✓</span>
+        </div>
+      </div>
       <div class="composer-row">
         <input type="file" id="file-input" multiple hidden>
+        <!-- Machine access (computer icon) — opens #scope-menu above. -->
+        <button type="button" class="scope-btn" id="scope-btn" aria-label="Machine access" title="Let Luna access this machine">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="4.5" width="18" height="12" rx="1.8"></rect>
+            <line x1="8.5" y1="20" x2="15.5" y2="20"></line>
+            <line x1="12" y1="16.5" x2="12" y2="20"></line>
+          </svg>
+        </button>
         <button type="button" class="attach-btn" id="attach-btn" aria-label="Attach files" title="Attach files">
           <!-- paperclip -->
           <svg viewBox="0 0 24 24">
@@ -5494,6 +5511,23 @@
     DOM.moon.addEventListener('pointermove', (e) => UIController.handlePointerMove(e));
     DOM.moon.addEventListener('pointerup', (e) => UIController.handlePointerUp(e));
     DOM.moon.addEventListener('pointerleave', () => UIController.handlePointerLeave());
+
+    // Spring the settings + new-chat satellites out only while the moon CLUSTER
+    // (moon or a sprung icon) is hovered/focused. A short hide delay bridges the
+    // gap between the moon and the sprung icons, so moving the cursor onto one to
+    // click it doesn't dismiss them first. Keyboard focus reveals them too.
+    (function wireMoonHoverSpring() {
+      const cluster = [DOM.moon, DOM.toggleSettings, DOM.newChat].filter(Boolean);
+      let hideTimer = null;
+      const show = () => { clearTimeout(hideTimer); document.body.classList.add('moon-hovered'); };
+      const hide = () => { clearTimeout(hideTimer); hideTimer = setTimeout(() => document.body.classList.remove('moon-hovered'), 250); };
+      cluster.forEach((el) => {
+        el.addEventListener('mouseenter', show);
+        el.addEventListener('mouseleave', hide);
+        el.addEventListener('focus', show);
+        el.addEventListener('blur', hide);
+      });
+    })();
     DOM.chatHeader.addEventListener('pointerdown', () => TauriService.startDragging());
     // Corner grip: drag to resize the whole panel.
     // We resize the window OURSELVES via setSize (the same call that grows the window
@@ -5550,18 +5584,14 @@
       resizeGrip.addEventListener('pointercancel', endResize);
     }
 
-    // Local-shell machine-access controls (computer-icon satellite + popover).
+    // Local-shell machine-access controls (computer-icon button in the composer
+    // + its popover). It lives inside the chat, which is already open when it's
+    // visible, so this just toggles the menu.
     LocalShell.refreshPlatform();
     if (DOM.scopeBtn) {
-      DOM.scopeBtn.addEventListener('click', async (e) => {
+      DOM.scopeBtn.addEventListener('click', (e) => {
         e.stopPropagation(); // don't let the document outside-click handler re-close it
-        const willOpen = !DOM.scopeMenu.classList.contains('open');
-        // The popover is 230px wide — wider than the 140px minimized window — so
-        // open the chat first (which grows the window) before showing the menu.
-        if (willOpen && !DOM.chatPanel.classList.contains('active')) {
-          await UIController.toggleChat();
-        }
-        LocalShell.openMenu(willOpen);
+        LocalShell.openMenu(!DOM.scopeMenu.classList.contains('open'));
       });
     }
     if (DOM.scopeFullAccess) {

@@ -35,19 +35,12 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
   </div>
 
   <!--
-    Satellite controls orbiting the moon's lower arc. Siblings of #moon (NOT
-    children) so they don't sit inside its data-tauri-drag-region. ids + handlers
-    are preserved from their old header/composer homes; only their look + place
-    changed. The scope popover (#scope-menu) was relocated to the body too.
+    Satellite controls (settings gear + new-chat "+") that SPRING OUT from the
+    moon, shown ONLY while the moon cluster is hovered (see the moon-hover wiring
+    in the init section). Siblings of #moon (NOT children) so they don't sit
+    inside its data-tauri-drag-region. Machine access lives back in the chat
+    composer (#scope-btn there), not out here.
   -->
-  <!-- Machine access — lower-left. Re-glyphed from "+" to a computer/monitor. -->
-  <button type="button" class="moon-satellite sat-machine" id="scope-btn" aria-label="Machine access" title="Let Luna access this machine">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <rect x="3" y="4.5" width="18" height="12" rx="1.8"></rect>
-      <line x1="8.5" y1="20" x2="15.5" y2="20"></line>
-      <line x1="12" y1="16.5" x2="12" y2="20"></line>
-    </svg>
-  </button>
   <!-- Settings — gold GEAR hovering straight below the moon (keeps the gold
        glow/twinkle "companion star" treatment via .sat-settings, but the gear
        glyph makes it unmistakably the settings control). Opens the tabbed
@@ -65,16 +58,6 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
       <line x1="5" y1="12" x2="19" y2="12"></line>
     </svg>
   </button>
-
-  <!-- Machine-access popover, re-anchored to the body just below the moon
-       cluster (it was pinned to .chat-input-area's bottom-left). -->
-  <div class="scope-menu" id="scope-menu" role="menu" aria-hidden="true">
-    <div class="scope-menu-hint">Let Luna read &amp; run anything on this Mac</div>
-    <div class="scope-menu-item" id="scope-full-access" role="menuitemcheckbox" aria-checked="false" tabindex="0">
-      <span>Full machine access</span>
-      <span class="scope-menu-check" aria-hidden="true">✓</span>
-    </div>
-  </div>
 
   <!-- Settings: a standalone tabbed modal (body-level overlay). Moved OUT of
        #chat-panel so it floats on top independently of the chat, and so this
@@ -278,11 +261,25 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
     <form class="chat-input-area" id="chat-form">
       <div class="attach-error" id="attach-error" hidden=""></div>
       <div class="attachments-strip" id="attachments-strip" hidden=""></div>
-      <!-- (Machine-access "+" and its popover moved out to orbit the moon as the
-           .sat-machine computer-icon satellite; see #scope-btn / #scope-menu near
-           the moon markup above.) -->
+      <!-- Machine-access popover, anchored to .chat-input-area (position:relative),
+           opening upward above the composer row. -->
+      <div class="scope-menu" id="scope-menu" role="menu" aria-hidden="true">
+        <div class="scope-menu-hint">Let Luna read &amp; run anything on this Mac</div>
+        <div class="scope-menu-item" id="scope-full-access" role="menuitemcheckbox" aria-checked="false" tabindex="0">
+          <span>Full machine access</span>
+          <span class="scope-menu-check" aria-hidden="true">✓</span>
+        </div>
+      </div>
       <div class="composer-row">
         <input type="file" id="file-input" multiple="" hidden="">
+        <!-- Machine access (computer icon) — opens #scope-menu above. -->
+        <button type="button" class="scope-btn" id="scope-btn" aria-label="Machine access" title="Let Luna access this machine">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="4.5" width="18" height="12" rx="1.8"></rect>
+            <line x1="8.5" y1="20" x2="15.5" y2="20"></line>
+            <line x1="12" y1="16.5" x2="12" y2="20"></line>
+          </svg>
+        </button>
         <button type="button" class="attach-btn" id="attach-btn" aria-label="Attach files" title="Attach files">
           <!-- paperclip -->
           <svg viewBox="0 0 24 24">
@@ -341,19 +338,12 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
   </div>
 
   <!--
-    Satellite controls orbiting the moon's lower arc. Siblings of #moon (NOT
-    children) so they don't sit inside its data-tauri-drag-region. ids + handlers
-    are preserved from their old header/composer homes; only their look + place
-    changed. The scope popover (#scope-menu) was relocated to the body too.
+    Satellite controls (settings gear + new-chat "+") that SPRING OUT from the
+    moon, shown ONLY while the moon cluster is hovered (see the moon-hover wiring
+    in the init section). Siblings of #moon (NOT children) so they don't sit
+    inside its data-tauri-drag-region. Machine access lives back in the chat
+    composer (#scope-btn there), not out here.
   -->
-  <!-- Machine access — lower-left. Re-glyphed from "+" to a computer/monitor. -->
-  <button type="button" class="moon-satellite sat-machine" id="scope-btn" aria-label="Machine access" title="Let Luna access this machine">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <rect x="3" y="4.5" width="18" height="12" rx="1.8"></rect>
-      <line x1="8.5" y1="20" x2="15.5" y2="20"></line>
-      <line x1="12" y1="16.5" x2="12" y2="20"></line>
-    </svg>
-  </button>
   <!-- Settings — gold GEAR hovering straight below the moon (keeps the gold
        glow/twinkle "companion star" treatment via .sat-settings, but the gear
        glyph makes it unmistakably the settings control). Opens the tabbed
@@ -371,16 +361,6 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
       <line x1="5" y1="12" x2="19" y2="12"></line>
     </svg>
   </button>
-
-  <!-- Machine-access popover, re-anchored to the body just below the moon
-       cluster (it was pinned to .chat-input-area's bottom-left). -->
-  <div class="scope-menu" id="scope-menu" role="menu" aria-hidden="true">
-    <div class="scope-menu-hint">Let Luna read &amp; run anything on this Mac</div>
-    <div class="scope-menu-item" id="scope-full-access" role="menuitemcheckbox" aria-checked="false" tabindex="0">
-      <span>Full machine access</span>
-      <span class="scope-menu-check" aria-hidden="true">✓</span>
-    </div>
-  </div>
 
   <!-- Settings: a standalone tabbed modal (body-level overlay). Moved OUT of
        #chat-panel so it floats on top independently of the chat, and so this
@@ -584,11 +564,25 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
     <form class="chat-input-area" id="chat-form">
       <div class="attach-error" id="attach-error" hidden=""></div>
       <div class="attachments-strip" id="attachments-strip" hidden=""></div>
-      <!-- (Machine-access "+" and its popover moved out to orbit the moon as the
-           .sat-machine computer-icon satellite; see #scope-btn / #scope-menu near
-           the moon markup above.) -->
+      <!-- Machine-access popover, anchored to .chat-input-area (position:relative),
+           opening upward above the composer row. -->
+      <div class="scope-menu" id="scope-menu" role="menu" aria-hidden="true">
+        <div class="scope-menu-hint">Let Luna read &amp; run anything on this Mac</div>
+        <div class="scope-menu-item" id="scope-full-access" role="menuitemcheckbox" aria-checked="false" tabindex="0">
+          <span>Full machine access</span>
+          <span class="scope-menu-check" aria-hidden="true">✓</span>
+        </div>
+      </div>
       <div class="composer-row">
         <input type="file" id="file-input" multiple="" hidden="">
+        <!-- Machine access (computer icon) — opens #scope-menu above. -->
+        <button type="button" class="scope-btn" id="scope-btn" aria-label="Machine access" title="Let Luna access this machine">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="4.5" width="18" height="12" rx="1.8"></rect>
+            <line x1="8.5" y1="20" x2="15.5" y2="20"></line>
+            <line x1="12" y1="16.5" x2="12" y2="20"></line>
+          </svg>
+        </button>
         <button type="button" class="attach-btn" id="attach-btn" aria-label="Attach files" title="Attach files">
           <!-- paperclip -->
           <svg viewBox="0 0 24 24">
