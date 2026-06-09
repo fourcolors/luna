@@ -1125,6 +1125,43 @@ exit 0
     expect(result.stdout).toContain("LUNA_DEV_FALLBACK_START_SSH=admin@lan.example.test")
   })
 
+  it("ssh recovery start-commands restart as stop -> settle -> start, not a fast restart", () => {
+    // Regression for the 2026-06-08 SQLITE_CANTOPEN deploy bug class: a fast
+    // `systemctl restart` can start the new chat-server before the outgoing one
+    // releases its DuckDB/SQLite WAL/SHM handles. The recovery defaults restart as
+    // a clean stop -> settle (6s) -> start instead. Each profile keeps its own
+    // systemd scope: stable = `--user`, dev = the in-container unit via incus exec
+    // (the `;` sequence survives the .env round-trip and runs in both local and
+    // ssh recovery modes).
+    const temp = makeTempDir()
+
+    const result = runScript("install.sh", [
+      "--dry-run",
+      "--luna-dir",
+      join(temp, "repo"),
+      "--bin-dir",
+      join(temp, "bin"),
+      "--enable-ssh-recovery",
+    ], {
+      env: {
+        LUNA_TEST_BUN_PATH: "/opt/homebrew/bin/bun",
+      },
+    })
+
+    expect(result.status).toBe(0)
+    // Stable: --user scope, stop -> settle -> start.
+    expect(result.stdout).toContain(
+      "LUNA_STABLE_START_COMMAND=systemctl --user stop luna-chat-server.service; sleep 6; systemctl --user start luna-chat-server.service",
+    )
+    // Dev: in-container unit via incus exec, host-side settle between the execs.
+    expect(result.stdout).toContain(
+      "LUNA_DEV_START_COMMAND=incus exec luna-dev -- systemctl stop luna-dev-chat-server.service; sleep 6; incus exec luna-dev -- systemctl start luna-dev-chat-server.service",
+    )
+    // Neither default may be a fast `systemctl restart` (the bug).
+    expect(result.stdout).not.toContain("LUNA_STABLE_START_COMMAND=systemctl --user restart")
+    expect(result.stdout).not.toContain("LUNA_DEV_START_COMMAND=incus exec luna-dev -- systemctl restart")
+  })
+
   it("installer honors a localhost stable override without leaking jax-box", () => {
     const temp = makeTempDir()
 
