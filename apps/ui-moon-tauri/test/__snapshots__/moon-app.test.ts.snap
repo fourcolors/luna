@@ -35,36 +35,20 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
     </div>
   </div>
 
-  <!--
-    Satellite control (the settings gear) that SPRINGS OUT from the
-    moon, shown ONLY while the moon cluster is hovered (see the moon-hover wiring
-    in the init section). Sibling of #moon (NOT a child) so it doesn't sit
-    inside its data-tauri-drag-region. Machine access lives back in the chat
-    composer (#scope-btn there), not out here. (The "+ new chat" was removed —
-    Luna is single-thread; "Start a fresh thread" now lives in Settings.)
-  -->
-  <!-- Settings — gold GEAR hovering straight below the moon (keeps the gold
-       glow/twinkle "companion star" treatment via .sat-settings, but the gear
-       glyph makes it unmistakably the settings control). Opens the tabbed
-       settings modal (#settings-panel) — its own thing, not the chat page. -->
-  <button type="button" class="moon-satellite sat-settings" id="toggle-settings" aria-label="Settings" title="Settings">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="3"></circle>
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-    </svg>
-  </button>
-
   <!-- Re-tether "string" (siblings of #moon, z-index > 100 to escape its drag
        region). Hidden until the connection drops; pull the bead to reconnect to
        the SAME thread. Physics ported verbatim from the approved demo. -->
   <svg class="moon-rope-layer" id="moon-rope-layer" aria-hidden="true">
     <defs>
       <linearGradient id="moonRopeGrad" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="rgba(226,236,253,.5)"></stop>
-        <stop offset="100%" stop-color="rgba(138,180,248,.85)"></stop>
+        <stop offset="0%" stop-color="rgba(226,236,253,.55)"></stop>
+        <stop offset="100%" stop-color="rgba(138,180,248,.9)"></stop>
       </linearGradient>
     </defs>
+    <!-- halo / core / shimmer share one Verlet \`d\` per frame (see the CSS notes) -->
+    <path id="moon-rope-halo"></path>
     <path id="moon-rope"></path>
+    <path id="moon-rope-shimmer" pathLength="1"></path>
   </svg>
   <div class="moon-bead" id="moon-bead" title="Pull to reconnect" aria-label="Reconnect to your thread">
     <svg viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></g></svg>
@@ -213,9 +197,15 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         </div>
       </div>
       <div class="header-actions">
-        <!-- Settings moved out to orbit the moon as a satellite (see
-             #toggle-settings below the moon). Only the close (X) control
-             remains in the header. -->
+        <!-- Settings lives here in the header (it orbited the moon as a
+             satellite for a while — that felt off, so it came home). Opens
+             the tabbed settings modal (#settings-panel). -->
+        <button class="close-btn" id="toggle-settings" aria-label="Settings" title="Settings">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
         <button class="close-btn" id="close-chat" aria-label="Close Chat">
           <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -356,36 +346,20 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
     </div>
   </div>
 
-  <!--
-    Satellite control (the settings gear) that SPRINGS OUT from the
-    moon, shown ONLY while the moon cluster is hovered (see the moon-hover wiring
-    in the init section). Sibling of #moon (NOT a child) so it doesn't sit
-    inside its data-tauri-drag-region. Machine access lives back in the chat
-    composer (#scope-btn there), not out here. (The "+ new chat" was removed —
-    Luna is single-thread; "Start a fresh thread" now lives in Settings.)
-  -->
-  <!-- Settings — gold GEAR hovering straight below the moon (keeps the gold
-       glow/twinkle "companion star" treatment via .sat-settings, but the gear
-       glyph makes it unmistakably the settings control). Opens the tabbed
-       settings modal (#settings-panel) — its own thing, not the chat page. -->
-  <button type="button" class="moon-satellite sat-settings" id="toggle-settings" aria-label="Settings" title="Settings">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="3"></circle>
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-    </svg>
-  </button>
-
   <!-- Re-tether "string" (siblings of #moon, z-index > 100 to escape its drag
        region). Hidden until the connection drops; pull the bead to reconnect to
        the SAME thread. Physics ported verbatim from the approved demo. -->
   <svg class="moon-rope-layer" id="moon-rope-layer" aria-hidden="true">
     <defs>
       <linearGradient id="moonRopeGrad" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="rgba(226,236,253,.5)"></stop>
-        <stop offset="100%" stop-color="rgba(138,180,248,.85)"></stop>
+        <stop offset="0%" stop-color="rgba(226,236,253,.55)"></stop>
+        <stop offset="100%" stop-color="rgba(138,180,248,.9)"></stop>
       </linearGradient>
     </defs>
+    <!-- halo / core / shimmer share one Verlet \`d\` per frame (see the CSS notes) -->
+    <path id="moon-rope-halo"></path>
     <path id="moon-rope"></path>
+    <path id="moon-rope-shimmer" pathLength="1"></path>
   </svg>
   <div class="moon-bead" id="moon-bead" title="Pull to reconnect" aria-label="Reconnect to your thread">
     <svg viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></g></svg>
@@ -534,9 +508,15 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         </div>
       </div>
       <div class="header-actions">
-        <!-- Settings moved out to orbit the moon as a satellite (see
-             #toggle-settings below the moon). Only the close (X) control
-             remains in the header. -->
+        <!-- Settings lives here in the header (it orbited the moon as a
+             satellite for a while — that felt off, so it came home). Opens
+             the tabbed settings modal (#settings-panel). -->
+        <button class="close-btn" id="toggle-settings" aria-label="Settings" title="Settings">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
         <button class="close-btn" id="close-chat" aria-label="Close Chat">
           <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <line x1="18" y1="6" x2="6" y2="18"></line>

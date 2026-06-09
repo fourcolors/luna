@@ -150,121 +150,82 @@
       height: 100%;
       filter: drop-shadow(0 6px 16px rgba(138, 180, 248, 0.45));
       transform: translate3d(var(--px, 0px), var(--py, 0px), 0) rotate(var(--rot, 0deg));
-      transition: transform 0.15s cubic-bezier(0.25, 0.8, 0.25, 1);
+      transition: transform 0.15s cubic-bezier(0.25, 0.8, 0.25, 1),
+                  filter 0.6s ease;   /* the detached dim fades, never snaps */
       pointer-events: auto;
-    }
-
-    /*
-      Satellite control (the settings gear) that SPRINGS OUT from the
-      moon, but only while the moon cluster is hovered (JS toggles body.moon-hovered
-      — see the hover-group wiring; a short hide delay there bridges the gap so
-      moving the cursor onto a sprung icon doesn't dismiss them).
-      They are SIBLINGS of .moon-container (NOT children) so they don't inherit
-      its data-tauri-drag-region — Tauri resolves the drag region against the
-      topmost element under the cursor, so a sibling on top (z-index > the
-      container's 100) wins the hit-test and clicks land on the button while the
-      rest of the moon still drags the native window. (Machine access lives back
-      in the chat composer, not out here.) */
-    .moon-satellite {
-      position: absolute;
-      z-index: 110;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 0;
-      cursor: pointer;
-      background: rgba(255, 255, 255, 0.06);
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      border-radius: 50%;
-      color: #cdd9f5;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35), inset 0 0 6px rgba(138, 180, 248, 0.12);
-      /* Hidden + tucked toward the moon by default; springs to its spot on hover.
-         The per-satellite --tx/--ty say which direction it emerges FROM (roughly
-         the moon's centre). transition (not animation) so it can't fight the
-         spring transform. */
-      opacity: 0;
-      pointer-events: none;
-      transform: translate(var(--tx, 0px), var(--ty, -80px)) scale(0.3);
-      transition: opacity 0.18s ease,
-                  transform 0.34s cubic-bezier(0.34, 1.56, 0.64, 1), /* spring overshoot */
-                  background 0.2s, color 0.2s, box-shadow 0.2s;
-    }
-    .moon-satellite svg { width: 14px; height: 14px; display: block; }
-
-    /* Sprung-out state: visible, interactive, at its real position. */
-    body.moon-hovered .moon-satellite {
-      opacity: 1;
-      pointer-events: auto;
-      transform: none;
-    }
-
-    /* Orb hover. Scoped under moon-hovered so it doesn't override the
-       spring transform while hidden. No transform here -> no spring conflict. */
-    body.moon-hovered .moon-satellite:hover {
-      background: rgba(138, 180, 248, 0.2);
-      color: #ffffff;
-      box-shadow: 0 3px 12px rgba(138, 180, 248, 0.4), inset 0 0 8px rgba(138, 180, 248, 0.25);
-    }
-
-    /* Settings — a gold GEAR below the moon (springs straight up from its centre).
-       Keeps the gold glow + twinkle so it still reads as the "magical companion",
-       but the gear glyph makes its purpose unmistakable. No orb chrome. */
-    .sat-settings {
-      width: 30px; height: 30px; left: 52px; top: 138px; --tx: 18px; --ty: -86px;
-      background: none;
-      border: none;
-      box-shadow: none;
-      color: #ffd97d;
-      animation: satellite-twinkle 3.6s ease-in-out infinite;
-    }
-    .sat-settings svg { width: 22px; height: 22px; }
-    /* Brighten the gear's glow on hover (scoped under moon-hovered so it beats the
-       spring rule's transform:none; pause the twinkle so this filter wins). */
-    body.moon-hovered .sat-settings:hover {
-      color: #ffe9a8;
-      animation-play-state: paused;
-      filter: drop-shadow(0 0 9px rgba(255, 217, 125, 0.85));
-    }
-
-    /* The gear pulses only its GLOW (filter) — never opacity — so hiding it
-       (opacity:0 when not hovered) isn't overridden by the running animation. */
-    @keyframes satellite-twinkle {
-      0%, 100% { filter: drop-shadow(0 0 4px rgba(255, 217, 125, 0.45)); }
-      50%      { filter: drop-shadow(0 0 7px rgba(255, 217, 125, 0.75)); }
     }
 
     /* ── Re-tether "string": a Verlet rope that falls from the moon when the
        connection drops; pull the bead to reconnect to the same thread. The rope
-       layer + bead are SIBLINGS of #moon (z-index > the moon's 100) so the bead
-       escapes #moon's data-tauri-drag-region — same hit-test trick as the
-       settings satellite. Compositor-only: bead moves by transform, the rope is
-       a single <path> repaint; the JS loop parks when settled (no idle CPU). ── */
+       layer + bead are SIBLINGS of #moon (NOT children) so they don't inherit
+       its data-tauri-drag-region — Tauri resolves the drag region against the
+       topmost element under the cursor, so a sibling on top (z-index > the
+       moon's 100) wins the hit-test and the bead is grabbable while the rest of
+       the moon still drags the native window. Compositor-only: bead moves by
+       transform, the rope is a few <path> repaints sharing one `d`; the JS loop
+       parks when settled (no idle CPU). ── */
     .moon-rope-layer {
       position: absolute; inset: 0; width: 100%; height: 100%;
       overflow: visible; pointer-events: none; z-index: 109; display: none;
     }
-    #moon-rope { fill: none; stroke: url(#moonRopeGrad); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+    /* Three strokes share one Verlet `d` each frame: a wide soft halo
+       underneath, the gradient core, and a faint shimmer pulse that travels
+       down toward the bead (energy flowing along the lifeline). */
+    #moon-rope { fill: none; stroke: url(#moonRopeGrad); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+    #moon-rope-halo { fill: none; stroke: rgba(138, 180, 248, 0.16); stroke-width: 9; stroke-linecap: round; stroke-linejoin: round; }
+    #moon-rope-shimmer {
+      fill: none; stroke: rgba(240, 247, 255, 0.75); stroke-width: 2; stroke-linecap: round;
+      /* pathLength=1 on the element keeps these fractions valid while the
+         path's true length changes every physics frame. */
+      stroke-dasharray: 0.12 0.88;
+      animation: rope-shimmer 2.6s linear infinite;
+    }
+    @keyframes rope-shimmer {
+      from { stroke-dashoffset: 0; }
+      to   { stroke-dashoffset: -1; }   /* one full lap anchor → bead */
+    }
+    /* The bead: a small glassy sphere lit from the upper-left, breathing a soft
+       glow so it reads "alive — pull me", brightening under the cursor. */
     .moon-bead {
       position: absolute; left: 0; top: 0; width: 34px; height: 34px; border-radius: 50%;
       z-index: 110; cursor: grab; display: none; align-items: center; justify-content: center;
-      color: #bcd2ff; will-change: transform; touch-action: none;
-      background: rgba(20, 26, 44, 0.96); border: 1px solid rgba(138, 180, 248, 0.6);
-      box-shadow: 0 0 16px rgba(138, 180, 248, 0.5), inset 0 0 8px rgba(138, 180, 248, 0.25);
+      color: #f4f8ff; will-change: transform; touch-action: none;
+      background: radial-gradient(circle at 32% 28%,
+        rgba(255, 255, 255, 0.95) 0%,
+        rgba(207, 224, 255, 0.85) 16%,
+        rgba(138, 180, 248, 0.55) 42%,
+        rgba(44, 74, 138, 0.85) 72%,
+        rgba(16, 24, 48, 0.97) 100%);
+      border: 1px solid rgba(190, 215, 255, 0.55);
       transition: opacity 0.3s ease;
+      animation: bead-breathe 2.8s ease-in-out infinite;
     }
     .moon-bead.live { display: flex; }
+    .moon-bead:hover {
+      animation-play-state: paused;   /* let the brighter hover shadow win */
+      box-shadow: 0 0 26px rgba(160, 198, 255, 0.85), 0 3px 10px rgba(0, 0, 0, 0.45),
+                  inset 0 -5px 9px rgba(8, 14, 34, 0.6), inset 0 2px 4px rgba(255, 255, 255, 0.5);
+    }
     .moon-bead:active { cursor: grabbing; }
-    .moon-bead svg { width: 17px; height: 17px; pointer-events: none; }
+    .moon-bead svg { width: 15px; height: 15px; pointer-events: none; filter: drop-shadow(0 1px 2px rgba(10, 16, 38, 0.8)); }
+    @keyframes bead-breathe {
+      0%, 100% { box-shadow: 0 0 14px rgba(138, 180, 248, 0.45), 0 3px 10px rgba(0, 0, 0, 0.45),
+                             inset 0 -5px 9px rgba(8, 14, 34, 0.6), inset 0 2px 4px rgba(255, 255, 255, 0.45); }
+      50%      { box-shadow: 0 0 24px rgba(160, 198, 255, 0.75), 0 3px 10px rgba(0, 0, 0, 0.45),
+                             inset 0 -5px 9px rgba(8, 14, 34, 0.6), inset 0 2px 4px rgba(255, 255, 255, 0.45); }
+    }
     /* success pulse on re-tether (played on #moon-wrapper; the JS clears any inline
        lean transform first so this animation isn't overridden by it). */
     .moon-wrapper.retether-pulse { animation: moon-retether-pulse 0.7s ease; }
     @keyframes moon-retether-pulse {
       0% { transform: scale(1); } 30% { transform: scale(1.12); } 100% { transform: scale(1); }
     }
-    /* While the re-tether string is out the window grows to an envelope and the
-       moon re-centers; the settings satellite is window-positioned (not moon-
-       relative), so hide it during re-tether rather than let it float detached. */
-    body.retethering .moon-satellite { display: none !important; }
+    /* While detached (string out) the moon's light dims — losing the thread
+       literally takes the glow out of it; re-tethering brings it back (the
+       hover rule still wins, so the moon brightens under attention). Subtle on
+       purpose: it must read "asleep", never "broken". */
+    body.retethering .moon-glow { opacity: 0.45; }
+    body.retethering .moon-svg { filter: drop-shadow(0 6px 16px rgba(138, 180, 248, 0.18)); }
 
 
     /* 
@@ -1785,36 +1746,20 @@
     </div>
   </div>
 
-  <!--
-    Satellite control (the settings gear) that SPRINGS OUT from the
-    moon, shown ONLY while the moon cluster is hovered (see the moon-hover wiring
-    in the init section). Sibling of #moon (NOT a child) so it doesn't sit
-    inside its data-tauri-drag-region. Machine access lives back in the chat
-    composer (#scope-btn there), not out here. (The "+ new chat" was removed —
-    Luna is single-thread; "Start a fresh thread" now lives in Settings.)
-  -->
-  <!-- Settings — gold GEAR hovering straight below the moon (keeps the gold
-       glow/twinkle "companion star" treatment via .sat-settings, but the gear
-       glyph makes it unmistakably the settings control). Opens the tabbed
-       settings modal (#settings-panel) — its own thing, not the chat page. -->
-  <button type="button" class="moon-satellite sat-settings" id="toggle-settings" aria-label="Settings" title="Settings">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="3"></circle>
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-    </svg>
-  </button>
-
   <!-- Re-tether "string" (siblings of #moon, z-index > 100 to escape its drag
        region). Hidden until the connection drops; pull the bead to reconnect to
        the SAME thread. Physics ported verbatim from the approved demo. -->
   <svg class="moon-rope-layer" id="moon-rope-layer" aria-hidden="true">
     <defs>
       <linearGradient id="moonRopeGrad" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="rgba(226,236,253,.5)"></stop>
-        <stop offset="100%" stop-color="rgba(138,180,248,.85)"></stop>
+        <stop offset="0%" stop-color="rgba(226,236,253,.55)"></stop>
+        <stop offset="100%" stop-color="rgba(138,180,248,.9)"></stop>
       </linearGradient>
     </defs>
+    <!-- halo / core / shimmer share one Verlet `d` per frame (see the CSS notes) -->
+    <path id="moon-rope-halo"></path>
     <path id="moon-rope"></path>
+    <path id="moon-rope-shimmer" pathLength="1"></path>
   </svg>
   <div class="moon-bead" id="moon-bead" title="Pull to reconnect" aria-label="Reconnect to your thread">
     <svg viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></g></svg>
@@ -1963,9 +1908,15 @@
         </div>
       </div>
       <div class="header-actions">
-        <!-- Settings moved out to orbit the moon as a satellite (see
-             #toggle-settings below the moon). Only the close (X) control
-             remains in the header. -->
+        <!-- Settings lives here in the header (it orbited the moon as a
+             satellite for a while — that felt off, so it came home). Opens
+             the tabbed settings modal (#settings-panel). -->
+        <button class="close-btn" id="toggle-settings" aria-label="Settings" title="Settings">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
         <button class="close-btn" id="close-chat" aria-label="Close Chat">
           <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -5833,23 +5784,6 @@
     DOM.moon.addEventListener('pointerup', (e) => UIController.handlePointerUp(e));
     DOM.moon.addEventListener('pointerleave', () => UIController.handlePointerLeave());
 
-    // Spring the settings satellite out only while the moon CLUSTER
-    // (moon or the sprung gear) is hovered/focused. A short hide delay bridges the
-    // gap between the moon and the sprung icon, so moving the cursor onto it to
-    // click it doesn't dismiss it first. Keyboard focus reveals it too.
-    (function wireMoonHoverSpring() {
-      const cluster = [DOM.moon, DOM.toggleSettings].filter(Boolean);
-      let hideTimer = null;
-      const show = () => { clearTimeout(hideTimer); document.body.classList.add('moon-hovered'); };
-      const hide = () => { clearTimeout(hideTimer); hideTimer = setTimeout(() => document.body.classList.remove('moon-hovered'), 250); };
-      cluster.forEach((el) => {
-        el.addEventListener('mouseenter', show);
-        el.addEventListener('mouseleave', hide);
-        el.addEventListener('focus', show);
-        el.addEventListener('blur', hide);
-      });
-    })();
-
     // ── Re-tether "string" — Verlet rope ported verbatim from the approved demo.
     // Falls from the moon when the connection drops; fling the bead (any
     // direction, springs back) or click / yank it down to reconnect to the SAME
@@ -5862,8 +5796,10 @@
       const moonWrapper = document.getElementById('moon-wrapper');
       const layer = document.getElementById('moon-rope-layer');
       const ropePath = document.getElementById('moon-rope');
+      const ropeHalo = document.getElementById('moon-rope-halo');
+      const ropeShimmer = document.getElementById('moon-rope-shimmer');
       const bead = document.getElementById('moon-bead');
-      if (!moon || !moonWrapper || !layer || !ropePath || !bead) {
+      if (!moon || !moonWrapper || !layer || !ropePath || !ropeHalo || !ropeShimmer || !bead) {
         return { show() {}, retract() {}, hideImmediate() {}, isLive: () => false, setOnPull() {}, setOnRetracted() {}, updateAnchor() {} };
       }
 
@@ -5989,10 +5925,25 @@
           .catch(() => {});
       }
 
-      function render() {
+      // Catmull-Rom through the Verlet points → one smooth cubic path. A raw
+      // polyline shows 14 visible elbows and reads as a chain of sticks; the
+      // spline reads as an actual string. Shared by the halo/core/shimmer.
+      function ropeD() {
         let d = 'M ' + pts[0].x.toFixed(1) + ' ' + pts[0].y.toFixed(1);
-        for (let i = 1; i < N; i++) d += ' L ' + pts[i].x.toFixed(1) + ' ' + pts[i].y.toFixed(1);
+        for (let i = 0; i < N - 1; i++) {
+          const p0 = pts[i > 0 ? i - 1 : 0], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2 < N ? i + 2 : N - 1];
+          d += ' C ' + (p1.x + (p2.x - p0.x) / 6).toFixed(1) + ' ' + (p1.y + (p2.y - p0.y) / 6).toFixed(1)
+             + ' '   + (p2.x - (p3.x - p1.x) / 6).toFixed(1) + ' ' + (p2.y - (p3.y - p1.y) / 6).toFixed(1)
+             + ' '   + p2.x.toFixed(1) + ' ' + p2.y.toFixed(1);
+        }
+        return d;
+      }
+
+      function render() {
+        const d = ropeD();
         ropePath.setAttribute('d', d);
+        ropeHalo.setAttribute('d', d);
+        ropeShimmer.setAttribute('d', d);
         pushRegion();
         const b = pts[N - 1];
         bead.style.transform = 'translate3d(' + (b.x - 17) + 'px,' + (b.y - 17) + 'px,0)';
