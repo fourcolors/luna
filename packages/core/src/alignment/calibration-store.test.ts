@@ -1,14 +1,9 @@
 // packages/core/src/alignment/calibration-store.test.ts
 //
-// RED (PING) for Slice A — calibration logging, MEASURE-ONLY.
-//
-// This file imports CalibrationStore / calculateEce / joinVerdicts from
-// ./calibration-store.js, which does NOT exist yet. It MUST fail at import
-// with "Cannot find module './calibration-store.js'" — that is the correct
-// RED reason (the slice's units are missing), NOT a harness error.
-//
-// Mirrors alignment-store.test.ts: Effect.provide(CalibrationStore.Memory)
-// + Clock.Test, idempotency = record twice expect length 1.
+// Tests for the Slice A calibration-logging units (MEASURE-ONLY): CalibrationStore
+// + pure calculateEce / joinVerdicts. Mirrors alignment-store.test.ts —
+// Effect.provide(CalibrationStore.Memory) + Clock.Test; idempotency = record
+// twice expect length 1.
 import { describe, expect, it } from "vitest"
 import { Effect } from "effect"
 import { Clock } from "../clock.js"

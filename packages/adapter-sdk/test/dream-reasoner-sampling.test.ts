@@ -1,19 +1,13 @@
 /**
- * dream-reasoner-sampling.test.ts — RED (PING) for Slice B (sampling-based
- * confidence, MEASURE-ONLY) at the adapter-sdk reasoner seam.
+ * dream-reasoner-sampling.test.ts — Slice B (sampling-based confidence,
+ * MEASURE-ONLY) at the adapter-sdk reasoner seam.
  *
- * CONVENTION (mirrors dream.test.ts's Slice-3 tier RED, lines 147–151): this
- * file does NOT import the missing Slice-B unit (sample-agreement.js). It LOADS
- * against today's DreamReasonerDefault and fails by ASSERTION — the pass-1 ops
- * do NOT yet carry `sampledConfidence`/`sampleCount`, and N=5 sampling is not
- * yet looped. The new op fields are accessed via a CAST (exactly like
- * dream.test.ts casts `(rows[0] as { tier?: number }).tier`), so that NO change
- * to DreamOp (a GREEN-step edit) is required for this file to compile/run.
- *
- * The correct RED reason here is "sampling path absent" — surfaced as
- * `expect(undefined).toBe(0.8)` on `sampledConfidence`, NOT an import collapse
- * and NOT a parse/setup error. Every fake result actually consumed is a valid
- * JSON op array so pass-1 always materializes (no DreamError(parse)).
+ * Drives the reasoner against a fake SDKClient that returns N varied results
+ * across the N passes and asserts: pass-1 ops materialize UNCHANGED (the belief
+ * keeps its verbalized confidence) and the additive `sampledConfidence` /
+ * `sampleCount` fields are attached for logging. Those op fields are read via a
+ * cast since they are optional on DreamOp. Every consumed fake result is a valid
+ * JSON op array, so pass-1 always materializes.
  *
  * Fixture (deterministic; agreement is order-independent because it counts over
  * all passes — only "which result is pass 1" matters, and pass-1 is the FIRST
@@ -204,8 +198,9 @@ describe("DreamReasonerDefault — Slice B sampling (MEASURE-ONLY)", () => {
   // A PASS-1 failure behaves EXACTLY as today's single-pass failure; an EXTRA
   // (2..N) failure is SKIPPED, lowering the effective sample count. Here every
   // extra call ERRORS (the fake yields no success-result message), so only
-  // pass 1 survives ⇒ the belief STILL materializes unchanged and sampleCount
-  // collapses to 1 (the lone surviving pass), sampledConfidence 1/1 = 1.
+  // pass 1 survives ⇒ effective N = 1 ⇒ NO real sampling occurred, so the belief
+  // STILL materializes unchanged and the sampling fields are ABSENT (identical to
+  // Slice A — a constant-1 "agreement" would only pollute the calibration column).
   it("extra-pass failures are skipped → belief materializes; effective N drops", async () => {
     const prev = process.env["LUNA_DREAM_SAMPLES"]
     process.env["LUNA_DREAM_SAMPLES"] = "5"
@@ -240,9 +235,9 @@ describe("DreamReasonerDefault — Slice B sampling (MEASURE-ONLY)", () => {
       const after = op.after as MemoryRecord
       expect((after.content as { confidence: number }).confidence).toBe(0.85)
 
-      // Only pass 1 survived ⇒ effective N = 1, agreement = 1/1.
-      expect(op.sampleCount).toBe(1)
-      expect(op.sampledConfidence).toBe(1)
+      // Only pass 1 survived ⇒ effective N = 1 ⇒ no real sampling ⇒ fields ABSENT.
+      expect(op.sampleCount).toBeUndefined()
+      expect(op.sampledConfidence).toBeUndefined()
     } finally {
       if (prev === undefined) delete process.env["LUNA_DREAM_SAMPLES"]
       else process.env["LUNA_DREAM_SAMPLES"] = prev

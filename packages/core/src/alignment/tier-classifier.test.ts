@@ -1,20 +1,9 @@
 // packages/core/src/alignment/tier-classifier.test.ts
 //
-// RED (PING) for Slice 3 — tier classifier, MEASURE-ONLY.
-//
-// This file imports classifyTier / revertabilityFor / TierInputs from
-// ./tier-classifier.js, which does NOT exist yet. It MUST fail at import with
-// "Cannot find module './tier-classifier.js'" — that is the correct RED reason
-// (the slice's pure unit is missing), NOT a harness error.
-//
-// classifyTier is PURE + synchronous, so this file imports ONLY vitest +
-// tier-classifier.js (no Effect / Clock / store), keeping the RED reason
-// unambiguous.
-//
-// The MEASURE-ONLY integration RED (a belief_candidate op recording a tier)
-// lives in dream/dream.test.ts — that file loads dream.js (which does NOT
-// import tier-classifier.js in RED) and fails by ASSERTION, so it does not
-// collapse at import.
+// Unit tests for the Slice 3 tier classifier (MEASURE-ONLY): classifyTier /
+// revertabilityFor are PURE + total. The MEASURE-ONLY integration (a
+// belief_candidate op recording its computed tier) is covered in
+// dream/dream.test.ts.
 import { describe, expect, it } from "vitest"
 import {
   classifyTier,

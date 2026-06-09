@@ -141,14 +141,11 @@ describe("applyOps", () => {
     expect(rows[0]?.dreamId).toBe("dream-0-100")
   })
 
-  // ── Slice 3 RED — tier classifier, MEASURE-ONLY ──────────────────────────────
-  // The SAME additive hook that logs the Slice A calibration row must ALSO
-  // record a measure-only `tier` (write-only, Effect.ignore'd, never read back).
-  // This test does NOT import tier-classifier.js — dream.ts does not import it
-  // in RED, so this file still LOADS and this test fails by ASSERTION (the
-  // recorded row has no `tier` yet). The expected tier is HARDCODED (not
-  // computed via classifyTier) so importing the missing module can't collapse
-  // the whole file and mask the real RED.
+  // ── Slice 3 — tier classifier, MEASURE-ONLY ──────────────────────────────────
+  // The SAME additive hook that logs the Slice A calibration row ALSO records a
+  // measure-only `tier` (write-only, Effect.ignore'd, never read back). The
+  // expected tier is HARDCODED (not computed via classifyTier) so this assertion
+  // is independent of the classifier's internals.
   //
   // Expected: at the hook, confidence 0.6 (verbalized), detectability 1
   // (heuristic), revertabilityFor(belief_candidate, true) = 0.9, stakes = null

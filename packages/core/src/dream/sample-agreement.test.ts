@@ -1,20 +1,10 @@
 // packages/core/src/dream/sample-agreement.test.ts
 //
-// RED (PING) for Slice B — sampling-based confidence, MEASURE-ONLY.
-//
-// This file imports `computeAgreement` from ./sample-agreement.js, which does
-// NOT exist yet. It MUST fail at import with
-//   "Cannot find module './sample-agreement.js'"
-// — that is the correct RED reason (the slice's pure unit is missing), NOT a
-// harness error.
-//
-// `computeAgreement` is PURE + TOTAL + synchronous, so this file imports ONLY
-// vitest + sample-agreement.js (no Effect / Clock / SDK), keeping the RED reason
-// unambiguous. The reasoner-integration RED (pass-1 ops materialize unchanged +
-// sampledConfidence/sampleCount attached) lives in
-// packages/adapter-sdk/test/dream-reasoner-sampling.test.ts — that file does NOT
-// import sample-agreement.js and fails by ASSERTION, so it does not collapse at
-// import.
+// Unit tests for `computeAgreement` (Slice B, MEASURE-ONLY): a PURE + TOTAL +
+// synchronous per-belief multi-sample agreement frequency over N reasoning
+// passes. The reasoner integration (pass-1 ops materialize unchanged + the
+// sampling fields attached) is covered in
+// packages/adapter-sdk/test/dream-reasoner-sampling.test.ts.
 import { describe, expect, it } from "vitest"
 import { computeAgreement } from "./sample-agreement.js"
 

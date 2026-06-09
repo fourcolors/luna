@@ -60,6 +60,12 @@ const VALID_KINDS: ReadonlySet<string> = new Set<DreamOpKind>([
  * time, mirroring LUNA_DREAM_TIMEOUT_MS); clamps to a positive integer.
  */
 const DEFAULT_DREAM_SAMPLES = 5
+/** Defensive upper bound on N: a misconfigured LUNA_DREAM_SAMPLES (e.g. 1000)
+ * must not flood the system with SDK queries — each pass is a real query. */
+const MAX_DREAM_SAMPLES = 10
+/** Bounded concurrency for the measurement-only extra passes (avoid load
+ * spikes / rate limits / memory pressure at high N). */
+const DREAM_SAMPLE_CONCURRENCY = 4
 
 // ---------------------------------------------------------------------------
 // Raw op shape from the model's JSON output
@@ -384,7 +390,9 @@ export const DreamReasonerDefault: Layer.Layer<
     const dreamSamples = (() => {
       const raw = process.env["LUNA_DREAM_SAMPLES"]?.trim()
       const n = raw ? Number(raw) : DEFAULT_DREAM_SAMPLES
-      return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : DEFAULT_DREAM_SAMPLES
+      if (!Number.isFinite(n) || n < 1) return DEFAULT_DREAM_SAMPLES
+      // Clamp to a defensive maximum so a misconfiguration cannot flood SDK queries.
+      return Math.min(Math.trunc(n), MAX_DREAM_SAMPLES)
     })()
 
     const reason: DreamReasonerApi["reason"] = (inputs: DreamInputs) =>
@@ -443,7 +451,7 @@ export const DreamReasonerDefault: Layer.Layer<
                     Effect.catchAll(() => Effect.succeed(null)),
                   ),
                 ),
-                { concurrency: "unbounded" },
+                { concurrency: DREAM_SAMPLE_CONCURRENCY },
               )
 
         // ── Agreement over ALL surviving passes (pass 1 + surviving extras) ───
@@ -460,15 +468,24 @@ export const DreamReasonerDefault: Layer.Layer<
         // Attach the MEASURE-ONLY sampling fields to each PASS-1 belief_candidate
         // op. targetId IS the beliefId. The materialized belief + its verbalized
         // confidence are UNCHANGED — these fields are additive logging metadata.
-        const withSampling: ReadonlyArray<DreamOp> = ops.map((op) => {
-          if (op.kind !== "belief_candidate") return op
-          const m = agreement.get(op.targetId)
-          return {
-            ...op,
-            sampledConfidence: m?.sampledConfidence,
-            sampleCount: m?.sampleCount,
-          }
-        })
+        //
+        // Only attach when ACTUAL sampling occurred (effective N >= 2). With a
+        // single surviving pass (N=1 configured, or all extras failed) the
+        // "agreement" would be a meaningless constant 1.0 that pollutes the
+        // sampled_confidence column — so leave the fields ABSENT, identical to
+        // Slice A's single-pass behavior.
+        const hasSampling = passes.length >= 2
+        const withSampling: ReadonlyArray<DreamOp> = hasSampling
+          ? ops.map((op) => {
+              if (op.kind !== "belief_candidate") return op
+              const m = agreement.get(op.targetId)
+              return {
+                ...op,
+                sampledConfidence: m?.sampledConfidence,
+                sampleCount: m?.sampleCount,
+              }
+            })
+          : ops
 
         yield* Effect.logInfo(
           `[luna/dream] reasoner.reason: returning ${withSampling.length} op(s) ` +
