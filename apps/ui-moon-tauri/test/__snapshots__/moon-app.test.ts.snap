@@ -5,6 +5,7 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
 
   <!-- The Draggable Moon -->
   <div class="moon-container" id="moon" data-tauri-drag-region="">
+    <div class="moon-aura" aria-hidden="true"></div>
     <div class="moon-wrapper" id="moon-wrapper">
       <div class="moon-glow"></div>
       <div class="moon-sphere">
@@ -35,11 +36,12 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
   </div>
 
   <!--
-    Satellite controls (settings gear + new-chat "+") that SPRING OUT from the
+    Satellite control (the settings gear) that SPRINGS OUT from the
     moon, shown ONLY while the moon cluster is hovered (see the moon-hover wiring
-    in the init section). Siblings of #moon (NOT children) so they don't sit
+    in the init section). Sibling of #moon (NOT a child) so it doesn't sit
     inside its data-tauri-drag-region. Machine access lives back in the chat
-    composer (#scope-btn there), not out here.
+    composer (#scope-btn there), not out here. (The "+ new chat" was removed —
+    Luna is single-thread; "Start a fresh thread" now lives in Settings.)
   -->
   <!-- Settings — gold GEAR hovering straight below the moon (keeps the gold
        glow/twinkle "companion star" treatment via .sat-settings, but the gear
@@ -51,13 +53,22 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
     </svg>
   </button>
-  <!-- New conversation — lower-right. -->
-  <button type="button" class="moon-satellite sat-new-chat" id="new-chat" aria-label="New conversation" title="New conversation">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <line x1="12" y1="5" x2="12" y2="19"></line>
-      <line x1="5" y1="12" x2="19" y2="12"></line>
-    </svg>
-  </button>
+
+  <!-- Re-tether "string" (siblings of #moon, z-index > 100 to escape its drag
+       region). Hidden until the connection drops; pull the bead to reconnect to
+       the SAME thread. Physics ported verbatim from the approved demo. -->
+  <svg class="moon-rope-layer" id="moon-rope-layer" aria-hidden="true">
+    <defs>
+      <linearGradient id="moonRopeGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="rgba(226,236,253,.5)"></stop>
+        <stop offset="100%" stop-color="rgba(138,180,248,.85)"></stop>
+      </linearGradient>
+    </defs>
+    <path id="moon-rope"></path>
+  </svg>
+  <div class="moon-bead" id="moon-bead" title="Pull to reconnect" aria-label="Reconnect to your thread">
+    <svg viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></g></svg>
+  </div>
 
   <!-- Settings: a standalone tabbed modal (body-level overlay). Moved OUT of
        #chat-panel so it floats on top independently of the chat, and so this
@@ -113,6 +124,13 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
             <input type="text" class="shortcut-input" id="shortcut-input" readonly="" value="⌥Space">
             <button type="button" class="record-btn" id="record-shortcut-btn">Record</button>
           </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Start a fresh thread</span>
+            <span class="setting-desc">Luna keeps one ongoing thread. This abandons the current conversation and begins a new one — your history stays on the server.</span>
+          </div>
+          <button type="button" class="record-btn" id="fresh-thread-btn">Start fresh</button>
         </div>
         </div>
         <div class="settings-tabpanel" data-tabpanel="connection">
@@ -195,9 +213,9 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         </div>
       </div>
       <div class="header-actions">
-        <!-- New-conversation and Settings moved out to orbit the moon as
-             satellites (see #new-chat / #toggle-settings below the moon).
-             Only the close (X) control remains in the header. -->
+        <!-- Settings moved out to orbit the moon as a satellite (see
+             #toggle-settings below the moon). Only the close (X) control
+             remains in the header. -->
         <button class="close-btn" id="close-chat" aria-label="Close Chat">
           <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -308,6 +326,7 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
 
   <!-- The Draggable Moon -->
   <div class="moon-container" id="moon" data-tauri-drag-region="">
+    <div class="moon-aura" aria-hidden="true"></div>
     <div class="moon-wrapper" id="moon-wrapper" style="transform: none;">
       <div class="moon-glow"></div>
       <div class="moon-sphere">
@@ -338,11 +357,12 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
   </div>
 
   <!--
-    Satellite controls (settings gear + new-chat "+") that SPRING OUT from the
+    Satellite control (the settings gear) that SPRINGS OUT from the
     moon, shown ONLY while the moon cluster is hovered (see the moon-hover wiring
-    in the init section). Siblings of #moon (NOT children) so they don't sit
+    in the init section). Sibling of #moon (NOT a child) so it doesn't sit
     inside its data-tauri-drag-region. Machine access lives back in the chat
-    composer (#scope-btn there), not out here.
+    composer (#scope-btn there), not out here. (The "+ new chat" was removed —
+    Luna is single-thread; "Start a fresh thread" now lives in Settings.)
   -->
   <!-- Settings — gold GEAR hovering straight below the moon (keeps the gold
        glow/twinkle "companion star" treatment via .sat-settings, but the gear
@@ -354,13 +374,22 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
     </svg>
   </button>
-  <!-- New conversation — lower-right. -->
-  <button type="button" class="moon-satellite sat-new-chat" id="new-chat" aria-label="New conversation" title="New conversation">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <line x1="12" y1="5" x2="12" y2="19"></line>
-      <line x1="5" y1="12" x2="19" y2="12"></line>
-    </svg>
-  </button>
+
+  <!-- Re-tether "string" (siblings of #moon, z-index > 100 to escape its drag
+       region). Hidden until the connection drops; pull the bead to reconnect to
+       the SAME thread. Physics ported verbatim from the approved demo. -->
+  <svg class="moon-rope-layer" id="moon-rope-layer" aria-hidden="true">
+    <defs>
+      <linearGradient id="moonRopeGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="rgba(226,236,253,.5)"></stop>
+        <stop offset="100%" stop-color="rgba(138,180,248,.85)"></stop>
+      </linearGradient>
+    </defs>
+    <path id="moon-rope"></path>
+  </svg>
+  <div class="moon-bead" id="moon-bead" title="Pull to reconnect" aria-label="Reconnect to your thread">
+    <svg viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></g></svg>
+  </div>
 
   <!-- Settings: a standalone tabbed modal (body-level overlay). Moved OUT of
        #chat-panel so it floats on top independently of the chat, and so this
@@ -416,6 +445,13 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
             <input type="text" class="shortcut-input" id="shortcut-input" readonly="" value="⌥Space">
             <button type="button" class="record-btn" id="record-shortcut-btn">Record</button>
           </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Start a fresh thread</span>
+            <span class="setting-desc">Luna keeps one ongoing thread. This abandons the current conversation and begins a new one — your history stays on the server.</span>
+          </div>
+          <button type="button" class="record-btn" id="fresh-thread-btn">Start fresh</button>
         </div>
         </div>
         <div class="settings-tabpanel" data-tabpanel="connection">
@@ -498,9 +534,9 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         </div>
       </div>
       <div class="header-actions">
-        <!-- New-conversation and Settings moved out to orbit the moon as
-             satellites (see #new-chat / #toggle-settings below the moon).
-             Only the close (X) control remains in the header. -->
+        <!-- Settings moved out to orbit the moon as a satellite (see
+             #toggle-settings below the moon). Only the close (X) control
+             remains in the header. -->
         <button class="close-btn" id="close-chat" aria-label="Close Chat">
           <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
             <line x1="18" y1="6" x2="6" y2="18"></line>

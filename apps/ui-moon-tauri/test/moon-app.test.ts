@@ -1883,4 +1883,472 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   })
 
   })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: re-tether reattach correctness (the network behavior the moon's
+  // "string" drives). Subscribe watchdog, in-memory thread preference over the
+  // on-disk file, and restart-survival persistence. No physics here (jsdom).
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: re-tether reattach correctness', () => {
+    const M = () => (window as any).__MoonInternals
+
+    // The shared beforeEach Tauri mock has no `core.invoke`; give each test one.
+    const stubInvoke = (impl?: (cmd: string, args?: any) => any) => {
+      const invoke = vi.fn(impl ?? (() => Promise.resolve(null)))
+      ;(window as any).__TAURI__.core = { invoke }
+      return invoke
+    }
+    const fakeOpenSocket = () => ({ readyState: WebSocket.OPEN, send: vi.fn() })
+
+    it('Scenario: syncThread prefers the in-memory thread over the Tauri last-thread file', async () => {
+      const m = M()
+      const invoke = stubInvoke(() => Promise.resolve('file-thread'))
+      m.State.activeThreadId = 'live-thread'
+      m.State.skipLastThreadFile = false
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      await m.WebSocketEngine.syncThread()
+
+      expect(invoke).not.toHaveBeenCalled() // never touched the disk file
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'live-thread' })
+    })
+
+    it('Scenario: syncThread falls back to the Tauri last-thread file on a cold start', async () => {
+      const m = M()
+      const invoke = stubInvoke((cmd) =>
+        Promise.resolve(cmd === 'get_last_thread_id' ? 'file-thread' : null),
+      )
+      m.State.activeThreadId = null
+      m.State.skipLastThreadFile = false
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      await m.WebSocketEngine.syncThread()
+
+      expect(invoke).toHaveBeenCalledWith('get_last_thread_id')
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'file-thread' })
+    })
+
+    it('Scenario: a server switch ignores BOTH the stale in-memory id and the file, listing fresh', async () => {
+      const m = M()
+      const invoke = stubInvoke(() => Promise.resolve('file-thread'))
+      m.State.activeThreadId = 'stale-old-server-thread'
+      m.State.skipLastThreadFile = true
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      await m.WebSocketEngine.syncThread()
+
+      expect(invoke).not.toHaveBeenCalled()
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'list-threads' })
+      expect(m.State.skipLastThreadFile).toBe(false) // one-shot guard consumed
+    })
+
+    it('Scenario: the subscribe watchdog fires onReattachStalled when no snapshot arrives', () => {
+      const m = M()
+      stubInvoke()
+      // Neutralize any pending auto-reconnect so connGen cannot shift under us.
+      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
+      m.State.ws = fakeOpenSocket() // socket is fine; only the thread is missing
+      const stalled = vi.spyOn(m.WebSocketEngine, 'onReattachStalled').mockImplementation(() => {})
+
+      m.WebSocketEngine.startSubscribeTimeout()
+      expect(m.State.subscribeTimeout).not.toBeNull()
+
+      vi.advanceTimersByTime(7000)
+
+      expect(stalled).toHaveBeenCalledTimes(1)
+      expect(m.State.subscribeTimeout).toBeNull()
+    })
+
+    it('Scenario: a thread-snapshot cancels the watchdog (success is not treated as stalled)', () => {
+      const m = M()
+      stubInvoke()
+      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
+      m.State.ws = fakeOpenSocket()
+      m.State.activeThreadId = 'thread-xyz'
+      const stalled = vi.spyOn(m.WebSocketEngine, 'onReattachStalled').mockImplementation(() => {})
+
+      m.WebSocketEngine.startSubscribeTimeout()
+      m.handleFrame({ type: 'thread-snapshot', messages: [] })
+      expect(m.State.subscribeTimeout).toBeNull()
+
+      vi.advanceTimersByTime(7000)
+      expect(stalled).not.toHaveBeenCalled()
+    })
+
+    it('Scenario: a thread-snapshot persists the thread id for restart-survival', () => {
+      const m = M()
+      const invoke = stubInvoke()
+      m.State.ws = fakeOpenSocket()
+      m.State.activeThreadId = 'thread-xyz'
+
+      m.handleFrame({ type: 'thread-snapshot', messages: [] })
+
+      expect(invoke).toHaveBeenCalledWith('set_last_thread_id', { threadId: 'thread-xyz' })
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: single-thread controls. The "+ new chat" satellite is gone (Luna is
+  // single-thread); the rare reset moves into Settings → General.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: single-thread controls (removed "+", Settings reset)', () => {
+    const M = () => (window as any).__MoonInternals
+
+    it('Scenario: the "+ new chat" satellite is gone; Settings has the reset instead', () => {
+      expect(document.getElementById('new-chat')).toBeNull()
+      expect(document.getElementById('fresh-thread-btn')).not.toBeNull()
+    })
+
+    it('Scenario: "Start a fresh thread" clears the active thread and closes Settings', () => {
+      const m = M()
+      document.getElementById('chat-panel')!.classList.add('active') // skip the async open branch
+      document.getElementById('toggle-settings')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(document.getElementById('settings-panel')!.classList.contains('active')).toBe(true)
+
+      m.State.activeThreadId = 'old-thread'
+      document.getElementById('fresh-thread-btn')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+      expect(m.State.activeThreadId).toBeNull() // newConversation() ran
+      expect(document.getElementById('settings-panel')!.classList.contains('active')).toBe(false) // close() ran
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: re-tether swing envelope. The window grows + re-origins so the moon
+  // stays visually fixed while the bead gets room to fling. The Tauri window
+  // calls are operator-verify; here we pin the COORDINATE MATH (incl. Retina
+  // logical-px + screen-edge clamp + moon-CSS compensation) with a mocked window.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: re-tether swing envelope (window math)', () => {
+    const M = () => (window as any).__MoonInternals
+    const mockWin = (originX: number, originY: number, sf = 1) => {
+      const setPosition = vi.fn().mockResolvedValue(undefined)
+      const setSize = vi.fn().mockResolvedValue(undefined)
+      const win = {
+        scaleFactor: vi.fn().mockResolvedValue(sf),
+        outerPosition: vi.fn().mockResolvedValue({ toLogical: () => ({ x: originX, y: originY }) }),
+        currentMonitor: vi.fn().mockResolvedValue({
+          position: { toLogical: () => ({ x: 0, y: 0 }) },
+          size: { toLogical: () => ({ width: 1440, height: 900 }) },
+        }),
+        setPosition, setSize,
+      }
+      ;(window as any).__TAURI__.window.getCurrentWindow = () => win
+      ;(window as any).__TAURI__.window.LogicalPosition = class { x: number; y: number; constructor(x: number, y: number) { this.x = x; this.y = y } }
+      return { setPosition, setSize }
+    }
+
+    it('Scenario: growToEnvelope keeps the moon visually fixed (origin shift cancels the moon re-center)', async () => {
+      const { setPosition, setSize } = mockWin(300, 200)
+      await M().TauriService.growToEnvelope()
+      const moon = document.getElementById('moon')!
+      const pos = setPosition.mock.calls[0][0]
+      // moon screen = (315,215); envelope centres the moon at window-local (175,15)
+      expect({ x: pos.x, y: pos.y }).toEqual({ x: 140, y: 200 }) // 315-175, 215-15
+      expect(moon.style.left).toBe('175px')
+      expect(moon.style.top).toBe('15px')
+      // THE invariant: newOrigin + moonCss === old moon screen position (no jump)
+      expect(pos.x + parseFloat(moon.style.left)).toBe(315)
+      expect(pos.y + parseFloat(moon.style.top)).toBe(215)
+      expect(setSize).toHaveBeenCalledWith(expect.objectContaining({ width: 460, height: 470 }))
+      expect(document.body.classList.contains('retethering')).toBe(true)
+    })
+
+    it('Scenario: a moon jammed at the screen edge clamps on-screen and compensates the moon CSS', async () => {
+      const { setPosition } = mockWin(5, 200) // near the left edge
+      await M().TauriService.growToEnvelope()
+      const moon = document.getElementById('moon')!
+      const pos = setPosition.mock.calls[0][0]
+      // moon screen = (20,215); desired origin 20-175=-155 → clamped to 0; moon CSS compensates to 20
+      expect(pos.x).toBe(0)
+      expect(parseFloat(moon.style.left)).toBe(20)
+      expect(pos.x + parseFloat(moon.style.left)).toBe(20) // screen position still preserved
+    })
+
+    it('Scenario: restoreCollapsed returns the moon to 140x185 at its original screen spot', async () => {
+      // First grow (moon at screen 315,215 → envelope), then restore.
+      mockWin(300, 200)
+      await M().TauriService.growToEnvelope()
+      const moon = document.getElementById('moon')!
+      // After grow, window origin is (140,200) and moon CSS (175,15) → screen (315,215).
+      const { setPosition, setSize } = mockWin(140, 200) // outerPosition now reports the grown origin
+      // re-point the moon CSS to what grow left it as (mockWin doesn't touch the DOM)
+      moon.style.left = '175px'; moon.style.top = '15px'
+      await M().TauriService.restoreCollapsed()
+      const pos = setPosition.mock.calls[0][0]
+      // moon screen still (315,215); collapsed moon CSS = (15,15) → origin (300,200)
+      expect({ x: pos.x, y: pos.y }).toEqual({ x: 300, y: 200 })
+      expect(moon.style.left).toBe('') // back to CSS default 15
+      expect(setSize).toHaveBeenCalledWith(expect.objectContaining({ width: 140, height: 185 }))
+      expect(document.body.classList.contains('retethering')).toBe(false)
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: re-tether state machine. Drives the string from the connection
+  // lifecycle: pull → reconnect to the SAME thread; detached-past-grace / stalled
+  // → drop the string (collapsed-only); thread-snapshot → retract + restore.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: re-tether state machine', () => {
+    const M = () => (window as any).__MoonInternals
+
+    it('Scenario: pull with the socket DOWN bypasses backoff, cancels the pending reconnect, and connects', () => {
+      const m = M()
+      m.State.ws = null
+      m.State.reconnectAttempts = 5
+      m.State.reconnectTimer = 123 // a pending scheduleReconnect timer
+      const connect = vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
+      m.WebSocketEngine.reTether()
+      expect(m.State.reconnectAttempts).toBe(0)
+      expect(connect).toHaveBeenCalledTimes(1)
+      expect(m.State.reconnectTimer).toBeNull() // no orphaned second socket
+    })
+
+    it('Scenario: pull with the socket OPEN re-subscribes to the SAME thread (never new-thread)', () => {
+      const m = M()
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      m.State.activeThreadId = 'thread-keep'
+      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
+      m.WebSocketEngine.reTether()
+      expect(send).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'thread-keep' })
+      expect(send).not.toHaveBeenCalledWith({ type: 'new-thread' })
+      expect(m.State.subscribeTimeout).not.toBeNull() // watchdog re-armed
+    })
+
+    it('Scenario: showTether drops the string when collapsed (grow envelope → show)', async () => {
+      const m = M()
+      document.getElementById('chat-panel')!.classList.remove('active')
+      vi.spyOn(m.MoonString, 'isLive').mockReturnValue(false)
+      const grow = vi.spyOn(m.TauriService, 'growToEnvelope').mockResolvedValue(undefined)
+      const show = vi.spyOn(m.MoonString, 'show').mockImplementation(() => {})
+      m.WebSocketEngine.showTether()
+      expect(grow).toHaveBeenCalledTimes(1)
+      await Promise.resolve(); await Promise.resolve() // flush the .then(show)
+      expect(show).toHaveBeenCalledTimes(1)
+      expect(m.State.tetherPendingOnCollapse).toBe(false)
+    })
+
+    it('Scenario: showTether DEFERS while the chat is open (string is collapsed-only)', () => {
+      const m = M()
+      document.getElementById('chat-panel')!.classList.add('active')
+      const grow = vi.spyOn(m.TauriService, 'growToEnvelope').mockResolvedValue(undefined)
+      m.WebSocketEngine.showTether()
+      expect(grow).not.toHaveBeenCalled()
+      expect(m.State.tetherPendingOnCollapse).toBe(true)
+    })
+
+    it('Scenario: a reconnect landing mid-grow abandons the string AND restores the window (tetherGen epoch)', async () => {
+      const m = M()
+      document.getElementById('chat-panel')!.classList.remove('active')
+      vi.spyOn(m.MoonString, 'isLive').mockReturnValue(false)
+      // growToEnvelope() resolves only when WE say so — this models the several-IPC
+      // round-trip gap during which a background reconnect can succeed.
+      let resolveGrow: () => void = () => {}
+      const grow = vi
+        .spyOn(m.TauriService, 'growToEnvelope')
+        .mockReturnValue(new Promise<void>((r) => { resolveGrow = r }))
+      const restore = vi.spyOn(m.TauriService, 'restoreCollapsed').mockResolvedValue(undefined)
+      const show = vi.spyOn(m.MoonString, 'show').mockImplementation(() => {})
+
+      m.WebSocketEngine.showTether()          // arms the grow, stamps tetherGen
+      expect(grow).toHaveBeenCalledTimes(1)
+
+      // reconnect wins the race. onReattached suspends at `await growPromise`, so it
+      // must NOT be awaited before we resolve the grow (that would deadlock).
+      const reattached = m.WebSocketEngine.onReattached()
+      expect(restore).not.toHaveBeenCalled()  // restore is sequenced AFTER the grow settles
+      resolveGrow()                           // grow finishes a beat too late
+      await reattached                         // → grow settled → restore awaited
+      expect(show).not.toHaveBeenCalled()     // string abandoned, not popped out post-reconnect
+      expect(restore).toHaveBeenCalledTimes(1) // ...and the window was collapsed back (no orphan)
+    })
+
+    it('Scenario: a NEW tether episode during cleanup is not clobbered (epoch guards the restore)', async () => {
+      const m = M()
+      document.getElementById('chat-panel')!.classList.remove('active')
+      vi.spyOn(m.MoonString, 'isLive').mockReturnValue(false)
+      vi.spyOn(m.MoonString, 'show').mockImplementation(() => {})
+      let resolveGrow1: () => void = () => {}
+      vi.spyOn(m.TauriService, 'growToEnvelope')
+        .mockReturnValueOnce(new Promise<void>((r) => { resolveGrow1 = r })) // episode 1 (pending)
+        .mockReturnValue(Promise.resolve())                                  // episode 2 grow
+      const restore = vi.spyOn(m.TauriService, 'restoreCollapsed').mockResolvedValue(undefined)
+
+      m.WebSocketEngine.showTether()           // episode 1 grow (pending)
+      const reattached = m.WebSocketEngine.onReattached() // suspends awaiting episode-1 grow
+      m.WebSocketEngine.showTether()           // a fresh disconnect → episode 2 → bumps tetherGen
+      resolveGrow1()                           // episode-1 grow finally settles
+      await reattached
+      expect(restore).not.toHaveBeenCalled()   // episode 1's restore stood down; episode 2 owns the window
+    })
+
+    it('Scenario: opening the chat ENDS the tether episode — a later reconnect cannot shrink the OPEN chat (regression)', async () => {
+      const m = M()
+      document.getElementById('chat-panel')!.classList.remove('active')
+      // Live-state tracked through the real show/hideImmediate call order, so the
+      // chat-open teardown path is exercised exactly as production wires it.
+      let live = false
+      vi.spyOn(m.MoonString, 'isLive').mockImplementation(() => live)
+      const show = vi.spyOn(m.MoonString, 'show').mockImplementation(() => { live = true })
+      vi.spyOn(m.MoonString, 'hideImmediate').mockImplementation(() => { live = false })
+      vi.spyOn(m.TauriService, 'growToEnvelope').mockResolvedValue(undefined)
+      const restore = vi.spyOn(m.TauriService, 'restoreCollapsed').mockResolvedValue(undefined)
+
+      m.WebSocketEngine.showTether()           // string drops while collapsed
+      await Promise.resolve(); await Promise.resolve()
+      expect(show).toHaveBeenCalledTimes(1)    // grow settled → string is out
+
+      // User opens the chat while the string is out (quick moon click).
+      const moon = document.getElementById('moon')!
+      moon.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 100, clientY: 100 }))
+      vi.advanceTimersByTime(50)
+      moon.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: 100, clientY: 100 }))
+      for (let i = 0; i < 10; i++) await Promise.resolve() // flush toggleChat's await chain
+      expect(document.getElementById('chat-panel')!.classList.contains('active')).toBe(true)
+      expect(restore).toHaveBeenCalledTimes(1) // teardown restored the envelope as part of the open
+      expect(m.State.growPromise).toBeNull()   // episode bookkeeping fully cleared
+
+      // The background reconnect lands AFTER the chat is open. Before the fix, the
+      // dangling growPromise made this replay restoreCollapsed() — shrinking the
+      // user's open chat window to 140x185 mid-use.
+      restore.mockClear()
+      await m.WebSocketEngine.onReattached()
+      expect(restore).not.toHaveBeenCalled()
+    })
+
+    it('Scenario: opening the chat MID-GROW abandons the deferred string (no string pop over the open chat)', async () => {
+      const m = M()
+      document.getElementById('chat-panel')!.classList.remove('active')
+      let live = false
+      vi.spyOn(m.MoonString, 'isLive').mockImplementation(() => live)
+      const show = vi.spyOn(m.MoonString, 'show').mockImplementation(() => { live = true })
+      vi.spyOn(m.MoonString, 'hideImmediate').mockImplementation(() => { live = false })
+      let resolveGrow: () => void = () => {}
+      vi.spyOn(m.TauriService, 'growToEnvelope')
+        .mockReturnValue(new Promise<void>((r) => { resolveGrow = r }))
+      vi.spyOn(m.TauriService, 'restoreCollapsed').mockResolvedValue(undefined)
+
+      m.WebSocketEngine.showTether()           // grow in flight; string NOT yet shown
+
+      // User opens the chat before the grow settles. The open path must bump the
+      // epoch so the deferred MoonString.show() stands down — before the fix the
+      // teardown branch was skipped entirely (isLive() still false) and the string
+      // popped out OVER the open chat once the grow resolved.
+      const moon = document.getElementById('moon')!
+      moon.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 100, clientY: 100 }))
+      vi.advanceTimersByTime(50)
+      moon.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: 100, clientY: 100 }))
+      for (let i = 0; i < 10; i++) await Promise.resolve()
+
+      resolveGrow()                            // grow finally settles, a beat too late
+      for (let i = 0; i < 10; i++) await Promise.resolve()
+      expect(document.getElementById('chat-panel')!.classList.contains('active')).toBe(true)
+      expect(show).not.toHaveBeenCalled()       // deferred show abandoned (epoch bumped)
+      expect(m.State.growPromise).toBeNull()
+      expect(m.State.tetherPendingOnCollapse).toBe(true) // string returns on the next collapse
+    })
+
+    it('Scenario: a thread-snapshot retracts a live string (with pulse) and clears the grace timer', () => {
+      const m = M()
+      ;(window as any).__TAURI__.core = { invoke: vi.fn().mockResolvedValue(undefined) }
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      m.State.activeThreadId = 'abc'
+      m.State.tetherGraceTimer = 999
+      vi.spyOn(m.MoonString, 'isLive').mockReturnValue(true)
+      const retract = vi.spyOn(m.MoonString, 'retract').mockImplementation(() => {})
+      m.handleFrame({ type: 'thread-snapshot', messages: [] })
+      expect(retract).toHaveBeenCalledWith(true)
+      expect(m.State.tetherGraceTimer).toBeNull()
+      expect(document.getElementById('connection-status')!.className).toBe('connected')
+    })
+  })
+
+  // ── Window-drag rope physics + click-through region ───────────────────────
+  // Dragging the WINDOW fires no JS pointer events (native drag), so onMoved
+  // deltas are injected into the rope as apparent velocity; and while the
+  // string is live the webview publishes the clickable region (moon + rope)
+  // so the Rust cursor poll can make the empty envelope click-through.
+  // jsdom can't run the rAF loop or the Rust poll — these test the contracts:
+  // the velocity-injection math and the region-publish lifecycle.
+  describe('Feature: window-drag rope physics + click-through region', () => {
+    const M = () => (window as any).__MoonInternals
+
+    beforeEach(() => {
+      // No-op rAF: these tests call the REAL MoonString.show(), whose loop
+      // re-arms rAF every frame — the SYNCHRONOUS rAF leaked by the frame-
+      // pipeline suite would recurse it into a stack overflow. A no-op also
+      // freezes the physics, so points move ONLY via the injection under test.
+      ;(window as any).requestAnimationFrame = () => 0
+      ;(window as any).cancelAnimationFrame = () => {}
+    })
+
+    function stubInvoke() {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      return invoke
+    }
+
+    it('Scenario: a window move shifts FREE points as velocity (positions move, prev-positions stay, anchor pinned)', () => {
+      const m = M()
+      stubInvoke()
+      m.MoonString.show()
+      const before = m.MoonString.getPoints()
+      expect(before.length).toBeGreaterThan(2)
+
+      m.MoonString.injectWindowDelta(50, 20)   // window dragged +50,+20 logical px
+
+      const after = m.MoonString.getPoints()
+      // Anchor (i=0) stays pinned to the moon — never shifted by the inject.
+      expect(after[0].x).toBe(before[0].x)
+      expect(after[0].y).toBe(before[0].y)
+      for (let i = 1; i < after.length; i++) {
+        // Free points trail the window: position shifts opposite the delta...
+        expect(after[i].x - before[i].x).toBeCloseTo(-50, 5)
+        expect(after[i].y - before[i].y).toBeCloseTo(-20, 5)
+        // ...but prev-positions DON'T move, which is what makes Verlet read the
+        // shift as velocity (the swing) instead of a teleport.
+        expect(after[i].px).toBe(before[i].px)
+        expect(after[i].py).toBe(before[i].py)
+      }
+    })
+
+    it('Scenario: per-event delta is clamped (a coalesced full-screen jump injects a swing, not an explosion)', () => {
+      const m = M()
+      stubInvoke()
+      m.MoonString.show()
+      const before = m.MoonString.getPoints()
+      m.MoonString.injectWindowDelta(1200, -900)  // e.g. paint frozen during drag → one fat delta
+      const after = m.MoonString.getPoints()
+      expect(after[1].x - before[1].x).toBeCloseTo(-80, 5)  // clamped to ±80
+      expect(after[1].y - before[1].y).toBeCloseTo(80, 5)
+    })
+
+    it('Scenario: injection is a no-op when the string is not live', () => {
+      const m = M()
+      stubInvoke()
+      m.MoonString.show()
+      m.MoonString.hideImmediate()             // live=false, points remain
+      const before = m.MoonString.getPoints()
+      m.MoonString.injectWindowDelta(50, 50)
+      expect(m.MoonString.getPoints()).toEqual(before)
+    })
+
+    it('Scenario: show() publishes the interactive region; hideImmediate() clears it', () => {
+      const m = M()
+      const invoke = stubInvoke()
+      m.MoonString.show()
+      const enable = invoke.mock.calls.find((c: any[]) => c[0] === 'set_interactive_region')
+      expect(enable).toBeTruthy()
+      expect(enable![1].enabled).toBe(true)
+      expect(enable![1].rects).toHaveLength(2)            // moon rect + rope bbox
+      for (const r of enable![1].rects) expect(r).toHaveLength(4)
+
+      invoke.mockClear()
+      m.MoonString.hideImmediate()
+      const disable = invoke.mock.calls.find((c: any[]) => c[0] === 'set_interactive_region')
+      expect(disable).toBeTruthy()
+      expect(disable![1].enabled).toBe(false)              // whole window interactive again
+    })
+  })
 })

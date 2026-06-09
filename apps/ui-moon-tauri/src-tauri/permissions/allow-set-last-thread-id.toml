@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-set-last-thread-id"
+description = "Allows writing the last active thread id so a restart re-tethers to the same thread"
+
+[permission.commands]
+allow = [
+  "set_last_thread_id"
+]
