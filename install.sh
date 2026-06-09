@@ -128,12 +128,26 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$ENABLE_SSH_RECOVERY" == true ]]; then
+  # The recovery start-commands restart as a CLEAN stop -> settle -> start, NOT a
+  # fast `systemctl restart`. A fast restart can start the new chat-server before
+  # the outgoing one releases its DuckDB/SQLite WAL/SHM handles, crashing the boot
+  # with "unable to open database file" (SQLITE_CANTOPEN) — the 2026-06-08
+  # stable-deploy bug class. The recovery path is lower-risk (the old process is
+  # usually already gone when recovery fires) but it is the same bug, so we close
+  # it here too. The 6s settle matches scripts/luna-update-server's RESTART_SETTLE_SECS
+  # default; it is baked into the stored command (this is the default — an operator
+  # can still override the whole command via LUNA_{STABLE,DEV}_START_COMMAND). The
+  # `;` sequence survives the .env round-trip (parseDotEnv strips only whole-value
+  # quotes) and runs as-is in both local (shell) and ssh (remote shell) recovery.
+  # Each profile keeps its existing systemd scope: stable = `--user`, dev = the
+  # in-container system unit via `incus exec` (the settle `sleep` runs host-side,
+  # between the two execs — the DB files are bind-mounted so wall-time is what counts).
   STABLE_START_MODE="${STABLE_START_MODE:-ssh}"
-  STABLE_START_COMMAND="${STABLE_START_COMMAND:-systemctl --user restart luna-chat-server.service}"
+  STABLE_START_COMMAND="${STABLE_START_COMMAND:-systemctl --user stop luna-chat-server.service; sleep 6; systemctl --user start luna-chat-server.service}"
   STABLE_START_SSH="${STABLE_START_SSH:-${SSH_USER}@${SSH_HOST}}"
   STABLE_FALLBACK_START_SSH="${STABLE_FALLBACK_START_SSH:-${SSH_USER}@${FALLBACK_SSH_HOST}}"
   DEV_START_MODE="${DEV_START_MODE:-ssh}"
-  DEV_START_COMMAND="${DEV_START_COMMAND:-incus exec luna-dev -- systemctl restart luna-dev-chat-server.service}"
+  DEV_START_COMMAND="${DEV_START_COMMAND:-incus exec luna-dev -- systemctl stop luna-dev-chat-server.service; sleep 6; incus exec luna-dev -- systemctl start luna-dev-chat-server.service}"
   DEV_START_SSH="${DEV_START_SSH:-${SSH_USER}@${SSH_HOST}}"
   DEV_FALLBACK_START_SSH="${DEV_FALLBACK_START_SSH:-${SSH_USER}@${FALLBACK_SSH_HOST}}"
 fi
