@@ -24,7 +24,16 @@ import { describe, expect, it } from "vitest"
 import { Effect, Layer, Ref, Stream } from "effect"
 import type { MemoryRecord } from "@luna/memory"
 import { MemoryRouterTag } from "@luna/memory"
-import { CalibrationStore, Clock, DreamReasoner, deriveBeliefId } from "@luna/core"
+import {
+  AccountBroker,
+  AccountBrokerLayer,
+  CalibrationStore,
+  Clock,
+  CLAUDE_CODE_LOGIN_SECRET_REF,
+  DreamReasoner,
+  deriveBeliefId,
+  EnvSecretProvider,
+} from "@luna/core"
 import type { DreamInputs, DreamOp } from "@luna/core"
 import { SDKClient } from "../src/sdk-client.js"
 import { DreamReasonerDefault } from "../src/dream-reasoner.js"
@@ -69,6 +78,17 @@ const CalSink: Layer.Layer<CalibrationStore> = CalibrationStore.Memory.pipe(
   Layer.provide(Clock.Test(0)),
 )
 
+/**
+ * Fake AccountBroker (provider seam): DreamReasonerDefault requires
+ * AccountBroker — every pass (pass 1 AND the sampling extras) runs as one
+ * brokered turn. One anthropic login-ref account keeps the sampling fixtures
+ * byte-identical to the pre-seam behavior (no model override, no env overlay).
+ */
+const brokerFake = (): Layer.Layer<AccountBroker> =>
+  AccountBrokerLayer.fromAccounts([
+    { id: "a1", kind: "anthropic", secretRef: CLAUDE_CODE_LOGIN_SECRET_REF },
+  ]).pipe(Layer.provide(EnvSecretProvider.Default), Layer.provide(Clock.Default))
+
 const runReason = (
   inputs: DreamInputs,
   sdkLayer: Layer.Layer<SDKClient>,
@@ -82,6 +102,7 @@ const runReason = (
     Effect.provide(DreamReasonerDefault),
     Effect.provide(sdkLayer),
     Effect.provide(memLayer),
+    Effect.provide(brokerFake()),
   )
   return calLayer === null ? eff : eff.pipe(Effect.provide(calLayer))
 }
