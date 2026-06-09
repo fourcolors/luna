@@ -250,6 +250,122 @@ sqlite3 ~/.luna/luna.db \
   "SELECT steps_json FROM job_runs WHERE id=<run_id>;" | python3 -m json.tool
 ```
 
+## SDK Dynamic Workflows
+
+**SDK Dynamic Workflows** are a separate concept from Luna's `workflow` job
+kind. They are Claude-written JavaScript scripts that orchestrate multiple
+subagents in parallel. They live on disk as `.js` files and are invoked
+via slash commands.
+
+> **This is the Claude Agent SDK's native workflow concept** — not to be
+> confused with Luna's linear `workflow`-kind jobs (which are shell+prompt
+> pipelines). The two systems are complementary.
+
+### What they are
+
+A Dynamic Workflow is a JS file with a `meta` export (name, description)
+and a default-exported async function that calls `claude(prompt)` to spawn
+subagents. The SDK can run up to 16 subagents concurrently and up to 1,000
+total per workflow run.
+
+```js
+// ~/.claude/workflows/deep-research.js
+export const meta = {
+  name: "deep-research",
+  description: "Multi-agent parallel research workflow"
+}
+
+export default async function(userPrompt, { claude }) {
+  const [summary, risks, refs] = await Promise.all([
+    claude(`Summarise: ${userPrompt}`),
+    claude(`Identify risks in: ${userPrompt}`),
+    claude(`Find references for: ${userPrompt}`)
+  ])
+  return `${summary}\n\nRisks:\n${risks}\n\nRefs:\n${refs}`
+}
+```
+
+### Where they live
+
+| Location | Scope |
+|---|---|
+| `~/.claude/workflows/` | User-global (all projects) |
+| `.claude/workflows/` | Project-scoped |
+
+### How to invoke
+
+**Interactive terminal:** type `/deep-research what to research` — the
+CLI routes it as a slash command.
+
+**Programmatic (Agent SDK `query()`):** **pass the slash command as the
+prompt string.** The SDK processes slash commands in prompts identically
+to the interactive terminal:
+
+```typescript
+for await (const msg of query({
+  prompt: '/deep-research Analyze the authentication security surface',
+  options: {
+    enableWorkflows: true,   // required — enables the Workflow tool
+    cwd: '/root/luna'
+  }
+})) {
+  // SDK emits task_created with:
+  //   task_type: 'local_workflow'
+  //   workflow_name: 'deep-research'   ← meta.name from the script
+}
+```
+
+`enableWorkflows: true` is the required option. `workflowKeywordTriggerEnabled`
+controls the "ultracode" keyword shortcut (opt-in magic word in a plain prompt).
+
+**Via `AgentDefinition.initialPrompt`:** slash commands are processed there
+too — useful when the workflow invocation should be the agent's opening act:
+
+```typescript
+query({
+  prompt: 'Here is the additional context ...',
+  options: {
+    agents: [{
+      name: 'researcher',
+      initialPrompt: '/deep-research',   // fired before any user prompt
+      enableWorkflows: true
+    }]
+  }
+})
+```
+
+### Integration with Luna's job system
+
+Luna's `jobs` table owns **scheduling and durability**; SDK Dynamic
+Workflows own **parallel subagent execution**. They compose cleanly:
+
+| Concern | Luna workflow job | SDK Dynamic Workflow |
+|---|---|---|
+| Scheduling (cron) | ✅ `jobs.schedule` | ❌ session-scoped |
+| Audit trail | ✅ `job_runs` + `steps_json` | ❌ session only |
+| Shell steps | ✅ `kind: "shell"` | ❌ |
+| Parallel subagents | ❌ sequential | ✅ up to 16 concurrent |
+| Invocation | `kind: "prompt"` step | `/workflowname` in prompt |
+
+**Pattern:** use a Luna `workflow` job for the cron trigger + shell
+bookkeeping, and in a `prompt` step pass `/workflowname` with
+`enableWorkflows: true` when you need parallel subagent scale:
+
+```json
+{
+  "steps": [
+    { "kind": "shell", "cmd": "jax-mail-sync", "timeout_ms": 60000 },
+    {
+      "kind": "prompt",
+      "user_prompt": "/mail-triage Triage today\'s inbox and create action items.",
+      "allowed_tools": ["mcp__local_shell__local_shell_run"],
+      "options": { "enableWorkflows": true },
+      "max_turns": 20
+    }
+  ]
+}
+```
+
 ## Agents & Subagents
 
 Agent definitions live in `~/.luna/agents/` as `.md` files with YAML
