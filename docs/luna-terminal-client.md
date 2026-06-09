@@ -76,11 +76,16 @@ Profile-specific recovery variables use the same prefix:
 
 ```bash
 LUNA_DEV_START_MODE=ssh
-LUNA_DEV_START_COMMAND="systemctl --user restart luna-dev-chat-server.service"
+LUNA_DEV_START_COMMAND="systemctl --user stop luna-dev-chat-server.service; sleep 6; systemctl --user start luna-dev-chat-server.service"
 LUNA_DEV_START_SSH=root@jax-box
 LUNA_DEV_FALLBACK_START_SSH=root@jax-box.local
 LUNA_DEV_START_TIMEOUT_MS=30000
 ```
+
+The start command runs `stop; sleep 6; start` rather than a fast `restart` so the
+outgoing chat-server releases its DuckDB/SQLite WAL/SHM handles before the new one
+opens them; a fast restart can crash the boot with `SQLITE_CANTOPEN`. This mirrors
+the installer's recovery default.
 
 Modes:
 

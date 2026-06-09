@@ -111,14 +111,22 @@ inspect `systemctl --user status luna-chat-server.service` and
 incus config device remove luna-stable ws4753
 incus config device remove luna-stable control4754
 incus stop luna-stable
+# Bring the host stable service back as stop -> settle -> start, NOT a fast
+# `systemctl restart`: a fast restart can start the new chat-server before the
+# outgoing one releases its DuckDB/SQLite WAL/SHM handles, crashing the boot with
+# SQLITE_CANTOPEN. The 6s settle covers that lagging handle release.
 case "$(cat /root/.luna/stable-host-service-scope 2>/dev/null || true)" in
   user)
     systemctl --user enable luna-chat-server.service
-    systemctl --user restart luna-chat-server.service
+    systemctl --user stop luna-chat-server.service
+    sleep 6
+    systemctl --user start luna-chat-server.service
     ;;
   system)
     systemctl enable luna-chat-server.service
-    systemctl restart luna-chat-server.service
+    systemctl stop luna-chat-server.service
+    sleep 6
+    systemctl start luna-chat-server.service
     ;;
   *)
     echo "Set /root/.luna/stable-host-service-scope to user or system before rollback" >&2

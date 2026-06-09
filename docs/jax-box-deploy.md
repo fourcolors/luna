@@ -171,7 +171,14 @@ git fetch origin dev
 git checkout dev
 git pull --ff-only origin dev
 incus exec luna-dev -- bash -lc 'cd /root/luna && /root/.bun/bin/bun install --frozen-lockfile'
-incus exec luna-dev -- systemctl restart luna-dev-chat-server.service
+# Restart as stop -> settle -> start, NOT a fast `systemctl restart`: a fast restart
+# can start the new chat-server before the outgoing one releases its DuckDB/SQLite
+# WAL/SHM handles, crashing the boot with SQLITE_CANTOPEN. The settle covers that.
+# Or run the guarded operator tool, which does this with a connection guard:
+#   scripts/restart-channel.sh dev [--yes]
+incus exec luna-dev -- systemctl stop luna-dev-chat-server.service
+sleep 6
+incus exec luna-dev -- systemctl start luna-dev-chat-server.service
 curl -fsS http://127.0.0.1:5753/healthz
 ```
 
@@ -195,7 +202,12 @@ git checkout master
 git pull --ff-only origin master
 /root/.bun/bin/bun install --frozen-lockfile
 incus exec luna-stable -- bash -lc 'cd /root/luna && /root/.bun/bin/bun install --frozen-lockfile'
-incus exec luna-stable -- systemctl restart luna-chat-server.service
+# Restart as stop -> settle -> start, NOT a fast `systemctl restart`: a fast restart
+# can start the new chat-server before the outgoing one releases its DuckDB/SQLite
+# WAL/SHM handles, crashing the boot with SQLITE_CANTOPEN. The settle covers that.
+incus exec luna-stable -- systemctl stop luna-chat-server.service
+sleep 6
+incus exec luna-stable -- systemctl start luna-chat-server.service
 curl -fsS http://127.0.0.1:4753/healthz
 ```
 
@@ -208,7 +220,12 @@ git log --oneline -5
 git checkout <known-good-commit>
 /root/.bun/bin/bun install --frozen-lockfile
 incus exec luna-stable -- bash -lc 'cd /root/luna && /root/.bun/bin/bun install --frozen-lockfile'
-incus exec luna-stable -- systemctl restart luna-chat-server.service
+# Restart as stop -> settle -> start, NOT a fast `systemctl restart`: a fast restart
+# can start the new chat-server before the outgoing one releases its DuckDB/SQLite
+# WAL/SHM handles, crashing the boot with SQLITE_CANTOPEN. The settle covers that.
+incus exec luna-stable -- systemctl stop luna-chat-server.service
+sleep 6
+incus exec luna-stable -- systemctl start luna-chat-server.service
 curl -fsS http://127.0.0.1:4753/healthz
 ```
 
