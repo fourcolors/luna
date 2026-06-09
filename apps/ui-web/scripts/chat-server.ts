@@ -173,7 +173,7 @@ import {
   JobsStoreService,
   validateAccountsTableLabels,
 } from "@luna/core"
-import { loadDna } from "./dna-loader.js"
+import { createDnaLoader, loadDna } from "./dna-loader.js"
 import { loadSystem } from "./system-loader.js"
 import { loadWorkspaces } from "./workspaces-loader.js"
 import {
@@ -186,7 +186,7 @@ import {
   attachSandboxLocalShell,
   resolveSandboxLocalShell,
 } from "./sandbox-local-shell.js"
-export { loadDna } from "./dna-loader.js"
+export { createDnaLoader, loadDna } from "./dna-loader.js"
 export { loadSystem } from "./system-loader.js"
 export { loadWorkspaces } from "./workspaces-loader.js"
 export {
@@ -327,7 +327,12 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       // server restart. Repo layout: this file is at
       // apps/ui-web/scripts/chat-server.ts → DNA.md is 3 levels up.
       const __scriptDir = dirname(fileURLToPath(import.meta.url))
-      loadDna(__scriptDir) // boot guard: throws if neither ~/.luna/DNA.md nor repo DNA.md exists
+      // loadDnaCached() seeds the cache on first call (throws if neither source
+      // exists — loud boot failure). On subsequent calls it returns last-good
+      // content if the files have been deleted mid-run, logging a console.error
+      // so the operator has a visible signal. See dna-loader.ts:createDnaLoader.
+      const loadDnaCached = createDnaLoader(__scriptDir)
+      loadDnaCached() // boot guard: throws if neither ~/.luna/DNA.md nor repo DNA.md exists
       // SYSTEM.md describes Luna's runtime mechanics (workspaces, paths,
       // memory, observability). Absence is non-fatal — boot continues
       // with identity-only context. See system-loader.ts for resolution.
@@ -437,8 +442,8 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
           // refreshIntervalMs by the background fiber above. Returns "" when
           // no active beliefs (the .filter(length>0) below drops it cleanly).
           // DNA is reloaded from disk per-thread so ~/.luna/DNA.md changes
-          // (e.g. operator renaming Luna → Jax) take effect without a restart.
-          const dnaContent = loadDna(__scriptDir)
+          // (e.g. the operator giving Luna a different identity) take effect without a restart.
+          const dnaContent = loadDnaCached()
           const systemPrompt = [
             dnaContent,
             systemContent, // SYSTEM.md: runtime mechanics (workspaces, paths)
