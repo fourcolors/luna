@@ -448,7 +448,7 @@
     /* The modal card itself. */
     .settings-card {
       width: 100%;
-      max-width: 480px;
+      max-width: 540px;
       max-height: 100%;
       display: flex;
       flex-direction: column;
@@ -482,31 +482,44 @@
     .settings-x:hover { background: rgba(255, 255, 255, 0.06); color: #f1f5f9; }
     .settings-x svg { width: 16px; height: 16px; }
 
-    /* Tab bar (General / Connection / Secrets / Updates). */
+    /* Body row: a LEFT tab rail (General / Connection / Secrets / Updates) +
+       the content pane. min-height keeps the card a stable size so switching
+       tabs doesn't make the modal resize. */
+    .settings-body {
+      display: flex;
+      flex: 1;
+      min-height: 300px;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
     .settings-tabs {
       display: flex;
+      flex-direction: column;
       gap: 2px;
-      padding: 0 12px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      flex: 0 0 150px;
+      padding: 12px 10px;
+      border-right: 1px solid rgba(255, 255, 255, 0.06);
     }
     .settings-tab {
       background: none; border: none; cursor: pointer;
-      padding: 9px 12px 11px;
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 9px 12px;
+      border-radius: 8px;
       font-family: var(--font-body);
-      font-size: 0.8rem;
+      font-size: 0.82rem;
       color: #8aa0c6;
-      border-bottom: 2px solid transparent;
-      margin-bottom: -1px;
-      transition: color 0.15s, border-color 0.15s;
+      transition: color 0.15s, background 0.15s;
     }
-    .settings-tab:hover { color: #cdd9f5; }
-    .settings-tab.active { color: #fff; border-bottom-color: #8ab4f8; }
+    .settings-tab:hover { color: #cdd9f5; background: rgba(255, 255, 255, 0.04); }
+    .settings-tab.active { color: #fff; background: rgba(138, 180, 248, 0.16); }
 
-    /* Scrollable body; only the active tab panel is shown. */
+    /* Scrollable content pane (right of the rail); only the active panel shows. */
     .settings-content {
       flex: 1;
+      min-width: 0;
       overflow-y: auto;
-      padding: 14px 16px 6px;
+      padding: 14px 16px;
     }
     .settings-tabpanel { display: none; }
     .settings-tabpanel.active {
@@ -1749,6 +1762,7 @@
           </svg>
         </button>
       </div>
+      <div class="settings-body">
       <div class="settings-tabs" role="tablist">
         <button type="button" class="settings-tab active" data-tab="general" role="tab" aria-selected="true">General</button>
         <button type="button" class="settings-tab" data-tab="connection" role="tab" aria-selected="false">Connection</button>
@@ -1840,6 +1854,7 @@
           <button type="button" class="record-btn" id="check-update-btn">Check</button>
         </div>
         </div>
+      </div>
       </div>
       <div class="settings-footer">
         <button class="save-settings-btn" id="close-settings-btn">Done</button>

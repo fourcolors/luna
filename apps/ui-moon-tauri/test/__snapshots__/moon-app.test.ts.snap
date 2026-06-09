@@ -92,6 +92,7 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
           </svg>
         </button>
       </div>
+      <div class="settings-body">
       <div class="settings-tabs" role="tablist">
         <button type="button" class="settings-tab active" data-tab="general" role="tab" aria-selected="true">General</button>
         <button type="button" class="settings-tab" data-tab="connection" role="tab" aria-selected="false">Connection</button>
@@ -183,6 +184,7 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
           <button type="button" class="record-btn" id="check-update-btn">Check</button>
         </div>
         </div>
+      </div>
       </div>
       <div class="settings-footer">
         <button class="save-settings-btn" id="close-settings-btn">Done</button>
@@ -396,6 +398,7 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
           </svg>
         </button>
       </div>
+      <div class="settings-body">
       <div class="settings-tabs" role="tablist">
         <button type="button" class="settings-tab active" data-tab="general" role="tab" aria-selected="true">General</button>
         <button type="button" class="settings-tab" data-tab="connection" role="tab" aria-selected="false">Connection</button>
@@ -487,6 +490,7 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
           <button type="button" class="record-btn" id="check-update-btn">Check</button>
         </div>
         </div>
+      </div>
       </div>
       <div class="settings-footer">
         <button class="save-settings-btn" id="close-settings-btn">Done</button>
