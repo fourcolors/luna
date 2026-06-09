@@ -18,7 +18,7 @@ tool call sends it.
 
 - **`~/.luna/`** — Luna's home directory on the server.
   - `luna.db` — SQLite. System of record for accounts, agent notes,
-    workspaces, dream state.
+    workspaces, dream state, **and scheduled jobs**.
   - `memory.db` — SQLite + Vectorlite HNSW. Long-term semantic memory.
   - `analytics.duckdb` — DuckDB. Session-level analytics + event aggregations.
   - `events.jsonl` — append-only event log. Source of truth for telemetry.
@@ -136,15 +136,168 @@ which. Common values (operators set via `LUNA_SCOPE`):
 
 Always trust `obs_runtime()`'s paths over any hardcoded assumption.
 
-## Subagents
+## SDK Job System
 
-Subagent definitions live in `~/.luna/agents/` as `.md` files. They are
-hot-loaded on every query — no restart needed.
+Luna runs autonomous background work via a job scheduler backed by
+`luna.db → jobs` and `luna.db → job_runs`. This is built on the
+**Claude Agent SDK**.
 
+> **SDK:** `@anthropic-ai/claude-agent-sdk ^0.3.167`
+> **Docs:** https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk
+> **Source:** `packages/adapter-sdk/src/` — `prompt-worker.ts`,
+> `workflow-worker.ts`, `agent-loader.ts`
+
+### Job kinds
+
+#### `prompt` — autonomous agent turn
+
+Runs a full Claude agent turn with tools. Results land in
+`job_runs.output_text`. Optionally delivers to `agent_notes`.
+
+```json
+{
+  "user_prompt":   "Survey state and write a daily brief.",
+  "system_prompt": "You are an autonomous worker. Use tools freely.",
+  "model":         "claude-opus-4-5",
+  "allowed_tools": ["mcp__local_shell__local_shell_run", "mcp__observability__obs_note"],
+  "max_turns":     20,
+  "timeout_ms":    600000,
+  "deliver_to":    { "kind": "obs_note", "kind_tag": "daily_brief" }
+}
+```
+
+**`deliver_to` sinks:**
+- `{ "kind": "obs_note", "kind_tag": "<tag>" }` — writes result to `agent_notes`
+- `{ "kind": "log" }` — log only (default)
+
+#### `workflow` — multi-step shell + prompt pipeline
+
+Executes a **linear sequence** of typed steps. Per-step results (stdout,
+stderr, exit code, duration, status) land in `job_runs.steps_json`.
+This is the right tool when you need shell work + intelligent analysis
+in one atomic unit.
+
+```json
+{
+  "steps": [
+    {
+      "kind": "shell",
+      "cmd": "jax-mail-sync",
+      "timeout_ms": 60000
+    },
+    {
+      "kind": "prompt",
+      "user_prompt": "Mail synced. Triage new messages and create action items.",
+      "system_prompt": "You are an autonomous triage agent. Be brief.",
+      "allowed_tools": ["mcp__local_shell__local_shell_run", "mcp__observability__obs_note"],
+      "max_turns": 12,
+      "timeout_ms": 180000
+    }
+  ],
+  "halt_on_failure": false
+}
+```
+
+**Step kinds:**
+
+| Kind | Required | Optional |
+|---|---|---|
+| `shell` | `cmd` (string) | `timeout_ms` (default 5 min), `env` (object) |
+| `prompt` | `user_prompt` (string) | `system_prompt`, `model`, `allowed_tools`, `max_turns`, `timeout_ms` (default 10 min) |
+
+**Step result status:** `success` / `failed` / `timeout`
+
+`halt_on_failure: true` (default) stops at first non-success step.
+`halt_on_failure: false` records all step outcomes even on failure.
+
+### Submitting jobs
+
+**One-shot job:**
+```sql
+INSERT INTO jobs (id, kind, spec, payload_json, enabled, created_at, updated_at)
+VALUES (
+  'my-job-id', 'workflow', 'once',
+  '{"steps":[{"kind":"shell","cmd":"echo hello"}]}',
+  1, unixepoch()*1000, unixepoch()*1000
+);
+```
+
+**Recurring cron job:**
+```sql
+INSERT INTO jobs (id, kind, spec, schedule, payload_json, enabled, created_at, updated_at)
+VALUES (
+  'my-job-id', 'workflow', '0 7 * * *', '0 7 * * *',
+  '{"steps":[...]}',
+  1, unixepoch()*1000, unixepoch()*1000
+);
+```
+
+Use `mcp__scheduler__schedule_create(expr, label?)` for simple bare
+cron triggers (no workflow payload). Use direct SQL inserts for
+`prompt` or `workflow` kind jobs with rich payloads.
+
+### Inspecting runs
+
+```bash
+# Recent job runs
+sqlite3 ~/.luna/luna.db \
+  "SELECT r.id, j.id as job, r.status, datetime(r.started_at/1000,'unixepoch','localtime')
+   FROM job_runs r JOIN jobs j ON r.job_id=j.id
+   ORDER BY r.started_at DESC LIMIT 20;"
+
+# Per-step breakdown for a workflow run (run_id = integer)
+sqlite3 ~/.luna/luna.db \
+  "SELECT steps_json FROM job_runs WHERE id=<run_id>;" | python3 -m json.tool
+```
+
+## Agents & Subagents
+
+Agent definitions live in `~/.luna/agents/` as `.md` files with YAML
+frontmatter. They are hot-loaded on every query — no restart needed.
+A workspace may add its own agents in `<workspace>/.workspace/agents/`.
+
+Built-in agents:
 - **`advisor`** — consult *before* substantive work. Pressure-tests plans.
 - **`auditor`** — consult *after* work is done. Verifies the deliverable.
+- **`dev-agent`** — coding and implementation tasks.
 
-A workspace may add its own subagents in `<workspace>/.workspace/agents/`.
+### Agent definition format
+
+```markdown
+---
+description: What this agent does (required)
+model: claude-opus-4-5
+effort: high
+maxTurns: 20
+memory: user
+tools:
+  - mcp__local_shell__local_shell_run
+  - mcp__memory__memory_search
+permissionMode: auto
+background: false
+---
+
+System prompt markdown body goes here.
+```
+
+**Supported frontmatter fields:**
+
+| Field | Values | Notes |
+|---|---|---|
+| `description` | string | **Required** |
+| `model` | string | e.g. `claude-opus-4-5` |
+| `effort` | `low`/`medium`/`high`/`xhigh`/`max` or number | |
+| `maxTurns` | integer | |
+| `memory` | `user`/`project`/`local` | |
+| `tools` | string list | Allowed MCP tools |
+| `disallowedTools` | string list | |
+| `mcpServers` | string list | MCP server refs only |
+| `skills` | string list | Skill file refs |
+| `permissionMode` | `default`/`auto`/`acceptEdits`/`bypassPermissions` | |
+| `background` | `true`/`false` | |
+| `initialPrompt` | string | Injected before first turn |
+
+The markdown body of the file becomes the agent's system prompt.
 
 ## Local shell
 
@@ -161,9 +314,13 @@ what is attached.
 | Workspace-specific facts      | `<ws>/.workspace/workspace.db`                    |
 | Cross-session behavioral log  | `agent_notes` in `luna.db`                        |
 | What workspaces exist         | `workspaces` table in `luna.db`                   |
+| Scheduled jobs & workflows    | `jobs` table in `luna.db`                         |
+| Job run history & step logs   | `job_runs` table in `luna.db`                     |
 | Recent sessions, tool use     | `analytics.duckdb` and `events.jsonl`             |
 | Identity & behavior           | `DNA.md` (loaded into every system prompt)        |
 | Mechanics & conventions       | `SYSTEM.md` (this file)                           |
+| SDK job implementation        | `packages/adapter-sdk/src/`                       |
+| Agent definitions             | `~/.luna/agents/*.md`                             |
 
 ## What this file is not
 
