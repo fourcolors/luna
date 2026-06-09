@@ -157,30 +157,35 @@
     }
     .moon-satellite svg { width: 14px; height: 14px; display: block; }
 
-    /* New-conversation "+" — lower-right of the moon. */
-    .sat-new-chat { width: 26px; height: 26px; left: 99px; top: 90px; animation-delay: -1.3s; }
+    /* The three satellites sit in a shallow arc BELOW the moon's body (its
+       visible bottom is ~y112; these start at y127+) so they read as orbiting
+       beneath it rather than sitting on top of it. The taller 140x185 minimized
+       window (see TauriService / tauri.conf) gives them the vertical room. */
+    /* New-conversation "+" — lower-right. */
+    .sat-new-chat { width: 26px; height: 26px; left: 94px; top: 127px; animation-delay: -1.3s; }
 
-    /* Machine-access (computer icon) — lower-left of the moon. Re-glyphed from a
-       "+" so it never reads as a second new-chat button. .active = scope on. */
-    .sat-machine { width: 26px; height: 26px; left: 15px; top: 90px; animation-delay: -2.6s; }
+    /* Machine-access (computer icon) — lower-left. Re-glyphed from a "+" so it
+       never reads as a second new-chat button. .active = scope on. */
+    .sat-machine { width: 26px; height: 26px; left: 20px; top: 127px; animation-delay: -2.6s; }
     .sat-machine.active {
       background: rgba(138, 180, 248, 0.22);
       border-color: rgba(138, 180, 248, 0.5);
       color: #c7dbff;
     }
 
-    /* Settings — a little gold STAR hovering straight below the moon (the classic
-       crescent-&-star motif). No orb chrome: the star shape itself is the control,
-       and it twinkles instead of bobbing so its hover scale/rotate reads cleanly. */
+    /* Settings — a gold GEAR hovering straight below the moon (lowest point of
+       the arc). It keeps the gold glow + twinkle treatment so it still reads as
+       the "magical companion star" the design wanted, but the gear glyph makes
+       its purpose unmistakable. No orb chrome; the glowing gear IS the control. */
     .sat-settings {
-      width: 24px; height: 24px; left: 58px; top: 108px;
+      width: 30px; height: 30px; left: 55px; top: 137px;
       background: none;
       border: none;
       box-shadow: none;
       color: #ffd97d;
       animation: satellite-twinkle 3.6s ease-in-out infinite;
     }
-    .sat-settings svg { width: 20px; height: 20px; }
+    .sat-settings svg { width: 22px; height: 22px; }
     .sat-settings:hover {
       background: none;
       box-shadow: none;
@@ -415,34 +420,99 @@
       gap: 8px;
     }
 
-    /* Settings panel overlay styling */
+    /* Settings is its OWN thing now: a centered modal that floats on top of
+       everything (no longer the chat page's slide-up panel). It's a body-level
+       fixed overlay = dim backdrop + centered card.
+       NO backdrop-filter on the dim: on this transparent macOS WKWebView window
+       backdrop-filter intermittently composites the whole surface to fully
+       transparent after a repaint (same reason .chat-panel avoids it) — so the
+       dim is a plain rgba fill. */
     .settings-panel {
-      position: absolute;
-      top: 57px; /* directly below header */
-      left: 0;
+      position: fixed;
+      inset: 0;
+      z-index: 300;            /* above the chat panel (50) and satellites (110) */
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: rgba(4, 6, 14, 0.62);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+    }
+    .settings-panel.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    /* The modal card itself. */
+    .settings-card {
       width: 100%;
-      height: calc(100% - 57px);
-      background: rgba(10, 14, 28, 0.95);
-      /* No backdrop-filter — see .chat-panel: WKWebView transparency punch-through. */
-      z-index: 60;
+      max-width: 480px;
+      max-height: 100%;
       display: flex;
       flex-direction: column;
-      transform: translateY(100%);
-      transition: transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
-      padding: 20px;
+      background: #0c1020;     /* solid dark glass — see .chat-panel note */
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 20px;
+      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+      overflow: hidden;
+      transform: translateY(8px) scale(0.98);
+      transition: transform 0.2s cubic-bezier(0.25, 0.8, 0.25, 1);
     }
-    
-    .settings-panel.active {
-      transform: translateY(0);
+    .settings-panel.active .settings-card { transform: none; }
+
+    .settings-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 18px 12px;
     }
-    
+    .settings-card-header h3 {
+      font-family: var(--font-display);
+      font-size: 1.05rem;
+      font-weight: 800;
+      color: #fff;
+    }
+    .settings-x {
+      background: none; border: none; color: #64748b; cursor: pointer;
+      width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+      border-radius: 50%; transition: background 0.2s, color 0.2s;
+    }
+    .settings-x:hover { background: rgba(255, 255, 255, 0.06); color: #f1f5f9; }
+    .settings-x svg { width: 16px; height: 16px; }
+
+    /* Tab bar (General / Connection / Secrets / Updates). */
+    .settings-tabs {
+      display: flex;
+      gap: 2px;
+      padding: 0 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .settings-tab {
+      background: none; border: none; cursor: pointer;
+      padding: 9px 12px 11px;
+      font-family: var(--font-body);
+      font-size: 0.8rem;
+      color: #8aa0c6;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .settings-tab:hover { color: #cdd9f5; }
+    .settings-tab.active { color: #fff; border-bottom-color: #8ab4f8; }
+
+    /* Scrollable body; only the active tab panel is shown. */
     .settings-content {
       flex: 1;
+      overflow-y: auto;
+      padding: 14px 16px 6px;
+    }
+    .settings-tabpanel { display: none; }
+    .settings-tabpanel.active {
       display: flex;
       flex-direction: column;
-      gap: 16px;
-      overflow-y: auto;
-      padding-right: 6px;
+      gap: 14px;
     }
     
     /* Dark-glass scrollbar styling — applied to every scrolling container in
@@ -1314,7 +1384,7 @@
     .scope-menu {
       position: absolute;
       left: 14px;
-      top: 138px;
+      top: 162px; /* just below the lowered computer-icon satellite */
       min-width: 230px;
       background: var(--glass-bg);
       border: 1px solid var(--glass-border);
@@ -1635,10 +1705,14 @@
       <line x1="12" y1="16.5" x2="12" y2="20"></line>
     </svg>
   </button>
-  <!-- Settings — gold star hovering straight below the moon. -->
+  <!-- Settings — gold GEAR hovering straight below the moon (keeps the gold
+       glow/twinkle "companion star" treatment via .sat-settings, but the gear
+       glyph makes it unmistakably the settings control). Opens the tabbed
+       settings modal (#settings-panel) — its own thing, not the chat page. -->
   <button type="button" class="moon-satellite sat-settings" id="toggle-settings" aria-label="Settings" title="Settings">
-    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="M12 2.5l2.6 5.78 6.3.62-4.73 4.2 1.39 6.2L12 16.9l-5.56 2.4 1.39-6.2L3.1 8.9l6.3-.62L12 2.5z"></path>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="3"></circle>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
     </svg>
   </button>
   <!-- New conversation — lower-right. -->
@@ -1659,6 +1733,119 @@
     </div>
   </div>
 
+  <!-- Settings: a standalone tabbed modal (body-level overlay). Moved OUT of
+       #chat-panel so it floats on top independently of the chat, and so this
+       fixed overlay is never hidden by the chat panel's opacity:0 collapsed
+       state. ids (#settings-panel, #close-settings-btn) + every input id are
+       preserved, so all existing handlers/DOM refs keep working. -->
+  <div class="settings-panel" id="settings-panel">
+    <div class="settings-card" role="dialog" aria-modal="true" aria-label="Settings">
+      <div class="settings-card-header">
+        <h3>Settings</h3>
+        <button type="button" class="settings-x" id="settings-close-x" aria-label="Close settings">
+          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+      <div class="settings-tabs" role="tablist">
+        <button type="button" class="settings-tab active" data-tab="general" role="tab" aria-selected="true">General</button>
+        <button type="button" class="settings-tab" data-tab="connection" role="tab" aria-selected="false">Connection</button>
+        <button type="button" class="settings-tab" data-tab="secrets" role="tab" aria-selected="false">Secrets</button>
+        <button type="button" class="settings-tab" data-tab="updates" role="tab" aria-selected="false">Updates</button>
+      </div>
+      <div class="settings-content">
+        <div class="settings-tabpanel active" data-tabpanel="general">
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Always on Top</span>
+            <span class="setting-desc">Keep Luna floating above other windows</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="always-on-top-toggle" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Close on Click Away</span>
+            <span class="setting-desc">Collapse chat automatically when unfocused</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="close-on-blur-toggle">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Global Shortcut</span>
+            <span class="setting-desc">Press shortcut to toggle Luna window</span>
+          </div>
+          <div class="shortcut-recorder-group">
+            <input type="text" class="shortcut-input" id="shortcut-input" readonly value="⌥Space">
+            <button type="button" class="record-btn" id="record-shortcut-btn">Record</button>
+          </div>
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="connection">
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Channel</span>
+            <span class="setting-desc">Switch this moon between the stable and dev servers</span>
+            <span class="channel-error" id="channel-error" hidden></span>
+          </div>
+          <select id="channel-select" class="channel-select">
+            <option value="stable">Stable</option>
+            <option value="dev">Dev</option>
+          </select>
+        </div>
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">WebSocket Server URL</span>
+            <span class="setting-desc">Luna Central server WebSocket address (for the selected channel)</span>
+          </div>
+          <input type="text" id="ws-url-input" class="premium-text-input" placeholder="ws://127.0.0.1:4753/ui">
+        </div>
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">Auth Token</span>
+            <span class="setting-desc">Optional authentication bearer token</span>
+          </div>
+          <input type="password" id="ws-token-input" class="premium-text-input" placeholder="Enter token (optional)...">
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="secrets">
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">1Password Service Account</span>
+            <span class="setting-desc">Send an <code>ops_…</code> service-account token to the server securely. It is verified and stored on the server — never kept in chat history or on this device.</span>
+          </div>
+          <input type="text" id="op-label-input" class="premium-text-input" placeholder="Account label (e.g. primary)" autocomplete="off" spellcheck="false" style="margin-bottom: 8px;">
+          <input type="password" id="op-token-input" class="premium-text-input" placeholder="ops_… service-account token" autocomplete="off" spellcheck="false">
+          <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+            <button type="button" class="record-btn" id="save-op-token-btn">Save to server</button>
+            <span class="setting-desc" id="op-token-status" style="font-size: 0.75rem;" hidden></span>
+          </div>
+          <span class="setting-desc" style="margin-top: 6px;">Saving verifies the token and briefly restarts the server.</span>
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="updates">
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">App Updates</span>
+            <span class="setting-desc">Check GitHub for a newer Luna Moon build</span>
+            <span class="update-status" id="update-status" hidden></span>
+          </div>
+          <button type="button" class="record-btn" id="check-update-btn">Check</button>
+        </div>
+        </div>
+      </div>
+      <div class="settings-footer">
+        <button class="save-settings-btn" id="close-settings-btn">Done</button>
+      </div>
+    </div>
+  </div>
   <!-- The Glassmorphic Chat Panel -->
   <div class="chat-panel" id="chat-panel">
     <!-- Chat Header supports dragging the native window too! -->
@@ -1692,101 +1879,6 @@
       </div>
     </div>
     
-    <!-- Settings Panel (Overlays chat content) -->
-    <div class="settings-panel" id="settings-panel">
-      <div class="settings-content">
-        <h3>App Settings</h3>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Always on Top</span>
-            <span class="setting-desc">Keep Luna floating above other windows</span>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="always-on-top-toggle" checked>
-            <span class="slider"></span>
-          </label>
-        </div>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Close on Click Away</span>
-            <span class="setting-desc">Collapse chat automatically when unfocused</span>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="close-on-blur-toggle">
-            <span class="slider"></span>
-          </label>
-        </div>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Global Shortcut</span>
-            <span class="setting-desc">Press shortcut to toggle Luna window</span>
-          </div>
-          <div class="shortcut-recorder-group">
-            <input type="text" class="shortcut-input" id="shortcut-input" readonly value="⌥Space">
-            <button type="button" class="record-btn" id="record-shortcut-btn">Record</button>
-          </div>
-        </div>
-
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Channel</span>
-            <span class="setting-desc">Switch this moon between the stable and dev servers</span>
-            <span class="channel-error" id="channel-error" hidden></span>
-          </div>
-          <select id="channel-select" class="channel-select">
-            <option value="stable">Stable</option>
-            <option value="dev">Dev</option>
-          </select>
-        </div>
-
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">App Updates</span>
-            <span class="setting-desc">Check GitHub for a newer Luna Moon build</span>
-            <span class="update-status" id="update-status" hidden></span>
-          </div>
-          <button type="button" class="record-btn" id="check-update-btn">Check</button>
-        </div>
-
-        <div class="setting-item flex-column">
-          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
-            <span class="setting-label">WebSocket Server URL</span>
-            <span class="setting-desc">Luna Central server WebSocket address (for the selected channel)</span>
-          </div>
-          <input type="text" id="ws-url-input" class="premium-text-input" placeholder="ws://127.0.0.1:4753/ui">
-        </div>
-
-        <div class="setting-item flex-column">
-          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
-            <span class="setting-label">Auth Token</span>
-            <span class="setting-desc">Optional authentication bearer token</span>
-          </div>
-          <input type="password" id="ws-token-input" class="premium-text-input" placeholder="Enter token (optional)...">
-        </div>
-
-        <div class="setting-item flex-column">
-          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
-            <span class="setting-label">1Password Service Account</span>
-            <span class="setting-desc">Send an <code>ops_…</code> service-account token to the server securely. It is verified and stored on the server — never kept in chat history or on this device.</span>
-          </div>
-          <input type="text" id="op-label-input" class="premium-text-input" placeholder="Account label (e.g. primary)" autocomplete="off" spellcheck="false" style="margin-bottom: 8px;">
-          <input type="password" id="op-token-input" class="premium-text-input" placeholder="ops_… service-account token" autocomplete="off" spellcheck="false">
-          <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
-            <button type="button" class="record-btn" id="save-op-token-btn">Save to server</button>
-            <span class="setting-desc" id="op-token-status" style="font-size: 0.75rem;" hidden></span>
-          </div>
-          <span class="setting-desc" style="margin-top: 6px;">Saving verifies the token and briefly restarts the server.</span>
-        </div>
-
-      </div>
-
-      <div class="settings-footer">
-        <button class="save-settings-btn" id="close-settings-btn">Done</button>
-      </div>
-    </div>
     
     <div class="chat-messages" id="chat-messages">
       <div class="msg assistant">
@@ -2109,7 +2201,9 @@
     const TauriService = {
       // Last logical window size we requested. Kept current by setWindowSize so the
       // resize grip can read the starting size synchronously (no awaited IPC on grab).
-      lastSize: { w: 140, h: 140 },
+      // Minimized footprint is 140×185 — taller than wide so the satellites have
+      // room to sit in an arc BELOW the moon (not on top of it).
+      lastSize: { w: 140, h: 185 },
 
       async setWindowSize(width, height) {
         if (!window.__TAURI__) return;
@@ -5061,13 +5155,37 @@
       },
 
       toggle() {
-        DOM.settingsPanel.classList.toggle('active');
-        Logger.info("Settings tab visibility toggled");
+        if (DOM.settingsPanel.classList.contains('active')) this.close();
+        else this.open();
+      },
+
+      // Settings is its own modal now, independent of the chat. Opening it from
+      // the minimized moon grows the window so the modal has room; closing shrinks
+      // back. IMPORTANT: add `.active` SYNCHRONOUSLY before any await — the unit
+      // test asserts the toggle flips #settings-panel on the same tick, and the
+      // window resize must stay fire-and-forget (the modal just fades in over it).
+      open() {
+        if (DOM.settingsPanel.classList.contains('active')) return;
+        this._openedMinimized = !DOM.chatPanel.classList.contains('active');
+        DOM.settingsPanel.classList.add('active');
+        if (this._openedMinimized) {
+          const { w, h } = PanelSize.load();
+          TauriService.setWindowSize(w, h);
+        }
+        Logger.info("Settings modal opened");
       },
 
       close() {
+        const wasMinimized = this._openedMinimized;
+        this._openedMinimized = false;
         DOM.settingsPanel.classList.remove('active');
-        Logger.info("Settings tab closed");
+        Logger.info("Settings modal closed");
+
+        // If we grew the window just to show the modal (opened from the minimized
+        // moon, chat still closed), shrink back after the fade-out.
+        if (wasMinimized && !DOM.chatPanel.classList.contains('active')) {
+          setTimeout(() => TauriService.setWindowSize(140, 185), 220);
+        }
 
         // Never retain the OP token in the DOM after the panel closes.
         if (DOM.opTokenInput) DOM.opTokenInput.value = '';
@@ -5249,15 +5367,15 @@
         const isActive = DOM.chatPanel.classList.contains('active');
         if (isActive) {
           DOM.chatPanel.classList.remove('active');
-          // The settings panel and scope popover now live OUTSIDE #chat-panel
+          // The settings modal and scope popover now live OUTSIDE #chat-panel
           // (they orbit the moon), so collapsing the chat no longer hides them
           // implicitly. Close them here so neither lingers — and so an open scope
-          // popover can't get clipped inside the 140x140 minimized window.
+          // popover can't get clipped inside the minimized window.
           LocalShell.openMenu(false);
           DOM.settingsPanel.classList.remove('active');
           Logger.info("Initiated chat collapse transition");
           setTimeout(() => {
-            TauriService.setWindowSize(140, 140);
+            TauriService.setWindowSize(140, 185);
           }, 300);
         } else {
           // Restore the user's last dragged size (or 560x520 if none saved).
@@ -5332,13 +5450,21 @@
       },
 
       handleBlur() {
-        if (DOM.closeOnBlurToggle.checked && DOM.chatPanel.classList.contains('active') && !State.isRecordingShortcut && !State.suppressBlurClose) {
-          Logger.info("Focus click-away blur event fired: collapsing companion");
-          DOM.settingsPanel.classList.remove('active');
+        if (!DOM.closeOnBlurToggle.checked || State.isRecordingShortcut || State.suppressBlurClose) return;
+        const settingsOpen = DOM.settingsPanel.classList.contains('active');
+        const chatOpen = DOM.chatPanel.classList.contains('active');
+        // The settings modal can be open while the chat is still minimized (it's
+        // its own thing now), so blur must dismiss it even when the chat isn't
+        // active — otherwise clicking away would leave a grown, modal-covered
+        // window stuck open.
+        if (!settingsOpen && !chatOpen) return;
+        Logger.info("Focus click-away blur event fired: collapsing companion");
+        if (settingsOpen) SettingsEngine.close(); // closes modal + shrinks if it grew the window
+        if (chatOpen) {
           LocalShell.openMenu(false); // hide the moon-anchored scope popover too
           DOM.chatPanel.classList.remove('active');
           setTimeout(() => {
-            TauriService.setWindowSize(140, 140);
+            TauriService.setWindowSize(140, 185);
           }, 300);
         }
       }
@@ -5545,17 +5671,27 @@
       if (files && files.length) Attachments.addFiles(files);
     });
 
-    // Settings Panel Controls
-    DOM.toggleSettings.addEventListener('click', () => {
-      // Toggle FIRST and synchronously — the settings panel lives inside the chat
-      // panel, and the unit test asserts this flips #settings-panel.active on the
-      // same tick. If we just opened it while the chat is minimized, also open the
-      // chat so the panel is actually on screen.
-      const willOpen = !DOM.settingsPanel.classList.contains('active');
-      SettingsEngine.toggle();
-      if (willOpen && !DOM.chatPanel.classList.contains('active')) UIController.toggleChat();
-    });
+    // Settings Panel Controls — the star opens the standalone settings modal
+    // (SettingsEngine.open() handles growing the window when minimized; no need
+    // to open the chat). Done button + the header ✕ both close it.
+    DOM.toggleSettings.addEventListener('click', () => SettingsEngine.toggle());
     DOM.closeSettingsBtn.addEventListener('click', () => SettingsEngine.close());
+    const settingsCloseX = document.getElementById('settings-close-x');
+    if (settingsCloseX) settingsCloseX.addEventListener('click', () => SettingsEngine.close());
+    // Tab switching inside the settings modal.
+    document.querySelectorAll('.settings-tab').forEach((tab) => {
+      tab.addEventListener('click', () => {
+        const name = tab.getAttribute('data-tab');
+        document.querySelectorAll('.settings-tab').forEach((t) => {
+          const on = t === tab;
+          t.classList.toggle('active', on);
+          t.setAttribute('aria-selected', String(on));
+        });
+        document.querySelectorAll('.settings-tabpanel').forEach((p) => {
+          p.classList.toggle('active', p.getAttribute('data-tabpanel') === name);
+        });
+      });
+    });
     DOM.alwaysOnTopToggle.addEventListener('change', () => SettingsEngine.handleAlwaysOnTopChange());
     DOM.closeOnBlurToggle.addEventListener('change', () => SettingsEngine.handleCloseOnBlurChange());
     if (DOM.channelSelect) {

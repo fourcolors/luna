@@ -144,8 +144,8 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       await Promise.resolve()
       await Promise.resolve()
       
-      // Verification: Window should shrink back to 140x140
-      expect(mockSetSize).toHaveBeenCalledWith({ type: 'Logical', width: 140, height: 140 })
+      // Verification: Window should shrink back to the 140x185 minimized size
+      expect(mockSetSize).toHaveBeenCalledWith({ type: 'Logical', width: 140, height: 185 })
     })
 
     it('Scenario: Reopens to the previously persisted chat size instead of the 560x520 default', async () => {
@@ -193,13 +193,13 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       const grip = document.getElementById('resize-grip')
       expect(grip).not.toBeNull()
 
-      // pointerdown captures startW = TauriService.lastSize.w (140 on boot)
+      // pointerdown captures startW/startH = TauriService.lastSize (140x185 on boot)
       //   and startX/startY = the pointer's screen coords.
       grip!.dispatchEvent(new MouseEvent('pointerdown', {
         bubbles: true, clientX: 0, clientY: 0, screenX: 100, screenY: 100,
       }))
       // pointermove computes pendingW = max(MIN_W=360, round(140 + dx)),
-      //   pendingH = max(MIN_H=360, round(140 + dy)). With dx=dy=400 -> 540, 540.
+      //   pendingH = max(MIN_H=360, round(185 + dy)). With dx=dy=400 -> 540, 585.
       grip!.dispatchEvent(new MouseEvent('pointermove', {
         bubbles: true, clientX: 0, clientY: 0, screenX: 500, screenY: 500,
       }))
@@ -210,7 +210,7 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
 
       const stored = localStorage.getItem('luna.moon.chatSize')
       expect(stored).not.toBeNull()
-      expect(JSON.parse(stored!)).toEqual({ w: 540, h: 540 })
+      expect(JSON.parse(stored!)).toEqual({ w: 540, h: 585 })
     })
   })
 
@@ -370,7 +370,7 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       await Promise.resolve()
       await Promise.resolve()
 
-      expect(mockSetSize).toHaveBeenCalledWith({ type: 'Logical', width: 140, height: 140 })
+      expect(mockSetSize).toHaveBeenCalledWith({ type: 'Logical', width: 140, height: 185 })
     })
 
     it('Scenario: Global Shortcut recorder captures key combinations', () => {

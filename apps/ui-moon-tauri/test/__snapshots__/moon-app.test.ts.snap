@@ -48,10 +48,14 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
       <line x1="12" y1="16.5" x2="12" y2="20"></line>
     </svg>
   </button>
-  <!-- Settings — gold star hovering straight below the moon. -->
+  <!-- Settings — gold GEAR hovering straight below the moon (keeps the gold
+       glow/twinkle "companion star" treatment via .sat-settings, but the gear
+       glyph makes it unmistakably the settings control). Opens the tabbed
+       settings modal (#settings-panel) — its own thing, not the chat page. -->
   <button type="button" class="moon-satellite sat-settings" id="toggle-settings" aria-label="Settings" title="Settings">
-    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="M12 2.5l2.6 5.78 6.3.62-4.73 4.2 1.39 6.2L12 16.9l-5.56 2.4 1.39-6.2L3.1 8.9l6.3-.62L12 2.5z"></path>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="3"></circle>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
     </svg>
   </button>
   <!-- New conversation — lower-right. -->
@@ -72,6 +76,119 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
     </div>
   </div>
 
+  <!-- Settings: a standalone tabbed modal (body-level overlay). Moved OUT of
+       #chat-panel so it floats on top independently of the chat, and so this
+       fixed overlay is never hidden by the chat panel's opacity:0 collapsed
+       state. ids (#settings-panel, #close-settings-btn) + every input id are
+       preserved, so all existing handlers/DOM refs keep working. -->
+  <div class="settings-panel" id="settings-panel">
+    <div class="settings-card" role="dialog" aria-modal="true" aria-label="Settings">
+      <div class="settings-card-header">
+        <h3>Settings</h3>
+        <button type="button" class="settings-x" id="settings-close-x" aria-label="Close settings">
+          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+      <div class="settings-tabs" role="tablist">
+        <button type="button" class="settings-tab active" data-tab="general" role="tab" aria-selected="true">General</button>
+        <button type="button" class="settings-tab" data-tab="connection" role="tab" aria-selected="false">Connection</button>
+        <button type="button" class="settings-tab" data-tab="secrets" role="tab" aria-selected="false">Secrets</button>
+        <button type="button" class="settings-tab" data-tab="updates" role="tab" aria-selected="false">Updates</button>
+      </div>
+      <div class="settings-content">
+        <div class="settings-tabpanel active" data-tabpanel="general">
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Always on Top</span>
+            <span class="setting-desc">Keep Luna floating above other windows</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="always-on-top-toggle" checked="">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Close on Click Away</span>
+            <span class="setting-desc">Collapse chat automatically when unfocused</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="close-on-blur-toggle">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Global Shortcut</span>
+            <span class="setting-desc">Press shortcut to toggle Luna window</span>
+          </div>
+          <div class="shortcut-recorder-group">
+            <input type="text" class="shortcut-input" id="shortcut-input" readonly="" value="⌥Space">
+            <button type="button" class="record-btn" id="record-shortcut-btn">Record</button>
+          </div>
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="connection">
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Channel</span>
+            <span class="setting-desc">Switch this moon between the stable and dev servers</span>
+            <span class="channel-error" id="channel-error" hidden=""></span>
+          </div>
+          <select id="channel-select" class="channel-select">
+            <option value="stable">Stable</option>
+            <option value="dev">Dev</option>
+          </select>
+        </div>
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">WebSocket Server URL</span>
+            <span class="setting-desc">Luna Central server WebSocket address (for the selected channel)</span>
+          </div>
+          <input type="text" id="ws-url-input" class="premium-text-input" placeholder="ws://127.0.0.1:4753/ui">
+        </div>
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">Auth Token</span>
+            <span class="setting-desc">Optional authentication bearer token</span>
+          </div>
+          <input type="password" id="ws-token-input" class="premium-text-input" placeholder="Enter token (optional)...">
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="secrets">
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">1Password Service Account</span>
+            <span class="setting-desc">Send an <code>ops_…</code> service-account token to the server securely. It is verified and stored on the server — never kept in chat history or on this device.</span>
+          </div>
+          <input type="text" id="op-label-input" class="premium-text-input" placeholder="Account label (e.g. primary)" autocomplete="off" spellcheck="false" style="margin-bottom: 8px;">
+          <input type="password" id="op-token-input" class="premium-text-input" placeholder="ops_… service-account token" autocomplete="off" spellcheck="false">
+          <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+            <button type="button" class="record-btn" id="save-op-token-btn">Save to server</button>
+            <span class="setting-desc" id="op-token-status" style="font-size: 0.75rem;" hidden=""></span>
+          </div>
+          <span class="setting-desc" style="margin-top: 6px;">Saving verifies the token and briefly restarts the server.</span>
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="updates">
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">App Updates</span>
+            <span class="setting-desc">Check GitHub for a newer Luna Moon build</span>
+            <span class="update-status" id="update-status" hidden=""></span>
+          </div>
+          <button type="button" class="record-btn" id="check-update-btn">Check</button>
+        </div>
+        </div>
+      </div>
+      <div class="settings-footer">
+        <button class="save-settings-btn" id="close-settings-btn">Done</button>
+      </div>
+    </div>
+  </div>
   <!-- The Glassmorphic Chat Panel -->
   <div class="chat-panel" id="chat-panel">
     <!-- Chat Header supports dragging the native window too! -->
@@ -105,101 +222,6 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
       </div>
     </div>
     
-    <!-- Settings Panel (Overlays chat content) -->
-    <div class="settings-panel" id="settings-panel">
-      <div class="settings-content">
-        <h3>App Settings</h3>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Always on Top</span>
-            <span class="setting-desc">Keep Luna floating above other windows</span>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="always-on-top-toggle" checked="">
-            <span class="slider"></span>
-          </label>
-        </div>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Close on Click Away</span>
-            <span class="setting-desc">Collapse chat automatically when unfocused</span>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="close-on-blur-toggle">
-            <span class="slider"></span>
-          </label>
-        </div>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Global Shortcut</span>
-            <span class="setting-desc">Press shortcut to toggle Luna window</span>
-          </div>
-          <div class="shortcut-recorder-group">
-            <input type="text" class="shortcut-input" id="shortcut-input" readonly="" value="⌥Space">
-            <button type="button" class="record-btn" id="record-shortcut-btn">Record</button>
-          </div>
-        </div>
-
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Channel</span>
-            <span class="setting-desc">Switch this moon between the stable and dev servers</span>
-            <span class="channel-error" id="channel-error" hidden=""></span>
-          </div>
-          <select id="channel-select" class="channel-select">
-            <option value="stable">Stable</option>
-            <option value="dev">Dev</option>
-          </select>
-        </div>
-
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">App Updates</span>
-            <span class="setting-desc">Check GitHub for a newer Luna Moon build</span>
-            <span class="update-status" id="update-status" hidden=""></span>
-          </div>
-          <button type="button" class="record-btn" id="check-update-btn">Check</button>
-        </div>
-
-        <div class="setting-item flex-column">
-          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
-            <span class="setting-label">WebSocket Server URL</span>
-            <span class="setting-desc">Luna Central server WebSocket address (for the selected channel)</span>
-          </div>
-          <input type="text" id="ws-url-input" class="premium-text-input" placeholder="ws://127.0.0.1:4753/ui">
-        </div>
-
-        <div class="setting-item flex-column">
-          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
-            <span class="setting-label">Auth Token</span>
-            <span class="setting-desc">Optional authentication bearer token</span>
-          </div>
-          <input type="password" id="ws-token-input" class="premium-text-input" placeholder="Enter token (optional)...">
-        </div>
-
-        <div class="setting-item flex-column">
-          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
-            <span class="setting-label">1Password Service Account</span>
-            <span class="setting-desc">Send an <code>ops_…</code> service-account token to the server securely. It is verified and stored on the server — never kept in chat history or on this device.</span>
-          </div>
-          <input type="text" id="op-label-input" class="premium-text-input" placeholder="Account label (e.g. primary)" autocomplete="off" spellcheck="false" style="margin-bottom: 8px;">
-          <input type="password" id="op-token-input" class="premium-text-input" placeholder="ops_… service-account token" autocomplete="off" spellcheck="false">
-          <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
-            <button type="button" class="record-btn" id="save-op-token-btn">Save to server</button>
-            <span class="setting-desc" id="op-token-status" style="font-size: 0.75rem;" hidden=""></span>
-          </div>
-          <span class="setting-desc" style="margin-top: 6px;">Saving verifies the token and briefly restarts the server.</span>
-        </div>
-
-      </div>
-
-      <div class="settings-footer">
-        <button class="save-settings-btn" id="close-settings-btn">Done</button>
-      </div>
-    </div>
     
     <div class="chat-messages" id="chat-messages">
       <div class="msg assistant">
@@ -330,10 +352,14 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
       <line x1="12" y1="16.5" x2="12" y2="20"></line>
     </svg>
   </button>
-  <!-- Settings — gold star hovering straight below the moon. -->
+  <!-- Settings — gold GEAR hovering straight below the moon (keeps the gold
+       glow/twinkle "companion star" treatment via .sat-settings, but the gear
+       glyph makes it unmistakably the settings control). Opens the tabbed
+       settings modal (#settings-panel) — its own thing, not the chat page. -->
   <button type="button" class="moon-satellite sat-settings" id="toggle-settings" aria-label="Settings" title="Settings">
-    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="M12 2.5l2.6 5.78 6.3.62-4.73 4.2 1.39 6.2L12 16.9l-5.56 2.4 1.39-6.2L3.1 8.9l6.3-.62L12 2.5z"></path>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="3"></circle>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
     </svg>
   </button>
   <!-- New conversation — lower-right. -->
@@ -354,6 +380,119 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
     </div>
   </div>
 
+  <!-- Settings: a standalone tabbed modal (body-level overlay). Moved OUT of
+       #chat-panel so it floats on top independently of the chat, and so this
+       fixed overlay is never hidden by the chat panel's opacity:0 collapsed
+       state. ids (#settings-panel, #close-settings-btn) + every input id are
+       preserved, so all existing handlers/DOM refs keep working. -->
+  <div class="settings-panel" id="settings-panel">
+    <div class="settings-card" role="dialog" aria-modal="true" aria-label="Settings">
+      <div class="settings-card-header">
+        <h3>Settings</h3>
+        <button type="button" class="settings-x" id="settings-close-x" aria-label="Close settings">
+          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+      <div class="settings-tabs" role="tablist">
+        <button type="button" class="settings-tab active" data-tab="general" role="tab" aria-selected="true">General</button>
+        <button type="button" class="settings-tab" data-tab="connection" role="tab" aria-selected="false">Connection</button>
+        <button type="button" class="settings-tab" data-tab="secrets" role="tab" aria-selected="false">Secrets</button>
+        <button type="button" class="settings-tab" data-tab="updates" role="tab" aria-selected="false">Updates</button>
+      </div>
+      <div class="settings-content">
+        <div class="settings-tabpanel active" data-tabpanel="general">
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Always on Top</span>
+            <span class="setting-desc">Keep Luna floating above other windows</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="always-on-top-toggle" checked="">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Close on Click Away</span>
+            <span class="setting-desc">Collapse chat automatically when unfocused</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="close-on-blur-toggle">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Global Shortcut</span>
+            <span class="setting-desc">Press shortcut to toggle Luna window</span>
+          </div>
+          <div class="shortcut-recorder-group">
+            <input type="text" class="shortcut-input" id="shortcut-input" readonly="" value="⌥Space">
+            <button type="button" class="record-btn" id="record-shortcut-btn">Record</button>
+          </div>
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="connection">
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Channel</span>
+            <span class="setting-desc">Switch this moon between the stable and dev servers</span>
+            <span class="channel-error" id="channel-error" hidden=""></span>
+          </div>
+          <select id="channel-select" class="channel-select">
+            <option value="stable">Stable</option>
+            <option value="dev">Dev</option>
+          </select>
+        </div>
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">WebSocket Server URL</span>
+            <span class="setting-desc">Luna Central server WebSocket address (for the selected channel)</span>
+          </div>
+          <input type="text" id="ws-url-input" class="premium-text-input" placeholder="ws://127.0.0.1:4753/ui">
+        </div>
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">Auth Token</span>
+            <span class="setting-desc">Optional authentication bearer token</span>
+          </div>
+          <input type="password" id="ws-token-input" class="premium-text-input" placeholder="Enter token (optional)...">
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="secrets">
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">1Password Service Account</span>
+            <span class="setting-desc">Send an <code>ops_…</code> service-account token to the server securely. It is verified and stored on the server — never kept in chat history or on this device.</span>
+          </div>
+          <input type="text" id="op-label-input" class="premium-text-input" placeholder="Account label (e.g. primary)" autocomplete="off" spellcheck="false" style="margin-bottom: 8px;">
+          <input type="password" id="op-token-input" class="premium-text-input" placeholder="ops_… service-account token" autocomplete="off" spellcheck="false">
+          <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+            <button type="button" class="record-btn" id="save-op-token-btn">Save to server</button>
+            <span class="setting-desc" id="op-token-status" style="font-size: 0.75rem;" hidden=""></span>
+          </div>
+          <span class="setting-desc" style="margin-top: 6px;">Saving verifies the token and briefly restarts the server.</span>
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="updates">
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">App Updates</span>
+            <span class="setting-desc">Check GitHub for a newer Luna Moon build</span>
+            <span class="update-status" id="update-status" hidden=""></span>
+          </div>
+          <button type="button" class="record-btn" id="check-update-btn">Check</button>
+        </div>
+        </div>
+      </div>
+      <div class="settings-footer">
+        <button class="save-settings-btn" id="close-settings-btn">Done</button>
+      </div>
+    </div>
+  </div>
   <!-- The Glassmorphic Chat Panel -->
   <div class="chat-panel active" id="chat-panel">
     <!-- Chat Header supports dragging the native window too! -->
@@ -387,101 +526,6 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
       </div>
     </div>
     
-    <!-- Settings Panel (Overlays chat content) -->
-    <div class="settings-panel" id="settings-panel">
-      <div class="settings-content">
-        <h3>App Settings</h3>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Always on Top</span>
-            <span class="setting-desc">Keep Luna floating above other windows</span>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="always-on-top-toggle" checked="">
-            <span class="slider"></span>
-          </label>
-        </div>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Close on Click Away</span>
-            <span class="setting-desc">Collapse chat automatically when unfocused</span>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="close-on-blur-toggle">
-            <span class="slider"></span>
-          </label>
-        </div>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Global Shortcut</span>
-            <span class="setting-desc">Press shortcut to toggle Luna window</span>
-          </div>
-          <div class="shortcut-recorder-group">
-            <input type="text" class="shortcut-input" id="shortcut-input" readonly="" value="⌥Space">
-            <button type="button" class="record-btn" id="record-shortcut-btn">Record</button>
-          </div>
-        </div>
-
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Channel</span>
-            <span class="setting-desc">Switch this moon between the stable and dev servers</span>
-            <span class="channel-error" id="channel-error" hidden=""></span>
-          </div>
-          <select id="channel-select" class="channel-select">
-            <option value="stable">Stable</option>
-            <option value="dev">Dev</option>
-          </select>
-        </div>
-
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">App Updates</span>
-            <span class="setting-desc">Check GitHub for a newer Luna Moon build</span>
-            <span class="update-status" id="update-status" hidden=""></span>
-          </div>
-          <button type="button" class="record-btn" id="check-update-btn">Check</button>
-        </div>
-
-        <div class="setting-item flex-column">
-          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
-            <span class="setting-label">WebSocket Server URL</span>
-            <span class="setting-desc">Luna Central server WebSocket address (for the selected channel)</span>
-          </div>
-          <input type="text" id="ws-url-input" class="premium-text-input" placeholder="ws://127.0.0.1:4753/ui">
-        </div>
-
-        <div class="setting-item flex-column">
-          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
-            <span class="setting-label">Auth Token</span>
-            <span class="setting-desc">Optional authentication bearer token</span>
-          </div>
-          <input type="password" id="ws-token-input" class="premium-text-input" placeholder="Enter token (optional)...">
-        </div>
-
-        <div class="setting-item flex-column">
-          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
-            <span class="setting-label">1Password Service Account</span>
-            <span class="setting-desc">Send an <code>ops_…</code> service-account token to the server securely. It is verified and stored on the server — never kept in chat history or on this device.</span>
-          </div>
-          <input type="text" id="op-label-input" class="premium-text-input" placeholder="Account label (e.g. primary)" autocomplete="off" spellcheck="false" style="margin-bottom: 8px;">
-          <input type="password" id="op-token-input" class="premium-text-input" placeholder="ops_… service-account token" autocomplete="off" spellcheck="false">
-          <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
-            <button type="button" class="record-btn" id="save-op-token-btn">Save to server</button>
-            <span class="setting-desc" id="op-token-status" style="font-size: 0.75rem;" hidden=""></span>
-          </div>
-          <span class="setting-desc" style="margin-top: 6px;">Saving verifies the token and briefly restarts the server.</span>
-        </div>
-
-      </div>
-
-      <div class="settings-footer">
-        <button class="save-settings-btn" id="close-settings-btn">Done</button>
-      </div>
-    </div>
     
     <div class="chat-messages" id="chat-messages">
       <div class="msg assistant">
