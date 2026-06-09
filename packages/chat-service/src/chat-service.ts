@@ -356,6 +356,16 @@ export class ChatService extends Effect.Service<ChatService>()(
           ...(opts.mcpServers !== undefined
             ? { mcpServers: opts.mcpServers }
             : {}),
+          // Forward the caller-supplied model into sdkOptions so the SDK
+          // adapter actually routes the request to the right model. Without
+          // this, opts.model lands only in the top-level SessionOptions field
+          // (used for display/telemetry) but never reaches the SDK query()
+          // call — Claude silently falls back to the CLI default. Fallback
+          // chain: caller-supplied → LUNA_DEFAULT_MODEL env → SDK default.
+          model:
+            opts.model ??
+            process.env["LUNA_DEFAULT_MODEL"] ??
+            "claude-opus-4-8",
         }
         return {
           model: opts.model,

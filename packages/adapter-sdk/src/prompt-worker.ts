@@ -102,6 +102,9 @@ export function parsePromptPayload(raw: unknown): PromptPayload | string {
   }
   if (typeof p["model"] === "string") {
     out.model = p["model"] as string
+  } else if (process.env["LUNA_DEFAULT_MODEL"]) {
+    // Fall back to operator-configured default when job payload omits model.
+    out.model = process.env["LUNA_DEFAULT_MODEL"]
   }
   if (Array.isArray(p["allowed_tools"])) {
     const filtered: string[] = []

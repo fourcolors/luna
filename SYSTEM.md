@@ -146,6 +146,23 @@ hot-loaded on every query — no restart needed.
 
 A workspace may add its own subagents in `<workspace>/.workspace/agents/`.
 
+## Model
+
+Luna's SDK queries default to **`claude-opus-4-8`** — the current latest
+Anthropic Opus model. The fallback chain is:
+
+1. Per-request `model` field (job payload or UI thread start)
+2. `LUNA_DEFAULT_MODEL` env var (set in `~/.luna/.env`)
+3. SDK built-in default (the CLI's own default, currently `claude-opus-4-7`)
+
+Always set `LUNA_DEFAULT_MODEL=claude-opus-4-8` in the runtime env so
+chat threads and job workers stay on the intended model. Confirm the
+current latest at
+https://docs.anthropic.com/en/docs/about-claude/models/all-models
+
+**Available effort levels:** `low` · `medium` · `high` (default) · `xhigh`
+(Opus 4.7+) · `max`. Platform recommends `medium` for most Opus tasks.
+
 ## Local shell
 
 The `local_shell` MCP server gives Luna shell access into the runtime

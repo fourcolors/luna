@@ -167,6 +167,9 @@ export function parseWorkflowPayload(raw: unknown): WorkflowPayload | string {
       }
       if (typeof s["model"] === "string") {
         out.model = s["model"] as string
+      } else if (process.env["LUNA_DEFAULT_MODEL"]) {
+        // Fall back to operator-configured default when step omits model.
+        out.model = process.env["LUNA_DEFAULT_MODEL"]
       }
       if (Array.isArray(s["allowed_tools"])) {
         const tools: string[] = []
