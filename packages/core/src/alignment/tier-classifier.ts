@@ -27,6 +27,7 @@
  *  - stakes        — NO signal exists anywhere in the codebase; `null` = unknown.
  */
 import type { DreamOpKind } from "../dream/types.js"
+import { DREAM_OP_TRAITS } from "../dream/types.js"
 
 /** Autonomy tier. Lower = safer. */
 export type Tier = 0 | 1 | 2
@@ -122,32 +123,24 @@ export const classifyTier = (i: TierInputs): Tier => {
 }
 
 // ── revertabilityFor — placeholder heuristic (DECISION NEEDING CONFIRMATION) ──
-// NO real revert-cost score exists in the codebase. These two magic numbers
-// (0.9 / 0.3) are a guess; confirm against real revert-cost data before any
-// behavior branches on them. Flagged in tier-classifier.feature.md §(2).
-
-/** A materialized, revertable op scores high. */
-const REVERTABILITY_MATERIALIZED = 0.9
-/** A held 'proposed' (un-materialized) op scores low. */
-const REVERTABILITY_HELD = 0.3
-
-/** Ops that, once materialized, are cheap to revert (undoable via revert()). */
-const REVERTABLE_OPS: ReadonlySet<DreamOpKind> = new Set<DreamOpKind>([
-  "belief_candidate",
-  "memory_dedup",
-])
+// NO real revert-cost score exists in the codebase. The per-kind magnitudes
+// live in DREAM_OP_TRAITS (dream/types.ts) — the single exhaustive table of
+// op-kind semantics — so adding a new DreamOpKind cannot silently default
+// here. Confirm magnitudes against real revert-cost data before any behavior
+// branches on them. Flagged in tier-classifier.feature.md §(2).
 
 /**
- * Documented PLACEHOLDER heuristic for revertability of a dream op.
- *  - a materialized + revertable op (belief_candidate / memory_dedup) → 0.9
- *  - a held 'proposed' op (not materialized)                          → 0.3
+ * Documented PLACEHOLDER heuristic for revertability of a dream op, derived
+ * from DREAM_OP_TRAITS:
+ *  - a materialized, cheap-to-undo op (belief_candidate / memory_dedup) → 0.9
+ *  - a held 'proposed' op (not materialized)                           → 0.3
  *
  * DECISION NEEDING CONFIRMATION — the magnitudes are a guess.
  */
 export const revertabilityFor = (
   opKind: DreamOpKind,
   materialized: boolean,
-): number =>
-  materialized && REVERTABLE_OPS.has(opKind)
-    ? REVERTABILITY_MATERIALIZED
-    : REVERTABILITY_HELD
+): number => {
+  const r = DREAM_OP_TRAITS[opKind].revertability
+  return materialized ? r.materialized : r.held
+}

@@ -36,7 +36,11 @@ export interface AgreementResult {
  * Semantics (load-bearing, pinned by fixtures):
  *   - WITHIN-PASS DEDUP: a beliefId appearing twice in ONE pass counts as ONE
  *     pass containing it (a `Set` per pass), e.g. [[A,A],[B]] → A=0.5 (NOT 1.0).
- *   - EMPTY INPUT: passes.length === 0 → EMPTY map (never divides by zero).
+ *   - DEGENERATE-N SENTINEL: passes.length < 2 → EMPTY map. Agreement over a
+ *     single pass is a meaningless constant 1.0, not a sampling signal — the
+ *     measurement owns its insufficient-data rule (mirroring calculateEce's
+ *     in-module n<30 → null), so no caller can accidentally log constant-1
+ *     "agreement". (This also covers the empty input — never divides by zero.)
  *   - An empty-but-present pass still counts toward the denominator (e.g.
  *     [[X],[],[]] → X = 1/3) but contributes no ids.
  *
@@ -47,7 +51,7 @@ export const computeAgreement = (
 ): Map<string, AgreementResult> => {
   const out = new Map<string, AgreementResult>()
   const n = passes.length
-  if (n === 0) return out // never divide by zero
+  if (n < 2) return out // degenerate-N sentinel (single pass ≠ sampling)
 
   // Count, per beliefId, how many passes CONTAIN it (deduped within a pass).
   const containCount = new Map<string, number>()

@@ -18,7 +18,7 @@
  *      snapshot `before` from memory (idempotency + revert contract).
  *   5. Any parse/validation/memory failure → DreamError (never crashes the cron).
  */
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option } from "effect"
 import type { MemoryRecord } from "@luna/memory"
 import { MemoryRouterTag } from "@luna/memory"
 import {
@@ -27,6 +27,7 @@ import {
   deriveBeliefId,
   makeBeliefRecord,
   computeAgreement,
+  CalibrationStore,
 } from "@luna/core"
 import type {
   DreamInputs,
@@ -386,13 +387,16 @@ export const DreamReasonerDefault: Layer.Layer<
 
     // Slice B (MEASURE-ONLY): the number of UNSEEDED reasoning passes N for the
     // sampling-agreement signal. Read at layer-build time (same pattern as the
-    // timeout above); clamp to a sane positive integer, fall back to 5.
+    // timeout above). An EXPLICIT finite value < 1 (e.g. "0", "-1" — the natural
+    // "disable sampling" spellings) clamps to 1 = sampling OFF, honoring the
+    // operator's opt-out; only an absent/non-numeric value falls back to the
+    // default. Upper-clamped so a misconfiguration cannot flood SDK queries.
     const dreamSamples = (() => {
       const raw = process.env["LUNA_DREAM_SAMPLES"]?.trim()
-      const n = raw ? Number(raw) : DEFAULT_DREAM_SAMPLES
-      if (!Number.isFinite(n) || n < 1) return DEFAULT_DREAM_SAMPLES
-      // Clamp to a defensive maximum so a misconfiguration cannot flood SDK queries.
-      return Math.min(Math.trunc(n), MAX_DREAM_SAMPLES)
+      if (!raw) return DEFAULT_DREAM_SAMPLES
+      const n = Number(raw)
+      if (!Number.isFinite(n)) return DEFAULT_DREAM_SAMPLES
+      return Math.max(1, Math.min(Math.trunc(n), MAX_DREAM_SAMPLES))
     })()
 
     const reason: DreamReasonerApi["reason"] = (inputs: DreamInputs) =>
@@ -430,11 +434,37 @@ export const DreamReasonerDefault: Layer.Layer<
         }
 
         // ── PASSES 2..N — MEASUREMENT-ONLY extras (never materialize) ─────────
-        // Run AFTER pass 1, concurrently with EACH OTHER. Each extra swallows ALL
-        // failures (timeout/parse/SDK error) → `null`, lowering the effective
-        // sample count rather than failing the turn. A surviving extra contributes
-        // its belief-candidate ids (deriveBeliefId) to the agreement count.
-        const extraCount = Math.max(0, dreamSamples - 1)
+        // COST IS CONTINGENT ON THE SINK: the only consumer of the agreement
+        // signal is the calibration log, so extras run ONLY when (a) a
+        // CalibrationStore is actually present in the ambient context (else the
+        // data is dropped on the floor — paying ~N× SDK cost for nothing),
+        // (b) N >= 2 was configured, and (c) pass 1 produced at least one
+        // belief_candidate (agreement can only ever attach to pass-1 belief
+        // ops — on a no-candidate night extras would be pure waste).
+        // serviceOption keeps reason()'s R channel unchanged.
+        const calOpt = yield* Effect.serviceOption(CalibrationStore)
+        const pass1HasCandidates = pass1Raw.some(
+          (r) => r.kind === "belief_candidate",
+        )
+        const samplingActive =
+          Option.isSome(calOpt) && dreamSamples >= 2 && pass1HasCandidates
+        if (dreamSamples >= 2 && !samplingActive) {
+          yield* Effect.logInfo(
+            `[luna/dream] reasoner.reason: sampling extras SKIPPED (` +
+              `${Option.isNone(calOpt) ? "no CalibrationStore sink" : "no pass-1 belief candidates"})`,
+          )
+        }
+
+        // Run AFTER pass 1, concurrently with EACH OTHER. Each extra swallows
+        // ALL failures AND defects (timeout/parse/SDK error/sync throw — a
+        // plain catchAll would miss defects and fail the turn after pass 1
+        // already succeeded) → `null`, lowering the effective N. The whole
+        // extras phase shares ONE additional dreamTimeoutMs deadline, so the
+        // turn's wall-clock ceiling is ≤ 2× dreamTimeoutMs REGARDLESS of N
+        // (without it, batching makes the ceiling (1 + ceil((N-1)/4)) ×
+        // timeout). On phase timeout the completed batches are discarded and
+        // the turn degrades to no sampling fields — never fails.
+        const extraCount = samplingActive ? dreamSamples - 1 : 0
         const extraResults =
           extraCount === 0
             ? []
@@ -446,17 +476,27 @@ export const DreamReasonerDefault: Layer.Layer<
                       (raw): ReadonlyArray<{ readonly beliefId: string }> | null =>
                         beliefIdsOf(raw),
                     ),
-                    // RESILIENCE: an extra-pass failure is SKIPPED (caught/ignored),
-                    // not propagated — it only lowers the effective N.
-                    Effect.catchAll(() => Effect.succeed(null)),
+                    // RESILIENCE: an extra-pass failure is SKIPPED — failures
+                    // AND defects — it only lowers the effective N.
+                    Effect.catchAllCause(() => Effect.succeed(null)),
                   ),
                 ),
                 { concurrency: DREAM_SAMPLE_CONCURRENCY },
+              ).pipe(
+                Effect.timeout(dreamTimeoutMs),
+                Effect.catchAll(() =>
+                  Effect.succeed(
+                    [] as ReadonlyArray<ReadonlyArray<{ readonly beliefId: string }> | null>,
+                  ),
+                ),
               )
 
         // ── Agreement over ALL surviving passes (pass 1 + surviving extras) ───
         // sampleCount = the number of passes that did NOT error (an empty-but-
-        // successful pass still counts toward the denominator).
+        // successful pass still counts toward the denominator). computeAgreement
+        // owns the degenerate-N sentinel: with < 2 surviving passes it returns
+        // an EMPTY map, so the fields below stay ABSENT (identical to Slice A)
+        // rather than logging a meaningless constant-1 "agreement".
         const survivingExtras = extraResults.filter(
           (r): r is ReadonlyArray<{ readonly beliefId: string }> => r !== null,
         )
@@ -467,25 +507,18 @@ export const DreamReasonerDefault: Layer.Layer<
 
         // Attach the MEASURE-ONLY sampling fields to each PASS-1 belief_candidate
         // op. targetId IS the beliefId. The materialized belief + its verbalized
-        // confidence are UNCHANGED — these fields are additive logging metadata.
-        //
-        // Only attach when ACTUAL sampling occurred (effective N >= 2). With a
-        // single surviving pass (N=1 configured, or all extras failed) the
-        // "agreement" would be a meaningless constant 1.0 that pollutes the
-        // sampled_confidence column — so leave the fields ABSENT, identical to
-        // Slice A's single-pass behavior.
-        const hasSampling = passes.length >= 2
-        const withSampling: ReadonlyArray<DreamOp> = hasSampling
-          ? ops.map((op) => {
-              if (op.kind !== "belief_candidate") return op
-              const m = agreement.get(op.targetId)
-              return {
-                ...op,
-                sampledConfidence: m?.sampledConfidence,
-                sampleCount: m?.sampleCount,
-              }
-            })
-          : ops
+        // confidence are UNCHANGED — these fields are additive logging metadata
+        // (absent whenever the agreement map is empty).
+        const withSampling: ReadonlyArray<DreamOp> = ops.map((op) => {
+          if (op.kind !== "belief_candidate") return op
+          const m = agreement.get(op.targetId)
+          if (m === undefined) return op
+          return {
+            ...op,
+            sampledConfidence: m.sampledConfidence,
+            sampleCount: m.sampleCount,
+          }
+        })
 
         yield* Effect.logInfo(
           `[luna/dream] reasoner.reason: returning ${withSampling.length} op(s) ` +

@@ -66,6 +66,14 @@ describe("computeAgreement — pure agreement fraction (MEASURE-ONLY; pure, tota
     expect(out.size).toBe(0)
   })
 
+  it("degenerate N: a SINGLE pass → empty map (single pass ≠ sampling)", () => {
+    // Agreement over one pass is a meaningless constant 1.0 — the measurement
+    // itself owns the insufficient-data rule (like calculateEce's n<30 → null),
+    // so no caller can accidentally log constant-1 "agreement".
+    const out = computeAgreement([[c("X"), c("Y")]])
+    expect(out.size).toBe(0)
+  })
+
   it("a pass that is itself empty still counts toward the denominator", () => {
     // 3 passes, X in 1 of them, 2 passes empty. X ⇒ 1/3.
     const passes: ReadonlyArray<ReadonlyArray<Cand>> = [[c("X")], [], []]

@@ -23,7 +23,7 @@
  * Run: bun run apps/ui-web/scripts/smoke/dream-cron-boot.smoke.ts
  * Exit 0 = PASS, non-zero = FAIL (missing service in graph → fix Layer.provide chain)
  */
-import { Clock, DreamCron, DreamStore, SessionStore } from "@luna/core"
+import { CalibrationStore, Clock, DreamCron, DreamStore, SessionStore } from "@luna/core"
 import { DreamReasonerDefault, SDKClient } from "@luna/adapter-sdk"
 import type { Query } from "@luna/adapter-sdk"
 import { MemoryRouterTag } from "@luna/memory"
@@ -76,6 +76,10 @@ const layer = buildDreamCronLayer({
   storeL: SessionStore.Default,
   clockL: Clock.Default,
   dreamStoreL: DreamStore.Memory,
+  // MEASURE-ONLY calibration sink (PR #100): the live boot passes
+  // CalibrationStore.makeLayer(lunaDbPath); the smoke uses the node-runnable
+  // Memory layer to prove the Layer.provide(calibrationStoreL) branch builds.
+  calibrationStoreL: CalibrationStore.Memory.pipe(Layer.provide(Clock.Default)),
 })
 
 // ---------------------------------------------------------------------------

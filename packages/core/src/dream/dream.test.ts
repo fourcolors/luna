@@ -171,6 +171,56 @@ describe("applyOps", () => {
     // field yet. Hardcoded expected tier — do NOT import classifyTier here.
     expect((rows[0] as { tier?: number }).tier).toBe(1)
   })
+
+  // ── HARD INVARIANT (c): a calibration failure can NEVER fail a dream turn ───
+  // The calibration PREP (readBelief / classifyTier over op.after) can throw on
+  // a malformed record — a sync throw is a DEFECT, not a typed failure, so it
+  // must be swallowed by the hook (catchAllCause), not just Effect.ignore'd.
+  it("a malformed belief_candidate `after` defects the calibration prep — turn still succeeds", async () => {
+    // `after` lacks `content` ⇒ readBelief(after).confidence throws TypeError.
+    const malformed = { id: "belief-broken" } as unknown as MemoryRecord
+    const out = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* applyOps("dream-0-100", [
+          { kind: "belief_candidate", targetId: "belief-broken", before: null, after: malformed, rationale: "malformed" },
+        ])
+        const store = yield* DreamStore
+        const cal = yield* CalibrationStore
+        return {
+          rows: yield* store.list({ dreamId: "dream-0-100" }),
+          calRows: yield* cal.list(),
+        }
+      }).pipe(
+        Effect.provide(DreamStore.Memory),
+        Effect.provide(FakeMemory([])),
+        Effect.provide(CalibrationStore.Memory),
+        Effect.provide(Clock.Default),
+      ) as Effect.Effect<any, any, never>,
+    )
+    // The turn completed: the op still applied + audited; only the calibration
+    // row is missing (the instrumentation failed, the dream did not).
+    expect(out.rows).toHaveLength(1)
+    expect(out.rows[0]?.status).toBe("applied")
+    expect(out.calRows).toHaveLength(0)
+  })
+
+  it("with NO CalibrationStore provided, applyOps still succeeds (warns, never fails)", async () => {
+    const candidate = makeBeliefRecord({ statement: "x", confidence: 0.6, domain: "comms", now: 0 })
+    const rows = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          yield* applyOps("dream-0-100", [
+            { kind: "belief_candidate", targetId: candidate.id, before: null, after: candidate, rationale: "pattern" },
+          ])
+          const store = yield* DreamStore
+          return yield* store.list({ dreamId: "dream-0-100" })
+        }),
+        FakeMemory([]),
+      ),
+    )
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.status).toBe("applied")
+  })
 })
 
 describe("revert", () => {

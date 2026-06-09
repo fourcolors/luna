@@ -99,11 +99,26 @@ export interface JoinVerdictInput {
 /**
  * One verdict-joined calibration record. The verdict→outcome map lives HERE
  * (in joinVerdicts), so calculateEce is pure binning over {confidence, outcome}.
+ *
+ * Carries the row's OTHER logged signals through the join so the offline
+ * analysis can compute the sampled-vs-verbalized ECE comparison (Slice B's
+ * whole purpose) without re-implementing the temporal join:
+ *   calculateEce(joined)                                → ECE(verbalized)
+ *   calculateEce(joined.filter(r => r.sampledConfidence != null)
+ *                      .map(r => ({ confidence: r.sampledConfidence!,
+ *                                   outcome: r.outcome })))  → ECE(sampled)
  */
 export interface JoinedRecord {
   readonly beliefId: string
+  /** The verbalized confidence (the row's `confidence` column). */
   readonly confidence: number
   readonly outcome: 0 | 1
+  /** Sampling-agreement confidence, when the row has one (Slice B). */
+  readonly sampledConfidence?: number | null
+  /** Effective sample size N for `sampledConfidence`. */
+  readonly sampleCount?: number
+  /** The measure-only autonomy tier logged on the row (Slice 3). */
+  readonly tier?: Tier | null
 }
 
 export class CalibrationError extends Data.TaggedError("CalibrationError")<{
@@ -311,35 +326,51 @@ export class CalibrationStore extends Effect.Tag("luna/CalibrationStore")<
 // ── Pure: temporal verdict join (NOT equijoin on `at`) ───────────────────────
 
 /**
- * Temporal join. Per beliefId, for each `via==='survey'` verdict:
- *   - candidate calibration rows = those with same beliefId AND
- *     proposal_at < verdict.at;
- *   - the match is the LATEST such (max proposal_at < verdict.at). Earlier
- *     proposals are unmatched; a re-proposal with proposal_at > verdict.at is
- *     never a candidate (must not steal the verdict).
+ * Temporal join — STRICTLY 1:1 (each proposal row is claimed by at most ONE
+ * verdict, and each verdict matches at most one row). Verdicts are processed
+ * in ascending `at`; for each `via==='survey'` verdict:
+ *   - candidate rows = same beliefId AND proposal_at < verdict.at AND not yet
+ *     claimed by an earlier verdict;
+ *   - the match is the LATEST such (max proposal_at < verdict.at), which is
+ *     then CLAIMED. Earlier proposals stay unmatched; a re-proposal with
+ *     proposal_at > verdict.at is never a candidate (must not steal the
+ *     verdict).
+ *   - A second verdict on the same belief with NO intervening re-proposal
+ *     finds no unclaimed candidate and is DROPPED — the FIRST verdict after a
+ *     proposal is its outcome label. (Without claiming, one proposal's
+ *     confidence would be double-counted across re-surveys, skewing ECE.)
  *   - `via!=='survey'` verdicts are IGNORED (no JoinedRecord).
  *   - outcome map: confirmed→1, corrected→0, rejected→0.
- *
- * Iterates verdicts (one JoinedRecord per matched survey verdict), matches 1:1.
  */
 export const joinVerdicts = (
   calibrationRows: ReadonlyArray<CalibrationRowInput | CalibrationRow>,
   verdicts: ReadonlyArray<JoinVerdictInput>,
 ): ReadonlyArray<JoinedRecord> => {
   const out: JoinedRecord[] = []
-  for (const v of verdicts) {
+  const claimed = new Set<CalibrationRowInput | CalibrationRow>()
+  const ordered = [...verdicts].sort((a, b) => a.at - b.at)
+  for (const v of ordered) {
     if (v.via !== "survey") continue
-    // Candidate rows for this belief whose proposal predates the verdict.
+    // Unclaimed candidate rows for this belief whose proposal predates the verdict.
     const candidates = calibrationRows.filter(
-      (r) => r.beliefId === v.beliefId && r.proposalAt < v.at,
+      (r) => r.beliefId === v.beliefId && r.proposalAt < v.at && !claimed.has(r),
     )
     if (candidates.length === 0) continue
     // LATEST proposal before the verdict.
     const match = candidates.reduce((best, r) =>
       r.proposalAt > best.proposalAt ? r : best,
     )
+    claimed.add(match)
     const outcome: 0 | 1 = v.verdict === "confirmed" ? 1 : 0
-    out.push({ beliefId: v.beliefId, confidence: match.confidence, outcome })
+    out.push({
+      beliefId: v.beliefId,
+      confidence: match.confidence,
+      outcome,
+      // Carry the row's other logged signals through (see JoinedRecord docs).
+      sampledConfidence: match.sampledConfidence ?? null,
+      sampleCount: match.sampleCount,
+      tier: match.tier ?? null,
+    })
   }
   return out
 }
@@ -355,8 +386,12 @@ const ECE_MIN_RECORDS = 30
 /**
  * Expected Calibration Error over {confidence, outcome} records.
  *
- * - records.length < 30 → null (not-enough-data sentinel; NEVER throws). [] → null.
- * - records.length >= 30 → a number in [0,1]; NEVER throws, NEVER gates.
+ * - Records with a NON-FINITE confidence (NaN/±Infinity — e.g. a corrupted or
+ *   coerced-null value) are EXCLUDED up front: they are neither binnable nor
+ *   meaningful, and counting them only in the denominator would silently
+ *   deflate ECE. The n<30 sentinel applies to the VALID count.
+ * - valid count < 30 → null (not-enough-data sentinel; NEVER throws). [] → null.
+ * - valid count >= 30 → a number in [0,1]; NEVER throws, NEVER gates.
  *
  * Standard ECE: sum over M equal-width bins of (|bin|/N) * |avg_conf − accuracy|.
  * The top-bin clamp (Math.min(M-1, …)) makes confidence 1.0 land in the last
@@ -365,14 +400,15 @@ const ECE_MIN_RECORDS = 30
 export const calculateEce = (
   records: ReadonlyArray<{ readonly confidence: number; readonly outcome: 0 | 1 }>,
 ): number | null => {
-  const n = records.length
+  const valid = records.filter((r) => Number.isFinite(r.confidence))
+  const n = valid.length
   if (n < ECE_MIN_RECORDS) return null
 
   const sums = new Array<number>(ECE_BINS).fill(0) // Σ confidence per bin
   const accs = new Array<number>(ECE_BINS).fill(0) // Σ outcome per bin
   const counts = new Array<number>(ECE_BINS).fill(0) // |bin|
 
-  for (const r of records) {
+  for (const r of valid) {
     // Clamp confidence into [0,1], then bin; top clamp keeps conf=1.0 in last bin.
     const c = r.confidence < 0 ? 0 : r.confidence > 1 ? 1 : r.confidence
     const bin = Math.min(ECE_BINS - 1, Math.floor(c * ECE_BINS))

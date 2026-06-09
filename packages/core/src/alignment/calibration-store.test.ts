@@ -148,6 +148,66 @@ describe("joinVerdicts — S2 temporal join (latest proposal_at < verdict.at)", 
     expect(joined).toHaveLength(0)
   })
 
+  it("is STRICTLY 1:1 — a second verdict with no intervening re-proposal is DROPPED", async () => {
+    // One proposal, then TWO survey verdicts (e.g. a re-survey of the same
+    // belief). Without claiming, the one row's confidence would be counted
+    // twice — with CONFLICTING outcomes — skewing ECE. The FIRST verdict after
+    // the proposal is its outcome label; the second finds no unclaimed row.
+    const B = calRow({ targetId: "tB", proposalAt: 150, confidence: 0.8 })
+    const V1 = verdict({ at: 200, verdict: "confirmed" })
+    const V2 = verdict({ at: 300, verdict: "rejected" })
+
+    const joined = joinVerdicts([B], [V1, V2])
+    expect(joined).toHaveLength(1)
+    expect(joined[0]?.outcome).toBe(1) // V1 (first after the proposal) wins
+
+    // Verdict order in the INPUT array must not matter: processed by `at`.
+    const joinedReversed = joinVerdicts([B], [V2, V1])
+    expect(joinedReversed).toHaveLength(1)
+    expect(joinedReversed[0]?.outcome).toBe(1)
+  })
+
+  it("a re-proposal BETWEEN two verdicts lets each verdict claim its own row", async () => {
+    const P1 = calRow({ targetId: "t1", proposalAt: 100, confidence: 0.3 })
+    const P2 = calRow({ targetId: "t2", proposalAt: 250, confidence: 0.9 }) // re-proposal after V1
+    const V1 = verdict({ at: 200, verdict: "rejected" })
+    const V2 = verdict({ at: 300, verdict: "confirmed" })
+
+    const joined = joinVerdicts([P1, P2], [V1, V2])
+    expect(joined).toHaveLength(2)
+    const byConf = Object.fromEntries(joined.map((j) => [j.confidence, j.outcome]))
+    expect(byConf[0.3]).toBe(0) // V1 ↔ P1
+    expect(byConf[0.9]).toBe(1) // V2 ↔ P2
+  })
+
+  it("carries sampledConfidence/sampleCount/tier through the join (sampled-vs-verbalized ECE)", async () => {
+    const B = calRow({
+      targetId: "tB",
+      proposalAt: 150,
+      confidence: 0.8,
+      sampledConfidence: 0.6,
+      sampleCount: 5,
+      tier: 1,
+    })
+    const joined = joinVerdicts([B], [verdict({ at: 200, verdict: "confirmed" })])
+    expect(joined).toHaveLength(1)
+    expect(joined[0]?.sampledConfidence).toBe(0.6)
+    expect(joined[0]?.sampleCount).toBe(5)
+    expect(joined[0]?.tier).toBe(1)
+    // …which is exactly what enables: calculateEce over the SAMPLED column.
+    const sampledView = joined
+      .filter((r) => r.sampledConfidence != null)
+      .map((r) => ({ confidence: r.sampledConfidence!, outcome: r.outcome }))
+    expect(sampledView).toHaveLength(1)
+    expect(sampledView[0]?.confidence).toBe(0.6)
+  })
+
+  it("a row WITHOUT sampling fields joins with sampledConfidence null (Slice A row)", async () => {
+    const B = calRow({ targetId: "tB", proposalAt: 150, confidence: 0.8 })
+    const joined = joinVerdicts([B], [verdict({ at: 200 })])
+    expect(joined[0]?.sampledConfidence).toBeNull()
+  })
+
   it("maps verdicts to outcomes: confirmed→1, corrected/rejected→0", async () => {
     const mk = (suffix: string, v: JoinVerdictInput["verdict"]) => ({
       cal: calRow({ beliefId: `b-${suffix}`, targetId: `t-${suffix}`, proposalAt: 100 }),
@@ -194,6 +254,19 @@ describe("calculateEce — S3 never gates (>=30) + S4 sentinel (<30)", () => {
   it("S4: returns null (not-enough-data sentinel) for < 30, never throws", () => {
     expect(calculateEce(joinedRecs(29, 0.5, 1))).toBeNull()
     expect(calculateEce([])).toBeNull()
+  })
+
+  it("excludes non-finite confidence records ENTIRELY (numerator AND denominator)", () => {
+    // A NaN confidence is neither binnable nor meaningful; counting it only in
+    // the denominator would silently deflate ECE (report better calibration
+    // than reality). It must not count toward the n>=30 threshold either.
+    const nanRecs = joinedRecs(5, Number.NaN, 1)
+    expect(calculateEce([...joinedRecs(29, 0.5, 1), ...nanRecs])).toBeNull() // 29 valid < 30
+
+    // With >= 30 VALID records, NaN/±Infinity rows must not change the result.
+    const valid = [...joinedRecs(15, 0.4, 1), ...joinedRecs(15, 0.6, 0)]
+    const polluted = [...valid, ...nanRecs, ...joinedRecs(3, Number.POSITIVE_INFINITY, 0)]
+    expect(calculateEce(polluted)).toBe(calculateEce(valid))
   })
 })
 

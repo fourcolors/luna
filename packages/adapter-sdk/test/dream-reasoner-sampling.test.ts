@@ -24,7 +24,7 @@ import { describe, expect, it } from "vitest"
 import { Effect, Layer, Ref, Stream } from "effect"
 import type { MemoryRecord } from "@luna/memory"
 import { MemoryRouterTag } from "@luna/memory"
-import { DreamReasoner, deriveBeliefId } from "@luna/core"
+import { CalibrationStore, Clock, DreamReasoner, deriveBeliefId } from "@luna/core"
 import type { DreamInputs, DreamOp } from "@luna/core"
 import { SDKClient } from "../src/sdk-client.js"
 import { DreamReasonerDefault } from "../src/dream-reasoner.js"
@@ -59,12 +59,23 @@ const FakeMemory = (initial: ReadonlyArray<MemoryRecord> = []) =>
     }),
   )
 
+/**
+ * The MEASURE-ONLY sampling extras are gated on a CalibrationStore being
+ * present in the ambient context (the only consumer of the agreement signal —
+ * no sink, no cost). Tests that exercise sampling provide this in-memory sink;
+ * the no-sink gate test omits it.
+ */
+const CalSink: Layer.Layer<CalibrationStore> = CalibrationStore.Memory.pipe(
+  Layer.provide(Clock.Test(0)),
+)
+
 const runReason = (
   inputs: DreamInputs,
   sdkLayer: Layer.Layer<SDKClient>,
   memLayer: Layer.Layer<typeof MemoryRouterTag>,
-) =>
-  Effect.gen(function* () {
+  calLayer: Layer.Layer<CalibrationStore> | null = CalSink,
+) => {
+  const eff = Effect.gen(function* () {
     const r = yield* DreamReasoner
     return yield* r.reason(inputs)
   }).pipe(
@@ -72,6 +83,8 @@ const runReason = (
     Effect.provide(sdkLayer),
     Effect.provide(memLayer),
   )
+  return calLayer === null ? eff : eff.pipe(Effect.provide(calLayer))
+}
 
 // ---------------------------------------------------------------------------
 // Belief X — its canonical statement + two whitespace/case variants. All three
@@ -121,14 +134,20 @@ const PASS_RESULTS: ReadonlyArray<string> = [
  * list is exhausted it returns an empty op array (harmless; never reached for
  * N<=5). This is how N varied results are produced across the N passes.
  */
-const fakeSamplingClient = (): Layer.Layer<SDKClient> => {
+const fakeSamplingClient = (
+  results: ReadonlyArray<string> = PASS_RESULTS,
+): { layer: Layer.Layer<SDKClient>; calls: () => number } => {
   let i = 0
-  return SDKClient.fake((_params) => {
-    const text = PASS_RESULTS[i] ?? "[]"
+  const layer = SDKClient.fake((_params) => {
+    const text = results[i] ?? "[]"
     i++
     const resultMsg = { ...makeResultMessage("sid", `uuid-${i}`), result: text }
     return makeFakeQuery({ messages: [resultMsg] }).query
   })
+  // `calls` exposes how many sdk.query() invocations actually happened, so the
+  // cost-gate tests can assert extras were (not) launched, not just that the
+  // sampling fields are absent.
+  return { layer, calls: () => i }
 }
 
 // Carry the (not-yet-existing) Slice-B fields via a cast so this file compiles
@@ -143,9 +162,11 @@ describe("DreamReasonerDefault — Slice B sampling (MEASURE-ONLY)", () => {
     const prev = process.env["LUNA_DREAM_SAMPLES"]
     process.env["LUNA_DREAM_SAMPLES"] = "5"
     try {
+      const sdk = fakeSamplingClient()
       const ops = (await Effect.runPromise(
-        runReason(EMPTY_INPUTS, fakeSamplingClient(), FakeMemory()),
+        runReason(EMPTY_INPUTS, sdk.layer, FakeMemory()),
       )) as ReadonlyArray<SampledOp>
+      expect(sdk.calls()).toBe(5) // pass 1 + 4 extras (sink present, N=5)
 
       // ── Behavior byte-identical: only PASS 1 materializes ──────────────────
       // The N-loop must NOT multiply materialized beliefs: exactly ONE op, the
@@ -177,7 +198,7 @@ describe("DreamReasonerDefault — Slice B sampling (MEASURE-ONLY)", () => {
     process.env["LUNA_DREAM_SAMPLES"] = "5"
     try {
       const ops = (await Effect.runPromise(
-        runReason(EMPTY_INPUTS, fakeSamplingClient(), FakeMemory()),
+        runReason(EMPTY_INPUTS, fakeSamplingClient().layer, FakeMemory()),
       )) as ReadonlyArray<SampledOp>
       const op = ops[0]!
       const beliefConfidence = (op.after as MemoryRecord).content as {
@@ -238,6 +259,72 @@ describe("DreamReasonerDefault — Slice B sampling (MEASURE-ONLY)", () => {
       // Only pass 1 survived ⇒ effective N = 1 ⇒ no real sampling ⇒ fields ABSENT.
       expect(op.sampleCount).toBeUndefined()
       expect(op.sampledConfidence).toBeUndefined()
+    } finally {
+      if (prev === undefined) delete process.env["LUNA_DREAM_SAMPLES"]
+      else process.env["LUNA_DREAM_SAMPLES"] = prev
+    }
+  })
+
+  // ── COST GATES — extras must not launch when their output has nowhere to go ──
+
+  it("no CalibrationStore sink → extras are SKIPPED (1 SDK call), fields absent", async () => {
+    const prev = process.env["LUNA_DREAM_SAMPLES"]
+    process.env["LUNA_DREAM_SAMPLES"] = "5"
+    try {
+      const sdk = fakeSamplingClient()
+      const ops = (await Effect.runPromise(
+        runReason(EMPTY_INPUTS, sdk.layer, FakeMemory(), null), // NO sink
+      )) as ReadonlyArray<SampledOp>
+
+      // The agreement signal's only consumer is the calibration log; without it
+      // the extra passes would be pure SDK cost — exactly ONE query (pass 1).
+      expect(sdk.calls()).toBe(1)
+      expect(ops).toHaveLength(1)
+      expect(ops[0]!.sampledConfidence).toBeUndefined()
+      expect(ops[0]!.sampleCount).toBeUndefined()
+      // Pass 1 still materializes unchanged (behavior byte-identical).
+      const after = ops[0]!.after as MemoryRecord
+      expect((after.content as { confidence: number }).confidence).toBe(0.85)
+    } finally {
+      if (prev === undefined) delete process.env["LUNA_DREAM_SAMPLES"]
+      else process.env["LUNA_DREAM_SAMPLES"] = prev
+    }
+  })
+
+  it("pass 1 yields NO belief candidates → extras are SKIPPED (1 SDK call)", async () => {
+    const prev = process.env["LUNA_DREAM_SAMPLES"]
+    process.env["LUNA_DREAM_SAMPLES"] = "5"
+    try {
+      // Pass 1 returns an empty op array; agreement could never attach to
+      // anything, so the 4 extras would be pure waste.
+      const sdk = fakeSamplingClient(["[]", ...PASS_RESULTS.slice(1)])
+      const ops = (await Effect.runPromise(
+        runReason(EMPTY_INPUTS, sdk.layer, FakeMemory()),
+      )) as ReadonlyArray<SampledOp>
+
+      expect(sdk.calls()).toBe(1)
+      expect(ops).toHaveLength(0)
+    } finally {
+      if (prev === undefined) delete process.env["LUNA_DREAM_SAMPLES"]
+      else process.env["LUNA_DREAM_SAMPLES"] = prev
+    }
+  })
+
+  it("LUNA_DREAM_SAMPLES=0 disables sampling (operator opt-out ≠ fall back to default 5)", async () => {
+    const prev = process.env["LUNA_DREAM_SAMPLES"]
+    process.env["LUNA_DREAM_SAMPLES"] = "0"
+    try {
+      const sdk = fakeSamplingClient()
+      const ops = (await Effect.runPromise(
+        runReason(EMPTY_INPUTS, sdk.layer, FakeMemory()),
+      )) as ReadonlyArray<SampledOp>
+
+      // An explicit value < 1 clamps to N=1 (sampling OFF) — honoring the
+      // natural "disable" spelling instead of silently restoring the default.
+      expect(sdk.calls()).toBe(1)
+      expect(ops).toHaveLength(1)
+      expect(ops[0]!.sampledConfidence).toBeUndefined()
+      expect(ops[0]!.sampleCount).toBeUndefined()
     } finally {
       if (prev === undefined) delete process.env["LUNA_DREAM_SAMPLES"]
       else process.env["LUNA_DREAM_SAMPLES"] = prev
