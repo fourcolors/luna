@@ -609,7 +609,12 @@
        dead" bug. Pinning flex-shrink:0 keeps each child at its natural height;
        the overflow then spills into .chat-messages' overflow-y:auto and scrolls
        normally. (Reproduces identically in Blink and WebKit — it's flex layout,
-       not an engine quirk.) */
+       not an engine quirk.)
+       The universal `> *` is intentional: the invariant is that EVERY direct
+       child of the scroll region must keep its natural height so the list
+       scrolls rather than compressing. Scoping this to specific classes (.msg,
+       .timeline, …) would silently re-break the moment a new message/card kind
+       is added under .chat-messages. */
     .chat-messages > * { flex-shrink: 0; }
 
     .msg {
