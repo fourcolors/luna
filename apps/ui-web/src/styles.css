@@ -213,12 +213,35 @@ button:hover:not(:disabled) { background: #2780f5; }
 }
 
 .bubble {
+  position: relative;
   max-width: 720px;
   padding: 10px 12px;
   border-radius: 8px;
   background: #181a1e;
   border: 1px solid #222;
 }
+/* Copy-to-clipboard button — top-right, revealed on bubble hover. */
+.bubble-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 6px;
+  background: #1e2027;
+  border: 1px solid #2e3138;
+  color: #9ba3af;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+.bubble:hover .bubble-copy { opacity: 1; }
+.bubble-copy:hover { background: #252830; color: #c9d1d9; }
+.bubble-copy:focus-visible { opacity: 1; outline: 1px solid #3d4450; }
 .bubble.user { align-self: flex-end; background: #1f3a6b; border-color: #2a4a85; }
 .bubble.assistant { align-self: flex-start; }
 .bubble.in-flight { opacity: 0.85; }
