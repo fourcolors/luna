@@ -146,6 +146,17 @@ hot-loaded on every query — no restart needed.
 
 A workspace may add its own subagents in `<workspace>/.workspace/agents/`.
 
+## Runtime
+
+| Component | Version | Notes |
+|---|---|---|
+| Claude Code CLI | `v2.1.169` | Minimum `v2.1.154` for Dynamic Workflows |
+| Agent SDK | `@anthropic-ai/claude-agent-sdk ^0.3.167` | Docs: [code.claude.com/docs/en/agent-sdk/overview](https://code.claude.com/docs/en/agent-sdk/overview) |
+| Default model | `claude-opus-4-8` | Override via `LUNA_DEFAULT_MODEL` env var |
+
+Update the CLI with `claude update`. Dynamic Workflows require `v2.1.154+` and the
+`tengu_workflows_enabled` account flag — check with `/config` in an interactive session.
+
 ## Local shell
 
 The `local_shell` MCP server gives Luna shell access into the runtime
