@@ -184,35 +184,44 @@
       from { stroke-dashoffset: 0; }
       to   { stroke-dashoffset: -1; }   /* one full lap anchor → bead */
     }
-    /* The bead: a small glassy sphere lit from the upper-left, breathing a soft
-       glow so it reads "alive — pull me", brightening under the cursor. */
+    /* The bead: a soft WATERCOLOR blot, not a glossy sphere — flat translucent
+       washes whose pigment pools toward the rim (edge-darkening ring) and then
+       feathers to nothing (closest-side, same lesson as the aura: the fade must
+       complete INSIDE the element or it clips hard). No border, no specular
+       highlight, no inset shading — those are what made it read "3D". A second
+       off-centre lavender pool keeps the wash from looking uniform, and the
+       outline drifts slowly like wet pigment settling. */
     .moon-bead {
-      position: absolute; left: 0; top: 0; width: 34px; height: 34px; border-radius: 50%;
+      position: absolute; left: 0; top: 0; width: 38px; height: 38px;
       z-index: 110; cursor: grab; display: none; align-items: center; justify-content: center;
-      color: #f4f8ff; will-change: transform; touch-action: none;
-      background: radial-gradient(circle at 32% 28%,
-        rgba(255, 255, 255, 0.95) 0%,
-        rgba(207, 224, 255, 0.85) 16%,
-        rgba(138, 180, 248, 0.55) 42%,
-        rgba(44, 74, 138, 0.85) 72%,
-        rgba(16, 24, 48, 0.97) 100%);
-      border: 1px solid rgba(190, 215, 255, 0.55);
-      transition: opacity 0.3s ease;
-      animation: bead-breathe 2.8s ease-in-out infinite;
+      color: rgba(240, 246, 255, 0.92); will-change: transform; touch-action: none;
+      background:
+        radial-gradient(circle closest-side,
+          rgba(150, 188, 250, 0.30) 0%,
+          rgba(138, 180, 248, 0.40) 42%,
+          rgba(118, 162, 240, 0.62) 68%,
+          rgba(104, 146, 232, 0.78) 82%,
+          rgba(96, 138, 226, 0.28) 92%,
+          rgba(96, 138, 226, 0) 100%),
+        radial-gradient(circle at 64% 68%, rgba(165, 148, 238, 0.25) 0%, rgba(165, 148, 238, 0) 60%),
+        radial-gradient(circle at 32% 30%, rgba(126, 184, 240, 0.18) 0%, rgba(126, 184, 240, 0) 55%);
+      border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%;
+      box-shadow: 0 0 14px rgba(138, 180, 248, 0.30);
+      transition: opacity 0.3s ease, filter 0.25s ease, box-shadow 0.25s ease;
+      animation: bead-wash 7s ease-in-out infinite alternate;
     }
     .moon-bead.live { display: flex; }
     .moon-bead:hover {
-      animation-play-state: paused;   /* let the brighter hover shadow win */
-      box-shadow: 0 0 26px rgba(160, 198, 255, 0.85), 0 3px 10px rgba(0, 0, 0, 0.45),
-                  inset 0 -5px 9px rgba(8, 14, 34, 0.6), inset 0 2px 4px rgba(255, 255, 255, 0.5);
+      filter: saturate(1.35) brightness(1.06);   /* the wash deepens under the cursor */
+      box-shadow: 0 0 20px rgba(150, 190, 252, 0.5);
     }
     .moon-bead:active { cursor: grabbing; }
-    .moon-bead svg { width: 15px; height: 15px; pointer-events: none; filter: drop-shadow(0 1px 2px rgba(10, 16, 38, 0.8)); }
-    @keyframes bead-breathe {
-      0%, 100% { box-shadow: 0 0 14px rgba(138, 180, 248, 0.45), 0 3px 10px rgba(0, 0, 0, 0.45),
-                             inset 0 -5px 9px rgba(8, 14, 34, 0.6), inset 0 2px 4px rgba(255, 255, 255, 0.45); }
-      50%      { box-shadow: 0 0 24px rgba(160, 198, 255, 0.75), 0 3px 10px rgba(0, 0, 0, 0.45),
-                             inset 0 -5px 9px rgba(8, 14, 34, 0.6), inset 0 2px 4px rgba(255, 255, 255, 0.45); }
+    /* The icon reads as denser pigment in the pool's centre, not chrome on glass. */
+    .moon-bead svg { width: 15px; height: 15px; pointer-events: none; opacity: 0.9; filter: drop-shadow(0 0 2px rgba(20, 30, 60, 0.5)); }
+    @keyframes bead-wash {
+      0%   { border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%; }
+      50%  { border-radius: 52% 48% 47% 53% / 47% 54% 46% 53%; }
+      100% { border-radius: 49% 51% 53% 47% / 53% 47% 52% 48%; }
     }
     /* success pulse on re-tether (played on #moon-wrapper; the JS clears any inline
        lean transform first so this animation isn't overridden by it). */
@@ -5946,7 +5955,7 @@
         ropeShimmer.setAttribute('d', d);
         pushRegion();
         const b = pts[N - 1];
-        bead.style.transform = 'translate3d(' + (b.x - 17) + 'px,' + (b.y - 17) + 'px,0)';
+        bead.style.transform = 'translate3d(' + (b.x - 19) + 'px,' + (b.y - 19) + 'px,0)'; // 19 = half the 38px blot
         // Lean the moon toward the pull — ONLY while dragging the bead. Pointer
         // capture keeps the moon's own hover/tilt handler (which also writes
         // moonWrapper.transform) from firing meanwhile, so there's no conflict.
