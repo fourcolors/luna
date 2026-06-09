@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
@@ -25,22 +25,32 @@ afterEach(() => {
 //     `incus exec luna-dev -- systemctl ...`, so for dev the stop/start verbs land
 //     in incus.log (the incus stub does NOT re-exec systemctl); for stable they
 //     land in systemctl.log directly.
-//   - curl: always 200 so the post-start /healthz check passes (exit 0).
-//   - ss: header line only → 0 established connections (the connection guard is
-//     also bypassed by --yes; this just keeps count_connections deterministic).
+//   - curl: logs its args to curl.log (so a test can assert the /healthz URL +
+//     port the script probes) and prints 200 so the post-start health check
+//     passes (exit 0).
+//   - ss: header line only → 0 established connections by default (the guard is
+//     also bypassed by --yes; this keeps count_connections deterministic). With
+//     opts.establishedOnPort set, it emits ONE ESTABLISHED row ONLY when queried
+//     for that port — so a test can prove the guard watches the right port and
+//     refuses the restart (exit 2) without --yes.
 //   - journalctl: exit 0 (the script already wraps the journal dump in `|| true`).
 //   - sleep: LOG the requested seconds and return immediately (no real wait), so
 //     the suite never incurs the script's settle or post-start `sleep 2`. Tests
 //     assert against sleep.log instead of wall-clock time — the settle-wiring
 //     test checks that `sleep` was invoked with the configured duration, which
 //     validates the wiring deterministically without the delay.
-const makeStubBin = (root: string, opts: { readonly stopExitCode?: number } = {}) => {
+const makeStubBin = (
+  root: string,
+  opts: { readonly stopExitCode?: number; readonly establishedOnPort?: number } = {},
+) => {
   const bin = join(root, "bin")
   mkdirSync(bin, { recursive: true })
   const systemctlLog = join(root, "systemctl.log")
   const incusLog = join(root, "incus.log")
   const sleepLog = join(root, "sleep.log")
+  const curlLog = join(root, "curl.log")
   const stopExitCode = opts.stopExitCode ?? 0
+  const establishedOnPort = opts.establishedOnPort
 
   // `stop` exits with stopExitCode (default 0) so a test can prove a FAILING stop
   // still proceeds to start (the `|| true` guard); every other verb exits 0.
@@ -54,11 +64,20 @@ const makeStubBin = (root: string, opts: { readonly stopExitCode?: number } = {}
   )
   writeFileSync(
     join(bin, "curl"),
-    `#!/usr/bin/env bash\nprintf '200\\n'\nexit 0\n`,
+    `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${curlLog}"\nprintf '200\\n'\nexit 0\n`,
   )
+  // ss prints a header line always (the script skips it with `tail -n +2`). When
+  // establishedOnPort is set, it appends ONE ESTABLISHED row, but ONLY when the
+  // query targets that port (`( sport = :<port> )`) — so the row is invisible
+  // unless the script actually asked about that port, which is what proves the
+  // guard reads the channel's correct port.
+  const ssEstablishedRow =
+    establishedOnPort === undefined
+      ? ""
+      : `case "$*" in\n  *:${establishedOnPort}*) printf 'ESTAB 0 0 127.0.0.1:${establishedOnPort} 127.0.0.1:54321\\n' ;;\nesac\n`
   writeFileSync(
     join(bin, "ss"),
-    `#!/usr/bin/env bash\nprintf 'State Recv-Q Send-Q Local Peer\\n'\nexit 0\n`,
+    `#!/usr/bin/env bash\nprintf 'State Recv-Q Send-Q Local Peer\\n'\n${ssEstablishedRow}exit 0\n`,
   )
   writeFileSync(
     join(bin, "journalctl"),
@@ -75,7 +94,7 @@ const makeStubBin = (root: string, opts: { readonly stopExitCode?: number } = {}
     chmodSync(join(bin, name), 0o755)
   }
 
-  return { bin, systemctlLog, incusLog, sleepLog }
+  return { bin, systemctlLog, incusLog, sleepLog, curlLog }
 }
 
 const runRestart = (
@@ -121,6 +140,52 @@ describe("restart-channel.sh", () => {
     expect(startIdx).toBeGreaterThan(stopIdx)
   })
 
+  it("stable guard + health target the stable WS port (4753), not dev's control port (5754)", () => {
+    // Regression: the stable branch hardcoded PORT/HEALTH_URL=5754, which is
+    // DEV's *control* port (host 5754 -> luna-dev:4754), not the stable
+    // WebSocket port. Two consequences this test locks down:
+    //   1. the issue-#24 connection guard counted ESTABLISHED sessions on a port
+    //      no stable operator ever uses → it saw ~0 and NEVER refused;
+    //   2. the post-restart health probe verified dev's control server instead of
+    //      the stable chat-server.
+    // Both must target 4753 — the stable WS port where operator chats live AND
+    // /healthz is served (mirroring the dev branch's PORT=5753, its WS port).
+    const temp = makeTempDir()
+    const { bin, curlLog } = makeStubBin(temp)
+
+    const r = runRestart(["stable", "--yes"], {}, bin)
+
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    // The status line reports the guarded port — it must be 4753, never 5754.
+    expect(r.stdout).toContain("port 4753")
+    expect(r.stdout).not.toContain("port 5754")
+    // The health probe hit the stable WS port's /healthz, not 5754. (curl logs
+    // its args, so this asserts the actual URL the script built from HEALTH_URL.)
+    const curls = readFileSync(curlLog, "utf8")
+    expect(curls).toContain("127.0.0.1:4753/healthz")
+    expect(curls).not.toContain("5754")
+  })
+
+  it("stable guard REFUSES (exit 2) on a live session on 4753 — and would not on 5754 (issue #24)", () => {
+    // Prove the guard actually watches 4753: with one ESTABLISHED row on 4753 and
+    // NO --yes, the script must refuse rather than kill the operator's live chat.
+    // The ss stub emits that row ONLY when queried for `:4753`, so a pass means
+    // the script asked ss about the right port. (With the old PORT=5754, ss would
+    // report 0 established and the guard would wave the restart through — the dead-
+    // guard bug.)
+    const temp = makeTempDir()
+    const { bin, systemctlLog } = makeStubBin(temp, { establishedOnPort: 4753 })
+
+    const r = runRestart(["stable"], {}, bin)
+
+    expect(r.status).toBe(2)
+    expect(r.stderr).toContain("active connection(s) on port 4753")
+    // It refused BEFORE touching the service — no stop/start ran.
+    const sys = existsSync(systemctlLog) ? readFileSync(systemctlLog, "utf8") : ""
+    expect(sys).not.toContain("stop luna-chat-server.service")
+    expect(sys).not.toContain("start luna-chat-server.service")
+  })
+
   it("dev restart is a clean stop -> start inside the container (NOT a fast restart)", () => {
     const temp = makeTempDir()
     const { bin, incusLog } = makeStubBin(temp)
@@ -136,6 +201,25 @@ describe("restart-channel.sh", () => {
     const startIdx = incus.indexOf("exec luna-dev -- systemctl start luna-dev-chat-server.service")
     expect(stopIdx).toBeGreaterThanOrEqual(0)
     expect(startIdx).toBeGreaterThan(stopIdx)
+  })
+
+  it("dev guard + health target the dev WS port (5753), not its control port (5754)", () => {
+    // Symmetric lock for the dev branch (the stable branch had the WS-vs-control
+    // port bug; pin dev too so the same class can't reappear here). Dev's guard +
+    // /healthz must use 5753 (its WS port), NEVER 5754 (dev's control port) or the
+    // stable candidate container's 6753. This is the port pairing the stable
+    // branch's fix is "mirroring", so it must itself be locked.
+    const temp = makeTempDir()
+    const { bin, curlLog } = makeStubBin(temp)
+
+    const r = runRestart(["dev", "--yes"], {}, bin)
+
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+    expect(r.stdout).toContain("port 5753")
+    expect(r.stdout).not.toContain("port 5754")
+    const curls = readFileSync(curlLog, "utf8")
+    expect(curls).toContain("127.0.0.1:5753/healthz")
+    expect(curls).not.toContain("5754")
   })
 
   it("settles between stop and start when LUNA_RESTART_SETTLE_SECS > 0", () => {
