@@ -18,11 +18,12 @@ notes — not to anything in Luna's runtime state (that's `~/.luna/`).
   inline in code comments and commit messages to anchor when something
   shipped. New work doesn't need a phase number unless it's continuing
   an existing band.
-- **Channel** — a runtime deployment. Two exist: `dev` (port 5753 on
-  jax-box, branch `dev`) and `stable` (port 5754 on jax-box, branch
-  `master`). "Promote" means dev → master + redeploy stable.
-- **Container** — the incus container hosting a channel's chat-server
-  on jax-box.
+- **Channel** — a runtime deployment. Two exist: `dev` (branch `dev`)
+  and `stable` (branch `master`), each served by its own chat-server on
+  the deploy host. "Promote" means fast-forwarding `master` to `dev`,
+  then redeploying stable.
+- **Container** — the OS container that can host a channel's chat-server.
+  The dev channel runs inside one; stable runs host-direct.
 - **DNA / SYSTEM** — `DNA.md` (identity) and `SYSTEM.md` (mechanics),
   both loaded into every thread's system prompt. Source of truth for
   who Luna is and how her runtime is organized.
@@ -61,31 +62,27 @@ Issues themselves live in GitHub, not here. Don't duplicate that table.
    a passing test or a clear verifiable outcome.
 3. Typecheck (`bun run typecheck`) and the affected vitest suites green.
 4. Push, open a PR against `dev`. CI runs typecheck + tests.
-5. Merge to `dev`. Deploy to luna-dev container on jax-box. The repo
-   lives at `/root/luna/dev/repo` on the host and is bind-mounted to
-   `/root/luna` inside the `luna-dev` container, so the pull happens
-   host-side and the restart happens container-side:
-   - `cd /root/luna/dev/repo && git pull --ff-only` (run on the
-     jax-box host — `ssh root@jax-box` if you're elsewhere).
-   - `bun install` (only when `bun.lock` changed; run inside the
-     container if `node_modules` is container-local — `incus exec
-     luna-dev -- bash -c 'cd /root/luna && bun install'`).
-   - `scripts/restart-channel.sh dev` — guarded restart. Refuses if a
-     WebSocket session is connected to port 5753 (the dev channel) so
-     Luna doesn't silently delete the chat thread she is running in.
-     Pass `--yes` to accept the kill when you intentionally want to
-     restart through your own active session (issue #24).
-   - The script also tails the journal and curls `/healthz`. Service
-     shows `active` even when a boot exception is crash-looping — the
-     `journalctl` output is the real signal.
+5. Merge to `dev`, then deploy the dev channel: pull the new commit on
+   the deploy host's dev checkout, run `bun install` only when
+   `bun.lock` changed (inside the container if `node_modules` is
+   container-local), then `scripts/restart-channel.sh dev` — a guarded
+   restart that refuses if a WebSocket session is connected to the dev
+   channel, so Luna doesn't silently delete the chat thread she is
+   running in. Pass `--yes` to accept the kill when you intentionally
+   want to restart through your own active session (issue #24). The
+   script tails the journal and curls `/healthz`; the service shows
+   `active` even when a boot exception is crash-looping, so the journal
+   output is the real signal. (Exact host, paths, container, and
+   service names are operator-specific and live in the local deploy
+   runbook — intentionally kept out of this public, prompt-injected doc.)
 6. Smoke-test via `luna chat --dev`. Verify the new behavior end-to-end.
 7. **Stop and wait for operator approval** before promoting to master.
    Operator sometimes wants to live with dev for a beat first.
-8. Promote: fast-forward `master` → `dev`, push, pull on jax-box's
-   stable repo (`cd /root/luna/stable/repo && git pull --ff-only`),
-   then `scripts/restart-channel.sh stable` (with `--yes` if and only
-   if the operator has consented to ending their stable chat session
-   first). Stable runs directly on the host, no container prefix.
+8. Promote: fast-forward `master` to `dev`, push, pull the new commit on
+   the host's stable checkout, then `scripts/restart-channel.sh stable`
+   (with `--yes` if and only if the operator has consented to ending
+   their stable chat session first). Stable runs host-direct, no
+   container prefix.
 
 ### First-time workspace registration on a new channel
 
@@ -94,23 +91,20 @@ migration creates it at boot) but no rows. Until a row is registered,
 the workspaces system-prompt inject (`workspaces-loader`) returns
 `null` and Luna's context window has no inlined `workspace.md`.
 
-To register the `luna` workspace on a freshly-deployed channel, run
-the bootstrap script against that channel's `~/.luna/luna.db`:
+To register the `luna` workspace on a freshly-deployed channel, run the
+bootstrap script against that channel's `~/.luna/luna.db`, pointing
+`--path` at that channel's repo checkout:
 
 ```bash
-# Dev container:
-incus exec luna-dev -- bash -c 'cd /root/luna && bun run scripts/bootstrap-workspace.ts \
-  --slug luna --path /root/luna'
-
-# Stable (host-direct):
-cd /root/luna/stable/repo && bun run scripts/bootstrap-workspace.ts \
-  --slug luna --path /root/luna/stable/repo
+bun run scripts/bootstrap-workspace.ts --slug luna --path <channel-repo-path>
 ```
 
-The script is idempotent: re-running updates the row in place
-(preserving `created_at`, refreshing `updated_at` and `summary` from
-the current `workspace.md`'s first paragraph). Restart the chat-server
-afterwards to pick the row up in the next thread's system prompt.
+For the containerized dev channel, exec into the container first so the
+path resolves to its bind-mounted repo. The script is idempotent:
+re-running updates the row in place (preserving `created_at`, refreshing
+`updated_at` and `summary` from the current `workspace.md`'s first
+paragraph). Restart the chat-server afterwards to pick the row up in the
+next thread's system prompt.
 
 ### Filing follow-ups
 
@@ -131,35 +125,24 @@ Without these, the next thread can't reconstruct what got done.
 
 ## Pointers
 
-Two channels run on jax-box. The dev channel runs inside an incus
-container (`luna-dev`); the stable channel runs directly on the host.
-Paths therefore depend on whose POV is asking.
+Concrete deploy coordinates — hostnames, filesystem paths, container
+names, ports, and service-unit names — are operator-specific and are
+**intentionally kept out of this doc**, since it's tracked in a public
+repo and injected verbatim into Luna's system prompt. They live in the
+operator's local deploy runbook.
 
-**Host POV (where deploys land, where you run `git pull` for a channel):**
+What's safe to know here is the *shape*:
 
-- Dev repo:     `/root/luna/dev/repo`     (cloned from `origin/dev`).
-- Stable repo:  `/root/luna/stable/repo`  (cloned from `origin/master`).
-- Dev `~/.luna`:    `/root/.luna-dev/` (bind-mounted into the container).
-- Stable `~/.luna`: `/root/.luna/`     (the host's own; stable runs as root on the host).
-
-**Dev container POV (where dev-Luna sees her filesystem):**
-
-- Repo:       `/root/luna/`  (bind-mount of host `/root/luna/dev/repo`).
-- `~/.luna/`: `/root/.luna/` (bind-mount of host `/root/.luna-dev/`).
-
-So when dev-Luna says her repo is at `/root/luna`, she is correct — that
-is the same physical files as the host's `/root/luna/dev/repo`. The
-deploy commands target the host paths; introspection from inside the
-container targets the container paths.
-
-**Stable POV** is identical to host POV (no container indirection).
-
-**Ports + services:**
-
-- Dev:    port `5753`, `luna-dev-chat-server.service` (inside the
-  `luna-dev` container — restart via `incus exec luna-dev -- systemctl
-  restart luna-dev-chat-server.service`).
-- Stable: port `5754`, `luna-chat-server.service` (on the host —
-  restart via `systemctl restart luna-chat-server.service`).
+- **Two channels** run on the deploy host: `dev` (branch `dev`) and
+  `stable` (branch `master`). Each exposes a WebSocket chat-server.
+- **Dev is containerized.** Its repo is bind-mounted from the host into
+  an OS container, so the *same* files have two paths: a host POV (where
+  deploys land and `git pull` runs) and a container POV (where dev-Luna
+  introspects her own filesystem). When dev-Luna reports a repo path
+  that differs from the host's, that's the bind-mount indirection, not
+  a bug.
+- **Stable is host-direct** — one POV, no container indirection.
+- **Restarts go through `scripts/restart-channel.sh <dev|stable>`**, the
+  guarded path that won't kill an active chat session unless `--yes`.
 
 **GitHub:** `fourcolors/luna`.
