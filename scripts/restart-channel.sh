@@ -53,11 +53,38 @@ case "$CHANNEL" in
     HEALTH_URL="http://127.0.0.1:5753/healthz"
     ;;
   stable)
-    PORT=5754
+    # Stable is the production HOST service (no container indirection): the
+    # chat-server runs on the host itself and is restarted with a bare
+    # `systemctl ... luna-chat-server.service`. This matches the live topology
+    # (see .workspace/workspace.md "Stable ... on the host") and the rollback
+    # `case` in docs/container-runtime.md.
+    #
+    # PORT is the stable WebSocket port — the SAME port operators connect their
+    # chat sessions to AND where /healthz is served (mirroring the dev branch,
+    # which uses 5753, its WS port — NOT a control port). Both jobs below need
+    # this port:
+    #   1. the connection-guard counts ESTABLISHED sessions here to refuse a
+    #      restart that would kill the operator's live chat (issue #24);
+    #   2. the post-restart health probe verifies the stable chat-server.
+    # It must therefore be 4753, the stable WS port — NOT 5754, which is dev's
+    # *control* port (host 5754 -> luna-dev:4754; see the port tables in
+    # docs/install.md / docs/container-runtime.md). The old 5754 left the guard
+    # watching a port with no stable sessions (so it never refused) and health-
+    # checked dev's control server instead of the stable chat-server.
+    #
+    # NOTE on the future container cutover: the `luna-stable` candidate container
+    # is reachable on host port 6753 (-> luna-stable:4753) during its
+    # verification window. Cutting stable over to that container is NOT a bare
+    # port swap here — it would also require routing STOP/START through
+    # `incus exec luna-stable -- systemctl ...` (like the dev branch does for
+    # luna-dev). Until that cutover lands, stable is the host service on 4753;
+    # post-cutover the operator-facing stable WS port is still 4753 (the proxy
+    # moves to the container), so this guard/health port stays correct either way.
+    PORT=4753
     STOP=(systemctl stop luna-chat-server.service)
     START=(systemctl start luna-chat-server.service)
     JOURNAL=(journalctl -u luna-chat-server.service --no-pager -n 20)
-    HEALTH_URL="http://127.0.0.1:5754/healthz"
+    HEALTH_URL="http://127.0.0.1:4753/healthz"
     ;;
   *)
     printf 'unknown channel: %s (must be "dev" or "stable")\n' "$CHANNEL" >&2
