@@ -20,7 +20,8 @@ notes — not to anything in Luna's runtime state (that's `~/.luna/`).
   an existing band.
 - **Channel** — a runtime deployment. Two exist: `dev` (branch `dev`)
   and `stable` (branch `master`), each served by its own chat-server on
-  the deploy host. "Promote" means dev → master + redeploy stable.
+  the deploy host. "Promote" means fast-forwarding `master` to `dev`,
+  then redeploying stable.
 - **Container** — the OS container that can host a channel's chat-server.
   The dev channel runs inside one; stable runs host-direct.
 - **DNA / SYSTEM** — `DNA.md` (identity) and `SYSTEM.md` (mechanics),
@@ -77,7 +78,7 @@ Issues themselves live in GitHub, not here. Don't duplicate that table.
 6. Smoke-test via `luna chat --dev`. Verify the new behavior end-to-end.
 7. **Stop and wait for operator approval** before promoting to master.
    Operator sometimes wants to live with dev for a beat first.
-8. Promote: fast-forward `master` → `dev`, push, pull the new commit on
+8. Promote: fast-forward `master` to `dev`, push, pull the new commit on
    the host's stable checkout, then `scripts/restart-channel.sh stable`
    (with `--yes` if and only if the operator has consented to ending
    their stable chat session first). Stable runs host-direct, no
