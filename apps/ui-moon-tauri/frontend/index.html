@@ -79,6 +79,36 @@
       pointer-events: auto; /* Active pointer events prevent click-through */
     }
     
+    /* Always-on dark glow "pool" the moon sits in (subtle — the demo look, at a
+       calm intensity so it's premium on a dark desktop without dimming a light
+       one). Sized to fade FULLY to transparent before the window edge, so there's
+       no hard rectangle; the dark pool is what makes the blue moon-glow read.
+       --moon-aura-d scales it with the window (collapsed default; the re-tether
+       envelope bumps it to a larger pool at the SAME intensity). pointer-events
+       none so it never eats the moon's drag region. */
+    .moon-aura {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: var(--moon-aura-d, 170px);
+      height: var(--moon-aura-d, 170px);
+      transform: translate(-50%, -50%);
+      border-radius: 50%;
+      pointer-events: none;
+      z-index: 0;
+      /* `closest-side` is load-bearing: WITHOUT it `circle` defaults to
+         farthest-corner, stretching the gradient ~40% past the element so its
+         alpha is still non-zero at the small 140×185 window edge — the window
+         then clips that into a hard dark RECTANGLE ("boxy glass"). closest-side
+         pins 100% to the element's edge so the fade completes inside the window,
+         leaving a clean circular pool with no box. */
+      background: radial-gradient(circle closest-side,
+        rgba(9, 12, 24, 0.35) 0%,
+        rgba(9, 12, 24, 0.22) 30%,
+        rgba(11, 16, 34, 0.08) 52%,
+        rgba(11, 16, 34, 0) 72%);
+    }
+
     /* Beautiful Atmospheric Glow */
     .moon-glow {
       position: absolute;
@@ -120,11 +150,93 @@
       height: 100%;
       filter: drop-shadow(0 6px 16px rgba(138, 180, 248, 0.45));
       transform: translate3d(var(--px, 0px), var(--py, 0px), 0) rotate(var(--rot, 0deg));
-      transition: transform 0.15s cubic-bezier(0.25, 0.8, 0.25, 1);
+      transition: transform 0.15s cubic-bezier(0.25, 0.8, 0.25, 1),
+                  filter 0.6s ease;   /* the detached dim fades, never snaps */
       pointer-events: auto;
     }
 
-    
+    /* ── Re-tether "string": a Verlet rope that falls from the moon when the
+       connection drops; pull the bead to reconnect to the same thread. The rope
+       layer + bead are SIBLINGS of #moon (NOT children) so they don't inherit
+       its data-tauri-drag-region — Tauri resolves the drag region against the
+       topmost element under the cursor, so a sibling on top (z-index > the
+       moon's 100) wins the hit-test and the bead is grabbable while the rest of
+       the moon still drags the native window. Compositor-only: bead moves by
+       transform, the rope is a few <path> repaints sharing one `d`; the JS loop
+       parks when settled (no idle CPU). ── */
+    .moon-rope-layer {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+      overflow: visible; pointer-events: none; z-index: 109; display: none;
+    }
+    /* Three strokes share one Verlet `d` each frame: a wide soft halo
+       underneath, the gradient core, and a faint shimmer pulse that travels
+       down toward the bead (energy flowing along the lifeline). */
+    #moon-rope { fill: none; stroke: url(#moonRopeGrad); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+    #moon-rope-halo { fill: none; stroke: rgba(138, 180, 248, 0.16); stroke-width: 9; stroke-linecap: round; stroke-linejoin: round; }
+    #moon-rope-shimmer {
+      fill: none; stroke: rgba(240, 247, 255, 0.75); stroke-width: 2; stroke-linecap: round;
+      /* pathLength=1 on the element keeps these fractions valid while the
+         path's true length changes every physics frame. */
+      stroke-dasharray: 0.12 0.88;
+      animation: rope-shimmer 2.6s linear infinite;
+    }
+    @keyframes rope-shimmer {
+      from { stroke-dashoffset: 0; }
+      to   { stroke-dashoffset: -1; }   /* one full lap anchor → bead */
+    }
+    /* The bead: a soft WATERCOLOR blot, not a glossy sphere — flat translucent
+       washes whose pigment pools toward the rim (edge-darkening ring) and then
+       feathers to nothing (closest-side, same lesson as the aura: the fade must
+       complete INSIDE the element or it clips hard). No border, no specular
+       highlight, no inset shading — those are what made it read "3D". A second
+       off-centre lavender pool keeps the wash from looking uniform, and the
+       outline drifts slowly like wet pigment settling. */
+    .moon-bead {
+      position: absolute; left: 0; top: 0; width: 38px; height: 38px;
+      z-index: 110; cursor: grab; display: none; align-items: center; justify-content: center;
+      color: rgba(240, 246, 255, 0.92); will-change: transform; touch-action: none;
+      background:
+        radial-gradient(circle closest-side,
+          rgba(150, 188, 250, 0.30) 0%,
+          rgba(138, 180, 248, 0.40) 42%,
+          rgba(118, 162, 240, 0.62) 68%,
+          rgba(104, 146, 232, 0.78) 82%,
+          rgba(96, 138, 226, 0.28) 92%,
+          rgba(96, 138, 226, 0) 100%),
+        radial-gradient(circle at 64% 68%, rgba(165, 148, 238, 0.25) 0%, rgba(165, 148, 238, 0) 60%),
+        radial-gradient(circle at 32% 30%, rgba(126, 184, 240, 0.18) 0%, rgba(126, 184, 240, 0) 55%);
+      border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%;
+      box-shadow: 0 0 14px rgba(138, 180, 248, 0.30);
+      transition: opacity 0.3s ease, filter 0.25s ease, box-shadow 0.25s ease;
+      animation: bead-wash 7s ease-in-out infinite alternate;
+    }
+    .moon-bead.live { display: flex; }
+    .moon-bead:hover {
+      filter: saturate(1.35) brightness(1.06);   /* the wash deepens under the cursor */
+      box-shadow: 0 0 20px rgba(150, 190, 252, 0.5);
+    }
+    .moon-bead:active { cursor: grabbing; }
+    /* The icon reads as denser pigment in the pool's centre, not chrome on glass. */
+    .moon-bead svg { width: 15px; height: 15px; pointer-events: none; opacity: 0.9; filter: drop-shadow(0 0 2px rgba(20, 30, 60, 0.5)); }
+    @keyframes bead-wash {
+      0%   { border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%; }
+      50%  { border-radius: 52% 48% 47% 53% / 47% 54% 46% 53%; }
+      100% { border-radius: 49% 51% 53% 47% / 53% 47% 52% 48%; }
+    }
+    /* success pulse on re-tether (played on #moon-wrapper; the JS clears any inline
+       lean transform first so this animation isn't overridden by it). */
+    .moon-wrapper.retether-pulse { animation: moon-retether-pulse 0.7s ease; }
+    @keyframes moon-retether-pulse {
+      0% { transform: scale(1); } 30% { transform: scale(1.12); } 100% { transform: scale(1); }
+    }
+    /* While detached (string out) the moon's light dims — losing the thread
+       literally takes the glow out of it; re-tethering brings it back (the
+       hover rule still wins, so the moon brightens under attention). Subtle on
+       purpose: it must read "asleep", never "broken". */
+    body.retethering .moon-glow { opacity: 0.45; }
+    body.retethering .moon-svg { filter: drop-shadow(0 6px 16px rgba(138, 180, 248, 0.18)); }
+
+
     /* 
       Floating Glassmorphic Chat Panel
       Positioned immediately to the right of the moon inside the transparent Tauri window
@@ -336,54 +448,112 @@
       gap: 8px;
     }
 
-    .settings-btn {
-      background: none;
-      border: none;
-      color: #64748b;
-      cursor: pointer;
-      width: 24px;
-      height: 24px;
+    /* Settings is its OWN thing now: a centered modal that floats on top of
+       everything (no longer the chat page's slide-up panel). It's a body-level
+       fixed overlay = dim backdrop + centered card.
+       NO backdrop-filter on the dim: on this transparent macOS WKWebView window
+       backdrop-filter intermittently composites the whole surface to fully
+       transparent after a repaint (same reason .chat-panel avoids it) — so the
+       dim is a plain rgba fill. */
+    .settings-panel {
+      position: fixed;
+      inset: 0;
+      z-index: 300;            /* above the chat panel (50) and satellites (110) */
       display: flex;
       align-items: center;
       justify-content: center;
-      border-radius: 50%;
-      transition: background 0.2s, color 0.2s, transform 0.3s ease;
+      padding: 16px;
+      background: rgba(4, 6, 14, 0.62);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
     }
-    
-    .settings-btn:hover {
-      background: rgba(255, 255, 255, 0.05);
-      color: #f1f5f9;
-      transform: rotate(45deg);
+    .settings-panel.active {
+      opacity: 1;
+      pointer-events: auto;
     }
 
-    /* Settings panel overlay styling */
-    .settings-panel {
-      position: absolute;
-      top: 57px; /* directly below header */
-      left: 0;
+    /* The modal card itself. */
+    .settings-card {
       width: 100%;
-      height: calc(100% - 57px);
-      background: rgba(10, 14, 28, 0.95);
-      /* No backdrop-filter — see .chat-panel: WKWebView transparency punch-through. */
-      z-index: 60;
+      max-width: 540px;
+      max-height: 100%;
       display: flex;
       flex-direction: column;
-      transform: translateY(100%);
-      transition: transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
-      padding: 20px;
+      background: #0c1020;     /* solid dark glass — see .chat-panel note */
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 20px;
+      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+      overflow: hidden;
+      transform: translateY(8px) scale(0.98);
+      transition: transform 0.2s cubic-bezier(0.25, 0.8, 0.25, 1);
     }
-    
-    .settings-panel.active {
-      transform: translateY(0);
+    .settings-panel.active .settings-card { transform: none; }
+
+    .settings-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 18px 12px;
     }
-    
+    .settings-card-header h3 {
+      font-family: var(--font-display);
+      font-size: 1.05rem;
+      font-weight: 800;
+      color: #fff;
+    }
+    .settings-x {
+      background: none; border: none; color: #64748b; cursor: pointer;
+      width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+      border-radius: 50%; transition: background 0.2s, color 0.2s;
+    }
+    .settings-x:hover { background: rgba(255, 255, 255, 0.06); color: #f1f5f9; }
+    .settings-x svg { width: 16px; height: 16px; }
+
+    /* Body row: a LEFT tab rail (General / Connection / Secrets / Updates) +
+       the content pane. min-height keeps the card a stable size so switching
+       tabs doesn't make the modal resize. */
+    .settings-body {
+      display: flex;
+      flex: 1;
+      min-height: 300px;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .settings-tabs {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      flex: 0 0 150px;
+      padding: 12px 10px;
+      border-right: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .settings-tab {
+      background: none; border: none; cursor: pointer;
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 9px 12px;
+      border-radius: 8px;
+      font-family: var(--font-body);
+      font-size: 0.82rem;
+      color: #8aa0c6;
+      transition: color 0.15s, background 0.15s;
+    }
+    .settings-tab:hover { color: #cdd9f5; background: rgba(255, 255, 255, 0.04); }
+    .settings-tab.active { color: #fff; background: rgba(138, 180, 248, 0.16); }
+
+    /* Scrollable content pane (right of the rail); only the active panel shows. */
     .settings-content {
       flex: 1;
+      min-width: 0;
+      overflow-y: auto;
+      padding: 14px 16px;
+    }
+    .settings-tabpanel { display: none; }
+    .settings-tabpanel.active {
       display: flex;
       flex-direction: column;
-      gap: 16px;
-      overflow-y: auto;
-      padding-right: 6px;
+      gap: 14px;
     }
     
     /* Dark-glass scrollbar styling — applied to every scrolling container in
@@ -1248,7 +1418,8 @@
       align-items: flex-end; /* send/attach stay at the bottom as the textarea grows */
     }
 
-    /* "+" machine-access button + its popover menu (local-shell attach). */
+    /* Machine-access button (computer icon) — lives in the chat composer next to
+       the attach + send buttons, styled to match them. .active = scope on. */
     .scope-btn {
       width: 38px;
       height: 38px;
@@ -1257,20 +1428,22 @@
       border: 1px solid rgba(255, 255, 255, 0.08);
       border-radius: 10px;
       color: #8ab4f8;
-      font-size: 20px;
-      line-height: 1;
       display: flex;
       align-items: center;
       justify-content: center;
       cursor: pointer;
       transition: background 0.2s, border-color 0.2s, color 0.2s;
     }
+    .scope-btn svg { width: 18px; height: 18px; }
     .scope-btn:hover { background: rgba(255, 255, 255, 0.09); }
     .scope-btn.active {
       background: rgba(138, 180, 248, 0.18);
       border-color: rgba(138, 180, 248, 0.5);
       color: #c7dbff;
     }
+
+    /* Machine-access popover menu, anchored to .chat-input-area's bottom-left
+       (position:relative), opening upward above the composer row. */
     .scope-menu {
       position: absolute;
       left: 24px;
@@ -1552,6 +1725,7 @@
 
   <!-- The Draggable Moon -->
   <div class="moon-container" id="moon" data-tauri-drag-region>
+    <div class="moon-aura" aria-hidden="true"></div>
     <div class="moon-wrapper" id="moon-wrapper">
       <div class="moon-glow"></div>
       <div class="moon-sphere">
@@ -1581,6 +1755,147 @@
     </div>
   </div>
 
+  <!-- Re-tether "string" (siblings of #moon, z-index > 100 to escape its drag
+       region). Hidden until the connection drops; pull the bead to reconnect to
+       the SAME thread. Physics ported verbatim from the approved demo. -->
+  <svg class="moon-rope-layer" id="moon-rope-layer" aria-hidden="true">
+    <defs>
+      <linearGradient id="moonRopeGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="rgba(226,236,253,.55)"></stop>
+        <stop offset="100%" stop-color="rgba(138,180,248,.9)"></stop>
+      </linearGradient>
+    </defs>
+    <!-- halo / core / shimmer share one Verlet `d` per frame (see the CSS notes) -->
+    <path id="moon-rope-halo"></path>
+    <path id="moon-rope"></path>
+    <path id="moon-rope-shimmer" pathLength="1"></path>
+  </svg>
+  <div class="moon-bead" id="moon-bead" title="Pull to reconnect" aria-label="Reconnect to your thread">
+    <svg viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></g></svg>
+  </div>
+
+  <!-- Settings: a standalone tabbed modal (body-level overlay). Moved OUT of
+       #chat-panel so it floats on top independently of the chat, and so this
+       fixed overlay is never hidden by the chat panel's opacity:0 collapsed
+       state. ids (#settings-panel, #close-settings-btn) + every input id are
+       preserved, so all existing handlers/DOM refs keep working. -->
+  <div class="settings-panel" id="settings-panel">
+    <div class="settings-card" role="dialog" aria-modal="true" aria-label="Settings">
+      <div class="settings-card-header">
+        <h3>Settings</h3>
+        <button type="button" class="settings-x" id="settings-close-x" aria-label="Close settings">
+          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+      <div class="settings-body">
+      <div class="settings-tabs" role="tablist">
+        <button type="button" class="settings-tab active" data-tab="general" role="tab" aria-selected="true">General</button>
+        <button type="button" class="settings-tab" data-tab="connection" role="tab" aria-selected="false">Connection</button>
+        <button type="button" class="settings-tab" data-tab="secrets" role="tab" aria-selected="false">Secrets</button>
+        <button type="button" class="settings-tab" data-tab="updates" role="tab" aria-selected="false">Updates</button>
+      </div>
+      <div class="settings-content">
+        <div class="settings-tabpanel active" data-tabpanel="general">
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Always on Top</span>
+            <span class="setting-desc">Keep Luna floating above other windows</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="always-on-top-toggle" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Close on Click Away</span>
+            <span class="setting-desc">Collapse chat automatically when unfocused</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="close-on-blur-toggle">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Global Shortcut</span>
+            <span class="setting-desc">Press shortcut to toggle Luna window</span>
+          </div>
+          <div class="shortcut-recorder-group">
+            <input type="text" class="shortcut-input" id="shortcut-input" readonly value="⌥Space">
+            <button type="button" class="record-btn" id="record-shortcut-btn">Record</button>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Start a fresh thread</span>
+            <span class="setting-desc">Luna keeps one ongoing thread. This abandons the current conversation and begins a new one — your history stays on the server.</span>
+          </div>
+          <button type="button" class="record-btn" id="fresh-thread-btn">Start fresh</button>
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="connection">
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Channel</span>
+            <span class="setting-desc">Switch this moon between the stable and dev servers</span>
+            <span class="channel-error" id="channel-error" hidden></span>
+          </div>
+          <select id="channel-select" class="channel-select">
+            <option value="stable">Stable</option>
+            <option value="dev">Dev</option>
+          </select>
+        </div>
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">WebSocket Server URL</span>
+            <span class="setting-desc">Luna Central server WebSocket address (for the selected channel)</span>
+          </div>
+          <input type="text" id="ws-url-input" class="premium-text-input" placeholder="ws://127.0.0.1:4753/ui">
+        </div>
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">Auth Token</span>
+            <span class="setting-desc">Optional authentication bearer token</span>
+          </div>
+          <input type="password" id="ws-token-input" class="premium-text-input" placeholder="Enter token (optional)...">
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="secrets">
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">1Password Service Account</span>
+            <span class="setting-desc">Send an <code>ops_…</code> service-account token to the server securely. It is verified and stored on the server — never kept in chat history or on this device.</span>
+          </div>
+          <input type="text" id="op-label-input" class="premium-text-input" placeholder="Account label (e.g. primary)" autocomplete="off" spellcheck="false" style="margin-bottom: 8px;">
+          <input type="password" id="op-token-input" class="premium-text-input" placeholder="ops_… service-account token" autocomplete="off" spellcheck="false">
+          <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+            <button type="button" class="record-btn" id="save-op-token-btn">Save to server</button>
+            <span class="setting-desc" id="op-token-status" style="font-size: 0.75rem;" hidden></span>
+          </div>
+          <span class="setting-desc" style="margin-top: 6px;">Saving verifies the token and briefly restarts the server.</span>
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="updates">
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">App Updates</span>
+            <span class="setting-desc">Check GitHub for a newer Luna Moon build</span>
+            <span class="update-status" id="update-status" hidden></span>
+          </div>
+          <button type="button" class="record-btn" id="check-update-btn">Check</button>
+        </div>
+        </div>
+      </div>
+      </div>
+      <div class="settings-footer">
+        <button class="save-settings-btn" id="close-settings-btn">Done</button>
+      </div>
+    </div>
+  </div>
   <!-- The Glassmorphic Chat Panel -->
   <div class="chat-panel" id="chat-panel">
     <!-- Chat Header supports dragging the native window too! -->
@@ -1602,14 +1917,11 @@
         </div>
       </div>
       <div class="header-actions">
-        <button class="settings-btn" id="new-chat" aria-label="New conversation" title="New conversation">
-          <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="12" y1="5" x2="12" y2="19"></line>
-            <line x1="5" y1="12" x2="19" y2="12"></line>
-          </svg>
-        </button>
-        <button class="settings-btn" id="toggle-settings" aria-label="Settings">
-          <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <!-- Settings lives here in the header (it orbited the moon as a
+             satellite for a while — that felt off, so it came home). Opens
+             the tabbed settings modal (#settings-panel). -->
+        <button class="close-btn" id="toggle-settings" aria-label="Settings" title="Settings">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="12" cy="12" r="3"></circle>
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
           </svg>
@@ -1623,101 +1935,6 @@
       </div>
     </div>
     
-    <!-- Settings Panel (Overlays chat content) -->
-    <div class="settings-panel" id="settings-panel">
-      <div class="settings-content">
-        <h3>App Settings</h3>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Always on Top</span>
-            <span class="setting-desc">Keep Luna floating above other windows</span>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="always-on-top-toggle" checked>
-            <span class="slider"></span>
-          </label>
-        </div>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Close on Click Away</span>
-            <span class="setting-desc">Collapse chat automatically when unfocused</span>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="close-on-blur-toggle">
-            <span class="slider"></span>
-          </label>
-        </div>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Global Shortcut</span>
-            <span class="setting-desc">Press shortcut to toggle Luna window</span>
-          </div>
-          <div class="shortcut-recorder-group">
-            <input type="text" class="shortcut-input" id="shortcut-input" readonly value="⌥Space">
-            <button type="button" class="record-btn" id="record-shortcut-btn">Record</button>
-          </div>
-        </div>
-
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Channel</span>
-            <span class="setting-desc">Switch this moon between the stable and dev servers</span>
-            <span class="channel-error" id="channel-error" hidden></span>
-          </div>
-          <select id="channel-select" class="channel-select">
-            <option value="stable">Stable</option>
-            <option value="dev">Dev</option>
-          </select>
-        </div>
-
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">App Updates</span>
-            <span class="setting-desc">Check GitHub for a newer Luna Moon build</span>
-            <span class="update-status" id="update-status" hidden></span>
-          </div>
-          <button type="button" class="record-btn" id="check-update-btn">Check</button>
-        </div>
-
-        <div class="setting-item flex-column">
-          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
-            <span class="setting-label">WebSocket Server URL</span>
-            <span class="setting-desc">Luna Central server WebSocket address (for the selected channel)</span>
-          </div>
-          <input type="text" id="ws-url-input" class="premium-text-input" placeholder="ws://127.0.0.1:4753/ui">
-        </div>
-
-        <div class="setting-item flex-column">
-          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
-            <span class="setting-label">Auth Token</span>
-            <span class="setting-desc">Optional authentication bearer token</span>
-          </div>
-          <input type="password" id="ws-token-input" class="premium-text-input" placeholder="Enter token (optional)...">
-        </div>
-
-        <div class="setting-item flex-column">
-          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
-            <span class="setting-label">1Password Service Account</span>
-            <span class="setting-desc">Send an <code>ops_…</code> service-account token to the server securely. It is verified and stored on the server — never kept in chat history or on this device.</span>
-          </div>
-          <input type="text" id="op-label-input" class="premium-text-input" placeholder="Account label (e.g. primary)" autocomplete="off" spellcheck="false" style="margin-bottom: 8px;">
-          <input type="password" id="op-token-input" class="premium-text-input" placeholder="ops_… service-account token" autocomplete="off" spellcheck="false">
-          <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
-            <button type="button" class="record-btn" id="save-op-token-btn">Save to server</button>
-            <span class="setting-desc" id="op-token-status" style="font-size: 0.75rem;" hidden></span>
-          </div>
-          <span class="setting-desc" style="margin-top: 6px;">Saving verifies the token and briefly restarts the server.</span>
-        </div>
-
-      </div>
-
-      <div class="settings-footer">
-        <button class="save-settings-btn" id="close-settings-btn">Done</button>
-      </div>
-    </div>
     
     <div class="chat-messages" id="chat-messages">
       <div class="msg assistant">
@@ -1772,7 +1989,8 @@
     <form class="chat-input-area" id="chat-form">
       <div class="attach-error" id="attach-error" hidden></div>
       <div class="attachments-strip" id="attachments-strip" hidden></div>
-      <!-- Machine-access popover, anchored to .chat-input-area (position:relative). -->
+      <!-- Machine-access popover, anchored to .chat-input-area (position:relative),
+           opening upward above the composer row. -->
       <div class="scope-menu" id="scope-menu" role="menu" aria-hidden="true">
         <div class="scope-menu-hint">Let Luna read &amp; run anything on this Mac</div>
         <div class="scope-menu-item" id="scope-full-access" role="menuitemcheckbox" aria-checked="false" tabindex="0">
@@ -1782,7 +2000,14 @@
       </div>
       <div class="composer-row">
         <input type="file" id="file-input" multiple hidden>
-        <button type="button" class="scope-btn" id="scope-btn" aria-label="Machine access" title="Let Luna access this machine">+</button>
+        <!-- Machine access (computer icon) — opens #scope-menu above. -->
+        <button type="button" class="scope-btn" id="scope-btn" aria-label="Machine access" title="Let Luna access this machine">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="4.5" width="18" height="12" rx="1.8"></rect>
+            <line x1="8.5" y1="20" x2="15.5" y2="20"></line>
+            <line x1="12" y1="16.5" x2="12" y2="20"></line>
+          </svg>
+        </button>
         <button type="button" class="attach-btn" id="attach-btn" aria-label="Attach files" title="Attach files">
           <!-- paperclip -->
           <svg viewBox="0 0 24 24">
@@ -1874,7 +2099,7 @@
       attachmentsStrip: document.getElementById('attachments-strip'),
       attachError: document.getElementById('attach-error'),
       toggleSettings: document.getElementById('toggle-settings'),
-      newChat: document.getElementById('new-chat'),
+      freshThreadBtn: document.getElementById('fresh-thread-btn'),
       settingsPanel: document.getElementById('settings-panel'),
       closeSettingsBtn: document.getElementById('close-settings-btn'),
       alwaysOnTopToggle: document.getElementById('always-on-top-toggle'),
@@ -1962,6 +2187,24 @@
       skipLastThreadFile: false,
       // Per-turn inactivity watchdog handle (fix-3). null when no turn is in flight.
       turnTimeout: null,
+      // Subscribe-response watchdog: armed after we (re)subscribe and expect a
+      // thread-snapshot. If none arrives we treat the reattach as STALLED (the
+      // moon's re-tether string surfaces). Cleared on snapshot/close/disconnect.
+      subscribeTimeout: null,
+      // Re-tether wiring: the pending scheduleReconnect() timer (so a manual pull
+      // can cancel it and connect now); a one-per-episode grace timer before the
+      // string drops (so transient blips self-heal silently); and a flag to defer
+      // the drop until the chat is collapsed (the string is collapsed-only).
+      reconnectTimer: null,
+      tetherGraceTimer: null,
+      tetherPendingOnCollapse: false,
+      // Epoch for showTether's async window-grow: bumped on reattach so a snapshot
+      // landing mid-grow abandons the deferred string (else it shows post-connect).
+      tetherGen: 0,
+      // The in-flight growToEnvelope() promise (or null). onReattached awaits it
+      // before restoring, so if a reconnect wins the race the window is collapsed
+      // back even though no string ever showed (no retract → no onRetracted fires).
+      growPromise: null,
       // Connection generation counter (fix-6). Bumped each connect(); each
       // socket's handlers capture their gen and ignore events if superseded.
       connGen: 0,
@@ -2046,7 +2289,9 @@
     const TauriService = {
       // Last logical window size we requested. Kept current by setWindowSize so the
       // resize grip can read the starting size synchronously (no awaited IPC on grab).
-      lastSize: { w: 140, h: 140 },
+      // Minimized footprint is 140×185 — taller than wide so the satellites have
+      // room to sit in an arc BELOW the moon (not on top of it).
+      lastSize: { w: 140, h: 185 },
 
       async setWindowSize(width, height) {
         if (!window.__TAURI__) return;
@@ -2058,6 +2303,79 @@
           Logger.info(`Resized window logical boundary: ${width}x${height}`);
         } catch (e) {
           Logger.error("Tauri window resizing failure:", e);
+        }
+      },
+
+      // ── Re-tether swing envelope ──────────────────────────────────────────
+      // The collapsed 140×185 window clips the string's swing, so while the
+      // string is live we grow the window to a swing envelope AND shift its
+      // screen origin so the MOON STAYS VISUALLY FIXED (no jump) — then the bead
+      // can fling any direction. All distances are LOGICAL px: outerPosition()/
+      // currentMonitor() return PHYSICAL, so we .toLogical(scaleFactor) or a
+      // Retina (sf=2) display doubles the origin and the moon leaps. Everything
+      // is in try/catch: if the window perms/APIs are missing it no-ops (the
+      // string still works, just clipped) rather than throwing into the UI.
+      ENVELOPE_W: 460,
+      ENVELOPE_H: 470,
+      COLLAPSED_W: 140,
+      COLLAPSED_H: 185,
+
+      async growToEnvelope() {
+        document.body.classList.add('retethering');
+        if (!window.__TAURI__) return;
+        try {
+          const { getCurrentWindow, LogicalSize, LogicalPosition } = window.__TAURI__.window;
+          const w = getCurrentWindow();
+          const sf = await w.scaleFactor();
+          const op = (await w.outerPosition()).toLogical(sf);     // current origin (logical)
+          const moonEl = document.getElementById('moon');
+          const curLeft = parseFloat(moonEl.style.left) || 15;    // collapsed CSS default
+          const curTop = parseFloat(moonEl.style.top) || 15;
+          const moonScreenX = op.x + curLeft, moonScreenY = op.y + curTop;
+          const TARGET_LEFT = (this.ENVELOPE_W - 110) / 2;        // 175 — moon centred horizontally
+          const TARGET_TOP = 15;                                  // near the top, room to hang below
+          let newOX = moonScreenX - TARGET_LEFT;
+          let newOY = moonScreenY - TARGET_TOP;
+          const mon = await w.currentMonitor();
+          if (mon && mon.position && mon.size) {
+            const mp = mon.position.toLogical(sf), ms = mon.size.toLogical(sf);
+            newOX = Math.max(mp.x, Math.min(mp.x + ms.width - this.ENVELOPE_W, newOX));
+            newOY = Math.max(mp.y, Math.min(mp.y + ms.height - this.ENVELOPE_H, newOY));
+          }
+          newOX = Math.round(newOX); newOY = Math.round(newOY);   // round ONCE so CSS + origin agree
+          // Compensate the moon's CSS so its SCREEN position is exact even after
+          // an edge-clamp (= TARGET_LEFT/TOP when unclamped).
+          moonEl.style.left = (moonScreenX - newOX) + 'px';
+          moonEl.style.top = (moonScreenY - newOY) + 'px';
+          await w.setPosition(new LogicalPosition(newOX, newOY));
+          await this.setWindowSize(this.ENVELOPE_W, this.ENVELOPE_H);
+        } catch (e) {
+          Logger.error("growToEnvelope failed (string still works, just clipped):", e);
+        }
+      },
+
+      async restoreCollapsed() {
+        if (!window.__TAURI__) { document.body.classList.remove('retethering'); return; }
+        try {
+          const { getCurrentWindow, LogicalSize, LogicalPosition } = window.__TAURI__.window;
+          const w = getCurrentWindow();
+          const sf = await w.scaleFactor();
+          const op = (await w.outerPosition()).toLogical(sf);
+          const moonEl = document.getElementById('moon');
+          const curLeft = parseFloat(moonEl.style.left) || 15;
+          const curTop = parseFloat(moonEl.style.top) || 15;
+          const moonScreenX = op.x + curLeft, moonScreenY = op.y + curTop;
+          // Restore the moon to its collapsed CSS spot (15,15) and shift the
+          // origin so its screen position is unchanged (preserves any window
+          // drag that happened while the string was out — we re-read the origin).
+          moonEl.style.left = '';
+          moonEl.style.top = '';
+          await w.setPosition(new LogicalPosition(Math.round(moonScreenX - 15), Math.round(moonScreenY - 15)));
+          await this.setWindowSize(this.COLLAPSED_W, this.COLLAPSED_H);
+        } catch (e) {
+          Logger.error("restoreCollapsed failed:", e);
+        } finally {
+          document.body.classList.remove('retethering');
         }
       },
 
@@ -2597,6 +2915,8 @@
         // cannot be detached because they were added via addEventListener) are
         // ignored once a newer connect() has incremented State.connGen.
         const myGen = ++State.connGen;
+        this.clearSubscribeTimeout();   // a fresh connect owns its own subscribe watchdog
+        if (State.reconnectTimer) { clearTimeout(State.reconnectTimer); State.reconnectTimer = null; }
 
         Logger.info(`Connecting to WebSocket: ${State.wsUrl}`);
         this.updateStatus('connecting', 'Connecting...');
@@ -2641,6 +2961,7 @@
           Logger.warn(`WebSocket closed. Code: ${event.code}, Reason: ${event.reason}`);
           this.updateStatus('disconnected', 'Disconnected');
           this.clearTurnTimeout();                         // fix-3 — no leaked timer across reconnects
+          this.clearSubscribeTimeout();                    // socket gone → the close path owns recovery now
           // Defensive: never retain a typed secret across a socket drop. Clear
           // the VALUE only — do NOT hide the panel, so the success flow's brief
           // "saved" message (server restarts → socket closes → auto-reconnect)
@@ -2657,6 +2978,15 @@
           }
           if (!State.isManuallyClosing) {
             this.scheduleReconnect();
+            // One-per-episode grace countdown: if we're STILL detached when it
+            // fires, drop the re-tether string. A thread-snapshot (or a manual
+            // pull) clears it first, so transient blips self-heal with no string.
+            if (!State.tetherGraceTimer && !MoonString.isLive()) {
+              State.tetherGraceTimer = setTimeout(() => {
+                State.tetherGraceTimer = null;
+                this.showTether();
+              }, 3500);
+            }
           }
         });
 
@@ -2675,6 +3005,9 @@
         // line the 90s timer leaks and later fires a false "No response" on the
         // new server. Any caller of disconnect() now cancels the timer.
         this.clearTurnTimeout();
+        this.clearSubscribeTimeout();
+        if (State.reconnectTimer) { clearTimeout(State.reconnectTimer); State.reconnectTimer = null; }
+        if (State.tetherGraceTimer) { clearTimeout(State.tetherGraceTimer); State.tetherGraceTimer = null; }
         if (State.ws) {
           Logger.info("Disconnecting WebSocket client manually");
           State.isManuallyClosing = true;
@@ -2817,11 +3150,104 @@
         }, 90000);
       },
 
+      clearSubscribeTimeout() {
+        if (State.subscribeTimeout) {
+          clearTimeout(State.subscribeTimeout);
+          State.subscribeTimeout = null;
+        }
+      },
+
+      // Armed after a (re)subscribe; if no thread-snapshot lands within the
+      // window the reattach has STALLED (socket may be fine but we never got our
+      // thread back — the silent failure the "+"-as-reconnect used to paper over).
+      // gen-gated like the other watchdogs so a superseded socket's timer is inert.
+      startSubscribeTimeout() {
+        this.clearSubscribeTimeout();
+        const myGen = State.connGen;
+        State.subscribeTimeout = setTimeout(() => {
+          State.subscribeTimeout = null;
+          if (myGen !== State.connGen) return;                              // superseded connect
+          if (!State.ws || State.ws.readyState !== WebSocket.OPEN) return;  // socket already down → close owns it
+          Logger.warn('Subscribe timed out — no thread-snapshot; reattach stalled');
+          this.onReattachStalled();
+        }, 7000);
+      },
+
+      // Reattach stalled (open socket but no thread-snapshot) → surface the string.
+      onReattachStalled() { this.showTether(); },
+
+      // ── Re-tether: the moon's string drives this. Reconnect to the SAME thread
+      // NOW (bypass backoff) if the socket is down; otherwise just re-ask for our
+      // thread. Success arrives as thread-snapshot → onReattached(). Never creates
+      // a new thread. MUST cancel the pending reconnect timer or it opens a 2nd socket.
+      reTether() {
+        this.updateStatus('connecting', 'Reconnecting…');
+        if (State.tetherGraceTimer) { clearTimeout(State.tetherGraceTimer); State.tetherGraceTimer = null; }
+        if (State.reconnectTimer) { clearTimeout(State.reconnectTimer); State.reconnectTimer = null; }
+        if (!State.ws || State.ws.readyState !== WebSocket.OPEN) {
+          State.reconnectAttempts = 0;        // bypass backoff — connect immediately
+          this.connect();                     // open → syncThread → subscribe(activeThreadId) + arms watchdog
+        } else {
+          const id = State.activeThreadId;
+          if (id) this.send({ type: 'subscribe', threadId: id });
+          else this.send({ type: 'list-threads' });
+          this.startSubscribeTimeout();
+        }
+      },
+
+      // ── Drop the string: we've been detached past the grace period, or a
+      // reattach stalled. Collapsed-only — if the chat is open the header status
+      // covers it, so defer the drop until the chat collapses.
+      showTether() {
+        if (State.tetherGraceTimer) { clearTimeout(State.tetherGraceTimer); State.tetherGraceTimer = null; }
+        if (DOM.chatPanel.classList.contains('active')) { State.tetherPendingOnCollapse = true; return; }
+        State.tetherPendingOnCollapse = false;
+        if (MoonString.isLive()) return;      // already out
+        // growToEnvelope() is several async IPC round-trips. Stamp an epoch so that
+        // if a background reconnect lands a thread-snapshot mid-grow (→ onReattached
+        // bumps tetherGen), this deferred show is abandoned — otherwise the string
+        // would pop out *after* we're already reconnected. We also stash the grow
+        // promise so onReattached can sequence a window restore after it (the grow
+        // still ran, so the window must be collapsed back even with no string).
+        const gen = ++State.tetherGen;
+        const grow = TauriService.growToEnvelope();
+        State.growPromise = grow;
+        grow.then(() => {
+          if (gen === State.tetherGen && !MoonString.isLive()) MoonString.show();
+        });
+      },
+
+      // ── Back on our thread: clear timers + retract the string with a success
+      // pulse; the rope's onRetracted hook restores the collapsed window.
+      async onReattached() {
+        this.updateStatus('connected', 'Connected');
+        const gen = ++State.tetherGen;   // supersede any showTether() grow still in flight
+        if (State.tetherGraceTimer) { clearTimeout(State.tetherGraceTimer); State.tetherGraceTimer = null; }
+        State.tetherPendingOnCollapse = false;
+        if (MoonString.isLive()) {
+          State.growPromise = null;
+          MoonString.retract(true);          // animates out → onRetracted → restoreCollapsed()
+        } else if (State.growPromise) {
+          // The reconnect beat the window grow: the string never showed, so there's
+          // no retract to trigger restoreCollapsed — yet the window did (or is about
+          // to) expand. Wait for the grow to fully settle, THEN restore, so their
+          // setPosition/setSize IPCs can't interleave and strand the window open.
+          const p = State.growPromise;
+          State.growPromise = null;
+          await p.catch(() => {});
+          // If a fresh disconnect started a NEW tether episode while we waited, let
+          // it own the window — restoring now would fight its grow.
+          if (gen === State.tetherGen) await TauriService.restoreCollapsed();
+        }
+      },
+
       scheduleReconnect() {
         const delay = Math.min(1000 * Math.pow(2, State.reconnectAttempts), 16000);
         State.reconnectAttempts++;
         Logger.info(`Scheduling reconnect attempt #${State.reconnectAttempts} in ${delay}ms`);
-        setTimeout(() => {
+        if (State.reconnectTimer) clearTimeout(State.reconnectTimer);
+        State.reconnectTimer = setTimeout(() => {
+          State.reconnectTimer = null;
           if (!State.ws || State.ws.readyState === WebSocket.CLOSED) {
             this.connect();
           }
@@ -2835,9 +3261,14 @@
         const skipFile = State.skipLastThreadFile;
         State.skipLastThreadFile = false;
 
-        // First invoke get_last_thread_id Tauri command
-        let lastThreadId = null;
-        if (!skipFile && window.__TAURI__) {
+        // Prefer the thread we're ALREADY on. State.activeThreadId survives a
+        // socket drop in-memory, so a mid-session reconnect re-subscribes to the
+        // exact same thread with no disk round-trip. Only fall back to the Tauri
+        // last-thread file on a cold start (no in-memory thread). On a server
+        // switch (skipFile) the in-memory id belongs to the OLD server, so ignore
+        // it too and list fresh.
+        let lastThreadId = skipFile ? null : State.activeThreadId;
+        if (!lastThreadId && !skipFile && window.__TAURI__) {
           try {
             lastThreadId = await window.__TAURI__.core.invoke('get_last_thread_id');
             Logger.info(`Tauri get_last_thread_id returned: ${lastThreadId}`);
@@ -2848,13 +3279,16 @@
 
         if (lastThreadId) {
           State.activeThreadId = lastThreadId;
-          Logger.info(`Syncing: subscribing to terminal thread "${lastThreadId}"`);
+          Logger.info(`Syncing: subscribing to thread "${lastThreadId}"`);
           this.send({ type: 'subscribe', threadId: lastThreadId });
         } else {
-          // If no active thread ID from the terminal, request the thread list
-          Logger.info("No active thread found from terminal; listing threads instead");
+          // No known thread → ask the server for its list (it auto-subscribes to
+          // the most recent, or creates one).
+          Logger.info("No known thread; listing threads instead");
           this.send({ type: 'list-threads' });
         }
+        // Either path should land us on a thread-snapshot; watch for it.
+        this.startSubscribeTimeout();
       },
 
       handleFrame(frame) {
@@ -2922,6 +3356,7 @@
             // Whole-history replay from the server. Build state from scratch
             // and flush a single render — ChatRenderer reconciles the entire
             // chat-messages container against ChatState in one pass.
+            this.clearSubscribeTimeout();        // reattach SUCCEEDED — we're back on a thread
             ChatState.reset();
             ChatState.loadHistory(frame.messages || []);
             if (ChatState.turns.length === 0) {
@@ -2929,6 +3364,15 @@
             }
             ChatLoop.flush();
             LocalShell.sendCapability();
+            // Restart-survival: persist the thread we just landed on so reopening
+            // the app re-tethers to it. The snapshot proves this thread is valid
+            // on the CURRENT server, so it's always safe to remember. Fire-and-
+            // forget; never blocks or throws into the UI.
+            if (window.__TAURI__ && State.activeThreadId) {
+              window.__TAURI__.core.invoke('set_last_thread_id', { threadId: State.activeThreadId })
+                .catch((e) => Logger.warn('set_last_thread_id failed (non-fatal):', e));
+            }
+            this.onReattached();   // clear the grace timer + retract the string (if it was out)
             break;
           }
 
@@ -3377,6 +3821,7 @@
       window.__MoonInternals.SecretPromptEngine = SecretPromptEngine;
       window.__MoonInternals.buildSurveyVerdicts = buildSurveyVerdicts;
       window.__MoonInternals.WebSocketEngine = WebSocketEngine;
+      window.__MoonInternals.TauriService = TauriService;
       // Mutable connection State (e.g. serverSupportsTurnComplete) so version-
       // skew tests can drive/assert the timeline's capability gating.
       window.__MoonInternals.State = State;
@@ -4998,13 +5443,37 @@
       },
 
       toggle() {
-        DOM.settingsPanel.classList.toggle('active');
-        Logger.info("Settings tab visibility toggled");
+        if (DOM.settingsPanel.classList.contains('active')) this.close();
+        else this.open();
+      },
+
+      // Settings is its own modal now, independent of the chat. Opening it from
+      // the minimized moon grows the window so the modal has room; closing shrinks
+      // back. IMPORTANT: add `.active` SYNCHRONOUSLY before any await — the unit
+      // test asserts the toggle flips #settings-panel on the same tick, and the
+      // window resize must stay fire-and-forget (the modal just fades in over it).
+      open() {
+        if (DOM.settingsPanel.classList.contains('active')) return;
+        this._openedMinimized = !DOM.chatPanel.classList.contains('active');
+        DOM.settingsPanel.classList.add('active');
+        if (this._openedMinimized) {
+          const { w, h } = PanelSize.load();
+          TauriService.setWindowSize(w, h);
+        }
+        Logger.info("Settings modal opened");
       },
 
       close() {
+        const wasMinimized = this._openedMinimized;
+        this._openedMinimized = false;
         DOM.settingsPanel.classList.remove('active');
-        Logger.info("Settings tab closed");
+        Logger.info("Settings modal closed");
+
+        // If we grew the window just to show the modal (opened from the minimized
+        // moon, chat still closed), shrink back after the fade-out.
+        if (wasMinimized && !DOM.chatPanel.classList.contains('active')) {
+          setTimeout(() => TauriService.setWindowSize(140, 185), 220);
+        }
 
         // Never retain the OP token in the DOM after the panel closes.
         if (DOM.opTokenInput) DOM.opTokenInput.value = '';
@@ -5182,15 +5651,46 @@
      * UI Parallax & Window state transitions.
      */
     const UIController = {
-      async toggleChat() {
+      async toggleChat({ sync = true } = {}) {
         const isActive = DOM.chatPanel.classList.contains('active');
         if (isActive) {
           DOM.chatPanel.classList.remove('active');
+          // The settings modal and scope popover now live OUTSIDE #chat-panel
+          // (they orbit the moon), so collapsing the chat no longer hides them
+          // implicitly. Close them here so neither lingers — and so an open scope
+          // popover can't get clipped inside the minimized window.
+          LocalShell.openMenu(false);
+          DOM.settingsPanel.classList.remove('active');
           Logger.info("Initiated chat collapse transition");
           setTimeout(() => {
-            TauriService.setWindowSize(140, 140);
+            // If a disconnect happened while the chat was open, the string drop
+            // was deferred (it's collapsed-only). Now that we're collapsed, drop
+            // it — showTether grows straight to the envelope, so skip the 140x185.
+            if (State.tetherPendingOnCollapse) {
+              WebSocketEngine.showTether();
+            } else {
+              TauriService.setWindowSize(140, 185);
+            }
           }, 300);
         } else {
+          // If a re-tether episode is active — string out, or its window grow still
+          // in flight — tear it down and restore the collapsed window FIRST, so the
+          // moon is back at its corner and the chat panel won't overlap it. Ending
+          // the episode means bumping the epoch (abandons a deferred MoonString.show()
+          // that would otherwise pop the string over the open chat) and dropping the
+          // stashed grow promise (otherwise a later onReattached would replay
+          // restoreCollapsed() over the OPEN chat, shrinking it to 140x185 mid-use).
+          // Keep the pending flag so the string returns on the next collapse
+          // (unless we reattach meanwhile).
+          if (MoonString.isLive() || State.growPromise) {
+            State.tetherGen++;
+            const grow = State.growPromise;
+            State.growPromise = null;
+            MoonString.hideImmediate();            // no-op if the string never showed
+            if (grow) await grow.catch(() => {});  // let the grow's IPCs settle first
+            await TauriService.restoreCollapsed();
+            State.tetherPendingOnCollapse = true;
+          }
           // Restore the user's last dragged size (or 560x520 if none saved).
           // Done BEFORE adding .active so the panel's open animation runs inside
           // the final window bounds — no mid-animation reflow.
@@ -5199,9 +5699,13 @@
           DOM.chatPanel.classList.add('active');
           DOM.messageInput.focus();
           Logger.info("Chat expand transition completed");
-          
-          // Re-sync thread on opening chat widget to keep up with terminal changes!
-          WebSocketEngine.syncThread();
+
+          // Re-sync thread on opening chat widget to keep up with terminal
+          // changes — UNLESS the caller is about to start a fresh conversation
+          // (new-chat). syncThread() awaits an IPC then subscribes to the last
+          // thread; that late subscribe would otherwise clobber the brand-new
+          // thread newConversation() just created.
+          if (sync) WebSocketEngine.syncThread();
         }
       },
 
@@ -5259,12 +5763,21 @@
       },
 
       handleBlur() {
-        if (DOM.closeOnBlurToggle.checked && DOM.chatPanel.classList.contains('active') && !State.isRecordingShortcut && !State.suppressBlurClose) {
-          Logger.info("Focus click-away blur event fired: collapsing companion");
-          DOM.settingsPanel.classList.remove('active');
+        if (!DOM.closeOnBlurToggle.checked || State.isRecordingShortcut || State.suppressBlurClose) return;
+        const settingsOpen = DOM.settingsPanel.classList.contains('active');
+        const chatOpen = DOM.chatPanel.classList.contains('active');
+        // The settings modal can be open while the chat is still minimized (it's
+        // its own thing now), so blur must dismiss it even when the chat isn't
+        // active — otherwise clicking away would leave a grown, modal-covered
+        // window stuck open.
+        if (!settingsOpen && !chatOpen) return;
+        Logger.info("Focus click-away blur event fired: collapsing companion");
+        if (settingsOpen) SettingsEngine.close(); // closes modal + shrinks if it grew the window
+        if (chatOpen) {
+          LocalShell.openMenu(false); // hide the moon-anchored scope popover too
           DOM.chatPanel.classList.remove('active');
           setTimeout(() => {
-            TauriService.setWindowSize(140, 140);
+            TauriService.setWindowSize(140, 185);
           }, 300);
         }
       }
@@ -5279,6 +5792,342 @@
     DOM.moon.addEventListener('pointermove', (e) => UIController.handlePointerMove(e));
     DOM.moon.addEventListener('pointerup', (e) => UIController.handlePointerUp(e));
     DOM.moon.addEventListener('pointerleave', () => UIController.handlePointerLeave());
+
+    // ── Re-tether "string" — Verlet rope ported verbatim from the approved demo.
+    // Falls from the moon when the connection drops; fling the bead (any
+    // direction, springs back) or click / yank it down to reconnect to the SAME
+    // thread. Physics/render are pure client-side; the network action is injected
+    // via setOnPull() (Phase 6 wires it to WebSocketEngine.reTether). Coords are
+    // window/viewport space: the rope layer is inset:0 and the bead is positioned
+    // by transform off the window origin, so SVG/anchor/cursor all share one frame.
+    const MoonString = (() => {
+      const moon = document.getElementById('moon');
+      const moonWrapper = document.getElementById('moon-wrapper');
+      const layer = document.getElementById('moon-rope-layer');
+      const ropePath = document.getElementById('moon-rope');
+      const ropeHalo = document.getElementById('moon-rope-halo');
+      const ropeShimmer = document.getElementById('moon-rope-shimmer');
+      const bead = document.getElementById('moon-bead');
+      if (!moon || !moonWrapper || !layer || !ropePath || !ropeHalo || !ropeShimmer || !bead) {
+        return { show() {}, retract() {}, hideImmediate() {}, isLive: () => false, setOnPull() {}, setOnRetracted() {}, updateAnchor() {} };
+      }
+
+      // APPROVED tuning — do not change without re-validating the feel live.
+      const N = 16, REST = 150, SEG = REST / (N - 1);
+      const MAX = 300, PULL_TRIGGER = 60, FIXED = 1 / 120, GRAV = 2800, DAMP = 0.975, ITER = 14;
+      const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+      let ANCHOR_X = 0, ANCHOR_Y = 0;     // moon-bottom attach point (window coords); set on show()
+      let pts = [];
+      let dragging = false, dragX = 0, dragY = 0;
+      let velX = 0, velY = 0, lastCX = 0, lastCY = 0;   // smoothed cursor velocity → the throw
+      let startX = 0, startY = 0, moved = 0, grabDX = 0, grabDY = 0;
+      let running = false, retracting = false, dropping = false, raf = 0, acc = 0, lastT = 0, calm = 0;
+      let live = false, pendingPulse = false;
+      let onPull = () => retract(true);   // sensible default (pull → retract+pulse); Phase 6 overrides
+      let onRetracted = () => {};         // fires when the rope finishes retracting (Phase 6: restore window)
+
+      function updateAnchor() {
+        const r = moon.getBoundingClientRect();
+        ANCHOR_X = r.left + r.width / 2;
+        ANCHOR_Y = r.bottom - 6;          // just inside the lower arc
+      }
+      // Seed gathered AT the anchor: the `dropping` phase in loop() lowers the
+      // points straight down to rest (no sideways swing-in — the string just
+      // drops out of the moon). The physics solver doesn't run during the drop,
+      // so the compressed seed can't coil; by handoff the rope is at rest length.
+      function initRope() {
+        pts = [];
+        for (let i = 0; i < N; i++) {
+          pts.push({ x: ANCHOR_X, y: ANCHOR_Y, px: ANCHOR_X, py: ANCHOR_Y });
+        }
+      }
+      function energy() { let e = 0; for (let i = 1; i < N; i++) { const p = pts[i]; e += (p.x - p.px) ** 2 + (p.y - p.py) ** 2; } return e; }
+
+      function physics(dt) {
+        const gy = GRAV * dt * dt;
+        for (let i = 1; i < N; i++) {
+          if (dragging && i === N - 1) continue;          // bead is driven by the cursor
+          const p = pts[i];
+          const vx = (p.x - p.px) * DAMP, vy = (p.y - p.py) * DAMP;
+          p.px = p.x; p.py = p.y;
+          p.x += vx; p.y += vy + gy;
+        }
+        for (let k = 0; k < ITER; k++) {
+          pts[0].x = ANCHOR_X; pts[0].y = ANCHOR_Y;        // pin anchor
+          if (dragging) { pts[N - 1].x = dragX; pts[N - 1].y = dragY; }   // pin bead to cursor
+          for (let i = 0; i < N - 1; i++) {
+            const a = pts[i], b = pts[i + 1];
+            let dx = b.x - a.x, dy = b.y - a.y;
+            const d = Math.hypot(dx, dy) || 1e-4;
+            const diff = (d - SEG) / d;
+            let ma = 0.5, mb = 0.5;
+            if (i === 0) { ma = 0; mb = 1; }
+            if (dragging && i + 1 === N - 1) { mb = 0; ma = (i === 0) ? 0 : 1; }
+            a.x += dx * diff * ma; a.y += dy * diff * ma;
+            b.x -= dx * diff * mb; b.y -= dy * diff * mb;
+          }
+        }
+      }
+
+      // ── window-drag physics ──
+      // While the OS drags the window (native startDragging) no JS pointer
+      // events fire, and the rope's window-local coords don't change — so the
+      // string looks welded to the moon. The window's onMoved stream is the
+      // only signal: shift every FREE point opposite the window's logical
+      // delta (positions only, NOT px/py), so Verlet reads the apparent
+      // screen-space motion as velocity and the rope trails + swings. The
+      // per-event delta is clamped so coalesced events (e.g. paint frozen
+      // during the native drag, one fat delta on release) inject a believable
+      // swing rather than an explosion.
+      function injectWindowDelta(ldx, ldy) {
+        if (!live || retracting) return;
+        const dx = clamp(ldx, -80, 80), dy = clamp(ldy, -80, 80);
+        for (let i = 1; i < N; i++) {
+          if (dragging && i === N - 1) continue;   // the cursor owns the bead
+          pts[i].x -= dx; pts[i].y -= dy;
+        }
+        start();                                   // wake a parked loop
+      }
+
+      // ── click-through region ──
+      // While the string is live the window is a big, mostly-empty envelope
+      // that would otherwise swallow clicks meant for the apps behind it.
+      // Publish the truly-interactive region (moon + rope/bead, padded) to the
+      // Rust cursor poll, which flips set_ignore_cursor_events as the cursor
+      // enters/leaves. Throttled + delta-gated so a swinging rope costs a few
+      // IPC calls per second, and a parked one costs none.
+      const REGION_PAD = 30, REGION_MIN_DELTA = 24, REGION_MIN_MS = 90;
+      let lastRegion = { t: -1e9, x: 0, y: 0, w: 0, h: 0 };
+      function canInvoke() {
+        return !!(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke);
+      }
+      function pushRegion(force) {
+        if (!canInvoke()) return;
+        const now = performance.now();
+        let minX = ANCHOR_X, maxX = ANCHOR_X, minY = ANCHOR_Y, maxY = ANCHOR_Y;
+        for (let i = 0; i < N; i++) {
+          const p = pts[i];
+          if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+          if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+        }
+        const x = minX - REGION_PAD, y = minY - REGION_PAD;
+        const w = (maxX - minX) + REGION_PAD * 2, h = (maxY - minY) + REGION_PAD * 2;
+        if (!force) {
+          if (now - lastRegion.t < REGION_MIN_MS) return;
+          if (Math.abs(x - lastRegion.x) < REGION_MIN_DELTA && Math.abs(y - lastRegion.y) < REGION_MIN_DELTA &&
+              Math.abs(w - lastRegion.w) < REGION_MIN_DELTA && Math.abs(h - lastRegion.h) < REGION_MIN_DELTA) return;
+        }
+        lastRegion = { t: now, x, y, w, h };
+        const mr = moon.getBoundingClientRect();
+        const rects = [
+          [mr.left - 20, mr.top - 20, mr.width + 40, mr.height + 40], // the moon (+ hover runway)
+          [x, y, w, h],                                                // rope + bead
+        ];
+        window.__TAURI__.core.invoke('set_interactive_region', { enabled: true, rects })
+          .catch(() => {});
+      }
+      function clearRegion() {
+        if (!canInvoke()) return;
+        lastRegion = { t: -1e9, x: 0, y: 0, w: 0, h: 0 };
+        window.__TAURI__.core.invoke('set_interactive_region', { enabled: false, rects: [] })
+          .catch(() => {});
+      }
+
+      // Catmull-Rom through the Verlet points → one smooth cubic path. A raw
+      // polyline shows 14 visible elbows and reads as a chain of sticks; the
+      // spline reads as an actual string. Shared by the halo/core/shimmer.
+      function ropeD() {
+        let d = 'M ' + pts[0].x.toFixed(1) + ' ' + pts[0].y.toFixed(1);
+        for (let i = 0; i < N - 1; i++) {
+          const p0 = pts[i > 0 ? i - 1 : 0], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2 < N ? i + 2 : N - 1];
+          d += ' C ' + (p1.x + (p2.x - p0.x) / 6).toFixed(1) + ' ' + (p1.y + (p2.y - p0.y) / 6).toFixed(1)
+             + ' '   + (p2.x - (p3.x - p1.x) / 6).toFixed(1) + ' ' + (p2.y - (p3.y - p1.y) / 6).toFixed(1)
+             + ' '   + p2.x.toFixed(1) + ' ' + p2.y.toFixed(1);
+        }
+        return d;
+      }
+
+      function render() {
+        const d = ropeD();
+        ropePath.setAttribute('d', d);
+        ropeHalo.setAttribute('d', d);
+        ropeShimmer.setAttribute('d', d);
+        pushRegion();
+        const b = pts[N - 1];
+        bead.style.transform = 'translate3d(' + (b.x - 19) + 'px,' + (b.y - 19) + 'px,0)'; // 19 = half the 38px blot
+        // Lean the moon toward the pull — ONLY while dragging the bead. Pointer
+        // capture keeps the moon's own hover/tilt handler (which also writes
+        // moonWrapper.transform) from firing meanwhile, so there's no conflict.
+        if (dragging && !moonWrapper.classList.contains('retether-pulse')) {
+          const dx = b.x - ANCHOR_X, dy = b.y - ANCHOR_Y;
+          moonWrapper.style.transform = 'translate3d(' + (dx * 0.03) + 'px,' + Math.max(0, dy - REST) * 0.04 + 'px,0)';
+        }
+      }
+
+      function loop(now) {
+        if (!running) return;
+        let dt = (now - lastT) / 1000; lastT = now;
+        if (dt > 0.1) dt = 0.1;                              // clamp tab-switch gaps
+        if (retracting) {                                   // suck the rope up into the moon
+          let done = true;
+          for (let i = 1; i < N; i++) {
+            const p = pts[i];
+            p.x += (ANCHOR_X - p.x) * 0.22; p.y += (ANCHOR_Y - p.y) * 0.22; p.px = p.x; p.py = p.y;
+            if (Math.hypot(p.x - ANCHOR_X, p.y - ANCHOR_Y) > 3) done = false;
+          }
+          render();
+          if (done) return finishRetract();
+          raf = requestAnimationFrame(loop); return;
+        }
+        if (dropping) {                                     // lower the string straight down
+          let done = true;
+          for (let i = 1; i < N; i++) {
+            const p = pts[i];
+            const ty = ANCHOR_Y + i * SEG;                  // straight-down rest position
+            p.x += (ANCHOR_X - p.x) * 0.16; p.y += (ty - p.y) * 0.16;
+            p.px = p.x; p.py = p.y;                         // no carried velocity: hand off at rest
+            if (Math.abs(ty - p.y) > 1.5 || Math.abs(ANCHOR_X - p.x) > 1.5) done = false;
+          }
+          render();
+          if (done) dropping = false;                       // physics takes over from rest
+          raf = requestAnimationFrame(loop); return;
+        }
+        acc += dt; let n = 0;
+        while (acc >= FIXED) { physics(FIXED); acc -= FIXED; if (++n > 8) { acc = 0; break; } }
+        render();
+        // Park only after SUSTAINED calm (a swing peak is calm for a frame or two
+        // but re-accelerates; true rest stays calm) — see the demo's notes.
+        if (!dragging && energy() < 0.05) { if (++calm > 18) { running = false; return; } } else calm = 0;
+        raf = requestAnimationFrame(loop);
+      }
+      function start() { if (running) return; running = true; calm = 0; lastT = performance.now(); acc = 0; raf = requestAnimationFrame(loop); }
+
+      function show() {
+        if (live) return;
+        live = true; retracting = false; dropping = true;
+        updateAnchor();
+        initRope();
+        layer.style.display = 'block';
+        bead.classList.add('live'); bead.style.opacity = '1';
+        pushRegion(true);   // arm click-through: only moon+rope stay clickable
+        start();
+      }
+      function retract(pulse) {
+        if (!live) return;
+        dragging = false; retracting = true; dropping = false;
+        moonWrapper.style.transform = '';     // clear any lean before the pulse animation
+        pendingPulse = !!pulse;
+        start();
+      }
+      function finishRetract() {
+        running = false; retracting = false; live = false;
+        clearRegion();      // string gone: the whole window is interactive again
+        layer.style.display = 'none';
+        bead.classList.remove('live');
+        if (pendingPulse) {
+          moonWrapper.classList.add('retether-pulse');
+          setTimeout(() => moonWrapper.classList.remove('retether-pulse'), 800);
+        }
+        pendingPulse = false;
+        onRetracted();      // Phase 6: restore the collapsed window after the rope is gone
+      }
+
+      // Instant teardown (no retract animation, no pulse, no onRetracted) — used
+      // when the user opens the chat while the string is out; the caller restores
+      // the window itself as part of the chat-open resize.
+      function hideImmediate() {
+        if (!live && !running) return;
+        running = false; retracting = false; dropping = false; dragging = false; live = false; pendingPulse = false;
+        if (raf) cancelAnimationFrame(raf);
+        clearRegion();      // string gone: the whole window is interactive again
+        layer.style.display = 'none';
+        bead.classList.remove('live');
+        moonWrapper.style.transform = '';
+      }
+
+      bead.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        dropping = false;                 // grabbed mid-drop: the cursor takes over
+        dragging = true; moved = 0; velX = velY = 0;
+        startX = lastCX = e.clientX; startY = lastCY = e.clientY;
+        const b = pts[N - 1];
+        grabDX = b.x - e.clientX; grabDY = b.y - e.clientY;  // hold the grabbed point under the cursor
+        dragX = b.x; dragY = b.y;                            // no first-frame jump
+        try { bead.setPointerCapture(e.pointerId); } catch (_) {}
+        start();
+      });
+      bead.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        moved = Math.max(moved, Math.hypot(e.clientX - startX, e.clientY - startY));
+        velX = velX * 0.5 + (e.clientX - lastCX) * 0.5;
+        velY = velY * 0.5 + (e.clientY - lastCY) * 0.5;
+        lastCX = e.clientX; lastCY = e.clientY;
+        let dx = (e.clientX + grabDX) - ANCHOR_X, dy = (e.clientY + grabDY) - ANCHOR_Y;
+        const dist = Math.hypot(dx, dy);
+        if (dist > MAX) { dx *= MAX / dist; dy *= MAX / dist; }   // clamp reach, keep DIRECTION
+        dragX = ANCHOR_X + dx; dragY = ANCHOR_Y + dy;
+      });
+      function endDrag(e) {
+        if (!dragging) return; dragging = false;
+        try { bead.releasePointerCapture(e.pointerId); } catch (_) {}
+        moonWrapper.style.transform = '';     // release the lean; the free swing has no lean
+        const b = pts[N - 1];
+        const downwardYank = (b.y - ANCHOR_Y) > REST + PULL_TRIGGER && (b.y - ANCHOR_Y) > Math.abs(b.x - ANCHOR_X);
+        if (moved < 6 || downwardYank) { onPull(); return; }   // tap or firm down-pull = reconnect
+        b.px = b.x - clamp(velX, -45, 45);    // inject the throw (Verlet velocity = cursor velocity)
+        b.py = b.y - clamp(velY, -45, 45);
+        start();
+      }
+      bead.addEventListener('pointerup', endDrag);
+      bead.addEventListener('pointercancel', endDrag);
+
+      return {
+        show, retract, hideImmediate, updateAnchor, injectWindowDelta,
+        isLive: () => live,
+        setOnPull: (fn) => { onPull = typeof fn === 'function' ? fn : (() => {}); },
+        setOnRetracted: (fn) => { onRetracted = typeof fn === 'function' ? fn : (() => {}); },
+        // Read-only copy of the rope points, for tests/debugging (jsdom can't
+        // observe the physics any other way).
+        getPoints: () => pts.map((p) => ({ x: p.x, y: p.y, px: p.px, py: p.py })),
+      };
+    })();
+    window.__MoonInternals = window.__MoonInternals || {};
+    window.__MoonInternals.MoonString = MoonString;
+    // Wire the string to the network: a pull/click/yank re-tethers; once the rope
+    // has fully retracted (after a successful reattach) restore the collapsed window.
+    MoonString.setOnPull(() => WebSocketEngine.reTether());
+    MoonString.setOnRetracted(() => TauriService.restoreCollapsed());
+
+    // Window-drag → rope: the native drag fires no JS pointer events, so the
+    // window's onMoved stream is the only signal that the moon is being carried
+    // around the screen. Feed each logical delta into the rope so the string
+    // trails and swings with the drag instead of riding rigidly along.
+    // The baseline updates even while the rope is hidden (injectWindowDelta
+    // no-ops then), so the first live delta is never a spurious full-screen jump
+    // — including the onMoved fired by our own growToEnvelope() setPosition,
+    // which lands before show() and only refreshes the baseline.
+    (async function wireWindowMoveToRope() {
+      if (!window.__TAURI__) return;
+      try {
+        const w = window.__TAURI__.window.getCurrentWindow();
+        let sf = await w.scaleFactor();
+        let lastX = null, lastY = null;
+        try {
+          // Monitor hop mid-drag: refresh the scale and drop the baseline (one
+          // skipped delta beats one wrongly-scaled fling).
+          await w.onScaleChanged(({ payload }) => { sf = (payload && payload.scaleFactor) || sf; lastX = null; });
+        } catch (_) {}
+        await w.onMoved(({ payload }) => {
+          const lx = payload.x / sf, ly = payload.y / sf;
+          if (lastX !== null) MoonString.injectWindowDelta(lx - lastX, ly - lastY);
+          lastX = lx; lastY = ly;
+        });
+      } catch (e) {
+        Logger.warn('window-move→rope wiring unavailable:', e);
+      }
+    })();
+
     DOM.chatHeader.addEventListener('pointerdown', () => TauriService.startDragging());
     // Corner grip: drag to resize the whole panel.
     // We resize the window OURSELVES via setSize (the same call that grows the window
@@ -5335,7 +6184,9 @@
       resizeGrip.addEventListener('pointercancel', endResize);
     }
 
-    // Local-shell machine-access controls ("+" button + popover menu).
+    // Local-shell machine-access controls (computer-icon button in the composer
+    // + its popover). It lives inside the chat, which is already open when it's
+    // visible, so this just toggles the menu.
     LocalShell.refreshPlatform();
     if (DOM.scopeBtn) {
       DOM.scopeBtn.addEventListener('click', (e) => {
@@ -5358,7 +6209,19 @@
 
     // Chat Panel Controls
     DOM.closeChat.addEventListener('click', () => UIController.toggleChat());
-    DOM.newChat.addEventListener('click', () => ChatEngine.newConversation());
+    // "Start a fresh thread" lives in Settings now (Luna is single-thread). Open
+    // the chat if minimized — sync:false + AWAIT so the open path's syncThread()
+    // can't race-subscribe to the old thread and clobber the new conversation —
+    // start the new conversation, then dismiss the settings modal.
+    if (DOM.freshThreadBtn) {
+      DOM.freshThreadBtn.addEventListener('click', async () => {
+        if (!DOM.chatPanel.classList.contains('active')) {
+          await UIController.toggleChat({ sync: false });
+        }
+        ChatEngine.newConversation();
+        SettingsEngine.close();
+      });
+    }
     DOM.chatForm.addEventListener('submit', (e) => ChatEngine.handleSubmit(e));
     // Textarea: Enter sends, Shift+Enter inserts a newline (a textarea otherwise newlines on Enter).
     DOM.messageInput.addEventListener('keydown', (e) => {
@@ -5456,9 +6319,27 @@
       if (files && files.length) Attachments.addFiles(files);
     });
 
-    // Settings Panel Controls
+    // Settings Panel Controls — the star opens the standalone settings modal
+    // (SettingsEngine.open() handles growing the window when minimized; no need
+    // to open the chat). Done button + the header ✕ both close it.
     DOM.toggleSettings.addEventListener('click', () => SettingsEngine.toggle());
     DOM.closeSettingsBtn.addEventListener('click', () => SettingsEngine.close());
+    const settingsCloseX = document.getElementById('settings-close-x');
+    if (settingsCloseX) settingsCloseX.addEventListener('click', () => SettingsEngine.close());
+    // Tab switching inside the settings modal.
+    document.querySelectorAll('.settings-tab').forEach((tab) => {
+      tab.addEventListener('click', () => {
+        const name = tab.getAttribute('data-tab');
+        document.querySelectorAll('.settings-tab').forEach((t) => {
+          const on = t === tab;
+          t.classList.toggle('active', on);
+          t.setAttribute('aria-selected', String(on));
+        });
+        document.querySelectorAll('.settings-tabpanel').forEach((p) => {
+          p.classList.toggle('active', p.getAttribute('data-tabpanel') === name);
+        });
+      });
+    });
     DOM.alwaysOnTopToggle.addEventListener('change', () => SettingsEngine.handleAlwaysOnTopChange());
     DOM.closeOnBlurToggle.addEventListener('change', () => SettingsEngine.handleCloseOnBlurChange());
     if (DOM.channelSelect) {

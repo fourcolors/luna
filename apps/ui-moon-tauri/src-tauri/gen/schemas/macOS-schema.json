@@ -231,6 +231,18 @@
           "markdownDescription": "Allows switching the active channel profile in the mode-600 WS connection file"
         },
         {
+          "description": "Allows the frontend to publish the clickable region (moon + rope) that drives the click-through cursor poll while the re-tether string is out",
+          "type": "string",
+          "const": "allow-set-interactive-region",
+          "markdownDescription": "Allows the frontend to publish the clickable region (moon + rope) that drives the click-through cursor poll while the re-tether string is out"
+        },
+        {
+          "description": "Allows writing the last active thread id so a restart re-tethers to the same thread",
+          "type": "string",
+          "const": "allow-set-last-thread-id",
+          "markdownDescription": "Allows writing the last active thread id so a restart re-tethers to the same thread"
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",
