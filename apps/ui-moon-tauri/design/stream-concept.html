@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Luna · The Stream — one surface, no threads</title>
+<style>
+  :root {
+    --moon-glow: rgba(186, 218, 255, 0.4);
+    --glass-bg: rgba(10, 14, 28, 0.92);
+    --glass-border: rgba(255, 255, 255, 0.1);
+    --primary: #8ab4f8;
+    --run-c: #8ab4f8;
+    --wait-c: #ffd88a;
+    --done-c: #6ee7b7;
+    --wait-wash: rgba(255, 216, 138, 0.16);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: radial-gradient(1200px 800px at 70% -10%, #16203c 0%, #0a0e1c 55%, #05070f 100%);
+    color: #e7edf8;
+    font-family: 'Plus Jakarta Sans', -apple-system, 'Segoe UI', sans-serif;
+    line-height: 1.55;
+    padding-bottom: 80px;
+  }
+  header { max-width: 1160px; margin: 0 auto; padding: 44px 28px 6px; }
+  h1 { font-size: 26px; font-weight: 700; letter-spacing: 0.2px; }
+  h1 .dim { color: #8ea2c8; font-weight: 400; }
+  .intro { color: #aab8d4; max-width: 920px; margin-top: 10px; font-size: 14.5px; }
+  .intro b { color: #e7edf8; }
+  .rules { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  .rules span {
+    font-size: 12px; color: #cbd8f0; background: rgba(138,180,248,0.10);
+    border: 1px solid rgba(138,180,248,0.25); border-radius: 999px; padding: 4px 12px;
+  }
+
+  .wrap { max-width: 1160px; margin: 24px auto 0; padding: 0 28px; }
+  .stage {
+    position: relative; height: 640px; overflow: hidden; border-radius: 18px;
+    border: 1px solid rgba(255,255,255,0.07);
+    background:
+      radial-gradient(420px 200px at 80% 0%, rgba(138,180,248,0.06), transparent 70%),
+      linear-gradient(180deg, #0b1020 0%, #070a14 100%);
+  }
+  .stage::before {
+    content: ""; position: absolute; inset: 0; opacity: 0.5; pointer-events: none;
+    background-image:
+      radial-gradient(1px 1px at 12% 30%, #ffffff66, transparent),
+      radial-gradient(1px 1px at 80% 18%, #ffffff44, transparent),
+      radial-gradient(1.5px 1.5px at 64% 72%, #ffffff33, transparent),
+      radial-gradient(1px 1px at 30% 84%, #ffffff44, transparent),
+      radial-gradient(1px 1px at 90% 60%, #ffffff33, transparent);
+  }
+  .hint { position: absolute; top: 10px; left: 14px; font-size: 11px; color: #6f81a6; letter-spacing: 0.04em; z-index: 9; pointer-events: none; }
+  .restart {
+    position: absolute; left: 16px; bottom: 14px; z-index: 9;
+    font: inherit; font-size: 10.5px; color: #6f81a6; cursor: pointer;
+    background: none; border: 1px dashed rgba(255,255,255,0.15); border-radius: 8px; padding: 4px 10px;
+  }
+  .restart:hover { color: #cfe0ff; border-color: rgba(138,180,248,0.4); }
+
+  /* ---- moon + sky (activity only — never the roster) ---- */
+  .moonw { position: absolute; width: 72px; height: 72px; left: 60px; top: 26px; z-index: 6; }
+  .mglow { position: absolute; inset: -14px; border-radius: 50%; background: radial-gradient(circle, var(--moon-glow) 0%, rgba(138,180,248,0) 70%); opacity: 0.9; }
+  .msvg { position: relative; width: 100%; height: 100%; filter: drop-shadow(0 6px 16px rgba(138, 180, 248, 0.45)); }
+  .pip {
+    position: absolute; right: 2px; bottom: 4px; min-width: 18px; height: 18px; padding: 0 5px;
+    border-radius: 999px; background: rgba(10,14,28,0.9); border: 1px solid rgba(138,180,248,0.55);
+    color: #cfe0ff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+    transition: all .25s ease;
+  }
+  .pip.gold { border-color: rgba(255,206,110,0.7); color: var(--wait-c); animation: pippulse 1.4s ease-in-out infinite alternate; }
+  .pip.zero { opacity: 0; transform: scale(0.6); }
+  @keyframes pippulse { from { box-shadow: 0 0 4px 0 rgba(255,206,110,0.2); } to { box-shadow: 0 0 12px 3px rgba(255,206,110,0.45); } }
+  .sky { position: absolute; left: 96px; top: 98px; height: 0; z-index: 7; }
+  .strand {
+    position: absolute; display: flex; flex-direction: column; align-items: center;
+    transform-origin: top center; animation: sway 3.8s ease-in-out infinite alternate;
+  }
+  .strand:hover { animation-play-state: paused; }
+  @keyframes sway { from { transform: rotate(-2.5deg); } to { transform: rotate(2.5deg); } }
+  .strand .thr { width: 1px; background: linear-gradient(180deg, rgba(207,226,255,0.0), rgba(207,226,255,0.45)); transition: height .9s cubic-bezier(0.34,1.2,0.64,1); }
+  .star { width: 15px; height: 15px; position: relative; cursor: pointer; margin-top: -2px; transition: transform .25s ease; }
+  .star:hover { transform: scale(1.35); }
+  .star svg { width: 100%; height: 100%; overflow: visible; display: block; }
+  .star.run path { fill: var(--run-c); }
+  .star.wait path { fill: var(--wait-c); }
+  .star.run svg { animation: twinkle 2s ease-in-out infinite alternate; }
+  .star.wait svg { animation: twinkle .9s ease-in-out infinite alternate; }
+  @keyframes twinkle { from { opacity: 0.65; filter: drop-shadow(0 0 1px currentColor); } to { opacity: 1; filter: drop-shadow(0 0 6px currentColor); } }
+  .star .tip {
+    position: absolute; top: 19px; left: 50%; transform: translateX(-50%);
+    background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 9px;
+    font-size: 11px; padding: 4px 9px; white-space: nowrap; color: #d7e1f5;
+    opacity: 0; pointer-events: none; transition: opacity .2s ease; z-index: 12;
+  }
+  .star:hover .tip { opacity: 1; }
+  .strand.falling { animation: none; }
+  .strand.falling .star { animation: fall 1s ease-in forwards; }
+  .strand.falling .thr { transition: height .7s ease; height: 0 !important; }
+  @keyframes fall { to { transform: translateY(230px) rotate(140deg) scale(0.8); opacity: 0; } }
+  .sky-empty { position: absolute; left: 60px; top: 120px; width: 80px; text-align: center; font-size: 10px; color: #44537a; font-style: italic; z-index: 5; }
+
+  /* ---- the one surface ---- */
+  .chat2 {
+    position: absolute; left: 190px; top: 16px; right: 16px; bottom: 16px;
+    background: var(--glass-bg); border-radius: 26px 26px 30px 30px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.38), inset 0 0 0 1px rgba(255,255,255,0.06);
+    display: flex; flex-direction: column; overflow: hidden; z-index: 3;
+  }
+  .mc-hdr { display: flex; align-items: center; gap: 8px; padding: 11px 16px; border-bottom: 1px solid rgba(255,255,255,0.06); flex-shrink: 0; }
+  .mc-av { width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0; background: radial-gradient(circle, #f0f6ff 0%, #8ab4f8 100%); box-shadow: 0 0 8px rgba(138,180,248,0.4); }
+  .mc-t { font-size: 11.5px; font-weight: 600; color: #fff; }
+  .mc-s { font-size: 8.5px; color: #34d399; display: flex; align-items: center; gap: 3px; }
+  .mc-s::before { content: ""; width: 4px; height: 4px; border-radius: 50%; background: #10b981; box-shadow: 0 0 4px #10b981; }
+  .hbtns { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+  .hbtn { color: #5d6e92; cursor: pointer; font-size: 13px; transition: color .15s ease; background: none; border: none; font-family: inherit; }
+  .hbtn:hover { color: #cfe0ff; }
+  .hbtn.on { color: var(--primary); }
+
+  .stream { flex: 1; overflow-y: auto; padding: 14px 18px; display: flex; flex-direction: column; gap: 9px; font-size: 12.5px; }
+  .stream::-webkit-scrollbar { width: 8px; }
+  .stream::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 4px; }
+
+  .day { text-align: center; font-size: 10px; color: #5d6e92; letter-spacing: 0.1em; text-transform: uppercase; margin: 6px 0 2px; }
+  .msg { max-width: 78%; padding: 7px 11px; border-radius: 11px; background: rgba(255,255,255,0.05); color: #c5d1ea; }
+  .msg.u { align-self: flex-end; background: rgba(138,180,248,0.14); }
+  .msg .prov {
+    display: inline-flex; align-items: center; gap: 4px; margin-bottom: 3px;
+    font-size: 9.5px; color: #8ea2c8; letter-spacing: 0.03em;
+  }
+  .msg .prov b { color: #aab8d4; font-weight: 600; }
+  .old { opacity: 0.55; }
+
+  /* heartbeat — cron/persistent-agent rhythm, coalesces in place, never a card */
+  .hb {
+    align-self: center; display: flex; align-items: center; gap: 7px;
+    font-size: 10.5px; color: #6f81a6; padding: 1px 10px;
+  }
+  .hb .sym { color: #4f628c; font-size: 11px; }
+  .hb b { color: #8ea2c8; font-weight: 600; }
+  .hb .more { color: #4f628c; font-style: italic; }
+
+  /* live activity card — delegated work, updates in place, in the stream */
+  .act {
+    align-self: stretch; max-width: 86%;
+    background: rgba(13, 18, 34, 0.85); border: 1px solid rgba(138,180,248,0.22);
+    border-radius: 13px; padding: 9px 12px 10px;
+    transition: border-color .3s ease, box-shadow .3s ease;
+  }
+  .act.flash { box-shadow: 0 0 0 2px rgba(138,180,248,0.45), 0 0 24px rgba(138,180,248,0.25); }
+  .act.blocked { border-color: rgba(255,206,110,0.45); }
+  .act.done { border-color: rgba(110,231,183,0.25); }
+  .act .ahd { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .act .ahd .nm { font-weight: 700; font-size: 12.5px; }
+  .act .ahd .el { margin-left: auto; font-size: 10.5px; color: #8ea2c8; font-variant-numeric: tabular-nums; }
+  .act .ahd .chev { color: #5d6e92; font-size: 10px; transition: transform .2s ease; }
+  .act.open .ahd .chev { transform: rotate(90deg); }
+  .act .body { display: none; margin-top: 8px; }
+  .act.open .body { display: block; }
+  .act .strow { display: flex; gap: 9px; font-size: 11.5px; color: #c5d1ea; position: relative; padding-bottom: 11px; }
+  .act .strow::before { content: ""; position: absolute; left: 5px; top: 14px; bottom: 1px; width: 1px; background: rgba(255,255,255,0.09); }
+  .act .strow:last-child::before { display: none; }
+  .act .strow .t { color: #6f81a6; font-size: 10px; margin-left: auto; flex-shrink: 0; }
+  .act .sum { margin-top: 2px; font-size: 11px; color: #8ea2c8; }
+  .kindchip {
+    font-size: 9px; letter-spacing: 0.05em; text-transform: uppercase; flex-shrink: 0;
+    border-radius: 5px; padding: 1px 6px; border: 1px solid rgba(255,255,255,0.14); color: #9fb0d2;
+  }
+  .kindchip.workflow { color: #c4b5fd; border-color: rgba(196,181,253,0.35); }
+  .kindchip.agent { color: #6ee7b7; border-color: rgba(110,231,183,0.35); }
+  .kindchip.cron { color: #fda4af; border-color: rgba(253,164,175,0.3); }
+  .blot { width: 12px; height: 12px; flex-shrink: 0; position: relative; }
+  .blot::before { content: ""; position: absolute; inset: 0; border-radius: 46% 54% 58% 42% / 52% 44% 56% 48%; filter: blur(0.4px); }
+  .blot.run::before { background: radial-gradient(circle at 40% 35%, rgba(207,226,255,0.95), var(--run-c) 55%, rgba(138,180,248,0.25) 95%); animation: breathe 2.2s ease-in-out infinite alternate; }
+  .blot.wait::before { background: radial-gradient(circle at 40% 35%, #fff3d6, var(--wait-c) 55%, rgba(255,216,138,0.25) 95%); animation: breathe 1.1s ease-in-out infinite alternate; }
+  .blot.done::before { background: radial-gradient(circle at 40% 35%, rgba(220,255,240,0.9), var(--done-c) 60%, rgba(110,231,183,0.2) 95%); opacity: 0.75; }
+  @keyframes breathe { from { transform: scale(0.92) rotate(-8deg); opacity: 0.75; } to { transform: scale(1.08) rotate(6deg); opacity: 1; } }
+
+  /* the ask — a message like any other, just gold */
+  .msg.ask { border: 1px solid rgba(255,206,110,0.45); background: var(--wait-wash); max-width: 86%; }
+  .msg.ask .atit { color: var(--wait-c); font-weight: 600; font-size: 11px; margin-bottom: 2px; }
+  .abtns { margin-top: 8px; display: flex; gap: 7px; }
+  .abtn { font: inherit; font-size: 11px; cursor: pointer; border-radius: 9px; padding: 4px 12px; border: 1px solid rgba(255,206,110,0.55); background: rgba(255,206,110,0.14); color: var(--wait-c); }
+  .abtn.sec { border-color: rgba(255,255,255,0.14); background: rgba(255,255,255,0.04); color: #9fb0d2; }
+  .msg.result { border: 1px solid rgba(110,231,183,0.3); max-width: 86%; }
+  .msg.result .rtit { color: var(--done-c); font-weight: 600; font-size: 11px; display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+
+  .mc-in { margin: 0 14px 12px; padding: 8px 13px; font-size: 11px; color: #6f81a6; border: 1px solid rgba(255,255,255,0.08); border-radius: 999px; flex-shrink: 0; }
+
+  /* ---- the observatory (settings · the roster lives HERE, not in the sky) ---- */
+  .obs { flex: 1; overflow-y: auto; padding: 16px 20px; font-size: 12px; display: none; }
+  .chat2.settings .obs { display: block; }
+  .chat2.settings .stream, .chat2.settings .mc-in { display: none; }
+  .obs h3 { font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: #8ea2c8; margin: 14px 0 8px; }
+  .obs h3:first-child { margin-top: 0; }
+  .obs .row {
+    display: flex; align-items: center; gap: 10px; padding: 8px 11px;
+    border: 1px solid rgba(255,255,255,0.06); border-radius: 11px; margin-bottom: 6px;
+    background: rgba(255,255,255,0.02);
+  }
+  .obs .row .nm { font-weight: 600; font-size: 12px; }
+  .obs .row .sub { color: #8ea2c8; font-size: 10.5px; }
+  .obs .row .right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .obs .next { font-size: 10px; color: #6f81a6; font-variant-numeric: tabular-nums; }
+  .obs .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .obs .dot.on { background: #34d399; box-shadow: 0 0 5px #10b981; }
+  .obs .dot.idle { background: #5d6e92; }
+  .obs .toggle {
+    width: 30px; height: 17px; border-radius: 999px; background: rgba(138,180,248,0.35);
+    position: relative; cursor: pointer; flex-shrink: 0;
+  }
+  .obs .toggle::after { content: ""; position: absolute; top: 2px; left: 15px; width: 13px; height: 13px; border-radius: 50%; background: #cfe0ff; transition: left .15s ease; }
+  .obs .toggle.off { background: rgba(255,255,255,0.1); }
+  .obs .toggle.off::after { left: 2px; background: #6f81a6; }
+  .obs .note { font-size: 10.5px; color: #6f81a6; font-style: italic; margin: 2px 0 10px; }
+
+  /* ---- explainer below ---- */
+  .explain { max-width: 1160px; margin: 26px auto 0; padding: 0 28px; display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }
+  .ex { background: rgba(13,18,34,0.6); border: 1px solid rgba(255,255,255,0.07); border-radius: 14px; padding: 14px 16px; font-size: 12.5px; color: #aab8d4; }
+  .ex b { color: #e7edf8; }
+  .ex h4 { font-size: 13.5px; color: #e7edf8; margin-bottom: 6px; }
+  .ex ul { padding-left: 16px; margin-top: 6px; }
+  .ex li { margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <linearGradient id="crescent-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" /><stop offset="35%" stop-color="#e2ecfd" />
+      <stop offset="70%" stop-color="#8ab4f8" /><stop offset="100%" stop-color="#1b2a4a" />
+    </linearGradient>
+    <filter id="glow-filter" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur" /><feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+</svg>
+
+<header>
+  <h1>The Stream <span class="dim">· one surface, no threads</span></h1>
+  <p class="intro">
+    The reframe: <b>everything that happens lives in one chronological stream with Luna</b> — your words,
+    her replies, delegation receipts, live activity cards, asks, results, and the soft heartbeat of scheduled work.
+    You never choose a thread, open a tab, or visit a panel-per-agent. The sky shows only what's <b>alive right now</b>;
+    the roster of permanent residents lives in <b>settings (the observatory)</b>, not in the air.
+    The scenario below plays itself — and everything is clickable.
+  </p>
+  <div class="rules">
+    <span>✓ no threads, no tabs — clicking a star scrolls the one stream</span>
+    <span>✓ cron = heartbeat lines + provenance chips, never event cards</span>
+    <span>✓ residents (persistent agents) live in settings, visitors (tasks) live in the sky</span>
+    <span>✓ asks are ordinary messages that happen to be gold</span>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="stage">
+    <span class="hint">live — watch the scenario · answer the ask · click the star · open ⚙</span>
+    <div class="moonw"></div>
+    <div class="sky"></div>
+    <div class="sky-empty" style="display:none">clear skies</div>
+    <div class="chat2">
+      <div class="mc-hdr">
+        <div class="mc-av"></div>
+        <div><div class="mc-t">Luna Companion</div><div class="mc-s">Connected</div></div>
+        <div class="hbtns">
+          <button class="hbtn" id="gear" title="Observatory — agents, rhythms, settings">⚙</button>
+          <button class="hbtn" title="Close">✕</button>
+        </div>
+      </div>
+      <div class="stream"></div>
+      <div class="obs"></div>
+      <div class="mc-in">Tell Luna what you need…</div>
+    </div>
+    <button class="restart">▶ restart scenario</button>
+  </div>
+</div>
+
+<div class="explain">
+  <div class="ex">
+    <h4>Why this fixes what felt off</h4>
+    Every earlier concept reinvented threads — tabs, popovers, peek panels are all <b>a place per agent</b>.
+    Here there is exactly one place. Delegated work is an <b>updating card inside the conversation</b>,
+    in the spot where it was born. History is just "scroll up" — the stream <i>is</i> the log.
+  </div>
+  <div class="ex">
+    <h4>The ontology, respected</h4>
+    <ul>
+      <li><b>Ephemeral agents / delegated tasks</b> — visitors: star in the sky + live card in the stream; both die when it's done</li>
+      <li><b>Cron rhythms</b> — heartbeat lines that coalesce in place ("wake-reasoner · 14 checks · all quiet"), and provenance chips when a scheduled run speaks ("daily-brief · 07:00")</li>
+      <li><b>Persistent agents</b> — residents: never in the sky while idle; managed in the observatory with status + toggles</li>
+    </ul>
+  </div>
+  <div class="ex">
+    <h4>One rule for attention</h4>
+    Gold is the only escalation: a gold <b>message</b> in the stream, a gold <b>star</b> in the sky, a gold <b>pip</b> on the moon —
+    three views of the same single question, answered once, anywhere. Everything else is allowed to be quiet.
+  </div>
+</div>
+
+<script>
+const CRESCENT = `
+  <div class="mglow"></div>
+  <svg class="msvg" viewBox="0 0 100 100">
+    <path d="M 62 12 A 38 38 0 1 0 88 62 A 30 30 0 1 1 62 12 Z" fill="url(#crescent-grad)" filter="url(#glow-filter)" />
+    <circle cx="40" cy="42" r="4.5" fill="#05070f" opacity="0.35"/><circle cx="34" cy="60" r="3.5" fill="#05070f" opacity="0.35"/>
+    <circle cx="48" cy="28" r="3" fill="#05070f" opacity="0.35"/><circle cx="28" cy="48" r="2.5" fill="#05070f" opacity="0.3"/>
+  </svg>
+  <div class="pip zero"></div>`;
+document.querySelector('.moonw').innerHTML = CRESCENT;
+const STAR_PATH = 'M7 0 L8.6 4.8 L14 5.2 L9.8 8.4 L11.2 14 L7 10.8 L2.8 14 L4.2 8.4 L0 5.2 L5.4 4.8 Z';
+
+const stream = document.querySelector('.stream');
+const sky = document.querySelector('.sky');
+const skyEmpty = document.querySelector('.sky-empty');
+const chat2 = document.querySelector('.chat2');
+
+/* ---------- state ---------- */
+let S = null, timers = [], started = 0;
+function resetState() {
+  timers.forEach(clearTimeout); timers = [];
+  started = Date.now();
+  S = {
+    review: { status: 'run', steps: [
+      ['done', 'checked out PR #99 · built context', '09:41'],
+    ], askLive: false, answered: false, finished: false, open: true },
+    wakeChecks: 14,
+  };
+}
+const at = (ms, fn) => timers.push(setTimeout(fn, ms));
+function fmtEl() {
+  const s = Math.floor((Date.now() - started) / 1000) + 192; /* task started "3m ago" */
+  return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+}
+
+/* ---------- sky (activity only) ---------- */
+function renderSky() {
+  const liveStar = !S.review.finished;
+  sky.innerHTML = liveStar ? `
+    <div class="strand" style="left:0">
+      <div class="thr" style="height:62px"></div>
+      <div class="star ${S.review.status}" id="star-review">
+        <svg viewBox="0 0 14 14"><path d="${STAR_PATH}"/></svg>
+        <div class="tip"><b>code-review</b> · click to find it in the stream</div>
+      </div>
+    </div>` : '';
+  skyEmpty.style.display = liveStar ? 'none' : 'block';
+  const pip = document.querySelector('.pip');
+  pip.textContent = liveStar ? '1' : '';
+  pip.classList.toggle('zero', !liveStar);
+  pip.classList.toggle('gold', S.review.status === 'wait');
+}
+sky.addEventListener('click', e => {
+  if (!e.target.closest('.star')) return;
+  /* no tabs, no panels: the star is a BOOKMARK into the one stream */
+  const card = document.getElementById('act-review');
+  if (!card) return;
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  card.classList.add('flash');
+  setTimeout(() => card.classList.remove('flash'), 1200);
+});
+
+/* ---------- stream ---------- */
+function actCard() {
+  const it = S.review;
+  const state = it.finished ? 'done' : it.status === 'wait' ? 'blocked' : 'run';
+  return `
+  <div class="act ${state === 'blocked' ? 'blocked' : ''} ${it.finished ? 'done' : ''} ${it.open ? 'open' : ''}" id="act-review">
+    <div class="ahd" data-toggle>
+      <div class="blot ${it.finished ? 'done' : it.status}"></div>
+      <span class="nm">code-review</span>
+      <span class="kindchip workflow">workflow</span>
+      <span class="kindchip agent">ephemeral</span>
+      <span class="el">${it.finished ? '✓ 4m 02s' : `<span data-el></span>`}</span>
+      <span class="chev">▶</span>
+    </div>
+    <div class="body">
+      ${it.steps.map(([k, t, ts]) => `
+        <div class="strow"><div class="blot ${k === 'ask' ? 'wait' : k === 'cur' ? 'run' : 'done'}"></div><span>${t}</span><span class="t">${ts}</span></div>`).join('')}
+    </div>
+    ${it.open ? '' : `<div class="sum">${it.steps.length} steps · ${it.finished ? 'finished' : it.status === 'wait' ? 'waiting on you' : 'running'}</div>`}
+  </div>`;
+}
+function heartbeat() {
+  return `
+  <div class="hb" id="hb-wake"><span class="sym">⟳</span><b>wake-reasoner</b> · ${S.wakeChecks} checks since 9:00 · all quiet</div>`;
+}
+function renderStream() {
+  const it = S.review;
+  stream.innerHTML = `
+    <div class="day">yesterday</div>
+    <div class="msg u old">what's queued for tonight?</div>
+    <div class="msg old">Dream runs at 3:00 as usual, and I'll have your brief ready by 7. Nothing needs you before morning.</div>
+    <div class="day">today</div>
+    <div class="hb"><span class="sym">⟳</span><b>Dream</b> ran at 3:00 · proposed 3 beliefs · <span class="more">survey waiting in tonight's check-in</span></div>
+    <div class="msg"><span class="prov"><span class="kindchip cron">cron</span> <b>daily-brief</b> · 07:00</span><br>Morning — two things need you today: the PR #99 merge window closes at noon, and Liya's server is one version behind stable.</div>
+    <div class="msg u old">thanks — remind me at 11 if I haven't merged</div>
+    ${heartbeat()}
+    <div class="msg u">can you review PR 99 before I merge?</div>
+    <div class="msg">On it — handed to <b>code-review</b>. It'll work here in the open; I'll only interrupt if it needs a decision.</div>
+    ${actCard()}
+    ${it.askLive && !it.answered ? `
+      <div class="msg ask" id="ask-review">
+        <div class="atit">code-review needs a decision</div>
+        Post 3 inline comments to PR #99? Two are high-confidence (cooldown integrity, failover viability); one is style-only.
+        <div class="abtns"><button class="abtn" data-yes>Post them</button><button class="abtn sec" data-no>Style nit only</button></div>
+      </div>` : ''}
+    ${it.answered ? `
+      <div class="msg u">post them</div>` : ''}
+    ${it.finished ? `
+      <div class="msg result">
+        <div class="rtit">✓ code-review finished · 4m 02s</div>
+        Posted 3 comments to PR #99. The cooldown-integrity one is worth a look before you merge — want me to hold the merge reminder until you've seen it?
+      </div>` : ''}
+  `;
+  stream.querySelector('[data-toggle]').addEventListener('click', () => { it.open = !it.open; renderStream(); });
+  stream.querySelectorAll('[data-yes],[data-no]').forEach(b => b.addEventListener('click', answer));
+  stream.scrollTop = stream.scrollHeight;
+}
+function answer() {
+  const it = S.review;
+  it.answered = true; it.askLive = false; it.status = 'run';
+  it.steps = it.steps.filter(([k]) => k !== 'ask').concat([
+    ['done', 'you said: post them', 'now'],
+    ['cur', 'posting 3 comments to PR #99…', 'now'],
+  ]);
+  renderAll();
+  /* completion follows on its own — the stream tells you when it lands */
+  at(4000, finish);
+}
+function finish() {
+  const it = S.review;
+  if (it.finished) return;
+  it.finished = true; it.status = 'run';
+  it.steps = it.steps.map(([k, t, ts]) => [k === 'cur' ? 'done' : k, t, ts]);
+  it.open = false; /* done work folds itself up — the result message speaks for it */
+  const strand = sky.querySelector('.strand');
+  if (strand) {
+    strand.classList.add('falling');
+    setTimeout(renderAll, 1000);
+  } else renderAll();
+}
+function renderAll() { renderSky(); renderStream(); }
+
+/* ---------- scenario ---------- */
+function play() {
+  resetState();
+  chat2.classList.remove('settings');
+  document.getElementById('gear').classList.remove('on');
+  renderAll();
+  at(2500, () => {  /* live progress arrives in place */
+    S.review.steps.push(['done', 'adversarial pass — 3 findings, 2 high-confidence', '09:44']);
+    renderAll();
+  });
+  at(5500, () => {  /* the block: gold everywhere, answered once */
+    S.review.status = 'wait';
+    S.review.steps.push(['ask', 'blocked — needs your call before posting', 'now']);
+    S.review.askLive = true;
+    renderAll();
+  });
+  at(9000, () => {  /* heartbeats coalesce IN PLACE — no new lines, no noise */
+    S.wakeChecks = 15;
+    const hb = document.getElementById('hb-wake');
+    if (hb) hb.innerHTML = `<span class="sym">⟳</span><b>wake-reasoner</b> · ${S.wakeChecks} checks since 9:00 · all quiet`;
+  });
+}
+document.querySelector('.restart').addEventListener('click', play);
+
+/* elapsed ticker */
+setInterval(() => {
+  const el = stream.querySelector('[data-el]');
+  if (el && !S.review.finished) el.textContent = fmtEl();
+}, 1000);
+
+/* ---------- observatory ---------- */
+document.querySelector('.obs').innerHTML = `
+  <h3>Residents · persistent agents</h3>
+  <div class="note">Always-on. They never appear in the sky unless actively working — existence isn't activity.</div>
+  <div class="row"><div class="dot on"></div><div><div class="nm">wake-reasoner</div><div class="sub">decides what deserves attention · checks every few minutes</div></div><div class="right"><span class="next">last: 2m ago</span><div class="toggle"></div></div></div>
+  <div class="row"><div class="dot on"></div><div><div class="nm">memory-keeper</div><div class="sub">files observations into beliefs</div></div><div class="right"><span class="next">last: 11m ago</span><div class="toggle"></div></div></div>
+  <div class="row"><div class="dot idle"></div><div><div class="nm">outreach</div><div class="sub">drafts proactive check-ins</div></div><div class="right"><span class="next">paused</span><div class="toggle off"></div></div></div>
+  <h3>Rhythms · cron</h3>
+  <div class="note">Scheduled work. Appears in the stream as heartbeats and provenance chips when it runs.</div>
+  <div class="row"><div class="dot on"></div><div><div class="nm">Dream</div><div class="sub">nightly belief synthesis · workflow</div></div><div class="right"><span class="next">3:00 · next in 16h</span><div class="toggle"></div></div></div>
+  <div class="row"><div class="dot on"></div><div><div class="nm">daily-brief</div><div class="sub">morning summary · prompt</div></div><div class="right"><span class="next">7:00 · next in 20h</span><div class="toggle"></div></div></div>
+  <div class="row"><div class="dot on"></div><div><div class="nm">mail-sync</div><div class="sub">shell step · feeds triage</div></div><div class="right"><span class="next">every 30m</span><div class="toggle"></div></div></div>
+  <h3>Workflows · on demand</h3>
+  <div class="note">Definitions Luna can delegate to. A run = an ephemeral visitor in the sky + a card in the stream.</div>
+  <div class="row"><div class="dot idle"></div><div><div class="nm">code-review</div><div class="sub">checkout → adversarial pass → post</div></div><div class="right"><span class="next">last run: just now</span></div></div>
+  <div class="row"><div class="dot idle"></div><div><div class="nm">mail-triage</div><div class="sub">sync → classify → draft replies</div></div><div class="right"><span class="next">last run: 7:02</span></div></div>
+`;
+document.getElementById('gear').addEventListener('click', () => {
+  chat2.classList.toggle('settings');
+  document.getElementById('gear').classList.toggle('on');
+});
+
+play();
+</script>
+</body>
+</html>
