@@ -21,6 +21,7 @@ import {
   CLAUDE_CODE_LOGIN_SECRET_REF,
   profileForKind,
   readProviderEnv,
+  toWireModel,
   type AccountBrokerApi,
   type AcquiredSession,
 } from "@luna/core"
@@ -60,7 +61,9 @@ export function brokeredOptionsFragment(
   acq: AcquiredSession,
 ): { model?: string; env?: Record<string, string> } {
   return {
-    ...(acq.model !== "default" ? { model: acq.model } : {}),
+    ...(acq.model !== "default"
+      ? { model: toWireModel(acq.model, acq.credential.kind) }
+      : {}),
     ...(acq.credential.secretRef !== CLAUDE_CODE_LOGIN_SECRET_REF
       ? {
           env: buildBrokerEnvOverlay(

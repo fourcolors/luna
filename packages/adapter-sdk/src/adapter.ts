@@ -34,6 +34,7 @@ import {
   AccountBroker,
   profileForKind,
   readProviderEnv,
+  toWireModel,
   type AccountBrokerApi,
   type SessionOptions,
 } from "@luna/core"
@@ -326,7 +327,11 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
               (callerSuppliedModel || acq.model !== brokerModel) &&
               acq.model !== "default"
             ) {
-              overrides.model = acq.model
+              // Strip luna's routing token (`local/` / `:cloud`) from the wire
+              // model — the SELECTOR string is not a name the ollama endpoints
+              // know. acquiredModel (line above) keeps acq.model for B4 pricing;
+              // only the SDK-bound value is normalized.
+              overrides.model = toWireModel(acq.model, acq.credential.kind)
             }
             // B8: the broker advanced past a previously-used chain step → log a
             // warning so an operator sees budget/throttle-driven failover. (The

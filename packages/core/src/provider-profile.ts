@@ -208,3 +208,31 @@ export function resolveProfile(
   const providerEnv = readProviderEnv(env)
   return profileForKind(resolveKind(model, providerEnv), providerEnv)
 }
+
+/**
+ * Strip luna's INTERNAL routing token from a model string to produce the name
+ * that goes over the wire. The token that SELECTS a provider kind — the
+ * `local/` prefix (→ ollama-local) and the `:cloud` suffix (→ ollama-cloud) —
+ * is a luna convention the Ollama endpoints do not understand: sending it
+ * verbatim makes the upstream reject the model
+ * (`not_found_error: model 'local/qwen3.6:35b' not found`), which makes the
+ * ollama-local / ollama-cloud lanes non-functional. The selector and the wire
+ * value are the same field, so we consume the token for routing (resolveKind)
+ * and remove it here for the request.
+ *
+ * Gateway kinds (google / openai / unknown) and anthropic keep the name
+ * VERBATIM: LiteLLM matches on the operator-configured `model_name`, and
+ * anthropic ids carry no routing token. Stripping is gated on the resolved
+ * `kind` (not a substring guess) so a `:cloud` that legitimately appears in a
+ * gateway model name is left intact.
+ */
+export function toWireModel(model: string, kind: string): string {
+  switch (kind) {
+    case "ollama-local":
+      return model.replace(/^local\//i, "")
+    case "ollama-cloud":
+      return model.replace(/:cloud$/i, "")
+    default:
+      return model
+  }
+}

@@ -10,6 +10,7 @@
 import { describe, expect, it } from "vitest"
 import {
   resolveProfile,
+  toWireModel,
   ANTHROPIC_KIND,
 } from "../src/provider-profile.js"
 
@@ -85,5 +86,47 @@ describe("resolveProfile", () => {
     expect(p.kind).toBe("mistral")
     expect(p.baseUrl).toBe("http://gw:4000")
     expect(p.authVar).toBe("ANTHROPIC_AUTH_TOKEN")
+  })
+})
+
+describe("toWireModel — strips luna's routing token from the wire name", () => {
+  // Regression for a LIVE-PROVEN bug: a real Agent SDK turn sent
+  // `local/qwen3.6:35b` verbatim and Ollama replied
+  // `not_found_error: model 'local/qwen3.6:35b' not found`, making the
+  // ollama-local lane non-functional. The `local/` prefix is BOTH the route
+  // selector (resolveKind) AND part of the wire name — it must be stripped
+  // for the request after it has done its routing job.
+  it("strips the leading 'local/' prefix for ollama-local", () => {
+    expect(toWireModel("local/qwen3.6:35b", "ollama-local")).toBe("qwen3.6:35b")
+    expect(toWireModel("local/llama3", "ollama-local")).toBe("llama3")
+  })
+
+  it("strips a trailing ':cloud' suffix for ollama-cloud", () => {
+    expect(toWireModel("qwen3-coder:480b:cloud", "ollama-cloud")).toBe(
+      "qwen3-coder:480b",
+    )
+  })
+
+  it("is case-insensitive on the routing token (matches resolveKind)", () => {
+    expect(toWireModel("LOCAL/Foo", "ollama-local")).toBe("Foo")
+    expect(toWireModel("foo:CLOUD", "ollama-cloud")).toBe("foo")
+  })
+
+  it("leaves gateway and anthropic names VERBATIM (LiteLLM matches on them)", () => {
+    // google / openai / unknown route through the gateway — the operator's
+    // configured model_name must reach LiteLLM unchanged.
+    expect(toWireModel("gemini-2.5-flash", "google")).toBe("gemini-2.5-flash")
+    expect(toWireModel("gpt-4o", "openai")).toBe("gpt-4o")
+    expect(toWireModel("claude-sonnet-4-6", "anthropic")).toBe(
+      "claude-sonnet-4-6",
+    )
+    expect(toWireModel("mistral-large", "mistral")).toBe("mistral-large")
+  })
+
+  it("only strips the token at its routing position, not mid-string", () => {
+    // a ':cloud' that is NOT a trailing suffix, and a 'local/' that is NOT a
+    // leading prefix, are part of the real name on a non-ollama kind → untouched.
+    expect(toWireModel("my-local/model", "google")).toBe("my-local/model")
+    expect(toWireModel("cloud:thing", "ollama-cloud")).toBe("cloud:thing")
   })
 })
