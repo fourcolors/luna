@@ -1,0 +1,5 @@
+# Generated for the connector OAuth flow (PRD A §09) — see main.rs.
+[[permission]]
+identifier = "allow-oauth-loopback-wait"
+description = "Allows the oauth_loopback_wait command"
+commands.allow = ["oauth_loopback_wait"]

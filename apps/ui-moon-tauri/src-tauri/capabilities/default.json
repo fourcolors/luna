@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default permission set for the main window",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "core:window:default",
@@ -24,6 +26,11 @@
     "allow-get-platform",
     "allow-check-for-update",
     "allow-install-update",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "allow-oauth-loopback-start",
+    "allow-oauth-loopback-wait",
+    "allow-oauth-loopback-cancel",
+    "allow-open-external-url",
+    "opener:allow-open-url"
   ]
 }
