@@ -82,8 +82,8 @@ voice = [
   "dep:objc2-foundation",
   "dep:objc2-avf-audio",
 ]
-# Enables the voice_spike e2e harness bin (which reuses the lib's voice
-# modules — the feature now just gates the bin target).
+# Enables the voice_spike e2e harness (which reuses the lib's voice
+# modules — the feature now just gates the example target).
 voice-spike = ["voice"]
 
 # Shared library target: the voice pipeline is one implementation consumed by
@@ -93,13 +93,15 @@ voice-spike = ["voice"]
 name = "luna_moon_ui_lib"
 path = "src/lib.rs"
 
-# Explicit bin targets: declaring [[bin]] for the spike means we also declare
-# the default app bin so cargo target resolution stays deterministic.
 [[bin]]
 name = "luna-moon-ui"
 path = "src/main.rs"
 
-[[bin]]
+# The voice_spike e2e harness is an EXAMPLE, not a [[bin]]: the Tauri bundler
+# copies every [[bin]] target into the .app and fails on one that wasn't
+# built (required-features doesn't exempt it). Examples are never bundled.
+# Run: cargo run --example voice_spike --features voice-spike --release -- --mic 8
+[[example]]
 name = "voice_spike"
-path = "src/bin/voice_spike.rs"
+path = "examples/voice_spike.rs"
 required-features = ["voice-spike"]

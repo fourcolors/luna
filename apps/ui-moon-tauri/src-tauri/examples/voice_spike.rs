@@ -10,7 +10,7 @@
 //!
 //! Model resolves from --model, else ~/.luna/models/ggml-base.en.bin.
 //!
-//! Build: cargo run --bin voice_spike --features voice-spike --release -- --file t.wav
+//! Build: cargo run --example voice_spike --features voice-spike --release -- --file t.wav
 
 use std::time::Instant;
 

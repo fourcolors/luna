@@ -1,5 +1,5 @@
 //! VAD-driven endpointer: feed 512-sample 16kHz frames, get bounded
-//! utterances out. Ported from the Phase-0 spike (src/bin/voice_spike.rs),
+//! utterances out. Ported from the Phase-0 spike (examples/voice_spike.rs),
 //! with two deliberate changes:
 //!
 //!   1. Generic over the speech-probability function — the constructor takes
