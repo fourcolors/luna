@@ -37,6 +37,17 @@ export interface HelloFrame {
    * protocol bump is needed. Lets a client display which build it's talking to.
    */
   readonly buildSha?: string
+  /**
+   * Models the operator can pick for new threads. OPTIONAL and additive —
+   * absent on older servers; the client falls back to its own hardcoded list
+   * when this field is missing. The FIRST entry is the recommended default
+   * (highest capability or operator-preferred).
+   *
+   * No protocol bump needed: additive field, same pattern as `buildSha`.
+   * The server includes it when `availableModels` is threaded into
+   * `startUIWebSocketServer`; older/setup-mode servers omit it entirely.
+   */
+  readonly availableModels?: ReadonlyArray<{ readonly id: string; readonly label: string }>
   /** Capability flags so older clients can negotiate down. */
   readonly capabilities: {
     readonly chat: boolean

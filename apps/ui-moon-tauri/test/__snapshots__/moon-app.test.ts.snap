@@ -129,6 +129,17 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
             <option value="dev">Dev</option>
           </select>
         </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Model</span>
+            <span class="setting-desc">Model for new conversations — existing threads keep theirs</span>
+          </div>
+          <!-- Options beyond "Server default" are populated from the server's
+               hello \`availableModels\` (additive; absent on older servers). -->
+          <select id="model-select" class="channel-select">
+            <option value="">Server default</option>
+          </select>
+        </div>
         <div class="setting-item flex-column">
           <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
             <span class="setting-label">WebSocket Server URL</span>
@@ -608,6 +619,17 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
           <select id="channel-select" class="channel-select">
             <option value="stable">Stable</option>
             <option value="dev">Dev</option>
+          </select>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Model</span>
+            <span class="setting-desc">Model for new conversations — existing threads keep theirs</span>
+          </div>
+          <!-- Options beyond "Server default" are populated from the server's
+               hello \`availableModels\` (additive; absent on older servers). -->
+          <select id="model-select" class="channel-select">
+            <option value="">Server default</option>
           </select>
         </div>
         <div class="setting-item flex-column">

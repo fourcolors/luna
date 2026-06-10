@@ -601,4 +601,42 @@ describe("UIWebSocketServer", () => {
     )
     await runtime.dispose()
   })
+
+  // ── availableModels in hello frame ──────────────────────────────────────
+  // Same additive pattern as buildSha: present when threaded in, absent otherwise.
+
+  it("hello frame includes availableModels when configured", async () => {
+    const models = [
+      { id: "claude-sonnet-4-6", label: "Sonnet 4.6 — balanced" },
+      { id: "claude-haiku-4-5",  label: "Haiku 4.5 — fastest" },
+    ]
+    rig = await startRig(undefined, { availableModels: models })
+    const frames = await collectFrames(
+      rig.url,
+      { authorization: `Bearer ${TOKEN}` },
+      1,
+    )
+    if (frames[0]?.type === "hello") {
+      expect(frames[0].availableModels).toEqual(models)
+    } else {
+      throw new Error("expected hello frame")
+    }
+  })
+
+  it("hello frame omits availableModels when not configured", async () => {
+    // Server started without availableModels → the field must be absent from
+    // the wire (not present as undefined or null). Older clients rely on
+    // strict absence to detect old servers and fall back to their own list.
+    rig = await startRig()
+    const frames = await collectFrames(
+      rig.url,
+      { authorization: `Bearer ${TOKEN}` },
+      1,
+    )
+    if (frames[0]?.type === "hello") {
+      expect(Object.prototype.hasOwnProperty.call(frames[0], "availableModels")).toBe(false)
+    } else {
+      throw new Error("expected hello frame")
+    }
+  })
 })

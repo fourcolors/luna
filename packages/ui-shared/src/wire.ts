@@ -98,6 +98,13 @@ export interface HelloFrame {
     readonly streamingDeltas: boolean
     readonly setup: boolean
   }
+  /**
+   * Models the operator can pick for new threads. OPTIONAL and additive —
+   * absent on older servers; clients fall back to their own hardcoded list.
+   * The FIRST entry is the recommended default.  Mirrors the same field in
+   * packages/ui-ws/src/protocol.ts — keep in sync.
+   */
+  readonly availableModels?: ReadonlyArray<{ readonly id: string; readonly label: string }>
 }
 export interface EventFrame {
   readonly type: "event"

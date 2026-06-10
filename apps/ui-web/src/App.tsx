@@ -322,8 +322,33 @@ export const App: Component = () => {
     () => settingsOpen() || (!isConnected() && !isConnecting()),
   )
 
+  /**
+   * The active model list for the settings dropdown. When the server sends an
+   * `availableModels` list in the `hello` frame we use that (so the operator's
+   * LUNA_UI_MODELS overrides and any non-Anthropic models are surfaced). On
+   * older servers that omit the field we fall back to the hardcoded
+   * MODEL_OPTIONS list — graceful degradation, no user-visible breakage.
+   *
+   * Note: the mapping from {id, label} (wire shape) to {value, label} (local
+   * shape) is done here so the dropdown JSX stays unchanged.
+   */
+  const activeModelOptions = createMemo((): ReadonlyArray<{ value: string; label: string }> => {
+    const serverModels = store.state.availableModels
+    if (serverModels !== null) {
+      return serverModels.map((m) => ({ value: m.id, label: m.label }))
+    }
+    return MODEL_OPTIONS
+  })
+
+  /**
+   * True when the persisted model id is not in the active model list. This
+   * happens when the user typed a custom model id, OR when a server-advertised
+   * list doesn't include the previously-persisted model. In both cases we
+   * keep the model selected (show a custom value) rather than silently
+   * switching — the user chose it deliberately.
+   */
   const isCustomModel = createMemo(
-    () => !MODEL_OPTIONS.some((o) => o.value === cfg().model),
+    () => !activeModelOptions().some((o) => o.value === cfg().model),
   )
 
   return (
@@ -397,7 +422,7 @@ export const App: Component = () => {
                   setCfg({ ...cfg(), model: v })
                 }}
               >
-                <For each={MODEL_OPTIONS}>
+                <For each={activeModelOptions()}>
                   {(o) => <option value={o.value}>{o.label}</option>}
                 </For>
                 <option value="__custom">Custom…</option>

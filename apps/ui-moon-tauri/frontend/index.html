@@ -2384,6 +2384,17 @@
             <option value="dev">Dev</option>
           </select>
         </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Model</span>
+            <span class="setting-desc">Model for new conversations — existing threads keep theirs</span>
+          </div>
+          <!-- Options beyond "Server default" are populated from the server's
+               hello `availableModels` (additive; absent on older servers). -->
+          <select id="model-select" class="channel-select">
+            <option value="">Server default</option>
+          </select>
+        </div>
         <div class="setting-item flex-column">
           <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
             <span class="setting-label">WebSocket Server URL</span>
@@ -2819,6 +2830,7 @@
       opTokenStatus: document.getElementById('op-token-status'),
       channelSelect: document.getElementById('channel-select'),
       channelError: document.getElementById('channel-error'),
+      modelSelect: document.getElementById('model-select'),
       checkUpdateBtn: document.getElementById('check-update-btn'),
       updateStatus: document.getElementById('update-status'),
       connectionStatus: document.getElementById('connection-status'),
@@ -3866,6 +3878,53 @@
         }
       },
 
+      /**
+       * Populate the settings model switcher from the hello frame's
+       * `availableModels` (additive — absent on older servers, leaving just
+       * the "Server default" option). The persisted pick (luna_model) is
+       * restored even when the server's list no longer carries it: silently
+       * dropping it would switch the operator's model without consent, so an
+       * off-list pick is kept as a "(custom)" option instead. Reconnects
+       * re-deliver hello; the rebuild is idempotent.
+       */
+      applyAvailableModels(frame) {
+        const el = DOM.modelSelect;
+        if (!el) return;
+        const models = frame && Array.isArray(frame.availableModels) ? frame.availableModels : [];
+        const saved = localStorage.getItem('luna_model') || '';
+        // Rebuild from scratch (reconnect-safe): default option first.
+        el.innerHTML = '';
+        const defOpt = document.createElement('option');
+        defOpt.value = '';
+        defOpt.textContent = 'Server default';
+        el.appendChild(defOpt);
+        for (const m of models) {
+          if (!m || typeof m.id !== 'string' || !m.id) continue;
+          const opt = document.createElement('option');
+          opt.value = m.id;
+          opt.textContent = typeof m.label === 'string' && m.label ? m.label : m.id;
+          el.appendChild(opt);
+        }
+        if (saved && !Array.from(el.options).some((o) => o.value === saved)) {
+          const opt = document.createElement('option');
+          opt.value = saved;
+          opt.textContent = `${saved} (custom)`;
+          el.appendChild(opt);
+        }
+        el.value = saved;
+      },
+
+      /**
+       * The ONE place a new-thread frame is built: carries the operator's
+       * persisted model pick (settings switcher). Empty/unset ⇒ no `model`
+       * field ⇒ the server's default lane — byte-identical to the pre-switcher
+       * frame, so older servers are unaffected.
+       */
+      sendNewThread() {
+        const model = localStorage.getItem('luna_model') || '';
+        this.send(model ? { type: 'new-thread', model } : { type: 'new-thread' });
+      },
+
       clearTurnTimeout() {
         if (State.turnTimeout) {
           clearTimeout(State.turnTimeout);
@@ -4062,6 +4121,8 @@
             this.checkProtocolVersion(frame);
             // Additive: show the server's build short-SHA when advertised.
             this.applyBuildSha(frame);
+            // Additive: populate the settings model switcher when advertised.
+            this.applyAvailableModels(frame);
             // version-skew: gate the grouped activity timeline on the server
             // advertising the `turn-complete` frame. An older server omits this
             // capability → fall back to per-turn timelines that collapse on
@@ -4082,7 +4143,7 @@
             } else if (!State.activeThreadId) {
               // No threads exist! Let's start a brand new thread.
               Logger.info("No threads exist on the server; creating a brand new thread");
-              this.send({ type: 'new-thread' });
+              this.sendNewThread();
             }
             break;
           }
@@ -5844,7 +5905,7 @@
         this.appendMessage('assistant', 'New conversation started. Type a message below!');
         DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
         if (State.ws && State.ws.readyState === WebSocket.OPEN) {
-          WebSocketEngine.send({ type: 'new-thread' });
+          WebSocketEngine.sendNewThread();
         } else {
           Logger.warn("Not connected; cleared locally. A new thread is created on next connect.");
         }
@@ -5902,7 +5963,7 @@
         } else {
           // If we don't have a thread subscribed yet, we create a thread first, then send
           Logger.warn("No active thread subscribed; queuing message and creating new thread");
-          WebSocketEngine.send({ type: 'new-thread' });
+          WebSocketEngine.sendNewThread();
           State.pendingUserMessage = { text: wireText, attachments: wire };
         }
       }
@@ -7103,6 +7164,15 @@
     DOM.closeOnBlurToggle.addEventListener('change', () => SettingsEngine.handleCloseOnBlurChange());
     if (DOM.channelSelect) {
       DOM.channelSelect.addEventListener('change', (e) => SettingsEngine.switchChannel(e.target.value));
+    }
+    if (DOM.modelSelect) {
+      // Persist the model pick; applies to NEW threads only (sendNewThread
+      // reads it). Empty value ("Server default") clears the override.
+      DOM.modelSelect.addEventListener('change', (e) => {
+        const v = e.target.value;
+        if (v) localStorage.setItem('luna_model', v);
+        else localStorage.removeItem('luna_model');
+      });
     }
     if (DOM.checkUpdateBtn) {
       DOM.checkUpdateBtn.addEventListener('click', () => SettingsEngine.checkForUpdate(false));

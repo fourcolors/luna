@@ -298,6 +298,98 @@ const resolveBuildSha = (): string => {
 /** Git short-SHA of this build — computed once, threaded into the endpoints. */
 const BUILD_SHA = resolveBuildSha()
 
+/* ── UI model-list helpers ───────────────────────────────────────────────────
+ *
+ * `parseUiModels` parses the LUNA_UI_MODELS env var (comma-separated
+ * `id=label` pairs) into an ordered array of {id, label} entries that
+ * appear FIRST in the UI's model-switcher dropdown.  Defensive parsing:
+ * malformed input is silently skipped so a misconfigured env var never
+ * crashes the server.
+ *
+ * `buildAvailableModels` merges operator-configured extras (from
+ * LUNA_UI_MODELS) with the built-in base list, deduping by model id with
+ * extras taking precedence (they come first in the output, so the client
+ * treats the first entry as the recommended default).
+ *
+ * Both functions are exported so the test suite can import them directly
+ * without running bootstrap() (the import.meta.main guard).
+ */
+
+/** A single selectable model entry. */
+export interface UiModelEntry {
+  readonly id: string
+  readonly label: string
+}
+
+/**
+ * Parse `LUNA_UI_MODELS`-format text into {id, label} entries.
+ *
+ * Format: comma-separated `id=label` pairs.  Examples:
+ *   - `gemini-2.5-flash=Gemini 2.5 Flash`
+ *   - `local/qwen2.5:14b=Qwen 14B (local)`
+ *   - `my-model` (no `=` → id is used as label)
+ *
+ * Rules:
+ *   - Whitespace around entries and around `=` is trimmed.
+ *   - Empty entries (stray commas) are silently skipped.
+ *   - An entry with no `=` uses the id as its label.
+ *   - An entry whose id is empty after trimming is silently skipped.
+ *   - Malformed input NEVER throws — always returns a (possibly empty) array.
+ */
+export const parseUiModels = (raw: string | undefined): ReadonlyArray<UiModelEntry> => {
+  if (!raw) return []
+  const out: Array<UiModelEntry> = []
+  try {
+    for (const part of raw.split(",")) {
+      const trimmed = part.trim()
+      if (trimmed === "") continue
+      const eq = trimmed.indexOf("=")
+      const id = (eq === -1 ? trimmed : trimmed.slice(0, eq)).trim()
+      if (id === "") continue // no id, skip
+      const label = eq === -1 ? id : trimmed.slice(eq + 1).trim() || id
+      out.push({ id, label })
+    }
+  } catch {
+    // Defensive: never propagate parse errors — a misconfigured env var
+    // must not crash the server.
+  }
+  return out
+}
+
+/**
+ * The built-in base list of selectable models shown when the operator has
+ * not overridden via LUNA_UI_MODELS. This list is the recommended default
+ * capability spread; entries are deduped (extras-first) in buildAvailableModels.
+ */
+const BASE_MODELS: ReadonlyArray<UiModelEntry> = [
+  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 — balanced" },
+  { id: "claude-opus-4-7",   label: "Claude Opus 4.7 — most capable" },
+  { id: "claude-haiku-4-5",  label: "Claude Haiku 4.5 — fastest" },
+]
+
+/**
+ * Build the full available-model list to advertise in the `hello` frame.
+ *
+ * Operator-configured extras (from LUNA_UI_MODELS) come FIRST in the
+ * output, making them the UI's recommended default.  The built-in base
+ * models follow, deduped by id (an extra that overrides a base model id
+ * keeps the extra's label and position).
+ *
+ * Accepts an optional `env` parameter (defaults to `process.env`) so unit
+ * tests can inject a synthetic environment without touching process.env.
+ */
+export const buildAvailableModels = (env: NodeJS.ProcessEnv = process.env): Array<UiModelEntry> => {
+  const extras = parseUiModels(env["LUNA_UI_MODELS"])
+  const seenIds = new Set(extras.map((e) => e.id))
+  const deduped: Array<UiModelEntry> = [...extras]
+  for (const base of BASE_MODELS) {
+    if (!seenIds.has(base.id)) {
+      deduped.push(base)
+    }
+  }
+  return deduped
+}
+
 const localShellBridge = createLocalShellBridge()
 
 // Per-thread sandbox re-attach closures. Module scope (single-process boot)
@@ -1469,6 +1561,11 @@ const buildServerLayer = (
         advertisedKinds: DEFAULT_UI_KINDS,
         pingIntervalMs: 5000,
         buildSha: BUILD_SHA,
+        // Advertise the operator-configured + built-in model list so the UI
+        // dropdown is driven by the server (LUNA_UI_MODELS overrides go first
+        // and become the recommended default). Absent on older/setup-mode
+        // servers — clients fall back to their hardcoded list gracefully.
+        availableModels: buildAvailableModels(),
         chatService: chat,
         accountBroker: broker,
         survey: surveyHandle, // Phase 3 D3: resolved handle

@@ -48,6 +48,13 @@ export interface UIState {
   readonly closeReason: string | null
   /** Server-advertised capabilities. */
   readonly capabilities: { readonly chat: boolean; readonly streamingDeltas: boolean; readonly setup: boolean }
+  /**
+   * Server-advertised model list (from the `hello` frame's `availableModels`
+   * field). When null the server is older and did not send the field; the UI
+   * falls back to its own hardcoded MODEL_OPTIONS list. When non-null (even
+   * if empty) the server has explicitly taken ownership of the list.
+   */
+  readonly availableModels: ReadonlyArray<{ readonly id: string; readonly label: string }> | null
   /** Sidebar projection — most-recently-active first (server orders). */
   readonly threadList: ReadonlyArray<SessionSummary>
   /** Per-thread state, keyed by threadId. */
@@ -74,6 +81,9 @@ export const initialState: UIState = {
   lastPingAt: null,
   closeReason: null,
   capabilities: { chat: false, streamingDeltas: false, setup: false },
+  // null = server hasn't sent availableModels yet (old server or not connected);
+  // the UI falls back to its hardcoded MODEL_OPTIONS list in that case.
+  availableModels: null,
   threadList: [],
   threads: new Map(),
   selectedThreadId: null,
@@ -170,6 +180,10 @@ export const reduce = (state: UIState, action: Action): UIState => {
         ...state,
         advertisedKinds: frame.kinds,
         capabilities: frame.capabilities,
+        // Capture server-advertised models when present. null means the server
+        // is older and omitted the field; the UI falls back to its hardcoded
+        // list. undefined → null so UIState's type stays non-nullable-optional.
+        availableModels: frame.availableModels ?? null,
         closeReason: null,
       }
     case "event": {

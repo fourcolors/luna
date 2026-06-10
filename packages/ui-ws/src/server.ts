@@ -164,6 +164,16 @@ export interface UIWebSocketServerConfig {
    */
   readonly buildSha?: string
   /**
+   * Operator-configured model list for the UI model-switcher dropdown.
+   * When provided, the array is echoed verbatim in the `hello` frame's
+   * `availableModels` field. Additive — absent = field omitted; clients
+   * fall back to their own hardcoded list (graceful degradation). The FIRST
+   * entry is treated by clients as the recommended default. Built by
+   * `buildAvailableModels()` in chat-server.ts, which merges
+   * `LUNA_UI_MODELS` overrides with the built-in base list.
+   */
+  readonly availableModels?: ReadonlyArray<{ readonly id: string; readonly label: string }>
+  /**
    * Optional ChatService binding. When provided, the server:
    *   - flips `capabilities.chat` and `capabilities.streamingDeltas` to
    *     `true` in the hello frame
@@ -384,6 +394,7 @@ export const startUIWebSocketServer = (
     const registerOpToken = config.registerOpToken ?? null
     const secretBridge = config.secretBridge ?? null
     const buildSha = config.buildSha
+    const availableModels = config.availableModels
 
     const httpServer = http.createServer((req, res) => {
       if (req.url === "/healthz") {
@@ -524,6 +535,11 @@ export const startUIWebSocketServer = (
           // an absent buildSha leaves the field off entirely — older clients
           // ignore it; newer clients against an old server simply see nothing.
           ...(buildSha !== undefined ? { buildSha } : {}),
+          // Additive model list (no protocol bump). When provided, the client
+          // uses this list for its model-switcher dropdown instead of its own
+          // hardcoded default. Absent on older/setup-mode servers — clients
+          // fall back gracefully (see HelloFrame.availableModels in protocol.ts).
+          ...(availableModels !== undefined ? { availableModels } : {}),
           // Capabilities reflect what was bound at startup. When a
           // ChatService is passed in `config.chatService`, the inbound
           // router below handles subscribe/send/interrupt and translates
