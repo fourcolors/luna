@@ -5247,8 +5247,12 @@
 
       _fmtTime(epochMs) {
         if (!epochMs) return '—';
+        // new Date(NaN | out-of-range).toLocaleTimeString() returns the literal
+        // 'Invalid Date' WITHOUT throwing — guard via getTime() (review G3).
+        var d = new Date(epochMs);
+        if (Number.isNaN(d.getTime())) return '—';
         try {
-          return new Date(epochMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         } catch (_) { return '—'; }
       },
 
@@ -5316,6 +5320,13 @@
       // ── actions ───────────────────────────────────────────────────────────────
 
       select(jobId) {
+        // Mirror the web gallery: re-clicking the selected tile collapses it
+        // (and avoids a redundant run-history re-fetch — review G3).
+        if (State.selectedWorkflowId === jobId) {
+          State.selectedWorkflowId = null;
+          this.render();
+          return;
+        }
         State.selectedWorkflowId = jobId;
         WebSocketEngine.send({ type: 'workflow-runs-request', jobId });
         this.render();

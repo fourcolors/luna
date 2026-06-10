@@ -1894,8 +1894,12 @@ const buildServerLayer = (
         kind: j.kind,
         label: j.payload.label,
         source: j.payload.source ?? null,
-        schedule: j.schedule,
-        onDemand: j.schedule == null,
+        // Legacy rows have schedule=null and carry the cron in `spec` (review
+        // G3) — fall back so a scheduled job shows its cron, not a blank.
+        schedule: j.schedule ?? j.spec,
+        // Badge by KIND, not the nullable schedule column: a `oneshot` is
+        // on-demand; cron/prompt/workflow/file-watch are scheduled/triggered.
+        onDemand: j.kind === "oneshot",
         enabled: j.enabled,
         nextRunAt: j.nextRunAt ?? j.nextRun,
         lastRun: j.lastRun,
@@ -1914,12 +1918,24 @@ const buildServerLayer = (
         list: () =>
           jobsStore.listAll().pipe(
             Effect.map((jobs) => jobs.map(toGalleryItem)),
-            Effect.catchAll(() => Effect.succeed([] as ReturnType<typeof toGalleryItem>[])),
+            // Degrade to empty so the connection survives, but LOG first — a
+            // chronically-failing jobs DB must be observable (review G3).
+            Effect.catchAll((e) =>
+              Effect.sync(() => {
+                console.warn("[luna/workflows] gallery list failed:", String(e))
+                return [] as ReturnType<typeof toGalleryItem>[]
+              }),
+            ),
           ),
         runs: (jobId: string, limit?: number) =>
           jobsStore.listRuns(jobId, limit ?? 25).pipe(
             Effect.map((runs) => runs.map(toRunItem)),
-            Effect.catchAll(() => Effect.succeed([] as ReturnType<typeof toRunItem>[])),
+            Effect.catchAll((e) =>
+              Effect.sync(() => {
+                console.warn("[luna/workflows] gallery runs failed:", String(e))
+                return [] as ReturnType<typeof toRunItem>[]
+              }),
+            ),
           ),
       }
 

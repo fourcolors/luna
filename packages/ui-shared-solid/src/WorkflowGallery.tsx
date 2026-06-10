@@ -36,11 +36,10 @@ export interface WorkflowGalleryProps {
 /** Format an epoch-ms value as a locale date+time string. Returns "—" for null/0. */
 function fmtTime(ms: number | null | undefined): string {
   if (ms == null || ms === 0) return "—"
-  try {
-    return new Date(ms).toLocaleString()
-  } catch {
-    return "—"
-  }
+  // new Date(NaN | out-of-range).toLocaleString() returns the literal string
+  // "Invalid Date" WITHOUT throwing — guard via getTime() (review G3).
+  const d = new Date(ms)
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString()
 }
 
 /** Format a duration in ms as "1.2s" or "823ms". Returns "—" when either end is missing. */

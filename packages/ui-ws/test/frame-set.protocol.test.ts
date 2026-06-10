@@ -211,7 +211,7 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     expect(UI_WS_PROTOCOL_VERSION).toBe(EXPECTED_PROTOCOL_VERSION)
   })
 
-  it("parser self-check: derived counts are sane (34 server, 23 client) — guards the regex itself", () => {
+  it("parser self-check: derived counts are sane (36 server, 25 client) — guards the regex itself", () => {
     // If the regex silently mis-parses, the toEqual above could pass for the
     // wrong reason. Pin the counts so a broken parser is caught here.
     // Prior base = 24 server / 15 client; the agent-summoned secure-secret-entry

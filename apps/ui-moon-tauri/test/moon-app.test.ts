@@ -4262,8 +4262,15 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(m.State.workflowsPanelOpen).toBe(true)
       expect((document.getElementById('workflows-btn') as HTMLElement).hidden).toBe(false)
 
-      // Now connect to a server without workflows support.
-      m.WorkflowsEngine.applyCapability(false)
+      // Drive the capability flag through the REAL path (the hello handler) so
+      // the assertion below is not vacuous (applyCapability itself does not set
+      // serverSupportsWorkflows — review G3).
+      m.WebSocketEngine.handleFrame({
+        type: 'hello',
+        protocolVersion: 2,
+        kinds: [],
+        capabilities: { chat: true, streamingDeltas: true, setup: false },
+      })
 
       expect(m.State.serverSupportsWorkflows).toBe(false)
       expect(m.State.workflows).toHaveLength(0)

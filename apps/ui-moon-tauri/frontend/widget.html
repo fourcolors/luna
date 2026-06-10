@@ -311,6 +311,13 @@
       return;
     }
 
+    ws.addEventListener('open', function () {
+      // A fresh socket is up → re-arm the single-retry budget so each DISTINCT
+      // disconnect gets its own one delayed reconnect (review G3 — without this
+      // the window gives up forever after the first drop+retry).
+      didReconnect = false;
+    });
+
     ws.addEventListener('message', function (evt) {
       var frame;
       try { frame = JSON.parse(evt.data); } catch (_) { return; }

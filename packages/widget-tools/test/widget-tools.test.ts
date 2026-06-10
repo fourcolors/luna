@@ -97,6 +97,36 @@ describe("widget_write tool", () => {
     expect(caps).toEqual(["obs:ToolCall", "obs:*"])
   })
 
+  it("iterating a widget can change bridge_caps; omitting them leaves caps untouched", async () => {
+    const out = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ArtifactStore
+        const [widgetWrite] = makeWidgetTools(store)
+        yield* Effect.promise(() =>
+          callTool(widgetWrite, {
+            widgetId: "w",
+            title: "W",
+            html: "<p>1</p>",
+            bridgeCaps: ["obs:*"],
+          }),
+        )
+        // Iterate WITH narrower caps → caps tighten (review G3).
+        yield* Effect.promise(() =>
+          callTool(widgetWrite, { widgetId: "w", title: "W", html: "<p>2</p>", bridgeCaps: ["obs:ToolCall"] }),
+        )
+        const afterNarrow = (yield* store.get("widget:w"))?.bridgeCaps ?? null
+        // Iterate WITHOUT caps → caps unchanged (not wiped).
+        yield* Effect.promise(() =>
+          callTool(widgetWrite, { widgetId: "w", title: "W", html: "<p>3</p>" }),
+        )
+        const afterOmit = (yield* store.get("widget:w"))?.bridgeCaps ?? null
+        return { afterNarrow, afterOmit }
+      }).pipe(Effect.provide(ArtifactStore.Memory), Effect.provide(Clock.Default)),
+    )
+    expect(out.afterNarrow).toEqual(["obs:ToolCall"])
+    expect(out.afterOmit).toEqual(["obs:ToolCall"]) // omitted → preserved
+  })
+
   it("a static widget (no bridgeCaps) stores null caps — no live-data door", async () => {
     const caps = await Effect.runPromise(
       Effect.gen(function* () {

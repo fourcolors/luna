@@ -1691,8 +1691,15 @@ export const startUIWebSocketServer = (
                       return
                     }
                     const jobId = frame.jobId
+                    // Clamp to a sane positive bound — a negative/huge/non-int
+                    // limit from a malformed client must not bypass the default
+                    // or hammer the DB (review G3).
                     const limit =
-                      typeof frame.limit === "number" ? frame.limit : undefined
+                      typeof frame.limit === "number" &&
+                      Number.isInteger(frame.limit) &&
+                      frame.limit > 0
+                        ? Math.min(frame.limit, 200)
+                        : undefined
                     yield* gallery
                       .runs(jobId, limit)
                       .pipe(

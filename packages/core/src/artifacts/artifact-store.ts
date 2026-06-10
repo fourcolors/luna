@@ -77,11 +77,14 @@ export interface ArtifactStoreApi {
   readonly list: () => Effect.Effect<ReadonlyArray<PinnedArtifact>>
   readonly get: (id: string) => Effect.Effect<PinnedArtifact | null>
   /** Append a new version and advance the head. Returns null when the id is
-   *  not pinned. */
+   *  not pinned. `bridgeCaps`, when given, also re-sets the widget's bridge
+   *  allowlist on the head (so iterating a widget can widen/narrow/revoke its
+   *  caps — review G3); omit it to leave the existing caps untouched. */
   readonly update: (
     id: string,
     content: string,
     editedBy: ArtifactEditor,
+    bridgeCaps?: ReadonlyArray<string> | null,
   ) => Effect.Effect<PinnedArtifact | null>
   /** The append-only version ledger for an artifact, oldest first. */
   readonly versions: (
@@ -126,6 +129,7 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
           id: string,
           content: string,
           editedBy: ArtifactEditor,
+          bridgeCaps?: ReadonlyArray<string> | null,
         ): Effect.Effect<PinnedArtifact | null> =>
           Effect.gen(function* () {
             const head = (yield* Ref.get(heads)).get(id)
@@ -137,6 +141,7 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
               content,
               version: nextVersion,
               updatedAt: now,
+              ...(bridgeCaps !== undefined ? { bridgeCaps } : {}),
             }
             const row: ArtifactVersion = {
               artifactId: id,
@@ -203,7 +208,8 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
           list: () => headList(),
           get: (id) =>
             Ref.get(heads).pipe(Effect.map((m) => m.get(id) ?? null)),
-          update: (id, content, editedBy) => doUpdate(id, content, editedBy),
+          update: (id, content, editedBy, bridgeCaps) =>
+            doUpdate(id, content, editedBy, bridgeCaps),
           versions: (id) =>
             Ref.get(ledger).pipe(Effect.map((m) => m.get(id) ?? [])),
           revert: (id, version) =>
@@ -274,6 +280,9 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
         )
         const updateHead = db.query(
           "UPDATE artifacts SET content = ?, updated_at = ? WHERE id = ?",
+        )
+        const updateBridgeCaps = db.query(
+          "UPDATE artifacts SET bridge_caps = ? WHERE id = ?",
         )
         const selectHead = db.query(
           `SELECT a.*,
@@ -420,11 +429,19 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
               (selectAll.all() as ArtifactRow[]).map(rowToArtifact),
             ),
           get: (id) => Effect.sync(() => readHead(id)),
-          update: (id, content, editedBy) =>
+          update: (id, content, editedBy, bridgeCaps) =>
             clock.nowMs().pipe(
               Effect.map((now) => {
                 if (!readHead(id)) return null
                 appendVersion(id, content, editedBy, now)
+                // Re-set the widget's caps when the caller supplied them
+                // (review G3: iterating a widget can widen/narrow/revoke caps).
+                if (bridgeCaps !== undefined) {
+                  updateBridgeCaps.run(
+                    bridgeCaps == null ? null : JSON.stringify(bridgeCaps),
+                    id,
+                  )
+                }
                 return readHead(id)
               }),
             ),

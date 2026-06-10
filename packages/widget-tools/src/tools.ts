@@ -87,8 +87,16 @@ export const makeWidgetTools = (store: (typeof ArtifactStore)["Service"]) => {
         const bridgeCaps = sanitizeBridgeCaps(args.bridgeCaps)
         const existing = yield* store.get(id)
         if (existing) {
-          // Iterate: a new version of the same widget (surgical diff edit).
-          const updated = yield* store.update(id, args.html, "agent")
+          // Iterate: a new version of the same widget (surgical diff edit). Pass
+          // the sanitized caps so an iteration can widen/narrow/revoke them
+          // (review G3); pass undefined when the caller omitted bridgeCaps so the
+          // existing caps are left untouched.
+          const updated = yield* store.update(
+            id,
+            args.html,
+            "agent",
+            args.bridgeCaps === undefined ? undefined : bridgeCaps,
+          )
           return {
             artifactId: id,
             version: updated?.version ?? existing.version,

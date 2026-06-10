@@ -826,12 +826,27 @@ async fn open_artifact_widget(
 }
 
 /// Close a widget window by label. No-op if it is already gone.
+///
+/// A Tauri command capability gates only WHETHER a window may invoke the
+/// command, not WHICH window the body acts on — so this command, granted to
+/// widget-* windows, must enforce the per-window boundary itself: it refuses
+/// any label outside the `widget-` namespace so a widget can never reach up and
+/// close the main chat window (review G3). The widget.html host renders
+/// sandboxed agent content, so this guard is defence-in-depth.
 #[tauri::command]
 async fn close_widget(app: tauri::AppHandle, label: String) -> Result<(), String> {
+    if !is_closable_widget_label(&label) {
+        return Ok(()); // refuse to close anything but a widget window
+    }
     if let Some(win) = app.get_webview_window(&label) {
         win.close().map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Pure label-namespace guard for `close_widget` (testable without a webview).
+fn is_closable_widget_label(label: &str) -> bool {
+    label.starts_with("widget-")
 }
 
 /// Labels of every currently-open widget window (those with the `widget-`
@@ -1383,6 +1398,17 @@ mod tests {
         // ':' and '/' and ' ' and '&' must be encoded so they cannot break the
         // query string the widget page parses.
         assert_eq!(encode_query_value("a:b/c d&e"), "a%3Ab%2Fc%20d%26e");
+    }
+
+    #[test]
+    fn close_widget_refuses_to_close_non_widget_windows() {
+        // The per-window boundary the widgets capability documents: a widget may
+        // only close widget-* windows, NEVER the main chat window (review G3).
+        assert!(is_closable_widget_label("widget-deadbeef"));
+        assert!(is_closable_widget_label(&widget_label("anything")));
+        assert!(!is_closable_widget_label("main"));
+        assert!(!is_closable_widget_label("setup"));
+        assert!(!is_closable_widget_label(""));
     }
 
     // THE load-bearing test: a legacy flat file must read back as the SAME
