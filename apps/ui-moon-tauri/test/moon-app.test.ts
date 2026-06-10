@@ -2682,8 +2682,17 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       // Every command gets the PATH prelude (a .app inherits launchd's PATH).
       for (const c of commands) expect(c).toContain('$HOME/.bun/bin')
 
-      // No server answered the wake probe ⇒ the nohup start actually ran.
-      expect(commands.some((c) => c.includes('nohup'))).toBe(true)
+      // No server answered the wake probe ⇒ the supervised start actually ran:
+      // the shared plist lib is sourced, the plist lands where launchd rescans
+      // at login (survives reboot), and bootstrap+kickstart bring her up.
+      const wake = commands.find((c) => c.includes('launchctl bootstrap'))!
+      expect(wake).toBeTruthy()
+      expect(wake).toContain('scripts/lib/launchd-plist.sh')
+      expect(wake).toContain('Library/LaunchAgents')
+      expect(wake).toContain('com.user.luna-chat-server')
+      expect(wake).toContain('launchctl kickstart')
+      // The unsupervised nohup start is gone for good.
+      expect(commands.some((c) => c.includes('nohup'))).toBe(false)
       // Fresh install never pauses an old server.
       expect(commands.some((c) => c.includes('pkill'))).toBe(false)
 
@@ -2720,10 +2729,17 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       await W().runLocalInstall()
 
       // Update flow: pull (not a fresh clone path choice — same command, repo
-      // branch wins), settle-pause the old server (pkill + 6s sleep in the
-      // SHELL, mirroring the deploy stop→settle→start lesson), then restart.
-      expect(commands.some((c) => c.includes('pkill -f "ui-web.*server:chat"') && c.includes('sleep 6'))).toBe(true)
-      expect(commands.some((c) => c.includes('nohup'))).toBe(true)
+      // branch wins), settle-pause the old server, then a supervised restart.
+      // The pause MUST bootout the LaunchAgent BEFORE the 6s settle (else
+      // KeepAlive respawns the old server mid-settle) and still pkill-sweeps
+      // legacy nohup-era servers.
+      const pause = commands.find((c) => c.includes('sleep 6'))!
+      expect(pause).toBeTruthy()
+      expect(pause.indexOf('launchctl bootout')).toBeGreaterThanOrEqual(0)
+      expect(pause.indexOf('launchctl bootout')).toBeLessThan(pause.indexOf('sleep 6'))
+      expect(pause).toContain('pkill -f "ui-web.*server:chat"')
+      expect(commands.some((c) => c.includes('launchctl bootstrap') && c.includes('launchctl kickstart'))).toBe(true)
+      expect(commands.some((c) => c.includes('nohup'))).toBe(false)
 
       const rows = Array.from(document.querySelectorAll('#wizard-progress-list .wizard-task'))
       expect(rows).toHaveLength(8)                            // + "Tucking the old Luna in"
@@ -2782,7 +2798,7 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       const shellCmds = invoke.mock.calls
         .filter((c: any[]) => c[0] === 'local_shell_exec')
         .map((c: any[]) => c[1].command as string)
-      expect(shellCmds.some((c) => c.includes('git clone') || c.includes('nohup') || c.includes('mkdir'))).toBe(false)
+      expect(shellCmds.some((c) => c.includes('git clone') || c.includes('launchctl') || c.includes('mkdir'))).toBe(false)
       expect(activeStep()).toBe('local')                     // still on the form
     })
 

@@ -7628,9 +7628,16 @@
           // settle before the new one wakes. The 6s sleep is load-bearing —
           // a fast stop→start races the database's WAL/SHM handle release
           // (the same lesson the server deploys learned the hard way).
+          // ORDER matters: bootout FIRST (unregisters the LaunchAgent so
+          // KeepAlive can't respawn the old server mid-settle), then a pkill
+          // sweep for legacy unsupervised (nohup-era) servers, THEN the sleep.
           ...(update && this.env.serverRunning ? [{
             label: 'Tucking the old Luna in',
-            run: () => this.sh('pkill -f "ui-web.*server:chat" 2>/dev/null; sleep 6; true', 30000),
+            run: () => this.sh(
+              'launchctl bootout "gui/$(id -u)/com.user.luna-chat-server" 2>/dev/null; '
+              + 'pkill -f "ui-web.*server:chat" 2>/dev/null; sleep 6; true',
+              30000,
+            ),
           }] : []),
           {
             label: update ? 'Waking Luna back up' : 'Waking Luna up',
@@ -7643,10 +7650,30 @@
                   return { exitCode: 0, stdout: 'Luna was already awake here', stderr: '', durationMs: probe.durationMs, timedOut: false };
                 }
               }
-              // Double-fork via subshell so sh -c returns immediately while the
-              // server lives on; log lands where the user can find it.
+              // Supervised start: render the SAME LaunchAgent the Mac installer
+              // uses (scripts/lib/launchd-plist.sh — one plist shape, shared
+              // label, so the in-app Restart button works) and bootstrap it.
+              // Two deliberate choices:
+              //   · the plist goes in ~/Library/LaunchAgents — the only place
+              //     launchd rescans at login, i.e. what makes Luna survive a
+              //     reboot (a plist elsewhere only lives until logout);
+              //   · kickstart (not plain start) after bootstrap — KeepAlive
+              //     {SuccessfulExit=false} never respawns a clean exit 0, so
+              //     kickstart is the one verb that always brings her up.
               return this.sh(
-                D + 'cd "$LUNA_DIR" && (nohup bun run --filter "@luna/ui-web" server:chat >> "$HOME/.luna/logs/moon-setup-server.log" 2>&1 &) && echo "Luna is waking (log: ~/.luna/logs/moon-setup-server.log)"',
+                D + 'LABEL="com.user.luna-chat-server"; DOMAIN="gui/$(id -u)"; '
+                + 'BUN_BIN="$(command -v bun)"; '
+                + '. "$LUNA_DIR/scripts/lib/launchd-plist.sh"; '
+                + 'mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.luna/logs"; '
+                + 'PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"; '
+                + 'render_launchd_plist "$BUN_BIN" "$LUNA_DIR" "$HOME/.luna" > "$PLIST"; '
+                + 'chmod 644 "$PLIST"; '
+                + 'launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null; '
+                + 'launchctl enable "$DOMAIN/$LABEL" 2>/dev/null; '
+                + 'launchctl bootstrap "$DOMAIN" "$PLIST" '
+                + '&& launchctl kickstart "$DOMAIN/$LABEL" '
+                + '&& echo "Luna is supervised now — she survives restarts (log: ~/.luna/logs/server.log)"',
+                60000,
               );
             },
           },
@@ -7660,7 +7687,7 @@
               }
               return {
                 exitCode: 1, stdout: '',
-                stderr: 'Luna never answered on http://127.0.0.1:4753/healthz after 60s — peek at ~/.luna/logs/moon-setup-server.log',
+                stderr: 'Luna never answered on http://127.0.0.1:4753/healthz after 60s — peek at ~/.luna/logs/server.log',
                 durationMs: 0, timedOut: true,
               };
             },
