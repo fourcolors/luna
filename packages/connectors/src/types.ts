@@ -43,6 +43,8 @@ export type AuthSpec =
        *  Google Desktop clients support it and it never hurts. */
       readonly authorizationEndpoint: string
       readonly tokenEndpoint: string
+      /** Best-effort revoke-on-disconnect (PRD §16: revocation is real). */
+      readonly revocationEndpoint?: string
       /** Env-var names (NOT values) holding the per-operator client id/secret
        *  — PRD §23: per-operator client REQUIRED; nothing ships in-repo. */
       readonly clientIdEnvVar: string

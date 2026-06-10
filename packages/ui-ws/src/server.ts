@@ -240,6 +240,52 @@ export interface UIWebSocketServerConfig {
     readonly changes?: (notify: () => void) => void
   } | null
   /**
+   * Optional connector handle (PRD Part A §18). When provided, the server
+   * advertises `capabilities.connectors`, sends `connector-catalog` +
+   * `connector-list` after hello, and routes the client-brokered OAuth
+   * handshake + connect/disconnect. The handle's outputs MUST already be
+   * wire-safe (the chat-server adapter projects instances to status +
+   * metadata; no secretRef, no tokens). Structural type — mirrors
+   * accountBroker/skillRegistry. Pass `null` explicitly in setup-mode.
+   */
+  readonly connectorService?: {
+    readonly catalog: () => import("effect").Effect.Effect<
+      ReadonlyArray<import("./protocol.js").ConnectorCatalogItem>
+    >
+    readonly list: () => import("effect").Effect.Effect<
+      ReadonlyArray<import("./protocol.js").ConnectorInstanceItem>
+    >
+    readonly beginAuth: (input: {
+      readonly definitionId: string
+      readonly label: string
+      readonly capabilityIds?: ReadonlyArray<string>
+      readonly loopbackPort: number
+    }) => import("effect").Effect.Effect<
+      { readonly pendingId: string; readonly authUrl: string },
+      unknown
+    >
+    readonly completeAuth: (input: {
+      readonly pendingId: string
+      readonly code: string
+      readonly state: string
+    }) => import("effect").Effect.Effect<
+      import("./protocol.js").ConnectorInstanceItem,
+      unknown
+    >
+    readonly connect: (input: {
+      readonly definitionId: string
+      readonly label: string
+      readonly secretRef?: string
+      readonly capabilityIds?: ReadonlyArray<string>
+    }) => import("effect").Effect.Effect<
+      import("./protocol.js").ConnectorInstanceItem,
+      unknown
+    >
+    readonly disconnect: (
+      instanceId: string,
+    ) => import("effect").Effect.Effect<boolean, unknown>
+  } | null
+  /**
    * Optional local-shell bridge. When provided, clients may advertise
    * terminal execution capability and receive local-shell request frames
    * from MCP tools bound to the same thread.
@@ -467,6 +513,7 @@ export const startUIWebSocketServer = (
     const registerOpToken = config.registerOpToken ?? null
     const secretBridge = config.secretBridge ?? null
     const skillRegistry = config.skillRegistry ?? null
+    const connectorService = config.connectorService ?? null
     const buildSha = config.buildSha
     const availableModels = config.availableModels
 
@@ -652,6 +699,9 @@ export const startUIWebSocketServer = (
             // gate the Skills settings tab on this flag (absent on older
             // servers → tab hidden, no errors).
             skills: skillRegistry !== null,
+            // PRD Part A: connector catalog + the client-brokered OAuth
+            // handshake available. Same additive gating as skills.
+            connectors: connectorService !== null,
           },
         })
 
@@ -681,6 +731,19 @@ export const startUIWebSocketServer = (
                 send(ws, { type: "skill-catalog", skills: skills.map(toWireSkill) })
               }),
             ),
+          )
+        }
+
+        // Connector catalog + current instances, same pattern (PRD A §18).
+        if (connectorService !== null) {
+          const svc = connectorService
+          Effect.runFork(
+            Effect.gen(function* () {
+              const connectors = yield* svc.catalog()
+              const instances = yield* svc.list()
+              send(ws, { type: "connector-catalog", connectors })
+              send(ws, { type: "connector-list", instances })
+            }).pipe(Effect.catchAllCause(() => Effect.void)),
           )
         }
 
@@ -1015,7 +1078,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || skillRegistry !== null) {
+        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || skillRegistry !== null || connectorService !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -1263,6 +1326,165 @@ export const startUIWebSocketServer = (
                         }),
                       ),
                     )
+                    return
+                  }
+                  case "connector-oauth-begin": {
+                    // PRD A §09 step 3: the client bound its loopback and
+                    // asks for a consent URL. Failures (missing per-operator
+                    // client env var, already connected) ack ok:false with
+                    // the operator-actionable message.
+                    if (connectorService === null) return
+                    const svc = connectorService
+                    if (
+                      typeof frame.definitionId !== "string" ||
+                      typeof frame.loopbackPort !== "number"
+                    ) {
+                      send(ws, {
+                        type: "connector-status",
+                        requestId: String((frame as { requestId?: unknown }).requestId ?? ""),
+                        ok: false,
+                        message: "malformed connector-oauth-begin frame",
+                      })
+                      return
+                    }
+                    yield* svc
+                      .beginAuth({
+                        definitionId: frame.definitionId,
+                        label: frame.label,
+                        ...(frame.capabilityIds !== undefined
+                          ? { capabilityIds: frame.capabilityIds }
+                          : {}),
+                        loopbackPort: frame.loopbackPort,
+                      })
+                      .pipe(
+                        Effect.map((begun) => {
+                          send(ws, {
+                            type: "connector-oauth-redirect",
+                            requestId: frame.requestId,
+                            pendingId: begun.pendingId,
+                            authUrl: begun.authUrl,
+                          })
+                        }),
+                        Effect.catchAllCause((cause) =>
+                          Effect.sync(() => {
+                            send(ws, {
+                              type: "connector-status",
+                              requestId: frame.requestId,
+                              ok: false,
+                              message: failureMessage(cause),
+                            })
+                          }),
+                        ),
+                      )
+                    return
+                  }
+                  case "connector-oauth-code": {
+                    // PRD A §09 step 9: redeem the captured code. On success
+                    // broadcast the refreshed instance list to ALL clients.
+                    if (connectorService === null) return
+                    const svc = connectorService
+                    yield* svc
+                      .completeAuth({
+                        pendingId: String(frame.pendingId),
+                        code: String(frame.code),
+                        state: String(frame.state),
+                      })
+                      .pipe(
+                        Effect.flatMap((instance) =>
+                          Effect.gen(function* () {
+                            send(ws, { type: "connector-status", ok: true, instance })
+                            const instances = yield* svc.list()
+                            const sockets = yield* Ref.get(activeSockets)
+                            for (const sock of sockets) {
+                              send(sock, { type: "connector-list", instances })
+                            }
+                          }),
+                        ),
+                        Effect.catchAllCause((cause) =>
+                          Effect.sync(() => {
+                            send(ws, {
+                              type: "connector-status",
+                              ok: false,
+                              message: failureMessage(cause),
+                            })
+                          }),
+                        ),
+                      )
+                    return
+                  }
+                  case "connector-connect": {
+                    if (connectorService === null) return
+                    const svc = connectorService
+                    yield* svc
+                      .connect({
+                        definitionId: String(frame.definitionId),
+                        label: String(frame.label ?? ""),
+                        ...(frame.secretRef !== undefined
+                          ? { secretRef: frame.secretRef }
+                          : {}),
+                        ...(frame.capabilityIds !== undefined
+                          ? { capabilityIds: frame.capabilityIds }
+                          : {}),
+                      })
+                      .pipe(
+                        Effect.flatMap((instance) =>
+                          Effect.gen(function* () {
+                            send(ws, {
+                              type: "connector-status",
+                              requestId: frame.requestId,
+                              ok: true,
+                              instance,
+                            })
+                            const instances = yield* svc.list()
+                            const sockets = yield* Ref.get(activeSockets)
+                            for (const sock of sockets) {
+                              send(sock, { type: "connector-list", instances })
+                            }
+                          }),
+                        ),
+                        Effect.catchAllCause((cause) =>
+                          Effect.sync(() => {
+                            send(ws, {
+                              type: "connector-status",
+                              requestId: frame.requestId,
+                              ok: false,
+                              message: failureMessage(cause),
+                            })
+                          }),
+                        ),
+                      )
+                    return
+                  }
+                  case "connector-disconnect": {
+                    if (connectorService === null) return
+                    const svc = connectorService
+                    yield* svc
+                      .disconnect(String(frame.instanceId))
+                      .pipe(
+                        Effect.flatMap((removed) =>
+                          Effect.gen(function* () {
+                            send(ws, {
+                              type: "connector-status",
+                              ok: removed,
+                              ...(removed ? {} : { message: "unknown instance" }),
+                            })
+                            const instances = yield* svc.list()
+                            const sockets = yield* Ref.get(activeSockets)
+                            for (const sock of sockets) {
+                              send(sock, { type: "connector-list", instances })
+                            }
+                          }),
+                        ),
+                        Effect.catchAllCause((cause) =>
+                          Effect.sync(() => {
+                            send(ws, {
+                              type: "connector-status",
+                              ok: false,
+                              message: failureMessage(cause),
+                            })
+                          }),
+                        ),
+                      )
                     return
                   }
                   case "pty-input": {

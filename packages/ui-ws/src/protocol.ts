@@ -69,6 +69,12 @@ export interface HelloFrame {
      * hide the Skills settings tab when the flag is absent/false.
      */
     readonly skills?: boolean
+    /**
+     * PRD Part A (Connectors): connector catalog/instances + the
+     * client-brokered OAuth handshake are available. OPTIONAL/additive —
+     * clients hide the Connectors settings tab when absent/false.
+     */
+    readonly connectors?: boolean
   }
 }
 
@@ -238,6 +244,109 @@ export interface SkillStatusFrame {
   readonly message?: string
 }
 
+/* PRD Part A — connector frames (§18). All additive, gated on the hello
+ * `connectors` capability. NO frame in either direction ever carries a
+ * token or credential: the catalog is definition metadata, instances
+ * carry status + a secret POINTER, and the OAuth handshake moves only the
+ * authorization CODE (worthless without the server-held PKCE verifier). */
+
+/** One catalog card for the settings UI — definition metadata only. */
+export interface ConnectorCatalogItem {
+  readonly id: string
+  readonly name: string
+  readonly blurb: string
+  readonly category: string
+  readonly authKind: "oauth2" | "api-key" | "none"
+  readonly capabilities: ReadonlyArray<{
+    readonly id: string
+    readonly label: string
+    readonly scopes: ReadonlyArray<string>
+    readonly defaultGranted: boolean
+  }>
+}
+
+/** One connection row — status + pointer, never credential material. */
+export interface ConnectorInstanceItem {
+  readonly id: string
+  readonly definitionId: string
+  readonly label: string
+  readonly status: "connected" | "needs-reauth" | "error" | "disconnected"
+  readonly grantedScopes: ReadonlyArray<string>
+  readonly createdAt: number
+  readonly lastHealthyAt: number | null
+}
+
+/** Server→client: the connector catalog (sent after hello, like account-list). */
+export interface ConnectorCatalogFrame {
+  readonly type: "connector-catalog"
+  readonly connectors: ReadonlyArray<ConnectorCatalogItem>
+}
+
+/** Server→client: current connections (after hello + broadcast on change). */
+export interface ConnectorListFrame {
+  readonly type: "connector-list"
+  readonly instances: ReadonlyArray<ConnectorInstanceItem>
+}
+
+/**
+ * Client→server: start the client-brokered OAuth flow (PRD §09). The
+ * client has ALREADY bound 127.0.0.1:<loopbackPort> and will capture the
+ * provider's redirect there (RFC 8252 — the browser runs client-side).
+ */
+export interface ConnectorOauthBeginFrame {
+  readonly type: "connector-oauth-begin"
+  readonly requestId: string
+  readonly definitionId: string
+  readonly label: string
+  readonly capabilityIds?: ReadonlyArray<string>
+  readonly loopbackPort: number
+}
+
+/** Server→client: the consent URL for the client to open in the real browser. */
+export interface ConnectorOauthRedirectFrame {
+  readonly type: "connector-oauth-redirect"
+  readonly requestId: string
+  readonly pendingId: string
+  readonly authUrl: string
+}
+
+/** Client→server: the captured authorization code + echoed state. */
+export interface ConnectorOauthCodeFrame {
+  readonly type: "connector-oauth-code"
+  readonly pendingId: string
+  readonly code: string
+  readonly state: string
+}
+
+/** Client→server: non-OAuth connect (api-key already stored, or auth none). */
+export interface ConnectorConnectFrame {
+  readonly type: "connector-connect"
+  readonly requestId: string
+  readonly definitionId: string
+  readonly label: string
+  readonly secretRef?: string
+  readonly capabilityIds?: ReadonlyArray<string>
+}
+
+/** Client→server: remove a connection (server revokes best-effort). */
+export interface ConnectorDisconnectFrame {
+  readonly type: "connector-disconnect"
+  readonly instanceId: string
+}
+
+/**
+ * Server→client: outcome of begin/code/connect/disconnect. `ok:false`
+ * carries a short, non-sensitive reason (e.g. which env var is missing
+ * for the per-operator OAuth client).
+ */
+export interface ConnectorStatusFrame {
+  readonly type: "connector-status"
+  readonly requestId?: string
+  readonly ok: boolean
+  readonly message?: string
+  readonly instance?: ConnectorInstanceItem
+}
+
 export interface LocalShellRequestFrame {
   readonly type: "local-shell-request"
   readonly requestId: string
@@ -394,6 +503,10 @@ export type ServerFrame =
   | AccountListFrame
   | SkillCatalogFrame
   | SkillStatusFrame
+  | ConnectorCatalogFrame
+  | ConnectorListFrame
+  | ConnectorOauthRedirectFrame
+  | ConnectorStatusFrame
   | LocalShellRequestFrame
   | LocalShellStatusFrame
   | RegisterOpTokenStatusFrame
@@ -624,5 +737,9 @@ export type ClientFrame =
   | SecretResultFrame
   | SurveyResponseFrame
   | SkillToggleFrame
+  | ConnectorOauthBeginFrame
+  | ConnectorOauthCodeFrame
+  | ConnectorConnectFrame
+  | ConnectorDisconnectFrame
   | PtyInputFrame
   | PtyResizeFrame

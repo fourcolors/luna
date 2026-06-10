@@ -61,6 +61,7 @@
         "@luna/local-shell-tools": "workspace:*",
         "@luna/memory": "workspace:*",
         "@luna/memory-tools": "workspace:*",
+        "@luna/oauth": "workspace:*",
         "@luna/observability-tools": "workspace:*",
         "@luna/scheduler-tools": "workspace:*",
         "@luna/secret-tools": "workspace:*",
@@ -113,6 +114,7 @@
       "version": "0.0.1",
       "dependencies": {
         "@luna/core": "workspace:*",
+        "@luna/oauth": "workspace:*",
         "@luna/tools": "workspace:*",
         "effect": "^3.21.0",
       },
@@ -192,6 +194,17 @@
       "peerDependencies": {
         "@anthropic-ai/claude-agent-sdk": ">=0.3.0 <1",
         "zod": "^4.0.0",
+      },
+    },
+    "packages/oauth": {
+      "name": "@luna/oauth",
+      "version": "0.0.1",
+      "dependencies": {
+        "effect": "^3.21.0",
+      },
+      "devDependencies": {
+        "typescript": "^5.6.3",
+        "vitest": "^2.1.5",
       },
     },
     "packages/observability-tools": {
@@ -512,6 +525,8 @@
     "@luna/memory": ["@luna/memory@workspace:packages/memory"],
 
     "@luna/memory-tools": ["@luna/memory-tools@workspace:packages/memory-tools"],
+
+    "@luna/oauth": ["@luna/oauth@workspace:packages/oauth"],
 
     "@luna/observability-tools": ["@luna/observability-tools@workspace:packages/observability-tools"],
 
