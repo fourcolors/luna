@@ -105,6 +105,19 @@ export interface ConnectorServiceApi {
     readonly code: string
     readonly state: string
   }) => Effect.Effect<ConnectorInstance, ConnectorError>
+  /**
+   * Persist the operator's per-operator OAuth client credentials (PRD §23) so
+   * the consent flow can run without hand-editing ~/.luna/.env. Writes the
+   * definition's clientIdEnvVar (and clientSecretEnvVar when a secret is given)
+   * via the same secret sink the refresh token uses. The values are stored
+   * server-side and never echoed back. Rejects non-oauth2 definitions and
+   * when no OAuth wiring is configured.
+   */
+  readonly setClientCredentials: (input: {
+    readonly definitionId: string
+    readonly clientId: string
+    readonly clientSecret?: string
+  }) => Effect.Effect<void, ConnectorError>
   /** Remove an instance (best-effort token revocation included for OAuth). */
   readonly disconnect: (
     instanceId: string,
@@ -642,16 +655,83 @@ export const ConnectorServiceLayer = (
           }),
         )
 
+      const setClientCredentials: ConnectorServiceApi["setClientCredentials"] = (
+        input,
+      ) =>
+        Effect.gen(function* () {
+          const definition = definitions.get(input.definitionId)
+          if (definition === undefined) {
+            return yield* Effect.fail(
+              new ConnectorError({
+                op: "setClientCredentials",
+                message: `unknown connector: ${input.definitionId}`,
+              }),
+            )
+          }
+          if (definition.auth.kind !== "oauth2") {
+            return yield* Effect.fail(
+              new ConnectorError({
+                op: "setClientCredentials",
+                message: `${input.definitionId} does not use an OAuth client`,
+              }),
+            )
+          }
+          if (oauth === undefined) {
+            return yield* Effect.fail(
+              new ConnectorError({
+                op: "setClientCredentials",
+                message: "OAuth is not configured on this server",
+              }),
+            )
+          }
+          const id = input.clientId.trim()
+          if (id.length === 0) {
+            return yield* Effect.fail(
+              new ConnectorError({
+                op: "setClientCredentials",
+                message: "client id must not be empty",
+              }),
+            )
+          }
+          // Persist via the same sink the refresh token uses (process.env +
+          // atomic ~/.luna/.env at 0600). client id first; the secret is
+          // OPTIONAL (Desktop-app/PKCE clients have none).
+          yield* oauth.storeSecret(definition.auth.clientIdEnvVar, id)
+          const secret = input.clientSecret?.trim()
+          if (secret !== undefined && secret.length > 0) {
+            yield* oauth.storeSecret(definition.auth.clientSecretEnvVar, secret)
+          }
+        })
+
+      // Build wire-safe catalog metadata, enriching oauth2 per-operator-client
+      // definitions with their current `configured` state (id env var set?).
+      const catalog: ConnectorServiceApi["catalog"] = () =>
+        Effect.succeed(
+          options.definitions.map((d) => {
+            const meta = toMeta(d)
+            if (d.auth.kind !== "oauth2") return meta
+            return {
+              ...meta,
+              clientSetup: {
+                configured:
+                  oauth !== undefined &&
+                  oauthEnv(d.auth.clientIdEnvVar) !== null,
+              },
+            }
+          }),
+        )
+
       // Boot: hydrate the snapshot from persisted instances so threads
       // created before any settings interaction still get their mounts.
       yield* refreshMounts()
 
       return {
-        catalog: () => Effect.succeed(options.definitions.map(toMeta)),
+        catalog,
         list: () => store.list(),
         connect,
         beginAuth,
         completeAuth,
+        setClientCredentials,
         disconnect,
         refreshMounts,
         mountSnapshotSync: () => snapshot,

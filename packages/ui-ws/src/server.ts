@@ -284,6 +284,14 @@ export interface UIWebSocketServerConfig {
     readonly disconnect: (
       instanceId: string,
     ) => import("effect").Effect.Effect<boolean, unknown>
+    /** PRD §23 (M2.6): persist the operator's per-operator OAuth client
+     *  credentials so the consent flow runs without hand-editing ~/.luna/.env.
+     *  Values are written server-side and never echoed. */
+    readonly setClientCredentials: (input: {
+      readonly definitionId: string
+      readonly clientId: string
+      readonly clientSecret?: string
+    }) => import("effect").Effect.Effect<void, unknown>
   } | null
   /**
    * Optional pinned-artifact store handle (PRD Part C/W1 §18). When provided,
@@ -1588,6 +1596,63 @@ export const startUIWebSocketServer = (
                           Effect.sync(() => {
                             send(ws, {
                               type: "connector-status",
+                              ok: false,
+                              message: failureMessage(cause),
+                            })
+                          }),
+                        ),
+                      )
+                    return
+                  }
+                  case "connector-set-client": {
+                    // PRD §23 (M2.6): store the operator's OAuth client creds,
+                    // then re-broadcast the catalog so `clientSetup.configured`
+                    // flips true in every connected client's UI. The values are
+                    // never echoed back.
+                    if (connectorService === null) return
+                    const svc = connectorService
+                    if (
+                      typeof frame.definitionId !== "string" ||
+                      typeof frame.clientId !== "string" ||
+                      frame.clientId.trim().length === 0
+                    ) {
+                      send(ws, {
+                        type: "connector-status",
+                        requestId: frame.requestId,
+                        ok: false,
+                        message: "malformed connector-set-client frame",
+                      })
+                      return
+                    }
+                    yield* svc
+                      .setClientCredentials({
+                        definitionId: frame.definitionId,
+                        clientId: frame.clientId,
+                        ...(typeof frame.clientSecret === "string" &&
+                        frame.clientSecret.length > 0
+                          ? { clientSecret: frame.clientSecret }
+                          : {}),
+                      })
+                      .pipe(
+                        Effect.flatMap(() =>
+                          Effect.gen(function* () {
+                            send(ws, {
+                              type: "connector-status",
+                              requestId: frame.requestId,
+                              ok: true,
+                            })
+                            const connectors = yield* svc.catalog()
+                            const sockets = yield* Ref.get(activeSockets)
+                            for (const sock of sockets) {
+                              send(sock, { type: "connector-catalog", connectors })
+                            }
+                          }),
+                        ),
+                        Effect.catchAllCause((cause) =>
+                          Effect.sync(() => {
+                            send(ws, {
+                              type: "connector-status",
+                              requestId: frame.requestId,
                               ok: false,
                               message: failureMessage(cause),
                             })

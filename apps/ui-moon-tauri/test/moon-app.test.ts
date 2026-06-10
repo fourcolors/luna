@@ -1812,6 +1812,60 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(gCard.classList.contains('needs-reauth')).toBe(true)
       expect(gCard.textContent).toContain('Reconnect')
     })
+
+    it('clientSetup.configured=false renders setup form; no Authorize button visible', () => {
+      // A catalog with a Google Workspace connector that needs its OAuth client
+      // configured first — the normal Authorize path must be gated.
+      M().handleFrame({
+        type: 'connector-catalog',
+        connectors: [
+          {
+            id: 'google_workspace',
+            name: 'Google Workspace',
+            blurb: 'Mail & files.',
+            category: 'productivity',
+            authKind: 'oauth2',
+            clientSetup: { configured: false },
+            capabilities: [
+              { id: 'gmail-read', label: 'Read email', scopes: ['gmail.readonly'], defaultGranted: true },
+            ],
+          },
+        ],
+      })
+      const card = document.querySelector('#connectors-list .connector-card') as HTMLElement
+      expect(card).not.toBeNull()
+      // Setup form present
+      const setup = card.querySelector('.connector-client-setup')!
+      expect(setup).not.toBeNull()
+      // Client ID input present and a Save client button
+      const clientIdInput = setup.querySelector('input[type=text]') as HTMLInputElement
+      expect(clientIdInput).not.toBeNull()
+      const secretInput = setup.querySelector('input[type=password]') as HTMLInputElement
+      expect(secretInput).not.toBeNull()
+      expect(setup.textContent).toContain('Save client')
+      // Explainer references Google Cloud Console
+      expect(setup.textContent).toContain('Google Cloud Console')
+      // No Authorize button — blocked until client is configured
+      const btns = Array.from(card.querySelectorAll('.connector-btn')).map((b) => b.textContent)
+      expect(btns).not.toContain('Authorize in browser')
+    })
+
+    it('setClient sends connector-set-client frame with definitionId + clientId; omits empty secret', () => {
+      const m = M()
+      // Ensure ws is OPEN (already done in beforeEach but re-assert for clarity)
+      m.State.ws = { readyState: WebSocket.OPEN }
+      m.ConnectorsEngine.setClient('google_workspace', 'abc.apps.googleusercontent.com', '')
+      const frame = sentFrames.find((f: any) => f.type === 'connector-set-client')
+      expect(frame).toMatchObject({
+        type: 'connector-set-client',
+        definitionId: 'google_workspace',
+        clientId: 'abc.apps.googleusercontent.com',
+      })
+      // Empty secret must NOT be forwarded
+      expect(frame).not.toHaveProperty('clientSecret')
+      // requestId has the setclient_ prefix
+      expect(frame.requestId).toMatch(/^setclient_/)
+    })
   })
 
   // ───────────────────────────────────────────────────────────────────────────

@@ -30,6 +30,11 @@ export interface ConnectorsPanelProps {
     capabilityIds: ReadonlyArray<string>,
   ) => void
   readonly onDisconnect: (instanceId: string) => void
+  readonly onSetClient?: (
+    definitionId: string,
+    clientId: string,
+    clientSecret: string | undefined,
+  ) => void
   readonly disabled?: boolean
   readonly lastError?: string | null
 }
@@ -80,9 +85,19 @@ export const ConnectorsPanel: Component<ConnectorsPanelProps> = (props) => {
                       <Show
                         when={def.authKind === "api-key"}
                         fallback={
-                          <span class="skill-desc" style={{ "max-width": "160px" }}>
-                            Connect from the Moon app
-                          </span>
+                          <Show
+                            when={def.clientSetup === undefined || def.clientSetup.configured === true}
+                            fallback={null}
+                          >
+                            <Show when={def.clientSetup?.configured === true}>
+                              <span class="skill-desc" style={{ color: "var(--ok, #4caf50)", "font-size": "0.8em" }}>
+                                ✓ OAuth client configured
+                              </span>
+                            </Show>
+                            <span class="skill-desc" style={{ "max-width": "160px" }}>
+                              Connect from the Moon app
+                            </span>
+                          </Show>
                         }
                       >
                         <button
@@ -117,11 +132,76 @@ export const ConnectorsPanel: Component<ConnectorsPanelProps> = (props) => {
                     }}
                   />
                 </Show>
+                <Show when={def.clientSetup !== undefined && def.clientSetup.configured === false && instance() === null}>
+                  <OAuthClientSetupForm
+                    def={def}
+                    disabled={props.disabled === true}
+                    onSubmit={(clientId, clientSecret) =>
+                      props.onSetClient?.(def.id, clientId, clientSecret)
+                    }
+                  />
+                </Show>
               </div>
             )
           }}
         </For>
       </div>
+    </div>
+  )
+}
+
+const OAuthClientSetupForm: Component<{
+  def: ConnectorCatalogItem
+  disabled: boolean
+  onSubmit: (clientId: string, clientSecret: string | undefined) => void
+}> = (props) => {
+  const [clientId, setClientId] = createSignal("")
+  const [clientSecret, setClientSecret] = createSignal("")
+
+  const handleSubmit = () => {
+    const id = clientId().trim()
+    if (id.length === 0) return
+    const secret = clientSecret().trim()
+    props.onSubmit(id, secret.length > 0 ? secret : undefined)
+    setClientId("")
+    setClientSecret("")
+  }
+
+  return (
+    <div
+      style={{
+        flex: "0 0 100%",
+        display: "flex",
+        "flex-direction": "column",
+        gap: "6px",
+        "margin-top": "6px",
+      }}
+    >
+      <span class="skill-desc" style={{ "line-height": "1.4" }}>
+        This connector uses YOUR own Google OAuth client. Create one in the
+        Google Cloud Console (Desktop app), then paste it here.
+      </span>
+      <input
+        type="text"
+        placeholder="Client ID (required)"
+        value={clientId()}
+        disabled={props.disabled}
+        onInput={(e) => setClientId(e.currentTarget.value)}
+      />
+      <input
+        type="password"
+        placeholder="Client secret (optional — Desktop-app clients can leave blank)"
+        value={clientSecret()}
+        disabled={props.disabled}
+        onInput={(e) => setClientSecret(e.currentTarget.value)}
+      />
+      <button
+        type="button"
+        disabled={props.disabled || clientId().trim().length === 0}
+        onClick={handleSubmit}
+      >
+        Save client
+      </button>
     </div>
   )
 }

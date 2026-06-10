@@ -105,6 +105,16 @@ export interface ConnectorDefinitionMeta {
   readonly category: ConnectorCategory
   readonly authKind: AuthSpec["kind"]
   readonly capabilities: ReadonlyArray<CapabilitySpec>
+  /**
+   * Present ONLY for oauth2 connectors that use a per-operator OAuth client
+   * (PRD §23) — the operator must supply their own GCP client id/secret before
+   * the consent flow can run. `configured` reflects whether the client id env
+   * var is currently set; the UI shows an inline setup form when it is false.
+   * Carries NO secret values — just the boolean state.
+   */
+  readonly clientSetup?: {
+    readonly configured: boolean
+  }
 }
 
 export interface ConnectorInstance {

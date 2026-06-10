@@ -277,6 +277,12 @@ export interface ConnectorCatalogItem {
     readonly scopes: ReadonlyArray<string>
     readonly defaultGranted: boolean
   }>
+  /** PRD §23 — present only for oauth2 per-operator-client connectors;
+   *  `configured` flips true once the operator's client id is stored. No
+   *  secret values cross the wire. */
+  readonly clientSetup?: {
+    readonly configured: boolean
+  }
 }
 
 /** One connection row — status + pointer, never credential material. */
@@ -346,6 +352,16 @@ export interface ConnectorConnectFrame {
 export interface ConnectorDisconnectFrame {
   readonly type: "connector-disconnect"
   readonly instanceId: string
+}
+/** Client→server: persist the operator's per-operator OAuth client creds
+ *  (PRD §23). Values go UP only — never echoed back; the server writes them via
+ *  the same secret sink the refresh token uses. */
+export interface ConnectorSetClientFrame {
+  readonly type: "connector-set-client"
+  readonly requestId: string
+  readonly definitionId: string
+  readonly clientId: string
+  readonly clientSecret?: string
 }
 
 /**
@@ -848,6 +864,7 @@ export type ClientFrame =
   | ConnectorOauthCodeFrame
   | ConnectorConnectFrame
   | ConnectorDisconnectFrame
+  | ConnectorSetClientFrame
   | ArtifactPinFrame
   | ArtifactUnpinFrame
   | WorkflowRunsRequestFrame

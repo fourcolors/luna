@@ -120,6 +120,7 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "connector-oauth-code",
   "connector-connect",
   "connector-disconnect",
+  "connector-set-client",
   "artifact-pin",
   "artifact-unpin",
   "workflow-runs-request",
@@ -211,7 +212,7 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     expect(UI_WS_PROTOCOL_VERSION).toBe(EXPECTED_PROTOCOL_VERSION)
   })
 
-  it("parser self-check: derived counts are sane (36 server, 25 client) — guards the regex itself", () => {
+  it("parser self-check: derived counts are sane (36 server, 26 client) — guards the regex itself", () => {
     // If the regex silently mis-parses, the toEqual above could pass for the
     // wrong reason. Pin the counts so a broken parser is caught here.
     // Prior base = 24 server / 15 client; the agent-summoned secure-secret-entry
@@ -225,9 +226,11 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // artifact-list + artifact-update (server) and artifact-pin + artifact-unpin
     // (client) → 34 server / 23 client. The PRD Part C/W3 workflow gallery adds
     // workflow-list + workflow-runs (server) and workflow-runs-request +
-    // workflow-refresh (client) → 36 server / 25 client.
+    // workflow-refresh (client) → 36 server / 25 client. M2.6 adds
+    // connector-set-client (client) for the inline OAuth-client setup form
+    // → 36 server / 26 client.
     expect(literalsForUnion(src, "ServerFrame")).toHaveLength(36)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(25)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(26)
   })
 
   // VERSION-SKEW (client half): nothing else pins the ui-shared wire.ts mirror

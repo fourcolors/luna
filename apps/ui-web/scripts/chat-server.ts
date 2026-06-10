@@ -1853,6 +1853,11 @@ const buildServerLayer = (
         }) => connectorServiceHandle.connect(input).pipe(Effect.map(toWireInstance)),
         disconnect: (instanceId: string) =>
           connectorServiceHandle.disconnect(instanceId),
+        setClientCredentials: (input: {
+          readonly definitionId: string
+          readonly clientId: string
+          readonly clientSecret?: string
+        }) => connectorServiceHandle.setClientCredentials(input),
       }
 
       // PRD Part C/W1: the artifact store's PinnedArtifact is already wire-safe

@@ -880,6 +880,11 @@
     .connector-cap { display: flex; align-items: center; gap: 8px; font-size: 0.7rem; color: #cbd8f0; cursor: pointer; }
     .connector-cap input { accent-color: #8ab4f8; }
     .connector-cap .cap-scopes { font-size: 0.58rem; color: #5d6e92; }
+    .connector-client-setup { display: flex; flex-direction: column; gap: 8px; border-top: 1px dashed rgba(255,255,255,0.08); padding-top: 10px; }
+    .connector-client-explainer { font-size: 0.64rem; color: #94a3b8; line-height: 1.5; }
+    .connector-client-row { display: flex; flex-direction: column; gap: 4px; }
+    .connector-client-label { font-size: 0.62rem; color: #64748b; font-weight: 500; }
+    .connector-client-configured { font-size: 0.64rem; color: #6ee7b7; display: flex; align-items: center; gap: 5px; padding-bottom: 2px; }
     
     /* Toggle switch design (macOS style) */
     .switch {
@@ -4867,8 +4872,78 @@
           head.appendChild(actions);
           card.appendChild(head);
 
+          // Client setup form: for oauth2 connectors that require a per-operator
+          // GCP OAuth client (PRD §23 / M2.6). Renders INSTEAD of the normal
+          // consent UI when clientSetup.configured === false; shows a small
+          // "configured" badge + normal consent UI when true.
+          if (def.clientSetup && def.authKind === 'oauth2' && !instance && !busy) {
+            if (!def.clientSetup.configured) {
+              // Show inline GCP client id / secret entry — block the Authorize path
+              // until the operator has pasted their credentials.
+              const setup = document.createElement('div');
+              setup.className = 'connector-client-setup';
+
+              const explainer = document.createElement('div');
+              explainer.className = 'connector-client-explainer';
+              explainer.textContent =
+                'Uses YOUR own Google OAuth client — create one in the Google Cloud Console' +
+                ' (Desktop app), then paste it here.';
+              setup.appendChild(explainer);
+
+              const idRow = document.createElement('div');
+              idRow.className = 'connector-client-row';
+              const idLabel = document.createElement('div');
+              idLabel.className = 'connector-client-label';
+              idLabel.textContent = 'Client ID';
+              const clientIdInput = document.createElement('input');
+              clientIdInput.type = 'text';
+              clientIdInput.className = 'premium-text-input';
+              clientIdInput.placeholder = 'e.g. 123456789-abc.apps.googleusercontent.com';
+              idRow.appendChild(idLabel);
+              idRow.appendChild(clientIdInput);
+              setup.appendChild(idRow);
+
+              const secRow = document.createElement('div');
+              secRow.className = 'connector-client-row';
+              const secLabel = document.createElement('div');
+              secLabel.className = 'connector-client-label';
+              secLabel.textContent = 'Client secret (optional)';
+              const clientSecretInput = document.createElement('input');
+              clientSecretInput.type = 'password';
+              clientSecretInput.className = 'premium-text-input';
+              clientSecretInput.placeholder = '(optional)';
+              secRow.appendChild(secLabel);
+              secRow.appendChild(clientSecretInput);
+              setup.appendChild(secRow);
+
+              const saveBtn = document.createElement('button');
+              saveBtn.type = 'button';
+              saveBtn.className = 'connector-btn';
+              saveBtn.textContent = 'Save client';
+              saveBtn.addEventListener('click', () => {
+                const cid = clientIdInput.value;
+                const csec = clientSecretInput.value;
+                if (!cid.trim()) return;
+                this.setClient(def.id, cid, csec);
+              });
+              setup.appendChild(saveBtn);
+              card.appendChild(setup);
+            } else {
+              // configured === true: show badge, then fall through to normal consent sheet
+              const badge = document.createElement('div');
+              badge.className = 'connector-client-configured';
+              badge.textContent = '✓ OAuth client configured';
+              // Insert before the consent sheet if it will render (i.e., _consentOpen)
+              card.appendChild(badge);
+            }
+          }
+
           // Consent sheet: capability checkboxes (scope narrowing, PRD §17).
-          if (this._consentOpen === def.id && !instance && !busy) {
+          // Skipped when clientSetup exists but is not yet configured (the setup
+          // form above is shown instead).
+          const clientNotReady = def.clientSetup && def.authKind === 'oauth2'
+            && !def.clientSetup.configured;
+          if (this._consentOpen === def.id && !instance && !busy && !clientNotReady) {
             const sheet = document.createElement('div');
             sheet.className = 'connector-consent';
             const boxes = [];
@@ -4924,6 +4999,28 @@
         } else {
           DOM.connectorsList.replaceChildren(...cards);
         }
+      },
+
+      /** Send a connector-set-client frame so the server can persist the
+       *  operator's GCP OAuth client credentials and flip clientSetup.configured.
+       *  The server re-broadcasts connector-catalog with configured:true, which
+       *  causes applyCatalog → render() to swap in the normal consent UI.
+       */
+      setClient(definitionId, clientId, clientSecret) {
+        if (!(State.ws && State.ws.readyState === WebSocket.OPEN)) {
+          this.setError('Not connected to a server.');
+          return;
+        }
+        const trimmedId = (clientId || '').trim();
+        if (!trimmedId) return;
+        const frame = {
+          type: 'connector-set-client',
+          requestId: 'setclient_' + Math.random().toString(36).slice(2),
+          definitionId,
+          clientId: trimmedId,
+          ...(clientSecret && clientSecret.trim() ? { clientSecret: clientSecret.trim() } : {}),
+        };
+        WebSocketEngine.send(frame);
       },
     };
 

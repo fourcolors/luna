@@ -364,3 +364,94 @@ describe("client-brokered OAuth flow (mock provider e2e)", () => {
     expect(err.message).toContain("~/.luna/.env")
   })
 })
+
+describe("setClientCredentials — operator OAuth client setup (M2.6)", () => {
+  // A rig whose storeSecret writes the SAME `env` object oauthEnv reads, mirroring
+  // production where storeSecret = persistEnvSecret sets process.env (which IS env).
+  const makeSetupRig = () => {
+    const provider = makeProvider()
+    const clock = makeTestClock()
+    const env: Record<string, string | undefined> = {} // empty = client NOT configured
+    const stored = new Map<string, string>()
+    const layer = ConnectorServiceLayer({
+      definitions: [oauthDef],
+      oauth: {
+        client: makeOAuthClient(provider.fetchImpl),
+        storeSecret: (varName, value) =>
+          Effect.sync(() => {
+            env[varName] = value
+            stored.set(varName, value)
+            return `env:${varName}`
+          }),
+        env,
+      },
+    }).pipe(
+      Layer.provide(ConnectorInstanceStore.Memory),
+      Layer.provide(
+        Layer.succeed(SecretProvider, {
+          get: (ref: string) => {
+            const v = ref.startsWith("env:") ? stored.get(ref.slice(4)) : undefined
+            return v !== undefined
+              ? Effect.succeed(Redacted.make(v))
+              : Effect.fail(new ConfigError({ module: "test", key: ref, message: "x" }))
+          },
+        }),
+      ),
+      Layer.provide(clock.layer),
+    )
+    return { env, stored, layer }
+  }
+
+  it("catalog reports configured:false until setClientCredentials flips it true", async () => {
+    const rig = makeSetupRig()
+    const out = await Effect.runPromise(
+      Effect.gen(function* () {
+        const svc = yield* ConnectorService
+        const before = (yield* svc.catalog())[0]
+        yield* svc.setClientCredentials({
+          definitionId: "fake-google",
+          clientId: "my-id.apps.googleusercontent.com",
+          clientSecret: "my-secret",
+        })
+        const after = (yield* svc.catalog())[0]
+        return { before, after }
+      }).pipe(Effect.provide(rig.layer)) as Effect.Effect<{ before: any; after: any }>,
+    )
+    expect(out.before.clientSetup).toEqual({ configured: false })
+    expect(out.after.clientSetup).toEqual({ configured: true })
+    expect(rig.env["FAKE_GOOGLE_CLIENT_ID"]).toBe("my-id.apps.googleusercontent.com")
+    expect(rig.env["FAKE_GOOGLE_CLIENT_SECRET"]).toBe("my-secret")
+  })
+
+  it("a missing secret is allowed — id alone flips configured (Desktop-app/PKCE clients)", async () => {
+    const rig = makeSetupRig()
+    const after = await Effect.runPromise(
+      Effect.gen(function* () {
+        const svc = yield* ConnectorService
+        yield* svc.setClientCredentials({ definitionId: "fake-google", clientId: "id-only" })
+        return (yield* svc.catalog())[0]
+      }).pipe(Effect.provide(rig.layer)) as Effect.Effect<any>,
+    )
+    expect(after.clientSetup).toEqual({ configured: true })
+    expect(rig.env["FAKE_GOOGLE_CLIENT_ID"]).toBe("id-only")
+    expect(rig.env["FAKE_GOOGLE_CLIENT_SECRET"]).toBeUndefined() // no secret stored
+  })
+
+  it("rejects an unknown connector and an empty client id", async () => {
+    const rig = makeSetupRig()
+    const errs = await Effect.runPromise(
+      Effect.gen(function* () {
+        const svc = yield* ConnectorService
+        const unknown = yield* svc
+          .setClientCredentials({ definitionId: "nope", clientId: "x" })
+          .pipe(Effect.flip)
+        const empty = yield* svc
+          .setClientCredentials({ definitionId: "fake-google", clientId: "   " })
+          .pipe(Effect.flip)
+        return { unknown: unknown.message, empty: empty.message }
+      }).pipe(Effect.provide(rig.layer)) as Effect.Effect<{ unknown: string; empty: string }>,
+    )
+    expect(errs.unknown).toContain("unknown connector")
+    expect(errs.empty).toContain("must not be empty")
+  })
+})

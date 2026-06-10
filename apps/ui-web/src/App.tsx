@@ -542,6 +542,9 @@ export const App: Component = () => {
                 onDisconnect={(instanceId) =>
                   send({ type: "connector-disconnect", instanceId })
                 }
+                onSetClient={(definitionId, clientId, clientSecret) =>
+                  send({ type: "connector-set-client", requestId: `setclient_${Date.now()}`, definitionId, clientId, ...(clientSecret ? { clientSecret } : {}) })
+                }
               />
             </div>
           </Show>

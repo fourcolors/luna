@@ -253,6 +253,12 @@ export interface ConnectorCatalogItem {
     readonly scopes: ReadonlyArray<string>
     readonly defaultGranted: boolean
   }>
+  /** PRD §23 — present only for oauth2 connectors using a per-operator OAuth
+   *  client. `configured` = the operator's client id is set; when false the UI
+   *  shows an inline "set up your OAuth client" form. No secret values here. */
+  readonly clientSetup?: {
+    readonly configured: boolean
+  }
 }
 export interface ConnectorInstanceItem {
   readonly id: string
@@ -309,6 +315,16 @@ export interface ConnectorConnectFrame {
 export interface ConnectorDisconnectFrame {
   readonly type: "connector-disconnect"
   readonly instanceId: string
+}
+/** Client→server: persist the operator's per-operator OAuth client creds
+ *  (PRD §23) so the consent flow runs without hand-editing ~/.luna/.env. The
+ *  values go UP only (like register-op-token's token) — never echoed back. */
+export interface ConnectorSetClientFrame {
+  readonly type: "connector-set-client"
+  readonly requestId: string
+  readonly definitionId: string
+  readonly clientId: string
+  readonly clientSecret?: string
 }
 
 /* PRD Part C (W1) — artifact frames (mirror packages/ui-ws/src/protocol.ts).
@@ -541,6 +557,7 @@ export type ClientFrame =
   | ConnectorOauthCodeFrame
   | ConnectorConnectFrame
   | ConnectorDisconnectFrame
+  | ConnectorSetClientFrame
   | ArtifactPinFrame
   | ArtifactUnpinFrame
   | WorkflowRunsRequestFrame
