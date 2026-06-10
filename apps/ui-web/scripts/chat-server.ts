@@ -255,6 +255,7 @@ import {
   type SecretDestination,
 } from "@luna/secret-tools"
 import { SkillToolsLayer, SkillToolsService } from "@luna/skill-tools"
+import { WidgetToolsLayer, WidgetToolsService } from "@luna/widget-tools"
 import {
   BUILTIN_CONNECTORS,
   ConnectorError,
@@ -456,6 +457,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       const localShellTools = yield* LocalShellToolsService
       const secretTools = yield* SecretToolsService
       const skillTools = yield* SkillToolsService
+      const widgetTools = yield* WidgetToolsService // PRD Part C/W4: widget_write
       // PRD Part B (Skills): the managed skill catalog. decorate() reads
       // promptSnapshotSync() — synchronous and never stale (the registry
       // rebuilds it inside every mutation), so a settings toggle is
@@ -600,6 +602,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
           const localShellThreadTools = localShellTools.createSessionBinding()
           const secretThreadTools = secretTools.createSessionBinding()
           const skillThreadTools = skillTools.createSessionBinding()
+          const widgetThreadTools = widgetTools.createSessionBinding()
           console.log(
             "[luna/thread] wiring MCP servers:",
             [
@@ -609,6 +612,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
               localShellThreadTools.serverName,
               secretThreadTools.serverName,
               skillThreadTools.serverName,
+              widgetThreadTools.serverName,
             ].join(", "),
           )
           // Sync read of the live-refresh holder — refreshed every
@@ -642,6 +646,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             [localShellThreadTools.serverName]: localShellThreadTools.server,
             [secretThreadTools.serverName]: secretThreadTools.server,
             [skillThreadTools.serverName]: skillThreadTools.server, // PRD B §11: skill_load (tier-2 disclosure)
+            [widgetThreadTools.serverName]: widgetThreadTools.server, // PRD C §16: widget_write (describe-to-spawn)
             ...connectorService.mountSnapshotSync(), // PRD A §07: connected services, hot per-thread
           }
           return {
@@ -1449,6 +1454,11 @@ export const buildBaseLayer = (
     // and the provider (Layer.provide composes bottom-up).
     Layer.provide(SkillToolsLayer()),
     Layer.provide(skillRegistryL),
+    // PRD Part C/W4: widget_tools (widget_write) — describe-to-spawn authoring.
+    // WidgetToolsLayer requires ArtifactStore; provide the tools layer first,
+    // then artifactStoreL satisfies both it and the WS handle (memoized).
+    Layer.provide(WidgetToolsLayer()),
+    Layer.provide(artifactStoreL),
     Layer.provide(connectorServiceL), // PRD Part A: mounts read by decorate()
     Layer.provide(obsL),
     Layer.provide(clockL),

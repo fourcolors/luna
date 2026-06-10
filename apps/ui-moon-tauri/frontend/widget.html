@@ -6,6 +6,7 @@
   <title>Luna Widget</title>
   <script src="vendor/highlight.min.js"></script>
   <script src="vendor/deck-snap.js"></script>
+  <script src="vendor/widget-sandbox.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -143,6 +144,10 @@
     .hljs-operator, .hljs-punctuation  { color: #89ddff; }
     .hljs-deletion                      { color: #f07178; }
     .hljs-addition                      { color: #c3e88d; }
+    /* kind=widget: the sandboxed iframe fills the content area. The widget
+       controls its own background; we give it a white base so a transparent
+       widget is legible. */
+    .widget-frame { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
   </style>
 </head>
 <body>
@@ -201,11 +206,64 @@
     contentArea.appendChild(p);
   }
 
+  // ── Widget sandbox bridge state (PRD §16) ─────────────────────────────────
+  // A kind='widget' artifact is AGENT-AUTHORED CODE. It renders in a hard
+  // sandbox (allow-scripts, NO allow-same-origin, strict CSP, no network) and
+  // can only reach out through the cap-gated luna.* postMessage bridge.
+  var widgetFrame = null;        // the current sandboxed <iframe>
+  var widgetBridgeCaps = [];     // this widget's bridge_caps allowlist
+  var widgetSubscribed = false;  // the widget called luna.subscribe()
+  var lastArtifact = null;       // for luna.refresh() re-render
+
+  function clearWidgetState() {
+    widgetFrame = null;
+    widgetBridgeCaps = [];
+    widgetSubscribed = false;
+  }
+
+  function renderWidget(artifact) {
+    lastArtifact = artifact;
+    widgetBridgeCaps = Array.isArray(artifact.bridgeCaps) ? artifact.bridgeCaps : [];
+    widgetSubscribed = false;
+    contentArea.innerHTML = '';
+    var iframe = document.createElement('iframe');
+    iframe.className = 'widget-frame';
+    // SECURITY (the trust boundary): allow-scripts WITHOUT allow-same-origin →
+    // unique opaque origin: no parent-DOM access, no cookies/storage, no
+    // window.__TAURI__. srcdoc (not src) → inline, no network load. The CSP +
+    // bridge shim are assembled by the audited LunaWidgetSandbox.
+    iframe.setAttribute(
+      'sandbox',
+      window.LunaWidgetSandbox ? LunaWidgetSandbox.SANDBOX_ATTR : 'allow-scripts'
+    );
+    iframe.setAttribute('referrerpolicy', 'no-referrer');
+    if (window.LunaWidgetSandbox) {
+      iframe.srcdoc = LunaWidgetSandbox.buildSrcdoc(artifact.content || '');
+    }
+    widgetFrame = iframe;
+    contentArea.appendChild(iframe);
+  }
+
+  // The host half of the luna.* bridge: accept messages ONLY from the current
+  // widget iframe, and forward obs events ONLY for kinds the widget's
+  // bridge_caps allow (fails closed). Set up once; the iframe reference gates it.
+  window.addEventListener('message', function (e) {
+    if (!widgetFrame || e.source !== widgetFrame.contentWindow) return;
+    var m = e.data;
+    if (!m || typeof m !== 'object') return;
+    if (m.__luna === 'subscribe') {
+      widgetSubscribed = true; // the per-kind gate is applied on each forward
+    } else if (m.__luna === 'refresh') {
+      if (lastArtifact) renderWidget(lastArtifact);
+    }
+    // 'ready' is a no-op in v1; luna.ask() is deferred to v2 (needs consent).
+  });
+
   // ── Render artifact ───────────────────────────────────────────────────────
   // XSS-CRITICAL: content is agent/user-controlled.
-  // - Title goes through .textContent (never innerHTML).
-  // - Artifact body uses codeEl.textContent (never innerHTML).
-  // - html/widget kinds render as escaped source, never executed.
+  // - kind='widget' → the sandboxed iframe above (executes, but caged).
+  // - all other kinds → escaped source via .textContent (NEVER innerHTML),
+  //   so even html/widget-source renders as text and never executes here.
   function render(artifact) {
     if (!artifact) return;
 
@@ -213,7 +271,13 @@
     var titleText = (artifact.title || 'Artifact') + ' · v' + (artifact.version || 1);
     barTitle.textContent = titleText;
 
-    // Restore the pre>code structure (may have been replaced by a notice).
+    if (artifact.kind === 'widget') {
+      renderWidget(artifact);
+      return;
+    }
+    clearWidgetState();
+
+    // Restore the pre>code structure (may have been replaced by a notice/iframe).
     if (!document.getElementById('code-block')) {
       contentArea.innerHTML = '';
       var pre = document.createElement('pre');
@@ -278,6 +342,25 @@
           break;
         case 'ping':
           try { ws.send(JSON.stringify({ type: 'pong', ts: frame.ts })); } catch (_) {}
+          break;
+        case 'event':
+          // Obs-event stream → forward to a SUBSCRIBED widget, but ONLY for the
+          // kinds its bridge_caps allow (cap-gated; fails closed). This is the
+          // single read-only door out of the sandbox (luna.subscribe).
+          if (
+            widgetFrame &&
+            widgetSubscribed &&
+            frame.event &&
+            window.LunaWidgetSandbox &&
+            LunaWidgetSandbox.subscribeAllowed(widgetBridgeCaps, frame.event.kind)
+          ) {
+            try {
+              widgetFrame.contentWindow.postMessage(
+                { __luna: 'event', event: frame.event },
+                '*'
+              );
+            } catch (_) { /* iframe gone */ }
+          }
           break;
         default:
           break;
