@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-voice-stop-speaking"
+description = "Allows stopping TTS playback and clearing the sentence queue"
+
+[permission.commands]
+allow = [
+  "voice_stop_speaking"
+]

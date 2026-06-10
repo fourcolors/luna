@@ -24,6 +24,17 @@
     "allow-get-platform",
     "allow-check-for-update",
     "allow-install-update",
+    "allow-voice-status",
+    "allow-voice-set-mode",
+    "allow-voice-ptt-down",
+    "allow-voice-ptt-up",
+    "allow-voice-cancel",
+    "allow-speak-text",
+    "allow-voice-stop-speaking",
+    "allow-voice-list-voices",
+    "allow-voice-set-voice",
+    "allow-voice-set-config",
+    "allow-voice-ensure-model",
     "dialog:allow-open"
   ]
 }

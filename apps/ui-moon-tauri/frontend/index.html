@@ -236,8 +236,162 @@
     body.retethering .moon-glow { opacity: 0.45; }
     body.retethering .moon-svg { filter: drop-shadow(0 6px 16px rgba(138, 180, 248, 0.18)); }
 
+    /* ── Voice states on the moon (data-voice-state, set by VoiceEngine).
+       Painterly like the bead: flat translucent washes, opacity + soft scale
+       only — no gloss, no specular anything. The moon is 30px in a 140px
+       window, so every effect here is deliberately quiet. ── */
+    /* listening: a soft watercolor pulse on the glow; --voice-level (RMS 0–1,
+       ~10 Hz from Rust) scales the pool so the moon visibly "hears" you. The
+       glow's existing 0.3s transitions smooth the level steps. */
+    .moon-wrapper[data-voice-state="listening"] .moon-glow {
+      transform: scale(calc(1 + var(--voice-level, 0) * 0.28));
+      animation: voice-listening-wash 2.8s ease-in-out infinite;
+    }
+    @keyframes voice-listening-wash {
+      0%, 100% { opacity: 0.7; }
+      50%      { opacity: 1; }
+    }
+    /* transcribing: a brief inward shimmer — the pool draws breath while
+       whisper works. Fast cycle; the state itself only lasts a moment. */
+    .moon-wrapper[data-voice-state="transcribing"] .moon-glow {
+      animation: voice-transcribing-shimmer 0.9s ease-in-out infinite;
+    }
+    @keyframes voice-transcribing-shimmer {
+      0%   { transform: scale(1.10); opacity: 0.55; }
+      60%  { transform: scale(0.94); opacity: 0.95; }
+      100% { transform: scale(1.02); opacity: 0.75; }
+    }
+    /* speaking: a gentle outward ripple — a blurred watercolor ring that
+       feathers to nothing inside its own box (closest-side, the aura lesson)
+       so it never clips into a hard edge. */
+    .moon-wrapper[data-voice-state="speaking"]::after {
+      content: '';
+      position: absolute;
+      inset: -8px;
+      border-radius: 50%;
+      pointer-events: none;
+      background: radial-gradient(circle closest-side,
+        rgba(138, 180, 248, 0) 52%,
+        rgba(138, 180, 248, 0.26) 72%,
+        rgba(165, 148, 238, 0.10) 86%,
+        rgba(138, 180, 248, 0) 100%);
+      animation: voice-speaking-ripple 1.9s ease-out infinite;
+    }
+    @keyframes voice-speaking-ripple {
+      0%   { transform: scale(0.72); opacity: 0; }
+      30%  { opacity: 0.9; }
+      100% { transform: scale(1.45); opacity: 0; }
+    }
 
-    /* 
+    /* ── Mic button (chat header, next to the gear). Same chrome-free base as
+       .close-btn; its voice state paints as watercolor washes (flat pigment
+       pools, edge-feathered) — never a glossy LED. ── */
+    .mic-btn { position: relative; }
+    /* `hidden` loses to .close-btn's `display: flex` by cascade (the UA
+       [hidden] rule is non-important) — without this the dead mic button
+       renders in every voice-less build. Same trap as .user-ask-panel. */
+    .mic-btn[hidden] { display: none !important; }
+    .mic-btn.voice-mode-off { opacity: 0.45; }
+    .mic-btn[data-voice-state="listening"] {
+      color: #eaf2ff;
+      background: radial-gradient(circle closest-side,
+        rgba(150, 188, 250, 0.26) 0%,
+        rgba(138, 180, 248, 0.38) 52%,
+        rgba(118, 162, 240, 0.55) 78%,
+        rgba(118, 162, 240, 0.18) 92%,
+        rgba(118, 162, 240, 0) 100%);
+      animation: mic-listening-wash 2.4s ease-in-out infinite;
+    }
+    @keyframes mic-listening-wash {
+      0%, 100% { box-shadow: 0 0 6px rgba(138, 180, 248, 0.25); }
+      50%      { box-shadow: 0 0 13px rgba(138, 180, 248, 0.5); }
+    }
+    .mic-btn[data-voice-state="transcribing"] {
+      color: #e2ecfd;
+      animation: mic-transcribing-breathe 0.9s ease-in-out infinite;
+    }
+    @keyframes mic-transcribing-breathe {
+      0%, 100% { opacity: 0.55; }
+      50%      { opacity: 1; }
+    }
+    .mic-btn[data-voice-state="speaking"] { color: #cdd9f5; }
+    .mic-btn[data-voice-state="speaking"]::after {
+      content: '';
+      position: absolute;
+      inset: -3px;
+      border-radius: 50%;
+      pointer-events: none;
+      background: radial-gradient(circle closest-side,
+        rgba(138, 180, 248, 0) 55%,
+        rgba(138, 180, 248, 0.30) 76%,
+        rgba(138, 180, 248, 0) 100%);
+      animation: voice-speaking-ripple 1.6s ease-out infinite;
+    }
+    .mic-btn[data-voice-state="error"] { color: #f87171; }
+
+    /* ── Settings → Voice controls ── */
+    .voice-mode-seg {
+      display: flex;
+      gap: 3px;
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: 9px;
+      padding: 3px;
+      flex-shrink: 0;
+    }
+    .voice-mode-btn {
+      border: none;
+      background: none;
+      color: #8aa0c6;
+      font-family: var(--font-body);
+      font-size: 0.7rem;
+      font-weight: 600;
+      padding: 5px 9px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s;
+    }
+    .voice-mode-btn:hover { color: #cdd9f5; }
+    .voice-mode-btn.active { background: rgba(138, 180, 248, 0.18); color: #fff; }
+    .voice-mode-btn:disabled { opacity: 0.4; cursor: default; }
+    .voice-range {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 130px;
+      height: 4px;
+      border-radius: 2px;
+      background: rgba(255, 255, 255, 0.12);
+      outline: none;
+      flex-shrink: 0;
+    }
+    .voice-range::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #8ab4f8;
+      box-shadow: 0 0 6px rgba(138, 180, 248, 0.5);
+      cursor: pointer;
+    }
+    .voice-range:disabled { opacity: 0.4; }
+    .voice-progress {
+      width: 100%;
+      height: 5px;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+      margin-top: 8px;
+    }
+    .voice-progress-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 3px;
+      background: linear-gradient(90deg, rgba(138, 180, 248, 0.65), rgba(165, 148, 238, 0.65));
+      transition: width 0.25s ease;
+    }
+
+    /*
       Floating Glassmorphic Chat Panel
       Positioned immediately to the right of the moon inside the transparent Tauri window
     */
@@ -1033,6 +1187,10 @@
       overflow: hidden;
     }
     .user-ask-panel[hidden] { display: none !important; }
+    /* Same cascade trap for settings rows (#voice-unavailable-note ships
+       hidden and is only un-hidden when the voice probe FAILS): .setting-item
+       sets display:flex, which defeats the UA [hidden] rule. */
+    .setting-item[hidden] { display: none !important; }
     .user-ask-header {
       display: flex;
       align-items: center;
@@ -2329,6 +2487,7 @@
       <div class="settings-tabs" role="tablist">
         <button type="button" class="settings-tab active" data-tab="general" role="tab" aria-selected="true">General</button>
         <button type="button" class="settings-tab" data-tab="connection" role="tab" aria-selected="false">Connection</button>
+        <button type="button" class="settings-tab" data-tab="voice" role="tab" aria-selected="false">Voice</button>
         <button type="button" class="settings-tab" data-tab="secrets" role="tab" aria-selected="false">Secrets</button>
         <button type="button" class="settings-tab" data-tab="updates" role="tab" aria-selected="false">Updates</button>
       </div>
@@ -2415,6 +2574,65 @@
             <span class="setting-desc">Guided setup — install Luna on this Mac, on a server, or point at one already running</span>
           </div>
           <button type="button" class="record-btn" id="open-wizard-btn">Open</button>
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="voice">
+        <!-- Voice pipeline lives in the Rust core (mic → VAD → whisper → TTS);
+             these controls persist to localStorage and re-apply on boot via
+             voice_set_mode / voice_set_voice / voice_set_config. The whole
+             section degrades gracefully when the Rust core predates voice:
+             the probe (voice_status) fails once → controls disable + the note
+             below shows. -->
+        <div class="setting-item" id="voice-unavailable-note" hidden>
+          <div class="setting-info">
+            <span class="setting-label">Voice isn't available</span>
+            <span class="setting-desc">This build of Luna Moon doesn't include the voice pipeline. Update the app to talk to Luna hands-free.</span>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Voice mode</span>
+            <span class="setting-desc">Off, push-to-talk (hold the mic), or hands-free listening</span>
+          </div>
+          <div class="voice-mode-seg" id="voice-mode-seg" role="radiogroup" aria-label="Voice mode">
+            <button type="button" class="voice-mode-btn active" data-voice-mode="off" role="radio" aria-checked="true">Off</button>
+            <button type="button" class="voice-mode-btn" data-voice-mode="ptt" role="radio" aria-checked="false">Push-to-talk</button>
+            <button type="button" class="voice-mode-btn" data-voice-mode="auto" role="radio" aria-checked="false">Hands-free</button>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Speak replies</span>
+            <span class="setting-desc">Read Luna's answers aloud as they stream in</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="voice-speak-replies-toggle" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Voice</span>
+            <span class="setting-desc">The system voice used for spoken replies</span>
+          </div>
+          <select id="voice-voice-select" class="channel-select">
+            <option value="">System default</option>
+          </select>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Silence hang</span>
+            <span class="setting-desc">How long a pause ends your utterance (<span id="voice-silence-value">600</span>&nbsp;ms)</span>
+          </div>
+          <input type="range" id="voice-silence-slider" class="voice-range" min="300" max="1200" step="50" value="600" aria-label="Silence hang in milliseconds">
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Speech model</span>
+            <span class="setting-desc" id="voice-model-status">Checking…</span>
+            <div class="voice-progress" id="voice-model-progress" hidden><div class="voice-progress-fill" id="voice-model-progress-fill"></div></div>
+          </div>
+          <button type="button" class="record-btn" id="voice-model-download" hidden>Download</button>
         </div>
         </div>
         <div class="settings-tabpanel" data-tabpanel="secrets">
@@ -2633,6 +2851,17 @@
         </div>
       </div>
       <div class="header-actions">
+        <!-- Voice mic. Hidden until VoiceEngine confirms this build's Rust
+             core has the voice pipeline (voice_status probe). Click toggles
+             hands-free listening in auto mode; press-and-hold is push-to-talk
+             in ptt mode. data-voice-state mirrors the moon's. -->
+        <button class="close-btn mic-btn" id="voice-mic-btn" data-voice-state="" aria-label="Voice input" title="Voice input" hidden>
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
+            <path d="M19 10v1a7 7 0 0 1-14 0v-1"></path>
+            <line x1="12" y1="18" x2="12" y2="22"></line>
+          </svg>
+        </button>
         <!-- Settings lives here in the header (it orbited the moon as a
              satellite for a while — that felt off, so it came home). Opens
              the tabbed settings modal (#settings-panel). -->
@@ -2851,6 +3080,18 @@
       secretPromptCancelX: document.getElementById('secret-prompt-cancel-x'),
       activeProfile: document.getElementById('active-profile'),
       buildSha: document.getElementById('build-sha'),
+      // Voice (mic button + Settings → Voice controls).
+      voiceMicBtn:           document.getElementById('voice-mic-btn'),
+      voiceUnavailableNote:  document.getElementById('voice-unavailable-note'),
+      voiceModeSeg:          document.getElementById('voice-mode-seg'),
+      voiceSpeakRepliesToggle: document.getElementById('voice-speak-replies-toggle'),
+      voiceVoiceSelect:      document.getElementById('voice-voice-select'),
+      voiceSilenceSlider:    document.getElementById('voice-silence-slider'),
+      voiceSilenceValue:     document.getElementById('voice-silence-value'),
+      voiceModelStatus:      document.getElementById('voice-model-status'),
+      voiceModelProgress:    document.getElementById('voice-model-progress'),
+      voiceModelProgressFill: document.getElementById('voice-model-progress-fill'),
+      voiceModelDownload:    document.getElementById('voice-model-download'),
       scopeBtn: document.getElementById('scope-btn'),
       scopeMenu: document.getElementById('scope-menu'),
       scopeFullAccess: document.getElementById('scope-full-access'),
@@ -4209,6 +4450,9 @@
             this.startTurnTimeout();
             ChatState.applyDelta(frame.turnId, frame.text || '');
             ChatLoop.schedule();
+            // Spoken replies: feed the (cumulative) delta to the voice
+            // sentence pipeline. No-ops unless voice is on + speakReplies.
+            VoiceEngine.onAssistantDelta(frame.turnId, frame.text || '');
             break;
           }
 
@@ -4220,6 +4464,9 @@
             State.activeTurnId = null;
             ChatState.finishTurn(doneTurnId, frame.message ? frame.message.text : null);
             ChatLoop.flush();
+            // Spoken replies: this message ended — flush its sentence
+            // remainder (per message, so intermediate agentic steps speak too).
+            VoiceEngine.onAssistantDone(doneTurnId);
             break;
           }
 
@@ -4241,6 +4488,9 @@
             this.clearTurnTimeout();
             ChatState.markRunSettled();
             ChatLoop.flush();
+            // Spoken replies: safety flush — anything still buffered for any
+            // message in this turn gets spoken now.
+            VoiceEngine.onTurnComplete();
             break;
           }
 
@@ -5940,6 +6190,11 @@
         const wireText = [typed, folded].filter(Boolean).join('\n\n');
         if (!wireText && !wire) return;   // nothing to send
 
+        // A new user send interrupts any spoken reply (voice_stop_speaking)
+        // and drops queued speech for the superseded turn. Safe no-op when
+        // voice is off/unavailable.
+        VoiceEngine.onUserSend();
+
         Logger.info(`Appended user message: "${typed}" (+${previews.length} attachment(s))`);
         this.appendMessage('user', typed, false, previews);
         DOM.messageInput.value = '';
@@ -6464,6 +6719,613 @@
         Logger.info(`Dynamic hotkey mapping resolved and saved: "${shortcut}"`);
         
         this.stopRecordingShortcut(false);
+      }
+    };
+
+    // ════════════════════════════════════════════════════════════════════════
+    // ── VOICE (local pipeline lives in the Rust core; see VOICE.md) ─────────
+    // ════════════════════════════════════════════════════════════════════════
+
+    /**
+     * PURE sentence splitter for the spoken-reply stream.
+     *
+     * Given the accumulated (not-yet-spoken) buffer, returns the complete
+     * speakable sentences plus the remainder to keep buffering. Contract
+     * (VOICE.md): a boundary is `[.!?]`, optionally followed by closing
+     * quotes/parens, then whitespace; at least 2 words must precede the
+     * boundary (so "Dr." / "e.g." style fragments don't split); boundaries
+     * inside an UNCLOSED ``` fence never split (the whole fenced block stays
+     * in one chunk for the speakable filter to summarize); markdown table
+     * rows (leading `|`) are protected the same way so a table reads as ONE
+     * table, not one announcement per row. End-of-buffer is NOT a boundary —
+     * the caller flushes the remainder on message end.
+     */
+    function splitSpeakableSentences(buffer) {
+      const text = String(buffer == null ? '' : buffer);
+      const sentences = [];
+      let start = 0;
+      let inFence = false;
+      let i = 0;
+      while (i < text.length) {
+        if (text.startsWith('```', i)) {
+          inFence = !inFence;
+          i += 3;
+          continue;
+        }
+        // A markdown table row (line starting with optional indent + '|') is
+        // protected like a fence: sentence punctuation inside cells must not
+        // split the table across chunks, or the speakable filter announces
+        // the SAME table once per chunk. Hop to the end of the row.
+        if (!inFence && (i === 0 || text[i - 1] === '\n') && /^[ \t]{0,3}\|/.test(text.slice(i, i + 5))) {
+          const nl = text.indexOf('\n', i);
+          if (nl === -1) break; // row still streaming: keep it all in rest
+          i = nl + 1;
+          continue;
+        }
+        const ch = text[i];
+        if (!inFence && (ch === '.' || ch === '!' || ch === '?')) {
+          // Consume any closing quotes/parens hugging the terminator.
+          let j = i + 1;
+          while (j < text.length && /["'’”)\]]/.test(text[j])) j++;
+          if (j < text.length && /\s/.test(text[j])) {
+            const candidate = text.slice(start, j);
+            const words = candidate.trim().split(/\s+/).filter(Boolean);
+            if (words.length >= 2) {
+              sentences.push(candidate.trim());
+              let k = j;
+              while (k < text.length && /\s/.test(text[k])) k++;
+              start = k;
+              i = k;
+              continue;
+            }
+          }
+        }
+        i++;
+      }
+      return { sentences, rest: text.slice(start) };
+    }
+
+    /**
+     * PURE speakable filter: markdown → something worth saying aloud.
+     *
+     * Fenced code (a consecutive run of blocks counts ONCE) → "I've put the
+     * code in the chat."; tables → "There's a table in the chat."; inline
+     * code → its literal text; links/images → their text; heading/emphasis/
+     * list/blockquote markers stripped; emoji stripped; whitespace collapsed.
+     * Returns '' when nothing speakable remains (caller skips speak_text).
+     */
+    function toSpeakable(text) {
+      const CODE_MSG = "I've put the code in the chat.";
+      const TABLE_MSG = "There's a table in the chat.";
+      let t = String(text == null ? '' : text);
+      // 1) Consecutive runs of CLOSED fenced blocks (whitespace-only between)
+      //    collapse to one announcement…
+      t = t.replace(
+        /```[^\n]*\n?[\s\S]*?```(?:\s*```[^\n]*\n?[\s\S]*?```)*/g,
+        '\n' + CODE_MSG + '\n'
+      );
+      // …and a dangling unclosed fence (message-end flush mid-block) too.
+      t = t.replace(/```[\s\S]*$/, '\n' + CODE_MSG + '\n');
+      // 2) Tables: a run of lines that start with `|` reads as one table.
+      t = t.replace(/(?:^|\n)(?:[ \t]*\|[^\n]*(?:\n|$))+/g, '\n' + TABLE_MSG + '\n');
+      // 3) Images → alt text, links → link text (images first: same shape + `!`).
+      t = t.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1');
+      t = t.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
+      // 4) Inline code → its literal text.
+      t = t.replace(/`([^`\n]+)`/g, '$1');
+      // 5) Structural markers: headings, blockquotes, list bullets/numbers.
+      t = t.replace(/^[ \t]{0,3}#{1,6}[ \t]+/gm, '');
+      t = t.replace(/^[ \t]*>[ \t]?/gm, '');
+      t = t.replace(/^[ \t]*(?:[-*+]|\d{1,3}[.)])[ \t]+/gm, '');
+      // 6) Emphasis markers (bold/italic/strikethrough) — keep the words.
+      t = t.replace(/(\*\*|__|~~)(?=\S)([\s\S]*?\S)\1/g, '$2');
+      t = t.replace(/(\*|_)(?=\S)([^*_\n]*\S)\1/g, '$2');
+      // 7) Emoji (incl. variation selectors / ZWJ joiners / flags).
+      t = t.replace(/\p{Extended_Pictographic}|\uFE0F|\u200D|[\u{1F1E6}-\u{1F1FF}]/gu, '');
+      // 8) Speech is one line: collapse all whitespace.
+      t = t.replace(/\s+/g, ' ').trim();
+      return t;
+    }
+
+    /**
+     * VoiceEngine — webview half of the local voice pipeline (VOICE.md).
+     *
+     * Owns: the availability probe (degrades silently on an older Rust core),
+     * persisted settings (localStorage) + their boot re-apply, the mic button,
+     * the moon's data-voice-state visuals, the transcript → send-path rule,
+     * and the assistant-delta → sentence → speak_text pipeline. Every Tauri
+     * surface is guarded (window.__TAURI__ && …) so jsdom and plain-browser
+     * dev keep working with voice simply unavailable.
+     */
+    const VoiceEngine = {
+      MODES: ['off', 'ptt', 'auto'],
+      available: false,
+      state: 'off',          // last Rust voice-state
+      mode: 'off',           // persisted user preference (luna_voice_mode)
+      speakReplies: true,
+      voiceId: '',
+      silenceHangMs: 600,
+      modelPresent: false,
+      micPaused: false,      // auto mode: mic click parks the pipeline without
+                             // rewriting the persisted preference
+      rustMode: 'off',       // EFFECTIVE mode (Rust can refuse, e.g. model
+                             // missing); fed by voice-state events + the
+                             // VoiceStatus returned from voice_set_mode
+      _ptt: false,
+      _uiBound: false,
+      _subscribed: false,
+      // Spoken-reply pipeline: per-message cumulative wire text (the server
+      // streams CUMULATIVE assistant text — same contract ChatState.applyDelta
+      // documents) and the unsplit sentence remainder.
+      _cum: new Map(),
+      _buf: new Map(),
+
+      // Guarded invoke: resolves null off-Tauri; failures log once per call
+      // site but never throw into the UI. Reads __TAURI__ at CALL time.
+      invoke(cmd, args) {
+        const core = window.__TAURI__ && window.__TAURI__.core;
+        if (!core) return Promise.resolve(null);
+        return core.invoke(cmd, args).catch((e) => {
+          Logger.warn(`Voice command ${cmd} failed:`, e);
+          return null;
+        });
+      },
+
+      // ── Boot ────────────────────────────────────────────────────────────
+      // Synchronous up to the availability probe so jsdom (no __TAURI__.core)
+      // lands in a deterministic "unavailable" state before any snapshot.
+      init() {
+        this.loadSettings();
+        this.bindUI();
+        const core = window.__TAURI__ && window.__TAURI__.core;
+        if (!core) { this.setAvailable(false); return; }
+        return this._probe(core);
+      },
+
+      async _probe(core) {
+        let status = null;
+        try {
+          status = await core.invoke('voice_status');
+        } catch (_) {
+          // Older Rust core without the voice pipeline: hide/disable the
+          // voice surface, exactly once, no console spam.
+          this.setAvailable(false);
+          Logger.info('Voice pipeline not available in this build (voice_status missing)');
+          return;
+        }
+        this.setAvailable(true);
+        this.applyStatus(status);
+        this.subscribeEvents();
+        await this.applyPersisted();
+        await this.populateVoices();
+      },
+
+      setAvailable(av) {
+        this.available = !!av;
+        if (DOM.voiceMicBtn) DOM.voiceMicBtn.hidden = !this.available;
+        if (DOM.voiceUnavailableNote) DOM.voiceUnavailableNote.hidden = this.available;
+        const dis = !this.available;
+        const controls = [
+          DOM.voiceSpeakRepliesToggle, DOM.voiceVoiceSelect,
+          DOM.voiceSilenceSlider, DOM.voiceModelDownload,
+        ];
+        for (const el of controls) if (el) el.disabled = dis;
+        if (DOM.voiceModeSeg) {
+          for (const b of DOM.voiceModeSeg.querySelectorAll('.voice-mode-btn')) b.disabled = dis;
+        }
+        if (!this.available && DOM.voiceModelStatus) {
+          DOM.voiceModelStatus.textContent = 'Unavailable in this build';
+        }
+      },
+
+      applyStatus(s) {
+        const present = !!(s && (s.modelPresent === true || s.model_present === true));
+        this.modelPresent = present;
+        if (present) this._markModelReady();
+        else this._markModelMissing();
+        if (s && typeof s.state === 'string') {
+          this.onStateEvent({ state: s.state, mode: s.mode });
+        }
+      },
+
+      subscribeEvents() {
+        const ev = window.__TAURI__ && window.__TAURI__.event;
+        if (!ev || this._subscribed) return;
+        this._subscribed = true;
+        ev.listen('voice-state', ({ payload }) => this.onStateEvent(payload || {}));
+        ev.listen('voice-transcript', ({ payload }) => this.handleTranscript(payload && payload.text));
+        ev.listen('voice-model-progress', ({ payload }) => this.onModelProgress(payload || {}));
+        ev.listen('voice-error', ({ payload }) => this.onVoiceError(payload || {}));
+      },
+
+      // ── Settings (persisted; VOICE.md keys) ─────────────────────────────
+      loadSettings() {
+        const m = localStorage.getItem('luna_voice_mode');
+        this.mode = (m === 'ptt' || m === 'auto') ? m : 'off';
+        this.speakReplies = localStorage.getItem('luna_voice_speak_replies') !== '0';
+        this.voiceId = localStorage.getItem('luna_voice_id') || '';
+        const hang = parseInt(localStorage.getItem('luna_voice_silence_hang_ms') || '', 10);
+        this.silenceHangMs = Number.isFinite(hang)
+          ? Math.max(300, Math.min(1200, hang))
+          : 600;
+        this.reflectSettings();
+      },
+
+      reflectSettings() {
+        if (DOM.voiceModeSeg) {
+          for (const b of DOM.voiceModeSeg.querySelectorAll('.voice-mode-btn')) {
+            const on = b.getAttribute('data-voice-mode') === this.mode;
+            b.classList.toggle('active', on);
+            b.setAttribute('aria-checked', String(on));
+          }
+        }
+        if (DOM.voiceSpeakRepliesToggle) DOM.voiceSpeakRepliesToggle.checked = this.speakReplies;
+        if (DOM.voiceSilenceSlider) DOM.voiceSilenceSlider.value = String(this.silenceHangMs);
+        if (DOM.voiceSilenceValue) DOM.voiceSilenceValue.textContent = String(this.silenceHangMs);
+        if (DOM.voiceVoiceSelect) {
+          // Keep a persisted off-list pick visible rather than silently
+          // switching voices (same philosophy as the model switcher).
+          if (this.voiceId && !Array.from(DOM.voiceVoiceSelect.options).some((o) => o.value === this.voiceId)) {
+            const opt = document.createElement('option');
+            opt.value = this.voiceId;
+            opt.textContent = `${this.voiceId} (saved)`;
+            DOM.voiceVoiceSelect.appendChild(opt);
+          }
+          DOM.voiceVoiceSelect.value = this.voiceId;
+        }
+        if (DOM.voiceMicBtn) DOM.voiceMicBtn.classList.toggle('voice-mode-off', this.mode === 'off');
+      },
+
+      // Rust can refuse a requested mode (a missing model forces off):
+      // consume the returned VoiceStatus so the UI knows the EFFECTIVE mode.
+      // When the pipeline stayed off against an on-mode request, park the
+      // mic (micPaused) — that way the FIRST mic click resumes (set_mode
+      // 'auto', which either starts voice or re-surfaces the model-missing
+      // error) instead of "pausing" a pipeline that was never live.
+      _applyModeResult(requested, st) {
+        if (!st || typeof st.mode !== 'string') return;
+        this.rustMode = st.mode;
+        if (requested !== 'off' && st.mode === 'off') this.micPaused = true;
+      },
+
+      // Re-apply persisted settings to the Rust core each session (VOICE.md).
+      async applyPersisted() {
+        const st = await this.invoke('voice_set_mode', { mode: this.mode });
+        this._applyModeResult(this.mode, st);
+        if (this.voiceId) await this.invoke('voice_set_voice', { id: this.voiceId });
+        await this.invoke('voice_set_config', { silenceHangMs: this.silenceHangMs });
+      },
+
+      async populateVoices() {
+        const el = DOM.voiceVoiceSelect;
+        if (!el) return;
+        const voices = await this.invoke('voice_list_voices');
+        if (!Array.isArray(voices)) return;
+        el.innerHTML = '';
+        const defOpt = document.createElement('option');
+        defOpt.value = '';
+        defOpt.textContent = 'System default';
+        el.appendChild(defOpt);
+        for (const v of voices) {
+          if (!v || typeof v.id !== 'string' || !v.id) continue;
+          const opt = document.createElement('option');
+          opt.value = v.id;
+          const name = typeof v.name === 'string' && v.name ? v.name : v.id;
+          const quality = typeof v.quality === 'string' && v.quality && v.quality !== 'default'
+            ? ` · ${v.quality}` : '';
+          opt.textContent = `${name}${quality}`;
+          el.appendChild(opt);
+        }
+        if (this.voiceId && !Array.from(el.options).some((o) => o.value === this.voiceId)) {
+          const opt = document.createElement('option');
+          opt.value = this.voiceId;
+          opt.textContent = `${this.voiceId} (saved)`;
+          el.appendChild(opt);
+        }
+        el.value = this.voiceId;
+      },
+
+      setMode(mode) {
+        const m = this.MODES.includes(mode) ? mode : 'off';
+        this.mode = m;
+        this.micPaused = false;
+        localStorage.setItem('luna_voice_mode', m);
+        this.reflectSettings();
+        if (this.available) {
+          this.invoke('voice_set_mode', { mode: m })
+            .then((st) => this._applyModeResult(m, st));
+        }
+        if (m === 'off') this.stopSpeaking();
+      },
+
+      // ── UI wiring (mic button + settings controls) ──────────────────────
+      bindUI() {
+        if (this._uiBound) return;
+        this._uiBound = true;
+        const mic = DOM.voiceMicBtn;
+        if (mic) {
+          mic.addEventListener('click', () => this.onMicClick());
+          // Press-and-hold = PTT (ptt mode only). pointerup is window-level
+          // so releasing outside the button still ends the capture window.
+          mic.addEventListener('pointerdown', (e) => {
+            if (this.available && this.mode === 'ptt') {
+              e.preventDefault();
+              this.pttDown();
+            }
+          });
+          window.addEventListener('pointerup', () => this.pttUp());
+          mic.addEventListener('pointercancel', () => this.pttUp());
+        }
+        if (DOM.voiceModeSeg) {
+          DOM.voiceModeSeg.addEventListener('click', (e) => {
+            const btn = e.target.closest && e.target.closest('.voice-mode-btn');
+            if (!btn || btn.disabled) return;
+            this.setMode(btn.getAttribute('data-voice-mode'));
+          });
+        }
+        if (DOM.voiceSpeakRepliesToggle) {
+          DOM.voiceSpeakRepliesToggle.addEventListener('change', () => {
+            this.speakReplies = !!DOM.voiceSpeakRepliesToggle.checked;
+            localStorage.setItem('luna_voice_speak_replies', this.speakReplies ? '1' : '0');
+            if (!this.speakReplies) this.stopSpeaking();
+          });
+        }
+        if (DOM.voiceVoiceSelect) {
+          DOM.voiceVoiceSelect.addEventListener('change', (e) => {
+            const id = e.target.value;
+            this.voiceId = id;
+            if (id) localStorage.setItem('luna_voice_id', id);
+            else localStorage.removeItem('luna_voice_id');
+            // ALWAYS invoke, empty id included: '' is the explicit reset to
+            // the system default (tts_avspeech blank-id contract). Guarding
+            // on a truthy id left the previously pinned voice speaking for
+            // the rest of the session after picking "System default".
+            if (this.available) this.invoke('voice_set_voice', { id });
+          });
+        }
+        if (DOM.voiceSilenceSlider) {
+          DOM.voiceSilenceSlider.addEventListener('input', () => {
+            if (DOM.voiceSilenceValue) DOM.voiceSilenceValue.textContent = DOM.voiceSilenceSlider.value;
+          });
+          DOM.voiceSilenceSlider.addEventListener('change', () => {
+            const v = parseInt(DOM.voiceSilenceSlider.value, 10);
+            this.silenceHangMs = Number.isFinite(v) ? Math.max(300, Math.min(1200, v)) : 600;
+            localStorage.setItem('luna_voice_silence_hang_ms', String(this.silenceHangMs));
+            if (this.available) this.invoke('voice_set_config', { silenceHangMs: this.silenceHangMs });
+          });
+        }
+        if (DOM.voiceModelDownload) {
+          DOM.voiceModelDownload.addEventListener('click', () => this.startModelDownload());
+        }
+      },
+
+      onMicClick() {
+        if (!this.available) return;
+        if (this.mode === 'ptt') return;           // press-and-hold owns ptt
+        if (this.mode === 'off') {
+          // Discoverability: voice is off — take them to the switch.
+          SettingsEngine.open();
+          const tab = document.querySelector('.settings-tab[data-tab="voice"]');
+          if (tab) tab.click();
+          return;
+        }
+        // auto: toggle listening. Runtime-only pause — the persisted
+        // preference stays "auto" so the next launch re-arms hands-free.
+        // micPaused is also set when Rust REFUSED the mode (model missing),
+        // so the resume branch doubles as the retry path.
+        if (this.micPaused) {
+          this.micPaused = false;
+          this.invoke('voice_set_mode', { mode: 'auto' })
+            .then((st) => this._applyModeResult('auto', st));
+        } else {
+          this.micPaused = true;
+          this.invoke('voice_set_mode', { mode: 'off' });
+        }
+      },
+
+      pttDown() {
+        if (!this.available || this.mode !== 'ptt' || this._ptt) return;
+        this._ptt = true;
+        this.invoke('voice_ptt_down');
+      },
+
+      pttUp() {
+        if (!this._ptt) return;
+        this._ptt = false;
+        this.invoke('voice_ptt_up');
+      },
+
+      // ── Transcript → the EXACT existing send path ───────────────────────
+      // Empty composer: fill + auto-send via the same form submit the send
+      // button fires (handleSubmit → user-message frame incl. client info).
+      // Non-empty draft: append with a space, do NOT send (they were mid-edit).
+      handleTranscript(text) {
+        // Mode gate: a transcript landing AFTER the user turned voice off
+        // (mic-pause click, settings toggle) must never auto-send. The Rust
+        // side suppresses transcripts whose inference a Stop rode through,
+        // but an event already over the IPC bridge still arrives here.
+        if (this.mode === 'off' || this.micPaused) return;
+        const t = String(text == null ? '' : text).trim();
+        if (!t) return;
+        const input = DOM.messageInput;
+        if (!input) return;
+        if (!input.value.trim()) {
+          input.value = t;
+          ChatEngine.autoGrowMessageInput();
+          DOM.chatForm.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        } else {
+          input.value = input.value + (/\s$/.test(input.value) ? '' : ' ') + t;
+          ChatEngine.autoGrowMessageInput();
+        }
+      },
+
+      // ── Spoken replies (delta accumulator → sentences → speak_text) ─────
+      shouldSpeak() {
+        return this.available && this.mode !== 'off' && this.speakReplies;
+      },
+
+      onAssistantDelta(turnId, cumText) {
+        if (!this.shouldSpeak()) return;
+        const id = String(turnId || 'pending');
+        const cum = String(cumText == null ? '' : cumText);
+        const prev = this._cum.get(id) || '';
+        // Wire deltas are CUMULATIVE (see ChatState.applyDelta): speak only
+        // the incremental suffix; a non-monotonic reset falls back to the
+        // whole text (better to over-speak than drop the answer).
+        let inc;
+        if (cum.length >= prev.length && cum.startsWith(prev)) {
+          inc = cum.slice(prev.length);
+        } else {
+          inc = cum;
+        }
+        this._cum.set(id, cum);
+        if (!inc) return;
+        const buf = (this._buf.get(id) || '') + inc;
+        const res = splitSpeakableSentences(buf);
+        this._buf.set(id, res.rest);
+        for (const s of res.sentences) this.speakSentence(s);
+      },
+
+      onAssistantDone(turnId) {
+        const id = String(turnId || 'pending');
+        const rest = this._buf.get(id) || '';
+        this._buf.delete(id);
+        this._cum.delete(id);
+        if (!this.shouldSpeak()) return;
+        if (rest.trim()) this.speakSentence(rest);
+      },
+
+      onTurnComplete() {
+        // Safety flush: anything still buffered (a missed assistant-done,
+        // a turnId mismatch) gets spoken now rather than swallowed.
+        const speak = this.shouldSpeak();
+        for (const rest of this._buf.values()) {
+          if (speak && rest.trim()) this.speakSentence(rest);
+        }
+        this._buf.clear();
+        this._cum.clear();
+      },
+
+      speakSentence(raw) {
+        const text = toSpeakable(raw);
+        if (!text) return;
+        this.invoke('speak_text', { text, interrupt: false });
+      },
+
+      stopSpeaking() {
+        this._buf.clear();
+        this._cum.clear();
+        if (!this.available) return;
+        this.invoke('voice_stop_speaking');
+      },
+
+      onUserSend() { this.stopSpeaking(); },
+
+      // Esc stops the spoken reply UNCONDITIONALLY (VOICE.md stop-speaking
+      // triad; stopSpeaking is idempotent). Gating on state==='speaking'
+      // left Esc dead after a pipeline error (nothing re-emits 'speaking'
+      // once the thread parks in error, but speak_text still plays) and
+      // during the ~150ms speech-start latency window.
+      handleEscape() {
+        if (!this.available) return;
+        this.stopSpeaking();
+      },
+
+      // ── Rust events → UI state ──────────────────────────────────────────
+      onStateEvent(p) {
+        const state = (p && typeof p.state === 'string') ? p.state : '';
+        this.state = state || 'off';
+        if (p && this.MODES.includes(p.mode)) this.rustMode = p.mode;
+        const visual = (state && state !== 'off') ? state : '';
+        const w = DOM.moonWrapper;
+        if (w) {
+          w.dataset.voiceState = visual;
+          if (state === 'listening' && typeof p.level === 'number' && Number.isFinite(p.level)) {
+            w.style.setProperty('--voice-level', String(Math.max(0, Math.min(1, p.level))));
+          } else if (state !== 'listening') {
+            w.style.removeProperty('--voice-level');
+          }
+        }
+        if (DOM.voiceMicBtn) DOM.voiceMicBtn.dataset.voiceState = visual;
+      },
+
+      onVoiceError(p) {
+        const msg = (p && typeof p.message === 'string' && p.message) ? p.message : 'Unknown voice error';
+        Logger.warn('Voice error:', msg);
+        // Non-blocking transcript banner (the chat keeps working).
+        try {
+          ChatState.appendBanner(`⚠️ Voice: ${msg}`);
+          ChatLoop.flush();
+        } catch (_) { /* transcript not ready in early boot — log only */ }
+      },
+
+      // ── Whisper model download row ──────────────────────────────────────
+      _markModelReady() {
+        this.modelPresent = true;
+        if (DOM.voiceModelStatus) DOM.voiceModelStatus.textContent = 'Model ready ✓';
+        if (DOM.voiceModelDownload) DOM.voiceModelDownload.hidden = true;
+        if (DOM.voiceModelProgress) DOM.voiceModelProgress.hidden = true;
+      },
+
+      _markModelMissing() {
+        this.modelPresent = false;
+        if (DOM.voiceModelStatus) DOM.voiceModelStatus.textContent = 'Speech model not downloaded yet';
+        if (DOM.voiceModelDownload) DOM.voiceModelDownload.hidden = false;
+      },
+
+      async startModelDownload() {
+        if (!this.available) return;
+        if (DOM.voiceModelDownload) DOM.voiceModelDownload.hidden = true;
+        if (DOM.voiceModelProgress) DOM.voiceModelProgress.hidden = false;
+        if (DOM.voiceModelStatus) DOM.voiceModelStatus.textContent = 'Downloading…';
+        const core = window.__TAURI__ && window.__TAURI__.core;
+        if (!core) return;
+        try {
+          await core.invoke('voice_ensure_model');   // resolves when present
+          this._markModelReady();
+          // mod.rs contract: a missing model forced the mode off and "the
+          // frontend drives voice_ensure_model first, then retries" — so
+          // RETRY. Without this the settings showed ptt/auto active while
+          // the pipeline stayed off and the moon stayed deaf until two more
+          // mic clicks.
+          if (this.mode !== 'off') {
+            const st = await this.invoke('voice_set_mode', { mode: this.mode });
+            this._applyModeResult(this.mode, st);
+            if (st && st.mode === this.mode) this.micPaused = false;
+          }
+        } catch (e) {
+          Logger.warn('voice_ensure_model failed:', e);
+          if (DOM.voiceModelStatus) DOM.voiceModelStatus.textContent = 'Download failed — try again';
+          if (DOM.voiceModelProgress) DOM.voiceModelProgress.hidden = true;
+          if (DOM.voiceModelDownload) DOM.voiceModelDownload.hidden = false;
+        }
+      },
+
+      onModelProgress(p) {
+        if (p && p.error) {
+          if (DOM.voiceModelStatus) DOM.voiceModelStatus.textContent = `Download failed: ${p.error}`;
+          if (DOM.voiceModelProgress) DOM.voiceModelProgress.hidden = true;
+          if (DOM.voiceModelDownload) DOM.voiceModelDownload.hidden = false;
+          return;
+        }
+        if (p && p.done) {
+          this._markModelReady();
+          return;
+        }
+        const got = p && Number.isFinite(p.downloadedBytes) ? p.downloadedBytes : 0;
+        const total = p && Number.isFinite(p.totalBytes) ? p.totalBytes : 0;
+        if (DOM.voiceModelProgress) DOM.voiceModelProgress.hidden = false;
+        if (DOM.voiceModelDownload) DOM.voiceModelDownload.hidden = true;
+        if (DOM.voiceModelProgressFill && total > 0) {
+          const pct = Math.max(0, Math.min(100, Math.round((got / total) * 100)));
+          DOM.voiceModelProgressFill.style.width = pct + '%';
+        }
+        if (DOM.voiceModelStatus) {
+          const mb = (n) => (n / (1024 * 1024)).toFixed(1);
+          DOM.voiceModelStatus.textContent = total > 0
+            ? `Downloading… ${mb(got)} / ${mb(total)} MB`
+            : `Downloading… ${mb(got)} MB`;
+        }
       }
     };
 
@@ -7902,6 +8764,23 @@
     // Window and Input Event Listeners
     window.addEventListener('blur', () => UIController.handleBlur());
     window.addEventListener('keydown', (e) => SettingsEngine.handleKeyDown(e));
+    // Esc stops the spoken reply (unconditional + idempotent — it must work
+    // even when the pipeline died and no 'speaking' state will be emitted
+    // again). A separate listener (not folded into handleKeyDown) so the
+    // shortcut recorder's preventDefault/stopPropagation flow is untouched;
+    // the recorder guard keeps Esc-to-cancel-recording from also silencing
+    // speech.
+    window.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      if (State.isRecordingShortcut) return;
+      VoiceEngine.handleEscape();
+    });
+
+    // Voice boot: probe the Rust core for the voice pipeline (older cores
+    // degrade to "unavailable" silently), re-apply persisted voice settings,
+    // and subscribe to the voice-* events. Independent of settingsLoaded.
+    Promise.resolve(VoiceEngine.init())
+      .catch((e) => Logger.warn('Voice init failed (non-fatal):', e));
 
     // Boot App Settings. load() is now async (it reads the token from the
     // mode-600 secure file via load_connection). Capture the promise so the
@@ -7984,6 +8863,9 @@
       Object.defineProperty(window.__MoonInternals, 'ChatLoop',     { configurable: true, get: () => ChatLoop });
       Object.defineProperty(window.__MoonInternals, 'ChatEngine',   { configurable: true, get: () => ChatEngine });
       Object.defineProperty(window.__MoonInternals, 'SetupWizard',  { configurable: true, get: () => SetupWizard });
+      Object.defineProperty(window.__MoonInternals, 'VoiceEngine',  { configurable: true, get: () => VoiceEngine });
+      window.__MoonInternals.splitSpeakableSentences = splitSpeakableSentences;
+      window.__MoonInternals.toSpeakable = toSpeakable;
     }
   </script>
 </body>

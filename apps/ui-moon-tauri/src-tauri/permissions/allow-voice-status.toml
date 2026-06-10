@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-voice-status"
+description = "Allows reading the voice pipeline status snapshot"
+
+[permission.commands]
+allow = [
+  "voice_status"
+]

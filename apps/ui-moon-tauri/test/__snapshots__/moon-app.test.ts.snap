@@ -74,6 +74,7 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
       <div class="settings-tabs" role="tablist">
         <button type="button" class="settings-tab active" data-tab="general" role="tab" aria-selected="true">General</button>
         <button type="button" class="settings-tab" data-tab="connection" role="tab" aria-selected="false">Connection</button>
+        <button type="button" class="settings-tab" data-tab="voice" role="tab" aria-selected="false">Voice</button>
         <button type="button" class="settings-tab" data-tab="secrets" role="tab" aria-selected="false">Secrets</button>
         <button type="button" class="settings-tab" data-tab="updates" role="tab" aria-selected="false">Updates</button>
       </div>
@@ -160,6 +161,65 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
             <span class="setting-desc">Guided setup — install Luna on this Mac, on a server, or point at one already running</span>
           </div>
           <button type="button" class="record-btn" id="open-wizard-btn">Open</button>
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="voice">
+        <!-- Voice pipeline lives in the Rust core (mic → VAD → whisper → TTS);
+             these controls persist to localStorage and re-apply on boot via
+             voice_set_mode / voice_set_voice / voice_set_config. The whole
+             section degrades gracefully when the Rust core predates voice:
+             the probe (voice_status) fails once → controls disable + the note
+             below shows. -->
+        <div class="setting-item" id="voice-unavailable-note">
+          <div class="setting-info">
+            <span class="setting-label">Voice isn't available</span>
+            <span class="setting-desc">This build of Luna Moon doesn't include the voice pipeline. Update the app to talk to Luna hands-free.</span>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Voice mode</span>
+            <span class="setting-desc">Off, push-to-talk (hold the mic), or hands-free listening</span>
+          </div>
+          <div class="voice-mode-seg" id="voice-mode-seg" role="radiogroup" aria-label="Voice mode">
+            <button type="button" class="voice-mode-btn active" data-voice-mode="off" role="radio" aria-checked="true" disabled="">Off</button>
+            <button type="button" class="voice-mode-btn" data-voice-mode="ptt" role="radio" aria-checked="false" disabled="">Push-to-talk</button>
+            <button type="button" class="voice-mode-btn" data-voice-mode="auto" role="radio" aria-checked="false" disabled="">Hands-free</button>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Speak replies</span>
+            <span class="setting-desc">Read Luna's answers aloud as they stream in</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="voice-speak-replies-toggle" checked="" disabled="">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Voice</span>
+            <span class="setting-desc">The system voice used for spoken replies</span>
+          </div>
+          <select id="voice-voice-select" class="channel-select" disabled="">
+            <option value="">System default</option>
+          </select>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Silence hang</span>
+            <span class="setting-desc">How long a pause ends your utterance (<span id="voice-silence-value">600</span>&nbsp;ms)</span>
+          </div>
+          <input type="range" id="voice-silence-slider" class="voice-range" min="300" max="1200" step="50" value="600" aria-label="Silence hang in milliseconds" disabled="">
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Speech model</span>
+            <span class="setting-desc" id="voice-model-status">Unavailable in this build</span>
+            <div class="voice-progress" id="voice-model-progress" hidden=""><div class="voice-progress-fill" id="voice-model-progress-fill"></div></div>
+          </div>
+          <button type="button" class="record-btn" id="voice-model-download" hidden="" disabled="">Download</button>
         </div>
         </div>
         <div class="settings-tabpanel" data-tabpanel="secrets">
@@ -378,6 +438,17 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         </div>
       </div>
       <div class="header-actions">
+        <!-- Voice mic. Hidden until VoiceEngine confirms this build's Rust
+             core has the voice pipeline (voice_status probe). Click toggles
+             hands-free listening in auto mode; press-and-hold is push-to-talk
+             in ptt mode. data-voice-state mirrors the moon's. -->
+        <button class="close-btn mic-btn voice-mode-off" id="voice-mic-btn" data-voice-state="" aria-label="Voice input" title="Voice input" hidden="">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
+            <path d="M19 10v1a7 7 0 0 1-14 0v-1"></path>
+            <line x1="12" y1="18" x2="12" y2="22"></line>
+          </svg>
+        </button>
         <!-- Settings lives here in the header (it orbited the moon as a
              satellite for a while — that felt off, so it came home). Opens
              the tabbed settings modal (#settings-panel). -->
@@ -566,6 +637,7 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
       <div class="settings-tabs" role="tablist">
         <button type="button" class="settings-tab active" data-tab="general" role="tab" aria-selected="true">General</button>
         <button type="button" class="settings-tab" data-tab="connection" role="tab" aria-selected="false">Connection</button>
+        <button type="button" class="settings-tab" data-tab="voice" role="tab" aria-selected="false">Voice</button>
         <button type="button" class="settings-tab" data-tab="secrets" role="tab" aria-selected="false">Secrets</button>
         <button type="button" class="settings-tab" data-tab="updates" role="tab" aria-selected="false">Updates</button>
       </div>
@@ -652,6 +724,65 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
             <span class="setting-desc">Guided setup — install Luna on this Mac, on a server, or point at one already running</span>
           </div>
           <button type="button" class="record-btn" id="open-wizard-btn">Open</button>
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="voice">
+        <!-- Voice pipeline lives in the Rust core (mic → VAD → whisper → TTS);
+             these controls persist to localStorage and re-apply on boot via
+             voice_set_mode / voice_set_voice / voice_set_config. The whole
+             section degrades gracefully when the Rust core predates voice:
+             the probe (voice_status) fails once → controls disable + the note
+             below shows. -->
+        <div class="setting-item" id="voice-unavailable-note">
+          <div class="setting-info">
+            <span class="setting-label">Voice isn't available</span>
+            <span class="setting-desc">This build of Luna Moon doesn't include the voice pipeline. Update the app to talk to Luna hands-free.</span>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Voice mode</span>
+            <span class="setting-desc">Off, push-to-talk (hold the mic), or hands-free listening</span>
+          </div>
+          <div class="voice-mode-seg" id="voice-mode-seg" role="radiogroup" aria-label="Voice mode">
+            <button type="button" class="voice-mode-btn active" data-voice-mode="off" role="radio" aria-checked="true" disabled="">Off</button>
+            <button type="button" class="voice-mode-btn" data-voice-mode="ptt" role="radio" aria-checked="false" disabled="">Push-to-talk</button>
+            <button type="button" class="voice-mode-btn" data-voice-mode="auto" role="radio" aria-checked="false" disabled="">Hands-free</button>
+          </div>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Speak replies</span>
+            <span class="setting-desc">Read Luna's answers aloud as they stream in</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="voice-speak-replies-toggle" checked="" disabled="">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Voice</span>
+            <span class="setting-desc">The system voice used for spoken replies</span>
+          </div>
+          <select id="voice-voice-select" class="channel-select" disabled="">
+            <option value="">System default</option>
+          </select>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Silence hang</span>
+            <span class="setting-desc">How long a pause ends your utterance (<span id="voice-silence-value">600</span>&nbsp;ms)</span>
+          </div>
+          <input type="range" id="voice-silence-slider" class="voice-range" min="300" max="1200" step="50" value="600" aria-label="Silence hang in milliseconds" disabled="">
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Speech model</span>
+            <span class="setting-desc" id="voice-model-status">Unavailable in this build</span>
+            <div class="voice-progress" id="voice-model-progress" hidden=""><div class="voice-progress-fill" id="voice-model-progress-fill"></div></div>
+          </div>
+          <button type="button" class="record-btn" id="voice-model-download" hidden="" disabled="">Download</button>
         </div>
         </div>
         <div class="settings-tabpanel" data-tabpanel="secrets">
@@ -870,6 +1001,17 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         </div>
       </div>
       <div class="header-actions">
+        <!-- Voice mic. Hidden until VoiceEngine confirms this build's Rust
+             core has the voice pipeline (voice_status probe). Click toggles
+             hands-free listening in auto mode; press-and-hold is push-to-talk
+             in ptt mode. data-voice-state mirrors the moon's. -->
+        <button class="close-btn mic-btn voice-mode-off" id="voice-mic-btn" data-voice-state="" aria-label="Voice input" title="Voice input" hidden="">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
+            <path d="M19 10v1a7 7 0 0 1-14 0v-1"></path>
+            <line x1="12" y1="18" x2="12" y2="22"></line>
+          </svg>
+        </button>
         <!-- Settings lives here in the header (it orbited the moon as a
              satellite for a while — that felt off, so it came home). Opens
              the tabbed settings modal (#settings-panel). -->

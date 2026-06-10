@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-voice-set-config"
+description = "Allows tuning voice endpointing config (silence hang, clamped 200-2000ms)"
+
+[permission.commands]
+allow = [
+  "voice_set_config"
+]

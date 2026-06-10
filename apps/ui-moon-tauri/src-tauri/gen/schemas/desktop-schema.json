@@ -243,6 +243,72 @@
           "markdownDescription": "Allows writing the last active thread id so a restart re-tethers to the same thread"
         },
         {
+          "description": "Allows enqueueing one sentence for client-side TTS playback",
+          "type": "string",
+          "const": "allow-speak-text",
+          "markdownDescription": "Allows enqueueing one sentence for client-side TTS playback"
+        },
+        {
+          "description": "Allows discarding in-flight voice capture/transcription",
+          "type": "string",
+          "const": "allow-voice-cancel",
+          "markdownDescription": "Allows discarding in-flight voice capture/transcription"
+        },
+        {
+          "description": "Allows downloading the whisper model to ~/.luna/models (idempotent)",
+          "type": "string",
+          "const": "allow-voice-ensure-model",
+          "markdownDescription": "Allows downloading the whisper model to ~/.luna/models (idempotent)"
+        },
+        {
+          "description": "Allows listing the available TTS voices",
+          "type": "string",
+          "const": "allow-voice-list-voices",
+          "markdownDescription": "Allows listing the available TTS voices"
+        },
+        {
+          "description": "Allows beginning a push-to-talk capture window",
+          "type": "string",
+          "const": "allow-voice-ptt-down",
+          "markdownDescription": "Allows beginning a push-to-talk capture window"
+        },
+        {
+          "description": "Allows ending a push-to-talk capture window (endpoint + transcribe)",
+          "type": "string",
+          "const": "allow-voice-ptt-up",
+          "markdownDescription": "Allows ending a push-to-talk capture window (endpoint + transcribe)"
+        },
+        {
+          "description": "Allows tuning voice endpointing config (silence hang, clamped 200-2000ms)",
+          "type": "string",
+          "const": "allow-voice-set-config",
+          "markdownDescription": "Allows tuning voice endpointing config (silence hang, clamped 200-2000ms)"
+        },
+        {
+          "description": "Allows switching the voice mode (off/ptt/auto), starting/stopping the pipeline",
+          "type": "string",
+          "const": "allow-voice-set-mode",
+          "markdownDescription": "Allows switching the voice mode (off/ptt/auto), starting/stopping the pipeline"
+        },
+        {
+          "description": "Allows selecting the TTS voice by identifier",
+          "type": "string",
+          "const": "allow-voice-set-voice",
+          "markdownDescription": "Allows selecting the TTS voice by identifier"
+        },
+        {
+          "description": "Allows reading the voice pipeline status snapshot",
+          "type": "string",
+          "const": "allow-voice-status",
+          "markdownDescription": "Allows reading the voice pipeline status snapshot"
+        },
+        {
+          "description": "Allows stopping TTS playback and clearing the sentence queue",
+          "type": "string",
+          "const": "allow-voice-stop-speaking",
+          "markdownDescription": "Allows stopping TTS playback and clearing the sentence queue"
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

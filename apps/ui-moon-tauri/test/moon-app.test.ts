@@ -2938,4 +2938,701 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(panel().classList.contains('active')).toBe(true)
     })
   })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Behavioral Feature: Voice — sentence splitter (pure function, VOICE.md)
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Voice sentence splitter (pure)', () => {
+    const split = (s: string) => (window as any).__MoonInternals.splitSpeakableSentences(s)
+
+    it('splits complete sentences and keeps the trailing fragment as rest', () => {
+      const r = split('Hello there. How are you? I am')
+      expect(r.sentences).toEqual(['Hello there.', 'How are you?'])
+      expect(r.rest).toBe('I am')
+    })
+
+    it('does NOT split an abbrev-ish short fragment (<2 words before the boundary)', () => {
+      const r = split('Dr. Smith is here. Good')
+      // "Dr." alone is 1 word -> no boundary; the real sentence end splits.
+      expect(r.sentences).toEqual(['Dr. Smith is here.'])
+      expect(r.rest).toBe('Good')
+    })
+
+    it('treats a closing quote after the terminator as part of the sentence', () => {
+      const r = split('He said "stop here." Then left.')
+      expect(r.sentences).toEqual(['He said "stop here."'])
+      // End-of-buffer is NOT a boundary (a decimal or more text may follow).
+      expect(r.rest).toBe('Then left.')
+    })
+
+    it('treats a closing paren after the terminator as part of the sentence', () => {
+      const r = split('It works (mostly.) And then some')
+      expect(r.sentences).toEqual(['It works (mostly.)'])
+      expect(r.rest).toBe('And then some')
+    })
+
+    it('never splits inside an unclosed ``` fence', () => {
+      const r = split('Here is code. ```python\nx = 1. y. z')
+      expect(r.sentences).toEqual(['Here is code.'])
+      expect(r.rest).toBe('```python\nx = 1. y. z')
+    })
+
+    it('splits after a fence CLOSES, keeping the whole block in one chunk', () => {
+      const r = split('Look at this. ```js\nfoo(); // first. second\n``` All done. Next')
+      expect(r.sentences).toEqual([
+        'Look at this.',
+        '```js\nfoo(); // first. second\n``` All done.',
+      ])
+      expect(r.rest).toBe('Next')
+    })
+
+    it('does not treat a decimal point as a boundary', () => {
+      const r = split('The value is 3.14 and rising. ok')
+      expect(r.sentences).toEqual(['The value is 3.14 and rising.'])
+      expect(r.rest).toBe('ok')
+    })
+
+    it('end-of-buffer terminator stays in rest (flush on message end handles it)', () => {
+      const r = split('Working on it.')
+      expect(r.sentences).toEqual([])
+      expect(r.rest).toBe('Working on it.')
+    })
+
+    // Regression (finding: table announced once per row): rows are protected
+    // like fences so the whole table lands in ONE chunk → ONE announcement.
+    it('never splits inside markdown table rows (cells with sentence punctuation)', () => {
+      const r = split('| Tool | Use it. Often. |\n| Saw | Cuts wood. Slowly. |\nAll covered. next')
+      expect(r.sentences).toEqual([
+        '| Tool | Use it. Often. |\n| Saw | Cuts wood. Slowly. |\nAll covered.',
+      ])
+      expect(r.rest).toBe('next')
+    })
+
+    it('a still-streaming table row stays whole in rest', () => {
+      const r = split('| name | description. with periods |')
+      expect(r.sentences).toEqual([])
+      expect(r.rest).toBe('| name | description. with periods |')
+    })
+
+    it('mid-line pipes are NOT table rows (only a line-leading | protects)', () => {
+      // toSpeakable's table collapse also requires (^|\n) before the pipe —
+      // the splitter must use the same definition so the two stay in sync.
+      const r = split('Sure thing. | a. b | more. tail')
+      expect(r.sentences[0]).toBe('Sure thing.')
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Behavioral Feature: Voice — speakable filter (pure function, VOICE.md)
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Voice speakable filter (pure)', () => {
+    const speak = (s: string) => (window as any).__MoonInternals.toSpeakable(s)
+    const CODE_MSG = "I've put the code in the chat."
+    const TABLE_MSG = "There's a table in the chat."
+
+    it('replaces a fenced code block with the code announcement', () => {
+      expect(speak('Here:\n```js\nconst a = 1;\n```\nDone'))
+        .toBe(`Here: ${CODE_MSG} Done`)
+    })
+
+    it('announces a CONSECUTIVE run of fenced blocks only once', () => {
+      const out = speak('```a\nx\n```\n\n```b\ny\n```')
+      expect(out).toBe(CODE_MSG)
+    })
+
+    it('announces two runs separated by prose twice', () => {
+      const out = speak('```a\nx\n``` then words ```b\ny\n```')
+      expect(out.split(CODE_MSG).length - 1).toBe(2)
+      expect(out).toContain('then words')
+    })
+
+    it('announces an unclosed (mid-stream flushed) fence too', () => {
+      expect(speak('Partial ```python\nx = 1')).toBe(`Partial ${CODE_MSG}`)
+    })
+
+    it('speaks inline code as its literal text', () => {
+      expect(speak('Run `bun install` now')).toBe('Run bun install now')
+    })
+
+    it('speaks links as their link text only', () => {
+      expect(speak('See [the docs](https://example.com) please')).toBe('See the docs please')
+    })
+
+    it('speaks images as their alt text', () => {
+      expect(speak('![a moon](moon.png) rises')).toBe('a moon rises')
+    })
+
+    it('strips heading, list, and emphasis markers', () => {
+      expect(speak('## Heading\n- item one\n**bold** and _quiet_')).toBe('Heading item one bold and quiet')
+    })
+
+    it('strips blockquote markers', () => {
+      expect(speak('> quoted wisdom here')).toBe('quoted wisdom here')
+    })
+
+    it('replaces a table with the table announcement', () => {
+      expect(speak('| a | b |\n|---|---|\n| 1 | 2 |')).toBe(TABLE_MSG)
+    })
+
+    it('strips emoji', () => {
+      expect(speak('Done! 🎉🚀')).toBe('Done!')
+    })
+
+    it('returns empty string when nothing speakable remains (caller skips speak_text)', () => {
+      expect(speak('🎉  \n  ')).toBe('')
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Behavioral Feature: Voice — transcript routing (fill/append + auto-send)
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Voice transcript routing', () => {
+    const M = () => (window as any).__MoonInternals
+    // Transcripts only flow while voice is live (handleTranscript gates on
+    // mode/micPaused — see the stop-while-transcribing scenarios below).
+    const voiceLive = () => {
+      const V = M().VoiceEngine
+      V.available = true
+      V.mode = 'auto'
+      V.micPaused = false
+      return V
+    }
+
+    it('Scenario: empty composer -> transcript fills and auto-sends via the EXACT existing send path (client info included)', () => {
+      voiceLive()
+      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      M().State.activeThreadId = 'th-voice'
+      const input = document.getElementById('message-input') as HTMLTextAreaElement
+      input.value = ''
+
+      M().VoiceEngine.handleTranscript('what time is it')
+
+      // Sent through handleSubmit: input cleared, user bubble appended.
+      expect(input.value).toBe('')
+      const userMsgs = document.querySelectorAll('#chat-messages .msg.user')
+      expect(userMsgs.length).toBe(1)
+      expect(userMsgs[0].textContent).toBe('what time is it')
+      // The same user-message frame the send button produces, incl. client info.
+      expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'user-message',
+        threadId: 'th-voice',
+        text: 'what time is it',
+        client: expect.objectContaining({ name: 'luna-moon' }),
+      }))
+    })
+
+    it('Scenario: non-empty draft -> transcript appends with a space and does NOT send', () => {
+      voiceLive()
+      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const input = document.getElementById('message-input') as HTMLTextAreaElement
+      input.value = 'remind me to'
+
+      M().VoiceEngine.handleTranscript('water the plants')
+
+      expect(input.value).toBe('remind me to water the plants')
+      expect(sendSpy).not.toHaveBeenCalled()
+      expect(document.querySelectorAll('#chat-messages .msg.user').length).toBe(0)
+    })
+
+    it('Scenario: a blank transcript is a no-op', () => {
+      voiceLive()
+      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      M().VoiceEngine.handleTranscript('   ')
+      expect(sendSpy).not.toHaveBeenCalled()
+      expect(document.querySelectorAll('#chat-messages .msg.user').length).toBe(0)
+    })
+
+    // Regression (finding: stop-while-transcribing still auto-sent): a
+    // transcript event that arrives AFTER voice was switched off — whisper
+    // finished mid-teardown, or the event was already over the IPC bridge —
+    // must be dropped, never auto-sent.
+    it('Scenario: transcript arriving after voice was turned OFF is dropped', () => {
+      const V = voiceLive()
+      V.mode = 'off'
+      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const input = document.getElementById('message-input') as HTMLTextAreaElement
+      input.value = ''
+
+      V.handleTranscript('captured speech the user stopped')
+
+      expect(input.value).toBe('')
+      expect(sendSpy).not.toHaveBeenCalled()
+      expect(document.querySelectorAll('#chat-messages .msg.user').length).toBe(0)
+    })
+
+    it('Scenario: transcript arriving after the mic-pause click is dropped', () => {
+      const V = voiceLive()
+      V.micPaused = true   // the pause click is exactly "stop listening NOW"
+      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      const input = document.getElementById('message-input') as HTMLTextAreaElement
+      input.value = ''
+
+      V.handleTranscript('captured while pausing')
+
+      expect(input.value).toBe('')
+      expect(sendSpy).not.toHaveBeenCalled()
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Behavioral Feature: Voice — state events drive the moon + mic visuals
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Voice state -> moon visuals (data-voice-state)', () => {
+    const V = () => (window as any).__MoonInternals.VoiceEngine
+
+    it('Scenario: listening sets dataset.voiceState and the --voice-level CSS var (clamped)', () => {
+      const wrapper = document.getElementById('moon-wrapper')!
+      const mic = document.getElementById('voice-mic-btn')!
+
+      V().onStateEvent({ state: 'listening', mode: 'auto', level: 0.5 })
+      expect(wrapper.dataset.voiceState).toBe('listening')
+      expect(wrapper.style.getPropertyValue('--voice-level')).toBe('0.5')
+      expect(mic.dataset.voiceState).toBe('listening')
+
+      V().onStateEvent({ state: 'listening', mode: 'auto', level: 3 })
+      expect(wrapper.style.getPropertyValue('--voice-level')).toBe('1')
+    })
+
+    it('Scenario: transcribing and speaking map through; off clears to ""', () => {
+      const wrapper = document.getElementById('moon-wrapper')!
+      V().onStateEvent({ state: 'transcribing', mode: 'auto' })
+      expect(wrapper.dataset.voiceState).toBe('transcribing')
+      V().onStateEvent({ state: 'speaking', mode: 'auto' })
+      expect(wrapper.dataset.voiceState).toBe('speaking')
+      V().onStateEvent({ state: 'off', mode: 'off' })
+      expect(wrapper.dataset.voiceState).toBe('')
+      expect(document.getElementById('voice-mic-btn')!.dataset.voiceState).toBe('')
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Behavioral Feature: Voice — Settings → Voice persistence + boot re-apply
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Voice settings persistence', () => {
+    const M = () => (window as any).__MoonInternals
+
+    // The shared beforeEach Tauri mock has no `core.invoke`; give each test one
+    // (same convention as the thread-id and wizard suites above).
+    function stubInvoke(impl?: (cmd: string, args?: any) => any) {
+      const invoke = vi.fn(impl ?? (() => Promise.resolve(null)))
+      ;(window as any).__TAURI__.core = { invoke }
+      return invoke
+    }
+
+    it('Scenario: picking a mode persists luna_voice_mode and applies voice_set_mode', () => {
+      const invoke = stubInvoke()
+      M().VoiceEngine.setAvailable(true)   // jsdom boots voice-unavailable; enable the controls
+      const autoBtn = document.querySelector('.voice-mode-btn[data-voice-mode="auto"]') as HTMLButtonElement
+      autoBtn.click()
+
+      expect(localStorage.getItem('luna_voice_mode')).toBe('auto')
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })
+      expect(autoBtn.classList.contains('active')).toBe(true)
+      expect(autoBtn.getAttribute('aria-checked')).toBe('true')
+    })
+
+    it('Scenario: turning Speak replies off persists "0"', () => {
+      stubInvoke()
+      M().VoiceEngine.setAvailable(true)
+      const toggle = document.getElementById('voice-speak-replies-toggle') as HTMLInputElement
+      toggle.checked = false
+      toggle.dispatchEvent(new Event('change', { bubbles: true }))
+      expect(localStorage.getItem('luna_voice_speak_replies')).toBe('0')
+      expect(M().VoiceEngine.speakReplies).toBe(false)
+    })
+
+    it('Scenario: the silence-hang slider live-updates its label and persists on change', () => {
+      const invoke = stubInvoke()
+      M().VoiceEngine.setAvailable(true)
+      const slider = document.getElementById('voice-silence-slider') as HTMLInputElement
+      slider.value = '900'
+      slider.dispatchEvent(new Event('input', { bubbles: true }))
+      expect(document.getElementById('voice-silence-value')!.textContent).toBe('900')
+      slider.dispatchEvent(new Event('change', { bubbles: true }))
+      expect(localStorage.getItem('luna_voice_silence_hang_ms')).toBe('900')
+      expect(invoke).toHaveBeenCalledWith('voice_set_config', { silenceHangMs: 900 })
+    })
+
+    it('Scenario: persisted settings round-trip back into the controls via loadSettings', () => {
+      localStorage.setItem('luna_voice_mode', 'ptt')
+      localStorage.setItem('luna_voice_speak_replies', '0')
+      localStorage.setItem('luna_voice_silence_hang_ms', '750')
+      localStorage.setItem('luna_voice_id', 'com.apple.voice.premium.en-US.Zoe')
+
+      M().VoiceEngine.loadSettings()
+
+      expect(M().VoiceEngine.mode).toBe('ptt')
+      const pttBtn = document.querySelector('.voice-mode-btn[data-voice-mode="ptt"]')!
+      expect(pttBtn.classList.contains('active')).toBe(true)
+      expect((document.getElementById('voice-speak-replies-toggle') as HTMLInputElement).checked).toBe(false)
+      expect((document.getElementById('voice-silence-slider') as HTMLInputElement).value).toBe('750')
+      expect(document.getElementById('voice-silence-value')!.textContent).toBe('750')
+      // The persisted voice id survives even before voice_list_voices populates.
+      const sel = document.getElementById('voice-voice-select') as HTMLSelectElement
+      expect(sel.value).toBe('com.apple.voice.premium.en-US.Zoe')
+    })
+
+    it('Scenario: a stored out-of-range silence hang is clamped on load', () => {
+      localStorage.setItem('luna_voice_silence_hang_ms', '99999')
+      M().VoiceEngine.loadSettings()
+      expect(M().VoiceEngine.silenceHangMs).toBe(1200)
+    })
+
+    it('Scenario: voice picker populates from voice_list_voices with quality tags and persists luna_voice_id', async () => {
+      stubInvoke((cmd) => Promise.resolve(
+        cmd === 'voice_list_voices'
+          ? [
+              { id: 'v1', name: 'Samantha', lang: 'en-US', quality: 'premium' },
+              { id: 'v2', name: 'Fred', lang: 'en-US', quality: 'default' },
+            ]
+          : null
+      ))
+      M().VoiceEngine.setAvailable(true)
+      await M().VoiceEngine.populateVoices()
+
+      const sel = document.getElementById('voice-voice-select') as HTMLSelectElement
+      const labels = Array.from(sel.options).map((o) => o.textContent)
+      expect(labels).toContain('Samantha · premium')
+      expect(labels).toContain('Fred')                    // "default" quality is untagged
+      expect(labels[0]).toBe('System default')
+
+      sel.value = 'v1'
+      sel.dispatchEvent(new Event('change', { bubbles: true }))
+      expect(localStorage.getItem('luna_voice_id')).toBe('v1')
+    })
+
+    // Regression (finding: "System default" never reached Rust): the empty
+    // id IS the engine's explicit reset command — guarding the invoke on a
+    // truthy id left the previously pinned voice speaking until restart.
+    it('Scenario: picking "System default" (empty id) still invokes voice_set_voice with id ""', async () => {
+      const invoke = stubInvoke((cmd) => Promise.resolve(
+        cmd === 'voice_list_voices'
+          ? [{ id: 'v1', name: 'Samantha', lang: 'en-US', quality: 'premium' }]
+          : null
+      ))
+      const V = M().VoiceEngine
+      V.setAvailable(true)
+      V.voiceId = 'v1'
+      localStorage.setItem('luna_voice_id', 'v1')
+      await V.populateVoices()
+      const sel = document.getElementById('voice-voice-select') as HTMLSelectElement
+      expect(sel.value).toBe('v1')
+
+      sel.value = ''
+      sel.dispatchEvent(new Event('change', { bubbles: true }))
+
+      expect(localStorage.getItem('luna_voice_id')).toBeNull()
+      expect(invoke).toHaveBeenCalledWith('voice_set_voice', { id: '' })
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Behavioral Feature: Voice — spoken replies pipeline + interrupts
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Voice spoken replies pipeline', () => {
+    const M = () => (window as any).__MoonInternals
+
+    function voiceOn() {
+      const invoke = vi.fn().mockResolvedValue(null)
+      ;(window as any).__TAURI__.core = { invoke }
+      const V = M().VoiceEngine
+      V.available = true
+      V.mode = 'auto'
+      V.speakReplies = true
+      return { invoke, V }
+    }
+    const spoken = (invoke: any) =>
+      invoke.mock.calls.filter((c: any[]) => c[0] === 'speak_text').map((c: any[]) => c[1].text)
+    const called = (invoke: any, cmd: string) =>
+      invoke.mock.calls.some((c: any[]) => c[0] === cmd)
+
+    it('Scenario: cumulative deltas speak each sentence as it completes; assistant-done flushes the remainder', () => {
+      const { invoke } = voiceOn()
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Hello there. How' })
+      expect(spoken(invoke)).toEqual(['Hello there.'])
+      // CUMULATIVE wire contract: the next delta re-sends the prefix.
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Hello there. How are you? I' })
+      expect(spoken(invoke)).toEqual(['Hello there.', 'How are you?'])
+      M().handleFrame({ type: 'assistant-done', turnId: 't1' })
+      expect(spoken(invoke)).toEqual(['Hello there.', 'How are you?', 'I'])
+    })
+
+    it('Scenario: a code fence streams as one chunk and is spoken as the announcement', () => {
+      const { invoke } = voiceOn()
+      M().handleFrame({
+        type: 'assistant-delta', turnId: 't1',
+        text: 'Look at this. ```js\nfoo(); // first. second\n``` All done. ',
+      })
+      expect(spoken(invoke)).toEqual([
+        'Look at this.',
+        "I've put the code in the chat. All done.",
+      ])
+    })
+
+    it('Scenario: turn-complete is a safety flush for anything still buffered', () => {
+      const { invoke } = voiceOn()
+      M().handleFrame({ type: 'assistant-delta', turnId: 't2', text: 'Partial answer without ending' })
+      expect(spoken(invoke)).toEqual([])
+      M().handleFrame({ type: 'turn-complete' })
+      expect(spoken(invoke)).toEqual(['Partial answer without ending'])
+    })
+
+    it('Scenario: nothing is spoken when speakReplies is off or mode is off', () => {
+      const { invoke, V } = voiceOn()
+      V.speakReplies = false
+      M().handleFrame({ type: 'assistant-delta', turnId: 't3', text: 'Quiet please. More' })
+      V.speakReplies = true
+      V.mode = 'off'
+      M().handleFrame({ type: 'assistant-delta', turnId: 't3', text: 'Quiet please. More words. Tail' })
+      expect(spoken(invoke)).toEqual([])
+    })
+
+    it('Scenario: a new user send stops speaking (voice_stop_speaking) and drops queued speech', () => {
+      const { invoke, V } = voiceOn()
+      M().handleFrame({ type: 'assistant-delta', turnId: 't4', text: 'Old answer still buffering' })
+      const input = document.getElementById('message-input') as HTMLTextAreaElement
+      input.value = 'never mind'
+      document.getElementById('chat-form')!.dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true })
+      )
+      expect(called(invoke, 'voice_stop_speaking')).toBe(true)
+      // The superseded turn's buffer was dropped: a later flush speaks nothing.
+      M().handleFrame({ type: 'turn-complete' })
+      expect(spoken(invoke)).toEqual([])
+      expect(V.state).toBeDefined()
+    })
+
+    it('Scenario: Esc stops the spoken reply while speaking', () => {
+      const { invoke, V } = voiceOn()
+      V.state = 'speaking'
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      expect(called(invoke, 'voice_stop_speaking')).toBe(true)
+    })
+
+    // Regression (finding: Esc gated on state==='speaking'): after a pipeline
+    // error the thread is dead and NOTHING re-emits 'speaking', yet
+    // speak_text still plays replies — Esc must stay able to silence them
+    // (VOICE.md lists Esc unconditionally in the stop-speaking triad).
+    it('Scenario: Esc stops speech regardless of reported state (pipeline-error case)', () => {
+      const { invoke, V } = voiceOn()
+      V.state = 'error'
+      // Direct call (window dispatch would also wake superseded script runs
+      // from earlier tests, which share this jsdom window).
+      V.handleEscape()
+      expect(called(invoke, 'voice_stop_speaking')).toBe(true)
+    })
+
+    it('Scenario: Esc is a no-op only when voice is unavailable', () => {
+      const { invoke, V } = voiceOn()
+      V.available = false
+      V.handleEscape()
+      expect(called(invoke, 'voice_stop_speaking')).toBe(false)
+    })
+
+    // Regression (finding: TABLE_MSG once per row): rows with sentence
+    // punctuation inside cells stream as ONE chunk → ONE announcement.
+    it('Scenario: a streamed markdown table is announced ONCE, not once per row', () => {
+      const { invoke } = voiceOn()
+      M().handleFrame({
+        type: 'assistant-delta', turnId: 'tt',
+        text: 'Here you go.\n| a | first. row |\n| b | second. row |\nDone now. ',
+      })
+      expect(spoken(invoke)).toEqual([
+        'Here you go.',
+        "There's a table in the chat. Done now.",
+      ])
+    })
+
+    it('Scenario: mic click toggles hands-free listening WITHOUT rewriting the persisted preference', () => {
+      const { invoke } = voiceOn()
+      const mic = document.getElementById('voice-mic-btn')!
+      mic.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'off' })   // pause
+      mic.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })  // resume
+      expect(localStorage.getItem('luna_voice_mode')).toBeNull()               // runtime-only
+    })
+
+    it('Scenario: press-and-hold on the mic is push-to-talk in ptt mode', () => {
+      const { invoke, V } = voiceOn()
+      V.mode = 'ptt'
+      const mic = document.getElementById('voice-mic-btn')!
+      mic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      expect(called(invoke, 'voice_ptt_down')).toBe(true)
+      expect(called(invoke, 'voice_ptt_up')).toBe(false)
+      window.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+      expect(called(invoke, 'voice_ptt_up')).toBe(true)
+    })
+
+    it('Scenario: voice-error surfaces a non-blocking transcript banner', () => {
+      voiceOn()
+      M().VoiceEngine.onVoiceError({ message: 'Microphone permission denied' })
+      expect(document.getElementById('chat-messages')!.textContent)
+        .toContain('Voice: Microphone permission denied')
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Behavioral Feature: Voice — availability probe + boot wiring
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Voice availability + boot wiring', () => {
+    const M = () => (window as any).__MoonInternals
+
+    it('Scenario: without a Tauri voice backend the section degrades (mic hidden, controls disabled, note shown)', () => {
+      // The shared beforeEach has no __TAURI__.core: VoiceEngine.init() lands
+      // in "unavailable" synchronously at boot.
+      expect(document.getElementById('voice-mic-btn')!.hidden).toBe(true)
+      expect(document.getElementById('voice-unavailable-note')!.hidden).toBe(false)
+      expect((document.getElementById('voice-silence-slider') as HTMLInputElement).disabled).toBe(true)
+      expect((document.querySelector('.voice-mode-btn') as HTMLButtonElement).disabled).toBe(true)
+      expect(document.getElementById('voice-model-status')!.textContent).toBe('Unavailable in this build')
+    })
+
+    it('Scenario: a Rust core whose voice_status REJECTS (older build) degrades silently, no throw', async () => {
+      const invoke = vi.fn().mockRejectedValue(new Error('unknown command voice_status'))
+      ;(window as any).__TAURI__.core = { invoke }
+      await M().VoiceEngine.init()
+      expect(M().VoiceEngine.available).toBe(false)
+      expect(document.getElementById('voice-mic-btn')!.hidden).toBe(true)
+      expect(document.getElementById('voice-unavailable-note')!.hidden).toBe(false)
+      // Only the probe was attempted — no follow-up voice commands to spam.
+      expect(invoke.mock.calls.map((c) => c[0])).toEqual(['voice_status'])
+    })
+
+    it('Scenario: with a voice backend, boot probes status, subscribes events, re-applies persisted settings, lists voices', async () => {
+      localStorage.setItem('luna_voice_mode', 'auto')
+      localStorage.setItem('luna_voice_silence_hang_ms', '800')
+      const handlers: Record<string, (e: any) => void> = {}
+      const invoke = vi.fn(async (cmd: string) => {
+        if (cmd === 'voice_status') return { state: 'idle', mode: 'off', modelPresent: true }
+        if (cmd === 'voice_list_voices') return [{ id: 'v1', name: 'Samantha', lang: 'en-US', quality: 'enhanced' }]
+        return null
+      })
+      const listen = vi.fn(async (name: string, cb: any) => { handlers[name] = cb; return () => {} })
+      ;(window as any).__TAURI__.core = { invoke }
+      ;(window as any).__TAURI__.event = { listen }
+
+      await M().VoiceEngine.init()
+
+      expect(invoke).toHaveBeenCalledWith('voice_status')
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })
+      expect(invoke).toHaveBeenCalledWith('voice_set_config', { silenceHangMs: 800 })
+      expect(Object.keys(handlers)).toEqual(expect.arrayContaining([
+        'voice-state', 'voice-transcript', 'voice-model-progress', 'voice-error',
+      ]))
+      expect(document.getElementById('voice-mic-btn')!.hidden).toBe(false)
+      expect(document.getElementById('voice-model-status')!.textContent).toContain('ready')
+      const sel = document.getElementById('voice-voice-select') as HTMLSelectElement
+      expect(Array.from(sel.options).some((o) => o.textContent === 'Samantha · enhanced')).toBe(true)
+
+      // A captured voice-transcript event routes through the real send path.
+      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      M().State.activeThreadId = 'th-boot'
+      handlers['voice-transcript']({ payload: { text: 'hello from voice', final: true } })
+      expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'user-message', text: 'hello from voice',
+      }))
+    })
+
+    it('Scenario: model-progress events drive the download bar; done marks the model ready', () => {
+      const V = M().VoiceEngine
+      V.onModelProgress({ downloadedBytes: 50 * 1024 * 1024, totalBytes: 100 * 1024 * 1024, done: false })
+      const bar = document.getElementById('voice-model-progress')!
+      expect(bar.hidden).toBe(false)
+      expect((document.getElementById('voice-model-progress-fill') as HTMLElement).style.width).toBe('50%')
+      expect(document.getElementById('voice-model-status')!.textContent).toContain('50.0 / 100.0 MB')
+
+      V.onModelProgress({ done: true })
+      expect(document.getElementById('voice-model-status')!.textContent).toContain('Model ready')
+      expect(bar.hidden).toBe(true)
+      expect(document.getElementById('voice-model-download')!.hidden).toBe(true)
+    })
+
+    it('Scenario: a failed model download re-arms the Download button', () => {
+      const V = M().VoiceEngine
+      V.onModelProgress({ downloadedBytes: 0, totalBytes: 0, done: false, error: 'network unreachable' })
+      expect(document.getElementById('voice-model-status')!.textContent).toContain('network unreachable')
+      expect(document.getElementById('voice-model-download')!.hidden).toBe(false)
+      expect(document.getElementById('voice-model-progress')!.hidden).toBe(true)
+    })
+
+    // Regression (finding: after model download the pipeline stayed off while
+    // the UI showed Hands-free active): mod.rs's contract is "the frontend
+    // drives voice_ensure_model first, then RETRIES" — so a successful
+    // download must re-apply the chosen mode.
+    it('Scenario: a successful model download re-applies the chosen voice mode', async () => {
+      const invoke = vi.fn(async (cmd: string, args?: any) => {
+        if (cmd === 'voice_set_mode') {
+          return { state: 'idle', mode: args.mode, modelPresent: true, silenceHangMs: 600 }
+        }
+        return null
+      })
+      ;(window as any).__TAURI__.core = { invoke }
+      const V = M().VoiceEngine
+      V.available = true
+      V.mode = 'auto'
+      V.micPaused = true   // the refused pre-download set_mode parked the mic
+
+      await V.startModelDownload()
+
+      expect(invoke).toHaveBeenCalledWith('voice_ensure_model')
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })
+      expect(V.micPaused).toBe(false)
+      expect(V.rustMode).toBe('auto')
+      expect(document.getElementById('voice-model-status')!.textContent).toContain('Model ready')
+    })
+
+    // Regression (finding: inverted first mic click): when Rust REFUSES a
+    // mode (model missing → VoiceStatus.mode 'off'), the engine must park
+    // the mic so the next click RESUMES (set_mode 'auto') instead of
+    // "pausing" a pipeline that was never live.
+    it('Scenario: a refused voice_set_mode parks the mic; the first mic click resumes', async () => {
+      const invoke = vi.fn(async (cmd: string) => {
+        if (cmd === 'voice_set_mode') {
+          return { state: 'off', mode: 'off', modelPresent: false, silenceHangMs: 600 }
+        }
+        return null
+      })
+      ;(window as any).__TAURI__.core = { invoke }
+      const V = M().VoiceEngine
+      V.available = true
+
+      V.setMode('auto')                          // user clicks Hands-free, no model yet
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+      expect(V.micPaused).toBe(true)
+      expect(V.rustMode).toBe('off')
+
+      invoke.mockClear()
+      V.onMicClick()                             // first click must START voice…
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })
+      expect(invoke).not.toHaveBeenCalledWith('voice_set_mode', { mode: 'off' })  // …not "pause" it
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Behavioral Feature: Voice — hidden-attribute CSS overrides (regression)
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Voice hidden-attribute CSS overrides', () => {
+    // jsdom computes no layout, so the DOM-property assertions elsewhere
+    // cannot catch this class of bug: the UA's `[hidden] {display:none}` is
+    // NON-important, so ANY author `display:` rule on the same element wins
+    // by cascade — .close-btn{display:flex} kept the dead mic button visible
+    // and .setting-item{display:flex} kept the "Voice isn't available" note
+    // visible in every real (WebKit) build. Assert the !important overrides
+    // exist in the stylesheet source.
+    it('mic button: .mic-btn[hidden] forces display:none over .close-btn display:flex', () => {
+      expect(htmlContent).toMatch(/\.mic-btn\[hidden\]\s*\{\s*display:\s*none\s*!important/)
+    })
+
+    it('settings rows: .setting-item[hidden] forces display:none over display:flex', () => {
+      expect(htmlContent).toMatch(/\.setting-item\[hidden\]\s*\{\s*display:\s*none\s*!important/)
+    })
+
+    it('the voice-unavailable note and mic button still carry the hidden attribute by default', () => {
+      // The override only matters because both elements SHIP hidden and are
+      // toggled via the property; keep that contract pinned.
+      expect(htmlContent).toMatch(/id="voice-unavailable-note"[^>]*hidden/)
+      expect(htmlContent).toMatch(/id="voice-mic-btn"[^>]*hidden/)
+    })
+  })
 })

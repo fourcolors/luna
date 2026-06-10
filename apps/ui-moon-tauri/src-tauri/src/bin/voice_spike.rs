@@ -1,8 +1,8 @@
 //! Phase-0 voice pipeline spike: capture → VAD endpointing → whisper STT.
 //!
-//! Proves the all-Rust voice loop (Silero VAD + whisper.cpp/Metal) works on
-//! this machine and measures real-time factor before we commit to wiring it
-//! into the Tauri app. Two modes:
+//! Now the LIVE E2E HARNESS for the shared voice library: it drives the same
+//! endpoint/stt modules (luna_moon_ui_lib::voice) the app's pipeline thread
+//! uses, with the same CLI and output format as the original spike. Two modes:
 //!
 //!   voice_spike --file <wav>     offline: 16kHz mono wav through the full
 //!                                VAD→STT pipeline (automatable via `say`)
@@ -14,174 +14,11 @@
 
 use std::time::Instant;
 
-use voice_activity_detector::VoiceActivityDetector;
-
-const TARGET_RATE: u32 = 16_000;
-/// Silero V5 expects 512-sample chunks at 16kHz (32ms per frame).
-const VAD_CHUNK: usize = 512;
-
-// ── Endpointing tunables ────────────────────────────────────────────────
-// These four constants define how "speaking" becomes "an utterance" and are
-// the main UX dials for Phase 1 (too eager = Luna interrupts you mid-thought,
-// too lazy = dead air after you stop talking).
-const SPEECH_THRESHOLD: f32 = 0.5; // Silero probability above which a frame counts as speech
-const SILENCE_HANG_MS: u32 = 600; // silence needed to close an utterance
-const MIN_UTTERANCE_MS: u32 = 300; // discard blips shorter than this
-const PRE_ROLL_MS: u32 = 250; // audio kept from before VAD triggered (avoids clipped first syllable)
-
-const FRAME_MS: u32 = (VAD_CHUNK as u32 * 1000) / TARGET_RATE; // 32ms
-
-struct Utterance {
-    samples: Vec<f32>,
-    /// Offset of the utterance start within the source audio, in ms.
-    start_ms: u32,
-}
-
-/// VAD-driven endpointer: feed 512-sample frames, get bounded utterances out.
-struct Endpointer {
-    vad: VoiceActivityDetector,
-    pre_roll: Vec<f32>,    // rolling buffer of recent non-speech audio
-    current: Vec<f32>,     // accumulating utterance, empty = not in speech
-    silence_ms: u32,       // consecutive silence while in speech
-    frames_seen: u32,
-    utterance_start_frame: u32,
-}
-
-impl Endpointer {
-    fn new() -> Self {
-        let vad = VoiceActivityDetector::builder()
-            .sample_rate(TARGET_RATE as i64)
-            .chunk_size(VAD_CHUNK)
-            .build()
-            .expect("failed to build Silero VAD");
-        Self {
-            vad,
-            pre_roll: Vec::new(),
-            current: Vec::new(),
-            silence_ms: 0,
-            frames_seen: 0,
-            utterance_start_frame: 0,
-        }
-    }
-
-    /// Push one 32ms frame; returns a finished utterance when one closes.
-    fn push_frame(&mut self, frame: &[f32]) -> Option<Utterance> {
-        let prob = self.vad.predict(frame.iter().copied());
-        let is_speech = prob > SPEECH_THRESHOLD;
-        self.frames_seen += 1;
-        let mut finished = None;
-
-        if self.current.is_empty() {
-            if is_speech {
-                // Speech onset: seed with pre-roll so the first syllable survives.
-                let pre_frames = (PRE_ROLL_MS / FRAME_MS) as usize;
-                self.utterance_start_frame =
-                    self.frames_seen.saturating_sub(1 + pre_frames as u32);
-                self.current = std::mem::take(&mut self.pre_roll);
-                self.current.extend_from_slice(frame);
-                self.silence_ms = 0;
-            } else {
-                self.pre_roll.extend_from_slice(frame);
-                let max = (PRE_ROLL_MS / FRAME_MS) as usize * VAD_CHUNK;
-                if self.pre_roll.len() > max {
-                    let excess = self.pre_roll.len() - max;
-                    self.pre_roll.drain(..excess);
-                }
-            }
-        } else {
-            self.current.extend_from_slice(frame);
-            if is_speech {
-                self.silence_ms = 0;
-            } else {
-                self.silence_ms += FRAME_MS;
-                if self.silence_ms >= SILENCE_HANG_MS {
-                    finished = self.close_utterance();
-                }
-            }
-        }
-        finished
-    }
-
-    /// Flush whatever is in progress (end of stream).
-    fn flush(&mut self) -> Option<Utterance> {
-        if self.current.is_empty() {
-            None
-        } else {
-            self.close_utterance()
-        }
-    }
-
-    fn close_utterance(&mut self) -> Option<Utterance> {
-        let samples = std::mem::take(&mut self.current);
-        self.silence_ms = 0;
-        self.pre_roll.clear();
-        let speech_ms =
-            (samples.len() as u32 * 1000 / TARGET_RATE).saturating_sub(self.silence_ms);
-        if speech_ms < MIN_UTTERANCE_MS {
-            return None; // a cough, not a sentence
-        }
-        Some(Utterance {
-            samples,
-            start_ms: self.utterance_start_frame * FRAME_MS,
-        })
-    }
-}
-
-// ── Whisper ─────────────────────────────────────────────────────────────
-
-struct Stt {
-    ctx: whisper_rs::WhisperContext,
-}
-
-impl Stt {
-    fn load(model_path: &str) -> Self {
-        let load_start = Instant::now();
-        let ctx = whisper_rs::WhisperContext::new_with_params(
-            model_path,
-            whisper_rs::WhisperContextParameters::default(),
-        )
-        .unwrap_or_else(|e| panic!("failed to load whisper model {model_path}: {e}"));
-        eprintln!("[stt] model loaded in {:.2?}", load_start.elapsed());
-        Self { ctx }
-    }
-
-    /// Transcribe one utterance; returns (text, inference_time_secs).
-    fn transcribe(&self, samples: &[f32]) -> (String, f64) {
-        let mut state = self.ctx.create_state().expect("whisper state");
-        let mut params = whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy {
-            best_of: 1,
-        });
-        params.set_language(Some("en"));
-        params.set_print_special(false);
-        params.set_print_progress(false);
-        params.set_print_realtime(false);
-        params.set_print_timestamps(false);
-        params.set_suppress_blank(true);
-
-        // Whisper requires >= 1s of audio; pad short utterances with silence.
-        let mut audio = samples.to_vec();
-        let min_len = TARGET_RATE as usize + TARGET_RATE as usize / 10;
-        if audio.len() < min_len {
-            audio.resize(min_len, 0.0);
-        }
-
-        let t = Instant::now();
-        state.full(params, &audio).expect("whisper inference failed");
-        let elapsed = t.elapsed().as_secs_f64();
-
-        let n = state.full_n_segments();
-        let mut text = String::new();
-        for i in 0..n {
-            if let Some(seg) = state.get_segment(i) {
-                if let Ok(s) = seg.to_str() {
-                    text.push_str(s.trim());
-                    text.push(' ');
-                }
-            }
-        }
-        (text.trim().to_string(), elapsed)
-    }
-}
+use luna_moon_ui_lib::voice::capture::resample_linear;
+use luna_moon_ui_lib::voice::endpoint::{
+    self, Endpointer, Utterance, DEFAULT_SILENCE_HANG_MS, TARGET_RATE, VAD_CHUNK,
+};
+use luna_moon_ui_lib::voice::stt::{SttEngine, WhisperEngine};
 
 // ── Audio sources ───────────────────────────────────────────────────────
 
@@ -204,26 +41,6 @@ fn read_wav_16k_mono(path: &str) -> Vec<f32> {
         }
         hound::SampleFormat::Float => reader.samples::<f32>().map(|s| s.unwrap()).collect(),
     }
-}
-
-/// Naive linear resampler — good enough for speech into VAD/whisper in a
-/// spike. Production uses a proper windowed-sinc resampler.
-fn resample_linear(input: &[f32], from_rate: f64, to_rate: f64) -> Vec<f32> {
-    if (from_rate - to_rate).abs() < f64::EPSILON {
-        return input.to_vec();
-    }
-    let ratio = from_rate / to_rate;
-    let out_len = (input.len() as f64 / ratio) as usize;
-    let mut out = Vec::with_capacity(out_len);
-    for i in 0..out_len {
-        let pos = i as f64 * ratio;
-        let idx = pos as usize;
-        let frac = (pos - idx as f64) as f32;
-        let a = input.get(idx).copied().unwrap_or(0.0);
-        let b = input.get(idx + 1).copied().unwrap_or(a);
-        out.push(a + (b - a) * frac);
-    }
-    out
 }
 
 fn capture_mic(seconds: u64) -> Vec<f32> {
@@ -250,7 +67,7 @@ fn capture_mic(seconds: u64) -> Vec<f32> {
             &config.into(),
             move |data: &[f32], _| {
                 // Downmix interleaved channels to mono and ship to the
-                // processing thread. (Production: lock-free ring buffer.)
+                // processing thread. (The app uses capture::CpalSource.)
                 let mono: Vec<f32> = data
                     .chunks(channels)
                     .map(|f| f.iter().sum::<f32>() / channels as f32)
@@ -307,8 +124,14 @@ fn main() {
     let audio_secs = audio.len() as f64 / TARGET_RATE as f64;
     eprintln!("[in] {:.1}s of 16kHz audio", audio_secs);
 
-    let stt = Stt::load(&model_path);
-    let mut ep = Endpointer::new();
+    // The lib engine creates its ONE long-lived state at load time, so the
+    // Metal init cost shows up here (once) instead of on the first utterance.
+    let load_start = Instant::now();
+    let mut stt = WhisperEngine::load(&model_path).unwrap_or_else(|e| panic!("{e}"));
+    eprintln!("[stt] model loaded in {:.2?}", load_start.elapsed());
+
+    let probe = endpoint::silero_probe().unwrap_or_else(|e| panic!("{e}"));
+    let mut ep = Endpointer::new(Box::new(probe), DEFAULT_SILENCE_HANG_MS);
 
     let wall = Instant::now();
     let mut utterances: Vec<Utterance> = Vec::new();
@@ -335,7 +158,11 @@ fn main() {
     let mut total_speech = 0.0;
     for (i, u) in utterances.iter().enumerate() {
         let dur = u.samples.len() as f64 / TARGET_RATE as f64;
-        let (text, secs) = stt.transcribe(&u.samples);
+        let t = Instant::now();
+        let text = stt
+            .transcribe(&u.samples)
+            .unwrap_or_else(|e| panic!("{e}"));
+        let secs = t.elapsed().as_secs_f64();
         total_inference += secs;
         total_speech += dur;
         println!(
