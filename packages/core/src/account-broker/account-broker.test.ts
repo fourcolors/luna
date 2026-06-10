@@ -62,25 +62,35 @@ describe("AccountBroker.acquireSession", () => {
         // Open an outer scope to keep the broker alive across two
         // observation points.
         const outer = yield* Scope.make()
-        const cred = yield* broker
+        const acq = yield* broker
           .acquireSession({ model: "claude-sonnet-4-5" })
           .pipe(Scope.extend(outer))
         const during = yield* broker._inspect()
         yield* Scope.close(outer, Exit.void)
         const after = yield* broker._inspect()
-        return { cred, during, after }
+        return { acq, during, after }
       }).pipe(Effect.provide(buildLayer())),
     )
-    expect(out.cred.kind).toBe("anthropic")
-    expect(["a1", "a2", "a3"]).toContain(out.cred.accountId)
-    expect(Redacted.value(out.cred.resolvedSecret)).toMatch(/^tok-a[1-3]$/)
-    const acquired = out.during.find((a) => a.id === out.cred.accountId)
+    // B6 widened return: AcquiredSession { credential, model, stepIndex }.
+    expect(out.acq.credential.kind).toBe("anthropic")
+    expect(["a1", "a2", "a3"]).toContain(out.acq.credential.accountId)
+    expect(Redacted.value(out.acq.credential.resolvedSecret)).toMatch(
+      /^tok-a[1-3]$/,
+    )
+    // No chain configured → single-step fallback: model = caller's model,
+    // stepIndex = 0, no advancedFrom. BYTE-IDENTICAL routing to pre-B6.
+    expect(out.acq.model).toBe("claude-sonnet-4-5")
+    expect(out.acq.stepIndex).toBe(0)
+    expect(out.acq.advancedFrom).toBeUndefined()
+    const acquired = out.during.find(
+      (a) => a.id === out.acq.credential.accountId,
+    )
     expect(acquired?.inFlight).toBe(1)
     expect(out.after.every((a) => a.inFlight === 0)).toBe(true)
   })
 
   it("boundAccountId pins to that account when healthy", async () => {
-    const cred = await Effect.runPromise(
+    const acq = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           const broker = yield* AccountBroker
@@ -91,7 +101,7 @@ describe("AccountBroker.acquireSession", () => {
         }),
       ).pipe(Effect.provide(buildLayer())),
     )
-    expect(cred.accountId).toBe("a2")
+    expect(acq.credential.accountId).toBe("a2")
   })
 
   it("boundAccountId unknown → AllAccountsExhaustedError", async () => {
@@ -127,7 +137,7 @@ describe("AccountBroker.acquireSession", () => {
         return { c1, c2 }
       }).pipe(Effect.provide(buildLayer())),
     )
-    expect(out.c1.accountId).not.toBe(out.c2.accountId)
+    expect(out.c1.credential.accountId).not.toBe(out.c2.credential.accountId)
   })
 })
 
@@ -227,7 +237,7 @@ describe("composition smoke", () => {
     const layer = AccountBrokerLayer.fromAccounts([
       { id: "a1", kind: "anthropic", secretRef: "env:ENV_TOK" },
     ]).pipe(Layer.provide(Layer.mergeAll(composed, Clock.Test(1000))))
-    const cred = await Effect.runPromise(
+    const acq = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           const broker = yield* AccountBroker
@@ -235,7 +245,7 @@ describe("composition smoke", () => {
         }),
       ).pipe(Effect.provide(layer)),
     )
-    expect(Redacted.value(cred.resolvedSecret)).toBe("from-env")
+    expect(Redacted.value(acq.credential.resolvedSecret)).toBe("from-env")
     delete process.env.ENV_TOK
   })
 })

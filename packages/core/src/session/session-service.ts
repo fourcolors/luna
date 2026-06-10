@@ -144,8 +144,9 @@ export class SessionService extends Effect.Service<SessionService>()(
             )
           }
           const parentOpts = yield* store.getOptions(id)
+          const childModel = overrides?.model ?? parent.model
           const childOpts: SessionOptions = {
-            model: overrides?.model ?? parent.model,
+            model: childModel,
             ...(overrides?.systemPrompt !== undefined
               ? { systemPrompt: overrides.systemPrompt }
               : {}),
@@ -154,12 +155,21 @@ export class SessionService extends Effect.Service<SessionService>()(
               : {}),
             ...(overrides?.tags !== undefined ? { tags: overrides.tags } : {}),
             parentSessionId: id,
-            // Slot systemPrompt into sdkOptions so the SDKAdapter sees it.
-            // The adapter reads ONLY sessionOptions.sdkOptions — the top-level
-            // systemPrompt field above is consumed by merge-policy only. Without
-            // this, fork() overrides are silently dropped before reaching Claude.
+            // Slot systemPrompt + model into sdkOptions so the SDKAdapter sees
+            // them. The adapter reads ONLY sessionOptions.sdkOptions — the
+            // top-level model/systemPrompt fields above are consumed by
+            // merge-policy only. GAP#3: without `model` here a forked thread's
+            // resolved model never reaches the SDK adapter (which routes the
+            // broker + SDK on sdkOptions.model), so it silently routes to the
+            // default provider. The explicit overrides.sdkOptions spread still
+            // wins last. The literal "default" is the broker's default-lane
+            // sentinel (e.g. a recovered thread with no known model), never a
+            // real model id — don't slot it, or the SDK would receive it.
             sdkOptions: {
               ...(parentOpts?.sdkOptions ?? {}),
+              ...(childModel !== undefined && childModel !== "default"
+                ? { model: childModel }
+                : {}),
               ...(overrides?.systemPrompt !== undefined
                 ? { systemPrompt: overrides.systemPrompt }
                 : {}),

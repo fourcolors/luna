@@ -3,7 +3,8 @@
  *
  * Validation (DESIGN.md §2.2.11):
  *   - all four required fields non-empty
- *   - kind ∈ allowlist (`anthropic`, `tool-<name>`, `mcp-<name>`)
+ *   - kind ∈ allowlist (`anthropic`, `google`, `openai`, `ollama-cloud`,
+ *     `ollama-local`, `tool-<name>`, `mcp-<name>`)
  *   - secret-ref matches one of:
  *       op://<rest>                                — bare 1Password
  *       luna-op://<label>/<rest>                   — explicit-account 1Password
@@ -17,7 +18,15 @@
  */
 import { openDb, defaultDbPath } from "../db.js"
 
-const KIND_ALLOWLIST_EXACT = new Set(["anthropic"])
+const KIND_ALLOWLIST_EXACT = new Set([
+  "anthropic",
+  // Non-Anthropic provider kinds (routed through an Anthropic-format gateway
+  // or a native /v1/messages-compatible endpoint via the provider-profile seam).
+  "google",
+  "openai",
+  "ollama-cloud",
+  "ollama-local",
+])
 const KIND_PREFIX_ALLOW = ["tool-", "mcp-"]
 
 const ACCOUNT_LABEL_RE = /^[a-z][a-z0-9-]{0,30}$/

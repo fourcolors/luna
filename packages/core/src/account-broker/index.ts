@@ -5,9 +5,16 @@ export {
   type AccountSummary,
   type AccountError,
   type Credential,
+  type AcquiredSession,
   type UsageReport,
 } from "./account-broker.js"
 export { pickAccount, type AccountRecord } from "./rotation-policy.js"
+export {
+  applyUsage,
+  readCycleMs,
+  type SpendUpdate,
+  type UsageTokens,
+} from "./spend-meter.js"
 export type { FromSqlOptions } from "./account-broker-sql.js"
 
 import { AccountBrokerLayer as InMemoryLayer } from "./account-broker.js"

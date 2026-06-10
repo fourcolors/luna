@@ -94,6 +94,41 @@ describe("SessionService", () => {
     expect(child.parentId).toBeTruthy()
   })
 
+  it("fork threads the resolved model into sdkOptions.model (GAP#3)", async () => {
+    // The SDK adapter routes the broker + SDK on sdkOptions.model, NOT the
+    // top-level SessionOptions.model. fork() must copy the resolved child model
+    // into sdkOptions or a forked thread silently routes to the default
+    // provider. Override wins over the parent's model.
+    const opts = await run(
+      Effect.gen(function* () {
+        const svc = yield* SessionService
+        const store = yield* SessionStore
+        const parent = yield* svc.open({ model: "claude-sonnet-4-5" })
+        const child = yield* svc.fork(parent.id, { model: "gemini-2.5-flash" })
+        return yield* store.getOptions(child.id)
+      }),
+    )
+    expect(opts?.model).toBe("gemini-2.5-flash")
+    expect((opts?.sdkOptions as { model?: string } | undefined)?.model).toBe(
+      "gemini-2.5-flash",
+    )
+  })
+
+  it("fork inherits the parent model into sdkOptions.model when no override (GAP#3)", async () => {
+    const opts = await run(
+      Effect.gen(function* () {
+        const svc = yield* SessionService
+        const store = yield* SessionStore
+        const parent = yield* svc.open({ model: "claude-sonnet-4-5" })
+        const child = yield* svc.fork(parent.id, { title: "child" })
+        return yield* store.getOptions(child.id)
+      }),
+    )
+    expect((opts?.sdkOptions as { model?: string } | undefined)?.model).toBe(
+      "claude-sonnet-4-5",
+    )
+  })
+
   it("resume of missing session fails with IntegrityError", async () => {
     const exit = await Effect.runPromiseExit(
       Effect.gen(function* () {

@@ -272,7 +272,7 @@ describe("S4 — boundAccountId pin routes acquireSession to selected account", 
         const cred = yield* Effect.scoped(
           broker.acquireSession({ model: "m", boundAccountId: "a2" }),
         )
-        return cred.accountId
+        return cred.credential.accountId
       }).pipe(Effect.provide(layer)),
     )
 
@@ -297,7 +297,7 @@ describe("S4 — boundAccountId pin routes acquireSession to selected account", 
           const cred = yield* Effect.scoped(
             broker.acquireSession({ model: "m", boundAccountId: "a2" }),
           )
-          results.push(cred.accountId)
+          results.push(cred.credential.accountId)
         }
         return results
       }).pipe(Effect.provide(layer)),
@@ -380,7 +380,7 @@ describe("S6 — Switch from exhausted account to healthy account", () => {
           broker.acquireSession({ model: "m", boundAccountId: "a2" }),
         )
 
-        return { freeRide: freeRide.accountId, pinned: pinned.accountId }
+        return { freeRide: freeRide.credential.accountId, pinned: pinned.credential.accountId }
       }).pipe(Effect.provide(layer)),
     )
 

@@ -12,7 +12,14 @@
  */
 import { describe, expect, it } from "vitest"
 import { Cause, Effect, Layer, Ref, Stream } from "effect"
-import { DreamError } from "@luna/core"
+import {
+  DreamError,
+  AccountBroker,
+  AccountBrokerLayer,
+  EnvSecretProvider,
+  Clock,
+  CLAUDE_CODE_LOGIN_SECRET_REF,
+} from "@luna/core"
 import type { MemoryRecord } from "@luna/memory"
 import { MemoryRouterTag } from "@luna/memory"
 import { DreamReasoner } from "@luna/core"
@@ -22,6 +29,19 @@ import { DreamReasonerDefault } from "../src/dream-reasoner.js"
 import { makeFakeQuery, makeAssistantMessage, makeResultMessage } from "./fake-sdk.js"
 import type { DreamInputs } from "@luna/core"
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk"
+
+// ---------------------------------------------------------------------------
+// Fake AccountBroker (A8/test): DreamReasonerDefault now requires AccountBroker.
+// Seed ONE google account (resolvable via env:DREAM_GOOGLE_TOK) + ONE anthropic
+// login-ref account (the sentinel that skips the env overlay → back-compat).
+// In-memory `fromAccounts` (NO bun:sqlite) + EnvSecretProvider + Clock.
+// ---------------------------------------------------------------------------
+const GOOGLE_TOK_ENV = "DREAM_GOOGLE_TOK"
+const brokerFake = (): Layer.Layer<AccountBroker> =>
+  AccountBrokerLayer.fromAccounts([
+    { id: "g1", kind: "google", secretRef: `env:${GOOGLE_TOK_ENV}` },
+    { id: "a1", kind: "anthropic", secretRef: CLAUDE_CODE_LOGIN_SECRET_REF },
+  ]).pipe(Layer.provide(EnvSecretProvider.Default), Layer.provide(Clock.Default))
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -73,11 +93,12 @@ const fakeClientNoSuccess = (): Layer.Layer<SDKClient> =>
     return makeFakeQuery({ messages: [assistantMsg] }).query
   })
 
-/** Helper: run reason(inputs) with a given sdk layer + memory layer. */
+/** Helper: run reason(inputs) with a given sdk layer + memory layer + broker. */
 const runReason = (
   inputs: DreamInputs,
   sdkLayer: Layer.Layer<SDKClient>,
   memLayer: Layer.Layer<typeof MemoryRouterTag>,
+  brokerLayer: Layer.Layer<AccountBroker> = brokerFake(),
 ) =>
   Effect.gen(function* () {
     const r = yield* DreamReasoner
@@ -86,6 +107,7 @@ const runReason = (
     Effect.provide(DreamReasonerDefault),
     Effect.provide(sdkLayer),
     Effect.provide(memLayer),
+    Effect.provide(brokerLayer),
   )
 
 // ---------------------------------------------------------------------------
@@ -353,6 +375,109 @@ describe("DreamReasonerDefault", () => {
       }
       const opts = sink.last!.options as Record<string, unknown>
       expect("pathToClaudeCodeExecutable" in opts).toBe(false)
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // PROVIDER SEAM (A4): the nightly Dream acquires a credential per reason()
+  // through the AccountBroker and routes the SDK at a cheap model via
+  // LUNA_DREAM_MODEL. These tests capture the SDK `options` the reasoner builds.
+  // -------------------------------------------------------------------------
+  describe("provider seam (broker routing)", () => {
+    /** Capture-only SDKClient.fake that records the last options it saw. */
+    const recordingClient = (sink: {
+      last: { options: Record<string, unknown> } | null
+    }): Layer.Layer<SDKClient> =>
+      SDKClient.fake((params) => {
+        sink.last = { options: (params.options ?? {}) as Record<string, unknown> }
+        const r = { ...makeResultMessage("sid", "uuid-cap"), result: "[]" }
+        return makeFakeQuery({ messages: [r] }).query
+      })
+
+    it("(a) LUNA_DREAM_MODEL + a google account → options.env has the gateway overlay + options.model set", async () => {
+      const sink: { last: { options: Record<string, unknown> } | null } = {
+        last: null,
+      }
+      const prevModel = process.env["LUNA_DREAM_MODEL"]
+      const prevTok = process.env[GOOGLE_TOK_ENV]
+      process.env["LUNA_DREAM_MODEL"] = "gemini-2.5-flash"
+      process.env[GOOGLE_TOK_ENV] = "google-secret-xyz"
+      try {
+        await Effect.runPromise(
+          runReason(EMPTY_INPUTS, recordingClient(sink), FakeMemory()),
+        )
+      } finally {
+        if (prevModel === undefined) delete process.env["LUNA_DREAM_MODEL"]
+        else process.env["LUNA_DREAM_MODEL"] = prevModel
+        if (prevTok === undefined) delete process.env[GOOGLE_TOK_ENV]
+        else process.env[GOOGLE_TOK_ENV] = prevTok
+      }
+      const opts = sink.last!.options
+      expect(opts["model"]).toBe("gemini-2.5-flash")
+      const env = opts["env"] as Record<string, string> | undefined
+      expect(env).toBeDefined()
+      expect(env!["ANTHROPIC_AUTH_TOKEN"]).toBe("google-secret-xyz")
+      expect(env!["ANTHROPIC_BASE_URL"]).toBeDefined()
+    })
+
+    it("(b) BACK-COMPAT: no LUNA_DREAM_MODEL + login-ref anthropic account → options.env undefined AND options.model undefined", async () => {
+      const sink: { last: { options: Record<string, unknown> } | null } = {
+        last: null,
+      }
+      const prevModel = process.env["LUNA_DREAM_MODEL"]
+      const prevReasoner = process.env["LUNA_REASONER_MODEL"]
+      delete process.env["LUNA_DREAM_MODEL"]
+      delete process.env["LUNA_REASONER_MODEL"]
+      try {
+        await Effect.runPromise(
+          runReason(EMPTY_INPUTS, recordingClient(sink), FakeMemory()),
+        )
+      } finally {
+        if (prevModel !== undefined) process.env["LUNA_DREAM_MODEL"] = prevModel
+        if (prevReasoner !== undefined)
+          process.env["LUNA_REASONER_MODEL"] = prevReasoner
+      }
+      const opts = sink.last!.options
+      expect("model" in opts).toBe(false)
+      expect("env" in opts).toBe(false)
+      expect(opts["maxTurns"]).toBe(1)
+    })
+
+    it("(c) EXHAUSTION: broker with no matching account → reason() returns a DreamError (Left), does NOT throw", async () => {
+      const sink: { last: { options: Record<string, unknown> } | null } = {
+        last: null,
+      }
+      const anthropicOnlyBroker: Layer.Layer<AccountBroker> =
+        AccountBrokerLayer.fromAccounts([
+          { id: "a1", kind: "anthropic", secretRef: CLAUDE_CODE_LOGIN_SECRET_REF },
+        ]).pipe(
+          Layer.provide(EnvSecretProvider.Default),
+          Layer.provide(Clock.Default),
+        )
+      const prevModel = process.env["LUNA_DREAM_MODEL"]
+      process.env["LUNA_DREAM_MODEL"] = "gemini-2.5-flash"
+      try {
+        const result = await Effect.runPromise(
+          Effect.either(
+            runReason(
+              EMPTY_INPUTS,
+              recordingClient(sink),
+              FakeMemory(),
+              anthropicOnlyBroker,
+            ),
+          ),
+        )
+        expect(result._tag).toBe("Left")
+        if (result._tag === "Left") {
+          expect(result.left).toBeInstanceOf(DreamError)
+          expect((result.left as DreamError).op).toBe("reason")
+        }
+        // The SDK was never invoked because acquire failed first.
+        expect(sink.last).toBeNull()
+      } finally {
+        if (prevModel === undefined) delete process.env["LUNA_DREAM_MODEL"]
+        else process.env["LUNA_DREAM_MODEL"] = prevModel
+      }
     })
   })
 })

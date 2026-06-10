@@ -23,6 +23,7 @@
  */
 import { describe, expect, it } from "vitest"
 import { pickAccount, type AccountRecord } from "./rotation-policy.js"
+import { pickChainTarget, type ChainStep } from "../overflow-chain.js"
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -86,6 +87,35 @@ describe("S2 — Kind filter", () => {
   it("returns null when no accounts match the requested kind", () => {
     const accounts = [tool("t1"), tool("t2")]
     expect(pickAccount(accounts, "anthropic", 0)).toBeNull()
+  })
+
+  /**
+   * B6 chain variant of the single-kind isolation guarantee. A one-step chain
+   * pinned to kind "anthropic" must NOT leak a tool account — `pickChainTarget`
+   * reuses `pickAccount`'s kind filter per step, so the isolation holds even
+   * when traversal is chain-driven. (Keeps the OLD single-kind guarantee green;
+   * adds the chain case the B-phase introduces.)
+   */
+  it("chain step with kind='anthropic' never selects a tool account", () => {
+    const accounts = [anthropic("a1"), tool("t1")]
+    const chain: ReadonlyArray<ChainStep> = [
+      { kind: "anthropic", model: "claude-sonnet-4-5" },
+    ]
+    const hit = pickChainTarget(chain, accounts, 0)
+    expect(hit?.account.id).toBe("a1")
+    expect(hit?.account.kind).toBe("anthropic")
+  })
+
+  /**
+   * A chain whose only step targets a kind with NO matching account yields
+   * null (the caller maps null → AllAccountsExhaustedError) — no tool leakage.
+   */
+  it("chain with only an unmatched kind → null (no fallback to tool)", () => {
+    const accounts = [tool("t1"), tool("t2")]
+    const chain: ReadonlyArray<ChainStep> = [
+      { kind: "anthropic", model: "claude-sonnet-4-5" },
+    ]
+    expect(pickChainTarget(chain, accounts, 0)).toBeNull()
   })
 })
 

@@ -5,7 +5,7 @@
  * NOT depend on adapter-sdk. Putting an SDKClient-using impl in core would
  * create a forbidden core → adapter-sdk → core cycle. So:
  *   - DreamReasoner Tag + FakeReasoner STAY in core/dream/reasoner.ts (unchanged).
- *   - This module exports DreamReasonerDefault: Layer.Layer<DreamReasoner, never, SDKClient | MemoryRouter>
+ *   - This module exports DreamReasonerDefault: Layer.Layer<DreamReasoner, never, SDKClient | MemoryRouter | AccountBroker>
  *
  * Design (§3.1 Dream engine, §2.3 category boundary):
  *   1. Build a deterministic prompt from DreamInputs (sessions → belief candidates;
@@ -28,6 +28,7 @@ import {
   makeBeliefRecord,
   computeAgreement,
   CalibrationStore,
+  AccountBroker,
 } from "@luna/core"
 import type {
   DreamInputs,
@@ -36,12 +37,12 @@ import type {
   DreamReasonerApi,
 } from "@luna/core"
 import { MemoryBackendError } from "@luna/core"
+import { SDKClient } from "./sdk-client.js"
+import { DEFAULT_QUERY_TIMEOUT_MS } from "./bounded-query.js"
 import {
-  SDKClient,
-  type SDKClientService,
-  type QueryParams,
-} from "./sdk-client.js"
-import { runBoundedQuery, DEFAULT_QUERY_TIMEOUT_MS } from "./bounded-query.js"
+  resolveReasonerModel,
+  runBrokeredReasonerTurn,
+} from "./brokered-turn.js"
 
 // ---------------------------------------------------------------------------
 // Valid op kinds (mirrors DreamOpKind union)
@@ -148,54 +149,6 @@ export function buildDreamPrompt(inputs: DreamInputs): string {
     "CURRENT MEMORY STATE (for dedup/staleness/contradiction ops only):",
     mems || "(none)",
   ].join("\n")
-}
-
-// ---------------------------------------------------------------------------
-// Bounded SDK result collection
-// ---------------------------------------------------------------------------
-
-/**
- * Run the reasoning turn under a wall-clock deadline (shared `runBoundedQuery`)
- * and map its outcome onto `DreamError({ op:"reason", ... })`. A timeout / stream
- * error / empty stream never crashes the 3am cron; on timeout the SDK subprocess
- * is aborted so a hung turn can't linger as a zombie.
- */
-function boundedResultText(
-  sdk: SDKClientService,
-  params: QueryParams,
-  timeoutMs: number,
-): Effect.Effect<string, DreamError> {
-  return runBoundedQuery(sdk, params, timeoutMs).pipe(
-    Effect.flatMap((outcome): Effect.Effect<string, DreamError> => {
-      switch (outcome._tag) {
-        case "result":
-          return Effect.succeed(outcome.text)
-        case "timeout":
-          return Effect.fail(
-            new DreamError({
-              op: "reason",
-              message: `SDK query timed out after ${outcome.timeoutMs}ms`,
-            }),
-          )
-        case "error":
-          return Effect.fail(
-            new DreamError({
-              op: "reason",
-              message: `SDK stream error: ${String(outcome.cause)}`,
-              cause: outcome.cause,
-            }),
-          )
-        case "empty":
-          return Effect.fail(
-            new DreamError({
-              op: "reason",
-              message:
-                "SDK stream produced no type:result/subtype:success message",
-            }),
-          )
-      }
-    }),
-  )
 }
 
 // ---------------------------------------------------------------------------
@@ -341,18 +294,28 @@ function materializeOp(
 // ---------------------------------------------------------------------------
 
 /**
- * Model-backed DreamReasoner layer. Requires SDKClient + MemoryRouter.
- * The returned `reason` effect has R=never (both are closed over at build time).
+ * Model-backed DreamReasoner layer. Requires SDKClient + MemoryRouter +
+ * AccountBroker. The returned `reason` effect has R=never (all are closed over
+ * at build time); the per-turn credential acquire runs inside `Effect.scoped`
+ * so the broker's inFlight finalizer fires at turn end without leaking Scope.
  */
 export const DreamReasonerDefault: Layer.Layer<
   DreamReasoner,
   never,
-  SDKClient | import("@luna/memory").MemoryRouter
+  SDKClient | import("@luna/memory").MemoryRouter | AccountBroker
 > = Layer.effect(
   DreamReasoner,
   Effect.gen(function* () {
     const sdk = yield* SDKClient
     const mem = yield* MemoryRouterTag
+    const broker = yield* AccountBroker
+
+    // Provider-seam routing: the nightly Dream can run on a cheap model. Pick the
+    // model from LUNA_DREAM_MODEL (falling back to the shared LUNA_REASONER_MODEL,
+    // each var trimmed independently so a set-but-blank primary falls through);
+    // unset → undefined → broker acquired with "default" → anthropic login-ref
+    // account → no env overlay, no options.model → today's behavior exactly.
+    const dreamModel = resolveReasonerModel("LUNA_DREAM_MODEL")
 
     /**
      * The SDK package ships per-arch native binaries under
@@ -402,30 +365,71 @@ export const DreamReasonerDefault: Layer.Layer<
     const reason: DreamReasonerApi["reason"] = (inputs: DreamInputs) =>
       Effect.gen(function* () {
         const prompt = buildDreamPrompt(inputs)
-        const queryParams: QueryParams = {
-          prompt,
-          options: {
-            maxTurns: 1,
-            ...(pathToClaudeCodeExecutable
-              ? { pathToClaudeCodeExecutable }
-              : {}),
-          },
-        }
         yield* Effect.logInfo("[luna/dream] reasoner.reason: starting", {
           sessions: inputs.sessions.length,
           memories: inputs.memories.length,
           samples: dreamSamples,
+          dreamModel: dreamModel ?? "(default)",
           pathToClaudeCodeExecutable: pathToClaudeCodeExecutable ?? "(unset)",
         })
 
         // ── PASS 1 — the PRIVILEGED "today's path" (SOLE materializer) ────────
-        // Issued FIRST and SEQUENTIALLY, NOT inside any concurrency: boundedResultText
-        // → parseRawOps → materializeOp, EXACTLY as the single-pass impl. A pass-1
-        // failure (timeout/parse/SDK error) propagates as today's DreamError — no
-        // new failure modes. (Locking pass-1 as the first sdk.query() call is also
-        // what makes the integration test's confidence===0.85 assertion deterministic
-        // against the fake's closure counter.)
-        const pass1Text = yield* boundedResultText(sdk, queryParams, dreamTimeoutMs)
+        // Issued FIRST and SEQUENTIALLY, NOT inside any concurrency: brokered
+        // turn → parseRawOps → materializeOp, EXACTLY as the single-pass impl.
+        // A pass-1 failure (timeout/parse/SDK error) propagates as today's
+        // DreamError — no new failure modes. (Locking pass-1 as the first
+        // sdk.query() call is also what makes the integration test's
+        // confidence===0.85 assertion deterministic against the fake's closure
+        // counter.)
+        //
+        // One brokered turn (shared with wake-reasoner): scoped acquire so the
+        // broker's inFlight finalizer fires at turn end, the model-gate +
+        // provider env-overlay options fragment, and usage / rate-limit
+        // reporting so chain budgets and 429 failover apply to this lane.
+        // Pass 1 AND the sampling extras below share this thunk so every pass
+        // samples the SAME model/provider lane (agreement over mixed providers
+        // would be meaningless) and every pass is metered — the N× nightly
+        // sampling cost lands in the spend meter, not off the books.
+        const runDreamTurn = () =>
+          runBrokeredReasonerTurn({
+            sdk,
+            broker,
+            model: dreamModel,
+            prompt,
+            baseOptions: {
+              maxTurns: 1,
+              ...(pathToClaudeCodeExecutable
+                ? { pathToClaudeCodeExecutable }
+                : {}),
+            },
+            timeoutMs: dreamTimeoutMs,
+            errors: {
+              acquire: (cause) =>
+                new DreamError({
+                  op: "reason",
+                  message: `failed to acquire account: ${String(cause)}`,
+                  cause,
+                }),
+              timeout: (timeoutMs) =>
+                new DreamError({
+                  op: "reason",
+                  message: `SDK query timed out after ${timeoutMs}ms`,
+                }),
+              streamError: (cause) =>
+                new DreamError({
+                  op: "reason",
+                  message: `SDK stream error: ${String(cause)}`,
+                  cause,
+                }),
+              empty: () =>
+                new DreamError({
+                  op: "reason",
+                  message:
+                    "SDK stream produced no type:result/subtype:success message",
+                }),
+            },
+          })
+        const pass1Text = yield* runDreamTurn()
         const pass1Raw = yield* parseRawOps(pass1Text)
         const ops: DreamOp[] = []
         for (const raw of pass1Raw) {
@@ -470,7 +474,7 @@ export const DreamReasonerDefault: Layer.Layer<
             ? []
             : yield* Effect.all(
                 Array.from({ length: extraCount }, () =>
-                  boundedResultText(sdk, queryParams, dreamTimeoutMs).pipe(
+                  runDreamTurn().pipe(
                     Effect.flatMap(parseRawOps),
                     Effect.map(
                       (raw): ReadonlyArray<{ readonly beliefId: string }> | null =>

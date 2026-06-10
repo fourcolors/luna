@@ -107,12 +107,14 @@ d("Phase 25d live smoke — broker → RoutedOpSecretProvider → Redacted<sk-an
         const broker = yield* AccountBroker
         return yield* broker.acquireSession({ model: "claude-sonnet-4-5" })
       })
-      const credential = await Effect.runPromise(
+      // acquireSession returns AcquiredSession{credential, model, ...} since
+      // the provider seam — the credential lives one level down.
+      const acquired = await Effect.runPromise(
         Effect.scoped(program).pipe(Effect.provide(brokerL)) as Effect.Effect<{
-          resolvedSecret: Redacted.Redacted<string>
+          credential: { resolvedSecret: Redacted.Redacted<string> }
         }>,
       )
-      const resolved = Redacted.value(credential.resolvedSecret)
+      const resolved = Redacted.value(acquired.credential.resolvedSecret)
       expect(resolved.startsWith("sk-ant-oat")).toBe(true)
     } finally {
       cleanupDb(dbPath)
@@ -197,15 +199,18 @@ d("Phase 25d live smoke — broker → RoutedOpSecretProvider → Redacted<sk-an
         })
         return yield* acquire.pipe(Effect.scoped, Effect.provide(brokerL))
       })
-      const credential = await Effect.runPromise(
+      // AcquiredSession shape (provider seam): credential one level down.
+      const acquired = await Effect.runPromise(
         program as Effect.Effect<{
-          accountId: string
-          kind: string
-          resolvedSecret: Redacted.Redacted<string>
+          credential: {
+            accountId: string
+            kind: string
+            resolvedSecret: Redacted.Redacted<string>
+          }
         }>,
       )
-      expect(credential.kind).toBe("anthropic")
-      const resolved = Redacted.value(credential.resolvedSecret)
+      expect(acquired.credential.kind).toBe("anthropic")
+      const resolved = Redacted.value(acquired.credential.resolvedSecret)
       expect(resolved.startsWith("sk-ant-oat")).toBe(true)
     } finally {
       cleanupDb(dbPath)
@@ -224,12 +229,14 @@ d("Phase 25d live smoke — broker → RoutedOpSecretProvider → Redacted<sk-an
         const broker = yield* AccountBroker
         return yield* broker.acquireSession({ model: "claude-sonnet-4-5" })
       })
-      const credential = await Effect.runPromise(
+      // acquireSession returns AcquiredSession{credential, model, ...} since
+      // the provider seam — the credential lives one level down.
+      const acquired = await Effect.runPromise(
         Effect.scoped(program).pipe(Effect.provide(brokerL)) as Effect.Effect<{
-          resolvedSecret: Redacted.Redacted<string>
+          credential: { resolvedSecret: Redacted.Redacted<string> }
         }>,
       )
-      const resolved = Redacted.value(credential.resolvedSecret)
+      const resolved = Redacted.value(acquired.credential.resolvedSecret)
       expect(resolved.startsWith("sk-ant-oat")).toBe(true)
     } finally {
       cleanupDb(dbPath)

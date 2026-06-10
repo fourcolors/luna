@@ -821,6 +821,16 @@ describe("ChatService (Tier-2 sim)", () => {
       sdkKey: "systemPrompt",
     },
     {
+      // GAP#3: opts.model MUST reach sdkOptions.model — the SDK adapter routes
+      // both the broker (provider selection, adapter.ts:263) and the SDK on
+      // sdkOptions.model, NOT the top-level SessionOptions.model. Before the
+      // fix this was dropped, so every chat thread routed to the default
+      // (anthropic) provider regardless of the requested model.
+      name: "model" as const,
+      value: "gemini-2.5-flash",
+      sdkKey: "model",
+    },
+    {
       name: "cwd" as const,
       value: "/tmp/luna-cwd-test",
       sdkKey: "cwd",

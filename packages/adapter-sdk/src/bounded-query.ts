@@ -42,12 +42,35 @@ import type { QueryParams, SDKClientService, SDKMessage } from "./sdk-client.js"
  */
 export const DEFAULT_QUERY_TIMEOUT_MS = 10 * 60 * 1000 // 10 min
 
+/** Whole-turn token totals lifted off the SDK result frame (same field names
+ * the chat adapter's B4 usage report reads). Lets broker-acquired callers
+ * (wake/dream reasoners) meter their turns against the spend meter. */
+export interface BoundedQueryUsage {
+  readonly tokensIn: number
+  readonly tokensOut: number
+  readonly cacheRead: number
+  readonly cacheWrite: number
+  /**
+   * The model that ACTUALLY served the turn, lifted from the result frame's
+   * `modelUsage` map — but only when it reports exactly ONE model. Lane
+   * strings can be aliases ("default", "opus") that price at a tier default;
+   * the real id prices exactly. Multi-model turns (subagents) stay undefined
+   * rather than mispricing the whole turn at one model's rate.
+   */
+  readonly model?: string
+}
+
 /**
  * The four terminal outcomes of a bounded turn. Each caller maps these onto
  * its own contract (a step result, a `WorkerError`, a `DreamError`, …).
  */
 export type BoundedQueryOutcome =
-  | { readonly _tag: "result"; readonly text: string }
+  | {
+      readonly _tag: "result"
+      readonly text: string
+      /** Present when the result frame carried `.usage` token totals. */
+      readonly usage?: BoundedQueryUsage
+    }
   /** Stream ended with no `type:"result"`/`subtype:"success"` message. */
   | { readonly _tag: "empty" }
   /** Deadline hit; the subprocess was aborted. */
@@ -116,7 +139,7 @@ export function runBoundedQuery(
     void runProducer()
 
     const foldQueue = Effect.gen(function* () {
-      let acc: string | null = null
+      let acc: { text: string; usage?: BoundedQueryUsage } | null = null
       while (true) {
         const frame = yield* Queue.take(queue)
         if (frame._tag === "end") return acc
@@ -125,13 +148,38 @@ export function runBoundedQuery(
           type?: string
           subtype?: string
           result?: string
+          usage?: {
+            input_tokens?: number
+            output_tokens?: number
+            cache_creation_input_tokens?: number
+            cache_read_input_tokens?: number
+          }
+          modelUsage?: Record<string, unknown>
         }
         if (
           m.type === "result" &&
           m.subtype === "success" &&
           typeof m.result === "string"
         ) {
-          acc = m.result
+          // Single-model turn → surface the REAL model id for exact pricing
+          // (alias lanes like "default"/"opus" otherwise price at a tier
+          // default). Multi-model turns stay undefined — see BoundedQueryUsage.
+          const muKeys = m.modelUsage ? Object.keys(m.modelUsage) : []
+          const realModel = muKeys.length === 1 ? muKeys[0] : undefined
+          acc = {
+            text: m.result,
+            ...(m.usage
+              ? {
+                  usage: {
+                    tokensIn: m.usage.input_tokens ?? 0,
+                    tokensOut: m.usage.output_tokens ?? 0,
+                    cacheRead: m.usage.cache_read_input_tokens ?? 0,
+                    cacheWrite: m.usage.cache_creation_input_tokens ?? 0,
+                    ...(realModel !== undefined ? { model: realModel } : {}),
+                  },
+                }
+              : {}),
+          }
         }
       }
     })
@@ -149,13 +197,17 @@ export function runBoundedQuery(
       abortQuietly(abort)
       return { _tag: "error", cause: outcome.left } satisfies BoundedQueryOutcome
     }
-    const opt = outcome.right // Option<string | null>
+    const opt = outcome.right // Option<{text, usage?} | null>
     if (Option.isNone(opt)) {
       abortQuietly(abort)
       return { _tag: "timeout", timeoutMs } satisfies BoundedQueryOutcome
     }
     if (opt.value !== null) {
-      return { _tag: "result", text: opt.value } satisfies BoundedQueryOutcome
+      return {
+        _tag: "result",
+        text: opt.value.text,
+        ...(opt.value.usage ? { usage: opt.value.usage } : {}),
+      } satisfies BoundedQueryOutcome
     }
     return { _tag: "empty" } satisfies BoundedQueryOutcome
   })

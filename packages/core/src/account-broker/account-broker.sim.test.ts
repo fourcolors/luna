@@ -77,10 +77,11 @@ describe("AccountBroker simulation", () => {
           yield* Effect.sync(() => clock.setNow(tick + 1))
           yield* Effect.scoped(
             Effect.gen(function* () {
-              const cred = yield* broker.acquireSession({ model: "m" })
-              counts[cred.accountId] = (counts[cred.accountId] ?? 0) + 1
+              const acq = yield* broker.acquireSession({ model: "m" })
+              const id = acq.credential.accountId
+              counts[id] = (counts[id] ?? 0) + 1
               yield* broker.report({
-                accountId: cred.accountId,
+                accountId: id,
                 kind: "success",
               })
             }),
@@ -134,7 +135,7 @@ describe("AccountBroker simulation", () => {
           const id = yield* Effect.scoped(
             broker
               .acquireSession({ model: "m" })
-              .pipe(Effect.map((c) => c.accountId)),
+              .pipe(Effect.map((c) => c.credential.accountId)),
           )
           seen.push(id)
         }
@@ -144,7 +145,7 @@ describe("AccountBroker simulation", () => {
         const pinned = yield* Effect.scoped(
           broker.acquireSession({ model: "m", boundAccountId: "a1" }),
         )
-        return { seen, pinned: pinned.accountId }
+        return { seen, pinned: pinned.credential.accountId }
       }).pipe(Effect.provide(layer)),
     )
     expect(result.seen).not.toContain("a1")

@@ -16,6 +16,7 @@ import { Effect, Layer } from "effect"
 import {
   WakeReasoner,
   WakeError,
+  AccountBroker,
 } from "@luna/core"
 import type {
   WakeDigest,
@@ -23,12 +24,12 @@ import type {
   WakeProposedAction,
   WakeReasonerApi,
 } from "@luna/core"
+import { SDKClient } from "./sdk-client.js"
+import { DEFAULT_QUERY_TIMEOUT_MS } from "./bounded-query.js"
 import {
-  SDKClient,
-  type SDKClientService,
-  type QueryParams,
-} from "./sdk-client.js"
-import { runBoundedQuery, DEFAULT_QUERY_TIMEOUT_MS } from "./bounded-query.js"
+  resolveReasonerModel,
+  runBrokeredReasonerTurn,
+} from "./brokered-turn.js"
 
 // ---------------------------------------------------------------------------
 // Prompt builder (pure, exported for unit tests)
@@ -97,54 +98,6 @@ export function buildWakePrompt(inputs: WakeInputs): string {
     "  ]",
     "}",
   ].join("\n")
-}
-
-// ---------------------------------------------------------------------------
-// Bounded SDK result collection
-// ---------------------------------------------------------------------------
-
-/**
- * Run the reasoning turn under a wall-clock deadline (shared `runBoundedQuery`)
- * and map its outcome onto `WakeError({ op:"wake/sdk-stream", ... })`. A timeout
- * / stream error / empty stream never crashes the wake cron; on timeout the SDK
- * subprocess is aborted so a hung turn can't linger as a zombie.
- */
-function boundedResultText(
-  sdk: SDKClientService,
-  params: QueryParams,
-  timeoutMs: number,
-): Effect.Effect<string, WakeError> {
-  return runBoundedQuery(sdk, params, timeoutMs).pipe(
-    Effect.flatMap((outcome): Effect.Effect<string, WakeError> => {
-      switch (outcome._tag) {
-        case "result":
-          return Effect.succeed(outcome.text)
-        case "timeout":
-          return Effect.fail(
-            new WakeError({
-              op: "wake/sdk-stream",
-              message: `SDK query timed out after ${outcome.timeoutMs}ms`,
-            }),
-          )
-        case "error":
-          return Effect.fail(
-            new WakeError({
-              op: "wake/sdk-stream",
-              message: `SDK stream error: ${String(outcome.cause)}`,
-              cause: outcome.cause,
-            }),
-          )
-        case "empty":
-          return Effect.fail(
-            new WakeError({
-              op: "wake/sdk-stream",
-              message:
-                "SDK stream produced no type:result/subtype:success message",
-            }),
-          )
-      }
-    }),
-  )
 }
 
 // ---------------------------------------------------------------------------
@@ -262,14 +215,27 @@ export function parseDigest(
 // ---------------------------------------------------------------------------
 
 /**
- * Model-backed WakeReasoner. Requires SDKClient. The returned `reason`
- * effect has R=never (SDKClient is closed over at layer build time).
+ * Model-backed WakeReasoner. Requires SDKClient + AccountBroker. The returned
+ * `reason` effect has R=never (both are closed over at layer build time); the
+ * per-turn credential acquire runs inside `Effect.scoped` so the broker's
+ * inFlight finalizer fires at turn end without leaking Scope into R.
  */
-export const WakeReasonerDefault: Layer.Layer<WakeReasoner, never, SDKClient> =
-  Layer.effect(
+export const WakeReasonerDefault: Layer.Layer<
+  WakeReasoner,
+  never,
+  SDKClient | AccountBroker
+> = Layer.effect(
     WakeReasoner,
     Effect.gen(function* () {
       const sdk = yield* SDKClient
+      const broker = yield* AccountBroker
+
+      // Provider-seam routing: the wake cron can run on a cheap model. Pick the
+      // model from LUNA_WAKE_MODEL (falling back to the shared LUNA_REASONER_MODEL,
+      // each var trimmed independently so a set-but-blank primary falls through);
+      // unset → undefined → broker is acquired with "default" → anthropic
+      // login-ref account → no env overlay, no options.model → today's behavior.
+      const wakeModel = resolveReasonerModel("LUNA_WAKE_MODEL")
 
       // Same Bun-on-linux musl-vs-glibc footgun as dream-reasoner: the SDK
       // ships a per-arch claude binary lookup that resolves to a musl variant
@@ -298,22 +264,52 @@ export const WakeReasonerDefault: Layer.Layer<WakeReasoner, never, SDKClient> =
             workspace: inputs.workspaceSlug,
             goals: inputs.openGoals.length,
             actions: inputs.openNextActions.length,
+            wakeModel: wakeModel ?? "(default)",
             pathToClaudeCodeExecutable:
               pathToClaudeCodeExecutable ?? "(unset)",
           })
-          const resultText = yield* boundedResultText(
+          // One brokered turn (shared with dream-reasoner): scoped acquire so
+          // the broker's inFlight finalizer fires at turn end, the model-gate +
+          // provider env-overlay options fragment, and usage / rate-limit
+          // reporting so chain budgets and 429 failover apply to this lane.
+          const resultText = yield* runBrokeredReasonerTurn({
             sdk,
-            {
-              prompt,
-              options: {
-                maxTurns: 1,
-                ...(pathToClaudeCodeExecutable
-                  ? { pathToClaudeCodeExecutable }
-                  : {}),
-              },
+            broker,
+            model: wakeModel,
+            prompt,
+            baseOptions: {
+              maxTurns: 1,
+              ...(pathToClaudeCodeExecutable
+                ? { pathToClaudeCodeExecutable }
+                : {}),
             },
-            wakeTimeoutMs,
-          )
+            timeoutMs: wakeTimeoutMs,
+            errors: {
+              acquire: (cause) =>
+                new WakeError({
+                  op: "wake/acquire",
+                  message: `failed to acquire account: ${String(cause)}`,
+                  cause,
+                }),
+              timeout: (timeoutMs) =>
+                new WakeError({
+                  op: "wake/sdk-stream",
+                  message: `SDK query timed out after ${timeoutMs}ms`,
+                }),
+              streamError: (cause) =>
+                new WakeError({
+                  op: "wake/sdk-stream",
+                  message: `SDK stream error: ${String(cause)}`,
+                  cause,
+                }),
+              empty: () =>
+                new WakeError({
+                  op: "wake/sdk-stream",
+                  message:
+                    "SDK stream produced no type:result/subtype:success message",
+                }),
+            },
+          })
           const digest = yield* parseDigest(inputs.workspaceSlug, resultText)
           yield* Effect.logInfo("[luna/wake] reasoner.reason: digest ready", {
             workspace: inputs.workspaceSlug,
