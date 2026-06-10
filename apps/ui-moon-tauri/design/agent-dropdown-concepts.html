@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Luna · Agent Activity Dropdown Concepts</title>
+<style>
+  :root {
+    /* Luna moon vocabulary (lifted from index.html / notification gallery) */
+    --moon-glow: rgba(186, 218, 255, 0.4);
+    --moon-bright: #f0f6ff;
+    --moon-shadow: #0f1225;
+    --glass-bg: rgba(10, 14, 28, 0.92);
+    --glass-border: rgba(255, 255, 255, 0.1);
+    --primary: #8ab4f8;
+
+    /* status palette — painterly, no gloss */
+    --run-c: #8ab4f8;          /* running · moonlight blue */
+    --wait-c: #ffd88a;         /* needs input · warm ask gold */
+    --queue-c: #7c8db5;        /* queued · dusk grey-blue */
+    --done-c: #6ee7b7;         /* done · sea-glass green */
+    --run-wash: rgba(138, 180, 248, 0.16);
+    --wait-wash: rgba(255, 216, 138, 0.16);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: radial-gradient(1200px 800px at 70% -10%, #16203c 0%, #0a0e1c 55%, #05070f 100%);
+    color: #e7edf8;
+    font-family: 'Plus Jakarta Sans', -apple-system, 'Segoe UI', sans-serif;
+    line-height: 1.55;
+    padding-bottom: 80px;
+  }
+  header { max-width: 1280px; margin: 0 auto; padding: 48px 28px 8px; }
+  h1 { font-size: 26px; font-weight: 700; letter-spacing: 0.2px; }
+  h1 .dim { color: #8ea2c8; font-weight: 400; }
+  .intro { color: #aab8d4; max-width: 880px; margin-top: 10px; font-size: 14.5px; }
+  .decisions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+  .decisions span {
+    font-size: 12px; color: #cbd8f0; background: rgba(138,180,248,0.10);
+    border: 1px solid rgba(138,180,248,0.25); border-radius: 999px; padding: 4px 12px;
+  }
+
+  /* ---- Activity switch (sticky) ---- */
+  .actbar {
+    position: sticky; top: 0; z-index: 50;
+    backdrop-filter: blur(10px);
+    background: rgba(8, 11, 22, 0.82);
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    padding: 12px 28px; margin-top: 22px;
+  }
+  .actbar .inner { max-width: 1280px; margin: 0 auto; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .actbar label { font-size: 12px; color: #8ea2c8; letter-spacing: 0.06em; text-transform: uppercase; }
+  .act-btns { display: flex; gap: 6px; }
+  .act-btns button {
+    font: inherit; font-size: 13px; color: #cbd8f0; cursor: pointer;
+    background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 10px; padding: 7px 14px; transition: all .18s ease;
+  }
+  .act-btns button:hover { border-color: rgba(138,180,248,0.5); }
+  .act-btns button.on {
+    background: rgba(138,180,248,0.14); border-color: rgba(138,180,248,0.55); color: var(--primary);
+  }
+  .acthint { font-size: 12.5px; color: #8ea2c8; }
+
+  /* ---- Cards grid ---- */
+  .grid {
+    max-width: 1280px; margin: 26px auto 0; padding: 0 28px;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 22px;
+  }
+  .card {
+    background: rgba(13, 18, 34, 0.75);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 18px; overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .stage {
+    position: relative; height: 385px; overflow: hidden; cursor: default;
+    background:
+      radial-gradient(420px 200px at 80% 0%, rgba(138,180,248,0.06), transparent 70%),
+      linear-gradient(180deg, #0b1020 0%, #070a14 100%);
+  }
+  .stage::before { /* faint star field */
+    content: ""; position: absolute; inset: 0; opacity: 0.5; pointer-events: none;
+    background-image:
+      radial-gradient(1px 1px at 12% 30%, #ffffff66, transparent),
+      radial-gradient(1px 1px at 80% 18%, #ffffff44, transparent),
+      radial-gradient(1.5px 1.5px at 64% 72%, #ffffff33, transparent),
+      radial-gradient(1px 1px at 30% 84%, #ffffff44, transparent),
+      radial-gradient(1px 1px at 90% 60%, #ffffff33, transparent);
+  }
+  .meta { padding: 16px 18px 18px; }
+  .meta h2 { font-size: 16.5px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  .num {
+    font-size: 11px; font-weight: 700; color: #0a0e1c; background: var(--primary);
+    width: 20px; height: 20px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center;
+  }
+  .tagline { color: #9fb0d2; font-size: 13px; margin-top: 4px; font-style: italic; }
+  .meta ul { margin: 10px 0 0 0; padding-left: 18px; font-size: 13px; color: #c5d1ea; }
+  .meta li { margin-top: 4px; }
+  .meta li b { color: #e7edf8; font-weight: 600; }
+  .badges { margin-top: 12px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .badge { font-size: 11px; border-radius: 999px; padding: 3px 10px; border: 1px solid; }
+  .badge.effort-s { color: #6ee7b7; border-color: rgba(110,231,183,0.4); }
+  .badge.effort-m { color: #fbbf24; border-color: rgba(251,191,36,0.4); }
+  .badge.effort-l { color: #f87171; border-color: rgba(248,113,113,0.4); }
+  .badge.role { color: #8ab4f8; border-color: rgba(138,180,248,0.4); }
+  .hint { position: absolute; top: 10px; left: 12px; font-size: 11px; color: #6f81a6; letter-spacing: 0.04em; z-index: 5; }
+
+  /* ---- The moon itself (real vocabulary) ---- */
+  .moonw { position: absolute; width: 72px; height: 72px; left: 50%; top: 26px; transform: translateX(-50%); cursor: pointer; z-index: 6; }
+  .mglow {
+    position: absolute; inset: -14px; border-radius: 50%;
+    background: radial-gradient(circle, var(--moon-glow) 0%, rgba(138,180,248,0) 70%);
+    opacity: 0.9; transition: opacity .3s ease;
+  }
+  .msvg { position: relative; width: 100%; height: 100%; filter: drop-shadow(0 6px 16px rgba(138, 180, 248, 0.45)); }
+
+  /* count pip riding the moon's lower tip */
+  .pip {
+    position: absolute; right: 2px; bottom: 4px;
+    min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+    background: rgba(10,14,28,0.9); border: 1px solid rgba(138,180,248,0.55);
+    color: #cfe0ff; font-size: 11px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    transition: all .25s ease;
+  }
+  .pip.gold { border-color: rgba(255,206,110,0.7); color: var(--wait-c); animation: pippulse 1.4s ease-in-out infinite alternate; }
+  .pip.zero { opacity: 0; transform: scale(0.6); }
+  @keyframes pippulse { from { box-shadow: 0 0 4px 0 rgba(255,206,110,0.2); } to { box-shadow: 0 0 12px 3px rgba(255,206,110,0.45); } }
+
+  /* ---- shared row vocabulary (used by several concepts) ---- */
+  .row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; font-size: 12.5px; color: #d7e1f5;
+  }
+  .row .nm { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .sub { color: #8ea2c8; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .right { margin-left: auto; text-align: right; flex-shrink: 0; }
+  .row .el { font-variant-numeric: tabular-nums; color: #9fb0d2; font-size: 11.5px; }
+  .kindchip {
+    font-size: 9.5px; letter-spacing: 0.05em; text-transform: uppercase; flex-shrink: 0;
+    border-radius: 5px; padding: 1.5px 6px; border: 1px solid rgba(255,255,255,0.14); color: #9fb0d2;
+  }
+  .kindchip.workflow { color: #c4b5fd; border-color: rgba(196,181,253,0.35); }
+  .kindchip.prompt { color: #8ab4f8; border-color: rgba(138,180,248,0.35); }
+  .kindchip.agent { color: #6ee7b7; border-color: rgba(110,231,183,0.35); }
+  .kindchip.shell { color: #fda4af; border-color: rgba(253,164,175,0.3); }
+
+  /* watercolor blot status dot — irregular, soft, never glossy */
+  .blot { width: 13px; height: 13px; flex-shrink: 0; position: relative; }
+  .blot::before {
+    content: ""; position: absolute; inset: 0;
+    border-radius: 46% 54% 58% 42% / 52% 44% 56% 48%;
+    filter: blur(0.4px);
+  }
+  .blot.run::before { background: radial-gradient(circle at 40% 35%, rgba(207,226,255,0.95), var(--run-c) 55%, rgba(138,180,248,0.25) 95%); animation: breathe 2.2s ease-in-out infinite alternate; }
+  .blot.wait::before { background: radial-gradient(circle at 40% 35%, #fff3d6, var(--wait-c) 55%, rgba(255,216,138,0.25) 95%); animation: breathe 1.1s ease-in-out infinite alternate; }
+  .blot.queue::before { background: radial-gradient(circle at 40% 35%, rgba(200,210,235,0.6), var(--queue-c) 60%, rgba(124,141,181,0.2) 95%); opacity: 0.6; animation: none; }
+  .blot.done::before { background: radial-gradient(circle at 40% 35%, rgba(220,255,240,0.9), var(--done-c) 60%, rgba(110,231,183,0.2) 95%); opacity: 0.75; animation: none; }
+  @keyframes breathe {
+    from { transform: scale(0.92) rotate(-8deg); opacity: 0.75; }
+    to   { transform: scale(1.08) rotate(6deg);  opacity: 1; }
+  }
+
+  /* workflow step thread: beads on a string under the row */
+  .steps { display: flex; align-items: center; gap: 0; margin-top: 4px; height: 8px; }
+  .steps .seg { height: 1.5px; width: 22px; background: rgba(255,255,255,0.12); }
+  .steps .bead2 {
+    width: 6px; height: 6px; border-radius: 50% 46% 54% 50%; flex-shrink: 0;
+    background: rgba(255,255,255,0.18);
+  }
+  .steps .bead2.done { background: var(--done-c); opacity: 0.7; }
+  .steps .bead2.cur { background: var(--run-c); animation: breathe 1.6s ease-in-out infinite alternate; }
+  .steps .seg.done { background: rgba(110,231,183,0.35); }
+
+  .empty-note { padding: 14px 16px; font-size: 12px; color: #6f81a6; font-style: italic; text-align: center; }
+
+  /* =========================================================
+     1 · GLASS LEDGER — classic dropdown panel
+     ========================================================= */
+  #c-ledger .panel {
+    position: absolute; left: 50%; top: 104px; transform: translateX(-50%) translateY(-8px) scale(0.97);
+    width: 290px; max-height: 256px; overflow: hidden auto;
+    background: var(--glass-bg); border: 1px solid var(--glass-border);
+    border-radius: 14px; backdrop-filter: blur(14px);
+    opacity: 0; pointer-events: none;
+    transition: opacity .22s ease, transform .25s cubic-bezier(0.34, 1.3, 0.64, 1);
+    box-shadow: 0 18px 40px rgba(0,0,0,0.45);
+  }
+  #c-ledger.open .panel { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0) scale(1); }
+  #c-ledger .panel .hdr {
+    padding: 9px 12px 7px; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: #8ea2c8; border-bottom: 1px solid rgba(255,255,255,0.06);
+    display: flex; justify-content: space-between;
+  }
+  #c-ledger .row { border-bottom: 1px solid rgba(255,255,255,0.04); flex-wrap: wrap; }
+  #c-ledger .row:last-child { border-bottom: none; }
+  #c-ledger .row.wait { background: var(--wait-wash); }
+  #c-ledger .row .stepwrap { flex-basis: 100%; padding-left: 23px; }
+  /* connecting stem from moon to panel */
+  #c-ledger .stem {
+    position: absolute; left: 50%; top: 92px; width: 1.5px; height: 0;
+    background: linear-gradient(180deg, rgba(138,180,248,0.0), rgba(138,180,248,0.6));
+    transition: height .25s ease .05s;
+  }
+  #c-ledger.open .stem { height: 14px; }
+
+  /* =========================================================
+     2 · CONSTELLATION — agents as hanging stars
+     ========================================================= */
+  #c-constel .skyline { position: absolute; left: 0; right: 0; top: 98px; height: 0; }
+  #c-constel .strand {
+    position: absolute; top: 0; display: flex; flex-direction: column; align-items: center;
+    transform-origin: top center;
+    animation: sway2 3.8s ease-in-out infinite alternate;
+  }
+  @keyframes sway2 { from { transform: rotate(-2.5deg); } to { transform: rotate(2.5deg); } }
+  #c-constel .strand .thr {
+    width: 1px; background: linear-gradient(180deg, rgba(207,226,255,0.0), rgba(207,226,255,0.45));
+    transition: height .5s cubic-bezier(0.34, 1.3, 0.64, 1);
+  }
+  #c-constel .star {
+    width: 14px; height: 14px; position: relative; cursor: pointer; margin-top: -2px;
+    transition: transform .25s ease;
+  }
+  #c-constel .star:hover { transform: scale(1.35); }
+  #c-constel .star svg { width: 100%; height: 100%; overflow: visible; }
+  #c-constel .star.run path { fill: var(--run-c); }
+  #c-constel .star.wait path { fill: var(--wait-c); }
+  #c-constel .star.queue path { fill: var(--queue-c); opacity: 0.55; }
+  #c-constel .star.run svg, #c-constel .star.wait svg { animation: twinkle 2s ease-in-out infinite alternate; }
+  #c-constel .star.wait svg { animation-duration: 0.9s; }
+  @keyframes twinkle { from { opacity: 0.65; filter: drop-shadow(0 0 1px currentColor); } to { opacity: 1; filter: drop-shadow(0 0 6px currentColor); } }
+  #c-constel .label {
+    position: absolute; top: 18px; left: 50%; transform: translateX(-50%) translateY(-3px);
+    background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 9px;
+    font-size: 11px; padding: 5px 10px; white-space: nowrap; color: #d7e1f5;
+    opacity: 0; pointer-events: none; transition: all .2s ease;
+  }
+  #c-constel .label .sub2 { color: #8ea2c8; font-size: 10px; display: block; }
+  #c-constel .star:hover .label { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* =========================================================
+     3 · PHASE LITTER — each agent is a tiny moon, phase = progress
+     ========================================================= */
+  #c-phase .panel {
+    position: absolute; left: 50%; top: 106px; transform: translateX(-50%);
+    width: 300px; opacity: 0; pointer-events: none; transition: opacity .25s ease;
+    display: flex; flex-direction: column; gap: 7px;
+  }
+  #c-phase.open .panel { opacity: 1; pointer-events: auto; }
+  #c-phase .prow {
+    display: flex; align-items: center; gap: 11px; font-size: 12.5px;
+    opacity: 0; transform: translateY(-6px);
+    transition: opacity .3s ease, transform .35s cubic-bezier(0.34, 1.3, 0.64, 1);
+  }
+  #c-phase.open .prow { opacity: 1; transform: translateY(0); }
+  #c-phase .minimoon { width: 22px; height: 22px; flex-shrink: 0; filter: drop-shadow(0 0 5px rgba(138,180,248,0.35)); }
+  #c-phase .prow.wait .minimoon { filter: drop-shadow(0 0 7px rgba(255,206,110,0.55)); }
+  #c-phase .prow .nm2 { font-weight: 600; }
+  #c-phase .prow .pct { margin-left: auto; color: #8ea2c8; font-size: 11px; font-variant-numeric: tabular-nums; }
+  #c-phase .prow .sub3 { color: #8ea2c8; font-size: 10.5px; }
+
+  /* =========================================================
+     4 · MOONBEAM — tasks float inside a beam of light
+     ========================================================= */
+  #c-beam .beam {
+    position: absolute; left: 50%; top: 88px; transform: translateX(-50%);
+    width: 0; height: 290px; pointer-events: none;
+    background: linear-gradient(180deg, rgba(207,226,255,0.16), rgba(138,180,248,0.05) 60%, rgba(138,180,248,0.0));
+    clip-path: polygon(38% 0, 62% 0, 100% 100%, 0 100%);
+    transition: width .45s cubic-bezier(0.34, 1.2, 0.64, 1);
+    filter: blur(1px);
+  }
+  #c-beam.open .beam { width: 240px; }
+  #c-beam .bstack {
+    position: absolute; left: 50%; top: 112px; transform: translateX(-50%);
+    width: 250px; display: flex; flex-direction: column; gap: 8px; align-items: center;
+  }
+  #c-beam .bcard {
+    width: 100%; background: rgba(10,14,28,0.78); border: 1px solid rgba(207,226,255,0.14);
+    border-radius: 11px; padding: 7px 11px;
+    opacity: 0; transform: translateY(-14px) scale(0.95);
+    transition: opacity .4s ease, transform .45s cubic-bezier(0.34, 1.3, 0.64, 1);
+  }
+  #c-beam.open .bcard { opacity: 1; transform: translateY(0) scale(1); }
+  #c-beam .bcard.wait { border-color: rgba(255,206,110,0.4); }
+  #c-beam .bcard .row { padding: 0; }
+  #c-beam .motes { position: absolute; left: 50%; top: 100px; transform: translateX(-50%); width: 160px; height: 200px; pointer-events: none; }
+  #c-beam .mote {
+    position: absolute; width: 3px; height: 3px; border-radius: 50%;
+    background: rgba(207,226,255,0.7); opacity: 0;
+  }
+  #c-beam.open .mote { animation: drift 5s linear infinite; }
+  @keyframes drift {
+    0% { opacity: 0; transform: translateY(0); }
+    15% { opacity: 0.8; }
+    85% { opacity: 0.5; }
+    100% { opacity: 0; transform: translateY(170px); }
+  }
+
+  /* =========================================================
+     5 · INK WASH — dropdown blooms like wet watercolor
+     ========================================================= */
+  #c-ink .wash {
+    position: absolute; left: 50%; top: 96px; transform: translateX(-50%) scaleY(0.1);
+    transform-origin: top center;
+    width: 300px; height: 252px; opacity: 0;
+    background:
+      radial-gradient(120% 90% at 50% 0%, rgba(26, 36, 66, 0.96) 0%, rgba(18, 25, 48, 0.9) 55%, rgba(14, 19, 38, 0.0) 100%);
+    border-radius: 24% 30% 46% 40% / 8% 10% 60% 52%;
+    filter: blur(0.5px);
+    transition: transform .6s cubic-bezier(0.22, 1, 0.36, 1), opacity .4s ease;
+    pointer-events: none;
+  }
+  #c-ink.open .wash { transform: translateX(-50%) scaleY(1); opacity: 1; }
+  #c-ink .wash::before { /* feathered bleed edge */
+    content: ""; position: absolute; inset: -8px;
+    background: inherit; opacity: 0.35; filter: blur(10px);
+    border-radius: inherit; z-index: -1;
+  }
+  #c-ink .entries {
+    position: absolute; left: 50%; top: 112px; transform: translateX(-50%);
+    width: 260px; display: flex; flex-direction: column; gap: 2px;
+  }
+  #c-ink .irow {
+    display: flex; align-items: baseline; gap: 9px; font-size: 12.5px; padding: 5px 4px;
+    opacity: 0; transition: opacity .8s ease;
+    border-bottom: 1px dashed rgba(255,255,255,0.05);
+  }
+  #c-ink.open .irow { opacity: 1; }
+  #c-ink .irow:last-child { border-bottom: none; }
+  #c-ink .irow .glyph { font-size: 13px; line-height: 1; flex-shrink: 0; width: 16px; text-align: center; }
+  #c-ink .irow.run .glyph { color: var(--run-c); animation: inkbreathe 2.4s ease-in-out infinite alternate; }
+  #c-ink .irow.wait .glyph { color: var(--wait-c); animation: inkbreathe 1.1s ease-in-out infinite alternate; }
+  #c-ink .irow.queue { opacity: 0.55 !important; }
+  #c-ink .irow.queue .glyph { color: var(--queue-c); }
+  #c-ink .irow.done .glyph { color: var(--done-c); }
+  #c-ink .irow.done .nm { text-decoration: line-through; text-decoration-color: rgba(110,231,183,0.5); text-decoration-thickness: 1px; color: #8ea2c8; }
+  @keyframes inkbreathe { from { opacity: 0.55; } to { opacity: 1; } }
+  #c-ink .irow .el2 { margin-left: auto; color: #7c8db5; font-size: 10.5px; font-variant-numeric: tabular-nums; }
+
+  /* =========================================================
+     6 · ORBIT DOCK — running agents orbit; click to dock into list
+     ========================================================= */
+  #c-orbit .moonw { top: 110px; transition: top .5s cubic-bezier(0.34, 1.2, 0.64, 1); }
+  #c-orbit.open .moonw { top: 26px; }
+  #c-orbit .orbits { position: absolute; left: 50%; top: 146px; width: 0; height: 0; transition: top .5s cubic-bezier(0.34, 1.2, 0.64, 1); }
+  #c-orbit.open .orbits { top: 62px; }
+  #c-orbit .ring {
+    position: absolute; left: 50%; top: 50%; border: 1px dashed rgba(138,180,248,0.13); border-radius: 50%;
+    transform: translate(-50%, -50%); transition: opacity .3s ease;
+  }
+  #c-orbit.open .ring { opacity: 0; }
+  #c-orbit .orb {
+    position: absolute; left: 0; top: 0; width: 10px; height: 10px; margin: -5px;
+    transition: transform .55s cubic-bezier(0.34, 1.2, 0.64, 1), opacity .3s ease;
+  }
+  #c-orbit .orb .blot { width: 10px; height: 10px; }
+  #c-orbit .dock {
+    position: absolute; left: 50%; top: 118px; transform: translateX(-50%);
+    width: 280px; display: flex; flex-direction: column;
+    background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 13px;
+    backdrop-filter: blur(14px);
+    opacity: 0; pointer-events: none; transition: opacity .3s ease .15s;
+  }
+  #c-orbit.open .dock { opacity: 1; pointer-events: auto; }
+  #c-orbit .dock .row { border-bottom: 1px solid rgba(255,255,255,0.04); }
+  #c-orbit .dock .row:last-child { border-bottom: none; }
+  #c-orbit .dock .row .blot { opacity: 0; }    /* dock rows borrow the flying orbs' blots visually */
+  #c-orbit.open .dock .row .blot { opacity: 1; transition: opacity .2s ease .5s; }
+</style>
+</head>
+<body data-act="calm">
+
+<!-- shared crescent defs, referenced by every instance -->
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <linearGradient id="crescent-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="35%" stop-color="#e2ecfd" />
+      <stop offset="70%" stop-color="#8ab4f8" />
+      <stop offset="100%" stop-color="#1b2a4a" />
+    </linearGradient>
+    <filter id="glow-filter" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+</svg>
+
+<header>
+  <h1>What is Luna doing right now? <span class="dim">· six dropdown concepts</span></h1>
+  <p class="intro">
+    Each card is a live mock of one way the moon could reveal its running work — background jobs
+    (<b>prompt</b> / <b>workflow</b> kinds from the SDK job system), live <b>subagents</b>, and
+    <b>shell</b> steps — rendered with the real crescent + glow vocabulary.
+    <b>Click the moon</b> in any card to open/close. The activity switch simulates server load;
+    elapsed timers tick live. A gold entry means that agent is blocked on your input
+    (ties into the notification-concepts work).
+  </p>
+  <div class="decisions">
+    <span>✓ painterly / watercolor, no gloss or 3D</span>
+    <span>✓ entity kinds match SYSTEM.md: prompt · workflow(steps) · agent · shell</span>
+    <span>✓ gold = needs-input, consistent with ask palette</span>
+    <span>✓ count pip on the moon when collapsed</span>
+  </div>
+</header>
+
+<div class="actbar">
+  <div class="inner">
+    <label>Server activity</label>
+    <div class="act-btns" id="actbtns">
+      <button data-a="idle">Idle</button>
+      <button data-a="calm" class="on">Calm · 3 running</button>
+      <button data-a="busy">Busy · 6 + needs input</button>
+    </div>
+    <span class="acthint" id="acthint"></span>
+  </div>
+</div>
+
+<div class="grid">
+
+  <!-- 1 · GLASS LEDGER -->
+  <div class="card" id="c-ledger">
+    <div class="stage">
+      <span class="hint">interactive — click the moon</span>
+      <div class="moonw"></div>
+      <div class="stem"></div>
+      <div class="panel">
+        <div class="hdr"><span>Luna is working on</span><span class="cnt"></span></div>
+        <div class="rows"></div>
+      </div>
+    </div>
+    <div class="meta">
+      <h2><span class="num">1</span> Glass Ledger</h2>
+      <p class="tagline">The honest one — a quiet glass panel slides out on a short stem.</p>
+      <ul>
+        <li><b>Rows</b>: watercolor blot status · name · kind chip · live elapsed</li>
+        <li><b>Workflows</b> show their step thread as beads on a string</li>
+        <li><b>Needs-input</b> row gets a warm gold wash; clicking it would open that thread</li>
+      </ul>
+      <div class="badges"><span class="badge effort-s">small effort</span><span class="badge role">most practical</span></div>
+    </div>
+  </div>
+
+  <!-- 2 · CONSTELLATION -->
+  <div class="card" id="c-constel">
+    <div class="stage">
+      <span class="hint">always visible — hover a star, click moon for detail</span>
+      <div class="moonw"></div>
+      <div class="skyline"></div>
+    </div>
+    <div class="meta">
+      <h2><span class="num">2</span> Constellation</h2>
+      <p class="tagline">No dropdown at all — each running agent hangs beneath the moon as a star.</p>
+      <ul>
+        <li><b>Glanceable</b>: star count = running count, zero stars = quiet sky</li>
+        <li>Strand length ∝ how long it's been running; gold star = needs input</li>
+        <li><b>Hover</b> a star for its name; uses the string vocabulary from re-tether</li>
+      </ul>
+      <div class="badges"><span class="badge effort-m">medium effort</span><span class="badge role">ambient, not a menu</span></div>
+    </div>
+  </div>
+
+  <!-- 3 · PHASE LITTER -->
+  <div class="card" id="c-phase">
+    <div class="stage">
+      <span class="hint">interactive — click the moon</span>
+      <div class="moonw"></div>
+      <div class="panel"></div>
+    </div>
+    <div class="meta">
+      <h2><span class="num">3</span> Phase Litter</h2>
+      <p class="tagline">Each agent is a tiny moon; its phase waxes as the work progresses.</p>
+      <ul>
+        <li><b>New moon → full moon</b> = 0% → 100% (workflow steps map directly)</li>
+        <li>No panels or chrome — rows float on the night sky</li>
+        <li>Needs-input moonlet glows gold and won't wax until you answer</li>
+      </ul>
+      <div class="badges"><span class="badge effort-m">medium effort</span><span class="badge role">most thematic</span></div>
+    </div>
+  </div>
+
+  <!-- 4 · MOONBEAM -->
+  <div class="card" id="c-beam">
+    <div class="stage">
+      <span class="hint">interactive — click the moon</span>
+      <div class="moonw"></div>
+      <div class="beam"></div>
+      <div class="motes"></div>
+      <div class="bstack"></div>
+    </div>
+    <div class="meta">
+      <h2><span class="num">4</span> Moonbeam</h2>
+      <p class="tagline">The moon casts a beam of light; the work floats inside it like dust motes.</p>
+      <ul>
+        <li>Beam widens with load — peripheral-vision busyness signal even when closed</li>
+        <li>Task cards drift into the beam top-down, newest first</li>
+        <li>Drifting motes are pure ambience; density ∝ token burn</li>
+      </ul>
+      <div class="badges"><span class="badge effort-m">medium effort</span><span class="badge role">most atmospheric</span></div>
+    </div>
+  </div>
+
+  <!-- 5 · INK WASH -->
+  <div class="card" id="c-ink">
+    <div class="stage">
+      <span class="hint">interactive — click the moon</span>
+      <div class="moonw"></div>
+      <div class="wash"></div>
+      <div class="entries"></div>
+    </div>
+    <div class="meta">
+      <h2><span class="num">5</span> Ink Wash</h2>
+      <p class="tagline">The dropdown blooms downward like wet ink; entries are handwriting in the wash.</p>
+      <ul>
+        <li>Feathered bleed edge, no hard panel border anywhere</li>
+        <li>Status is a single breathing glyph: ● running · ◐ queued · ✓ done struck through</li>
+        <li>Closest to the watercolor-blot direction you chose for the string bead</li>
+      </ul>
+      <div class="badges"><span class="badge effort-m">medium effort</span><span class="badge role">most painterly</span></div>
+    </div>
+  </div>
+
+  <!-- 6 · ORBIT DOCK -->
+  <div class="card" id="c-orbit">
+    <div class="stage">
+      <span class="hint">interactive — click the moon</span>
+      <div class="moonw"></div>
+      <div class="orbits">
+        <div class="ring r1"></div>
+        <div class="ring r2"></div>
+      </div>
+      <div class="dock"><div class="rows"></div></div>
+    </div>
+    <div class="meta">
+      <h2><span class="num">6</span> Orbit Dock</h2>
+      <p class="tagline">Agents physically orbit the moon as motes; click and they dock into a list.</p>
+      <ul>
+        <li><b>Closed</b>: each running agent is a colored mote circling on its own ring</li>
+        <li><b>Open</b>: moon rises, motes fly to their row — same object, two states</li>
+        <li>Heaviest motion of the set; orbit speed ∝ activity</li>
+      </ul>
+      <div class="badges"><span class="badge effort-l">large effort</span><span class="badge role">most alive</span></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* ============================================================
+   Mock data — shapes mirror the real job system (SYSTEM.md):
+   jobs.kind ∈ {prompt, workflow}; workflow steps {shell, prompt};
+   plus live subagents and the wake-reasoner.
+   ============================================================ */
+const now = Date.now();
+const DATA = {
+  idle: [],
+  calm: [
+    { id: 'dream', name: 'Dream', kind: 'workflow', sub: 'nightly belief synthesis', status: 'run', started: now - 754_000, steps: { total: 4, done: 1, cur: 2 }, pct: 0.38 },
+    { id: 'brief', name: 'daily-brief', kind: 'prompt', sub: 'morning summary → note', status: 'run', started: now - 41_000, pct: 0.62 },
+    { id: 'wake', name: 'wake-reasoner', kind: 'agent', sub: 'deciding next action', status: 'run', started: now - 6_000, pct: 0.15 },
+  ],
+  busy: [
+    { id: 'review', name: 'code-review', kind: 'workflow', sub: 'PR #99 · adversarial pass', status: 'wait', started: now - 192_000, steps: { total: 5, done: 3, cur: 4 }, pct: 0.66, ask: 'needs your input' },
+    { id: 'dream', name: 'Dream', kind: 'workflow', sub: 'nightly belief synthesis', status: 'run', started: now - 754_000, steps: { total: 4, done: 1, cur: 2 }, pct: 0.38 },
+    { id: 'brief', name: 'daily-brief', kind: 'prompt', sub: 'morning summary → note', status: 'run', started: now - 41_000, pct: 0.62 },
+    { id: 'wake', name: 'wake-reasoner', kind: 'agent', sub: 'deciding next action', status: 'run', started: now - 6_000, pct: 0.15 },
+    { id: 'mail', name: 'mail-sync', kind: 'shell', sub: 'workflow step 1/3', status: 'queue', pct: 0 },
+    { id: 'scout', name: 'repo-scout', kind: 'agent', sub: 'finished · 2m ago', status: 'done', pct: 1 },
+  ],
+};
+const HINTS = {
+  idle: 'nothing running — every concept should disappear gracefully',
+  calm: 'normal background hum: Dream + a prompt job + the wake reasoner',
+  busy: 'heavy load, and code-review is blocked waiting on Mr. Cobb',
+};
+
+const CRESCENT = `
+  <div class="mglow"></div>
+  <svg class="msvg" viewBox="0 0 100 100">
+    <path d="M 62 12 A 38 38 0 1 0 88 62 A 30 30 0 1 1 62 12 Z" fill="url(#crescent-grad)" filter="url(#glow-filter)" />
+    <circle cx="40" cy="42" r="4.5" fill="#05070f" opacity="0.35"/><circle cx="34" cy="60" r="3.5" fill="#05070f" opacity="0.35"/>
+    <circle cx="48" cy="28" r="3" fill="#05070f" opacity="0.35"/><circle cx="28" cy="48" r="2.5" fill="#05070f" opacity="0.3"/>
+  </svg>
+  <div class="pip zero"></div>`;
+document.querySelectorAll('.moonw').forEach(m => m.innerHTML = CRESCENT);
+
+let act = 'calm';
+const items = () => DATA[act];
+const active = () => items().filter(i => i.status === 'run' || i.status === 'wait');
+
+function fmtEl(it) {
+  if (!it.started) return '';
+  const s = Math.floor((Date.now() - it.started) / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+}
+function stepThread(it) {
+  if (!it.steps) return '';
+  let h = '<div class="steps">';
+  for (let i = 1; i <= it.steps.total; i++) {
+    const cls = i <= it.steps.done ? 'done' : (i === it.steps.cur ? 'cur' : '');
+    h += `<div class="bead2 ${cls}"></div>`;
+    if (i < it.steps.total) h += `<div class="seg ${i <= it.steps.done ? 'done' : ''}"></div>`;
+  }
+  return h + '</div>';
+}
+function setPips() {
+  document.querySelectorAll('.pip').forEach(p => {
+    const n = active().length;
+    p.textContent = n || '';
+    p.classList.toggle('zero', n === 0);
+    p.classList.toggle('gold', items().some(i => i.status === 'wait'));
+  });
+}
+
+/* ---- 1 · Glass Ledger ---- */
+function renderLedger() {
+  const wrap = document.querySelector('#c-ledger .rows');
+  const list = items();
+  document.querySelector('#c-ledger .cnt').textContent = active().length ? `${active().length} active` : '';
+  if (!list.length) { wrap.innerHTML = '<div class="empty-note">all quiet — Luna is resting</div>'; return; }
+  wrap.innerHTML = list.map(it => `
+    <div class="row ${it.status}">
+      <div class="blot ${it.status}"></div>
+      <div style="min-width:0">
+        <div class="nm">${it.name} ${it.ask ? `<span style="color:var(--wait-c);font-weight:400;font-size:11px"> · ${it.ask}</span>` : ''}</div>
+        <div class="sub">${it.sub}</div>
+      </div>
+      <span class="kindchip ${it.kind}">${it.kind}</span>
+      <div class="right"><div class="el" data-el="${it.id}">${fmtEl(it)}</div></div>
+      ${it.steps ? `<div class="stepwrap">${stepThread(it)}</div>` : ''}
+    </div>`).join('');
+}
+
+/* ---- 2 · Constellation ---- */
+function renderConstel() {
+  const sky = document.querySelector('#c-constel .skyline');
+  const list = active();
+  const starPath = 'M7 0 L8.6 4.8 L14 5.2 L9.8 8.4 L11.2 14 L7 10.8 L2.8 14 L4.2 8.4 L0 5.2 L5.4 4.8 Z';
+  sky.innerHTML = list.map((it, i) => {
+    const n = list.length, spread = Math.min(34, 160 / Math.max(n, 1));
+    const x = (i - (n - 1) / 2) * spread;
+    const len = 26 + Math.min(70, it.started ? (Date.now() - it.started) / 12000 : 10);
+    return `
+    <div class="strand" style="left:calc(50% + ${x}px); animation-delay:${i * -0.7}s">
+      <div class="thr" style="height:${len}px"></div>
+      <div class="star ${it.status}">
+        <svg viewBox="0 0 14 14"><path d="${starPath}"/></svg>
+        <div class="label"><b>${it.name}</b> · ${it.kind}<span class="sub2">${it.sub}${it.ask ? ' · ' + it.ask : ''}</span></div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+/* ---- 3 · Phase Litter ---- */
+function miniMoon(pct, wait) {
+  // phase: 0 = new (dark), 1 = full. Render lit portion via two arcs.
+  const r = 9, cx = 11, cy = 11;
+  const lit = wait ? 'var(--wait-c)' : '#cfe0ff';
+  // terminator x-radius sweeps from +r (new) through 0 (half) to -r (full) — draw lit lune
+  const k = 1 - 2 * Math.min(Math.max(pct, 0), 1); // 1 → -1
+  return `<svg class="minimoon" viewBox="0 0 22 22">
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="#141a30" stroke="rgba(207,226,255,0.25)" stroke-width="0.75"/>
+    <path d="M ${cx} ${cy - r} A ${r} ${r} 0 0 1 ${cx} ${cy + r} A ${Math.abs(k) * r} ${r} 0 0 ${k > 0 ? 0 : 1} ${cx} ${cy - r} Z" fill="${lit}" opacity="0.92"/>
+  </svg>`;
+}
+function renderPhase() {
+  const panel = document.querySelector('#c-phase .panel');
+  const list = items().filter(i => i.status !== 'done');
+  if (!list.length) { panel.innerHTML = '<div class="empty-note">no moons in the sky tonight</div>'; return; }
+  panel.innerHTML = list.map((it, i) => `
+    <div class="prow ${it.status}" style="transition-delay:${i * 60}ms">
+      ${miniMoon(it.pct, it.status === 'wait')}
+      <div style="min-width:0">
+        <div class="nm2">${it.name}${it.ask ? ` <span style="color:var(--wait-c);font-size:10.5px;font-weight:400">${it.ask}</span>` : ''}</div>
+        <div class="sub3">${it.sub}</div>
+      </div>
+      <span class="pct">${Math.round(it.pct * 100)}%</span>
+    </div>`).join('');
+}
+
+/* ---- 4 · Moonbeam ---- */
+function renderBeam() {
+  const stack = document.querySelector('#c-beam .bstack');
+  const motes = document.querySelector('#c-beam .motes');
+  const list = active(); /* queued work hasn't entered the light yet */
+  stack.innerHTML = list.length ? list.map((it, i) => `
+    <div class="bcard ${it.status}" style="transition-delay:${i * 90}ms">
+      <div class="row">
+        <div class="blot ${it.status}"></div>
+        <div style="min-width:0"><div class="nm">${it.name}</div><div class="sub">${it.sub}${it.ask ? ' · <span style="color:var(--wait-c)">' + it.ask + '</span>' : ''}</div></div>
+        <div class="right"><div class="el" data-el="${it.id}">${fmtEl(it)}</div></div>
+      </div>
+    </div>`).join('') : '<div class="empty-note bcard" style="border:none;background:none">the beam falls on empty ground</div>';
+  motes.innerHTML = Array.from({ length: Math.min(14, list.length * 3 + 2) }, (_, i) =>
+    `<div class="mote" style="left:${8 + (i * 37) % 84}%; top:${(i * 23) % 40}px; animation-delay:${(i * 0.83) % 5}s"></div>`).join('');
+}
+
+/* ---- 5 · Ink Wash ---- */
+function renderInk() {
+  const wrap = document.querySelector('#c-ink .entries');
+  const list = items();
+  const glyph = s => s === 'run' ? '●' : s === 'wait' ? '●' : s === 'queue' ? '◐' : '✓';
+  if (!list.length) { wrap.innerHTML = '<div class="empty-note">the page is blank</div>'; return; }
+  wrap.innerHTML = list.map((it, i) => `
+    <div class="irow ${it.status}" style="transition-delay:${150 + i * 130}ms">
+      <span class="glyph">${glyph(it.status)}</span>
+      <span class="nm">${it.name}</span>
+      <span style="color:#7c8db5;font-size:10.5px">${it.ask ? '<span style="color:var(--wait-c)">' + it.ask + '</span>' : it.sub}</span>
+      <span class="el2 el" data-el="${it.id}">${fmtEl(it)}</span>
+    </div>`).join('');
+}
+
+/* ---- 6 · Orbit Dock ---- */
+function renderOrbit() {
+  const card = document.querySelector('#c-orbit');
+  const orbits = card.querySelector('.orbits');
+  const dockRows = card.querySelector('.dock .rows');
+  const list = active();
+  orbits.querySelectorAll('.orb').forEach(o => o.remove());
+  const r1 = card.querySelector('.r1'), r2 = card.querySelector('.r2');
+  r1.style.width = r1.style.height = '128px';
+  r2.style.width = r2.style.height = '176px';
+  list.forEach((it, i) => {
+    const orb = document.createElement('div');
+    orb.className = 'orb'; orb.dataset.id = it.id;
+    orb.innerHTML = `<div class="blot ${it.status}"></div>`;
+    orbits.appendChild(orb);
+  });
+  dockRows.innerHTML = list.length ? list.map(it => `
+    <div class="row ${it.status}">
+      <div class="blot ${it.status}"></div>
+      <div style="min-width:0"><div class="nm">${it.name}</div><div class="sub">${it.sub}${it.ask ? ' · <span style="color:var(--wait-c)">' + it.ask + '</span>' : ''}</div></div>
+      <span class="kindchip ${it.kind}">${it.kind}</span>
+      <div class="right"><div class="el" data-el="${it.id}">${fmtEl(it)}</div></div>
+    </div>`).join('') : '<div class="empty-note">nothing in orbit</div>';
+  layoutOrbit();
+}
+let orbitT = 0;
+function layoutOrbit() {
+  const card = document.querySelector('#c-orbit');
+  const open = card.classList.contains('open');
+  const orbs = [...card.querySelectorAll('.orb')];
+  const rows = [...card.querySelectorAll('.dock .row')];
+  const orbitsBox = card.querySelector('.orbits').getBoundingClientRect();
+  orbs.forEach((orb, i) => {
+    if (open && rows[i]) {
+      const blot = rows[i].querySelector('.blot').getBoundingClientRect();
+      orb.style.transform = `translate(${blot.left - orbitsBox.left + 1.5}px, ${blot.top - orbitsBox.top + 1.5}px)`;
+      orb.style.opacity = '0';
+      orb.style.transitionDelay = `${i * 60}ms, 450ms`;
+    } else {
+      const ring = i % 2 === 0 ? 64 : 88;
+      const a = orbitT * (i % 2 === 0 ? 1 : -0.7) + i * 2.4;
+      orb.style.transform = `translate(${Math.cos(a) * ring}px, ${Math.sin(a) * ring * 0.45}px)`;
+      orb.style.opacity = '1';
+      orb.style.transitionDelay = '0ms, 0ms';
+    }
+  });
+}
+setInterval(() => {
+  const card = document.querySelector('#c-orbit');
+  if (!card.classList.contains('open')) { orbitT += 0.045; layoutOrbit(); }
+}, 50);
+
+/* ---- shared wiring ---- */
+function renderAll() {
+  renderLedger(); renderConstel(); renderPhase(); renderBeam(); renderInk(); renderOrbit(); setPips();
+}
+document.querySelectorAll('#actbtns button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('#actbtns button').forEach(x => x.classList.remove('on'));
+  b.classList.add('on');
+  act = b.dataset.a;
+  document.body.dataset.act = act;
+  document.getElementById('acthint').textContent = HINTS[act];
+  renderAll();
+}));
+document.getElementById('acthint').textContent = HINTS[act];
+
+['c-ledger', 'c-phase', 'c-beam', 'c-ink', 'c-orbit'].forEach(id => {
+  const card = document.getElementById(id);
+  card.querySelector('.moonw').addEventListener('click', () => {
+    card.classList.toggle('open');
+    if (id === 'c-orbit') setTimeout(layoutOrbit, 20);
+  });
+});
+/* constellation: clicking the moon shows a hint that detail = ledger-style panel */
+document.querySelector('#c-constel .moonw').addEventListener('click', () => {
+  const sky = document.querySelector('#c-constel .skyline');
+  sky.style.transition = 'opacity .2s'; sky.style.opacity = sky.style.opacity === '0.3' ? '1' : '0.3';
+});
+
+/* live elapsed tickers */
+setInterval(() => {
+  document.querySelectorAll('[data-el]').forEach(el => {
+    const it = items().find(i => i.id === el.dataset.el);
+    if (it) el.textContent = fmtEl(it);
+  });
+}, 1000);
+
+/* slow progress creep so phase moons + beads feel alive */
+setInterval(() => {
+  Object.values(DATA).flat().forEach(it => {
+    if (it.status === 'run' && it.pct < 0.97) it.pct += 0.003;
+  });
+  renderPhase();
+}, 4000);
+
+renderAll();
+/* open the practical ones by default so first paint shows content */
+['c-ledger', 'c-ink'].forEach(id => document.getElementById(id).classList.add('open'));
+setTimeout(layoutOrbit, 100);
+</script>
+</body>
+</html>
