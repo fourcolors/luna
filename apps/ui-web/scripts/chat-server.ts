@@ -248,6 +248,11 @@ import {
   makeRegisterSecret,
   type SecretDestination,
 } from "@luna/secret-tools"
+import {
+  PlaidToolsLive,
+  PlaidToolsService,
+  PLAID_TOOLS_SYSTEM_PROMPT,
+} from "@luna/plaid-tools"
 import { startControlServer } from "@luna/control-server"
 import {
   resolveOpAccounts,
@@ -433,6 +438,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       const obsTools = yield* ObsToolsService
       const localShellTools = yield* LocalShellToolsService
       const secretTools = yield* SecretToolsService
+      const plaidTools = process.env.PLAID_CLIENT_ID ? yield* PlaidToolsService : null
 
       console.log("[luna/boot] MCP servers registered:", [
         memTools.serverName,
@@ -440,6 +446,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
         obsTools.serverName,
         localShellTools.serverName,
         secretTools.serverName,
+        ...(plaidTools ? [plaidTools.serverName] : []),
       ].join(", "))
 
       // Luna identity: resolve script dir once at boot (immutable — import.meta.url
@@ -582,6 +589,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             obsThreadTools.systemPromptAddendum,
             localShellThreadTools.systemPromptAddendum,
             secretThreadTools.systemPromptAddendum,
+            ...(plaidTools ? [plaidTools.systemPromptAddendum] : []),
           ]
             .filter((s): s is string => typeof s === "string" && s.length > 0)
             .join("\n\n")
@@ -592,6 +600,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             [obsThreadTools.serverName]: obsThreadTools.server,
             [localShellThreadTools.serverName]: localShellThreadTools.server,
             [secretThreadTools.serverName]: secretThreadTools.server,
+            ...(plaidTools ? { [plaidTools.serverName]: plaidTools.server } : {}),
           }
           return {
             mcpServers,
@@ -629,6 +638,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
     Layer.provide(LocalShellToolsLayer({ bridge: localShellBridge })),
     Layer.provide(SecretToolsLayer({ bridge: secretRequestBridge })),
     Layer.provide(ObsToolsLayer({ runtimeProbe: buildChatServerRuntimeProbe })),
+    ...(process.env.PLAID_CLIENT_ID ? [Layer.provide(PlaidToolsLive)] : []),
   )
 
 // Build a fresh RuntimeSnapshot per `obs_runtime` call (issue #12). Reads
