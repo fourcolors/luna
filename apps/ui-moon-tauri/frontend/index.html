@@ -2190,6 +2190,24 @@
     .wizard-log::-webkit-scrollbar-track { background: transparent; }
     .wizard-log::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 3px; }
 
+    /* Setup-mode note on the done step: server alive, Claude login still
+       missing. Gold — the moon's "needs your input" color. Code spans inherit
+       the dark chip look. */
+    .wizard-setup-note {
+      color: #fbbf24;
+      font-size: 0.76rem;
+      line-height: 1.7;
+    }
+    .wizard-setup-note code {
+      font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+      font-size: 0.72rem;
+      background: #0d1325;
+      border-radius: 6px;
+      padding: 1px 6px;
+      user-select: text;
+      -webkit-user-select: text;
+    }
+
     /* Environment-detection note under the path cards ("Luna already lives
        here"). Same quiet-sub voice, success-tinted. */
     .wizard-detect-note {
@@ -2569,6 +2587,11 @@
           <div class="wizard-hero-blot" aria-hidden="true"></div>
           <h2 id="wizard-done-title">Luna is tethered</h2>
           <p class="wizard-sub" id="wizard-done-summary">Your moon has a home.</p>
+          <!-- Shown only when the verified hello reported setup mode: the
+               server is alive but has no Claude login yet, so chat would
+               otherwise fail silently. Gold = needs-your-input, per the
+               moon's notification language. -->
+          <p class="wizard-sub wizard-setup-note" id="wizard-done-setup" hidden>Luna is awake, but she hasn’t met Claude yet. In the Terminal app run <code>claude setup-token</code>, copy the token it prints, and add this line to <code>~/.luna/.env</code> on Luna’s machine:<br><code>CLAUDE_CODE_OAUTH_TOKEN=…the token…</code><br>Then restart Luna (re-run this wizard and pick “This Mac” → Update) and she’s ready to chat.</p>
           <p class="wizard-sub" style="font-size: 0.74rem;">Your moon keeps itself up to date on its own — and any time Luna herself needs a refresh, just re-run this wizard from Settings and pick “This Mac” again.</p>
           <div class="wizard-actions">
             <button type="button" class="wizard-primary-btn" id="wizard-done-btn">Start chatting</button>
@@ -2851,7 +2874,9 @@
       wizardConnectBack:  document.getElementById('wizard-connect-back'),
       wizardTestBtn:      document.getElementById('wizard-test-btn'),
       wizardFinishBtn:    document.getElementById('wizard-finish-btn'),
+      wizardDoneTitle:    document.getElementById('wizard-done-title'),
       wizardDoneSummary:  document.getElementById('wizard-done-summary'),
+      wizardDoneSetup:    document.getElementById('wizard-done-setup'),
       wizardDoneBtn:      document.getElementById('wizard-done-btn'),
       openWizardBtn:      document.getElementById('open-wizard-btn')
     };
@@ -7374,10 +7399,12 @@
         const token = DOM.wizardConnectToken.value.trim();
         if (!url) { this.setConnectStatus('Enter a server address first.', 'fail'); return false; }
         const gen = ++this._testGen;
+        this._lastHello = null;   // a new probe invalidates the old verdict
         this.setConnectStatus('Listening for Luna’s hello…', 'run');
         const res = await this.testConnection(url, token);
         if (gen !== this._testGen) return false; // superseded by a newer test
         if (res.ok) {
+          this._lastHello = res.hello || null;
           const h = res.hello || {};
           const bits = [];
           if (h.buildSha) bits.push('build ' + h.buildSha);
@@ -7421,6 +7448,14 @@
         WebSocketEngine.connect();
         this.markComplete();
         DOM.wizardDoneSummary.textContent = 'Your moon is pointed at ' + url + '. Click it any time to talk to Luna.';
+        // Setup mode = server alive but no Claude login yet. Say so HERE, in
+        // gold, instead of letting the first chat fail mysteriously. Only a
+        // verified hello can assert this; "Save anyway" leaves it hidden.
+        const inSetup = !!(this._lastHello && this._lastHello.capabilities && this._lastHello.capabilities.setup);
+        if (DOM.wizardDoneSetup) DOM.wizardDoneSetup.hidden = !inSetup;
+        if (DOM.wizardDoneTitle) {
+          DOM.wizardDoneTitle.textContent = inSetup ? 'Tethered — one last step' : 'Luna is tethered';
+        }
         this.goTo('done');
       },
 

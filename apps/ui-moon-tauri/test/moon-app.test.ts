@@ -2555,6 +2555,50 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(M().State.skipLastThreadFile).toBe(true)
     })
 
+    it('Scenario: a setup-mode server surfaces the Claude-login note on the done step', async () => {
+      const sockets: any[] = []
+      ;(window as any).WebSocket = fakeWsClass(sockets)
+      stubCore(() => undefined)
+
+      W().open()
+      W().goTo('connect')
+      ;(document.getElementById('wizard-connect-url') as HTMLInputElement).value = 'ws://127.0.0.1:4753/ui'
+
+      const pending = W().finish()
+      sockets[0].onmessage({ data: JSON.stringify({
+        type: 'hello', protocolVersion: 2,
+        capabilities: { chat: false, setup: true },
+      }) })
+      await pending
+
+      expect(activeStep()).toBe('done')
+      const note = document.getElementById('wizard-done-setup') as HTMLElement
+      expect(note.hidden).toBe(false)
+      expect(note.textContent).toContain('claude setup-token')
+      expect(document.getElementById('wizard-done-title')!.textContent).toContain('one last step')
+    })
+
+    it('Scenario: a chat-ready server keeps the done step clean (no setup note)', async () => {
+      const sockets: any[] = []
+      ;(window as any).WebSocket = fakeWsClass(sockets)
+      stubCore(() => undefined)
+
+      W().open()
+      W().goTo('connect')
+      ;(document.getElementById('wizard-connect-url') as HTMLInputElement).value = 'ws://127.0.0.1:4753/ui'
+
+      const pending = W().finish()
+      sockets[0].onmessage({ data: JSON.stringify({
+        type: 'hello', protocolVersion: 2,
+        capabilities: { chat: true, setup: false },
+      }) })
+      await pending
+
+      expect(activeStep()).toBe('done')
+      expect((document.getElementById('wizard-done-setup') as HTMLElement).hidden).toBe(true)
+      expect(document.getElementById('wizard-done-title')!.textContent).toBe('Luna is tethered')
+    })
+
     it('Scenario: failed probe blocks the save; the button re-arms as an explicit "Save anyway"', async () => {
       const sockets: any[] = []
       ;(window as any).WebSocket = fakeWsClass(sockets)

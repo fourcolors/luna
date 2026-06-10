@@ -109,6 +109,26 @@ You also need [Bun](https://bun.sh) (the installers will install it for you if
 it is missing) and, on the machine that runs the server, the `claude` CLI
 logged in with `claude setup-token` (see [Authentication](#authentication)).
 
+### Easiest: the Luna Moon setup wizard
+
+No clone needed. Download **Luna Moon** (the floating-widget desktop app) from
+[GitHub Releases](https://github.com/fourcolors/luna/releases) and open it. On
+first run a guided setup wizard appears with three paths:
+
+- **This Mac** — installs and starts the Luna server right there (and detects
+  an existing install, offering *Update & restart* instead),
+- **My own server** — writes a tailored one-line installer to paste into your
+  terminal for a Linux box you own,
+- **Already running** — points the moon at an existing Luna server.
+
+Every path ends with a live connection test (the wizard listens for the
+server's `hello` before saving anything). Re-run it any time from
+**Settings → Connection → Setup wizard**.
+
+The server still needs its one-time Claude login (`claude setup-token`, see
+[Authentication](#authentication)) — if it's missing, the wizard's final step
+tells you exactly what to do.
+
 ### macOS: double-click installer
 
 The easiest path on macOS is the interactive installer at the repo root.
