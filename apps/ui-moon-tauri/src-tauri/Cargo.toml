@@ -23,6 +23,44 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "process
 # kill(2) the child's process group on timeout (mirrors the CLI's detached spawn).
 libc = "0.2"
 
+# ── Voice pipeline (Phase 0 spike) ──────────────────────────────────────
+# All optional + gated behind the `voice-spike` feature so the normal app
+# build never compiles whisper.cpp / onnxruntime. Build the spike with:
+#   cargo run --bin voice_spike --features voice-spike --release -- --file <wav>
+[dependencies.cpal]
+version = "0.17"
+optional = true
+
+[dependencies.voice_activity_detector]
+version = "0.2"
+optional = true
+
+[dependencies.whisper-rs]
+version = "0.16"
+features = ["metal"]
+optional = true
+
+[dependencies.hound]
+version = "3"
+optional = true
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+voice-spike = [
+  "dep:cpal",
+  "dep:voice_activity_detector",
+  "dep:whisper-rs",
+  "dep:hound",
+]
+
+# Explicit bin targets: declaring [[bin]] for the spike means we also declare
+# the default app bin so cargo target resolution stays deterministic.
+[[bin]]
+name = "luna-moon-ui"
+path = "src/main.rs"
+
+[[bin]]
+name = "voice_spike"
+path = "src/bin/voice_spike.rs"
+required-features = ["voice-spike"]
