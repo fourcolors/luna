@@ -85,6 +85,8 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "connector-list",
   "connector-oauth-redirect",
   "connector-status",
+  "artifact-list",
+  "artifact-update",
   "local-shell-request",
   "local-shell-status",
   "register-op-token-status",
@@ -116,6 +118,8 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "connector-oauth-code",
   "connector-connect",
   "connector-disconnect",
+  "artifact-pin",
+  "artifact-unpin",
   "pty-input",
   "pty-resize",
 ].sort()
@@ -195,7 +199,7 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     expect(UI_WS_PROTOCOL_VERSION).toBe(EXPECTED_PROTOCOL_VERSION)
   })
 
-  it("parser self-check: derived counts are sane (32 server, 21 client) — guards the regex itself", () => {
+  it("parser self-check: derived counts are sane (34 server, 23 client) — guards the regex itself", () => {
     // If the regex silently mis-parses, the toEqual above could pass for the
     // wrong reason. Pin the counts so a broken parser is caught here.
     // Prior base = 24 server / 15 client; the agent-summoned secure-secret-entry
@@ -205,8 +209,10 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // → 28 server / 17 client. The PRD Part A connectors feature adds
     // connector-catalog/-list/-oauth-redirect/-status (server) and
     // connector-oauth-begin/-oauth-code/-connect/-disconnect (client)
-    // → 32 server / 21 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(32)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(21)
+    // → 32 server / 21 client. The PRD Part C/W1 artifacts feature adds
+    // artifact-list + artifact-update (server) and artifact-pin + artifact-unpin
+    // (client) → 34 server / 23 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(34)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(23)
   })
 })

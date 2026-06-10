@@ -107,6 +107,10 @@ export interface HelloFrame {
     /** PRD Part A (Connectors): connector catalog/instances + OAuth
      *  handshake available. OPTIONAL/additive. */
     readonly connectors?: boolean
+    /** PRD Part C (Widgets/W1): server persists pinned artifacts and routes
+     *  artifact-pin/unpin + artifact-list/update. OPTIONAL/additive — covers
+     *  the artifact panel, pop-out widgets, and the workflow gallery. */
+    readonly artifacts?: boolean
   }
   /**
    * Models the operator can pick for new threads. OPTIONAL and additive —
@@ -304,6 +308,54 @@ export interface ConnectorDisconnectFrame {
   readonly instanceId: string
 }
 
+/* PRD Part C (W1) — artifact frames (mirror packages/ui-ws/src/protocol.ts).
+ * The ephemeral `Artifact` above evaporates per session; a PINNED artifact is
+ * the durable form persisted in luna.db (artifacts + artifact_versions). */
+export type ArtifactKind = "code" | "markdown" | "html" | "widget"
+
+export interface PinnedArtifactItem {
+  readonly id: string
+  readonly kind: ArtifactKind
+  readonly title: string
+  readonly lang: string | null
+  readonly content: string
+  readonly origin: string | null
+  /** Head version number (starts at 1; bumps on every agent edit/revert). */
+  readonly version: number
+  readonly pinnedAt: number
+  readonly updatedAt: number
+  /** Widget-only luna.* bridge allowlist (§16); optional/forward-compat (W4). */
+  readonly bridgeCaps?: ReadonlyArray<string> | null
+}
+
+/** Server→client: all pinned artifacts (sent after hello, re-sent on change). */
+export interface ArtifactListFrame {
+  readonly type: "artifact-list"
+  readonly artifacts: ReadonlyArray<PinnedArtifactItem>
+}
+/** Server→client: a single pinned artifact gained a new version → open
+ *  widgets re-render live. Also broadcast so panels update in place. */
+export interface ArtifactUpdateFrame {
+  readonly type: "artifact-update"
+  readonly artifact: PinnedArtifactItem
+}
+/** Client→server: pin an artifact by VALUE (the client already holds the
+ *  ephemeral artifact it rendered). Idempotent on `id` server-side. */
+export interface ArtifactPinFrame {
+  readonly type: "artifact-pin"
+  readonly id: string
+  readonly title: string
+  readonly content: string
+  readonly lang?: string | null
+  readonly kind?: ArtifactKind
+  readonly origin?: string | null
+}
+/** Client→server: drop a pinned artifact (and its version ledger). */
+export interface ArtifactUnpinFrame {
+  readonly type: "artifact-unpin"
+  readonly id: string
+}
+
 /** Marks the true end of an agentic turn (SDK `result`). Consumed by clients
  *  that group consecutive assistant turns (the moon timeline); ui-web is
  *  seq-keyed and treats it as a no-op. */
@@ -350,6 +402,8 @@ export type ServerFrame =
   | ConnectorListFrame
   | ConnectorOauthRedirectFrame
   | ConnectorStatusFrame
+  | ArtifactListFrame
+  | ArtifactUpdateFrame
   | TurnCompleteFrame
   | PtyOutputFrame
 
@@ -433,5 +487,7 @@ export type ClientFrame =
   | ConnectorOauthCodeFrame
   | ConnectorConnectFrame
   | ConnectorDisconnectFrame
+  | ArtifactPinFrame
+  | ArtifactUnpinFrame
   | PtyInputFrame
   | PtyResizeFrame

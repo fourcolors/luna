@@ -149,6 +149,7 @@ import {
   AccountBroker,
   AccountBrokerLayer,
   AgentNotesService,
+  ArtifactStore,
   JobsStoreService,
   JobTickerLayer,
   WorkerRegistry,
@@ -1401,6 +1402,11 @@ export const buildBaseLayer = (
   const connectorStoreL = ConnectorInstanceStore.makeLayer(paths.lunaDbPath).pipe(
     Layer.provide(clockL),
   )
+  // PRD Part C/W1: durable pinned-artifact store (artifacts + artifact_versions
+  // in luna.db). Resolved by buildServerLayer for the ui-ws artifact frames.
+  const artifactStoreL = ArtifactStore.makeLayer(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
   const connectorServiceL = ConnectorServiceLayer({
     definitions: BUILTIN_CONNECTORS,
     // PRD A §09: the OAuth half. storeSecret persists the refresh token
@@ -1610,6 +1616,7 @@ export const buildBaseLayer = (
     surveyL,    // Phase 3 D3: Survey available for buildServerLayer to resolve + pass to the WS server
     skillRegistryL, // PRD Part B: same instance as threadToolsL (memoized by reference) — buildServerLayer resolves it for the WS skill frames
     connectorServiceL, // PRD Part A: same instance as threadToolsL — M2's WS connector frames resolve it here
+    artifactStoreL, // PRD Part C/W1: buildServerLayer resolves it for the WS artifact frames
   )
 }
 
@@ -1725,6 +1732,7 @@ export const buildSetupServerLayer = (
         survey: null,
         skillRegistry: null,
         connectorService: null,
+        artifactStore: null,
         localShellBridge: null,
         // No chat in setup-mode → the request_secret tool is never bound, so the
         // secret bridge has nothing to drive. Disabled here.
@@ -1765,6 +1773,7 @@ const buildServerLayer = (
       const surveyService = yield* Survey // Phase 3 D3
       const skillRegistryService = yield* SkillRegistry // PRD Part B
       const connectorServiceHandle = yield* ConnectorService // PRD Part A
+      const artifactStoreService = yield* ArtifactStore // PRD Part C/W1
 
       // PRD A §08: access tokens live ~1h; refresh AHEAD of expiry so the
       // mount snapshot's bearer never goes stale mid-conversation. The
@@ -1834,6 +1843,35 @@ const buildServerLayer = (
           connectorServiceHandle.disconnect(instanceId),
       }
 
+      // PRD Part C/W1: the artifact store's PinnedArtifact is already wire-safe
+      // (metadata + content, no secrets) — project to the wire PinnedArtifactItem
+      // shape explicitly so a future store-internal field can't silently leak.
+      const toWireArtifact = (a: import("@luna/core").PinnedArtifact) => ({
+        id: a.id,
+        kind: a.kind,
+        title: a.title,
+        lang: a.lang,
+        content: a.content,
+        origin: a.origin,
+        version: a.version,
+        pinnedAt: a.pinnedAt,
+        updatedAt: a.updatedAt,
+        bridgeCaps: a.bridgeCaps,
+      })
+      const artifactsWsHandle = {
+        list: () =>
+          artifactStoreService.list().pipe(Effect.map((xs) => xs.map(toWireArtifact))),
+        pin: (input: {
+          readonly id: string
+          readonly title: string
+          readonly content: string
+          readonly lang?: string | null
+          readonly kind?: import("@luna/core").ArtifactKind
+          readonly origin?: string | null
+        }) => artifactStoreService.pin(input).pipe(Effect.map(toWireArtifact)),
+        unpin: (id: string) => artifactStoreService.unpin(id),
+      }
+
       // Wire-safety adapter (PRD §12): the ui-ws handle receives catalog
       // entries with the `body` ALREADY stripped. Bodies are prompt content
       // for the agent — they never reach clients, and stripping here (not
@@ -1892,6 +1930,7 @@ const buildServerLayer = (
         survey: surveyHandle, // Phase 3 D3: resolved handle
         skillRegistry: skillsWsHandle, // PRD Part B: bodies pre-stripped
         connectorService: connectorsWsHandle, // PRD Part A: instances pre-projected
+        artifactStore: artifactsWsHandle, // PRD Part C/W1: pinned artifacts (wire-safe)
         localShellBridge,
         onLocalShellRelease: reattachSandbox,
         registerOpToken: registerOpTokenHandler,

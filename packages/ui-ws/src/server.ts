@@ -286,6 +286,36 @@ export interface UIWebSocketServerConfig {
     ) => import("effect").Effect.Effect<boolean, unknown>
   } | null
   /**
+   * Optional pinned-artifact store handle (PRD Part C/W1 §18). When provided,
+   * the server advertises `capabilities.artifacts`, sends an `artifact-list`
+   * after hello, routes `artifact-pin`/`artifact-unpin`, and broadcasts a
+   * fresh `artifact-list` to every client on any change. The handle's outputs
+   * are already wire-safe (PinnedArtifactItem — metadata + content, no
+   * secrets). Structural type — mirrors connectorService. `changes` lets
+   * out-of-band edits (an agent patching an artifact, W4) re-broadcast.
+   * Pass `null` explicitly in setup-mode.
+   */
+  readonly artifactStore?: {
+    readonly list: () => import("effect").Effect.Effect<
+      ReadonlyArray<import("./protocol.js").PinnedArtifactItem>
+    >
+    readonly pin: (input: {
+      readonly id: string
+      readonly title: string
+      readonly content: string
+      readonly lang?: string | null
+      readonly kind?: import("./protocol.js").ArtifactKind
+      readonly origin?: string | null
+    }) => import("effect").Effect.Effect<
+      import("./protocol.js").PinnedArtifactItem,
+      unknown
+    >
+    readonly unpin: (
+      id: string,
+    ) => import("effect").Effect.Effect<boolean, unknown>
+    readonly changes?: (notify: () => void) => void
+  } | null
+  /**
    * Optional local-shell bridge. When provided, clients may advertise
    * terminal execution capability and receive local-shell request frames
    * from MCP tools bound to the same thread.
@@ -514,6 +544,7 @@ export const startUIWebSocketServer = (
     const secretBridge = config.secretBridge ?? null
     const skillRegistry = config.skillRegistry ?? null
     const connectorService = config.connectorService ?? null
+    const artifactStore = config.artifactStore ?? null
     const buildSha = config.buildSha
     const availableModels = config.availableModels
 
@@ -646,6 +677,25 @@ export const startUIWebSocketServer = (
       })
     }
 
+    // PRD Part C/W1: out-of-band artifact changes (an agent edits a pinned
+    // artifact — W4) → broadcast a fresh artifact-list to every client. The
+    // pin/unpin paths broadcast inline; this hook covers agent-side edits.
+    if (artifactStore !== null && artifactStore.changes !== undefined) {
+      const store = artifactStore
+      const registerArtifactChanges = artifactStore.changes
+      registerArtifactChanges(() => {
+        Runtime.runFork(runtime)(
+          Effect.gen(function* () {
+            const artifacts = yield* store.list()
+            const sockets = yield* Ref.get(activeSockets)
+            for (const sock of sockets) {
+              send(sock, { type: "artifact-list", artifacts })
+            }
+          }).pipe(Effect.catchAllCause(() => Effect.void)),
+        )
+      })
+    }
+
     // The connection-handler effect: it OWNS its own scope (so we can use
     // addFinalizer for queue cleanup) but lives until the ws closes —
     // which we signal via a Deferred resolved from the ws "close" handler.
@@ -702,6 +752,9 @@ export const startUIWebSocketServer = (
             // PRD Part A: connector catalog + the client-brokered OAuth
             // handshake available. Same additive gating as skills.
             connectors: connectorService !== null,
+            // PRD Part C/W1: pinned-artifact persistence + pin/unpin routing.
+            // Clients gate the panel's "Pinned" section on this flag.
+            artifacts: artifactStore !== null,
           },
         })
 
@@ -744,6 +797,19 @@ export const startUIWebSocketServer = (
               send(ws, { type: "connector-catalog", connectors })
               send(ws, { type: "connector-list", instances })
             }).pipe(Effect.catchAllCause(() => Effect.void)),
+          )
+        }
+
+        // Pinned artifacts, same fire-and-forget pattern (PRD C/W1 §18) — the
+        // artifact panel's "Pinned" section renders from this on connect.
+        if (artifactStore !== null) {
+          const store = artifactStore
+          Effect.runFork(
+            Effect.flatMap(store.list(), (artifacts) =>
+              Effect.sync(() => {
+                send(ws, { type: "artifact-list", artifacts })
+              }),
+            ).pipe(Effect.catchAllCause(() => Effect.void)),
           )
         }
 
@@ -1078,7 +1144,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || skillRegistry !== null || connectorService !== null) {
+        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -1491,6 +1557,56 @@ export const startUIWebSocketServer = (
                             })
                           }),
                         ),
+                      )
+                    return
+                  }
+                  case "artifact-pin": {
+                    // PRD C/W1: persist an artifact by value. On success
+                    // broadcast a fresh artifact-list to ALL clients (pins are
+                    // global, like connector-list). Idempotent on id server-side.
+                    if (artifactStore === null) return
+                    const store = artifactStore
+                    yield* store
+                      .pin({
+                        id: String(frame.id),
+                        title: String(frame.title ?? ""),
+                        content: String(frame.content ?? ""),
+                        ...(frame.lang !== undefined ? { lang: frame.lang } : {}),
+                        ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
+                        ...(frame.origin !== undefined
+                          ? { origin: frame.origin }
+                          : {}),
+                      })
+                      .pipe(
+                        Effect.flatMap(() =>
+                          Effect.gen(function* () {
+                            const artifacts = yield* store.list()
+                            const sockets = yield* Ref.get(activeSockets)
+                            for (const sock of sockets) {
+                              send(sock, { type: "artifact-list", artifacts })
+                            }
+                          }),
+                        ),
+                        Effect.catchAllCause(() => Effect.void),
+                      )
+                    return
+                  }
+                  case "artifact-unpin": {
+                    if (artifactStore === null) return
+                    const store = artifactStore
+                    yield* store
+                      .unpin(String(frame.id))
+                      .pipe(
+                        Effect.flatMap(() =>
+                          Effect.gen(function* () {
+                            const artifacts = yield* store.list()
+                            const sockets = yield* Ref.get(activeSockets)
+                            for (const sock of sockets) {
+                              send(sock, { type: "artifact-list", artifacts })
+                            }
+                          }),
+                        ),
+                        Effect.catchAllCause(() => Effect.void),
                       )
                     return
                   }

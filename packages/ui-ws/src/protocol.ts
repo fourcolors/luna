@@ -75,6 +75,13 @@ export interface HelloFrame {
      * clients hide the Connectors settings tab when absent/false.
      */
     readonly connectors?: boolean
+    /**
+     * PRD Part C (Widgets/W1): the server has an ArtifactStore bound — it
+     * sends an `artifact-list` after `hello`, routes `artifact-pin`/`-unpin`,
+     * and broadcasts `artifact-update`. OPTIONAL/additive: older servers omit
+     * it and clients hide the artifact panel's "Pinned" section.
+     */
+    readonly artifacts?: boolean
   }
 }
 
@@ -347,6 +354,50 @@ export interface ConnectorStatusFrame {
   readonly instance?: ConnectorInstanceItem
 }
 
+/* PRD Part C (W1) — artifact frames. The ephemeral `Artifact` (above) is
+ * recomputed per session; a PINNED artifact is the durable form persisted in
+ * luna.db (artifacts + artifact_versions). Mirrors ui-shared/wire.ts. */
+export type ArtifactKind = "code" | "markdown" | "html" | "widget"
+
+export interface PinnedArtifactItem {
+  readonly id: string
+  readonly kind: ArtifactKind
+  readonly title: string
+  readonly lang: string | null
+  readonly content: string
+  readonly origin: string | null
+  readonly version: number
+  readonly pinnedAt: number
+  readonly updatedAt: number
+  readonly bridgeCaps?: ReadonlyArray<string> | null
+}
+
+/** Server→client: all pinned artifacts (sent after hello, re-sent on change). */
+export interface ArtifactListFrame {
+  readonly type: "artifact-list"
+  readonly artifacts: ReadonlyArray<PinnedArtifactItem>
+}
+/** Server→client: a pinned artifact gained a new version → live re-render. */
+export interface ArtifactUpdateFrame {
+  readonly type: "artifact-update"
+  readonly artifact: PinnedArtifactItem
+}
+/** Client→server: pin an artifact by value (idempotent on `id`). */
+export interface ArtifactPinFrame {
+  readonly type: "artifact-pin"
+  readonly id: string
+  readonly title: string
+  readonly content: string
+  readonly lang?: string | null
+  readonly kind?: ArtifactKind
+  readonly origin?: string | null
+}
+/** Client→server: drop a pinned artifact and its version ledger. */
+export interface ArtifactUnpinFrame {
+  readonly type: "artifact-unpin"
+  readonly id: string
+}
+
 export interface LocalShellRequestFrame {
   readonly type: "local-shell-request"
   readonly requestId: string
@@ -507,6 +558,8 @@ export type ServerFrame =
   | ConnectorListFrame
   | ConnectorOauthRedirectFrame
   | ConnectorStatusFrame
+  | ArtifactListFrame
+  | ArtifactUpdateFrame
   | LocalShellRequestFrame
   | LocalShellStatusFrame
   | RegisterOpTokenStatusFrame
@@ -741,5 +794,7 @@ export type ClientFrame =
   | ConnectorOauthCodeFrame
   | ConnectorConnectFrame
   | ConnectorDisconnectFrame
+  | ArtifactPinFrame
+  | ArtifactUnpinFrame
   | PtyInputFrame
   | PtyResizeFrame

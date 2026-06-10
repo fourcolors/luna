@@ -17,6 +17,7 @@ import type {
   ConnectorInstanceItem,
   ObsEvent,
   ObsEventKind,
+  PinnedArtifactItem,
   ServerFrame,
   SessionSummary,
   SkillCatalogItem,
@@ -57,6 +58,7 @@ export interface UIState {
     readonly setup: boolean
     readonly skills?: boolean
     readonly connectors?: boolean
+    readonly artifacts?: boolean
   }
   /**
    * Server-advertised model list (from the `hello` frame's `availableModels`
@@ -96,6 +98,9 @@ export interface UIState {
   readonly connectorInstances: ReadonlyArray<ConnectorInstanceItem>
   /** Last connector-status failure. Cleared on the next ok / list. */
   readonly connectorError: string | null
+  /** PRD Part C (W1) — durable pinned artifacts (metadata + content,
+   *  wire-safe). Most-recently-updated first. Gated on capabilities.artifacts. */
+  readonly pinnedArtifacts: ReadonlyArray<PinnedArtifactItem>
 }
 
 export const initialState: UIState = {
@@ -120,6 +125,7 @@ export const initialState: UIState = {
   connectorCatalog: [],
   connectorInstances: [],
   connectorError: null,
+  pinnedArtifacts: [],
 }
 
 const MAX_RETAINED = 500
@@ -367,6 +373,18 @@ export const reduce = (state: UIState, action: Action): UIState => {
       return frame.ok
         ? { ...state, connectorError: null }
         : { ...state, connectorError: frame.message ?? "connector request failed" }
+    case "artifact-list":
+      // Server-authored, broadcast on every pin/unpin/update — replace
+      // wholesale (most-recently-updated first, ordered server-side).
+      return { ...state, pinnedArtifacts: frame.artifacts }
+    case "artifact-update": {
+      // A single artifact gained a new version. Replace it in place if
+      // present, else prepend (a pin we hadn't yet seen). Keep newest first.
+      const others = state.pinnedArtifacts.filter(
+        (a) => a.id !== frame.artifact.id,
+      )
+      return { ...state, pinnedArtifacts: [frame.artifact, ...others] }
+    }
     case "pty-output":
       // pty output is consumed by the setup terminal directly off the
       // transport (streamy frame), not folded into store state.
