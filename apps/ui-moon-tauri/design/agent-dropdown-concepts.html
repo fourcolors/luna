@@ -104,7 +104,7 @@
   .badge.effort-m { color: #fbbf24; border-color: rgba(251,191,36,0.4); }
   .badge.effort-l { color: #f87171; border-color: rgba(248,113,113,0.4); }
   .badge.role { color: #8ab4f8; border-color: rgba(138,180,248,0.4); }
-  .hint { position: absolute; top: 10px; left: 12px; font-size: 11px; color: #6f81a6; letter-spacing: 0.04em; z-index: 5; }
+  .hint { position: absolute; top: 10px; left: 12px; font-size: 11px; color: #6f81a6; letter-spacing: 0.04em; z-index: 5; pointer-events: none; }
 
   /* ---- The moon itself (real vocabulary) ---- */
   .moonw { position: absolute; width: 72px; height: 72px; left: 50%; top: 26px; transform: translateX(-50%); cursor: pointer; z-index: 6; }
@@ -460,6 +460,99 @@
   body[data-view="chat"] .orbitcard .dock .row .sub, body[data-view="chat"] .orbitcard .dock .row .kindchip,
   body[data-view="chat"] .orbitcard .dock .row .right { display: none; }
   body[data-view="chat"] #c-lunet .dock .minimoon { width: 16px; height: 16px; }
+
+  /* =========================================================
+     INTERACTION STUDY — Phase Orbit, fully wired:
+     orbiting moonlets → agent TABS on the chat surface →
+     peek timeline → act (answer / pause / cancel)
+     ========================================================= */
+  .card.wide { grid-column: 1 / -1; }
+  #demo .stage { height: 560px; }
+  #demo .moonw { left: 60px; top: 24px; transform: none; }
+  /* z 7 > moon's 6 so a parked moonlet is never trapped behind the moon;
+     the container is pointer-transparent so the moon stays clickable —
+     only the moonlets themselves take the pointer */
+  #demo .orbits2 {
+    position: absolute; left: 96px; top: 60px; width: 156px; height: 124px;
+    transform: translate(-50%, -50%); z-index: 7; pointer-events: none;
+  }
+  #demo .orb { pointer-events: auto; }
+  #demo .ring2 {
+    position: absolute; left: 50%; top: 50%; border: 1px dashed rgba(138,180,248,0.12); border-radius: 50%;
+    transform: translate(-50%, -50%);
+  }
+  #demo .orb {
+    position: absolute; left: 50%; top: 50%; width: 17px; height: 17px; margin: -8.5px;
+    cursor: pointer;
+    transition: transform .55s cubic-bezier(0.34, 1.2, 0.64, 1);
+  }
+  #demo .orb .minimoon { width: 17px; height: 17px; display: block; filter: drop-shadow(0 0 4px rgba(138,180,248,0.35)); pointer-events: none; }
+  #demo .orb.wait .minimoon { filter: drop-shadow(0 0 7px rgba(255,206,110,0.65)); }
+  #demo .orb.paused { opacity: 0.45; }
+  #demo .orb:hover { transition-duration: .15s; }
+  #demo .orb:hover .minimoon { transform: scale(1.3); transition: transform .15s ease; }
+  /* hover-freeze affordance: rings brighten while the orbit is parked */
+  #demo .orbits2.frozen .ring2 { border-color: rgba(138,180,248,0.32); }
+
+  /* the chat surface (always open in this study) */
+  #demo .chat2 {
+    position: absolute; left: 190px; top: 16px; right: 16px; bottom: 16px;
+    background: var(--glass-bg); border-radius: 26px 26px 30px 30px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.38), inset 0 0 0 1px rgba(255,255,255,0.06);
+    display: flex; flex-direction: column; overflow: hidden; z-index: 3;
+  }
+  /* tab shelf — the dock pills, promoted to tabs */
+  #demo .tabs { display: flex; gap: 6px; padding: 8px 12px; border-bottom: 1px solid rgba(255,255,255,0.06); flex-wrap: wrap; }
+  #demo .tab {
+    display: flex; align-items: center; gap: 6px; font-size: 11px; color: #cbd8f0;
+    padding: 4px 11px 4px 7px; border-radius: 999px; border: 1px solid var(--glass-border);
+    cursor: pointer; background: rgba(255,255,255,0.03); transition: all .18s ease;
+  }
+  #demo .tab:hover { border-color: rgba(138,180,248,0.45); }
+  #demo .tab.on { background: rgba(138,180,248,0.16); border-color: rgba(138,180,248,0.6); color: #e7edf8; }
+  #demo .tab.wait { border-color: rgba(255,206,110,0.5); }
+  #demo .tab.wait.on { background: rgba(255,206,110,0.13); }
+  #demo .tab.paused { opacity: 0.55; }
+  #demo .tab .minimoon { width: 15px; height: 15px; flex-shrink: 0; }
+  #demo .tab .homedot { width: 13px; height: 13px; border-radius: 50%; flex-shrink: 0; background: radial-gradient(circle, #f0f6ff 0%, #8ab4f8 100%); box-shadow: 0 0 5px rgba(138,180,248,0.4); }
+  #demo .surface { flex: 1; overflow: auto; position: relative; }
+  /* peek pane */
+  #demo .peek { padding: 14px 18px 10px; }
+  #demo .phead { display: flex; align-items: center; gap: 10px; }
+  #demo .phead .minimoon { width: 26px; height: 26px; flex-shrink: 0; }
+  #demo .pnm { font-weight: 700; font-size: 14px; }
+  #demo .psub { color: #8ea2c8; font-size: 11px; }
+  #demo .pacts { margin-left: auto; display: flex; gap: 6px; }
+  #demo .pbtn {
+    font: inherit; font-size: 10.5px; color: #9fb0d2; cursor: pointer;
+    background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 8px; padding: 4px 10px;
+  }
+  #demo .pbtn:hover { border-color: rgba(138,180,248,0.5); color: #cfe0ff; }
+  #demo .pbtn.danger:hover { border-color: rgba(248,113,113,0.55); color: #f8b4b4; }
+  /* run timeline (borrows the chat's "Working on it…" vocabulary) */
+  #demo .tl { margin-top: 16px; display: flex; flex-direction: column; }
+  #demo .tlrow { display: flex; gap: 10px; font-size: 12px; color: #c5d1ea; position: relative; padding-bottom: 15px; }
+  #demo .tlrow::before { content: ""; position: absolute; left: 5.5px; top: 16px; bottom: 2px; width: 1px; background: rgba(255,255,255,0.09); }
+  #demo .tlrow:last-child::before { display: none; }
+  #demo .tlrow .blot { margin-top: 2px; }
+  #demo .tlrow .t { color: #6f81a6; font-size: 10.5px; margin-left: auto; flex-shrink: 0; }
+  /* the docked ask (gold = blocked on you) */
+  #demo .ask {
+    margin-top: 4px; background: var(--wait-wash); border: 1px solid rgba(255,206,110,0.4);
+    border-radius: 12px; padding: 10px 13px; font-size: 12.5px; color: #efe2c2;
+  }
+  #demo .ask .abtns { margin-top: 9px; display: flex; gap: 7px; }
+  #demo .abtn {
+    font: inherit; font-size: 11.5px; cursor: pointer; border-radius: 9px; padding: 5px 13px;
+    border: 1px solid rgba(255,206,110,0.55); background: rgba(255,206,110,0.14); color: var(--wait-c);
+  }
+  #demo .abtn.sec { border-color: rgba(255,255,255,0.14); background: rgba(255,255,255,0.04); color: #9fb0d2; }
+  #demo .pawnote { margin-top: 10px; font-size: 11px; color: #8ea2c8; font-style: italic; }
+  /* context-aware input */
+  #demo .dm-in { margin: 0 14px 12px; padding: 8px 13px; font-size: 11px; color: #6f81a6; border: 1px solid rgba(255,255,255,0.08); border-radius: 999px; flex-shrink: 0; }
+  #demo .dm-in.live { border-color: rgba(255,206,110,0.35); color: #c9b27a; }
+  #demo .surface .mc-msgs { font-size: 11.5px; }
 </style>
 </head>
 <body data-act="calm" data-view="moon">
@@ -667,6 +760,39 @@
     </div>
   </div>
 
+  <!-- INTERACTION STUDY — what clicking an item actually does -->
+  <div class="card wide" id="demo">
+    <div class="stage">
+      <span class="hint">interaction study, fully wired — click a moonlet or a tab · answer the gold ask · pause / cancel</span>
+      <div class="moonw"></div>
+      <div class="orbits2">
+        <div class="ring2" style="width:80px;height:80px"></div>
+        <div class="ring2" style="width:112px;height:112px"></div>
+      </div>
+      <div class="chat2">
+        <div class="mc-hdr">
+          <div class="mc-av"></div>
+          <div><div class="mc-t">Luna Companion</div><div class="mc-s">Connected</div></div>
+          <div class="mc-x">⚙&ensp;✕</div>
+        </div>
+        <div class="tabs"></div>
+        <div class="surface"></div>
+        <div class="dm-in">Message Luna…</div>
+      </div>
+    </div>
+    <div class="meta">
+      <h2><span class="num">★</span> Interaction study · glance → peek → act</h2>
+      <p class="tagline">The dropdown was a dead end — this is what clicking actually does. Agents are tabs of the one chat surface.</p>
+      <ul>
+        <li><b>Glance</b>: the orbit answers "what's happening" without a single word</li>
+        <li><b>Peek</b>: click a moonlet (or its tab) — its run timeline slides over the messages, reusing the chat's existing "Working on it…" vocabulary. Your conversation stays put in the home tab.</li>
+        <li><b>Act</b>: three verbs only — <b>answer</b> (the gold ask is docked in the peek; answering un-blocks the agent and it resumes waxing), <b>pause</b>, <b>cancel</b>. The input strip is context-aware: it becomes a reply field when an agent is blocked.</li>
+        <li><b>Chat closed?</b> Clicking an orbiting moonlet opens the chat directly into that agent's tab — same destination, one step shorter.</li>
+      </ul>
+      <div class="badges"><span class="badge role">applies to any of the 7 looks</span><span class="badge effort-m">the tabs + peek are the real build</span></div>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -746,6 +872,7 @@ function stepThread(it) {
 }
 function setPips() {
   document.querySelectorAll('.pip').forEach(p => {
+    if (p.closest('#demo')) return; /* the interaction study manages its own pip */
     const n = active().length;
     p.textContent = n || '';
     p.classList.toggle('zero', n === 0);
@@ -990,9 +1117,182 @@ setInterval(() => {
   });
   renderPhase();
   updateLunetPhases();
+  /* study: waxing continues unless paused/blocked; refresh glance surfaces only
+     (tabs + orbs), never the peek mid-read */
+  DEMO.forEach(it => {
+    if (it.status === 'run' && !it.paused && !it.cancelled && it.pct < 0.97) it.pct += 0.003;
+  });
+  renderDemoTabs(); updateDemoOrbPhases();
 }, 4000);
 
+/* ============================================================
+   INTERACTION STUDY — its own copy of the busy data so cancel/
+   answer here never disturbs the concept cards above.
+   ============================================================ */
+const DEMO = JSON.parse(JSON.stringify(DATA.busy)).filter(i => ['review', 'dream', 'brief', 'wake'].includes(i.id));
+const DEMO_TL = {
+  review: [
+    { dot: 'done', txt: 'checked out PR #99 · built review context', t: '3m ago' },
+    { dot: 'done', txt: 'adversarial pass — 3 findings, 2 high-confidence', t: '1m ago' },
+    { dot: 'wait', txt: 'blocked — needs your call before posting', t: 'now' },
+  ],
+  dream: [
+    { dot: 'done', txt: 'gathered 14 observations from today', t: '12m ago' },
+    { dot: 'done', txt: 'clustered into 3 belief candidates', t: '6m ago' },
+    { dot: 'run', txt: 'drafting survey questions…', t: 'now' },
+  ],
+  brief: [
+    { dot: 'done', txt: 'mail-sync · calendar read', t: '40s ago' },
+    { dot: 'run', txt: 'writing the brief — “Two things need you today…”', t: 'now' },
+  ],
+  wake: [
+    { dot: 'run', txt: 'scoring 6 queued signals for the next action', t: 'now' },
+  ],
+};
+const DEMO_ASK = {
+  review: 'Post 3 inline comments to PR #99? Two are high-confidence (cooldown integrity, failover viability); one is style-only.',
+};
+let demoTab = 'home';
+const demoItems = () => DEMO.filter(i => !i.cancelled);
+const demoActive = () => demoItems().filter(i => i.status === 'run' || i.status === 'wait');
+const demoFind = id => DEMO.find(i => i.id === id);
+
+function renderDemoTabs() {
+  const tabs = document.querySelector('#demo .tabs');
+  tabs.innerHTML = `
+    <div class="tab ${demoTab === 'home' ? 'on' : ''}" data-tab="home"><div class="homedot"></div>Luna · you</div>` +
+    demoActive().map(it => `
+    <div class="tab ${it.status} ${demoTab === it.id ? 'on' : ''} ${it.paused ? 'paused' : ''}" data-tab="${it.id}">
+      ${miniMoon(it.pct, it.status === 'wait')}${it.name}
+    </div>`).join('');
+}
+function renderDemoSurface() {
+  const surf = document.querySelector('#demo .surface');
+  const input = document.querySelector('#demo .dm-in');
+  if (demoTab === 'home') {
+    surf.innerHTML = `
+      <div class="mc-msgs">
+        <div class="mc-msg">Dream is mid-synthesis — I'll fold the results into tonight's survey.</div>
+        <div class="mc-msg u">nice, keep me posted</div>
+        <div class="mc-msg">Will do. code-review hit something it wants your eyes on — it's the gold tab above whenever you're ready.</div>
+      </div>`;
+    input.textContent = 'Message Luna…';
+    input.classList.remove('live');
+    return;
+  }
+  const it = demoFind(demoTab);
+  if (!it || it.cancelled) { demoTab = 'home'; return renderDemoSurface(); }
+  const rows = (DEMO_TL[it.id] || []).map(r => `
+    <div class="tlrow">
+      <div class="blot ${r.dot === 'wait' && it.status !== 'wait' ? 'done' : r.dot} tldot"></div>
+      <span>${r.txt}</span><span class="t">${r.t}</span>
+    </div>`).join('');
+  const ask = it.status === 'wait' && DEMO_ASK[it.id] ? `
+    <div class="ask">${DEMO_ASK[it.id]}
+      <div class="abtns">
+        <button class="abtn" data-answer="${it.id}">Post the comments</button>
+        <button class="abtn sec" data-skip="${it.id}">Skip them</button>
+      </div>
+    </div>` : '';
+  surf.innerHTML = `
+    <div class="peek">
+      <div class="phead">
+        ${miniMoon(it.pct, it.status === 'wait')}
+        <div><div class="pnm">${it.name}</div><div class="psub">${it.sub} · <span class="kindchip ${it.kind}">${it.kind}</span> · ${fmtEl(it)} · ${Math.round(it.pct * 100)}%</div></div>
+        <div class="pacts">
+          <button class="pbtn" data-pause="${it.id}">${it.paused ? 'Resume' : 'Pause'}</button>
+          <button class="pbtn danger" data-cancel="${it.id}">Cancel</button>
+        </div>
+      </div>
+      <div class="tl">${rows}</div>
+      ${ask}
+      ${it.paused ? '<div class="pawnote">paused — the moonlet stops waxing until you resume</div>' : ''}
+    </div>`;
+  input.textContent = it.status === 'wait' ? `Reply to ${it.name}…` : `Watching ${it.name} — read-only`;
+  input.classList.toggle('live', it.status === 'wait');
+}
+function updateDemoPip() {
+  const pip = document.querySelector('#demo .pip');
+  const n = demoActive().length;
+  pip.textContent = n || '';
+  pip.classList.toggle('zero', n === 0);
+  pip.classList.toggle('gold', demoItems().some(i => i.status === 'wait'));
+}
+function renderDemoOrbs() {
+  const box = document.querySelector('#demo .orbits2');
+  box.querySelectorAll('.orb').forEach(o => o.remove());
+  demoActive().forEach(it => {
+    const orb = document.createElement('div');
+    orb.className = `orb ${it.status} ${it.paused ? 'paused' : ''}`;
+    orb.dataset.id = it.id;
+    orb.title = it.name;
+    orb.innerHTML = miniMoon(it.pct, it.status === 'wait');
+    box.appendChild(orb);
+  });
+}
+let demoMouseX = null;
+const demoStage = document.querySelector('#demo .stage');
+demoStage.addEventListener('mousemove', e => {
+  demoMouseX = e.clientX - demoStage.getBoundingClientRect().left;
+});
+demoStage.addEventListener('mouseleave', () => { demoMouseX = null; });
+function layoutDemoOrbs() {
+  /* a moving 17px target is unclickable (Fitts) — while the pointer rests
+     anywhere in the moon column, the orbit parks */
+  const frozen = demoMouseX !== null && demoMouseX < 190;
+  document.querySelector('#demo .orbits2').classList.toggle('frozen', frozen);
+  document.querySelectorAll('#demo .orb').forEach((orb, i) => {
+    const it = demoFind(orb.dataset.id);
+    const ring = i % 2 === 0 ? 40 : 56;
+    if (!frozen && !(it && it.paused)) orb.dataset.a = (parseFloat(orb.dataset.a || i * 2.4) + (i % 2 === 0 ? 0.045 : -0.032));
+    const a = parseFloat(orb.dataset.a || i * 2.4);
+    orb.style.transform = `translate(${Math.cos(a) * ring}px, ${Math.sin(a) * ring * 0.45}px)`;
+  });
+}
+setInterval(layoutDemoOrbs, 50);
+function updateDemoOrbPhases() {
+  /* in-place SVG swap — recreating orbs would detach them mid-click */
+  document.querySelectorAll('#demo .orb').forEach(orb => {
+    const it = demoFind(orb.dataset.id);
+    if (it) orb.innerHTML = miniMoon(it.pct, it.status === 'wait');
+  });
+}
+
+function renderDemo() { renderDemoTabs(); renderDemoSurface(); renderDemoOrbs(); updateDemoPip(); }
+
+document.querySelector('#demo .tabs').addEventListener('click', e => {
+  const tab = e.target.closest('.tab');
+  if (tab) { demoTab = tab.dataset.tab; renderDemo(); }
+});
+document.querySelector('#demo .orbits2').addEventListener('click', e => {
+  const orb = e.target.closest('.orb');
+  if (orb) { demoTab = orb.dataset.id; renderDemo(); }
+});
+document.querySelector('#demo .moonw').addEventListener('click', () => { demoTab = 'home'; renderDemo(); });
+document.querySelector('#demo .surface').addEventListener('click', e => {
+  const t = e.target;
+  if (t.dataset.answer || t.dataset.skip) {
+    const it = demoFind(t.dataset.answer || t.dataset.skip);
+    it.status = 'run'; it.ask = null;
+    DEMO_TL[it.id] = DEMO_TL[it.id].filter(r => r.dot !== 'wait').concat(
+      { dot: 'done', txt: t.dataset.answer ? 'you said: post them' : 'you said: skip them', t: 'now' },
+      { dot: 'run', txt: t.dataset.answer ? 'posting 3 comments to PR #99…' : 'wrapping up without posting…', t: 'now' },
+    );
+    renderDemo();
+  } else if (t.dataset.pause) {
+    const it = demoFind(t.dataset.pause);
+    it.paused = !it.paused;
+    renderDemo();
+  } else if (t.dataset.cancel) {
+    const it = demoFind(t.dataset.cancel);
+    it.cancelled = true;
+    if (demoTab === it.id) demoTab = 'home';
+    renderDemo();
+  }
+});
+
 renderAll();
+renderDemo();
 /* open the practical ones by default so first paint shows content */
 ['c-ledger', 'c-ink'].forEach(id => document.getElementById(id).classList.add('open'));
 setTimeout(layoutOrbit, 100);
