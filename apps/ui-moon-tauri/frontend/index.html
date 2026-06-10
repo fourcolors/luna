@@ -3182,6 +3182,17 @@
       // a new thread. MUST cancel the pending reconnect timer or it opens a 2nd socket.
       reTether() {
         this.updateStatus('connecting', 'Reconnecting…');
+        // The pull IS the feedback: wrap the string up into the moon right now and
+        // let the reconnect run behind it (string-demo behavior). The retract's
+        // onRetracted hook owns the window restore, so drop the stashed grow
+        // promise — onReattached must not restore a second time or the two
+        // setPosition/setSize IPC sequences can interleave. If the reattach then
+        // stalls or the socket dies, the subscribe watchdog / grace timer drops
+        // the string again.
+        if (MoonString.isLive()) {
+          State.growPromise = null;
+          MoonString.retract(true);
+        }
         if (State.tetherGraceTimer) { clearTimeout(State.tetherGraceTimer); State.tetherGraceTimer = null; }
         if (State.reconnectTimer) { clearTimeout(State.reconnectTimer); State.reconnectTimer = null; }
         if (!State.ws || State.ws.readyState !== WebSocket.OPEN) {
@@ -3217,8 +3228,11 @@
         });
       },
 
-      // ── Back on our thread: clear timers + retract the string with a success
-      // pulse; the rope's onRetracted hook restores the collapsed window.
+      // ── Back on our thread: clear timers; if the string is still out (a
+      // BACKGROUND reconnect succeeded — no pull, so reTether never retracted),
+      // retract it with the success pulse; the rope's onRetracted hook restores
+      // the collapsed window. After a pull the string is already wrapping in
+      // (or gone) and growPromise is null, so this is just the status flip.
       async onReattached() {
         this.updateStatus('connected', 'Connected');
         const gen = ++State.tetherGen;   // supersede any showTether() grow still in flight
