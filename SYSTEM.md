@@ -18,14 +18,14 @@ tool call sends it.
 
 - **`~/.luna/`** — Luna's home directory on the server.
   - `luna.db` — SQLite. System of record for accounts, agent notes,
-    workspaces, dream state.
+    workspaces, dream state, **and scheduled jobs**.
   - `memory.db` — SQLite + Vectorlite HNSW. Long-term semantic memory.
   - `analytics.duckdb` — DuckDB. Session-level analytics + event aggregations.
   - `events.jsonl` — append-only event log. Source of truth for telemetry.
   - `agents/` — subagent definitions, hot-loaded each query.
   - `logs/` — runtime logs.
 
-The exact location of `~/.luna/` depends on the install (jax-box container vs
+The exact location of `~/.luna/` depends on the install (Linux container vs
 Mac native vs other). To find the current process's paths, ask via the
 runtime/observability tools.
 
@@ -136,15 +136,264 @@ which. Common values (operators set via `LUNA_SCOPE`):
 
 Always trust `obs_runtime()`'s paths over any hardcoded assumption.
 
-## Subagents
+## SDK Job System
 
-Subagent definitions live in `~/.luna/agents/` as `.md` files. They are
-hot-loaded on every query — no restart needed.
+Luna runs autonomous background work via a job scheduler backed by
+`luna.db → jobs` and `luna.db → job_runs`, built on the **Claude Agent SDK**.
 
+> **SDK:** `@anthropic-ai/claude-agent-sdk ^0.3.167`
+> **Source:** `packages/adapter-sdk/src/` (`prompt-worker.ts`,
+> `workflow-worker.ts`) + `packages/core/src/jobs/` (ticker, store)
+
+The scheduler runs **only when `LUNA_SCHEDULER_V2_ENABLED=1`** is set on
+the chat-server (boot log: `[luna/sched] V2 ticker ENABLED`). Without the
+flag, no ticker polls and inserted job rows sit inert.
+
+### Job kinds
+
+#### `prompt` — autonomous agent turn
+
+Runs a Claude agent turn with tools. Result lands in
+`job_runs.output_text`; optionally delivers to `agent_notes`.
+
+```json
+{
+  "user_prompt":   "Survey state and write a daily brief.",
+  "system_prompt": "You are an autonomous worker. Use tools freely.",
+  "model":         "claude-sonnet-4-5",
+  "allowed_tools": ["mcp__local_shell__local_shell_run", "mcp__observability__obs_note"],
+  "max_turns":     20,
+  "timeout_ms":    600000,
+  "deliver_to":    { "kind": "obs_note", "kind_tag": "daily_brief" }
+}
+```
+
+`max_turns` defaults to **1** when omitted.
+
+**`deliver_to` sinks:**
+- `{ "kind": "obs_note", "kind_tag": "<tag>", "session_id": "<id>" }` —
+  writes result to `agent_notes`; both fields optional, `kind_tag`
+  defaults to `prompt_result`
+- `{ "kind": "log" }` — log only (default)
+
+#### `workflow` — multi-step shell + prompt pipeline
+
+Executes a **linear sequence** of typed steps. Per-step results (stdout,
+stderr, exit code, duration, status) land in `job_runs.steps_json`.
+Right tool for shell work + intelligent analysis in one atomic unit.
+
+```json
+{
+  "steps": [
+    { "kind": "shell", "cmd": "mail-sync", "timeout_ms": 60000 },
+    {
+      "kind": "prompt",
+      "user_prompt": "Mail synced. Triage new messages and create action items.",
+      "system_prompt": "You are an autonomous triage agent. Be brief.",
+      "allowed_tools": ["mcp__local_shell__local_shell_run", "mcp__observability__obs_note"],
+      "max_turns": 12,
+      "timeout_ms": 180000
+    }
+  ],
+  "halt_on_failure": false
+}
+```
+
+**Step kinds:**
+
+| Kind | Required | Optional |
+|---|---|---|
+| `shell` | `cmd` (string) | `timeout_ms` (default 5 min), `env` (object) |
+| `prompt` | `user_prompt` (string) | `system_prompt`, `model`, `allowed_tools`, `max_turns` (default 1), `timeout_ms` (default 10 min) |
+
+**Step result status:** `success` / `failed` / `timeout`
+
+`halt_on_failure: true` (default) stops at first non-success step.
+`halt_on_failure: false` records all step outcomes even on failure.
+
+### Submitting jobs
+
+**Recurring cron job** (`spec` is the legacy NOT NULL column; the ticker
+reads `schedule` and falls back to `spec`):
+
+```sql
+INSERT INTO jobs (id, kind, spec, schedule, payload_json, enabled, created_at, updated_at)
+VALUES (
+  'my-job-id', 'workflow', '0 7 * * *', '0 7 * * *',
+  '{"steps":[...]}',
+  1, unixepoch()*1000, unixepoch()*1000
+);
+```
+
+**One-shot: there is no one-shot spec.** Every enabled row recurs. A row
+whose `schedule`/`spec` is not valid cron (e.g. `'once'`) is due on
+**every** tick — it re-fires every ~60 s forever. To run work once, make
+the job's *first* step disable its own row:
+
+```sql
+INSERT INTO jobs (id, kind, spec, payload_json, enabled, created_at, updated_at)
+VALUES (
+  'my-once-job', 'workflow', 'manual',
+  '{"steps":[
+     {"kind":"shell","cmd":"sqlite3 ~/.luna/luna.db \"UPDATE jobs SET enabled=0 WHERE id=''my-once-job''\""},
+     {"kind":"shell","cmd":"echo hello"}]}',
+  1, unixepoch()*1000, unixepoch()*1000
+);
+```
+
+`payload_json` must be strictly valid JSON: the ticker's due-list read
+parses every row as a unit, so one malformed row silently halts dispatch
+of **all** jobs.
+
+`mcp__scheduler__schedule_create(expr, label?)` creates only bare V1
+no-op cron ticks (no payload, stored `enabled=0`, ignored by the V2
+ticker). Use direct SQL inserts for `prompt`/`workflow` jobs.
+
+### Inspecting runs
+
+```bash
+# Recent job runs
+sqlite3 ~/.luna/luna.db \
+  "SELECT r.id, j.id as job, r.status, datetime(r.started_at/1000,'unixepoch','localtime')
+   FROM job_runs r JOIN jobs j ON r.job_id=j.id
+   ORDER BY r.started_at DESC LIMIT 20;"
+
+# Per-step breakdown for a workflow run (run_id = integer)
+sqlite3 ~/.luna/luna.db \
+  "SELECT steps_json FROM job_runs WHERE id=<run_id>;" | python3 -m json.tool
+```
+
+## SDK Dynamic Workflows
+
+**SDK Dynamic Workflows** are a separate concept from Luna's `workflow`
+job kind: Claude-written JavaScript scripts that orchestrate many
+subagents in parallel, executed via the SDK's **Workflow tool**.
+
+### Script contract
+
+The script's FIRST statement must be
+`export const meta = { name, description }` (pure literal; optional
+`phases`). The rest of the file is the script body itself, executed
+directly with top-level `await` — **no default export, no `claude()`
+helper**. Injected globals:
+
+- `agent(prompt, opts?)` — spawn a subagent; resolves to its final text,
+  or a validated object when `opts.schema` (JSON Schema) is set. Returns
+  `null` if the subagent is skipped or dies (filter with
+  `.filter(Boolean)`). `opts`: `{ label, phase, schema, model, isolation,
+  agentType }`.
+- `parallel()` / `pipeline()` / `phase()` / `log()` — orchestration and
+  progress helpers.
+- `args` — the input object passed in the Workflow tool invocation.
+
+Scripts must be deterministic: `Date.now()` / `Math.random()` /
+`new Date()` are unavailable (breaks resume) — pass timestamps via
+`args`. The SDK runs up to 16 subagents concurrently, up to 1,000
+`agent()` calls per workflow run.
+
+```js
+// ~/.claude/workflows/deep-research.js
+export const meta = {
+  name: "deep-research",
+  description: "Multi-agent parallel research workflow"
+}
+
+const [summary, risks] = await Promise.all([
+  agent(`Summarise: ${args.topic}`),
+  agent(`Identify risks in: ${args.topic}`)
+])
+return `${summary}\n\nRisks:\n${risks}`
+```
+
+### Where they live
+
+| Location | Scope |
+|---|---|
+| `~/.claude/workflows/` | User-global (all projects) |
+| `.claude/workflows/` | Project-scoped |
+
+### Enabling + invoking
+
+`enableWorkflows` and `workflowKeywordTriggerEnabled` are **Settings**
+fields (settings.json, managed settings, or `options.settings` in
+`query()`) — they are NOT `query()` options. Unset = default by plan once
+the feature is available; managed `disableWorkflows` (or
+`CLAUDE_CODE_DISABLE_WORKFLOWS`) force-disables.
+
+Invocation is via the SDK's **Workflow tool** — slash commands are not
+how workflows run:
+
+- `name` — a predefined workflow from `.claude/workflows/`
+- `script` / `scriptPath` — an ad-hoc script (`scriptPath` wins)
+- the `ultracode` keyword in a plain prompt opts that turn into the
+  Workflow tool (on by default; opt out via
+  `workflowKeywordTriggerEnabled: false`)
+
+When a workflow runs, the SDK emits a `task_started` system message with
+`task_type: 'local_workflow'` and `workflow_name` = the script's
+`meta.name`.
+
+### Relationship to Luna's job system
+
+Luna's `jobs` table owns scheduling + durability (cron, `job_runs` audit,
+shell steps); Dynamic Workflows own parallel subagent execution inside
+one SDK session. They do **not** compose today: Luna's workflow `prompt`
+steps forward only `model` / `allowed_tools` / `max_turns` to `query()` —
+there is no settings passthrough, so a Luna job cannot enable the
+Workflow tool.
+
+## Agents & Subagents
+
+Agent definitions live in `~/.luna/agents/` as `.md` files with YAML
+frontmatter. They are hot-loaded on every interactive chat query — no
+restart needed. (Background jobs do not load agent definitions.)
+
+Seed agents ship in the repo (`agents/`, `seeds/agents/`) and must be
+copied into `~/.luna/agents/` by the operator — nothing installs them
+automatically:
 - **`advisor`** — consult *before* substantive work. Pressure-tests plans.
 - **`auditor`** — consult *after* work is done. Verifies the deliverable.
+- **`dev-agent`** — coding and implementation tasks.
 
-A workspace may add its own subagents in `<workspace>/.workspace/agents/`.
+### Agent definition format
+
+```markdown
+---
+name: my-agent
+description: What this agent does (required)
+model: opus
+effort: high
+maxTurns: 20
+memory: user
+tools:
+  - Read
+  - mcp__memory__memory_search
+permissionMode: auto
+background: false
+---
+
+System prompt markdown body goes here.
+```
+
+**Supported frontmatter fields:**
+
+| Field | Values | Notes |
+|---|---|---|
+| `name` | string | Invocation key; defaults to filename stem |
+| `description` | string | **Required** |
+| `model` | string | Alias (`opus`/`sonnet`/`haiku`) or full model id |
+| `effort` | `low`/`medium`/`high`/`xhigh`/`max` or number | |
+| `maxTurns` | integer | |
+| `memory` | `user`/`project`/`local` | |
+| `tools` | string list | Allowed tool names (built-in or MCP) |
+| `disallowedTools` | string list | |
+| `mcpServers` | string list | MCP server refs only |
+| `skills` | string list | Skill file refs |
+| `permissionMode` | `default`/`auto`/`acceptEdits`/`bypassPermissions`/`dontAsk`/`plan` | |
+| `background` | `true`/`false` | |
+| `initialPrompt` | string | Auto-submitted as first user turn — only when this agent is the main thread agent |
+
+The markdown body of the file becomes the agent's system prompt.
 
 ## Local shell
 
@@ -161,9 +410,13 @@ what is attached.
 | Workspace-specific facts      | `<ws>/.workspace/workspace.db`                    |
 | Cross-session behavioral log  | `agent_notes` in `luna.db`                        |
 | What workspaces exist         | `workspaces` table in `luna.db`                   |
+| Scheduled jobs & workflows    | `jobs` table in `luna.db`                         |
+| Job run history & step logs   | `job_runs` table in `luna.db`                     |
 | Recent sessions, tool use     | `analytics.duckdb` and `events.jsonl`             |
 | Identity & behavior           | `DNA.md` (loaded into every system prompt)        |
 | Mechanics & conventions       | `SYSTEM.md` (this file)                           |
+| SDK job implementation        | `packages/adapter-sdk/src/`                       |
+| Agent definitions             | `~/.luna/agents/*.md`                             |
 
 ## What this file is not
 
