@@ -4080,5 +4080,79 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(m.State.sessionArtifacts).toHaveLength(2)
       expect(m.State.sessionArtifacts.map((a: any) => a.id)).toEqual(['msg-2:0', 'msg-3:0'])
     })
+
+    it('(e) pop-out button on a pinned artifact invokes open_artifact_widget when Tauri is present', () => {
+      const m = M()
+      // Seed __TAURI__.core.invoke mock.
+      const invokeMock = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__ = {
+        ...(window as any).__TAURI__,
+        core: { invoke: invokeMock },
+      }
+
+      m.ArtifactsEngine.openPanel()
+      m.ArtifactsEngine.applyPinned([
+        { id: 'pin-pop', kind: 'code', title: 'deploy.sh', lang: 'sh', content: 'echo hi',
+          origin: null, version: 3, pinnedAt: 1, updatedAt: 1 },
+      ])
+
+      const pinnedList = document.getElementById('artifacts-pinned-list')!
+      const popBtn = pinnedList.querySelector('[data-action="pop-out"]') as HTMLButtonElement
+      expect(popBtn).not.toBeNull()
+      expect(popBtn.textContent).toBe('⤢')
+
+      popBtn.click()
+
+      expect(invokeMock).toHaveBeenCalledOnce()
+      expect(invokeMock).toHaveBeenCalledWith('open_artifact_widget', {
+        artifactId: 'pin-pop',
+        title: 'deploy.sh',
+      })
+    })
+
+    it('(f) pop-out button on a session artifact invokes open_artifact_widget; no-ops without Tauri', () => {
+      const m = M()
+
+      // Part 1 — with Tauri present.
+      const invokeMock = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__ = {
+        ...(window as any).__TAURI__,
+        core: { invoke: invokeMock },
+      }
+
+      m.ArtifactsEngine.openPanel()
+      m.ArtifactsEngine.applySession({
+        type: 'artifacts-extracted', threadId: 't', messageId: 'msg-pop', messageSeq: 0,
+        artifacts: [
+          { id: 'msg-pop:0', source: 'code-fence', path: null, lang: 'py',
+            title: 'snippet.py', content: 'print(1)' },
+        ],
+      })
+
+      const sessionList = document.getElementById('artifacts-session-list')!
+      const popBtn = sessionList.querySelector('[data-action="pop-out"]') as HTMLButtonElement
+      expect(popBtn).not.toBeNull()
+
+      popBtn.click()
+
+      expect(invokeMock).toHaveBeenCalledOnce()
+      expect(invokeMock).toHaveBeenCalledWith('open_artifact_widget', {
+        artifactId: 'msg-pop:0',
+        title: 'snippet.py',
+      })
+
+      // Part 2 — without Tauri (browser env): clicking must NOT throw.
+      ;(window as any).__TAURI__ = undefined
+      m.ArtifactsEngine.applySession({
+        type: 'artifacts-extracted', threadId: 't', messageId: 'msg-pop2', messageSeq: 1,
+        artifacts: [
+          { id: 'msg-pop2:0', source: 'code-fence', path: null, lang: 'ts',
+            title: 'foo.ts', content: 'const x = 1' },
+        ],
+      })
+      const popBtn2 = sessionList.querySelector('[data-action="pop-out"]:last-of-type') as HTMLButtonElement
+      // Clicking should not throw even without Tauri.
+      expect(() => { popBtn2?.click() }).not.toThrow()
+    })
   })
 })

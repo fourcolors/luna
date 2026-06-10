@@ -4973,8 +4973,23 @@
               this.unpin(a.id);
             });
 
+            const popOutBtnP = document.createElement('button');
+            popOutBtnP.type = 'button';
+            popOutBtnP.className = 'artifact-row-btn';
+            popOutBtnP.textContent = '⤢';
+            popOutBtnP.title = 'Open in widget window';
+            popOutBtnP.setAttribute('data-action', 'pop-out');
+            popOutBtnP.addEventListener('click', (e) => {
+              e.stopPropagation();
+              if (window.__TAURI__ && window.__TAURI__.core) {
+                window.__TAURI__.core.invoke('open_artifact_widget', { artifactId: a.id, title: a.title || '' })
+                  .catch(() => {/* best-effort */});
+              }
+            });
+
             row.appendChild(info);
             row.appendChild(unpinBtn);
+            row.appendChild(popOutBtnP);
             return row;
           });
           DOM.artifactsPinnedList.replaceChildren(...rows);
@@ -5013,8 +5028,23 @@
               });
             }
 
+            const popOutBtnS = document.createElement('button');
+            popOutBtnS.type = 'button';
+            popOutBtnS.className = 'artifact-row-btn';
+            popOutBtnS.textContent = '⤢';
+            popOutBtnS.title = 'Open in widget window';
+            popOutBtnS.setAttribute('data-action', 'pop-out');
+            popOutBtnS.addEventListener('click', (e) => {
+              e.stopPropagation();
+              if (window.__TAURI__ && window.__TAURI__.core) {
+                window.__TAURI__.core.invoke('open_artifact_widget', { artifactId: a.id, title: a.title || a.path || '' })
+                  .catch(() => {/* best-effort */});
+              }
+            });
+
             row.appendChild(info);
             row.appendChild(actionBtn);
+            row.appendChild(popOutBtnS);
             return row;
           });
           DOM.artifactsSessionList.replaceChildren(...rows);

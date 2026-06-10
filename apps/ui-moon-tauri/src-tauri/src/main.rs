@@ -804,7 +804,9 @@ async fn open_artifact_widget(
         let _ = win.set_focus();
         return Ok(label);
     }
-    let url = format!("index.html?widget={}", encode_query_value(&artifact_id));
+    // A dedicated, self-contained page (NOT index.html) — keeps the widget
+    // runtime isolated from the moon monolith. The real id rides in the query.
+    let url = format!("widget.html?id={}", encode_query_value(&artifact_id));
     let mut builder = tauri::WebviewWindowBuilder::new(
         &app,
         &label,
