@@ -13,11 +13,18 @@
  *   - configured:true hides the form behind the ✓ badge + an Edit toggle
  *     (the recovery path), and re-rendering with configured flipped removes
  *     the form
+ *
+ * C1 multi-account pins:
+ *   - two instances of one definition render two labeled rows, each with a
+ *     Disconnect button wired to the correct instance id
+ *   - the api-key connect form forwards the typed label to onConnectApiKey;
+ *     empty label → undefined; button label reads "Add account" when instances
+ *     already exist
  */
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { render } from "solid-js/web"
 import { createSignal } from "solid-js"
-import type { ConnectorCatalogItem } from "@luna/ui-shared"
+import type { ConnectorCatalogItem, ConnectorInstanceItem } from "@luna/ui-shared"
 import { ConnectorsPanel } from "../src/ConnectorsPanel.jsx"
 
 const gw = (configured: boolean): ConnectorCatalogItem => ({
@@ -28,6 +35,25 @@ const gw = (configured: boolean): ConnectorCatalogItem => ({
   authKind: "oauth2",
   capabilities: [],
   clientSetup: { configured },
+})
+
+const slackDef = (): ConnectorCatalogItem => ({
+  id: "slack",
+  name: "Slack",
+  blurb: "Messaging.",
+  category: "messaging",
+  authKind: "api-key",
+  capabilities: [
+    { id: "read", label: "Read messages", scopes: ["channels:read"], defaultGranted: true },
+  ],
+})
+
+const makeInstance = (overrides: Partial<ConnectorInstanceItem> & { id: string; definitionId: string; label: string }): ConnectorInstanceItem => ({
+  status: "connected",
+  grantedScopes: [],
+  createdAt: 0,
+  lastHealthyAt: null,
+  ...overrides,
 })
 
 interface Rig {
@@ -147,6 +173,110 @@ describe("ConnectorsPanel — OAuth client setup (M2.6)", () => {
       expect(inputs(rig.container).id).not.toBeNull()
     } finally {
       rig.dispose()
+    }
+  })
+})
+
+describe("ConnectorsPanel — multi-account (C1)", () => {
+  it("two instances of one definition render two labeled rows each with per-instance Disconnect", () => {
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    const onDisconnect = vi.fn()
+    const inst1 = makeInstance({ id: "inst-1", definitionId: "google_workspace", label: "personal" })
+    const inst2 = makeInstance({ id: "inst-2", definitionId: "google_workspace", label: "flowstay", status: "needs-reauth" })
+    const dispose = render(
+      () => (
+        <ConnectorsPanel
+          catalog={[gw(true)]}
+          instances={[inst1, inst2]}
+          onConnectApiKey={() => {}}
+          onDisconnect={onDisconnect}
+        />
+      ),
+      container,
+    )
+    try {
+      // Both labels rendered
+      expect(container.textContent).toContain("personal")
+      expect(container.textContent).toContain("flowstay")
+      // Status badges
+      expect(container.textContent).toContain("connected")
+      expect(container.textContent).toContain("needs-reauth")
+      // Two Disconnect buttons, wired correctly
+      const disconnectBtns = [...container.querySelectorAll("button")].filter(
+        (b) => b.textContent === "Disconnect",
+      ) as HTMLButtonElement[]
+      expect(disconnectBtns).toHaveLength(2)
+      disconnectBtns[0]!.click()
+      expect(onDisconnect).toHaveBeenCalledWith("inst-1")
+      disconnectBtns[1]!.click()
+      expect(onDisconnect).toHaveBeenCalledWith("inst-2")
+    } finally {
+      dispose()
+      container.remove()
+    }
+  })
+
+  it("api-key form: button reads 'Add account' with existing instances; typed label forwarded; empty label → undefined", () => {
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    const onConnectApiKey = vi.fn()
+    const existingInst = makeInstance({ id: "inst-slack-1", definitionId: "slack", label: "personal" })
+    const [instances, setInstances] = createSignal<ReadonlyArray<ConnectorInstanceItem>>([])
+    const dispose = render(
+      () => (
+        <ConnectorsPanel
+          catalog={[slackDef()]}
+          instances={instances()}
+          onConnectApiKey={onConnectApiKey}
+          onDisconnect={() => {}}
+        />
+      ),
+      container,
+    )
+    try {
+      // 0 instances → button reads "Connect"
+      const connectBtn0 = [...container.querySelectorAll("button")].find(
+        (b) => b.textContent === "Connect",
+      ) as HTMLButtonElement | undefined
+      expect(connectBtn0).toBeDefined()
+
+      // Open the form, fill fields, submit with a label
+      connectBtn0!.click()
+      const allInputs = container.querySelectorAll("input[type=text]") as NodeListOf<HTMLInputElement>
+      // first input = label, second = secret ref
+      const labelInput = allInputs[0]!
+      const refInput = allInputs[1]!
+      type(labelInput, "work")
+      type(refInput, "env:SLACK_TOKEN")
+      const connectSubmitBtn = [...container.querySelectorAll("button")].find(
+        (b) => b.textContent === "Connect",
+      ) as HTMLButtonElement | undefined
+      connectSubmitBtn!.click()
+      expect(onConnectApiKey).toHaveBeenCalledWith("slack", "env:SLACK_TOKEN", ["read"], "work")
+
+      // Now add an existing instance → button reads "Add account"
+      setInstances([existingInst])
+      const addBtn = [...container.querySelectorAll("button")].find(
+        (b) => b.textContent === "Add account",
+      ) as HTMLButtonElement | undefined
+      expect(addBtn).toBeDefined()
+
+      // Open form again, submit with empty label → undefined
+      addBtn!.click()
+      const allInputs2 = container.querySelectorAll("input[type=text]") as NodeListOf<HTMLInputElement>
+      const labelInput2 = allInputs2[0]!
+      const refInput2 = allInputs2[1]!
+      type(labelInput2, "   ") // whitespace only → trimmed to empty → undefined
+      type(refInput2, "env:SLACK_TOKEN_2")
+      const connectSubmitBtn2 = [...container.querySelectorAll("button")].find(
+        (b) => b.textContent === "Connect",
+      ) as HTMLButtonElement | undefined
+      connectSubmitBtn2!.click()
+      expect(onConnectApiKey).toHaveBeenLastCalledWith("slack", "env:SLACK_TOKEN_2", ["read"], undefined)
+    } finally {
+      dispose()
+      container.remove()
     }
   })
 })

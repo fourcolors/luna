@@ -118,8 +118,12 @@ describe("ConnectorService — lifecycle", () => {
         const noRef = yield* svc.connect({ definitionId: "fake-saas", label: "x" }).pipe(Effect.flip)
         expect(noRef.message).toContain("secretRef")
         yield* svc.connect({ definitionId: "fake-saas", label: "one", secretRef: "env:KNOWN_A" })
-        const dup = yield* svc.connect({ definitionId: "fake-saas", label: "two", secretRef: "env:KNOWN_A" }).pipe(Effect.flip)
-        expect(dup.message).toContain("already connected")
+        // C1 multi-account: a DIFFERENT label is a second account, allowed…
+        yield* svc.connect({ definitionId: "fake-saas", label: "two", secretRef: "env:KNOWN_A" })
+        // …but re-using an existing label (slug-insensitive) is rejected.
+        const dup = yield* svc.connect({ definitionId: "fake-saas", label: "One!", secretRef: "env:KNOWN_A" }).pipe(Effect.flip)
+        expect(dup.message).toContain('already has an account labeled')
+        expect(yield* svc.list()).toHaveLength(2)
       }),
     )
   })
@@ -146,7 +150,7 @@ describe("ConnectorService — mounting", () => {
         expect(instance.secretRef).toBe("env:KNOWN_A") // pointer, not value
         expect(instance.grantedScopes).toEqual(["saas.read"]) // defaultGranted only
         const mounts = svc.mountSnapshotSync()
-        expect(mounts["fake_saas"]).toEqual({
+        expect(mounts["fake_saas_test"]).toEqual({
           type: "http",
           url: "http://127.0.0.1:9999/mcp/",
           headers: { Authorization: "Bearer secret-for-env:KNOWN_A" },
@@ -163,7 +167,7 @@ describe("ConnectorService — mounting", () => {
       Effect.gen(function* () {
         const svc = yield* ConnectorService
         yield* svc.connect({ definitionId: "fake-stdio", label: "T", secretRef: "env:KNOWN_B" })
-        expect(svc.mountSnapshotSync()["fake_stdio"]).toEqual({
+        expect(svc.mountSnapshotSync()["fake_stdio_t"]).toEqual({
           type: "stdio",
           command: "fake-mcp",
           args: ["--serve"],
@@ -179,7 +183,7 @@ describe("ConnectorService — mounting", () => {
         const svc = yield* ConnectorService
         yield* svc.connect({ definitionId: "mock-connector", label: "Mock" })
         const mounts = svc.mountSnapshotSync()
-        const mock = mounts["mock_connector"] as { type?: string } | undefined
+        const mock = mounts["mock_connector_mock"] as { type?: string } | undefined
         expect(mock).toBeDefined()
         expect(mock?.type).toBe("sdk")
       }),
@@ -197,7 +201,7 @@ describe("ConnectorService — mounting", () => {
         })
         // connect itself succeeded (the ref is a pointer) but the mount
         // refresh could not resolve it → excluded + flagged.
-        expect(svc.mountSnapshotSync()["fake_saas"]).toBeUndefined()
+        expect(svc.mountSnapshotSync()["fake_saas_t"]).toBeUndefined()
         const listed = yield* svc.list()
         expect(listed[0]?.status).toBe("error")
         const removed = yield* svc.disconnect(instance.id)
@@ -244,6 +248,7 @@ describe("ConnectorService — mounting", () => {
         ),
       ) as Effect.Effect<Readonly<Record<string, unknown>>>,
     )
-    expect(mounts["fake_saas"]).toMatchObject({ type: "http" })
+    // C1: the non-default label mounts under its suffixed key.
+    expect(mounts["fake_saas_persisted"]).toMatchObject({ type: "http" })
   })
 })

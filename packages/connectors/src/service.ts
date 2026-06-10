@@ -203,8 +203,49 @@ export const ConnectorServiceLayer = (
         return typeof v === "string" && v.length > 0 ? v : null
       }
 
-      const refreshTokenVarName = (definition: ConnectorDefinition): string =>
-        `LUNA_CONNECTOR_${definition.id.toUpperCase().replace(/-/g, "_")}_REFRESH_TOKEN`
+      /** Normalize an account label to a stable slug: mount-key suffix, env-var
+       *  segment, and the per-definition uniqueness key (C1 multi-account). */
+      const labelSlug = (label: string): string => {
+        const s = label
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "_")
+          .replace(/^_+|_+$/g, "")
+        return s.length > 0 ? s : "default"
+      }
+
+      /** The definition's DEFAULT label slug (the Moon sends label=def.name
+       *  when the operator types nothing) — such instances keep the bare
+       *  serverKey + the historical per-definition env var, so pre-C1 rows
+       *  and tool names are untouched. */
+      const defaultSlug = (definition: ConnectorDefinition): string =>
+        labelSlug(definition.name)
+
+      const refreshTokenVarName = (
+        definition: ConnectorDefinition,
+        label: string,
+      ): string => {
+        const base = `LUNA_CONNECTOR_${definition.id.toUpperCase().replace(/-/g, "_")}`
+        const slug = labelSlug(label)
+        // Default-labeled instance keeps the historical var name (back-compat
+        // with rows minted before multi-account).
+        return slug === defaultSlug(definition)
+          ? `${base}_REFRESH_TOKEN`
+          : `${base}_${slug.toUpperCase()}_REFRESH_TOKEN`
+      }
+
+      /** Per-instance mount key: bare serverKey for the default label (stable
+       *  vs pre-C1), else serverKey_<slug>. Keys never change as sibling
+       *  accounts come and go — slug uniqueness per definition is enforced at
+       *  connect/beginAuth/completeAuth, so keys cannot collide. */
+      const mountKey = (
+        definition: ConnectorDefinition,
+        instance: ConnectorInstance,
+      ): string => {
+        const slug = labelSlug(instance.label)
+        return slug === defaultSlug(definition)
+          ? definition.serverKey
+          : `${definition.serverKey}_${slug}`
+      }
 
       /** Valid cached access token, or mint one from the refresh token.
        *  Failure → needs-reauth + null (excluded from mounts). */
@@ -326,7 +367,10 @@ export const ConnectorServiceLayer = (
             const definition = definitions.get(instance.definitionId)
             if (definition === undefined) continue // catalog drift: orphan row, skip
             const mount = yield* buildMount(definition, instance)
-            if (mount !== null) next[definition.serverKey] = mount
+            // C1 multi-account: each instance mounts under its own key — the
+            // agent sees mcp__google_workspace__* (default label) alongside
+            // mcp__google_workspace_flowstay__* etc.
+            if (mount !== null) next[mountKey(definition, instance)] = mount
           }
           snapshot = next
         })
@@ -369,16 +413,24 @@ export const ConnectorServiceLayer = (
             definition.capabilities.filter((c) => c.defaultGranted).map((c) => c.id)
           // ATOMIC check→insert→rebuild under the gate (review G2): the
           // duplicate guard and the insert must not interleave with a
-          // second identical connect, or two rows land for one definition.
+          // second identical connect, or two rows land for one label.
+          const label = input.label.trim() || definition.name
           return yield* refreshGate.withPermits(1)(
             Effect.gen(function* () {
               const existing = yield* store.list()
-              if (existing.some((i) => i.definitionId === definition.id)) {
-                // v1: one instance per definition (multi-account is §23 open).
+              // C1 multi-account: N instances per definition, ONE per label
+              // slug (the slug keys the mount + the refresh-token env var).
+              if (
+                existing.some(
+                  (i) =>
+                    i.definitionId === definition.id &&
+                    labelSlug(i.label) === labelSlug(label),
+                )
+              ) {
                 return yield* Effect.fail(
                   new ConnectorError({
                     op: "connect",
-                    message: `"${input.definitionId}" is already connected — disconnect it first`,
+                    message: `"${input.definitionId}" already has an account labeled "${label}" — pick a different label or disconnect it first`,
                   }),
                 )
               }
@@ -386,7 +438,7 @@ export const ConnectorServiceLayer = (
               const instance: ConnectorInstance = {
                 id: crypto.randomUUID(),
                 definitionId: definition.id,
-                label: input.label.trim() || definition.name,
+                label,
                 status: "connected",
                 secretRef: input.secretRef ?? "none",
                 grantedScopes: scopesForCapabilities(definition, capabilityIds),
@@ -438,12 +490,20 @@ export const ConnectorServiceLayer = (
               }),
             )
           }
+          const requestedLabel = input.label.trim() || definition.name
           const existing = yield* store.list()
-          if (existing.some((i) => i.definitionId === definition.id)) {
+          // C1 multi-account: only the LABEL must be free, not the definition.
+          if (
+            existing.some(
+              (i) =>
+                i.definitionId === definition.id &&
+                labelSlug(i.label) === labelSlug(requestedLabel),
+            )
+          ) {
             return yield* Effect.fail(
               new ConnectorError({
                 op: "beginAuth",
-                message: `"${input.definitionId}" is already connected — disconnect it first`,
+                message: `"${input.definitionId}" already has an account labeled "${requestedLabel}" — pick a different label or disconnect it first`,
               }),
             )
           }
@@ -483,7 +543,7 @@ export const ConnectorServiceLayer = (
           pendingAuths.set(pendingId, {
             pendingId,
             definitionId: definition.id,
-            label: input.label.trim() || definition.name,
+            label: requestedLabel,
             capabilityIds,
             verifier,
             state,
@@ -564,25 +624,34 @@ export const ConnectorServiceLayer = (
             )
           }
           // Persist the refresh token via the injected sink; the instance
-          // row stores only the returned POINTER.
+          // row stores only the returned POINTER. The var name is keyed by
+          // the LABEL slug (C1 multi-account) so each account's token lives
+          // in its own ~/.luna/.env entry; the default label keeps the
+          // historical per-definition var (pre-C1 rows untouched).
           const secretRef = yield* oauth.storeSecret(
-            refreshTokenVarName(definition),
+            refreshTokenVarName(definition, pending.label),
             tokens.refreshToken,
           )
           // ATOMIC duplicate-check→insert→rebuild under the gate (review
-          // G2): two concurrent OAuth flows for one definition each reach
-          // here; without the re-check both insert a row. The exchange
-          // already happened (the code is single-use), so the loser just
-          // doesn't persist a second row — its token is the one already
-          // overwritten in the env sink (per-definition var name).
+          // G2): two concurrent OAuth flows for one LABEL each reach here;
+          // without the re-check both insert a row. The exchange already
+          // happened (the code is single-use), so the loser just doesn't
+          // persist a second row — its token is the one already overwritten
+          // in the env sink (per-label var name).
           return yield* refreshGate.withPermits(1)(
             Effect.gen(function* () {
               const existing = yield* store.list()
-              if (existing.some((i) => i.definitionId === definition.id)) {
+              if (
+                existing.some(
+                  (i) =>
+                    i.definitionId === definition.id &&
+                    labelSlug(i.label) === labelSlug(pending.label),
+                )
+              ) {
                 return yield* Effect.fail(
                   new ConnectorError({
                     op: "completeAuth",
-                    message: `"${definition.id}" is already connected — disconnect it first`,
+                    message: `"${definition.id}" already has an account labeled "${pending.label}" — pick a different label or disconnect it first`,
                   }),
                 )
               }

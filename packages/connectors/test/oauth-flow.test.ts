@@ -179,16 +179,17 @@ describe("client-brokered OAuth flow (mock provider e2e)", () => {
           state,
         })
         expect(instance.status).toBe("connected")
-        expect(instance.secretRef).toBe("env:LUNA_CONNECTOR_FAKE_GOOGLE_REFRESH_TOKEN")
+        expect(instance.secretRef).toBe("env:LUNA_CONNECTOR_FAKE_GOOGLE_PERSONAL_REFRESH_TOKEN")
         expect(instance.grantedScopes).toEqual(["fake.mail"])
         // refresh token persisted through the sink, never in the instance
-        expect(rig.stored.get("LUNA_CONNECTOR_FAKE_GOOGLE_REFRESH_TOKEN")).toBe("refresh-1")
+        expect(rig.stored.get("LUNA_CONNECTOR_FAKE_GOOGLE_PERSONAL_REFRESH_TOKEN")).toBe("refresh-1")
         expect(JSON.stringify(instance)).not.toContain("refresh-1")
         expect(JSON.stringify(instance)).not.toContain("access-1")
 
         // mounted with the EXCHANGE-seeded access token (no refresh call yet)
         const mounts = svc.mountSnapshotSync()
-        expect(mounts["fake_google"]).toEqual({
+        // C1: non-default label "Personal" mounts under its own suffixed key.
+        expect(mounts["fake_google_personal"]).toEqual({
           type: "http",
           url: "http://127.0.0.1:8000/mcp/",
           headers: { Authorization: "Bearer access-1" },
@@ -257,31 +258,65 @@ describe("client-brokered OAuth flow (mock provider e2e)", () => {
         expect(rig.provider.getRefreshCount()).toBe(1) // semaphore: one mint
         const mounts = svc.mountSnapshotSync()
         expect(
-          (mounts["fake_google"] as { headers: { Authorization: string } }).headers
+          (mounts["fake_google_x"] as { headers: { Authorization: string } }).headers
             .Authorization,
         ).toBe("Bearer access-2")
       }).pipe(Effect.provide(rig.layer)),
     )
   })
 
-  it("completeAuth rejects a SECOND flow for an already-connected definition (review G2 duplicate guard)", async () => {
+  it("C1 multi-account: two labels → two instances with distinct mounts + token vars; a SAME-label second flow is rejected", async () => {
     const rig = makeRig()
     await Effect.runPromise(
       Effect.gen(function* () {
         const svc = yield* ConnectorService
-        // Two independent begins (double-click / web+Moon) → two pendings.
+        // Two accounts of the SAME definition under different labels —
+        // the personal + flowstay use case.
         const a = yield* svc.beginAuth({ definitionId: "fake-google", label: "A", loopbackPort: 51000 })
         const b = yield* svc.beginAuth({ definitionId: "fake-google", label: "B", loopbackPort: 51001 })
         const stateA = new URL(a.authUrl).searchParams.get("state")!
         const stateB = new URL(b.authUrl).searchParams.get("state")!
         yield* svc.completeAuth({ pendingId: a.pendingId, code: "good-code", state: stateA })
-        // The second completeAuth must NOT insert a second row.
-        const dup = yield* svc
-          .completeAuth({ pendingId: b.pendingId, code: "good-code", state: stateB })
-          .pipe(Effect.flip)
-        expect(dup.message).toContain("already connected")
+        yield* svc.completeAuth({ pendingId: b.pendingId, code: "good-code", state: stateB })
+
         const listed = yield* svc.list()
-        expect(listed).toHaveLength(1)
+        expect(listed).toHaveLength(2)
+        // Each account has its OWN refresh-token var…
+        expect(rig.stored.has("LUNA_CONNECTOR_FAKE_GOOGLE_A_REFRESH_TOKEN")).toBe(true)
+        expect(rig.stored.has("LUNA_CONNECTOR_FAKE_GOOGLE_B_REFRESH_TOKEN")).toBe(true)
+        // …and its OWN mount key, so the agent sees both side by side.
+        const mounts = svc.mountSnapshotSync()
+        expect(Object.keys(mounts).sort()).toEqual(["fake_google_a", "fake_google_b"])
+
+        // A SECOND flow for an EXISTING label is still rejected (the old
+        // G2 duplicate guard, now scoped to the label).
+        const dupBegin = yield* svc
+          .beginAuth({ definitionId: "fake-google", label: "a", loopbackPort: 51002 })
+          .pipe(Effect.flip)
+        expect(dupBegin.message).toContain('already has an account labeled')
+
+        // Disconnecting ONE account leaves the other intact.
+        const first = listed.find((i) => i.label === "A")!
+        yield* svc.disconnect(first.id)
+        const after = yield* svc.list()
+        expect(after.map((i) => i.label)).toEqual(["B"])
+        expect(Object.keys(svc.mountSnapshotSync())).toEqual(["fake_google_b"])
+      }).pipe(Effect.provide(rig.layer)),
+    )
+  })
+
+  it("C1 back-compat: the DEFAULT label keeps the bare mount key + historical var name", async () => {
+    const rig = makeRig()
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const svc = yield* ConnectorService
+        // The Moon sends label=def.name when the operator types nothing —
+        // exactly the shape of every pre-C1 row.
+        const begun = yield* svc.beginAuth({ definitionId: "fake-google", label: "Fake Google", loopbackPort: 51003 })
+        const state = new URL(begun.authUrl).searchParams.get("state")!
+        const instance = yield* svc.completeAuth({ pendingId: begun.pendingId, code: "good-code", state })
+        expect(instance.secretRef).toBe("env:LUNA_CONNECTOR_FAKE_GOOGLE_REFRESH_TOKEN")
+        expect(Object.keys(svc.mountSnapshotSync())).toEqual(["fake_google"])
       }).pipe(Effect.provide(rig.layer)),
     )
   })
@@ -294,10 +329,10 @@ describe("client-brokered OAuth flow (mock provider e2e)", () => {
         const begun = yield* svc.beginAuth({ definitionId: "fake-google", label: "x", loopbackPort: 51002 })
         const state = new URL(begun.authUrl).searchParams.get("state")!
         const instance = yield* svc.completeAuth({ pendingId: begun.pendingId, code: "good-code", state })
-        expect(rig.stored.has("LUNA_CONNECTOR_FAKE_GOOGLE_REFRESH_TOKEN")).toBe(true)
+        expect(rig.stored.has("LUNA_CONNECTOR_FAKE_GOOGLE_X_REFRESH_TOKEN")).toBe(true)
         yield* svc.disconnect(instance.id)
-        expect(rig.clearedVars).toContain("LUNA_CONNECTOR_FAKE_GOOGLE_REFRESH_TOKEN")
-        expect(rig.stored.has("LUNA_CONNECTOR_FAKE_GOOGLE_REFRESH_TOKEN")).toBe(false)
+        expect(rig.clearedVars).toContain("LUNA_CONNECTOR_FAKE_GOOGLE_X_REFRESH_TOKEN")
+        expect(rig.stored.has("LUNA_CONNECTOR_FAKE_GOOGLE_X_REFRESH_TOKEN")).toBe(false)
       }).pipe(Effect.provide(rig.layer)),
     )
   })

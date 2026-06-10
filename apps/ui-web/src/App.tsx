@@ -529,12 +529,12 @@ export const App: Component = () => {
                 instances={store.state.connectorInstances}
                 lastError={store.state.connectorError}
                 disabled={!isConnected()}
-                onConnectApiKey={(definitionId, secretRef, capabilityIds) =>
+                onConnectApiKey={(definitionId, secretRef, capabilityIds, label) =>
                   send({
                     type: "connector-connect",
                     requestId: `conn_${Date.now()}`,
                     definitionId,
-                    label: definitionId,
+                    label: label ?? definitionId,
                     secretRef,
                     capabilityIds,
                   })

@@ -12,6 +12,9 @@
  *   - for OAuth connectors with no instance, shows an honest
  *     "connect from the Moon app" note instead of a dead button
  *
+ * Multi-account: each definition may have N instances (one per label,
+ * e.g. "personal" + "flowstay"). All are rendered as per-instance rows.
+ *
  * onConnect/onDisconnect send the corresponding ClientFrames; the parent
  * gates rendering on capabilities.connectors.
  */
@@ -28,6 +31,7 @@ export interface ConnectorsPanelProps {
     definitionId: string,
     secretRef: string,
     capabilityIds: ReadonlyArray<string>,
+    label?: string,
   ) => void
   readonly onDisconnect: (instanceId: string) => void
   readonly onSetClient?: (
@@ -44,8 +48,10 @@ export const ConnectorsPanel: Component<ConnectorsPanelProps> = (props) => {
   // Definition whose OAuth-client edit form is open even though configured —
   // the recovery path for a wrong/half-written credential (review M2.6).
   const [editClientId, setEditClientId] = createSignal<string | null>(null)
-  const instanceFor = (defId: string) =>
-    props.instances.find((i) => i.definitionId === defId) ?? null
+
+  /** All instances for a given definition, in insertion order. */
+  const instancesFor = (defId: string) =>
+    props.instances.filter((i) => i.definitionId === defId)
 
   return (
     <div class="skills-panel">
@@ -63,93 +69,109 @@ export const ConnectorsPanel: Component<ConnectorsPanelProps> = (props) => {
           fallback={<div class="skills-empty">No connectors available.</div>}
         >
           {(def) => {
-            const instance = () => instanceFor(def.id)
+            const instances = () => instancesFor(def.id)
+            const hasInstances = () => instances().length > 0
             return (
-              <div classList={{ "skill-row": true, off: instance() === null }}>
+              <div classList={{ "skill-row": true, off: !hasInstances() }}>
                 <div class="skill-meta">
-                  <span class="skill-name">
-                    {def.name}
-                    <Show when={instance()}>
-                      {(i) => (
-                        <span
-                          class={`skill-badge ${i().status === "needs-reauth" ? "src-user" : "cat"}`}
-                        >
-                          {i().status}
-                        </span>
-                      )}
-                    </Show>
-                  </span>
+                  <span class="skill-name">{def.name}</span>
                   <span class="skill-desc">{def.blurb}</span>
                 </div>
-                <div style={{ display: "flex", gap: "6px", "align-items": "center" }}>
-                  <Show
-                    when={instance()}
-                    fallback={
-                      <Show
-                        when={def.authKind === "api-key"}
-                        fallback={
-                          <Show
-                            when={def.clientSetup === undefined || def.clientSetup.configured === true}
-                            fallback={null}
-                          >
-                            <Show when={def.clientSetup?.configured === true}>
-                              <span class="skill-desc" style={{ color: "var(--ok, #4caf50)", "font-size": "0.8em" }}>
-                                ✓ OAuth client configured
-                              </span>
-                              <button
-                                type="button"
-                                class="chip small"
-                                disabled={props.disabled === true}
-                                onClick={() =>
-                                  setEditClientId(editClientId() === def.id ? null : def.id)
-                                }
-                                title="Re-enter the OAuth client credentials"
-                              >
-                                {editClientId() === def.id ? "close" : "edit"}
-                              </button>
-                            </Show>
-                            <span class="skill-desc" style={{ "max-width": "160px" }}>
-                              Connect from the Moon app
-                            </span>
-                          </Show>
-                        }
+
+                {/* Per-instance rows (one per label) */}
+                <For each={instances()}>
+                  {(i) => (
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: "6px",
+                        "align-items": "center",
+                        "margin-top": "4px",
+                      }}
+                    >
+                      <span class="skill-desc" style={{ flex: "1" }}>
+                        {i.label}
+                      </span>
+                      <span
+                        class={`skill-badge ${i.status === "needs-reauth" ? "src-user" : "cat"}`}
                       >
-                        <button
-                          type="button"
-                          disabled={props.disabled === true}
-                          onClick={() =>
-                            setOpenId(openId() === def.id ? null : def.id)
-                          }
-                        >
-                          {openId() === def.id ? "Cancel" : "Connect"}
-                        </button>
-                      </Show>
-                    }
-                  >
-                    {(i) => (
+                        {i.status}
+                      </span>
                       <button
                         type="button"
                         disabled={props.disabled === true}
-                        onClick={() => props.onDisconnect(i().id)}
+                        onClick={() => props.onDisconnect(i.id)}
                       >
                         Disconnect
                       </button>
-                    )}
+                    </div>
+                  )}
+                </For>
+
+                {/* Connect / Add account controls */}
+                <div style={{ display: "flex", gap: "6px", "align-items": "center", "margin-top": hasInstances() ? "6px" : undefined }}>
+                  <Show
+                    when={def.authKind === "api-key"}
+                    fallback={
+                      /* OAuth2: always show Moon hint + optional clientSetup */
+                      <Show
+                        when={def.clientSetup === undefined || def.clientSetup.configured === true}
+                        fallback={null}
+                      >
+                        <Show when={def.clientSetup?.configured === true}>
+                          <span class="skill-desc" style={{ color: "var(--ok, #4caf50)", "font-size": "0.8em" }}>
+                            ✓ OAuth client configured
+                          </span>
+                          <button
+                            type="button"
+                            class="chip small"
+                            disabled={props.disabled === true}
+                            onClick={() =>
+                              setEditClientId(editClientId() === def.id ? null : def.id)
+                            }
+                            title="Re-enter the OAuth client credentials"
+                          >
+                            {editClientId() === def.id ? "close" : "edit"}
+                          </button>
+                        </Show>
+                        <span class="skill-desc" style={{ "max-width": "160px" }}>
+                          Connect from the Moon app
+                        </span>
+                      </Show>
+                    }
+                  >
+                    {/* API-key connector: "Connect" (0 instances) or "Add account" (≥1) */}
+                    <button
+                      type="button"
+                      disabled={props.disabled === true}
+                      onClick={() =>
+                        setOpenId(openId() === def.id ? null : def.id)
+                      }
+                    >
+                      {openId() === def.id
+                        ? "Cancel"
+                        : hasInstances()
+                          ? "Add account"
+                          : "Connect"}
+                    </button>
                   </Show>
                 </div>
-                <Show when={openId() === def.id && instance() === null && def.authKind === "api-key"}>
+
+                {/* API-key connect form (open regardless of existing instances) */}
+                <Show when={openId() === def.id && def.authKind === "api-key"}>
                   <ApiKeyConnectForm
                     def={def}
-                    onSubmit={(ref, caps) => {
-                      props.onConnectApiKey(def.id, ref, caps)
+                    onSubmit={(ref, caps, label) => {
+                      props.onConnectApiKey(def.id, ref, caps, label)
                       setOpenId(null)
                     }}
                   />
                 </Show>
+
+                {/* OAuth client setup form (unconfigured, or edit mode) */}
                 <Show
                   when={
                     def.clientSetup !== undefined &&
-                    instance() === null &&
                     (def.clientSetup.configured === false || editClientId() === def.id)
                   }
                 >
@@ -231,9 +253,10 @@ const OAuthClientSetupForm: Component<{
 
 const ApiKeyConnectForm: Component<{
   def: ConnectorCatalogItem
-  onSubmit: (secretRef: string, capabilityIds: ReadonlyArray<string>) => void
+  onSubmit: (secretRef: string, capabilityIds: ReadonlyArray<string>, label: string | undefined) => void
 }> = (props) => {
   const [ref, setRef] = createSignal("")
+  const [label, setLabel] = createSignal("")
   const [granted, setGranted] = createSignal<ReadonlyArray<string>>(
     props.def.capabilities.filter((c) => c.defaultGranted).map((c) => c.id),
   )
@@ -250,6 +273,12 @@ const ApiKeyConnectForm: Component<{
         "margin-top": "6px",
       }}
     >
+      <input
+        type="text"
+        placeholder="Account label (e.g. personal, flowstay)"
+        value={label()}
+        onInput={(e) => setLabel(e.currentTarget.value)}
+      />
       <For each={props.def.capabilities}>
         {(cap) => (
           <label class="toggle">
@@ -271,7 +300,10 @@ const ApiKeyConnectForm: Component<{
       <button
         type="button"
         disabled={ref().trim().length === 0}
-        onClick={() => props.onSubmit(ref().trim(), granted())}
+        onClick={() => {
+          const trimmedLabel = label().trim()
+          props.onSubmit(ref().trim(), granted(), trimmedLabel.length > 0 ? trimmedLabel : undefined)
+        }}
       >
         Connect
       </button>

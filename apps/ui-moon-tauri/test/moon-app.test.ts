@@ -1790,7 +1790,8 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       const slackCard = document.querySelectorAll('#connectors-list .connector-card')[1] as HTMLElement
       ;(slackCard.querySelector('.connector-btn') as HTMLElement).click()
       const sheet = document.querySelector('#connectors-list .connector-consent')!
-      const ref = sheet.querySelector('input[type=text]') as HTMLInputElement
+      // The consent sheet now has a label input first; use the secretref-specific class.
+      const ref = sheet.querySelector('.connector-secretref-input') as HTMLInputElement
       ref.value = 'env:SLACK_MCP_XOXB_TOKEN'
       ;(sheet.querySelector('.connector-btn') as HTMLElement).click()
       const frame = sentFrames.find((f) => f.type === 'connector-connect')
@@ -1920,6 +1921,92 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(frame).not.toHaveProperty('clientSecret')
       // requestId has the setclient_ prefix
       expect(frame.requestId).toMatch(/^setclient_/)
+    })
+
+    // ── C1: Multi-account tests ─────────────────────────────────────────────
+
+    it('C1: connector-list with TWO instances of one definition renders two labeled rows each with Disconnect', () => {
+      M().handleFrame(catalogFrame())
+      M().handleFrame({
+        type: 'connector-list',
+        instances: [
+          {
+            id: 'inst-personal', definitionId: 'google-workspace', label: 'personal',
+            status: 'connected', grantedScopes: ['g.read'], createdAt: 1, lastHealthyAt: 1,
+          },
+          {
+            id: 'inst-flowstay', definitionId: 'google-workspace', label: 'flowstay',
+            status: 'connected', grantedScopes: ['g.read', 'g.send'], createdAt: 2, lastHealthyAt: 2,
+          },
+        ],
+      })
+      const gCard = document.querySelectorAll('#connectors-list .connector-card')[0] as HTMLElement
+      // Two instance rows rendered
+      const rows = gCard.querySelectorAll('.connector-instance-row')
+      expect(rows.length).toBe(2)
+      // Labels appear in the rows
+      const labels = Array.from(rows).map((r) => r.querySelector('.connector-instance-label')!.textContent)
+      expect(labels).toContain('personal')
+      expect(labels).toContain('flowstay')
+      // Each row has a Disconnect button
+      for (const row of Array.from(rows)) {
+        const btns = Array.from(row.querySelectorAll('.connector-btn')).map((b) => b.textContent)
+        expect(btns).toContain('Disconnect')
+      }
+    })
+
+    it('C1: card button reads "Add account" when ≥1 instance exists and opens the consent sheet with a label input', () => {
+      M().handleFrame(catalogFrame())
+      M().handleFrame({
+        type: 'connector-list',
+        instances: [{
+          id: 'inst-1', definitionId: 'google-workspace', label: 'personal',
+          status: 'connected', grantedScopes: ['g.read'], createdAt: 1, lastHealthyAt: 1,
+        }],
+      })
+      const gCard = document.querySelectorAll('#connectors-list .connector-card')[0] as HTMLElement
+      // Head button should say "Add account" when an instance exists
+      const headBtn = gCard.querySelector('.connector-head .connector-btn') as HTMLElement
+      expect(headBtn.textContent).toBe('Add account')
+      // Clicking it opens the consent sheet
+      headBtn.click()
+      const sheet = document.querySelector('#connectors-list .connector-consent')!
+      expect(sheet).not.toBeNull()
+      // Consent sheet contains the account label input
+      const labelInput = sheet.querySelector('.connector-label-input') as HTMLInputElement
+      expect(labelInput).not.toBeNull()
+      expect(labelInput.placeholder).toContain('personal')
+    })
+
+    it('C1: filling the label input + clicking Authorize sends connector-oauth-begin with that label', async () => {
+      M().handleFrame(catalogFrame())
+      // Start with one existing instance so "Add account" is shown
+      M().handleFrame({
+        type: 'connector-list',
+        instances: [{
+          id: 'inst-1', definitionId: 'google-workspace', label: 'personal',
+          status: 'connected', grantedScopes: ['g.read'], createdAt: 1, lastHealthyAt: 1,
+        }],
+      })
+      const gCard = document.querySelectorAll('#connectors-list .connector-card')[0] as HTMLElement
+      // Open the consent sheet via "Add account"
+      ;(gCard.querySelector('.connector-head .connector-btn') as HTMLElement).click()
+      const sheet = document.querySelector('#connectors-list .connector-consent')!
+      // Type a label
+      const labelInput = sheet.querySelector('.connector-label-input') as HTMLInputElement
+      labelInput.value = 'flowstay'
+      // Click Authorize
+      ;(sheet.querySelector('.connector-btn') as HTMLElement).click()
+      await flush()
+      // loopback was started
+      expect(invokeCalls[0]?.cmd).toBe('oauth_loopback_start')
+      // connector-oauth-begin carries the typed label
+      const begin = sentFrames.find((f: any) => f.type === 'connector-oauth-begin')
+      expect(begin).toMatchObject({
+        definitionId: 'google-workspace',
+        label: 'flowstay',
+        loopbackPort: 49152,
+      })
     })
   })
 

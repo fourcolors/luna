@@ -885,7 +885,17 @@
     .connector-client-row { display: flex; flex-direction: column; gap: 4px; }
     .connector-client-label { font-size: 0.62rem; color: #64748b; font-weight: 500; }
     .connector-client-configured { font-size: 0.64rem; color: #6ee7b7; display: flex; align-items: center; gap: 5px; padding-bottom: 2px; }
-    
+    /* Per-instance account rows (multi-account C1) */
+    .connector-instance-row {
+      display: flex; align-items: flex-start; gap: 10px;
+      border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;
+    }
+    .connector-instance-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .connector-instance-label { font-size: 0.72rem; font-weight: 500; color: #cbd8f0; }
+    .connector-instance-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+    /* Label input inside the consent sheet */
+    .connector-label-input { margin-bottom: 2px; }
+
     /* Toggle switch design (macOS style) */
     .switch {
       position: relative;
@@ -4675,8 +4685,12 @@
         return State.connectorInstances.find((i) => i.definitionId === definitionId) || null;
       },
 
+      instancesFor(definitionId) {
+        return State.connectorInstances.filter((i) => i.definitionId === definitionId);
+      },
+
       /** The full client-brokered OAuth arc for one definition. */
-      async connectOauth(def, capabilityIds) {
+      async connectOauth(def, capabilityIds, label) {
         if (!(window.__TAURI__ && window.__TAURI__.core)) {
           this.setError('OAuth connect needs the Moon desktop app (the browser cannot capture the redirect).');
           return;
@@ -4704,11 +4718,12 @@
           this._beginTimer = setTimeout(() => {
             this._cancelOauth('Timed out starting the connection — please try again.');
           }, 30000);
+          const resolvedLabel = (label && label.trim()) ? label.trim() : def.name;
           WebSocketEngine.send({
             type: 'connector-oauth-begin',
             requestId,
             definitionId: def.id,
-            label: def.name,
+            label: resolvedLabel,
             capabilityIds,
             loopbackPort: port,
           });
@@ -4745,7 +4760,7 @@
         }
       },
 
-      connectPlain(def, capabilityIds, secretRef) {
+      connectPlain(def, capabilityIds, secretRef, label) {
         if (!(State.ws && State.ws.readyState === WebSocket.OPEN)) {
           this.setError('Not connected to a server.');
           return;
@@ -4753,11 +4768,12 @@
         State.connectorBusy[def.id] = 'connecting';
         this._consentOpen = null;
         const requestId = 'conn_' + Math.random().toString(36).slice(2);
+        const resolvedLabel = (label && label.trim()) ? label.trim() : def.name;
         const frame = {
           type: 'connector-connect',
           requestId,
           definitionId: def.id,
-          label: def.name,
+          label: resolvedLabel,
           capabilityIds,
         };
         if (secretRef) frame.secretRef = secretRef;
@@ -4776,12 +4792,20 @@
       render() {
         if (!DOM.connectorsList) return;
         const cards = State.connectorCatalog.map((def) => {
-          const instance = this.instanceFor(def.id);
+          const instances = this.instancesFor(def.id);
           const busy = State.connectorBusy[def.id];
-          const card = document.createElement('div');
-          card.className = 'connector-card'
-            + (instance ? ' ' + instance.status : ' idle');
 
+          // Card-level status class: highest-severity instance status wins, or
+          // idle when there are none.
+          const overallStatus = instances.length === 0 ? 'idle'
+            : instances.some((i) => i.status === 'error') ? 'error'
+            : instances.some((i) => i.status === 'needs-reauth') ? 'needs-reauth'
+            : 'connected';
+
+          const card = document.createElement('div');
+          card.className = 'connector-card ' + overallStatus;
+
+          // ── Card head: definition name/blurb + connect/add-account button ──
           const head = document.createElement('div');
           head.className = 'connector-head';
           const blot = document.createElement('div');
@@ -4796,26 +4820,6 @@
           sub.textContent = def.blurb;
           info.appendChild(name);
           info.appendChild(sub);
-          if (instance) {
-            const status = document.createElement('div');
-            status.className = 'connector-status-line' + (instance.status === 'needs-reauth' ? ' gold' : '');
-            status.textContent = instance.status === 'connected'
-              ? 'Connected · ' + (instance.grantedScopes.length || 'no') + ' scope(s)'
-              : instance.status === 'needs-reauth'
-                ? 'Needs your approval again — reconnect'
-                : 'Error — check the server log';
-            info.appendChild(status);
-            // Honest UX (review G2): a remote (mcp-remote) connector mounts
-            // a bearer token at a LOCAL server URL — if that process isn't
-            // running, the tools fail silently. Tell the operator.
-            if (instance.status === 'connected' && def.authKind === 'oauth2') {
-              const hint = document.createElement('div');
-              hint.className = 'connector-status-line';
-              hint.style.color = '#5d6e92';
-              hint.textContent = 'Requires its local connector server running on this machine.';
-              info.appendChild(hint);
-            }
-          }
 
           const actions = document.createElement('div');
           actions.className = 'connector-actions';
@@ -4836,37 +4840,23 @@
               cancel.addEventListener('click', () => this._cancelOauth(null));
               actions.appendChild(cancel);
             }
-          } else if (instance) {
-            if (instance.status === 'needs-reauth' && def.authKind === 'oauth2') {
-              const re = document.createElement('button');
-              re.type = 'button';
-              re.className = 'connector-btn';
-              re.textContent = 'Reconnect';
-              re.addEventListener('click', () => {
-                // Reconnect = disconnect (drops the dead token) + fresh consent.
-                this.disconnect(instance.id);
-                this._consentOpen = def.id;
-                this.render();
-              });
-              actions.appendChild(re);
-            }
-            const dis = document.createElement('button');
-            dis.type = 'button';
-            dis.className = 'connector-btn danger';
-            dis.textContent = 'Disconnect';
-            dis.addEventListener('click', () => this.disconnect(instance.id));
-            actions.appendChild(dis);
           } else {
-            // No Connect button while the per-operator OAuth client is not yet
-            // configured — the setup form below is the only actionable step,
-            // and a dead Connect button beside it just confuses (review M2.6).
+            // No Connect/Add account button while the per-operator OAuth client
+            // is not yet configured — the setup form is the only actionable
+            // step (review M2.6).
             const needsClientFirst = !!(def.clientSetup && def.authKind === 'oauth2'
               && !def.clientSetup.configured);
             if (!needsClientFirst) {
               const connect = document.createElement('button');
               connect.type = 'button';
               connect.className = 'connector-btn';
-              connect.textContent = this._consentOpen === def.id ? 'Cancel' : 'Connect';
+              // "Add account" once ≥1 instance exists; "Connect" for first.
+              const isAdding = instances.length > 0;
+              if (this._consentOpen === def.id) {
+                connect.textContent = 'Cancel';
+              } else {
+                connect.textContent = isAdding ? 'Add account' : 'Connect';
+              }
               connect.addEventListener('click', () => {
                 this._consentOpen = this._consentOpen === def.id ? null : def.id;
                 this.setError(null);
@@ -4881,11 +4871,69 @@
           head.appendChild(actions);
           card.appendChild(head);
 
-          // Client setup form: for oauth2 connectors that require a per-operator
-          // GCP OAuth client (PRD §23 / M2.6). Renders INSTEAD of the normal
-          // consent UI when clientSetup.configured === false; shows a small
-          // "configured" badge + normal consent UI when true.
-          if (def.clientSetup && def.authKind === 'oauth2' && !instance && !busy) {
+          // ── Per-instance rows: one row per connected account ──────────────
+          for (const inst of instances) {
+            const row = document.createElement('div');
+            row.className = 'connector-instance-row';
+
+            const rowLabel = document.createElement('div');
+            rowLabel.className = 'connector-instance-label';
+            rowLabel.textContent = inst.label || inst.id;
+
+            const rowStatus = document.createElement('div');
+            rowStatus.className = 'connector-status-line'
+              + (inst.status === 'needs-reauth' ? ' gold' : '');
+            rowStatus.textContent = inst.status === 'connected'
+              ? 'Connected · ' + (inst.grantedScopes.length || 'no') + ' scope(s)'
+              : inst.status === 'needs-reauth'
+                ? 'Needs your approval again — reconnect'
+                : 'Error — check the server log';
+
+            const rowInfo = document.createElement('div');
+            rowInfo.className = 'connector-instance-info';
+            rowInfo.appendChild(rowLabel);
+            rowInfo.appendChild(rowStatus);
+
+            // Honest UX (review G2): mcp-remote connector needs a local
+            // connector server process running.
+            if (inst.status === 'connected' && def.authKind === 'oauth2') {
+              const hint = document.createElement('div');
+              hint.className = 'connector-status-line';
+              hint.style.color = '#5d6e92';
+              hint.textContent = 'Requires its local connector server running on this machine.';
+              rowInfo.appendChild(hint);
+            }
+
+            const rowActions = document.createElement('div');
+            rowActions.className = 'connector-instance-actions';
+
+            if (inst.status === 'needs-reauth' && def.authKind === 'oauth2') {
+              const re = document.createElement('button');
+              re.type = 'button';
+              re.className = 'connector-btn';
+              re.textContent = 'Reconnect';
+              re.addEventListener('click', () => {
+                // Reconnect = disconnect (drops the dead token) + open consent.
+                this.disconnect(inst.id);
+                this._consentOpen = def.id;
+                this.render();
+              });
+              rowActions.appendChild(re);
+            }
+            const dis = document.createElement('button');
+            dis.type = 'button';
+            dis.className = 'connector-btn danger';
+            dis.textContent = 'Disconnect';
+            dis.addEventListener('click', () => this.disconnect(inst.id));
+            rowActions.appendChild(dis);
+
+            row.appendChild(rowInfo);
+            row.appendChild(rowActions);
+            card.appendChild(row);
+          }
+
+          // ── Client setup form (M2.6) — only needed once per definition ────
+          if (def.clientSetup && def.authKind === 'oauth2' && !busy) {
             const editOpen = this._clientEditOpen === def.id;
             if (def.clientSetup.configured) {
               // configured === true: badge + an Edit toggle so a wrong or
@@ -4967,14 +5015,31 @@
             }
           }
 
-          // Consent sheet: capability checkboxes (scope narrowing, PRD §17).
-          // Skipped when clientSetup exists but is not yet configured (the setup
-          // form above is shown instead).
+          // ── Consent sheet: label input + capability checkboxes ────────────
+          // (PRD §17 scope narrowing). Shown when _consentOpen matches this
+          // definition and no auth is in flight. Skipped when clientSetup
+          // exists but is not yet configured (setup form gates it — M2.6).
           const clientNotReady = def.clientSetup && def.authKind === 'oauth2'
             && !def.clientSetup.configured;
-          if (this._consentOpen === def.id && !instance && !busy && !clientNotReady) {
+          if (this._consentOpen === def.id && !busy && !clientNotReady) {
             const sheet = document.createElement('div');
             sheet.className = 'connector-consent';
+
+            // Account label input — lets the operator name the new account
+            // (e.g. "personal", "flowstay"). Empty → falls back to def.name.
+            const labelRow = document.createElement('div');
+            labelRow.className = 'connector-client-row';
+            const labelLbl = document.createElement('div');
+            labelLbl.className = 'connector-client-label';
+            labelLbl.textContent = 'Account label';
+            const labelInput = document.createElement('input');
+            labelInput.type = 'text';
+            labelInput.className = 'premium-text-input connector-label-input';
+            labelInput.placeholder = 'e.g. personal, flowstay';
+            labelRow.appendChild(labelLbl);
+            labelRow.appendChild(labelInput);
+            sheet.appendChild(labelRow);
+
             const boxes = [];
             for (const cap of def.capabilities) {
               const row = document.createElement('label');
@@ -4999,7 +5064,7 @@
             if (def.authKind === 'api-key') {
               refInput = document.createElement('input');
               refInput.type = 'text';
-              refInput.className = 'premium-text-input';
+              refInput.className = 'premium-text-input connector-secretref-input';
               refInput.placeholder = 'Secret ref, e.g. env:SLACK_MCP_XOXB_TOKEN (store the value via the Secrets tab first)';
               sheet.appendChild(refInput);
             }
@@ -5009,10 +5074,11 @@
             go.textContent = def.authKind === 'oauth2' ? 'Authorize in browser' : 'Connect';
             go.addEventListener('click', () => {
               const capabilityIds = boxes.filter((b) => b.cb.checked).map((b) => b.id);
+              const accountLabel = labelInput.value.trim() || def.name;
               if (def.authKind === 'oauth2') {
-                this.connectOauth(def, capabilityIds);
+                this.connectOauth(def, capabilityIds, accountLabel);
               } else {
-                this.connectPlain(def, capabilityIds, refInput ? refInput.value.trim() : '');
+                this.connectPlain(def, capabilityIds, refInput ? refInput.value.trim() : '', accountLabel);
               }
             });
             sheet.appendChild(go);
