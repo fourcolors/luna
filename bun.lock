@@ -36,7 +36,7 @@
     },
     "apps/ui-moon-tauri": {
       "name": "@luna/ui-moon-tauri",
-      "version": "0.0.18",
+      "version": "0.0.21",
       "devDependencies": {
         "@tauri-apps/cli": "^2.1.0",
         "jsdom": "^29.1.1",
@@ -55,6 +55,7 @@
       "devDependencies": {
         "@luna/adapter-sdk": "workspace:*",
         "@luna/chat-service": "workspace:*",
+        "@luna/connectors": "workspace:*",
         "@luna/control-server": "workspace:*",
         "@luna/core": "workspace:*",
         "@luna/local-shell-tools": "workspace:*",
@@ -63,6 +64,7 @@
         "@luna/observability-tools": "workspace:*",
         "@luna/scheduler-tools": "workspace:*",
         "@luna/secret-tools": "workspace:*",
+        "@luna/skill-tools": "workspace:*",
         "@luna/ui-shared": "workspace:*",
         "@luna/ui-shared-solid": "workspace:*",
         "@luna/ui-ws": "workspace:*",
@@ -104,6 +106,25 @@
       },
       "peerDependencies": {
         "@anthropic-ai/claude-agent-sdk": ">=0.3.0 <1",
+      },
+    },
+    "packages/connectors": {
+      "name": "@luna/connectors",
+      "version": "0.0.1",
+      "dependencies": {
+        "@luna/core": "workspace:*",
+        "@luna/tools": "workspace:*",
+        "effect": "^3.21.0",
+      },
+      "devDependencies": {
+        "@anthropic-ai/claude-agent-sdk": "^0.3.170",
+        "typescript": "^5.6.3",
+        "vitest": "^2.1.5",
+        "zod": "^4.0.0",
+      },
+      "peerDependencies": {
+        "@anthropic-ai/claude-agent-sdk": ">=0.3.0 <1",
+        "zod": "^4.0.0",
       },
     },
     "packages/control-server": {
@@ -214,6 +235,25 @@
       "dependencies": {
         "@luna/tools": "workspace:*",
         "@luna/ui-ws": "workspace:*",
+        "effect": "^3.21.0",
+      },
+      "devDependencies": {
+        "@anthropic-ai/claude-agent-sdk": "^0.3.170",
+        "typescript": "^5.6.3",
+        "vitest": "^2.1.5",
+        "zod": "^4.0.0",
+      },
+      "peerDependencies": {
+        "@anthropic-ai/claude-agent-sdk": ">=0.3.0 <1",
+        "zod": "^4.0.0",
+      },
+    },
+    "packages/skill-tools": {
+      "name": "@luna/skill-tools",
+      "version": "0.0.1",
+      "dependencies": {
+        "@luna/core": "workspace:*",
+        "@luna/tools": "workspace:*",
         "effect": "^3.21.0",
       },
       "devDependencies": {
@@ -461,6 +501,8 @@
 
     "@luna/chat-service": ["@luna/chat-service@workspace:packages/chat-service"],
 
+    "@luna/connectors": ["@luna/connectors@workspace:packages/connectors"],
+
     "@luna/control-server": ["@luna/control-server@workspace:packages/control-server"],
 
     "@luna/core": ["@luna/core@workspace:packages/core"],
@@ -476,6 +518,8 @@
     "@luna/scheduler-tools": ["@luna/scheduler-tools@workspace:packages/scheduler-tools"],
 
     "@luna/secret-tools": ["@luna/secret-tools@workspace:packages/secret-tools"],
+
+    "@luna/skill-tools": ["@luna/skill-tools@workspace:packages/skill-tools"],
 
     "@luna/tools": ["@luna/tools@workspace:packages/tools"],
 

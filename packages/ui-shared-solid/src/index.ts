@@ -35,3 +35,4 @@ export {
   type AccountSwitcherProps,
   type AccountSummary,
 } from "./AccountSwitcher.jsx"
+export { SkillsPanel, type SkillsPanelProps } from "./SkillsPanel.jsx"

@@ -119,7 +119,7 @@ import {
 } from "node:fs"
 import { hostname, userInfo } from "node:os"
 import { execFileSync, spawn } from "node:child_process"
-import { dirname } from "node:path"
+import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
   applyRuntimePathEnvDefaults,
@@ -144,7 +144,7 @@ import {
   }
   applyRuntimePathEnvDefaults(resolveRuntimePaths())
 }
-import { Effect, Layer, ManagedRuntime, Option, Stream } from "effect"
+import { Context, Effect, Layer, ManagedRuntime, Option, Stream } from "effect"
 import {
   AccountBroker,
   AccountBrokerLayer,
@@ -158,6 +158,7 @@ import {
   BELIEF_KIND,
   BELIEF_NAMESPACE,
   BeliefWriter,
+  BUILTIN_SKILLS,
   CalibrationStore,
   Clock,
   DEFAULT_UI_KINDS,
@@ -170,7 +171,11 @@ import {
   ObservabilityService,
   OnePasswordSecretProvider,
   RoutedOpSecretProvider,
+  scanUserSkills,
   SessionStore,
+  SkillPrefsStore,
+  SkillRegistry,
+  syncUserSkills,
   Survey,
   TelemetryPlatform,
   TelemetryService,
@@ -248,6 +253,13 @@ import {
   makeRegisterSecret,
   type SecretDestination,
 } from "@luna/secret-tools"
+import { SkillToolsLayer, SkillToolsService } from "@luna/skill-tools"
+import {
+  BUILTIN_CONNECTORS,
+  ConnectorInstanceStore,
+  ConnectorService,
+  ConnectorServiceLayer,
+} from "@luna/connectors"
 import { startControlServer } from "@luna/control-server"
 import {
   resolveOpAccounts,
@@ -399,6 +411,13 @@ const localShellBridge = createLocalShellBridge()
 // attached CLI with --local-shell takes over (`replaceable: true`); when it
 // releases, we re-run the original attach so the agent keeps local_shell.
 const sandboxReattachers = new Map<string, () => void>()
+
+// PRD Part B: bridge between skillRegistryL's hot-load fiber (buildBaseLayer)
+// and the ui-ws broadcast hook (buildServerLayer wires it via
+// skillsWsHandle.changes). Module-level holder because the two live in
+// different layer scopes of this same boot script. Null until a WS server
+// registers; the fiber null-guards every call.
+let notifySkillCatalogChanged: (() => void) | null = null
 const reattachSandbox = (threadId: string): void => {
   const reattach = sandboxReattachers.get(threadId)
   if (reattach !== undefined) reattach()
@@ -433,6 +452,30 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       const obsTools = yield* ObsToolsService
       const localShellTools = yield* LocalShellToolsService
       const secretTools = yield* SecretToolsService
+      const skillTools = yield* SkillToolsService
+      // PRD Part B (Skills): the managed skill catalog. decorate() reads
+      // promptSnapshotSync() — synchronous and never stale (the registry
+      // rebuilds it inside every mutation), so a settings toggle is
+      // reflected in the very next thread without a restart or a tick.
+      // (The ~/.luna/skills hot-load fiber lives in skillRegistryL, where
+      // the prefs store is in scope for the new-skill quarantine.)
+      const skillRegistry = yield* SkillRegistry
+      // PRD Part A (Connectors): connected services' MCP servers. Same
+      // sync-snapshot discipline — refreshMounts() rebuilds on connect/
+      // disconnect (and on M2 token rotation); decorate() just spreads it.
+      const connectorService = yield* ConnectorService
+      const bootMounts = Object.keys(connectorService.mountSnapshotSync())
+      if (bootMounts.length > 0) {
+        console.log("[luna/boot] connector mounts:", bootMounts.join(", "))
+      }
+
+      const bootSkills = yield* skillRegistry.catalog()
+      console.log(
+        "[luna/boot] skills registered:",
+        bootSkills.length,
+        `(${bootSkills.filter((s) => s.enabled).length} enabled,`,
+        `${bootSkills.filter((s) => s.source === "user").length} user)`,
+      )
 
       console.log("[luna/boot] MCP servers registered:", [
         memTools.serverName,
@@ -553,6 +596,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
           const obsThreadTools = obsTools.createSessionBinding()
           const localShellThreadTools = localShellTools.createSessionBinding()
           const secretThreadTools = secretTools.createSessionBinding()
+          const skillThreadTools = skillTools.createSessionBinding()
           console.log(
             "[luna/thread] wiring MCP servers:",
             [
@@ -561,6 +605,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
               obsThreadTools.serverName,
               localShellThreadTools.serverName,
               secretThreadTools.serverName,
+              skillThreadTools.serverName,
             ].join(", "),
           )
           // Sync read of the live-refresh holder — refreshed every
@@ -576,6 +621,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             mainMemoryContent, // Luna main thread observational memory
             sessionMetadata,
             beliefsContent, // Phase 3 D5: ranked active beliefs section
+            skillRegistry.promptSnapshotSync(), // PRD Part B: enabled skills ("" when none — filtered below)
             opts.systemPrompt,
             memoryThreadTools.systemPromptAddendum,
             schedulerThreadTools.systemPromptAddendum,
@@ -592,6 +638,8 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             [obsThreadTools.serverName]: obsThreadTools.server,
             [localShellThreadTools.serverName]: localShellThreadTools.server,
             [secretThreadTools.serverName]: secretThreadTools.server,
+            [skillThreadTools.serverName]: skillThreadTools.server, // PRD B §11: skill_load (tier-2 disclosure)
+            ...connectorService.mountSnapshotSync(), // PRD A §07: connected services, hot per-thread
           }
           return {
             mcpServers,
@@ -1211,12 +1259,128 @@ export const buildBaseLayer = (
     Layer.provide(clockL),
   )
 
+  // PRD Part B: the skill catalog, seeded with the in-repo built-ins and
+  // hydrated from the skill_preferences table (delta-only: absent row =
+  // enabled). Toggles write through to the store BEFORE the in-memory
+  // flip, so memory and disk can never disagree. Defined once and reused
+  // by reference (Layer memoization) so the thread-tools wiring and the
+  // ui-ws skill frames see the SAME registry instance.
+  //
+  // This layer also OWNS the ~/.luna/skills hot-load fiber (boot scan +
+  // 30s refresh, the beliefs-holder pattern) because the quarantine needs
+  // the prefs store: a NEVER-DECIDED user skill registers DISABLED until
+  // the operator enables it in the Skills tab (review finding: the agent
+  // can write ~/.luna/skills via local-shell, so auto-enabling new files
+  // would be a persistent prompt-injection channel). Catalog deltas ping
+  // notifySkillCatalogChanged so ui-ws broadcasts a fresh catalog to
+  // long-lived clients.
+  // LunaSqliteBootstrap flows up from the prefs store and is satisfied at
+  // the bottom of buildServerLayer, same as every other SQLite layer here.
+  const skillPrefsL = SkillPrefsStore.makeLayer(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
+  const skillRegistryL = Layer.scoped(
+    SkillRegistry,
+    Effect.gen(function* () {
+      const prefs = yield* SkillPrefsStore
+      const disabled = yield* prefs.disabledIds()
+      if (disabled.length > 0) {
+        console.log(
+          "[luna/boot] skill_preferences hydrated:",
+          disabled.length,
+          "disabled —",
+          disabled.join(", "),
+        )
+      }
+      const ctx = yield* Layer.build(
+        SkillRegistry.layer({
+          seeds: BUILTIN_SKILLS,
+          initialDisabled: disabled,
+          onToggle: (id, enabled) => prefs.setEnabled(id, enabled),
+          // PRD B §11 (S4): index disclosure — the system prompt carries a
+          // one-line index of enabled skills; bodies load on demand via the
+          // skill_tools.skill_load MCP tool. Keeps 100+ enabled skills from
+          // bloating every turn's context.
+          disclosure: "index",
+        }),
+      )
+      const registry = Context.get(ctx, SkillRegistry)
+
+      const userSkillsDir = join(resolveRuntimePaths().lunaHome, "skills")
+      const refreshUserSkills = Effect.gen(function* () {
+        const scan = scanUserSkills(userSkillsDir)
+        const approvedIds = new Set(yield* prefs.knownIds())
+        const summary = yield* syncUserSkills(registry, scan, { approvedIds })
+        if (summary.added + summary.updated + summary.removed > 0) {
+          console.log(
+            `[luna/skills] user skills synced: +${summary.added} ~${summary.updated} -${summary.removed}`,
+          )
+          // Long-lived clients (the Moon) must see hot-load deltas without
+          // a reconnect — ui-ws registered this via skillsWsHandle.changes.
+          notifySkillCatalogChanged?.()
+        }
+        if (summary.quarantined.length > 0) {
+          console.warn(
+            "[luna/skills] NEW user skill(s) found and DISABLED pending your approval " +
+              "(enable in Settings → Skills):",
+            summary.quarantined.join(", "),
+          )
+        }
+        if (summary.conflicts.length > 0) {
+          console.warn(
+            "[luna/skills] user skills shadowing built-ins were SKIPPED:",
+            summary.conflicts.join(", "),
+          )
+        }
+        for (const w of scan.warnings) console.warn("[luna/skills]", w)
+      }).pipe(
+        // Never take the boot/loop down — but never swallow silently either
+        // (review finding): squashed causes get an operator-visible line.
+        Effect.catchAllCause((cause) =>
+          Effect.sync(() =>
+            console.warn("[luna/skills] user-skill sync failed:", String(cause)),
+          ),
+        ),
+      )
+      yield* refreshUserSkills
+      yield* Effect.forkScoped(
+        Effect.forever(
+          Effect.sleep(30_000).pipe(Effect.zipRight(refreshUserSkills)),
+        ),
+      )
+
+      return registry
+    }),
+  ).pipe(Layer.provide(skillPrefsL))
+
   // Per-thread tool wiring, provided INTO ChatService so both new and
   // resumed threads get tools (the resume path bypasses any outer wrapper).
   // LunaSqliteBootstrap flows up and is satisfied at the bottom of
   // buildServerLayer, same as every other SQLite-backed layer here.
+  // PRD Part A: connector instances (luna.db) + the service whose sync
+  // mount snapshot decorate() spreads into every thread's mcpServers.
+  // Defined once and merged into the base layer too (memoized by
+  // reference) so M2's WS frames talk to the SAME instance.
+  const connectorStoreL = ConnectorInstanceStore.makeLayer(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
+  const connectorServiceL = ConnectorServiceLayer({
+    definitions: BUILTIN_CONNECTORS,
+  }).pipe(
+    Layer.provide(connectorStoreL),
+    Layer.provide(secretL),
+    Layer.provide(clockL),
+  )
+
   const threadToolsL = ThreadToolsProviderLayer().pipe(
     Layer.provide(memoryRouterL), // REQUIRED: satisfies MemoryRouterTag inside the layer (siblings don't cross-wire)
+    // PRD Part B: skill_tools (skill_load) + the registry snapshot read by
+    // decorate(). SkillToolsLayer requires SkillRegistry, so order matters:
+    // provide the tools layer first, then the registry satisfies both it
+    // and the provider (Layer.provide composes bottom-up).
+    Layer.provide(SkillToolsLayer()),
+    Layer.provide(skillRegistryL),
+    Layer.provide(connectorServiceL), // PRD Part A: mounts read by decorate()
     Layer.provide(obsL),
     Layer.provide(clockL),
     // JobsStore required by SchedulerToolsLayer for durable cron persistence
@@ -1381,6 +1545,8 @@ export const buildBaseLayer = (
     wakeCronL ?? Layer.empty, // wake cron: workspace-state digest at each tick (disabled if LUNA_WAKE_ENABLED=0)
     jobTickerL ?? Layer.empty, // Phase 12b V2 ticker: enabled via LUNA_SCHEDULER_V2_ENABLED=1 (DESIGN §5.3)
     surveyL,    // Phase 3 D3: Survey available for buildServerLayer to resolve + pass to the WS server
+    skillRegistryL, // PRD Part B: same instance as threadToolsL (memoized by reference) — buildServerLayer resolves it for the WS skill frames
+    connectorServiceL, // PRD Part A: same instance as threadToolsL — M2's WS connector frames resolve it here
   )
 }
 
@@ -1494,6 +1660,7 @@ export const buildSetupServerLayer = (
         chatService: null,
         accountBroker: null,
         survey: null,
+        skillRegistry: null,
         localShellBridge: null,
         // No chat in setup-mode → the request_secret tool is never bound, so the
         // secret bridge has nothing to drive. Disabled here.
@@ -1532,6 +1699,27 @@ const buildServerLayer = (
       const chat = yield* ChatService
       const broker = yield* AccountBroker
       const surveyService = yield* Survey // Phase 3 D3
+      const skillRegistryService = yield* SkillRegistry // PRD Part B
+
+      // Wire-safety adapter (PRD §12): the ui-ws handle receives catalog
+      // entries with the `body` ALREADY stripped. Bodies are prompt content
+      // for the agent — they never reach clients, and stripping here (not
+      // in ui-ws) means a ui-ws logging/serialization bug cannot leak them.
+      const skillsWsHandle = {
+        catalog: () =>
+          skillRegistryService.catalog().pipe(
+            Effect.map((entries) =>
+              entries.map(({ body: _body, ...meta }) => meta),
+            ),
+          ),
+        setEnabled: (id: string, enabled: boolean) =>
+          skillRegistryService.setEnabled(id, enabled),
+        // Out-of-band catalog changes (the ~/.luna/skills hot-load fiber)
+        // → ui-ws broadcasts a fresh catalog to every connected client.
+        changes: (notify: () => void) => {
+          notifySkillCatalogChanged = notify
+        },
+      }
 
       // Phase 3 D3: build the SurveyWsHandle adapter. SurveyApi has
       // pendingSurvey + processVerdict; SurveyWsHandle needs pendingSurvey +
@@ -1569,6 +1757,7 @@ const buildServerLayer = (
         chatService: chat,
         accountBroker: broker,
         survey: surveyHandle, // Phase 3 D3: resolved handle
+        skillRegistry: skillsWsHandle, // PRD Part B: bodies pre-stripped
         localShellBridge,
         onLocalShellRelease: reattachSandbox,
         registerOpToken: registerOpTokenHandler,
