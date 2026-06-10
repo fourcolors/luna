@@ -61,37 +61,49 @@ export interface ArtifactPanelProps {
 
 export const ArtifactPanel: Component<ArtifactPanelProps> = (props) => {
   const [selectedId, setSelectedId] = createSignal<string | null>(
-    props.artifacts[0]?.id ?? null,
+    // Seed from the newest ephemeral, else the first pin — so a pins-only
+    // panel (a reopened session whose only artifacts are durable) previews
+    // something on mount instead of a blank detail area (review W1/web).
+    props.artifacts[0]?.id ?? props.pinned?.[0]?.id ?? null,
   )
 
   // Auto-select newest when artifacts grow or the newest artifact's
   // identity changes. Mirrors the React useEffect — only assigns when
-  // there's no current selection so manual clicks stick.
+  // there's no current selection so manual clicks stick. Falls back to the
+  // first pin when there is no ephemeral artifact (the pins-only case).
   createEffect(() => {
-    const last = props.artifacts[props.artifacts.length - 1]?.id ?? null
+    const last =
+      props.artifacts[props.artifacts.length - 1]?.id ??
+      props.pinned?.[0]?.id ??
+      null
     if (last) setSelectedId((cur) => cur ?? last)
   })
 
   /** Set of ids that are already in the pinned list. */
   const pinnedIds = createMemo(() => new Set((props.pinned ?? []).map((p) => p.id)))
 
-  /** Resolve the selected display item — search pinned first, then ephemeral. */
+  /** Resolve the selected display item. Search EPHEMERAL first so an
+   *  in-session artifact that is also pinned (same id in both lists) keeps
+   *  its richer `path`/provenance — and so this stays consistent with
+   *  `artifactForDownload`, which also searches ephemeral first (review
+   *  W1/web). Falls back to newest ephemeral, then first pin. */
   const selected = createMemo<DisplayItem | null>(() => {
     const id = selectedId()
-    // 1. Check pinned list
-    const inPinned = (props.pinned ?? []).find((p) => p.id === id)
-    if (inPinned) {
-      return { id: inPinned.id, title: inPinned.title, lang: inPinned.lang, content: inPinned.content, path: null }
-    }
-    // 2. Check ephemeral list
     const inEphemeral = props.artifacts.find((a) => a.id === id)
     if (inEphemeral) {
       return { id: inEphemeral.id, title: inEphemeral.title, lang: inEphemeral.lang, content: inEphemeral.content, path: inEphemeral.path }
     }
-    // 3. Fall back to newest ephemeral
+    const inPinned = (props.pinned ?? []).find((p) => p.id === id)
+    if (inPinned) {
+      return { id: inPinned.id, title: inPinned.title, lang: inPinned.lang, content: inPinned.content, path: null }
+    }
     const last = props.artifacts[props.artifacts.length - 1]
     if (last) {
       return { id: last.id, title: last.title, lang: last.lang, content: last.content, path: last.path }
+    }
+    const firstPin = (props.pinned ?? [])[0]
+    if (firstPin) {
+      return { id: firstPin.id, title: firstPin.title, lang: firstPin.lang, content: firstPin.content, path: null }
     }
     return null
   })
@@ -116,12 +128,29 @@ export const ArtifactPanel: Component<ArtifactPanelProps> = (props) => {
     () => props.artifactsCapable === true && (props.pinned ?? []).length > 0,
   )
 
+  // Rows are <div role="button"> (not <button>) so the pin/unpin chips —
+  // themselves <button>s — are valid children (a button may not nest a
+  // button; review W1/web). Keyboard activation restores the button a11y.
+  const activateOnKey = (fn: () => void) => (e: KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault()
+      fn()
+    }
+  }
+
   return (
     <aside class="artifact-panel">
       <div class="artifact-head">
         <span>Artifacts</span>
         <span class="muted small">
-          {(props.pinned ?? []).length + props.artifacts.length}
+          {/* Distinct ids — an in-session artifact that is also pinned shares
+              its id across both lists and must not be counted twice. */}
+          {
+            new Set([
+              ...(props.pinned ?? []).map((p) => p.id),
+              ...props.artifacts.map((a) => a.id),
+            ]).size
+          }
         </span>
       </div>
 
@@ -134,9 +163,12 @@ export const ArtifactPanel: Component<ArtifactPanelProps> = (props) => {
         <div class="artifact-list">
           <For each={props.pinned ?? []}>
             {(p) => (
-              <button
+              <div
                 class={`artifact-row${p.id === selected()?.id ? " selected" : ""}`}
+                role="button"
+                tabindex={0}
                 onClick={() => setSelectedId(p.id)}
+                onKeyDown={activateOnKey(() => setSelectedId(p.id))}
               >
                 <div class="artifact-title">📌 {p.title}</div>
                 <div class="artifact-meta muted small">
@@ -152,7 +184,7 @@ export const ArtifactPanel: Component<ArtifactPanelProps> = (props) => {
                     unpin
                   </button>
                 </Show>
-              </button>
+              </div>
             )}
           </For>
         </div>
@@ -172,9 +204,12 @@ export const ArtifactPanel: Component<ArtifactPanelProps> = (props) => {
               const lines = countLines(a.content)
               const alreadyPinned = createMemo(() => pinnedIds().has(a.id))
               return (
-                <button
+                <div
                   class={`artifact-row${a.id === selected()?.id ? " selected" : ""}`}
+                  role="button"
+                  tabindex={0}
                   onClick={() => setSelectedId(a.id)}
+                  onKeyDown={activateOnKey(() => setSelectedId(a.id))}
                 >
                   <div class="artifact-title">
                     {a.source === "tool-write" ? "📄" : "📝"} {a.title}
@@ -206,7 +241,7 @@ export const ArtifactPanel: Component<ArtifactPanelProps> = (props) => {
                       </button>
                     </Show>
                   </Show>
-                </button>
+                </div>
               )
             }}
           </For>

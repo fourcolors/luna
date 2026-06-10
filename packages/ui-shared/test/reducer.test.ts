@@ -286,3 +286,62 @@ describe("reducer", () => {
     ])
   })
 })
+
+describe("reducer — pinned artifacts (PRD C/W1)", () => {
+  const pin = (id: string, over: Record<string, unknown> = {}) =>
+    ({
+      id,
+      kind: "code",
+      title: id,
+      lang: null,
+      content: "x",
+      origin: null,
+      version: 1,
+      pinnedAt: 0,
+      updatedAt: 0,
+      ...over,
+    }) as unknown as import("../src/wire.js").PinnedArtifactItem
+
+  it("artifact-list replaces the pinned set wholesale", () => {
+    let s = reduce(initialState, {
+      type: "artifact-list",
+      artifacts: [pin("a"), pin("b")],
+    })
+    expect(s.pinnedArtifacts.map((p) => p.id)).toEqual(["a", "b"])
+    // A second list fully replaces — not merges.
+    s = reduce(s, { type: "artifact-list", artifacts: [pin("c")] })
+    expect(s.pinnedArtifacts.map((p) => p.id)).toEqual(["c"])
+  })
+
+  it("artifact-update replaces an existing artifact IN PLACE and moves it to the front", () => {
+    const s0 = reduce(initialState, {
+      type: "artifact-list",
+      artifacts: [pin("a", { version: 1 }), pin("b"), pin("c")],
+    })
+    const s1 = reduce(s0, {
+      type: "artifact-update",
+      artifact: pin("a", { version: 2, content: "edited" }),
+    })
+    // Newest-updated leads; no duplicate; the edit is reflected.
+    expect(s1.pinnedArtifacts.map((p) => p.id)).toEqual(["a", "b", "c"])
+    expect(s1.pinnedArtifacts[0]).toMatchObject({ id: "a", version: 2, content: "edited" })
+  })
+
+  it("artifact-update with an unseen id prepends it", () => {
+    const s0 = reduce(initialState, {
+      type: "artifact-list",
+      artifacts: [pin("a"), pin("b")],
+    })
+    const s1 = reduce(s0, { type: "artifact-update", artifact: pin("new") })
+    expect(s1.pinnedArtifacts.map((p) => p.id)).toEqual(["new", "a", "b"])
+  })
+
+  it("artifact-update cannot leave a duplicate id even if the prior list had one", () => {
+    // Construct a degenerate state with a duplicate, then update it.
+    const dup = { ...initialState, pinnedArtifacts: [pin("a"), pin("a"), pin("b")] }
+    const s1 = reduce(dup, { type: "artifact-update", artifact: pin("a", { version: 9 }) })
+    const ids = s1.pinnedArtifacts.map((p) => p.id)
+    expect(ids).toEqual(["a", "b"]) // both prior "a" rows collapsed into the update
+    expect(s1.pinnedArtifacts.filter((p) => p.id === "a")).toHaveLength(1)
+  })
+})

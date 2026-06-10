@@ -1566,11 +1566,23 @@ export const startUIWebSocketServer = (
                     // global, like connector-list). Idempotent on id server-side.
                     if (artifactStore === null) return
                     const store = artifactStore
+                    // Validate the inbound frame (review W1/uiws): reject
+                    // malformed pins rather than coercing undefined → junk rows
+                    // ("undefined" id, empty content). Same discipline as
+                    // skill-toggle's id guard.
+                    if (
+                      typeof frame.id !== "string" ||
+                      frame.id.trim().length === 0 ||
+                      typeof frame.title !== "string" ||
+                      typeof frame.content !== "string"
+                    ) {
+                      return
+                    }
                     yield* store
                       .pin({
-                        id: String(frame.id),
-                        title: String(frame.title ?? ""),
-                        content: String(frame.content ?? ""),
+                        id: frame.id,
+                        title: frame.title,
+                        content: frame.content,
                         ...(frame.lang !== undefined ? { lang: frame.lang } : {}),
                         ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
                         ...(frame.origin !== undefined
@@ -1594,8 +1606,14 @@ export const startUIWebSocketServer = (
                   case "artifact-unpin": {
                     if (artifactStore === null) return
                     const store = artifactStore
+                    if (
+                      typeof frame.id !== "string" ||
+                      frame.id.trim().length === 0
+                    ) {
+                      return
+                    }
                     yield* store
-                      .unpin(String(frame.id))
+                      .unpin(frame.id)
                       .pipe(
                         Effect.flatMap(() =>
                           Effect.gen(function* () {

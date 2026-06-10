@@ -340,15 +340,37 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
           return (r?.v ?? 0) + 1
         }
 
+        // Multi-statement writes must be atomic: a crash between an
+        // `artifacts` insert and its `artifact_versions` insert would leave an
+        // orphan head (empty ledger) that permanently poisons the id (review
+        // W1/store). BEGIN IMMEDIATE acquires the write lock up front, matching
+        // jobs-store.ts.
+        const tx = (fn: () => void): void => {
+          db.run("BEGIN IMMEDIATE")
+          try {
+            fn()
+            db.run("COMMIT")
+          } catch (e) {
+            try {
+              db.run("ROLLBACK")
+            } catch {
+              /* best-effort */
+            }
+            throw e
+          }
+        }
+
         const appendVersion = (
           id: string,
           content: string,
           editedBy: ArtifactEditor,
           now: number,
         ): void => {
-          const version = nextVersionFor(id)
-          insertVersion.run(id, version, content, editedBy, now)
-          updateHead.run(content, now, id)
+          tx(() => {
+            const version = nextVersionFor(id)
+            insertVersion.run(id, version, content, editedBy, now)
+            updateHead.run(content, now, id)
+          })
         }
 
         return {
@@ -362,24 +384,28 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
                   input.bridgeCaps == null
                     ? null
                     : JSON.stringify(input.bridgeCaps)
-                insertArtifact.run(
-                  input.id,
-                  kind,
-                  input.title,
-                  input.lang ?? null,
-                  input.content,
-                  input.origin ?? null,
-                  bridge,
-                  now,
-                  now,
-                )
-                insertVersion.run(
-                  input.id,
-                  1,
-                  input.content,
-                  input.editedBy ?? "user",
-                  now,
-                )
+                // Atomic: the artifacts head + its v1 ledger row commit together
+                // or not at all (review W1/store — no orphan heads).
+                tx(() => {
+                  insertArtifact.run(
+                    input.id,
+                    kind,
+                    input.title,
+                    input.lang ?? null,
+                    input.content,
+                    input.origin ?? null,
+                    bridge,
+                    now,
+                    now,
+                  )
+                  insertVersion.run(
+                    input.id,
+                    1,
+                    input.content,
+                    input.editedBy ?? "user",
+                    now,
+                  )
+                })
                 return readHead(input.id) as PinnedArtifact
               }),
             ),

@@ -135,6 +135,14 @@ function readProtocolSource(): string {
   return readFileSync(new URL("../src/protocol.ts", import.meta.url), "utf8")
 }
 
+/** Read the ui-shared wire mirror (the standalone copy non-Node clients use). */
+function readWireSource(): string {
+  return readFileSync(
+    new URL("../../ui-shared/src/wire.ts", import.meta.url),
+    "utf8",
+  )
+}
+
 /**
  * Map each frame INTERFACE NAME to its `type` string literal.
  * `type` is always the first field of a frame interface, so we match
@@ -214,5 +222,36 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // (client) → 34 server / 23 client.
     expect(literalsForUnion(src, "ServerFrame")).toHaveLength(34)
     expect(literalsForUnion(src, "ClientFrame")).toHaveLength(23)
+  })
+
+  // VERSION-SKEW (client half): nothing else pins the ui-shared wire.ts mirror
+  // to protocol.ts. A frame added/renamed in wire.ts but not protocol.ts (or
+  // misspelled) would silently break the non-Node clients (Moon/web) without
+  // any test going red (review W1/wire). wire.ts is a STRICT SUBSET of
+  // protocol.ts (it omits server-internal frames like tool-call), so assert
+  // containment with matching spellings.
+  const wireSrc = readWireSource()
+  for (const union of ["ServerFrame", "ClientFrame"] as const) {
+    it(`wire.ts ${union} literals are a spelling-exact subset of protocol.ts (mirror stays in sync)`, () => {
+      const wire = new Set(literalsForUnion(wireSrc, union))
+      const proto = new Set(literalsForUnion(src, union))
+      const orphans = [...wire].filter((t) => !proto.has(t))
+      expect(orphans).toEqual([]) // every wire frame must exist in protocol.ts
+    })
+  }
+
+  it("the artifact frames (W1) are present in BOTH wire.ts and protocol.ts", () => {
+    const serverProto = new Set(literalsForUnion(src, "ServerFrame"))
+    const serverWire = new Set(literalsForUnion(wireSrc, "ServerFrame"))
+    const clientProto = new Set(literalsForUnion(src, "ClientFrame"))
+    const clientWire = new Set(literalsForUnion(wireSrc, "ClientFrame"))
+    for (const t of ["artifact-list", "artifact-update"]) {
+      expect(serverProto.has(t)).toBe(true)
+      expect(serverWire.has(t)).toBe(true)
+    }
+    for (const t of ["artifact-pin", "artifact-unpin"]) {
+      expect(clientProto.has(t)).toBe(true)
+      expect(clientWire.has(t)).toBe(true)
+    }
   })
 })
