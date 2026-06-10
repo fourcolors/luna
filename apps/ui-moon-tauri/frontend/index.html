@@ -3953,7 +3953,10 @@
       // covers it, so defer the drop until the chat collapses.
       showTether() {
         if (State.tetherGraceTimer) { clearTimeout(State.tetherGraceTimer); State.tetherGraceTimer = null; }
-        if (DOM.chatPanel.classList.contains('active')) { State.tetherPendingOnCollapse = true; return; }
+        // Collapsed-only, and never under a full-window overlay: the wizard
+        // (like the open chat) must keep the whole window interactive — a
+        // string episode would flip most of it native-click-through.
+        if (DOM.chatPanel.classList.contains('active') || DOM.wizardPanel.classList.contains('active')) { State.tetherPendingOnCollapse = true; return; }
         State.tetherPendingOnCollapse = false;
         if (MoonString.isLive()) return;      // already out
         // growToEnvelope() is several async IPC round-trips. Stamp an epoch so that
@@ -7190,9 +7193,28 @@
         this.open();
       },
 
-      open() {
+      async open() {
         if (DOM.wizardPanel.classList.contains('active')) return;
         this._openedMinimized = !DOM.chatPanel.classList.contains('active');
+        // A live re-tether episode owns the NATIVE click-through region: while
+        // the string is out, everything except the moon+rope rects ignores the
+        // mouse at the OS level — the wizard would paint fine yet be dead to
+        // every click (first run is always disconnected, so this is the COMMON
+        // first-run state, not an edge). Tear the episode down exactly like
+        // chat-open does: bump the epoch (abandons a deferred MoonString.show()),
+        // drop the stashed grow promise, hideImmediate() (clears the region →
+        // the whole window is interactive again), and let the grow's IPCs
+        // settle before our own resize so they can't interleave. Keep the
+        // pending flag so the string returns when the wizard closes.
+        if (MoonString.isLive() || State.growPromise) {
+          State.tetherGen++;
+          const grow = State.growPromise;
+          State.growPromise = null;
+          MoonString.hideImmediate();
+          if (grow) await grow.catch(() => {});
+          await TauriService.restoreCollapsed();
+          State.tetherPendingOnCollapse = true;
+        }
         DOM.wizardPanel.classList.add('active');
         DOM.wizardPanel.setAttribute('aria-hidden', 'false');
         // Fire-and-forget like SettingsEngine.open — the card fades in over it.
@@ -7280,7 +7302,13 @@
         DOM.wizardPanel.classList.remove('active');
         DOM.wizardPanel.setAttribute('aria-hidden', 'true');
         if (this._openedMinimized && !DOM.chatPanel.classList.contains('active')) {
-          setTimeout(() => TauriService.setWindowSize(140, 185), 220);
+          // Mirror the chat-collapse hand-off: if a string drop was deferred
+          // while the wizard was open (we're still detached), let the tether
+          // episode own the window now; otherwise just collapse.
+          setTimeout(() => {
+            if (State.tetherPendingOnCollapse) WebSocketEngine.showTether();
+            else TauriService.setWindowSize(140, 185);
+          }, 220);
         }
         this._openedMinimized = false;
       },
@@ -7300,11 +7328,15 @@
           this.prefillConnect();
           // Coming from a finished install/update (or the "Just connect to
           // it" shortcut) the address is known-good — listen for the hello
-          // immediately so the happy path is zero extra clicks.
-          if (this._autoTest) {
-            this._autoTest = false;
-            this.runConnectTest();
-          }
+          // immediately so the happy path is zero extra clicks. For the local
+          // path, first read the server's UI_WS_TOKEN out of ~/.luna/.env so
+          // the pairing (and the probe) is zero-typing; without it the hello
+          // handshake is refused and the user has no way to know the secret.
+          const auto = this._autoTest;
+          this._autoTest = false;
+          this.loadLocalToken().then(() => {
+            if (auto && this.current === 'connect') this.runConnectTest();
+          });
         }
         if (step === 'remote') this.renderRemoteCmd();
       },
@@ -7326,6 +7358,22 @@
         }
         this.setConnectStatus('', null);
         this.resetFinishGuard();
+      },
+
+      // Local path only: read the server's UI_WS_TOKEN back out of
+      // ~/.luna/.env into the (empty) secret field. Resolves quietly on any
+      // failure — the user can still paste a token by hand. Never overwrites
+      // something the user already typed.
+      async loadLocalToken() {
+        if (this.chosenPath !== 'local') return;
+        if (DOM.wizardConnectToken.value.trim()) return;
+        const r = await this.sh('grep "^UI_WS_TOKEN=" "$HOME/.luna/.env"');
+        if (!r || r.exitCode !== 0) return;
+        const m = /^UI_WS_TOKEN=(.+)$/m.exec(r.stdout || '');
+        if (m && m[1].trim() && !DOM.wizardConnectToken.value.trim()) {
+          DOM.wizardConnectToken.value = m[1].trim();
+          this.resetFinishGuard();
+        }
       },
 
       // Forget a previous "Save anyway" arming whenever the step is re-entered
@@ -7620,8 +7668,14 @@
           },
           {
             label: 'Making Luna a home (~/.luna)',
+            // UI_WS_TOKEN is a HARD boot requirement (resolveUiWsToken throws
+            // without it → the launchd server crash-loops and the heartbeat
+            // step times out), so a fresh install must mint one. An existing
+            // token is preserved — rotating it here would strand every other
+            // paired client. loadLocalToken() reads it back into the connect
+            // step so the pairing is zero-typing.
             run: () => this.sh(
-              D + 'mkdir -p "$HOME/.luna/logs" && { [ -f "$HOME/.luna/.env" ] || touch "$HOME/.luna/.env"; } && chmod 600 "$HOME/.luna/.env" && { grep -q "^LUNA_REPO_ROOT=" "$HOME/.luna/.env" || printf "LUNA_REPO_ROOT=%s\\n" "$LUNA_DIR" >> "$HOME/.luna/.env"; }',
+              D + 'mkdir -p "$HOME/.luna/logs" && { [ -f "$HOME/.luna/.env" ] || touch "$HOME/.luna/.env"; } && chmod 600 "$HOME/.luna/.env" && { grep -q "^LUNA_REPO_ROOT=" "$HOME/.luna/.env" || printf "LUNA_REPO_ROOT=%s\\n" "$LUNA_DIR" >> "$HOME/.luna/.env"; } && { grep -q "^UI_WS_TOKEN=" "$HOME/.luna/.env" || printf "UI_WS_TOKEN=%s\\n" "$(openssl rand -hex 24)" >> "$HOME/.luna/.env"; }',
             ),
           },
           // Update-with-running-server only: stop the old Luna and let her

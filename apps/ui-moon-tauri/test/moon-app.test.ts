@@ -2423,6 +2423,56 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(panel().classList.contains('active')).toBe(false)
     })
 
+    it('Scenario: opening the wizard ENDS a live tether episode — buttons stay clickable (regression)', async () => {
+      // First run is always disconnected, so the string episode is the COMMON
+      // first-run state: it flips everything outside the moon+rope rects
+      // native-click-through. If the wizard opens without tearing it down,
+      // every wizard button paints fine and is dead to real clicks.
+      stubCore(() => undefined)
+      document.getElementById('chat-panel')!.classList.remove('active')
+      let live = false
+      vi.spyOn(M().MoonString, 'isLive').mockImplementation(() => live)
+      const show = vi.spyOn(M().MoonString, 'show').mockImplementation(() => { live = true })
+      const hide = vi.spyOn(M().MoonString, 'hideImmediate').mockImplementation(() => { live = false })
+      vi.spyOn(M().TauriService, 'growToEnvelope').mockResolvedValue(undefined)
+      const restore = vi.spyOn(M().TauriService, 'restoreCollapsed').mockResolvedValue(undefined)
+
+      M().WebSocketEngine.showTether()         // string drops while collapsed
+      await Promise.resolve(); await Promise.resolve()
+      expect(show).toHaveBeenCalledTimes(1)    // episode live → region owns the window
+
+      await W().open()
+      expect(hide).toHaveBeenCalledTimes(1)    // hideImmediate cleared the click-through region
+      expect(restore).toHaveBeenCalledTimes(1) // envelope restored before the wizard resize
+      expect(M().State.growPromise).toBeNull() // episode bookkeeping fully cleared
+      expect(M().State.tetherPendingOnCollapse).toBe(true) // string returns after the wizard
+      expect(panel().classList.contains('active')).toBe(true)
+    })
+
+    it('Scenario: a disconnect while the wizard is open DEFERS the string drop (no click-through under the wizard)', async () => {
+      stubCore(() => undefined)
+      document.getElementById('chat-panel')!.classList.remove('active')
+      const show = vi.spyOn(M().MoonString, 'show').mockImplementation(() => {})
+      const grow = vi.spyOn(M().TauriService, 'growToEnvelope').mockResolvedValue(undefined)
+      await W().open()
+      M().WebSocketEngine.showTether()         // grace timer fires mid-wizard
+      await Promise.resolve(); await Promise.resolve()
+      expect(grow).not.toHaveBeenCalled()      // no envelope grow under the wizard
+      expect(show).not.toHaveBeenCalled()
+      expect(M().State.tetherPendingOnCollapse).toBe(true)
+    })
+
+    it('Scenario: closing the wizard hands the window to a deferred string instead of a plain collapse', async () => {
+      stubCore(() => undefined)
+      document.getElementById('chat-panel')!.classList.remove('active')
+      const showTether = vi.spyOn(M().WebSocketEngine, 'showTether').mockImplementation(() => {})
+      await W().open()                          // collapsed → _openedMinimized = true
+      M().State.tetherPendingOnCollapse = true  // a drop was deferred meanwhile
+      W().close({ complete: true })
+      vi.advanceTimersByTime(250)
+      expect(showTether).toHaveBeenCalledTimes(1)
+    })
+
     it('Scenario: Begin -> path step; picking each card routes to its flow; closing marks complete', () => {
       stubCore(() => undefined)
       W().open()
@@ -2679,6 +2729,11 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(install[2]).toContain('LUNA_DIR="$HOME/luna"')   // ~ expanded by the SHELL
       expect(install[3]).toContain('bun install')
       expect(install[4]).toContain('LUNA_REPO_ROOT')
+      // UI_WS_TOKEN is a HARD boot requirement (resolveUiWsToken throws) — a
+      // fresh install must mint one or the launchd server crash-loops and the
+      // heartbeat times out. Existing tokens are preserved (grep -q guard).
+      expect(install[4]).toContain('grep -q "^UI_WS_TOKEN="')
+      expect(install[4]).toContain('openssl rand -hex 24')
       // Every command gets the PATH prelude (a .app inherits launchd's PATH).
       for (const c of commands) expect(c).toContain('$HOME/.bun/bin')
 
@@ -2800,6 +2855,42 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
         .map((c: any[]) => c[1].command as string)
       expect(shellCmds.some((c) => c.includes('git clone') || c.includes('launchctl') || c.includes('mkdir'))).toBe(false)
       expect(activeStep()).toBe('local')                     // still on the form
+    })
+
+    it('Scenario: arriving at connect on the local path reads UI_WS_TOKEN into the secret field', async () => {
+      stubCore((cmd, args) => {
+        if (cmd !== 'local_shell_exec') return undefined
+        const c = args.command as string
+        if (c.includes('grep "^UI_WS_TOKEN=')) {
+          return { exitCode: 0, stdout: 'UI_WS_TOKEN=tok_abc123456789\n', stderr: '', durationMs: 2, timedOut: false }
+        }
+        return { exitCode: 1, stdout: '', stderr: '', durationMs: 1, timedOut: false }
+      })
+      W().open()
+      W().chosenPath = 'local'
+      const tokenInput = document.getElementById('wizard-connect-token') as HTMLInputElement
+      tokenInput.value = ''
+      W().goTo('connect')
+      for (let i = 0; i < 6; i++) await Promise.resolve()
+      expect(tokenInput.value).toBe('tok_abc123456789')
+    })
+
+    it('Scenario: a token the user already typed is never overwritten by the .env read', async () => {
+      stubCore((cmd, args) => {
+        if (cmd !== 'local_shell_exec') return undefined
+        const c = args.command as string
+        if (c.includes('grep "^UI_WS_TOKEN=')) {
+          return { exitCode: 0, stdout: 'UI_WS_TOKEN=from-env-file\n', stderr: '', durationMs: 2, timedOut: false }
+        }
+        return { exitCode: 1, stdout: '', stderr: '', durationMs: 1, timedOut: false }
+      })
+      W().open()
+      W().chosenPath = 'local'
+      const tokenInput = document.getElementById('wizard-connect-token') as HTMLInputElement
+      tokenInput.value = 'my-own-secret'
+      W().goTo('connect')
+      for (let i = 0; i < 6; i++) await Promise.resolve()
+      expect(tokenInput.value).toBe('my-own-secret')
     })
 
     it('Scenario: remote step writes a tailored install one-liner and prefills the connect URL', () => {
