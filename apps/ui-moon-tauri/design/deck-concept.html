@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Luna · Moon Deck — magnetic widgets</title>
+<title>Luna · Moon Deck — the full arc</title>
 <style>
   :root {
     --moon-glow: rgba(186, 218, 255, 0.4);
@@ -33,7 +33,7 @@
 
   .wrap { max-width: 1240px; margin: 24px auto 0; padding: 0 28px; }
   .stage {
-    position: relative; height: 720px; overflow: hidden; border-radius: 18px;
+    position: relative; height: 760px; overflow: hidden; border-radius: 18px;
     border: 1px solid rgba(255,255,255,0.07);
     background:
       radial-gradient(420px 200px at 80% 0%, rgba(138,180,248,0.06), transparent 70%),
@@ -50,9 +50,61 @@
   }
   .hint { position: absolute; top: 10px; left: 14px; font-size: 11px; color: #6f81a6; z-index: 40; pointer-events: none; letter-spacing: 0.04em; }
 
-  /* ================= the anchor window: chat ================= */
+  /* ============ THE MOON — never moves, both states ============ */
+  #moonw {
+    position: absolute; left: 46px; top: 44px; width: 64px; height: 64px;
+    cursor: pointer; z-index: 28;
+  }
+  .mglow { position: absolute; inset: -14px; border-radius: 50%; background: radial-gradient(circle, var(--moon-glow) 0%, rgba(138,180,248,0) 70%); transition: opacity .4s ease; }
+  .msvg { position: relative; width: 100%; height: 100%; filter: drop-shadow(0 6px 16px rgba(138,180,248,0.45)); }
+  #moonw:hover .mglow { opacity: 1; transform: scale(1.06); }
+  .pip {
+    position: absolute; right: 0; bottom: 2px; min-width: 17px; height: 17px; padding: 0 5px;
+    border-radius: 999px; background: rgba(10,14,28,0.92); border: 1px solid rgba(138,180,248,0.55);
+    color: #cfe0ff; font-size: 10.5px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+    transition: all .25s ease; z-index: 2;
+  }
+  .pip.gold { border-color: rgba(255,206,110,0.7); color: var(--wait-c); animation: pippulse 1.4s ease-in-out infinite alternate; }
+  .pip.zero { opacity: 0; }
+  @keyframes pippulse { from { box-shadow: 0 0 4px 0 rgba(255,206,110,0.2); } to { box-shadow: 0 0 12px 3px rgba(255,206,110,0.45); } }
+
+  /* orbit dock — the ambient layer while minimized */
+  #orbits { position: absolute; left: 78px; top: 76px; width: 0; height: 0; z-index: 26; pointer-events: none; }
+  #orbits .ring { position: absolute; left: 0; top: 0; border: 1px dashed rgba(138,180,248,0.13); border-radius: 50%; transform: translate(-50%,-50%); transition: opacity .4s ease; }
+  #motes { position: absolute; inset: 0; z-index: 27; pointer-events: none; }
+  .mote {
+    position: absolute; left: 78px; top: 76px; width: 13px; height: 13px; margin: -6.5px;
+    pointer-events: auto; cursor: pointer;
+    transition: opacity .4s ease;
+  }
+  .mote.flying { transition: transform .55s cubic-bezier(0.34, 1.1, 0.64, 1), opacity .3s ease .4s; }
+  .stage:not(.min) #orbits .ring { opacity: 0; }
+
+  /* the notification — how "Luna needs you" reaches the desktop */
+  #toast {
+    position: absolute; left: 128px; top: 56px; z-index: 29;
+    display: flex; align-items: center; gap: 8px;
+    background: rgba(10,14,28,0.96); border: 1px solid rgba(255,206,110,0.5);
+    border-radius: 12px; padding: 8px 13px; font-size: 11.5px; color: #efe2c2;
+    cursor: pointer; opacity: 0; transform: translateX(-8px); pointer-events: none;
+    transition: opacity .35s ease, transform .4s cubic-bezier(0.34, 1.3, 0.64, 1);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+  }
+  #toast.show { opacity: 1; transform: translateX(0); pointer-events: auto; }
+  #toast .tdot { width: 8px; height: 8px; border-radius: 50%; background: var(--wait-c); box-shadow: 0 0 7px rgba(255,206,110,0.7); flex-shrink: 0; animation: pippulse 1.2s ease-in-out infinite alternate; }
+  #toast b { color: var(--wait-c); }
+  #toast .topen { color: #8ab4f8; font-size: 10px; margin-left: 4px; }
+
+  /* minimized hint */
+  #minhint { position: absolute; left: 46px; top: 175px; width: 200px; font-size: 10.5px; color: #44537a; font-style: italic; z-index: 5; opacity: 0; transition: opacity .4s ease; }
+  .stage.min #minhint { opacity: 1; }
+
+  /* ============ the deck (hidden while minimized) ============ */
+  .stage.min #chatp, .stage.min .widget { opacity: 0; pointer-events: none; }
+  #chatp, .widget { transition: opacity .35s ease; }
+
   #chatp {
-    position: absolute; left: 360px; top: 195px; width: 500px; height: 510px;
+    position: absolute; left: 360px; top: 195px; width: 500px; height: 530px;
     background: var(--glass-bg); border-radius: 22px;
     box-shadow: 0 4px 24px rgba(0,0,0,0.38), inset 0 0 0 1px rgba(255,255,255,0.06);
     display: flex; flex-direction: column; overflow: hidden; z-index: 10;
@@ -68,18 +120,22 @@
   .stream { flex: 1; overflow-y: auto; padding: 13px 16px; display: flex; flex-direction: column; gap: 9px; font-size: 12.5px; }
   .msg { max-width: 80%; padding: 7px 11px; border-radius: 11px; background: rgba(255,255,255,0.05); color: #c5d1ea; }
   .msg.u { align-self: flex-end; background: rgba(138,180,248,0.14); }
+  .msg.result { border: 1px solid rgba(110,231,183,0.3); max-width: 86%; }
+  .msg.result .rtit { color: var(--done-c); font-weight: 600; font-size: 11px; margin-bottom: 2px; }
   .hb { align-self: center; display: flex; align-items: center; gap: 7px; font-size: 10.5px; color: #6f81a6; }
   .hb .sym { color: #4f628c; }
   .hb b { color: #8ea2c8; font-weight: 600; }
   .actref {
     align-self: stretch; display: flex; align-items: center; gap: 8px; cursor: pointer;
     background: rgba(13,18,34,0.85); border: 1px solid rgba(138,180,248,0.22); border-radius: 11px;
-    padding: 7px 11px; font-size: 12px;
+    padding: 7px 11px; font-size: 12px; transition: border-color .3s ease;
   }
   .actref:hover { border-color: rgba(138,180,248,0.5); }
   .actref.gold { border-color: rgba(255,206,110,0.45); }
+  .actref.donec { border-color: rgba(110,231,183,0.3); }
   .actref .nm { font-weight: 700; }
-  .actref .open-w { margin-left: auto; font-size: 10px; color: #8ab4f8; }
+  .actref .st { color: #8ea2c8; font-size: 10.5px; }
+  .actref .open-w { margin-left: auto; font-size: 10px; color: #8ab4f8; flex-shrink: 0; }
   .chat-in {
     margin: 0 14px 12px; padding: 8px 13px; font-size: 11.5px; color: #d7e1f5;
     border: 1px solid rgba(255,255,255,0.08); border-radius: 999px; flex-shrink: 0;
@@ -88,16 +144,15 @@
   .chat-in::placeholder { color: #6f81a6; }
   .chat-in:focus { border-color: rgba(138,180,248,0.4); }
 
-  /* ================= widgets (the Winamp pieces) ================= */
+  /* ============ widgets ============ */
   .widget {
     position: absolute; z-index: 20;
     background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 14px;
     box-shadow: 0 8px 28px rgba(0,0,0,0.45), inset 0 0 0 1px rgba(255,255,255,0.04);
     display: flex; flex-direction: column; overflow: hidden;
   }
-  .widget.dragging { opacity: 0.92; z-index: 30; cursor: grabbing; }
-  .widget.settling { transition: left .16s ease, top .16s ease; }
-  /* magnet seams — the edge that touches the chat flattens + glows */
+  .widget.dragging { opacity: 0.92 !important; z-index: 30; }
+  .widget.settling { transition: left .16s ease, top .16s ease, opacity .35s ease; }
   .widget.snap-l { border-radius: 14px 5px 5px 14px; box-shadow: 7px 0 16px -7px rgba(138,180,248,0.35), 0 8px 28px rgba(0,0,0,0.45); }
   .widget.snap-r { border-radius: 5px 14px 14px 5px; box-shadow: -7px 0 16px -7px rgba(138,180,248,0.35), 0 8px 28px rgba(0,0,0,0.45); }
   .widget.snap-t { border-radius: 14px 14px 5px 5px; box-shadow: 0 7px 16px -7px rgba(138,180,248,0.35), 0 8px 28px rgba(0,0,0,0.45); }
@@ -116,33 +171,30 @@
     background: rgba(138,180,248,0.06); display: none; pointer-events: none;
   }
 
-  /* ---- widget 1 · NOW rail (phase litter, dynamic) ---- */
+  /* NOW rail */
   #w-now { width: 138px; }
-  #w-now .rows { padding: 8px 9px 9px; display: flex; flex-direction: column; gap: 9px; }
+  #w-now .rows { padding: 8px 9px 10px; display: flex; flex-direction: column; gap: 9px; }
   .nrow { display: flex; align-items: center; gap: 7px; cursor: pointer; border-radius: 9px; padding: 3px 5px; transition: background .15s ease; }
   .nrow:hover { background: rgba(138,180,248,0.08); }
-  .nrow .minimoon { width: 19px; height: 19px; flex-shrink: 0; filter: drop-shadow(0 0 4px rgba(138,180,248,0.3)); }
-  .nrow.wait .minimoon { filter: drop-shadow(0 0 6px rgba(255,206,110,0.6)); }
+  .nrow .ic { width: 20px; height: 20px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
   .nrow .nm { font-size: 10.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .nrow .ty { font-size: 8px; color: #6f81a6; letter-spacing: 0.06em; text-transform: uppercase; display: block; }
   .nrow.wait .ty { color: var(--wait-c); }
+  #w-now .empty { padding: 10px; font-size: 10px; color: #5d6e92; font-style: italic; text-align: center; }
+  .minimoon-svg { display: block; width: 20px; height: 20px; }
+  #w-flow .fhd .minimoon-svg { width: 26px; height: 26px; }
   .blot { width: 13px; height: 13px; flex-shrink: 0; position: relative; }
   .blot::before { content: ""; position: absolute; inset: 0; border-radius: 46% 54% 58% 42% / 52% 44% 56% 48%; filter: blur(0.4px); }
   .blot.run::before { background: radial-gradient(circle at 40% 35%, rgba(207,226,255,0.95), var(--run-c) 55%, rgba(138,180,248,0.25) 95%); animation: breathe 2.2s ease-in-out infinite alternate; }
   .blot.wait::before { background: radial-gradient(circle at 40% 35%, #fff3d6, var(--wait-c) 55%, rgba(255,216,138,0.25) 95%); animation: breathe 1.1s ease-in-out infinite alternate; }
   .blot.done::before { background: radial-gradient(circle at 40% 35%, rgba(220,255,240,0.9), var(--done-c) 60%, rgba(110,231,183,0.2) 95%); opacity: 0.75; }
+  .blot.todo::before { background: rgba(255,255,255,0.15); animation: none; }
   @keyframes breathe { from { transform: scale(0.92) rotate(-8deg); opacity: .75; } to { transform: scale(1.08) rotate(6deg); opacity: 1; } }
-  #w-now .empty { padding: 10px; font-size: 10px; color: #5d6e92; font-style: italic; text-align: center; }
-  #w-now .simff { margin: 0 9px 9px; font: inherit; font-size: 9px; color: #5d6e92; background: none; border: 1px dashed rgba(255,255,255,0.12); border-radius: 7px; padding: 3px 7px; cursor: pointer; }
-  #w-now .simff:hover { color: #cfe0ff; }
 
-  /* ---- widget 2 · BRIEFING board (the “welcome back” glance) ---- */
+  /* briefing */
   #w-brief { width: 500px; }
   #w-brief .sect { font-size: 9px; color: #6f81a6; letter-spacing: 0.09em; text-transform: uppercase; padding: 8px 13px 3px; }
-  #w-brief .brow {
-    display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: #c5d1ea;
-    padding: 6px 13px; cursor: pointer; transition: background .15s ease;
-  }
+  #w-brief .brow { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: #c5d1ea; padding: 6px 13px; cursor: pointer; }
   #w-brief .brow:hover { background: rgba(138,180,248,0.07); }
   #w-brief .brow .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
   #w-brief .brow .dot.gold { background: var(--wait-c); box-shadow: 0 0 6px rgba(255,206,110,0.6); }
@@ -151,65 +203,56 @@
   #w-brief .brow .lab.g { color: var(--done-c); }
   #w-brief .brow .tt { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #w-brief .brow .mm { color: #6f81a6; font-size: 10px; margin-left: auto; flex-shrink: 0; }
-  #w-brief .brow .chev { color: #5d6e92; font-size: 10px; }
   #w-brief .pad { height: 7px; }
-  /* collapsed: one slim line once you start typing */
   #w-brief.slim .sect, #w-brief.slim .brow, #w-brief.slim .pad { display: none; }
   #w-brief.slim .slimline { display: flex; }
-  #w-brief .slimline {
-    display: none; align-items: center; gap: 8px; padding: 6px 13px; font-size: 10.5px; color: #8ea2c8; cursor: pointer;
-  }
+  #w-brief .slimline { display: none; align-items: center; gap: 8px; padding: 6px 13px; font-size: 10.5px; color: #8ea2c8; cursor: pointer; }
   #w-brief .slimline .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--wait-c); box-shadow: 0 0 5px rgba(255,206,110,0.5); }
 
-  /* ---- widget 3 · WORKFLOW inspector (see the pipeline) ---- */
+  /* workflow inspector */
   #w-flow { width: 280px; display: none; }
   #w-flow .body { padding: 11px 13px 12px; font-size: 11.5px; }
   #w-flow .fhd { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 12.5px; margin-bottom: 10px; }
-  #w-flow .fhd .el { margin-left: auto; font-weight: 400; font-size: 10px; color: #8ea2c8; font-variant-numeric: tabular-nums; }
+  #w-flow .fhd .el { margin-left: auto; font-weight: 400; font-size: 10px; color: #8ea2c8; }
   .frow { display: flex; gap: 9px; position: relative; padding-bottom: 13px; color: #c5d1ea; }
   .frow::before { content: ""; position: absolute; left: 6px; top: 16px; bottom: 1px; width: 1px; background: rgba(255,255,255,0.09); }
   .frow:last-child::before { display: none; }
   .frow .blot { margin-top: 2px; }
   .frow.todo { opacity: 0.45; }
-  .frow .blot.todo::before { background: rgba(255,255,255,0.15); animation: none; }
-  .frow .stn { font-size: 11.5px; }
   .askbox { background: var(--wait-wash); border: 1px solid rgba(255,206,110,0.4); border-radius: 10px; padding: 8px 10px; color: #efe2c2; font-size: 11px; margin: 2px 0 10px 21px; }
   .abtns { margin-top: 7px; display: flex; gap: 6px; }
   .abtn { font: inherit; font-size: 10.5px; cursor: pointer; border-radius: 8px; padding: 3px 10px; border: 1px solid rgba(255,206,110,0.55); background: rgba(255,206,110,0.14); color: var(--wait-c); }
   .abtn.sec { border-color: rgba(255,255,255,0.14); background: rgba(255,255,255,0.04); color: #9fb0d2; }
+  #w-flow .fin { margin-left: 21px; font-size: 10.5px; color: var(--done-c); }
 
-  /* ---- widget 4 · AGENT line (talk to it directly) ---- */
+  /* agent direct line */
   #w-agent { width: 280px; height: 240px; display: none; }
   #w-agent .amsgs { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 7px; font-size: 11px; }
   #w-agent .am { max-width: 85%; padding: 5px 9px; border-radius: 9px; background: rgba(255,255,255,0.05); color: #c5d1ea; }
   #w-agent .am.u { align-self: flex-end; background: rgba(110,231,183,0.12); }
-  #w-agent .ain {
-    margin: 0 10px 10px; padding: 6px 11px; font-size: 10.5px; color: #d7e1f5;
-    border: 1px solid rgba(110,231,183,0.25); border-radius: 999px; flex-shrink: 0;
-    background: rgba(255,255,255,0.03); font-family: inherit; outline: none; width: calc(100% - 20px);
-  }
+  #w-agent .ain { margin: 0 10px 10px; padding: 6px 11px; font-size: 10.5px; color: #d7e1f5; border: 1px solid rgba(110,231,183,0.25); border-radius: 999px; flex-shrink: 0; background: rgba(255,255,255,0.03); font-family: inherit; outline: none; width: calc(100% - 20px); }
   #w-agent .ain::placeholder { color: #5f7a6f; }
-  #w-agent .ain:focus { border-color: rgba(110,231,183,0.5); }
 
-  /* ================= minimized: moon + ORBIT DOCK ================= */
-  #minimoon { position: absolute; inset: 0; display: none; z-index: 25; }
-  .stage.min #minimoon { display: block; }
-  .stage.min #chatp, .stage.min .widget { display: none !important; }
-  #minimoon .moonw { position: absolute; width: 84px; height: 84px; left: 50%; top: 44%; transform: translate(-50%,-50%); cursor: pointer; }
-  .mglow { position: absolute; inset: -14px; border-radius: 50%; background: radial-gradient(circle, var(--moon-glow) 0%, rgba(138,180,248,0) 70%); }
-  .msvg { position: relative; width: 100%; height: 100%; filter: drop-shadow(0 6px 16px rgba(138,180,248,0.45)); }
-  .pip { position: absolute; right: 2px; bottom: 4px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: rgba(10,14,28,0.9); border: 1px solid rgba(138,180,248,0.55); color: #cfe0ff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
-  .pip.gold { border-color: rgba(255,206,110,0.7); color: var(--wait-c); animation: pippulse 1.4s ease-in-out infinite alternate; }
-  @keyframes pippulse { from { box-shadow: 0 0 4px 0 rgba(255,206,110,0.2); } to { box-shadow: 0 0 12px 3px rgba(255,206,110,0.45); } }
-  #minimoon .orbits { position: absolute; left: 50%; top: 44%; width: 0; height: 0; pointer-events: none; }
-  #minimoon .ring { position: absolute; left: 0; top: 0; border: 1px dashed rgba(138,180,248,0.12); border-radius: 50%; transform: translate(-50%,-50%); }
-  #minimoon .orb { position: absolute; left: 0; top: 0; width: 12px; height: 12px; margin: -6px; }
-  #minimoon .hintmin { position: absolute; left: 50%; top: 62%; transform: translateX(-50%); font-size: 10.5px; color: #44537a; font-style: italic; }
+  /* ============ scenario bar ============ */
+  .scen {
+    position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
+    display: flex; gap: 6px; align-items: center; z-index: 40;
+  }
+  .scen .step {
+    font: inherit; font-size: 11px; color: #9fb0d2; cursor: pointer;
+    background: rgba(10,14,28,0.85); border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 999px; padding: 4px 12px; transition: all .18s ease;
+  }
+  .scen .step.on { background: rgba(138,180,248,0.16); border-color: rgba(138,180,248,0.6); color: #e7edf8; }
+  .scen .step.play { border-color: rgba(110,231,183,0.5); color: var(--done-c); }
+  .caption {
+    position: absolute; left: 22px; bottom: 92px;
+    font-size: 12px; color: #aab8d4; text-align: left; width: 300px; z-index: 40;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.8);
+  }
+  .scen { left: 22px; transform: none; flex-wrap: wrap; width: 320px; }
+  .caption b { color: #e7edf8; }
 
-  .minimoon-svg { display: block; width: 20px; height: 20px; }
-  #w-flow .fhd .minimoon-svg { width: 26px; height: 26px; }
-
-  /* explainer */
   .explain { max-width: 1240px; margin: 24px auto 0; padding: 0 28px; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
   .ex { background: rgba(13,18,34,0.6); border: 1px solid rgba(255,255,255,0.07); border-radius: 14px; padding: 14px 16px; font-size: 12.5px; color: #aab8d4; }
   .ex b { color: #e7edf8; }
@@ -231,27 +274,44 @@
 </svg>
 
 <header>
-  <h1>Moon Deck <span class="dim">· the chat is the player, everything else snaps on</span></h1>
+  <h1>Moon Deck <span class="dim">· the full arc — moon, notification, deck, fold</span></h1>
   <p class="intro">
-    Winamp rules: <b>the chat is the anchor window</b> — clean, just the conversation. Capability arrives as
-    <b>widgets that magnetically snap to its edges</b> and detach when you don't want them.
-    <b>Drag any widget by its title bar</b> — pull it away to float it, bring it near an edge and it clicks on.
-    The left rail shows <b>what's being worked on right now</b> (phase-litter moonlets, only when something's live);
-    the top board is your <b>welcome-back glance</b> that gets out of the way once you start typing;
-    clicking a <b>workflow</b> snaps on a pipeline inspector; clicking an <b>agent</b> snaps on a direct line — you talk to it, not about it.
+    <b>The moon never moves.</b> Minimized, it sits on your desktop with the <b>orbit dock</b> — one mote per live job.
+    When something needs you, the mote and pip go <b>gold</b> and a small notification slides out beside the moon.
+    Click the moon (or the notification) and the deck <b>assembles around the same moon</b> — the orbiting motes fly
+    into the NOW rail, the briefing appears on top, the chat in the middle. Handle it, press <b>—</b>, and everything
+    folds back into orbit. Press <b>▶ play</b> to watch the whole story, or drive it yourself at any point.
   </p>
   <div class="rules">
-    <span>✓ drag widgets — magnet snap to chat edges</span>
-    <span>✓ workflow → see the pipeline · agent → talk to it directly</span>
-    <span>✓ briefing collapses when you start typing</span>
-    <span>✓ minimize (—) → moon with the orbit dock</span>
+    <span>✓ same moon in both states — the deck assembles around it</span>
+    <span>✓ notification = gold mote + pip + toast beside the moon</span>
+    <span>✓ motes fly into the rail on open</span>
+    <span>✓ everything still draggable / magnetic</span>
   </div>
 </header>
 
 <div class="wrap">
-  <div class="stage" id="stage">
-    <span class="hint">live — drag title bars · click rail items · focus the input · try — to minimize</span>
+  <div class="stage min" id="stage">
+    <span class="hint">live — ▶ plays the story · or click things yourself (moon, toast, rail, widgets)</span>
     <div id="ghost"></div>
+
+    <!-- THE MOON (persistent) -->
+    <div id="moonw">
+      <div class="mglow"></div>
+      <svg class="msvg" viewBox="0 0 100 100">
+        <path d="M 62 12 A 38 38 0 1 0 88 62 A 30 30 0 1 1 62 12 Z" fill="url(#crescent-grad)" filter="url(#glow-filter)" />
+        <circle cx="40" cy="42" r="4.5" fill="#05070f" opacity="0.35"/><circle cx="34" cy="60" r="3.5" fill="#05070f" opacity="0.35"/>
+        <circle cx="48" cy="28" r="3" fill="#05070f" opacity="0.35"/><circle cx="28" cy="48" r="2.5" fill="#05070f" opacity="0.3"/>
+      </svg>
+      <div class="pip" id="pip"></div>
+    </div>
+    <div id="orbits">
+      <div class="ring" style="width:118px;height:118px"></div>
+      <div class="ring" style="width:160px;height:160px"></div>
+    </div>
+    <div id="motes"></div>
+    <div id="toast"><span class="tdot"></span><span><b>code-review</b> needs your input</span><span class="topen">open ›</span></div>
+    <div id="minhint">just the moon on your desktop — motes are live jobs · gold means it needs you</div>
 
     <!-- anchor window -->
     <div id="chatp">
@@ -259,51 +319,35 @@
         <div class="mc-av"></div>
         <div><div class="mc-t">Luna Companion</div><div class="mc-s">Connected</div></div>
         <div class="hbtns">
-          <button class="hbtn" id="minbtn" title="Minimize to moon">—</button>
+          <button class="hbtn" id="minbtn" title="Fold the deck into the moon">—</button>
           <button class="hbtn" title="Settings">⚙</button>
           <button class="hbtn" title="Close">✕</button>
         </div>
       </div>
-      <div class="stream" id="stream">
-        <div class="hb"><span class="sym">⟳</span><b>Dream</b> ran at 3:00 · proposed 3 beliefs</div>
-        <div class="msg u">can you review PR 99 before I merge?</div>
-        <div class="msg">On it — handed to <b>code-review</b>. It's on your rail; I'll only interrupt for decisions.</div>
-        <div class="actref gold" data-open="review">
-          <div class="blot wait"></div><span class="nm">code-review</span><span style="color:#8ea2c8;font-size:10.5px">needs your call</span>
-          <span class="open-w">open workflow ›</span>
-        </div>
-        <div class="msg u">also have someone map stale deps in the repo</div>
-        <div class="msg">Spawned <b>repo-scout</b> for that — it's ephemeral, it'll dissolve when done. You can talk to it directly from the rail.</div>
-      </div>
+      <div class="stream" id="stream"></div>
       <input class="chat-in" id="chatin" placeholder="Tell Luna what you need…" />
     </div>
 
-    <!-- widget: NOW rail -->
+    <!-- NOW rail -->
     <div class="widget" id="w-now">
       <div class="whandle"><span class="grip">⋮⋮</span> now <span class="wx" data-x>✕</span></div>
       <div class="rows"></div>
-      <button class="simff">▶ simulate: Dream finishes</button>
     </div>
 
-    <!-- widget: briefing -->
+    <!-- briefing -->
     <div class="widget" id="w-brief">
       <div class="whandle"><span class="grip">⋮⋮</span> while you were away <span class="wx" data-x>✕</span></div>
-      <div class="slimline"><span class="dot"></span><span id="slimtxt">1 needs input · 2 landed</span><span style="margin-left:auto;color:#5d6e92">›</span></div>
-      <div class="sect">Needs you</div>
-      <div class="brow" data-open="review"><span class="dot gold"></span><span class="lab">Needs input</span><span class="tt">code-review — your call before posting to PR #99</span><span class="mm">3m</span><span class="chev">›</span></div>
-      <div class="sect">Landed while you were away</div>
-      <div class="brow"><span class="dot green"></span><span class="lab g">Ready</span><span class="tt">daily-brief — two things need you today</span><span class="mm">07:00</span><span class="chev">›</span></div>
-      <div class="brow"><span class="dot green"></span><span class="lab g">Ready</span><span class="tt">Dream — 3 belief candidates for tonight's survey</span><span class="mm">03:00</span><span class="chev">›</span></div>
-      <div class="pad"></div>
+      <div class="slimline"><span class="dot"></span><span id="slimtxt"></span><span style="margin-left:auto;color:#5d6e92">›</span></div>
+      <div class="bb"></div>
     </div>
 
-    <!-- widget: workflow inspector -->
+    <!-- workflow inspector -->
     <div class="widget" id="w-flow">
       <div class="whandle"><span class="grip">⋮⋮</span> workflow <span class="wx" data-x>✕</span></div>
       <div class="body"></div>
     </div>
 
-    <!-- widget: agent direct line -->
+    <!-- agent direct line -->
     <div class="widget" id="w-agent">
       <div class="whandle"><span class="grip">⋮⋮</span> repo-scout · direct line <span class="wx" data-x>✕</span></div>
       <div class="amsgs" id="amsgs">
@@ -312,125 +356,231 @@
       <input class="ain" id="ain" placeholder="Talk to repo-scout directly…" />
     </div>
 
-    <!-- minimized -->
-    <div id="minimoon">
-      <div class="moonw" id="bigmoon">
-        <div class="mglow"></div>
-        <svg class="msvg" viewBox="0 0 100 100">
-          <path d="M 62 12 A 38 38 0 1 0 88 62 A 30 30 0 1 1 62 12 Z" fill="url(#crescent-grad)" filter="url(#glow-filter)" />
-          <circle cx="40" cy="42" r="4.5" fill="#05070f" opacity="0.35"/><circle cx="34" cy="60" r="3.5" fill="#05070f" opacity="0.35"/>
-          <circle cx="48" cy="28" r="3" fill="#05070f" opacity="0.35"/><circle cx="28" cy="48" r="2.5" fill="#05070f" opacity="0.3"/>
-        </svg>
-        <div class="pip" id="minpip">3</div>
-      </div>
-      <div class="orbits" id="minorbits">
-        <div class="ring" style="width:150px;height:150px"></div>
-        <div class="ring" style="width:200px;height:200px"></div>
-      </div>
-      <div class="hintmin">the deck folds into the moon — orbit dock keeps the pulse · click to reopen</div>
+    <div class="caption" id="caption"></div>
+    <div class="scen" id="scen">
+      <button class="step play" data-s="play">▶ play</button>
+      <button class="step" data-s="0">quiet</button>
+      <button class="step" data-s="1">needs you</button>
+      <button class="step" data-s="2">open</button>
+      <button class="step" data-s="3">answer</button>
+      <button class="step" data-s="4">done</button>
+      <button class="step" data-s="5">fold</button>
     </div>
   </div>
 </div>
 
 <div class="explain">
   <div class="ex">
-    <h4>Different things, different windows</h4>
-    Your ontology decides the widget: a <b>workflow</b> is a pipeline, so its widget is an inspector you <i>look at</i>.
-    An <b>agent</b> is a colleague, so its widget is a direct line you <i>talk to</i> — its own input, its own bubbles, no
-    impersonating Luna. Cron stays a heartbeat in the stream. Nothing pretends to be something it isn't.
+    <h4>Where notifications live</h4>
+    Three intensities of the same gold: the <b>mote</b> turns gold (peripheral vision), the <b>pip</b> on the moon goes gold
+    (count + urgency at a glance), and a <b>toast</b> slides out beside the moon naming the asker. risk_tier decides how far
+    up that ladder a given ask climbs — a Tier 0 question might only gild the mote.
   </div>
   <div class="ex">
-    <h4>The chat stays pure</h4>
-    Nothing is baked into the conversation surface — the rail, the board, the inspector are all <b>removable</b>.
-    Close every widget and you have exactly the moon chat you ship today. The deck is progressive disclosure
-    with physical metaphors instead of menus.
+    <h4>Continuity is the trick</h4>
+    The mote you watched orbit while minimized is the <b>same object</b> you act on in the deck — it flies into the rail when
+    the deck assembles. Nothing teleports; the notification you saw IS the row you click IS the workflow you answer.
   </div>
   <div class="ex">
-    <h4>The briefing yields to you</h4>
-    Like your screenshot: status up top when you arrive — but the moment you focus the input, it folds to one slim
-    line. Your intent always outranks ambient status. Click the slim line to get it back.
+    <h4>And it's still a deck</h4>
+    Everything from the previous round survives: drag widgets by their title bars (magnet snap, ghost preview), the briefing
+    folds when you focus the input, workflows open inspectors, agents open direct lines. Close every widget → pure chat.
   </div>
 </div>
 
 <script>
-/* ================= data ================= */
-const ITEMS = [
-  { id: 'review', name: 'code-review', type: 'workflow', status: 'wait', pct: 0.66,
-    steps: [
-      { n: 'checkout PR #99 · build context', s: 'done' },
-      { n: 'adversarial pass — 3 findings', s: 'done' },
-      { n: 'post comments', s: 'ask', ask: 'Post 3 inline comments? Two high-confidence, one style-only.' },
-      { n: 'summarize for the stream', s: 'todo' },
-    ] },
-  { id: 'dream', name: 'Dream', type: 'workflow', status: 'run', pct: 0.38,
-    steps: [
-      { n: 'gather observations', s: 'done' },
-      { n: 'cluster candidates', s: 'cur' },
-      { n: 'draft survey', s: 'todo' },
-      { n: 'queue for check-in', s: 'todo' },
-    ] },
+/* ================= state ================= */
+const stage = document.getElementById('stage');
+let review = 'run';        /* run → wait → answered → done */
+let minimized = true;
+let flowOpen = false;
+let timers = [];
+const at = (ms, fn) => timers.push(setTimeout(fn, ms));
+const liveItems = () => [
+  ...(review !== 'done' ? [{ id: 'review', name: 'code-review', type: 'workflow', status: review === 'wait' ? 'wait' : 'run', pct: review === 'answered' ? 0.85 : 0.66 }] : []),
+  { id: 'dream', name: 'Dream', type: 'workflow', status: 'run', pct: 0.38 },
   { id: 'scout', name: 'repo-scout', type: 'agent', status: 'run' },
 ];
-const live = () => ITEMS.filter(i => !i.gone);
 
 function miniMoon(pct, wait) {
   const r = 9, cx = 11, cy = 11;
   const lit = wait ? 'var(--wait-c)' : '#cfe0ff';
   const k = 1 - 2 * Math.min(Math.max(pct, 0), 1);
-  return `<svg class="minimoon minimoon-svg" viewBox="0 0 22 22">
+  return `<svg class="minimoon-svg" viewBox="0 0 22 22">
     <circle cx="${cx}" cy="${cy}" r="${r}" fill="#141a30" stroke="rgba(207,226,255,0.25)" stroke-width="0.75"/>
     <path d="M ${cx} ${cy - r} A ${r} ${r} 0 0 1 ${cx} ${cy + r} A ${Math.abs(k) * r} ${r} 0 0 ${k > 0 ? 0 : 1} ${cx} ${cy - r} Z" fill="${lit}" opacity="0.92"/>
   </svg>`;
 }
 
-/* ================= NOW rail ================= */
+/* ================= moon · pip · toast · motes ================= */
+function renderPip() {
+  const pip = document.getElementById('pip');
+  const n = liveItems().length;
+  pip.textContent = n || '';
+  pip.classList.toggle('zero', n === 0);
+  pip.classList.toggle('gold', review === 'wait');
+}
+function renderToast() {
+  document.getElementById('toast').classList.toggle('show', minimized && review === 'wait');
+}
+function renderMotes() {
+  const box = document.getElementById('motes');
+  box.innerHTML = liveItems().map(it =>
+    `<div class="mote" data-id="${it.id}"><div class="blot ${it.status}"></div></div>`).join('');
+  box.style.display = minimized ? 'block' : 'none';
+}
+let oT = 0;
+setInterval(() => {
+  if (!minimized) return;
+  oT += 0.04;
+  document.querySelectorAll('.mote:not(.flying)').forEach((m, i) => {
+    const r = i % 2 === 0 ? 59 : 80;
+    const a = oT * (i % 2 === 0 ? 1 : -0.7) + i * 2.4;
+    m.style.transform = `translate(${Math.cos(a) * r}px, ${Math.sin(a) * r * 0.45}px)`;
+  });
+}, 50);
+
+/* expand: motes fly from orbit into their rail rows, then hand off */
+function flyMotesToRail() {
+  const box = document.getElementById('motes');
+  box.style.display = 'block';
+  const stageR = stage.getBoundingClientRect();
+  document.querySelectorAll('.mote').forEach(m => {
+    const target = document.querySelector(`#w-now .nrow[data-open="${m.dataset.id}"] .ic`);
+    if (!target) { m.style.opacity = 0; return; }
+    const t = target.getBoundingClientRect();
+    m.classList.add('flying');
+    m.style.transform = `translate(${t.left + t.width / 2 - stageR.left - 78}px, ${t.top + t.height / 2 - stageR.top - 76}px)`;
+    m.style.opacity = 0;
+  });
+  setTimeout(() => { box.style.display = 'none'; }, 750);
+}
+
+/* ================= rail · briefing · flow · stream ================= */
 function renderRail() {
   const rows = document.querySelector('#w-now .rows');
-  const L = live();
+  const L = liveItems();
   rows.innerHTML = L.length ? L.map(it => `
     <div class="nrow ${it.status}" data-open="${it.id}">
-      ${it.type === 'workflow' ? miniMoon(it.pct, it.status === 'wait') : `<div class="blot ${it.status}"></div>`}
+      <div class="ic">${it.type === 'workflow' ? miniMoon(it.pct, it.status === 'wait') : `<div class="blot ${it.status}"></div>`}</div>
       <div style="min-width:0">
         <span class="nm">${it.name}</span>
         <span class="ty">${it.type === 'agent' ? 'agent · talk' : it.status === 'wait' ? 'needs you' : 'workflow'}</span>
       </div>
     </div>`).join('') : `<div class="empty">all quiet</div>`;
-  document.getElementById('slimtxt').textContent =
-    `${live().filter(i => i.status === 'wait').length} needs input · 2 landed`;
 }
-
-/* ================= workflow inspector ================= */
-let flowId = null;
+function renderBrief() {
+  const bb = document.querySelector('#w-brief .bb');
+  bb.innerHTML = `
+    ${review === 'wait' ? `
+    <div class="sect">Needs you</div>
+    <div class="brow" data-open="review"><span class="dot gold"></span><span class="lab">Needs input</span><span class="tt">code-review — your call before posting to PR #99</span><span class="mm">3m</span></div>` : ''}
+    <div class="sect">Landed while you were away</div>
+    <div class="brow"><span class="dot green"></span><span class="lab g">Ready</span><span class="tt">daily-brief — two things need you today</span><span class="mm">07:00</span></div>
+    <div class="brow"><span class="dot green"></span><span class="lab g">Ready</span><span class="tt">Dream — 3 belief candidates for tonight's survey</span><span class="mm">03:00</span></div>
+    <div class="pad"></div>`;
+  document.getElementById('slimtxt').textContent =
+    `${review === 'wait' ? 1 : 0} needs input · 2 landed`;
+  requestAnimationFrame(() => {
+    const b = document.getElementById('w-brief');
+    if (!b.classList.contains('detached')) b.style.top = (CHAT.t - b.offsetHeight - GAP) + 'px';
+  });
+}
 function renderFlow() {
   const w = document.getElementById('w-flow');
-  if (!flowId) { w.style.display = 'none'; return; }
-  const it = ITEMS.find(i => i.id === flowId);
+  if (!flowOpen) { w.style.display = 'none'; return; }
   w.style.display = 'flex';
-  w.querySelector('.whandle').childNodes[1].textContent = ' workflow ';
+  const steps = {
+    run: [['done', 'checkout PR #99 · build context'], ['done', 'adversarial pass — 3 findings'], ['cur', 'post comments'], ['todo', 'summarize for the stream']],
+    wait: [['done', 'checkout PR #99 · build context'], ['done', 'adversarial pass — 3 findings'], ['ask', 'post comments'], ['todo', 'summarize for the stream']],
+    answered: [['done', 'checkout PR #99 · build context'], ['done', 'adversarial pass — 3 findings'], ['cur', 'post comments — you said: post them'], ['todo', 'summarize for the stream']],
+    done: [['done', 'checkout PR #99 · build context'], ['done', 'adversarial pass — 3 findings'], ['done', 'posted 3 comments'], ['done', 'summarized for the stream']],
+  }[review];
+  const pct = { run: 0.66, wait: 0.66, answered: 0.85, done: 1 }[review];
   w.querySelector('.body').innerHTML = `
-    <div class="fhd">${miniMoon(it.pct, it.status === 'wait')} ${it.name} <span class="el">${it.id === 'review' ? '3m 22s' : '12m 40s'}</span></div>
-    ${it.steps.map(st => `
-      <div class="frow ${st.s}">
-        <div class="blot ${st.s === 'ask' ? 'wait' : st.s === 'cur' ? 'run' : st.s === 'todo' ? 'todo' : 'done'}"></div>
-        <div style="min-width:0">
-          <div class="stn">${st.n}</div>
-          ${st.s === 'ask' ? `` : ``}
-        </div>
+    <div class="fhd">${miniMoon(pct, review === 'wait')} code-review <span class="el">${review === 'done' ? '✓ 4m 02s' : '3m 22s'}</span></div>
+    ${steps.map(([s, n]) => `
+      <div class="frow ${s}">
+        <div class="blot ${s === 'ask' ? 'wait' : s === 'cur' ? 'run' : s === 'todo' ? 'todo' : 'done'}"></div>
+        <div style="min-width:0"><div>${n}</div></div>
       </div>
-      ${st.s === 'ask' ? `<div class="askbox">${st.ask}<div class="abtns"><button class="abtn" data-yes>Post them</button><button class="abtn sec">Skip</button></div></div>` : ''}
-    `).join('')}`;
-  w.querySelectorAll('[data-yes]').forEach(b => b.addEventListener('click', () => {
-    it.status = 'run'; it.pct = 0.8;
-    it.steps = it.steps.map(st => st.s === 'ask' ? { n: 'post comments — you said: post them', s: 'cur' } : st);
-    document.querySelector('.actref').classList.remove('gold');
-    document.querySelector('.actref .open-w').previousElementSibling.textContent = 'posting comments…';
-    const goldRow = document.querySelector('#w-brief .brow[data-open="review"]');
-    if (goldRow) goldRow.remove();
-    renderAll();
-  }));
+      ${s === 'ask' ? `<div class="askbox">Post 3 inline comments? Two high-confidence, one style-only.<div class="abtns"><button class="abtn" data-yes>Post them</button><button class="abtn sec" data-yes>Skip</button></div></div>` : ''}
+    `).join('')}
+    ${review === 'done' ? '<div class="fin">✓ finished — result is in the stream</div>' : ''}`;
+  w.querySelectorAll('[data-yes]').forEach(b => b.addEventListener('click', () => answer()));
+}
+function renderStream() {
+  const s = document.getElementById('stream');
+  s.innerHTML = `
+    <div class="hb"><span class="sym">⟳</span><b>Dream</b> ran at 3:00 · proposed 3 beliefs</div>
+    <div class="msg u">can you review PR 99 before I merge?</div>
+    <div class="msg">On it — handed to <b>code-review</b>. It's on your rail; I'll only interrupt for decisions.</div>
+    <div class="actref ${review === 'wait' ? 'gold' : review === 'done' ? 'donec' : ''}" data-open="review">
+      <div class="blot ${review === 'wait' ? 'wait' : review === 'done' ? 'done' : 'run'}"></div>
+      <span class="nm">code-review</span>
+      <span class="st">${{ run: 'adversarial pass…', wait: 'needs your call', answered: 'posting comments…', done: '✓ posted 3 comments' }[review]}</span>
+      <span class="open-w">open workflow ›</span>
+    </div>
+    <div class="msg u">also have someone map stale deps in the repo</div>
+    <div class="msg">Spawned <b>repo-scout</b> for that — ephemeral; talk to it directly from the rail.</div>
+    ${review === 'answered' || review === 'done' ? `<div class="msg u">post them</div>` : ''}
+    ${review === 'done' ? `
+      <div class="msg result"><div class="rtit">✓ code-review finished · 4m 02s</div>
+      Posted 3 comments to PR #99 — the cooldown-integrity one is worth a look before you merge.</div>` : ''}
+  `;
+  s.scrollTop = s.scrollHeight;
 }
 
-/* ================= agent direct line ================= */
+function renderAll() {
+  stage.classList.toggle('min', minimized);
+  renderRail(); renderBrief(); renderFlow(); renderStream();
+  renderPip(); renderToast(); renderMotes();
+}
+
+/* ================= actions ================= */
+function expand(openFlow) {
+  if (!minimized) { if (openFlow) { flowOpen = true; renderFlow(); } return; }
+  minimized = false;
+  if (openFlow && review === 'wait') flowOpen = true;
+  renderAll();
+  /* re-create motes for the flight, then send them to the rail */
+  document.getElementById('motes').innerHTML = liveItems().map((it, i) => {
+    const r = i % 2 === 0 ? 59 : 80;
+    const a = oT * (i % 2 === 0 ? 1 : -0.7) + i * 2.4;
+    return `<div class="mote" data-id="${it.id}" style="transform:translate(${Math.cos(a) * r}px,${Math.sin(a) * r * 0.45}px)"><div class="blot ${it.status}"></div></div>`;
+  }).join('');
+  requestAnimationFrame(() => requestAnimationFrame(flyMotesToRail));
+  setStep(minimized ? 0 : (review === 'wait' ? 2 : stepNow));
+}
+function fold() {
+  if (minimized) return;
+  minimized = true;
+  renderAll();
+}
+function answer() {
+  if (review !== 'wait') return;
+  review = 'answered';
+  renderAll();
+  at(3500, () => { if (review === 'answered') { review = 'done'; renderAll(); } });
+}
+
+document.getElementById('moonw').addEventListener('click', () => minimized ? expand(true) : fold());
+document.getElementById('toast').addEventListener('click', () => expand(true));
+document.getElementById('minbtn').addEventListener('click', fold);
+document.getElementById('motes').addEventListener('click', e => { if (e.target.closest('.mote')) expand(true); });
+
+/* rail / stream / brief clicks */
+stage.addEventListener('click', e => {
+  const x = e.target.closest('[data-x]');
+  if (x) { x.closest('.widget').style.display = 'none'; if (x.closest('#w-flow')) flowOpen = false; return; }
+  const o = e.target.closest('[data-open]');
+  if (!o) return;
+  const id = o.dataset.open;
+  if (id === 'review' || id === 'dream') { flowOpen = true; renderFlow(); }
+  else { document.getElementById('w-agent').style.display = 'flex'; document.getElementById('ain').focus(); }
+});
+
+/* agent direct line */
 const ain = document.getElementById('ain');
 ain.addEventListener('keydown', e => {
   if (e.key !== 'Enter' || !ain.value.trim()) return;
@@ -439,39 +589,18 @@ ain.addEventListener('keydown', e => {
   ain.value = '';
   msgs.scrollTop = msgs.scrollHeight;
   setTimeout(() => {
-    msgs.insertAdjacentHTML('beforeend', `<div class="am">Noted — narrowing to apps/ui-moon-tauri first. I'll put findings in the stream when I dissolve.</div>`);
+    msgs.insertAdjacentHTML('beforeend', `<div class="am">Noted — narrowing to apps/ui-moon-tauri first. Findings land in the stream when I dissolve.</div>`);
     msgs.scrollTop = msgs.scrollHeight;
   }, 800);
 });
 
-/* ================= open/close logic ================= */
-document.getElementById('stage').addEventListener('click', e => {
-  const x = e.target.closest('[data-x]');
-  if (x) { x.closest('.widget').style.display = 'none'; if (x.closest('#w-flow')) flowId = null; return; }
-  const o = e.target.closest('[data-open]');
-  if (!o) return;
-  const it = ITEMS.find(i => i.id === o.dataset.open);
-  if (!it) return;
-  if (it.type === 'workflow') { flowId = it.id; renderFlow(); }
-  else { document.getElementById('w-agent').style.display = 'flex'; ain.focus(); }
-});
-
-/* ================= briefing collapse ================= */
+/* briefing collapse on typing */
 const brief = document.getElementById('w-brief');
 document.getElementById('chatin').addEventListener('focus', () => brief.classList.add('slim'));
 brief.querySelector('.slimline').addEventListener('click', () => brief.classList.remove('slim'));
 
-/* ================= rail simulate ================= */
-document.querySelector('#w-now .simff').addEventListener('click', () => {
-  const d = ITEMS.find(i => i.id === 'dream');
-  d.gone = true;
-  document.getElementById('stream').insertAdjacentHTML('beforeend',
-    `<div class="hb"><span class="sym">⟳</span><b>Dream</b> finished · survey queued for tonight</div>`);
-  renderAll();
-});
-
-/* ================= drag + magnet snap ================= */
-const CHAT = { l: 360, t: 195, r: 860, b: 705 };
+/* ================= drag + magnet ================= */
+const CHAT = { l: 360, t: 195, r: 860, b: 725 };
 const GAP = 4, NEAR = 22;
 const ghost = document.getElementById('ghost');
 function calcSnap(w) {
@@ -489,7 +618,7 @@ function makeDraggable(w) {
   h.addEventListener('pointerdown', e => {
     if (e.target.closest('[data-x]')) return;
     st = { x: e.clientX, y: e.clientY, l: w.offsetLeft, t: w.offsetTop };
-    w.classList.add('dragging'); w.classList.remove('settling');
+    w.classList.add('dragging', 'detached'); w.classList.remove('settling');
     h.setPointerCapture(e.pointerId);
   });
   h.addEventListener('pointermove', e => {
@@ -509,6 +638,7 @@ function makeDraggable(w) {
     const s = calcSnap(w);
     if (s) {
       w.classList.add('settling', s.cls);
+      w.classList.remove('detached');
       w.style.left = s.x + 'px'; w.style.top = s.y + 'px';
       setTimeout(() => w.classList.remove('settling'), 200);
     }
@@ -518,56 +648,64 @@ function makeDraggable(w) {
   });
 }
 document.querySelectorAll('.widget').forEach(makeDraggable);
-
-/* initial snapped positions */
 function place(id, x, y, cls) {
   const w = document.getElementById(id);
   w.style.left = x + 'px'; w.style.top = y + 'px';
   if (cls) w.classList.add(cls);
 }
 place('w-now', CHAT.l - 138 - GAP, CHAT.t, 'snap-l');
-place('w-brief', CHAT.l, CHAT.t - 118 - GAP, 'snap-t');   /* height ≈ 118 */
+place('w-brief', CHAT.l, 60, 'snap-t');
 place('w-flow', CHAT.r + GAP, CHAT.t, 'snap-r');
-place('w-agent', CHAT.r + GAP, CHAT.t + 300, 'snap-r');
+place('w-agent', CHAT.r + GAP, CHAT.t + 310, 'snap-r');
 
-/* re-flush briefing top once its real height is known */
-requestAnimationFrame(() => {
-  const b = document.getElementById('w-brief');
-  b.style.top = (CHAT.t - b.offsetHeight - GAP) + 'px';
+/* ================= scenario ================= */
+const CAPS = {
+  0: '<b>Quiet.</b> The deck is folded — just the moon on your desktop. Three motes orbit: code-review, Dream, repo-scout. All blue, pip says 3.',
+  1: '<b>code-review hits a decision.</b> Its mote and the pip turn gold, and a notification slides out beside the moon. You\'re in another app — this is all you see.',
+  2: '<b>You click the moon.</b> The deck assembles around it — the motes fly into the NOW rail, the briefing appears, the workflow inspector opens on the gold item.',
+  3: '<b>You answer.</b> One click in the inspector (or the stream). Gold clears everywhere at once — mote, pip, rail, briefing, stream.',
+  4: '<b>It finishes.</b> The result lands in the stream as the record; the rail row dissolves. The inspector shows the completed pipeline.',
+  5: '<b>Fold.</b> Press — and the deck collapses back into the moon. Two motes still orbiting. The desktop is quiet again.',
+};
+let stepNow = 0, playing = false;
+function setStep(n) {
+  stepNow = n;
+  document.querySelectorAll('.scen .step').forEach(b => b.classList.toggle('on', b.dataset.s === String(n)));
+  document.getElementById('caption').innerHTML = CAPS[n];
+}
+function apply(n) {
+  timers.forEach(clearTimeout); timers = [];
+  setStep(n);
+  flowOpen = n >= 2 && n <= 4;
+  review = n <= 0 ? 'run' : n === 1 || n === 2 ? 'wait' : n === 3 ? 'answered' : 'done';
+  const wantMin = n <= 1 || n === 5;
+  if (!wantMin && minimized) { minimized = false; renderAll(); expandFlight(); }
+  else { minimized = wantMin; renderAll(); }
+}
+function expandFlight() {
+  document.getElementById('motes').innerHTML = liveItems().map((it, i) => {
+    const r = i % 2 === 0 ? 59 : 80;
+    const a = oT * (i % 2 === 0 ? 1 : -0.7) + i * 2.4;
+    return `<div class="mote" data-id="${it.id}" style="transform:translate(${Math.cos(a) * r}px,${Math.sin(a) * r * 0.45}px)"><div class="blot ${it.status}"></div></div>`;
+  }).join('');
+  requestAnimationFrame(() => requestAnimationFrame(flyMotesToRail));
+}
+function play() {
+  if (playing) return;
+  playing = true;
+  const seq = [[0, 0], [1, 2200], [2, 5200], [3, 8800], [4, 11800], [5, 15000]];
+  seq.forEach(([s, t]) => at(t, () => apply(s)));
+  at(16200, () => { playing = false; });
+}
+document.getElementById('scen').addEventListener('click', e => {
+  const b = e.target.closest('.step');
+  if (!b) return;
+  if (b.dataset.s === 'play') return play();
+  playing = false;
+  apply(Number(b.dataset.s));
 });
 
-/* ================= minimize → orbit dock ================= */
-const stage = document.getElementById('stage');
-document.getElementById('minbtn').addEventListener('click', () => { stage.classList.add('min'); renderOrbs(); });
-document.getElementById('bigmoon').addEventListener('click', () => stage.classList.remove('min'));
-let oT = 0;
-function renderOrbs() {
-  const box = document.getElementById('minorbits');
-  box.querySelectorAll('.orb').forEach(o => o.remove());
-  live().forEach(it => {
-    const o = document.createElement('div');
-    o.className = 'orb';
-    o.innerHTML = `<div class="blot ${it.status}" style="width:12px;height:12px"></div>`;
-    box.appendChild(o);
-  });
-  const pip = document.getElementById('minpip');
-  pip.textContent = live().length || '';
-  pip.classList.toggle('gold', live().some(i => i.status === 'wait'));
-}
-setInterval(() => {
-  if (!stage.classList.contains('min')) return;
-  oT += 0.04;
-  document.querySelectorAll('#minimoon .orb').forEach((o, i) => {
-    const r = i % 2 === 0 ? 75 : 100;
-    const a = oT * (i % 2 === 0 ? 1 : -0.7) + i * 2.4;
-    o.style.transform = `translate(${Math.cos(a) * r}px, ${Math.sin(a) * r * 0.45}px)`;
-  });
-}, 50);
-
-function renderAll() { renderRail(); renderFlow(); if (stage.classList.contains('min')) renderOrbs(); }
-renderAll();
-/* open the workflow inspector for the gold item on load so the magnet story is visible immediately */
-flowId = 'review'; renderFlow();
+apply(0);
 </script>
 </body>
 </html>
