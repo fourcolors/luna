@@ -1740,11 +1740,17 @@
       background: rgba(4, 6, 14, 0.66);
       opacity: 0;
       pointer-events: none;
-      transition: opacity 0.25s ease;
+      /* visibility (delayed until the fade-out ends) keeps the hidden
+         wizard out of the tab order — opacity alone leaves invisible
+         buttons focusable for keyboard users. */
+      visibility: hidden;
+      transition: opacity 0.25s ease, visibility 0s linear 0.25s;
     }
     .wizard-panel.active {
       opacity: 1;
       pointer-events: auto;
+      visibility: visible;
+      transition: opacity 0.25s ease;
     }
 
     .wizard-card {
@@ -7130,6 +7136,13 @@
       // install-vs-update wording and the "Just connect to it" shortcut.
       env: { serverRunning: false, repoExists: false },
       _detectPromise: null,
+      // Did an install/update run actually happen this session? Gates whether
+      // the connect step's Back returns to the progress screen (populated) or
+      // the local form (the "Just connect" shortcut skips progress entirely).
+      _ranInstall: false,
+      // Set after a FAILED probe on Save & finish: the next click is an
+      // explicit "Save anyway". Reset whenever the address/key change.
+      _forceSave: false,
 
       isComplete() { return localStorage.getItem(this.STORAGE_DONE) === '1'; },
       markComplete() {
@@ -7160,6 +7173,7 @@
         // Fire-and-forget like SettingsEngine.open — the card fades in over it.
         TauriService.setWindowSize(this.WIZARD_W, this.WIZARD_H);
         this.goTo('welcome');
+        this._ranInstall = false;
         // Quietly look around this Mac while the welcome step plays — by the
         // time the user reaches the path step, the cards know whether Luna
         // already lives here. Fire-and-forget; the promise is kept for tests.
@@ -7286,6 +7300,14 @@
             : (State.wsUrl || 'ws://127.0.0.1:4753/ui');
         }
         this.setConnectStatus('', null);
+        this.resetFinishGuard();
+      },
+
+      // Forget a previous "Save anyway" arming whenever the step is re-entered
+      // or the address/key change — a NEW value pair deserves a fresh probe.
+      resetFinishGuard() {
+        this._forceSave = false;
+        if (DOM.wizardFinishBtn) DOM.wizardFinishBtn.textContent = 'Save & finish';
       },
 
       setConnectStatus(msg, kind) {
@@ -7330,8 +7352,11 @@
           sock.onmessage = (ev) => {
             try {
               const frame = JSON.parse(ev.data);
+              // A Luna server ALWAYS sends `hello` first — anything else means
+              // we reached some other WebSocket service, not Luna. Treating it
+              // as success would happily "find Luna" on any random endpoint.
               if (frame && frame.type === 'hello') finish({ ok: true, hello: frame });
-              else finish({ ok: true, hello: null });
+              else finish({ ok: false, reason: 'That answers, but it doesn’t sound like Luna — double-check the address.' });
             } catch (_) {
               finish({ ok: false, reason: 'Reached something, but it does not speak Luna.' });
             }
@@ -7365,10 +7390,22 @@
       },
 
       // Persist the pair the same way Settings does, hand the live engine the
-      // new creds, and celebrate.
+      // new creds, and celebrate. The step promises "I'll listen for her hello
+      // before saving anything" — so the first click VERIFIES; only after a
+      // failed probe does the button re-arm as an explicit "Save anyway"
+      // (the server might be legitimately offline right now).
       async finish() {
         const url = DOM.wizardConnectUrl.value.trim() || 'ws://127.0.0.1:4753/ui';
         const token = DOM.wizardConnectToken.value.trim();
+        if (!this._forceSave) {
+          const ok = await this.runConnectTest();
+          if (!ok) {
+            this._forceSave = true;
+            if (DOM.wizardFinishBtn) DOM.wizardFinishBtn.textContent = 'Save anyway';
+            return;
+          }
+        }
+        this.resetFinishGuard();
         State.wsUrl = url;
         State.wsToken = token;
         if (DOM.wsUrlInput) DOM.wsUrlInput.value = url;
@@ -7390,13 +7427,18 @@
       // ── remote path ───────────────────────────────────────────────────
       renderRemoteCmd() {
         const raw = (DOM.wizardRemoteHost.value || '').trim();
-        const host = raw || 'user@your-server';
+        // Only interpolate an ssh destination that LOOKS like one (user@host,
+        // hostname, or IPv4). Whitespace/quotes — easy to drag in with a
+        // copy-paste — would render a broken (or surprising) one-liner, so
+        // anything else falls back to the placeholder.
+        const safe = /^[A-Za-z0-9._@-]+$/.test(raw) ? raw : '';
+        const host = safe || 'user@your-server';
         DOM.wizardRemoteCmd.textContent =
           `ssh -t ${host} '` +
           `git clone ${this.REPO_URL} ~/luna 2>/dev/null || git -C ~/luna pull --ff-only; ` +
           `cd ~/luna && sudo bash scripts/luna-server-install && ` +
           `grep ^UI_WS_TOKEN ~/.luna/.env'`;
-        const bare = raw.includes('@') ? raw.split('@').pop() : raw;
+        const bare = safe.includes('@') ? safe.split('@').pop() : safe;
         this._remoteWsGuess = bare ? `ws://${bare}:4753/ui` : '';
       },
 
@@ -7503,6 +7545,7 @@
         }
         const update = this.env.serverRunning || this.env.repoExists;
         this._running = true;
+        this._ranInstall = true;   // connect's Back may now return to progress
         this.goTo('progress');
         DOM.wizardProgressTitle.textContent = update
           ? 'Freshening Luna up…'
@@ -7648,9 +7691,15 @@
     DOM.wizardRemoteCopy.addEventListener('click', () => SetupWizard.copyRemoteCmd());
     DOM.wizardRemoteContinue.addEventListener('click', () => SetupWizard.goTo('connect'));
     DOM.wizardConnectBack.addEventListener('click', () => {
+      // The local path only returns to the progress screen when a run actually
+      // happened — the "Just connect to it" shortcut skips progress entirely,
+      // and Back must not land on an empty one.
       SetupWizard.goTo(SetupWizard.chosenPath === 'remote' ? 'remote'
-        : SetupWizard.chosenPath === 'local' ? 'progress' : 'path');
+        : SetupWizard.chosenPath === 'local' ? (SetupWizard._ranInstall ? 'progress' : 'local')
+        : 'path');
     });
+    DOM.wizardConnectUrl.addEventListener('input', () => SetupWizard.resetFinishGuard());
+    DOM.wizardConnectToken.addEventListener('input', () => SetupWizard.resetFinishGuard());
     DOM.wizardTestBtn.addEventListener('click', () => SetupWizard.runConnectTest());
     DOM.wizardFinishBtn.addEventListener('click', () => SetupWizard.finish());
     DOM.wizardDoneBtn.addEventListener('click', () => {
