@@ -130,6 +130,20 @@ const sameManifest = (a: SkillManifest, b: SkillManifest): boolean =>
   a.tags.length === b.tags.length &&
   a.tags.every((t, i) => t === b.tags[i])
 
+export interface SyncUserSkillsOptions {
+  /**
+   * Ids the operator has already decided on (any skill_preferences row).
+   * A scanned skill NOT in this set and not already registered is NEW and
+   * registers DISABLED (quarantine) — the operator enables it once in the
+   * Skills tab. Review finding: the agent itself can write ~/.luna/skills
+   * (local-shell full access shipped), so auto-enabling new files would be
+   * a persistent prompt-injection channel; the operator's toggle is the
+   * approval gate, consistent with propose→approve everywhere else.
+   * Omitted (undefined) = no quarantine (unit-test convenience).
+   */
+  readonly approvedIds?: ReadonlySet<string>
+}
+
 /**
  * Reconcile the registry's user-sourced entries with a fresh scan.
  * Returns a change summary for logging. Non-user entries are never touched;
@@ -138,11 +152,14 @@ const sameManifest = (a: SkillManifest, b: SkillManifest): boolean =>
 export const syncUserSkills = (
   registry: SkillRegistryApi,
   scan: UserSkillScan,
+  options: SyncUserSkillsOptions = {},
 ): Effect.Effect<{
   readonly added: number
   readonly updated: number
   readonly removed: number
   readonly conflicts: ReadonlyArray<string>
+  /** NEW skills registered disabled, awaiting operator enable. */
+  readonly quarantined: ReadonlyArray<string>
 }> =>
   Effect.gen(function* () {
     const catalog = yield* registry.catalog()
@@ -158,6 +175,7 @@ export const syncUserSkills = (
     let updated = 0
     let removed = 0
     const conflicts: string[] = []
+    const quarantined: string[] = []
 
     for (const [id, manifest] of scanned) {
       if (nonUserIds.has(id)) {
@@ -168,6 +186,18 @@ export const syncUserSkills = (
       if (cur === undefined) {
         yield* registry.register(manifest).pipe(Effect.catchAll(() => Effect.void))
         added++
+        if (
+          options.approvedIds !== undefined &&
+          !options.approvedIds.has(id)
+        ) {
+          // Never seen, never decided → disabled until the operator says so.
+          // setEnabled also write-throughs a row, so the quarantine fires
+          // exactly once per skill (it is "approved-as-disabled" after).
+          yield* registry
+            .setEnabled(id, false)
+            .pipe(Effect.catchAll(() => Effect.void))
+          quarantined.push(id)
+        }
       } else if (!sameManifest(cur, manifest)) {
         yield* registry.unregister(id)
         yield* registry.register(manifest).pipe(Effect.catchAll(() => Effect.void))
@@ -180,5 +210,5 @@ export const syncUserSkills = (
         removed++
       }
     }
-    return { added, updated, removed, conflicts }
+    return { added, updated, removed, conflicts, quarantined }
   })

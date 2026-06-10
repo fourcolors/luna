@@ -16,5 +16,6 @@ export {
   parseSkillMd,
   scanUserSkills,
   syncUserSkills,
+  type SyncUserSkillsOptions,
   type UserSkillScan,
 } from "./user-skills-loader.js"

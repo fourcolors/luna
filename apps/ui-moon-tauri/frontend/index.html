@@ -3753,17 +3753,32 @@
 
       applyCapability(supported) {
         if (DOM.skillsTabBtn) DOM.skillsTabBtn.hidden = !supported;
+        // A hello means a NEW connection — any in-flight toggle from the
+        // previous connection is dead. Clear pending so rows can't stay
+        // stuck blurred waiting for a skill-status that will never come.
+        State.skillsPending = {};
         if (!supported && DOM.skillsTabBtn && DOM.skillsTabBtn.classList.contains('active')) {
           // The tab was open when we reconnected to an older server —
           // bounce back to General so the modal never shows a dead panel.
           const general = document.querySelector('.settings-tab[data-tab="general"]');
           if (general) general.click();
         }
+        this.render();
       },
 
       applyCatalog(skills) {
         State.skills = Array.isArray(skills) ? skills : [];
-        State.skillsPending = {};
+        // Settle ONLY the toggles this catalog confirms (review finding:
+        // wiping all pending markers drops a concurrent second toggle's
+        // pending state early and re-opens it to double-sends).
+        // skillsPending holds the REQUESTED enabled value; an entry whose
+        // catalog row doesn't match yet is still in flight — keep it.
+        const settled = {};
+        for (const [id, desired] of Object.entries(State.skillsPending)) {
+          const row = State.skills.find((s) => s.id === id);
+          if (row && row.enabled !== desired) settled[id] = desired;
+        }
+        State.skillsPending = settled;
         this.setError(null);
         this.render();
       },
@@ -3783,12 +3798,14 @@
 
       toggle(id) {
         const skill = State.skills.find((s) => s.id === id);
-        if (!skill || State.skillsPending[id]) return;
+        if (!skill || id in State.skillsPending) return;
         if (!(State.ws && State.ws.readyState === WebSocket.OPEN)) {
           this.setError('Not connected to a server.');
           return;
         }
-        State.skillsPending[id] = true;
+        // Store the REQUESTED value — applyCatalog uses it to settle only
+        // confirmed toggles (a plain `true` can't distinguish direction).
+        State.skillsPending[id] = !skill.enabled;
         WebSocketEngine.send({ type: 'skill-toggle', id, enabled: !skill.enabled });
         this.render();
       },
@@ -3825,6 +3842,11 @@
         if (DOM.skillsChips) {
           const cats = ['all'].concat(Array.from(new Set(State.skills.map((s) => s.category))).sort());
           const f = this._filter;
+          // Review finding: a catalog refresh can remove the actively-
+          // filtered category (user skill deleted on disk) — the filter
+          // would point at a chip that no longer renders and the list
+          // would show "No skills match." with no visible cue. Reset.
+          if (!cats.includes(f.category)) f.category = 'all';
           DOM.skillsChips.replaceChildren(
             ...cats.map((c) => this._chip(c, f.category === c, () => { f.category = c; this.render(); })),
             this._chip('built-in', f.source === 'builtin', () => { f.source = f.source === 'builtin' ? 'all' : 'builtin'; this.render(); }),
@@ -3835,10 +3857,21 @@
         // rows — built with createElement (no innerHTML with catalog strings:
         // names/descriptions are server-authored but defence-in-depth is free)
         const rows = this._visible().map((s) => {
+          const pending = s.id in State.skillsPending;
           const row = document.createElement('div');
-          row.className = 'skill-row' + (s.enabled ? '' : ' off') + (State.skillsPending[s.id] ? ' pending' : '');
+          row.className = 'skill-row' + (s.enabled ? '' : ' off') + (pending ? ' pending' : '');
           row.setAttribute('role', 'switch');
           row.setAttribute('aria-checked', String(!!s.enabled));
+          // a11y (review finding): role=switch must be keyboard-operable,
+          // and pending must be conveyed beyond the visual blur.
+          row.tabIndex = 0;
+          if (pending) row.setAttribute('aria-busy', 'true');
+          row.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              this.toggle(s.id);
+            }
+          });
           row.title = s.enabled ? 'Click to disable' : 'Click to enable';
 
           const blot = document.createElement('div');
@@ -3884,6 +3917,7 @@
         const b = document.createElement('button');
         b.type = 'button';
         b.className = 'skills-chip' + (on ? ' on' : '');
+        b.setAttribute('aria-pressed', String(!!on));
         b.textContent = label;
         b.addEventListener('click', onClick);
         return b;

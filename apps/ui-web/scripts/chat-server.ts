@@ -144,7 +144,7 @@ import {
   }
   applyRuntimePathEnvDefaults(resolveRuntimePaths())
 }
-import { Effect, Layer, ManagedRuntime, Option, Stream } from "effect"
+import { Context, Effect, Layer, ManagedRuntime, Option, Stream } from "effect"
 import {
   AccountBroker,
   AccountBrokerLayer,
@@ -411,6 +411,13 @@ const localShellBridge = createLocalShellBridge()
 // attached CLI with --local-shell takes over (`replaceable: true`); when it
 // releases, we re-run the original attach so the agent keeps local_shell.
 const sandboxReattachers = new Map<string, () => void>()
+
+// PRD Part B: bridge between skillRegistryL's hot-load fiber (buildBaseLayer)
+// and the ui-ws broadcast hook (buildServerLayer wires it via
+// skillsWsHandle.changes). Module-level holder because the two live in
+// different layer scopes of this same boot script. Null until a WS server
+// registers; the fiber null-guards every call.
+let notifySkillCatalogChanged: (() => void) | null = null
 const reattachSandbox = (threadId: string): void => {
   const reattach = sandboxReattachers.get(threadId)
   if (reattach !== undefined) reattach()
@@ -450,6 +457,8 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       // promptSnapshotSync() — synchronous and never stale (the registry
       // rebuilds it inside every mutation), so a settings toggle is
       // reflected in the very next thread without a restart or a tick.
+      // (The ~/.luna/skills hot-load fiber lives in skillRegistryL, where
+      // the prefs store is in scope for the new-skill quarantine.)
       const skillRegistry = yield* SkillRegistry
       // PRD Part A (Connectors): connected services' MCP servers. Same
       // sync-snapshot discipline — refreshMounts() rebuilds on connect/
@@ -459,36 +468,6 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       if (bootMounts.length > 0) {
         console.log("[luna/boot] connector mounts:", bootMounts.join(", "))
       }
-
-      // PRD Part B S4: hot-load user skills from ~/.luna/skills/<id>/SKILL.md.
-      // Same pattern as the beliefs holder: run once at boot (correct from
-      // t=0), then a supervised refresh loop in this layer's Scope. A new or
-      // edited SKILL.md appears in the catalog (and the next thread's index)
-      // within ~refreshIntervalMs, no restart. Scan/sync never throw — a
-      // malformed file is a warning, not an outage.
-      const userSkillsDir = join(resolveRuntimePaths().lunaHome, "skills")
-      const refreshUserSkills = Effect.gen(function* () {
-        const scan = scanUserSkills(userSkillsDir)
-        const summary = yield* syncUserSkills(skillRegistry, scan)
-        if (summary.added + summary.updated + summary.removed > 0) {
-          console.log(
-            `[luna/skills] user skills synced: +${summary.added} ~${summary.updated} -${summary.removed}`,
-          )
-        }
-        if (summary.conflicts.length > 0) {
-          console.warn(
-            "[luna/skills] user skills shadowing built-ins were SKIPPED:",
-            summary.conflicts.join(", "),
-          )
-        }
-        for (const w of scan.warnings) console.warn("[luna/skills]", w)
-      }).pipe(Effect.catchAllCause(() => Effect.void))
-      yield* refreshUserSkills
-      yield* Effect.forkScoped(
-        Effect.forever(
-          Effect.sleep(refreshIntervalMs).pipe(Effect.zipRight(refreshUserSkills)),
-        ),
-      )
 
       const bootSkills = yield* skillRegistry.catalog()
       console.log(
@@ -1285,14 +1264,23 @@ export const buildBaseLayer = (
   // enabled). Toggles write through to the store BEFORE the in-memory
   // flip, so memory and disk can never disagree. Defined once and reused
   // by reference (Layer memoization) so the thread-tools wiring and the
-  // ui-ws skill frames see the SAME registry instance. Disclosure stays
-  // "inline" until skill_load ships (S4 flips this to "index").
+  // ui-ws skill frames see the SAME registry instance.
+  //
+  // This layer also OWNS the ~/.luna/skills hot-load fiber (boot scan +
+  // 30s refresh, the beliefs-holder pattern) because the quarantine needs
+  // the prefs store: a NEVER-DECIDED user skill registers DISABLED until
+  // the operator enables it in the Skills tab (review finding: the agent
+  // can write ~/.luna/skills via local-shell, so auto-enabling new files
+  // would be a persistent prompt-injection channel). Catalog deltas ping
+  // notifySkillCatalogChanged so ui-ws broadcasts a fresh catalog to
+  // long-lived clients.
   // LunaSqliteBootstrap flows up from the prefs store and is satisfied at
   // the bottom of buildServerLayer, same as every other SQLite layer here.
   const skillPrefsL = SkillPrefsStore.makeLayer(paths.lunaDbPath).pipe(
     Layer.provide(clockL),
   )
-  const skillRegistryL = Layer.unwrapEffect(
+  const skillRegistryL = Layer.scoped(
+    SkillRegistry,
     Effect.gen(function* () {
       const prefs = yield* SkillPrefsStore
       const disabled = yield* prefs.disabledIds()
@@ -1304,16 +1292,64 @@ export const buildBaseLayer = (
           disabled.join(", "),
         )
       }
-      return SkillRegistry.layer({
-        seeds: BUILTIN_SKILLS,
-        initialDisabled: disabled,
-        onToggle: (id, enabled) => prefs.setEnabled(id, enabled),
-        // PRD B §11 (S4): index disclosure — the system prompt carries a
-        // one-line index of enabled skills; bodies load on demand via the
-        // skill_tools.skill_load MCP tool. Keeps 100+ enabled skills from
-        // bloating every turn's context.
-        disclosure: "index",
-      })
+      const ctx = yield* Layer.build(
+        SkillRegistry.layer({
+          seeds: BUILTIN_SKILLS,
+          initialDisabled: disabled,
+          onToggle: (id, enabled) => prefs.setEnabled(id, enabled),
+          // PRD B §11 (S4): index disclosure — the system prompt carries a
+          // one-line index of enabled skills; bodies load on demand via the
+          // skill_tools.skill_load MCP tool. Keeps 100+ enabled skills from
+          // bloating every turn's context.
+          disclosure: "index",
+        }),
+      )
+      const registry = Context.get(ctx, SkillRegistry)
+
+      const userSkillsDir = join(resolveRuntimePaths().lunaHome, "skills")
+      const refreshUserSkills = Effect.gen(function* () {
+        const scan = scanUserSkills(userSkillsDir)
+        const approvedIds = new Set(yield* prefs.knownIds())
+        const summary = yield* syncUserSkills(registry, scan, { approvedIds })
+        if (summary.added + summary.updated + summary.removed > 0) {
+          console.log(
+            `[luna/skills] user skills synced: +${summary.added} ~${summary.updated} -${summary.removed}`,
+          )
+          // Long-lived clients (the Moon) must see hot-load deltas without
+          // a reconnect — ui-ws registered this via skillsWsHandle.changes.
+          notifySkillCatalogChanged?.()
+        }
+        if (summary.quarantined.length > 0) {
+          console.warn(
+            "[luna/skills] NEW user skill(s) found and DISABLED pending your approval " +
+              "(enable in Settings → Skills):",
+            summary.quarantined.join(", "),
+          )
+        }
+        if (summary.conflicts.length > 0) {
+          console.warn(
+            "[luna/skills] user skills shadowing built-ins were SKIPPED:",
+            summary.conflicts.join(", "),
+          )
+        }
+        for (const w of scan.warnings) console.warn("[luna/skills]", w)
+      }).pipe(
+        // Never take the boot/loop down — but never swallow silently either
+        // (review finding): squashed causes get an operator-visible line.
+        Effect.catchAllCause((cause) =>
+          Effect.sync(() =>
+            console.warn("[luna/skills] user-skill sync failed:", String(cause)),
+          ),
+        ),
+      )
+      yield* refreshUserSkills
+      yield* Effect.forkScoped(
+        Effect.forever(
+          Effect.sleep(30_000).pipe(Effect.zipRight(refreshUserSkills)),
+        ),
+      )
+
+      return registry
     }),
   ).pipe(Layer.provide(skillPrefsL))
 
@@ -1678,6 +1714,11 @@ const buildServerLayer = (
           ),
         setEnabled: (id: string, enabled: boolean) =>
           skillRegistryService.setEnabled(id, enabled),
+        // Out-of-band catalog changes (the ~/.luna/skills hot-load fiber)
+        // → ui-ws broadcasts a fresh catalog to every connected client.
+        changes: (notify: () => void) => {
+          notifySkillCatalogChanged = notify
+        },
       }
 
       // Phase 3 D3: build the SurveyWsHandle adapter. SurveyApi has

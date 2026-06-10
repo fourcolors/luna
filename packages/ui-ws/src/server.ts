@@ -229,6 +229,15 @@ export interface UIWebSocketServerConfig {
       id: string,
       enabled: boolean,
     ) => import("effect").Effect.Effect<void, unknown>
+    /**
+     * Optional change-notification registration: the server passes a
+     * `notify` callback; the provider calls it whenever the catalog
+     * changes OUTSIDE a client toggle (the ~30s user-skills hot-load).
+     * On notify, the server broadcasts a fresh `skill-catalog` to every
+     * connected client — without it, a hot-loaded/removed user skill is
+     * invisible to long-lived clients (the Moon) until reconnect.
+     */
+    readonly changes?: (notify: () => void) => void
   } | null
   /**
    * Optional local-shell bridge. When provided, clients may advertise
@@ -320,6 +329,27 @@ export interface UIWebSocketServerHandle {
   /** Bound host. */
   readonly host: string
 }
+
+/**
+ * Defence-in-depth for the skill catalog: pick EXACTLY the wire fields.
+ * The chat-server adapter already strips `body`, but the config slot's
+ * structural type cannot prevent a future caller wiring the raw core
+ * registry (extra fields are structurally assignable) — so this package
+ * re-projects every entry before serialization. A skill body can only
+ * reach a client if BOTH layers regress.
+ */
+const toWireSkill = (
+  s: import("./protocol.js").SkillCatalogItem,
+): import("./protocol.js").SkillCatalogItem => ({
+  id: s.id,
+  name: s.name,
+  description: s.description,
+  whenToUse: s.whenToUse,
+  category: s.category,
+  tags: s.tags,
+  source: s.source,
+  enabled: s.enabled,
+})
 
 /**
  * Short, non-sensitive failure text for status acks. Prefers the typed
@@ -549,6 +579,26 @@ export const startUIWebSocketServer = (
     // runtime so they share the UIService PubSub etc.
     const runtime = yield* Effect.runtime<UIService>()
 
+    // PRD Part B: out-of-band catalog changes (user-skills hot-load) →
+    // broadcast a fresh skill-catalog to every connected client. The toggle
+    // path broadcasts inline; this hook covers changes no client initiated.
+    if (skillRegistry !== null && skillRegistry.changes !== undefined) {
+      const reg = skillRegistry
+      const registerChanges = skillRegistry.changes
+      registerChanges(() => {
+        Runtime.runFork(runtime)(
+          Effect.gen(function* () {
+            const skills = yield* reg.catalog()
+            const wire = skills.map(toWireSkill)
+            const sockets = yield* Ref.get(activeSockets)
+            for (const sock of sockets) {
+              send(sock, { type: "skill-catalog", skills: wire })
+            }
+          }).pipe(Effect.catchAllCause(() => Effect.void)),
+        )
+      })
+    }
+
     // The connection-handler effect: it OWNS its own scope (so we can use
     // addFinalizer for queue cleanup) but lives until the ws closes —
     // which we signal via a Deferred resolved from the ws "close" handler.
@@ -628,7 +678,7 @@ export const startUIWebSocketServer = (
           Effect.runFork(
             Effect.flatMap(reg.catalog(), (skills) =>
               Effect.sync(() => {
-                send(ws, { type: "skill-catalog", skills })
+                send(ws, { type: "skill-catalog", skills: skills.map(toWireSkill) })
               }),
             ),
           )
@@ -965,7 +1015,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null) {
+        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || skillRegistry !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -1158,23 +1208,49 @@ export const startUIWebSocketServer = (
                   }
                   case "skill-toggle": {
                     // PRD Part B §12. Persist + flip via the injected handle;
-                    // ack with skill-status, then refresh this client's
-                    // catalog so its list state confirms. Failures (unknown
-                    // id, registry defect) ack ok:false with a non-sensitive
-                    // message — they must never tear down the connection.
+                    // ack the toggling client with skill-status, then
+                    // BROADCAST the refreshed catalog to every connected
+                    // client (review finding: unicast left a second open
+                    // client — Moon + web is a normal setup — rendering
+                    // stale enabled bits, and its stale-state toggle could
+                    // re-flip the skill back). Failures (unknown id,
+                    // registry defect) ack ok:false with a non-sensitive
+                    // message and must never tear down the connection.
                     if (skillRegistry === null) return
+                    // Malformed-frame guard: id/enabled types are attacker-
+                    // controlled JSON — reject junk before touching state.
+                    if (
+                      typeof frame.id !== "string" ||
+                      frame.id.length === 0 ||
+                      typeof frame.enabled !== "boolean"
+                    ) {
+                      send(ws, {
+                        type: "skill-status",
+                        id: String((frame as { id?: unknown }).id ?? ""),
+                        enabled: false,
+                        ok: false,
+                        message: "malformed skill-toggle frame",
+                      })
+                      return
+                    }
                     const reg = skillRegistry
                     yield* reg.setEnabled(frame.id, frame.enabled).pipe(
                       Effect.flatMap(() => reg.catalog()),
-                      Effect.map((skills) => {
-                        send(ws, {
-                          type: "skill-status",
-                          id: frame.id,
-                          enabled: frame.enabled,
-                          ok: true,
-                        })
-                        send(ws, { type: "skill-catalog", skills })
-                      }),
+                      Effect.flatMap((skills) =>
+                        Effect.gen(function* () {
+                          send(ws, {
+                            type: "skill-status",
+                            id: frame.id,
+                            enabled: frame.enabled,
+                            ok: true,
+                          })
+                          const wire = skills.map(toWireSkill)
+                          const sockets = yield* Ref.get(activeSockets)
+                          for (const sock of sockets) {
+                            send(sock, { type: "skill-catalog", skills: wire })
+                          }
+                        }),
+                      ),
                       Effect.catchAllCause((cause) =>
                         Effect.sync(() => {
                           send(ws, {

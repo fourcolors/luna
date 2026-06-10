@@ -46,6 +46,14 @@ interface BunStmt {
 export interface SkillPrefsApi {
   /** Ids currently persisted as disabled — the registry's `initialDisabled`. */
   readonly disabledIds: () => Effect.Effect<ReadonlyArray<string>>
+  /**
+   * Every id with ANY row (enabled or disabled) — "the operator has seen
+   * and decided on this skill". Drives the new-user-skill quarantine: a
+   * scanned skill with no row has never been approved and registers
+   * disabled (review finding: auto-enabling agent-writable SKILL.md files
+   * is a persistent prompt-injection channel).
+   */
+  readonly knownIds: () => Effect.Effect<ReadonlyArray<string>>
   /** Upsert the toggle delta. Infallible by signature — a SQLite failure
    *  here is a defect (the registry's onToggle contract). */
   readonly setEnabled: (id: string, enabled: boolean) => Effect.Effect<void>
@@ -69,6 +77,8 @@ export class SkillPrefsStore extends Effect.Tag("luna/SkillPrefsStore")<
                 .map(([id]) => id),
             ),
           ),
+        knownIds: () =>
+          Ref.get(store).pipe(Effect.map((m) => Array.from(m.keys()))),
         setEnabled: (id, enabled) =>
           Ref.update(store, (m) => new Map(m).set(id, enabled)),
       } satisfies SkillPrefsApi
@@ -125,6 +135,9 @@ export class SkillPrefsStore extends Effect.Tag("luna/SkillPrefsStore")<
         const disabledStmt = db.query(
           "SELECT skill_id FROM skill_preferences WHERE enabled = 0",
         )
+        const knownStmt = db.query(
+          "SELECT skill_id FROM skill_preferences",
+        )
         const upsertStmt = db.query(
           `INSERT INTO skill_preferences (skill_id, enabled, updated_at)
            VALUES (?, ?, ?)
@@ -137,6 +150,12 @@ export class SkillPrefsStore extends Effect.Tag("luna/SkillPrefsStore")<
           disabledIds: () =>
             Effect.sync(() =>
               (disabledStmt.all() as Array<{ skill_id: string }>).map(
+                (r) => r.skill_id,
+              ),
+            ),
+          knownIds: () =>
+            Effect.sync(() =>
+              (knownStmt.all() as Array<{ skill_id: string }>).map(
                 (r) => r.skill_id,
               ),
             ),

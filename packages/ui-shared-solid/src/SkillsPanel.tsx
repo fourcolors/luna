@@ -38,10 +38,18 @@ export const SkillsPanel: Component<SkillsPanelProps> = (props) => {
     return ["all", ...Array.from(set).sort()]
   })
 
+  // Review finding: a catalog refresh can remove the actively-filtered
+  // category (user skill deleted on disk), leaving a filter no chip can
+  // represent and an unexplained empty list. Resolve the EFFECTIVE
+  // category at read time — a vanished selection falls back to "all".
+  const activeCategory = createMemo(() =>
+    categories().includes(category()) ? category() : "all",
+  )
+
   const visible = createMemo(() => {
     const q = query().trim().toLowerCase()
     return props.skills.filter((s) => {
-      if (category() !== "all" && s.category !== category()) return false
+      if (activeCategory() !== "all" && s.category !== activeCategory()) return false
       if (source() !== "all" && s.source !== source()) return false
       if (enabledOnly() && !s.enabled) return false
       if (q.length === 0) return true
@@ -76,7 +84,8 @@ export const SkillsPanel: Component<SkillsPanelProps> = (props) => {
           {(c) => (
             <button
               type="button"
-              classList={{ "skills-chip": true, on: category() === c }}
+              classList={{ "skills-chip": true, on: activeCategory() === c }}
+              aria-pressed={activeCategory() === c}
               onClick={() => setCategory(c)}
             >
               {c}
@@ -128,7 +137,16 @@ export const SkillsPanel: Component<SkillsPanelProps> = (props) => {
                   type="checkbox"
                   checked={s.enabled}
                   disabled={props.disabled === true}
-                  onChange={() => props.onToggle(s.id, !s.enabled)}
+                  onChange={(e) => {
+                    // No optimistic UI: a native checkbox flips its own DOM
+                    // before onChange, and Solid's checked={s.enabled} only
+                    // re-syncs when the prop CHANGES — which it doesn't on a
+                    // failed toggle (skill-status ok:false touches only
+                    // skillError). Revert the DOM immediately and let the
+                    // server's confirmed state drive the input.
+                    e.currentTarget.checked = s.enabled
+                    props.onToggle(s.id, !s.enabled)
+                  }}
                 />
                 <span>{s.enabled ? "on" : "off"}</span>
               </label>

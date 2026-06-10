@@ -502,8 +502,11 @@ export const App: Component = () => {
           </div>
           {/* PRD Part B §12 — gated on the additive hello capability: an
               older server never advertises `skills`, so the section simply
-              doesn't exist against it. */}
-          <Show when={isConnected() && store.state.capabilities.skills === true}>
+              doesn't exist against it. Gate on the capability ONLY (not
+              isConnected): a transient disconnect must dim the toggles via
+              `disabled`, not unmount the panel and discard the user's
+              search/filter state (review finding). */}
+          <Show when={store.state.capabilities.skills === true}>
             <div class="row settings-row">
               <SkillsPanel
                 skills={store.state.skills}

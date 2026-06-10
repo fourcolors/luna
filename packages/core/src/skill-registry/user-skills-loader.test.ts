@@ -117,6 +117,41 @@ describe("syncUserSkills", () => {
     body,
   })
 
+  it("quarantine: a NEVER-DECIDED new skill registers DISABLED; known ids enable normally", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const reg = yield* SkillRegistry
+
+        // "previously-approved" has a prefs row (operator decided before a
+        // restart); "brand-new" has none → quarantined.
+        const summary = yield* syncUserSkills(
+          reg,
+          { manifests: [user("previously-approved"), user("brand-new")], warnings: [] },
+          { approvedIds: new Set(["previously-approved"]) },
+        )
+        expect(summary.quarantined).toEqual(["brand-new"])
+        const cat = yield* reg.catalog()
+        expect(cat.find((e) => e.id === "previously-approved")?.enabled).toBe(true)
+        expect(cat.find((e) => e.id === "brand-new")?.enabled).toBe(false)
+        // the quarantined body must not be in the prompt
+        expect(reg.promptSnapshotSync()).not.toContain("USER-brand-new")
+
+        // Operator approves → enabled; the NEXT sync round (id now known)
+        // must NOT re-quarantine it.
+        yield* reg.setEnabled("brand-new", true)
+        const round2 = yield* syncUserSkills(
+          reg,
+          { manifests: [user("previously-approved"), user("brand-new")], warnings: [] },
+          { approvedIds: new Set(["previously-approved", "brand-new"]) },
+        )
+        expect(round2.quarantined).toEqual([])
+        expect(
+          (yield* reg.catalog()).find((e) => e.id === "brand-new")?.enabled,
+        ).toBe(true)
+      }).pipe(Effect.provide(SkillRegistry.Default)),
+    )
+  })
+
   it("add / update / remove / conflict, with toggle state surviving re-registration", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
