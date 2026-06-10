@@ -369,9 +369,89 @@
   #c-orbit .dock .row:last-child { border-bottom: none; }
   #c-orbit .dock .row .blot { opacity: 0; }    /* dock rows borrow the flying orbs' blots visually */
   #c-orbit.open .dock .row .blot { opacity: 1; transition: opacity .2s ease .5s; }
+
+  /* =========================================================
+     CHAT-OPEN VIEW — mock of the real expanded layout:
+     moon stays top-left (15,15), glass chat panel fills the rest
+     (mirrors .chat-panel { left:145px; inset 15px } in index.html)
+     ========================================================= */
+  .mockchat {
+    position: absolute; left: 118px; top: 14px; right: 14px; bottom: 14px;
+    background: var(--glass-bg);
+    border-radius: 26px 26px 30px 30px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.38), inset 0 0 0 1px rgba(255,255,255,0.06);
+    display: none; flex-direction: column; overflow: hidden; z-index: 3;
+  }
+  body[data-view="chat"] .mockchat { display: flex; }
+  .mc-hdr { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+  .mc-av { width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0; background: radial-gradient(circle, #f0f6ff 0%, #8ab4f8 100%); box-shadow: 0 0 8px rgba(138,180,248,0.4); }
+  .mc-t { font-size: 11px; font-weight: 600; color: #fff; }
+  .mc-s { font-size: 8.5px; color: #34d399; display: flex; align-items: center; gap: 3px; }
+  .mc-s::before { content: ""; width: 4px; height: 4px; border-radius: 50%; background: #10b981; box-shadow: 0 0 4px #10b981; }
+  .mc-x { margin-left: auto; color: #5d6e92; font-size: 10px; letter-spacing: 2px; }
+  .mc-msgs { flex: 1; padding: 10px 12px; display: flex; flex-direction: column; gap: 7px; font-size: 10.5px; color: #c5d1ea; }
+  .mc-msg { max-width: 78%; padding: 6px 9px; border-radius: 10px; background: rgba(255,255,255,0.05); }
+  .mc-msg.u { align-self: flex-end; background: rgba(138,180,248,0.14); }
+  .mc-in { margin: 0 12px 12px; padding: 7px 11px; font-size: 10px; color: #6f81a6; border: 1px solid rgba(255,255,255,0.08); border-radius: 999px; }
+
+  /* concept overlays paint above the chat glass */
+  .stem, .panel, .skyline, .beam, .motes, .bstack, .wash, .entries, .orbits, .dock { z-index: 4; }
+
+  /* moon pinned top-left in chat view (matches the real widget) */
+  body[data-view="chat"] .moonw,
+  body[data-view="chat"] #c-orbit .moonw,
+  body[data-view="chat"] #c-orbit.open .moonw { left: 20px; top: 18px; transform: none; }
+
+  /* 1 · Ledger — same panel, drops from the moon OVER the chat's corner */
+  body[data-view="chat"] #c-ledger .stem { left: 56px; top: 88px; }
+  body[data-view="chat"] #c-ledger .panel { left: 12px; transform: translateY(-8px) scale(0.97); width: 262px; top: 102px; }
+  body[data-view="chat"] #c-ledger.open .panel { transform: translateY(0) scale(1); }
+
+  /* 3 · Phase — moonlets stack in the narrow column, compact */
+  body[data-view="chat"] #c-phase .panel { left: 6px; transform: none; width: 104px; top: 100px; gap: 9px; }
+  body[data-view="chat"] #c-phase .prow { gap: 6px; }
+  body[data-view="chat"] #c-phase .prow .sub3 { display: none; }
+  body[data-view="chat"] #c-phase .prow .nm2 { font-size: 9.5px; max-width: 44px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  body[data-view="chat"] #c-phase .prow .nm2 span { display: none; }
+  body[data-view="chat"] #c-phase .prow .pct { font-size: 9px; }
+
+  /* 4 · Moonbeam — beam falls down the column, cards become slivers */
+  body[data-view="chat"] #c-beam .beam { left: 56px; top: 84px; height: 290px; }
+  body[data-view="chat"] #c-beam.open .beam { width: 104px; }
+  body[data-view="chat"] #c-beam .motes { left: 56px; width: 90px; top: 96px; }
+  body[data-view="chat"] #c-beam .bstack { left: 56px; width: 100px; top: 104px; gap: 6px; }
+  body[data-view="chat"] #c-beam .bcard { padding: 4px 7px; border-radius: 8px; }
+  body[data-view="chat"] #c-beam .bcard .sub, body[data-view="chat"] #c-beam .bcard .right { display: none; }
+  body[data-view="chat"] #c-beam .bcard .nm { font-size: 10px; }
+
+  /* 5 · Ink — the wash bleeds down the column instead of a wide bloom */
+  body[data-view="chat"] #c-ink .wash { left: 58px; width: 112px; height: 272px; top: 90px; }
+  body[data-view="chat"] #c-ink .entries { left: 8px; transform: none; width: 102px; top: 104px; }
+  body[data-view="chat"] #c-ink .irow { font-size: 10.5px; gap: 6px; padding: 4px 2px; }
+  body[data-view="chat"] #c-ink .irow > span:nth-child(3), body[data-view="chat"] #c-ink .irow .el2 { display: none; }
+  body[data-view="chat"] #c-ink .irow .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* 6 · Orbit — tighter rings; open docks agents as PILLS along the chat's top */
+  body[data-view="chat"] #c-orbit .orbits, body[data-view="chat"] #c-orbit.open .orbits { left: 56px; top: 54px; }
+  body[data-view="chat"] #c-orbit .dock {
+    left: 124px; top: 60px; right: 20px; transform: none; width: auto;
+    flex-direction: row; flex-wrap: wrap; gap: 5px; align-items: flex-start;
+    padding: 7px 9px;
+    background: linear-gradient(180deg, rgba(8,11,22,0.96), rgba(8,11,22,0.78));
+    border: none; border-bottom: 1px solid rgba(255,255,255,0.06);
+    border-radius: 0 0 14px 14px; backdrop-filter: blur(6px);
+  }
+  body[data-view="chat"] #c-orbit .dock .rows { display: flex; flex-wrap: wrap; gap: 5px; }
+  body[data-view="chat"] #c-orbit .dock .row {
+    border: 1px solid var(--glass-border); background: rgba(10,14,28,0.92);
+    border-radius: 999px; padding: 3px 9px 3px 7px; gap: 6px; font-size: 10px;
+  }
+  body[data-view="chat"] #c-orbit .dock .row.wait { border-color: rgba(255,206,110,0.45); }
+  body[data-view="chat"] #c-orbit .dock .row .sub, body[data-view="chat"] #c-orbit .dock .row .kindchip,
+  body[data-view="chat"] #c-orbit .dock .row .right { display: none; }
 </style>
 </head>
-<body data-act="calm">
+<body data-act="calm" data-view="moon">
 
 <!-- shared crescent defs, referenced by every instance -->
 <svg width="0" height="0" style="position:absolute">
@@ -397,7 +477,9 @@
     <b>shell</b> steps — rendered with the real crescent + glow vocabulary.
     <b>Click the moon</b> in any card to open/close. The activity switch simulates server load;
     elapsed timers tick live. A gold entry means that agent is blocked on your input
-    (ties into the notification-concepts work).
+    (ties into the notification-concepts work). The <b>view switch</b> shows each concept with
+    the chat panel open — the moon keeps its real top-left position and each concept adapts to
+    the narrow column beside the chat glass.
   </p>
   <div class="decisions">
     <span>✓ painterly / watercolor, no gloss or 3D</span>
@@ -414,6 +496,11 @@
       <button data-a="idle">Idle</button>
       <button data-a="calm" class="on">Calm · 3 running</button>
       <button data-a="busy">Busy · 6 + needs input</button>
+    </div>
+    <label style="margin-left:14px">View</label>
+    <div class="act-btns" id="viewbtns">
+      <button data-v="moon" class="on">Moon only</button>
+      <button data-v="chat">Chat open</button>
     </div>
     <span class="acthint" id="acthint"></span>
   </div>
@@ -587,7 +674,24 @@ const CRESCENT = `
   <div class="pip zero"></div>`;
 document.querySelectorAll('.moonw').forEach(m => m.innerHTML = CRESCENT);
 
+/* mock of the real expanded chat (header · messages · input), one per stage */
+const MOCKCHAT = `
+<div class="mockchat">
+  <div class="mc-hdr">
+    <div class="mc-av"></div>
+    <div><div class="mc-t">Luna Companion</div><div class="mc-s">Connected</div></div>
+    <div class="mc-x">⚙&ensp;✕</div>
+  </div>
+  <div class="mc-msgs">
+    <div class="mc-msg">Dream is mid-synthesis — I'll fold the results into tonight's survey.</div>
+    <div class="mc-msg u">nice, keep me posted</div>
+  </div>
+  <div class="mc-in">Message Luna…</div>
+</div>`;
+document.querySelectorAll('.stage').forEach(s => s.insertAdjacentHTML('beforeend', MOCKCHAT));
+
 let act = 'calm';
+let view = 'moon';
 const items = () => DATA[act];
 const active = () => items().filter(i => i.status === 'run' || i.status === 'wait');
 
@@ -640,11 +744,13 @@ function renderConstel() {
   const list = active();
   const starPath = 'M7 0 L8.6 4.8 L14 5.2 L9.8 8.4 L11.2 14 L7 10.8 L2.8 14 L4.2 8.4 L0 5.2 L5.4 4.8 Z';
   sky.innerHTML = list.map((it, i) => {
-    const n = list.length, spread = Math.min(34, 160 / Math.max(n, 1));
+    const n = list.length;
+    const spread = view === 'chat' ? Math.min(24, 96 / Math.max(n, 1)) : Math.min(34, 160 / Math.max(n, 1));
     const x = (i - (n - 1) / 2) * spread;
+    const base = view === 'chat' ? '56px' : '50%';
     const len = 26 + Math.min(70, it.started ? (Date.now() - it.started) / 12000 : 10);
     return `
-    <div class="strand" style="left:calc(50% + ${x}px); animation-delay:${i * -0.7}s">
+    <div class="strand" style="left:calc(${base} + ${x}px); animation-delay:${i * -0.7}s">
       <div class="thr" style="height:${len}px"></div>
       <div class="star ${it.status}">
         <svg viewBox="0 0 14 14"><path d="${starPath}"/></svg>
@@ -721,8 +827,8 @@ function renderOrbit() {
   const list = active();
   orbits.querySelectorAll('.orb').forEach(o => o.remove());
   const r1 = card.querySelector('.r1'), r2 = card.querySelector('.r2');
-  r1.style.width = r1.style.height = '128px';
-  r2.style.width = r2.style.height = '176px';
+  r1.style.width = r1.style.height = view === 'chat' ? '76px' : '128px';
+  r2.style.width = r2.style.height = view === 'chat' ? '108px' : '176px';
   list.forEach((it, i) => {
     const orb = document.createElement('div');
     orb.className = 'orb'; orb.dataset.id = it.id;
@@ -752,7 +858,7 @@ function layoutOrbit() {
       orb.style.opacity = '0';
       orb.style.transitionDelay = `${i * 60}ms, 450ms`;
     } else {
-      const ring = i % 2 === 0 ? 64 : 88;
+      const ring = view === 'chat' ? (i % 2 === 0 ? 38 : 54) : (i % 2 === 0 ? 64 : 88);
       const a = orbitT * (i % 2 === 0 ? 1 : -0.7) + i * 2.4;
       orb.style.transform = `translate(${Math.cos(a) * ring}px, ${Math.sin(a) * ring * 0.45}px)`;
       orb.style.opacity = '1';
@@ -778,6 +884,15 @@ document.querySelectorAll('#actbtns button').forEach(b => b.addEventListener('cl
   renderAll();
 }));
 document.getElementById('acthint').textContent = HINTS[act];
+
+document.querySelectorAll('#viewbtns button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('#viewbtns button').forEach(x => x.classList.remove('on'));
+  b.classList.add('on');
+  view = b.dataset.v;
+  document.body.dataset.view = view;
+  renderAll();
+  setTimeout(layoutOrbit, 30);
+}));
 
 ['c-ledger', 'c-phase', 'c-beam', 'c-ink', 'c-orbit'].forEach(id => {
   const card = document.getElementById(id);
