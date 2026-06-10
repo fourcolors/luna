@@ -35,6 +35,7 @@ import {
   ObsPanel,
   Sidebar,
   SkillsPanel,
+  WorkflowGallery,
   createTransport,
   createUiStore,
   type SlashCommand,
@@ -652,6 +653,18 @@ export const App: Component = () => {
                     })
                   }
                   onUnpin={(id) => send({ type: "artifact-unpin", id })}
+                />
+              </Show>
+              {/* PRD Part C / W3 — workflow gallery, gated on the additive
+                  hello capability. Rendered alongside the artifact panel in
+                  the right-column area; an older server never advertises
+                  `workflows` so the section simply doesn't appear. */}
+              <Show when={store.state.capabilities.workflows === true}>
+                <WorkflowGallery
+                  workflows={store.state.workflows}
+                  runs={store.state.workflowRuns}
+                  onSelectRuns={(jobId) => send({ type: "workflow-runs-request", jobId })}
+                  onRefresh={() => send({ type: "workflow-refresh" })}
                 />
               </Show>
             </div>

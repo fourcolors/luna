@@ -93,5 +93,11 @@ export type {
   UnsubscribeThreadFrame,
   UserAcceptedFrame,
   UserMessageFrame,
+  WorkflowGalleryItem,
+  WorkflowRunItem,
+  WorkflowListFrame,
+  WorkflowRunsFrame,
+  WorkflowRunsRequestFrame,
+  WorkflowRefreshFrame,
 } from "./wire.js"
 export { UI_WS_PROTOCOL_VERSION } from "./wire.js"

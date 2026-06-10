@@ -37,3 +37,4 @@ export {
 } from "./AccountSwitcher.jsx"
 export { SkillsPanel, type SkillsPanelProps } from "./SkillsPanel.jsx"
 export { ConnectorsPanel, type ConnectorsPanelProps } from "./ConnectorsPanel.jsx"
+export { WorkflowGallery, type WorkflowGalleryProps } from "./WorkflowGallery.jsx"

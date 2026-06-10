@@ -490,6 +490,18 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
           </button>
           <span class="artifacts-badge" id="artifacts-badge" hidden=""></span>
         </div>
+        <!-- Workflows toggle — hidden until the server advertises the
+             \`workflows\` capability. PRD Part C W3. -->
+        <div class="workflows-header-btn" id="workflows-btn" hidden="">
+          <button class="close-btn" id="workflows-btn-inner" aria-label="Workflows" title="Workflows" type="button">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="3" width="7" height="7" rx="1"></rect>
+              <rect x="14" y="3" width="7" height="7" rx="1"></rect>
+              <rect x="3" y="14" width="7" height="7" rx="1"></rect>
+              <path d="M17.5 14v3m0 3v.01M14 17.5h3m3 0h.01"></path>
+            </svg>
+          </button>
+        </div>
         <!-- Settings lives here in the header (it orbited the moon as a
              satellite for a while — that felt off, so it came home). Opens
              the tabbed settings modal (#settings-panel). -->
@@ -588,6 +600,23 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
           </div>
           <div class="artifacts-preview-body" id="artifacts-preview-body"></div>
         </div>
+      </div>
+    </div>
+
+    <!-- Workflows panel (PRD Part C W3). Hidden until toggled open via
+         WorkflowsEngine.openPanel(). Position:absolute fills the chat body
+         area so it slides over the messages without reflowing the layout. -->
+    <div class="workflows-panel" id="workflows-panel" hidden="">
+      <div class="workflows-panel-header">
+        <h3 class="workflows-panel-title">Workflows</h3>
+        <button type="button" class="workflows-panel-refresh" id="workflows-panel-refresh" aria-label="Refresh workflows">↻ Refresh</button>
+        <button type="button" class="workflows-panel-close" id="workflows-panel-close" aria-label="Close workflows panel">×</button>
+      </div>
+      <div class="workflows-panel-body" id="workflows-panel-body">
+        <!-- Tiles populated by WorkflowsEngine.render() -->
+        <div id="workflows-list"></div>
+        <!-- Empty state when there are no workflows -->
+        <div id="workflows-empty" class="workflows-empty" hidden="">No workflows yet. Workflows will appear here once the server provides them.</div>
       </div>
     </div>
 
@@ -1126,6 +1155,18 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
           </button>
           <span class="artifacts-badge" id="artifacts-badge" hidden=""></span>
         </div>
+        <!-- Workflows toggle — hidden until the server advertises the
+             \`workflows\` capability. PRD Part C W3. -->
+        <div class="workflows-header-btn" id="workflows-btn" hidden="">
+          <button class="close-btn" id="workflows-btn-inner" aria-label="Workflows" title="Workflows" type="button">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="3" width="7" height="7" rx="1"></rect>
+              <rect x="14" y="3" width="7" height="7" rx="1"></rect>
+              <rect x="3" y="14" width="7" height="7" rx="1"></rect>
+              <path d="M17.5 14v3m0 3v.01M14 17.5h3m3 0h.01"></path>
+            </svg>
+          </button>
+        </div>
         <!-- Settings lives here in the header (it orbited the moon as a
              satellite for a while — that felt off, so it came home). Opens
              the tabbed settings modal (#settings-panel). -->
@@ -1224,6 +1265,23 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
           </div>
           <div class="artifacts-preview-body" id="artifacts-preview-body"></div>
         </div>
+      </div>
+    </div>
+
+    <!-- Workflows panel (PRD Part C W3). Hidden until toggled open via
+         WorkflowsEngine.openPanel(). Position:absolute fills the chat body
+         area so it slides over the messages without reflowing the layout. -->
+    <div class="workflows-panel" id="workflows-panel" hidden="">
+      <div class="workflows-panel-header">
+        <h3 class="workflows-panel-title">Workflows</h3>
+        <button type="button" class="workflows-panel-refresh" id="workflows-panel-refresh" aria-label="Refresh workflows">↻ Refresh</button>
+        <button type="button" class="workflows-panel-close" id="workflows-panel-close" aria-label="Close workflows panel">×</button>
+      </div>
+      <div class="workflows-panel-body" id="workflows-panel-body">
+        <!-- Tiles populated by WorkflowsEngine.render() -->
+        <div id="workflows-list"></div>
+        <!-- Empty state when there are no workflows -->
+        <div id="workflows-empty" class="workflows-empty" hidden="">No workflows yet. Workflows will appear here once the server provides them.</div>
       </div>
     </div>
 
