@@ -631,10 +631,28 @@ export const App: Component = () => {
               />
               <Show
                 when={
-                  selectedThread() && selectedThread()!.artifacts.length > 0
+                  selectedThread() &&
+                  (selectedThread()!.artifacts.length > 0 ||
+                    (store.state.capabilities.artifacts === true &&
+                      store.state.pinnedArtifacts.length > 0))
                 }
               >
-                <ArtifactPanel artifacts={selectedThread()!.artifacts} />
+                <ArtifactPanel
+                  artifacts={selectedThread()!.artifacts}
+                  pinned={store.state.pinnedArtifacts}
+                  artifactsCapable={store.state.capabilities.artifacts === true}
+                  onPin={(a) =>
+                    send({
+                      type: "artifact-pin",
+                      id: a.id,
+                      title: a.title,
+                      content: a.content,
+                      lang: a.lang,
+                      origin: a.path ?? selectedThread()?.summary.id ?? null,
+                    })
+                  }
+                  onUnpin={(id) => send({ type: "artifact-unpin", id })}
+                />
               </Show>
             </div>
           </Show>

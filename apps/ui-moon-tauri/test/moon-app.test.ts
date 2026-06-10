@@ -3932,4 +3932,153 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(htmlContent).toMatch(/id="voice-mic-btn"[^>]*hidden/)
     })
   })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Behavioral Feature: Artifacts panel (PRD Part C W1)
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Artifacts panel', () => {
+    const M = () => (window as any).__MoonInternals
+    const sentFrames: any[] = []
+
+    beforeEach(() => {
+      sentFrames.length = 0
+      const m = M()
+      m.WebSocketEngine.send = (f: any) => { sentFrames.push(f) }
+      m.State.ws = { readyState: WebSocket.OPEN }
+      m.State.pinnedArtifacts = []
+      m.State.sessionArtifacts = []
+      m.State.artifactsPanelOpen = false
+      m.State.serverSupportsArtifacts = false
+      m.ArtifactsEngine._selectedId = null
+      // Ensure the panel is closed and button is hidden at the start of each test.
+      const panel = document.getElementById('artifacts-panel')
+      if (panel) panel.hidden = true
+      const btn = document.getElementById('artifacts-btn')
+      if (btn) (btn as HTMLElement).hidden = true
+    })
+
+    it('(a) applyPinned populates State and render() lists them in the pinned section', () => {
+      const m = M()
+      // The panel must be open for the list to be rendered.
+      m.ArtifactsEngine.openPanel()
+
+      m.ArtifactsEngine.applyPinned([
+        { id: 'pin-1', kind: 'code', title: 'My Script', lang: 'python', content: 'print("hi")',
+          origin: null, version: 2, pinnedAt: 1, updatedAt: 1 },
+        { id: 'pin-2', kind: 'markdown', title: 'Notes', lang: null, content: '# Hello',
+          origin: null, version: 1, pinnedAt: 1, updatedAt: 1 },
+      ])
+
+      expect(m.State.pinnedArtifacts).toHaveLength(2)
+      const pinnedSection = document.getElementById('artifacts-pinned-section')!
+      expect(pinnedSection.hidden).toBe(false)
+      const rows = document.querySelectorAll('#artifacts-pinned-list .artifact-row')
+      expect(rows.length).toBe(2)
+      expect(rows[0]!.textContent).toContain('My Script')
+      expect(rows[0]!.textContent).toContain('code')
+      expect(rows[0]!.textContent).toContain('v2')
+      expect(rows[1]!.textContent).toContain('Notes')
+
+      // Badge shows count of pinned artifacts.
+      const badge = document.getElementById('artifacts-badge')!
+      expect(badge.hidden).toBe(false)
+      expect(badge.textContent).toBe('2')
+    })
+
+    it('(b) clicking Pin in the session list sends an artifact-pin frame', () => {
+      const m = M()
+      m.ArtifactsEngine.openPanel()
+
+      // Inject a session artifact via the frame pipeline.
+      m.ArtifactsEngine.applySession({
+        type: 'artifacts-extracted',
+        threadId: 'th-1',
+        messageId: 'msg-1',
+        messageSeq: 0,
+        artifacts: [
+          { id: 'msg-1:0', source: 'code-fence', path: null, lang: 'js',
+            title: 'Snippet', content: 'console.log(42)' },
+        ],
+      })
+
+      const sessionList = document.getElementById('artifacts-session-list')!
+      const pinBtn = sessionList.querySelector('.artifact-row-btn') as HTMLButtonElement
+      expect(pinBtn).not.toBeNull()
+      expect(pinBtn.textContent).toBe('Pin')
+      pinBtn.click()
+
+      expect(sentFrames).toHaveLength(1)
+      expect(sentFrames[0]).toMatchObject({
+        type: 'artifact-pin',
+        id: 'msg-1:0',
+        title: 'Snippet',
+        content: 'console.log(42)',
+        lang: 'js',
+      })
+    })
+
+    it('(c) applyCapability(false) hides the header button and clears pinned/session state', () => {
+      const m = M()
+      // First seed some state and reveal the button.
+      m.ArtifactsEngine.applyCapability(true)
+      m.ArtifactsEngine.applyPinned([
+        { id: 'x', kind: 'code', title: 'X', lang: null, content: 'a', origin: null, version: 1, pinnedAt: 1, updatedAt: 1 },
+      ])
+      m.ArtifactsEngine.applySession({
+        type: 'artifacts-extracted', threadId: 't', messageId: 'msg-x', messageSeq: 0,
+        artifacts: [{ id: 'msg-x:0', source: 'code-fence', path: null, lang: 'sh', title: 'sh', content: 'ls' }],
+      })
+      m.ArtifactsEngine.openPanel()
+      expect(m.State.pinnedArtifacts).toHaveLength(1)
+      expect(m.State.sessionArtifacts).toHaveLength(1)
+      expect(m.State.artifactsPanelOpen).toBe(true)
+
+      const btn = document.getElementById('artifacts-btn')!
+      expect((btn as HTMLElement).hidden).toBe(false)
+
+      // Simulate connecting to an old server without artifacts support.
+      m.handleFrame({ type: 'hello', protocolVersion: 2, kinds: [],
+        capabilities: { chat: true, streamingDeltas: true } })
+
+      expect(m.State.serverSupportsArtifacts).toBe(false)
+      expect(m.State.pinnedArtifacts).toHaveLength(0)
+      expect(m.State.sessionArtifacts).toHaveLength(0)
+      expect(m.State.artifactsPanelOpen).toBe(false)
+      expect((document.getElementById('artifacts-btn')! as HTMLElement).hidden).toBe(true)
+    })
+
+    it('(d) applySession dedups by messageId prefix — re-delivered turns replace their own artifacts', () => {
+      const m = M()
+      // First delivery: msg-2 produces 2 artifacts.
+      m.ArtifactsEngine.applySession({
+        type: 'artifacts-extracted', threadId: 't', messageId: 'msg-2', messageSeq: 0,
+        artifacts: [
+          { id: 'msg-2:0', source: 'code-fence', path: null, lang: 'py', title: 'v1', content: 'a' },
+          { id: 'msg-2:1', source: 'code-fence', path: null, lang: 'py', title: 'v1b', content: 'b' },
+        ],
+      })
+      expect(m.State.sessionArtifacts).toHaveLength(2)
+
+      // Second delivery: same messageId — replaces both prior.
+      m.ArtifactsEngine.applySession({
+        type: 'artifacts-extracted', threadId: 't', messageId: 'msg-2', messageSeq: 0,
+        artifacts: [
+          { id: 'msg-2:0', source: 'code-fence', path: null, lang: 'py', title: 'v2', content: 'c' },
+        ],
+      })
+      // Only 1 artifact remains — the re-delivered msg-2:0 with title 'v2'.
+      expect(m.State.sessionArtifacts).toHaveLength(1)
+      expect(m.State.sessionArtifacts[0].title).toBe('v2')
+
+      // A different messageId is NOT affected by the dedup.
+      m.ArtifactsEngine.applySession({
+        type: 'artifacts-extracted', threadId: 't', messageId: 'msg-3', messageSeq: 1,
+        artifacts: [
+          { id: 'msg-3:0', source: 'code-fence', path: null, lang: 'ts', title: 'other', content: 'd' },
+        ],
+      })
+      expect(m.State.sessionArtifacts).toHaveLength(2)
+      expect(m.State.sessionArtifacts.map((a: any) => a.id)).toEqual(['msg-2:0', 'msg-3:0'])
+    })
+  })
 })

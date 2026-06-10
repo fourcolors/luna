@@ -479,6 +479,17 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
             <line x1="12" y1="18" x2="12" y2="22"></line>
           </svg>
         </button>
+        <!-- Artifacts toggle — hidden until the server advertises the
+             \`artifacts\` capability. Shows a count badge of pinned artifacts.
+             PRD Part C W1. -->
+        <div class="artifacts-header-btn" id="artifacts-btn" hidden="">
+          <button class="close-btn" id="artifacts-btn-inner" aria-label="Artifacts" title="Artifacts" type="button">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+            </svg>
+          </button>
+          <span class="artifacts-badge" id="artifacts-badge" hidden=""></span>
+        </div>
         <!-- Settings lives here in the header (it orbited the moon as a
              satellite for a while — that felt off, so it came home). Opens
              the tabbed settings modal (#settings-panel). -->
@@ -545,6 +556,38 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         <span class="user-ask-hint secret-prompt-status" id="secret-prompt-status" hidden=""></span>
         <button type="button" class="user-ask-dismiss-btn" id="secret-prompt-cancel">Cancel</button>
         <button type="button" class="user-ask-submit" id="secret-prompt-submit">Submit</button>
+      </div>
+    </div>
+
+    <!-- Artifacts panel (PRD Part C W1). Hidden until toggled open via
+         ArtifactsEngine.openPanel(). Position:absolute fills the chat body
+         area so it slides over the messages without reflowing the layout. -->
+    <div class="artifacts-panel" id="artifacts-panel" hidden="">
+      <div class="artifacts-panel-header">
+        <h3 class="artifacts-panel-title">Artifacts</h3>
+        <button type="button" class="artifacts-panel-close" id="artifacts-panel-close" aria-label="Close artifacts panel">×</button>
+      </div>
+      <div class="artifacts-panel-body">
+        <!-- Pinned section — populated by ArtifactsEngine.render() -->
+        <div id="artifacts-pinned-section" hidden="">
+          <div class="artifacts-section-label">📌 Pinned</div>
+          <div id="artifacts-pinned-list"></div>
+        </div>
+        <!-- Session section — populated by ArtifactsEngine.render() -->
+        <div id="artifacts-session-section" hidden="">
+          <div class="artifacts-section-label">This session</div>
+          <div id="artifacts-session-list"></div>
+        </div>
+        <!-- Empty state when neither section has items -->
+        <div id="artifacts-empty" class="artifacts-empty" hidden="">No artifacts yet. Artifacts will appear here as Luna creates them.</div>
+        <!-- Preview pane — shown when a row is selected -->
+        <div class="artifacts-preview" id="artifacts-preview" hidden="">
+          <div class="artifacts-preview-header">
+            <span class="artifacts-preview-title" id="artifacts-preview-title"></span>
+            <button type="button" class="artifacts-preview-copy" id="artifacts-preview-copy">Copy</button>
+          </div>
+          <div class="artifacts-preview-body" id="artifacts-preview-body"></div>
+        </div>
       </div>
     </div>
 
@@ -1072,6 +1115,17 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
             <line x1="12" y1="18" x2="12" y2="22"></line>
           </svg>
         </button>
+        <!-- Artifacts toggle — hidden until the server advertises the
+             \`artifacts\` capability. Shows a count badge of pinned artifacts.
+             PRD Part C W1. -->
+        <div class="artifacts-header-btn" id="artifacts-btn" hidden="">
+          <button class="close-btn" id="artifacts-btn-inner" aria-label="Artifacts" title="Artifacts" type="button">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+            </svg>
+          </button>
+          <span class="artifacts-badge" id="artifacts-badge" hidden=""></span>
+        </div>
         <!-- Settings lives here in the header (it orbited the moon as a
              satellite for a while — that felt off, so it came home). Opens
              the tabbed settings modal (#settings-panel). -->
@@ -1138,6 +1192,38 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         <span class="user-ask-hint secret-prompt-status" id="secret-prompt-status" hidden=""></span>
         <button type="button" class="user-ask-dismiss-btn" id="secret-prompt-cancel">Cancel</button>
         <button type="button" class="user-ask-submit" id="secret-prompt-submit">Submit</button>
+      </div>
+    </div>
+
+    <!-- Artifacts panel (PRD Part C W1). Hidden until toggled open via
+         ArtifactsEngine.openPanel(). Position:absolute fills the chat body
+         area so it slides over the messages without reflowing the layout. -->
+    <div class="artifacts-panel" id="artifacts-panel" hidden="">
+      <div class="artifacts-panel-header">
+        <h3 class="artifacts-panel-title">Artifacts</h3>
+        <button type="button" class="artifacts-panel-close" id="artifacts-panel-close" aria-label="Close artifacts panel">×</button>
+      </div>
+      <div class="artifacts-panel-body">
+        <!-- Pinned section — populated by ArtifactsEngine.render() -->
+        <div id="artifacts-pinned-section" hidden="">
+          <div class="artifacts-section-label">📌 Pinned</div>
+          <div id="artifacts-pinned-list"></div>
+        </div>
+        <!-- Session section — populated by ArtifactsEngine.render() -->
+        <div id="artifacts-session-section" hidden="">
+          <div class="artifacts-section-label">This session</div>
+          <div id="artifacts-session-list"></div>
+        </div>
+        <!-- Empty state when neither section has items -->
+        <div id="artifacts-empty" class="artifacts-empty" hidden="">No artifacts yet. Artifacts will appear here as Luna creates them.</div>
+        <!-- Preview pane — shown when a row is selected -->
+        <div class="artifacts-preview" id="artifacts-preview" hidden="">
+          <div class="artifacts-preview-header">
+            <span class="artifacts-preview-title" id="artifacts-preview-title"></span>
+            <button type="button" class="artifacts-preview-copy" id="artifacts-preview-copy">Copy</button>
+          </div>
+          <div class="artifacts-preview-body" id="artifacts-preview-body"></div>
+        </div>
       </div>
     </div>
 

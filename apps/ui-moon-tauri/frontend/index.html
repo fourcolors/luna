@@ -1450,6 +1450,118 @@
     .user-ask-dismiss-btn:hover { background: rgba(255, 255, 255, 0.09); border-color: rgba(255, 255, 255, 0.22); }
     .user-ask-dismiss-btn:active { transform: translateY(1px); }
 
+    /* ── Artifacts panel (PRD Part C W1) — slide-in overlay anchored inside
+       #chat-panel. Hidden until ArtifactsEngine.openPanel(). Uses the same
+       watercolor palette as user-ask-panel and skill rows. ── */
+    .artifacts-panel {
+      position: absolute;
+      top: 48px; /* below the chat header */
+      left: 0; right: 0; bottom: 0;
+      background: linear-gradient(160deg, rgba(11, 14, 35, 0.97) 0%, rgba(16, 20, 48, 0.97) 100%);
+      border-top: 1px solid rgba(138, 180, 248, 0.18);
+      display: flex; flex-direction: column;
+      z-index: 60;
+      overflow: hidden;
+      animation: msgAppear 0.18s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
+    }
+    .artifacts-panel[hidden] { display: none !important; }
+    .artifacts-panel-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      flex-shrink: 0;
+    }
+    .artifacts-panel-title {
+      flex: 1; margin: 0;
+      font-family: var(--font-display); font-weight: 600; font-size: 0.85rem;
+      color: #f0f6ff; letter-spacing: 0.01em;
+    }
+    .artifacts-panel-close {
+      background: transparent; border: none;
+      color: #9aa6c4; font-size: 1.1rem; line-height: 1;
+      cursor: pointer; padding: 2px 6px; border-radius: 6px;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .artifacts-panel-close:hover { background: rgba(255, 255, 255, 0.08); color: #f0f6ff; }
+    .artifacts-panel-body {
+      flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px;
+      padding: 10px 12px;
+    }
+    .artifacts-panel-body::-webkit-scrollbar { width: 6px; }
+    .artifacts-panel-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 3px; }
+    .artifacts-section-label {
+      font-size: 0.66rem; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.07em; color: #64748b; margin: 0 0 4px;
+    }
+    .artifact-row {
+      display: flex; align-items: center; gap: 8px;
+      background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 8px; padding: 6px 10px;
+      cursor: pointer; transition: border-color 0.18s ease, background 0.18s ease;
+    }
+    .artifact-row:hover { border-color: rgba(138, 180, 248, 0.22); background: rgba(138, 180, 248, 0.05); }
+    .artifact-row.selected { border-color: rgba(138, 180, 248, 0.45); background: rgba(138, 180, 248, 0.09); }
+    .artifact-row-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+    .artifact-row-title { font-size: 0.78rem; font-weight: 600; color: #f1f5f9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .artifact-row-meta { font-size: 0.63rem; color: #64748b; }
+    .artifact-row-btn {
+      flex-shrink: 0; padding: 3px 9px;
+      background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.10);
+      border-radius: 6px; color: #94a3b8; font-size: 0.68rem; cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .artifact-row-btn:hover { background: rgba(138, 180, 248, 0.14); color: #e2ecfd; border-color: rgba(138, 180, 248, 0.35); }
+    .artifact-row-btn.muted { color: #475569; cursor: default; }
+    .artifact-row-btn.muted:hover { background: rgba(255,255,255,0.04); color: #475569; border-color: rgba(255,255,255,0.10); }
+    .artifact-row-btn.danger:hover { background: rgba(239, 68, 68, 0.14); color: #fca5a5; border-color: rgba(239, 68, 68, 0.35); }
+    /* Artifacts header button — hides when server doesn't support artifacts */
+    .artifacts-header-btn {
+      position: relative; display: flex; align-items: center; gap: 4px;
+    }
+    .artifacts-header-btn[hidden] { display: none !important; }
+    .artifacts-badge {
+      position: absolute; top: -3px; right: -5px;
+      background: rgba(138, 180, 248, 0.75);
+      color: #0f1225; font-size: 0.54rem; font-weight: 700;
+      border-radius: 8px; padding: 1px 4px; line-height: 1.2;
+      min-width: 12px; text-align: center; pointer-events: none;
+    }
+    /* Preview area for selected artifact */
+    .artifacts-preview {
+      flex-shrink: 0; max-height: 240px;
+      background: rgba(5, 7, 20, 0.55); border: 1px solid rgba(138, 180, 248, 0.12);
+      border-radius: 10px; overflow: hidden; display: flex; flex-direction: column;
+    }
+    .artifacts-preview[hidden] { display: none !important; }
+    .artifacts-preview-header {
+      display: flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-bottom: 1px solid rgba(255,255,255,0.05);
+      background: rgba(255,255,255,0.02);
+    }
+    .artifacts-preview-title {
+      flex: 1; font-size: 0.72rem; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .artifacts-preview-copy {
+      padding: 2px 8px; background: transparent; border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 5px; color: #94a3b8; font-size: 0.64rem; cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .artifacts-preview-copy:hover { background: rgba(138,180,248,0.12); color: #e2ecfd; }
+    .artifacts-preview-body {
+      flex: 1; overflow: auto; padding: 8px 10px;
+    }
+    .artifacts-preview-body::-webkit-scrollbar { width: 5px; }
+    .artifacts-preview-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 3px; }
+    .artifacts-preview-body pre {
+      margin: 0; white-space: pre-wrap; word-break: break-word;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.76rem; color: #d4ddf5; line-height: 1.45;
+    }
+    .artifacts-empty {
+      font-size: 0.76rem; color: #475569; text-align: center;
+      padding: 16px 0; font-style: italic;
+    }
+
     /* Markdown rendering inside assistant bubbles (mirrors ui-web's .markdown conventions) */
     .msg.assistant > :first-child { margin-top: 0; }
     .msg.assistant > :last-child { margin-bottom: 0; }
@@ -2982,6 +3094,17 @@
             <line x1="12" y1="18" x2="12" y2="22"></line>
           </svg>
         </button>
+        <!-- Artifacts toggle — hidden until the server advertises the
+             `artifacts` capability. Shows a count badge of pinned artifacts.
+             PRD Part C W1. -->
+        <div class="artifacts-header-btn" id="artifacts-btn" hidden>
+          <button class="close-btn" id="artifacts-btn-inner" aria-label="Artifacts" title="Artifacts" type="button">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+            </svg>
+          </button>
+          <span class="artifacts-badge" id="artifacts-badge" hidden></span>
+        </div>
         <!-- Settings lives here in the header (it orbited the moon as a
              satellite for a while — that felt off, so it came home). Opens
              the tabbed settings modal (#settings-panel). -->
@@ -3048,6 +3171,38 @@
         <span class="user-ask-hint secret-prompt-status" id="secret-prompt-status" hidden></span>
         <button type="button" class="user-ask-dismiss-btn" id="secret-prompt-cancel">Cancel</button>
         <button type="button" class="user-ask-submit" id="secret-prompt-submit">Submit</button>
+      </div>
+    </div>
+
+    <!-- Artifacts panel (PRD Part C W1). Hidden until toggled open via
+         ArtifactsEngine.openPanel(). Position:absolute fills the chat body
+         area so it slides over the messages without reflowing the layout. -->
+    <div class="artifacts-panel" id="artifacts-panel" hidden>
+      <div class="artifacts-panel-header">
+        <h3 class="artifacts-panel-title">Artifacts</h3>
+        <button type="button" class="artifacts-panel-close" id="artifacts-panel-close" aria-label="Close artifacts panel">×</button>
+      </div>
+      <div class="artifacts-panel-body">
+        <!-- Pinned section — populated by ArtifactsEngine.render() -->
+        <div id="artifacts-pinned-section" hidden>
+          <div class="artifacts-section-label">📌 Pinned</div>
+          <div id="artifacts-pinned-list"></div>
+        </div>
+        <!-- Session section — populated by ArtifactsEngine.render() -->
+        <div id="artifacts-session-section" hidden>
+          <div class="artifacts-section-label">This session</div>
+          <div id="artifacts-session-list"></div>
+        </div>
+        <!-- Empty state when neither section has items -->
+        <div id="artifacts-empty" class="artifacts-empty" hidden>No artifacts yet. Artifacts will appear here as Luna creates them.</div>
+        <!-- Preview pane — shown when a row is selected -->
+        <div class="artifacts-preview" id="artifacts-preview" hidden>
+          <div class="artifacts-preview-header">
+            <span class="artifacts-preview-title" id="artifacts-preview-title"></span>
+            <button type="button" class="artifacts-preview-copy" id="artifacts-preview-copy">Copy</button>
+          </div>
+          <div class="artifacts-preview-body" id="artifacts-preview-body"></div>
+        </div>
       </div>
     </div>
 
@@ -3191,6 +3346,21 @@
       connectorsTabBtn: document.getElementById('connectors-tab-btn'),
       connectorsList: document.getElementById('connectors-list'),
       connectorsError: document.getElementById('connectors-error'),
+      // PRD Part C W1: Artifacts panel handles.
+      artifactsBtn: document.getElementById('artifacts-btn'),
+      artifactsBtnInner: document.getElementById('artifacts-btn-inner'),
+      artifactsBadge: document.getElementById('artifacts-badge'),
+      artifactsPanel: document.getElementById('artifacts-panel'),
+      artifactsPanelClose: document.getElementById('artifacts-panel-close'),
+      artifactsPinnedSection: document.getElementById('artifacts-pinned-section'),
+      artifactsPinnedList: document.getElementById('artifacts-pinned-list'),
+      artifactsSessionSection: document.getElementById('artifacts-session-section'),
+      artifactsSessionList: document.getElementById('artifacts-session-list'),
+      artifactsEmpty: document.getElementById('artifacts-empty'),
+      artifactsPreview: document.getElementById('artifacts-preview'),
+      artifactsPreviewTitle: document.getElementById('artifacts-preview-title'),
+      artifactsPreviewCopy: document.getElementById('artifacts-preview-copy'),
+      artifactsPreviewBody: document.getElementById('artifacts-preview-body'),
       checkUpdateBtn: document.getElementById('check-update-btn'),
       updateStatus: document.getElementById('update-status'),
       connectionStatus: document.getElementById('connection-status'),
@@ -3361,6 +3531,11 @@
       connectorCatalog: [],
       connectorInstances: [],
       connectorBusy: {},
+      // PRD Part C W1: artifact persistence + panel.
+      serverSupportsArtifacts: false,
+      pinnedArtifacts: [],    // PinnedArtifactItem[] — from artifact-list / artifact-update
+      sessionArtifacts: [],   // Artifact[] — deduped ephemeral per-turn artifacts
+      artifactsPanelOpen: false,
       // local-shell: the machine-access scope this client advertises. roots are
       // explicitly attached folders (auto-approve set, may be empty); fullAccess
       // lets Luna run anywhere. enabled = fullAccess || roots.length > 0.
@@ -4590,6 +4765,274 @@
       },
     };
 
+    // ── ArtifactsEngine — the Artifacts overlay panel (PRD Part C W1) ────────
+    //
+    // Handles server-pushed artifact frames and lets the operator pin/unpin
+    // artifacts for long-term storage. The panel is an absolute overlay that
+    // covers the chat area — it does NOT open a new Tauri window (that is W2).
+    //
+    // Wire protocol (server→client):
+    //   artifact-list      → applyPinned()    (full replacement from DB)
+    //   artifact-update    → applyUpdate()    (single row upsert)
+    //   artifacts-extracted → applySession()  (ephemeral per-turn, deduped)
+    //
+    // Wire protocol (client→server):
+    //   artifact-pin       → pin()
+    //   artifact-unpin     → unpin()
+    //
+    // Defined BEFORE WebSocketEngine — the __MoonInternals exposure block runs
+    // mid-script and a later const would hit the TDZ (same pattern as Skills +
+    // Connectors above).
+    const ArtifactsEngine = {
+      _selectedId: null,
+
+      applyCapability(supported) {
+        if (DOM.artifactsBtn) DOM.artifactsBtn.hidden = !supported;
+        if (!supported) {
+          // Channel switched to a server without artifact support — drop all
+          // state so stale rows never render.
+          State.pinnedArtifacts = [];
+          State.sessionArtifacts = [];
+          this._selectedId = null;
+          if (State.artifactsPanelOpen) this.closePanel();
+        }
+        this.render();
+      },
+
+      applyPinned(list) {
+        State.pinnedArtifacts = Array.isArray(list) ? list : [];
+        this.render();
+      },
+
+      applyUpdate(artifact) {
+        if (!artifact) return;
+        const idx = State.pinnedArtifacts.findIndex((a) => a.id === artifact.id);
+        if (idx >= 0) {
+          State.pinnedArtifacts = [
+            ...State.pinnedArtifacts.slice(0, idx),
+            artifact,
+            ...State.pinnedArtifacts.slice(idx + 1),
+          ];
+        } else {
+          // Not yet in the list — prepend (newest first).
+          State.pinnedArtifacts = [artifact, ...State.pinnedArtifacts];
+        }
+        this.render();
+      },
+
+      applySession(frame) {
+        if (!frame || !Array.isArray(frame.artifacts)) return;
+        const messageId = frame.messageId || null;
+        if (messageId) {
+          // Dedup: drop any prior session artifacts whose id starts with
+          // `${messageId}:` (mirrors the web reducer's artifacts-extracted logic —
+          // a re-delivered turn replaces its own artifacts but not others').
+          State.sessionArtifacts = State.sessionArtifacts.filter(
+            (a) => !a.id.startsWith(messageId + ':')
+          );
+        }
+        // Append newest last (session list shows in delivery order).
+        State.sessionArtifacts = State.sessionArtifacts.concat(frame.artifacts);
+        this.render();
+      },
+
+      togglePanel() {
+        if (State.artifactsPanelOpen) {
+          this.closePanel();
+        } else {
+          this.openPanel();
+        }
+      },
+
+      openPanel() {
+        State.artifactsPanelOpen = true;
+        if (DOM.artifactsPanel) DOM.artifactsPanel.hidden = false;
+        this.render();
+      },
+
+      closePanel() {
+        State.artifactsPanelOpen = false;
+        if (DOM.artifactsPanel) DOM.artifactsPanel.hidden = true;
+      },
+
+      select(id) {
+        this._selectedId = id;
+        this.renderPreview();
+      },
+
+      pin(artifact) {
+        if (!(State.ws && State.ws.readyState === WebSocket.OPEN)) return;
+        WebSocketEngine.send({
+          type: 'artifact-pin',
+          id: artifact.id,
+          title: artifact.title,
+          content: artifact.content,
+          lang: artifact.lang || null,
+          origin: artifact.path || State.activeThreadId || null,
+        });
+      },
+
+      unpin(id) {
+        if (!(State.ws && State.ws.readyState === WebSocket.OPEN)) return;
+        WebSocketEngine.send({ type: 'artifact-unpin', id });
+      },
+
+      _isPinned(id) {
+        return State.pinnedArtifacts.some((a) => a.id === id);
+      },
+
+      _getSelected() {
+        if (!this._selectedId) return null;
+        const pinned = State.pinnedArtifacts.find((a) => a.id === this._selectedId);
+        if (pinned) return pinned;
+        return State.sessionArtifacts.find((a) => a.id === this._selectedId) || null;
+      },
+
+      renderPreview() {
+        if (!DOM.artifactsPreview) return;
+        const artifact = this._getSelected();
+        if (!artifact) {
+          DOM.artifactsPreview.hidden = true;
+          return;
+        }
+        DOM.artifactsPreview.hidden = false;
+        if (DOM.artifactsPreviewTitle) {
+          DOM.artifactsPreviewTitle.textContent = artifact.title || 'Artifact';
+        }
+        if (DOM.artifactsPreviewBody) {
+          DOM.artifactsPreviewBody.innerHTML = '';
+          const kind = artifact.kind || null;
+          const lang = artifact.lang || '';
+          const isMarkdown = kind === 'markdown' || lang === 'markdown' || lang === 'md';
+          if (isMarkdown) {
+            // renderMarkdown sanitizes — safe for untrusted content.
+            DOM.artifactsPreviewBody.innerHTML = renderMarkdown(artifact.content || '');
+            enhanceCodeBlocks(DOM.artifactsPreviewBody);
+          } else {
+            // For code/html/plain — set textContent (never innerHTML) then enhance.
+            const pre = document.createElement('pre');
+            const code = document.createElement('code');
+            if (lang) code.className = 'language-' + lang;
+            code.textContent = artifact.content || '';
+            pre.appendChild(code);
+            DOM.artifactsPreviewBody.appendChild(pre);
+            enhanceCodeBlocks(DOM.artifactsPreviewBody);
+          }
+        }
+        // Wire the copy button to current content.
+        if (DOM.artifactsPreviewCopy) {
+          DOM.artifactsPreviewCopy.onclick = () => {
+            if (navigator.clipboard) {
+              navigator.clipboard.writeText(artifact.content || '').catch(() => {});
+            }
+            DOM.artifactsPreviewCopy.textContent = 'Copied!';
+            setTimeout(() => { if (DOM.artifactsPreviewCopy) DOM.artifactsPreviewCopy.textContent = 'Copy'; }, 1500);
+          };
+        }
+      },
+
+      render() {
+        if (!DOM.artifactsPanel) return;
+
+        // Update the header badge (count of pinned).
+        const pinnedCount = State.pinnedArtifacts.length;
+        if (DOM.artifactsBadge) {
+          DOM.artifactsBadge.hidden = pinnedCount === 0;
+          DOM.artifactsBadge.textContent = String(pinnedCount);
+        }
+
+        if (!State.artifactsPanelOpen) return;
+
+        // ── Pinned section ────────────────────────────────────────────────────
+        const hasPinned = State.pinnedArtifacts.length > 0;
+        if (DOM.artifactsPinnedSection) DOM.artifactsPinnedSection.hidden = !hasPinned;
+        if (hasPinned && DOM.artifactsPinnedList) {
+          const rows = State.pinnedArtifacts.map((a) => {
+            const row = document.createElement('div');
+            row.className = 'artifact-row' + (this._selectedId === a.id ? ' selected' : '');
+            row.addEventListener('click', () => this.select(a.id));
+
+            const info = document.createElement('div');
+            info.className = 'artifact-row-info';
+            const title = document.createElement('div');
+            title.className = 'artifact-row-title';
+            title.textContent = a.title || 'Untitled';
+            const meta = document.createElement('div');
+            meta.className = 'artifact-row-meta';
+            meta.textContent = (a.kind || 'artifact') + ' · v' + (a.version || 1);
+            info.appendChild(title);
+            info.appendChild(meta);
+
+            const unpinBtn = document.createElement('button');
+            unpinBtn.type = 'button';
+            unpinBtn.className = 'artifact-row-btn danger';
+            unpinBtn.textContent = 'Unpin';
+            unpinBtn.title = 'Remove from pinned';
+            unpinBtn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              this.unpin(a.id);
+            });
+
+            row.appendChild(info);
+            row.appendChild(unpinBtn);
+            return row;
+          });
+          DOM.artifactsPinnedList.replaceChildren(...rows);
+        }
+
+        // ── Session section ───────────────────────────────────────────────────
+        const hasSession = State.sessionArtifacts.length > 0;
+        if (DOM.artifactsSessionSection) DOM.artifactsSessionSection.hidden = !hasSession;
+        if (hasSession && DOM.artifactsSessionList) {
+          const rows = State.sessionArtifacts.map((a) => {
+            const row = document.createElement('div');
+            row.className = 'artifact-row' + (this._selectedId === a.id ? ' selected' : '');
+            row.addEventListener('click', () => this.select(a.id));
+
+            const info = document.createElement('div');
+            info.className = 'artifact-row-info';
+            const title = document.createElement('div');
+            title.className = 'artifact-row-title';
+            title.textContent = a.title || a.path || 'Untitled';
+            const meta = document.createElement('div');
+            meta.className = 'artifact-row-meta';
+            meta.textContent = (a.lang || a.source || 'artifact');
+            info.appendChild(title);
+            info.appendChild(meta);
+
+            const alreadyPinned = this._isPinned(a.id);
+            const actionBtn = document.createElement('button');
+            actionBtn.type = 'button';
+            actionBtn.className = 'artifact-row-btn' + (alreadyPinned ? ' muted' : '');
+            actionBtn.textContent = alreadyPinned ? 'Pinned' : 'Pin';
+            actionBtn.title = alreadyPinned ? 'Already pinned' : 'Pin this artifact';
+            if (!alreadyPinned) {
+              actionBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.pin(a);
+              });
+            }
+
+            row.appendChild(info);
+            row.appendChild(actionBtn);
+            return row;
+          });
+          DOM.artifactsSessionList.replaceChildren(...rows);
+        }
+
+        // ── Empty state ───────────────────────────────────────────────────────
+        const isEmpty = !hasPinned && !hasSession;
+        if (DOM.artifactsEmpty) DOM.artifactsEmpty.hidden = !isEmpty;
+
+        // ── Preview ───────────────────────────────────────────────────────────
+        // Re-validate the selected id still exists (it may have been unpinned).
+        if (this._selectedId && !this._getSelected()) {
+          this._selectedId = null;
+        }
+        this.renderPreview();
+      },
+    };
+
     const WebSocketEngine = {
       connect() {
         if (State.ws) {
@@ -5072,6 +5515,10 @@
             State.serverSupportsConnectors =
               !!(frame.capabilities && frame.capabilities.connectors);
             ConnectorsEngine.applyCapability(State.serverSupportsConnectors);
+            // PRD Part C W1: additive gating for the Artifacts panel.
+            State.serverSupportsArtifacts =
+              !!(frame.capabilities && frame.capabilities.artifacts);
+            ArtifactsEngine.applyCapability(State.serverSupportsArtifacts);
             break;
 
           case 'skill-catalog':
@@ -5099,6 +5546,21 @@
 
           case 'connector-status':
             ConnectorsEngine.applyStatus(frame);
+            break;
+
+          case 'artifact-list':
+            // Full replacement list of pinned artifacts from the server.
+            ArtifactsEngine.applyPinned(frame.artifacts || []);
+            break;
+
+          case 'artifact-update':
+            // Single pinned artifact was created or updated.
+            ArtifactsEngine.applyUpdate(frame.artifact);
+            break;
+
+          case 'artifacts-extracted':
+            // Ephemeral per-turn artifacts (code fences / tool writes).
+            ArtifactsEngine.applySession(frame);
             break;
 
           case 'thread-list': {
@@ -5618,6 +6080,7 @@
       window.__MoonInternals.SurveyEngine = SurveyEngine;
       window.__MoonInternals.SkillsEngine = SkillsEngine;
       window.__MoonInternals.ConnectorsEngine = ConnectorsEngine;
+      window.__MoonInternals.ArtifactsEngine = ArtifactsEngine;
       window.__MoonInternals.SecretPromptEngine = SecretPromptEngine;
       window.__MoonInternals.buildSurveyVerdicts = buildSurveyVerdicts;
       window.__MoonInternals.WebSocketEngine = WebSocketEngine;
@@ -5635,6 +6098,14 @@
     }
     if (DOM.userAskDismiss) {
       DOM.userAskDismiss.addEventListener('click', () => SurveyEngine.dismiss());
+    }
+
+    // Wire the Artifacts panel close button and header toggle.
+    if (DOM.artifactsPanelClose) {
+      DOM.artifactsPanelClose.addEventListener('click', () => ArtifactsEngine.closePanel());
+    }
+    if (DOM.artifactsBtnInner) {
+      DOM.artifactsBtnInner.addEventListener('click', () => ArtifactsEngine.togglePanel());
     }
 
     // Wire the secure secret-entry panel buttons (Submit / Cancel / × ).
