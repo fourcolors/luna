@@ -351,6 +351,12 @@
           "markdownDescription": "Allows querying GitHub Releases for an available app update"
         },
         {
+          "description": "Allows the close_widget command",
+          "type": "string",
+          "const": "allow-close-widget",
+          "markdownDescription": "Allows the close_widget command"
+        },
+        {
           "description": "Allows reading the CLI thread file",
           "type": "string",
           "const": "allow-get-last-thread-id",
@@ -367,6 +373,12 @@
           "type": "string",
           "const": "allow-install-update",
           "markdownDescription": "Allows downloading + installing an available update, then relaunching"
+        },
+        {
+          "description": "Allows the list_widget_windows command",
+          "type": "string",
+          "const": "allow-list-widget-windows",
+          "markdownDescription": "Allows the list_widget_windows command"
         },
         {
           "description": "Allows reading the mode-600 WS connection file",
@@ -403,6 +415,12 @@
           "type": "string",
           "const": "allow-oauth-loopback-wait",
           "markdownDescription": "Allows the oauth_loopback_wait command"
+        },
+        {
+          "description": "Allows the open_artifact_widget command",
+          "type": "string",
+          "const": "allow-open-artifact-widget",
+          "markdownDescription": "Allows the open_artifact_widget command"
         },
         {
           "description": "Allows the open_external_url command",

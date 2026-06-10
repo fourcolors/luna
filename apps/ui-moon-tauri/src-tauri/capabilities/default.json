@@ -42,6 +42,9 @@
     "allow-oauth-loopback-wait",
     "allow-oauth-loopback-cancel",
     "allow-open-external-url",
-    "opener:allow-open-url"
+    "opener:allow-open-url",
+    "allow-open-artifact-widget",
+    "allow-close-widget",
+    "allow-list-widget-windows"
   ]
 }

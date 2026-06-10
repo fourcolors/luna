@@ -748,6 +748,101 @@ fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
         .map_err(|e| format!("could not open the browser: {e}"))
 }
 
+// ── the deck: artifact widget windows (PRD Part C / W2) ──────────────────────
+//
+// Each pinned artifact can pop out into its own frameless, always-on-top,
+// OPAQUE runtime window (WinAmp-style). Opaque rectangles need none of the
+// interactive-region / click-through machinery the moon fights (§13), so these
+// windows are plain. The window LABEL is a deterministic hash of the artifact
+// id so it is unique, collision-resistant, valid as a Tauri label, and matches
+// the `widget-*` capability glob — a label that matched no capability would get
+// no IPC at all (fails closed). The REAL artifact id rides in the URL query so
+// the widget page knows what to render; the label is just an opaque handle.
+
+/// Deterministic, capability-glob-matching window label for an artifact id.
+/// djb2 → hex; stable across processes so "focus if already open" and restore
+/// reconcile to the same window.
+fn widget_label(artifact_id: &str) -> String {
+    let mut hash: u64 = 5381;
+    for b in artifact_id.bytes() {
+        hash = hash.wrapping_mul(33).wrapping_add(u64::from(b));
+    }
+    format!("widget-{hash:x}")
+}
+
+/// Percent-encode a query-parameter VALUE (RFC 3986 unreserved set kept raw).
+/// Avoids depending on a urlencoding crate for the one place we need it.
+fn encode_query_value(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Pop an artifact out into its own widget window (or focus it if already open).
+/// Returns the window label so the caller can track it for layout persistence.
+#[tauri::command]
+async fn open_artifact_widget(
+    app: tauri::AppHandle,
+    artifact_id: String,
+    title: String,
+    x: Option<f64>,
+    y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<String, String> {
+    let label = widget_label(&artifact_id);
+    // Already open → focus, don't spawn a duplicate.
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.show();
+        let _ = win.set_focus();
+        return Ok(label);
+    }
+    let url = format!("index.html?widget={}", encode_query_value(&artifact_id));
+    let mut builder = tauri::WebviewWindowBuilder::new(
+        &app,
+        &label,
+        tauri::WebviewUrl::App(url.into()),
+    )
+    .title(if title.is_empty() { "Artifact" } else { &title })
+    .decorations(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .inner_size(width.unwrap_or(360.0), height.unwrap_or(440.0))
+    .min_inner_size(220.0, 160.0);
+    if let (Some(px), Some(py)) = (x, y) {
+        builder = builder.position(px, py);
+    }
+    builder.build().map_err(|e| e.to_string())?;
+    Ok(label)
+}
+
+/// Close a widget window by label. No-op if it is already gone.
+#[tauri::command]
+async fn close_widget(app: tauri::AppHandle, label: String) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(&label) {
+        win.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Labels of every currently-open widget window (those with the `widget-`
+/// prefix) — lets the deck reconcile its persisted layout against reality.
+#[tauri::command]
+fn list_widget_windows(app: tauri::AppHandle) -> Vec<String> {
+    app.webview_windows()
+        .keys()
+        .filter(|l| l.starts_with("widget-"))
+        .cloned()
+        .collect()
+}
+
 // ── click-through over the re-tether envelope ───────────────────────────────
 //
 // A transparent window is still an opaque RECTANGLE to the OS hit-tester: it
@@ -1012,6 +1107,9 @@ fn main() {
         oauth_loopback_wait,
         oauth_loopback_cancel,
         open_external_url,
+        open_artifact_widget,
+        close_widget,
+        list_widget_windows,
         voice_status,
         voice_set_mode,
         voice_ptt_down,
@@ -1040,7 +1138,10 @@ fn main() {
         oauth_loopback_start,
         oauth_loopback_wait,
         oauth_loopback_cancel,
-        open_external_url
+        open_external_url,
+        open_artifact_widget,
+        close_widget,
+        list_widget_windows
     ]);
 
     builder
@@ -1251,6 +1352,36 @@ fn main() {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ── the deck: widget window label + query encoding (PRD W2) ──────────────
+
+    #[test]
+    fn widget_label_is_deterministic_prefixed_and_glob_matching() {
+        let a = widget_label("msg-1:0");
+        let b = widget_label("msg-1:0");
+        assert_eq!(a, b, "same id → same label (focus-if-open + restore rely on it)");
+        assert!(a.starts_with("widget-"), "must match the widget-* capability glob");
+        // Valid Tauri label charset (alphanumeric + - _ : /): hash is hex.
+        assert!(
+            a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+            "label {a} must be a valid window label"
+        );
+    }
+
+    #[test]
+    fn widget_label_distinguishes_ids_that_sanitize_alike() {
+        // A naive sanitizer (`:` → `_`) would collide these; the hash must not.
+        assert_ne!(widget_label("m:1"), widget_label("m_1"));
+        assert_ne!(widget_label("a:b"), widget_label("a:c"));
+    }
+
+    #[test]
+    fn encode_query_value_keeps_unreserved_and_percent_encodes_the_rest() {
+        assert_eq!(encode_query_value("msg-1_0.x~"), "msg-1_0.x~");
+        // ':' and '/' and ' ' and '&' must be encoded so they cannot break the
+        // query string the widget page parses.
+        assert_eq!(encode_query_value("a:b/c d&e"), "a%3Ab%2Fc%20d%26e");
+    }
 
     // THE load-bearing test: a legacy flat file must read back as the SAME
     // {wsToken, wsUrl} it returns today (zero behavior change for the running

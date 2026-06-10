@@ -1,0 +1,25 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "widgets",
+  "description": "Permission set for artifact widget windows (the deck — PRD Part C / W2). Opaque, frameless, always-on-top panels that render ONE pinned artifact and magnetically dock to the chat. The `widget-*` glob means any other label gets NO IPC at all (fails closed — PRD §23 derisk). These windows deliberately get a NARROWER set than the main window: they may move/resize/drag/close themselves and read the anchor window's geometry for snapping, connect to the same WS server (load-connection), and close themselves — nothing else.",
+  "windows": ["widget-*"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-outer-position",
+    "core:window:allow-outer-size",
+    "core:window:allow-inner-size",
+    "core:window:allow-current-monitor",
+    "core:window:allow-scale-factor",
+    "core:window:allow-close",
+    "core:event:default",
+    "allow-load-connection",
+    "allow-get-platform",
+    "allow-close-widget",
+    "allow-list-widget-windows"
+  ]
+}
