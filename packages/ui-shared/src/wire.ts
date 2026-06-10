@@ -97,6 +97,13 @@ export interface HelloFrame {
     readonly chat: boolean
     readonly streamingDeltas: boolean
     readonly setup: boolean
+    /**
+     * PRD Part B (Skills): server sends `skill-catalog` after hello and
+     * routes `skill-toggle`. OPTIONAL/additive — absent on older servers;
+     * clients hide the Skills settings section when missing. Mirrors
+     * packages/ui-ws/src/protocol.ts — keep in sync.
+     */
+    readonly skills?: boolean
   }
   /**
    * Models the operator can pick for new threads. OPTIONAL and additive —
@@ -192,6 +199,37 @@ export interface AccountListFrame {
   }>
 }
 
+/**
+ * One skill row for the settings catalog — METADATA ONLY by construction
+ * (no `body` field: skill bodies are agent prompt content and never cross
+ * the wire to clients). Mirrors packages/ui-ws/src/protocol.ts — keep in sync.
+ */
+export interface SkillCatalogItem {
+  readonly id: string
+  readonly name: string
+  readonly description: string
+  readonly whenToUse: string
+  readonly category: string
+  readonly tags: ReadonlyArray<string>
+  readonly source: string
+  readonly enabled: boolean
+}
+
+/** Server→client: the skill catalog (sent after hello; re-sent after a toggle). */
+export interface SkillCatalogFrame {
+  readonly type: "skill-catalog"
+  readonly skills: ReadonlyArray<SkillCatalogItem>
+}
+
+/** Server→client: ack for a `skill-toggle` (ok:false carries a short reason). */
+export interface SkillStatusFrame {
+  readonly type: "skill-status"
+  readonly id: string
+  readonly enabled: boolean
+  readonly ok: boolean
+  readonly message?: string
+}
+
 /** Marks the true end of an agentic turn (SDK `result`). Consumed by clients
  *  that group consecutive assistant turns (the moon timeline); ui-web is
  *  seq-keyed and treats it as a no-op. */
@@ -232,6 +270,8 @@ export type ServerFrame =
   | AssistantErrorFrame
   | ArtifactsExtractedFrame
   | AccountListFrame
+  | SkillCatalogFrame
+  | SkillStatusFrame
   | TurnCompleteFrame
   | PtyOutputFrame
 
@@ -290,6 +330,17 @@ export interface InterruptFrame {
   readonly threadId: string
 }
 
+/**
+ * Client→server: flip one skill from the Skills settings section (PRD Part
+ * B §12). Carries ONLY id + enabled — the catalog is server-authored.
+ * Mirrors packages/ui-ws/src/protocol.ts — keep in sync.
+ */
+export interface SkillToggleFrame {
+  readonly type: "skill-toggle"
+  readonly id: string
+  readonly enabled: boolean
+}
+
 export type ClientFrame =
   | PongFrame
   | ByeFrame
@@ -299,5 +350,6 @@ export type ClientFrame =
   | NewThreadFrame
   | UserMessageFrame
   | InterruptFrame
+  | SkillToggleFrame
   | PtyInputFrame
   | PtyResizeFrame

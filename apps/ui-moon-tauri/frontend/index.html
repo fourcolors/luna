@@ -636,6 +636,54 @@
       color: #64748b;
       line-height: 1.3;
     }
+
+    /* ── Skills tab (PRD Part B §12) — watercolor toggles, no glossy switches ── */
+    .skills-chips { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; margin-bottom: 8px; }
+    .skills-chip {
+      font-family: inherit; font-size: 0.66rem; letter-spacing: 0.04em;
+      color: #94a3b8; background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 999px;
+      padding: 3px 10px; cursor: pointer; transition: all 0.2s ease;
+    }
+    .skills-chip.on {
+      color: #dbeafe; border-color: rgba(138, 180, 248, 0.55);
+      background: rgba(138, 180, 248, 0.12);
+    }
+    .skills-list { display: flex; flex-direction: column; gap: 6px; width: 100%; max-height: 240px; overflow-y: auto; }
+    .skill-row {
+      display: flex; align-items: center; gap: 10px;
+      background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 10px; padding: 8px 10px; cursor: pointer;
+      transition: border-color 0.2s ease, opacity 0.25s ease;
+    }
+    .skill-row:hover { border-color: rgba(138, 180, 248, 0.25); }
+    .skill-row.off { opacity: 0.55; }
+    .skill-row-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+    .skill-row-name { font-size: 0.78rem; font-weight: 600; color: #f1f5f9; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .skill-row-badge { font-size: 0.56rem; text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8; background: rgba(255, 255, 255, 0.05); border-radius: 4px; padding: 1px 5px; }
+    .skill-row-desc { font-size: 0.66rem; color: #64748b; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* watercolor blot indicator: lit breathing pigment when on, dry faded blot when off.
+       Reuses the moon-bead pigment recipe + bead-wash keyframes — same paint, smaller brush. */
+    .skill-blot {
+      width: 22px; height: 22px; flex-shrink: 0; position: relative;
+      border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%;
+      background:
+        radial-gradient(circle closest-side,
+          rgba(150, 188, 250, 0.30) 0%,
+          rgba(138, 180, 248, 0.45) 45%,
+          rgba(104, 146, 232, 0.70) 78%,
+          rgba(96, 138, 226, 0.25) 94%,
+          rgba(96, 138, 226, 0) 100%),
+        radial-gradient(circle at 64% 68%, rgba(165, 148, 238, 0.25) 0%, rgba(165, 148, 238, 0) 60%);
+      box-shadow: 0 0 10px rgba(138, 180, 248, 0.35);
+      animation: bead-wash 7s ease-in-out infinite alternate;
+      transition: opacity 0.3s ease, filter 0.3s ease, box-shadow 0.3s ease;
+    }
+    .skill-row.off .skill-blot {
+      opacity: 0.35; filter: grayscale(0.7); box-shadow: none; animation: none;
+    }
+    .skill-row.pending .skill-blot { filter: blur(1px); }
+    .skills-error { color: #fda4af !important; width: 100%; }
     
     /* Toggle switch design (macOS style) */
     .switch {
@@ -2330,6 +2378,8 @@
         <button type="button" class="settings-tab active" data-tab="general" role="tab" aria-selected="true">General</button>
         <button type="button" class="settings-tab" data-tab="connection" role="tab" aria-selected="false">Connection</button>
         <button type="button" class="settings-tab" data-tab="secrets" role="tab" aria-selected="false">Secrets</button>
+        <!-- PRD Part B: hidden until the server's hello advertises capabilities.skills -->
+        <button type="button" class="settings-tab" data-tab="skills" role="tab" aria-selected="false" id="skills-tab-btn" hidden>Skills</button>
         <button type="button" class="settings-tab" data-tab="updates" role="tab" aria-selected="false">Updates</button>
       </div>
       <div class="settings-content">
@@ -2430,6 +2480,20 @@
             <span class="setting-desc" id="op-token-status" style="font-size: 0.75rem;" hidden></span>
           </div>
           <span class="setting-desc" style="margin-top: 6px;">Saving verifies the token and briefly restarts the server.</span>
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="skills">
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">Skills <span class="setting-desc" id="skills-count" style="display:inline"></span></span>
+            <span class="setting-desc">What Luna knows how to do. Toggle one off and it leaves her mind on the very next conversation — nothing is uninstalled.</span>
+          </div>
+          <input type="text" id="skills-search-input" class="premium-text-input" placeholder="Search skills…" autocomplete="off" spellcheck="false" style="margin-bottom: 8px;">
+          <div class="skills-chips" id="skills-chips"></div>
+          <span class="setting-desc skills-error" id="skills-error" hidden></span>
+          <div class="skills-list" id="skills-list">
+            <span class="setting-desc">Not connected — skills appear when the server sends its catalog.</span>
+          </div>
         </div>
         </div>
         <div class="settings-tabpanel" data-tabpanel="updates">
@@ -2831,6 +2895,13 @@
       channelSelect: document.getElementById('channel-select'),
       channelError: document.getElementById('channel-error'),
       modelSelect: document.getElementById('model-select'),
+      // PRD Part B: Skills settings tab handles.
+      skillsTabBtn: document.getElementById('skills-tab-btn'),
+      skillsSearchInput: document.getElementById('skills-search-input'),
+      skillsChips: document.getElementById('skills-chips'),
+      skillsList: document.getElementById('skills-list'),
+      skillsCount: document.getElementById('skills-count'),
+      skillsError: document.getElementById('skills-error'),
       checkUpdateBtn: document.getElementById('check-update-btn'),
       updateStatus: document.getElementById('update-status'),
       connectionStatus: document.getElementById('connection-status'),
@@ -2974,6 +3045,15 @@
       // Defaults true; `hello` (always the first frame on connect, before any
       // chat frame) corrects it to false for an old server.
       serverSupportsTurnComplete: true,
+      // PRD Part B: does the connected server speak the skill frames
+      // (hello capability `skills`)? Gates the Skills settings tab —
+      // absent/false on older servers → tab stays hidden. Defaults false
+      // (opposite of turnComplete: a feature, not a fallback-needing path).
+      serverSupportsSkills: false,
+      // PRD Part B: the latest skill-catalog rows (metadata only — bodies
+      // never cross the wire) + per-toggle pending markers.
+      skills: [],
+      skillsPending: {},
       // local-shell: the machine-access scope this client advertises. roots are
       // explicitly attached folders (auto-approve set, may be empty); fullAccess
       // lets Luna run anywhere. enabled = fullAccess || roots.length > 0.
@@ -3658,6 +3738,158 @@
     /**
      * Real WebSocket connection manager and wire protocol implementation.
      */
+    // ── SkillsEngine — the Skills settings tab (PRD Part B §12) ────────────
+    //
+    // Renders the server-authored skill catalog as watercolor-blot toggle
+    // rows with client-side search + filter chips. No optimistic flips: a
+    // row goes "pending" (blurred blot) when clicked and settles when the
+    // server's skill-status / refreshed skill-catalog lands — the registry
+    // toggle is synchronous server-side, so the round trip is fast and
+    // honest state beats reconciliation bugs. The tab itself is revealed by
+    // the hello capability (applyCapability) and hides again if a channel
+    // switch lands on an older server.
+    const SkillsEngine = {
+      _filter: { q: '', category: 'all', source: 'all', enabledOnly: false },
+
+      applyCapability(supported) {
+        if (DOM.skillsTabBtn) DOM.skillsTabBtn.hidden = !supported;
+        if (!supported && DOM.skillsTabBtn && DOM.skillsTabBtn.classList.contains('active')) {
+          // The tab was open when we reconnected to an older server —
+          // bounce back to General so the modal never shows a dead panel.
+          const general = document.querySelector('.settings-tab[data-tab="general"]');
+          if (general) general.click();
+        }
+      },
+
+      applyCatalog(skills) {
+        State.skills = Array.isArray(skills) ? skills : [];
+        State.skillsPending = {};
+        this.setError(null);
+        this.render();
+      },
+
+      applyStatus(frame) {
+        if (!frame || typeof frame.id !== 'string') return;
+        delete State.skillsPending[frame.id];
+        if (frame.ok) {
+          State.skills = State.skills.map((s) =>
+            s.id === frame.id ? Object.assign({}, s, { enabled: frame.enabled }) : s);
+          this.setError(null);
+        } else {
+          this.setError(frame.message || 'Could not change that skill.');
+        }
+        this.render();
+      },
+
+      toggle(id) {
+        const skill = State.skills.find((s) => s.id === id);
+        if (!skill || State.skillsPending[id]) return;
+        if (!(State.ws && State.ws.readyState === WebSocket.OPEN)) {
+          this.setError('Not connected to a server.');
+          return;
+        }
+        State.skillsPending[id] = true;
+        WebSocketEngine.send({ type: 'skill-toggle', id, enabled: !skill.enabled });
+        this.render();
+      },
+
+      setError(message) {
+        if (!DOM.skillsError) return;
+        DOM.skillsError.hidden = !message;
+        DOM.skillsError.textContent = message || '';
+      },
+
+      _visible() {
+        const f = this._filter;
+        const q = f.q.trim().toLowerCase();
+        return State.skills.filter((s) => {
+          if (f.category !== 'all' && s.category !== f.category) return false;
+          if (f.source !== 'all' && s.source !== f.source) return false;
+          if (f.enabledOnly && !s.enabled) return false;
+          if (!q) return true;
+          const hay = (s.name + ' ' + s.description + ' ' + (s.tags || []).join(' ')).toLowerCase();
+          return hay.includes(q);
+        });
+      },
+
+      render() {
+        if (!DOM.skillsList) return;
+        // count badge
+        if (DOM.skillsCount) {
+          const on = State.skills.filter((s) => s.enabled).length;
+          DOM.skillsCount.textContent = State.skills.length
+            ? ' · ' + on + '/' + State.skills.length + ' on'
+            : '';
+        }
+        // chips: categories derived from the catalog + source + enabled-only
+        if (DOM.skillsChips) {
+          const cats = ['all'].concat(Array.from(new Set(State.skills.map((s) => s.category))).sort());
+          const f = this._filter;
+          DOM.skillsChips.replaceChildren(
+            ...cats.map((c) => this._chip(c, f.category === c, () => { f.category = c; this.render(); })),
+            this._chip('built-in', f.source === 'builtin', () => { f.source = f.source === 'builtin' ? 'all' : 'builtin'; this.render(); }),
+            this._chip('yours', f.source === 'user', () => { f.source = f.source === 'user' ? 'all' : 'user'; this.render(); }),
+            this._chip('enabled only', f.enabledOnly, () => { f.enabledOnly = !f.enabledOnly; this.render(); }),
+          );
+        }
+        // rows — built with createElement (no innerHTML with catalog strings:
+        // names/descriptions are server-authored but defence-in-depth is free)
+        const rows = this._visible().map((s) => {
+          const row = document.createElement('div');
+          row.className = 'skill-row' + (s.enabled ? '' : ' off') + (State.skillsPending[s.id] ? ' pending' : '');
+          row.setAttribute('role', 'switch');
+          row.setAttribute('aria-checked', String(!!s.enabled));
+          row.title = s.enabled ? 'Click to disable' : 'Click to enable';
+
+          const blot = document.createElement('div');
+          blot.className = 'skill-blot';
+
+          const info = document.createElement('div');
+          info.className = 'skill-row-info';
+          const name = document.createElement('span');
+          name.className = 'skill-row-name';
+          name.textContent = s.name;
+          const badge = document.createElement('span');
+          badge.className = 'skill-row-badge';
+          badge.textContent = s.source === 'user' ? 'yours' : s.source;
+          name.appendChild(badge);
+          const cat = document.createElement('span');
+          cat.className = 'skill-row-badge';
+          cat.textContent = s.category;
+          name.appendChild(cat);
+          const desc = document.createElement('span');
+          desc.className = 'skill-row-desc';
+          desc.textContent = s.description;
+          info.appendChild(name);
+          info.appendChild(desc);
+
+          row.appendChild(blot);
+          row.appendChild(info);
+          row.addEventListener('click', () => this.toggle(s.id));
+          return row;
+        });
+        if (rows.length === 0) {
+          const empty = document.createElement('span');
+          empty.className = 'setting-desc';
+          empty.textContent = State.skills.length
+            ? 'No skills match.'
+            : 'Not connected — skills appear when the server sends its catalog.';
+          DOM.skillsList.replaceChildren(empty);
+        } else {
+          DOM.skillsList.replaceChildren(...rows);
+        }
+      },
+
+      _chip(label, on, onClick) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'skills-chip' + (on ? ' on' : '');
+        b.textContent = label;
+        b.addEventListener('click', onClick);
+        return b;
+      },
+    };
+
     const WebSocketEngine = {
       connect() {
         if (State.ws) {
@@ -4130,6 +4362,21 @@
             // settles on turn-complete, would hang on "Working on it…").
             State.serverSupportsTurnComplete =
               !!(frame.capabilities && frame.capabilities.turnComplete);
+            // PRD Part B: reveal the Skills settings tab only when the server
+            // advertises the skill frames. Re-evaluated on every hello so a
+            // channel switch to an older server hides the tab again.
+            State.serverSupportsSkills =
+              !!(frame.capabilities && frame.capabilities.skills);
+            SkillsEngine.applyCapability(State.serverSupportsSkills);
+            break;
+
+          case 'skill-catalog':
+            // Server-authored catalog (sent after hello + after each toggle).
+            SkillsEngine.applyCatalog(frame.skills || []);
+            break;
+
+          case 'skill-status':
+            SkillsEngine.applyStatus(frame);
             break;
 
           case 'thread-list': {
@@ -4638,6 +4885,7 @@
       // moon-009 fix in place.
       window.__MoonInternals.handleFrame = (frame) => WebSocketEngine.handleFrame(frame);
       window.__MoonInternals.SurveyEngine = SurveyEngine;
+      window.__MoonInternals.SkillsEngine = SkillsEngine;
       window.__MoonInternals.SecretPromptEngine = SecretPromptEngine;
       window.__MoonInternals.buildSurveyVerdicts = buildSurveyVerdicts;
       window.__MoonInternals.WebSocketEngine = WebSocketEngine;
@@ -7179,6 +7427,13 @@
     }
     if (DOM.saveOpTokenBtn) {
       DOM.saveOpTokenBtn.addEventListener('click', () => SettingsEngine.submitOpToken());
+    }
+    // PRD Part B: Skills tab search (chips + rows wire their own listeners in render()).
+    if (DOM.skillsSearchInput) {
+      DOM.skillsSearchInput.addEventListener('input', (e) => {
+        SkillsEngine._filter.q = e.target.value || '';
+        SkillsEngine.render();
+      });
     }
 
     DOM.recordShortcutBtn.addEventListener('click', () => {

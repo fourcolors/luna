@@ -1518,6 +1518,115 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(chat.querySelector('.timeline-summary-label')!.textContent).toContain('Worked for')
     })
   // ───────────────────────────────────────────────────────────────────────────
+  // Feature: Skills settings tab (PRD Part B §12, Moon-side wiring)
+  //
+  // Driven at the production seam (__MoonInternals.handleFrame): hello
+  // reveals/hides the tab via capabilities.skills; skill-catalog renders the
+  // watercolor rows; clicking a row sends skill-toggle and goes pending (no
+  // optimistic flip); skill-status ok settles it, ok:false surfaces the error.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Skills settings tab', () => {
+    const M = () => (window as any).__MoonInternals
+
+    const catalog = () => ({
+      type: 'skill-catalog',
+      skills: [
+        { id: 'clear-writing', name: 'Clear Writing', description: 'Strunk rules.',
+          whenToUse: 'Writing prose.', category: 'writing', tags: ['style'], source: 'builtin', enabled: true },
+        { id: 'duck-query', name: 'Duck Query', description: 'SQL over files.',
+          whenToUse: 'Data questions.', category: 'data', tags: ['sql'], source: 'user', enabled: false },
+      ],
+    })
+
+    const sentFrames: any[] = []
+    beforeEach(() => {
+      sentFrames.length = 0
+      const m = M()
+      // capture outbound frames at the engine seam (no real socket in jsdom)
+      m.WebSocketEngine.send = (f: any) => { sentFrames.push(f) }
+      ;(window as any).State = m.State
+      m.State.skills = []
+      m.State.skillsPending = {}
+      // pretend the socket is open so toggle() passes its connection guard
+      m.State.ws = { readyState: WebSocket.OPEN }
+      const err = document.getElementById('skills-error')
+      if (err) { err.hidden = true; err.textContent = '' }
+    })
+
+    it('hello capabilities.skills reveals the tab; an old server hides it again', () => {
+      const tab = document.getElementById('skills-tab-btn')!
+      M().handleFrame({ type: 'hello', protocolVersion: 2, kinds: [],
+        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false, skills: true } })
+      expect(M().State.serverSupportsSkills).toBe(true)
+      expect(tab.hidden).toBe(false)
+      M().handleFrame({ type: 'hello', protocolVersion: 2, kinds: [],
+        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false } })
+      expect(M().State.serverSupportsSkills).toBe(false)
+      expect(tab.hidden).toBe(true)
+    })
+
+    it('skill-catalog renders one watercolor row per skill, off-rows dimmed', () => {
+      M().handleFrame(catalog())
+      const rows = document.querySelectorAll('#skills-list .skill-row')
+      expect(rows.length).toBe(2)
+      expect(rows[0]!.classList.contains('off')).toBe(false)
+      expect(rows[1]!.classList.contains('off')).toBe(true)
+      expect(rows[0]!.querySelector('.skill-blot')).not.toBeNull()
+      expect(rows[0]!.textContent).toContain('Clear Writing')
+      expect(rows[1]!.textContent).toContain('yours') // source=user badge
+      expect(document.getElementById('skills-count')!.textContent).toContain('1/2')
+    })
+
+    it('clicking a row sends skill-toggle and marks pending WITHOUT flipping', () => {
+      M().handleFrame(catalog())
+      const row = document.querySelectorAll('#skills-list .skill-row')[0] as HTMLElement
+      row.click()
+      expect(sentFrames).toEqual([{ type: 'skill-toggle', id: 'clear-writing', enabled: false }])
+      const rerendered = document.querySelectorAll('#skills-list .skill-row')[0]!
+      expect(rerendered.classList.contains('pending')).toBe(true)
+      expect(rerendered.classList.contains('off')).toBe(false) // not flipped yet
+      // a second click while pending is a no-op
+      ;(rerendered as HTMLElement).click()
+      expect(sentFrames.length).toBe(1)
+    })
+
+    it('skill-status ok settles the row; ok:false surfaces the message and reverts nothing', () => {
+      M().handleFrame(catalog())
+      ;(document.querySelectorAll('#skills-list .skill-row')[0] as HTMLElement).click()
+      M().handleFrame({ type: 'skill-status', id: 'clear-writing', enabled: false, ok: true })
+      const row = document.querySelectorAll('#skills-list .skill-row')[0]!
+      expect(row.classList.contains('pending')).toBe(false)
+      expect(row.classList.contains('off')).toBe(true)
+
+      M().handleFrame({ type: 'skill-status', id: 'duck-query', enabled: true, ok: false, message: 'nope' })
+      const err = document.getElementById('skills-error')!
+      expect(err.hidden).toBe(false)
+      expect(err.textContent).toBe('nope')
+      // duck-query stays off — no phantom enable
+      expect(document.querySelectorAll('#skills-list .skill-row')[1]!.classList.contains('off')).toBe(true)
+    })
+
+    it('search + chips filter the list client-side', () => {
+      M().handleFrame(catalog())
+      const search = document.getElementById('skills-search-input') as HTMLInputElement
+      search.value = 'sql'
+      search.dispatchEvent(new Event('input'))
+      let rows = document.querySelectorAll('#skills-list .skill-row')
+      expect(rows.length).toBe(1)
+      expect(rows[0]!.textContent).toContain('Duck Query')
+      // reset search, filter by category chip "writing"
+      search.value = ''
+      search.dispatchEvent(new Event('input'))
+      const chips = Array.from(document.querySelectorAll('#skills-chips .skills-chip'))
+      const writing = chips.find((c) => c.textContent === 'writing') as HTMLElement
+      writing.click()
+      rows = document.querySelectorAll('#skills-list .skill-row')
+      expect(rows.length).toBe(1)
+      expect(rows[0]!.textContent).toContain('Clear Writing')
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
   // Feature: UserAsk / alignment-survey (Phase 3 D3, Moon-side wiring)
   //
   // The TUI already paints a survey modal when the server pushes a

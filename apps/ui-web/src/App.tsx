@@ -33,6 +33,7 @@ import {
   ConnectionSummary,
   ObsPanel,
   Sidebar,
+  SkillsPanel,
   createTransport,
   createUiStore,
   type SlashCommand,
@@ -499,6 +500,19 @@ export const App: Component = () => {
               {restarting() ? "⟳ Restarting…" : "↺ Restart Server"}
             </button>
           </div>
+          {/* PRD Part B §12 — gated on the additive hello capability: an
+              older server never advertises `skills`, so the section simply
+              doesn't exist against it. */}
+          <Show when={isConnected() && store.state.capabilities.skills === true}>
+            <div class="row settings-row">
+              <SkillsPanel
+                skills={store.state.skills}
+                lastError={store.state.skillError}
+                onToggle={(id, enabled) => send({ type: "skill-toggle", id, enabled })}
+                disabled={!isConnected()}
+              />
+            </div>
+          </Show>
         </Show>
         <Show when={store.state.closeReason}>
           {(reason) => (

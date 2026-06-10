@@ -17,6 +17,7 @@ import type {
   ObsEventKind,
   ServerFrame,
   SessionSummary,
+  SkillCatalogItem,
 } from "./wire.js"
 
 export interface InFlightTurn {
@@ -46,8 +47,14 @@ export interface UIState {
   readonly lastDrop: { readonly n: number; readonly since: string } | null
   readonly lastPingAt: string | null
   readonly closeReason: string | null
-  /** Server-advertised capabilities. */
-  readonly capabilities: { readonly chat: boolean; readonly streamingDeltas: boolean; readonly setup: boolean }
+  /** Server-advertised capabilities. `skills` is additive/optional —
+   *  absent against older servers (the Skills section hides). */
+  readonly capabilities: {
+    readonly chat: boolean
+    readonly streamingDeltas: boolean
+    readonly setup: boolean
+    readonly skills?: boolean
+  }
   /**
    * Server-advertised model list (from the `hello` frame's `availableModels`
    * field). When null the server is older and did not send the field; the UI
@@ -70,6 +77,16 @@ export interface UIState {
   }>
   /** Currently-selected account id. null = use default broker rotation. */
   readonly selectedAccountId: string | null
+  /**
+   * Skill catalog from the server (PRD Part B) — metadata only, no bodies
+   * by wire construction. Empty until a `skill-catalog` frame arrives;
+   * the Skills settings section is additionally gated on
+   * `capabilities.skills` so an old server shows nothing.
+   */
+  readonly skills: ReadonlyArray<SkillCatalogItem>
+  /** Last skill-toggle failure (skill-status ok:false). Cleared by the
+   *  next successful toggle or catalog refresh. */
+  readonly skillError: string | null
 }
 
 export const initialState: UIState = {
@@ -89,6 +106,8 @@ export const initialState: UIState = {
   selectedThreadId: null,
   accounts: [],
   selectedAccountId: null,
+  skills: [],
+  skillError: null,
 }
 
 const MAX_RETAINED = 500
@@ -303,6 +322,27 @@ export const reduce = (state: UIState, action: Action): UIState => {
         // selectedAccountId intentionally NOT changed here.
         // null = "Auto" (broker picks). User must explicitly select an account.
         // On reconnect, user's prior selection is preserved as-is.
+      }
+    }
+    case "skill-catalog":
+      // Server-authored catalog replaces wholesale (sent after hello and
+      // re-sent after each successful toggle) — same idiom as account-list.
+      return { ...state, skills: frame.skills, skillError: null }
+    case "skill-status": {
+      // ok:true → reflect the confirmed state on the matching row (the
+      // refreshed catalog usually follows, but this keeps the UI correct
+      // even if that frame is dropped) and clear any stale error.
+      // ok:false → keep rows untouched (no optimistic flip to revert) and
+      // surface the short server-provided reason.
+      if (!frame.ok) {
+        return { ...state, skillError: frame.message ?? "skill toggle failed" }
+      }
+      return {
+        ...state,
+        skillError: null,
+        skills: state.skills.map((s) =>
+          s.id === frame.id ? { ...s, enabled: frame.enabled } : s,
+        ),
       }
     }
     case "pty-output":

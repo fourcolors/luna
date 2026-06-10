@@ -75,6 +75,8 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         <button type="button" class="settings-tab active" data-tab="general" role="tab" aria-selected="true">General</button>
         <button type="button" class="settings-tab" data-tab="connection" role="tab" aria-selected="false">Connection</button>
         <button type="button" class="settings-tab" data-tab="secrets" role="tab" aria-selected="false">Secrets</button>
+        <!-- PRD Part B: hidden until the server's hello advertises capabilities.skills -->
+        <button type="button" class="settings-tab" data-tab="skills" role="tab" aria-selected="false" id="skills-tab-btn" hidden="">Skills</button>
         <button type="button" class="settings-tab" data-tab="updates" role="tab" aria-selected="false">Updates</button>
       </div>
       <div class="settings-content">
@@ -175,6 +177,20 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
             <span class="setting-desc" id="op-token-status" style="font-size: 0.75rem;" hidden=""></span>
           </div>
           <span class="setting-desc" style="margin-top: 6px;">Saving verifies the token and briefly restarts the server.</span>
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="skills">
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">Skills <span class="setting-desc" id="skills-count" style="display:inline"></span></span>
+            <span class="setting-desc">What Luna knows how to do. Toggle one off and it leaves her mind on the very next conversation — nothing is uninstalled.</span>
+          </div>
+          <input type="text" id="skills-search-input" class="premium-text-input" placeholder="Search skills…" autocomplete="off" spellcheck="false" style="margin-bottom: 8px;">
+          <div class="skills-chips" id="skills-chips"></div>
+          <span class="setting-desc skills-error" id="skills-error" hidden=""></span>
+          <div class="skills-list" id="skills-list">
+            <span class="setting-desc">Not connected — skills appear when the server sends its catalog.</span>
+          </div>
         </div>
         </div>
         <div class="settings-tabpanel" data-tabpanel="updates">
@@ -567,6 +583,8 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         <button type="button" class="settings-tab active" data-tab="general" role="tab" aria-selected="true">General</button>
         <button type="button" class="settings-tab" data-tab="connection" role="tab" aria-selected="false">Connection</button>
         <button type="button" class="settings-tab" data-tab="secrets" role="tab" aria-selected="false">Secrets</button>
+        <!-- PRD Part B: hidden until the server's hello advertises capabilities.skills -->
+        <button type="button" class="settings-tab" data-tab="skills" role="tab" aria-selected="false" id="skills-tab-btn" hidden="">Skills</button>
         <button type="button" class="settings-tab" data-tab="updates" role="tab" aria-selected="false">Updates</button>
       </div>
       <div class="settings-content">
@@ -667,6 +685,20 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
             <span class="setting-desc" id="op-token-status" style="font-size: 0.75rem;" hidden=""></span>
           </div>
           <span class="setting-desc" style="margin-top: 6px;">Saving verifies the token and briefly restarts the server.</span>
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="skills">
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">Skills <span class="setting-desc" id="skills-count" style="display:inline"></span></span>
+            <span class="setting-desc">What Luna knows how to do. Toggle one off and it leaves her mind on the very next conversation — nothing is uninstalled.</span>
+          </div>
+          <input type="text" id="skills-search-input" class="premium-text-input" placeholder="Search skills…" autocomplete="off" spellcheck="false" style="margin-bottom: 8px;">
+          <div class="skills-chips" id="skills-chips"></div>
+          <span class="setting-desc skills-error" id="skills-error" hidden=""></span>
+          <div class="skills-list" id="skills-list">
+            <span class="setting-desc">Not connected — skills appear when the server sends its catalog.</span>
+          </div>
         </div>
         </div>
         <div class="settings-tabpanel" data-tabpanel="updates">
