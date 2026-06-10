@@ -25,7 +25,10 @@ import {
   type AccountBrokerApi,
   type AcquiredSession,
 } from "@luna/core"
-import { buildBrokerEnvOverlay } from "./broker-env-overlay.js"
+import {
+  buildBrokerBaseEnv,
+  buildBrokerEnvOverlay,
+} from "./broker-env-overlay.js"
 import { runBoundedQuery } from "./bounded-query.js"
 import { classifyThrottle } from "./throttle.js"
 import type { SDKClientService } from "./sdk-client.js"
@@ -59,17 +62,23 @@ export function resolveReasonerModel(
  */
 export function brokeredOptionsFragment(
   acq: AcquiredSession,
-): { model?: string; env?: Record<string, string> } {
+): { model?: string; env?: Record<string, string | undefined> } {
   return {
     ...(acq.model !== "default"
       ? { model: toWireModel(acq.model, acq.credential.kind) }
       : {}),
     ...(acq.credential.secretRef !== CLAUDE_CODE_LOGIN_SECRET_REF
       ? {
-          env: buildBrokerEnvOverlay(
-            profileForKind(acq.credential.kind, readProviderEnv()),
-            acq.credential.resolvedSecret,
-          ),
+          // SDK Options.env is REPLACE, not merge — build the FULL subprocess
+          // env: inherited process.env (auth vars scrubbed) under the broker
+          // overlay. See buildBrokerBaseEnv.
+          env: {
+            ...buildBrokerBaseEnv(),
+            ...buildBrokerEnvOverlay(
+              profileForKind(acq.credential.kind, readProviderEnv()),
+              acq.credential.resolvedSecret,
+            ),
+          },
         }
       : {}),
   }
@@ -116,13 +125,14 @@ export function runBrokeredReasonerTurn<E>(args: {
         args.timeoutMs,
       )
       // B4 parity: meter the turn so reasoner lanes enforce chain budgets.
-      // Priced against the broker-resolved model (acq.model — "default" prices
-      // via the account kind's default rate, same as the chat adapter's lane).
+      // Priced against the model that ACTUALLY served the turn when the SDK
+      // reports exactly one (alias lanes like "default"/"opus" otherwise
+      // price at a tier default); falls back to the broker-resolved acq.model.
       if (outcome._tag === "result" && outcome.usage !== undefined) {
         yield* args.broker.report({
           accountId: acq.credential.accountId,
           kind: "usage",
-          model: acq.model,
+          model: outcome.usage.model ?? acq.model,
           tokensIn: outcome.usage.tokensIn,
           tokensOut: outcome.usage.tokensOut,
           cacheRead: outcome.usage.cacheRead,

@@ -72,7 +72,10 @@ const brokerWith = (budgetUsd?: number): Layer.Layer<AccountBroker> =>
     },
   ]).pipe(Layer.provide(EnvSecretProvider.Default), Layer.provide(Clock.Default))
 
-const resultWithUsage = (text: string): SDKMessage =>
+const resultWithUsage = (
+  text: string,
+  modelUsage?: Record<string, object>,
+): SDKMessage =>
   ({
     ...(makeResultMessage("sid", "u1") as object),
     result: text,
@@ -82,6 +85,7 @@ const resultWithUsage = (text: string): SDKMessage =>
       cache_read_input_tokens: 0,
       cache_creation_input_tokens: 0,
     },
+    ...(modelUsage !== undefined ? { modelUsage } : {}),
   }) as unknown as SDKMessage
 
 const sdkWith = (messages: ReadonlyArray<SDKMessage>): Layer.Layer<SDKClient> =>
@@ -136,6 +140,57 @@ describe("runBrokeredReasonerTurn — spend metering (B4 parity)", () => {
       expect(g1?.usage?.spentUsd).toBeCloseTo(0.3, 5)
       // Crossed the $0.10 budget → cooled to the cycle boundary.
       expect(g1?.cooldownUntilMs).toBeGreaterThan(0)
+    } finally {
+      delete process.env[GOOGLE_TOK_ENV]
+    }
+  })
+
+  it("prices against the modelUsage-reported REAL model when the lane is an alias", async () => {
+    process.env[GOOGLE_TOK_ENV] = "tok"
+    try {
+      // Lane string "gemini-future-pro" matches no RATE_TABLE prefix → would
+      // price at the google kind-default floor (0.30/M). But the result frame
+      // reports the single model that ACTUALLY served the turn —
+      // gemini-3.5-flash (1.50/M) — and that must win the pricing.
+      const out = await Effect.runPromise(
+        runTurn("gemini-future-pro").pipe(
+          Effect.provide(
+            sdkWith([
+              resultWithUsage("ok", { "gemini-3.5-flash": { inputTokens: 1 } }),
+            ]),
+          ),
+          Effect.provide(brokerWith()),
+        ),
+      )
+      expect(out.text._tag).toBe("Right")
+      const g1 = out.accounts.find((a) => a.id === "g1")
+      // 1M input tokens at the REAL model's $1.50/M — not the floor's $0.30.
+      expect(g1?.usage?.spentUsd).toBeCloseTo(1.5, 5)
+    } finally {
+      delete process.env[GOOGLE_TOK_ENV]
+    }
+  })
+
+  it("falls back to the lane model when modelUsage reports MULTIPLE models", async () => {
+    process.env[GOOGLE_TOK_ENV] = "tok"
+    try {
+      const out = await Effect.runPromise(
+        runTurn("gemini-2.5-flash").pipe(
+          Effect.provide(
+            sdkWith([
+              resultWithUsage("ok", {
+                "gemini-3.5-flash": { inputTokens: 1 },
+                "gemini-2.5-flash": { inputTokens: 1 },
+              }),
+            ]),
+          ),
+          Effect.provide(brokerWith()),
+        ),
+      )
+      expect(out.text._tag).toBe("Right")
+      const g1 = out.accounts.find((a) => a.id === "g1")
+      // Mixed-model turn → lane model's rate (0.30/M), not either real id.
+      expect(g1?.usage?.spentUsd).toBeCloseTo(0.3, 5)
     } finally {
       delete process.env[GOOGLE_TOK_ENV]
     }

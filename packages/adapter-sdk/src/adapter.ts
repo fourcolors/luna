@@ -39,7 +39,10 @@ import {
   type SessionOptions,
 } from "@luna/core"
 import { SDKClient, type QueryParams } from "./sdk-client.js"
-import { buildBrokerEnvOverlay } from "./broker-env-overlay.js"
+import {
+  buildBrokerBaseEnv,
+  buildBrokerEnvOverlay,
+} from "./broker-env-overlay.js"
 import { classifyThrottle } from "./throttle.js"
 import type {
   SDKMessage,
@@ -373,8 +376,12 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
               const callerEnv = req.sessionOptions.sdkOptions?.env as
                 | Readonly<Record<string, string | undefined>>
                 | undefined
+              // SDK Options.env is REPLACE, not merge: the subprocess sees
+              // ONLY what we pass. Base = inherited process.env with auth
+              // vars scrubbed, caller env on top; broker overlay above both
+              // (collision warnings still fire for caller-set broker keys).
               const mergedEnv = yield* mergeEnvOverlayLogged(
-                callerEnv,
+                buildBrokerBaseEnv(callerEnv),
                 brokerOwnedEnv,
               )
               overrides.env = mergedEnv
@@ -499,7 +506,15 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             } }).usage
             if (!u) return
             const id = acquiredAccountId
-            const model = acquiredModel
+            // Price against the model that ACTUALLY served the turn when the
+            // result frame's modelUsage reports exactly one (alias lanes like
+            // "default"/"opus" otherwise price at a tier default). Multi-model
+            // turns (subagents) fall back to the broker-picked lane model.
+            const mu = (msg as { modelUsage?: Record<string, unknown> })
+              .modelUsage
+            const muKeys = mu ? Object.keys(mu) : []
+            const model =
+              muKeys.length === 1 ? muKeys[0]! : acquiredModel
             Effect.runPromise(
               broker.report({
                 accountId: id,

@@ -50,6 +50,14 @@ export interface BoundedQueryUsage {
   readonly tokensOut: number
   readonly cacheRead: number
   readonly cacheWrite: number
+  /**
+   * The model that ACTUALLY served the turn, lifted from the result frame's
+   * `modelUsage` map — but only when it reports exactly ONE model. Lane
+   * strings can be aliases ("default", "opus") that price at a tier default;
+   * the real id prices exactly. Multi-model turns (subagents) stay undefined
+   * rather than mispricing the whole turn at one model's rate.
+   */
+  readonly model?: string
 }
 
 /**
@@ -146,12 +154,18 @@ export function runBoundedQuery(
             cache_creation_input_tokens?: number
             cache_read_input_tokens?: number
           }
+          modelUsage?: Record<string, unknown>
         }
         if (
           m.type === "result" &&
           m.subtype === "success" &&
           typeof m.result === "string"
         ) {
+          // Single-model turn → surface the REAL model id for exact pricing
+          // (alias lanes like "default"/"opus" otherwise price at a tier
+          // default). Multi-model turns stay undefined — see BoundedQueryUsage.
+          const muKeys = m.modelUsage ? Object.keys(m.modelUsage) : []
+          const realModel = muKeys.length === 1 ? muKeys[0] : undefined
           acc = {
             text: m.result,
             ...(m.usage
@@ -161,6 +175,7 @@ export function runBoundedQuery(
                     tokensOut: m.usage.output_tokens ?? 0,
                     cacheRead: m.usage.cache_read_input_tokens ?? 0,
                     cacheWrite: m.usage.cache_creation_input_tokens ?? 0,
+                    ...(realModel !== undefined ? { model: realModel } : {}),
                   },
                 }
               : {}),

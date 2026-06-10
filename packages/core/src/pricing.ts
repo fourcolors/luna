@@ -68,6 +68,21 @@ const KIND_DEFAULTS: Record<string, ModelRate> = {
  *   3. Kind-default (KIND_DEFAULTS).
  *   4. Sonnet fallback {3,15} — matches observability's unknown default.
  */
+/**
+ * Anthropic tier ALIASES (provider-profile.ts ANTHROPIC_ALIASES) mapped to
+ * their RATE_TABLE prefix. Without this, an "opus" lane matched no prefix and
+ * fell to the anthropic kind-default (Sonnet 3/15) — under-metering Opus
+ * turns 40%+. "default" stays unmapped: the SDK's own default model is not
+ * knowable statically, so it prices at the kind-default floor (the usage
+ * report's `modelUsage`-derived real model corrects it whenever the SDK
+ * reports exactly one model — see bounded-query.ts / adapter reportUsage).
+ */
+const ALIAS_RATE_PREFIX: Record<string, string> = {
+  opus: "claude-opus",
+  sonnet: "claude-sonnet",
+  haiku: "claude-haiku",
+}
+
 export function rateFor(
   model: string,
   kind: string,
@@ -77,8 +92,10 @@ export function rateFor(
   if (kind.toLowerCase().startsWith("ollama")) return FREE_RATE
 
   // (2) exact model → longest matching prefix wins (so "claude-opus" beats a
-  // hypothetical shorter "claude").
-  const m = model.trim().toLowerCase()
+  // hypothetical shorter "claude"). Tier aliases normalize to their
+  // claude-* prefix first.
+  const raw = model.trim().toLowerCase()
+  const m = ALIAS_RATE_PREFIX[raw] ?? raw
   let best: ModelRate | undefined
   let bestLen = -1
   for (const [prefix, rate] of Object.entries(table)) {

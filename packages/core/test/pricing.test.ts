@@ -93,6 +93,29 @@ describe("rateFor — model resolution precedence", () => {
       pricePerMOutput: 25,
     })
   })
+
+  it("prices tier ALIASES at their real tier rate, not the kind-default", () => {
+    // Regression: "opus" matched no RATE_TABLE prefix → fell to the anthropic
+    // kind-default {3,15} (Sonnet) → Opus turns under-metered 40%+.
+    expect(rateFor("opus", "anthropic")).toEqual({
+      pricePerMInput: 5,
+      pricePerMOutput: 25,
+    })
+    expect(rateFor("sonnet", "anthropic")).toEqual({
+      pricePerMInput: 3,
+      pricePerMOutput: 15,
+    })
+    expect(rateFor("haiku", "anthropic")).toEqual({
+      pricePerMInput: 1,
+      pricePerMOutput: 5,
+    })
+    // "default" stays at the kind-default floor — the SDK's own default model
+    // is unknowable statically; modelUsage-derived real ids correct it live.
+    expect(rateFor("default", "anthropic")).toEqual({
+      pricePerMInput: 3,
+      pricePerMOutput: 15,
+    })
+  })
 })
 
 describe("priceTurnUsd — formula correctness", () => {
