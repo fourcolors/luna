@@ -77,6 +77,8 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         <button type="button" class="settings-tab" data-tab="secrets" role="tab" aria-selected="false">Secrets</button>
         <!-- PRD Part B: hidden until the server's hello advertises capabilities.skills -->
         <button type="button" class="settings-tab" data-tab="skills" role="tab" aria-selected="false" id="skills-tab-btn" hidden="">Skills</button>
+        <!-- PRD Part A: hidden until the server's hello advertises capabilities.connectors -->
+        <button type="button" class="settings-tab" data-tab="connectors" role="tab" aria-selected="false" id="connectors-tab-btn" hidden="">Connectors</button>
         <button type="button" class="settings-tab" data-tab="updates" role="tab" aria-selected="false">Updates</button>
       </div>
       <div class="settings-content">
@@ -190,6 +192,18 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
           <span class="setting-desc skills-error" id="skills-error" hidden=""></span>
           <div class="skills-list" id="skills-list">
             <span class="setting-desc">Not connected — skills appear when the server sends its catalog.</span>
+          </div>
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="connectors">
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">Connectors</span>
+            <span class="setting-desc">Plug Luna into your services. Connecting opens the provider's own consent page in your browser — Luna only ever holds what you grant, and you can disconnect any time.</span>
+          </div>
+          <span class="setting-desc skills-error" id="connectors-error" hidden=""></span>
+          <div class="skills-list" id="connectors-list" style="max-height: 300px;">
+            <span class="setting-desc">Not connected — connectors appear when the server sends its catalog.</span>
           </div>
         </div>
         </div>
@@ -585,6 +599,8 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         <button type="button" class="settings-tab" data-tab="secrets" role="tab" aria-selected="false">Secrets</button>
         <!-- PRD Part B: hidden until the server's hello advertises capabilities.skills -->
         <button type="button" class="settings-tab" data-tab="skills" role="tab" aria-selected="false" id="skills-tab-btn" hidden="">Skills</button>
+        <!-- PRD Part A: hidden until the server's hello advertises capabilities.connectors -->
+        <button type="button" class="settings-tab" data-tab="connectors" role="tab" aria-selected="false" id="connectors-tab-btn" hidden="">Connectors</button>
         <button type="button" class="settings-tab" data-tab="updates" role="tab" aria-selected="false">Updates</button>
       </div>
       <div class="settings-content">
@@ -698,6 +714,18 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
           <span class="setting-desc skills-error" id="skills-error" hidden=""></span>
           <div class="skills-list" id="skills-list">
             <span class="setting-desc">Not connected — skills appear when the server sends its catalog.</span>
+          </div>
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="connectors">
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">Connectors</span>
+            <span class="setting-desc">Plug Luna into your services. Connecting opens the provider's own consent page in your browser — Luna only ever holds what you grant, and you can disconnect any time.</span>
+          </div>
+          <span class="setting-desc skills-error" id="connectors-error" hidden=""></span>
+          <div class="skills-list" id="connectors-list" style="max-height: 300px;">
+            <span class="setting-desc">Not connected — connectors appear when the server sends its catalog.</span>
           </div>
         </div>
         </div>

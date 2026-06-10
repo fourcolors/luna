@@ -104,6 +104,9 @@ export interface HelloFrame {
      * packages/ui-ws/src/protocol.ts — keep in sync.
      */
     readonly skills?: boolean
+    /** PRD Part A (Connectors): connector catalog/instances + OAuth
+     *  handshake available. OPTIONAL/additive. */
+    readonly connectors?: boolean
   }
   /**
    * Models the operator can pick for new threads. OPTIONAL and additive —
@@ -230,6 +233,77 @@ export interface SkillStatusFrame {
   readonly message?: string
 }
 
+/* PRD Part A — connector frames (mirror packages/ui-ws/src/protocol.ts). */
+export interface ConnectorCatalogItem {
+  readonly id: string
+  readonly name: string
+  readonly blurb: string
+  readonly category: string
+  readonly authKind: "oauth2" | "api-key" | "none"
+  readonly capabilities: ReadonlyArray<{
+    readonly id: string
+    readonly label: string
+    readonly scopes: ReadonlyArray<string>
+    readonly defaultGranted: boolean
+  }>
+}
+export interface ConnectorInstanceItem {
+  readonly id: string
+  readonly definitionId: string
+  readonly label: string
+  readonly status: "connected" | "needs-reauth" | "error" | "disconnected"
+  readonly grantedScopes: ReadonlyArray<string>
+  readonly createdAt: number
+  readonly lastHealthyAt: number | null
+}
+export interface ConnectorCatalogFrame {
+  readonly type: "connector-catalog"
+  readonly connectors: ReadonlyArray<ConnectorCatalogItem>
+}
+export interface ConnectorListFrame {
+  readonly type: "connector-list"
+  readonly instances: ReadonlyArray<ConnectorInstanceItem>
+}
+export interface ConnectorOauthRedirectFrame {
+  readonly type: "connector-oauth-redirect"
+  readonly requestId: string
+  readonly pendingId: string
+  readonly authUrl: string
+}
+export interface ConnectorStatusFrame {
+  readonly type: "connector-status"
+  readonly requestId?: string
+  readonly ok: boolean
+  readonly message?: string
+  readonly instance?: ConnectorInstanceItem
+}
+export interface ConnectorOauthBeginFrame {
+  readonly type: "connector-oauth-begin"
+  readonly requestId: string
+  readonly definitionId: string
+  readonly label: string
+  readonly capabilityIds?: ReadonlyArray<string>
+  readonly loopbackPort: number
+}
+export interface ConnectorOauthCodeFrame {
+  readonly type: "connector-oauth-code"
+  readonly pendingId: string
+  readonly code: string
+  readonly state: string
+}
+export interface ConnectorConnectFrame {
+  readonly type: "connector-connect"
+  readonly requestId: string
+  readonly definitionId: string
+  readonly label: string
+  readonly secretRef?: string
+  readonly capabilityIds?: ReadonlyArray<string>
+}
+export interface ConnectorDisconnectFrame {
+  readonly type: "connector-disconnect"
+  readonly instanceId: string
+}
+
 /** Marks the true end of an agentic turn (SDK `result`). Consumed by clients
  *  that group consecutive assistant turns (the moon timeline); ui-web is
  *  seq-keyed and treats it as a no-op. */
@@ -272,6 +346,10 @@ export type ServerFrame =
   | AccountListFrame
   | SkillCatalogFrame
   | SkillStatusFrame
+  | ConnectorCatalogFrame
+  | ConnectorListFrame
+  | ConnectorOauthRedirectFrame
+  | ConnectorStatusFrame
   | TurnCompleteFrame
   | PtyOutputFrame
 
@@ -351,5 +429,9 @@ export type ClientFrame =
   | UserMessageFrame
   | InterruptFrame
   | SkillToggleFrame
+  | ConnectorOauthBeginFrame
+  | ConnectorOauthCodeFrame
+  | ConnectorConnectFrame
+  | ConnectorDisconnectFrame
   | PtyInputFrame
   | PtyResizeFrame

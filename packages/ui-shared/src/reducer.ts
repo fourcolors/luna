@@ -13,6 +13,8 @@ import type {
   Artifact,
   ChatErrorKind,
   ChatMessage,
+  ConnectorCatalogItem,
+  ConnectorInstanceItem,
   ObsEvent,
   ObsEventKind,
   ServerFrame,
@@ -54,6 +56,7 @@ export interface UIState {
     readonly streamingDeltas: boolean
     readonly setup: boolean
     readonly skills?: boolean
+    readonly connectors?: boolean
   }
   /**
    * Server-advertised model list (from the `hello` frame's `availableModels`
@@ -87,6 +90,12 @@ export interface UIState {
   /** Last skill-toggle failure (skill-status ok:false). Cleared by the
    *  next successful toggle or catalog refresh. */
   readonly skillError: string | null
+  /** PRD Part A connector catalog + current instances (wire-safe — no
+   *  tokens, no secret refs). Gated on capabilities.connectors. */
+  readonly connectorCatalog: ReadonlyArray<ConnectorCatalogItem>
+  readonly connectorInstances: ReadonlyArray<ConnectorInstanceItem>
+  /** Last connector-status failure. Cleared on the next ok / list. */
+  readonly connectorError: string | null
 }
 
 export const initialState: UIState = {
@@ -108,6 +117,9 @@ export const initialState: UIState = {
   selectedAccountId: null,
   skills: [],
   skillError: null,
+  connectorCatalog: [],
+  connectorInstances: [],
+  connectorError: null,
 }
 
 const MAX_RETAINED = 500
@@ -345,6 +357,16 @@ export const reduce = (state: UIState, action: Action): UIState => {
         ),
       }
     }
+    case "connector-catalog":
+      return { ...state, connectorCatalog: frame.connectors }
+    case "connector-list":
+      // Server-authored, broadcast on every change — replace wholesale and
+      // clear any stale error (a successful op produced this list).
+      return { ...state, connectorInstances: frame.instances, connectorError: null }
+    case "connector-status":
+      return frame.ok
+        ? { ...state, connectorError: null }
+        : { ...state, connectorError: frame.message ?? "connector request failed" }
     case "pty-output":
       // pty output is consumed by the setup terminal directly off the
       // transport (streamy frame), not folded into store state.
@@ -353,6 +375,11 @@ export const reduce = (state: UIState, action: Action): UIState => {
       // End-of-agentic-turn marker. ui-web renders from seq-keyed finalized
       // messages, so the "whole turn is over" signal carries no new state for
       // it — only the moon's grouped activity timeline needs it. No-op here.
+      return state
+    case "connector-oauth-redirect":
+      // The consent URL is consumed by the Moon directly off the transport
+      // (it opens the browser + binds the loopback); the web client can't
+      // bind a loopback, so this frame carries no store state here.
       return state
   }
 }

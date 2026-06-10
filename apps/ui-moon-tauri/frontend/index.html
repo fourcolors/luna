@@ -684,6 +684,48 @@
     }
     .skill-row.pending .skill-blot { filter: blur(1px); }
     .skills-error { color: #fda4af !important; width: 100%; }
+
+    /* ── Connectors tab (PRD Part A §17) — same watercolor language ── */
+    .connector-card {
+      display: flex; flex-direction: column; gap: 8px;
+      background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 10px; padding: 10px 12px; transition: border-color 0.2s ease;
+    }
+    .connector-card:hover { border-color: rgba(138, 180, 248, 0.2); }
+    .connector-head { display: flex; align-items: center; gap: 10px; }
+    .connector-head .skill-blot { width: 26px; height: 26px; }
+    /* status tints reuse the blot pigment: gold = needs you, dim = error */
+    .connector-card.needs-reauth .skill-blot {
+      background:
+        radial-gradient(circle closest-side,
+          rgba(255, 243, 214, 0.85) 0%,
+          rgba(255, 216, 138, 0.6) 50%,
+          rgba(214, 158, 56, 0.5) 82%,
+          rgba(214, 158, 56, 0) 100%);
+      box-shadow: 0 0 10px rgba(255, 216, 138, 0.4);
+      animation-duration: 2.5s;
+    }
+    .connector-card.error .skill-blot,
+    .connector-card.idle .skill-blot { opacity: 0.3; filter: grayscale(0.8); box-shadow: none; animation: none; }
+    .connector-info { flex: 1; min-width: 0; }
+    .connector-name { font-size: 0.8rem; font-weight: 600; color: #f1f5f9; display: flex; gap: 6px; align-items: center; }
+    .connector-sub { font-size: 0.66rem; color: #64748b; line-height: 1.35; }
+    .connector-status-line { font-size: 0.64rem; color: #94a3b8; }
+    .connector-status-line.gold { color: #ffd88a; }
+    .connector-actions { display: flex; gap: 8px; align-items: center; }
+    .connector-btn {
+      font-family: inherit; font-size: 0.68rem; padding: 5px 12px; cursor: pointer;
+      border-radius: 8px; border: 1px solid rgba(138, 180, 248, 0.45);
+      background: rgba(138, 180, 248, 0.12); color: #dbeafe;
+      transition: all 0.2s ease;
+    }
+    .connector-btn:hover { background: rgba(138, 180, 248, 0.22); }
+    .connector-btn.danger { border-color: rgba(253, 164, 175, 0.4); background: rgba(253, 164, 175, 0.08); color: #fda4af; }
+    .connector-btn:disabled { opacity: 0.45; cursor: default; }
+    .connector-consent { display: flex; flex-direction: column; gap: 6px; border-top: 1px dashed rgba(255,255,255,0.08); padding-top: 8px; }
+    .connector-cap { display: flex; align-items: center; gap: 8px; font-size: 0.7rem; color: #cbd8f0; cursor: pointer; }
+    .connector-cap input { accent-color: #8ab4f8; }
+    .connector-cap .cap-scopes { font-size: 0.58rem; color: #5d6e92; }
     
     /* Toggle switch design (macOS style) */
     .switch {
@@ -2380,6 +2422,8 @@
         <button type="button" class="settings-tab" data-tab="secrets" role="tab" aria-selected="false">Secrets</button>
         <!-- PRD Part B: hidden until the server's hello advertises capabilities.skills -->
         <button type="button" class="settings-tab" data-tab="skills" role="tab" aria-selected="false" id="skills-tab-btn" hidden>Skills</button>
+        <!-- PRD Part A: hidden until the server's hello advertises capabilities.connectors -->
+        <button type="button" class="settings-tab" data-tab="connectors" role="tab" aria-selected="false" id="connectors-tab-btn" hidden>Connectors</button>
         <button type="button" class="settings-tab" data-tab="updates" role="tab" aria-selected="false">Updates</button>
       </div>
       <div class="settings-content">
@@ -2493,6 +2537,18 @@
           <span class="setting-desc skills-error" id="skills-error" hidden></span>
           <div class="skills-list" id="skills-list">
             <span class="setting-desc">Not connected — skills appear when the server sends its catalog.</span>
+          </div>
+        </div>
+        </div>
+        <div class="settings-tabpanel" data-tabpanel="connectors">
+        <div class="setting-item flex-column">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">Connectors</span>
+            <span class="setting-desc">Plug Luna into your services. Connecting opens the provider's own consent page in your browser — Luna only ever holds what you grant, and you can disconnect any time.</span>
+          </div>
+          <span class="setting-desc skills-error" id="connectors-error" hidden></span>
+          <div class="skills-list" id="connectors-list" style="max-height: 300px;">
+            <span class="setting-desc">Not connected — connectors appear when the server sends its catalog.</span>
           </div>
         </div>
         </div>
@@ -2902,6 +2958,10 @@
       skillsList: document.getElementById('skills-list'),
       skillsCount: document.getElementById('skills-count'),
       skillsError: document.getElementById('skills-error'),
+      // PRD Part A: Connectors settings tab handles.
+      connectorsTabBtn: document.getElementById('connectors-tab-btn'),
+      connectorsList: document.getElementById('connectors-list'),
+      connectorsError: document.getElementById('connectors-error'),
       checkUpdateBtn: document.getElementById('check-update-btn'),
       updateStatus: document.getElementById('update-status'),
       connectionStatus: document.getElementById('connection-status'),
@@ -3054,6 +3114,12 @@
       // never cross the wire) + per-toggle pending markers.
       skills: [],
       skillsPending: {},
+      // PRD Part A: connector catalog/instances (wire-safe projections —
+      // no tokens, no secret refs) + per-definition busy markers.
+      serverSupportsConnectors: false,
+      connectorCatalog: [],
+      connectorInstances: [],
+      connectorBusy: {},
       // local-shell: the machine-access scope this client advertises. roots are
       // explicitly attached folders (auto-approve set, may be empty); fullAccess
       // lets Luna run anywhere. enabled = fullAccess || roots.length > 0.
@@ -3924,6 +3990,299 @@
       },
     };
 
+    // ── ConnectorsEngine — the Connectors settings tab (PRD Part A §17) ────
+    //
+    // The Moon runs the CLIENT half of the client-brokered OAuth flow:
+    //   Connect → consent sheet (scope narrowing) → Authorize →
+    //   oauth_loopback_start (Rust binds 127.0.0.1:0) →
+    //   connector-oauth-begin {loopbackPort} → connector-oauth-redirect →
+    //   open_external_url(authUrl) + oauth_loopback_wait →
+    //   connector-oauth-code {code, state} → connector-status + broadcast
+    //   connector-list.
+    // Tokens never reach this file: the wire carries the authorization
+    // CODE only, and instance rows are status + metadata. api-key
+    // connectors take a secretRef POINTER (store the value first via the
+    // Secrets tab / request_secret). Like SkillsEngine, defined BEFORE
+    // WebSocketEngine — the __MoonInternals exposure block runs mid-script
+    // and a later const hits the TDZ.
+    const ConnectorsEngine = {
+      _consentOpen: null, // definitionId whose consent sheet is expanded
+
+      applyCapability(supported) {
+        if (DOM.connectorsTabBtn) DOM.connectorsTabBtn.hidden = !supported;
+        State.connectorBusy = {};
+        if (!supported && DOM.connectorsTabBtn && DOM.connectorsTabBtn.classList.contains('active')) {
+          const general = document.querySelector('.settings-tab[data-tab="general"]');
+          if (general) general.click();
+        }
+        this.render();
+      },
+
+      applyCatalog(connectors) {
+        State.connectorCatalog = Array.isArray(connectors) ? connectors : [];
+        this.render();
+      },
+
+      applyList(instances) {
+        State.connectorInstances = Array.isArray(instances) ? instances : [];
+        // A list broadcast settles whichever definition just changed.
+        State.connectorBusy = {};
+        this.render();
+      },
+
+      applyStatus(frame) {
+        if (!frame) return;
+        State.connectorBusy = {};
+        if (frame.ok) {
+          this.setError(null);
+        } else {
+          this.setError(frame.message || 'Connector request failed.');
+        }
+        this.render();
+      },
+
+      setError(message) {
+        if (!DOM.connectorsError) return;
+        DOM.connectorsError.hidden = !message;
+        DOM.connectorsError.textContent = message || '';
+      },
+
+      instanceFor(definitionId) {
+        return State.connectorInstances.find((i) => i.definitionId === definitionId) || null;
+      },
+
+      /** The full client-brokered OAuth arc for one definition. */
+      async connectOauth(def, capabilityIds) {
+        if (!(window.__TAURI__ && window.__TAURI__.core)) {
+          this.setError('OAuth connect needs the Moon desktop app (the browser cannot capture the redirect).');
+          return;
+        }
+        if (!(State.ws && State.ws.readyState === WebSocket.OPEN)) {
+          this.setError('Not connected to a server.');
+          return;
+        }
+        const invoke = window.__TAURI__.core.invoke;
+        State.connectorBusy[def.id] = 'authorizing';
+        this._consentOpen = null;
+        this.render();
+        try {
+          const port = await invoke('oauth_loopback_start');
+          const requestId = 'oauth_' + ((window.crypto && crypto.randomUUID)
+            ? crypto.randomUUID().replace(/-/g, '')
+            : Math.random().toString(36).slice(2));
+          this._oauthRequestId = requestId;
+          this._oauthDefinitionId = def.id;
+          WebSocketEngine.send({
+            type: 'connector-oauth-begin',
+            requestId,
+            definitionId: def.id,
+            label: def.name,
+            capabilityIds,
+            loopbackPort: port,
+          });
+          // The flow continues in applyOauthRedirect when the server
+          // answers with the consent URL.
+        } catch (e) {
+          Logger.error('oauth loopback start failed:', e);
+          State.connectorBusy = {};
+          this.setError(String(e));
+          this.render();
+        }
+      },
+
+      /** Server sent the consent URL — open the browser and await the code. */
+      async applyOauthRedirect(frame) {
+        if (!frame || frame.requestId !== this._oauthRequestId) return;
+        const invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+        if (!invoke) return;
+        try {
+          await invoke('open_external_url', { url: frame.authUrl });
+          const captured = await invoke('oauth_loopback_wait', { timeoutMs: 300000 });
+          WebSocketEngine.send({
+            type: 'connector-oauth-code',
+            pendingId: frame.pendingId,
+            code: captured.code,
+            state: captured.state,
+          });
+          // connector-status + the connector-list broadcast settle the UI.
+        } catch (e) {
+          Logger.error('oauth consent hop failed:', e);
+          try { await invoke('oauth_loopback_cancel'); } catch (_) { /* best-effort */ }
+          State.connectorBusy = {};
+          this.setError(typeof e === 'string' ? e : 'The consent flow did not complete.');
+          this.render();
+        }
+      },
+
+      connectPlain(def, capabilityIds, secretRef) {
+        if (!(State.ws && State.ws.readyState === WebSocket.OPEN)) {
+          this.setError('Not connected to a server.');
+          return;
+        }
+        State.connectorBusy[def.id] = 'connecting';
+        this._consentOpen = null;
+        const requestId = 'conn_' + Math.random().toString(36).slice(2);
+        const frame = {
+          type: 'connector-connect',
+          requestId,
+          definitionId: def.id,
+          label: def.name,
+          capabilityIds,
+        };
+        if (secretRef) frame.secretRef = secretRef;
+        WebSocketEngine.send(frame);
+        this.render();
+      },
+
+      disconnect(instanceId) {
+        if (!(State.ws && State.ws.readyState === WebSocket.OPEN)) {
+          this.setError('Not connected to a server.');
+          return;
+        }
+        WebSocketEngine.send({ type: 'connector-disconnect', instanceId });
+      },
+
+      render() {
+        if (!DOM.connectorsList) return;
+        const cards = State.connectorCatalog.map((def) => {
+          const instance = this.instanceFor(def.id);
+          const busy = State.connectorBusy[def.id];
+          const card = document.createElement('div');
+          card.className = 'connector-card'
+            + (instance ? ' ' + instance.status : ' idle');
+
+          const head = document.createElement('div');
+          head.className = 'connector-head';
+          const blot = document.createElement('div');
+          blot.className = 'skill-blot';
+          const info = document.createElement('div');
+          info.className = 'connector-info';
+          const name = document.createElement('div');
+          name.className = 'connector-name';
+          name.textContent = def.name;
+          const sub = document.createElement('div');
+          sub.className = 'connector-sub';
+          sub.textContent = def.blurb;
+          info.appendChild(name);
+          info.appendChild(sub);
+          if (instance) {
+            const status = document.createElement('div');
+            status.className = 'connector-status-line' + (instance.status === 'needs-reauth' ? ' gold' : '');
+            status.textContent = instance.status === 'connected'
+              ? 'Connected · ' + (instance.grantedScopes.length || 'no') + ' scope(s)'
+              : instance.status === 'needs-reauth'
+                ? 'Needs your approval again — reconnect'
+                : 'Error — check the server log';
+            info.appendChild(status);
+          }
+
+          const actions = document.createElement('div');
+          actions.className = 'connector-actions';
+          if (busy) {
+            const busyLbl = document.createElement('span');
+            busyLbl.className = 'connector-status-line';
+            busyLbl.textContent = busy === 'authorizing'
+              ? 'Waiting for your browser consent…'
+              : 'Connecting…';
+            actions.appendChild(busyLbl);
+          } else if (instance) {
+            if (instance.status === 'needs-reauth' && def.authKind === 'oauth2') {
+              const re = document.createElement('button');
+              re.type = 'button';
+              re.className = 'connector-btn';
+              re.textContent = 'Reconnect';
+              re.addEventListener('click', () => {
+                // Reconnect = disconnect (drops the dead token) + fresh consent.
+                this.disconnect(instance.id);
+                this._consentOpen = def.id;
+                this.render();
+              });
+              actions.appendChild(re);
+            }
+            const dis = document.createElement('button');
+            dis.type = 'button';
+            dis.className = 'connector-btn danger';
+            dis.textContent = 'Disconnect';
+            dis.addEventListener('click', () => this.disconnect(instance.id));
+            actions.appendChild(dis);
+          } else {
+            const connect = document.createElement('button');
+            connect.type = 'button';
+            connect.className = 'connector-btn';
+            connect.textContent = this._consentOpen === def.id ? 'Cancel' : 'Connect';
+            connect.addEventListener('click', () => {
+              this._consentOpen = this._consentOpen === def.id ? null : def.id;
+              this.setError(null);
+              this.render();
+            });
+            actions.appendChild(connect);
+          }
+
+          head.appendChild(blot);
+          head.appendChild(info);
+          head.appendChild(actions);
+          card.appendChild(head);
+
+          // Consent sheet: capability checkboxes (scope narrowing, PRD §17).
+          if (this._consentOpen === def.id && !instance && !busy) {
+            const sheet = document.createElement('div');
+            sheet.className = 'connector-consent';
+            const boxes = [];
+            for (const cap of def.capabilities) {
+              const row = document.createElement('label');
+              row.className = 'connector-cap';
+              const cb = document.createElement('input');
+              cb.type = 'checkbox';
+              cb.checked = !!cap.defaultGranted;
+              boxes.push({ id: cap.id, cb });
+              const lbl = document.createElement('span');
+              lbl.textContent = cap.label;
+              row.appendChild(cb);
+              row.appendChild(lbl);
+              if (cap.scopes && cap.scopes.length) {
+                const sc = document.createElement('span');
+                sc.className = 'cap-scopes';
+                sc.textContent = cap.scopes.join(' ');
+                row.appendChild(sc);
+              }
+              sheet.appendChild(row);
+            }
+            let refInput = null;
+            if (def.authKind === 'api-key') {
+              refInput = document.createElement('input');
+              refInput.type = 'text';
+              refInput.className = 'premium-text-input';
+              refInput.placeholder = 'Secret ref, e.g. env:SLACK_MCP_XOXB_TOKEN (store the value via the Secrets tab first)';
+              sheet.appendChild(refInput);
+            }
+            const go = document.createElement('button');
+            go.type = 'button';
+            go.className = 'connector-btn';
+            go.textContent = def.authKind === 'oauth2' ? 'Authorize in browser' : 'Connect';
+            go.addEventListener('click', () => {
+              const capabilityIds = boxes.filter((b) => b.cb.checked).map((b) => b.id);
+              if (def.authKind === 'oauth2') {
+                this.connectOauth(def, capabilityIds);
+              } else {
+                this.connectPlain(def, capabilityIds, refInput ? refInput.value.trim() : '');
+              }
+            });
+            sheet.appendChild(go);
+            card.appendChild(sheet);
+          }
+          return card;
+        });
+        if (cards.length === 0) {
+          const empty = document.createElement('span');
+          empty.className = 'setting-desc';
+          empty.textContent = 'Not connected — connectors appear when the server sends its catalog.';
+          DOM.connectorsList.replaceChildren(empty);
+        } else {
+          DOM.connectorsList.replaceChildren(...cards);
+        }
+      },
+    };
+
     const WebSocketEngine = {
       connect() {
         if (State.ws) {
@@ -4402,6 +4761,10 @@
             State.serverSupportsSkills =
               !!(frame.capabilities && frame.capabilities.skills);
             SkillsEngine.applyCapability(State.serverSupportsSkills);
+            // PRD Part A: same additive gating for the Connectors tab.
+            State.serverSupportsConnectors =
+              !!(frame.capabilities && frame.capabilities.connectors);
+            ConnectorsEngine.applyCapability(State.serverSupportsConnectors);
             break;
 
           case 'skill-catalog':
@@ -4411,6 +4774,24 @@
 
           case 'skill-status':
             SkillsEngine.applyStatus(frame);
+            break;
+
+          case 'connector-catalog':
+            ConnectorsEngine.applyCatalog(frame.connectors || []);
+            break;
+
+          case 'connector-list':
+            ConnectorsEngine.applyList(frame.instances || []);
+            break;
+
+          case 'connector-oauth-redirect':
+            // The async consent hop (browser + loopback wait) continues
+            // outside the frame handler.
+            ConnectorsEngine.applyOauthRedirect(frame);
+            break;
+
+          case 'connector-status':
+            ConnectorsEngine.applyStatus(frame);
             break;
 
           case 'thread-list': {
@@ -4920,6 +5301,7 @@
       window.__MoonInternals.handleFrame = (frame) => WebSocketEngine.handleFrame(frame);
       window.__MoonInternals.SurveyEngine = SurveyEngine;
       window.__MoonInternals.SkillsEngine = SkillsEngine;
+      window.__MoonInternals.ConnectorsEngine = ConnectorsEngine;
       window.__MoonInternals.SecretPromptEngine = SecretPromptEngine;
       window.__MoonInternals.buildSurveyVerdicts = buildSurveyVerdicts;
       window.__MoonInternals.WebSocketEngine = WebSocketEngine;

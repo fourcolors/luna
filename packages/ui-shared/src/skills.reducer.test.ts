@@ -125,6 +125,97 @@ describe("skill-status frame", () => {
   })
 })
 
+describe("connector frames (PRD Part A)", () => {
+  const catalog = (): ServerFrame => ({
+    type: "connector-catalog",
+    connectors: [
+      {
+        id: "google-workspace",
+        name: "Google Workspace",
+        blurb: "Mail & files.",
+        category: "productivity",
+        authKind: "oauth2",
+        capabilities: [
+          { id: "gmail-read", label: "Read email", scopes: ["g.read"], defaultGranted: true },
+        ],
+      },
+    ],
+  })
+
+  it("connector-catalog populates state; connector-list replaces + clears error", () => {
+    const errored = { ...initialState, connectorError: "old" }
+    const s1 = reduce(errored, catalog())
+    expect(s1.connectorCatalog.map((c) => c.id)).toEqual(["google-workspace"])
+    const s2 = reduce(s1, {
+      type: "connector-list",
+      instances: [
+        {
+          id: "i1",
+          definitionId: "google-workspace",
+          label: "G",
+          status: "connected",
+          grantedScopes: ["g.read"],
+          createdAt: 1,
+          lastHealthyAt: 1,
+        },
+      ],
+    })
+    expect(s2.connectorInstances[0]?.status).toBe("connected")
+    expect(s2.connectorError).toBeNull()
+  })
+
+  it("connector-status ok clears error; failure surfaces the message", () => {
+    const base = reduce(initialState, catalog())
+    const failed = reduce(base, {
+      type: "connector-status",
+      ok: false,
+      message: "GOOGLE_OAUTH_CLIENT_ID is not set",
+    })
+    expect(failed.connectorError).toContain("GOOGLE_OAUTH_CLIENT_ID")
+    const recovered = reduce(failed, { type: "connector-status", ok: true })
+    expect(recovered.connectorError).toBeNull()
+  })
+
+  it("capabilities.connectors passes through hello (additive/optional)", () => {
+    const withCap: ServerFrame = {
+      type: "hello",
+      protocolVersion: 2,
+      kinds: [],
+      capabilities: { chat: true, streamingDeltas: true, setup: false, connectors: true },
+    }
+    expect(reduce(initialState, withCap).capabilities.connectors).toBe(true)
+    const without: ServerFrame = {
+      type: "hello",
+      protocolVersion: 2,
+      kinds: [],
+      capabilities: { chat: true, streamingDeltas: true, setup: false },
+    }
+    expect(reduce(initialState, without).capabilities.connectors).toBeUndefined()
+  })
+
+  it("connector-list never carries a token or secretRef (wire shape)", () => {
+    const s = reduce(initialState, {
+      type: "connector-list",
+      instances: [
+        {
+          id: "i1",
+          definitionId: "slack",
+          label: "Slack",
+          status: "connected",
+          grantedScopes: [],
+          createdAt: 1,
+          lastHealthyAt: null,
+        },
+      ],
+    })
+    const keys = Object.keys(s.connectorInstances[0]!).sort()
+    expect(keys).toEqual([
+      "createdAt", "definitionId", "grantedScopes", "id", "label", "lastHealthyAt", "status",
+    ])
+    expect(keys).not.toContain("secretRef")
+  })
+})
+
 describe("wire invariant", () => {
   it("SkillCatalogItem on this side mirrors the server: metadata only, never a body", () => {
     // @ts-expect-error — body is not a SkillCatalogItem field on the client either

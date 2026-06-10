@@ -1627,6 +1627,194 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   })
 
   // ───────────────────────────────────────────────────────────────────────────
+  // Feature: Connectors settings tab (PRD Part A §17, Moon-side wiring)
+  //
+  // Driven at the production seam (__MoonInternals.handleFrame), with the
+  // Tauri bridge stubbed: connect → consent sheet → Authorize walks the
+  // full client-brokered OAuth arc (loopback start → oauth-begin frame →
+  // redirect → open browser + wait → oauth-code frame). Tokens never
+  // appear anywhere in this file by construction.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Connectors settings tab', () => {
+    const M = () => (window as any).__MoonInternals
+    // Fake timers are active (line 59) → setTimeout never fires; the OAuth
+    // arc is pure microtasks (awaited Tauri invoke promises), so flush those.
+    const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve() }
+
+    const catalogFrame = () => ({
+      type: 'connector-catalog',
+      connectors: [
+        {
+          id: 'google-workspace', name: 'Google Workspace', blurb: 'Mail & files.',
+          category: 'productivity', authKind: 'oauth2',
+          capabilities: [
+            { id: 'gmail-read', label: 'Read email', scopes: ['g.read'], defaultGranted: true },
+            { id: 'gmail-send', label: 'Send email', scopes: ['g.send'], defaultGranted: false },
+          ],
+        },
+        {
+          id: 'slack', name: 'Slack', blurb: 'Channels & DMs.',
+          category: 'communication', authKind: 'api-key',
+          capabilities: [
+            { id: 'read', label: 'Read', scopes: [], defaultGranted: true },
+          ],
+        },
+      ],
+    })
+
+    const sentFrames: any[] = []
+    const invokeCalls: Array<{ cmd: string; args: any }> = []
+    let invokeImpl: (cmd: string, args?: any) => Promise<any>
+
+    beforeEach(() => {
+      sentFrames.length = 0
+      invokeCalls.length = 0
+      const m = M()
+      m.WebSocketEngine.send = (f: any) => { sentFrames.push(f) }
+      m.State.ws = { readyState: WebSocket.OPEN }
+      m.State.connectorCatalog = []
+      m.State.connectorInstances = []
+      m.State.connectorBusy = {}
+      m.ConnectorsEngine._consentOpen = null
+      invokeImpl = async (cmd: string) => {
+        if (cmd === 'oauth_loopback_start') return 49152
+        if (cmd === 'oauth_loopback_wait') return { code: 'captured-code', state: 'captured-state' }
+        return undefined
+      }
+      ;(window as any).__TAURI__ = {
+        core: {
+          invoke: (cmd: string, args?: any) => {
+            invokeCalls.push({ cmd, args })
+            return invokeImpl(cmd, args)
+          },
+        },
+      }
+      const err = document.getElementById('connectors-error')
+      if (err) { err.hidden = true; err.textContent = '' }
+    })
+
+    it('hello capabilities.connectors reveals the tab; catalog renders cards', () => {
+      const tab = document.getElementById('connectors-tab-btn')!
+      M().handleFrame({ type: 'hello', protocolVersion: 2, kinds: [],
+        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false, connectors: true } })
+      expect(tab.hidden).toBe(false)
+      M().handleFrame(catalogFrame())
+      const cards = document.querySelectorAll('#connectors-list .connector-card')
+      expect(cards.length).toBe(2)
+      expect(cards[0]!.textContent).toContain('Google Workspace')
+      expect(cards[0]!.querySelector('.skill-blot')).not.toBeNull() // watercolor status blot
+      // old server hides the tab again
+      M().handleFrame({ type: 'hello', protocolVersion: 2, kinds: [],
+        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false } })
+      expect(tab.hidden).toBe(true)
+    })
+
+    it('Connect opens the consent sheet with defaultGranted prechecked; Authorize walks the OAuth arc', async () => {
+      M().handleFrame(catalogFrame())
+      const googleCard = document.querySelectorAll('#connectors-list .connector-card')[0] as HTMLElement
+      ;(googleCard.querySelector('.connector-btn') as HTMLElement).click()
+
+      const sheet = document.querySelector('#connectors-list .connector-consent')!
+      const boxes = Array.from(sheet.querySelectorAll('input[type=checkbox]')) as HTMLInputElement[]
+      expect(boxes.map((b) => b.checked)).toEqual([true, false]) // gmail-read yes, gmail-send no
+      expect(sheet.textContent).toContain('g.read') // scopes visible pre-consent
+
+      ;(sheet.querySelector('.connector-btn') as HTMLElement).click() // Authorize
+      await flush() // let the async arc start
+
+      // loopback bound, then the begin frame with the bound port + narrowed caps
+      expect(invokeCalls[0]?.cmd).toBe('oauth_loopback_start')
+      const begin = sentFrames.find((f) => f.type === 'connector-oauth-begin')
+      expect(begin).toMatchObject({
+        definitionId: 'google-workspace',
+        capabilityIds: ['gmail-read'],
+        loopbackPort: 49152,
+      })
+
+      // server answers with the consent URL → browser hop + wait → code frame
+      M().handleFrame({
+        type: 'connector-oauth-redirect',
+        requestId: begin.requestId,
+        pendingId: 'pend-1',
+        authUrl: 'https://accounts.fake.test/auth?x=1',
+      })
+      await flush()
+      await flush()
+      expect(invokeCalls.map((c) => c.cmd)).toContain('open_external_url')
+      expect(invokeCalls.find((c) => c.cmd === 'open_external_url')?.args?.url)
+        .toBe('https://accounts.fake.test/auth?x=1')
+      const codeFrame = sentFrames.find((f) => f.type === 'connector-oauth-code')
+      expect(codeFrame).toMatchObject({
+        pendingId: 'pend-1',
+        code: 'captured-code',
+        state: 'captured-state',
+      })
+
+      // connector-list broadcast settles the card into Connected + Disconnect
+      M().handleFrame({
+        type: 'connector-list',
+        instances: [{
+          id: 'inst-1', definitionId: 'google-workspace', label: 'Google Workspace',
+          status: 'connected', grantedScopes: ['g.read'], createdAt: 1, lastHealthyAt: 1,
+        }],
+      })
+      const settled = document.querySelectorAll('#connectors-list .connector-card')[0]!
+      expect(settled.textContent).toContain('Connected')
+      expect(settled.textContent).toContain('Disconnect')
+    })
+
+    it('a failed consent hop cancels the loopback and surfaces the error', async () => {
+      invokeImpl = async (cmd: string) => {
+        if (cmd === 'oauth_loopback_start') return 49200
+        if (cmd === 'oauth_loopback_wait') throw 'timed out waiting for the browser consent'
+        return undefined
+      }
+      M().handleFrame(catalogFrame())
+      const card = document.querySelectorAll('#connectors-list .connector-card')[0] as HTMLElement
+      ;(card.querySelector('.connector-btn') as HTMLElement).click()
+      ;(document.querySelector('#connectors-list .connector-consent .connector-btn') as HTMLElement).click()
+      await flush()
+      const begin = sentFrames.find((f) => f.type === 'connector-oauth-begin')
+      M().handleFrame({ type: 'connector-oauth-redirect', requestId: begin.requestId, pendingId: 'p', authUrl: 'https://x.test/a' })
+      await flush()
+      await flush()
+      expect(invokeCalls.map((c) => c.cmd)).toContain('oauth_loopback_cancel')
+      const err = document.getElementById('connectors-error')!
+      expect(err.hidden).toBe(false)
+      expect(err.textContent).toContain('timed out')
+      expect(sentFrames.find((f) => f.type === 'connector-oauth-code')).toBeUndefined()
+    })
+
+    it('api-key connect sends the secretRef POINTER; needs-reauth shows gold + Reconnect', () => {
+      M().handleFrame(catalogFrame())
+      const slackCard = document.querySelectorAll('#connectors-list .connector-card')[1] as HTMLElement
+      ;(slackCard.querySelector('.connector-btn') as HTMLElement).click()
+      const sheet = document.querySelector('#connectors-list .connector-consent')!
+      const ref = sheet.querySelector('input[type=text]') as HTMLInputElement
+      ref.value = 'env:SLACK_MCP_XOXB_TOKEN'
+      ;(sheet.querySelector('.connector-btn') as HTMLElement).click()
+      const frame = sentFrames.find((f) => f.type === 'connector-connect')
+      expect(frame).toMatchObject({
+        definitionId: 'slack',
+        secretRef: 'env:SLACK_MCP_XOXB_TOKEN',
+        capabilityIds: ['read'],
+      })
+      expect(JSON.stringify(sentFrames)).not.toContain('xoxb-') // pointer, never a value
+
+      M().handleFrame({
+        type: 'connector-list',
+        instances: [{
+          id: 'inst-g', definitionId: 'google-workspace', label: 'G',
+          status: 'needs-reauth', grantedScopes: [], createdAt: 1, lastHealthyAt: null,
+        }],
+      })
+      const gCard = document.querySelectorAll('#connectors-list .connector-card')[0]!
+      expect(gCard.classList.contains('needs-reauth')).toBe(true)
+      expect(gCard.textContent).toContain('Reconnect')
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
   // Feature: UserAsk / alignment-survey (Phase 3 D3, Moon-side wiring)
   //
   // The TUI already paints a survey modal when the server pushes a
