@@ -25,7 +25,7 @@ tool call sends it.
   - `agents/` — subagent definitions, hot-loaded each query.
   - `logs/` — runtime logs.
 
-The exact location of `~/.luna/` depends on the install (jax-box container vs
+The exact location of `~/.luna/` depends on the install (Linux container vs
 Mac native vs other). To find the current process's paths, ask via the
 runtime/observability tools.
 
