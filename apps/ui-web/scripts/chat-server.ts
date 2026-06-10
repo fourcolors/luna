@@ -172,6 +172,7 @@ import {
   OnePasswordSecretProvider,
   RoutedOpSecretProvider,
   SessionStore,
+  SkillPrefsStore,
   SkillRegistry,
   Survey,
   TelemetryPlatform,
@@ -1225,12 +1226,37 @@ export const buildBaseLayer = (
     Layer.provide(clockL),
   )
 
-  // PRD Part B: the skill catalog, seeded with the in-repo built-ins.
-  // Defined once and reused by reference (Layer memoization) so the
-  // thread-tools wiring and — from S2 — the ui-ws skill frames see the
-  // SAME registry instance. Disclosure stays "inline" until skill_load
-  // ships (S4 flips this to "index").
-  const skillRegistryL = SkillRegistry.layer({ seeds: BUILTIN_SKILLS })
+  // PRD Part B: the skill catalog, seeded with the in-repo built-ins and
+  // hydrated from the skill_preferences table (delta-only: absent row =
+  // enabled). Toggles write through to the store BEFORE the in-memory
+  // flip, so memory and disk can never disagree. Defined once and reused
+  // by reference (Layer memoization) so the thread-tools wiring and the
+  // ui-ws skill frames see the SAME registry instance. Disclosure stays
+  // "inline" until skill_load ships (S4 flips this to "index").
+  // LunaSqliteBootstrap flows up from the prefs store and is satisfied at
+  // the bottom of buildServerLayer, same as every other SQLite layer here.
+  const skillPrefsL = SkillPrefsStore.makeLayer(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
+  const skillRegistryL = Layer.unwrapEffect(
+    Effect.gen(function* () {
+      const prefs = yield* SkillPrefsStore
+      const disabled = yield* prefs.disabledIds()
+      if (disabled.length > 0) {
+        console.log(
+          "[luna/boot] skill_preferences hydrated:",
+          disabled.length,
+          "disabled —",
+          disabled.join(", "),
+        )
+      }
+      return SkillRegistry.layer({
+        seeds: BUILTIN_SKILLS,
+        initialDisabled: disabled,
+        onToggle: (id, enabled) => prefs.setEnabled(id, enabled),
+      })
+    }),
+  ).pipe(Layer.provide(skillPrefsL))
 
   // Per-thread tool wiring, provided INTO ChatService so both new and
   // resumed threads get tools (the resume path bypasses any outer wrapper).
@@ -1403,6 +1429,7 @@ export const buildBaseLayer = (
     wakeCronL ?? Layer.empty, // wake cron: workspace-state digest at each tick (disabled if LUNA_WAKE_ENABLED=0)
     jobTickerL ?? Layer.empty, // Phase 12b V2 ticker: enabled via LUNA_SCHEDULER_V2_ENABLED=1 (DESIGN §5.3)
     surveyL,    // Phase 3 D3: Survey available for buildServerLayer to resolve + pass to the WS server
+    skillRegistryL, // PRD Part B: same instance as threadToolsL (memoized by reference) — buildServerLayer resolves it for the WS skill frames
   )
 }
 
@@ -1516,6 +1543,7 @@ export const buildSetupServerLayer = (
         chatService: null,
         accountBroker: null,
         survey: null,
+        skillRegistry: null,
         localShellBridge: null,
         // No chat in setup-mode → the request_secret tool is never bound, so the
         // secret bridge has nothing to drive. Disabled here.
@@ -1554,6 +1582,22 @@ const buildServerLayer = (
       const chat = yield* ChatService
       const broker = yield* AccountBroker
       const surveyService = yield* Survey // Phase 3 D3
+      const skillRegistryService = yield* SkillRegistry // PRD Part B
+
+      // Wire-safety adapter (PRD §12): the ui-ws handle receives catalog
+      // entries with the `body` ALREADY stripped. Bodies are prompt content
+      // for the agent — they never reach clients, and stripping here (not
+      // in ui-ws) means a ui-ws logging/serialization bug cannot leak them.
+      const skillsWsHandle = {
+        catalog: () =>
+          skillRegistryService.catalog().pipe(
+            Effect.map((entries) =>
+              entries.map(({ body: _body, ...meta }) => meta),
+            ),
+          ),
+        setEnabled: (id: string, enabled: boolean) =>
+          skillRegistryService.setEnabled(id, enabled),
+      }
 
       // Phase 3 D3: build the SurveyWsHandle adapter. SurveyApi has
       // pendingSurvey + processVerdict; SurveyWsHandle needs pendingSurvey +
@@ -1591,6 +1635,7 @@ const buildServerLayer = (
         chatService: chat,
         accountBroker: broker,
         survey: surveyHandle, // Phase 3 D3: resolved handle
+        skillRegistry: skillsWsHandle, // PRD Part B: bodies pre-stripped
         localShellBridge,
         onLocalShellRelease: reattachSandbox,
         registerOpToken: registerOpTokenHandler,

@@ -27,6 +27,7 @@
  *   - Anything else → HTTP 404.
  */
 import {
+  Cause,
   Deferred,
   Duration,
   Effect,
@@ -206,6 +207,30 @@ export interface UIWebSocketServerConfig {
     }>>
   } | null
   /**
+   * Optional skill-catalog handle (PRD Part B). When provided, the server:
+   *   - advertises `capabilities.skills: true`
+   *   - sends a `skill-catalog` frame after `hello` (fire-and-forget, like
+   *     account-list) so the Skills settings tab renders on connect
+   *   - routes inbound `skill-toggle` frames → setEnabled, acking with
+   *     `skill-status` + a refreshed `skill-catalog` to the toggling client
+   *
+   * The handle's catalog() MUST already be wire-safe (metadata only, no
+   * skill bodies) — the chat-server adapter strips bodies BEFORE this
+   * package ever sees them, so a logging or serialization bug here cannot
+   * leak prompt content. Structural type (not the core Tag) keeps this
+   * package's dependency surface narrow — mirrors accountBroker exactly.
+   * Pass `null` explicitly in setup-mode (same as absent).
+   */
+  readonly skillRegistry?: {
+    readonly catalog: () => import("effect").Effect.Effect<
+      ReadonlyArray<import("./protocol.js").SkillCatalogItem>
+    >
+    readonly setEnabled: (
+      id: string,
+      enabled: boolean,
+    ) => import("effect").Effect.Effect<void, unknown>
+  } | null
+  /**
    * Optional local-shell bridge. When provided, clients may advertise
    * terminal execution capability and receive local-shell request frames
    * from MCP tools bound to the same thread.
@@ -294,6 +319,24 @@ export interface UIWebSocketServerHandle {
   readonly port: number
   /** Bound host. */
   readonly host: string
+}
+
+/**
+ * Short, non-sensitive failure text for status acks. Prefers the typed
+ * failure's `.message`; defects collapse to a generic line (a stack trace
+ * is not a UI message, and must never leak internals to clients).
+ */
+const failureMessage = (cause: Cause.Cause<unknown>): string => {
+  const failure = Cause.failureOption(cause)
+  if (Option.isSome(failure)) {
+    const f = failure.value
+    if (typeof f === "object" && f !== null && "message" in f) {
+      const m = (f as { message?: unknown }).message
+      if (typeof m === "string" && m.length > 0) return m
+    }
+    if (typeof f === "string") return f
+  }
+  return "request failed"
 }
 
 const send = (ws: WebSocket, frame: ServerFrame): void => {
@@ -393,6 +436,7 @@ export const startUIWebSocketServer = (
     const setupPty = config.setupPty ?? null
     const registerOpToken = config.registerOpToken ?? null
     const secretBridge = config.secretBridge ?? null
+    const skillRegistry = config.skillRegistry ?? null
     const buildSha = config.buildSha
     const availableModels = config.availableModels
 
@@ -554,6 +598,10 @@ export const startUIWebSocketServer = (
             // Lets grouping clients (the moon timeline) detect this server can
             // signal end-of-agentic-turn and enable the grouped/settling view.
             turnComplete: chat !== null,
+            // PRD Part B: skill catalog + toggle routing available. Clients
+            // gate the Skills settings tab on this flag (absent on older
+            // servers → tab hidden, no errors).
+            skills: skillRegistry !== null,
           },
         })
 
@@ -567,6 +615,20 @@ export const startUIWebSocketServer = (
             Effect.flatMap(broker.list("anthropic"), (accounts) =>
               Effect.sync(() => {
                 send(ws, { type: "account-list", accounts })
+              }),
+            ),
+          )
+        }
+
+        // Send skill-catalog immediately after hello so the Skills settings
+        // tab can render on connect. Same fire-and-forget pattern as
+        // account-list; a catalog failure must not block connection setup.
+        if (skillRegistry !== null) {
+          const reg = skillRegistry
+          Effect.runFork(
+            Effect.flatMap(reg.catalog(), (skills) =>
+              Effect.sync(() => {
+                send(ws, { type: "skill-catalog", skills })
               }),
             ),
           )
@@ -1091,6 +1153,39 @@ export const startUIWebSocketServer = (
                     }))
                     yield* survey.submitVerdicts(frame.surveyId, frame.issuedAt, pinnedVerdicts).pipe(
                       Effect.catchAllCause(() => Effect.void),
+                    )
+                    return
+                  }
+                  case "skill-toggle": {
+                    // PRD Part B §12. Persist + flip via the injected handle;
+                    // ack with skill-status, then refresh this client's
+                    // catalog so its list state confirms. Failures (unknown
+                    // id, registry defect) ack ok:false with a non-sensitive
+                    // message — they must never tear down the connection.
+                    if (skillRegistry === null) return
+                    const reg = skillRegistry
+                    yield* reg.setEnabled(frame.id, frame.enabled).pipe(
+                      Effect.flatMap(() => reg.catalog()),
+                      Effect.map((skills) => {
+                        send(ws, {
+                          type: "skill-status",
+                          id: frame.id,
+                          enabled: frame.enabled,
+                          ok: true,
+                        })
+                        send(ws, { type: "skill-catalog", skills })
+                      }),
+                      Effect.catchAllCause((cause) =>
+                        Effect.sync(() => {
+                          send(ws, {
+                            type: "skill-status",
+                            id: frame.id,
+                            enabled: frame.enabled,
+                            ok: false,
+                            message: failureMessage(cause),
+                          })
+                        }),
+                      ),
                     )
                     return
                   }

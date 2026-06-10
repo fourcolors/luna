@@ -79,6 +79,8 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "tool-result",
   "turn-complete",
   "account-list",
+  "skill-catalog",
+  "skill-status",
   "local-shell-request",
   "local-shell-status",
   "register-op-token-status",
@@ -105,6 +107,7 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "register-op-token",
   "secret-result",
   "survey-response",
+  "skill-toggle",
   "pty-input",
   "pty-resize",
 ].sort()
@@ -184,13 +187,15 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     expect(UI_WS_PROTOCOL_VERSION).toBe(EXPECTED_PROTOCOL_VERSION)
   })
 
-  it("parser self-check: derived counts are sane (26 server, 16 client) — guards the regex itself", () => {
+  it("parser self-check: derived counts are sane (28 server, 17 client) — guards the regex itself", () => {
     // If the regex silently mis-parses, the toEqual above could pass for the
     // wrong reason. Pin the counts so a broken parser is caught here.
     // Prior base = 24 server / 15 client; the agent-summoned secure-secret-entry
     // feature adds secret-request + secret-status (server) and secret-result
-    // (client) → 26 server / 16 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(26)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(16)
+    // (client) → 26 server / 16 client. The PRD Part B skills feature adds
+    // skill-catalog + skill-status (server) and skill-toggle (client)
+    // → 28 server / 17 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(28)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(17)
   })
 })

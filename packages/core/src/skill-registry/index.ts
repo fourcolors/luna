@@ -11,3 +11,4 @@ export {
   type SkillSource,
 } from "./skill-registry.js"
 export { BUILTIN_SKILLS } from "./builtin-skills.js"
+export { SkillPrefsStore, type SkillPrefsApi } from "./skill-prefs-store.js"

@@ -62,6 +62,13 @@ export interface HelloFrame {
      * per-turn timeline instead of waiting on a turn-complete that never comes.
      */
     readonly turnComplete: boolean
+    /**
+     * PRD Part B (Skills): the server has a SkillRegistry bound — it sends a
+     * `skill-catalog` frame after `hello` and routes `skill-toggle`. OPTIONAL
+     * and additive (no protocol bump): older servers omit it, and clients
+     * hide the Skills settings tab when the flag is absent/false.
+     */
+    readonly skills?: boolean
   }
 }
 
@@ -185,6 +192,50 @@ export interface AccountListFrame {
     readonly kind: string
     readonly health: string
   }>
+}
+
+/**
+ * One skill row for the settings catalog — METADATA ONLY, by construction.
+ *
+ * There is deliberately no `body` field on this type: skill bodies are
+ * prompt content for the agent, not the UI, and they never cross the wire
+ * to clients (PRD §12 "metadata-only on the wire"). `category`/`source`
+ * are plain strings on the wire (forward-compatible with new categories).
+ */
+export interface SkillCatalogItem {
+  readonly id: string
+  readonly name: string
+  readonly description: string
+  readonly whenToUse: string
+  readonly category: string
+  readonly tags: ReadonlyArray<string>
+  readonly source: string
+  readonly enabled: boolean
+}
+
+/**
+ * Server→client: the full skill catalog. Sent once after `hello` (same
+ * fire-and-forget pattern as `account-list`) so the Skills settings tab can
+ * render on connect, and re-sent to the toggling client after a successful
+ * `skill-toggle` so its list state confirms. Additive — no protocol bump.
+ */
+export interface SkillCatalogFrame {
+  readonly type: "skill-catalog"
+  readonly skills: ReadonlyArray<SkillCatalogItem>
+}
+
+/**
+ * Server→client ack for a `skill-toggle`. `ok:false` carries a
+ * non-sensitive reason (unknown id, registry failure). On `ok:true`,
+ * `enabled` is the now-live state — effective for the NEXT thread (the
+ * registry snapshot is rebuilt synchronously on toggle).
+ */
+export interface SkillStatusFrame {
+  readonly type: "skill-status"
+  readonly id: string
+  readonly enabled: boolean
+  readonly ok: boolean
+  readonly message?: string
 }
 
 export interface LocalShellRequestFrame {
@@ -341,6 +392,8 @@ export type ServerFrame =
   | ToolResultFrame
   | TurnCompleteFrame
   | AccountListFrame
+  | SkillCatalogFrame
+  | SkillStatusFrame
   | LocalShellRequestFrame
   | LocalShellStatusFrame
   | RegisterOpTokenStatusFrame
@@ -543,6 +596,18 @@ export interface SurveyResponseFrame {
   readonly verdicts: ReadonlyArray<SurveyVerdict>
 }
 
+/**
+ * Client→server: flip one skill on/off from the Skills settings tab
+ * (PRD Part B §12). Server persists the delta (skill_preferences), flips
+ * the live registry, and acks with `skill-status` + a fresh `skill-catalog`.
+ * Idempotent: re-sending the current state is a no-op server-side.
+ */
+export interface SkillToggleFrame {
+  readonly type: "skill-toggle"
+  readonly id: string
+  readonly enabled: boolean
+}
+
 export type ClientFrame =
   | PongFrame
   | ByeFrame
@@ -558,5 +623,6 @@ export type ClientFrame =
   | RegisterOpTokenFrame
   | SecretResultFrame
   | SurveyResponseFrame
+  | SkillToggleFrame
   | PtyInputFrame
   | PtyResizeFrame
