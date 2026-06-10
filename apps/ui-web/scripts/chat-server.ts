@@ -158,6 +158,7 @@ import {
   BELIEF_KIND,
   BELIEF_NAMESPACE,
   BeliefWriter,
+  BUILTIN_SKILLS,
   CalibrationStore,
   Clock,
   DEFAULT_UI_KINDS,
@@ -171,6 +172,7 @@ import {
   OnePasswordSecretProvider,
   RoutedOpSecretProvider,
   SessionStore,
+  SkillRegistry,
   Survey,
   TelemetryPlatform,
   TelemetryService,
@@ -433,6 +435,17 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       const obsTools = yield* ObsToolsService
       const localShellTools = yield* LocalShellToolsService
       const secretTools = yield* SecretToolsService
+      // PRD Part B (Skills): the managed skill catalog. decorate() reads
+      // promptSnapshotSync() — synchronous and never stale (the registry
+      // rebuilds it inside every mutation), so a settings toggle is
+      // reflected in the very next thread without a restart or a tick.
+      const skillRegistry = yield* SkillRegistry
+      const bootSkills = yield* skillRegistry.catalog()
+      console.log(
+        "[luna/boot] skills registered:",
+        bootSkills.length,
+        `(${bootSkills.filter((s) => s.enabled).length} enabled)`,
+      )
 
       console.log("[luna/boot] MCP servers registered:", [
         memTools.serverName,
@@ -576,6 +589,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             mainMemoryContent, // Luna main thread observational memory
             sessionMetadata,
             beliefsContent, // Phase 3 D5: ranked active beliefs section
+            skillRegistry.promptSnapshotSync(), // PRD Part B: enabled skills ("" when none — filtered below)
             opts.systemPrompt,
             memoryThreadTools.systemPromptAddendum,
             schedulerThreadTools.systemPromptAddendum,
@@ -1211,12 +1225,20 @@ export const buildBaseLayer = (
     Layer.provide(clockL),
   )
 
+  // PRD Part B: the skill catalog, seeded with the in-repo built-ins.
+  // Defined once and reused by reference (Layer memoization) so the
+  // thread-tools wiring and — from S2 — the ui-ws skill frames see the
+  // SAME registry instance. Disclosure stays "inline" until skill_load
+  // ships (S4 flips this to "index").
+  const skillRegistryL = SkillRegistry.layer({ seeds: BUILTIN_SKILLS })
+
   // Per-thread tool wiring, provided INTO ChatService so both new and
   // resumed threads get tools (the resume path bypasses any outer wrapper).
   // LunaSqliteBootstrap flows up and is satisfied at the bottom of
   // buildServerLayer, same as every other SQLite-backed layer here.
   const threadToolsL = ThreadToolsProviderLayer().pipe(
     Layer.provide(memoryRouterL), // REQUIRED: satisfies MemoryRouterTag inside the layer (siblings don't cross-wire)
+    Layer.provide(skillRegistryL), // PRD Part B: skills snapshot read by decorate()
     Layer.provide(obsL),
     Layer.provide(clockL),
     // JobsStore required by SchedulerToolsLayer for durable cron persistence

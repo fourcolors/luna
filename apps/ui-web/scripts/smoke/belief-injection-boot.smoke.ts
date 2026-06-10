@@ -28,12 +28,14 @@
  * Exit 0 = PASS, non-zero = FAIL
  */
 import {
+  BUILTIN_SKILLS,
   Clock,
   JobsStoreService,
   makeBeliefRecord,
   makeDuckDbLayer,
   makeTelemetrySqlite,
   ObservabilityService,
+  SkillRegistry,
   TelemetryPlatform,
 } from "@luna/core"
 import { MemoryRouterTag } from "@luna/memory"
@@ -141,6 +143,14 @@ const buildLayer = (
     // file. Without it the real layer build crashes with
     // "Service not found: luna/JobsStoreService".
     Layer.provide(JobsStoreService.Memory),
+    // PRD Part B: ThreadToolsProviderLayer yields SkillRegistry for the
+    // skills prompt snapshot. Mirror production (chat-server.ts
+    // skillRegistryL) with the real built-in seeds so CHECK 3 can assert
+    // the skills section renders — and so a future missing-provide in the
+    // production wiring fails THIS smoke the same way it would fail boot.
+    // provideMerge (not provide): CHECK 3 also needs the registry handle
+    // from the runtime context to drive the toggle.
+    Layer.provideMerge(SkillRegistry.layer({ seeds: BUILTIN_SKILLS })),
     Layer.provide(obsL),
     Layer.provide(clockL),
     Layer.provide(LunaSqliteBootstrapLive),
@@ -305,7 +315,57 @@ async function check2(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Run both checks sequentially, then report
+// CHECK 3 (PRD Part B): skills section renders at boot; a toggle is
+// reflected on the NEXT decorate() with NO tick (sync snapshot, unlike the
+// interval-refreshed beliefs holder). Regression guards: removing the
+// skillRegistryL provide from production wiring fails the layer build here;
+// breaking the snapshot rebuild-on-mutation makes the post-toggle assert fail.
+// ---------------------------------------------------------------------------
+
+async function check3(): Promise<void> {
+  console.log("\n[smoke] --- CHECK 3: skills snapshot (boot render + sync toggle) ---")
+  const rt = ManagedRuntime.make(buildLayer(seededMem, 30_000))
+  try {
+    await rt.runPromise(
+      Effect.gen(function* () {
+        const provider = yield* ThreadToolsProviderTag
+        const reg = yield* SkillRegistry
+
+        const spBoot = provider.decorate({} as never).systemPrompt ?? ""
+        if (!spBoot.includes("## Skills")) {
+          throw new Error(
+            `[check 3] '## Skills' section missing from decorate() output.\n` +
+              `systemPrompt (first 500 chars): ${spBoot.slice(0, 500)}`,
+          )
+        }
+        const firstSeed = BUILTIN_SKILLS[0]!
+        if (!spBoot.includes(firstSeed.name)) {
+          throw new Error(
+            `[check 3] built-in skill "${firstSeed.name}" missing from boot prompt`,
+          )
+        }
+        console.log("[check 3] boot decorate() contains '## Skills' + seeds ✓")
+
+        // Toggle a seed off → the very NEXT decorate must not contain it.
+        yield* reg.setEnabled(firstSeed.id, false)
+        const spToggled = provider.decorate({} as never).systemPrompt ?? ""
+        if (spToggled.includes(firstSeed.name)) {
+          throw new Error(
+            `[check 3] disabled skill "${firstSeed.id}" still present in the ` +
+              "next decorate() — snapshot is stale (rebuild-on-mutation broken)",
+          )
+        }
+        console.log("[check 3] toggle off → gone from the NEXT decorate, no tick ✓")
+      }),
+    )
+  } finally {
+    await rt.dispose()
+  }
+  console.log("[smoke] CHECK 3 PASS ✓")
+}
+
+// ---------------------------------------------------------------------------
+// Run all checks sequentially, then report
 // ---------------------------------------------------------------------------
 
 async function main() {
@@ -313,9 +373,10 @@ async function main() {
   try {
     await check1()
     await check2()
+    await check3()
     console.log(
       "\n[smoke] PASS — real ThreadToolsProviderLayer builds (MemoryRouterTag satisfied); " +
-        "initial render ✓ + live belief-refresh ✓",
+        "initial render ✓ + live belief-refresh ✓ + skills snapshot ✓",
     )
   } catch (err: unknown) {
     console.error("\n[smoke] FAIL:", err)
