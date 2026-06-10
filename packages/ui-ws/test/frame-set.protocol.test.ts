@@ -87,6 +87,8 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "connector-status",
   "artifact-list",
   "artifact-update",
+  "workflow-list",
+  "workflow-runs",
   "local-shell-request",
   "local-shell-status",
   "register-op-token-status",
@@ -120,6 +122,8 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "connector-disconnect",
   "artifact-pin",
   "artifact-unpin",
+  "workflow-runs-request",
+  "workflow-refresh",
   "pty-input",
   "pty-resize",
 ].sort()
@@ -219,9 +223,11 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // connector-oauth-begin/-oauth-code/-connect/-disconnect (client)
     // → 32 server / 21 client. The PRD Part C/W1 artifacts feature adds
     // artifact-list + artifact-update (server) and artifact-pin + artifact-unpin
-    // (client) → 34 server / 23 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(34)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(23)
+    // (client) → 34 server / 23 client. The PRD Part C/W3 workflow gallery adds
+    // workflow-list + workflow-runs (server) and workflow-runs-request +
+    // workflow-refresh (client) → 36 server / 25 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(36)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(25)
   })
 
   // VERSION-SKEW (client half): nothing else pins the ui-shared wire.ts mirror

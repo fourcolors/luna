@@ -316,6 +316,26 @@ export interface UIWebSocketServerConfig {
     readonly changes?: (notify: () => void) => void
   } | null
   /**
+   * Optional workflow-gallery handle (PRD Part C / W3). A READ-ONLY, wire-safe
+   * view over the persisted jobs store: `list` returns every job projected to a
+   * gallery tile (no secrets, no large output), `runs` returns one job's run
+   * history. When provided, the server advertises `capabilities.workflows`,
+   * sends `workflow-list` after hello, and routes `workflow-runs-request` +
+   * `workflow-refresh`. Structural type — mirrors artifactStore. Pass `null`
+   * in setup-mode.
+   */
+  readonly workflowGallery?: {
+    readonly list: () => import("effect").Effect.Effect<
+      ReadonlyArray<import("./protocol.js").WorkflowGalleryItem>
+    >
+    readonly runs: (
+      jobId: string,
+      limit?: number,
+    ) => import("effect").Effect.Effect<
+      ReadonlyArray<import("./protocol.js").WorkflowRunItem>
+    >
+  } | null
+  /**
    * Optional local-shell bridge. When provided, clients may advertise
    * terminal execution capability and receive local-shell request frames
    * from MCP tools bound to the same thread.
@@ -545,6 +565,7 @@ export const startUIWebSocketServer = (
     const skillRegistry = config.skillRegistry ?? null
     const connectorService = config.connectorService ?? null
     const artifactStore = config.artifactStore ?? null
+    const workflowGallery = config.workflowGallery ?? null
     const buildSha = config.buildSha
     const availableModels = config.availableModels
 
@@ -755,6 +776,8 @@ export const startUIWebSocketServer = (
             // PRD Part C/W1: pinned-artifact persistence + pin/unpin routing.
             // Clients gate the panel's "Pinned" section on this flag.
             artifacts: artifactStore !== null,
+            // PRD Part C/W3: read-only workflow gallery over the jobs store.
+            workflows: workflowGallery !== null,
           },
         })
 
@@ -808,6 +831,19 @@ export const startUIWebSocketServer = (
             Effect.flatMap(store.list(), (artifacts) =>
               Effect.sync(() => {
                 send(ws, { type: "artifact-list", artifacts })
+              }),
+            ).pipe(Effect.catchAllCause(() => Effect.void)),
+          )
+        }
+
+        // Workflow gallery, same fire-and-forget pattern (PRD C/W3) — the
+        // "Workflows" view renders from this on connect.
+        if (workflowGallery !== null) {
+          const gallery = workflowGallery
+          Effect.runFork(
+            Effect.flatMap(gallery.list(), (workflows) =>
+              Effect.sync(() => {
+                send(ws, { type: "workflow-list", workflows })
               }),
             ).pipe(Effect.catchAllCause(() => Effect.void)),
           )
@@ -1144,7 +1180,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null) {
+        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -1622,6 +1658,47 @@ export const startUIWebSocketServer = (
                             for (const sock of sockets) {
                               send(sock, { type: "artifact-list", artifacts })
                             }
+                          }),
+                        ),
+                        Effect.catchAllCause(() => Effect.void),
+                      )
+                    return
+                  }
+                  case "workflow-refresh": {
+                    // PRD C/W3: re-send the gallery to the requesting client.
+                    if (workflowGallery === null) return
+                    const gallery = workflowGallery
+                    yield* gallery
+                      .list()
+                      .pipe(
+                        Effect.flatMap((workflows) =>
+                          Effect.sync(() => {
+                            send(ws, { type: "workflow-list", workflows })
+                          }),
+                        ),
+                        Effect.catchAllCause(() => Effect.void),
+                      )
+                    return
+                  }
+                  case "workflow-runs-request": {
+                    // PRD C/W3: one job's run history (to the requester only).
+                    if (workflowGallery === null) return
+                    const gallery = workflowGallery
+                    if (
+                      typeof frame.jobId !== "string" ||
+                      frame.jobId.trim().length === 0
+                    ) {
+                      return
+                    }
+                    const jobId = frame.jobId
+                    const limit =
+                      typeof frame.limit === "number" ? frame.limit : undefined
+                    yield* gallery
+                      .runs(jobId, limit)
+                      .pipe(
+                        Effect.flatMap((runs) =>
+                          Effect.sync(() => {
+                            send(ws, { type: "workflow-runs", jobId, runs })
                           }),
                         ),
                         Effect.catchAllCause(() => Effect.void),

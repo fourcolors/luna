@@ -21,6 +21,8 @@ import type {
   ServerFrame,
   SessionSummary,
   SkillCatalogItem,
+  WorkflowGalleryItem,
+  WorkflowRunItem,
 } from "./wire.js"
 
 export interface InFlightTurn {
@@ -59,6 +61,7 @@ export interface UIState {
     readonly skills?: boolean
     readonly connectors?: boolean
     readonly artifacts?: boolean
+    readonly workflows?: boolean
   }
   /**
    * Server-advertised model list (from the `hello` frame's `availableModels`
@@ -101,6 +104,10 @@ export interface UIState {
   /** PRD Part C (W1) — durable pinned artifacts (metadata + content,
    *  wire-safe). Most-recently-updated first. Gated on capabilities.artifacts. */
   readonly pinnedArtifacts: ReadonlyArray<PinnedArtifactItem>
+  /** PRD Part C (W3) — the workflow gallery (read-only over the jobs store),
+   *  + per-job run history fetched on demand. Gated on capabilities.workflows. */
+  readonly workflows: ReadonlyArray<WorkflowGalleryItem>
+  readonly workflowRuns: ReadonlyMap<string, ReadonlyArray<WorkflowRunItem>>
 }
 
 export const initialState: UIState = {
@@ -126,6 +133,8 @@ export const initialState: UIState = {
   connectorInstances: [],
   connectorError: null,
   pinnedArtifacts: [],
+  workflows: [],
+  workflowRuns: new Map(),
 }
 
 const MAX_RETAINED = 500
@@ -384,6 +393,15 @@ export const reduce = (state: UIState, action: Action): UIState => {
         (a) => a.id !== frame.artifact.id,
       )
       return { ...state, pinnedArtifacts: [frame.artifact, ...others] }
+    }
+    case "workflow-list":
+      // Server-authored, read-only gallery — replace wholesale.
+      return { ...state, workflows: frame.workflows }
+    case "workflow-runs": {
+      // Run history for one job — keyed by jobId, replaced on each fetch.
+      const next = new Map(state.workflowRuns)
+      next.set(frame.jobId, frame.runs)
+      return { ...state, workflowRuns: next }
     }
     case "pty-output":
       // pty output is consumed by the setup terminal directly off the

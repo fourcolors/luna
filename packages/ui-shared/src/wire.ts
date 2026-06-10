@@ -111,6 +111,9 @@ export interface HelloFrame {
      *  artifact-pin/unpin + artifact-list/update. OPTIONAL/additive — covers
      *  the artifact panel, pop-out widgets, and the workflow gallery. */
     readonly artifacts?: boolean
+    /** PRD Part C (W3): server exposes the read-only workflow gallery over the
+     *  jobs store (workflow-list + workflow-runs). OPTIONAL/additive. */
+    readonly workflows?: boolean
   }
   /**
    * Models the operator can pick for new threads. OPTIONAL and additive —
@@ -356,6 +359,55 @@ export interface ArtifactUnpinFrame {
   readonly id: string
 }
 
+/* PRD Part C (W3) — workflow gallery frames (mirror ui-ws/protocol.ts). A
+ * read-only, wire-safe view over the persisted jobs store: every job is a
+ * gallery tile, badged `onDemand` (no schedule) vs scheduled (a cron string).
+ * Run history is fetched on demand. No secrets/large output cross the wire. */
+export interface WorkflowGalleryItem {
+  readonly id: string
+  readonly kind: string
+  readonly label: string
+  readonly source: string | null
+  /** Cron/spec string when scheduled; null for on-demand jobs. */
+  readonly schedule: string | null
+  readonly onDemand: boolean
+  readonly enabled: boolean
+  readonly nextRunAt: number | null
+  readonly lastRun: number | null
+  readonly lastStatus: string | null
+  readonly createdAt: number
+}
+export interface WorkflowRunItem {
+  readonly id: number
+  readonly startedAt: number
+  readonly finishedAt: number | null
+  readonly status: string
+  readonly attempt: number
+  /** Short, truncated diagnostic — never the full output (large/sensitive). */
+  readonly error: string | null
+}
+/** Server→client: the unified gallery (sent after hello, re-sent on refresh). */
+export interface WorkflowListFrame {
+  readonly type: "workflow-list"
+  readonly workflows: ReadonlyArray<WorkflowGalleryItem>
+}
+/** Server→client: run history for one job (response to a runs request). */
+export interface WorkflowRunsFrame {
+  readonly type: "workflow-runs"
+  readonly jobId: string
+  readonly runs: ReadonlyArray<WorkflowRunItem>
+}
+/** Client→server: ask for one job's run history. */
+export interface WorkflowRunsRequestFrame {
+  readonly type: "workflow-runs-request"
+  readonly jobId: string
+  readonly limit?: number
+}
+/** Client→server: ask the server to re-send the gallery list. */
+export interface WorkflowRefreshFrame {
+  readonly type: "workflow-refresh"
+}
+
 /** Marks the true end of an agentic turn (SDK `result`). Consumed by clients
  *  that group consecutive assistant turns (the moon timeline); ui-web is
  *  seq-keyed and treats it as a no-op. */
@@ -404,6 +456,8 @@ export type ServerFrame =
   | ConnectorStatusFrame
   | ArtifactListFrame
   | ArtifactUpdateFrame
+  | WorkflowListFrame
+  | WorkflowRunsFrame
   | TurnCompleteFrame
   | PtyOutputFrame
 
@@ -489,5 +543,7 @@ export type ClientFrame =
   | ConnectorDisconnectFrame
   | ArtifactPinFrame
   | ArtifactUnpinFrame
+  | WorkflowRunsRequestFrame
+  | WorkflowRefreshFrame
   | PtyInputFrame
   | PtyResizeFrame

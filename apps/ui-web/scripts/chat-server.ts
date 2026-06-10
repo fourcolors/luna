@@ -1733,6 +1733,7 @@ export const buildSetupServerLayer = (
         skillRegistry: null,
         connectorService: null,
         artifactStore: null,
+        workflowGallery: null,
         localShellBridge: null,
         // No chat in setup-mode → the request_secret tool is never bound, so the
         // secret bridge has nothing to drive. Disabled here.
@@ -1774,6 +1775,7 @@ const buildServerLayer = (
       const skillRegistryService = yield* SkillRegistry // PRD Part B
       const connectorServiceHandle = yield* ConnectorService // PRD Part A
       const artifactStoreService = yield* ArtifactStore // PRD Part C/W1
+      const jobsStore = yield* JobsStoreService // PRD Part C/W3 (gallery source)
 
       // PRD A §08: access tokens live ~1h; refresh AHEAD of expiry so the
       // mount snapshot's bearer never goes stale mid-conversation. The
@@ -1872,6 +1874,45 @@ const buildServerLayer = (
         unpin: (id: string) => artifactStoreService.unpin(id),
       }
 
+      // PRD Part C/W3: the workflow gallery is a READ-ONLY, wire-safe projection
+      // of the persisted jobs store. A job is "on-demand" when it has no
+      // schedule; the run-error is truncated and the (potentially large /
+      // sensitive) outputText + stepsJson never cross the wire. A failed fetch
+      // degrades to an empty list — it must not break the connection.
+      const toGalleryItem = (j: import("@luna/core").PersistedJob) => ({
+        id: j.id,
+        kind: j.kind,
+        label: j.payload.label,
+        source: j.payload.source ?? null,
+        schedule: j.schedule,
+        onDemand: j.schedule == null,
+        enabled: j.enabled,
+        nextRunAt: j.nextRunAt ?? j.nextRun,
+        lastRun: j.lastRun,
+        lastStatus: j.lastStatus,
+        createdAt: j.createdAt,
+      })
+      const toRunItem = (r: import("@luna/core").JobRun) => ({
+        id: r.id,
+        startedAt: r.startedAt,
+        finishedAt: r.finishedAt,
+        status: r.status,
+        attempt: r.attempt,
+        error: r.error ? r.error.slice(0, 200) : null,
+      })
+      const workflowGalleryHandle = {
+        list: () =>
+          jobsStore.listAll().pipe(
+            Effect.map((jobs) => jobs.map(toGalleryItem)),
+            Effect.catchAll(() => Effect.succeed([] as ReturnType<typeof toGalleryItem>[])),
+          ),
+        runs: (jobId: string, limit?: number) =>
+          jobsStore.listRuns(jobId, limit ?? 25).pipe(
+            Effect.map((runs) => runs.map(toRunItem)),
+            Effect.catchAll(() => Effect.succeed([] as ReturnType<typeof toRunItem>[])),
+          ),
+      }
+
       // Wire-safety adapter (PRD §12): the ui-ws handle receives catalog
       // entries with the `body` ALREADY stripped. Bodies are prompt content
       // for the agent — they never reach clients, and stripping here (not
@@ -1931,6 +1972,7 @@ const buildServerLayer = (
         skillRegistry: skillsWsHandle, // PRD Part B: bodies pre-stripped
         connectorService: connectorsWsHandle, // PRD Part A: instances pre-projected
         artifactStore: artifactsWsHandle, // PRD Part C/W1: pinned artifacts (wire-safe)
+        workflowGallery: workflowGalleryHandle, // PRD Part C/W3: read-only jobs gallery
         localShellBridge,
         onLocalShellRelease: reattachSandbox,
         registerOpToken: registerOpTokenHandler,
