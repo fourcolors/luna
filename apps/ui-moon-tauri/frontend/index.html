@@ -4590,6 +4590,7 @@
     // and a later const hits the TDZ.
     const ConnectorsEngine = {
       _consentOpen: null, // definitionId whose consent sheet is expanded
+      _clientEditOpen: null, // definitionId whose OAuth-client edit form is open (M2.6)
       _beginTimer: null,  // begin-leg watchdog (review G2)
 
       _clearBusy(defId) {
@@ -4618,6 +4619,7 @@
           // Channel switch to a non-connector server: drop ALL connector
           // state so a stale catalog/instance list can't render (review G2).
           this._cancelOauth(null);
+          this._clientEditOpen = null;
           State.connectorCatalog = [];
           State.connectorInstances = [];
           State.connectorBusy = {};
@@ -4855,16 +4857,23 @@
             dis.addEventListener('click', () => this.disconnect(instance.id));
             actions.appendChild(dis);
           } else {
-            const connect = document.createElement('button');
-            connect.type = 'button';
-            connect.className = 'connector-btn';
-            connect.textContent = this._consentOpen === def.id ? 'Cancel' : 'Connect';
-            connect.addEventListener('click', () => {
-              this._consentOpen = this._consentOpen === def.id ? null : def.id;
-              this.setError(null);
-              this.render();
-            });
-            actions.appendChild(connect);
+            // No Connect button while the per-operator OAuth client is not yet
+            // configured — the setup form below is the only actionable step,
+            // and a dead Connect button beside it just confuses (review M2.6).
+            const needsClientFirst = !!(def.clientSetup && def.authKind === 'oauth2'
+              && !def.clientSetup.configured);
+            if (!needsClientFirst) {
+              const connect = document.createElement('button');
+              connect.type = 'button';
+              connect.className = 'connector-btn';
+              connect.textContent = this._consentOpen === def.id ? 'Cancel' : 'Connect';
+              connect.addEventListener('click', () => {
+                this._consentOpen = this._consentOpen === def.id ? null : def.id;
+                this.setError(null);
+                this.render();
+              });
+              actions.appendChild(connect);
+            }
           }
 
           head.appendChild(blot);
@@ -4877,9 +4886,30 @@
           // consent UI when clientSetup.configured === false; shows a small
           // "configured" badge + normal consent UI when true.
           if (def.clientSetup && def.authKind === 'oauth2' && !instance && !busy) {
-            if (!def.clientSetup.configured) {
-              // Show inline GCP client id / secret entry — block the Authorize path
-              // until the operator has pasted their credentials.
+            const editOpen = this._clientEditOpen === def.id;
+            if (def.clientSetup.configured) {
+              // configured === true: badge + an Edit toggle so a wrong or
+              // half-written credential can be corrected WITHOUT hand-editing
+              // ~/.luna/.env (review M2.6 — the recovery path).
+              const badge = document.createElement('div');
+              badge.className = 'connector-client-configured';
+              const badgeText = document.createElement('span');
+              badgeText.textContent = '✓ OAuth client configured';
+              badge.appendChild(badgeText);
+              const editBtn = document.createElement('button');
+              editBtn.type = 'button';
+              editBtn.className = 'connector-btn';
+              editBtn.textContent = editOpen ? 'Close' : 'Edit';
+              editBtn.addEventListener('click', () => {
+                this._clientEditOpen = editOpen ? null : def.id;
+                this.render();
+              });
+              badge.appendChild(editBtn);
+              card.appendChild(badge);
+            }
+            if (!def.clientSetup.configured || editOpen) {
+              // Inline GCP client id / secret entry — the Authorize path stays
+              // blocked until the operator has pasted their credentials.
               const setup = document.createElement('div');
               setup.className = 'connector-client-setup';
 
@@ -4907,11 +4937,13 @@
               secRow.className = 'connector-client-row';
               const secLabel = document.createElement('div');
               secLabel.className = 'connector-client-label';
-              secLabel.textContent = 'Client secret (optional)';
+              // Google's token endpoint requires the secret even for Desktop-app
+              // clients (review M2.6) — only skip it if your provider issues none.
+              secLabel.textContent = 'Client secret';
               const clientSecretInput = document.createElement('input');
               clientSecretInput.type = 'password';
               clientSecretInput.className = 'premium-text-input';
-              clientSecretInput.placeholder = '(optional)';
+              clientSecretInput.placeholder = 'Google issues one — paste it too';
               secRow.appendChild(secLabel);
               secRow.appendChild(clientSecretInput);
               setup.appendChild(secRow);
@@ -4924,17 +4956,14 @@
                 const cid = clientIdInput.value;
                 const csec = clientSecretInput.value;
                 if (!cid.trim()) return;
+                // Clear immediately so credentials never linger in the DOM
+                // while the save round-trips (review M2.6).
+                clientIdInput.value = '';
+                clientSecretInput.value = '';
                 this.setClient(def.id, cid, csec);
               });
               setup.appendChild(saveBtn);
               card.appendChild(setup);
-            } else {
-              // configured === true: show badge, then fall through to normal consent sheet
-              const badge = document.createElement('div');
-              badge.className = 'connector-client-configured';
-              badge.textContent = '✓ OAuth client configured';
-              // Insert before the consent sheet if it will render (i.e., _consentOpen)
-              card.appendChild(badge);
             }
           }
 
@@ -5021,6 +5050,8 @@
           ...(clientSecret && clientSecret.trim() ? { clientSecret: clientSecret.trim() } : {}),
         };
         WebSocketEngine.send(frame);
+        // Close the edit form — the catalog re-broadcast settles the badge.
+        this._clientEditOpen = null;
       },
     };
 

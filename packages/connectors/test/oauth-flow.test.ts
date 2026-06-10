@@ -14,6 +14,7 @@ import { Effect, Layer, Redacted } from "effect"
 import { Clock, ConfigError, SecretProvider } from "@luna/core"
 import { makeOAuthClient, type FetchLike } from "@luna/oauth"
 import {
+  ConnectorError,
   ConnectorInstanceStore,
   ConnectorService,
   ConnectorServiceLayer,
@@ -455,3 +456,91 @@ describe("setClientCredentials — operator OAuth client setup (M2.6)", () => {
     expect(errs.empty).toContain("must not be empty")
   })
 })
+
+describe("setClientCredentials hardening (M2.6 review)", () => {
+  it("rejects credentials containing line breaks (env-file injection guard)", async () => {
+    const rig = makeSetupRig2()
+    const errs = await Effect.runPromise(
+      Effect.gen(function* () {
+        const svc = yield* ConnectorService
+        const idErr = yield* svc
+          .setClientCredentials({ definitionId: "fake-google", clientId: "a\nINJECTED=1" })
+          .pipe(Effect.flip)
+        const secErr = yield* svc
+          .setClientCredentials({
+            definitionId: "fake-google",
+            clientId: "ok-id",
+            clientSecret: "s\r\nINJECTED=1",
+          })
+          .pipe(Effect.flip)
+        return { idErr: idErr.message, secErr: secErr.message }
+      }).pipe(Effect.provide(rig.layer)) as Effect.Effect<{ idErr: string; secErr: string }>,
+    )
+    expect(errs.idErr).toContain("line breaks")
+    expect(errs.secErr).toContain("line breaks")
+    // The offending values must never be echoed in the error.
+    expect(errs.idErr).not.toContain("INJECTED")
+    expect(errs.secErr).not.toContain("INJECTED")
+    expect(rig.env["FAKE_GOOGLE_CLIENT_ID"]).toBeUndefined()
+  })
+
+  it("writes the SECRET before the id — a secret-write failure cannot leave a 'configured' connector missing its secret", async () => {
+    const rig = makeSetupRig2({ failVar: "FAKE_GOOGLE_CLIENT_SECRET" })
+    const err = await Effect.runPromise(
+      Effect.gen(function* () {
+        const svc = yield* ConnectorService
+        const e = yield* svc
+          .setClientCredentials({
+            definitionId: "fake-google",
+            clientId: "my-id",
+            clientSecret: "my-secret",
+          })
+          .pipe(Effect.flip)
+        const cat = (yield* svc.catalog())[0]
+        return { message: e.message, configured: cat?.clientSetup }
+      }).pipe(Effect.provide(rig.layer)) as Effect.Effect<{ message: string; configured: unknown }>,
+    )
+    // The id was never written (secret-first ordering) → still unconfigured.
+    expect(rig.env["FAKE_GOOGLE_CLIENT_ID"]).toBeUndefined()
+    expect(err.configured).toEqual({ configured: false })
+  })
+})
+
+// A second rig variant whose storeSecret can be told to fail for one var.
+function makeSetupRig2(opts?: { failVar?: string }) {
+  const provider = makeProvider()
+  const clock = makeTestClock()
+  const env: Record<string, string | undefined> = {}
+  const stored = new Map<string, string>()
+  const layer = ConnectorServiceLayer({
+    definitions: [oauthDef],
+    oauth: {
+      client: makeOAuthClient(provider.fetchImpl),
+      storeSecret: (varName, value) =>
+        opts?.failVar === varName
+          ? Effect.fail(
+              new ConnectorError({ op: "storeSecret", message: "disk full" }),
+            )
+          : Effect.sync(() => {
+              env[varName] = value
+              stored.set(varName, value)
+              return `env:${varName}`
+            }),
+      env,
+    },
+  }).pipe(
+    Layer.provide(ConnectorInstanceStore.Memory),
+    Layer.provide(
+      Layer.succeed(SecretProvider, {
+        get: (ref: string) => {
+          const v = ref.startsWith("env:") ? stored.get(ref.slice(4)) : undefined
+          return v !== undefined
+            ? Effect.succeed(Redacted.make(v))
+            : Effect.fail(new ConfigError({ module: "test", key: ref, message: "x" }))
+        },
+      }),
+    ),
+    Layer.provide(clock.layer),
+  )
+  return { env, stored, layer }
+}

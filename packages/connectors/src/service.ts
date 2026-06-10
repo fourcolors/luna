@@ -693,14 +693,27 @@ export const ConnectorServiceLayer = (
               }),
             )
           }
-          // Persist via the same sink the refresh token uses (process.env +
-          // atomic ~/.luna/.env at 0600). client id first; the secret is
-          // OPTIONAL (Desktop-app/PKCE clients have none).
-          yield* oauth.storeSecret(definition.auth.clientIdEnvVar, id)
           const secret = input.clientSecret?.trim()
+          // The env-file writer's documented precondition: values must not
+          // carry newlines (an interior \n would inject an extra line into
+          // ~/.luna/.env — review M2.6). Reject WITHOUT echoing the value.
+          if (/[\r\n]/.test(id) || (secret !== undefined && /[\r\n]/.test(secret))) {
+            return yield* Effect.fail(
+              new ConnectorError({
+                op: "setClientCredentials",
+                message: "credentials must not contain line breaks",
+              }),
+            )
+          }
+          // Persist via the same sink the refresh token uses (process.env +
+          // atomic ~/.luna/.env at 0600). SECRET FIRST, id LAST (review M2.6):
+          // `configured` keys on the id var, so committing the id only after
+          // the secret succeeds means a partial failure can never leave a
+          // "configured" connector whose token exchange is missing its secret.
           if (secret !== undefined && secret.length > 0) {
             yield* oauth.storeSecret(definition.auth.clientSecretEnvVar, secret)
           }
+          yield* oauth.storeSecret(definition.auth.clientIdEnvVar, id)
         })
 
       // Build wire-safe catalog metadata, enriching oauth2 per-operator-client

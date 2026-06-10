@@ -1848,6 +1848,61 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       // No Authorize button — blocked until client is configured
       const btns = Array.from(card.querySelectorAll('.connector-btn')).map((b) => b.textContent)
       expect(btns).not.toContain('Authorize in browser')
+      // And no dead Connect button either (review M2.6) — the setup form is
+      // the only actionable step while the client is missing.
+      expect(btns).not.toContain('Connect')
+      expect(btns).toContain('Save client')
+    })
+
+    it('Save clears the credential inputs immediately (no secrets lingering in the DOM)', () => {
+      const m = M()
+      m.State.ws = { readyState: WebSocket.OPEN }
+      m.handleFrame({
+        type: 'connector-catalog',
+        connectors: [{
+          id: 'google_workspace', name: 'Google Workspace', blurb: 'Mail.',
+          category: 'productivity', authKind: 'oauth2',
+          clientSetup: { configured: false }, capabilities: [],
+        }],
+      })
+      const setup = document.querySelector('#connectors-list .connector-client-setup')!
+      const idInput = setup.querySelector('input[type=text]') as HTMLInputElement
+      const secInput = setup.querySelector('input[type=password]') as HTMLInputElement
+      idInput.value = 'my-id'
+      secInput.value = 'my-secret'
+      const save = Array.from(setup.querySelectorAll('.connector-btn'))
+        .find((b) => b.textContent === 'Save client') as HTMLButtonElement
+      save.click()
+      // The frame went out with the values…
+      const frame = sentFrames.find((f: any) => f.type === 'connector-set-client')
+      expect(frame).toMatchObject({ clientId: 'my-id', clientSecret: 'my-secret' })
+      // …and the inputs were cleared at once (review M2.6).
+      expect(idInput.value).toBe('')
+      expect(secInput.value).toBe('')
+    })
+
+    it('configured=true shows the badge with an Edit toggle that reopens the setup form (recovery path)', () => {
+      const m = M()
+      m.handleFrame({
+        type: 'connector-catalog',
+        connectors: [{
+          id: 'google_workspace', name: 'Google Workspace', blurb: 'Mail.',
+          category: 'productivity', authKind: 'oauth2',
+          clientSetup: { configured: true }, capabilities: [],
+        }],
+      })
+      const card = document.querySelector('#connectors-list .connector-card') as HTMLElement
+      expect(card.textContent).toContain('✓ OAuth client configured')
+      // No form while closed…
+      expect(card.querySelector('.connector-client-setup')).toBeNull()
+      // …Edit opens it (so a wrong/half-written credential can be re-entered
+      // without hand-editing ~/.luna/.env — review M2.6).
+      const edit = Array.from(card.querySelectorAll('.connector-btn'))
+        .find((b) => b.textContent === 'Edit') as HTMLButtonElement
+      expect(edit).toBeDefined()
+      edit.click()
+      const reopened = document.querySelector('#connectors-list .connector-client-setup')
+      expect(reopened).not.toBeNull()
     })
 
     it('setClient sends connector-set-client frame with definitionId + clientId; omits empty secret', () => {

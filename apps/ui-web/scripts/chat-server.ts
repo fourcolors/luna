@@ -889,11 +889,22 @@ const registerOpTokenHandler = makeRegisterOpToken({
  * (0600), mirroring the boot loader's parsing (first `=`, trimmed key), then set
  * `process.env[NAME]` live (EnvSecretProvider reads process.env per-resolve).
  * The deferred restart covers account-broker hydration. The value is never
- * logged. Name/value are pre-validated by makeRegisterSecret (no `=`/newline).
+ * logged. Callers pre-validate (makeRegisterSecret, setClientCredentials), but
+ * the no-newline invariant is ALSO enforced here so every writer — present and
+ * future — is covered (review M2.6: an interior \n in a value would inject an
+ * extra line into ~/.luna/.env).
  */
 const persistEnvSecret = (varName: string, value: string): Promise<void> =>
   new Promise((resolve, reject) => {
     try {
+      if (/[=\r\n]/.test(varName)) {
+        reject(new Error("env var name must not contain '=' or line breaks"))
+        return
+      }
+      if (/[\r\n]/.test(value)) {
+        reject(new Error("env secret value must not contain line breaks"))
+        return
+      }
       const envPath = resolveRuntimePaths().envFilePath
       let lines: ReadonlyArray<string> = []
       try {

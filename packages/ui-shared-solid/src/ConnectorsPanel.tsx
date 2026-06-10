@@ -41,6 +41,9 @@ export interface ConnectorsPanelProps {
 
 export const ConnectorsPanel: Component<ConnectorsPanelProps> = (props) => {
   const [openId, setOpenId] = createSignal<string | null>(null)
+  // Definition whose OAuth-client edit form is open even though configured —
+  // the recovery path for a wrong/half-written credential (review M2.6).
+  const [editClientId, setEditClientId] = createSignal<string | null>(null)
   const instanceFor = (defId: string) =>
     props.instances.find((i) => i.definitionId === defId) ?? null
 
@@ -93,6 +96,17 @@ export const ConnectorsPanel: Component<ConnectorsPanelProps> = (props) => {
                               <span class="skill-desc" style={{ color: "var(--ok, #4caf50)", "font-size": "0.8em" }}>
                                 ✓ OAuth client configured
                               </span>
+                              <button
+                                type="button"
+                                class="chip small"
+                                disabled={props.disabled === true}
+                                onClick={() =>
+                                  setEditClientId(editClientId() === def.id ? null : def.id)
+                                }
+                                title="Re-enter the OAuth client credentials"
+                              >
+                                {editClientId() === def.id ? "close" : "edit"}
+                              </button>
                             </Show>
                             <span class="skill-desc" style={{ "max-width": "160px" }}>
                               Connect from the Moon app
@@ -132,13 +146,20 @@ export const ConnectorsPanel: Component<ConnectorsPanelProps> = (props) => {
                     }}
                   />
                 </Show>
-                <Show when={def.clientSetup !== undefined && def.clientSetup.configured === false && instance() === null}>
+                <Show
+                  when={
+                    def.clientSetup !== undefined &&
+                    instance() === null &&
+                    (def.clientSetup.configured === false || editClientId() === def.id)
+                  }
+                >
                   <OAuthClientSetupForm
                     def={def}
                     disabled={props.disabled === true}
-                    onSubmit={(clientId, clientSecret) =>
+                    onSubmit={(clientId, clientSecret) => {
                       props.onSetClient?.(def.id, clientId, clientSecret)
-                    }
+                      setEditClientId(null)
+                    }}
                   />
                 </Show>
               </div>
@@ -188,9 +209,11 @@ const OAuthClientSetupForm: Component<{
         disabled={props.disabled}
         onInput={(e) => setClientId(e.currentTarget.value)}
       />
+      {/* Google's token endpoint requires the secret even for Desktop-app
+          clients (review M2.6) — only omit it if your provider issues none. */}
       <input
         type="password"
-        placeholder="Client secret (optional — Desktop-app clients can leave blank)"
+        placeholder="Client secret (Google issues one — paste it too)"
         value={clientSecret()}
         disabled={props.disabled}
         onInput={(e) => setClientSecret(e.currentTarget.value)}
