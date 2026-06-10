@@ -143,6 +143,13 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
           </div>
           <input type="password" id="ws-token-input" class="premium-text-input" placeholder="Enter token (optional)...">
         </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Setup wizard</span>
+            <span class="setting-desc">Guided setup — install Luna on this Mac, on a server, or point at one already running</span>
+          </div>
+          <button type="button" class="record-btn" id="open-wizard-btn">Open</button>
+        </div>
         </div>
         <div class="settings-tabpanel" data-tabpanel="secrets">
         <div class="setting-item flex-column">
@@ -173,6 +180,164 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
       </div>
       <div class="settings-footer">
         <button class="save-settings-btn" id="close-settings-btn">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       Setup Wizard — multi-step first-run flow. Auto-opens when no
+       connection has ever been configured (SetupWizard.maybeAutoOpen, gated
+       on a real Tauri runtime so jsdom/frontend-dev never see it uninvited);
+       re-runnable from Settings → Connection → Setup wizard. Three paths:
+         · local   — install + start the Luna server on THIS Mac via
+                     local_shell_exec (git clone → bun install → wake → pulse)
+         · remote  — collect a host, hand back a tailored copy-paste install
+                     command, then verify the resulting server
+         · connect — point the moon at a Luna that is already running
+       Every path funnels into the same connect step: a live hello-frame
+       probe against the entered URL, then persist via save_connection. ═══ -->
+  <div class="wizard-panel" id="setup-wizard" aria-hidden="true">
+    <div class="wizard-card" role="dialog" aria-modal="true" aria-label="Luna setup">
+      <div class="wizard-wash" aria-hidden="true">
+        <span class="wash-blot wash-a"></span>
+        <span class="wash-blot wash-b"></span>
+        <span class="wash-blot wash-c"></span>
+      </div>
+      <button type="button" class="settings-x wizard-x" id="wizard-close-x" aria-label="Close setup">
+        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+      <div class="wizard-beads" id="wizard-beads" aria-hidden="true">
+        <span class="wizard-bead" data-bead="0"></span>
+        <span class="wizard-bead" data-bead="1"></span>
+        <span class="wizard-bead" data-bead="2"></span>
+        <span class="wizard-bead" data-bead="3"></span>
+        <span class="wizard-bead" data-bead="4"></span>
+      </div>
+      <div class="wizard-body">
+
+        <div class="wizard-step active" data-step="welcome">
+          <div class="wizard-hero-blot" aria-hidden="true"></div>
+          <h2>Welcome to Luna</h2>
+          <p class="wizard-sub">Hi — I’m your moon. I just need to know where Luna, my other half, should live. Pick a spot on the next screen and I’ll take care of the rest.</p>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-skip">Skip for now</button>
+            <button type="button" class="wizard-primary-btn" id="wizard-begin">Begin</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="path">
+          <h2>Where should Luna live?</h2>
+          <p class="wizard-sub">You can change your mind any time — this wizard lives in Settings.</p>
+          <div class="wizard-paths">
+            <button type="button" class="wizard-path-card" data-path="local">
+              <span class="wizard-blot-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12" rx="1.8"></rect><line x1="8.5" y1="20" x2="15.5" y2="20"></line><line x1="12" y1="16.5" x2="12" y2="20"></line></svg>
+              </span>
+              <span class="wizard-path-title">This Mac</span>
+              <span class="wizard-path-desc" id="wizard-path-local-desc">Everything stays private, right on this computer</span>
+            </button>
+            <button type="button" class="wizard-path-card" data-path="remote">
+              <span class="wizard-blot-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><rect x="3" y="3.5" width="18" height="7" rx="1.6"></rect><rect x="3" y="13.5" width="18" height="7" rx="1.6"></rect><circle cx="7" cy="7" r="0.6"></circle><circle cx="7" cy="17" r="0.6"></circle></svg>
+              </span>
+              <span class="wizard-path-title">My own server</span>
+              <span class="wizard-path-desc">For a home server or Linux box you own</span>
+            </button>
+            <button type="button" class="wizard-path-card" data-path="connect">
+              <span class="wizard-blot-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"></path><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"></path></svg>
+              </span>
+              <span class="wizard-path-title">Already running</span>
+              <span class="wizard-path-desc">Just connect to a Luna that exists somewhere</span>
+            </button>
+          </div>
+          <p class="wizard-sub wizard-detect-note" id="wizard-detect-note" hidden=""></p>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-path-back">Back</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="local">
+          <h2 id="wizard-local-title">Set up Luna on this Mac</h2>
+          <p class="wizard-sub" id="wizard-local-sub">I’ll download Luna, set her up, and wake her — all on this machine. Nothing leaves your Mac.</p>
+          <details class="wizard-advanced">
+            <summary>Advanced options</summary>
+            <div class="wizard-field">
+              <label for="wizard-local-dir">Install folder</label>
+              <input type="text" id="wizard-local-dir" class="premium-text-input" value="~/luna" spellcheck="false" autocomplete="off">
+              <span class="field-hint">Luna’s code lives here; her data and settings live in ~/.luna. The defaults are fine for almost everyone.</span>
+            </div>
+          </details>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-local-back">Back</button>
+            <button type="button" class="wizard-ghost-btn" id="wizard-local-connect" hidden="">Just connect to it</button>
+            <button type="button" class="wizard-primary-btn" id="wizard-local-start">Install &amp; start</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="progress">
+          <h2 id="wizard-progress-title">Painting Luna onto this Mac…</h2>
+          <p class="wizard-sub" id="wizard-progress-sub">This can take a few minutes the first time. Feel free to watch the beads.</p>
+          <div class="wizard-tasks" id="wizard-progress-list"></div>
+          <pre class="wizard-log" id="wizard-progress-log" hidden=""></pre>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-progress-back" hidden="">Back</button>
+            <button type="button" class="wizard-primary-btn" id="wizard-progress-next" hidden="">Connect to it</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="remote">
+          <h2>Install on your server</h2>
+          <p class="wizard-sub">Tell me your server’s name and I’ll write the whole command for you. Paste it into the Terminal app, let it finish, then come back here.</p>
+          <div class="wizard-field">
+            <label for="wizard-remote-host">Your server</label>
+            <input type="text" id="wizard-remote-host" class="premium-text-input" placeholder="like: me@my-server" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="wizard-cmd-block">
+            <button type="button" class="wizard-copy-btn" id="wizard-remote-copy">Copy</button>
+            <pre id="wizard-remote-cmd"></pre>
+          </div>
+          <div class="wizard-field">
+            <span class="field-hint">When it finishes, the last line it prints is your secret key — keep it handy, you’ll paste it on the next step. (For safety, Luna talks only over your private network, like Tailscale.)</span>
+          </div>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-remote-back">Back</button>
+            <button type="button" class="wizard-primary-btn" id="wizard-remote-continue">I ran it — continue</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="connect">
+          <h2>Point your moon at Luna</h2>
+          <p class="wizard-sub">Where does Luna live? I’ll listen for her hello before saving anything.</p>
+          <div class="wizard-field">
+            <label for="wizard-connect-url">Luna’s address</label>
+            <input type="text" id="wizard-connect-url" class="premium-text-input" placeholder="ws://127.0.0.1:4753/ui" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="wizard-field">
+            <label for="wizard-connect-token">Secret key <span style="font-weight:400;color:#64748b;">(optional)</span></label>
+            <input type="password" id="wizard-connect-token" class="premium-text-input" placeholder="Printed during install — leave empty if you don’t have one" autocomplete="off">
+          </div>
+          <div class="wizard-connect-status" id="wizard-connect-status"></div>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-connect-back">Back</button>
+            <button type="button" class="wizard-ghost-btn" id="wizard-test-btn">Test connection</button>
+            <button type="button" class="wizard-primary-btn" id="wizard-finish-btn">Save &amp; finish</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="done">
+          <div class="wizard-hero-blot" aria-hidden="true"></div>
+          <h2 id="wizard-done-title">Luna is tethered</h2>
+          <p class="wizard-sub" id="wizard-done-summary">Your moon has a home.</p>
+          <p class="wizard-sub" style="font-size: 0.74rem;">Your moon keeps itself up to date on its own — and any time Luna herself needs a refresh, just re-run this wizard from Settings and pick “This Mac” again.</p>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-primary-btn" id="wizard-done-btn">Start chatting</button>
+          </div>
+        </div>
+
       </div>
     </div>
   </div>
@@ -454,6 +619,13 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
           </div>
           <input type="password" id="ws-token-input" class="premium-text-input" placeholder="Enter token (optional)...">
         </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Setup wizard</span>
+            <span class="setting-desc">Guided setup — install Luna on this Mac, on a server, or point at one already running</span>
+          </div>
+          <button type="button" class="record-btn" id="open-wizard-btn">Open</button>
+        </div>
         </div>
         <div class="settings-tabpanel" data-tabpanel="secrets">
         <div class="setting-item flex-column">
@@ -484,6 +656,164 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
       </div>
       <div class="settings-footer">
         <button class="save-settings-btn" id="close-settings-btn">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       Setup Wizard — multi-step first-run flow. Auto-opens when no
+       connection has ever been configured (SetupWizard.maybeAutoOpen, gated
+       on a real Tauri runtime so jsdom/frontend-dev never see it uninvited);
+       re-runnable from Settings → Connection → Setup wizard. Three paths:
+         · local   — install + start the Luna server on THIS Mac via
+                     local_shell_exec (git clone → bun install → wake → pulse)
+         · remote  — collect a host, hand back a tailored copy-paste install
+                     command, then verify the resulting server
+         · connect — point the moon at a Luna that is already running
+       Every path funnels into the same connect step: a live hello-frame
+       probe against the entered URL, then persist via save_connection. ═══ -->
+  <div class="wizard-panel" id="setup-wizard" aria-hidden="true">
+    <div class="wizard-card" role="dialog" aria-modal="true" aria-label="Luna setup">
+      <div class="wizard-wash" aria-hidden="true">
+        <span class="wash-blot wash-a"></span>
+        <span class="wash-blot wash-b"></span>
+        <span class="wash-blot wash-c"></span>
+      </div>
+      <button type="button" class="settings-x wizard-x" id="wizard-close-x" aria-label="Close setup">
+        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+      <div class="wizard-beads" id="wizard-beads" aria-hidden="true">
+        <span class="wizard-bead" data-bead="0"></span>
+        <span class="wizard-bead" data-bead="1"></span>
+        <span class="wizard-bead" data-bead="2"></span>
+        <span class="wizard-bead" data-bead="3"></span>
+        <span class="wizard-bead" data-bead="4"></span>
+      </div>
+      <div class="wizard-body">
+
+        <div class="wizard-step active" data-step="welcome">
+          <div class="wizard-hero-blot" aria-hidden="true"></div>
+          <h2>Welcome to Luna</h2>
+          <p class="wizard-sub">Hi — I’m your moon. I just need to know where Luna, my other half, should live. Pick a spot on the next screen and I’ll take care of the rest.</p>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-skip">Skip for now</button>
+            <button type="button" class="wizard-primary-btn" id="wizard-begin">Begin</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="path">
+          <h2>Where should Luna live?</h2>
+          <p class="wizard-sub">You can change your mind any time — this wizard lives in Settings.</p>
+          <div class="wizard-paths">
+            <button type="button" class="wizard-path-card" data-path="local">
+              <span class="wizard-blot-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12" rx="1.8"></rect><line x1="8.5" y1="20" x2="15.5" y2="20"></line><line x1="12" y1="16.5" x2="12" y2="20"></line></svg>
+              </span>
+              <span class="wizard-path-title">This Mac</span>
+              <span class="wizard-path-desc" id="wizard-path-local-desc">Everything stays private, right on this computer</span>
+            </button>
+            <button type="button" class="wizard-path-card" data-path="remote">
+              <span class="wizard-blot-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><rect x="3" y="3.5" width="18" height="7" rx="1.6"></rect><rect x="3" y="13.5" width="18" height="7" rx="1.6"></rect><circle cx="7" cy="7" r="0.6"></circle><circle cx="7" cy="17" r="0.6"></circle></svg>
+              </span>
+              <span class="wizard-path-title">My own server</span>
+              <span class="wizard-path-desc">For a home server or Linux box you own</span>
+            </button>
+            <button type="button" class="wizard-path-card" data-path="connect">
+              <span class="wizard-blot-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"></path><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"></path></svg>
+              </span>
+              <span class="wizard-path-title">Already running</span>
+              <span class="wizard-path-desc">Just connect to a Luna that exists somewhere</span>
+            </button>
+          </div>
+          <p class="wizard-sub wizard-detect-note" id="wizard-detect-note" hidden=""></p>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-path-back">Back</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="local">
+          <h2 id="wizard-local-title">Set up Luna on this Mac</h2>
+          <p class="wizard-sub" id="wizard-local-sub">I’ll download Luna, set her up, and wake her — all on this machine. Nothing leaves your Mac.</p>
+          <details class="wizard-advanced">
+            <summary>Advanced options</summary>
+            <div class="wizard-field">
+              <label for="wizard-local-dir">Install folder</label>
+              <input type="text" id="wizard-local-dir" class="premium-text-input" value="~/luna" spellcheck="false" autocomplete="off">
+              <span class="field-hint">Luna’s code lives here; her data and settings live in ~/.luna. The defaults are fine for almost everyone.</span>
+            </div>
+          </details>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-local-back">Back</button>
+            <button type="button" class="wizard-ghost-btn" id="wizard-local-connect" hidden="">Just connect to it</button>
+            <button type="button" class="wizard-primary-btn" id="wizard-local-start">Install &amp; start</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="progress">
+          <h2 id="wizard-progress-title">Painting Luna onto this Mac…</h2>
+          <p class="wizard-sub" id="wizard-progress-sub">This can take a few minutes the first time. Feel free to watch the beads.</p>
+          <div class="wizard-tasks" id="wizard-progress-list"></div>
+          <pre class="wizard-log" id="wizard-progress-log" hidden=""></pre>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-progress-back" hidden="">Back</button>
+            <button type="button" class="wizard-primary-btn" id="wizard-progress-next" hidden="">Connect to it</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="remote">
+          <h2>Install on your server</h2>
+          <p class="wizard-sub">Tell me your server’s name and I’ll write the whole command for you. Paste it into the Terminal app, let it finish, then come back here.</p>
+          <div class="wizard-field">
+            <label for="wizard-remote-host">Your server</label>
+            <input type="text" id="wizard-remote-host" class="premium-text-input" placeholder="like: me@my-server" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="wizard-cmd-block">
+            <button type="button" class="wizard-copy-btn" id="wizard-remote-copy">Copy</button>
+            <pre id="wizard-remote-cmd"></pre>
+          </div>
+          <div class="wizard-field">
+            <span class="field-hint">When it finishes, the last line it prints is your secret key — keep it handy, you’ll paste it on the next step. (For safety, Luna talks only over your private network, like Tailscale.)</span>
+          </div>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-remote-back">Back</button>
+            <button type="button" class="wizard-primary-btn" id="wizard-remote-continue">I ran it — continue</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="connect">
+          <h2>Point your moon at Luna</h2>
+          <p class="wizard-sub">Where does Luna live? I’ll listen for her hello before saving anything.</p>
+          <div class="wizard-field">
+            <label for="wizard-connect-url">Luna’s address</label>
+            <input type="text" id="wizard-connect-url" class="premium-text-input" placeholder="ws://127.0.0.1:4753/ui" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="wizard-field">
+            <label for="wizard-connect-token">Secret key <span style="font-weight:400;color:#64748b;">(optional)</span></label>
+            <input type="password" id="wizard-connect-token" class="premium-text-input" placeholder="Printed during install — leave empty if you don’t have one" autocomplete="off">
+          </div>
+          <div class="wizard-connect-status" id="wizard-connect-status"></div>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-connect-back">Back</button>
+            <button type="button" class="wizard-ghost-btn" id="wizard-test-btn">Test connection</button>
+            <button type="button" class="wizard-primary-btn" id="wizard-finish-btn">Save &amp; finish</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="done">
+          <div class="wizard-hero-blot" aria-hidden="true"></div>
+          <h2 id="wizard-done-title">Luna is tethered</h2>
+          <p class="wizard-sub" id="wizard-done-summary">Your moon has a home.</p>
+          <p class="wizard-sub" style="font-size: 0.74rem;">Your moon keeps itself up to date on its own — and any time Luna herself needs a refresh, just re-run this wizard from Settings and pick “This Mac” again.</p>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-primary-btn" id="wizard-done-btn">Start chatting</button>
+          </div>
+        </div>
+
       </div>
     </div>
   </div>

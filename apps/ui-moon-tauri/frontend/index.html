@@ -1719,6 +1719,517 @@
       background: #0a0e1c;
       color: #e2e8f0;
     }
+
+    /* ════════════════════════════════════════════════════════════════════
+       Setup Wizard — first-run guided install, in the moon's watercolor hand.
+       Same overlay pattern as .settings-panel (plain rgba dim, NO
+       backdrop-filter — see the .chat-panel compositing note), same solid
+       dark-glass card. All the "watercolor" is pure CSS: layered off-center
+       radial-gradients + an ORGANIC border-radius that a keyframe slowly
+       morphs — the exact recipe the .moon-bead uses, so the wizard reads as
+       the same brush. z-index 320 sits above settings (300) so "open wizard
+       from settings" layers correctly. ══════════════════════════════════ */
+    .wizard-panel {
+      position: fixed;
+      inset: 0;
+      z-index: 320;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: rgba(4, 6, 14, 0.66);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+    }
+    .wizard-panel.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .wizard-card {
+      position: relative;
+      width: 100%;
+      max-width: 600px;
+      max-height: 100%;
+      display: flex;
+      flex-direction: column;
+      background: #0c1020;
+      border-radius: 26px;
+      box-shadow:
+        0 24px 64px rgba(0, 0, 0, 0.55),
+        inset 0 0 0 1px rgba(255, 255, 255, 0.05),
+        inset 0 0 22px rgba(138, 180, 248, 0.05);
+      overflow: hidden;
+      transform: translateY(8px) scale(0.98);
+      transition: transform 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
+    }
+    .wizard-panel.active .wizard-card { transform: none; }
+
+    /* Ambient watercolor wash: three big soft pigment pools drifting behind
+       the content. Each blot is the moon-bead gradient at a larger scale and
+       a lower opacity, with its own slow morph so the card never feels like
+       a static dialog. pointer-events:none — pure paint. */
+    .wizard-wash {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      overflow: hidden;
+    }
+    .wash-blot {
+      position: absolute;
+      border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%;
+      filter: blur(6px);
+      animation: wash-drift 16s ease-in-out infinite alternate;
+    }
+    .wash-a {
+      width: 340px; height: 300px;
+      left: -120px; top: -110px;
+      background:
+        radial-gradient(circle closest-side,
+          rgba(138, 180, 248, 0.14) 0%,
+          rgba(118, 162, 240, 0.20) 55%,
+          rgba(104, 146, 232, 0.10) 80%,
+          rgba(104, 146, 232, 0) 100%),
+        radial-gradient(circle at 64% 68%, rgba(165, 148, 238, 0.10) 0%, rgba(165, 148, 238, 0) 60%);
+    }
+    .wash-b {
+      width: 300px; height: 280px;
+      right: -120px; top: 30%;
+      background:
+        radial-gradient(circle closest-side,
+          rgba(165, 148, 238, 0.12) 0%,
+          rgba(150, 140, 235, 0.15) 50%,
+          rgba(138, 180, 248, 0.07) 82%,
+          rgba(138, 180, 248, 0) 100%);
+      animation-delay: -6s;
+      animation-duration: 19s;
+    }
+    .wash-c {
+      width: 280px; height: 240px;
+      left: 20%; bottom: -130px;
+      background:
+        radial-gradient(circle closest-side,
+          rgba(126, 184, 240, 0.10) 0%,
+          rgba(118, 162, 240, 0.14) 55%,
+          rgba(96, 138, 226, 0) 100%);
+      animation-delay: -11s;
+      animation-duration: 22s;
+    }
+    @keyframes wash-drift {
+      0%   { border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%; transform: translate(0, 0) rotate(0deg); }
+      50%  { border-radius: 53% 47% 46% 54% / 45% 55% 48% 52%; transform: translate(14px, -10px) rotate(2deg); }
+      100% { border-radius: 49% 51% 55% 45% / 54% 44% 52% 48%; transform: translate(-8px, 8px) rotate(-2deg); }
+    }
+
+    /* All real content floats above the wash. */
+    .wizard-body {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+      padding: 22px 26px 20px;
+      overflow-y: auto;
+    }
+    .wizard-body::-webkit-scrollbar { width: 6px; }
+    .wizard-body::-webkit-scrollbar-track { background: transparent; }
+    .wizard-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 3px; }
+
+    .wizard-x {
+      position: absolute;
+      top: 14px; right: 14px;
+      z-index: 2;
+    }
+
+    /* Step progress beads — tiny watercolor blots strung across the top.
+       pending = faint outline pool; active = lit + shimmering; done = filled. */
+    .wizard-beads {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 18px 0 0;
+    }
+    .wizard-bead {
+      width: 11px; height: 11px;
+      border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%;
+      background: rgba(138, 180, 248, 0.12);
+      box-shadow: inset 0 0 0 1px rgba(138, 180, 248, 0.18);
+      transition: background 0.3s, box-shadow 0.3s, transform 0.3s;
+    }
+    .wizard-bead.active {
+      background:
+        radial-gradient(circle closest-side,
+          rgba(150, 188, 250, 0.5) 0%,
+          rgba(118, 162, 240, 0.85) 70%,
+          rgba(96, 138, 226, 0) 100%);
+      box-shadow: 0 0 10px rgba(138, 180, 248, 0.45);
+      transform: scale(1.25);
+      animation: bead-pulse 2.4s ease-in-out infinite alternate;
+    }
+    .wizard-bead.done {
+      background:
+        radial-gradient(circle closest-side,
+          rgba(138, 180, 248, 0.55) 0%,
+          rgba(165, 148, 238, 0.6) 75%,
+          rgba(165, 148, 238, 0) 100%);
+      box-shadow: none;
+    }
+    @keyframes bead-pulse {
+      from { border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%; }
+      to   { border-radius: 53% 47% 45% 55% / 46% 54% 47% 53%; }
+    }
+
+    /* Steps: only the active one renders. */
+    .wizard-step { display: none; }
+    .wizard-step.active {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      animation: step-wash-in 0.35s ease;
+    }
+    @keyframes step-wash-in {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: none; }
+    }
+
+    .wizard-step h2 {
+      font-family: var(--font-display);
+      font-size: 1.35rem;
+      font-weight: 800;
+      color: #fff;
+      text-align: center;
+      margin: 14px 0 6px;
+    }
+    .wizard-sub {
+      font-size: 0.86rem;
+      line-height: 1.5;
+      color: #9fb0d0;
+      text-align: center;
+      max-width: 420px;
+      margin: 0 auto 18px;
+    }
+
+    /* The welcome step's hero: a big watercolor moon blot. */
+    .wizard-hero-blot {
+      width: 96px; height: 96px;
+      margin: 8px auto 0;
+      border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%;
+      background:
+        radial-gradient(circle closest-side,
+          rgba(150, 188, 250, 0.30) 0%,
+          rgba(138, 180, 248, 0.40) 42%,
+          rgba(118, 162, 240, 0.62) 68%,
+          rgba(104, 146, 232, 0.78) 82%,
+          rgba(96, 138, 226, 0.28) 92%,
+          rgba(96, 138, 226, 0) 100%),
+        radial-gradient(circle at 64% 68%, rgba(165, 148, 238, 0.25) 0%, rgba(165, 148, 238, 0) 60%),
+        radial-gradient(circle at 32% 30%, rgba(126, 184, 240, 0.18) 0%, rgba(126, 184, 240, 0) 55%);
+      box-shadow: 0 0 28px rgba(138, 180, 248, 0.30);
+      animation: hero-wash 7s ease-in-out infinite alternate;
+    }
+    @keyframes hero-wash {
+      from { border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%; }
+      to   { border-radius: 52% 48% 46% 54% / 47% 55% 45% 53%; }
+    }
+
+    /* Path-choice cards: three painterly tiles. */
+    .wizard-paths {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin: 6px 0 16px;
+    }
+    .wizard-path-card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      padding: 18px 12px 14px;
+      background: rgba(255, 255, 255, 0.025);
+      border: none;
+      border-radius: 18px;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+      cursor: pointer;
+      font-family: var(--font-body);
+      text-align: center;
+      transition: transform 0.2s cubic-bezier(0.25, 0.8, 0.25, 1), box-shadow 0.2s, background 0.2s;
+    }
+    .wizard-path-card:hover {
+      transform: translateY(-3px);
+      background: rgba(138, 180, 248, 0.06);
+      box-shadow:
+        inset 0 0 0 1px rgba(138, 180, 248, 0.35),
+        0 8px 22px rgba(0, 0, 0, 0.35),
+        0 0 18px rgba(138, 180, 248, 0.12);
+    }
+    .wizard-path-title {
+      font-family: var(--font-display);
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: #f1f5f9;
+    }
+    .wizard-path-desc {
+      font-size: 0.72rem;
+      line-height: 1.45;
+      color: #8aa0c6;
+    }
+
+    /* Blot icon: a small pigment pool with a line glyph floating on it. */
+    .wizard-blot-icon {
+      position: relative;
+      width: 52px; height: 52px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%;
+      background:
+        radial-gradient(circle closest-side,
+          rgba(138, 180, 248, 0.22) 0%,
+          rgba(118, 162, 240, 0.42) 60%,
+          rgba(104, 146, 232, 0.18) 88%,
+          rgba(104, 146, 232, 0) 100%),
+        radial-gradient(circle at 62% 66%, rgba(165, 148, 238, 0.22) 0%, rgba(165, 148, 238, 0) 60%);
+      animation: hero-wash 9s ease-in-out infinite alternate;
+    }
+    .wizard-blot-icon svg {
+      width: 24px; height: 24px;
+      stroke: #f0f6ff;
+      fill: none;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    /* Form bits: reuse the premium text input look; labels match settings. */
+    .wizard-field { margin: 0 0 12px; }
+    .wizard-field label {
+      display: block;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: #cdd9f5;
+      margin-bottom: 6px;
+    }
+    .wizard-field .field-hint {
+      display: block;
+      font-size: 0.72rem;
+      color: #64748b;
+      margin-top: 5px;
+      line-height: 1.45;
+    }
+
+    /* Buttons: a primary watercolor wash pill + a quiet ghost. */
+    .wizard-actions {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      margin-top: auto;
+      padding-top: 16px;
+    }
+    .wizard-primary-btn {
+      border: none;
+      cursor: pointer;
+      font-family: var(--font-display);
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: #0c1020;
+      padding: 11px 26px;
+      border-radius: 999px;
+      background:
+        radial-gradient(circle at 30% 30%, rgba(240, 247, 255, 0.55) 0%, rgba(240, 247, 255, 0) 55%),
+        linear-gradient(135deg, #a6c6fa 0%, #8ab4f8 45%, #9a8ce6 100%);
+      box-shadow: 0 4px 18px rgba(138, 180, 248, 0.35);
+      transition: transform 0.2s, box-shadow 0.2s, opacity 0.2s;
+    }
+    .wizard-primary-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 22px rgba(138, 180, 248, 0.5); }
+    .wizard-primary-btn:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: none; }
+    .wizard-ghost-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-family: var(--font-body);
+      font-size: 0.8rem;
+      color: #8aa0c6;
+      padding: 10px 14px;
+      border-radius: 999px;
+      transition: color 0.2s, background 0.2s;
+    }
+    .wizard-ghost-btn:hover { color: #e2e8f0; background: rgba(255, 255, 255, 0.05); }
+
+    /* Copy-paste command block (remote path). */
+    .wizard-cmd-block {
+      position: relative;
+      background: #0d1325;
+      border-radius: 12px;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+      padding: 12px 14px;
+      margin: 4px 0 10px;
+    }
+    .wizard-cmd-block pre {
+      font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+      font-size: 0.72rem;
+      line-height: 1.55;
+      color: #c8d6f5;
+      white-space: pre-wrap;
+      word-break: break-all;
+      user-select: text;
+      -webkit-user-select: text;
+      padding-right: 58px;   /* keep the first line clear of the Copy button */
+    }
+    .wizard-copy-btn {
+      position: absolute;
+      top: 8px; right: 8px;
+      background: rgba(138, 180, 248, 0.12);
+      border: none;
+      border-radius: 8px;
+      color: #8ab4f8;
+      font-family: var(--font-body);
+      font-size: 0.68rem;
+      font-weight: 600;
+      padding: 5px 10px;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s;
+    }
+    .wizard-copy-btn:hover { background: rgba(138, 180, 248, 0.22); color: #f0f6ff; }
+
+    /* Install progress: each task is a row with a blot bead that morphs while
+       running, settles solid on success, and dries red on failure. */
+    .wizard-tasks {
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      margin: 6px 0 10px;
+    }
+    .wizard-task {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 9px 12px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.02);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+    }
+    .wizard-task-bead {
+      flex-shrink: 0;
+      width: 13px; height: 13px;
+      border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%;
+      background: rgba(138, 180, 248, 0.1);
+      box-shadow: inset 0 0 0 1px rgba(138, 180, 248, 0.18);
+      transition: background 0.3s, box-shadow 0.3s;
+    }
+    .wizard-task.running .wizard-task-bead {
+      background:
+        radial-gradient(circle closest-side,
+          rgba(150, 188, 250, 0.5) 0%,
+          rgba(118, 162, 240, 0.9) 70%,
+          rgba(96, 138, 226, 0) 100%);
+      box-shadow: 0 0 10px rgba(138, 180, 248, 0.5);
+      animation: bead-pulse 1.1s ease-in-out infinite alternate;
+    }
+    .wizard-task.ok .wizard-task-bead {
+      background:
+        radial-gradient(circle closest-side,
+          rgba(110, 222, 168, 0.55) 0%,
+          rgba(74, 222, 128, 0.7) 70%,
+          rgba(74, 222, 128, 0) 100%);
+      box-shadow: none;
+    }
+    .wizard-task.fail .wizard-task-bead {
+      background:
+        radial-gradient(circle closest-side,
+          rgba(252, 165, 165, 0.5) 0%,
+          rgba(248, 113, 113, 0.7) 70%,
+          rgba(248, 113, 113, 0) 100%);
+      box-shadow: none;
+    }
+    .wizard-task-label {
+      flex: 1;
+      font-size: 0.8rem;
+      color: #cdd9f5;
+    }
+    .wizard-task.fail .wizard-task-label { color: #fca5a5; }
+    .wizard-task-note {
+      font-size: 0.7rem;
+      color: #64748b;
+      max-width: 45%;
+      text-align: right;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .wizard-log {
+      font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+      font-size: 0.66rem;
+      line-height: 1.5;
+      color: #7d8db3;
+      background: #0d1325;
+      border-radius: 10px;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+      padding: 10px 12px;
+      max-height: 110px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      user-select: text;
+      -webkit-user-select: text;
+    }
+    .wizard-log::-webkit-scrollbar { width: 6px; }
+    .wizard-log::-webkit-scrollbar-track { background: transparent; }
+    .wizard-log::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 3px; }
+
+    /* Environment-detection note under the path cards ("Luna already lives
+       here"). Same quiet-sub voice, success-tinted. */
+    .wizard-detect-note {
+      color: #4ade80;
+      font-size: 0.76rem;
+      margin-bottom: 10px;
+    }
+
+    /* "Advanced options" disclosure on the local step — defaults just work,
+       the folder picker hides until summoned. */
+    .wizard-advanced {
+      margin: 2px 0 12px;
+    }
+    .wizard-advanced summary {
+      cursor: pointer;
+      list-style: none;
+      font-size: 0.76rem;
+      color: #8aa0c6;
+      padding: 6px 2px;
+      transition: color 0.2s;
+    }
+    .wizard-advanced summary::-webkit-details-marker { display: none; }
+    .wizard-advanced summary::before {
+      content: '▸';
+      display: inline-block;
+      margin-right: 6px;
+      transition: transform 0.2s;
+    }
+    .wizard-advanced[open] summary::before { transform: rotate(90deg); }
+    .wizard-advanced summary:hover { color: #cdd9f5; }
+    .wizard-advanced .wizard-field { margin-top: 10px; }
+
+    /* Connection-test status line. */
+    .wizard-connect-status {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 22px;
+      font-size: 0.78rem;
+      text-align: center;
+      margin-top: 4px;
+    }
+    .wizard-connect-status.run  { color: #8ab4f8; }
+    .wizard-connect-status.ok   { color: #4ade80; }
+    .wizard-connect-status.fail { color: #f87171; }
   </style>
 </head>
 <body>
@@ -1863,6 +2374,13 @@
           </div>
           <input type="password" id="ws-token-input" class="premium-text-input" placeholder="Enter token (optional)...">
         </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-label">Setup wizard</span>
+            <span class="setting-desc">Guided setup — install Luna on this Mac, on a server, or point at one already running</span>
+          </div>
+          <button type="button" class="record-btn" id="open-wizard-btn">Open</button>
+        </div>
         </div>
         <div class="settings-tabpanel" data-tabpanel="secrets">
         <div class="setting-item flex-column">
@@ -1893,6 +2411,164 @@
       </div>
       <div class="settings-footer">
         <button class="save-settings-btn" id="close-settings-btn">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       Setup Wizard — multi-step first-run flow. Auto-opens when no
+       connection has ever been configured (SetupWizard.maybeAutoOpen, gated
+       on a real Tauri runtime so jsdom/frontend-dev never see it uninvited);
+       re-runnable from Settings → Connection → Setup wizard. Three paths:
+         · local   — install + start the Luna server on THIS Mac via
+                     local_shell_exec (git clone → bun install → wake → pulse)
+         · remote  — collect a host, hand back a tailored copy-paste install
+                     command, then verify the resulting server
+         · connect — point the moon at a Luna that is already running
+       Every path funnels into the same connect step: a live hello-frame
+       probe against the entered URL, then persist via save_connection. ═══ -->
+  <div class="wizard-panel" id="setup-wizard" aria-hidden="true">
+    <div class="wizard-card" role="dialog" aria-modal="true" aria-label="Luna setup">
+      <div class="wizard-wash" aria-hidden="true">
+        <span class="wash-blot wash-a"></span>
+        <span class="wash-blot wash-b"></span>
+        <span class="wash-blot wash-c"></span>
+      </div>
+      <button type="button" class="settings-x wizard-x" id="wizard-close-x" aria-label="Close setup">
+        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+      <div class="wizard-beads" id="wizard-beads" aria-hidden="true">
+        <span class="wizard-bead" data-bead="0"></span>
+        <span class="wizard-bead" data-bead="1"></span>
+        <span class="wizard-bead" data-bead="2"></span>
+        <span class="wizard-bead" data-bead="3"></span>
+        <span class="wizard-bead" data-bead="4"></span>
+      </div>
+      <div class="wizard-body">
+
+        <div class="wizard-step active" data-step="welcome">
+          <div class="wizard-hero-blot" aria-hidden="true"></div>
+          <h2>Welcome to Luna</h2>
+          <p class="wizard-sub">Hi — I’m your moon. I just need to know where Luna, my other half, should live. Pick a spot on the next screen and I’ll take care of the rest.</p>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-skip">Skip for now</button>
+            <button type="button" class="wizard-primary-btn" id="wizard-begin">Begin</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="path">
+          <h2>Where should Luna live?</h2>
+          <p class="wizard-sub">You can change your mind any time — this wizard lives in Settings.</p>
+          <div class="wizard-paths">
+            <button type="button" class="wizard-path-card" data-path="local">
+              <span class="wizard-blot-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12" rx="1.8"></rect><line x1="8.5" y1="20" x2="15.5" y2="20"></line><line x1="12" y1="16.5" x2="12" y2="20"></line></svg>
+              </span>
+              <span class="wizard-path-title">This Mac</span>
+              <span class="wizard-path-desc" id="wizard-path-local-desc">Everything stays private, right on this computer</span>
+            </button>
+            <button type="button" class="wizard-path-card" data-path="remote">
+              <span class="wizard-blot-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><rect x="3" y="3.5" width="18" height="7" rx="1.6"></rect><rect x="3" y="13.5" width="18" height="7" rx="1.6"></rect><circle cx="7" cy="7" r="0.6"></circle><circle cx="7" cy="17" r="0.6"></circle></svg>
+              </span>
+              <span class="wizard-path-title">My own server</span>
+              <span class="wizard-path-desc">For a home server or Linux box you own</span>
+            </button>
+            <button type="button" class="wizard-path-card" data-path="connect">
+              <span class="wizard-blot-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"></path><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"></path></svg>
+              </span>
+              <span class="wizard-path-title">Already running</span>
+              <span class="wizard-path-desc">Just connect to a Luna that exists somewhere</span>
+            </button>
+          </div>
+          <p class="wizard-sub wizard-detect-note" id="wizard-detect-note" hidden></p>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-path-back">Back</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="local">
+          <h2 id="wizard-local-title">Set up Luna on this Mac</h2>
+          <p class="wizard-sub" id="wizard-local-sub">I’ll download Luna, set her up, and wake her — all on this machine. Nothing leaves your Mac.</p>
+          <details class="wizard-advanced">
+            <summary>Advanced options</summary>
+            <div class="wizard-field">
+              <label for="wizard-local-dir">Install folder</label>
+              <input type="text" id="wizard-local-dir" class="premium-text-input" value="~/luna" spellcheck="false" autocomplete="off">
+              <span class="field-hint">Luna’s code lives here; her data and settings live in ~/.luna. The defaults are fine for almost everyone.</span>
+            </div>
+          </details>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-local-back">Back</button>
+            <button type="button" class="wizard-ghost-btn" id="wizard-local-connect" hidden>Just connect to it</button>
+            <button type="button" class="wizard-primary-btn" id="wizard-local-start">Install &amp; start</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="progress">
+          <h2 id="wizard-progress-title">Painting Luna onto this Mac…</h2>
+          <p class="wizard-sub" id="wizard-progress-sub">This can take a few minutes the first time. Feel free to watch the beads.</p>
+          <div class="wizard-tasks" id="wizard-progress-list"></div>
+          <pre class="wizard-log" id="wizard-progress-log" hidden></pre>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-progress-back" hidden>Back</button>
+            <button type="button" class="wizard-primary-btn" id="wizard-progress-next" hidden>Connect to it</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="remote">
+          <h2>Install on your server</h2>
+          <p class="wizard-sub">Tell me your server’s name and I’ll write the whole command for you. Paste it into the Terminal app, let it finish, then come back here.</p>
+          <div class="wizard-field">
+            <label for="wizard-remote-host">Your server</label>
+            <input type="text" id="wizard-remote-host" class="premium-text-input" placeholder="like: me@my-server" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="wizard-cmd-block">
+            <button type="button" class="wizard-copy-btn" id="wizard-remote-copy">Copy</button>
+            <pre id="wizard-remote-cmd"></pre>
+          </div>
+          <div class="wizard-field">
+            <span class="field-hint">When it finishes, the last line it prints is your secret key — keep it handy, you’ll paste it on the next step. (For safety, Luna talks only over your private network, like Tailscale.)</span>
+          </div>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-remote-back">Back</button>
+            <button type="button" class="wizard-primary-btn" id="wizard-remote-continue">I ran it — continue</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="connect">
+          <h2>Point your moon at Luna</h2>
+          <p class="wizard-sub">Where does Luna live? I’ll listen for her hello before saving anything.</p>
+          <div class="wizard-field">
+            <label for="wizard-connect-url">Luna’s address</label>
+            <input type="text" id="wizard-connect-url" class="premium-text-input" placeholder="ws://127.0.0.1:4753/ui" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="wizard-field">
+            <label for="wizard-connect-token">Secret key <span style="font-weight:400;color:#64748b;">(optional)</span></label>
+            <input type="password" id="wizard-connect-token" class="premium-text-input" placeholder="Printed during install — leave empty if you don’t have one" autocomplete="off">
+          </div>
+          <div class="wizard-connect-status" id="wizard-connect-status"></div>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-ghost-btn" id="wizard-connect-back">Back</button>
+            <button type="button" class="wizard-ghost-btn" id="wizard-test-btn">Test connection</button>
+            <button type="button" class="wizard-primary-btn" id="wizard-finish-btn">Save &amp; finish</button>
+          </div>
+        </div>
+
+        <div class="wizard-step" data-step="done">
+          <div class="wizard-hero-blot" aria-hidden="true"></div>
+          <h2 id="wizard-done-title">Luna is tethered</h2>
+          <p class="wizard-sub" id="wizard-done-summary">Your moon has a home.</p>
+          <p class="wizard-sub" style="font-size: 0.74rem;">Your moon keeps itself up to date on its own — and any time Luna herself needs a refresh, just re-run this wizard from Settings and pick “This Mac” again.</p>
+          <div class="wizard-actions">
+            <button type="button" class="wizard-primary-btn" id="wizard-done-btn">Start chatting</button>
+          </div>
+        </div>
+
       </div>
     </div>
   </div>
@@ -2136,7 +2812,42 @@
       buildSha: document.getElementById('build-sha'),
       scopeBtn: document.getElementById('scope-btn'),
       scopeMenu: document.getElementById('scope-menu'),
-      scopeFullAccess: document.getElementById('scope-full-access')
+      scopeFullAccess: document.getElementById('scope-full-access'),
+      // Setup-wizard handles.
+      wizardPanel:        document.getElementById('setup-wizard'),
+      wizardCloseX:       document.getElementById('wizard-close-x'),
+      wizardBeads:        document.getElementById('wizard-beads'),
+      wizardBegin:        document.getElementById('wizard-begin'),
+      wizardSkip:         document.getElementById('wizard-skip'),
+      wizardPathBack:     document.getElementById('wizard-path-back'),
+      wizardLocalDir:     document.getElementById('wizard-local-dir'),
+      wizardLocalBack:    document.getElementById('wizard-local-back'),
+      wizardLocalStart:   document.getElementById('wizard-local-start'),
+      wizardLocalConnect: document.getElementById('wizard-local-connect'),
+      wizardLocalTitle:   document.getElementById('wizard-local-title'),
+      wizardLocalSub:     document.getElementById('wizard-local-sub'),
+      wizardDetectNote:   document.getElementById('wizard-detect-note'),
+      wizardPathLocalDesc: document.getElementById('wizard-path-local-desc'),
+      wizardProgressTitle: document.getElementById('wizard-progress-title'),
+      wizardProgressSub:  document.getElementById('wizard-progress-sub'),
+      wizardProgressList: document.getElementById('wizard-progress-list'),
+      wizardProgressLog:  document.getElementById('wizard-progress-log'),
+      wizardProgressBack: document.getElementById('wizard-progress-back'),
+      wizardProgressNext: document.getElementById('wizard-progress-next'),
+      wizardRemoteHost:   document.getElementById('wizard-remote-host'),
+      wizardRemoteCmd:    document.getElementById('wizard-remote-cmd'),
+      wizardRemoteCopy:   document.getElementById('wizard-remote-copy'),
+      wizardRemoteBack:   document.getElementById('wizard-remote-back'),
+      wizardRemoteContinue: document.getElementById('wizard-remote-continue'),
+      wizardConnectUrl:   document.getElementById('wizard-connect-url'),
+      wizardConnectToken: document.getElementById('wizard-connect-token'),
+      wizardConnectStatus: document.getElementById('wizard-connect-status'),
+      wizardConnectBack:  document.getElementById('wizard-connect-back'),
+      wizardTestBtn:      document.getElementById('wizard-test-btn'),
+      wizardFinishBtn:    document.getElementById('wizard-finish-btn'),
+      wizardDoneSummary:  document.getElementById('wizard-done-summary'),
+      wizardDoneBtn:      document.getElementById('wizard-done-btn'),
+      openWizardBtn:      document.getElementById('open-wizard-btn')
     };
 
     /**
@@ -6374,6 +7085,585 @@
       }
     });
 
+    /**
+     * SetupWizard — multi-step first-run installer/onboarding flow.
+     *
+     * Three paths, one funnel:
+     *   local   → run the real install on THIS Mac through the Rust
+     *             local_shell_exec command (git clone → bun install → seed
+     *             ~/.luna → wake the server → poll /healthz via shell curl,
+     *             which is CSP-immune where a webview fetch() may not be),
+     *             then fall through to the connect step prefilled with
+     *             ws://127.0.0.1:4753/ui.
+     *   remote  → collect an SSH destination, render a tailored copy-paste
+     *             install command (scripts/luna-server-install does the heavy
+     *             lifting server-side), then fall through to connect.
+     *   connect → URL + token, live-verified by listening for the server's
+     *             `hello` frame on a THROWAWAY WebSocket (never touches the
+     *             main WebSocketEngine), then persisted via save_connection.
+     *
+     * Auto-open is gated on a REAL Tauri runtime (window.__TAURI__.core) so
+     * jsdom tests and plain-browser frontend dev never see it uninvited, and
+     * on the absence of any stored connection (load_connection / seeded
+     * token) so existing installs are grandfathered in silently.
+     */
+    const SetupWizard = {
+      STORAGE_DONE: 'luna.moon.setupComplete',
+      REPO_URL: 'https://github.com/fourcolors/luna.git',
+      // sh -c under a .app bundle inherits launchd's anaemic PATH — without
+      // this prelude `bun` (in ~/.bun/bin) and brew git are invisible.
+      PATH_PRELUDE: 'export PATH="$HOME/.bun/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ',
+      // data-step → progress-bead index. local/remote/progress share a bead:
+      // they are the same "set it up" stage of the journey.
+      BEAD_FOR: { welcome: 0, path: 1, local: 2, remote: 2, progress: 2, connect: 3, done: 4 },
+      WIZARD_W: 660,
+      WIZARD_H: 600,
+
+      current: 'welcome',
+      chosenPath: null,
+      _openedMinimized: false,
+      _running: false,
+      _testGen: 0,
+      _remoteWsGuess: '',
+      _autoTest: false,
+      // What detectEnvironment() learned about this Mac. Drives the
+      // install-vs-update wording and the "Just connect to it" shortcut.
+      env: { serverRunning: false, repoExists: false },
+      _detectPromise: null,
+
+      isComplete() { return localStorage.getItem(this.STORAGE_DONE) === '1'; },
+      markComplete() {
+        try { localStorage.setItem(this.STORAGE_DONE, '1'); } catch (_) { /* quota: harmless */ }
+      },
+
+      // First-run detection. Called once after SettingsEngine.load() settles
+      // so State.wsToken reflects both the secure file AND a luna-config seed.
+      async maybeAutoOpen() {
+        if (this.isComplete()) return;
+        if (!(window.__TAURI__ && window.__TAURI__.core)) return; // jsdom / frontend dev
+        if (State.wsToken) { this.markComplete(); return; }       // .env-seeded pairing exists
+        try {
+          const conn = await window.__TAURI__.core.invoke('load_connection');
+          if (conn && typeof conn.wsUrl === 'string' && conn.wsUrl) {
+            this.markComplete();                                  // pre-wizard install: grandfather in
+            return;
+          }
+        } catch (_) { /* no connection file yet — that IS first run */ }
+        this.open();
+      },
+
+      open() {
+        if (DOM.wizardPanel.classList.contains('active')) return;
+        this._openedMinimized = !DOM.chatPanel.classList.contains('active');
+        DOM.wizardPanel.classList.add('active');
+        DOM.wizardPanel.setAttribute('aria-hidden', 'false');
+        // Fire-and-forget like SettingsEngine.open — the card fades in over it.
+        TauriService.setWindowSize(this.WIZARD_W, this.WIZARD_H);
+        this.goTo('welcome');
+        // Quietly look around this Mac while the welcome step plays — by the
+        // time the user reaches the path step, the cards know whether Luna
+        // already lives here. Fire-and-forget; the promise is kept for tests.
+        this._detectPromise = this.detectEnvironment();
+        Logger.info('Setup wizard opened');
+      },
+
+      /**
+       * Sniff this Mac (Tauri only): is a Luna server answering on the
+       * default port, and/or is the default install folder already a Luna
+       * checkout? Both probes are cheap, read-only shell one-liners. Errors
+       * degrade to "nothing found" — the wizard then behaves exactly like a
+       * fresh install, which is always a safe default.
+       */
+      async detectEnvironment() {
+        this.env = { serverRunning: false, repoExists: false };
+        if (!(window.__TAURI__ && window.__TAURI__.core)) { this.applyDetection(); return this.env; }
+        try {
+          const [health, repo] = await Promise.all([
+            this.sh('curl -fsS -m 2 http://127.0.0.1:4753/healthz'),
+            this.sh('[ -d "$HOME/luna/.git" ]'),
+          ]);
+          this.env.serverRunning = !!(health && health.exitCode === 0);
+          this.env.repoExists = !!(repo && repo.exitCode === 0);
+        } catch (_) { /* treat as fresh */ }
+        this.applyDetection();
+        return this.env;
+      },
+
+      // Reflect what we found in the path cards + the local step's wording.
+      applyDetection() {
+        const { serverRunning, repoExists } = this.env;
+        if (DOM.wizardDetectNote) {
+          if (serverRunning) {
+            DOM.wizardDetectNote.textContent = '✓ Good news — Luna is already running on this Mac.';
+            DOM.wizardDetectNote.hidden = false;
+          } else if (repoExists) {
+            DOM.wizardDetectNote.textContent = '✓ Luna is installed on this Mac — she just isn’t awake.';
+            DOM.wizardDetectNote.hidden = false;
+          } else {
+            DOM.wizardDetectNote.hidden = true;
+          }
+        }
+        if (DOM.wizardPathLocalDesc) {
+          DOM.wizardPathLocalDesc.textContent = serverRunning
+            ? 'Luna already lives here — connect, or update her'
+            : repoExists
+              ? 'Luna is installed here — wake her up, or update her'
+              : 'Everything stays private, right on this computer';
+        }
+        this.applyLocalMode();
+      },
+
+      // Install vs update wording on the local step. "Update" is the SAME
+      // pipeline (pull --ff-only instead of clone, plus a settle-pause of the
+      // old server) — one flow the user already knows, two labels.
+      applyLocalMode() {
+        const update = this.env.serverRunning || this.env.repoExists;
+        if (DOM.wizardLocalTitle) {
+          DOM.wizardLocalTitle.textContent = update ? 'Update Luna on this Mac' : 'Set up Luna on this Mac';
+        }
+        if (DOM.wizardLocalSub) {
+          DOM.wizardLocalSub.textContent = update
+            ? 'I’ll fetch Luna’s newest code, refresh her pieces, and wake her back up. Your chats and memories stay put in ~/.luna.'
+            : 'I’ll download Luna, set her up, and wake her — all on this machine. Nothing leaves your Mac.';
+        }
+        if (DOM.wizardLocalStart) {
+          DOM.wizardLocalStart.textContent = update ? 'Update & restart' : 'Install & start';
+        }
+        if (DOM.wizardLocalConnect) {
+          DOM.wizardLocalConnect.hidden = !this.env.serverRunning;
+        }
+      },
+
+      close({ complete = true } = {}) {
+        // Any explicit close marks setup complete: the wizard must never nag
+        // on every boot — it stays one click away in Settings → Connection.
+        if (complete) this.markComplete();
+        DOM.wizardPanel.classList.remove('active');
+        DOM.wizardPanel.setAttribute('aria-hidden', 'true');
+        if (this._openedMinimized && !DOM.chatPanel.classList.contains('active')) {
+          setTimeout(() => TauriService.setWindowSize(140, 185), 220);
+        }
+        this._openedMinimized = false;
+      },
+
+      goTo(step) {
+        this.current = step;
+        DOM.wizardPanel.querySelectorAll('.wizard-step').forEach((el) => {
+          el.classList.toggle('active', el.dataset.step === step);
+        });
+        const beadIdx = this.BEAD_FOR[step] ?? 0;
+        DOM.wizardBeads.querySelectorAll('.wizard-bead').forEach((b) => {
+          const i = Number(b.dataset.bead);
+          b.classList.toggle('done', i < beadIdx);
+          b.classList.toggle('active', i === beadIdx);
+        });
+        if (step === 'connect') {
+          this.prefillConnect();
+          // Coming from a finished install/update (or the "Just connect to
+          // it" shortcut) the address is known-good — listen for the hello
+          // immediately so the happy path is zero extra clicks.
+          if (this._autoTest) {
+            this._autoTest = false;
+            this.runConnectTest();
+          }
+        }
+        if (step === 'remote') this.renderRemoteCmd();
+      },
+
+      choosePath(path) {
+        this.chosenPath = path;
+        if (path === 'connect') this.goTo('connect');
+        else if (path === 'local') this.goTo('local');
+        else this.goTo('remote');
+      },
+
+      // ── connect step ──────────────────────────────────────────────────
+      prefillConnect() {
+        if (!DOM.wizardConnectUrl.value.trim()) {
+          DOM.wizardConnectUrl.value =
+            this.chosenPath === 'local' ? 'ws://127.0.0.1:4753/ui'
+            : this.chosenPath === 'remote' && this._remoteWsGuess ? this._remoteWsGuess
+            : (State.wsUrl || 'ws://127.0.0.1:4753/ui');
+        }
+        this.setConnectStatus('', null);
+      },
+
+      setConnectStatus(msg, kind) {
+        const el = DOM.wizardConnectStatus;
+        el.textContent = msg || '';
+        el.className = 'wizard-connect-status' + (kind ? ' ' + kind : '');
+      },
+
+      /**
+       * Probe a Luna server on a throwaway socket: open, wait for the first
+       * frame (the server ALWAYS sends `hello` first), classify, close.
+       * Resolves {ok, hello?, reason?} — never rejects, never touches
+       * WebSocketEngine or State.
+       */
+      testConnection(url, token, timeoutMs = 7000) {
+        return new Promise((resolve) => {
+          if (typeof WebSocket === 'undefined') {
+            resolve({ ok: false, reason: 'WebSocket unavailable in this environment.' });
+            return;
+          }
+          let sock;
+          let settled = false;
+          let timer = null;
+          const finish = (result) => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            try { if (sock) sock.close(); } catch (_) { /* already closed */ }
+            resolve(result);
+          };
+          try {
+            const sep = url.includes('?') ? '&' : '?';
+            sock = new WebSocket(token ? `${url}${sep}token=${encodeURIComponent(token)}` : url);
+          } catch (e) {
+            resolve({ ok: false, reason: 'That does not look like a valid ws:// address.' });
+            return;
+          }
+          timer = setTimeout(() => finish({
+            ok: false,
+            reason: `No reply after ${Math.round(timeoutMs / 1000)}s — is the server running and the address reachable?`,
+          }), timeoutMs);
+          sock.onmessage = (ev) => {
+            try {
+              const frame = JSON.parse(ev.data);
+              if (frame && frame.type === 'hello') finish({ ok: true, hello: frame });
+              else finish({ ok: true, hello: null });
+            } catch (_) {
+              finish({ ok: false, reason: 'Reached something, but it does not speak Luna.' });
+            }
+          };
+          // onerror carries no detail in browsers; the close that follows does.
+          sock.onclose = () => finish({
+            ok: false,
+            reason: 'Connection refused — check the address, and the token if the server requires one.',
+          });
+        });
+      },
+
+      async runConnectTest() {
+        const url = DOM.wizardConnectUrl.value.trim();
+        const token = DOM.wizardConnectToken.value.trim();
+        if (!url) { this.setConnectStatus('Enter a server address first.', 'fail'); return false; }
+        const gen = ++this._testGen;
+        this.setConnectStatus('Listening for Luna’s hello…', 'run');
+        const res = await this.testConnection(url, token);
+        if (gen !== this._testGen) return false; // superseded by a newer test
+        if (res.ok) {
+          const h = res.hello || {};
+          const bits = [];
+          if (h.buildSha) bits.push('build ' + h.buildSha);
+          if (h.capabilities && h.capabilities.setup) bits.push('server is in setup mode and will guide login');
+          this.setConnectStatus('Found Luna ✓' + (bits.length ? ' — ' + bits.join(', ') : ''), 'ok');
+          return true;
+        }
+        this.setConnectStatus(res.reason || 'Could not connect.', 'fail');
+        return false;
+      },
+
+      // Persist the pair the same way Settings does, hand the live engine the
+      // new creds, and celebrate.
+      async finish() {
+        const url = DOM.wizardConnectUrl.value.trim() || 'ws://127.0.0.1:4753/ui';
+        const token = DOM.wizardConnectToken.value.trim();
+        State.wsUrl = url;
+        State.wsToken = token;
+        if (DOM.wsUrlInput) DOM.wsUrlInput.value = url;
+        if (DOM.wsTokenInput) DOM.wsTokenInput.value = token;
+        localStorage.setItem('luna_ws_url', url);
+        await SettingsEngine.persistConnection(url, token);
+        // New server ⇒ old thread ids are meaningless (same reset Settings does).
+        State.activeThreadId = null;
+        State.activeTurnId = null;
+        State.pendingUserMessage = null;
+        State.skipLastThreadFile = true;
+        DOM.chatMessages.innerHTML = '';
+        WebSocketEngine.connect();
+        this.markComplete();
+        DOM.wizardDoneSummary.textContent = 'Your moon is pointed at ' + url + '. Click it any time to talk to Luna.';
+        this.goTo('done');
+      },
+
+      // ── remote path ───────────────────────────────────────────────────
+      renderRemoteCmd() {
+        const raw = (DOM.wizardRemoteHost.value || '').trim();
+        const host = raw || 'user@your-server';
+        DOM.wizardRemoteCmd.textContent =
+          `ssh -t ${host} '` +
+          `git clone ${this.REPO_URL} ~/luna 2>/dev/null || git -C ~/luna pull --ff-only; ` +
+          `cd ~/luna && sudo bash scripts/luna-server-install && ` +
+          `grep ^UI_WS_TOKEN ~/.luna/.env'`;
+        const bare = raw.includes('@') ? raw.split('@').pop() : raw;
+        this._remoteWsGuess = bare ? `ws://${bare}:4753/ui` : '';
+      },
+
+      async copyRemoteCmd() {
+        const text = DOM.wizardRemoteCmd.textContent || '';
+        let copied = false;
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text);
+            copied = true;
+          }
+        } catch (_) { /* fall through to execCommand */ }
+        if (!copied) {
+          try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            document.body.appendChild(ta);
+            ta.select();
+            copied = document.execCommand('copy');
+            ta.remove();
+          } catch (_) { copied = false; }
+        }
+        DOM.wizardRemoteCopy.textContent = copied ? 'Copied ✓' : 'Copy failed';
+        setTimeout(() => { DOM.wizardRemoteCopy.textContent = 'Copy'; }, 1600);
+      },
+
+      // ── local path ────────────────────────────────────────────────────
+      // Run a command through the Rust executor. PATH prelude makes ~/.bun/bin
+      // et al visible under a .app bundle's launchd environment.
+      sh(command, timeoutMs) {
+        if (!(window.__TAURI__ && window.__TAURI__.core)) {
+          return Promise.resolve({
+            exitCode: null, stdout: '',
+            stderr: 'local shell unavailable (no Tauri runtime)',
+            durationMs: 0, timedOut: false,
+          });
+        }
+        return window.__TAURI__.core.invoke('local_shell_exec', {
+          command: this.PATH_PRELUDE + command,
+          cwd: null,
+          timeoutMs: timeoutMs ?? null,
+        });
+      },
+
+      // "~/luna" → `"$HOME/luna"` (shell-expanded), "/abs/path" → `"/abs/path"`.
+      // Rejects characters that would break out of the double quotes.
+      dirShellExpr(dir) {
+        if (!/^[A-Za-z0-9._\/~ -]+$/.test(dir)) return null;
+        if (dir === '~') return '"$HOME"';
+        if (dir.startsWith('~/')) return `"$HOME/${dir.slice(2)}"`;
+        if (dir.startsWith('/')) return `"${dir}"`;
+        return null; // relative paths are ambiguous under sh -c with no cwd
+      },
+
+      renderTasks(labels) {
+        DOM.wizardProgressList.innerHTML = '';
+        labels.forEach((label) => {
+          const row = document.createElement('div');
+          row.className = 'wizard-task';
+          const bead = document.createElement('span');
+          bead.className = 'wizard-task-bead';
+          const text = document.createElement('span');
+          text.className = 'wizard-task-label';
+          text.textContent = label;
+          const note = document.createElement('span');
+          note.className = 'wizard-task-note';
+          row.appendChild(bead);
+          row.appendChild(text);
+          row.appendChild(note);
+          DOM.wizardProgressList.appendChild(row);
+        });
+      },
+
+      setTask(idx, stateName, note) {
+        const row = DOM.wizardProgressList.children[idx];
+        if (!row) return;
+        row.classList.remove('running', 'ok', 'fail');
+        if (stateName) row.classList.add(stateName);
+        const noteEl = row.querySelector('.wizard-task-note');
+        if (noteEl) {
+          noteEl.textContent = note || '';
+          noteEl.title = note || '';
+        }
+      },
+
+      appendLog(text) {
+        const t = (text || '').trim();
+        if (!t) return;
+        DOM.wizardProgressLog.hidden = false;
+        DOM.wizardProgressLog.textContent += t + '\n';
+        DOM.wizardProgressLog.scrollTop = DOM.wizardProgressLog.scrollHeight;
+      },
+
+      async runLocalInstall() {
+        if (this._running) return;
+        const dirRaw = (DOM.wizardLocalDir.value || '').trim() || '~/luna';
+        const dirSh = this.dirShellExpr(dirRaw);
+        if (!dirSh) {
+          // Surface on the local step itself — we haven't left it yet.
+          DOM.wizardLocalDir.focus();
+          DOM.wizardLocalDir.style.boxShadow = 'inset 0 0 0 1px rgba(248, 113, 113, 0.6)';
+          setTimeout(() => { DOM.wizardLocalDir.style.boxShadow = ''; }, 1800);
+          return;
+        }
+        const update = this.env.serverRunning || this.env.repoExists;
+        this._running = true;
+        this.goTo('progress');
+        DOM.wizardProgressTitle.textContent = update
+          ? 'Freshening Luna up…'
+          : 'Painting Luna onto this Mac…';
+        DOM.wizardProgressSub.textContent = update
+          ? 'A quick refresh — your chats and memories aren’t touched.'
+          : 'This can take a few minutes the first time. Feel free to watch the beads.';
+        DOM.wizardProgressLog.hidden = true;
+        DOM.wizardProgressLog.textContent = '';
+        DOM.wizardProgressBack.hidden = true;
+        DOM.wizardProgressNext.hidden = true;
+
+        // Every command sets LUNA_DIR first so the user's chosen folder is
+        // expanded by the SHELL (the .env write needs the absolute form).
+        const D = `LUNA_DIR=${dirSh}; `;
+        const tasks = [
+          {
+            label: 'Checking this Mac has the basics',
+            hint: 'This Mac is missing its developer basics. Open Terminal, run `xcode-select --install`, then try again.',
+            run: () => this.sh('command -v git'),
+          },
+          {
+            label: 'Fetching Luna’s toolbox',
+            hint: 'Couldn’t fetch bun (Luna’s engine) from bun.sh — check your internet connection and retry.',
+            run: () => this.sh('command -v bun || (curl -fsSL https://bun.sh/install | bash)', 240000),
+          },
+          {
+            label: update ? 'Picking up Luna’s newest code' : 'Downloading Luna',
+            run: () => this.sh(
+              D + 'if [ -d "$LUNA_DIR/.git" ]; then git -C "$LUNA_DIR" pull --ff-only; else git clone ' + this.REPO_URL + ' "$LUNA_DIR"; fi',
+              420000,
+            ),
+          },
+          {
+            label: 'Putting the pieces together',
+            run: () => this.sh(D + 'cd "$LUNA_DIR" && bun install', 600000),
+          },
+          {
+            label: 'Making Luna a home (~/.luna)',
+            run: () => this.sh(
+              D + 'mkdir -p "$HOME/.luna/logs" && { [ -f "$HOME/.luna/.env" ] || touch "$HOME/.luna/.env"; } && chmod 600 "$HOME/.luna/.env" && { grep -q "^LUNA_REPO_ROOT=" "$HOME/.luna/.env" || printf "LUNA_REPO_ROOT=%s\\n" "$LUNA_DIR" >> "$HOME/.luna/.env"; }',
+            ),
+          },
+          // Update-with-running-server only: stop the old Luna and let her
+          // settle before the new one wakes. The 6s sleep is load-bearing —
+          // a fast stop→start races the database's WAL/SHM handle release
+          // (the same lesson the server deploys learned the hard way).
+          ...(update && this.env.serverRunning ? [{
+            label: 'Tucking the old Luna in',
+            run: () => this.sh('pkill -f "ui-web.*server:chat" 2>/dev/null; sleep 6; true', 30000),
+          }] : []),
+          {
+            label: update ? 'Waking Luna back up' : 'Waking Luna up',
+            run: async () => {
+              if (!update) {
+                // Fresh install: if a Luna is somehow already healthy on this
+                // port, adopt it instead of double-starting.
+                const probe = await this.sh('curl -fsS -m 2 http://127.0.0.1:4753/healthz');
+                if (probe && probe.exitCode === 0) {
+                  return { exitCode: 0, stdout: 'Luna was already awake here', stderr: '', durationMs: probe.durationMs, timedOut: false };
+                }
+              }
+              // Double-fork via subshell so sh -c returns immediately while the
+              // server lives on; log lands where the user can find it.
+              return this.sh(
+                D + 'cd "$LUNA_DIR" && (nohup bun run --filter "@luna/ui-web" server:chat >> "$HOME/.luna/logs/moon-setup-server.log" 2>&1 &) && echo "Luna is waking (log: ~/.luna/logs/moon-setup-server.log)"',
+              );
+            },
+          },
+          {
+            label: 'Listening for a heartbeat',
+            run: async () => {
+              for (let attempt = 0; attempt < 30; attempt++) {
+                const r = await this.sh('curl -fsS -m 2 http://127.0.0.1:4753/healthz');
+                if (r && r.exitCode === 0) return r;
+                await new Promise((res) => setTimeout(res, 2000));
+              }
+              return {
+                exitCode: 1, stdout: '',
+                stderr: 'Luna never answered on http://127.0.0.1:4753/healthz after 60s — peek at ~/.luna/logs/moon-setup-server.log',
+                durationMs: 0, timedOut: true,
+              };
+            },
+          },
+        ];
+
+        this.renderTasks(tasks.map((t) => t.label));
+        for (let i = 0; i < tasks.length; i++) {
+          this.setTask(i, 'running', '');
+          let r;
+          try {
+            r = await tasks[i].run();
+          } catch (e) {
+            r = { exitCode: null, stdout: '', stderr: String(e), durationMs: 0, timedOut: false };
+          }
+          const okExit = r && r.exitCode === 0;
+          if (okExit) {
+            const secs = r.durationMs >= 1000 ? Math.round(r.durationMs / 1000) + 's' : '';
+            this.setTask(i, 'ok', (r.stdout || '').trim().split('\n').pop() || secs);
+          } else {
+            this.setTask(i, 'fail', r.timedOut ? 'timed out' : ('exit ' + r.exitCode));
+            this.appendLog((r.stderr || '').trim() || (r.stdout || '').trim() || 'No output.');
+            if (tasks[i].hint) this.appendLog(tasks[i].hint);
+            DOM.wizardProgressTitle.textContent = 'The wash didn’t take';
+            DOM.wizardProgressSub.textContent = 'Something went wrong at "' + tasks[i].label + '". Fix it up and try again.';
+            DOM.wizardProgressBack.hidden = false;
+            this._running = false;
+            return;
+          }
+        }
+
+        this._running = false;
+        DOM.wizardProgressTitle.textContent = update ? 'Luna is fresh and awake ☾' : 'Luna is awake ☾';
+        DOM.wizardProgressSub.textContent = update
+          ? 'All updated and answering. One last brushstroke: re-tether your moon.'
+          : 'She answered. One last brushstroke: tether your moon to her.';
+        DOM.wizardProgressNext.hidden = false;
+      },
+    };
+
+    // ── Setup-wizard wiring ──────────────────────────────────────────────
+    DOM.wizardBegin.addEventListener('click', () => SetupWizard.goTo('path'));
+    DOM.wizardSkip.addEventListener('click', () => SetupWizard.close({ complete: true }));
+    DOM.wizardCloseX.addEventListener('click', () => SetupWizard.close({ complete: true }));
+    DOM.wizardPathBack.addEventListener('click', () => SetupWizard.goTo('welcome'));
+    DOM.wizardPanel.querySelectorAll('.wizard-path-card').forEach((card) => {
+      card.addEventListener('click', () => SetupWizard.choosePath(card.dataset.path));
+    });
+    DOM.wizardLocalBack.addEventListener('click', () => SetupWizard.goTo('path'));
+    DOM.wizardLocalStart.addEventListener('click', () => SetupWizard.runLocalInstall());
+    DOM.wizardLocalConnect.addEventListener('click', () => {
+      // Detection found a live local Luna — skip straight to a verified connect.
+      SetupWizard._autoTest = true;
+      SetupWizard.goTo('connect');
+    });
+    DOM.wizardProgressBack.addEventListener('click', () => SetupWizard.goTo('local'));
+    DOM.wizardProgressNext.addEventListener('click', () => {
+      SetupWizard._autoTest = true;   // install just verified the server — listen for hello immediately
+      SetupWizard.goTo('connect');
+    });
+    DOM.wizardRemoteBack.addEventListener('click', () => SetupWizard.goTo('path'));
+    DOM.wizardRemoteHost.addEventListener('input', () => SetupWizard.renderRemoteCmd());
+    DOM.wizardRemoteCopy.addEventListener('click', () => SetupWizard.copyRemoteCmd());
+    DOM.wizardRemoteContinue.addEventListener('click', () => SetupWizard.goTo('connect'));
+    DOM.wizardConnectBack.addEventListener('click', () => {
+      SetupWizard.goTo(SetupWizard.chosenPath === 'remote' ? 'remote'
+        : SetupWizard.chosenPath === 'local' ? 'progress' : 'path');
+    });
+    DOM.wizardTestBtn.addEventListener('click', () => SetupWizard.runConnectTest());
+    DOM.wizardFinishBtn.addEventListener('click', () => SetupWizard.finish());
+    DOM.wizardDoneBtn.addEventListener('click', () => {
+      SetupWizard.close({ complete: true });
+      if (!DOM.chatPanel.classList.contains('active')) UIController.toggleChat();
+    });
+    if (DOM.openWizardBtn) {
+      DOM.openWizardBtn.addEventListener('click', () => {
+        SettingsEngine.close();
+        SetupWizard.open();
+      });
+    }
+
     // Window and Input Event Listeners
     window.addEventListener('blur', () => UIController.handleBlur());
     window.addEventListener('keydown', (e) => SettingsEngine.handleKeyDown(e));
@@ -6384,6 +7674,28 @@
     // token-precedence guard — otherwise the still-pending load would leave
     // State.wsToken empty and the .env seed would clobber a stored token.
     const settingsLoaded = SettingsEngine.load();
+
+    // First-run: once settings have hydrated (secure file + possible .env
+    // seed), open the setup wizard if no connection has ever been configured.
+    // Resilient to a load() rejection — first run is exactly when state is
+    // most likely to be missing.
+    //
+    // Browser-dev convenience: off-Tauri, `?wizard=1` force-opens the wizard
+    // (and darkens the transparent-canvas body so the watercolor card reads
+    // against something) — a plain-browser page can never auto-open it
+    // otherwise, since first-run detection requires the Tauri runtime.
+    settingsLoaded
+      .catch(() => {})
+      .then(() => {
+        if (!window.__TAURI__ && typeof location !== 'undefined'
+            && new URLSearchParams(location.search).has('wizard')) {
+          document.body.style.background = '#10142a';
+          SetupWizard.open();
+          return;
+        }
+        return SetupWizard.maybeAutoOpen();
+      })
+      .catch((e) => Logger.error('Setup wizard auto-open failed:', e));
 
     // Silent self-update check shortly after boot (let the WS connect first).
     // Surfaces an in-chat "Update & Restart" banner only if a newer signed
@@ -6436,6 +7748,7 @@
       Object.defineProperty(window.__MoonInternals, 'ChatRenderer', { configurable: true, get: () => ChatRenderer });
       Object.defineProperty(window.__MoonInternals, 'ChatLoop',     { configurable: true, get: () => ChatLoop });
       Object.defineProperty(window.__MoonInternals, 'ChatEngine',   { configurable: true, get: () => ChatEngine });
+      Object.defineProperty(window.__MoonInternals, 'SetupWizard',  { configurable: true, get: () => SetupWizard });
     }
   </script>
 </body>

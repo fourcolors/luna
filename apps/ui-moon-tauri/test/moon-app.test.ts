@@ -2378,4 +2378,342 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(disable![1].enabled).toBe(false)              // whole window interactive again
     })
   })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Behavioral Feature: Setup wizard (first-run installer)
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Setup wizard (first-run installer)', () => {
+    const M = () => (window as any).__MoonInternals
+    const W = () => M().SetupWizard
+    const panel = () => document.getElementById('setup-wizard')!
+    const activeStep = () =>
+      (panel().querySelector('.wizard-step.active') as HTMLElement)?.dataset.step
+
+    function stubCore(handler: (cmd: string, args: any) => any) {
+      const invoke = vi.fn().mockImplementation((cmd: string, args: any) =>
+        Promise.resolve(handler(cmd, args)))
+      ;(window as any).__TAURI__.core = { invoke }
+      return invoke
+    }
+
+    it('Scenario: first run (no stored connection) -> wizard auto-opens', async () => {
+      stubCore((cmd) => (cmd === 'load_connection' ? {} : undefined))
+      await W().maybeAutoOpen()
+      expect(panel().classList.contains('active')).toBe(true)
+      expect(activeStep()).toBe('welcome')
+    })
+
+    it('Scenario: a connection already exists -> wizard stays closed and marks setup complete', async () => {
+      stubCore((cmd) => (cmd === 'load_connection' ? { wsUrl: 'ws://10.0.0.5:4753/ui' } : undefined))
+      await W().maybeAutoOpen()
+      expect(panel().classList.contains('active')).toBe(false)
+      expect(localStorage.getItem('luna.moon.setupComplete')).toBe('1')
+    })
+
+    it('Scenario: setup already completed once -> never auto-opens again', async () => {
+      localStorage.setItem('luna.moon.setupComplete', '1')
+      const invoke = stubCore(() => ({}))
+      await W().maybeAutoOpen()
+      expect(panel().classList.contains('active')).toBe(false)
+      expect(invoke).not.toHaveBeenCalled()   // short-circuits before any IPC
+    })
+
+    it('Scenario: outside a real Tauri runtime (no __TAURI__.core) -> auto-open is inert', async () => {
+      await W().maybeAutoOpen()               // shared beforeEach mocks window only, no .core
+      expect(panel().classList.contains('active')).toBe(false)
+    })
+
+    it('Scenario: Begin -> path step; picking each card routes to its flow; closing marks complete', () => {
+      stubCore(() => undefined)
+      W().open()
+      document.getElementById('wizard-begin')!.click()
+      expect(activeStep()).toBe('path')
+
+      ;(panel().querySelector('[data-path="local"]') as HTMLElement).click()
+      expect(activeStep()).toBe('local')
+      document.getElementById('wizard-local-back')!.click()
+
+      ;(panel().querySelector('[data-path="remote"]') as HTMLElement).click()
+      expect(activeStep()).toBe('remote')
+      document.getElementById('wizard-remote-back')!.click()
+
+      ;(panel().querySelector('[data-path="connect"]') as HTMLElement).click()
+      expect(activeStep()).toBe('connect')
+
+      document.getElementById('wizard-close-x')!.click()
+      expect(panel().classList.contains('active')).toBe(false)
+      expect(localStorage.getItem('luna.moon.setupComplete')).toBe('1')
+    })
+
+    it('Scenario: progress beads track the journey (path=1, config=2, connect=3, done=4)', () => {
+      stubCore(() => undefined)
+      W().open()
+      const beads = () => Array.from(panel().querySelectorAll('.wizard-bead'))
+      expect(beads()[0].classList.contains('active')).toBe(true)
+      W().goTo('path')
+      expect(beads()[1].classList.contains('active')).toBe(true)
+      expect(beads()[0].classList.contains('done')).toBe(true)
+      W().goTo('local')
+      expect(beads()[2].classList.contains('active')).toBe(true)
+      W().goTo('connect')
+      expect(beads()[3].classList.contains('active')).toBe(true)
+      W().goTo('done')
+      expect(beads()[4].classList.contains('active')).toBe(true)
+      expect(beads().slice(0, 4).every((b) => b.classList.contains('done'))).toBe(true)
+    })
+
+    it('Scenario: connect test hears the hello frame -> success status with build identity', async () => {
+      const sockets: any[] = []
+      class FakeWS {
+        url: string
+        onmessage: any; onclose: any; onerror: any
+        constructor(url: string) { this.url = url; sockets.push(this) }
+        close() {}
+      }
+      ;(window as any).WebSocket = FakeWS
+
+      W().open()
+      W().chosenPath = 'connect'
+      W().goTo('connect')
+      const urlInput = document.getElementById('wizard-connect-url') as HTMLInputElement
+      const tokenInput = document.getElementById('wizard-connect-token') as HTMLInputElement
+      urlInput.value = 'ws://moonbase:4753/ui'
+      tokenInput.value = 'sekrit'
+
+      const testPromise = W().runConnectTest()
+      await Promise.resolve()
+      expect(sockets).toHaveLength(1)
+      // The probe carries the token as a query param, like the real engine.
+      expect(sockets[0].url).toBe('ws://moonbase:4753/ui?token=sekrit')
+
+      sockets[0].onmessage({ data: JSON.stringify({ type: 'hello', protocolVersion: 2, buildSha: 'abc1234' }) })
+      const ok = await testPromise
+      expect(ok).toBe(true)
+      const status = document.getElementById('wizard-connect-status')!
+      expect(status.textContent).toContain('Found Luna')
+      expect(status.textContent).toContain('abc1234')
+      expect(status.classList.contains('ok')).toBe(true)
+    })
+
+    it('Scenario: connect test refused (socket closes) -> failure status, finish still possible', async () => {
+      const sockets: any[] = []
+      class FakeWS {
+        onmessage: any; onclose: any; onerror: any
+        constructor(_url: string) { sockets.push(this) }
+        close() {}
+      }
+      ;(window as any).WebSocket = FakeWS
+
+      W().open()
+      ;(document.getElementById('wizard-connect-url') as HTMLInputElement).value = 'ws://nowhere:4753/ui'
+      const testPromise = W().runConnectTest()
+      await Promise.resolve()
+      sockets[0].onclose({ code: 1006 })
+      const ok = await testPromise
+      expect(ok).toBe(false)
+      const status = document.getElementById('wizard-connect-status')!
+      expect(status.classList.contains('fail')).toBe(true)
+    })
+
+    it('Scenario: Save & finish persists via save_connection, reconnects, and celebrates', async () => {
+      class FakeWS {
+        onmessage: any; onclose: any; onerror: any; onopen: any
+        readyState = 0
+        constructor(_url: string) {}
+        close() {}
+        send() {}
+        addEventListener() {}      // WebSocketEngine.connect wires via listeners
+        removeEventListener() {}
+      }
+      ;(window as any).WebSocket = FakeWS
+      const invoke = stubCore(() => undefined)
+
+      W().open()
+      ;(document.getElementById('wizard-connect-url') as HTMLInputElement).value = 'ws://moonbase:4753/ui'
+      ;(document.getElementById('wizard-connect-token') as HTMLInputElement).value = 'sekrit'
+      await W().finish()
+
+      const saved = invoke.mock.calls.find((c: any[]) => c[0] === 'save_connection')
+      expect(saved).toBeTruthy()
+      expect(saved![1]).toEqual({ url: 'ws://moonbase:4753/ui', token: 'sekrit' })
+      expect(M().State.wsUrl).toBe('ws://moonbase:4753/ui')
+      expect(M().State.wsToken).toBe('sekrit')
+      expect(localStorage.getItem('luna_ws_url')).toBe('ws://moonbase:4753/ui')
+      expect(localStorage.getItem('luna.moon.setupComplete')).toBe('1')
+      expect(activeStep()).toBe('done')
+      // Cross-server thread state was reset, same as a Settings server switch.
+      expect(M().State.skipLastThreadFile).toBe(true)
+    })
+
+    it('Scenario: fresh Mac -> install runs the real steps in order and starts the server', async () => {
+      const commands: string[] = []
+      let healthzCalls = 0
+      stubCore((cmd, args) => {
+        if (cmd !== 'local_shell_exec') return undefined
+        const c = args.command as string
+        commands.push(c)
+        if (c.includes('healthz')) {
+          healthzCalls++
+          // 1st = detection probe (no server), 2nd = wake-step probe (still
+          // none → must start), 3rd+ = heartbeat after start (alive).
+          return { exitCode: healthzCalls >= 3 ? 0 : 1, stdout: '', stderr: '', durationMs: 4, timedOut: false }
+        }
+        if (c.includes('"$HOME/luna/.git" ]')) {
+          return { exitCode: 1, stdout: '', stderr: '', durationMs: 1, timedOut: false } // no repo yet
+        }
+        return { exitCode: 0, stdout: 'ok', stderr: '', durationMs: 5, timedOut: false }
+      })
+
+      W().open()
+      await W()._detectPromise
+      expect(W().env).toEqual({ serverRunning: false, repoExists: false })
+      // Fresh Mac → no detection banner, install wording.
+      expect((document.getElementById('wizard-detect-note') as HTMLElement).hidden).toBe(true)
+      expect(document.getElementById('wizard-local-start')!.textContent).toBe('Install & start')
+
+      W().choosePath('local')
+      await W().runLocalInstall()
+
+      expect(activeStep()).toBe('progress')
+      // Order of operations (after the 2 detection probes): git check → bun
+      // check → clone → bun install → ~/.luna seed → wake probe → start → heartbeat.
+      const install = commands.slice(2)
+      expect(install[0]).toContain('command -v git')
+      expect(install[1]).toContain('command -v bun')
+      expect(install[2]).toContain('git clone https://github.com/fourcolors/luna.git')
+      expect(install[2]).toContain('LUNA_DIR="$HOME/luna"')   // ~ expanded by the SHELL
+      expect(install[3]).toContain('bun install')
+      expect(install[4]).toContain('LUNA_REPO_ROOT')
+      // Every command gets the PATH prelude (a .app inherits launchd's PATH).
+      for (const c of commands) expect(c).toContain('$HOME/.bun/bin')
+
+      // No server answered the wake probe ⇒ the nohup start actually ran.
+      expect(commands.some((c) => c.includes('nohup'))).toBe(true)
+      // Fresh install never pauses an old server.
+      expect(commands.some((c) => c.includes('pkill'))).toBe(false)
+
+      const rows = Array.from(document.querySelectorAll('#wizard-progress-list .wizard-task'))
+      expect(rows).toHaveLength(7)
+      expect(rows.every((r) => r.classList.contains('ok'))).toBe(true)
+      expect((document.getElementById('wizard-progress-next') as HTMLElement).hidden).toBe(false)
+    })
+
+    it('Scenario: Luna already lives here -> update mode (settle-pause + restart, update wording, connect shortcut)', async () => {
+      const commands: string[] = []
+      stubCore((cmd, args) => {
+        if (cmd !== 'local_shell_exec') return undefined
+        const c = args.command as string
+        commands.push(c)
+        return { exitCode: 0, stdout: 'ok', stderr: '', durationMs: 5, timedOut: false } // server up, repo present
+      })
+
+      W().open()
+      await W()._detectPromise
+      expect(W().env).toEqual({ serverRunning: true, repoExists: true })
+
+      // The path step announces the find; the local step speaks "update".
+      const note = document.getElementById('wizard-detect-note') as HTMLElement
+      expect(note.hidden).toBe(false)
+      expect(note.textContent).toContain('already running')
+      expect(document.getElementById('wizard-path-local-desc')!.textContent).toContain('update')
+
+      W().choosePath('local')
+      expect(document.getElementById('wizard-local-title')!.textContent).toContain('Update Luna')
+      expect(document.getElementById('wizard-local-start')!.textContent).toBe('Update & restart')
+      expect((document.getElementById('wizard-local-connect') as HTMLElement).hidden).toBe(false)
+
+      await W().runLocalInstall()
+
+      // Update flow: pull (not a fresh clone path choice — same command, repo
+      // branch wins), settle-pause the old server (pkill + 6s sleep in the
+      // SHELL, mirroring the deploy stop→settle→start lesson), then restart.
+      expect(commands.some((c) => c.includes('pkill -f "ui-web.*server:chat"') && c.includes('sleep 6'))).toBe(true)
+      expect(commands.some((c) => c.includes('nohup'))).toBe(true)
+
+      const rows = Array.from(document.querySelectorAll('#wizard-progress-list .wizard-task'))
+      expect(rows).toHaveLength(8)                            // + "Tucking the old Luna in"
+      expect(rows.every((r) => r.classList.contains('ok'))).toBe(true)
+    })
+
+    it('Scenario: "Just connect to it" shortcut jumps to connect prefilled with localhost', async () => {
+      stubCore((cmd) => (cmd === 'local_shell_exec'
+        ? { exitCode: 0, stdout: '', stderr: '', durationMs: 2, timedOut: false }
+        : undefined))
+      W().open()
+      await W()._detectPromise
+      W().choosePath('local')
+      const shortcut = document.getElementById('wizard-local-connect') as HTMLElement
+      expect(shortcut.hidden).toBe(false)
+      shortcut.click()
+      expect(activeStep()).toBe('connect')
+      expect((document.getElementById('wizard-connect-url') as HTMLInputElement).value)
+        .toBe('ws://127.0.0.1:4753/ui')
+    })
+
+    it('Scenario: local install failure paints the bead red, shows the log, and offers Back', async () => {
+      stubCore((cmd) => {
+        if (cmd !== 'local_shell_exec') return undefined
+        return { exitCode: 1, stdout: '', stderr: 'sh: git: command not found', durationMs: 3, timedOut: false }
+      })
+
+      W().open()
+      W().choosePath('local')
+      await W().runLocalInstall()
+
+      const rows = Array.from(document.querySelectorAll('#wizard-progress-list .wizard-task'))
+      expect(rows[0].classList.contains('fail')).toBe(true)
+      expect(rows[1].classList.contains('ok')).toBe(false)   // never reached
+      const log = document.getElementById('wizard-progress-log') as HTMLElement
+      expect(log.hidden).toBe(false)
+      expect(log.textContent).toContain('git: command not found')
+      expect((document.getElementById('wizard-progress-back') as HTMLElement).hidden).toBe(false)
+      expect((document.getElementById('wizard-progress-next') as HTMLElement).hidden).toBe(true)
+    })
+
+    it('Scenario: a hostile install folder is rejected before any install command runs', async () => {
+      const invoke = stubCore(() => ({ exitCode: 0, stdout: '', stderr: '', durationMs: 1, timedOut: false }))
+      W().open()
+      await W()._detectPromise                               // detection probes are read-only
+      W().choosePath('local')
+      ;(document.getElementById('wizard-local-dir') as HTMLInputElement).value = '~/luna"; rm -rf /; "'
+      await W().runLocalInstall()
+      // No mutating install command ever reached the shell (detection's two
+      // read-only probes are the only local_shell_exec calls).
+      const shellCmds = invoke.mock.calls
+        .filter((c: any[]) => c[0] === 'local_shell_exec')
+        .map((c: any[]) => c[1].command as string)
+      expect(shellCmds.some((c) => c.includes('git clone') || c.includes('nohup') || c.includes('mkdir'))).toBe(false)
+      expect(activeStep()).toBe('local')                     // still on the form
+    })
+
+    it('Scenario: remote step writes a tailored install one-liner and prefills the connect URL', () => {
+      stubCore(() => undefined)
+      W().open()
+      W().choosePath('remote')
+
+      const host = document.getElementById('wizard-remote-host') as HTMLInputElement
+      host.value = 'root@moonbase'
+      host.dispatchEvent(new Event('input', { bubbles: true }))
+
+      const cmd = document.getElementById('wizard-remote-cmd')!.textContent!
+      expect(cmd).toContain('ssh -t root@moonbase')
+      expect(cmd).toContain('git clone https://github.com/fourcolors/luna.git')
+      expect(cmd).toContain('luna-server-install')
+      expect(cmd).toContain('UI_WS_TOKEN')                   // surfaces the token to paste back
+
+      document.getElementById('wizard-remote-continue')!.click()
+      expect(activeStep()).toBe('connect')
+      expect((document.getElementById('wizard-connect-url') as HTMLInputElement).value)
+        .toBe('ws://moonbase:4753/ui')                       // user@ stripped, ws guessed
+    })
+
+    it('Scenario: Settings → Connection has a re-entry point for the wizard', () => {
+      stubCore(() => undefined)
+      const settingsPanel = document.getElementById('settings-panel')!
+      settingsPanel.classList.add('active')
+      document.getElementById('open-wizard-btn')!.click()
+      expect(settingsPanel.classList.contains('active')).toBe(false)
+      expect(panel().classList.contains('active')).toBe(true)
+    })
+  })
 })
