@@ -1335,13 +1335,20 @@ export const startUIWebSocketServer = (
                     // the operator-actionable message.
                     if (connectorService === null) return
                     const svc = connectorService
+                    // Coerce requestId ONCE so success + failure echo the
+                    // same value (review G2: the success path used to echo
+                    // it un-coerced while the error path coerced it).
+                    const beginReqId = String(
+                      (frame as { requestId?: unknown }).requestId ?? "",
+                    )
                     if (
                       typeof frame.definitionId !== "string" ||
-                      typeof frame.loopbackPort !== "number"
+                      typeof frame.loopbackPort !== "number" ||
+                      typeof frame.label !== "string"
                     ) {
                       send(ws, {
                         type: "connector-status",
-                        requestId: String((frame as { requestId?: unknown }).requestId ?? ""),
+                        requestId: beginReqId,
                         ok: false,
                         message: "malformed connector-oauth-begin frame",
                       })
@@ -1360,7 +1367,7 @@ export const startUIWebSocketServer = (
                         Effect.map((begun) => {
                           send(ws, {
                             type: "connector-oauth-redirect",
-                            requestId: frame.requestId,
+                            requestId: beginReqId,
                             pendingId: begun.pendingId,
                             authUrl: begun.authUrl,
                           })
@@ -1369,7 +1376,7 @@ export const startUIWebSocketServer = (
                           Effect.sync(() => {
                             send(ws, {
                               type: "connector-status",
-                              requestId: frame.requestId,
+                              requestId: beginReqId,
                               ok: false,
                               message: failureMessage(cause),
                             })

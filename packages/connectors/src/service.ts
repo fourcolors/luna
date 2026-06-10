@@ -138,9 +138,15 @@ export interface ConnectorServiceOptions {
       varName: string,
       value: string,
     ) => Effect.Effect<string, ConnectorError>
+    /** Drop a stored env secret on disconnect (best-effort; review G2). */
+    readonly clearSecret?: (varName: string) => Effect.Effect<void>
     readonly env: Readonly<Record<string, string | undefined>>
   }
 }
+
+/** `env:VARNAME` → `VARNAME`; anything else (op refs, "none") → null. */
+const secretRefVarName = (ref: string): string | null =>
+  ref.startsWith("env:") ? ref.slice(4) : null
 
 const toMeta = (d: ConnectorDefinition): ConnectorDefinitionMeta => ({
   id: d.id,
@@ -292,21 +298,28 @@ export const ConnectorServiceLayer = (
           }
         })
 
+      // The ungated snapshot rebuild — ALL token minting (ensureAccessToken
+      // via buildMount) happens here. Callers MUST hold refreshGate (review
+      // G2): connect/completeAuth/disconnect run their check→mutate→rebuild
+      // as ONE gated unit so a concurrent rotation tick can neither
+      // double-mint a token nor re-add a just-removed instance's access
+      // token to the cache.
+      const rebuildSnapshot = (): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          const instances = yield* store.list()
+          const next: Record<string, McpServerConfigLike> = {}
+          for (const instance of instances) {
+            if (instance.status !== "connected") continue
+            const definition = definitions.get(instance.definitionId)
+            if (definition === undefined) continue // catalog drift: orphan row, skip
+            const mount = yield* buildMount(definition, instance)
+            if (mount !== null) next[definition.serverKey] = mount
+          }
+          snapshot = next
+        })
+
       const refreshMounts: ConnectorServiceApi["refreshMounts"] = () =>
-        refreshGate.withPermits(1)(
-          Effect.gen(function* () {
-            const instances = yield* store.list()
-            const next: Record<string, McpServerConfigLike> = {}
-            for (const instance of instances) {
-              if (instance.status !== "connected") continue
-              const definition = definitions.get(instance.definitionId)
-              if (definition === undefined) continue // catalog drift: orphan row, skip
-              const mount = yield* buildMount(definition, instance)
-              if (mount !== null) next[definition.serverKey] = mount
-            }
-            snapshot = next
-          }),
-        )
+        refreshGate.withPermits(1)(rebuildSnapshot())
 
       const connect: ConnectorServiceApi["connect"] = (input) =>
         Effect.gen(function* () {
@@ -338,34 +351,41 @@ export const ConnectorServiceLayer = (
               }),
             )
           }
-          const existing = yield* store.list()
-          if (existing.some((i) => i.definitionId === definition.id)) {
-            // v1: one instance per definition (multi-account is PRD §23 open).
-            return yield* Effect.fail(
-              new ConnectorError({
-                op: "connect",
-                message: `"${input.definitionId}" is already connected — disconnect it first`,
-              }),
-            )
-          }
-          const now = yield* clock.nowMs()
           const capabilityIds =
             input.capabilityIds ??
             definition.capabilities.filter((c) => c.defaultGranted).map((c) => c.id)
-          const instance: ConnectorInstance = {
-            id: crypto.randomUUID(),
-            definitionId: definition.id,
-            label: input.label.trim() || definition.name,
-            status: "connected",
-            secretRef: input.secretRef ?? "none",
-            grantedScopes: scopesForCapabilities(definition, capabilityIds),
-            accountKind: `connector-${definition.id}`,
-            createdAt: now,
-            lastHealthyAt: now,
-          }
-          yield* store.insert(instance)
-          yield* refreshMounts()
-          return instance
+          // ATOMIC check→insert→rebuild under the gate (review G2): the
+          // duplicate guard and the insert must not interleave with a
+          // second identical connect, or two rows land for one definition.
+          return yield* refreshGate.withPermits(1)(
+            Effect.gen(function* () {
+              const existing = yield* store.list()
+              if (existing.some((i) => i.definitionId === definition.id)) {
+                // v1: one instance per definition (multi-account is §23 open).
+                return yield* Effect.fail(
+                  new ConnectorError({
+                    op: "connect",
+                    message: `"${input.definitionId}" is already connected — disconnect it first`,
+                  }),
+                )
+              }
+              const now = yield* clock.nowMs()
+              const instance: ConnectorInstance = {
+                id: crypto.randomUUID(),
+                definitionId: definition.id,
+                label: input.label.trim() || definition.name,
+                status: "connected",
+                secretRef: input.secretRef ?? "none",
+                grantedScopes: scopesForCapabilities(definition, capabilityIds),
+                accountKind: `connector-${definition.id}`,
+                createdAt: now,
+                lastHealthyAt: now,
+              }
+              yield* store.insert(instance)
+              yield* rebuildSnapshot()
+              return instance
+            }),
+          )
         })
 
       const pruneExpiredPending = (now: number): void => {
@@ -490,6 +510,9 @@ export const ConnectorServiceLayer = (
           const auth = definition.auth
           const clientId = oauthEnv(auth.clientIdEnvVar)
           if (clientId === null) {
+            // Consume the pending like the sibling early-exits (review G2):
+            // the env var vanished mid-flow; don't leave the grant lingering.
+            pendingAuths.delete(input.pendingId)
             return yield* Effect.fail(
               new ConnectorError({
                 op: "completeAuth",
@@ -533,55 +556,91 @@ export const ConnectorServiceLayer = (
             refreshTokenVarName(definition),
             tokens.refreshToken,
           )
-          const instance: ConnectorInstance = {
-            id: crypto.randomUUID(),
-            definitionId: definition.id,
-            label: pending.label,
-            status: "connected",
-            secretRef,
-            grantedScopes: scopesForCapabilities(definition, pending.capabilityIds),
-            accountKind: `connector-${definition.id}`,
-            createdAt: now,
-            lastHealthyAt: now,
-          }
-          yield* store.insert(instance)
-          // Seed the access-token cache so the first mount needs no refresh.
-          accessTokens.set(instance.id, {
-            accessToken: tokens.accessToken,
-            expiresAtMs: now + tokens.expiresInSec * 1000,
-          })
-          yield* refreshMounts()
-          return instance
+          // ATOMIC duplicate-check→insert→rebuild under the gate (review
+          // G2): two concurrent OAuth flows for one definition each reach
+          // here; without the re-check both insert a row. The exchange
+          // already happened (the code is single-use), so the loser just
+          // doesn't persist a second row — its token is the one already
+          // overwritten in the env sink (per-definition var name).
+          return yield* refreshGate.withPermits(1)(
+            Effect.gen(function* () {
+              const existing = yield* store.list()
+              if (existing.some((i) => i.definitionId === definition.id)) {
+                return yield* Effect.fail(
+                  new ConnectorError({
+                    op: "completeAuth",
+                    message: `"${definition.id}" is already connected — disconnect it first`,
+                  }),
+                )
+              }
+              const instance: ConnectorInstance = {
+                id: crypto.randomUUID(),
+                definitionId: definition.id,
+                label: pending.label,
+                status: "connected",
+                secretRef,
+                grantedScopes: scopesForCapabilities(definition, pending.capabilityIds),
+                accountKind: `connector-${definition.id}`,
+                createdAt: now,
+                lastHealthyAt: now,
+              }
+              yield* store.insert(instance)
+              // Seed the access-token cache so the first mount needs no refresh.
+              accessTokens.set(instance.id, {
+                accessToken: tokens.accessToken,
+                expiresAtMs: now + tokens.expiresInSec * 1000,
+              })
+              yield* rebuildSnapshot()
+              return instance
+            }),
+          )
         })
 
       const disconnect: ConnectorServiceApi["disconnect"] = (instanceId) =>
-        Effect.gen(function* () {
-          const instances = yield* store.list()
-          const instance = instances.find((i) => i.id === instanceId)
-          // Best-effort provider-side revocation BEFORE dropping local
-          // state (PRD §16: disconnect revokes, not just deletes).
-          if (instance !== undefined && oauth !== undefined) {
-            const definition = definitions.get(instance.definitionId)
-            if (
-              definition !== undefined &&
-              definition.auth.kind === "oauth2" &&
-              definition.auth.revocationEndpoint !== undefined
-            ) {
-              const revocationEndpoint = definition.auth.revocationEndpoint
-              const refreshToken = yield* secrets.get(instance.secretRef).pipe(
-                Effect.map(Redacted.value),
-                Effect.catchAll(() => Effect.succeed(null)),
-              )
-              if (refreshToken !== null) {
-                yield* oauth.client.revoke({ revocationEndpoint, token: refreshToken })
+        // Gated end-to-end (review G2): revoke→delete-secret→remove-row→
+        // clear-cache→rebuild is one atomic unit so the rotation fiber
+        // can't re-mint/re-cache a token for the instance mid-removal.
+        refreshGate.withPermits(1)(
+          Effect.gen(function* () {
+            const instances = yield* store.list()
+            const instance = instances.find((i) => i.id === instanceId)
+            if (instance !== undefined && oauth !== undefined) {
+              const definition = definitions.get(instance.definitionId)
+              if (definition !== undefined && definition.auth.kind === "oauth2") {
+                const refreshToken = yield* secrets.get(instance.secretRef).pipe(
+                  Effect.map(Redacted.value),
+                  Effect.catchAll(() => Effect.succeed(null)),
+                )
+                // Best-effort provider revocation BEFORE dropping local
+                // state (PRD §16: disconnect revokes, not just deletes).
+                if (
+                  refreshToken !== null &&
+                  definition.auth.revocationEndpoint !== undefined
+                ) {
+                  yield* oauth.client.revoke({
+                    revocationEndpoint: definition.auth.revocationEndpoint,
+                    token: refreshToken,
+                  })
+                }
+                // Drop the LOCAL refresh-token secret too (review G2): a
+                // revoked token left in ~/.luna/.env is dead weight and a
+                // needless lingering credential. Best-effort.
+                if (oauth.clearSecret !== undefined) {
+                  const varName = secretRefVarName(instance.secretRef)
+                  if (varName !== null) {
+                    yield* oauth
+                      .clearSecret(varName)
+                      .pipe(Effect.catchAll(() => Effect.void))
+                  }
+                }
               }
             }
-          }
-          accessTokens.delete(instanceId)
-          const removed = yield* store.remove(instanceId)
-          if (removed) yield* refreshMounts()
-          return removed
-        })
+            accessTokens.delete(instanceId)
+            const removed = yield* store.remove(instanceId)
+            if (removed) yield* rebuildSnapshot()
+            return removed
+          }),
+        )
 
       // Boot: hydrate the snapshot from persisted instances so threads
       // created before any settings interaction still get their mounts.

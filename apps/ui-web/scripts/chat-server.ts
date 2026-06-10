@@ -924,6 +924,41 @@ const persistEnvSecret = (varName: string, value: string): Promise<void> =>
     }
   })
 
+/**
+ * Remove a var from ~/.luna/.env + process.env (connector disconnect drops
+ * its revoked refresh token — review G2). Atomic rewrite, 0600, best-effort
+ * (a missing file/var is a no-op). Mirrors persistEnvSecret's IO posture.
+ */
+const removeEnvSecret = (varName: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    try {
+      delete process.env[varName]
+      const envPath = resolveRuntimePaths().envFilePath
+      let lines: ReadonlyArray<string>
+      try {
+        lines = readFileSync(envPath, "utf8").split("\n")
+      } catch {
+        resolve() // no file → nothing to remove
+        return
+      }
+      const kept = lines.filter((line) => {
+        const t = line.trim()
+        if (t === "" || t.startsWith("#")) return true
+        const eq = t.indexOf("=")
+        return !(eq !== -1 && t.slice(0, eq).trim() === varName)
+      })
+      while (kept.length > 0 && kept[kept.length - 1]!.trim() === "") kept.pop()
+      const content = kept.length > 0 ? `${kept.join("\n")}\n` : ""
+      const tmp = `${envPath}.tmp-${process.pid}`
+      writeFileSync(tmp, content, { mode: 0o600 })
+      renameSync(tmp, envPath)
+      chmodSync(envPath, 0o600)
+      resolve()
+    } catch (e) {
+      reject(e instanceof Error ? e : new Error(String(e)))
+    }
+  })
+
 // ── Moon agent-summoned secure secret entry ─────────────────────────────
 //
 // The `request_secret` tool (in @luna/secret-tools) calls
@@ -1388,6 +1423,10 @@ export const buildBaseLayer = (
               message: `failed to persist the token: ${String(e)}`,
             }),
         }),
+      // Disconnect drops the revoked refresh token from ~/.luna/.env +
+      // process.env (review G2). Best-effort — never fails disconnect.
+      clearSecret: (varName) =>
+        Effect.promise(() => removeEnvSecret(varName).catch(() => undefined)),
       env: process.env,
     },
   }).pipe(

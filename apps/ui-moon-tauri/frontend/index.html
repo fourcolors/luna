@@ -4007,13 +4007,41 @@
     // and a later const hits the TDZ.
     const ConnectorsEngine = {
       _consentOpen: null, // definitionId whose consent sheet is expanded
+      _beginTimer: null,  // begin-leg watchdog (review G2)
+
+      _clearBusy(defId) {
+        // Per-definition (review G2): a broadcast from ANY connector must
+        // not wipe an UNRELATED connector's in-flight busy/pending state.
+        if (defId) delete State.connectorBusy[defId];
+      },
+
+      _cancelOauth(message) {
+        // Tear down an in-flight OAuth attempt: stop the watchdog, tell the
+        // Rust loopback to stop accepting (kills its poll thread — review
+        // G2 leak), clear this definition's busy, surface the error.
+        if (this._beginTimer) { clearTimeout(this._beginTimer); this._beginTimer = null; }
+        const invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+        if (invoke) { try { invoke('oauth_loopback_cancel'); } catch (_) { /* best-effort */ } }
+        if (this._oauthDefinitionId) this._clearBusy(this._oauthDefinitionId);
+        this._oauthRequestId = null;
+        this._oauthDefinitionId = null;
+        if (message) this.setError(message);
+        this.render();
+      },
 
       applyCapability(supported) {
         if (DOM.connectorsTabBtn) DOM.connectorsTabBtn.hidden = !supported;
-        State.connectorBusy = {};
-        if (!supported && DOM.connectorsTabBtn && DOM.connectorsTabBtn.classList.contains('active')) {
-          const general = document.querySelector('.settings-tab[data-tab="general"]');
-          if (general) general.click();
+        if (!supported) {
+          // Channel switch to a non-connector server: drop ALL connector
+          // state so a stale catalog/instance list can't render (review G2).
+          this._cancelOauth(null);
+          State.connectorCatalog = [];
+          State.connectorInstances = [];
+          State.connectorBusy = {};
+          if (DOM.connectorsTabBtn && DOM.connectorsTabBtn.classList.contains('active')) {
+            const general = document.querySelector('.settings-tab[data-tab="general"]');
+            if (general) general.click();
+          }
         }
         this.render();
       },
@@ -4025,18 +4053,29 @@
 
       applyList(instances) {
         State.connectorInstances = Array.isArray(instances) ? instances : [];
-        // A list broadcast settles whichever definition just changed.
-        State.connectorBusy = {};
+        // Settle ONLY definitions that now have an instance (the op that
+        // produced this broadcast completed) — leave other in-flight
+        // attempts pending (review G2: don't wipe all busy wholesale).
+        for (const inst of State.connectorInstances) this._clearBusy(inst.definitionId);
         this.render();
       },
 
       applyStatus(frame) {
         if (!frame) return;
-        State.connectorBusy = {};
+        // A status ends the OAuth/connect attempt for its definition. We
+        // don't always have the definitionId on the frame, so settle the
+        // one we know is in flight (the oauth attempt) plus, on failure,
+        // stop the watchdog so a hung attempt frees up.
+        if (this._beginTimer) { clearTimeout(this._beginTimer); this._beginTimer = null; }
+        if (this._oauthDefinitionId) this._clearBusy(this._oauthDefinitionId);
+        if (frame.instance) this._clearBusy(frame.instance.definitionId);
         if (frame.ok) {
           this.setError(null);
         } else {
           this.setError(frame.message || 'Connector request failed.');
+          // a failed status means the in-flight oauth attempt is dead
+          this._oauthRequestId = null;
+          this._oauthDefinitionId = null;
         }
         this.render();
       },
@@ -4072,6 +4111,14 @@
             : Math.random().toString(36).slice(2));
           this._oauthRequestId = requestId;
           this._oauthDefinitionId = def.id;
+          // Begin-leg watchdog (review G2): if the server never answers with
+          // a consent URL (dropped frame, server hiccup), don't wedge the
+          // connector forever — tear down after 30s. The redirect handler
+          // clears this; the full consent wait has its own 5-min timeout.
+          if (this._beginTimer) clearTimeout(this._beginTimer);
+          this._beginTimer = setTimeout(() => {
+            this._cancelOauth('Timed out starting the connection — please try again.');
+          }, 30000);
           WebSocketEngine.send({
             type: 'connector-oauth-begin',
             requestId,
@@ -4084,7 +4131,7 @@
           // answers with the consent URL.
         } catch (e) {
           Logger.error('oauth loopback start failed:', e);
-          State.connectorBusy = {};
+          this._clearBusy(def.id);
           this.setError(String(e));
           this.render();
         }
@@ -4093,6 +4140,8 @@
       /** Server sent the consent URL — open the browser and await the code. */
       async applyOauthRedirect(frame) {
         if (!frame || frame.requestId !== this._oauthRequestId) return;
+        // The begin leg answered — stop its watchdog.
+        if (this._beginTimer) { clearTimeout(this._beginTimer); this._beginTimer = null; }
         const invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
         if (!invoke) return;
         try {
@@ -4107,10 +4156,7 @@
           // connector-status + the connector-list broadcast settle the UI.
         } catch (e) {
           Logger.error('oauth consent hop failed:', e);
-          try { await invoke('oauth_loopback_cancel'); } catch (_) { /* best-effort */ }
-          State.connectorBusy = {};
-          this.setError(typeof e === 'string' ? e : 'The consent flow did not complete.');
-          this.render();
+          this._cancelOauth(typeof e === 'string' ? e : 'The consent flow did not complete.');
         }
       },
 
@@ -4174,6 +4220,16 @@
                 ? 'Needs your approval again — reconnect'
                 : 'Error — check the server log';
             info.appendChild(status);
+            // Honest UX (review G2): a remote (mcp-remote) connector mounts
+            // a bearer token at a LOCAL server URL — if that process isn't
+            // running, the tools fail silently. Tell the operator.
+            if (instance.status === 'connected' && def.authKind === 'oauth2') {
+              const hint = document.createElement('div');
+              hint.className = 'connector-status-line';
+              hint.style.color = '#5d6e92';
+              hint.textContent = 'Requires its local connector server running on this machine.';
+              info.appendChild(hint);
+            }
           }
 
           const actions = document.createElement('div');
@@ -4185,6 +4241,16 @@
               ? 'Waiting for your browser consent…'
               : 'Connecting…';
             actions.appendChild(busyLbl);
+            // Cancel an in-flight OAuth attempt (review G2: a hung consent
+            // must not wedge the connector with no way out).
+            if (busy === 'authorizing') {
+              const cancel = document.createElement('button');
+              cancel.type = 'button';
+              cancel.className = 'connector-btn';
+              cancel.textContent = 'Cancel';
+              cancel.addEventListener('click', () => this._cancelOauth(null));
+              actions.appendChild(cancel);
+            }
           } else if (instance) {
             if (instance.status === 'needs-reauth' && def.authKind === 'oauth2') {
               const re = document.createElement('button');

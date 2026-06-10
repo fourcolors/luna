@@ -111,6 +111,7 @@ const makeRig = () => {
   // chat-server wiring of process.env + persistEnvSecret).
   const stored = new Map<string, string>()
   const sinkCalls: string[] = []
+  const clearedVars: string[] = []
   const layer = ConnectorServiceLayer({
     definitions: [oauthDef],
     oauth: {
@@ -120,6 +121,11 @@ const makeRig = () => {
           stored.set(varName, value)
           sinkCalls.push(varName)
           return `env:${varName}`
+        }),
+      clearSecret: (varName) =>
+        Effect.sync(() => {
+          stored.delete(varName)
+          clearedVars.push(varName)
         }),
       env: {
         FAKE_GOOGLE_CLIENT_ID: "cid-123",
@@ -142,7 +148,7 @@ const makeRig = () => {
     ),
     Layer.provide(clock.layer),
   )
-  return { provider, clock, stored, sinkCalls, layer }
+  return { provider, clock, stored, sinkCalls, clearedVars, layer }
 }
 
 describe("client-brokered OAuth flow (mock provider e2e)", () => {
@@ -253,6 +259,44 @@ describe("client-brokered OAuth flow (mock provider e2e)", () => {
           (mounts["fake_google"] as { headers: { Authorization: string } }).headers
             .Authorization,
         ).toBe("Bearer access-2")
+      }).pipe(Effect.provide(rig.layer)),
+    )
+  })
+
+  it("completeAuth rejects a SECOND flow for an already-connected definition (review G2 duplicate guard)", async () => {
+    const rig = makeRig()
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const svc = yield* ConnectorService
+        // Two independent begins (double-click / web+Moon) → two pendings.
+        const a = yield* svc.beginAuth({ definitionId: "fake-google", label: "A", loopbackPort: 51000 })
+        const b = yield* svc.beginAuth({ definitionId: "fake-google", label: "B", loopbackPort: 51001 })
+        const stateA = new URL(a.authUrl).searchParams.get("state")!
+        const stateB = new URL(b.authUrl).searchParams.get("state")!
+        yield* svc.completeAuth({ pendingId: a.pendingId, code: "good-code", state: stateA })
+        // The second completeAuth must NOT insert a second row.
+        const dup = yield* svc
+          .completeAuth({ pendingId: b.pendingId, code: "good-code", state: stateB })
+          .pipe(Effect.flip)
+        expect(dup.message).toContain("already connected")
+        const listed = yield* svc.list()
+        expect(listed).toHaveLength(1)
+      }).pipe(Effect.provide(rig.layer)),
+    )
+  })
+
+  it("disconnect drops the LOCAL refresh-token secret via clearSecret (review G2)", async () => {
+    const rig = makeRig()
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const svc = yield* ConnectorService
+        const begun = yield* svc.beginAuth({ definitionId: "fake-google", label: "x", loopbackPort: 51002 })
+        const state = new URL(begun.authUrl).searchParams.get("state")!
+        const instance = yield* svc.completeAuth({ pendingId: begun.pendingId, code: "good-code", state })
+        expect(rig.stored.has("LUNA_CONNECTOR_FAKE_GOOGLE_REFRESH_TOKEN")).toBe(true)
+        yield* svc.disconnect(instance.id)
+        expect(rig.clearedVars).toContain("LUNA_CONNECTOR_FAKE_GOOGLE_REFRESH_TOKEN")
+        expect(rig.stored.has("LUNA_CONNECTOR_FAKE_GOOGLE_REFRESH_TOKEN")).toBe(false)
       }).pipe(Effect.provide(rig.layer)),
     )
   })
