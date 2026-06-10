@@ -10,6 +10,7 @@
  * A change that weakens any of these flips a test red.
  */
 import { readFileSync } from "node:fs"
+import * as path from "node:path"
 import { describe, expect, it, beforeAll } from "vitest"
 
 interface Sandbox {
@@ -22,7 +23,7 @@ let SB: Sandbox
 
 beforeAll(() => {
   const src = readFileSync(
-    new URL("../frontend/vendor/widget-sandbox.js", import.meta.url),
+    path.resolve(__dirname, "../frontend/vendor/widget-sandbox.js"),
     "utf8",
   )
   const sandbox: Record<string, unknown> = {}

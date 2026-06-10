@@ -7,6 +7,7 @@
  * the browser does (a global IIFE) and exercise computeSnap directly.
  */
 import { readFileSync } from "node:fs"
+import * as path from "node:path"
 import { describe, expect, it, beforeAll } from "vitest"
 
 interface Rect {
@@ -24,7 +25,7 @@ let computeSnap: (a: Rect, w: Rect, t?: number) => Snap | null
 
 beforeAll(() => {
   const src = readFileSync(
-    new URL("../frontend/vendor/deck-snap.js", import.meta.url),
+    path.resolve(__dirname, "../frontend/vendor/deck-snap.js"),
     "utf8",
   )
   const sandbox: Record<string, unknown> = {}
