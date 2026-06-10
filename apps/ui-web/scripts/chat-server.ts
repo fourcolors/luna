@@ -254,6 +254,12 @@ import {
   type SecretDestination,
 } from "@luna/secret-tools"
 import { SkillToolsLayer, SkillToolsService } from "@luna/skill-tools"
+import {
+  BUILTIN_CONNECTORS,
+  ConnectorInstanceStore,
+  ConnectorService,
+  ConnectorServiceLayer,
+} from "@luna/connectors"
 import { startControlServer } from "@luna/control-server"
 import {
   resolveOpAccounts,
@@ -445,6 +451,14 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       // rebuilds it inside every mutation), so a settings toggle is
       // reflected in the very next thread without a restart or a tick.
       const skillRegistry = yield* SkillRegistry
+      // PRD Part A (Connectors): connected services' MCP servers. Same
+      // sync-snapshot discipline — refreshMounts() rebuilds on connect/
+      // disconnect (and on M2 token rotation); decorate() just spreads it.
+      const connectorService = yield* ConnectorService
+      const bootMounts = Object.keys(connectorService.mountSnapshotSync())
+      if (bootMounts.length > 0) {
+        console.log("[luna/boot] connector mounts:", bootMounts.join(", "))
+      }
 
       // PRD Part B S4: hot-load user skills from ~/.luna/skills/<id>/SKILL.md.
       // Same pattern as the beliefs holder: run once at boot (correct from
@@ -646,6 +660,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             [localShellThreadTools.serverName]: localShellThreadTools.server,
             [secretThreadTools.serverName]: secretThreadTools.server,
             [skillThreadTools.serverName]: skillThreadTools.server, // PRD B §11: skill_load (tier-2 disclosure)
+            ...connectorService.mountSnapshotSync(), // PRD A §07: connected services, hot per-thread
           }
           return {
             mcpServers,
@@ -1306,6 +1321,21 @@ export const buildBaseLayer = (
   // resumed threads get tools (the resume path bypasses any outer wrapper).
   // LunaSqliteBootstrap flows up and is satisfied at the bottom of
   // buildServerLayer, same as every other SQLite-backed layer here.
+  // PRD Part A: connector instances (luna.db) + the service whose sync
+  // mount snapshot decorate() spreads into every thread's mcpServers.
+  // Defined once and merged into the base layer too (memoized by
+  // reference) so M2's WS frames talk to the SAME instance.
+  const connectorStoreL = ConnectorInstanceStore.makeLayer(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
+  const connectorServiceL = ConnectorServiceLayer({
+    definitions: BUILTIN_CONNECTORS,
+  }).pipe(
+    Layer.provide(connectorStoreL),
+    Layer.provide(secretL),
+    Layer.provide(clockL),
+  )
+
   const threadToolsL = ThreadToolsProviderLayer().pipe(
     Layer.provide(memoryRouterL), // REQUIRED: satisfies MemoryRouterTag inside the layer (siblings don't cross-wire)
     // PRD Part B: skill_tools (skill_load) + the registry snapshot read by
@@ -1314,6 +1344,7 @@ export const buildBaseLayer = (
     // and the provider (Layer.provide composes bottom-up).
     Layer.provide(SkillToolsLayer()),
     Layer.provide(skillRegistryL),
+    Layer.provide(connectorServiceL), // PRD Part A: mounts read by decorate()
     Layer.provide(obsL),
     Layer.provide(clockL),
     // JobsStore required by SchedulerToolsLayer for durable cron persistence
@@ -1479,6 +1510,7 @@ export const buildBaseLayer = (
     jobTickerL ?? Layer.empty, // Phase 12b V2 ticker: enabled via LUNA_SCHEDULER_V2_ENABLED=1 (DESIGN §5.3)
     surveyL,    // Phase 3 D3: Survey available for buildServerLayer to resolve + pass to the WS server
     skillRegistryL, // PRD Part B: same instance as threadToolsL (memoized by reference) — buildServerLayer resolves it for the WS skill frames
+    connectorServiceL, // PRD Part A: same instance as threadToolsL — M2's WS connector frames resolve it here
   )
 }
 

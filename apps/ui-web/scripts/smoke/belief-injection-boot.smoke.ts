@@ -43,6 +43,7 @@ import type { MemoryRecord } from "@luna/memory"
 import { LunaSqliteBootstrapLive } from "@luna/memory"
 import { ThreadToolsProviderTag } from "@luna/chat-service"
 import { SkillToolsLayer } from "@luna/skill-tools"
+import { ConnectorService } from "@luna/connectors"
 import { Effect, Layer, ManagedRuntime, Ref, Stream } from "effect"
 import { rmSync } from "node:fs"
 import { ThreadToolsProviderLayer } from "../chat-server.js"
@@ -159,6 +160,20 @@ const buildLayer = (
     Layer.provide(SkillToolsLayer()),
     Layer.provideMerge(
       SkillRegistry.layer({ seeds: BUILTIN_SKILLS, disclosure: "index" }),
+    ),
+    // PRD Part A: decorate() spreads the connector mount snapshot. The
+    // smoke stubs an empty service — connector mounting has its own tests;
+    // here we only need the layer graph to build like production.
+    Layer.provide(
+      Layer.succeed(ConnectorService, {
+        catalog: () => Effect.succeed([]),
+        list: () => Effect.succeed([]),
+        connect: () =>
+          Effect.die("smoke stub — connect not exercised here"),
+        disconnect: () => Effect.succeed(false),
+        refreshMounts: () => Effect.void,
+        mountSnapshotSync: () => ({}),
+      } as never),
     ),
     Layer.provide(obsL),
     Layer.provide(clockL),
