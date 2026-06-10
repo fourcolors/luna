@@ -206,6 +206,11 @@ const make = (
 ): Effect.Effect<SkillRegistryApi, ValidationError> =>
   Effect.gen(function* () {
     const mode: SkillDisclosure = options.disclosure ?? "inline"
+    // LIVE disabled-set, not a boot snapshot: setEnabled keeps it current so
+    // a skill that is unregistered and re-registered later in the process
+    // (the user-skills hot-load resyncs on file edits) re-enters with its
+    // CURRENT toggled state, not its boot-time state. Keeps memory and the
+    // skill_preferences store agreeing without a restart.
     const disabledSeed = new Set(options.initialDisabled ?? [])
 
     const initial = new Map<string, SkillState>()
@@ -295,6 +300,9 @@ const make = (
         if (options.onToggle !== undefined) {
           yield* options.onToggle(id, enabled)
         }
+        // Keep the live disabled-set current (see its declaration comment).
+        if (enabled) disabledSeed.delete(id)
+        else disabledSeed.add(id)
         const next = new Map(cur)
         next.set(id, { manifest: state.manifest, enabled })
         yield* Ref.set(ref, next)

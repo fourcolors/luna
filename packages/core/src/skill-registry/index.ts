@@ -12,3 +12,9 @@ export {
 } from "./skill-registry.js"
 export { BUILTIN_SKILLS } from "./builtin-skills.js"
 export { SkillPrefsStore, type SkillPrefsApi } from "./skill-prefs-store.js"
+export {
+  parseSkillMd,
+  scanUserSkills,
+  syncUserSkills,
+  type UserSkillScan,
+} from "./user-skills-loader.js"

@@ -42,6 +42,7 @@ import { MemoryRouterTag } from "@luna/memory"
 import type { MemoryRecord } from "@luna/memory"
 import { LunaSqliteBootstrapLive } from "@luna/memory"
 import { ThreadToolsProviderTag } from "@luna/chat-service"
+import { SkillToolsLayer } from "@luna/skill-tools"
 import { Effect, Layer, ManagedRuntime, Ref, Stream } from "effect"
 import { rmSync } from "node:fs"
 import { ThreadToolsProviderLayer } from "../chat-server.js"
@@ -74,6 +75,11 @@ const SMOKE_TEL_ANALYTICS_DB = `/tmp/luna-smoke-belief-tel-analytics-${RUN_ID}.d
 const SMOKE_OBS_JSONL = `/tmp/luna-smoke-belief-obs-${RUN_ID}.jsonl`
 process.env["LUNA_DB_PATH"] = SMOKE_LUNA_DB
 process.env["LUNA_ANALYTICS_DB_PATH"] = SMOKE_OBS_ANALYTICS_DB
+// PRD B S4: the thread-tools layer scans $LUNA_HOME/skills for user skills
+// at boot. Point LUNA_HOME at an empty temp dir so the smoke never reads
+// the operator's real ~/.luna (the explicit DB overrides above still win
+// for every path that has one).
+process.env["LUNA_HOME"] = `/tmp/luna-smoke-belief-home-${RUN_ID}`
 
 /** Best-effort removal of this run's temp DB files + their sidecars/locks. */
 const cleanupSmokeArtifacts = (): void => {
@@ -143,14 +149,17 @@ const buildLayer = (
     // file. Without it the real layer build crashes with
     // "Service not found: luna/JobsStoreService".
     Layer.provide(JobsStoreService.Memory),
-    // PRD Part B: ThreadToolsProviderLayer yields SkillRegistry for the
-    // skills prompt snapshot. Mirror production (chat-server.ts
-    // skillRegistryL) with the real built-in seeds so CHECK 3 can assert
-    // the skills section renders — and so a future missing-provide in the
-    // production wiring fails THIS smoke the same way it would fail boot.
-    // provideMerge (not provide): CHECK 3 also needs the registry handle
-    // from the runtime context to drive the toggle.
-    Layer.provideMerge(SkillRegistry.layer({ seeds: BUILTIN_SKILLS })),
+    // PRD Part B: ThreadToolsProviderLayer yields SkillToolsService (the
+    // skill_load MCP server) AND SkillRegistry (the prompt snapshot).
+    // Mirror production exactly — built-in seeds + INDEX disclosure — so
+    // CHECK 3 asserts what a real boot renders, and a future
+    // missing-provide in the production wiring fails THIS smoke the same
+    // way it would fail boot. provideMerge (not provide): CHECK 3 also
+    // needs the registry handle from the runtime context to drive toggles.
+    Layer.provide(SkillToolsLayer()),
+    Layer.provideMerge(
+      SkillRegistry.layer({ seeds: BUILTIN_SKILLS, disclosure: "index" }),
+    ),
     Layer.provide(obsL),
     Layer.provide(clockL),
     Layer.provide(LunaSqliteBootstrapLive),
@@ -339,17 +348,24 @@ async function check3(): Promise<void> {
           )
         }
         const firstSeed = BUILTIN_SKILLS[0]!
-        if (!spBoot.includes(firstSeed.name)) {
+        // INDEX disclosure (production mode): one line per enabled skill,
+        // keyed by id; the body must NOT be inlined (that's skill_load's job).
+        if (!spBoot.includes(`- ${firstSeed.id} —`)) {
           throw new Error(
-            `[check 3] built-in skill "${firstSeed.name}" missing from boot prompt`,
+            `[check 3] index line for "${firstSeed.id}" missing from boot prompt`,
           )
         }
-        console.log("[check 3] boot decorate() contains '## Skills' + seeds ✓")
+        if (spBoot.includes(firstSeed.body.slice(0, 40))) {
+          throw new Error(
+            "[check 3] skill BODY found inlined in the prompt — index disclosure broken",
+          )
+        }
+        console.log("[check 3] boot decorate() carries the skills INDEX (no bodies) ✓")
 
         // Toggle a seed off → the very NEXT decorate must not contain it.
         yield* reg.setEnabled(firstSeed.id, false)
         const spToggled = provider.decorate({} as never).systemPrompt ?? ""
-        if (spToggled.includes(firstSeed.name)) {
+        if (spToggled.includes(`- ${firstSeed.id} —`)) {
           throw new Error(
             `[check 3] disabled skill "${firstSeed.id}" still present in the ` +
               "next decorate() — snapshot is stale (rebuild-on-mutation broken)",

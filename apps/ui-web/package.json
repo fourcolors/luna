@@ -31,6 +31,7 @@
     "@luna/observability-tools": "workspace:*",
     "@luna/scheduler-tools": "workspace:*",
     "@luna/secret-tools": "workspace:*",
+    "@luna/skill-tools": "workspace:*",
     "@luna/ui-shared": "workspace:*",
     "@luna/ui-shared-solid": "workspace:*",
     "@luna/ui-ws": "workspace:*",

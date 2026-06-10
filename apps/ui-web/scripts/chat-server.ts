@@ -119,7 +119,7 @@ import {
 } from "node:fs"
 import { hostname, userInfo } from "node:os"
 import { execFileSync, spawn } from "node:child_process"
-import { dirname } from "node:path"
+import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
   applyRuntimePathEnvDefaults,
@@ -171,9 +171,11 @@ import {
   ObservabilityService,
   OnePasswordSecretProvider,
   RoutedOpSecretProvider,
+  scanUserSkills,
   SessionStore,
   SkillPrefsStore,
   SkillRegistry,
+  syncUserSkills,
   Survey,
   TelemetryPlatform,
   TelemetryService,
@@ -251,6 +253,7 @@ import {
   makeRegisterSecret,
   type SecretDestination,
 } from "@luna/secret-tools"
+import { SkillToolsLayer, SkillToolsService } from "@luna/skill-tools"
 import { startControlServer } from "@luna/control-server"
 import {
   resolveOpAccounts,
@@ -436,16 +439,49 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       const obsTools = yield* ObsToolsService
       const localShellTools = yield* LocalShellToolsService
       const secretTools = yield* SecretToolsService
+      const skillTools = yield* SkillToolsService
       // PRD Part B (Skills): the managed skill catalog. decorate() reads
       // promptSnapshotSync() — synchronous and never stale (the registry
       // rebuilds it inside every mutation), so a settings toggle is
       // reflected in the very next thread without a restart or a tick.
       const skillRegistry = yield* SkillRegistry
+
+      // PRD Part B S4: hot-load user skills from ~/.luna/skills/<id>/SKILL.md.
+      // Same pattern as the beliefs holder: run once at boot (correct from
+      // t=0), then a supervised refresh loop in this layer's Scope. A new or
+      // edited SKILL.md appears in the catalog (and the next thread's index)
+      // within ~refreshIntervalMs, no restart. Scan/sync never throw — a
+      // malformed file is a warning, not an outage.
+      const userSkillsDir = join(resolveRuntimePaths().lunaHome, "skills")
+      const refreshUserSkills = Effect.gen(function* () {
+        const scan = scanUserSkills(userSkillsDir)
+        const summary = yield* syncUserSkills(skillRegistry, scan)
+        if (summary.added + summary.updated + summary.removed > 0) {
+          console.log(
+            `[luna/skills] user skills synced: +${summary.added} ~${summary.updated} -${summary.removed}`,
+          )
+        }
+        if (summary.conflicts.length > 0) {
+          console.warn(
+            "[luna/skills] user skills shadowing built-ins were SKIPPED:",
+            summary.conflicts.join(", "),
+          )
+        }
+        for (const w of scan.warnings) console.warn("[luna/skills]", w)
+      }).pipe(Effect.catchAllCause(() => Effect.void))
+      yield* refreshUserSkills
+      yield* Effect.forkScoped(
+        Effect.forever(
+          Effect.sleep(refreshIntervalMs).pipe(Effect.zipRight(refreshUserSkills)),
+        ),
+      )
+
       const bootSkills = yield* skillRegistry.catalog()
       console.log(
         "[luna/boot] skills registered:",
         bootSkills.length,
-        `(${bootSkills.filter((s) => s.enabled).length} enabled)`,
+        `(${bootSkills.filter((s) => s.enabled).length} enabled,`,
+        `${bootSkills.filter((s) => s.source === "user").length} user)`,
       )
 
       console.log("[luna/boot] MCP servers registered:", [
@@ -567,6 +603,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
           const obsThreadTools = obsTools.createSessionBinding()
           const localShellThreadTools = localShellTools.createSessionBinding()
           const secretThreadTools = secretTools.createSessionBinding()
+          const skillThreadTools = skillTools.createSessionBinding()
           console.log(
             "[luna/thread] wiring MCP servers:",
             [
@@ -575,6 +612,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
               obsThreadTools.serverName,
               localShellThreadTools.serverName,
               secretThreadTools.serverName,
+              skillThreadTools.serverName,
             ].join(", "),
           )
           // Sync read of the live-refresh holder — refreshed every
@@ -607,6 +645,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             [obsThreadTools.serverName]: obsThreadTools.server,
             [localShellThreadTools.serverName]: localShellThreadTools.server,
             [secretThreadTools.serverName]: secretThreadTools.server,
+            [skillThreadTools.serverName]: skillThreadTools.server, // PRD B §11: skill_load (tier-2 disclosure)
           }
           return {
             mcpServers,
@@ -1254,6 +1293,11 @@ export const buildBaseLayer = (
         seeds: BUILTIN_SKILLS,
         initialDisabled: disabled,
         onToggle: (id, enabled) => prefs.setEnabled(id, enabled),
+        // PRD B §11 (S4): index disclosure — the system prompt carries a
+        // one-line index of enabled skills; bodies load on demand via the
+        // skill_tools.skill_load MCP tool. Keeps 100+ enabled skills from
+        // bloating every turn's context.
+        disclosure: "index",
       })
     }),
   ).pipe(Layer.provide(skillPrefsL))
@@ -1264,7 +1308,12 @@ export const buildBaseLayer = (
   // buildServerLayer, same as every other SQLite-backed layer here.
   const threadToolsL = ThreadToolsProviderLayer().pipe(
     Layer.provide(memoryRouterL), // REQUIRED: satisfies MemoryRouterTag inside the layer (siblings don't cross-wire)
-    Layer.provide(skillRegistryL), // PRD Part B: skills snapshot read by decorate()
+    // PRD Part B: skill_tools (skill_load) + the registry snapshot read by
+    // decorate(). SkillToolsLayer requires SkillRegistry, so order matters:
+    // provide the tools layer first, then the registry satisfies both it
+    // and the provider (Layer.provide composes bottom-up).
+    Layer.provide(SkillToolsLayer()),
+    Layer.provide(skillRegistryL),
     Layer.provide(obsL),
     Layer.provide(clockL),
     // JobsStore required by SchedulerToolsLayer for durable cron persistence
