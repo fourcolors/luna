@@ -1,0 +1,5 @@
+# Generated for the connector OAuth flow (PRD A §09) — see main.rs.
+[[permission]]
+identifier = "allow-open-external-url"
+description = "Allows the open_external_url command"
+commands.allow = ["open_external_url"]

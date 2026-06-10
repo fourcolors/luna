@@ -31,6 +31,7 @@ import {
   ArtifactPanel,
   ChatPanel,
   ConnectionSummary,
+  ConnectorsPanel,
   ObsPanel,
   Sidebar,
   SkillsPanel,
@@ -513,6 +514,33 @@ export const App: Component = () => {
                 lastError={store.state.skillError}
                 onToggle={(id, enabled) => send({ type: "skill-toggle", id, enabled })}
                 disabled={!isConnected()}
+              />
+            </div>
+          </Show>
+          {/* PRD Part A §17 — gated on the additive connectors capability.
+              The web client does the view + api-key connect + disconnect;
+              the OAuth browser hop lives in the Moon app (a page can't bind
+              a loopback). */}
+          <Show when={store.state.capabilities.connectors === true}>
+            <div class="row settings-row">
+              <ConnectorsPanel
+                catalog={store.state.connectorCatalog}
+                instances={store.state.connectorInstances}
+                lastError={store.state.connectorError}
+                disabled={!isConnected()}
+                onConnectApiKey={(definitionId, secretRef, capabilityIds) =>
+                  send({
+                    type: "connector-connect",
+                    requestId: `conn_${Date.now()}`,
+                    definitionId,
+                    label: definitionId,
+                    secretRef,
+                    capabilityIds,
+                  })
+                }
+                onDisconnect={(instanceId) =>
+                  send({ type: "connector-disconnect", instanceId })
+                }
               />
             </div>
           </Show>

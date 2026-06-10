@@ -81,6 +81,10 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "account-list",
   "skill-catalog",
   "skill-status",
+  "connector-catalog",
+  "connector-list",
+  "connector-oauth-redirect",
+  "connector-status",
   "local-shell-request",
   "local-shell-status",
   "register-op-token-status",
@@ -108,6 +112,10 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "secret-result",
   "survey-response",
   "skill-toggle",
+  "connector-oauth-begin",
+  "connector-oauth-code",
+  "connector-connect",
+  "connector-disconnect",
   "pty-input",
   "pty-resize",
 ].sort()
@@ -187,15 +195,18 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     expect(UI_WS_PROTOCOL_VERSION).toBe(EXPECTED_PROTOCOL_VERSION)
   })
 
-  it("parser self-check: derived counts are sane (28 server, 17 client) — guards the regex itself", () => {
+  it("parser self-check: derived counts are sane (32 server, 21 client) — guards the regex itself", () => {
     // If the regex silently mis-parses, the toEqual above could pass for the
     // wrong reason. Pin the counts so a broken parser is caught here.
     // Prior base = 24 server / 15 client; the agent-summoned secure-secret-entry
     // feature adds secret-request + secret-status (server) and secret-result
     // (client) → 26 server / 16 client. The PRD Part B skills feature adds
     // skill-catalog + skill-status (server) and skill-toggle (client)
-    // → 28 server / 17 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(28)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(17)
+    // → 28 server / 17 client. The PRD Part A connectors feature adds
+    // connector-catalog/-list/-oauth-redirect/-status (server) and
+    // connector-oauth-begin/-oauth-code/-connect/-disconnect (client)
+    // → 32 server / 21 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(32)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(21)
   })
 })

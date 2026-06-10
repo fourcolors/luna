@@ -256,10 +256,12 @@ import {
 import { SkillToolsLayer, SkillToolsService } from "@luna/skill-tools"
 import {
   BUILTIN_CONNECTORS,
+  ConnectorError,
   ConnectorInstanceStore,
   ConnectorService,
   ConnectorServiceLayer,
 } from "@luna/connectors"
+import { makeOAuthClient } from "@luna/oauth"
 import { startControlServer } from "@luna/control-server"
 import {
   resolveOpAccounts,
@@ -922,6 +924,41 @@ const persistEnvSecret = (varName: string, value: string): Promise<void> =>
     }
   })
 
+/**
+ * Remove a var from ~/.luna/.env + process.env (connector disconnect drops
+ * its revoked refresh token — review G2). Atomic rewrite, 0600, best-effort
+ * (a missing file/var is a no-op). Mirrors persistEnvSecret's IO posture.
+ */
+const removeEnvSecret = (varName: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    try {
+      delete process.env[varName]
+      const envPath = resolveRuntimePaths().envFilePath
+      let lines: ReadonlyArray<string>
+      try {
+        lines = readFileSync(envPath, "utf8").split("\n")
+      } catch {
+        resolve() // no file → nothing to remove
+        return
+      }
+      const kept = lines.filter((line) => {
+        const t = line.trim()
+        if (t === "" || t.startsWith("#")) return true
+        const eq = t.indexOf("=")
+        return !(eq !== -1 && t.slice(0, eq).trim() === varName)
+      })
+      while (kept.length > 0 && kept[kept.length - 1]!.trim() === "") kept.pop()
+      const content = kept.length > 0 ? `${kept.join("\n")}\n` : ""
+      const tmp = `${envPath}.tmp-${process.pid}`
+      writeFileSync(tmp, content, { mode: 0o600 })
+      renameSync(tmp, envPath)
+      chmodSync(envPath, 0o600)
+      resolve()
+    } catch (e) {
+      reject(e instanceof Error ? e : new Error(String(e)))
+    }
+  })
+
 // ── Moon agent-summoned secure secret entry ─────────────────────────────
 //
 // The `request_secret` tool (in @luna/secret-tools) calls
@@ -1360,12 +1397,38 @@ export const buildBaseLayer = (
   // PRD Part A: connector instances (luna.db) + the service whose sync
   // mount snapshot decorate() spreads into every thread's mcpServers.
   // Defined once and merged into the base layer too (memoized by
-  // reference) so M2's WS frames talk to the SAME instance.
+  // reference) so the WS frames talk to the SAME instance.
   const connectorStoreL = ConnectorInstanceStore.makeLayer(paths.lunaDbPath).pipe(
     Layer.provide(clockL),
   )
   const connectorServiceL = ConnectorServiceLayer({
     definitions: BUILTIN_CONNECTORS,
+    // PRD A §09: the OAuth half. storeSecret persists the refresh token
+    // to ~/.luna/.env (0600, atomic) AND sets process.env so the
+    // EnvSecretProvider resolves it immediately — no restart. The
+    // per-operator client id/secret resolve from process.env (operator
+    // setup step, PRD §23).
+    oauth: {
+      client: makeOAuthClient(),
+      storeSecret: (varName, value) =>
+        Effect.tryPromise({
+          try: async () => {
+            process.env[varName] = value
+            await persistEnvSecret(varName, value)
+            return `env:${varName}`
+          },
+          catch: (e) =>
+            new ConnectorError({
+              op: "storeSecret",
+              message: `failed to persist the token: ${String(e)}`,
+            }),
+        }),
+      // Disconnect drops the revoked refresh token from ~/.luna/.env +
+      // process.env (review G2). Best-effort — never fails disconnect.
+      clearSecret: (varName) =>
+        Effect.promise(() => removeEnvSecret(varName).catch(() => undefined)),
+      env: process.env,
+    },
   }).pipe(
     Layer.provide(connectorStoreL),
     Layer.provide(secretL),
@@ -1661,6 +1724,7 @@ export const buildSetupServerLayer = (
         accountBroker: null,
         survey: null,
         skillRegistry: null,
+        connectorService: null,
         localShellBridge: null,
         // No chat in setup-mode → the request_secret tool is never bound, so the
         // secret bridge has nothing to drive. Disabled here.
@@ -1700,6 +1764,75 @@ const buildServerLayer = (
       const broker = yield* AccountBroker
       const surveyService = yield* Survey // Phase 3 D3
       const skillRegistryService = yield* SkillRegistry // PRD Part B
+      const connectorServiceHandle = yield* ConnectorService // PRD Part A
+
+      // PRD A §08: access tokens live ~1h; refresh AHEAD of expiry so the
+      // mount snapshot's bearer never goes stale mid-conversation. The
+      // service refreshes only tokens within their margin, under its
+      // single-flight gate — this tick is cheap when nothing is expiring.
+      yield* Effect.forkScoped(
+        Effect.forever(
+          Effect.sleep(10 * 60 * 1000).pipe(
+            Effect.zipRight(
+              connectorServiceHandle.refreshMounts().pipe(
+                Effect.catchAllCause((cause) =>
+                  Effect.sync(() =>
+                    console.warn("[luna/connectors] mount refresh failed:", String(cause)),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      )
+
+      // Wire-safety adapter (PRD §18): instances are projected to status +
+      // metadata — no secretRef (pointer or not, clients don't need it),
+      // no accountKind. Tokens never exist on instances at all.
+      const toWireInstance = (i: {
+        readonly id: string
+        readonly definitionId: string
+        readonly label: string
+        readonly status: "connected" | "needs-reauth" | "error" | "disconnected"
+        readonly grantedScopes: ReadonlyArray<string>
+        readonly createdAt: number
+        readonly lastHealthyAt: number | null
+      }) => ({
+        id: i.id,
+        definitionId: i.definitionId,
+        label: i.label,
+        status: i.status,
+        grantedScopes: i.grantedScopes,
+        createdAt: i.createdAt,
+        lastHealthyAt: i.lastHealthyAt,
+      })
+      const connectorsWsHandle = {
+        catalog: () => connectorServiceHandle.catalog(),
+        list: () =>
+          connectorServiceHandle.list().pipe(
+            Effect.map((xs) => xs.map(toWireInstance)),
+          ),
+        beginAuth: (input: {
+          readonly definitionId: string
+          readonly label: string
+          readonly capabilityIds?: ReadonlyArray<string>
+          readonly loopbackPort: number
+        }) => connectorServiceHandle.beginAuth(input),
+        completeAuth: (input: {
+          readonly pendingId: string
+          readonly code: string
+          readonly state: string
+        }) =>
+          connectorServiceHandle.completeAuth(input).pipe(Effect.map(toWireInstance)),
+        connect: (input: {
+          readonly definitionId: string
+          readonly label: string
+          readonly secretRef?: string
+          readonly capabilityIds?: ReadonlyArray<string>
+        }) => connectorServiceHandle.connect(input).pipe(Effect.map(toWireInstance)),
+        disconnect: (instanceId: string) =>
+          connectorServiceHandle.disconnect(instanceId),
+      }
 
       // Wire-safety adapter (PRD §12): the ui-ws handle receives catalog
       // entries with the `body` ALREADY stripped. Bodies are prompt content
@@ -1758,6 +1891,7 @@ const buildServerLayer = (
         accountBroker: broker,
         survey: surveyHandle, // Phase 3 D3: resolved handle
         skillRegistry: skillsWsHandle, // PRD Part B: bodies pre-stripped
+        connectorService: connectorsWsHandle, // PRD Part A: instances pre-projected
         localShellBridge,
         onLocalShellRelease: reattachSandbox,
         registerOpToken: registerOpTokenHandler,
