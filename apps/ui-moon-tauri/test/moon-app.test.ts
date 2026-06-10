@@ -2262,6 +2262,33 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(m.State.tetherGraceTimer).toBeNull()
       expect(document.getElementById('connection-status')!.className).toBe('connected')
     })
+
+    it('Scenario: a PULL wraps the string into the moon IMMEDIATELY — retract fires before any thread-snapshot (string-demo behavior)', () => {
+      const m = M()
+      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      m.State.activeThreadId = 'thread-keep'
+      m.State.growPromise = Promise.resolve()  // the showTether grow that put the string out
+      vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      vi.spyOn(m.MoonString, 'isLive').mockReturnValue(true)
+      const retract = vi.spyOn(m.MoonString, 'retract').mockImplementation(() => {})
+      m.WebSocketEngine.reTether()             // the pull gesture — NO snapshot has arrived
+      expect(retract).toHaveBeenCalledWith(true)
+      // The retract's onRetracted hook owns the window restore now; the stashed
+      // grow promise must be dropped or onReattached would restore a second time.
+      expect(m.State.growPromise).toBeNull()
+    })
+
+    it('Scenario: after a pull-retract has finished, onReattached is just the status flip (no second restore, no second retract)', async () => {
+      const m = M()
+      m.State.growPromise = null               // reTether dropped it at pull time
+      vi.spyOn(m.MoonString, 'isLive').mockReturnValue(false) // retract already finished
+      const retract = vi.spyOn(m.MoonString, 'retract').mockImplementation(() => {})
+      const restore = vi.spyOn(m.TauriService, 'restoreCollapsed').mockResolvedValue(undefined)
+      await m.WebSocketEngine.onReattached()
+      expect(retract).not.toHaveBeenCalled()
+      expect(restore).not.toHaveBeenCalled()   // onRetracted already collapsed the window
+      expect(document.getElementById('connection-status')!.className).toBe('connected')
+    })
   })
 
   // ── Window-drag rope physics + click-through region ───────────────────────
