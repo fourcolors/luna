@@ -39,3 +39,44 @@ export function loadDna(
   const repoDna = resolvePath(scriptDir, "../../..", "DNA.md")
   return readFileSync(repoDna, "utf-8").trim()
 }
+
+/**
+ * Create a resilient DNA loader with a last-good-content cache.
+ *
+ * Returns a `load()` function that wraps `loadDna`:
+ *   - On success: updates the internal cache and returns the content.
+ *   - On throw (e.g. files deleted mid-run): logs a one-line console.error
+ *     and returns the cached last-good content so thread creation continues.
+ *   - First-call failure (no cache yet): rethrows, preserving the loud boot
+ *     failure that a misconfigured server should surface.
+ *
+ * `scriptDir` is passed through to every `loadDna` call.
+ * `personalPathOverride` is forwarded as `loadDna`'s second argument
+ * (omit or pass `undefined` to use the default `~/.luna/DNA.md`).
+ */
+export function createDnaLoader(
+  scriptDir: string,
+  personalPathOverride?: string | null,
+): () => string {
+  let lastGood: string | undefined
+  return function load(): string {
+    try {
+      const content =
+        personalPathOverride !== undefined
+          ? loadDna(scriptDir, personalPathOverride)
+          : loadDna(scriptDir)
+      lastGood = content
+      return content
+    } catch (err) {
+      if (lastGood === undefined) {
+        // No cache yet — first call failed. Rethrow for loud boot failure.
+        throw err
+      }
+      console.error(
+        "[luna/dna] DNA.md unavailable; using last-good cached content:",
+        err instanceof Error ? err.message : String(err),
+      )
+      return lastGood
+    }
+  }
+}
