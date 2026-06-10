@@ -341,34 +341,44 @@
   #c-ink .irow .el2 { margin-left: auto; color: #7c8db5; font-size: 10.5px; font-variant-numeric: tabular-nums; }
 
   /* =========================================================
-     6 · ORBIT DOCK — running agents orbit; click to dock into list
+     6 · ORBIT DOCK + 7 · PHASE ORBIT — shared orbit machinery
+     (.orbitcard scopes both; the orbiting icon differs:
+      blot for #c-orbit, phase moonlet for #c-lunet)
      ========================================================= */
-  #c-orbit .moonw { top: 110px; transition: top .5s cubic-bezier(0.34, 1.2, 0.64, 1); }
-  #c-orbit.open .moonw { top: 26px; }
-  #c-orbit .orbits { position: absolute; left: 50%; top: 146px; width: 0; height: 0; transition: top .5s cubic-bezier(0.34, 1.2, 0.64, 1); }
-  #c-orbit.open .orbits { top: 62px; }
-  #c-orbit .ring {
+  .orbitcard .moonw { top: 110px; transition: top .5s cubic-bezier(0.34, 1.2, 0.64, 1); }
+  .orbitcard.open .moonw { top: 26px; }
+  .orbitcard .orbits { position: absolute; left: 50%; top: 146px; width: 0; height: 0; transition: top .5s cubic-bezier(0.34, 1.2, 0.64, 1); }
+  .orbitcard.open .orbits { top: 62px; }
+  .orbitcard .ring {
     position: absolute; left: 50%; top: 50%; border: 1px dashed rgba(138,180,248,0.13); border-radius: 50%;
     transform: translate(-50%, -50%); transition: opacity .3s ease;
   }
-  #c-orbit.open .ring { opacity: 0; }
-  #c-orbit .orb {
+  .orbitcard.open .ring { opacity: 0; }
+  .orbitcard .orb {
     position: absolute; left: 0; top: 0; width: 10px; height: 10px; margin: -5px;
     transition: transform .55s cubic-bezier(0.34, 1.2, 0.64, 1), opacity .3s ease;
   }
-  #c-orbit .orb .blot { width: 10px; height: 10px; }
-  #c-orbit .dock {
+  .orbitcard .orb .blot { width: 10px; height: 10px; }
+  .orbitcard .dock {
     position: absolute; left: 50%; top: 118px; transform: translateX(-50%);
     width: 280px; display: flex; flex-direction: column;
     background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 13px;
     backdrop-filter: blur(14px);
     opacity: 0; pointer-events: none; transition: opacity .3s ease .15s;
   }
-  #c-orbit.open .dock { opacity: 1; pointer-events: auto; }
-  #c-orbit .dock .row { border-bottom: 1px solid rgba(255,255,255,0.04); }
-  #c-orbit .dock .row:last-child { border-bottom: none; }
-  #c-orbit .dock .row .blot { opacity: 0; }    /* dock rows borrow the flying orbs' blots visually */
-  #c-orbit.open .dock .row .blot { opacity: 1; transition: opacity .2s ease .5s; }
+  .orbitcard.open .dock { opacity: 1; pointer-events: auto; }
+  .orbitcard .dock .row { border-bottom: 1px solid rgba(255,255,255,0.04); }
+  .orbitcard .dock .row:last-child { border-bottom: none; }
+  /* dock rows borrow the flying orbs' icons visually */
+  .orbitcard .dock .row .blot, .orbitcard .dock .row .minimoon { opacity: 0; }
+  .orbitcard.open .dock .row .blot, .orbitcard.open .dock .row .minimoon { opacity: 1; transition: opacity .2s ease .5s; }
+
+  /* 7-specific: orbiting moonlets show their phase */
+  #c-lunet .orb { width: 17px; height: 17px; margin: -8.5px; }
+  #c-lunet .orb .minimoon { width: 17px; height: 17px; display: block; filter: drop-shadow(0 0 4px rgba(138,180,248,0.35)); }
+  #c-lunet .orb.wait .minimoon { filter: drop-shadow(0 0 6px rgba(255,206,110,0.6)); }
+  #c-lunet .dock .minimoon { width: 22px; height: 22px; flex-shrink: 0; }
+  #c-lunet .dock .pct2 { color: #8ea2c8; font-size: 11px; font-variant-numeric: tabular-nums; }
 
   /* =========================================================
      CHAT-OPEN VIEW — mock of the real expanded layout:
@@ -399,8 +409,8 @@
 
   /* moon pinned top-left in chat view (matches the real widget) */
   body[data-view="chat"] .moonw,
-  body[data-view="chat"] #c-orbit .moonw,
-  body[data-view="chat"] #c-orbit.open .moonw { left: 20px; top: 18px; transform: none; }
+  body[data-view="chat"] .orbitcard .moonw,
+  body[data-view="chat"] .orbitcard.open .moonw { left: 20px; top: 18px; transform: none; }
 
   /* 1 · Ledger — same panel, drops from the moon OVER the chat's corner */
   body[data-view="chat"] #c-ledger .stem { left: 56px; top: 88px; }
@@ -431,9 +441,9 @@
   body[data-view="chat"] #c-ink .irow > span:nth-child(3), body[data-view="chat"] #c-ink .irow .el2 { display: none; }
   body[data-view="chat"] #c-ink .irow .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-  /* 6 · Orbit — tighter rings; open docks agents as PILLS along the chat's top */
-  body[data-view="chat"] #c-orbit .orbits, body[data-view="chat"] #c-orbit.open .orbits { left: 56px; top: 54px; }
-  body[data-view="chat"] #c-orbit .dock {
+  /* 6+7 · Orbit cards — tighter rings; open docks agents as PILLS along the chat's top */
+  body[data-view="chat"] .orbitcard .orbits, body[data-view="chat"] .orbitcard.open .orbits { left: 56px; top: 54px; }
+  body[data-view="chat"] .orbitcard .dock {
     left: 124px; top: 60px; right: 20px; transform: none; width: auto;
     flex-direction: row; flex-wrap: wrap; gap: 5px; align-items: flex-start;
     padding: 7px 9px;
@@ -441,14 +451,15 @@
     border: none; border-bottom: 1px solid rgba(255,255,255,0.06);
     border-radius: 0 0 14px 14px; backdrop-filter: blur(6px);
   }
-  body[data-view="chat"] #c-orbit .dock .rows { display: flex; flex-wrap: wrap; gap: 5px; }
-  body[data-view="chat"] #c-orbit .dock .row {
+  body[data-view="chat"] .orbitcard .dock .rows { display: flex; flex-wrap: wrap; gap: 5px; }
+  body[data-view="chat"] .orbitcard .dock .row {
     border: 1px solid var(--glass-border); background: rgba(10,14,28,0.92);
     border-radius: 999px; padding: 3px 9px 3px 7px; gap: 6px; font-size: 10px;
   }
-  body[data-view="chat"] #c-orbit .dock .row.wait { border-color: rgba(255,206,110,0.45); }
-  body[data-view="chat"] #c-orbit .dock .row .sub, body[data-view="chat"] #c-orbit .dock .row .kindchip,
-  body[data-view="chat"] #c-orbit .dock .row .right { display: none; }
+  body[data-view="chat"] .orbitcard .dock .row.wait { border-color: rgba(255,206,110,0.45); }
+  body[data-view="chat"] .orbitcard .dock .row .sub, body[data-view="chat"] .orbitcard .dock .row .kindchip,
+  body[data-view="chat"] .orbitcard .dock .row .right { display: none; }
+  body[data-view="chat"] #c-lunet .dock .minimoon { width: 16px; height: 16px; }
 </style>
 </head>
 <body data-act="calm" data-view="moon">
@@ -470,7 +481,7 @@
 </svg>
 
 <header>
-  <h1>What is Luna doing right now? <span class="dim">· six dropdown concepts</span></h1>
+  <h1>What is Luna doing right now? <span class="dim">· seven dropdown concepts</span></h1>
   <p class="intro">
     Each card is a live mock of one way the moon could reveal its running work — background jobs
     (<b>prompt</b> / <b>workflow</b> kinds from the SDK job system), live <b>subagents</b>, and
@@ -611,7 +622,7 @@
   </div>
 
   <!-- 6 · ORBIT DOCK -->
-  <div class="card" id="c-orbit">
+  <div class="card orbitcard" id="c-orbit">
     <div class="stage">
       <span class="hint">interactive — click the moon</span>
       <div class="moonw"></div>
@@ -630,6 +641,29 @@
         <li>Heaviest motion of the set; orbit speed ∝ activity</li>
       </ul>
       <div class="badges"><span class="badge effort-l">large effort</span><span class="badge role">most alive</span></div>
+    </div>
+  </div>
+
+  <!-- 7 · PHASE ORBIT (hybrid of 3 + 6) -->
+  <div class="card orbitcard" id="c-lunet">
+    <div class="stage">
+      <span class="hint">interactive — click the moon</span>
+      <div class="moonw"></div>
+      <div class="orbits">
+        <div class="ring r1"></div>
+        <div class="ring r2"></div>
+      </div>
+      <div class="dock"><div class="rows"></div></div>
+    </div>
+    <div class="meta">
+      <h2><span class="num">7</span> Phase Orbit <span style="color:#8ea2c8;font-weight:400;font-size:12px">· hybrid of 3 + 6</span></h2>
+      <p class="tagline">Agents orbit as tiny moons that wax with their progress; click and they dock into a ledger.</p>
+      <ul>
+        <li><b>Closed</b>: each orbiting moonlet shows its phase — progress readable at a glance, zero text</li>
+        <li><b>Open</b>: the same moonlets fly into rows with name + % — one object, two states</li>
+        <li>Needs-input moonlet glows gold and stops waxing until you answer</li>
+      </ul>
+      <div class="badges"><span class="badge effort-l">large effort</span><span class="badge role">hybrid · most informative while closed</span></div>
     </div>
   </div>
 
@@ -819,9 +853,10 @@ function renderInk() {
     </div>`).join('');
 }
 
-/* ---- 6 · Orbit Dock ---- */
-function renderOrbit() {
-  const card = document.querySelector('#c-orbit');
+/* ---- 6 · Orbit Dock + 7 · Phase Orbit (shared machinery) ----
+   The orbiting icon and dock-row layout differ; flight + docking are shared. */
+function renderOrbitLike(sel, makeIcon, makeRow) {
+  const card = document.querySelector(sel);
   const orbits = card.querySelector('.orbits');
   const dockRows = card.querySelector('.dock .rows');
   const list = active();
@@ -829,32 +864,45 @@ function renderOrbit() {
   const r1 = card.querySelector('.r1'), r2 = card.querySelector('.r2');
   r1.style.width = r1.style.height = view === 'chat' ? '76px' : '128px';
   r2.style.width = r2.style.height = view === 'chat' ? '108px' : '176px';
-  list.forEach((it, i) => {
+  list.forEach(it => {
     const orb = document.createElement('div');
-    orb.className = 'orb'; orb.dataset.id = it.id;
-    orb.innerHTML = `<div class="blot ${it.status}"></div>`;
+    orb.className = `orb ${it.status}`; orb.dataset.id = it.id;
+    orb.innerHTML = makeIcon(it);
     orbits.appendChild(orb);
   });
-  dockRows.innerHTML = list.length ? list.map(it => `
+  dockRows.innerHTML = list.length ? list.map(makeRow).join('') : '<div class="empty-note">nothing in orbit</div>';
+  layoutOrbitLike(sel);
+}
+const orbitIcon = it => `<div class="blot ${it.status}"></div>`;
+const orbitRow = it => `
     <div class="row ${it.status}">
       <div class="blot ${it.status}"></div>
       <div style="min-width:0"><div class="nm">${it.name}</div><div class="sub">${it.sub}${it.ask ? ' · <span style="color:var(--wait-c)">' + it.ask + '</span>' : ''}</div></div>
       <span class="kindchip ${it.kind}">${it.kind}</span>
       <div class="right"><div class="el" data-el="${it.id}">${fmtEl(it)}</div></div>
-    </div>`).join('') : '<div class="empty-note">nothing in orbit</div>';
-  layoutOrbit();
-}
+    </div>`;
+const lunetIcon = it => miniMoon(it.pct, it.status === 'wait');
+const lunetRow = it => `
+    <div class="row ${it.status}">
+      ${miniMoon(it.pct, it.status === 'wait')}
+      <div style="min-width:0"><div class="nm">${it.name}${it.ask ? ' · <span style="color:var(--wait-c);font-weight:400;font-size:11px">' + it.ask + '</span>' : ''}</div><div class="sub">${it.sub}</div></div>
+      <div class="right"><span class="pct2" data-pct="${it.id}">${Math.round(it.pct * 100)}%</span></div>
+    </div>`;
+const renderOrbit = () => renderOrbitLike('#c-orbit', orbitIcon, orbitRow);
+const renderLunet = () => renderOrbitLike('#c-lunet', lunetIcon, lunetRow);
+
 let orbitT = 0;
-function layoutOrbit() {
-  const card = document.querySelector('#c-orbit');
+function layoutOrbitLike(sel) {
+  const card = document.querySelector(sel);
   const open = card.classList.contains('open');
   const orbs = [...card.querySelectorAll('.orb')];
   const rows = [...card.querySelectorAll('.dock .row')];
   const orbitsBox = card.querySelector('.orbits').getBoundingClientRect();
   orbs.forEach((orb, i) => {
     if (open && rows[i]) {
-      const blot = rows[i].querySelector('.blot').getBoundingClientRect();
-      orb.style.transform = `translate(${blot.left - orbitsBox.left + 1.5}px, ${blot.top - orbitsBox.top + 1.5}px)`;
+      const icon = rows[i].querySelector('.blot, .minimoon').getBoundingClientRect();
+      const w = orb.offsetWidth;
+      orb.style.transform = `translate(${icon.left - orbitsBox.left + (icon.width - w) / 2}px, ${icon.top - orbitsBox.top + (icon.height - w) / 2}px)`;
       orb.style.opacity = '0';
       orb.style.transitionDelay = `${i * 60}ms, 450ms`;
     } else {
@@ -866,14 +914,34 @@ function layoutOrbit() {
     }
   });
 }
+function layoutOrbit() { layoutOrbitLike('#c-orbit'); layoutOrbitLike('#c-lunet'); }
 setInterval(() => {
-  const card = document.querySelector('#c-orbit');
-  if (!card.classList.contains('open')) { orbitT += 0.045; layoutOrbit(); }
+  orbitT += 0.045;
+  ['#c-orbit', '#c-lunet'].forEach(sel => {
+    if (!document.querySelector(sel).classList.contains('open')) layoutOrbitLike(sel);
+  });
 }, 50);
+/* waxing in place: swap moonlet SVGs without recreating orbs (recreating would
+   reset their transform and make them re-fly from the origin) */
+function updateLunetPhases() {
+  const card = document.querySelector('#c-lunet');
+  card.querySelectorAll('.orb').forEach(orb => {
+    const it = items().find(i => i.id === orb.dataset.id);
+    if (it) orb.innerHTML = miniMoon(it.pct, it.status === 'wait');
+  });
+  card.querySelectorAll('.dock .row').forEach((row, idx) => {
+    const it = active()[idx];
+    if (!it) return;
+    const mm = row.querySelector('.minimoon');
+    if (mm) mm.outerHTML = miniMoon(it.pct, it.status === 'wait');
+    const pct = row.querySelector('.pct2');
+    if (pct) pct.textContent = `${Math.round(it.pct * 100)}%`;
+  });
+}
 
 /* ---- shared wiring ---- */
 function renderAll() {
-  renderLedger(); renderConstel(); renderPhase(); renderBeam(); renderInk(); renderOrbit(); setPips();
+  renderLedger(); renderConstel(); renderPhase(); renderBeam(); renderInk(); renderOrbit(); renderLunet(); setPips();
 }
 document.querySelectorAll('#actbtns button').forEach(b => b.addEventListener('click', () => {
   document.querySelectorAll('#actbtns button').forEach(x => x.classList.remove('on'));
@@ -894,11 +962,11 @@ document.querySelectorAll('#viewbtns button').forEach(b => b.addEventListener('c
   setTimeout(layoutOrbit, 30);
 }));
 
-['c-ledger', 'c-phase', 'c-beam', 'c-ink', 'c-orbit'].forEach(id => {
+['c-ledger', 'c-phase', 'c-beam', 'c-ink', 'c-orbit', 'c-lunet'].forEach(id => {
   const card = document.getElementById(id);
   card.querySelector('.moonw').addEventListener('click', () => {
     card.classList.toggle('open');
-    if (id === 'c-orbit') setTimeout(layoutOrbit, 20);
+    if (card.classList.contains('orbitcard')) setTimeout(() => layoutOrbitLike('#' + id), 20);
   });
 });
 /* constellation: clicking the moon shows a hint that detail = ledger-style panel */
@@ -921,6 +989,7 @@ setInterval(() => {
     if (it.status === 'run' && it.pct < 0.97) it.pct += 0.003;
   });
   renderPhase();
+  updateLunetPhases();
 }, 4000);
 
 renderAll();
