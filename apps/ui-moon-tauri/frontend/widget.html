@@ -420,27 +420,38 @@
     try {
       var snapSettleTimer = null;
       var lastMoveTime = 0;
+      var suppressUntil = 0;
       var THROTTLE_MS = 16;
       var DEBOUNCE_MS = 120;
+      var SUPPRESS_MS = 250;
 
       W.onMoved(function () {
         var now = Date.now();
+        // Our own setPosition below fires onMoved too — without this window
+        // the snap re-arms off its own echo (snap → onMoved → snap …).
+        if (now < suppressUntil) return;
         if (now - lastMoveTime < THROTTLE_MS) return;
         lastMoveTime = now;
 
         if (snapSettleTimer) { clearTimeout(snapSettleTimer); snapSettleTimer = null; }
         snapSettleTimer = setTimeout(async function () {
           try {
-            // Get the main (chat) window.
+            // Minimize fires a spurious onMoved with nonsense coordinates
+            // (tauri#7664) — never snap a minimized window.
+            if (typeof W.isMinimized === 'function' && (await W.isMinimized())) return;
+
+            // Get the main (chat) window. getByLabel is ASYNC in the Tauri 2
+            // JS API — without the await, mainWin was a Promise (truthy), the
+            // !mainWin guard passed, and outerPosition() threw straight into
+            // the catch below: the snap path silently never ran.
             var mainWin = null;
             if (window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.Window &&
                 typeof window.__TAURI__.window.Window.getByLabel === 'function') {
-              mainWin = window.__TAURI__.window.Window.getByLabel('main');
+              mainWin = await window.__TAURI__.window.Window.getByLabel('main');
             }
             if (!mainWin) return;
 
             // Read positions and sizes in physical px.
-            var scaleFactor = window.devicePixelRatio || 1;
             var mainPos = await mainWin.outerPosition();
             var mainSize = await mainWin.outerSize();
             var myPos = await W.outerPosition();
@@ -455,6 +466,7 @@
 
             // Apply snap position.
             if (window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.PhysicalPosition) {
+              suppressUntil = Date.now() + SUPPRESS_MS;
               await W.setPosition(new window.__TAURI__.window.PhysicalPosition(snap.x, snap.y));
             }
           } catch (_) { /* best-effort — never throw */ }

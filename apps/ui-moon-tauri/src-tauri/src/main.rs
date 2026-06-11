@@ -1094,6 +1094,20 @@ async fn voice_ensure_model(app: tauri::AppHandle) -> Result<(), String> {
 
 fn main() {
     let builder = tauri::Builder::default()
+        // Hub-owns-exit lifecycle (widget-system.md Phase 0): the moon hub is
+        // the owning window — when it is destroyed, every other window
+        // (widget-*/panel-*) closes with it, and Tauri's natural
+        // last-window-closed exit fires. The reverse never holds: closing a
+        // widget leaves the hub (and the app) alive.
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) && window.label() == "main" {
+                for (label, win) in window.app_handle().webview_windows() {
+                    if label != "main" {
+                        let _ = win.close();
+                    }
+                }
+            }
+        })
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -1249,13 +1263,24 @@ fn main() {
                     let shortcut_clone = shortcut.clone();
                     let _ = app.global_shortcut().on_shortcut(shortcut, |app, _shortcut, event| {
                         if event.state == ShortcutState::Pressed {
-                            if let Some(window) = app.get_webview_window("main") {
-                                let is_visible = window.is_visible().unwrap_or(false);
-                                if is_visible {
+                            // Toggle EVERY app window on the hub's visibility
+                            // (widget-system.md Phase 0). Toggling only "main"
+                            // used to strand floating widget windows on screen
+                            // with the moon hidden. Closed windows no longer
+                            // exist, so this never resurrects anything.
+                            let windows = app.webview_windows();
+                            let hub_visible = windows
+                                .get("main")
+                                .map(|w| w.is_visible().unwrap_or(false))
+                                .unwrap_or(false);
+                            for (label, window) in windows {
+                                if hub_visible {
                                     let _ = window.hide();
                                 } else {
                                     let _ = window.show();
-                                    let _ = window.set_focus();
+                                    if label == "main" {
+                                        let _ = window.set_focus();
+                                    }
                                 }
                             }
                         }
