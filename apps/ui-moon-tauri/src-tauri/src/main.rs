@@ -1092,6 +1092,112 @@ async fn voice_ensure_model(app: tauri::AppHandle) -> Result<(), String> {
     .await
 }
 
+// ── widget dock graph (group-drag) ──────────────────────────────────────────
+//
+// widget-system.md Phase 0.5 operator feedback: snapped widgets must MOVE WITH
+// the window they snapped to. widget.html reports its dock state after every
+// settle-snap (`set_dock`); the Moved arm of on_window_event then applies the
+// hub's drag delta to every docked widget. WinAmp model: dragging the HUB
+// carries the group; dragging a docked widget by itself moves only that
+// widget — that IS the detach gesture (its next settle clears the edge).
+//
+// `suppressed` counts pending PROGRAMMATIC moves per label (a counter, not a
+// flag) so a follower's echoed Moved event neither re-propagates nor eats a
+// concurrent real user drag.
+#[derive(Default)]
+struct DockState(std::sync::Mutex<DockInner>);
+
+#[derive(Default)]
+struct DockInner {
+    /// widget labels currently docked to the hub ("main").
+    docked: std::collections::HashSet<String>,
+    /// last known outer position per label, physical px.
+    positions: std::collections::HashMap<String, (i32, i32)>,
+    /// pending programmatic moves per label.
+    suppressed: std::collections::HashMap<String, u32>,
+}
+
+/// Pure half of the group-drag: fold one Moved(label → x,y) event into the
+/// dock state and return the follower moves to apply (empty when the event
+/// was a suppressed echo, a non-hub window, a first sighting, or a no-op).
+/// Kept free of window handles so the arithmetic is unit-testable.
+fn dock_fold_move(
+    s: &mut DockInner,
+    label: &str,
+    x: i32,
+    y: i32,
+) -> Vec<(String, i32, i32)> {
+    if let Some(n) = s.suppressed.get_mut(label) {
+        if *n > 0 {
+            *n -= 1;
+            s.positions.insert(label.to_string(), (x, y));
+            return Vec::new();
+        }
+    }
+    let prev = s.positions.insert(label.to_string(), (x, y));
+    if label != "main" {
+        return Vec::new();
+    }
+    let Some((px, py)) = prev else {
+        return Vec::new();
+    };
+    let (dx, dy) = (x - px, y - py);
+    if dx == 0 && dy == 0 {
+        return Vec::new();
+    }
+    let docked: Vec<String> = s.docked.iter().cloned().collect();
+    let mut moves = Vec::new();
+    for fl in docked {
+        // A docked widget without a seeded position can't be deltaed safely —
+        // skip it; its next settle-snap re-seeds via set_dock.
+        let Some(cur) = s.positions.get(&fl).copied() else {
+            continue;
+        };
+        let next = (cur.0 + dx, cur.1 + dy);
+        *s.suppressed.entry(fl.clone()).or_insert(0) += 1;
+        s.positions.insert(fl.clone(), next);
+        moves.push((fl, next.0, next.1));
+    }
+    moves
+}
+
+/// Remove a window from the dock state entirely (close/destroy).
+fn dock_forget(s: &mut DockInner, label: &str) {
+    s.docked.remove(label);
+    s.positions.remove(label);
+    s.suppressed.remove(label);
+}
+
+/// widget.html calls this after every settle-snap: docked=true when it landed
+/// flush on the hub, false when it settled away. Seeds both rects so the next
+/// hub delta starts from fresh truth. The hub itself can never dock.
+#[tauri::command]
+fn set_dock(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, DockState>,
+    docked: bool,
+) -> Result<(), String> {
+    let label = window.label().to_string();
+    if label == "main" {
+        return Err("the hub cannot dock to itself".into());
+    }
+    let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
+    if docked {
+        if let Ok(p) = window.outer_position() {
+            s.positions.insert(label.clone(), (p.x, p.y));
+        }
+        if let Some(main) = window.app_handle().get_webview_window("main") {
+            if let Ok(p) = main.outer_position() {
+                s.positions.insert("main".to_string(), (p.x, p.y));
+            }
+        }
+        s.docked.insert(label);
+    } else {
+        s.docked.remove(&label);
+    }
+    Ok(())
+}
+
 fn main() {
     let builder = tauri::Builder::default()
         // Hub-owns-exit lifecycle (widget-system.md Phase 0): the moon hub is
@@ -1099,18 +1205,45 @@ fn main() {
         // (widget-*/panel-*) closes with it, and Tauri's natural
         // last-window-closed exit fires. The reverse never holds: closing a
         // widget leaves the hub (and the app) alive.
+        // The Moved arm drives dock group-drag (see DockState above).
         .on_window_event(|window, event| {
-            if matches!(event, tauri::WindowEvent::Destroyed) && window.label() == "main" {
-                for (label, win) in window.app_handle().webview_windows() {
-                    if label != "main" {
-                        // destroy(), not close(): close() emits CloseRequested
-                        // first, which page JS can intercept — a widget with an
-                        // "unsaved changes" guard would survive the hub and
-                        // float orphaned forever. destroy() is the hard
-                        // guarantee the invariant claims.
-                        let _ = win.destroy();
+            match event {
+                tauri::WindowEvent::Destroyed => {
+                    {
+                        let state = window.app_handle().state::<DockState>();
+                        let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
+                        dock_forget(&mut s, window.label());
+                    }
+                    if window.label() == "main" {
+                        for (label, win) in window.app_handle().webview_windows() {
+                            if label != "main" {
+                                // destroy(), not close(): close() emits
+                                // CloseRequested first, which page JS can
+                                // intercept — a widget with an "unsaved
+                                // changes" guard would survive the hub and
+                                // float orphaned forever. destroy() is the
+                                // hard guarantee the invariant claims.
+                                let _ = win.destroy();
+                            }
+                        }
                     }
                 }
+                tauri::WindowEvent::Moved(pos) => {
+                    let app = window.app_handle();
+                    let state = app.state::<DockState>();
+                    // Fold under the lock; APPLY outside it — set_position can
+                    // re-enter this handler with the follower's own Moved.
+                    let moves = {
+                        let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
+                        dock_fold_move(&mut s, window.label(), pos.x, pos.y)
+                    };
+                    for (fl, nx, ny) in moves {
+                        if let Some(w) = app.get_webview_window(&fl) {
+                            let _ = w.set_position(tauri::PhysicalPosition::new(nx, ny));
+                        }
+                    }
+                }
+                _ => {}
             }
         })
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -1119,6 +1252,8 @@ fn main() {
         // PRD A §09: open the system browser for the connector OAuth hop.
         .plugin(tauri_plugin_opener::init())
         .manage(InteractiveRegion::default())
+        // Widget dock graph for group-drag (set_dock + the Moved arm above).
+        .manage(DockState::default())
         // PRD A §09: the client-brokered OAuth loopback state.
         .manage(OauthLoopback::default());
 
@@ -1146,6 +1281,7 @@ fn main() {
         open_artifact_widget,
         close_widget,
         list_widget_windows,
+        set_dock,
         voice_status,
         voice_set_mode,
         voice_ptt_down,
@@ -1177,7 +1313,8 @@ fn main() {
         open_external_url,
         open_artifact_widget,
         close_widget,
-        list_widget_windows
+        list_widget_windows,
+        set_dock
     ]);
 
     builder
@@ -1752,5 +1889,98 @@ mod tests {
         let captured = result.lock().unwrap().take().unwrap();
         assert_eq!(captured.code, "the-code");
         assert_eq!(captured.state, "the-state");
+    }
+}
+
+#[cfg(test)]
+mod dock_tests {
+    use super::{dock_fold_move, dock_forget, DockInner};
+
+    fn seeded() -> DockInner {
+        let mut s = DockInner::default();
+        s.docked.insert("widget-a".to_string());
+        s.docked.insert("widget-b".to_string());
+        s.positions.insert("main".to_string(), (100, 100));
+        s.positions.insert("widget-a".to_string(), (500, 120));
+        s.positions.insert("widget-b".to_string(), (500, 400));
+        s
+    }
+
+    #[test]
+    fn hub_move_carries_every_seeded_docked_widget_by_the_same_delta() {
+        let mut s = seeded();
+        let mut moves = dock_fold_move(&mut s, "main", 130, 90);
+        moves.sort();
+        assert_eq!(
+            moves,
+            vec![
+                ("widget-a".to_string(), 530, 110),
+                ("widget-b".to_string(), 530, 390),
+            ]
+        );
+        // Follower bookkeeping advanced with the move and armed suppression.
+        assert_eq!(s.positions["widget-a"], (530, 110));
+        assert_eq!(s.suppressed["widget-a"], 1);
+    }
+
+    #[test]
+    fn consecutive_hub_moves_accumulate_correctly() {
+        let mut s = seeded();
+        let _ = dock_fold_move(&mut s, "main", 110, 100);
+        let moves = dock_fold_move(&mut s, "main", 120, 100);
+        assert!(moves.contains(&("widget-a".to_string(), 520, 120)));
+    }
+
+    #[test]
+    fn non_hub_moves_never_propagate_but_update_position() {
+        let mut s = seeded();
+        let moves = dock_fold_move(&mut s, "widget-a", 700, 700);
+        assert!(moves.is_empty());
+        assert_eq!(s.positions["widget-a"], (700, 700));
+    }
+
+    #[test]
+    fn suppressed_echo_is_consumed_exactly_once() {
+        let mut s = seeded();
+        let _ = dock_fold_move(&mut s, "main", 130, 90); // arms suppression=1
+        // The follower's echoed Moved: consumed, no propagation, counter drops.
+        let moves = dock_fold_move(&mut s, "widget-a", 530, 110);
+        assert!(moves.is_empty());
+        assert_eq!(s.suppressed["widget-a"], 0);
+        // A real user drag of the follower afterwards is NOT suppressed.
+        let moves = dock_fold_move(&mut s, "widget-a", 900, 900);
+        assert!(moves.is_empty()); // non-hub: bookkeeping only
+        assert_eq!(s.positions["widget-a"], (900, 900));
+    }
+
+    #[test]
+    fn first_hub_sighting_and_zero_delta_produce_no_moves() {
+        let mut s = DockInner::default();
+        s.docked.insert("widget-a".to_string());
+        s.positions.insert("widget-a".to_string(), (500, 120));
+        assert!(dock_fold_move(&mut s, "main", 100, 100).is_empty()); // no prev
+        assert!(dock_fold_move(&mut s, "main", 100, 100).is_empty()); // no delta
+        assert!(!dock_fold_move(&mut s, "main", 110, 100).is_empty());
+    }
+
+    #[test]
+    fn unseeded_docked_widget_is_skipped_not_invented() {
+        let mut s = DockInner::default();
+        s.docked.insert("widget-ghost".to_string());
+        s.positions.insert("main".to_string(), (100, 100));
+        let moves = dock_fold_move(&mut s, "main", 150, 150);
+        assert!(moves.is_empty());
+    }
+
+    #[test]
+    fn dock_forget_clears_all_traces() {
+        let mut s = seeded();
+        s.suppressed.insert("widget-a".to_string(), 2);
+        dock_forget(&mut s, "widget-a");
+        assert!(!s.docked.contains("widget-a"));
+        assert!(!s.positions.contains_key("widget-a"));
+        assert!(!s.suppressed.contains_key("widget-a"));
+        // Others untouched.
+        assert!(s.docked.contains("widget-b"));
     }
 }

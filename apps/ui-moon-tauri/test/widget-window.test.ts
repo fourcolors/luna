@@ -195,6 +195,35 @@ describe('widget.html — deck self-snap consumer', () => {
     expect(setPositionCalls).toHaveLength(0)
   })
 
+  const dockCalls = () =>
+    ((window as any).__TAURI__.core.invoke as ReturnType<typeof vi.fn>).mock.calls
+      .filter((c: unknown[]) => c[0] === 'set_dock')
+      .map((c: unknown[]) => (c[1] as { docked: boolean }).docked)
+
+  it('reports dock=true to the Rust dock graph after snapping', async () => {
+    movedHandler!()
+    await vi.advanceTimersByTimeAsync(121)
+    expect(dockCalls()).toEqual([true])
+  })
+
+  it('reports dock=false after settling out of range (the detach gesture)', async () => {
+    me.outerPosition.mockResolvedValue({ x: 2000, y: 1500 })
+    movedHandler!()
+    await vi.advanceTimersByTimeAsync(121)
+    expect(dockCalls()).toEqual([false])
+  })
+
+  it('re-affirms dock=true on the group-drag echo (already flush, no move)', async () => {
+    movedHandler!()
+    await vi.advanceTimersByTimeAsync(121)
+    const snapped = setPositionCalls[0]
+    me.outerPosition.mockResolvedValue({ x: snapped.x, y: snapped.y })
+    movedHandler!()
+    await vi.advanceTimersByTimeAsync(121)
+    expect(dockCalls()).toEqual([true, true])
+    expect(setPositionCalls).toHaveLength(1) // still no re-issued move
+  })
+
   it('survives a missing main window without touching position', async () => {
     getByLabel.mockResolvedValue(null)
     movedHandler!()

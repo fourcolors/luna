@@ -455,20 +455,34 @@
             var anchorRect = { x: mainPos.x, y: mainPos.y, w: mainSize.width, h: mainSize.height };
             var widgetRect = { x: myPos.x, y: myPos.y, w: mySize.width, h: mySize.height };
 
+            // Report dock state to the Rust dock graph (group-drag): docked
+            // after landing flush on the hub, undocked after settling away.
+            // Fire-and-forget — group-drag is best-effort chrome.
+            var setDock = function (docked) {
+              try {
+                if (window.__TAURI__ && window.__TAURI__.core) {
+                  window.__TAURI__.core.invoke('set_dock', { docked: docked }).catch(function () {});
+                }
+              } catch (_) { /* best-effort */ }
+            };
+
             if (!window.LunaDeckSnap) return;
             var snap = LunaDeckSnap.computeSnap(anchorRect, widgetRect, 22);
-            if (!snap) return;
+            if (!snap) { setDock(false); return; }
 
             // Idempotence kills the echo loop: our own setPosition fires
             // onMoved, which settles back here with the window ALREADY at the
             // snap target — skip the no-op move instead of re-issuing it.
             // (Positional, not time-windowed: a slow IPC can't outlive it and
             // a real flick-drag right after a snap is never swallowed.)
-            if (snap.x === myPos.x && snap.y === myPos.y) return;
+            // Still flush on the hub → re-affirm the dock edge (covers the
+            // group-drag echo, where the hub carried us and we ARE the move).
+            if (snap.x === myPos.x && snap.y === myPos.y) { setDock(true); return; }
 
             // Apply snap position.
             if (window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.PhysicalPosition) {
               await W.setPosition(new window.__TAURI__.window.PhysicalPosition(snap.x, snap.y));
+              setDock(true);
             }
           } catch (_) { /* best-effort — never throw */ }
         }, DEBOUNCE_MS);

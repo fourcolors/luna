@@ -441,6 +441,12 @@
           "markdownDescription": "Allows switching the active channel profile in the mode-600 WS connection file"
         },
         {
+          "description": "Allows a widget window to report its dock state (snapped flush to the hub or not) so the Rust dock graph can group-drag it with the hub",
+          "type": "string",
+          "const": "allow-set-dock",
+          "markdownDescription": "Allows a widget window to report its dock state (snapped flush to the hub or not) so the Rust dock graph can group-drag it with the hub"
+        },
+        {
           "description": "Allows the frontend to publish the clickable region (moon + rope) that drives the click-through cursor poll while the re-tether string is out",
           "type": "string",
           "const": "allow-set-interactive-region",

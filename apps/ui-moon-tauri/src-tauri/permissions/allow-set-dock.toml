@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-set-dock"
+description = "Allows a widget window to report its dock state (snapped flush to the hub or not) so the Rust dock graph can group-drag it with the hub"
+
+[permission.commands]
+allow = [
+  "set_dock"
+]
