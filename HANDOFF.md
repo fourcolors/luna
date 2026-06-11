@@ -206,7 +206,7 @@ is the parallel mechanism. §12.2 #7 unchanged.
 ### Session 2026-04-24 (end of orchestrator C)
 
 **Full transcript of this session:**
-Find via `~/.claude/projects/-Users-sol/` newest jsonl after timestamp
+Find via the project jsonl file newest entry after timestamp
 2026-04-24T19:00Z.
 
 **Next pending phase: 10 — Jobs & Schedule + Trigger Agents + backpressure**

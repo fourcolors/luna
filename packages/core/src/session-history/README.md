@@ -4,7 +4,7 @@
 
 ## Overview
 
-The Session History module stores full transcripts of agent sessions in DuckDB for analytics queries. It mirrors sol-agent's `cc_sessions` table but integrates with Luna's Effect/Layer architecture.
+The Session History module stores full transcripts of agent sessions in DuckDB for analytics queries. It mirrors the `cc_sessions` table pattern but integrates with Luna's Effect/Layer architecture.
 
 ## Architecture
 
@@ -144,6 +144,6 @@ bun run test packages/core/src/analytics/
 
 ## References
 
-- **Sol-agent cc_sessions:** `<local-agent-history-path>`
+- **Reference cc_sessions:** `<local-agent-history-path>`
 - **Luna DESIGN.md §2.2.8:** Telemetry → DuckDB + OTLP
 - **Luna DESIGN.md §17:** Repo layout (Phase 25–28 progression)

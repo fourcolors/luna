@@ -26,7 +26,7 @@ describe("Luna DNA contract", () => {
     expect(content).not.toMatch(/\bSterling\b/)
   })
 
-  it("establishes Luna's identity (not Claude / Sol / generic assistant)", () => {
+  it("establishes Luna's identity (not Claude or a generic assistant)", () => {
     const content = dna()
     // Identity declaration: name + repudiation of substrate model.
     expect(content).toContain("Luna")

@@ -26,7 +26,7 @@ op://<vault-name>/<item-name>/[section-name/]<field-name>
 ```
 Account selection in `op` CLI is out-of-band (`--account` flag / `OP_ACCOUNT` env / token). 1P does NOT have an account-prefix grammar of their own.
 
-Currently registered keychain entries (verified by Sol):
+Currently registered keychain entries:
 - `luna.op.primary` / `primary` — populated, `op vault list` returns "Example Vault"
 - `luna.op.ops` / `ops` — Operator will add later
 - `luna.op.flow` / `flow` — Operator will add later
@@ -261,10 +261,10 @@ Modify `apps/ui-web/scripts/dev-server-chat.ts`:
   label })`. The env-var token uses label `env` IF you keep it in
   the routed pool — actually NO, `env` is a reserved label. Decide:
   - Option (i): drop the env-var fallback entirely — Operator's
-    Sol-agent shell shouldn't be relied on; keychain is the source
+    The agent shell shouldn't be relied on; keychain is the source
     of truth. Cleaner.
   - Option (ii): give the env-var-sourced token an internal label
-    like `envtok` (not reserved). Operator's Sol-agent shell
+    like `envtok` (not reserved). Operator's The agent shell
     continues to work as a hidden default account.
   Lean **(i) drop** — but make this an explicit decision in your
   return summary so Operator can override. Discuss tradeoff in the
