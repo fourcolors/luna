@@ -74,11 +74,12 @@ async function fetchServerStatus(token: string): Promise<{ uptime: number; start
 
 const STORAGE_KEY = "ui-ws.config"
 const DEFAULT_URL = "ws://127.0.0.1:4753/ui"
-const DEFAULT_MODEL = "claude-sonnet-4-6"
+const DEFAULT_MODEL = "claude-opus-4-8"
 
 const MODEL_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
-  { value: "claude-opus-4-7", label: "Opus 4.7 — most capable" },
-  { value: "claude-sonnet-4-6", label: "Sonnet 4.6 — balanced (default)" },
+  { value: "claude-opus-4-8", label: "Opus 4.8 — most capable (default)" },
+  { value: "claude-opus-4-7", label: "Opus 4.7 — prior gen" },
+  { value: "claude-sonnet-4-6", label: "Sonnet 4.6 — balanced" },
   { value: "claude-haiku-4-5", label: "Haiku 4.5 — fastest" },
   { value: "claude-opus-4-6", label: "Opus 4.6 — prior gen" },
   { value: "claude-sonnet-4-5", label: "Sonnet 4.5 — prior gen" },
