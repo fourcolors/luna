@@ -3001,6 +3001,39 @@
       z-index: 88;
     }
     body:not(.deck-chat-open) #deck-min-hint { opacity: 1; }
+
+    /* ── DECK DEMO MODE ─────────────────────────────────────────────────────── */
+    #deck-demo-bar {
+      position: fixed;
+      bottom: 18px; left: 50%;
+      transform: translateX(-50%);
+      display: flex; gap: 6px; align-items: center;
+      z-index: 9999;
+      background: rgba(8, 11, 22, 0.92);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 999px;
+      padding: 5px 10px;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.55);
+      font-size: 11px;
+      user-select: none;
+      white-space: nowrap;
+    }
+    #deck-demo-bar .ddemo-label {
+      color: #5d6e92; font-size: 10px; letter-spacing: 0.06em;
+      text-transform: uppercase; padding-right: 4px;
+    }
+    #deck-demo-bar button {
+      font: inherit; font-size: 11px;
+      color: #9fb0d2; cursor: pointer;
+      background: rgba(10,14,28,0.85);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 999px; padding: 3px 11px;
+      transition: all .15s ease;
+    }
+    #deck-demo-bar button:hover { background: rgba(138,180,248,0.14); border-color: rgba(138,180,248,0.5); color: #e7edf8; }
+    #deck-demo-bar button.on  { background: rgba(138,180,248,0.18); border-color: rgba(138,180,248,0.65); color: #e7edf8; }
+    #deck-demo-bar button.play { border-color: rgba(110,231,183,0.5); color: var(--done-c); }
+    #deck-demo-bar .ddemo-sep { color: #2a3550; padding: 0 2px; }
 </style>
 </head>
 <body>
@@ -8819,6 +8852,130 @@
       return { init, openDeck, closeDeck, refresh, openFlow, closeFlow };
     })();
 
+
+    // =========================================================================
+    // ── DECK DEMO MODE — seed fake jobs so the deck can be played with ───────
+    // Activates automatically. Adds a scenario bar at the bottom of the window.
+    // =========================================================================
+    const DeckDemo = (() => {
+
+      const JOBS = [
+        { id: 'demo-review',  label: 'code-review',  kind: 'workflow', lastStatus: 'running',    schedule: null },
+        { id: 'demo-dream',   label: 'Dream',         kind: 'workflow', lastStatus: 'running',    schedule: '0 3 * * *' },
+        { id: 'demo-scout',   label: 'repo-scout',    kind: 'agent',    lastStatus: 'running',    schedule: null },
+      ];
+
+      // Scenario definitions — each sets the review job's status
+      const STEPS = {
+        quiet:    { review: 'running',    toast: false, caption: 'Quiet — moon is folded, three jobs orbit.' },
+        alert:    { review: 'needs_input', toast: true,  caption: 'Needs you — pip + mote go gold, toast appears.' },
+        open:     { review: 'needs_input', toast: true,  caption: 'Deck open — motes fly into the NOW rail.' },
+        answered: { review: 'running',    toast: false, caption: 'Answered — gold clears, workflow continues.' },
+        done:     { review: 'completed',  toast: false, caption: 'Done — result in briefing, row dissolves.' },
+        fold:     { review: 'completed',  toast: false, caption: 'Folded — deck collapses back to moon.' },
+      };
+
+      let currentStep = 'quiet';
+      let playTimers = [];
+
+      function applyStep(name, autoOpenClose) {
+        const step = STEPS[name];
+        if (!step) return;
+        currentStep = name;
+
+        // Update the demo-review job status
+        JOBS[0].lastStatus = step.review;
+        // seed State
+        if (!window.State) window.State = {};
+        State.workflows = JSON.parse(JSON.stringify(JOBS));
+        if (step.review === 'completed') {
+          State.workflows[0].lastRun = Date.now() - 240000;
+        }
+        // Also seed a couple of fake run records
+        State.workflowRuns = {
+          'demo-review': step.review === 'completed'
+            ? [{ status: 'completed', startedAt: Date.now()-244000, finishedAt: Date.now()-1000 }]
+            : [{ status: 'running', startedAt: Date.now()-90000 }],
+          'demo-dream':  [{ status: 'completed', startedAt: Date.now()-18000000, finishedAt: Date.now()-17940000 }],
+          'demo-scout':  [],
+        };
+
+        // Refresh deck
+        if (typeof DeckEngine !== 'undefined') DeckEngine.refresh();
+
+        // Handle open/close
+        if (name === 'open' && autoOpenClose) {
+          // Programmatically open the chat/deck
+          if (!document.body.classList.contains('deck-chat-open')) {
+            // Simulate moon click to open
+            const moonEl = document.getElementById('moon');
+            if (moonEl) moonEl.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: moonEl.getBoundingClientRect().left + 32, clientY: moonEl.getBoundingClientRect().top + 32, button: 0, isPrimary: true }));
+            setTimeout(() => moonEl && moonEl.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, isPrimary: true })), 80);
+          }
+        }
+        if (name === 'fold' && autoOpenClose) {
+          const closeBtn = document.getElementById('close-chat');
+          if (closeBtn) closeBtn.click();
+        }
+
+        updateBar();
+      }
+
+      function updateBar() {
+        document.querySelectorAll('#deck-demo-bar button[data-step]').forEach(b => {
+          b.classList.toggle('on', b.dataset.step === currentStep);
+        });
+      }
+
+      function playAll() {
+        playTimers.forEach(clearTimeout); playTimers = [];
+        const seq = [
+          [0,    'quiet'],
+          [2200, 'alert'],
+          [5000, 'open'],
+          [8500, 'answered'],
+          [11500,'done'],
+          [15000,'fold'],
+        ];
+        seq.forEach(([t, name]) => {
+          playTimers.push(setTimeout(() => applyStep(name, true), t));
+        });
+      }
+
+      function buildBar() {
+        if (document.getElementById('deck-demo-bar')) return;
+        const bar = document.createElement('div');
+        bar.id = 'deck-demo-bar';
+        bar.innerHTML = `
+          <span class="ddemo-label">deck demo</span>
+          <button data-step="play" class="play">▶ play</button>
+          <span class="ddemo-sep">·</span>
+          <button data-step="quiet">quiet</button>
+          <button data-step="alert">needs you</button>
+          <button data-step="open">open</button>
+          <button data-step="answered">answered</button>
+          <button data-step="done">done</button>
+          <button data-step="fold">fold</button>
+        `;
+        bar.addEventListener('click', e => {
+          const btn = e.target.closest('button[data-step]');
+          if (!btn) return;
+          playTimers.forEach(clearTimeout); playTimers = [];
+          if (btn.dataset.step === 'play') { playAll(); return; }
+          applyStep(btn.dataset.step, true);
+        });
+        document.body.appendChild(bar);
+      }
+
+      function init() {
+        buildBar();
+        applyStep('quiet', false);
+      }
+
+      return { init, applyStep };
+    })();
+
+
     const ChatEngine = {
       // ----------------------------------------------------------------------
       // Chat-bubble surface. After the thread-state refactor, this object is
@@ -10228,6 +10385,8 @@
     // Moon Events
     // W2: initialise deck engine
     if (typeof DeckEngine !== 'undefined') DeckEngine.init();
+    // Deck demo mode — seeds fake jobs for local play-testing
+    if (typeof DeckDemo !== 'undefined') DeckDemo.init();
 
     DOM.moon.addEventListener('pointerdown', (e) => UIController.handlePointerDown(e));
     DOM.moon.addEventListener('pointermove', (e) => UIController.handlePointerMove(e));
