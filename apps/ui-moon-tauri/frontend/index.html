@@ -4602,6 +4602,11 @@
       _consentOpen: null, // definitionId whose consent sheet is expanded
       _clientEditOpen: null, // definitionId whose OAuth-client edit form is open (M2.6)
       _beginTimer: null,  // begin-leg watchdog (review G2)
+      _oauthRequestId: null, // requestId of the current oauth-begin (null when idle)
+      _oauthDefinitionId: null, // definitionId of the current oauth attempt (null when idle)
+      _plainRequests: {}, // requestId → definitionId for in-flight connector-connect (#5)
+      _consentDraft: {},  // definitionId → { label, secretRef, caps } — survives re-renders (#8)
+      _reconnectLabel: null, // one-shot: label to prefill when reopening for Reconnect (#7)
 
       _clearBusy(defId) {
         // Per-definition (review G2): a broadcast from ANY connector must
@@ -4627,9 +4632,13 @@
         if (DOM.connectorsTabBtn) DOM.connectorsTabBtn.hidden = !supported;
         if (!supported) {
           // Channel switch to a non-connector server: drop ALL connector
-          // state so a stale catalog/instance list can't render (review G2).
+          // state so a stale catalog/instance list can't render (review G2 + #11).
           this._cancelOauth(null);
           this._clientEditOpen = null;
+          this._consentOpen = null;
+          this._consentDraft = {};
+          this._reconnectLabel = null;
+          this._plainRequests = {};
           State.connectorCatalog = [];
           State.connectorInstances = [];
           State.connectorBusy = {};
@@ -4648,30 +4657,57 @@
 
       applyList(instances) {
         State.connectorInstances = Array.isArray(instances) ? instances : [];
-        // Settle ONLY definitions that now have an instance (the op that
-        // produced this broadcast completed) — leave other in-flight
-        // attempts pending (review G2: don't wipe all busy wholesale).
-        for (const inst of State.connectorInstances) this._clearBusy(inst.definitionId);
+        // Busy state is settled ONLY in applyStatus (via tracked plain
+        // requestId or instance.definitionId on the status frame) — never
+        // here. A sibling-instance broadcast must not wipe an unrelated
+        // in-flight add-account attempt's busy for the same definition (#6).
         this.render();
       },
 
       applyStatus(frame) {
         if (!frame) return;
-        // A status ends the OAuth/connect attempt for its definition. We
-        // don't always have the definitionId on the frame, so settle the
-        // one we know is in flight (the oauth attempt) plus, on failure,
-        // stop the watchdog so a hung attempt frees up.
-        if (this._beginTimer) { clearTimeout(this._beginTimer); this._beginTimer = null; }
-        if (this._oauthDefinitionId) this._clearBusy(this._oauthDefinitionId);
-        if (frame.instance) this._clearBusy(frame.instance.definitionId);
-        if (frame.ok) {
-          this.setError(null);
-        } else {
-          this.setError(frame.message || 'Connector request failed.');
-          // a failed status means the in-flight oauth attempt is dead
-          this._oauthRequestId = null;
-          this._oauthDefinitionId = null;
+
+        // ── Path 1: plain connector-connect response (#5) ──────────────────
+        // Check FIRST (before the oauth path) so a requestId match clears
+        // busy for the correct definition regardless of ok/fail.
+        if (frame.requestId && Object.prototype.hasOwnProperty.call(this._plainRequests, frame.requestId)) {
+          const defId = this._plainRequests[frame.requestId];
+          delete this._plainRequests[frame.requestId];
+          this._clearBusy(defId);
+          if (frame.ok) {
+            this.setError(null);
+            // Clear the draft for this definition on success (#8)
+            delete this._consentDraft[defId];
+          } else {
+            this.setError(frame.message || 'Connector request failed.');
+          }
+          this.render();
+          return;
         }
+
+        // ── Path 2: oauth status frame ─────────────────────────────────────
+        // Stop the begin-leg watchdog unconditionally (the attempt is done).
+        if (this._beginTimer) { clearTimeout(this._beginTimer); this._beginTimer = null; }
+
+        if (!frame.ok && this._oauthRequestId !== null) {
+          // Failed oauth attempt: route through _cancelOauth so it tears down
+          // the Rust loopback listener and clears busy atomically (#9).
+          // _cancelOauth calls setError + render, so return afterwards.
+          this._cancelOauth(frame.message || 'Connector request failed.');
+          return;
+        }
+
+        // Successful oauth status (or a status without a matching plain
+        // requestId and no oauth in-flight) — settle via instance if present.
+        if (this._oauthDefinitionId) this._clearBusy(this._oauthDefinitionId);
+        this._oauthRequestId = null;
+        this._oauthDefinitionId = null;
+        if (frame.instance) {
+          this._clearBusy(frame.instance.definitionId);
+          // Clear the draft for this definition on success (#8)
+          delete this._consentDraft[frame.instance.definitionId];
+        }
+        this.setError(null);
         this.render();
       },
 
@@ -4768,6 +4804,8 @@
         State.connectorBusy[def.id] = 'connecting';
         this._consentOpen = null;
         const requestId = 'conn_' + Math.random().toString(36).slice(2);
+        // Track so applyStatus can clear busy even on failure (#5)
+        this._plainRequests[requestId] = def.id;
         const resolvedLabel = (label && label.trim()) ? label.trim() : def.name;
         const frame = {
           type: 'connector-connect',
@@ -4858,7 +4896,13 @@
                 connect.textContent = isAdding ? 'Add account' : 'Connect';
               }
               connect.addEventListener('click', () => {
-                this._consentOpen = this._consentOpen === def.id ? null : def.id;
+                const closing = this._consentOpen === def.id;
+                this._consentOpen = closing ? null : def.id;
+                if (closing) {
+                  // Sheet dismissed via Cancel — discard the draft (#8).
+                  delete this._consentDraft[def.id];
+                  this._reconnectLabel = null;
+                }
                 this.setError(null);
                 this.render();
               });
@@ -4914,7 +4958,9 @@
               re.textContent = 'Reconnect';
               re.addEventListener('click', () => {
                 // Reconnect = disconnect (drops the dead token) + open consent.
+                // Stash the label so the sheet prefills it (#7).
                 this.disconnect(inst.id);
+                this._reconnectLabel = inst.label || null;
                 this._consentOpen = def.id;
                 this.render();
               });
@@ -5025,8 +5071,12 @@
             const sheet = document.createElement('div');
             sheet.className = 'connector-consent';
 
+            // Restore any in-progress draft for this definition (#8).
+            const draft = this._consentDraft[def.id] || {};
+
             // Account label input — lets the operator name the new account
             // (e.g. "personal", "flowstay"). Empty → falls back to def.name.
+            // Prefill priority: _reconnectLabel (#7) > draft.label > '' (#8).
             const labelRow = document.createElement('div');
             labelRow.className = 'connector-client-row';
             const labelLbl = document.createElement('div');
@@ -5036,18 +5086,37 @@
             labelInput.type = 'text';
             labelInput.className = 'premium-text-input connector-label-input';
             labelInput.placeholder = 'e.g. personal, flowstay';
+            // One-shot reconnect prefill (#7): use it and clear it.
+            if (this._reconnectLabel !== null) {
+              labelInput.value = this._reconnectLabel;
+              this._reconnectLabel = null;
+            } else if (draft.label !== undefined) {
+              labelInput.value = draft.label;
+            }
+            // Persist label changes to the draft (#8).
+            labelInput.addEventListener('input', () => {
+              if (!this._consentDraft[def.id]) this._consentDraft[def.id] = {};
+              this._consentDraft[def.id].label = labelInput.value;
+            });
             labelRow.appendChild(labelLbl);
             labelRow.appendChild(labelInput);
             sheet.appendChild(labelRow);
 
             const boxes = [];
+            // Restore draft capability selections if present (#8).
+            const draftCaps = Array.isArray(draft.caps) ? new Set(draft.caps) : null;
             for (const cap of def.capabilities) {
               const row = document.createElement('label');
               row.className = 'connector-cap';
               const cb = document.createElement('input');
               cb.type = 'checkbox';
-              cb.checked = !!cap.defaultGranted;
+              cb.checked = draftCaps ? draftCaps.has(cap.id) : !!cap.defaultGranted;
               boxes.push({ id: cap.id, cb });
+              // Persist capability changes to the draft (#8).
+              cb.addEventListener('change', () => {
+                if (!this._consentDraft[def.id]) this._consentDraft[def.id] = {};
+                this._consentDraft[def.id].caps = boxes.filter((b) => b.cb.checked).map((b) => b.id);
+              });
               const lbl = document.createElement('span');
               lbl.textContent = cap.label;
               row.appendChild(cb);
@@ -5066,6 +5135,13 @@
               refInput.type = 'text';
               refInput.className = 'premium-text-input connector-secretref-input';
               refInput.placeholder = 'Secret ref, e.g. env:SLACK_MCP_XOXB_TOKEN (store the value via the Secrets tab first)';
+              // Restore draft secretRef (#8).
+              if (draft.secretRef !== undefined) refInput.value = draft.secretRef;
+              // Persist secretRef changes to the draft (#8).
+              refInput.addEventListener('input', () => {
+                if (!this._consentDraft[def.id]) this._consentDraft[def.id] = {};
+                this._consentDraft[def.id].secretRef = refInput.value;
+              });
               sheet.appendChild(refInput);
             }
             const go = document.createElement('button');

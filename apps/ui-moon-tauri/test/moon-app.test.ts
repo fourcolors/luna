@@ -1676,6 +1676,11 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       m.State.connectorInstances = []
       m.State.connectorBusy = {}
       m.ConnectorsEngine._consentOpen = null
+      m.ConnectorsEngine._oauthRequestId = null
+      m.ConnectorsEngine._oauthDefinitionId = null
+      m.ConnectorsEngine._plainRequests = {}
+      m.ConnectorsEngine._consentDraft = {}
+      m.ConnectorsEngine._reconnectLabel = null
       invokeImpl = async (cmd: string) => {
         if (cmd === 'oauth_loopback_start') return 49152
         if (cmd === 'oauth_loopback_wait') return { code: 'captured-code', state: 'captured-state' }
@@ -1975,7 +1980,26 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       // Consent sheet contains the account label input
       const labelInput = sheet.querySelector('.connector-label-input') as HTMLInputElement
       expect(labelInput).not.toBeNull()
-      expect(labelInput.placeholder).toContain('personal')
+      // (#10) Add-account opens with an EMPTY value, not prefilled with the
+      // existing account label — the operator is adding a NEW account.
+      expect(labelInput.value).toBe('')
+      // (#7/#10) Clicking Reconnect on a needs-reauth instance prefills the label.
+      M().handleFrame({
+        type: 'connector-list',
+        instances: [{
+          id: 'inst-1', definitionId: 'google-workspace', label: 'personal',
+          status: 'needs-reauth', grantedScopes: [], createdAt: 1, lastHealthyAt: null,
+        }],
+      })
+      const reconCard = document.querySelectorAll('#connectors-list .connector-card')[0] as HTMLElement
+      const reconBtn = Array.from(reconCard.querySelectorAll('.connector-btn'))
+        .find((b) => b.textContent === 'Reconnect') as HTMLElement
+      expect(reconBtn).toBeDefined()
+      reconBtn.click()
+      const reconSheet = document.querySelector('#connectors-list .connector-consent')!
+      expect(reconSheet).not.toBeNull()
+      const reconLabelInput = reconSheet.querySelector('.connector-label-input') as HTMLInputElement
+      expect(reconLabelInput.value).toBe('personal')
     })
 
     it('C1: filling the label input + clicking Authorize sends connector-oauth-begin with that label', async () => {
@@ -2007,6 +2031,101 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
         label: 'flowstay',
         loopbackPort: 49152,
       })
+    })
+
+    // ── Review-finding regression tests ────────────────────────────────────
+
+    it('#5: connector-status {ok:false, requestId} matching a sent connector-connect clears busy and shows error', () => {
+      M().handleFrame(catalogFrame())
+      const slackCard = document.querySelectorAll('#connectors-list .connector-card')[1] as HTMLElement
+      ;(slackCard.querySelector('.connector-btn') as HTMLElement).click()
+      const sheet = document.querySelector('#connectors-list .connector-consent')!
+      const ref = sheet.querySelector('.connector-secretref-input') as HTMLInputElement
+      ref.value = 'env:SLACK_TOKEN'
+      ;(sheet.querySelector('.connector-btn') as HTMLElement).click()
+      // Grab the requestId that was sent
+      const frame = sentFrames.find((f: any) => f.type === 'connector-connect')
+      expect(frame).toBeDefined()
+      expect(M().State.connectorBusy['slack']).toBe('connecting')
+
+      // Server rejects (e.g. duplicate-label): {ok:false, requestId, message}
+      M().handleFrame({ type: 'connector-status', ok: false, requestId: frame.requestId, message: 'Duplicate label' })
+
+      // Busy must be cleared
+      expect(M().State.connectorBusy['slack']).toBeUndefined()
+      // Error message shown
+      const err = document.getElementById('connectors-error')!
+      expect(err.hidden).toBe(false)
+      expect(err.textContent).toContain('Duplicate label')
+      // Card must no longer show "Connecting…"
+      const updatedCard = document.querySelectorAll('#connectors-list .connector-card')[1] as HTMLElement
+      expect(updatedCard.textContent).not.toContain('Connecting')
+    })
+
+    it('#6: an unrelated connector-list broadcast does NOT clear busy for a definition with an in-flight add-account attempt', () => {
+      M().handleFrame(catalogFrame())
+      // Open Add account for google-workspace and start authorizing
+      const gCard = document.querySelectorAll('#connectors-list .connector-card')[0] as HTMLElement
+      ;(gCard.querySelector('.connector-head .connector-btn') as HTMLElement).click()
+      // Manually set busy for google-workspace (simulates in-flight oauth)
+      M().State.connectorBusy['google-workspace'] = 'authorizing'
+
+      // A connector-list broadcast for an unrelated instance arrives
+      M().handleFrame({
+        type: 'connector-list',
+        instances: [{
+          id: 'inst-slack', definitionId: 'slack', label: 'work',
+          status: 'connected', grantedScopes: ['read'], createdAt: 1, lastHealthyAt: 1,
+        }],
+      })
+
+      // google-workspace's in-flight busy must NOT have been cleared
+      expect(M().State.connectorBusy['google-workspace']).toBe('authorizing')
+    })
+
+    it('#8: typing a label, then receiving a connector-list broadcast, preserves the typed label in the rebuilt sheet', () => {
+      M().handleFrame(catalogFrame())
+      // Open the consent sheet for google-workspace
+      const gCard = document.querySelectorAll('#connectors-list .connector-card')[0] as HTMLElement
+      ;(gCard.querySelector('.connector-head .connector-btn') as HTMLElement).click()
+      const sheet = document.querySelector('#connectors-list .connector-consent')!
+      const labelInput = sheet.querySelector('.connector-label-input') as HTMLInputElement
+      // Type a label — fire the input event so the draft is saved
+      labelInput.value = 'typed-label'
+      labelInput.dispatchEvent(new Event('input'))
+
+      // A connector-list broadcast arrives (re-render)
+      M().handleFrame({ type: 'connector-list', instances: [] })
+
+      // Sheet must still be open and label must be preserved
+      const rebuiltSheet = document.querySelector('#connectors-list .connector-consent')!
+      expect(rebuiltSheet).not.toBeNull()
+      const rebuiltLabel = rebuiltSheet.querySelector('.connector-label-input') as HTMLInputElement
+      expect(rebuiltLabel.value).toBe('typed-label')
+    })
+
+    it('#9: connector-status {ok:false} while oauth is in flight invokes oauth_loopback_cancel', async () => {
+      M().handleFrame(catalogFrame())
+      const gCard = document.querySelectorAll('#connectors-list .connector-card')[0] as HTMLElement
+      ;(gCard.querySelector('.connector-head .connector-btn') as HTMLElement).click()
+      ;(document.querySelector('#connectors-list .connector-consent .connector-btn') as HTMLElement).click()
+      await flush()
+      // OAuth arc is in flight
+      const begin = sentFrames.find((f: any) => f.type === 'connector-oauth-begin')
+      expect(begin).toBeDefined()
+      expect(M().ConnectorsEngine._oauthRequestId).toBe(begin.requestId)
+
+      // Server sends a failure status (without a plain requestId match)
+      M().handleFrame({ type: 'connector-status', ok: false, message: 'Server error' })
+
+      // Must have invoked oauth_loopback_cancel to tear down the Rust listener
+      expect(invokeCalls.some((c) => c.cmd === 'oauth_loopback_cancel')).toBe(true)
+      // Error shown
+      const err = document.getElementById('connectors-error')!
+      expect(err.hidden).toBe(false)
+      expect(err.textContent).toContain('Server error')
+      // Busy cleared
+      expect(M().State.connectorBusy['google-workspace']).toBeUndefined()
     })
   })
 

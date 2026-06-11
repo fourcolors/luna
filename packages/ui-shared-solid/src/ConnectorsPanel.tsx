@@ -83,6 +83,10 @@ export const ConnectorsPanel: Component<ConnectorsPanelProps> = (props) => {
                   {(i) => (
                     <div
                       style={{
+                        // Full-width break inside the flex-row tile (review C1
+                        // #12): without it the stacked rows render on one
+                        // squashed horizontal line. Matches the forms' idiom.
+                        flex: "0 0 100%",
                         display: "flex",
                         gap: "6px",
                         "align-items": "center",

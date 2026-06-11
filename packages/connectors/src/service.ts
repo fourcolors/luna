@@ -210,15 +210,26 @@ export const ConnectorServiceLayer = (
           .toLowerCase()
           .replace(/[^a-z0-9]+/g, "_")
           .replace(/^_+|_+$/g, "")
-        return s.length > 0 ? s : "default"
+        if (s.length > 0) return s
+        // Symbol-only / non-ASCII labels would all collapse to one fallback
+        // slug and collide (review C1) — hash the raw label instead so
+        // distinct labels stay distinct (deterministic djb2, no Date/random).
+        let h = 5381
+        for (let i = 0; i < label.length; i++) {
+          h = ((h * 33) ^ label.charCodeAt(i)) >>> 0
+        }
+        return `acct_${h.toString(16)}`
       }
 
       /** The definition's DEFAULT label slug (the Moon sends label=def.name
        *  when the operator types nothing) — such instances keep the bare
        *  serverKey + the historical per-definition env var, so pre-C1 rows
-       *  and tool names are untouched. */
+       *  and tool names are untouched. Keyed off the IMMUTABLE definition.id
+       *  (review C1): for every current catalog entry id-slug === name-slug,
+       *  and a future display-name rename must not re-alias the historical
+       *  var name or churn mount keys. */
       const defaultSlug = (definition: ConnectorDefinition): string =>
-        labelSlug(definition.name)
+        labelSlug(definition.id)
 
       const refreshTokenVarName = (
         definition: ConnectorDefinition,
@@ -623,21 +634,18 @@ export const ConnectorServiceLayer = (
               }),
             )
           }
-          // Persist the refresh token via the injected sink; the instance
-          // row stores only the returned POINTER. The var name is keyed by
-          // the LABEL slug (C1 multi-account) so each account's token lives
-          // in its own ~/.luna/.env entry; the default label keeps the
-          // historical per-definition var (pre-C1 rows untouched).
-          const secretRef = yield* oauth.storeSecret(
-            refreshTokenVarName(definition, pending.label),
-            tokens.refreshToken,
-          )
-          // ATOMIC duplicate-check→insert→rebuild under the gate (review
-          // G2): two concurrent OAuth flows for one LABEL each reach here;
-          // without the re-check both insert a row. The exchange already
-          // happened (the code is single-use), so the loser just doesn't
-          // persist a second row — its token is the one already overwritten
-          // in the env sink (per-label var name).
+          // Narrowed capture — TS cannot carry the undefined-check into the
+          // gated closure below.
+          const refreshToken = tokens.refreshToken
+          // ATOMIC duplicate-check→storeSecret→insert→rebuild under the gate
+          // (reviews G2 + C1): two concurrent OAuth flows for one LABEL each
+          // reach here. The duplicate re-check runs BEFORE the token is
+          // persisted — were storeSecret outside the gate, a LOSING same-label
+          // flow (possibly consented as a DIFFERENT Google account) would
+          // overwrite the winner's refresh token in the shared per-label var
+          // and silently swap accounts at the next refresh. The loser's
+          // exchanged token is simply dropped (never persisted; the code was
+          // single-use anyway).
           return yield* refreshGate.withPermits(1)(
             Effect.gen(function* () {
               const existing = yield* store.list()
@@ -655,6 +663,25 @@ export const ConnectorServiceLayer = (
                   }),
                 )
               }
+              // Invariant: no two instances may ever share a token var. The
+              // slug-uniqueness guard makes a collision unreachable today;
+              // this converts any future drift from silent cross-account
+              // contamination into a clean error (review C1).
+              const varName = refreshTokenVarName(definition, pending.label)
+              if (existing.some((i) => i.secretRef === `env:${varName}`)) {
+                return yield* Effect.fail(
+                  new ConnectorError({
+                    op: "completeAuth",
+                    message: `another connected account already uses the credential slot for "${pending.label}" — pick a different label`,
+                  }),
+                )
+              }
+              // Persist the refresh token via the injected sink; the instance
+              // row stores only the returned POINTER. The var name is keyed by
+              // the LABEL slug (C1) so each account's token lives in its own
+              // ~/.luna/.env entry; the default label keeps the historical
+              // per-definition var (pre-C1 rows untouched).
+              const secretRef = yield* oauth.storeSecret(varName, refreshToken)
               const instance: ConnectorInstance = {
                 id: crypto.randomUUID(),
                 definitionId: definition.id,

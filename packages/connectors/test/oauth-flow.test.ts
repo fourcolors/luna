@@ -305,6 +305,56 @@ describe("client-brokered OAuth flow (mock provider e2e)", () => {
     )
   })
 
+  it("C1 review: a losing SAME-label concurrent flow never persists its token (storeSecret gated after the re-check)", async () => {
+    const rig = makeRig()
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const svc = yield* ConnectorService
+        // Both begins pass (no row exists yet) — e.g. two consent tabs, which
+        // can be DIFFERENT Google accounts. The loser must never overwrite
+        // the winner's refresh token in the shared per-label var.
+        const a = yield* svc.beginAuth({ definitionId: "fake-google", label: "work", loopbackPort: 52000 })
+        const b = yield* svc.beginAuth({ definitionId: "fake-google", label: "work", loopbackPort: 52001 })
+        const stateA = new URL(a.authUrl).searchParams.get("state")!
+        const stateB = new URL(b.authUrl).searchParams.get("state")!
+        yield* svc.completeAuth({ pendingId: a.pendingId, code: "good-code", state: stateA })
+        const lose = yield* svc
+          .completeAuth({ pendingId: b.pendingId, code: "good-code", state: stateB })
+          .pipe(Effect.flip)
+        expect(lose.message).toContain('already has an account labeled')
+        // THE pin: the sink saw exactly ONE write for this var — the winner's.
+        expect(
+          rig.sinkCalls.filter((v) => v === "LUNA_CONNECTOR_FAKE_GOOGLE_WORK_REFRESH_TOKEN"),
+        ).toHaveLength(1)
+        expect(yield* svc.list()).toHaveLength(1)
+      }).pipe(Effect.provide(rig.layer)),
+    )
+  })
+
+  it("C1 review: symbol-only labels hash to distinct slugs instead of colliding on a shared fallback", async () => {
+    const rig = makeRig()
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const svc = yield* ConnectorService
+        const a = yield* svc.beginAuth({ definitionId: "fake-google", label: "!!!", loopbackPort: 52002 })
+        const stateA = new URL(a.authUrl).searchParams.get("state")!
+        yield* svc.completeAuth({ pendingId: a.pendingId, code: "good-code", state: stateA })
+        // A DIFFERENT symbol label is a different account — allowed…
+        const b = yield* svc.beginAuth({ definitionId: "fake-google", label: "###", loopbackPort: 52003 })
+        const stateB = new URL(b.authUrl).searchParams.get("state")!
+        yield* svc.completeAuth({ pendingId: b.pendingId, code: "good-code", state: stateB })
+        expect(yield* svc.list()).toHaveLength(2)
+        // …with two DISTINCT mounts + token vars (acct_<hash> slugs).
+        expect(Object.keys(svc.mountSnapshotSync())).toHaveLength(2)
+        // …while re-using the SAME symbol label is still rejected.
+        const dup = yield* svc
+          .beginAuth({ definitionId: "fake-google", label: "!!!", loopbackPort: 52004 })
+          .pipe(Effect.flip)
+        expect(dup.message).toContain('already has an account labeled')
+      }).pipe(Effect.provide(rig.layer)),
+    )
+  })
+
   it("C1 back-compat: the DEFAULT label keeps the bare mount key + historical var name", async () => {
     const rig = makeRig()
     await Effect.runPromise(
