@@ -1103,7 +1103,12 @@ fn main() {
             if matches!(event, tauri::WindowEvent::Destroyed) && window.label() == "main" {
                 for (label, win) in window.app_handle().webview_windows() {
                     if label != "main" {
-                        let _ = win.close();
+                        // destroy(), not close(): close() emits CloseRequested
+                        // first, which page JS can intercept — a widget with an
+                        // "unsaved changes" guard would survive the hub and
+                        // float orphaned forever. destroy() is the hard
+                        // guarantee the invariant claims.
+                        let _ = win.destroy();
                     }
                 }
             }
@@ -1269,10 +1274,13 @@ fn main() {
                             // with the moon hidden. Closed windows no longer
                             // exist, so this never resurrects anything.
                             let windows = app.webview_windows();
-                            let hub_visible = windows
-                                .get("main")
-                                .map(|w| w.is_visible().unwrap_or(false))
-                                .unwrap_or(false);
+                            // No hub window → mid-teardown; never blind-show
+                            // orphans (a missing hub would read as "hidden"
+                            // and make every press a show-forever).
+                            let Some(hub) = windows.get("main") else {
+                                return;
+                            };
+                            let hub_visible = hub.is_visible().unwrap_or(false);
                             for (label, window) in windows {
                                 if hub_visible {
                                     let _ = window.hide();

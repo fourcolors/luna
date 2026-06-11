@@ -107,10 +107,14 @@ describe('widget.html — deck self-snap consumer', () => {
     loadVendorInto(window, 'deck-snap.js')
     loadVendorInto(window, 'widget-sandbox.js')
 
-    // First plain <script> (the src= vendor tags don't match this pattern).
-    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/)
-    expect(scriptMatch).not.toBeNull()
-    new Function(scriptMatch![1])()
+    // Select the page script by CONTENT, not position — an added inline
+    // config stub or a type= attribute on the main tag must fail loudly
+    // here, not silently execute the wrong script.
+    const inlineScripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+      .map((m) => m[1])
+      .filter((s) => s.includes('wireDeckSnap'))
+    expect(inlineScripts).toHaveLength(1)
+    new Function(inlineScripts[0])()
   })
 
   afterEach(() => {
@@ -147,18 +151,23 @@ describe('widget.html — deck self-snap consumer', () => {
     expect(setPositionCalls).toHaveLength(1)
   })
 
-  it('ignores the onMoved echo of its own setPosition (suppression window)', async () => {
+  it('treats the onMoved echo of its own setPosition as a no-op (no snap loop)', async () => {
+    movedHandler!()
+    await vi.advanceTimersByTimeAsync(121)
+    expect(setPositionCalls).toHaveLength(1)
+    const snapped = setPositionCalls[0]
+
+    // The echo: the window now reports the snapped position. The settle must
+    // recognize "already at the snap target" and never re-issue the move —
+    // positional idempotence, so it holds however slow the IPC was.
+    me.outerPosition.mockResolvedValue({ x: snapped.x, y: snapped.y })
     movedHandler!()
     await vi.advanceTimersByTimeAsync(121)
     expect(setPositionCalls).toHaveLength(1)
 
-    // The snap's setPosition fires onMoved again immediately — inside the
-    // suppression window it must NOT arm another settle timer.
-    movedHandler!()
-    await vi.advanceTimersByTimeAsync(300)
-    expect(setPositionCalls).toHaveLength(1)
-
-    // A real drag after the window expires snaps again.
+    // A real drag straight after (back into magnet range, off-target) snaps
+    // again — nothing is time-window-swallowed.
+    me.outerPosition.mockResolvedValue({ ...WIDGET_POS })
     movedHandler!()
     await vi.advanceTimersByTimeAsync(121)
     expect(setPositionCalls).toHaveLength(2)

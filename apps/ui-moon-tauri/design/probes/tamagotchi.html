@@ -530,6 +530,10 @@
     if (ev.kind === "ToolCall") {
       lastEventAt = now;
       recentSnacks.push(now);
+      // Hard cap: the tick prune is skipped while document.hidden, and a
+      // hidden Mochi over a weekend of background jobs would otherwise hoard
+      // one timestamp per ToolCall. Liveliness only ever needs a handful.
+      if (recentSnacks.length > 20) recentSnacks.splice(0, recentSnacks.length - 20);
       var tasty = ev.status === "success";
       energy = clamp(energy + (tasty ? 6 : 3));
       happiness = clamp(happiness + (tasty ? 3.5 : 1));

@@ -51,12 +51,14 @@ const inline = (escaped: string): string => {
     codeSpans.push(`<code>${code}</code>`)
     return `\u0000${codeSpans.length - 1}\u0000`
   })
+  // No href on purpose: the sandbox (allow-scripts, CSP connect 'none')
+  // doesn't block user-initiated self-navigation, so a live link would let
+  // one click replace the srcdoc with an external site. The URL rides in
+  // title; clickable links belong to a future bridge cap via the host.
   out = out.replace(
     /\[([^\]]+)\]\(([^)\s]+)\)/g,
     (_m, text: string, href: string) =>
-      /^https?:\/\//.test(href)
-        ? `<a href="${href}" title="${href}">${text}</a>`
-        : text,
+      /^https?:\/\//.test(href) ? `<a title="${href}">${text}</a>` : text,
   )
   out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
   out = out.replace(/(^|\s)_([^_]+)_(?=\s|$|[.,;:])/g, "$1<em>$2</em>")
@@ -209,10 +211,12 @@ const main = async () => {
     console.error("doc-shell.html is missing its <!-- DOC_BODY --> placeholder")
     process.exit(1)
   }
-  const docHtml = docShell.replace(
-    "<!-- DOC_BODY -->",
-    markdownToHtml(readFileSync(docPath, "utf8")),
-  )
+  // Function replacement: a STRING replacement would interpret $&, $', $`
+  // and $$ in the rendered body as GetSubstitution patterns — a doc that
+  // gains a `$'…'` code span would silently splice doc-shell's tail into
+  // the middle of the document.
+  const docBody = markdownToHtml(readFileSync(docPath, "utf8"))
+  const docHtml = docShell.replace("<!-- DOC_BODY -->", () => docBody)
 
   const ORIGIN = "probe-seed (widget-system.md Phase 0.5)"
 

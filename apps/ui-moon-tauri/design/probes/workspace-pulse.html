@@ -401,6 +401,10 @@
   function handleEvent(ev) {
     lastEventTime = Date.now();
     var ts = ev.ts ? new Date(ev.ts) : new Date();
+    // Untrusted ts from whatever server speaks the protocol: an unparseable
+    // string yields Invalid Date and a permanent "NaNh ago" row — degrade to
+    // arrival time instead.
+    if (isNaN(ts.getTime())) ts = new Date();
     var kind = safeText(ev.kind);
     var level = safeText(ev.level);
 

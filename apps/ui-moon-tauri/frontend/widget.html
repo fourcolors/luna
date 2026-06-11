@@ -420,16 +420,11 @@
     try {
       var snapSettleTimer = null;
       var lastMoveTime = 0;
-      var suppressUntil = 0;
       var THROTTLE_MS = 16;
       var DEBOUNCE_MS = 120;
-      var SUPPRESS_MS = 250;
 
       W.onMoved(function () {
         var now = Date.now();
-        // Our own setPosition below fires onMoved too — without this window
-        // the snap re-arms off its own echo (snap → onMoved → snap …).
-        if (now < suppressUntil) return;
         if (now - lastMoveTime < THROTTLE_MS) return;
         lastMoveTime = now;
 
@@ -464,9 +459,15 @@
             var snap = LunaDeckSnap.computeSnap(anchorRect, widgetRect, 22);
             if (!snap) return;
 
+            // Idempotence kills the echo loop: our own setPosition fires
+            // onMoved, which settles back here with the window ALREADY at the
+            // snap target — skip the no-op move instead of re-issuing it.
+            // (Positional, not time-windowed: a slow IPC can't outlive it and
+            // a real flick-drag right after a snap is never swallowed.)
+            if (snap.x === myPos.x && snap.y === myPos.y) return;
+
             // Apply snap position.
             if (window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.PhysicalPosition) {
-              suppressUntil = Date.now() + SUPPRESS_MS;
               await W.setPosition(new window.__TAURI__.window.PhysicalPosition(snap.x, snap.y));
             }
           } catch (_) { /* best-effort — never throw */ }
