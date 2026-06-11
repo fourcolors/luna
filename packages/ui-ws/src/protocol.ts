@@ -89,6 +89,13 @@ export interface HelloFrame {
      * when absent/false.
      */
     readonly workflows?: boolean
+    /**
+     * Luna Vault (V1): the server has a VaultService bound — it pushes a
+     * `vault-list` frame after `hello` and routes `vault-put` /
+     * `vault-delete` / `vault-sync-config` / `vault-import`. OPTIONAL/additive
+     * — clients hide the Vault settings section when absent/false.
+     */
+    readonly vault?: boolean
   }
 }
 
@@ -466,6 +473,161 @@ export interface WorkflowRefreshFrame {
   readonly type: "workflow-refresh"
 }
 
+/* Luna Vault (V1) — credential registry frames. All additive, gated on the
+ * hello `vault` capability. The registry is METADATA + POINTERS ONLY — no
+ * frame in either direction ever carries a secret VALUE. `vault-list` and
+ * `vault-status` are explicitly designed to be wire-safe:
+ *   - `vault-list` carries identifiers, labels, kind badges, and opaque `ref`
+ *     pointers (e.g. "env:OPENAI_API_KEY", "luna-op://my-label") but never
+ *     the credential material they point at.
+ *   - `vault-status` carries a boolean outcome and a short human-readable
+ *     `message` — never echoes the value from a `vault-put` or `vault-import`.
+ *   - `vault-put` and `vault-import` carry values UPWARD ONLY (client→server),
+ *     matching the connector-set-client contract; they are never stored in
+ *     transcripts or logs. */
+
+/**
+ * One vault registry row projected for the wire — METADATA + POINTER ONLY.
+ * `ref` is an opaque pointer to where the credential lives (e.g.
+ * "env:OPENAI_API_KEY", "luna-op://my-label"), never the credential value.
+ * `synced` = the row was confirmed in the configured 1Password vault.
+ * `shadowed` = the env var was present in `.env` at boot (before the vault
+ * registry was wired) and was skipped by the env loader to avoid overwriting
+ * a live value — the UI should badge it "shadowed".
+ */
+export interface VaultWireItem {
+  readonly id: string
+  readonly name: string
+  readonly kind: "env-secret" | "op-token" | "op-item"
+  /** Opaque back-pointer — pointer to storage location, never a secret value. */
+  readonly ref: string
+  readonly source: "manual" | "agent" | "1password" | "apple-import"
+  readonly description: string | null
+  readonly createdAt: number
+  readonly updatedAt: number
+  /** true = row was confirmed present in the configured 1Password vault. */
+  readonly synced: boolean
+  /** true = a pre-existing .env value shadowed this entry at boot. */
+  readonly shadowed: boolean
+}
+
+/** Sync configuration and health for the 1Password integration (slice V3). */
+export interface VaultSyncWire {
+  readonly enabled: boolean
+  readonly opLabel: string | null
+  readonly opVault: string | null
+  /** Unix ms of the last successful inbound sync, or null if never synced. */
+  readonly lastSyncedAt: number | null
+  /** Short diagnostic from the last sync failure, or null if last sync was ok. */
+  readonly lastError: string | null
+  /** How often to poll 1Password, in seconds (minimum 60). Mirrors the
+   *  `pollSeconds` stored in the sync config so the UI can reflect the live
+   *  value without a separate round-trip. */
+  readonly pollSeconds: number
+}
+
+/**
+ * Server→client: the current vault registry. Sent after `hello` (like
+ * `connector-catalog`) and after every successful mutation. Contains METADATA
+ * AND POINTERS ONLY — never secret values. `sync` is omitted when no sync
+ * config exists (slice V3 not yet configured).
+ */
+export interface VaultListFrame {
+  readonly type: "vault-list"
+  readonly items: ReadonlyArray<VaultWireItem>
+  /** 1Password sync state, when configured (slice V3). Absent on V1 servers. */
+  readonly sync?: VaultSyncWire
+}
+
+/**
+ * Server→client: outcome of a `vault-put`, `vault-delete`, `vault-sync-config`,
+ * or `vault-import`. `ok:false` carries a short, non-sensitive reason in
+ * `message` (e.g. "label not in LUNA_OP_ACCOUNTS", "env var name invalid").
+ *
+ * NEVER echoes the value from a `vault-put` or `vault-import` frame — the
+ * message is operator-actionable diagnostic text only.
+ */
+export interface VaultStatusFrame {
+  readonly type: "vault-status"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly message: string
+}
+
+/**
+ * Client→server: register or update a credential in the vault. `value` is the
+ * SENSITIVE credential — it travels UP ONLY and is never echoed back in any
+ * server frame or logged. Mirrors the connector-set-client value-up-only contract.
+ *
+ * For `kind:'env-secret'`, `varName` is required (the env var name, e.g.
+ * "OPENAI_API_KEY"). For `kind:'op-token'`, `label` is required (must match an
+ * entry in LUNA_OP_ACCOUNTS). `requestId` correlates the `vault-status` reply.
+ */
+export interface VaultPutFrame {
+  readonly type: "vault-put"
+  readonly requestId: string
+  readonly name: string
+  readonly kind: "env-secret" | "op-token"
+  /** Required when kind='env-secret': the env var name to store. */
+  readonly varName?: string
+  /** Required when kind='op-token': the 1Password account label. */
+  readonly label?: string
+  /** The credential value — sensitive, NEVER echoed back or logged. */
+  readonly value: string
+  readonly description?: string
+}
+
+/**
+ * Client→server: remove a vault registry row (and, for env-secret/op-token,
+ * the underlying stored credential). `id` is the registry row id from
+ * `vault-list`. For `op-item` rows the registry row is removed but the item
+ * inside 1Password is intentionally NOT deleted. `requestId` correlates the
+ * `vault-status` reply.
+ */
+export interface VaultDeleteFrame {
+  readonly type: "vault-delete"
+  readonly requestId: string
+  readonly id: string
+}
+
+/**
+ * Client→server: configure the 1Password two-way sync (slice V3). Enables or
+ * disables the sync, and optionally sets the account label + vault name and
+ * poll interval. `requestId` correlates the `vault-status` reply.
+ */
+export interface VaultSyncConfigFrame {
+  readonly type: "vault-sync-config"
+  readonly requestId: string
+  readonly enabled: boolean
+  readonly opLabel?: string
+  readonly opVault?: string
+  readonly pollSeconds?: number
+}
+
+/**
+ * Client→server: import Apple Passwords CSV export items into the 1Password
+ * sync vault (slice V3). The server creates LOGIN items in the configured vault
+ * + inserts registry rows (source='apple-import'). Requires sync to be enabled
+ * with a configured vault. `items` is limited to ≤20 per frame (server enforces
+ * this; the client should chunk larger imports). `requestId` correlates the
+ * `vault-status` reply.
+ *
+ * `password` in each item is SENSITIVE — travels UP ONLY and is never echoed
+ * back or included in any server→client frame or log.
+ */
+export interface VaultImportFrame {
+  readonly type: "vault-import"
+  readonly requestId: string
+  readonly items: ReadonlyArray<{
+    readonly title: string
+    readonly url?: string
+    readonly username?: string
+    /** The credential to import — sensitive, NEVER echoed back or logged. */
+    readonly password: string
+    readonly notes?: string
+  }>
+}
+
 export interface LocalShellRequestFrame {
   readonly type: "local-shell-request"
   readonly requestId: string
@@ -639,6 +801,8 @@ export type ServerFrame =
   | MemorySearchErrorFrame
   | SurveyRequestFrame
   | PtyOutputFrame
+  | VaultListFrame
+  | VaultStatusFrame
 
 /* -------------------------------------------------------------------------- */
 /* Client → server                                                            */
@@ -871,3 +1035,7 @@ export type ClientFrame =
   | WorkflowRefreshFrame
   | PtyInputFrame
   | PtyResizeFrame
+  | VaultPutFrame
+  | VaultDeleteFrame
+  | VaultSyncConfigFrame
+  | VaultImportFrame

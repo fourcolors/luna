@@ -38,7 +38,7 @@
     },
     "apps/ui-moon-tauri": {
       "name": "@luna/ui-moon-tauri",
-      "version": "0.0.21",
+      "version": "0.0.22",
       "devDependencies": {
         "@tauri-apps/cli": "^2.1.0",
         "jsdom": "^29.1.1",
@@ -71,6 +71,7 @@
         "@luna/ui-shared": "workspace:*",
         "@luna/ui-shared-solid": "workspace:*",
         "@luna/ui-ws": "workspace:*",
+        "@luna/vault": "workspace:*",
         "@luna/widget-tools": "workspace:*",
         "debug": "^4.4.3",
         "effect": "^3.21.0",
@@ -339,6 +340,18 @@
         "@types/ws": "^8.5.13",
       },
     },
+    "packages/vault": {
+      "name": "@luna/vault",
+      "version": "0.0.1",
+      "dependencies": {
+        "@luna/core": "workspace:*",
+        "effect": "^3.21.0",
+      },
+      "devDependencies": {
+        "typescript": "^5.6.3",
+        "vitest": "^2.1.5",
+      },
+    },
     "packages/widget-tools": {
       "name": "@luna/widget-tools",
       "version": "0.0.1",
@@ -569,6 +582,8 @@
     "@luna/ui-web": ["@luna/ui-web@workspace:apps/ui-web"],
 
     "@luna/ui-ws": ["@luna/ui-ws@workspace:packages/ui-ws"],
+
+    "@luna/vault": ["@luna/vault@workspace:packages/vault"],
 
     "@luna/widget-tools": ["@luna/widget-tools@workspace:packages/widget-tools"],
 

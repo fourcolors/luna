@@ -75,7 +75,8 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         <button type="button" class="settings-tab active" data-tab="general" role="tab" aria-selected="true">General</button>
         <button type="button" class="settings-tab" data-tab="connection" role="tab" aria-selected="false">Connection</button>
         <button type="button" class="settings-tab" data-tab="voice" role="tab" aria-selected="false">Voice</button>
-        <button type="button" class="settings-tab" data-tab="secrets" role="tab" aria-selected="false">Secrets</button>
+        <!-- Luna Vault: friendlier name, same data-tab value (minimal churn) -->
+        <button type="button" class="settings-tab" data-tab="secrets" role="tab" aria-selected="false">Vault</button>
         <!-- PRD Part B: hidden until the server's hello advertises capabilities.skills -->
         <button type="button" class="settings-tab" data-tab="skills" role="tab" aria-selected="false" id="skills-tab-btn" hidden="">Skills</button>
         <!-- PRD Part A: hidden until the server's hello advertises capabilities.connectors -->
@@ -227,7 +228,68 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         </div>
         </div>
         <div class="settings-tabpanel" data-tabpanel="secrets">
-        <div class="setting-item flex-column">
+        <!-- Luna Vault (V1): the friendly credential registry. Hidden until the
+             server's hello advertises capabilities.vault — old servers keep the
+             legacy 1Password-token-only form below, byte-identical. The list
+             carries METADATA + POINTERS only; the value input is one-shot
+             (wiped on send/close — SecretPromptEngine discipline). -->
+        <div class="setting-item flex-column" id="vault-section" hidden="">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">Vault</span>
+            <span class="setting-desc">Keys and tokens Luna can use. Values are stored safely on the server — once saved, they never appear here again.</span>
+          </div>
+          <div class="skills-list" id="vault-list" style="margin-bottom: 10px;">
+            <span class="setting-desc">Nothing stored yet — add your first key below.</span>
+          </div>
+          <div class="vault-add-form">
+            <input type="text" id="vault-name-input" class="premium-text-input" placeholder="Name (e.g. Notion API Key)" autocomplete="off" spellcheck="false" maxlength="64">
+            <select id="vault-kind-select" class="channel-select">
+              <option value="env-secret" selected="">API key / secret</option>
+              <option value="op-token">1Password service-account token</option>
+            </select>
+            <div class="vault-var-row" id="vault-var-row">
+              <span class="setting-desc">Stored as <code id="vault-var-preview" class="vault-ref">ENV_VAR_NAME</code></span>
+              <button type="button" class="vault-link-btn" id="vault-var-edit">change</button>
+              <input type="text" id="vault-var-input" class="premium-text-input" placeholder="ENV_VAR_NAME" autocomplete="off" spellcheck="false" hidden="">
+            </div>
+            <input type="text" id="vault-label-input" class="premium-text-input" placeholder="Account label (e.g. primary)" autocomplete="off" spellcheck="false" hidden="">
+            <input type="password" id="vault-value-input" class="premium-text-input" placeholder="Paste the secret value" autocomplete="off" spellcheck="false">
+            <input type="text" id="vault-desc-input" class="premium-text-input" placeholder="Note (optional)" autocomplete="off" spellcheck="false">
+            <span class="setting-desc" id="vault-restart-note" hidden="">Saving verifies the token and briefly restarts the server.</span>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <button type="button" class="record-btn" id="vault-add-btn">Save to server</button>
+              <span class="setting-desc" id="vault-status-line" style="font-size: 0.75rem;" hidden=""></span>
+            </div>
+          </div>
+          <!-- 1Password sync sub-section — rendered/updated by VaultEngine.renderSync() -->
+          <div class="vault-sync-section" id="vault-sync-section">
+            <div class="vault-sync-header">
+              <span class="vault-sync-label">1Password Sync</span>
+              <span class="vault-sync-state" id="vault-sync-state">Sync: off</span>
+            </div>
+            <span class="vault-sync-error" id="vault-sync-error" hidden=""></span>
+            <div class="vault-sync-fields" id="vault-sync-fields" hidden="">
+              <label class="switch" title="Enable 1Password sync">
+                <input type="checkbox" id="vault-sync-enabled">
+                <span class="slider"></span>
+              </label>
+              <input type="text" id="vault-sync-op-label" class="premium-text-input" placeholder="Service-account label (e.g. primary)" autocomplete="off" spellcheck="false">
+              <input type="text" id="vault-sync-op-vault" class="premium-text-input" placeholder="Vault name (e.g. Luna)" autocomplete="off" spellcheck="false" value="Luna">
+              <span class="vault-sync-helper">Create this vault in 1Password and share it with your service account</span>
+              <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                <span class="setting-desc" style="font-size: 0.65rem;">Poll every</span>
+                <input type="number" id="vault-sync-poll" class="premium-text-input" min="60" value="300" style="width: 72px; text-align: right; padding: 3px 6px; font-size: 0.75rem;">
+                <span class="setting-desc" style="font-size: 0.65rem;">seconds</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <button type="button" class="record-btn" id="vault-sync-save-btn">Save sync settings</button>
+                <span class="setting-desc" id="vault-sync-status" style="font-size: 0.75rem;" hidden=""></span>
+              </div>
+              <span class="vault-sync-import-note" id="vault-sync-import-note" hidden="">Import Apple Passwords exports from the web client.</span>
+            </div>
+          </div>
+        </div>
+        <div class="setting-item flex-column" id="legacy-op-token-section">
           <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
             <span class="setting-label">1Password Service Account</span>
             <span class="setting-desc">Send an <code>ops_…</code> service-account token to the server securely. It is verified and stored on the server — never kept in chat history or on this device.</span>
@@ -740,7 +802,8 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         <button type="button" class="settings-tab active" data-tab="general" role="tab" aria-selected="true">General</button>
         <button type="button" class="settings-tab" data-tab="connection" role="tab" aria-selected="false">Connection</button>
         <button type="button" class="settings-tab" data-tab="voice" role="tab" aria-selected="false">Voice</button>
-        <button type="button" class="settings-tab" data-tab="secrets" role="tab" aria-selected="false">Secrets</button>
+        <!-- Luna Vault: friendlier name, same data-tab value (minimal churn) -->
+        <button type="button" class="settings-tab" data-tab="secrets" role="tab" aria-selected="false">Vault</button>
         <!-- PRD Part B: hidden until the server's hello advertises capabilities.skills -->
         <button type="button" class="settings-tab" data-tab="skills" role="tab" aria-selected="false" id="skills-tab-btn" hidden="">Skills</button>
         <!-- PRD Part A: hidden until the server's hello advertises capabilities.connectors -->
@@ -892,7 +955,68 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         </div>
         </div>
         <div class="settings-tabpanel" data-tabpanel="secrets">
-        <div class="setting-item flex-column">
+        <!-- Luna Vault (V1): the friendly credential registry. Hidden until the
+             server's hello advertises capabilities.vault — old servers keep the
+             legacy 1Password-token-only form below, byte-identical. The list
+             carries METADATA + POINTERS only; the value input is one-shot
+             (wiped on send/close — SecretPromptEngine discipline). -->
+        <div class="setting-item flex-column" id="vault-section" hidden="">
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">Vault</span>
+            <span class="setting-desc">Keys and tokens Luna can use. Values are stored safely on the server — once saved, they never appear here again.</span>
+          </div>
+          <div class="skills-list" id="vault-list" style="margin-bottom: 10px;">
+            <span class="setting-desc">Nothing stored yet — add your first key below.</span>
+          </div>
+          <div class="vault-add-form">
+            <input type="text" id="vault-name-input" class="premium-text-input" placeholder="Name (e.g. Notion API Key)" autocomplete="off" spellcheck="false" maxlength="64">
+            <select id="vault-kind-select" class="channel-select">
+              <option value="env-secret" selected="">API key / secret</option>
+              <option value="op-token">1Password service-account token</option>
+            </select>
+            <div class="vault-var-row" id="vault-var-row">
+              <span class="setting-desc">Stored as <code id="vault-var-preview" class="vault-ref">ENV_VAR_NAME</code></span>
+              <button type="button" class="vault-link-btn" id="vault-var-edit">change</button>
+              <input type="text" id="vault-var-input" class="premium-text-input" placeholder="ENV_VAR_NAME" autocomplete="off" spellcheck="false" hidden="">
+            </div>
+            <input type="text" id="vault-label-input" class="premium-text-input" placeholder="Account label (e.g. primary)" autocomplete="off" spellcheck="false" hidden="">
+            <input type="password" id="vault-value-input" class="premium-text-input" placeholder="Paste the secret value" autocomplete="off" spellcheck="false">
+            <input type="text" id="vault-desc-input" class="premium-text-input" placeholder="Note (optional)" autocomplete="off" spellcheck="false">
+            <span class="setting-desc" id="vault-restart-note" hidden="">Saving verifies the token and briefly restarts the server.</span>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <button type="button" class="record-btn" id="vault-add-btn">Save to server</button>
+              <span class="setting-desc" id="vault-status-line" style="font-size: 0.75rem;" hidden=""></span>
+            </div>
+          </div>
+          <!-- 1Password sync sub-section — rendered/updated by VaultEngine.renderSync() -->
+          <div class="vault-sync-section" id="vault-sync-section">
+            <div class="vault-sync-header">
+              <span class="vault-sync-label">1Password Sync</span>
+              <span class="vault-sync-state" id="vault-sync-state">Sync: off</span>
+            </div>
+            <span class="vault-sync-error" id="vault-sync-error" hidden=""></span>
+            <div class="vault-sync-fields" id="vault-sync-fields" hidden="">
+              <label class="switch" title="Enable 1Password sync">
+                <input type="checkbox" id="vault-sync-enabled">
+                <span class="slider"></span>
+              </label>
+              <input type="text" id="vault-sync-op-label" class="premium-text-input" placeholder="Service-account label (e.g. primary)" autocomplete="off" spellcheck="false">
+              <input type="text" id="vault-sync-op-vault" class="premium-text-input" placeholder="Vault name (e.g. Luna)" autocomplete="off" spellcheck="false" value="Luna">
+              <span class="vault-sync-helper">Create this vault in 1Password and share it with your service account</span>
+              <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                <span class="setting-desc" style="font-size: 0.65rem;">Poll every</span>
+                <input type="number" id="vault-sync-poll" class="premium-text-input" min="60" value="300" style="width: 72px; text-align: right; padding: 3px 6px; font-size: 0.75rem;">
+                <span class="setting-desc" style="font-size: 0.65rem;">seconds</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <button type="button" class="record-btn" id="vault-sync-save-btn">Save sync settings</button>
+                <span class="setting-desc" id="vault-sync-status" style="font-size: 0.75rem;" hidden=""></span>
+              </div>
+              <span class="vault-sync-import-note" id="vault-sync-import-note" hidden="">Import Apple Passwords exports from the web client.</span>
+            </div>
+          </div>
+        </div>
+        <div class="setting-item flex-column" id="legacy-op-token-section">
           <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
             <span class="setting-label">1Password Service Account</span>
             <span class="setting-desc">Send an <code>ops_…</code> service-account token to the server securely. It is verified and stored on the server — never kept in chat history or on this device.</span>

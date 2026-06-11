@@ -21,6 +21,8 @@ import type {
   ServerFrame,
   SessionSummary,
   SkillCatalogItem,
+  VaultSyncWire,
+  VaultWireItem,
   WorkflowGalleryItem,
   WorkflowRunItem,
 } from "./wire.js"
@@ -62,6 +64,8 @@ export interface UIState {
     readonly connectors?: boolean
     readonly artifacts?: boolean
     readonly workflows?: boolean
+    /** Luna Vault (V1): vault-list pushed after hello; vault mutations routed. */
+    readonly vault?: boolean
   }
   /**
    * Server-advertised model list (from the `hello` frame's `availableModels`
@@ -108,6 +112,11 @@ export interface UIState {
    *  + per-job run history fetched on demand. Gated on capabilities.workflows. */
   readonly workflows: ReadonlyArray<WorkflowGalleryItem>
   readonly workflowRuns: ReadonlyMap<string, ReadonlyArray<WorkflowRunItem>>
+  /** Luna Vault (V1) — credential registry (metadata + opaque pointers only;
+   *  never credential values). Gated on capabilities.vault. */
+  readonly vaultItems: ReadonlyArray<VaultWireItem>
+  /** 1Password sync state (slice V3); null when not yet received. */
+  readonly vaultSync: VaultSyncWire | null
 }
 
 export const initialState: UIState = {
@@ -135,6 +144,8 @@ export const initialState: UIState = {
   pinnedArtifacts: [],
   workflows: [],
   workflowRuns: new Map(),
+  vaultItems: [],
+  vaultSync: null,
 }
 
 const MAX_RETAINED = 500
@@ -417,6 +428,30 @@ export const reduce = (state: UIState, action: Action): UIState => {
       // (it opens the browser + binds the loopback); the web client can't
       // bind a loopback, so this frame carries no store state here.
       return state
+    case "vault-list":
+      // Server-authoritative registry (metadata + pointers only; no values).
+      // Sent after hello + after every successful mutation — replace wholesale.
+      return {
+        ...state,
+        vaultItems: frame.items,
+        vaultSync: frame.sync ?? null,
+      }
+    case "vault-status":
+      // Mutation ack — consumed by the UI's pending-request tracker, not
+      // folded into persistent store state (the fresh vault-list that follows
+      // a successful mutation already updates the list).
+      return state
+    default: {
+      // Exhaustiveness guard: when every ServerFrame member has a matching
+      // case arm, TypeScript narrows `frame` to `never` here. Adding a new
+      // ServerFrame member WITHOUT a matching case becomes a compile-time
+      // error on the assignment below. The `return state` keeps runtime
+      // forward-compat: a newer server CAN send unknown frame types and the
+      // store stays intact. The `void` suppresses "variable unused" lints.
+      const _exhaustive: never = frame satisfies never
+      void _exhaustive
+      return state
+    }
   }
 }
 

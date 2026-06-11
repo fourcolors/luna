@@ -393,6 +393,49 @@ export interface UIWebSocketServerConfig {
     }
   } | null
   /**
+   * Optional Vault service handle (Luna Vault V1). When provided, the server:
+   *   - advertises `capabilities.vault: true`
+   *   - pushes a `vault-list` frame after `hello` (same fire-and-forget pattern
+   *     as `connector-catalog`) so the Vault settings section renders on connect
+   *   - routes inbound `vault-put` / `vault-delete` / `vault-sync-config` /
+   *     `vault-import` frames; after each mutation sends a `vault-status`
+   *     (requestId-correlated) THEN a fresh `vault-list` to the requesting client
+   *
+   * The handle's `list()` output MUST be wire-safe (VaultWireItem — metadata +
+   * opaque pointer refs, never credential values). Structural type — mirrors
+   * connectorService / artifactStore. Pass `null` explicitly in setup-mode.
+   *
+   * SENSITIVE FRAME CONTRACT: `vault-put` and `vault-import` carry credential
+   * values. This package NEVER logs the frame payload for those types — only
+   * `frame.type` + `frame.requestId` are safe to log. The handle methods receive
+   * the full frame for dispatch but are responsible for not leaking values into
+   * their returned `message` strings.
+   */
+  readonly vaultService?: {
+    readonly list: () => Promise<ReadonlyArray<import("./protocol.js").VaultWireItem>>
+    readonly syncState: () => Promise<import("./protocol.js").VaultSyncWire | null>
+    readonly put: (
+      f: import("./protocol.js").VaultPutFrame,
+    ) => Promise<{ readonly ok: boolean; readonly message: string }>
+    readonly remove: (
+      f: import("./protocol.js").VaultDeleteFrame,
+    ) => Promise<{ readonly ok: boolean; readonly message: string }>
+    readonly setSyncConfig: (
+      f: import("./protocol.js").VaultSyncConfigFrame,
+    ) => Promise<{ readonly ok: boolean; readonly message: string }>
+    readonly importItems: (
+      f: import("./protocol.js").VaultImportFrame,
+    ) => Promise<{ readonly ok: boolean; readonly message: string }>
+    /**
+     * Optional out-of-band change subscription (same contract as
+     * skillRegistry.changes): the server registers a `notify` callback and,
+     * on each notify, broadcasts a fresh `vault-list` to every connected
+     * client. Covers registry changes no client initiated — e.g. the
+     * 1Password sync poll loop adopting/removing rows.
+     */
+    readonly changes?: (notify: () => void) => void
+  } | null
+  /**
    * Optional handler for the Moon secure-entry `register-op-token` frame.
    * When provided, an inbound `register-op-token` is routed here; the handler
    * validates + persists the 1Password service-account token and resolves to a
@@ -574,6 +617,7 @@ export const startUIWebSocketServer = (
     const connectorService = config.connectorService ?? null
     const artifactStore = config.artifactStore ?? null
     const workflowGallery = config.workflowGallery ?? null
+    const vaultService = config.vaultService ?? null
     const buildSha = config.buildSha
     const availableModels = config.availableModels
 
@@ -725,6 +769,32 @@ export const startUIWebSocketServer = (
       })
     }
 
+    // Luna Vault V3: out-of-band registry changes (the 1Password sync poll
+    // loop adopting/refreshing/removing rows) → broadcast a fresh vault-list
+    // to every client. The mutation paths broadcast inline; this hook covers
+    // changes no client initiated. Wire-safe by construction — `list()` is
+    // the same metadata/pointer projection the inline path uses.
+    if (vaultService !== null && vaultService.changes !== undefined) {
+      const vsvc = vaultService
+      const registerVaultChanges = vaultService.changes
+      registerVaultChanges(() => {
+        Runtime.runFork(runtime)(
+          Effect.gen(function* () {
+            const items = yield* Effect.promise(() => vsvc.list())
+            const sync = yield* Effect.promise(() => vsvc.syncState())
+            const sockets = yield* Ref.get(activeSockets)
+            for (const sock of sockets) {
+              send(sock, {
+                type: "vault-list",
+                items,
+                ...(sync !== null ? { sync } : {}),
+              })
+            }
+          }).pipe(Effect.catchAllCause(() => Effect.void)),
+        )
+      })
+    }
+
     // The connection-handler effect: it OWNS its own scope (so we can use
     // addFinalizer for queue cleanup) but lives until the ws closes —
     // which we signal via a Deferred resolved from the ws "close" handler.
@@ -786,6 +856,9 @@ export const startUIWebSocketServer = (
             artifacts: artifactStore !== null,
             // PRD Part C/W3: read-only workflow gallery over the jobs store.
             workflows: workflowGallery !== null,
+            // Luna Vault (V1): credential registry + put/delete/sync routing.
+            // Clients hide the Vault section when absent/false.
+            vault: vaultService !== null,
           },
         })
 
@@ -854,6 +927,24 @@ export const startUIWebSocketServer = (
                 send(ws, { type: "workflow-list", workflows })
               }),
             ).pipe(Effect.catchAllCause(() => Effect.void)),
+          )
+        }
+
+        // Vault registry, same fire-and-forget pattern (Luna Vault V1) — the
+        // Vault settings section renders from this on connect. Contains
+        // metadata + opaque pointers only; no credential values cross the wire.
+        if (vaultService !== null) {
+          const vsvc = vaultService
+          Effect.runFork(
+            Effect.promise(async () => {
+              const items = await vsvc.list()
+              const sync = await vsvc.syncState()
+              send(ws, {
+                type: "vault-list",
+                items,
+                ...(sync !== null ? { sync } : {}),
+              })
+            }).pipe(Effect.catchAllCause(() => Effect.void)),
           )
         }
 
@@ -1188,7 +1279,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null) {
+        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || vaultService !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -1204,6 +1295,29 @@ export const startUIWebSocketServer = (
             } catch {
               return
             }
+
+            // pushVaultList: broadcast a fresh vault-list to a set of
+            // target sockets (all active sockets on mutation; only the
+            // new connection on hello). Extracted so every vault mutation
+            // case can broadcast without duplicating the list/syncState
+            // fetch. Refresh errors are silently swallowed (isolated
+            // catchAllCause) so they cannot produce a second vault-status
+            // for the same requestId (finding 6).
+            const pushVaultList = (
+              vsvc: NonNullable<typeof vaultService>,
+              targets: ReadonlyArray<WebSocket>,
+            ): Effect.Effect<void, never> =>
+              Effect.promise(async () => {
+                const items = await vsvc.list()
+                const sync = await vsvc.syncState()
+                for (const sock of targets) {
+                  send(sock, {
+                    type: "vault-list",
+                    items,
+                    ...(sync !== null ? { sync } : {}),
+                  })
+                }
+              }).pipe(Effect.catchAllCause(() => Effect.void))
 
             const handle = (): Effect.Effect<void, never> =>
               Effect.gen(function* () {
@@ -1799,6 +1913,232 @@ export const startUIWebSocketServer = (
                       ok: result.ok,
                       message: result.message,
                     })
+                    return
+                  }
+                  case "vault-put": {
+                    // Luna Vault V1: register/update a credential. The frame
+                    // carries a sensitive `value` — we log ONLY the type and
+                    // requestId, never the payload. The handle receives the
+                    // full frame but its returned `message` MUST NOT echo the
+                    // value (enforced by handle contract, not this package).
+                    if (vaultService === null) return
+                    const vsvc = vaultService
+                    const putReqId = String(
+                      (frame as { requestId?: unknown }).requestId ?? "",
+                    )
+                    if (
+                      typeof frame.name !== "string" ||
+                      frame.name.trim().length === 0 ||
+                      typeof frame.kind !== "string" ||
+                      (frame.kind !== "env-secret" && frame.kind !== "op-token") ||
+                      typeof frame.value !== "string" ||
+                      frame.value.length === 0 ||
+                      // B4: optional fields present-but-non-string → malformed
+                      (frame.varName !== undefined && typeof frame.varName !== "string") ||
+                      (frame.label !== undefined && typeof frame.label !== "string") ||
+                      (frame.description !== undefined && typeof frame.description !== "string")
+                    ) {
+                      send(ws, {
+                        type: "vault-status",
+                        requestId: putReqId,
+                        ok: false,
+                        message: "malformed vault-put frame",
+                      })
+                      return
+                    }
+                    yield* Effect.promise(async () => {
+                      const res = await vsvc.put(frame)
+                      send(ws, {
+                        type: "vault-status",
+                        requestId: putReqId,
+                        ok: res.ok,
+                        message: res.message,
+                      })
+                      return res.ok
+                    }).pipe(
+                      Effect.catchAllCause((cause) =>
+                        Effect.sync(() => {
+                          send(ws, {
+                            type: "vault-status",
+                            requestId: putReqId,
+                            ok: false,
+                            message: failureMessage(cause),
+                          })
+                          return false
+                        }),
+                      ),
+                      Effect.flatMap((ok) =>
+                        ok
+                          ? Effect.gen(function* () {
+                              const sockets = yield* Ref.get(activeSockets)
+                              yield* pushVaultList(vsvc, sockets)
+                            })
+                          : Effect.void,
+                      ),
+                    )
+                    return
+                  }
+                  case "vault-delete": {
+                    // Remove a registry row (and optionally the underlying
+                    // credential). No sensitive values in this frame.
+                    if (vaultService === null) return
+                    const vsvc = vaultService
+                    const delReqId = String(
+                      (frame as { requestId?: unknown }).requestId ?? "",
+                    )
+                    if (
+                      typeof frame.id !== "string" ||
+                      frame.id.trim().length === 0
+                    ) {
+                      send(ws, {
+                        type: "vault-status",
+                        requestId: delReqId,
+                        ok: false,
+                        message: "malformed vault-delete frame",
+                      })
+                      return
+                    }
+                    yield* Effect.promise(async () => {
+                      const res = await vsvc.remove(frame)
+                      send(ws, {
+                        type: "vault-status",
+                        requestId: delReqId,
+                        ok: res.ok,
+                        message: res.message,
+                      })
+                      return res.ok
+                    }).pipe(
+                      Effect.catchAllCause((cause) =>
+                        Effect.sync(() => {
+                          send(ws, {
+                            type: "vault-status",
+                            requestId: delReqId,
+                            ok: false,
+                            message: failureMessage(cause),
+                          })
+                          return false
+                        }),
+                      ),
+                      Effect.flatMap((ok) =>
+                        ok
+                          ? Effect.gen(function* () {
+                              const sockets = yield* Ref.get(activeSockets)
+                              yield* pushVaultList(vsvc, sockets)
+                            })
+                          : Effect.void,
+                      ),
+                    )
+                    return
+                  }
+                  case "vault-sync-config": {
+                    // Configure 1Password two-way sync (slice V3). No secret
+                    // values in this frame (tokens live in their own storage).
+                    if (vaultService === null) return
+                    const vsvc = vaultService
+                    const syncReqId = String(
+                      (frame as { requestId?: unknown }).requestId ?? "",
+                    )
+                    if (typeof frame.enabled !== "boolean") {
+                      send(ws, {
+                        type: "vault-status",
+                        requestId: syncReqId,
+                        ok: false,
+                        message: "malformed vault-sync-config frame",
+                      })
+                      return
+                    }
+                    yield* Effect.promise(async () => {
+                      const res = await vsvc.setSyncConfig(frame)
+                      send(ws, {
+                        type: "vault-status",
+                        requestId: syncReqId,
+                        ok: res.ok,
+                        message: res.message,
+                      })
+                      return res.ok
+                    }).pipe(
+                      Effect.catchAllCause((cause) =>
+                        Effect.sync(() => {
+                          send(ws, {
+                            type: "vault-status",
+                            requestId: syncReqId,
+                            ok: false,
+                            message: failureMessage(cause),
+                          })
+                          return false
+                        }),
+                      ),
+                      Effect.flatMap((ok) =>
+                        ok
+                          ? Effect.gen(function* () {
+                              const sockets = yield* Ref.get(activeSockets)
+                              yield* pushVaultList(vsvc, sockets)
+                            })
+                          : Effect.void,
+                      ),
+                    )
+                    return
+                  }
+                  case "vault-import": {
+                    // Bulk Apple Passwords CSV import (slice V3). The frame
+                    // carries sensitive `password` values in each item — log
+                    // ONLY type + requestId. Server enforces ≤20 items/frame.
+                    if (vaultService === null) return
+                    const vsvc = vaultService
+                    const importReqId = String(
+                      (frame as { requestId?: unknown }).requestId ?? "",
+                    )
+                    // Read items ONCE via the unknown accessor; Array.isArray
+                    // narrows without the ReadonlyArray→mutable cast (TS2352).
+                    const importItems = (frame as { readonly items?: unknown }).items
+                    if (!Array.isArray(importItems)) {
+                      send(ws, {
+                        type: "vault-status",
+                        requestId: importReqId,
+                        ok: false,
+                        message: "malformed vault-import frame",
+                      })
+                      return
+                    }
+                    if (importItems.length > 20) {
+                      send(ws, {
+                        type: "vault-status",
+                        requestId: importReqId,
+                        ok: false,
+                        message: "vault-import: too many items (max 20 per frame)",
+                      })
+                      return
+                    }
+                    yield* Effect.promise(async () => {
+                      const res = await vsvc.importItems(frame)
+                      send(ws, {
+                        type: "vault-status",
+                        requestId: importReqId,
+                        ok: res.ok,
+                        message: res.message,
+                      })
+                      return res.ok
+                    }).pipe(
+                      Effect.catchAllCause((cause) =>
+                        Effect.sync(() => {
+                          send(ws, {
+                            type: "vault-status",
+                            requestId: importReqId,
+                            ok: false,
+                            message: failureMessage(cause),
+                          })
+                          return false
+                        }),
+                      ),
+                      Effect.flatMap((ok) =>
+                        ok
+                          ? Effect.gen(function* () {
+                              const sockets = yield* Ref.get(activeSockets)
+                              yield* pushVaultList(vsvc, sockets)
+                            })
+                          : Effect.void,
+                      ),
+                    )
                     return
                   }
                   default: {

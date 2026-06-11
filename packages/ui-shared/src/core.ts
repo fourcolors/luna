@@ -99,5 +99,13 @@ export type {
   WorkflowRunsFrame,
   WorkflowRunsRequestFrame,
   WorkflowRefreshFrame,
+  VaultWireItem,
+  VaultSyncWire,
+  VaultListFrame,
+  VaultStatusFrame,
+  VaultPutFrame,
+  VaultDeleteFrame,
+  VaultSyncConfigFrame,
+  VaultImportFrame,
 } from "./wire.js"
 export { UI_WS_PROTOCOL_VERSION } from "./wire.js"

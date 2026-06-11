@@ -98,6 +98,8 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "memory-search-error",
   "survey-request",
   "pty-output",
+  "vault-list",
+  "vault-status",
 ].sort()
 
 const EXPECTED_CLIENT_FRAME_TYPES = [
@@ -127,6 +129,10 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "workflow-refresh",
   "pty-input",
   "pty-resize",
+  "vault-put",
+  "vault-delete",
+  "vault-sync-config",
+  "vault-import",
 ].sort()
 
 const EXPECTED_PROTOCOL_VERSION = 2
@@ -228,9 +234,11 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // workflow-list + workflow-runs (server) and workflow-runs-request +
     // workflow-refresh (client) → 36 server / 25 client. M2.6 adds
     // connector-set-client (client) for the inline OAuth-client setup form
-    // → 36 server / 26 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(36)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(26)
+    // → 36 server / 26 client. Luna Vault V1 adds vault-list + vault-status
+    // (server) and vault-put + vault-delete + vault-sync-config + vault-import
+    // (client) → 38 server / 30 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(38)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(30)
   })
 
   // VERSION-SKEW (client half): nothing else pins the ui-shared wire.ts mirror

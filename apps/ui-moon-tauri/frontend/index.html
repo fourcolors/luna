@@ -896,6 +896,50 @@
     /* Label input inside the consent sheet */
     .connector-label-input { margin-bottom: 2px; }
 
+    /* ── Vault tab (Luna Vault V1) — same watercolor language as skills/connectors ── */
+    .vault-add-form { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+    .vault-row {
+      display: flex; align-items: center; gap: 10px;
+      background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 10px; padding: 8px 10px;
+      transition: border-color 0.2s ease;
+    }
+    .vault-row:hover { border-color: rgba(138, 180, 248, 0.2); }
+    .vault-row .skill-blot { width: 22px; height: 22px; }
+    /* a shadowed entry's pigment is dry — the server's environment wins */
+    .vault-row.shadowed .skill-blot { opacity: 0.35; filter: grayscale(0.7); box-shadow: none; animation: none; }
+    .vault-row-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .vault-row-name { font-size: 0.78rem; font-weight: 600; color: #f1f5f9; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .vault-row-sub { display: flex; gap: 8px; align-items: center; min-width: 0; }
+    .vault-ref { font-family: 'SF Mono', ui-monospace, Menlo, monospace; font-size: 0.6rem; color: #7d8cab; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .vault-source { font-size: 0.58rem; color: #64748b; flex-shrink: 0; }
+    .vault-chip { font-size: 0.56rem; border-radius: 4px; padding: 1px 5px; letter-spacing: 0.05em; flex-shrink: 0; }
+    .vault-chip.synced { color: #6ee7b7; background: rgba(110, 231, 183, 0.1); border: 1px solid rgba(110, 231, 183, 0.3); }
+    .vault-chip.shadowed { color: #ffd88a; background: rgba(255, 216, 138, 0.08); border: 1px solid rgba(255, 216, 138, 0.3); cursor: help; }
+    .vault-var-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .vault-link-btn {
+      font-family: inherit; font-size: 0.62rem; color: #8ab4f8; background: none;
+      border: none; padding: 0; cursor: pointer; text-decoration: underline dotted;
+    }
+    .vault-link-btn:hover { color: #dbeafe; }
+    .vault-confirm-note { font-size: 0.62rem; color: #ffd88a; }
+    /* ── 1Password sync sub-section (below add form, within vault-section) ── */
+    .vault-sync-section {
+      width: 100%; margin-top: 10px;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      padding-top: 10px;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .vault-sync-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .vault-sync-label {
+      font-size: 0.75rem; font-weight: 600; color: #94a3b8; flex: 1;
+    }
+    .vault-sync-state { font-size: 0.65rem; color: #64748b; }
+    .vault-sync-error { font-size: 0.65rem; color: #f87171; word-break: break-all; }
+    .vault-sync-fields { display: flex; flex-direction: column; gap: 6px; }
+    .vault-sync-helper { font-size: 0.62rem; color: #64748b; }
+    .vault-sync-import-note { font-size: 0.62rem; color: #64748b; font-style: italic; }
+
     /* Toggle switch design (macOS style) */
     .switch {
       position: relative;
@@ -2824,7 +2868,8 @@
         <button type="button" class="settings-tab active" data-tab="general" role="tab" aria-selected="true">General</button>
         <button type="button" class="settings-tab" data-tab="connection" role="tab" aria-selected="false">Connection</button>
         <button type="button" class="settings-tab" data-tab="voice" role="tab" aria-selected="false">Voice</button>
-        <button type="button" class="settings-tab" data-tab="secrets" role="tab" aria-selected="false">Secrets</button>
+        <!-- Luna Vault: friendlier name, same data-tab value (minimal churn) -->
+        <button type="button" class="settings-tab" data-tab="secrets" role="tab" aria-selected="false">Vault</button>
         <!-- PRD Part B: hidden until the server's hello advertises capabilities.skills -->
         <button type="button" class="settings-tab" data-tab="skills" role="tab" aria-selected="false" id="skills-tab-btn" hidden>Skills</button>
         <!-- PRD Part A: hidden until the server's hello advertises capabilities.connectors -->
@@ -2976,7 +3021,74 @@
         </div>
         </div>
         <div class="settings-tabpanel" data-tabpanel="secrets">
-        <div class="setting-item flex-column">
+        <!-- Luna Vault (V1): the friendly credential registry. Hidden until the
+             server's hello advertises capabilities.vault — old servers keep the
+             legacy 1Password-token-only form below, byte-identical. The list
+             carries METADATA + POINTERS only; the value input is one-shot
+             (wiped on send/close — SecretPromptEngine discipline). -->
+        <div class="setting-item flex-column" id="vault-section" hidden>
+          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
+            <span class="setting-label">Vault</span>
+            <span class="setting-desc">Keys and tokens Luna can use. Values are stored safely on the server — once saved, they never appear here again.</span>
+          </div>
+          <div class="skills-list" id="vault-list" style="margin-bottom: 10px;">
+            <span class="setting-desc">Nothing stored yet — add your first key below.</span>
+          </div>
+          <div class="vault-add-form">
+            <input type="text" id="vault-name-input" class="premium-text-input" placeholder="Name (e.g. Notion API Key)" autocomplete="off" spellcheck="false" maxlength="64">
+            <select id="vault-kind-select" class="channel-select">
+              <option value="env-secret" selected>API key / secret</option>
+              <option value="op-token">1Password service-account token</option>
+            </select>
+            <div class="vault-var-row" id="vault-var-row">
+              <span class="setting-desc">Stored as <code id="vault-var-preview" class="vault-ref">ENV_VAR_NAME</code></span>
+              <button type="button" class="vault-link-btn" id="vault-var-edit">change</button>
+              <input type="text" id="vault-var-input" class="premium-text-input" placeholder="ENV_VAR_NAME" autocomplete="off" spellcheck="false" hidden>
+            </div>
+            <input type="text" id="vault-label-input" class="premium-text-input" placeholder="Account label (e.g. primary)" autocomplete="off" spellcheck="false" hidden>
+            <input type="password" id="vault-value-input" class="premium-text-input" placeholder="Paste the secret value" autocomplete="off" spellcheck="false">
+            <input type="text" id="vault-desc-input" class="premium-text-input" placeholder="Note (optional)" autocomplete="off" spellcheck="false">
+            <span class="setting-desc" id="vault-restart-note" hidden>Saving verifies the token and briefly restarts the server.</span>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <button type="button" class="record-btn" id="vault-add-btn">Save to server</button>
+              <span class="setting-desc" id="vault-status-line" style="font-size: 0.75rem;" hidden></span>
+            </div>
+          </div>
+          <!-- 1Password sync sub-section — rendered/updated by VaultEngine.renderSync() -->
+          <div class="vault-sync-section" id="vault-sync-section">
+            <div class="vault-sync-header">
+              <span class="vault-sync-label">1Password Sync</span>
+              <span class="vault-sync-state" id="vault-sync-state">Sync: off</span>
+            </div>
+            <span class="vault-sync-error" id="vault-sync-error" hidden></span>
+            <div class="vault-sync-fields" id="vault-sync-fields" hidden>
+              <label class="switch" title="Enable 1Password sync">
+                <input type="checkbox" id="vault-sync-enabled">
+                <span class="slider"></span>
+              </label>
+              <input type="text" id="vault-sync-op-label" class="premium-text-input"
+                placeholder="Service-account label (e.g. primary)"
+                autocomplete="off" spellcheck="false">
+              <input type="text" id="vault-sync-op-vault" class="premium-text-input"
+                placeholder="Vault name (e.g. Luna)"
+                autocomplete="off" spellcheck="false" value="Luna">
+              <span class="vault-sync-helper">Create this vault in 1Password and share it with your service account</span>
+              <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                <span class="setting-desc" style="font-size: 0.65rem;">Poll every</span>
+                <input type="number" id="vault-sync-poll" class="premium-text-input"
+                  min="60" value="300"
+                  style="width: 72px; text-align: right; padding: 3px 6px; font-size: 0.75rem;">
+                <span class="setting-desc" style="font-size: 0.65rem;">seconds</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <button type="button" class="record-btn" id="vault-sync-save-btn">Save sync settings</button>
+                <span class="setting-desc" id="vault-sync-status" style="font-size: 0.75rem;" hidden></span>
+              </div>
+              <span class="vault-sync-import-note" id="vault-sync-import-note" hidden>Import Apple Passwords exports from the web client.</span>
+            </div>
+          </div>
+        </div>
+        <div class="setting-item flex-column" id="legacy-op-token-section">
           <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
             <span class="setting-label">1Password Service Account</span>
             <span class="setting-desc">Send an <code>ops_…</code> service-account token to the server securely. It is verified and stored on the server — never kept in chat history or on this device.</span>
@@ -3509,6 +3621,34 @@
       connectorsTabBtn: document.getElementById('connectors-tab-btn'),
       connectorsList: document.getElementById('connectors-list'),
       connectorsError: document.getElementById('connectors-error'),
+      // Luna Vault (V1): Vault settings tab handles.
+      vaultSection: document.getElementById('vault-section'),
+      legacyOpTokenSection: document.getElementById('legacy-op-token-section'),
+      vaultList: document.getElementById('vault-list'),
+      vaultNameInput: document.getElementById('vault-name-input'),
+      vaultKindSelect: document.getElementById('vault-kind-select'),
+      vaultVarRow: document.getElementById('vault-var-row'),
+      vaultVarPreview: document.getElementById('vault-var-preview'),
+      vaultVarEdit: document.getElementById('vault-var-edit'),
+      vaultVarInput: document.getElementById('vault-var-input'),
+      vaultLabelInput: document.getElementById('vault-label-input'),
+      vaultValueInput: document.getElementById('vault-value-input'),
+      vaultDescInput: document.getElementById('vault-desc-input'),
+      vaultRestartNote: document.getElementById('vault-restart-note'),
+      vaultAddBtn: document.getElementById('vault-add-btn'),
+      vaultStatusLine: document.getElementById('vault-status-line'),
+      // Luna Vault V1 — 1Password sync sub-section handles.
+      vaultSyncSection: document.getElementById('vault-sync-section'),
+      vaultSyncState: document.getElementById('vault-sync-state'),
+      vaultSyncError: document.getElementById('vault-sync-error'),
+      vaultSyncFields: document.getElementById('vault-sync-fields'),
+      vaultSyncEnabled: document.getElementById('vault-sync-enabled'),
+      vaultSyncOpLabel: document.getElementById('vault-sync-op-label'),
+      vaultSyncOpVault: document.getElementById('vault-sync-op-vault'),
+      vaultSyncPoll: document.getElementById('vault-sync-poll'),
+      vaultSyncSaveBtn: document.getElementById('vault-sync-save-btn'),
+      vaultSyncStatus: document.getElementById('vault-sync-status'),
+      vaultSyncImportNote: document.getElementById('vault-sync-import-note'),
       // PRD Part C W1: Artifacts panel handles.
       artifactsBtn: document.getElementById('artifacts-btn'),
       artifactsBtnInner: document.getElementById('artifacts-btn-inner'),
@@ -3702,6 +3842,15 @@
       connectorCatalog: [],
       connectorInstances: [],
       connectorBusy: {},
+      // Luna Vault (V1): does the connected server speak the vault frames
+      // (hello capability `vault`)? Gates the Vault UI inside the (renamed)
+      // Secrets tab — absent/false on older servers → the legacy op-token
+      // form renders instead, byte-identical to the pre-vault behavior.
+      serverSupportsVault: false,
+      // The latest vault-list rows (METADATA + POINTERS only — values never
+      // cross the wire downward) + the optional 1Password sync block.
+      vaultItems: [],
+      vaultSync: null,
       // PRD Part C W1: artifact persistence + panel.
       serverSupportsArtifacts: false,
       pinnedArtifacts: [],    // PinnedArtifactItem[] — from artifact-list / artifact-update
@@ -5197,6 +5346,525 @@
       },
     };
 
+    // ── VaultEngine — the Vault settings tab (Luna Vault V1) ────────────────
+    //
+    // A friendly credential registry: list rows are METADATA + POINTERS only
+    // (`vault-list` never carries values) and the add form sends the value UP
+    // exactly once on `vault-put` (connector-set-client contract).
+    //
+    // SECURITY — the typed value lives in exactly one place: the password
+    // input, and only until the OPEN-guarded send. It is wiped one-shot on
+    // submit, on settings close, and on socket close (SecretPromptEngine
+    // discipline). The OPEN-socket guard is load-bearing: WebSocketEngine
+    // .send() logs the WHOLE frame when the socket is NOT open, which would
+    // leak the value to the console — confirm OPEN before every send. Server
+    // strings (names, refs, status messages) render via textContent only.
+    //
+    // Like SkillsEngine/ConnectorsEngine, defined BEFORE WebSocketEngine —
+    // the __MoonInternals exposure block runs mid-script and a later const
+    // hits the TDZ (a blank moon at load).
+    const VaultEngine = {
+      _reqId: null,           // requestId of the in-flight vault-put/vault-delete
+      _reqKind: null,         // 'put' | 'delete' — only a confirmed put clears the form
+      _syncReqId: null,       // separate slot for an in-flight vault-sync-config ack
+      _confirmId: null,       // row id currently showing the inline delete confirm
+      _varOverride: false,    // advanced env-var override input revealed
+      _syncCheckboxDirty: false, // user toggled the checkbox since the last successful save
+
+      KIND_BADGE: { 'env-secret': 'API key', 'op-token': '1P token', 'op-item': '1P item' },
+      SOURCE_LABEL: {
+        'manual': 'added by you',
+        'agent': 'added by Luna',
+        '1password': 'from 1Password',
+        'apple-import': 'Apple import',
+      },
+
+      /** 'Notion API Key' → 'NOTION_API_KEY' (best-effort; validated before send). */
+      deriveVarName(name) {
+        let v = String(name || '')
+          .trim()
+          .toUpperCase()
+          .replace(/[^A-Z0-9]+/g, '_')
+          .replace(/^_+|_+$/g, '');
+        if (/^[0-9]/.test(v)) v = '_' + v;
+        return v;
+      },
+
+      /** hello gating: vault UI when the server speaks it, legacy op-token
+       *  form (byte-identical pre-vault behavior) when it does not. */
+      applyCapability(supported) {
+        State.serverSupportsVault = !!supported;
+        if (DOM.vaultSection) DOM.vaultSection.hidden = !supported;
+        if (DOM.legacyOpTokenSection) DOM.legacyOpTokenSection.hidden = !!supported;
+        if (!supported) {
+          // Channel switch to an older server: drop stale registry state and
+          // any in-flight request — its vault-status will never arrive.
+          State.vaultItems = [];
+          State.vaultSync = null;
+          this._confirmId = null;
+          this._reqId = null;
+          this._reqKind = null;
+          this._syncReqId = null;
+          this._syncCheckboxDirty = false;
+          this.wipeValue();
+          this.setStatus('', null);
+          // Clear the sync status line too — a stale 'Saving sync settings…' would
+          // never be resolved once the socket switches to an older server.
+          this.setSyncStatus('', null);
+        }
+        this.render();
+      },
+
+      /** Idempotent rebuild — vault-list arrives after hello AND is broadcast
+       *  after every successful mutation; re-applying the same frame is a no-op
+       *  visually (replaceChildren swaps the whole list). */
+      applyList(frame) {
+        State.vaultItems = frame && Array.isArray(frame.items) ? frame.items : [];
+        State.vaultSync = (frame && frame.sync) || null;
+        // An armed delete-confirm survives an unrelated broadcast, but dies
+        // with its row (e.g. the delete actually happened elsewhere).
+        if (this._confirmId && !State.vaultItems.some((i) => i && i.id === this._confirmId)) {
+          this._confirmId = null;
+        }
+        this.render();
+        this.renderSync();
+      },
+
+      /** The env var name the put will use: the advanced override when the
+       *  operator opened it and typed one, else auto-derived from the Name. */
+      effectiveVarName() {
+        const override = this._varOverride
+          ? (((DOM.vaultVarInput && DOM.vaultVarInput.value) || '').trim())
+          : '';
+        return override || this.deriveVarName(DOM.vaultNameInput && DOM.vaultNameInput.value);
+      },
+
+      /** Validate locally, then send vault-put with the OPEN-socket guard and
+       *  one-shot wipe the value input. Validation failures stay local. */
+      submitAdd() {
+        const name = (((DOM.vaultNameInput && DOM.vaultNameInput.value) || '')).trim();
+        const kind = (DOM.vaultKindSelect && DOM.vaultKindSelect.value) || 'env-secret';
+        const value = (DOM.vaultValueInput && DOM.vaultValueInput.value) || '';
+        const description = (((DOM.vaultDescInput && DOM.vaultDescInput.value) || '')).trim();
+
+        if (!name || name.length > 64) {
+          this.setStatus('Give it a name (1–64 characters).', 'error');
+          return;
+        }
+        const frame = { type: 'vault-put', name, kind };
+        if (kind === 'op-token') {
+          frame.label = (((DOM.vaultLabelInput && DOM.vaultLabelInput.value) || '')).trim() || 'primary';
+          if (!value.trim()) {
+            this.setStatus('Paste the ops_… token first.', 'error');
+            return;
+          }
+        } else {
+          const varName = this.effectiveVarName();
+          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(varName)) {
+            this.setStatus('That name can’t become a key — add some letters, or set one under “change”.', 'error');
+            return;
+          }
+          frame.varName = varName;
+          if (!value) {
+            this.setStatus('Paste the secret value first.', 'error');
+            return;
+          }
+          if (/[\r\n]/.test(value)) {
+            this.setStatus('The value can’t contain line breaks.', 'error');
+            return;
+          }
+        }
+        if (description) frame.description = description;
+
+        // OPEN-socket guard BEFORE send: WebSocketEngine.send() logs the whole
+        // frame when the socket is NOT open (which would leak the value). When
+        // OPEN it never logs the frame, so this is the only safe path.
+        if (!State.serverSupportsVault) {
+          this.setStatus("This server doesn't support the Vault.", 'error');
+          return;
+        }
+        if (!(State.ws && State.ws.readyState === WebSocket.OPEN)) {
+          this.setStatus('Not connected to a server.', 'error');
+          return;
+        }
+        const reqId = 'vlt_' + ((window.crypto && crypto.randomUUID)
+          ? crypto.randomUUID().replace(/-/g, '')
+          : Math.random().toString(36).slice(2));
+        this._reqId = reqId;
+        // 'put-op-token' lets the socket-close handler leave the status alone
+        // (op-token saves deliberately restart the server; the drop is expected).
+        // All other puts use 'put' so a stale 'Saving…' gets replaced on drop.
+        this._reqKind = kind === 'op-token' ? 'put-op-token' : 'put';
+        frame.requestId = reqId;
+        frame.value = value;
+        WebSocketEngine.send(frame);
+        this.wipeValue();   // one-shot — the value is never retained client-side
+        this.setStatus(kind === 'op-token'
+          ? 'Verifying… the server will restart briefly.'
+          : 'Saving…', 'info');
+      },
+
+      /** Two-step inline confirm (no window.confirm): the first click arms the
+       *  row (re-rendered with Delete/Keep), only the second click sends. */
+      requestDelete(id) {
+        if (this._confirmId !== id) {
+          this._confirmId = id;
+          this.render();
+          return;
+        }
+        if (!State.serverSupportsVault) {
+          this.setStatus("This server doesn't support the Vault.", 'error');
+          return;
+        }
+        if (!(State.ws && State.ws.readyState === WebSocket.OPEN)) {
+          this.setStatus('Not connected to a server.', 'error');
+          return;
+        }
+        const reqId = 'vlt_' + ((window.crypto && crypto.randomUUID)
+          ? crypto.randomUUID().replace(/-/g, '')
+          : Math.random().toString(36).slice(2));
+        this._reqId = reqId;
+        this._reqKind = 'delete';
+        this._confirmId = null;
+        WebSocketEngine.send({ type: 'vault-delete', requestId: reqId, id });
+        this.setStatus('Removing…', 'info');
+        this.render();
+      },
+
+      cancelDelete() {
+        this._confirmId = null;
+        this.render();
+      },
+
+      /** vault-status ack — correlate by requestId; stale/unmatched is ignored.
+       *  Sync saves use _syncReqId (separate slot) so a racing add-form put and
+       *  a sync save can both be in-flight without one silently orphaning the other.
+       *  On ok for a put, clear the form (the value was already wiped on send);
+       *  a sync ack shows on the sync status line and does NOT touch the add form;
+       *  the broadcast vault-list that follows re-renders the rows. */
+      handleStatus(frame) {
+        if (!frame) return;
+        // ── sync slot (independent from the add-form slot) ──────────────────
+        if (this._syncReqId && frame.requestId === this._syncReqId) {
+          this._syncReqId = null;
+          if (frame.ok) this._syncCheckboxDirty = false;   // server ack clears dirty
+          this.setSyncStatus(
+            frame.ok ? (frame.message || 'Saved.')
+                     : (frame.message || "That didn’t work — try again."),
+            frame.ok ? 'ok' : 'error',
+          );
+          return;
+        }
+        // ── add-form / delete slot ───────────────────────────────────────────
+        if (!this._reqId || frame.requestId !== this._reqId) return;
+        const wasPut = this._reqKind === 'put' || this._reqKind === 'put-op-token';
+        this._reqId = null;
+        this._reqKind = null;
+        this.setStatus(
+          frame.ok ? (frame.message || 'Saved.')
+                   : (frame.message || "That didn’t work — try again."),
+          frame.ok ? 'ok' : 'error',
+        );
+        if (frame.ok && wasPut) this.clearForm();
+      },
+
+      setStatus(msg, kind) {
+        const el = DOM.vaultStatusLine;
+        if (!el) return;
+        el.textContent = msg || '';   // textContent only — server-controlled string
+        el.hidden = !msg;
+        el.style.color = kind === 'error' ? '#f87171'
+          : kind === 'ok' ? '#4ade80'
+          : '#94a3b8';
+      },
+
+      /** The ONE place the credential value lives is this input — wipe it.
+       *  Called on send, settings close, socket close, capability loss. */
+      wipeValue() {
+        if (DOM.vaultValueInput) DOM.vaultValueInput.value = '';
+      },
+
+      /** Full form reset after a confirmed save. */
+      clearForm() {
+        if (DOM.vaultNameInput) DOM.vaultNameInput.value = '';
+        if (DOM.vaultVarInput) DOM.vaultVarInput.value = '';
+        if (DOM.vaultLabelInput) DOM.vaultLabelInput.value = '';
+        if (DOM.vaultDescInput) DOM.vaultDescInput.value = '';
+        this.wipeValue();   // defensive — already wiped on send
+        if (this._varOverride) this.toggleVarOverride();
+        this.updateKindUI();
+      },
+
+      /** Reveal/hide the advanced env-var override input. */
+      toggleVarOverride() {
+        this._varOverride = !this._varOverride;
+        if (DOM.vaultVarInput) {
+          DOM.vaultVarInput.hidden = !this._varOverride;
+          if (this._varOverride) {
+            if (!DOM.vaultVarInput.value) {
+              DOM.vaultVarInput.value = this.deriveVarName(DOM.vaultNameInput && DOM.vaultNameInput.value);
+            }
+            try { DOM.vaultVarInput.focus(); } catch (_) { /* non-fatal in jsdom */ }
+          }
+        }
+        if (DOM.vaultVarEdit) DOM.vaultVarEdit.textContent = this._varOverride ? 'auto' : 'change';
+        this.updateVarPreview();
+      },
+
+      updateVarPreview() {
+        if (!DOM.vaultVarPreview) return;
+        DOM.vaultVarPreview.textContent = this.effectiveVarName() || 'ENV_VAR_NAME';
+      },
+
+      /** Kind choice drives which extra field shows: derived-var preview for
+       *  env-secret, account label + restart warning for op-token. */
+      updateKindUI() {
+        const kind = (DOM.vaultKindSelect && DOM.vaultKindSelect.value) || 'env-secret';
+        const isOp = kind === 'op-token';
+        if (DOM.vaultVarRow) DOM.vaultVarRow.hidden = isOp;
+        if (DOM.vaultLabelInput) DOM.vaultLabelInput.hidden = !isOp;
+        if (DOM.vaultRestartNote) DOM.vaultRestartNote.hidden = !isOp;
+        if (DOM.vaultValueInput) {
+          DOM.vaultValueInput.placeholder = isOp
+            ? 'ops_… service-account token'
+            : 'Paste the secret value';
+        }
+        this.updateVarPreview();
+      },
+
+      /** Rebuild the list rows from State.vaultItems — createElement +
+       *  textContent only (server-controlled strings; defence-in-depth). */
+      render() {
+        if (!DOM.vaultList) return;
+        const rows = State.vaultItems.map((item) => {
+          const row = document.createElement('div');
+          row.className = 'vault-row' + (item.shadowed ? ' shadowed' : '');
+
+          const blot = document.createElement('div');
+          blot.className = 'skill-blot';
+
+          const info = document.createElement('div');
+          info.className = 'vault-row-info';
+          const nameLine = document.createElement('span');
+          nameLine.className = 'vault-row-name';
+          nameLine.textContent = String(item.name ?? '');   // defensive: never render 'undefined'
+          const kindBadge = document.createElement('span');
+          kindBadge.className = 'skill-row-badge';
+          const kindStr = String(item.kind ?? '');
+          kindBadge.textContent = this.KIND_BADGE[kindStr] || kindStr;
+          nameLine.appendChild(kindBadge);
+          if (item.synced) {
+            const chip = document.createElement('span');
+            chip.className = 'vault-chip synced';
+            chip.textContent = '1P';
+            chip.title = 'Synced with 1Password';
+            nameLine.appendChild(chip);
+          }
+          if (item.shadowed) {
+            const warn = document.createElement('span');
+            warn.className = 'vault-chip shadowed';
+            warn.textContent = '⚠ shadowed';
+            warn.title = "Defined by the server's environment — edits here won't take effect";
+            nameLine.appendChild(warn);
+          }
+          const sub = document.createElement('span');
+          sub.className = 'vault-row-sub';
+          const ref = document.createElement('code');
+          ref.className = 'vault-ref';
+          ref.textContent = String(item.ref ?? '');   // opaque pointer, never a value; never 'undefined'
+          sub.appendChild(ref);
+          const src = document.createElement('span');
+          src.className = 'vault-source';
+          const srcStr = String(item.source ?? '');
+          src.textContent = this.SOURCE_LABEL[srcStr] || srcStr;
+          sub.appendChild(src);
+          info.appendChild(nameLine);
+          info.appendChild(sub);
+          if (item.description) {
+            const desc = document.createElement('span');
+            desc.className = 'skill-row-desc';
+            desc.textContent = String(item.description ?? '');   // defensive coercion
+            info.appendChild(desc);
+          }
+
+          const actions = document.createElement('div');
+          actions.className = 'connector-actions';
+          if (this._confirmId === item.id) {
+            const ask = document.createElement('span');
+            ask.className = 'vault-confirm-note';
+            ask.textContent = item.kind === 'op-token'
+              ? 'Remove? The server restarts.'
+              : 'Remove this credential?';
+            const yes = document.createElement('button');
+            yes.type = 'button';
+            yes.className = 'connector-btn danger';
+            yes.textContent = 'Delete';
+            yes.addEventListener('click', () => this.requestDelete(item.id));
+            const no = document.createElement('button');
+            no.type = 'button';
+            no.className = 'connector-btn';
+            no.textContent = 'Keep';
+            no.addEventListener('click', () => this.cancelDelete());
+            actions.appendChild(ask);
+            actions.appendChild(yes);
+            actions.appendChild(no);
+          } else {
+            const del = document.createElement('button');
+            del.type = 'button';
+            del.className = 'connector-btn danger';
+            del.textContent = 'Delete';
+            del.addEventListener('click', () => this.requestDelete(item.id));
+            actions.appendChild(del);
+          }
+
+          row.appendChild(blot);
+          row.appendChild(info);
+          row.appendChild(actions);
+          return row;
+        });
+        if (rows.length === 0) {
+          const empty = document.createElement('span');
+          empty.className = 'setting-desc';
+          empty.textContent = 'Nothing stored yet — add your first key below.';
+          DOM.vaultList.replaceChildren(empty);
+        } else {
+          DOM.vaultList.replaceChildren(...rows);
+        }
+      },
+
+      /** Idempotent rebuild of the 1Password sync sub-section from State.vaultSync.
+       *  Called by applyList() (idempotent — re-delivering the same sync state is
+       *  a no-op from the user's perspective). Does NOT touch the add form.
+       *
+       *  State.vaultSync shape:
+       *    { enabled, opLabel, opVault, pollSeconds?, lastSyncedAt?, lastError? }
+       *
+       *  Derive the op-label placeholder from existing op-token items in the
+       *  registry so the user sees a helpful default without us storing a value. */
+      renderSync() {
+        if (!DOM.vaultSyncSection) return;
+
+        const sync = State.vaultSync || null;
+
+        // ── 1. Status line: "Sync: on / off"  + relative last-synced time ──────
+        if (DOM.vaultSyncState) {
+          let stateText = sync && sync.enabled ? 'Sync: on' : 'Sync: off';
+          if (sync && sync.lastSyncedAt) {
+            const diffMs = Date.now() - sync.lastSyncedAt;
+            const diffSec = Math.floor(diffMs / 1000);
+            let rel;
+            if (diffSec < 60) rel = diffSec + 's ago';
+            else if (diffSec < 3600) rel = Math.floor(diffSec / 60) + 'm ago';
+            else if (diffSec < 86400) rel = Math.floor(diffSec / 3600) + 'h ago';
+            else rel = Math.floor(diffSec / 86400) + 'd ago';
+            stateText += ' · ' + rel;
+          }
+          DOM.vaultSyncState.textContent = stateText;   // textContent — never innerHTML
+        }
+
+        // ── 2. Last error (warn color, textContent only) ──────────────────────
+        if (DOM.vaultSyncError) {
+          const err = (sync && sync.lastError) ? String(sync.lastError) : '';
+          DOM.vaultSyncError.textContent = err;   // textContent — server-controlled string
+          DOM.vaultSyncError.hidden = !err;
+        }
+
+        // ── 3. Expand/collapse the editable fields row (always visible for
+        //       discoverability; sync section is shown whenever vault capability
+        //       is present). ─────────────────────────────────────────────────
+        if (DOM.vaultSyncFields) DOM.vaultSyncFields.hidden = false;
+
+        // ── 4. Populate editable controls from server state.
+        //       Text inputs: fill-if-empty guard (never overwrite mid-edit).
+        //       Checkbox: only apply server state when the user has not toggled
+        //       it since the last successful save (_syncCheckboxDirty flag).
+        //       The dirty flag is set on user 'change' and cleared on a
+        //       successful sync-save ack (handleStatus) or capability loss. ──
+        if (DOM.vaultSyncEnabled && !this._syncCheckboxDirty) {
+          DOM.vaultSyncEnabled.checked = !!(sync && sync.enabled);
+        }
+        if (DOM.vaultSyncOpLabel) {
+          // Derive a placeholder from existing op-token items in the registry;
+          // use the first one found (most users have exactly one).
+          const opTokenItem = Array.isArray(State.vaultItems)
+            ? State.vaultItems.find((i) => i && i.kind === 'op-token')
+            : null;
+          const derivedLabel = opTokenItem
+            ? (String(opTokenItem.ref || '').replace(/^luna-op:\/\//, '').split('/')[0] || 'primary')
+            : 'primary';
+          DOM.vaultSyncOpLabel.placeholder = derivedLabel;
+          if (!DOM.vaultSyncOpLabel.value && sync && sync.opLabel) {
+            DOM.vaultSyncOpLabel.value = String(sync.opLabel);
+          }
+        }
+        if (DOM.vaultSyncOpVault) {
+          if (!DOM.vaultSyncOpVault.value && sync && sync.opVault) {
+            DOM.vaultSyncOpVault.value = String(sync.opVault);
+          }
+        }
+        if (DOM.vaultSyncPoll) {
+          if (!DOM.vaultSyncPoll.value || DOM.vaultSyncPoll.value === '300') {
+            const ps = sync && sync.pollSeconds ? Number(sync.pollSeconds) : 300;
+            DOM.vaultSyncPoll.value = String(Math.max(60, ps));
+          }
+        }
+
+        // ── 5. When sync is enabled show the Apple Passwords import nudge ────
+        if (DOM.vaultSyncImportNote) {
+          DOM.vaultSyncImportNote.hidden = !(sync && sync.enabled);
+        }
+      },
+
+      /** Send vault-sync-config with the OPEN-socket guard.
+       *  Does NOT touch the add form at all. */
+      submitSyncConfig() {
+        if (!State.serverSupportsVault) {
+          this.setSyncStatus("This server doesn't support the Vault.", 'error');
+          return;
+        }
+        if (!(State.ws && State.ws.readyState === WebSocket.OPEN)) {
+          this.setSyncStatus('Not connected to a server.', 'error');
+          return;
+        }
+        const enabled = !!(DOM.vaultSyncEnabled && DOM.vaultSyncEnabled.checked);
+        const opLabel = ((DOM.vaultSyncOpLabel && DOM.vaultSyncOpLabel.value) || '').trim();
+        const opVault = ((DOM.vaultSyncOpVault && DOM.vaultSyncOpVault.value) || '').trim() || 'Luna';
+        const pollRaw = parseInt(
+          (DOM.vaultSyncPoll && DOM.vaultSyncPoll.value) || '300', 10,
+        );
+        const pollSeconds = isNaN(pollRaw) ? 300 : Math.max(60, pollRaw);
+
+        const reqId = 'vlt_' + ((window.crypto && crypto.randomUUID)
+          ? crypto.randomUUID().replace(/-/g, '')
+          : Math.random().toString(36).slice(2));
+        // Use the dedicated sync slot — keeps add-form and sync acks independent.
+        this._syncReqId = reqId;
+
+        // OPEN-socket guard already confirmed above — safe to send (no value in frame).
+        const frame = {
+          type: 'vault-sync-config',
+          requestId: reqId,
+          enabled,
+          opLabel,
+          opVault,
+          pollSeconds,
+        };
+        WebSocketEngine.send(frame);
+        this.setSyncStatus('Saving sync settings…', 'info');
+      },
+
+      /** Sync-section status line (separate from add-form status line). */
+      setSyncStatus(msg, kind) {
+        const el = DOM.vaultSyncStatus;
+        if (!el) return;
+        el.textContent = msg || '';   // textContent — server-controlled string
+        el.hidden = !msg;
+        el.style.color = kind === 'error' ? '#f87171'
+          : kind === 'ok' ? '#4ade80'
+          : '#94a3b8';
+      },
+    };
+
     // ── ArtifactsEngine — the Artifacts overlay panel (PRD Part C W1) ────────
     //
     // Handles server-pushed artifact frames and lets the operator pin/unpin
@@ -5821,6 +6489,28 @@
           // "saved" message (server restarts → socket closes → auto-reconnect)
           // isn't killed early.
           if (DOM.secretPromptInput) DOM.secretPromptInput.value = '';
+          // Same discipline for the Vault add-form value (an op-token save
+          // restarts the server → this close fires mid-flow by design).
+          VaultEngine.wipeValue();
+          // Clear any stale in-flight Vault request. The ack will never arrive
+          // on this session, so stale _reqId/_syncReqId would block future submits
+          // from correlating. For env-secret puts and deletes also replace the
+          // status text with an actionable message. Op-token saves deliberately
+          // restart the server so their 'Verifying…' status should stay.
+          if (VaultEngine._reqId) {
+            const lostKind = VaultEngine._reqKind;
+            VaultEngine._reqId = null;
+            VaultEngine._reqKind = null;
+            if (lostKind && lostKind !== 'put-op-token') {
+              VaultEngine.setStatus('Connection lost — check the list after reconnecting.', 'error');
+            }
+          }
+          // Sync save slot: a dropped sync ack leaves the sync status stuck at
+          // 'Saving sync settings…' — replace it with an actionable error.
+          if (VaultEngine._syncReqId) {
+            VaultEngine._syncReqId = null;
+            VaultEngine.setSyncStatus('Connection lost — check sync state after reconnecting.', 'error');
+          }
           if (State.activeTurnId) {                        // only decorate an actually in-flight turn
             State.activeTurnId = null;
             const last = DOM.chatMessages.lastElementChild;
@@ -6248,6 +6938,11 @@
             State.serverSupportsWorkflows =
               !!(frame.capabilities && frame.capabilities.workflows);
             WorkflowsEngine.applyCapability(State.serverSupportsWorkflows);
+            // Luna Vault (V1): additive gating for the Vault UI inside the
+            // (renamed) Secrets tab. Absent/false (old server) → the legacy
+            // op-token-only form renders, byte-identical to pre-vault.
+            VaultEngine.applyCapability(
+              !!(frame.capabilities && frame.capabilities.vault));
             break;
 
           case 'skill-catalog':
@@ -6470,6 +7165,18 @@
           case 'secret-status':
             // Server ack for a submitted secret. Never carries the secret.
             SecretPromptEngine.handleStatus(frame);
+            break;
+
+          case 'vault-list':
+            // The credential registry (metadata + pointers ONLY — never
+            // values). Arrives after hello and is broadcast after every
+            // successful mutation; the rebuild is idempotent.
+            VaultEngine.applyList(frame);
+            break;
+
+          case 'vault-status':
+            // Ack for a vault-put / vault-delete. Never carries the value.
+            VaultEngine.handleStatus(frame);
             break;
         }
       }
@@ -6819,6 +7526,7 @@
       window.__MoonInternals.SurveyEngine = SurveyEngine;
       window.__MoonInternals.SkillsEngine = SkillsEngine;
       window.__MoonInternals.ConnectorsEngine = ConnectorsEngine;
+      window.__MoonInternals.VaultEngine = VaultEngine;
       window.__MoonInternals.ArtifactsEngine = ArtifactsEngine;
       window.__MoonInternals.WorkflowsEngine = WorkflowsEngine;
       window.__MoonInternals.SecretPromptEngine = SecretPromptEngine;
@@ -8502,11 +9210,9 @@
           setTimeout(() => TauriService.setWindowSize(140, 185), 220);
         }
 
-        // Never retain the OP token in the DOM after the panel closes.
-        if (DOM.opTokenInput) DOM.opTokenInput.value = '';
+        // Wipe every typed-but-unsent secret across all input surfaces.
+        wipeSecretInputs();
         this.setOpStatus('', null);
-        // Defensive: never retain a secret-entry value in the DOM either.
-        if (DOM.secretPromptInput) DOM.secretPromptInput.value = '';
 
         // Save the WS configuration changes and reconnect if they changed!
         const newUrl = DOM.wsUrlInput.value.trim() || 'ws://127.0.0.1:4753/ui';
@@ -9282,6 +9988,24 @@
     };
 
     /**
+     * Wipe every secret input that could survive a settings-panel hide —
+     * the op-token input, the secret-prompt input, the Vault value field,
+     * and any dynamically-created password inputs in the Connectors list
+     * (e.g. the GCP client-secret entry form rendered by ConnectorsEngine).
+     * Called from both the normal SettingsEngine.close() path AND the
+     * chat-collapse path (which hides the panel without running close()).
+     * Does NOT run reconnect / window-shrink logic — that stays in close().
+     */
+    function wipeSecretInputs() {
+      if (DOM.opTokenInput) DOM.opTokenInput.value = '';
+      if (DOM.secretPromptInput) DOM.secretPromptInput.value = '';
+      VaultEngine.wipeValue();
+      if (DOM.connectorsList) {
+        DOM.connectorsList.querySelectorAll('input[type="password"]').forEach((i) => { i.value = ""; });
+      }
+    }
+
+    /**
      * UI Parallax & Window state transitions.
      */
     const UIController = {
@@ -9295,6 +10019,10 @@
           // popover can't get clipped inside the minimized window.
           LocalShell.openMenu(false);
           DOM.settingsPanel.classList.remove('active');
+          // Wipe any typed-but-unsent secret. We call the helper directly here
+          // rather than SettingsEngine.close() to avoid the reconnect / window-
+          // shrink side-effects that close() triggers.
+          wipeSecretInputs();
           Logger.info("Initiated chat collapse transition");
           setTimeout(() => {
             // If a disconnect happened while the chat was open, the string drop
@@ -9993,6 +10721,32 @@
     }
     if (DOM.saveOpTokenBtn) {
       DOM.saveOpTokenBtn.addEventListener('click', () => SettingsEngine.submitOpToken());
+    }
+    // Luna Vault: add-form wiring (list rows wire their own listeners in render()).
+    if (DOM.vaultAddBtn) {
+      DOM.vaultAddBtn.addEventListener('click', () => VaultEngine.submitAdd());
+    }
+    if (DOM.vaultKindSelect) {
+      DOM.vaultKindSelect.addEventListener('change', () => VaultEngine.updateKindUI());
+    }
+    if (DOM.vaultNameInput) {
+      DOM.vaultNameInput.addEventListener('input', () => VaultEngine.updateVarPreview());
+    }
+    if (DOM.vaultVarInput) {
+      DOM.vaultVarInput.addEventListener('input', () => VaultEngine.updateVarPreview());
+    }
+    if (DOM.vaultVarEdit) {
+      DOM.vaultVarEdit.addEventListener('click', () => VaultEngine.toggleVarOverride());
+    }
+    if (DOM.vaultSyncSaveBtn) {
+      DOM.vaultSyncSaveBtn.addEventListener('click', () => VaultEngine.submitSyncConfig());
+    }
+    if (DOM.vaultSyncEnabled) {
+      // Mark the checkbox dirty whenever the user toggles it manually so that
+      // a concurrent vault-list broadcast does not clobber their intent.
+      DOM.vaultSyncEnabled.addEventListener('change', () => {
+        VaultEngine._syncCheckboxDirty = true;
+      });
     }
     // PRD Part B: Skills tab search (chips + rows wire their own listeners in render()).
     if (DOM.skillsSearchInput) {

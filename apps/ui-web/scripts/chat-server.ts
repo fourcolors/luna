@@ -114,6 +114,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
   writeSync,
 } from "node:fs"
@@ -129,6 +130,13 @@ import {
 // Load Luna's runtime .env before anything else so CLAUDE_CONFIG_DIR (and any
 // other Luna env vars) are in process.env when the SDK initialises. LUNA_HOME
 // makes the runtime portable; the default remains ~/.luna.
+//
+// `bootShadowedEnvKeys` records .env keys that were ALREADY set in process.env
+// (supervisor/unit-defined) — those definitions win over ~/.luna/.env, so a
+// Vault edit to the file is silently ineffective for them. The Vault list
+// surfaces this as a `shadowed` badge instead of showing a value that isn't
+// the effective one.
+const bootShadowedEnvKeys = new Set<string>()
 {
   const lunaEnv = resolveRuntimePaths().envFilePath
   if (existsSync(lunaEnv)) {
@@ -140,6 +148,7 @@ import {
       const key = trimmed.slice(0, eq).trim()
       const value = trimmed.slice(eq + 1).trim()
       if (key && !(key in process.env)) process.env[key] = value
+      else if (key) bootShadowedEnvKeys.add(key)
     }
   }
   applyRuntimePathEnvDefaults(resolveRuntimePaths())
@@ -264,6 +273,16 @@ import {
   ConnectorServiceLayer,
 } from "@luna/connectors"
 import { makeOAuthClient } from "@luna/oauth"
+import {
+  VaultStore,
+  makeVaultMutations,
+  makeVaultOpSync,
+  reconcileVaultItems,
+  shouldAttemptSync,
+  toWireVaultItem,
+  type VaultItem,
+  type VaultSyncConfig,
+} from "@luna/vault"
 import { startControlServer } from "@luna/control-server"
 import {
   resolveOpAccounts,
@@ -422,6 +441,12 @@ const sandboxReattachers = new Map<string, () => void>()
 // different layer scopes of this same boot script. Null until a WS server
 // registers; the fiber null-guards every call.
 let notifySkillCatalogChanged: (() => void) | null = null
+
+// Luna Vault V3: same late-binding bridge for out-of-band vault-list
+// broadcasts — the 1Password sync poll loop (buildServerLayer) calls it after
+// a pass that changed registry rows, and ui-ws re-broadcasts the (wire-safe)
+// list to every client. Null until a WS server registers.
+let notifyVaultListChanged: (() => void) | null = null
 const reattachSandbox = (threadId: string): void => {
   const reattach = sandboxReattachers.get(threadId)
   if (reattach !== undefined) reattach()
@@ -834,6 +859,134 @@ const persistOpToken = (label: string, token: string): Promise<void> =>
     }
   })
 
+/**
+ * Delete a stored op token (Vault remove). Mirrors `persistOpToken`'s platform
+ * split: darwin keychain entry, linux/other the 0600 runtime file. Idempotent —
+ * a missing entry/file is success (`security` exits 44 for item-not-found;
+ * unlink swallows ENOENT). NOTE: a token defined via `LUNA_OP_TOKEN_<LABEL>`
+ * cannot be deleted here (the supervisor owns that env) — discovery re-finds it
+ * after restart and the Vault reconciler re-adopts the row, which is honest.
+ */
+const deleteOpToken = (label: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    if (process.platform === "darwin") {
+      const child = spawn(
+        "security",
+        ["delete-generic-password", "-s", `luna.op.${label}`, "-a", label],
+        { stdio: ["ignore", "ignore", "ignore"] },
+      )
+      child.on("error", reject)
+      child.on("close", (code) =>
+        code === 0 || code === 44
+          ? resolve()
+          : reject(new Error(`security delete-generic-password exited ${code}`)),
+      )
+      return
+    }
+    try {
+      unlinkSync(tokenFilePathFor(label))
+      resolve()
+    } catch (e) {
+      const err = e as NodeJS.ErrnoException
+      if (err.code === "ENOENT") resolve()
+      else reject(err instanceof Error ? err : new Error(String(err)))
+    }
+  })
+
+/**
+ * Real `op` runner for makeVaultOpSync (Vault V3 — 1Password sync). Mirrors
+ * opWhoami's spawn style: the service-account token rides ONLY in the child
+ * env (`input.env` merged over process.env), outbound item values ride ONLY
+ * on stdin (the `op item create -` JSON template). NOTHING here is logged —
+ * stdin/stdout/stderr can all carry secrets; op-sync sanitizes before any
+ * string escapes (lastError = operation + exit code only).
+ */
+const runOpForVaultSync = (input: {
+  readonly args: ReadonlyArray<string>
+  readonly env?: Readonly<Record<string, string>>
+  readonly stdin?: string
+}): Promise<{ code: number; stdout: string; stderr: string }> =>
+  new Promise((resolve, reject) => {
+    let settled = false
+    const done = (r: { code: number; stdout: string; stderr: string }): void => {
+      if (!settled) {
+        settled = true
+        clearTimeout(killTimer)
+        resolve(r)
+      }
+    }
+    const fail = (err: Error): void => {
+      if (!settled) {
+        settled = true
+        clearTimeout(killTimer)
+        reject(err)
+      }
+    }
+    let stdout = ""
+    let stderr = ""
+    // B3: 60s hard kill-timer — a hung `op` invocation must not wedge the sync
+    // loop forever. On timeout we SIGKILL the child and resolve {code:-1} so
+    // the engine's exit-code check sanitizes the result to a non-throws failure.
+    // First-settle-wins: close/error handlers call done/fail first if the child
+    // exits before the timer fires.
+    // eslint-disable-next-line prefer-const
+    let killTimer: ReturnType<typeof setTimeout>
+    try {
+      const child = spawn("op", [...input.args], {
+        env: { ...process.env, ...(input.env ?? {}) },
+        stdio: [input.stdin !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
+      })
+      killTimer = setTimeout(() => {
+        try { child.kill("SIGKILL") } catch { /* already exited */ }
+        done({ code: -1, stdout: "", stderr: "" })
+      }, 60_000)
+      killTimer.unref()
+      child.stdout?.on("data", (d: Buffer) => {
+        stdout += d.toString("utf8")
+      })
+      child.stderr?.on("data", (d: Buffer) => {
+        stderr += d.toString("utf8")
+      })
+      // Reject on spawn errors (e.g. ENOENT when `op` is not installed).
+      // The engine's catch branch sanitizes to "op item list failed (spawn error)",
+      // so no raw error message or path reaches lastError.
+      child.on("error", (err: Error) => fail(err))
+      child.on("close", (code) => done({ code: code ?? -1, stdout, stderr }))
+      if (input.stdin !== undefined && child.stdin !== null) {
+        child.stdin.on("error", () => undefined) // EPIPE on a fast exit must not crash
+        child.stdin.write(input.stdin)
+        child.stdin.end()
+      }
+    } catch (e) {
+      fail(e instanceof Error ? e : new Error(String(e)))
+    }
+  })
+
+/**
+ * Var NAMES currently present in ~/.luna/.env — for the Vault reconciler
+ * (adopting pre-Vault secrets into the registry). Names only; values are
+ * never read into the result.
+ */
+const readEnvFileVarNames = (): ReadonlyArray<string> => {
+  const envPath = resolveRuntimePaths().envFilePath
+  let lines: ReadonlyArray<string>
+  try {
+    lines = readFileSync(envPath, "utf8").split("\n")
+  } catch {
+    return []
+  }
+  const names: string[] = []
+  for (const line of lines) {
+    const t = line.trim()
+    if (t === "" || t.startsWith("#")) continue
+    const eq = t.indexOf("=")
+    if (eq === -1) continue
+    const key = t.slice(0, eq).trim()
+    if (key) names.push(key)
+  }
+  return names
+}
+
 const CHAT_SERVICE_LABEL = "com.user.luna-chat-server"
 
 /**
@@ -1001,9 +1154,34 @@ const registerSecret = makeRegisterSecret({
   log: (msg) => writeSync(1, `${msg}\n`),
 })
 
+// Vault registry hook — assigned inside buildServerLayer once the VaultStore
+// resolves (same late-binding pattern as `notifySkillCatalogChanged`). Both
+// secret WRITE paths that bypass the Vault UI (the agent's request_secret and
+// the Settings register-op-token form) call it after a successful store so
+// every captured credential appears in the Vault registry. Fire-and-forget:
+// a hook failure must never fail the store that already succeeded.
+//
+// V3 outbound sync: the hook ALSO receives the captured VALUE so env-secret
+// captures can be pushed to 1Password when sync is enabled (op-token captures
+// never push). The value stays inside the hook's closure — it is never
+// logged, never stored in the registry, and only ever handed to
+// opSync.createItem (which moves it to `op` via a stdin JSON template).
+let vaultCaptureHook:
+  | ((destination: SecretDestination, source: "agent" | "manual", value: string) => void)
+  | null = null
+
 const secretRequestBridge = createSecretRequestBridge({
-  persistSecret: (destination, secret) =>
-    registerSecret(destination as SecretDestination, secret),
+  persistSecret: async (destination, secret) => {
+    const result = await registerSecret(destination as SecretDestination, secret)
+    if (result.ok) {
+      try {
+        vaultCaptureHook?.(destination as SecretDestination, "agent", secret)
+      } catch {
+        // Registry bookkeeping must never fail a store that succeeded.
+      }
+    }
+    return result
+  },
   // Activation = the same supervised restart the Settings path uses, so token
   // discovery + account-broker hydration re-run with the stored secret. Fired
   // by the bridge at turn-complete (or its long fallback), never mid-turn.
@@ -1423,6 +1601,13 @@ export const buildBaseLayer = (
   const artifactStoreL = ArtifactStore.makeLayer(paths.lunaDbPath).pipe(
     Layer.provide(clockL),
   )
+  // Vault V1: credential REGISTRY (vault_items + vault_sync_config in luna.db).
+  // Pointers/metadata only — values stay in the existing backends (~/.luna/.env,
+  // keychain luna.op.*, op-token files). Resolved by buildServerLayer for the
+  // ui-ws vault frames; LunaSqliteBootstrap bubbles up like every store here.
+  const vaultStoreL = VaultStore.makeLayer(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
   const connectorServiceL = ConnectorServiceLayer({
     definitions: BUILTIN_CONNECTORS,
     // PRD A §09: the OAuth half. storeSecret persists the refresh token
@@ -1638,6 +1823,7 @@ export const buildBaseLayer = (
     skillRegistryL, // PRD Part B: same instance as threadToolsL (memoized by reference) — buildServerLayer resolves it for the WS skill frames
     connectorServiceL, // PRD Part A: same instance as threadToolsL — M2's WS connector frames resolve it here
     artifactStoreL, // PRD Part C/W1: buildServerLayer resolves it for the WS artifact frames
+    vaultStoreL, // Vault V1: buildServerLayer resolves it for the WS vault frames
   )
 }
 
@@ -1755,6 +1941,9 @@ export const buildSetupServerLayer = (
         connectorService: null,
         artifactStore: null,
         workflowGallery: null,
+        // No vault in setup-mode: the registry layer isn't built here, and a
+        // fresh server has nothing to list until real boot.
+        vaultService: null,
         localShellBridge: null,
         // No chat in setup-mode → the request_secret tool is never bound, so the
         // secret bridge has nothing to drive. Disabled here.
@@ -1869,6 +2058,327 @@ const buildServerLayer = (
           readonly clientId: string
           readonly clientSecret?: string
         }) => connectorServiceHandle.setClientCredentials(input),
+      }
+
+      // ── Vault V1 ─────────────────────────────────────────────────────
+      // Registry over the EXISTING secret backends. The store holds pointers
+      // (name/kind/ref/source) — values stay in ~/.luna/.env, the keychain,
+      // and op-token files, written/removed by the same primitives the
+      // request_secret + register-op-token paths already use.
+      const vaultStoreService = yield* VaultStore
+
+      // makeVaultMutations is plain-async (unit-tested in @luna/vault, like
+      // makeRegisterSecret) — adapt the Effect store to its Promise facade.
+      // The resolved handle's effects carry no remaining requirements.
+      const vaultStoreFacade = {
+        list: () => Effect.runPromise(vaultStoreService.list()),
+        upsertByName: (item: VaultItem) =>
+          Effect.runPromise(vaultStoreService.upsertByName(item)),
+        getById: (id: string) => Effect.runPromise(vaultStoreService.getById(id)),
+        remove: (id: string) => Effect.runPromise(vaultStoreService.remove(id)),
+      }
+
+      // V3 sync facade: the op-sync engine needs the sync-config row too.
+      const vaultSyncStoreFacade = {
+        ...vaultStoreFacade,
+        getSyncConfig: () => Effect.runPromise(vaultStoreService.getSyncConfig()),
+        setSyncConfig: (cfg: VaultSyncConfig) =>
+          Effect.runPromise(vaultStoreService.setSyncConfig(cfg)),
+      }
+
+      const vaultMutations = makeVaultMutations({
+        registerSecret,
+        removeEnvSecret,
+        deleteOpToken,
+        store: vaultStoreFacade,
+        now: () => Date.now(),
+        log: (msg) => writeSync(1, `${msg}\n`),
+      })
+
+      // Boot-discovered op tokens, shared by the reconciler below and the
+      // V3 sync engine's tokenForLabel. The map living until restart is
+      // correct: every op-token change schedules a supervised restart, so
+      // discovery re-runs with the fresh token.
+      const discoveredOpTokens = yield* discoverOpTokens
+      const opTokenByLabel = new Map(discoveredOpTokens.map((t) => [t.label, t.token]))
+
+      // Boot reconcile: adopt pre-Vault secrets (env var NAMES from
+      // ~/.luna/.env, op-token labels with a discoverable token) into the
+      // registry so the Vault shows the truth on first run. Best-effort —
+      // an adoption failure must never block server start.
+      yield* Effect.gen(function* () {
+        const existing = yield* vaultStoreService.list()
+        const { toAdopt } = reconcileVaultItems({
+          envVarNames: readEnvFileVarNames(),
+          opTokenLabels: discoveredOpTokens.map((t) => t.label),
+          existing,
+          now: Date.now(),
+        })
+        for (const item of toAdopt) {
+          yield* vaultStoreService.upsertByName(item)
+        }
+        if (toAdopt.length > 0) {
+          console.log(`[luna/vault] adopted ${toAdopt.length} pre-existing credential(s) into the registry`)
+        }
+      }).pipe(
+        Effect.catchAllCause((cause) =>
+          Effect.sync(() =>
+            console.warn("[luna/vault] boot reconcile failed:", String(cause)),
+          ),
+        ),
+      )
+
+      // ── Vault V3: 1Password two-way sync engine ──────────────────────
+      // All decision logic lives unit-tested in @luna/vault's makeVaultOpSync;
+      // here we inject the real spawn runner + the boot-discovered token map.
+      // Token → child env only; values → stdin template only; lastError is
+      // sanitized to operation + exit code inside the engine.
+      const opSync = makeVaultOpSync({
+        runOp: runOpForVaultSync,
+        tokenForLabel: (label) => opTokenByLabel.get(label),
+        store: vaultSyncStoreFacade,
+        now: () => Date.now(),
+        log: (msg) => writeSync(1, `${msg}\n`),
+      })
+
+      /**
+       * Outbound push of a freshly stored env-secret to 1Password (when sync
+       * is enabled). The VALUE lives only in this call chain — it goes to
+       * opSync.createItem (stdin template) and nowhere else. Failures degrade
+       * gracefully: the item stays local-only and a sanitized line is logged.
+       * Rows already pushed (opItemId set) are skipped — op item create would
+       * duplicate them (op item edit is a future slice).
+       */
+      const pushEnvSecretTo1P = async (varName: string, value: string): Promise<void> => {
+        const cfg = await vaultSyncStoreFacade.getSyncConfig()
+        if (cfg === null || !cfg.enabled) return
+        const ref = `env:${varName.trim()}`
+        const item = (await vaultStoreFacade.list()).find((i) => i.ref === ref)
+        if (item === undefined || item.opItemId !== null) return
+        const res = await opSync.createItem({
+          title: item.name,
+          value,
+          category: "API_CREDENTIAL",
+        })
+        if (res.ok && res.itemId !== undefined) {
+          await vaultStoreFacade.upsertByName({
+            ...item,
+            opItemId: res.itemId,
+            updatedAt: Date.now(),
+          })
+        } else {
+          // res.message is sanitized by the engine (op + exit code only).
+          writeSync(1, `[luna/vault] outbound 1Password push failed: ${res.message}\n`)
+        }
+      }
+
+      // Late-bind the capture hook (module scope, same pattern as
+      // notifySkillCatalogChanged): agent request_secret captures and the
+      // Settings register-op-token form now land in the registry too.
+      // Fire-and-forget — registry bookkeeping never fails a finished store.
+      // V3: env-secret captures (NOT op-tokens) also push outbound to
+      // 1Password when sync is enabled; the value stays in this closure.
+      vaultCaptureHook = (destination, source, value) => {
+        const args =
+          destination.kind === "op-token"
+            ? { kind: "op-token" as const, label: destination.label, source }
+            : { kind: "env-secret" as const, varName: destination.varName, source }
+        void vaultMutations
+          .recordCapture(args)
+          .then(async () => {
+            if (destination.kind !== "env-secret") return
+            await pushEnvSecretTo1P(destination.varName, value)
+            // Out-of-band registry change (no client request to ack) — let
+            // ui-ws broadcast the refreshed list/synced badges.
+            notifyVaultListChanged?.()
+          })
+          .catch(() => undefined)
+      }
+
+      // ── Vault V3: inbound poll loop ──────────────────────────────────
+      // Effect.forkScoped like the connector refreshMounts loop: a cheap 30s
+      // tick; an actual `op item list` runs only when the configured poll
+      // interval (floor 60s, default 300s ≈ 288 reads/day against the
+      // personal-plan ~1000/day budget) has elapsed since the last SUCCESSFUL
+      // sync — and, after failures, only when the exponential backoff window
+      // (doubling per consecutive failure, cap 1h) has elapsed since the last
+      // ATTEMPT. setSyncConfig (enable) resets both gates for an immediate
+      // first pass.
+      let vaultSyncConsecutiveFailures = 0
+      let vaultSyncLastAttemptAt = 0
+      yield* Effect.forkScoped(
+        Effect.forever(
+          Effect.sleep(30 * 1000).pipe(
+            Effect.zipRight(
+              Effect.promise(async () => {
+                const cfg = await vaultSyncStoreFacade.getSyncConfig()
+                if (cfg === null || !cfg.enabled) return
+                const nowMs = Date.now()
+                if (
+                  !shouldAttemptSync({
+                    nowMs,
+                    lastSyncedAt: cfg.lastSyncedAt ?? null,
+                    lastAttemptAt: vaultSyncLastAttemptAt === 0 ? null : vaultSyncLastAttemptAt,
+                    consecutiveFailures: vaultSyncConsecutiveFailures,
+                    pollSeconds: cfg.pollSeconds,
+                  })
+                ) return
+                vaultSyncLastAttemptAt = nowMs
+                const r = await opSync.syncOnce()
+                if (r.ok) {
+                  vaultSyncConsecutiveFailures = 0
+                  // Mutation-driven vault-list pushes come from ui-ws; a poll
+                  // pass has no requesting client, so nudge the broadcast hook.
+                  if (r.changed > 0) notifyVaultListChanged?.()
+                } else {
+                  vaultSyncConsecutiveFailures += 1
+                  // r.message is sanitized by the engine — safe to log.
+                  writeSync(
+                    1,
+                    `[luna/vault] sync failed (${vaultSyncConsecutiveFailures} consecutive): ${r.message}\n`,
+                  )
+                }
+              }).pipe(Effect.catchAllCause(() => Effect.void)),
+            ),
+          ),
+        ),
+      )
+
+      // Wire-safety projection: pointers + metadata only — `synced` and
+      // `shadowed` are derived flags, never values. (Refs ARE names — e.g.
+      // `env:NOTION_API_KEY` — disclosing them is the Vault's purpose.)
+      // toWireVaultItem is imported from @luna/vault (wire-projection.ts),
+      // bound to bootShadowedEnvKeys here so the list() closure stays simple.
+      const wireItem = (i: VaultItem) => toWireVaultItem(i, bootShadowedEnvKeys)
+
+      const vaultWsHandle = {
+        list: () =>
+          vaultStoreFacade.list().then((items) => items.map(wireItem)),
+        syncState: async () => {
+          const cfg = await Effect.runPromise(vaultStoreService.getSyncConfig())
+          return cfg === null
+            ? null
+            : {
+                enabled: cfg.enabled,
+                opLabel: cfg.opLabel,
+                opVault: cfg.opVault,
+                lastSyncedAt: cfg.lastSyncedAt,
+                lastError: cfg.lastError,
+                pollSeconds: Math.max(60, cfg.pollSeconds ?? 300),
+              }
+        },
+        put: async (f: {
+          readonly name: string
+          readonly kind: "env-secret" | "op-token"
+          readonly varName?: string
+          readonly label?: string
+          readonly value: string
+          readonly description?: string
+        }) => {
+          const r = await vaultMutations.put({
+            name: f.name,
+            kind: f.kind,
+            ...(f.varName !== undefined ? { varName: f.varName } : {}),
+            ...(f.label !== undefined ? { label: f.label } : {}),
+            value: f.value,
+            ...(f.description !== undefined ? { description: f.description } : {}),
+          })
+          // op-token activation needs token discovery + broker hydration to
+          // re-run — same immediate supervised restart as register-op-token
+          // (its 300ms delay lets the status/list frames flush first).
+          if (r.restartNeeded) scheduleServerRestart()
+          // V3 outbound: a freshly stored env-secret also lands in 1Password
+          // when sync is enabled. Awaited inline so the vault-list ui-ws
+          // pushes right after this carries the `synced` badge; a push
+          // failure degrades gracefully (item stays local, message unchanged).
+          if (r.ok && f.kind === "env-secret" && f.varName !== undefined) {
+            try {
+              await pushEnvSecretTo1P(f.varName, f.value)
+            } catch {
+              // Push problems must never fail a put that already succeeded.
+            }
+          }
+          return { ok: r.ok, message: r.message }
+        },
+        remove: async (f: { readonly id: string }) => {
+          const r = await vaultMutations.remove(f.id)
+          if (r.restartNeeded) scheduleServerRestart()
+          return { ok: r.ok, message: r.message }
+        },
+        setSyncConfig: async (f: {
+          readonly enabled: boolean
+          readonly opLabel?: string
+          readonly opVault?: string
+          readonly pollSeconds?: number
+        }) => {
+          // Enabling requires a registered label so "enabled" is never a lie
+          // the sync engine later trips over.
+          if (f.enabled) {
+            const label = (f.opLabel ?? "").trim()
+            if (label === "" || !OP_ACCOUNTS.some((a) => a.label === label)) {
+              return {
+                ok: false,
+                message: `"${label || "(none)"}" isn't a registered 1Password account label — add it to LUNA_OP_ACCOUNTS and store its token first.`,
+              }
+            }
+          }
+          const prev = await Effect.runPromise(vaultStoreService.getSyncConfig())
+          await Effect.runPromise(
+            vaultStoreService.setSyncConfig({
+              enabled: f.enabled,
+              opLabel: f.opLabel?.trim() || prev?.opLabel || "",
+              opVault: f.opVault?.trim() || prev?.opVault || "Luna",
+              pollSeconds: Math.max(60, f.pollSeconds ?? prev?.pollSeconds ?? 300),
+              // Enable nudge: a null lastSyncedAt (plus reset backoff gates)
+              // makes the next 30s poll tick sync immediately instead of
+              // waiting out a stale interval.
+              lastSyncedAt: f.enabled ? null : (prev?.lastSyncedAt ?? null),
+              lastError: f.enabled ? null : (prev?.lastError ?? null),
+            }),
+          )
+          if (f.enabled) {
+            vaultSyncConsecutiveFailures = 0
+            vaultSyncLastAttemptAt = 0
+          }
+          return {
+            ok: true,
+            message: f.enabled
+              ? "1Password sync enabled."
+              : "1Password sync disabled.",
+          }
+        },
+        importItems: async (f: {
+          readonly items: ReadonlyArray<{
+            readonly title: string
+            readonly url?: string
+            readonly username?: string
+            readonly password: string
+            readonly notes?: string
+          }>
+        }) => {
+          // Guard here too (the engine re-checks): with sync off, the honest
+          // failure message explains WHY import is unavailable.
+          const cfg = await vaultSyncStoreFacade.getSyncConfig()
+          if (cfg === null || !cfg.enabled) {
+            return {
+              ok: false,
+              message:
+                "Importing passwords requires 1Password sync, which isn't active yet on this server.",
+            }
+          }
+          const r = await opSync.importLogins(f.items)
+          // ui-ws pushes vault-list only on ok — a PARTIAL import (rows
+          // created, then a hard failure) still changed the registry, so
+          // nudge the out-of-band broadcast.
+          if (!r.ok && r.created > 0) notifyVaultListChanged?.()
+          return { ok: r.ok, message: r.message }
+        },
+        // Out-of-band registry changes (sync poll loop, capture-hook pushes)
+        // → ui-ws broadcasts a fresh vault-list to every connected client
+        // (same pattern as notifySkillCatalogChanged).
+        changes: (notify: () => void) => {
+          notifyVaultListChanged = notify
+        },
       }
 
       // PRD Part C/W1: the artifact store's PinnedArtifact is already wire-safe
@@ -2015,9 +2525,25 @@ const buildServerLayer = (
         connectorService: connectorsWsHandle, // PRD Part A: instances pre-projected
         artifactStore: artifactsWsHandle, // PRD Part C/W1: pinned artifacts (wire-safe)
         workflowGallery: workflowGalleryHandle, // PRD Part C/W3: read-only jobs gallery
+        vaultService: vaultWsHandle, // Vault V1: registry CRUD (values never cross down)
         localShellBridge,
         onLocalShellRelease: reattachSandbox,
-        registerOpToken: registerOpTokenHandler,
+        // Wrapped so a Settings-form token ALSO lands in the Vault registry
+        // (source 'manual'). The wrap never changes the handler's result.
+        registerOpToken: async (input) => {
+          const result = await registerOpTokenHandler(input)
+          if (result.ok) {
+            try {
+              // The hook receives the token for signature consistency, but
+              // op-token captures NEVER push to 1Password (only env-secret
+              // captures do) — it stays inside the hook's closure.
+              vaultCaptureHook?.({ kind: "op-token", label: input.label }, "manual", input.token)
+            } catch {
+              // Registry bookkeeping must never fail a store that succeeded.
+            }
+          }
+          return result
+        },
         secretBridge: secretRequestBridge,
       })
     }),

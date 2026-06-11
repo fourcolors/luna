@@ -35,10 +35,12 @@ import {
   ObsPanel,
   Sidebar,
   SkillsPanel,
+  VaultPanel,
   WorkflowGallery,
   createTransport,
   createUiStore,
   type SlashCommand,
+  type VaultStatusAck,
 } from "@luna/ui-shared-solid"
 import { SetupTerminal, b64ToBytes } from "./SetupTerminal"
 
@@ -141,6 +143,10 @@ export const App: Component = () => {
   )
   const [settingsOpen, setSettingsOpen] = createSignal(false)
   const [restarting, setRestarting] = createSignal(false)
+  // vault-status acks: not stored in the reducer (vault-list broadcast that
+  // follows a successful mutation already updates the list). We keep the
+  // last ack as a signal so VaultPanel can correlate its pending requestId.
+  const [vaultLastStatus, setVaultLastStatus] = createSignal<VaultStatusAck | null>(null)
 
   const store = createUiStore()
 
@@ -168,6 +174,14 @@ export const App: Component = () => {
         if (ptyWrite) ptyWrite(bytes)
         else ptyWriteQueue.push(bytes)
         return
+      }
+      // vault-status: intercepted BEFORE the reducer so VaultPanel can
+      // correlate by requestId. The reducer is a no-op for this frame type
+      // (the vault-list broadcast that follows a successful mutation is the
+      // authoritative list update). We still dispatch it so the exhaustive
+      // default arm in the reducer stays correct.
+      if (frame.type === "vault-status") {
+        setVaultLastStatus({ requestId: frame.requestId, ok: frame.ok, message: frame.message })
       }
       store.dispatch(frame)
       // Sidebar freshness: any frame that mutates a thread's last-message
@@ -313,6 +327,9 @@ export const App: Component = () => {
   )
   const setupMode = createMemo(
     () => isConnected() && store.state.capabilities.setup,
+  )
+  const vaultEnabled = createMemo(
+    () => store.state.capabilities.vault === true,
   )
   const selectedThread = createMemo(() =>
     store.state.selectedThreadId !== null
@@ -546,6 +563,25 @@ export const App: Component = () => {
                 onSetClient={(definitionId, clientId, clientSecret) =>
                   send({ type: "connector-set-client", requestId: `setclient_${Date.now()}`, definitionId, clientId, ...(clientSecret ? { clientSecret } : {}) })
                 }
+              />
+            </div>
+          </Show>
+          {/* Luna Vault (V1) — gated on the additive hello capability.
+              An older server never advertises `vault`, so the section simply
+              doesn't appear. Gate on the capability ONLY (not isConnected):
+              a transient disconnect dims actions via `disabled` without
+              unmounting the panel and losing the user's in-progress form. */}
+          <Show when={vaultEnabled()}>
+            <div class="row settings-row">
+              <VaultPanel
+                items={store.state.vaultItems}
+                sync={store.state.vaultSync}
+                disabled={!isConnected()}
+                lastStatus={vaultLastStatus()}
+                onPut={(params) => send({ type: "vault-put", ...params })}
+                onDelete={(params) => send({ type: "vault-delete", ...params })}
+                onSyncConfig={(params) => send({ type: "vault-sync-config", ...params })}
+                onImport={(params) => send({ type: "vault-import", ...params })}
               />
             </div>
           </Show>

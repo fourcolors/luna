@@ -114,6 +114,9 @@ export interface HelloFrame {
     /** PRD Part C (W3): server exposes the read-only workflow gallery over the
      *  jobs store (workflow-list + workflow-runs). OPTIONAL/additive. */
     readonly workflows?: boolean
+    /** Luna Vault (V1): server routes vault-put/delete/sync-config/import and
+     *  pushes vault-list after hello. OPTIONAL/additive. */
+    readonly vault?: boolean
   }
   /**
    * Models the operator can pick for new threads. OPTIONAL and additive —
@@ -449,6 +452,116 @@ export interface PtyResizeFrame {
   readonly rows: number
 }
 
+/* Luna Vault (V1) — credential registry frames (mirror packages/ui-ws/src/protocol.ts).
+ * The registry is METADATA + POINTERS ONLY — no frame carries secret values.
+ * `vault-list` and `vault-status` are explicitly wire-safe:
+ *   - `vault-list` items carry opaque `ref` pointers, never credential values.
+ *   - `vault-status` carries only a boolean outcome + short diagnostic text. */
+
+/**
+ * One vault registry row projected for the wire — METADATA + POINTER ONLY.
+ * `ref` is an opaque storage pointer (e.g. "env:OPENAI_API_KEY"); never a value.
+ * `shadowed` = a pre-existing .env value shadowed this entry at boot.
+ * `synced` = row confirmed in the configured 1Password vault.
+ */
+export interface VaultWireItem {
+  readonly id: string
+  readonly name: string
+  readonly kind: "env-secret" | "op-token" | "op-item"
+  /** Opaque back-pointer to storage location, never a secret value. */
+  readonly ref: string
+  readonly source: "manual" | "agent" | "1password" | "apple-import"
+  readonly description: string | null
+  readonly createdAt: number
+  readonly updatedAt: number
+  readonly synced: boolean
+  readonly shadowed: boolean
+}
+
+/** 1Password sync state + health (slice V3). */
+export interface VaultSyncWire {
+  readonly enabled: boolean
+  readonly opLabel: string | null
+  readonly opVault: string | null
+  readonly lastSyncedAt: number | null
+  readonly lastError: string | null
+  /** How often to poll 1Password, in seconds (minimum 60). Mirrors the
+   *  `pollSeconds` stored in the sync config so the UI can reflect the live
+   *  value without a separate round-trip. */
+  readonly pollSeconds: number
+}
+
+/**
+ * Server→client: the current vault registry (metadata + pointers only; no
+ * credential values). Sent after hello and after every successful mutation.
+ */
+export interface VaultListFrame {
+  readonly type: "vault-list"
+  readonly items: ReadonlyArray<VaultWireItem>
+  readonly sync?: VaultSyncWire
+}
+
+/**
+ * Server→client: outcome of a vault mutation. NEVER echoes a secret value —
+ * `message` is short operator-actionable diagnostic text only.
+ */
+export interface VaultStatusFrame {
+  readonly type: "vault-status"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly message: string
+}
+
+/**
+ * Client→server: register/update a credential in the vault. `value` is
+ * SENSITIVE — travels UP ONLY, never echoed back or logged server-side.
+ */
+export interface VaultPutFrame {
+  readonly type: "vault-put"
+  readonly requestId: string
+  readonly name: string
+  readonly kind: "env-secret" | "op-token"
+  readonly varName?: string
+  readonly label?: string
+  /** Sensitive — never echoed back or logged. */
+  readonly value: string
+  readonly description?: string
+}
+
+/** Client→server: remove a vault registry row (and its underlying credential). */
+export interface VaultDeleteFrame {
+  readonly type: "vault-delete"
+  readonly requestId: string
+  readonly id: string
+}
+
+/** Client→server: configure 1Password two-way sync (slice V3). */
+export interface VaultSyncConfigFrame {
+  readonly type: "vault-sync-config"
+  readonly requestId: string
+  readonly enabled: boolean
+  readonly opLabel?: string
+  readonly opVault?: string
+  readonly pollSeconds?: number
+}
+
+/**
+ * Client→server: bulk import Apple Passwords CSV items into the sync vault
+ * (slice V3). ≤20 items per frame; server enforces the limit. `password` in
+ * each item is SENSITIVE — travels UP ONLY, never echoed back or logged.
+ */
+export interface VaultImportFrame {
+  readonly type: "vault-import"
+  readonly requestId: string
+  readonly items: ReadonlyArray<{
+    readonly title: string
+    readonly url?: string
+    readonly username?: string
+    readonly password: string
+    readonly notes?: string
+  }>
+}
+
 export type ServerFrame =
   | HelloFrame
   | EventFrame
@@ -476,6 +589,8 @@ export type ServerFrame =
   | WorkflowRunsFrame
   | TurnCompleteFrame
   | PtyOutputFrame
+  | VaultListFrame
+  | VaultStatusFrame
 
 /* Client → server frames */
 
@@ -564,3 +679,7 @@ export type ClientFrame =
   | WorkflowRefreshFrame
   | PtyInputFrame
   | PtyResizeFrame
+  | VaultPutFrame
+  | VaultDeleteFrame
+  | VaultSyncConfigFrame
+  | VaultImportFrame

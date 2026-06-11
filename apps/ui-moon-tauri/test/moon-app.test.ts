@@ -2130,6 +2130,962 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   })
 
   // ───────────────────────────────────────────────────────────────────────────
+  // Feature: Vault settings tab (Luna Vault V1)
+  //
+  // The friendly credential registry inside the (renamed) Secrets tab. The
+  // wire is METADATA + POINTERS down (`vault-list`), value UP exactly once
+  // (`vault-put`). These suites drive the same seam production uses
+  // (__MoonInternals.handleFrame) and pin the one-shot wipe discipline: the
+  // typed value must never survive a send, a settings close, or a socket
+  // close, and validation failures must never put a frame on the wire.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Vault settings tab (Luna Vault V1)', () => {
+    const M = () => (window as any).__MoonInternals
+
+    const sentFrames: any[] = []
+
+    const helloVault = (vault: boolean) => ({
+      type: 'hello', protocolVersion: 2, kinds: [],
+      capabilities: {
+        chat: true, streamingDeltas: true, localShell: false, setup: false,
+        ...(vault ? { vault: true } : {}),
+      },
+    })
+
+    const listFrame = () => ({
+      type: 'vault-list',
+      items: [
+        {
+          id: 'itm-1', name: 'Notion API Key', kind: 'env-secret',
+          ref: 'env:NOTION_API_KEY', source: 'manual', description: null,
+          createdAt: 1, updatedAt: 1, synced: true, shadowed: false,
+        },
+        {
+          id: 'itm-2', name: 'Deploy Token', kind: 'op-token',
+          ref: 'luna-op://primary', source: 'agent', description: 'For deploys',
+          createdAt: 1, updatedAt: 2, synced: false, shadowed: true,
+        },
+      ],
+    })
+
+    const el = <T extends HTMLElement = HTMLElement>(id: string) =>
+      document.getElementById(id) as T
+    const input = (id: string) => el<HTMLInputElement>(id)
+    const fire = (target: HTMLElement, type: string) =>
+      target.dispatchEvent(new Event(type, { bubbles: true }))
+
+    beforeEach(() => {
+      sentFrames.length = 0
+      const m = M()
+      m.WebSocketEngine.send = (f: any) => { sentFrames.push(f) }
+      m.State.ws = { readyState: WebSocket.OPEN }
+      m.handleFrame(helloVault(true))
+    })
+
+    it('hello capabilities.vault gates the Vault UI; old servers keep the legacy op-token form', () => {
+      const section = el('vault-section')
+      const legacy = el('legacy-op-token-section')
+      // The tab is renamed "Vault" but keeps data-tab="secrets" (minimal churn).
+      const tab = document.querySelector('.settings-tab[data-tab="secrets"]')!
+      expect(tab.textContent).toBe('Vault')
+
+      // beforeEach hello advertised vault → new UI shown, legacy hidden.
+      expect(section.hidden).toBe(false)
+      expect(legacy.hidden).toBe(true)
+
+      // Channel switch to an OLD server (no vault capability) → fallback:
+      // legacy form back, vault UI hidden, stale registry state dropped.
+      M().handleFrame(helloVault(false))
+      expect(section.hidden).toBe(true)
+      expect(legacy.hidden).toBe(false)
+      expect(M().State.vaultItems).toEqual([])
+      // Legacy form pieces are intact (byte-identical old-server behavior).
+      expect(el('op-label-input')).not.toBeNull()
+      expect(el('op-token-input')).not.toBeNull()
+      expect(el('save-op-token-btn')).not.toBeNull()
+    })
+
+    it('applyVaultList is an idempotent rebuild with kind/synced/shadowed badges', () => {
+      const m = M()
+      m.handleFrame(listFrame())
+      let rows = document.querySelectorAll('#vault-list .vault-row')
+      expect(rows.length).toBe(2)
+
+      // Re-delivery of the same frame (reconnect / post-mutation broadcast)
+      // must not duplicate rows.
+      m.handleFrame(listFrame())
+      rows = document.querySelectorAll('#vault-list .vault-row')
+      expect(rows.length).toBe(2)
+
+      // Row 1: name + kind badge + ref (small mono) + source + synced "1P" chip.
+      const first = rows[0] as HTMLElement
+      expect(first.textContent).toContain('Notion API Key')
+      expect(first.querySelector('.skill-row-badge')!.textContent).toBe('API key')
+      expect(first.querySelector('.vault-ref')!.textContent).toBe('env:NOTION_API_KEY')
+      expect(first.querySelector('.vault-source')!.textContent).toBe('added by you')
+      expect(first.querySelector('.vault-chip.synced')!.textContent).toBe('1P')
+      expect(first.querySelector('.vault-chip.shadowed')).toBeNull()
+
+      // Row 2: shadowed warning glyph with the exact tooltip + description.
+      const second = rows[1] as HTMLElement
+      expect(second.classList.contains('shadowed')).toBe(true)
+      const warn = second.querySelector('.vault-chip.shadowed') as HTMLElement
+      expect(warn).not.toBeNull()
+      expect(warn.title).toBe(
+        "Defined by the server's environment — edits here won't take effect")
+      expect(second.querySelector('.skill-row-badge')!.textContent).toBe('1P token')
+      expect(second.textContent).toContain('For deploys')
+
+      // Shrink + empty re-renders (full replacement, not append).
+      m.handleFrame({ type: 'vault-list', items: [listFrame().items[0]] })
+      expect(document.querySelectorAll('#vault-list .vault-row').length).toBe(1)
+      m.handleFrame({ type: 'vault-list', items: [] })
+      expect(document.querySelectorAll('#vault-list .vault-row').length).toBe(0)
+      expect(el('vault-list').textContent).toContain('Nothing stored yet')
+    })
+
+    it('the env var name is auto-derived from the friendly Name (with live preview + override)', () => {
+      const ve = M().VaultEngine
+      expect(ve.deriveVarName('Notion API Key')).toBe('NOTION_API_KEY')
+      expect(ve.deriveVarName('  spaces & symbols!! ')).toBe('SPACES_SYMBOLS')
+      expect(ve.deriveVarName('123 starts numeric')).toBe('_123_STARTS_NUMERIC')
+
+      input('vault-name-input').value = 'Notion API Key'
+      fire(input('vault-name-input'), 'input')
+      expect(el('vault-var-preview').textContent).toBe('NOTION_API_KEY')
+
+      // "change" reveals the advanced override, prefilled with the derivation;
+      // the preview then follows the override.
+      el('vault-var-edit').click()
+      const override = input('vault-var-input')
+      expect(override.hidden).toBe(false)
+      expect(override.value).toBe('NOTION_API_KEY')
+      override.value = 'MY_CUSTOM_KEY'
+      fire(override, 'input')
+      expect(el('vault-var-preview').textContent).toBe('MY_CUSTOM_KEY')
+    })
+
+    it('validation failures stay local — no frame ever leaves the client', () => {
+      const add = el('vault-add-btn')
+      const status = el('vault-status-line')
+
+      // Empty name.
+      input('vault-value-input').value = 'sk-something'
+      add.click()
+      expect(sentFrames.length).toBe(0)
+      expect(status.hidden).toBe(false)
+      expect(status.textContent).toContain('name')
+
+      // Invalid env var override.
+      input('vault-name-input').value = 'Notion API Key'
+      el('vault-var-edit').click()
+      input('vault-var-input').value = 'BAD-NAME'
+      fire(input('vault-var-input'), 'input')
+      add.click()
+      expect(sentFrames.length).toBe(0)
+
+      // Empty value.
+      input('vault-var-input').value = 'GOOD_NAME'
+      fire(input('vault-var-input'), 'input')
+      input('vault-value-input').value = ''
+      add.click()
+      expect(sentFrames.length).toBe(0)
+
+      // Value with a newline: jsdom (like real browsers) strips line breaks
+      // on input.value assignment, so shadow the accessor to exercise the
+      // engine's own defence-in-depth check.
+      const valueInput = input('vault-value-input')
+      Object.defineProperty(valueInput, 'value', {
+        configurable: true, get: () => 'line1\nline2', set: () => {},
+      })
+      add.click()
+      expect(sentFrames.length).toBe(0)
+      expect(status.textContent).toContain('line breaks')
+      delete (valueInput as any).value   // restore the prototype accessor
+
+      // Socket not OPEN: valid form, but the OPEN guard must block the send
+      // (WebSocketEngine.send logs the WHOLE frame when not open).
+      valueInput.value = 'sk-123'
+      M().State.ws = { readyState: WebSocket.CLOSED }
+      add.click()
+      expect(sentFrames.length).toBe(0)
+      expect(status.textContent).toContain('Not connected')
+      // …and the un-sent value is kept so the operator can retry.
+      expect(valueInput.value).toBe('sk-123')
+    })
+
+    it('a valid submit sends vault-put once and one-shot wipes the value input', () => {
+      input('vault-name-input').value = 'Notion API Key'
+      fire(input('vault-name-input'), 'input')
+      input('vault-value-input').value = 'sk-super-secret'
+      input('vault-desc-input').value = 'workspace key'
+      el('vault-add-btn').click()
+
+      expect(sentFrames.length).toBe(1)
+      const frame = sentFrames[0]
+      expect(frame).toMatchObject({
+        type: 'vault-put',
+        name: 'Notion API Key',
+        kind: 'env-secret',
+        varName: 'NOTION_API_KEY',
+        value: 'sk-super-secret',
+        description: 'workspace key',
+      })
+      expect(frame.requestId).toMatch(/^vlt_/)
+      expect(frame.label).toBeUndefined()
+
+      // One-shot: the value is gone from the DOM the moment the frame left.
+      expect(input('vault-value-input').value).toBe('')
+      // The rest of the form survives until the server confirms.
+      expect(input('vault-name-input').value).toBe('Notion API Key')
+      expect(el('vault-status-line').textContent).toContain('Saving')
+    })
+
+    it('op-token kind swaps in the label field + restart warning and sends label (no varName)', () => {
+      const kind = el<HTMLSelectElement>('vault-kind-select')
+      kind.value = 'op-token'
+      fire(kind, 'change')
+
+      expect(input('vault-label-input').hidden).toBe(false)
+      expect(el('vault-var-row').hidden).toBe(true)
+      // Saving an op-token warns about the server restart up front.
+      expect(el('vault-restart-note').hidden).toBe(false)
+      expect(el('vault-restart-note').textContent).toContain('restarts')
+
+      input('vault-name-input').value = 'Deploy Token'
+      input('vault-value-input').value = 'ops_abc123'
+      el('vault-add-btn').click()
+
+      const frame = sentFrames.find((f) => f.type === 'vault-put')
+      expect(frame).toMatchObject({
+        kind: 'op-token', name: 'Deploy Token', label: 'primary', value: 'ops_abc123',
+      })
+      expect(frame.varName).toBeUndefined()
+      expect(input('vault-value-input').value).toBe('')          // one-shot wipe
+      expect(el('vault-status-line').textContent).toContain('restart')
+    })
+
+    it('delete is a two-step inline confirm; op-token rows warn about the restart', () => {
+      const m = M()
+      m.handleFrame(listFrame())
+      const rowDelete = (i: number) =>
+        document.querySelectorAll('#vault-list .vault-row')[i]!
+          .querySelector('.connector-btn.danger') as HTMLElement
+
+      // First click ARMS — nothing on the wire yet.
+      rowDelete(0).click()
+      expect(sentFrames.filter((f) => f.type === 'vault-delete').length).toBe(0)
+      let armed = document.querySelectorAll('#vault-list .vault-row')[0]!
+      expect(armed.textContent).toContain('Remove this credential?')
+
+      // Keep cancels.
+      const keep = Array.from(armed.querySelectorAll('.connector-btn'))
+        .find((b) => b.textContent === 'Keep') as HTMLElement
+      keep.click()
+      expect(sentFrames.filter((f) => f.type === 'vault-delete').length).toBe(0)
+      expect(document.querySelectorAll('#vault-list .vault-row')[0]!.textContent)
+        .not.toContain('Remove this credential?')
+
+      // Arm again, confirm — exactly one vault-delete with the row id.
+      rowDelete(0).click()
+      rowDelete(0).click()   // the armed row's danger button IS the confirm
+      const delFrames = sentFrames.filter((f) => f.type === 'vault-delete')
+      expect(delFrames.length).toBe(1)
+      expect(delFrames[0]).toMatchObject({ id: 'itm-1' })
+      expect(delFrames[0].requestId).toMatch(/^vlt_/)
+
+      // An armed op-token row warns the server restarts.
+      rowDelete(1).click()
+      const opArmed = document.querySelectorAll('#vault-list .vault-row')[1]!
+      expect(opArmed.textContent).toContain('Remove? The server restarts.')
+    })
+
+    it('vault-status correlates by requestId; ok clears the form; message renders as text', () => {
+      const m = M()
+      input('vault-name-input').value = 'Notion API Key'
+      input('vault-value-input').value = 'sk-secret'
+      el('vault-add-btn').click()
+      const reqId = sentFrames[0].requestId
+      const status = el('vault-status-line')
+
+      // A status for someone ELSE's request is ignored (stale/unmatched).
+      m.handleFrame({ type: 'vault-status', requestId: 'vlt_other', ok: false, message: 'nope' })
+      expect(status.textContent).toContain('Saving')
+      expect(input('vault-name-input').value).toBe('Notion API Key')
+
+      // The matching ok lands: message shown via textContent (never parsed as
+      // HTML) and the form clears.
+      m.handleFrame({
+        type: 'vault-status', requestId: reqId, ok: true,
+        message: '<b>Saved NOTION_API_KEY</b>',
+      })
+      expect(status.textContent).toBe('<b>Saved NOTION_API_KEY</b>')
+      expect(status.querySelector('b')).toBeNull()
+      expect(input('vault-name-input').value).toBe('')
+      expect(input('vault-desc-input').value).toBe('')
+
+      // A failed put keeps the typed fields so the operator can fix + resend.
+      input('vault-name-input').value = 'Other Key'
+      input('vault-value-input').value = 'sk-2'
+      el('vault-add-btn').click()
+      const req2 = sentFrames[sentFrames.length - 1].requestId
+      m.handleFrame({ type: 'vault-status', requestId: req2, ok: false, message: 'env var name invalid' })
+      expect(status.textContent).toBe('env var name invalid')
+      expect(input('vault-name-input').value).toBe('Other Key')
+      // …but the value was already one-shot wiped on send regardless.
+      expect(input('vault-value-input').value).toBe('')
+    })
+
+    it('closing the settings modal wipes a typed-but-unsent value', () => {
+      const m = M()
+      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
+      el('toggle-settings').click()   // open the modal
+      input('vault-value-input').value = 'sk-typed-then-abandoned'
+      el('close-settings-btn').click()
+      expect(input('vault-value-input').value).toBe('')
+    })
+
+    it('a socket close wipes a typed-but-unsent value (op-token saves restart the server)', () => {
+      const m = M()
+      class FakeWS extends EventTarget {
+        static OPEN = 1; static CONNECTING = 0; static CLOSING = 2; static CLOSED = 3
+        readyState = FakeWS.OPEN
+        url: string
+        constructor(url: string) { super(); this.url = url }
+        send() {}
+        close() { this.readyState = FakeWS.CLOSED }
+      }
+      const RealWS = globalThis.WebSocket
+      ;(globalThis as any).WebSocket = FakeWS
+      try {
+        m.State.ws = null            // fresh connect (no stale fake to tear down)
+        m.WebSocketEngine.connect()
+        expect(m.State.ws).toBeInstanceOf(FakeWS)
+        input('vault-value-input').value = 'sk-mid-flight'
+        m.State.ws.dispatchEvent(new Event('close'))
+        expect(input('vault-value-input').value).toBe('')
+      } finally {
+        ;(globalThis as any).WebSocket = RealWS
+      }
+    })
+
+    // ── Finding #1: collapse-path wipe ───────────────────────────────────────
+    it('chat-collapse path wipes the vault value, op-token input, and secret-prompt input', async () => {
+      const m = M()
+      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
+
+      // Open the chat panel then the settings panel.
+      const chatPanel = document.getElementById('chat-panel')!
+      chatPanel.classList.add('active')
+      el('toggle-settings').click()
+      expect(chatPanel.classList.contains('active')).toBe(true)
+      expect(el('settings-panel').classList.contains('active')).toBe(true)
+
+      // Type values into the three sensitive inputs.
+      input('vault-value-input').value = 'sk-collapse-test'
+      const opIn = document.getElementById('op-token-input') as HTMLInputElement | null
+      if (opIn) opIn.value = 'ops_collapse'
+      const secretIn = document.getElementById('secret-prompt-input') as HTMLInputElement | null
+      if (secretIn) secretIn.value = 'my-secret'
+
+      // Clicking close-chat collapses the chat — this is the collapse path that
+      // previously bypassed SettingsEngine.close().
+      el('close-chat').click()
+
+      // Allow async microtasks from toggleChat to flush.
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(chatPanel.classList.contains('active')).toBe(false)
+      expect(input('vault-value-input').value).toBe('')
+      if (opIn)     expect(opIn.value).toBe('')
+      if (secretIn) expect(secretIn.value).toBe('')
+    })
+
+    // ── Finding #2: stale in-flight request across socket drop ───────────────
+    it('socket drop clears _reqId/_reqKind and replaces Saving… for env-secret and delete; leaves op-token status', () => {
+      const m = M()
+      const ve = M().VaultEngine
+
+      class FakeWS extends EventTarget {
+        static OPEN = 1; static CONNECTING = 0; static CLOSING = 2; static CLOSED = 3
+        readyState = FakeWS.OPEN
+        url: string
+        constructor(url: string) { super(); this.url = url }
+        send() {}
+        close() { this.readyState = FakeWS.CLOSED }
+      }
+      const RealWS = globalThis.WebSocket
+      ;(globalThis as any).WebSocket = FakeWS
+      try {
+        m.State.ws = null
+        m.WebSocketEngine.connect()
+        const ws = m.State.ws as typeof FakeWS.prototype
+
+        // ── env-secret put in flight ──
+        m.WebSocketEngine.send = (f: any) => { sentFrames.push(f) }
+        // Seed an in-flight env-secret put directly (status already 'Saving…').
+        ve._reqId = 'vlt_test_env'
+        ve._reqKind = 'put'
+        ve.setStatus('Saving…', 'info')
+        ws.dispatchEvent(new Event('close'))
+        expect(ve._reqId).toBeNull()
+        expect(ve._reqKind).toBeNull()
+        expect(el('vault-status-line').textContent).toContain('Connection lost')
+
+        // ── op-token put in flight — status must survive ──
+        m.State.ws = null
+        m.WebSocketEngine.connect()
+        const ws2 = m.State.ws as typeof FakeWS.prototype
+        ve._reqId = 'vlt_test_op'
+        ve._reqKind = 'put-op-token'
+        ve.setStatus('Verifying… the server will restart briefly.', 'info')
+        ws2.dispatchEvent(new Event('close'))
+        expect(ve._reqId).toBeNull()
+        expect(ve._reqKind).toBeNull()
+        // Status must NOT be overwritten — the restart drop is expected.
+        expect(el('vault-status-line').textContent).toContain('Verifying')
+      } finally {
+        ;(globalThis as any).WebSocket = RealWS
+      }
+    })
+
+    // ── Finding #3: defensive coercion in render() ───────────────────────────
+    it('render() with a row missing fields shows empty strings not "undefined"', () => {
+      const m = M()
+      // Push a vault-list with a malformed row: name/ref/source/description absent.
+      m.handleFrame({
+        type: 'vault-list',
+        items: [
+          {
+            id: 'bad-row',
+            // name, kind, ref, source, description intentionally omitted
+          },
+        ],
+      })
+      const rows = document.querySelectorAll('#vault-list .vault-row')
+      expect(rows.length).toBe(1)
+      const row = rows[0]!
+      // None of the text content should contain the literal string 'undefined'.
+      expect(row.textContent).not.toContain('undefined')
+      // The ref span must be empty string, not 'undefined'.
+      expect(row.querySelector('.vault-ref')!.textContent).toBe('')
+    })
+
+    // ── 1Password sync sub-section ────────────────────────────────────────────
+    // These tests drive the sync section that lives BELOW the add form, rendered
+    // by VaultEngine.renderSync() from State.vaultSync. Key invariants:
+    //   - section renders from vault-list .sync; idempotent re-render is a no-op
+    //   - enable+save sends the exact vault-sync-config frame (OPEN-guard)
+    //   - sync ack (vault-status with a sync requestId) NEVER clears the add form
+    //   - lastError renders via textContent (server HTML stays literal)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    it('sync section renders from a vault-list with .sync state', () => {
+      const m = M()
+      m.handleFrame({
+        type: 'vault-list',
+        items: [],
+        sync: {
+          enabled: true,
+          opLabel: 'primary',
+          opVault: 'Luna',
+          pollSeconds: 120,
+          lastSyncedAt: Date.now() - 4 * 60 * 1000, // 4 minutes ago
+          lastError: null,
+        },
+      })
+
+      // State was stored.
+      expect(m.State.vaultSync).toMatchObject({ enabled: true, opLabel: 'primary' })
+
+      // Status line shows 'Sync: on' + relative time.
+      const state = el('vault-sync-state')
+      expect(state.textContent).toContain('Sync: on')
+      expect(state.textContent).toMatch(/\d+m ago/)
+
+      // Enabled checkbox is checked.
+      const checkbox = input('vault-sync-enabled') as HTMLInputElement
+      expect(checkbox.checked).toBe(true)
+
+      // Fields are populated from server state.
+      expect(input('vault-sync-op-label').value).toBe('primary')
+      expect(input('vault-sync-op-vault').value).toBe('Luna')
+      expect(input('vault-sync-poll').value).toBe('120')
+
+      // When sync is enabled, the Apple Passwords import nudge is visible.
+      expect(el('vault-sync-import-note').hidden).toBe(false)
+
+      // Error line is hidden when lastError is null.
+      expect(el('vault-sync-error').hidden).toBe(true)
+    })
+
+    it('sync section: lastError renders via textContent (HTML stays literal)', () => {
+      const m = M()
+      const htmlPayload = '<script>alert(1)</script>'
+      m.handleFrame({
+        type: 'vault-list',
+        items: [],
+        sync: {
+          enabled: false,
+          opLabel: 'primary',
+          opVault: 'Luna',
+          lastError: htmlPayload,
+        },
+      })
+
+      const errEl = el('vault-sync-error')
+      // textContent means the raw HTML string is shown, not parsed.
+      expect(errEl.textContent).toBe(htmlPayload)
+      // No <script> element was injected into the DOM.
+      expect(errEl.querySelector('script')).toBeNull()
+      expect(errEl.hidden).toBe(false)
+
+      // When sync is disabled the import nudge is hidden.
+      expect(el('vault-sync-import-note').hidden).toBe(true)
+    })
+
+    it('sync section idempotent re-render: re-delivering the same frame does not duplicate elements', () => {
+      const m = M()
+      const frame = {
+        type: 'vault-list',
+        items: [],
+        sync: { enabled: true, opLabel: 'primary', opVault: 'Luna' },
+      }
+      m.handleFrame(frame)
+      m.handleFrame(frame)
+      m.handleFrame(frame)
+
+      // The sync section exists exactly once (no duplicates from re-renders).
+      expect(document.querySelectorAll('#vault-sync-section').length).toBe(1)
+      expect(document.querySelectorAll('#vault-sync-enabled').length).toBe(1)
+    })
+
+    it('enable+save sends exact vault-sync-config frame with the OPEN-socket guard', () => {
+      const m = M()
+
+      // Pre-populate op-label and vault name.
+      const labelInput = input('vault-sync-op-label')
+      const vaultInput = input('vault-sync-op-vault')
+      const pollInput  = input('vault-sync-poll')
+      const checkbox   = input('vault-sync-enabled') as HTMLInputElement
+
+      checkbox.checked = true
+      labelInput.value = 'primary'
+      vaultInput.value = 'Luna'
+      pollInput.value  = '180'
+
+      // ── OPEN socket: frame goes out ──────────────────────────────────────────
+      m.State.ws = { readyState: WebSocket.OPEN }
+      el('vault-sync-save-btn').click()
+
+      expect(sentFrames.length).toBe(1)
+      const frame = sentFrames[0]
+      expect(frame).toMatchObject({
+        type: 'vault-sync-config',
+        enabled: true,
+        opLabel: 'primary',
+        opVault: 'Luna',
+        pollSeconds: 180,
+      })
+      expect(frame.requestId).toMatch(/^vlt_/)
+      // No credential value in the frame — this is a config-only send.
+      expect(frame.value).toBeUndefined()
+
+      sentFrames.length = 0
+
+      // ── NOT-OPEN socket: guard blocks the send; status is value-free ─────────
+      m.State.ws = { readyState: WebSocket.CLOSED }
+      el('vault-sync-save-btn').click()
+
+      // Nothing was sent.
+      expect(sentFrames.length).toBe(0)
+      // A value-free status message is shown (no credential content).
+      const syncStatus = el('vault-sync-status')
+      expect(syncStatus.hidden).toBe(false)
+      expect(syncStatus.textContent).toContain('Not connected')
+      // Crucially: the status text does NOT contain any credential/config value.
+      expect(syncStatus.textContent).not.toContain('primary')
+      expect(syncStatus.textContent).not.toContain('Luna')
+    })
+
+    it('sync ack (vault-status with sync requestId) does NOT wipe the half-typed add form', () => {
+      const m = M()
+
+      // Type into the add form (simulating the user mid-entry).
+      input('vault-name-input').value = 'Half-typed Name'
+      input('vault-value-input').value = 'sk-half-typed'
+      input('vault-desc-input').value = 'some note'
+
+      // Send a sync-config (triggers _reqKind = 'sync').
+      m.State.ws = { readyState: WebSocket.OPEN }
+      el('vault-sync-save-btn').click()
+      const syncReqId = sentFrames[sentFrames.length - 1].requestId
+
+      // Arrive sync ack.
+      m.handleFrame({ type: 'vault-status', requestId: syncReqId, ok: true, message: 'Sync saved.' })
+
+      // Sync status shows ok.
+      const syncStatus = el('vault-sync-status')
+      expect(syncStatus.textContent).toBe('Sync saved.')
+
+      // The ADD FORM is untouched — name + value fields kept.
+      expect(input('vault-name-input').value).toBe('Half-typed Name')
+      expect(input('vault-value-input').value).toBe('sk-half-typed')
+      expect(input('vault-desc-input').value).toBe('some note')
+      // The add-form status line was NOT changed (not an add-form ack).
+      expect(el('vault-status-line').textContent).toBe('')
+    })
+
+    it('a failed sync ack surfaces the message on the sync status line, not the add form', () => {
+      const m = M()
+
+      // Populate add form to confirm it stays untouched.
+      input('vault-name-input').value = 'My Key'
+      input('vault-value-input').value = 'sk-mine'
+
+      m.State.ws = { readyState: WebSocket.OPEN }
+      el('vault-sync-save-btn').click()
+      const reqId = sentFrames[sentFrames.length - 1].requestId
+
+      m.handleFrame({
+        type: 'vault-status', requestId: reqId, ok: false,
+        message: '<b>vault not found</b>',
+      })
+
+      // Sync status shows the error via textContent (no HTML parsed).
+      const syncStatus = el('vault-sync-status')
+      expect(syncStatus.textContent).toBe('<b>vault not found</b>')
+      expect(syncStatus.querySelector('b')).toBeNull()
+
+      // Add form untouched.
+      expect(input('vault-name-input').value).toBe('My Key')
+      expect(input('vault-value-input').value).toBe('sk-mine')
+
+      // Add-form status line unchanged.
+      expect(el('vault-status-line').textContent).toBe('')
+    })
+
+    it('op-label placeholder is derived from existing op-token items in the registry', () => {
+      const m = M()
+      // Push a vault-list with an op-token row; the label in ref = 'primary'.
+      m.handleFrame({
+        type: 'vault-list',
+        items: [
+          {
+            id: 'tok-1', name: 'Primary Token', kind: 'op-token',
+            ref: 'luna-op://myaccount', source: 'manual', description: null,
+            createdAt: 1, updatedAt: 1, synced: false, shadowed: false,
+          },
+        ],
+        sync: { enabled: false, opLabel: '', opVault: 'Luna' },
+      })
+
+      // The label input placeholder should be derived from the op-token ref.
+      const labelInput = input('vault-sync-op-label')
+      expect(labelInput.placeholder).toBe('myaccount')
+    })
+
+    it('pollSeconds value is clamped to minimum 60 on send', () => {
+      const m = M()
+      m.State.ws = { readyState: WebSocket.OPEN }
+
+      const pollInput = input('vault-sync-poll')
+      pollInput.value = '10'   // below minimum
+      el('vault-sync-save-btn').click()
+
+      const frame = sentFrames.find((f) => f.type === 'vault-sync-config')
+      expect(frame).toBeDefined()
+      expect(frame.pollSeconds).toBe(60)   // clamped to floor
+    })
+
+    // ── Fix 1: socket-close sync status isolation ─────────────────────────────
+    it('socket drop with in-flight sync save routes the lost-connection message to the sync status line, not the add-form line', () => {
+      const m = M()
+      const ve = M().VaultEngine
+
+      class FakeWS2 extends EventTarget {
+        static OPEN = 1; static CONNECTING = 0; static CLOSING = 2; static CLOSED = 3
+        readyState = FakeWS2.OPEN
+        url: string
+        constructor(url: string) { super(); this.url = url }
+        send() {}
+        close() { this.readyState = FakeWS2.CLOSED }
+      }
+      const RealWS = globalThis.WebSocket
+      ;(globalThis as any).WebSocket = FakeWS2
+      try {
+        m.State.ws = null
+        m.WebSocketEngine.connect()
+        const ws = m.State.ws as typeof FakeWS2.prototype
+
+        // Seed a sync save in-flight directly.
+        ve._syncReqId = 'vlt_sync_lost'
+        ve.setSyncStatus('Saving sync settings…', 'info')
+        // Ensure add-form status is empty before drop.
+        ve.setStatus('', null)
+
+        ws.dispatchEvent(new Event('close'))
+
+        // The sync slot is cleared.
+        expect(ve._syncReqId).toBeNull()
+        // The SYNC status line shows the connection-lost message.
+        expect(el('vault-sync-status').textContent).toContain('Connection lost')
+        // The ADD-FORM status line must NOT be touched.
+        expect(el('vault-status-line').textContent).toBe('')
+      } finally {
+        ;(globalThis as any).WebSocket = RealWS
+      }
+    })
+
+    it('applyCapability(false) clears a stale sync status line', () => {
+      const m = M()
+      const ve = M().VaultEngine
+
+      // Seed a stuck 'Saving sync settings…' on the sync line.
+      ve.setSyncStatus('Saving sync settings…', 'info')
+      expect(el('vault-sync-status').hidden).toBe(false)
+
+      // Channel switch to an older server drops vault capability.
+      m.handleFrame({
+        type: 'hello', protocolVersion: 2, kinds: [],
+        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false },
+      })
+
+      // The sync status line must be hidden/cleared after the capability drop.
+      expect(el('vault-sync-status').hidden).toBe(true)
+    })
+
+    // ── Fix 2: separate sync slot — both acks resolve independently ───────────
+    it('put + sync save in flight together: both vault-status acks land on their own status lines', () => {
+      const m = M()
+      const ve = M().VaultEngine
+
+      m.State.ws = { readyState: WebSocket.OPEN }
+
+      // Kick off an add-form put.
+      input('vault-name-input').value = 'Notion API Key'
+      fire(input('vault-name-input'), 'input')
+      input('vault-value-input').value = 'sk-concurrent'
+      el('vault-add-btn').click()
+      const putReqId = sentFrames[sentFrames.length - 1].requestId
+
+      // Kick off a sync save (uses a different slot, does not displace the put).
+      input('vault-sync-op-label').value = 'primary'
+      input('vault-sync-op-vault').value = 'Luna'
+      el('vault-sync-save-btn').click()
+      const syncReqId = sentFrames[sentFrames.length - 1].requestId
+
+      // Both slots are live.
+      expect(ve._reqId).toBe(putReqId)
+      expect(ve._syncReqId).toBe(syncReqId)
+
+      // Sync ack arrives first.
+      m.handleFrame({ type: 'vault-status', requestId: syncReqId, ok: true, message: 'Sync ok.' })
+      expect(ve._syncReqId).toBeNull()
+      expect(ve._reqId).toBe(putReqId)          // put slot untouched
+      expect(el('vault-sync-status').textContent).toBe('Sync ok.')
+      // Add-form status line must not have been touched by the sync ack.
+      expect(el('vault-status-line').textContent).toContain('Saving')
+
+      // Put ack arrives second.
+      m.handleFrame({ type: 'vault-status', requestId: putReqId, ok: true, message: 'Saved.' })
+      expect(ve._reqId).toBeNull()
+      expect(el('vault-status-line').textContent).toBe('Saved.')
+    })
+
+    // ── Fix 3: checkbox dirty flag ────────────────────────────────────────────
+    it('user toggle survives a concurrent vault-list broadcast with opposite server state', () => {
+      const m = M()
+
+      // Server says sync is OFF.
+      m.handleFrame({
+        type: 'vault-list', items: [],
+        sync: { enabled: false, opLabel: 'primary', opVault: 'Luna', pollSeconds: 300 },
+      })
+      const checkbox = input('vault-sync-enabled') as HTMLInputElement
+      expect(checkbox.checked).toBe(false)
+
+      // User toggles ON manually (marks dirty).
+      checkbox.checked = true
+      fire(checkbox, 'change')
+      expect(M().VaultEngine._syncCheckboxDirty).toBe(true)
+
+      // Server broadcasts a vault-list with enabled=false (e.g. another client saved).
+      m.handleFrame({
+        type: 'vault-list', items: [],
+        sync: { enabled: false, opLabel: 'primary', opVault: 'Luna', pollSeconds: 300 },
+      })
+
+      // The user's toggle must survive — checkbox still ON.
+      expect(checkbox.checked).toBe(true)
+    })
+
+    it('after a successful sync save ack, a subsequent vault-list applies the server state again', () => {
+      const m = M()
+      const ve = M().VaultEngine
+
+      // Server says OFF; user toggles ON; save is sent.
+      m.handleFrame({
+        type: 'vault-list', items: [],
+        sync: { enabled: false, opLabel: 'primary', opVault: 'Luna', pollSeconds: 300 },
+      })
+      const checkbox = input('vault-sync-enabled') as HTMLInputElement
+      checkbox.checked = true
+      fire(checkbox, 'change')
+
+      m.State.ws = { readyState: WebSocket.OPEN }
+      el('vault-sync-save-btn').click()
+      const syncReqId = sentFrames[sentFrames.length - 1].requestId
+
+      // Successful ack — dirty flag should be cleared.
+      m.handleFrame({ type: 'vault-status', requestId: syncReqId, ok: true, message: 'Saved.' })
+      expect(ve._syncCheckboxDirty).toBe(false)
+
+      // Now a vault-list arrives with enabled=false (hypothetical server-side rollback).
+      m.handleFrame({
+        type: 'vault-list', items: [],
+        sync: { enabled: false, opLabel: 'primary', opVault: 'Luna', pollSeconds: 300 },
+      })
+      // Dirty flag is clear, so server state is applied (checkbox reverts to OFF).
+      expect(checkbox.checked).toBe(false)
+    })
+
+    // ── Fix 4: poll-seconds seeded from State.vaultSync.pollSeconds ───────────
+    it('renderSync seeds poll-seconds input from sync.pollSeconds (now a legitimate wire field)', () => {
+      const m = M()
+
+      // Frame includes pollSeconds — the now-standard wire shape.
+      m.handleFrame({
+        type: 'vault-list', items: [],
+        sync: {
+          enabled: true, opLabel: 'primary', opVault: 'Luna',
+          pollSeconds: 600,
+        },
+      })
+
+      // The poll input must be populated from the wire value, not the hardcoded 300.
+      expect(input('vault-sync-poll').value).toBe('600')
+    })
+
+    it('renderSync falls back to 300 when sync.pollSeconds is absent', () => {
+      const m = M()
+
+      // Frame without pollSeconds (e.g. older server or initial state).
+      m.handleFrame({
+        type: 'vault-list', items: [],
+        sync: { enabled: true, opLabel: 'primary', opVault: 'Luna' },
+      })
+
+      // Fallback: 300 is used when pollSeconds is absent.
+      expect(input('vault-sync-poll').value).toBe('300')
+    })
+
+    // ── C3: serverSupportsVault guard on submitAdd / requestDelete / submitSyncConfig ──
+    it('C3: serverSupportsVault=false + OPEN socket — no frame sent, error status shown on submitAdd', () => {
+      const m = M()
+      // Switch to a server that does NOT advertise vault support.
+      m.handleFrame({
+        type: 'hello', protocolVersion: 2, kinds: [],
+        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false },
+      })
+      // Socket is open but server does not support vault.
+      m.State.ws = { readyState: WebSocket.OPEN }
+
+      // Fill in a valid form so the only blocker is the vault-support flag.
+      input('vault-name-input').value = 'Test Key'
+      fire(input('vault-name-input'), 'input')
+      input('vault-value-input').value = 'sk-abc'
+
+      // Attempt to add — must be blocked.
+      el('vault-add-btn').click()
+
+      expect(sentFrames.filter((f: any) => f.type === 'vault-put').length).toBe(0)
+      const status = el('vault-status-line')
+      expect(status.hidden).toBe(false)
+      expect(status.textContent).toContain("doesn't support the Vault")
+    })
+
+    it('C3: serverSupportsVault=false + OPEN socket — no frame sent on requestDelete (two-step confirm)', () => {
+      const m = M()
+      // Seed the registry so there is a row to delete.
+      m.handleFrame({
+        type: 'hello', protocolVersion: 2, kinds: [],
+        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false, vault: true },
+      })
+      m.handleFrame({
+        type: 'vault-list',
+        items: [
+          { id: 'del-1', name: 'Old Key', kind: 'env-secret', ref: 'env:OLD_KEY',
+            source: 'manual', description: null, createdAt: 1, updatedAt: 1,
+            synced: false, shadowed: false },
+        ],
+      })
+
+      // Now drop vault support (channel switch to old server).
+      m.handleFrame({
+        type: 'hello', protocolVersion: 2, kinds: [],
+        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false },
+      })
+      m.State.ws = { readyState: WebSocket.OPEN }
+
+      // The vault section is hidden (old server path), but we can still invoke
+      // requestDelete directly to exercise the guard.
+      const ve = M().VaultEngine
+      ve._confirmId = 'del-1'   // arm the row manually
+      ve.requestDelete('del-1') // second click → should hit the guard
+
+      expect(sentFrames.filter((f: any) => f.type === 'vault-delete').length).toBe(0)
+    })
+
+    it('C3: serverSupportsVault=false + OPEN socket — no frame sent on submitSyncConfig, sync status shown', () => {
+      const m = M()
+      m.handleFrame({
+        type: 'hello', protocolVersion: 2, kinds: [],
+        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false },
+      })
+      m.State.ws = { readyState: WebSocket.OPEN }
+
+      el('vault-sync-save-btn').click()
+
+      expect(sentFrames.filter((f: any) => f.type === 'vault-sync-config').length).toBe(0)
+      const syncStatus = el('vault-sync-status')
+      expect(syncStatus.hidden).toBe(false)
+      expect(syncStatus.textContent).toContain("doesn't support the Vault")
+    })
+
+    // ── C4: wipeSecretInputs covers connector client-secret password input ──────
+    it('C4: wipeSecretInputs clears dynamically-created password inputs inside connectors-list', () => {
+      const m = M()
+      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
+
+      // Grab the connectors-list element and inject a fake connector client-setup
+      // form with a password input — simulating what ConnectorsEngine.render() does.
+      const connectorsList = document.getElementById('connectors-list')
+      expect(connectorsList).not.toBeNull()
+
+      const fakeSetup = document.createElement('div')
+      fakeSetup.className = 'connector-client-setup'
+      const fakeSecret = document.createElement('input')
+      fakeSecret.type = 'password'
+      fakeSecret.value = 'fake-client-secret-value'
+      fakeSetup.appendChild(fakeSecret)
+      connectorsList!.appendChild(fakeSetup)
+
+      // Confirm it has the value.
+      expect(fakeSecret.value).toBe('fake-client-secret-value')
+
+      // wipeSecretInputs is not exported — exercise it via the settings-close path
+      // (SettingsEngine.close calls wipeSecretInputs).
+      el('toggle-settings').click()    // open settings modal
+      el('close-settings-btn').click() // close → wipeSecretInputs runs
+
+      // The connector password input must have been wiped.
+      expect(fakeSecret.value).toBe('')
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
   // Feature: UserAsk / alignment-survey (Phase 3 D3, Moon-side wiring)
   //
   // The TUI already paints a survey modal when the server pushes a
