@@ -1,0 +1,602 @@
+<!-- Mochi — watercolor moon-blob desk pet (Luna widget probe)
+     HTML fragment: injected into a sandboxed iframe body. In-memory state only. -->
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: radial-gradient(120% 90% at 50% 28%, #111a33 0%, #0c1224 45%, #0a0e1c 100%);
+    color: #e2ecfd;
+    font-family: ui-rounded, -apple-system, "Segoe UI", system-ui, sans-serif;
+    -webkit-user-select: none;
+    user-select: none;
+    cursor: default;
+  }
+
+  #mochi-stage {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ---------- sky ---------- */
+  .stars { position: absolute; inset: 0; pointer-events: none; }
+  .stars i {
+    position: absolute;
+    width: 2px; height: 2px;
+    border-radius: 50%;
+    background: #bcd6ff;
+    opacity: .35;
+    animation: twinkle 7s ease-in-out infinite alternate;
+  }
+  .stars i:nth-child(1) { left: 12%; top: 14%; animation-delay: 0s; }
+  .stars i:nth-child(2) { left: 26%; top: 32%; animation-delay: 1.4s; transform: scale(.7); }
+  .stars i:nth-child(3) { left: 44%; top: 9%;  animation-delay: 2.8s; }
+  .stars i:nth-child(4) { left: 63%; top: 20%; animation-delay: .8s; transform: scale(1.3); }
+  .stars i:nth-child(5) { left: 81%; top: 12%; animation-delay: 3.5s; transform: scale(.8); }
+  .stars i:nth-child(6) { left: 90%; top: 38%; animation-delay: 2s; }
+  .stars i:nth-child(7) { left: 8%;  top: 52%; animation-delay: 4.2s; transform: scale(.6); }
+  .stars i:nth-child(8) { left: 73%; top: 55%; animation-delay: 5s;  transform: scale(.9); }
+  .stars i:nth-child(9) { left: 35%; top: 60%; animation-delay: 1.9s; transform: scale(.5); }
+  @keyframes twinkle { from { opacity: .15; } to { opacity: .7; } }
+
+  /* ---------- arena / pet ---------- */
+  .arena {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+
+  .pet-zone {
+    position: relative;
+    width: clamp(96px, 58vmin, 300px);
+    height: clamp(96px, 58vmin, 300px);
+    cursor: pointer;
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .pet-zone:focus-visible { border-radius: 50%; box-shadow: 0 0 0 1px rgba(138,180,248,.4); }
+
+  .glow {
+    position: absolute;
+    inset: -18%;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(138,180,248,.30) 0%, rgba(138,180,248,.08) 52%, rgba(138,180,248,0) 74%);
+    animation: glowDrift 11s ease-in-out infinite alternate;
+    pointer-events: none;
+  }
+  @keyframes glowDrift {
+    from { transform: translate(-5px, 3px) scale(.95); opacity: .55; }
+    to   { transform: translate(6px, -5px) scale(1.06); opacity: .9; }
+  }
+  .lively .glow { animation-duration: 5s; }
+
+  .pet-wrap {
+    position: absolute;
+    inset: 0;
+    animation: breathe 5s ease-in-out infinite;
+    will-change: transform;
+  }
+  @keyframes breathe {
+    0%, 100% { transform: translateY(0) scale(1); }
+    50%      { transform: translateY(-6px) scale(1.015); }
+  }
+  .lively .pet-wrap { animation-duration: 2.7s; }
+  [data-mood="asleep"] .pet-wrap { animation-duration: 7.5s; }
+
+  .pet-jiggle { position: absolute; inset: 0; }
+  .fx-munch   .pet-jiggle { animation: munchBounce .6s ease; }
+  .fx-startle .pet-jiggle { animation: wobble .85s ease; }
+  .fx-nuzzle  .pet-jiggle { animation: nuzzle .9s ease-in-out; }
+
+  @keyframes munchBounce {
+    0%   { transform: translateY(0)    scale(1); }
+    16%  { transform: translateY(5px)  scale(1.07, .9); }
+    36%  { transform: translateY(-8px) scale(.94, 1.07); }
+    56%  { transform: translateY(2px)  scale(1.05, .95); }
+    76%  { transform: translateY(-2px) scale(.99, 1.02); }
+    100% { transform: translateY(0)    scale(1); }
+  }
+  @keyframes wobble {
+    0%   { transform: translate(0, 0)     rotate(0); }
+    12%  { transform: translate(-3px, -6px) rotate(-5deg); }
+    30%  { transform: translate(3px, -2px)  rotate(4deg); }
+    48%  { transform: translate(-3px, 0)    rotate(-3deg); }
+    66%  { transform: translate(2px, 0)     rotate(2deg); }
+    84%  { transform: translate(-1px, 0)    rotate(-1deg); }
+    100% { transform: translate(0, 0)       rotate(0); }
+  }
+  @keyframes nuzzle {
+    0%   { transform: rotate(0) translateX(0) scale(1); }
+    25%  { transform: rotate(5deg) translateX(4px) scale(1.03, .97); }
+    55%  { transform: rotate(-4deg) translateX(-3px) scale(.98, 1.03); }
+    80%  { transform: rotate(2deg) translateX(1px) scale(1.01); }
+    100% { transform: rotate(0) translateX(0) scale(1); }
+  }
+
+  svg.pet { width: 100%; height: 100%; display: block; overflow: visible; }
+
+  /* ---------- face ---------- */
+  .eye {
+    transform-box: fill-box;
+    transform-origin: center;
+    transition: transform .5s ease, opacity .7s ease;
+  }
+  [data-mood="drowsy"]   .eye { transform: scaleY(.45); }
+  [data-mood="startled"] .eye { transform: scale(1.28); transition-duration: .12s; }
+  [data-mood="asleep"]   .eye { opacity: 0; }
+  .blinking .eye { animation: blinkK .24s ease-in-out; }
+  @keyframes blinkK {
+    0%, 100% { transform: scaleY(1); }
+    50%      { transform: scaleY(.08); }
+  }
+
+  .eye-lid { opacity: 0; transition: opacity .7s ease; }
+  [data-mood="asleep"] .eye-lid { opacity: 1; }
+
+  .blush { opacity: .15; transition: opacity 1.2s ease; }
+  [data-mood="content"] .blush { opacity: .3; }
+  [data-mood="beaming"] .blush { opacity: .5; }
+
+  .m-var { display: none; }
+  [data-mood="content"]  .mouth-smile,
+  [data-mood="curious"]  .mouth-o,
+  [data-mood="startled"] .mouth-o,
+  [data-mood="beaming"]  .mouth-beam,
+  [data-mood="drowsy"]   .mouth-sleep,
+  [data-mood="asleep"]   .mouth-sleep { display: block; }
+  .fx-munch .m-var { display: none !important; }
+  .fx-munch .mouth-munch {
+    display: block !important;
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: chew .17s ease-in-out 3;
+  }
+  @keyframes chew {
+    0%, 100% { transform: scaleY(1); }
+    50%      { transform: scaleY(.25); }
+  }
+
+  /* ---------- effects ---------- */
+  .shimmer {
+    position: absolute;
+    inset: -12%;
+    border-radius: 50%;
+    background: radial-gradient(circle at 50% 42%, rgba(251,191,36,.22) 0%, rgba(251,191,36,.05) 55%, rgba(251,191,36,0) 72%);
+    mix-blend-mode: screen;
+    opacity: 0;
+    pointer-events: none;
+  }
+  .fx-shimmer .shimmer { animation: shimmerPulse 1.9s ease-in-out forwards; }
+  @keyframes shimmerPulse {
+    0%   { opacity: 0; }
+    30%  { opacity: 1; }
+    100% { opacity: 0; }
+  }
+
+  .fx-layer { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+
+  .fx-heart {
+    position: absolute;
+    top: 28%;
+    width: 22px;
+    height: 22px;
+    opacity: 0;
+    animation: heartFloat 1.5s ease-out forwards;
+  }
+  .fx-heart .h-bleed { fill: #ef9fc3; opacity: .45; }
+  .fx-heart .h-core  { fill: #f6bcd5; opacity: .85; }
+  @keyframes heartFloat {
+    0%   { transform: translate(-50%, 0)     scale(calc(var(--hs, 1) * .55)) rotate(var(--hr, 0deg)); opacity: 0; }
+    18%  { opacity: .95; }
+    100% { transform: translate(-50%, -64px) scale(var(--hs, 1)) rotate(var(--hr, 0deg)); opacity: 0; }
+  }
+
+  .crumb {
+    position: absolute;
+    top: 36%;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #ffe9ad 0%, #fbbf24 60%, rgba(251,191,36,0) 100%);
+    box-shadow: 0 0 8px rgba(251,191,36,.55);
+    animation: crumbFall .55s ease-in forwards;
+  }
+  @keyframes crumbFall {
+    0%   { transform: translate(-50%, 0)    scale(1);  opacity: 0; }
+    14%  { opacity: 1; }
+    100% { transform: translate(-50%, 36px) scale(.2); opacity: 0; }
+  }
+
+  .zzz { display: none; position: absolute; top: 4%; right: 6%; width: 40px; height: 50px; pointer-events: none; }
+  [data-mood="asleep"] .zzz { display: block; }
+  .zzz span {
+    position: absolute;
+    right: 8px;
+    bottom: 4px;
+    color: #8ab4f8;
+    font-style: italic;
+    font-weight: 600;
+    opacity: 0;
+    animation: zFloat 3s ease-in infinite;
+  }
+  .zzz span:nth-child(1) { font-size: 11px; animation-delay: 0s; }
+  .zzz span:nth-child(2) { font-size: 15px; animation-delay: 1s; }
+  .zzz span:nth-child(3) { font-size: 19px; animation-delay: 2s; }
+  @keyframes zFloat {
+    0%   { transform: translate(0, 0);       opacity: 0; }
+    25%  { opacity: .75; }
+    100% { transform: translate(14px, -34px); opacity: 0; }
+  }
+
+  /* ---------- footer HUD ---------- */
+  .hud {
+    flex: 0 0 auto;
+    padding: 8px 14px 10px;
+    border-top: 1px solid rgba(255,255,255,.09);
+    background: rgba(10,14,28,.55);
+  }
+  .hud-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .pet-name {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .04em;
+    color: #e2ecfd;
+  }
+  .pet-name .moon-glyph { color: #8ab4f8; margin-right: 3px; }
+  .mood-word {
+    font-size: 11px;
+    color: #8ab4f8;
+    opacity: .9;
+    font-style: italic;
+    transition: opacity .5s ease;
+  }
+  [data-mood="asleep"] .mood-word { color: #64748b; }
+  .energy-track {
+    height: 3px;
+    border-radius: 2px;
+    background: rgba(255,255,255,.07);
+    overflow: hidden;
+  }
+  .energy-fill {
+    height: 100%;
+    width: 58%;
+    border-radius: 2px;
+    background: linear-gradient(90deg, #5e8ad6 0%, #8ab4f8 60%, #bcd6ff 100%);
+    transition: width .8s ease;
+  }
+  .tag {
+    margin-top: 6px;
+    font-size: 9.5px;
+    color: #64748b;
+    opacity: .8;
+    letter-spacing: .02em;
+  }
+  @media (max-height: 240px) {
+    .tag { display: none; }
+    .hud { padding: 6px 12px 8px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pet-wrap, .glow, .stars i { animation: none; }
+  }
+</style>
+
+<div id="mochi-stage" data-mood="content">
+  <div class="stars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+
+  <div class="arena">
+    <div class="pet-zone" id="petZone" role="button" tabindex="0" aria-label="Pet Mochi" title="pet Mochi">
+      <div class="glow"></div>
+      <div class="pet-wrap">
+        <div class="pet-jiggle" id="petJiggle">
+          <svg class="pet" id="petSvg" viewBox="0 0 220 220" aria-hidden="true">
+            <defs>
+              <radialGradient id="bodyGrad" cx="38%" cy="34%" r="78%">
+                <stop offset="0%"  stop-color="#eef4ff" stop-opacity="0.95"/>
+                <stop offset="45%" stop-color="#c9dcfc" stop-opacity="0.90"/>
+                <stop offset="78%" stop-color="#8ab4f8" stop-opacity="0.62"/>
+                <stop offset="100%" stop-color="#5c84d6" stop-opacity="0.18"/>
+              </radialGradient>
+              <radialGradient id="shadeGrad" cx="72%" cy="58%" r="72%">
+                <stop offset="0%"  stop-color="#27406e" stop-opacity="0"/>
+                <stop offset="60%" stop-color="#1d3358" stop-opacity="0.22"/>
+                <stop offset="100%" stop-color="#13223c" stop-opacity="0.55"/>
+              </radialGradient>
+              <filter id="wc" x="-25%" y="-25%" width="150%" height="150%">
+                <feTurbulence type="fractalNoise" baseFrequency="0.035" numOctaves="3" seed="7" result="noise"/>
+                <feDisplacementMap in="SourceGraphic" in2="noise" scale="14"/>
+              </filter>
+              <filter id="soften" x="-40%" y="-40%" width="180%" height="180%">
+                <feGaussianBlur stdDeviation="7"/>
+              </filter>
+              <filter id="soften2" x="-60%" y="-60%" width="220%" height="220%">
+                <feGaussianBlur stdDeviation="2.4"/>
+              </filter>
+              <filter id="fxBlur" x="-40%" y="-40%" width="180%" height="180%">
+                <feGaussianBlur stdDeviation="1.6"/>
+              </filter>
+            </defs>
+
+            <!-- watercolor bleed halo under the body -->
+            <path d="M 110 40 C 144 38 176 60 180 96 C 184 132 162 172 122 178 C 84 184 44 162 40 118 C 36 76 74 42 110 40 Z"
+                  transform="translate(110 110) scale(1.07) translate(-110 -110)"
+                  fill="#7ba6ee" opacity="0.28" filter="url(#soften)"/>
+
+            <!-- body with displaced (feathered) watercolor edge -->
+            <g filter="url(#wc)">
+              <path d="M 110 40 C 144 38 176 60 180 96 C 184 132 162 172 122 178 C 84 184 44 162 40 118 C 36 76 74 42 110 40 Z"
+                    fill="url(#bodyGrad)"/>
+              <!-- pigment pooling -->
+              <ellipse cx="84" cy="82" rx="30" ry="22" fill="#dce9ff" opacity="0.28"/>
+              <ellipse cx="140" cy="142" rx="27" ry="19" fill="#5d83cf" opacity="0.22"/>
+              <!-- crescent shade (dark limb, lower right) -->
+              <path d="M 110 40 C 144 38 176 60 180 96 C 184 132 162 172 122 178 C 84 184 44 162 40 118 C 36 76 74 42 110 40 Z"
+                    fill="url(#shadeGrad)" opacity="0.85"/>
+              <!-- lit rim, upper left -->
+              <path d="M 48 102 Q 55 56 104 42" fill="none" stroke="#eef5ff" stroke-width="3"
+                    stroke-linecap="round" opacity="0.5" filter="url(#soften2)"/>
+            </g>
+
+            <!-- face (unfiltered, crisp on top) -->
+            <g class="face">
+              <ellipse class="blush" cx="78"  cy="116" rx="9" ry="5" fill="#f2a9c0" filter="url(#soften2)"/>
+              <ellipse class="blush" cx="142" cy="116" rx="9" ry="5" fill="#f2a9c0" filter="url(#soften2)"/>
+
+              <g class="eye">
+                <ellipse cx="85" cy="101" rx="6" ry="8.5" fill="#16243d"/>
+                <circle cx="83" cy="98" r="2.1" fill="#f4f8ff" opacity="0.9"/>
+              </g>
+              <g class="eye">
+                <ellipse cx="135" cy="101" rx="6" ry="8.5" fill="#16243d"/>
+                <circle cx="133" cy="98" r="2.1" fill="#f4f8ff" opacity="0.9"/>
+              </g>
+
+              <path class="eye-lid" d="M 77 102 Q 85 109 93 102"  fill="none" stroke="#16243d" stroke-width="3" stroke-linecap="round"/>
+              <path class="eye-lid" d="M 127 102 Q 135 109 143 102" fill="none" stroke="#16243d" stroke-width="3" stroke-linecap="round"/>
+
+              <g class="mouth">
+                <path class="m-var mouth-smile" d="M 101 124 Q 110 132 119 124" fill="none" stroke="#16243d" stroke-width="3" stroke-linecap="round"/>
+                <path class="m-var mouth-beam"  d="M 98 122 Q 110 140 122 122 Q 110 128 98 122 Z" fill="#16243d"/>
+                <ellipse class="m-var mouth-o" cx="110" cy="127" rx="3.4" ry="4.6" fill="#16243d"/>
+                <path class="m-var mouth-sleep" d="M 104 126 Q 110 130 116 126" fill="none" stroke="#16243d" stroke-width="2.5" stroke-linecap="round"/>
+                <ellipse class="m-var mouth-munch" cx="110" cy="127" rx="6.5" ry="7.5" fill="#16243d"/>
+              </g>
+            </g>
+          </svg>
+        </div>
+      </div>
+      <div class="shimmer" id="shimmerFx"></div>
+      <div class="zzz" aria-hidden="true"><span>z</span><span>z</span><span>z</span></div>
+      <div class="fx-layer" id="fxLayer"></div>
+    </div>
+  </div>
+
+  <footer class="hud">
+    <div class="hud-row">
+      <span class="pet-name"><span class="moon-glyph">&#9790;</span>Mochi</span>
+      <span class="mood-word" id="moodWord">content</span>
+    </div>
+    <div class="energy-track"><div class="energy-fill" id="energyFill"></div></div>
+    <div class="tag">fed by Luna&rsquo;s work &middot; resets on restart</div>
+  </footer>
+</div>
+
+<template id="heartTpl">
+  <svg class="fx-heart" viewBox="0 0 32 32" aria-hidden="true">
+    <path class="h-bleed" filter="url(#fxBlur)"
+          d="M16 27 C 8 20 3 15 3 10 a 6.5 6.5 0 0 1 13 -1.4 A 6.5 6.5 0 0 1 29 10 c 0 5 -5 10 -13 17 Z"/>
+    <path class="h-core" transform="translate(16 16) scale(0.82) translate(-16 -16)"
+          d="M16 27 C 8 20 3 15 3 10 a 6.5 6.5 0 0 1 13 -1.4 A 6.5 6.5 0 0 1 29 10 c 0 5 -5 10 -13 17 Z"/>
+  </svg>
+</template>
+
+<script>
+(function () {
+  "use strict";
+
+  var stage      = document.getElementById("mochi-stage");
+  var petZone    = document.getElementById("petZone");
+  var jiggle     = document.getElementById("petJiggle");
+  var shimmerFx  = document.getElementById("shimmerFx");
+  var fxLayer    = document.getElementById("fxLayer");
+  var moodWord   = document.getElementById("moodWord");
+  var energyFill = document.getElementById("energyFill");
+  var heartTpl   = document.getElementById("heartTpl");
+
+  // ---------- mood model (in-memory only; resets on restart by design) ----------
+  var happiness = 64;          // 0..100
+  var energy = 58;             // 0..100
+  var lastEventAt = Date.now();
+  var startleUntil = 0;
+  var nextBlinkAt = Date.now() + 3000;
+  var recentSnacks = [];
+  var lastTick = Date.now();
+  var shownMood = "";
+  var shownEnergy = -1;
+
+  var HAPPY_DECAY = 100 / (20 * 60);  // empty in ~20 quiet minutes
+  var ENERGY_DECAY = 100 / (30 * 60); // ~30 minutes
+  var SLEEP_REGEN = 0.18;             // energy/sec while asleep
+  var DROWSY_AFTER = 90;              // quiet seconds
+  var ASLEEP_AFTER = 180;
+
+  function clamp(v) { return v < 0 ? 0 : v > 100 ? 100 : v; }
+
+  function computeMood(now) {
+    if (now < startleUntil) return "startled";
+    var quiet = (now - lastEventAt) / 1000;
+    if (quiet > ASLEEP_AFTER) return "asleep";
+    if (quiet > DROWSY_AFTER || energy < 15) return "drowsy";
+    if (happiness >= 78) return "beaming";
+    if (happiness >= 45) return "content";
+    return "curious";
+  }
+
+  function render(now) {
+    now = now || Date.now();
+    var m = computeMood(now);
+    if (m !== shownMood) {
+      shownMood = m;
+      stage.dataset.mood = m;
+      moodWord.textContent = m;
+    }
+    var w = Math.round(energy);
+    if (w !== shownEnergy) {
+      shownEnergy = w;
+      energyFill.style.width = w + "%";
+    }
+  }
+
+  // ---------- transient animation helpers ----------
+  function flash(cls) {
+    if (stage.classList.contains(cls)) {
+      stage.classList.remove(cls);
+      void jiggle.offsetWidth; // restart the animation
+    }
+    stage.classList.add(cls);
+  }
+
+  jiggle.addEventListener("animationend", function (e) {
+    if (e.animationName === "munchBounce") stage.classList.remove("fx-munch");
+    else if (e.animationName === "wobble") stage.classList.remove("fx-startle");
+    else if (e.animationName === "nuzzle") stage.classList.remove("fx-nuzzle");
+    else if (e.animationName === "blinkK") stage.classList.remove("blinking");
+  });
+
+  shimmerFx.addEventListener("animationend", function () {
+    stage.classList.remove("fx-shimmer");
+  });
+
+  // ---------- particles ----------
+  function spawnCrumb() {
+    if (fxLayer.childElementCount > 18) return;
+    var c = document.createElement("span");
+    c.className = "crumb";
+    c.style.left = (46 + Math.random() * 8) + "%";
+    c.addEventListener("animationend", function () { c.remove(); });
+    fxLayer.appendChild(c);
+  }
+
+  function spawnHearts() {
+    if (fxLayer.childElementCount > 18) return;
+    var n = 1 + Math.floor(Math.random() * 3);
+    for (var i = 0; i < n; i++) {
+      var h = heartTpl.content.firstElementChild.cloneNode(true);
+      h.style.left = (38 + Math.random() * 24) + "%";
+      h.style.animationDelay = (i * 130) + "ms";
+      h.style.setProperty("--hs", (0.7 + Math.random() * 0.6).toFixed(2));
+      h.style.setProperty("--hr", Math.round(Math.random() * 30 - 15) + "deg");
+      h.addEventListener("animationend", function (e) { e.currentTarget.remove(); });
+      fxLayer.appendChild(h);
+    }
+  }
+
+  // ---------- interactions ----------
+  function petIt() {
+    var now = Date.now();
+    lastEventAt = now;
+    happiness = clamp(happiness + 6);
+    energy = clamp(energy + 1.5);
+    flash("fx-nuzzle");
+    spawnHearts();
+    render(now);
+  }
+
+  petZone.addEventListener("pointerdown", petIt);
+  petZone.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      petIt();
+    }
+  });
+
+  // ---------- Luna event diet ----------
+  function onEvent(ev) {
+    if (!ev || typeof ev.kind !== "string") return;
+    var now = Date.now();
+    if (ev.kind === "ToolCall") {
+      lastEventAt = now;
+      recentSnacks.push(now);
+      var tasty = ev.status === "success";
+      energy = clamp(energy + (tasty ? 6 : 3));
+      happiness = clamp(happiness + (tasty ? 3.5 : 1));
+      spawnCrumb();
+      flash("fx-munch");
+    } else if (ev.kind === "CostAccrued") {
+      lastEventAt = now;
+      happiness = clamp(happiness + 2.5);
+      flash("fx-shimmer");
+    } else if (ev.kind === "Error") {
+      lastEventAt = now;
+      happiness = clamp(happiness - 7);
+      startleUntil = now + 1800;
+      flash("fx-startle");
+    } else {
+      return;
+    }
+    render(now);
+  }
+
+  // ---------- the one tick: decay, liveliness, blink scheduling ----------
+  function tick() {
+    var now = Date.now();
+    var dt = Math.min((now - lastTick) / 1000, 120); // throttle-safe delta
+    lastTick = now;
+
+    if (shownMood === "asleep") {
+      energy = clamp(energy + SLEEP_REGEN * dt);   // it sleeps to recover
+      happiness = clamp(happiness - HAPPY_DECAY * 0.25 * dt);
+    } else {
+      happiness = clamp(happiness - HAPPY_DECAY * dt);
+      energy = clamp(energy - ENERGY_DECAY * dt);
+    }
+
+    if (document.hidden) return; // skip all visual work while hidden
+
+    while (recentSnacks.length && now - recentSnacks[0] > 12000) recentSnacks.shift();
+    stage.classList.toggle("lively", recentSnacks.length >= 3);
+
+    var m = computeMood(now);
+    if (m !== "asleep" && m !== "drowsy" && now >= nextBlinkAt) {
+      flash("blinking");
+      nextBlinkAt = now + 2600 + Math.random() * 3800;
+    }
+
+    render(now);
+  }
+
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) {
+      shownMood = "";
+      shownEnergy = -1;
+      render();
+    }
+  });
+
+  setInterval(tick, 1000);
+  render();
+
+  // ---------- boot ----------
+  try {
+    if (window.luna && typeof window.luna.subscribe === "function") {
+      window.luna.subscribe(["ToolCall", "CostAccrued", "Error"], onEvent);
+    }
+  } catch (err) { /* stay decorative if the bridge misbehaves */ }
+  if (window.luna && typeof window.luna.ready === "function") {
+    window.luna.ready();
+  }
+})();
+</script>

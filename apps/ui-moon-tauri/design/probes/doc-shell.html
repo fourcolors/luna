@@ -1,0 +1,257 @@
+<style>
+  /* ── Reset & base ───────────────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  body {
+    background: #0a0e1c;
+    color: #dbe5f8;
+    font-family: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.65;
+    /* Moonlight radial wash — top-centre, extremely subtle */
+    background-image: radial-gradient(
+      ellipse 60% 28% at 50% -4%,
+      rgba(138, 180, 248, 0.07) 0%,
+      transparent 100%
+    );
+    background-attachment: local;
+  }
+
+  /* ── Scroll container ───────────────────────────────────────────────── */
+  .doc-scroll {
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 28px 24px 48px;
+  }
+
+  /* ── Thin webkit scrollbar ──────────────────────────────────────────── */
+  .doc-scroll::-webkit-scrollbar { width: 5px; }
+  .doc-scroll::-webkit-scrollbar-track { background: transparent; }
+  .doc-scroll::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.10);
+    border-radius: 3px;
+  }
+  .doc-scroll::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.18);
+  }
+
+  /* ── Article wrapper ────────────────────────────────────────────────── */
+  .doc {
+    max-width: 520px;
+    margin: 0 auto;
+  }
+
+  /* ── Headings ───────────────────────────────────────────────────────── */
+  .doc h1 {
+    font-size: 1.35rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    color: #edf2ff;
+    line-height: 1.25;
+    margin-bottom: 10px;
+    padding-bottom: 10px;
+    /* Watercolor accent: soft blue wash underline */
+    border-bottom: 2px solid transparent;
+    border-image: linear-gradient(
+      90deg,
+      rgba(138, 180, 248, 0.55) 0%,
+      rgba(138, 180, 248, 0.12) 60%,
+      transparent 100%
+    ) 1;
+  }
+
+  .doc h2 {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: #c9d9f7;
+    letter-spacing: -0.005em;
+    margin-top: 2.2em;
+    margin-bottom: 0.55em;
+    padding-top: 0.75em;
+    border-top: 1px solid rgba(255, 255, 255, 0.09);
+  }
+
+  .doc h3 {
+    font-size: 0.93rem;
+    font-weight: 600;
+    color: #b0c4e8;
+    margin-top: 1.6em;
+    margin-bottom: 0.4em;
+  }
+
+  /* Suppress top border on first h2 immediately after h1 */
+  .doc h1 + h2 {
+    border-top: none;
+    padding-top: 0;
+    margin-top: 1.4em;
+  }
+
+  /* ── Paragraphs & inline ────────────────────────────────────────────── */
+  .doc p {
+    margin-bottom: 0.85em;
+    color: #dbe5f8;
+  }
+
+  .doc em { font-style: italic; color: #c8daf5; }
+  .doc strong { font-weight: 650; color: #edf2ff; }
+
+  .doc a {
+    color: #8ab4f8;
+    text-decoration: none;
+    border-bottom: 1px solid rgba(138, 180, 248, 0.25);
+    transition: border-color 0.15s;
+  }
+  .doc a:hover { border-bottom-color: rgba(138, 180, 248, 0.65); }
+
+  /* ── Lists ──────────────────────────────────────────────────────────── */
+  .doc ul, .doc ol {
+    margin: 0.3em 0 0.85em 0;
+    padding-left: 1.5em;
+  }
+  .doc ul { list-style: disc; }
+  .doc ol { list-style: decimal; }
+
+  .doc li { margin-bottom: 0.28em; }
+  .doc li > ul,
+  .doc li > ol { margin-top: 0.22em; margin-bottom: 0.22em; }
+
+  /* Nested lists — slightly dimmer */
+  .doc li > ul > li,
+  .doc li > ol > li { color: #b0c4e8; }
+
+  /* ── Tables ─────────────────────────────────────────────────────────── */
+  /*
+   * Wide tables get horizontal scroll. Because the seed script emits plain
+   * <table> tags with no wrapper, we target the table directly:
+   * display:block lets overflow-x work on a table element.
+   */
+  .doc table {
+    display: block;
+    overflow-x: auto;
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    line-height: 1.45;
+    margin: 0.8em 0 1.1em;
+    color: #c9d9f7;
+    -webkit-overflow-scrolling: touch;
+  }
+  .doc table::-webkit-scrollbar { height: 4px; }
+  .doc table::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.10);
+    border-radius: 2px;
+  }
+
+  .doc thead tr {
+    background: rgba(138, 180, 248, 0.08);
+  }
+  .doc thead th {
+    font-weight: 600;
+    color: #b8cfee;
+    text-align: left;
+    padding: 5px 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.11);
+    white-space: nowrap;
+  }
+
+  .doc tbody tr:nth-child(even) {
+    background: rgba(255, 255, 255, 0.03);
+  }
+  .doc tbody tr:hover {
+    background: rgba(138, 180, 248, 0.05);
+  }
+  .doc td {
+    padding: 4px 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    vertical-align: top;
+  }
+
+  /* ── Code blocks (pre > code) ───────────────────────────────────────── */
+  .doc pre {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    padding: 12px 14px;
+    margin: 0.5em 0 1em;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .doc pre::-webkit-scrollbar { height: 4px; }
+  .doc pre::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.10);
+    border-radius: 2px;
+  }
+
+  .doc pre > code {
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo,
+                 "DejaVu Sans Mono", monospace;
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: #c5d8f4;
+    white-space: pre;         /* no wrap — horizontal scroll on <pre> */
+    background: none;
+    border: none;
+    padding: 0;
+    border-radius: 0;
+  }
+
+  /* ── Inline code ────────────────────────────────────────────────────── */
+  .doc code {
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo,
+                 "DejaVu Sans Mono", monospace;
+    font-size: 11.5px;
+    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 3px;
+    padding: 1px 5px;
+    color: #b8d4f7;
+  }
+
+  /* ── Blockquote ─────────────────────────────────────────────────────── */
+  .doc blockquote {
+    border-left: 3px solid rgba(138, 180, 248, 0.40);
+    margin: 0.7em 0 0.9em;
+    padding: 4px 0 4px 14px;
+    color: #8fa8cc;
+    font-style: italic;
+  }
+  .doc blockquote p { margin-bottom: 0.3em; color: inherit; }
+
+  /* ── Horizontal rule ────────────────────────────────────────────────── */
+  .doc hr {
+    border: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    margin: 1.8em 0;
+  }
+
+  /* ── Footer treatment (last <p> inside .doc-footer or .doc > footer) ── */
+  .doc footer,
+  .doc .doc-footer {
+    margin-top: 2.5em;
+    padding-top: 1em;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+    font-size: 11.5px;
+    color: #4a5568;
+    line-height: 1.5;
+  }
+  .doc footer p,
+  .doc .doc-footer p { color: inherit; margin-bottom: 0.3em; }
+
+  /* Also mute the very last <p> in .doc as a light footer fallback */
+  .doc > p:last-child {
+    font-size: 11.5px;
+    color: #4a5568;
+  }
+</style>
+
+<div class="doc-scroll">
+  <article class="doc"><!-- DOC_BODY --></article>
+</div>
