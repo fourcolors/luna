@@ -286,9 +286,19 @@ window registry.
 - `capabilities/panels.json`; global shortcut + show/hide iterate all windows;
   hub-owns-exit lifecycle policy in `main.rs`.
 
+**Phase 0.5 — windowing playground (throwaway, gates Phase 2)** — a dev-only
+command spawns N dummy panel windows (static content, no WS) on the real shell:
+real capabilities, the fixed deck-snap path, the lifecycle policy. Operator
+verdict on: spawn latency, snap-on-release feel, last-touched-wins z-order
+livability, memory at 10/20/30 windows (Instruments). Prototype the risk, not
+the product — the platform unknowns get answered for days of work before the
+expensive extraction bet. Delete the harness after the verdict; keep the numbers
+in this doc.
+
 **Phase 1 — shared modules (S0/S1)** — extract `moon-protocol/markdown/theme/ws`,
 consume from `index.html`, frame switch → registry. Pure refactor, tests green,
-zero behavior change. Ship alone.
+zero behavior change. Ship alone — worth it even if the playground verdict
+changes the panel plan, because the 11.5k-line monolith is a liability either way.
 
 **Phase 2 — chat panel (S2/S3)** — `chat.html` + `open_chat_panel` command;
 moon click spawns/focuses it; sub-engines move; snap anchor parameterized to
