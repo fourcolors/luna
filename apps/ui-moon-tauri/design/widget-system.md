@@ -260,12 +260,16 @@ against the live layout.
   Guard against the spurious `onMoved` from minimize (Tauri #7664) and from
   programmatic `setPosition` (suppression flag — the feedback-loop trap is
   documented at `index.html:10470`).
-- **Group-drag** (dragging a docked cluster as one): deferred. Requires a
-  Rust-side registry — `WindowEvent::Moved` handler in `main.rs` maintaining a
-  label→rect map + dock graph, applying follower deltas with the suppression
-  flag. JS-side follower dragging would oscillate (two windows self-snapping at
-  each other) and lag per IPC tick. Native `addChildWindow` is a future option
-  (macOSPrivateApi already on) but kills independent drag while parented.
+- **Group-drag** (dragging a docked cluster as one): **shipped** (Phase 0.5
+  operator feedback). Rust-side dock graph in `main.rs`: widgets report dock
+  state after every settle-snap (`set_dock`); the `WindowEvent::Moved` arm
+  applies the hub's drag delta to every docked widget, with per-label
+  suppression *counters* so follower echoes don't re-propagate. WinAmp
+  semantics: dragging the hub carries the group; dragging a docked widget by
+  itself moves only that widget — that is the detach gesture. (JS-side
+  follower dragging was rejected: it would oscillate and lag per IPC tick.
+  Native `addChildWindow` remains a future option but kills independent drag
+  while parented.)
 - ⚠️ **Phase 0 blocker:** the shipped self-snap has never run — `widget.html:438`
   misses `await` on `Window.getByLabel('main')` (async in Tauri 2), so
   `mainWin.outerPosition()` throws into the swallow-catch at `:460`. Fix,
