@@ -58,7 +58,7 @@ Three decisions that drive everything downstream. Dated, with rationale.
 - **Chosen**: Dual-mode `AccountBroker`:
   - `acquireSession()` — rotates the Anthropic OAuth subscription token per `query()` call via SDK's `options.env.CLAUDE_CODE_OAUTH_TOKEN`. Per-query granularity, no subprocess respawn needed.
   - `acquireTool(name)` — rotates credentials for MCP servers + custom tools we own. Per-invocation, transparent wrap.
-- **Verified evidence**: production usage confirms this pattern works: the Claude Agent SDK respects `options.env` overlays per-query; the subprocess honors the injected token without restart. Our earlier concern ("subprocess owns HTTP, can't rotate without respawn") was wrong in practice.
+- **Observed behaviour**: the Claude Agent SDK respects `options.env` overlays per-query; the subprocess honors the injected token without restart. Our earlier concern ("subprocess owns HTTP, can't rotate without respawn") was wrong in practice.
 - **Consequence**: `AccountBroker` is truly transparent. Rotation strategies (round-robin, LRU, least-used-with-429-awareness) specified in §9.3. Sticky-pin on session resume (`boundAccountId`) preserves prompt-cache warmth.
 - **Token type**: OAuth subscription tokens (1-year TTL, from `claude setup-token`), not API keys. Pool stored at `~/.luna/accounts.db` (SQLite per §5.1) via `SecretProvider`, never as plaintext env vars.
 

@@ -260,11 +260,11 @@ Modify `apps/ui-web/scripts/dev-server-chat.ts`:
   inline via `OnePasswordSecretProvider.make({ token, accountLabel:
   label })`. The env-var token uses label `env` IF you keep it in
   the routed pool — actually NO, `env` is a reserved label. Decide:
-  - Option (i): drop the env-var fallback entirely — Operator's
-    The agent shell shouldn't be relied on; keychain is the source
+  - Option (i): drop the env-var fallback entirely — the agent shell
+    shouldn't be relied on; keychain is the source
     of truth. Cleaner.
   - Option (ii): give the env-var-sourced token an internal label
-    like `envtok` (not reserved). Operator's The agent shell
+    like `envtok` (not reserved). The agent shell
     continues to work as a hidden default account.
   Lean **(i) drop** — but make this an explicit decision in your
   return summary so Operator can override. Discuss tradeoff in the
