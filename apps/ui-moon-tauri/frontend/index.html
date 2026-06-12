@@ -9638,6 +9638,9 @@
       function start() { if (running) return; running = true; calm = 0; lastT = performance.now(); acc = 0; raf = requestAnimationFrame(loop); }
 
       function show() {
+        // TODO: bead fires even when connected — disable until showTether() is
+        // properly gated on actual disconnection. Re-enable once the bug is fixed.
+        return;
         if (live) return;
         live = true; retracting = false; dropping = true;
         updateAnchor();
