@@ -116,7 +116,7 @@ const sourceLabel = (source: VaultWireItem["source"]): string => {
  *  undefined over plain http from a non-localhost host. Fall back to a
  *  Date+Math.random combination (not cryptographically strong, but fine
  *  for correlation IDs that never leave the session). */
-export const newReqId = () =>
+const newReqId = () =>
   "vlt_" +
   (globalThis.crypto?.randomUUID?.() ??
     `${Date.now()}_${Math.random().toString(36).slice(2)}`)

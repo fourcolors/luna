@@ -719,6 +719,13 @@ export const startUIWebSocketServer = (
     // Browsers can't set custom headers on WebSocket upgrades, so we accept
     // EITHER `Authorization: Bearer <token>` (Node clients) OR a `?token=`
     // query-string parameter (browser clients). Same token, both forms.
+    //
+    // Audit hardening: log failed auth attempts (source IP + no token material)
+    // so ops can detect brute-force or misconfigured clients. Also emit a
+    // one-time-per-source console.log on the FIRST successful connect from each
+    // unique IP (de-duplication avoids log spam from long-lived Moon reconnects).
+    const _firstConnectSeen = new Set<string>()
+
     httpServer.on("upgrade", (req, socket, head) => {
       const rawUrl = req.url ?? ""
       // Strip query string for path match.
@@ -746,9 +753,18 @@ export const startUIWebSocketServer = (
         }
       }
       if (!ok) {
+        // Audit finding: log failed auth — IP only, no token material.
+        const srcIp = (socket as { remoteAddress?: string }).remoteAddress ?? "unknown"
+        console.warn(`[ui-ws] auth failed — 401 sent to ${srcIp}`)
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n")
         socket.destroy()
         return
+      }
+      // First-successful-connect notice per source IP (one-time, de-duped).
+      const connIp = (socket as { remoteAddress?: string }).remoteAddress ?? "unknown"
+      if (!_firstConnectSeen.has(connIp)) {
+        _firstConnectSeen.add(connIp)
+        console.log(`[ui-ws] first connect from ${connIp}`)
       }
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit("connection", ws, req)

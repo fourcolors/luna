@@ -114,6 +114,18 @@ describe("reconcileVaultItems — denylist", () => {
     expect(toAdopt).toHaveLength(2)
     expect(toAdopt.map((i) => i.ref).sort()).toEqual(["env:OPENAI_API_KEY", "env:SOME_KEY"])
   })
+
+  // Audit finding: denylist must be CASE-INSENSITIVE so mixed-case variants
+  // (e.g. luna_x, Ui_Ws_Token) are equally blocked.
+  it("never adopts mixed-case variants of UI_WS_TOKEN or LUNA_*", () => {
+    const { toAdopt } = reconcileVaultItems({
+      envVarNames: ["ui_ws_token", "Ui_Ws_Token", "luna_connector_x", "Luna_Internal"],
+      opTokenLabels: [],
+      existing: [],
+      now: NOW,
+    })
+    expect(toAdopt).toHaveLength(0)
+  })
 })
 
 // ---------------------------------------------------------------------------

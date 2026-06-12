@@ -155,6 +155,50 @@ describe("makeRegisterSecret — env-secret", () => {
     expect(persistEnv).not.toHaveBeenCalled()
   })
 
+  // Audit finding: agent write path must reject reserved Luna-internal names
+  // before calling persistEnvSecret. Check is CASE-INSENSITIVE.
+  it("rejects UI_WS_TOKEN — reserved, persistEnv never called", async () => {
+    const { deps, persistEnv } = happyDeps()
+    const res = await makeRegisterSecret(deps)(
+      { kind: "env-secret", varName: "UI_WS_TOKEN" },
+      "tok",
+    )
+    expect(res.ok).toBe(false)
+    expect(res.message).toContain("reserved")
+    expect(persistEnv).not.toHaveBeenCalled()
+  })
+
+  it("rejects ui_ws_token (lowercase) — case-insensitive check", async () => {
+    const { deps, persistEnv } = happyDeps()
+    const res = await makeRegisterSecret(deps)(
+      { kind: "env-secret", varName: "ui_ws_token" },
+      "tok",
+    )
+    expect(res.ok).toBe(false)
+    expect(persistEnv).not.toHaveBeenCalled()
+  })
+
+  it("rejects LUNA_X — LUNA_* prefix reserved", async () => {
+    const { deps, persistEnv } = happyDeps()
+    const res = await makeRegisterSecret(deps)(
+      { kind: "env-secret", varName: "LUNA_X" },
+      "tok",
+    )
+    expect(res.ok).toBe(false)
+    expect(res.message).toContain("reserved")
+    expect(persistEnv).not.toHaveBeenCalled()
+  })
+
+  it("rejects luna_connector_y (lowercase LUNA_*) — case-insensitive check", async () => {
+    const { deps, persistEnv } = happyDeps()
+    const res = await makeRegisterSecret(deps)(
+      { kind: "env-secret", varName: "luna_connector_y" },
+      "tok",
+    )
+    expect(res.ok).toBe(false)
+    expect(persistEnv).not.toHaveBeenCalled()
+  })
+
   it("returns ok:false (opaque) when env persist throws", async () => {
     const { deps } = happyDeps({
       persistEnvSecret: async () => {

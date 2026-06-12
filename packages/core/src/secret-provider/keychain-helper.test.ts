@@ -12,8 +12,11 @@ import { EventEmitter } from "node:events"
 import { describe, expect, it, vi } from "vitest"
 import { Effect, Exit, Redacted } from "effect"
 import {
+  deleteKeychainSecret,
   readKeychainToken,
+  writeKeychainSecret,
   type KeychainHelperInternals,
+  type KeychainQuery,
 } from "./keychain-helper.js"
 import {
   EnvSecretProvider,
@@ -61,6 +64,35 @@ const fakeExecFileHang: KeychainHelperInternals["_execFile"] = ((
 ) => {
   return makeFakeChild() as unknown as ChildProcess
 }) as unknown as KeychainHelperInternals["_execFile"]
+
+/**
+ * Capturing fake for the write/delete suites: records (cmd, args, opts),
+ * invokes the callback with the supplied result, and emits "close" so the
+ * helper's timeout guard is cleared — otherwise a ref'd 5.1s timer lingers
+ * past the assertion and stalls vitest worker teardown.
+ */
+const makeCapturingExecFile = (
+  result: {
+    err: ExecFileException | null
+    stdout?: string
+    stderr?: string
+  },
+  sink?: Array<{ cmd: string; args: ReadonlyArray<string>; opts: unknown }>,
+): KeychainHelperInternals["_execFile"] =>
+  ((
+    cmd: string,
+    args: ReadonlyArray<string>,
+    opts: unknown,
+    cb: ExecFileCallback,
+  ) => {
+    sink?.push({ cmd, args, opts })
+    const child = makeFakeChild()
+    queueMicrotask(() => {
+      cb(result.err, result.stdout ?? "", result.stderr ?? "")
+      child.emit("close", result.err ? (result.err.code ?? 1) : 0)
+    })
+    return child as unknown as ChildProcess
+  }) as unknown as KeychainHelperInternals["_execFile"]
 
 describe("readKeychainToken — unit", () => {
   it("happy path returns trimmed token", async () => {
@@ -250,5 +282,88 @@ describe("secretProviderFirstOf — multi-account routing", () => {
     )
     expect(Redacted.value(got)).toBe("env-wins")
     delete process.env.MULTI_OP_FALLBACK
+  })
+})
+
+describe("keychain-helper write/delete", () => {
+  const q: KeychainQuery = {
+    service: "luna.vault.OPENAI_API_KEY",
+    account: "OPENAI_API_KEY",
+  }
+
+  it("writes with security add-generic-password -U without leaking the value", async () => {
+    const calls: Array<{
+      cmd: string
+      args: ReadonlyArray<string>
+      opts: unknown
+    }> = []
+    const fakeExecFile = makeCapturingExecFile({ err: null }, calls)
+
+    await Effect.runPromise(
+      writeKeychainSecret(q, "super-secret-value", {
+        _platform: "darwin",
+        _execFile: fakeExecFile,
+      }),
+    )
+
+    expect(calls[0]?.cmd).toBe("security")
+    expect(calls[0]?.args).toEqual([
+      "add-generic-password",
+      "-U",
+      "-s",
+      "luna.vault.OPENAI_API_KEY",
+      "-a",
+      "OPENAI_API_KEY",
+      "-w",
+      "super-secret-value",
+    ])
+  })
+
+  it("deletes idempotently when security reports item not found", async () => {
+    const err = Object.assign(new Error("missing"), {
+      code: 44,
+    }) as ExecFileException
+    const fakeExecFile = makeCapturingExecFile({ err })
+
+    // Must resolve, not reject: a missing entry is a no-op delete.
+    await Effect.runPromise(
+      deleteKeychainSecret(q, {
+        _platform: "darwin",
+        _execFile: fakeExecFile,
+      }),
+    )
+  })
+
+  it("fails without shelling out on non-darwin", async () => {
+    const fakeExecFile = vi.fn() as never
+    const exit = await Effect.runPromiseExit(
+      writeKeychainSecret(q, "value", {
+        _platform: "linux",
+        _execFile: fakeExecFile,
+      }),
+    )
+
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(fakeExecFile).not.toHaveBeenCalled()
+  })
+
+  it("write/read errors do not include secret values", async () => {
+    const err = Object.assign(new Error("boom"), {
+      code: 1,
+    }) as ExecFileException
+    const fakeExecFile = makeCapturingExecFile({
+      err,
+      stderr: "security failed",
+    })
+
+    const exit = await Effect.runPromiseExit(
+      readKeychainToken(q, {
+        _platform: "darwin",
+        _execFile: fakeExecFile,
+      }),
+    )
+
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(JSON.stringify(exit)).not.toContain("super-secret-value")
   })
 })
