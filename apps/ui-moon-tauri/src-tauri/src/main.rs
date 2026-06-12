@@ -1533,6 +1533,27 @@ fn main() {
         // last-window-closed exit fires. The reverse never holds: closing a
         // widget leaves the hub (and the app) alive.
         .on_window_event(|window, event| {
+            // Detach dock edges the moment a close is REQUESTED — before the
+            // window dies. Closing a native parent takes its attached
+            // children down with it (AppKit cascade), so a grouped root's ✕
+            // used to close the whole cluster instead of just itself.
+            // close() always emits CloseRequested first; the Destroyed arm
+            // below stays as the safety net for destroy() paths.
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                let app = window.app_handle();
+                let (diff, survivors) = {
+                    let state = app.state::<DockState>();
+                    let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
+                    let before = s.members_of(window.label());
+                    let (diff, _departed) = s.leave(window.label(), false);
+                    let survivors: Vec<String> = before
+                        .into_iter()
+                        .filter(|m| m != window.label())
+                        .collect();
+                    (diff, survivors)
+                };
+                dock_apply_and_notify(&app, diff, survivors);
+            }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 let app = window.app_handle();
                 // Dock hygiene: the dead window leaves its group. Survivors
