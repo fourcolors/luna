@@ -167,6 +167,7 @@ const makeChatLoopQuery = (params: {
     interrupt: async () => {},
     setPermissionMode: async () => {},
     setModel: async () => {},
+    applyFlagSettings: async () => {},
     setMaxThinkingTokens: async () => {},
     supplyToolPermissionResponse: async () => {},
     mcpServerStatus: async () => ({}),
@@ -206,6 +207,7 @@ const makeStreamingQuery = (params: {
     interrupt: async () => {},
     setPermissionMode: async () => {},
     setModel: async () => {},
+    applyFlagSettings: async () => {},
     setMaxThinkingTokens: async () => {},
     supplyToolPermissionResponse: async () => {},
     mcpServerStatus: async () => ({}),
@@ -531,6 +533,7 @@ describe("ChatService (Tier-2 sim)", () => {
           interrupt: async () => {},
           setPermissionMode: async () => {},
           setModel: async () => {},
+          applyFlagSettings: async () => {},
           setMaxThinkingTokens: async () => {},
           supplyToolPermissionResponse: async () => {},
           mcpServerStatus: async () => ({}),
@@ -605,6 +608,7 @@ describe("ChatService (Tier-2 sim)", () => {
           interrupt: async () => {},
           setPermissionMode: async () => {},
           setModel: async () => {},
+          applyFlagSettings: async () => {},
           setMaxThinkingTokens: async () => {},
           supplyToolPermissionResponse: async () => {},
           mcpServerStatus: async () => ({}),
@@ -1027,9 +1031,15 @@ describe("ChatService (Tier-2 sim)", () => {
         expect(fs.existsSync(mapPath)).toBe(true)
         const map = JSON.parse(fs.readFileSync(mapPath, "utf8")) as Record<
           string,
-          string
+          unknown
         >
-        expect(map[createdThreadId!]).toBe(SDK_UUID)
+        // New format: object with sid field (legacy bare strings also supported)
+        const entry = map[createdThreadId!]
+        const sid = typeof entry === "string" ? entry
+          : (entry !== null && typeof entry === "object" && "sid" in (entry as Record<string, unknown>)
+            ? (entry as Record<string, unknown>)["sid"]
+            : undefined)
+        expect(sid).toBe(SDK_UUID)
       } finally {
         if (prevHome !== undefined) {
           process.env["LUNA_HOME"] = prevHome
@@ -1291,6 +1301,7 @@ describe("ChatService (Tier-2 sim)", () => {
           interrupt: async () => {},
           setPermissionMode: async () => {},
           setModel: async () => {},
+          applyFlagSettings: async () => {},
           setMaxThinkingTokens: async () => {},
           supplyToolPermissionResponse: async () => {},
           mcpServerStatus: async () => ({}),

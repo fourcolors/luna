@@ -116,6 +116,7 @@ const makeChatLoopQuery = (params: {
     interrupt: async () => {},
     setPermissionMode: async () => {},
     setModel: async () => {},
+    applyFlagSettings: async () => {},
     setMaxThinkingTokens: async () => {},
     supplyToolPermissionResponse: async () => {},
     mcpServerStatus: async () => ({}),
@@ -599,6 +600,87 @@ describe("UIWebSocketServer (chat routing)", () => {
     )
 
     expect(capturedOptions?.systemPrompt).toBe("Z-IDENTITY-Z")
+  })
+
+  it("new-thread with effort field: effortSelection capability is true", async () => {
+    // When ChatService is bound, effortSelection must be advertised as true
+    // so clients know they can send set-thread-config frames.
+    rig = await startChatRig()
+    const frames = await collectFrames(rig.url, 1)
+    expect(frames[0]?.type).toBe("hello")
+    if (frames[0]?.type === "hello") {
+      expect(frames[0].capabilities?.effortSelection).toBe(true)
+    }
+  })
+
+  it("new-thread with effort field: thread-created frame reflects the thread id", async () => {
+    // new-thread carries effort — the server must not drop the thread if
+    // effort is present. Verify thread-created arrives cleanly.
+    rig = await startChatRig()
+    const allFrames = await driveSequence(
+      rig.url,
+      [
+        {
+          waitFor: (f) => f.type === "hello",
+          thenSend: () => [
+            {
+              type: "new-thread",
+              model: "claude-sonnet-4-6",
+              effort: "high",
+              title: "effort-thread",
+            },
+          ],
+        },
+      ],
+      // hello + thread-created + thread-snapshot + possible obs event frames
+      4,
+    )
+    const created = allFrames.find((f) => f.type === "thread-created")
+    expect(created).toBeDefined()
+    if (created?.type === "thread-created") {
+      expect(typeof created.thread.id).toBe("string")
+      expect(created.thread.id.length).toBeGreaterThan(0)
+    }
+  })
+
+  it("set-thread-config → thread-config ack is emitted", async () => {
+    // Full round-trip: create a thread, then send set-thread-config with
+    // effort=high. The server must respond with a thread-config frame
+    // listing "effort" in applied.
+    rig = await startChatRig()
+    const allFrames = await driveSequence(
+      rig.url,
+      [
+        {
+          waitFor: (f) => f.type === "hello",
+          thenSend: () => [
+            { type: "new-thread", model: "claude-sonnet-4-6", title: "config-test" },
+          ],
+        },
+        {
+          // Wait for thread-snapshot (confirms auto-subscribe is ready).
+          waitFor: (f) => f.type === "thread-snapshot",
+          thenSend: (snap) => {
+            if (snap.type !== "thread-snapshot") return []
+            return [
+              {
+                type: "set-thread-config",
+                threadId: snap.threadId,
+                effort: "medium",
+              },
+            ]
+          },
+        },
+      ],
+      // hello + thread-created + thread-snapshot + thread-config + possible obs event
+      5,
+    )
+    const configFrame = allFrames.find((f) => f.type === "thread-config")
+    expect(configFrame).toBeDefined()
+    if (configFrame?.type === "thread-config") {
+      expect(configFrame.applied).toContain("effort")
+      expect(configFrame.effort).toBe("medium")
+    }
   })
 
   it("malformed JSON inbound frame does not crash the connection", async () => {

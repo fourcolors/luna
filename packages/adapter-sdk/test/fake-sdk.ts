@@ -49,6 +49,7 @@ export const makeFakeQuery = (opts: FakeQueryOptions): FakeQueryInstance => {
       state.modeChanges.push(mode)
     },
     setModel: async (_m?: string) => {},
+    applyFlagSettings: async (_s: unknown) => {},
     setMaxThinkingTokens: async (_n: number) => {},
     supplyToolPermissionResponse: async () => {},
     mcpServerStatus: async () => ({}),

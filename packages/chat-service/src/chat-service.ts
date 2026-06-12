@@ -71,8 +71,14 @@ import {
 import { extractArtifacts } from "./artifacts.js"
 import {
   appendThreadSessionEntry,
+  appendThreadConfigEntry,
   loadThreadSessionMap,
 } from "./thread-session-map.js"
+import { isEffort, type EffortLevel } from "./effort.js"
+import {
+  resolveKind,
+  readProviderEnv,
+} from "@luna/core"
 
 /* -------------------------------------------------------------------------- */
 /* Internal per-thread state                                                  */
@@ -311,6 +317,12 @@ export class ChatService extends Effect.Service<ChatService>()(
           // call. Without this slot a caller-supplied model is silently dropped
           // and every thread routes to the broker's default (anthropic).
           ...(opts.model !== undefined ? { model: opts.model } : {}),
+          // Effort level: forwarded verbatim to the SDK. Only valid for
+          // models that support it (Sonnet 4.6, Fable 5, Opus 4.8); the
+          // SDK silently ignores it for models that don't. Per-model
+          // clamping is the caller's responsibility (chat-server.ts
+          // clampEffort runs before this).
+          ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
           cwd:
             opts.cwd ??
             process.env["LUNA_REPO_ROOT"] ??
@@ -939,6 +951,148 @@ export class ChatService extends Effect.Service<ChatService>()(
           yield* inc("luna.chat.interrupts.total")
         })
 
+      /**
+       * Live model + effort update for an existing thread.
+       *
+       * - effort: applied immediately via `Query.applyFlagSettings`. Wrapped
+       *   in Effect.tryPromise + catchAll (same pattern as interrupt() at
+       *   chat-service.ts:923). `"max"` maps to `effortLevel:"xhigh"` for the
+       *   live-switch because Settings.effortLevel doesn't include "max"; the
+       *   initial thread creation already uses Options.effort (all 5 levels).
+       * - model: applied immediately via `Query.setModel` ONLY when the new
+       *   model is in the same provider lane as the current model (resolveKind
+       *   comparison). Cross-lane switches are deferred (queued for the next
+       *   thread creation) because the SDK subprocess can't hot-swap its
+       *   credential chain mid-session.
+       *
+       * Both changes are persisted via store.setOptions + appendThreadConfigEntry.
+       * The ack object is returned for the WS handler to forward as a
+       * `thread-config` frame to the requesting client.
+       */
+      const setThreadConfig = (opts: {
+        readonly threadId: string
+        readonly model?: string
+        readonly effort?: EffortLevel
+      }): Effect.Effect<{
+        readonly threadId: string
+        readonly model?: string
+        readonly effort?: EffortLevel
+        readonly applied: ReadonlyArray<"model" | "effort">
+        readonly deferred: ReadonlyArray<"model" | "effort">
+        readonly rejected?: ReadonlyArray<{ readonly field: "model" | "effort"; readonly reason: string }>
+      }, never> =>
+        Effect.gen(function* () {
+          const { threadId, model, effort } = opts
+          const applied: Array<"model" | "effort"> = []
+          const deferred: Array<"model" | "effort"> = []
+          const rejected: Array<{ field: "model" | "effort"; reason: string }> = []
+
+          const m = yield* Ref.get(threads)
+          const entry = m.get(threadId)
+          if (!entry) {
+            // Unknown thread — reject everything gracefully
+            if (model !== undefined) rejected.push({ field: "model", reason: "unknown thread" })
+            if (effort !== undefined) rejected.push({ field: "effort", reason: "unknown thread" })
+            return { threadId, applied, deferred, ...(rejected.length > 0 ? { rejected } : {}) }
+          }
+
+          const handle = yield* adapter.getQueryHandle(threadId)
+          const providerEnv = readProviderEnv()
+
+          // ── Effort ──────────────────────────────────────────────────────────
+          if (effort !== undefined) {
+            if (!isEffort(effort)) {
+              rejected.push({ field: "effort", reason: `unknown effort level: ${effort}` })
+            } else if (handle !== null) {
+              // Live-switch via applyFlagSettings. "max" maps to "xhigh" for
+              // Settings.effortLevel (which omits "max"); the initial thread
+              // creation used Options.effort (all 5 levels supported there).
+              const settingsLevel: "low" | "medium" | "high" | "xhigh" =
+                effort === "max" ? "xhigh" : effort
+              yield* Effect.tryPromise(() =>
+                handle.applyFlagSettings({ effortLevel: settingsLevel }),
+              ).pipe(Effect.catchAll(() => Effect.void))
+              applied.push("effort")
+              // Persist: merge effort into the stored sdkOptions (read-patch-write
+              // so we don't discard other sdkOptions fields).
+              const existingOpts = yield* store.getOptions(threadId)
+              const mergedSdk = { ...(existingOpts?.sdkOptions ?? {}), effort }
+              yield* store.setOptions(threadId, { sdkOptions: mergedSdk }).pipe(
+                Effect.catchAll(() => Effect.void),
+              )
+              const lunaHome = process.env["LUNA_HOME"]
+              if (lunaHome !== undefined) {
+                appendThreadConfigEntry(lunaHome, threadId, { effort })
+              }
+            } else {
+              // No live handle — still accept and persist as deferred intent
+              applied.push("effort")
+              const lunaHome = process.env["LUNA_HOME"]
+              if (lunaHome !== undefined) {
+                appendThreadConfigEntry(lunaHome, threadId, { effort })
+              }
+            }
+          }
+
+          // ── Model ────────────────────────────────────────────────────────────
+          if (model !== undefined) {
+            if (typeof model !== "string" || model.trim() === "") {
+              rejected.push({ field: "model", reason: "model id must be a non-empty string" })
+            } else {
+              // Same-lane check: compare provider kind of current vs next model.
+              // If lanes differ, setModel mid-session would switch the SDK subprocess
+              // to a provider it has no credential for → defer to next thread creation.
+              const currentOptions = yield* store.getOptions(threadId)
+              const currentModel = currentOptions?.sdkOptions?.model as string | undefined
+              const currentKind = currentModel !== undefined
+                ? resolveKind(currentModel, providerEnv)
+                : "anthropic" // default lane
+              const nextKind = resolveKind(model, providerEnv)
+
+              if (currentKind !== nextKind) {
+                // Cross-lane: deferred (next thread creation uses the new model)
+                deferred.push("model")
+                const lunaHome = process.env["LUNA_HOME"]
+                if (lunaHome !== undefined) {
+                  appendThreadConfigEntry(lunaHome, threadId, { model })
+                }
+              } else if (handle !== null) {
+                // Same lane + live handle → hot-swap via setModel
+                yield* Effect.tryPromise(() => handle.setModel(model)).pipe(
+                  Effect.catchAll(() => Effect.void),
+                )
+                applied.push("model")
+                // Persist: update both top-level model and sdkOptions.model
+                const existingOpts2 = yield* store.getOptions(threadId)
+                const mergedSdk2 = { ...(existingOpts2?.sdkOptions ?? {}), model }
+                yield* store.setOptions(threadId, { model, sdkOptions: mergedSdk2 }).pipe(
+                  Effect.catchAll(() => Effect.void),
+                )
+                const lunaHome = process.env["LUNA_HOME"]
+                if (lunaHome !== undefined) {
+                  appendThreadConfigEntry(lunaHome, threadId, { model })
+                }
+              } else {
+                // Same lane but no live handle (thread idle) → still accept
+                applied.push("model")
+                const lunaHome = process.env["LUNA_HOME"]
+                if (lunaHome !== undefined) {
+                  appendThreadConfigEntry(lunaHome, threadId, { model })
+                }
+              }
+            }
+          }
+
+          return {
+            threadId,
+            ...(model !== undefined ? { model } : {}),
+            ...(effort !== undefined ? { effort } : {}),
+            applied: applied as ReadonlyArray<"model" | "effort">,
+            deferred: deferred as ReadonlyArray<"model" | "effort">,
+            ...(rejected.length > 0 ? { rejected: rejected as ReadonlyArray<{ readonly field: "model" | "effort"; readonly reason: string }> } : {}),
+          }
+        })
+
       /** Subscribe to a thread's live ChatFrame stream. The Stream emits
        *  exactly one `snapshot` frame first (the persisted history) then
        *  pipes through PubSub. Returns an empty Stream for unknown threadIds
@@ -964,21 +1118,40 @@ export class ChatService extends Effect.Service<ChatService>()(
               // via the SDK's JSONL backing; the visual snapshot will be
               // empty until new messages arrive.
               const lunaHome = process.env["LUNA_HOME"]
-              const persistedSdkId =
+              const persistedEntry =
                 lunaHome !== undefined
                   ? loadThreadSessionMap(lunaHome)[threadId]
                   : undefined
+              // Support both legacy bare-string (sid only) and new object shape
+              const persistedSdkId =
+                persistedEntry !== undefined
+                  ? typeof persistedEntry === "string"
+                    ? persistedEntry
+                    : persistedEntry.sid
+                  : undefined
               if (persistedSdkId !== undefined) {
-                // NO model here: the thread-session-map doesn't persist the
-                // original model, and a hardcoded one now actually ROUTES
-                // (GAP#3 threads model → sdkOptions.model → broker/SDK), so it
-                // would silently switch a recovered thread's model/provider
-                // mid-conversation. Omitting it routes the broker's "default"
-                // lane and leaves the SDK model unset — the SDK resumes the
-                // session with its own persisted settings.
+                // Rebuild createThread with the persisted model and effort so
+                // a recovered thread routes to the same provider and applies
+                // the same effort level the user originally selected.
+                // Legacy entries (bare strings) have no model/effort — omit
+                // them to keep the existing "default lane" behavior.
+                const savedModel =
+                  typeof persistedEntry === "object" && persistedEntry !== null
+                    ? persistedEntry.model
+                    : undefined
+                const savedEffort =
+                  typeof persistedEntry === "object" && persistedEntry !== null
+                    ? persistedEntry.effort
+                    : undefined
+                const validEffort =
+                  savedEffort !== undefined && isEffort(savedEffort)
+                    ? savedEffort
+                    : undefined
                 yield* createThread({
                   threadIdOverride: threadId,
                   resumeFromSessionId: persistedSdkId,
+                  ...(savedModel !== undefined ? { model: savedModel } : {}),
+                  ...(validEffort !== undefined ? { effort: validEffort } : {}),
                 })
                 const m2 = yield* Ref.get(threads)
                 entry = m2.get(threadId)
@@ -1086,6 +1259,7 @@ export class ChatService extends Effect.Service<ChatService>()(
         createThread,
         send,
         interrupt,
+        setThreadConfig,
         subscribe,
         listThreads,
         searchMemory,

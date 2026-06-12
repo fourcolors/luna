@@ -441,6 +441,11 @@ export const reduce = (state: UIState, action: Action): UIState => {
       // folded into persistent store state (the fresh vault-list that follows
       // a successful mutation already updates the list).
       return state
+    case "thread-config":
+      // Ack for set-thread-config. The store has no model/effort state today
+      // (that lives in cfg().model/cfg().effort in App.tsx). The UI layer
+      // reads applied/deferred/rejected from this frame directly. No-op here.
+      return state
     default: {
       // Exhaustiveness guard: when every ServerFrame member has a matching
       // case arm, TypeScript narrows `frame` to `never` here. Adding a new

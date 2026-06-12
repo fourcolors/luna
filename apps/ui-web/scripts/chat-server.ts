@@ -360,10 +360,60 @@ const BUILD_SHA = resolveBuildSha()
  * without running bootstrap() (the import.meta.main guard).
  */
 
-/** A single selectable model entry. */
+/** Effort level values accepted by the SDK and the wire protocol. */
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max"
+
+/** All effort levels in ascending strength order. */
+export const ALL_EFFORTS: readonly Effort[] = ["low", "medium", "high", "xhigh", "max"]
+
+/**
+ * Effort-validity matrix — server-side single source of truth.
+ *
+ * Returns the subset of effort levels valid for the given model id. An empty
+ * array means the model takes no effort parameter. Callers (buildAvailableModels)
+ * attach this to every entry so clients never compute the matrix themselves.
+ *
+ * Pattern rules (lowest-specificity first):
+ *   - Haiku → no effort (too fast; effort param is a no-op).
+ *   - Fable / Opus 4.8 → all five levels (maximum reasoning models).
+ *   - Sonnet 4.6 → low/medium/high/max (no xhigh).
+ *   - Everything else → no effort (safest default for unknown models).
+ */
+export const effortsForModel = (id: string): readonly Effort[] => {
+  const m = id.toLowerCase()
+  if (/haiku/.test(m)) return []
+  if (/fable|opus-4-(8)|opus-4\.?8/.test(m)) return ALL_EFFORTS
+  if (/sonnet-4-6|sonnet-4\.?6/.test(m)) return ["low", "medium", "high", "max"]
+  return []
+}
+
+/**
+ * Clamp an effort value to what the given model actually supports.
+ * Returns the effort unchanged when it is valid for the model, drops it when
+ * the model takes no effort param (e.g. Haiku), and falls back to the highest
+ * supported level when the exact level is unsupported.
+ *
+ * `dropped: true` means the caller should omit the effort field entirely.
+ */
+export const clampEffort = (
+  modelId: string | undefined,
+  effort: Effort | undefined,
+): { effort?: Effort; dropped: boolean } => {
+  if (effort === undefined) return { dropped: false }
+  if (modelId === undefined) return { effort, dropped: false }
+  const supported = effortsForModel(modelId)
+  if (supported.length === 0) return { dropped: true }
+  if ((supported as string[]).includes(effort)) return { effort, dropped: false }
+  // Unsupported level: fall back to highest supported
+  return { effort: supported[supported.length - 1]!, dropped: false }
+}
+
+/** A single selectable model entry (with server-computed effort matrix). */
 export interface UiModelEntry {
   readonly id: string
   readonly label: string
+  /** Effort levels valid for this model — server-computed. See effortsForModel(). */
+  readonly efforts?: readonly Effort[]
 }
 
 /**
@@ -405,11 +455,14 @@ export const parseUiModels = (raw: string | undefined): ReadonlyArray<UiModelEnt
  * The built-in base list of selectable models shown when the operator has
  * not overridden via LUNA_UI_MODELS. This list is the recommended default
  * capability spread; entries are deduped (extras-first) in buildAvailableModels.
+ * The first entry is the recommended default (highest capability or operator-
+ * preferred). Efforts are attached server-side via effortsForModel().
  */
-const BASE_MODELS: ReadonlyArray<UiModelEntry> = [
-  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 — balanced" },
-  { id: "claude-opus-4-7",   label: "Claude Opus 4.7 — most capable" },
-  { id: "claude-haiku-4-5",  label: "Claude Haiku 4.5 — fastest" },
+const BASE_MODELS: ReadonlyArray<{ readonly id: string; readonly label: string }> = [
+  { id: "claude-sonnet-4-6",   label: "Claude Sonnet 4.6 — balanced" },
+  { id: "claude-fable-5",       label: "Fable 5 (1M context)" },
+  { id: "claude-opus-4-8",      label: "Claude Opus 4.8 — most capable" },
+  { id: "claude-haiku-4-5",     label: "Claude Haiku 4.5 — fastest" },
 ]
 
 /**
@@ -418,7 +471,8 @@ const BASE_MODELS: ReadonlyArray<UiModelEntry> = [
  * Operator-configured extras (from LUNA_UI_MODELS) come FIRST in the
  * output, making them the UI's recommended default.  The built-in base
  * models follow, deduped by id (an extra that overrides a base model id
- * keeps the extra's label and position).
+ * keeps the extra's label and position). Efforts are attached to every entry
+ * via effortsForModel() so clients never compute the matrix themselves.
  *
  * Accepts an optional `env` parameter (defaults to `process.env`) so unit
  * tests can inject a synthetic environment without touching process.env.
@@ -426,10 +480,13 @@ const BASE_MODELS: ReadonlyArray<UiModelEntry> = [
 export const buildAvailableModels = (env: NodeJS.ProcessEnv = process.env): Array<UiModelEntry> => {
   const extras = parseUiModels(env["LUNA_UI_MODELS"])
   const seenIds = new Set(extras.map((e) => e.id))
-  const deduped: Array<UiModelEntry> = [...extras]
+  const deduped: Array<UiModelEntry> = extras.map((e) => ({
+    ...e,
+    efforts: effortsForModel(e.id),
+  }))
   for (const base of BASE_MODELS) {
     if (!seenIds.has(base.id)) {
-      deduped.push(base)
+      deduped.push({ ...base, efforts: effortsForModel(base.id) })
     }
   }
   return deduped

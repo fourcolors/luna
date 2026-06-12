@@ -639,4 +639,53 @@ describe("UIWebSocketServer", () => {
       throw new Error("expected hello frame")
     }
   })
+
+  // ── efforts in hello frame ────────────────────────────────────────────────
+  // The server populates the `efforts` field per model entry so clients never
+  // compute the matrix themselves. Haiku → [], Fable/Opus-4.8 → all 5 levels.
+
+  it("hello frame: haiku model entry has empty efforts array", async () => {
+    const models = [
+      { id: "claude-haiku-4-5", label: "Haiku 4.5", efforts: [] as readonly string[] },
+    ]
+    rig = await startRig(undefined, { availableModels: models })
+    const frames = await collectFrames(rig.url, { authorization: `Bearer ${TOKEN}` }, 1)
+    if (frames[0]?.type === "hello") {
+      const haiku = frames[0].availableModels?.find((m) => m.id === "claude-haiku-4-5")
+      expect(haiku?.efforts).toEqual([])
+    } else {
+      throw new Error("expected hello frame")
+    }
+  })
+
+  it("hello frame: fable model entry has all 5 effort levels", async () => {
+    const allEfforts = ["low", "medium", "high", "xhigh", "max"] as const
+    const models = [
+      { id: "claude-fable-5", label: "Fable 5", efforts: allEfforts as readonly string[] },
+    ]
+    rig = await startRig(undefined, { availableModels: models })
+    const frames = await collectFrames(rig.url, { authorization: `Bearer ${TOKEN}` }, 1)
+    if (frames[0]?.type === "hello") {
+      const fable = frames[0].availableModels?.find((m) => m.id === "claude-fable-5")
+      expect(fable?.efforts).toEqual(["low", "medium", "high", "xhigh", "max"])
+    } else {
+      throw new Error("expected hello frame")
+    }
+  })
+
+  it("hello frame: effortSelection capability is present when chat is wired in", async () => {
+    // The effortSelection capability is set to `chat !== null` in server.ts — it's
+    // only absent when no chat service is attached (the non-chat rig used here).
+    // In the basic server.test.ts rig, chat IS null → effortSelection must be false.
+    rig = await startRig()
+    const frames = await collectFrames(rig.url, { authorization: `Bearer ${TOKEN}` }, 1)
+    if (frames[0]?.type === "hello") {
+      // Capability is present (even if false for no-chat rig).
+      expect(Object.prototype.hasOwnProperty.call(frames[0].capabilities, "effortSelection")).toBe(true)
+      // No chat attached → false.
+      expect(frames[0].capabilities?.effortSelection).toBe(false)
+    } else {
+      throw new Error("expected hello frame")
+    }
+  })
 })

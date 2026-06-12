@@ -47,7 +47,16 @@ export interface HelloFrame {
    * The server includes it when `availableModels` is threaded into
    * `startUIWebSocketServer`; older/setup-mode servers omit it entirely.
    */
-  readonly availableModels?: ReadonlyArray<{ readonly id: string; readonly label: string }>
+  readonly availableModels?: ReadonlyArray<{
+    readonly id: string
+    readonly label: string
+    /**
+     * Effort levels valid for THIS model, server-computed. Absent on older
+     * servers; empty array = model takes no effort param (e.g. Haiku). Clients
+     * never compute the matrix — always defer to this field when present.
+     */
+    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max">
+  }>
   /** Capability flags so older clients can negotiate down. */
   readonly capabilities: {
     readonly chat: boolean
@@ -62,6 +71,13 @@ export interface HelloFrame {
      * per-turn timeline instead of waiting on a turn-complete that never comes.
      */
     readonly turnComplete: boolean
+    /**
+     * Server accepts `set-thread-config` frames and computes the effort-validity
+     * matrix per-model (advertised in the `availableModels.efforts` array).
+     * Clients hide effort controls when this flag is absent or false.
+     * OPTIONAL/additive — no protocol bump.
+     */
+    readonly effortSelection?: boolean
     /**
      * PRD Part B (Skills): the server has a SkillRegistry bound — it sends a
      * `skill-catalog` frame after `hello` and routes `skill-toggle`. OPTIONAL
@@ -918,6 +934,27 @@ export interface McpToolResultFrame {
   readonly message?: string
 }
 
+/**
+ * Server→client: ack for a `set-thread-config` request. Sent only to the
+ * requesting connection (not broadcast — the change is per-thread not
+ * per-session, and other connections can detect the diff on next message).
+ *
+ * `applied` lists the fields that were accepted and are effective NOW for the
+ * in-flight SDK session. `deferred` lists fields accepted but queued for the
+ * NEXT thread creation (e.g. cross-lane model switch — cannot hot-swap mid-
+ * conversation). `rejected` lists fields that were invalid or unsupported,
+ * with a short non-sensitive reason.
+ */
+export interface ThreadConfigFrame {
+  readonly type: "thread-config"
+  readonly threadId: string
+  readonly model?: string
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
+  readonly applied: ReadonlyArray<"model" | "effort">
+  readonly deferred: ReadonlyArray<"model" | "effort">
+  readonly rejected?: ReadonlyArray<{ readonly field: "model" | "effort"; readonly reason: string }>
+}
+
 export type ServerFrame =
   | HelloFrame
   | EventFrame
@@ -962,6 +999,7 @@ export type ServerFrame =
   | WidgetOpenFrame
   | McpResourceResultFrame
   | McpToolResultFrame
+  | ThreadConfigFrame
 
 /* -------------------------------------------------------------------------- */
 /* Client → server                                                            */
@@ -994,6 +1032,8 @@ export interface NewThreadFrame {
   readonly title?: string
   readonly tags?: ReadonlyArray<string>
   readonly systemPrompt?: string
+  /** Additive effort level for this thread. Older servers ignore it. */
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
 }
 
 /**
@@ -1177,6 +1217,19 @@ export interface SkillToggleFrame {
   readonly enabled: boolean
 }
 
+/**
+ * Client→server: update the model and/or effort for an existing thread.
+ * Additive — gated on the `effortSelection` capability; older servers route
+ * this to the unknown-frame log and ignore it. At most one of model/effort
+ * is required; omitting both is a no-op (server replies with empty applied[]).
+ */
+export interface SetThreadConfigFrame {
+  readonly type: "set-thread-config"
+  readonly threadId: string
+  readonly model?: string
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
+}
+
 export type ClientFrame =
   | PongFrame
   | ByeFrame
@@ -1212,3 +1265,4 @@ export type ClientFrame =
   | VaultDeleteFrame
   | VaultSyncConfigFrame
   | VaultImportFrame
+  | SetThreadConfigFrame
