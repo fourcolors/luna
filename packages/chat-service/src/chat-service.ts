@@ -74,7 +74,7 @@ import {
   appendThreadConfigEntry,
   loadThreadSessionMap,
 } from "./thread-session-map.js"
-import { isEffort, type EffortLevel } from "./effort.js"
+import { clampEffort, isEffort, type EffortLevel } from "./effort.js"
 import {
   resolveKind,
   readProviderEnv,
@@ -308,6 +308,13 @@ export class ChatService extends Effect.Service<ChatService>()(
             ? { CLAUDE_CONFIG_DIR: process.env["CLAUDE_CONFIG_DIR"] }
             : {}),
         }
+        // Per-model effort clamp (effort.ts effortsForModel — the same matrix
+        // the hello frame advertises). This is the enforcement point for
+        // every createThread caller (ui-ws new-thread, subscribe()-recovery,
+        // direct API): an invalid combo from a stale or hand-rolled client
+        // (e.g. haiku+max) never reaches the SDK options. createThread logs
+        // when the clamp drops or adjusts the level.
+        const effortClamp = clampEffort(opts.model, opts.effort)
         const sdkOptions: Record<string, unknown> = {
           includePartialMessages: true,
           // GAP#3: the SDK adapter routes by `sdkOptions.model` (the broker reads
@@ -317,12 +324,11 @@ export class ChatService extends Effect.Service<ChatService>()(
           // call. Without this slot a caller-supplied model is silently dropped
           // and every thread routes to the broker's default (anthropic).
           ...(opts.model !== undefined ? { model: opts.model } : {}),
-          // Effort level: forwarded verbatim to the SDK. Only valid for
-          // models that support it (Sonnet 4.6, Fable 5, Opus 4.8); the
-          // SDK silently ignores it for models that don't. Per-model
-          // clamping is the caller's responsibility (chat-server.ts
-          // clampEffort runs before this).
-          ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
+          // Effort level: the clamped value (see effortClamp above) — never
+          // the raw wire value. A dropped effort is omitted entirely.
+          ...(effortClamp.effort !== undefined
+            ? { effort: effortClamp.effort }
+            : {}),
           cwd:
             opts.cwd ??
             process.env["LUNA_REPO_ROOT"] ??
@@ -430,6 +436,23 @@ export class ChatService extends Effect.Service<ChatService>()(
           })
           const sessionOptions = buildSessionOptions(effectiveOpts)
 
+          // Per-model clamp result for logging + eager persistence below.
+          // The same pure clamp already ran inside buildSessionOptions —
+          // recomputing it here avoids widening that function's return type.
+          const createClamp = clampEffort(opts.model, opts.effort)
+          if (opts.effort !== undefined && createClamp.dropped) {
+            yield* Effect.logWarning(
+              `[chat] createThread: effort '${opts.effort}' dropped — model '${opts.model ?? "(default)"}' takes no effort parameter`,
+            )
+          } else if (
+            opts.effort !== undefined &&
+            createClamp.effort !== opts.effort
+          ) {
+            yield* Effect.logWarning(
+              `[chat] createThread: effort '${opts.effort}' clamped to '${createClamp.effort}' for model '${opts.model ?? "(default)"}'`,
+            )
+          }
+
           // Create the session row first — fail loudly if id collides.
           const summary = yield* store
             .create({ id, options: sessionOptions, createdAt })
@@ -491,6 +514,27 @@ export class ChatService extends Effect.Service<ChatService>()(
                   }
                 }
               : undefined
+
+          // Eagerly persist the creation-time model/effort (clamped) so a
+          // selection made BEFORE the first turn survives a restart — the
+          // SDK session id only arrives asynchronously via onSdkSessionId,
+          // and the later sid write merges into this entry rather than
+          // replacing it (appendThreadSessionEntry preserves model/effort).
+          if (
+            lunaHome !== undefined &&
+            (opts.model !== undefined || createClamp.effort !== undefined)
+          ) {
+            try {
+              appendThreadConfigEntry(lunaHome, id, {
+                ...(opts.model !== undefined ? { model: opts.model } : {}),
+                ...(createClamp.effort !== undefined
+                  ? { effort: createClamp.effort }
+                  : {}),
+              })
+            } catch {
+              // Best-effort persistence — must not break live chat.
+            }
+          }
 
           // The adapter.query call is provided with the thread scope so its
           // AbortController + watchdog tear down when we close threadScope.
@@ -954,18 +998,23 @@ export class ChatService extends Effect.Service<ChatService>()(
       /**
        * Live model + effort update for an existing thread.
        *
-       * - effort: applied immediately via `Query.applyFlagSettings`. Wrapped
-       *   in Effect.tryPromise + catchAll (same pattern as interrupt() at
-       *   chat-service.ts:923). `"max"` maps to `effortLevel:"xhigh"` for the
-       *   live-switch because Settings.effortLevel doesn't include "max"; the
-       *   initial thread creation already uses Options.effort (all 5 levels).
+       * - effort: clamped against the per-model matrix (effort.ts) FIRST —
+       *   the reference model is the one this call switches to when
+       *   provided, else the thread's current model. A model that takes no
+       *   effort (e.g. haiku) → `rejected`; an unsupported level → clamped
+       *   to the highest supported. Valid levels are applied live via
+       *   `Query.applyFlagSettings` ("max" runs as "xhigh" — see the
+       *   ThreadConfigFrame contract in protocol.ts).
        * - model: applied immediately via `Query.setModel` ONLY when the new
        *   model is in the same provider lane as the current model (resolveKind
        *   comparison). Cross-lane switches are deferred (queued for the next
        *   thread creation) because the SDK subprocess can't hot-swap its
        *   credential chain mid-session.
        *
-       * Both changes are persisted via store.setOptions + appendThreadConfigEntry.
+       * `applied` is pushed ONLY after the live SDK call succeeds; a thrown
+       * applyFlagSettings/setModel lands the field in `rejected` and skips
+       * persistence (the ack never reports success on a failed switch).
+       * Accepted changes persist via store.setOptions + appendThreadConfigEntry.
        * The ack object is returned for the WS handler to forward as a
        * `thread-config` frame to the requesting client.
        */
@@ -999,37 +1048,86 @@ export class ChatService extends Effect.Service<ChatService>()(
           const handle = yield* adapter.getQueryHandle(threadId)
           const providerEnv = readProviderEnv()
 
+          // Pre-change options, read BEFORE any write: the effort clamp's
+          // reference model and the lane guard both want the state as it was
+          // when the request arrived. Persist steps below re-read fresh
+          // state so the effort write isn't clobbered by the model merge.
+          const preOptions = yield* store.getOptions(threadId)
+          const currentModel = preOptions?.sdkOptions?.model as string | undefined
+
+          // The effort echoed in the ack: the EFFECTIVE level when accepted
+          // (clamping may adjust it), the requested level otherwise.
+          let ackEffort = effort
+
           // ── Effort ──────────────────────────────────────────────────────────
           if (effort !== undefined) {
-            if (!isEffort(effort)) {
+            // Per-model clamp (the same matrix the hello advertises). The
+            // reference is the model this call switches to when provided,
+            // else the thread's current model — so an effort-only change on
+            // a haiku thread is rejected, and sonnet+xhigh clamps to max.
+            const referenceModel =
+              typeof model === "string" && model.trim() !== ""
+                ? model
+                : currentModel
+            const clamp = isEffort(effort)
+              ? clampEffort(referenceModel, effort)
+              : undefined
+            if (clamp === undefined) {
               rejected.push({ field: "effort", reason: `unknown effort level: ${effort}` })
-            } else if (handle !== null) {
-              // Live-switch via applyFlagSettings. "max" maps to "xhigh" for
-              // Settings.effortLevel (which omits "max"); the initial thread
-              // creation used Options.effort (all 5 levels supported there).
-              const settingsLevel: "low" | "medium" | "high" | "xhigh" =
-                effort === "max" ? "xhigh" : effort
-              yield* Effect.tryPromise(() =>
-                handle.applyFlagSettings({ effortLevel: settingsLevel }),
-              ).pipe(Effect.catchAll(() => Effect.void))
-              applied.push("effort")
-              // Persist: merge effort into the stored sdkOptions (read-patch-write
-              // so we don't discard other sdkOptions fields).
-              const existingOpts = yield* store.getOptions(threadId)
-              const mergedSdk = { ...(existingOpts?.sdkOptions ?? {}), effort }
-              yield* store.setOptions(threadId, { sdkOptions: mergedSdk }).pipe(
-                Effect.catchAll(() => Effect.void),
+            } else if (clamp.dropped) {
+              rejected.push({
+                field: "effort",
+                reason: `model ${referenceModel ?? "(default)"} takes no effort parameter`,
+              })
+              yield* Effect.logWarning(
+                `[chat] set-thread-config: effort '${effort}' rejected — model '${referenceModel ?? "(default)"}' takes no effort parameter`,
               )
-              const lunaHome = process.env["LUNA_HOME"]
-              if (lunaHome !== undefined) {
-                appendThreadConfigEntry(lunaHome, threadId, { effort })
-              }
             } else {
-              // No live handle — still accept and persist as deferred intent
-              applied.push("effort")
-              const lunaHome = process.env["LUNA_HOME"]
-              if (lunaHome !== undefined) {
-                appendThreadConfigEntry(lunaHome, threadId, { effort })
+              const effective = clamp.effort ?? effort
+              if (effective !== effort) {
+                yield* Effect.logWarning(
+                  `[chat] set-thread-config: effort '${effort}' clamped to '${effective}' for model '${referenceModel ?? "(default)"}'`,
+                )
+              }
+              // Live-switch via applyFlagSettings. "max" runs as "xhigh" on
+              // the LIVE query only — Settings.effortLevel has no "max". Per
+              // the ThreadConfigFrame contract (protocol.ts), the ack still
+              // reports the accepted thread-level preference ("max"); the
+              // persisted value applies exactly on the next rebuild
+              // (recovery / new thread), which uses Options.effort.
+              let liveOk = true
+              if (handle !== null) {
+                const settingsLevel: "low" | "medium" | "high" | "xhigh" =
+                  effective === "max" ? "xhigh" : effective
+                liveOk = yield* Effect.tryPromise(() =>
+                  handle.applyFlagSettings({ effortLevel: settingsLevel }),
+                ).pipe(
+                  Effect.as(true),
+                  Effect.catchAll(() => Effect.succeed(false)),
+                )
+              }
+              if (liveOk) {
+                // Confirmed (or no live handle — accepted as queued intent).
+                applied.push("effort")
+                ackEffort = effective
+                // Persist: merge effort into the stored sdkOptions
+                // (read-patch-write so other sdkOptions fields survive).
+                const existingOpts = yield* store.getOptions(threadId)
+                const mergedSdk = { ...(existingOpts?.sdkOptions ?? {}), effort: effective }
+                yield* store.setOptions(threadId, { sdkOptions: mergedSdk }).pipe(
+                  Effect.catchAll(() => Effect.void),
+                )
+                const lunaHome = process.env["LUNA_HOME"]
+                if (lunaHome !== undefined) {
+                  appendThreadConfigEntry(lunaHome, threadId, { effort: effective })
+                }
+              } else {
+                // The SDK call threw — the ack must NOT report success, and
+                // the unapplied value must NOT persist.
+                rejected.push({ field: "effort", reason: "live effort switch failed" })
+                yield* Effect.logWarning(
+                  "[chat] set-thread-config: applyFlagSettings failed — effort not applied",
+                )
               }
             }
           }
@@ -1042,8 +1140,6 @@ export class ChatService extends Effect.Service<ChatService>()(
               // Same-lane check: compare provider kind of current vs next model.
               // If lanes differ, setModel mid-session would switch the SDK subprocess
               // to a provider it has no credential for → defer to next thread creation.
-              const currentOptions = yield* store.getOptions(threadId)
-              const currentModel = currentOptions?.sdkOptions?.model as string | undefined
               const currentKind = currentModel !== undefined
                 ? resolveKind(currentModel, providerEnv)
                 : "anthropic" // default lane
@@ -1057,20 +1153,30 @@ export class ChatService extends Effect.Service<ChatService>()(
                   appendThreadConfigEntry(lunaHome, threadId, { model })
                 }
               } else if (handle !== null) {
-                // Same lane + live handle → hot-swap via setModel
-                yield* Effect.tryPromise(() => handle.setModel(model)).pipe(
-                  Effect.catchAll(() => Effect.void),
+                // Same lane + live handle → hot-swap via setModel. Success-
+                // gated: a thrown setModel lands in `rejected`, not `applied`,
+                // and the unapplied value is not persisted.
+                const liveOk = yield* Effect.tryPromise(() => handle.setModel(model)).pipe(
+                  Effect.as(true),
+                  Effect.catchAll(() => Effect.succeed(false)),
                 )
-                applied.push("model")
-                // Persist: update both top-level model and sdkOptions.model
-                const existingOpts2 = yield* store.getOptions(threadId)
-                const mergedSdk2 = { ...(existingOpts2?.sdkOptions ?? {}), model }
-                yield* store.setOptions(threadId, { model, sdkOptions: mergedSdk2 }).pipe(
-                  Effect.catchAll(() => Effect.void),
-                )
-                const lunaHome = process.env["LUNA_HOME"]
-                if (lunaHome !== undefined) {
-                  appendThreadConfigEntry(lunaHome, threadId, { model })
+                if (liveOk) {
+                  applied.push("model")
+                  // Persist: update both top-level model and sdkOptions.model
+                  const existingOpts2 = yield* store.getOptions(threadId)
+                  const mergedSdk2 = { ...(existingOpts2?.sdkOptions ?? {}), model }
+                  yield* store.setOptions(threadId, { model, sdkOptions: mergedSdk2 }).pipe(
+                    Effect.catchAll(() => Effect.void),
+                  )
+                  const lunaHome = process.env["LUNA_HOME"]
+                  if (lunaHome !== undefined) {
+                    appendThreadConfigEntry(lunaHome, threadId, { model })
+                  }
+                } else {
+                  rejected.push({ field: "model", reason: "live model switch failed" })
+                  yield* Effect.logWarning(
+                    "[chat] set-thread-config: setModel failed — model not applied",
+                  )
                 }
               } else {
                 // Same lane but no live handle (thread idle) → still accept
@@ -1086,7 +1192,7 @@ export class ChatService extends Effect.Service<ChatService>()(
           return {
             threadId,
             ...(model !== undefined ? { model } : {}),
-            ...(effort !== undefined ? { effort } : {}),
+            ...(ackEffort !== undefined ? { effort: ackEffort } : {}),
             applied: applied as ReadonlyArray<"model" | "effort">,
             deferred: deferred as ReadonlyArray<"model" | "effort">,
             ...(rejected.length > 0 ? { rejected: rejected as ReadonlyArray<{ readonly field: "model" | "effort"; readonly reason: string }> } : {}),

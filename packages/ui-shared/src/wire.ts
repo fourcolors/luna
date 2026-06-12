@@ -580,6 +580,13 @@ export interface VaultImportFrame {
  * Server→client: ack for a `set-thread-config` request. `applied` = effective
  * NOW; `deferred` = queued for next thread creation (e.g. cross-lane model
  * switch); `rejected` = invalid/unsupported fields with a short reason.
+ *
+ * Effort semantic for `"max"`: the ack reports the accepted THREAD-LEVEL
+ * preference, and `effort` echoes the value the server actually accepted
+ * (clamping may adjust it). A mid-thread switch to "max" runs the current
+ * thread's live query at the closest live level ("xhigh" — the SDK's
+ * Settings.effortLevel has no "max") and applies exactly as "max" on the
+ * next rebuild (recovery or new thread, which use Options.effort).
  * Mirrors packages/ui-ws/src/protocol.ts — keep in sync.
  */
 export interface ThreadConfigFrame {

@@ -11,10 +11,16 @@
  * Shape: a single JSON file `~/.luna/thread-session-map.json` whose top-level
  * keys are Luna thread ids (`thr_<base36>_<rand>`) and values are EITHER:
  *   - A bare string (legacy format) — the SDK session UUID.
- *   - An object `{sid: string, model?: string, effort?: string}` — the SDK
+ *   - An object `{sid?: string, model?: string, effort?: string}` — the SDK
  *     session UUID plus the thread's last-known model and effort selections.
  *     The recovery path (subscribe cache-miss) rebuilds createThread with
  *     these so a recovered thread uses the right model + effort.
+ *
+ * `sid` is OPTIONAL in the object shape: the SDK session id arrives
+ * asynchronously (onSdkSessionId fires around the first turn), so a config
+ * selection made before any turn is persisted as a config-only entry that
+ * the later sid write merges into. Recovery skips sid-less entries (there
+ * is no session to resume) but the intent is never silently dropped.
  *
  * Best-effort by design — disk failures must not break a live chat session.
  * Schema is intentionally tiny so corruption recovery is "delete the file
@@ -37,8 +43,9 @@ const MODEL_ID = /^[A-Za-z0-9][\w\-./]{0,127}$/
 
 /** Per-thread config persisted alongside the SDK session id. */
 export interface ThreadConfig {
-  /** The Claude SDK session UUID. */
-  readonly sid: string
+  /** The Claude SDK session UUID. Absent until onSdkSessionId fires (a
+   *  config selection made before the first turn creates a sid-less entry). */
+  readonly sid?: string
   /** Last-known model id for this thread (used to rebuild createThread on recovery). */
   readonly model?: string
   /** Last-known effort level for this thread (used to rebuild createThread on recovery). */
@@ -57,18 +64,30 @@ const normalizeEntry = (v: unknown): ThreadConfig | undefined => {
   if (typeof v === "string" && SDK_SESSION_ID.test(v)) {
     return { sid: v }
   }
-  // New: object with at least a `sid` field
+  // New: object shape. `sid` may be ABSENT (config-only entry written before
+  // the SDK session id arrived) — but a PRESENT-yet-invalid sid means the
+  // entry is corrupt and is dropped entirely.
   if (v !== null && typeof v === "object" && !Array.isArray(v)) {
     const obj = v as Record<string, unknown>
-    if (typeof obj["sid"] !== "string" || !SDK_SESSION_ID.test(obj["sid"])) {
+    const entry: ThreadConfig = {}
+    if (typeof obj["sid"] === "string" && SDK_SESSION_ID.test(obj["sid"])) {
+      Object.assign(entry, { sid: obj["sid"] })
+    } else if (obj["sid"] !== undefined) {
       return undefined
     }
-    const entry: ThreadConfig = { sid: obj["sid"] }
     if (typeof obj["model"] === "string" && MODEL_ID.test(obj["model"])) {
       Object.assign(entry, { model: obj["model"] })
     }
     if (isEffort(obj["effort"])) {
       Object.assign(entry, { effort: obj["effort"] })
+    }
+    // An object carrying neither a sid nor any config is meaningless.
+    if (
+      entry.sid === undefined &&
+      entry.model === undefined &&
+      entry.effort === undefined
+    ) {
+      return undefined
     }
     return entry
   }
@@ -138,8 +157,11 @@ export const appendThreadSessionEntry = (
 
 /**
  * Persist model and/or effort for a thread (merged with the existing entry).
- * No-ops if the thread has no existing entry (the SDK session id must be
- * appended first via appendThreadSessionEntry before calling this).
+ * When the thread has NO entry yet — the SDK session id arrives only
+ * asynchronously around the first turn — a config-only (sid-less) entry is
+ * CREATED so a selection made before any turn survives a restart; the later
+ * appendThreadSessionEntry merges the sid in without disturbing it.
+ * No-ops when neither field validates (never writes an empty entry).
  */
 export const appendThreadConfigEntry = (
   homeDir: string,
@@ -147,11 +169,7 @@ export const appendThreadConfigEntry = (
   config: { model?: string; effort?: string },
 ): void => {
   if (!LUNA_THREAD_ID.test(lunaThreadId)) return
-  const current = readRawMap(homeDir)
-  const prev = current[lunaThreadId]
-  if (prev === undefined) return // no entry to merge into
-  const updated: ThreadConfig = {
-    ...prev,
+  const validFields: Partial<ThreadConfig> = {
     ...(config.model !== undefined && MODEL_ID.test(config.model)
       ? { model: config.model }
       : {}),
@@ -159,7 +177,13 @@ export const appendThreadConfigEntry = (
       ? { effort: config.effort }
       : {}),
   }
-  current[lunaThreadId] = updated
+  if (Object.keys(validFields).length === 0) return
+  const current = readRawMap(homeDir)
+  const prev = current[lunaThreadId]
+  current[lunaThreadId] = {
+    ...(prev !== undefined ? prev : {}),
+    ...validFields,
+  }
   try {
     writeRawMap(homeDir, current)
   } catch {

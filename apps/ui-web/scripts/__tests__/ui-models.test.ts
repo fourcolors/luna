@@ -102,6 +102,15 @@ describe("effortsForModel", () => {
     expect(effortsForModel("claude-opus-4.8")).toEqual(ALL_EFFORTS)
   })
 
+  it("returns all 5 levels for Opus 4.7 (plan §2 frozen matrix: opus-4-(7|8))", () => {
+    // The SDK documents xhigh for Opus 4.7+ and max for Opus 4.6+ — an
+    // operator configuring claude-opus-4-7 via LUNA_UI_MODELS must get the
+    // full effort control, same as 4.8.
+    expect(effortsForModel("claude-opus-4-7")).toEqual(ALL_EFFORTS)
+    // dot form
+    expect(effortsForModel("claude-opus-4.7")).toEqual(ALL_EFFORTS)
+  })
+
   it("returns [low, medium, high, max] for Sonnet 4.6 (no xhigh)", () => {
     expect(effortsForModel("claude-sonnet-4-6")).toEqual(["low", "medium", "high", "max"])
     // dot form

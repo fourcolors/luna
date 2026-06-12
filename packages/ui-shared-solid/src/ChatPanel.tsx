@@ -33,6 +33,7 @@ import {
   deriveTitle,
   fileToAttachment,
   type ChatAttachment,
+  type NewThreadFrame,
   type PendingAttachment,
   type ThreadView,
 } from "@luna/ui-shared/core"
@@ -48,6 +49,55 @@ export interface AvailableModel {
   readonly id: string
   readonly label: string
   readonly efforts?: ReadonlyArray<EffortLevel>
+}
+
+/**
+ * Clamp a persisted effort against the SERVER-computed validity list for one
+ * model. Returns the effort unchanged when `availableModels[modelId].efforts`
+ * contains it; returns undefined otherwise (unknown model, no list, effort-less
+ * model, or no server list at all). This only CONSUMES the server matrix —
+ * clients never compute which efforts a model supports.
+ *
+ * Used by App.tsx for (review F5) gating `new-thread.effort` and (review F11)
+ * dropping a stale persisted effort when the user switches model — mirroring
+ * moon's `_selectModel` localStorage clear.
+ */
+export const clampEffortToModel = (
+  availableModels: ReadonlyArray<AvailableModel> | null | undefined,
+  modelId: string,
+  effort: EffortLevel | undefined,
+): EffortLevel | undefined => {
+  if (effort === undefined || availableModels == null) return undefined
+  const model = availableModels.find((m) => m.id === modelId)
+  return model?.efforts?.includes(effort) ? effort : undefined
+}
+
+/**
+ * Build a `new-thread` client frame from persisted config + server state
+ * (review F5: ui-web previously dropped effort on every new thread).
+ * `effort` is included ONLY when the server matrix lists it for the chosen
+ * model — otherwise omitted so the server default applies (also the safe
+ * behavior against old servers, where `availableModels` is null).
+ * `accountId` is included only when non-null. Pure → unit-testable without
+ * mounting the App shell.
+ */
+export const buildNewThreadFrame = (params: {
+  readonly model: string
+  readonly effort?: EffortLevel | undefined
+  readonly accountId?: string | null | undefined
+  readonly availableModels?: ReadonlyArray<AvailableModel> | null | undefined
+}): NewThreadFrame => {
+  const effort = clampEffortToModel(
+    params.availableModels,
+    params.model,
+    params.effort,
+  )
+  return {
+    type: "new-thread",
+    model: params.model,
+    ...(effort !== undefined ? { effort } : {}),
+    ...(params.accountId != null ? { accountId: params.accountId } : {}),
+  }
 }
 
 export interface ChatPanelProps {

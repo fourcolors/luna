@@ -1507,6 +1507,9 @@ export const startUIWebSocketServer = (
                     if (chat === null) return
                     const summary = yield* chat.createThread({
                       model: frame.model,
+                      // effort is forwarded verbatim — chat-service clamps it
+                      // per-model inside createThread (buildSessionOptions),
+                      // so an invalid combo never reaches the SDK options.
                       ...(frame.effort !== undefined ? { effort: frame.effort } : {}),
                       ...(frame.title !== undefined ? { title: frame.title } : {}),
                       ...(frame.tags !== undefined ? { tags: frame.tags } : {}),
@@ -1575,7 +1578,10 @@ export const startUIWebSocketServer = (
                     // Model + effort switcher. Gated on chat being bound (which
                     // implies effortSelection: true in capabilities). The ack
                     // is sent only to the requesting connection — broadcast is
-                    // optional per §1.D (comment left intentionally).
+                    // optional per §1.D (comment left intentionally). Both
+                    // fields are forwarded verbatim — chat-service clamps the
+                    // effort against the thread's reference model and reports
+                    // invalid combos in the ack's `rejected` list.
                     if (chat === null) return
                     const threadId = typeof frame.threadId === "string"
                       ? frame.threadId : ""

@@ -643,6 +643,69 @@ describe("UIWebSocketServer (chat routing)", () => {
     }
   })
 
+  it("new-thread haiku+max: the per-model clamp drops effort before it reaches SDK options", async () => {
+    // Full-path proof of the defensive server clamp (plan §5): a stale or
+    // hand-rolled client sends new-thread with model=haiku + effort=max.
+    // haiku takes no effort parameter — chat-service's createThread clamp
+    // must drop it, so the SDK options never carry an `effort` key.
+    let capturedOptions: Record<string, unknown> | undefined
+    const fakeLayer = SDKClient.fake((p) => {
+      capturedOptions = p.options as Record<string, unknown> | undefined
+      return makeChatLoopQuery({
+        prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+        sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+        responseFor: (t) => `echo:${t}`,
+      })
+    })
+    const baseChatLayer = fullLayer(fakeLayer)
+    const serverLayer = Layer.scoped(
+      ServerHandle,
+      Effect.gen(function* () {
+        const chat = yield* ChatService
+        return yield* startUIWebSocketServer({
+          port: 0,
+          token: TOKEN,
+          pingIntervalMs: 0,
+          chatService: chat,
+        })
+      }),
+    ).pipe(Layer.provide(baseChatLayer))
+    const runtime = ManagedRuntime.make(Layer.mergeAll(serverLayer, baseChatLayer))
+    const handle = await runtime.runPromise(ServerHandle)
+    rig = {
+      url: `ws://127.0.0.1:${handle.port}/ui`,
+      shutdown: async () => { await runtime.dispose() },
+    }
+
+    await driveSequence(
+      rig.url,
+      [
+        {
+          waitFor: (f) => f.type === "hello",
+          thenSend: () => [
+            {
+              type: "new-thread",
+              model: "claude-haiku-4-5",
+              effort: "max",
+            },
+          ],
+        },
+        {
+          waitFor: (f) => f.type === "thread-created",
+          thenSend: () => [],
+        },
+      ],
+      // hello + thread-created + thread-snapshot (minimum guaranteed set)
+      3,
+    )
+
+    expect(capturedOptions).toBeDefined()
+    // The model went through …
+    expect(capturedOptions?.["model"]).toBe("claude-haiku-4-5")
+    // … but the invalid effort was clamped out — the key must be ABSENT.
+    expect(Object.prototype.hasOwnProperty.call(capturedOptions!, "effort")).toBe(false)
+  })
+
   it("set-thread-config → thread-config ack is emitted", async () => {
     // Full round-trip: create a thread, then send set-thread-config with
     // effort=high. The server must respond with a thread-config frame

@@ -396,7 +396,9 @@ describe('ComposerConfig (chat.html)', () => {
       const hint = document.getElementById('cfg-deferred-hint')!
       expect(hint.classList.contains('visible')).toBe(true)
       expect(hint.textContent).toContain('model')
-      expect(hint.textContent).toContain('applies to next')
+      // F8: a deferred (cross-lane) model lands on the next NEW thread, not
+      // the next message of the live thread — wording must say "conversation".
+      expect(hint.textContent).toContain('applies to next conversation')
     })
 
     it('applied fields produce no hint (empty deferred)', () => {
@@ -425,18 +427,156 @@ describe('ComposerConfig (chat.html)', () => {
       expect(hint.classList.contains('visible')).toBe(false)
     })
 
-    it('rejected field triggers a label refresh (idempotent)', () => {
-      const models = [{ id: 'claude-fable-5', label: 'Fable 5', efforts: ['max'] }]
-      sendHello({ models })
+    // F9: rejected picks must roll back the OPTIMISTIC localStorage write
+    // made at select time — the prior value must come back in storage AND on
+    // the rendered label (not just a re-read of the mutated value).
+
+    it('rejected model rolls back luna_model and the label to the prior pick', () => {
+      const models = [
+        { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', efforts: [] },
+        { id: 'claude-fable-5', label: 'Fable 5', efforts: ['max'] },
+      ]
+      sendHello({ models, effortSelection: true })
+      internals().State.serverSupportsEffort = true
+      internals().State.activeThreadId = 'thread-abc'
+      localStorage.setItem('luna_model', 'claude-sonnet-4-6')
       internals().ComposerConfig.applyModels(models)
-      // Should not throw; label stays consistent with localStorage
-      expect(() => internals().handleFrame({
+      // Optimistic pick: writes localStorage + sends set-thread-config.
+      internals().ComposerConfig._selectModel('claude-fable-5')
+      expect(localStorage.getItem('luna_model')).toBe('claude-fable-5')
+      // Server rejects → prior model restored in storage AND on the label.
+      internals().handleFrame({
         type: 'thread-config',
         threadId: 'thread-abc',
         applied: [],
         deferred: [],
         rejected: [{ field: 'model', reason: 'cross-lane' }],
-      })).not.toThrow()
+      })
+      expect(localStorage.getItem('luna_model')).toBe('claude-sonnet-4-6')
+      expect(document.getElementById('model-cfg-btn')!.textContent).toBe('Sonnet 4.6')
+    })
+
+    it('rejected effort rolls back luna_effort and the label to the prior pick', () => {
+      const models = [{ id: 'claude-fable-5', label: 'Fable 5', efforts: ['low', 'max'] }]
+      sendHello({ models, effortSelection: true })
+      internals().State.serverSupportsEffort = true
+      internals().State.activeThreadId = 'thread-xyz'
+      localStorage.setItem('luna_model', 'claude-fable-5')
+      localStorage.setItem('luna_effort', 'low')
+      internals().ComposerConfig.applyModels(models)
+      internals().ComposerConfig._selectEffort('max')
+      expect(localStorage.getItem('luna_effort')).toBe('max')
+      internals().handleFrame({
+        type: 'thread-config',
+        threadId: 'thread-xyz',
+        applied: [],
+        deferred: [],
+        rejected: [{ field: 'effort', reason: 'invalid' }],
+      })
+      expect(localStorage.getItem('luna_effort')).toBe('low')
+      expect(document.getElementById('effort-cfg-btn')!.textContent).toBe('Low')
+    })
+
+    it('rejected model also restores an effort the model pick cascade-cleared', () => {
+      const models = [
+        { id: 'claude-fable-5', label: 'Fable 5', efforts: ['low', 'max'] },
+        { id: 'claude-haiku-4-5', label: 'Haiku 4.5', efforts: [] },
+      ]
+      sendHello({ models, effortSelection: true })
+      internals().State.serverSupportsEffort = true
+      internals().State.activeThreadId = 'thread-abc'
+      localStorage.setItem('luna_model', 'claude-fable-5')
+      localStorage.setItem('luna_effort', 'max')
+      internals().ComposerConfig.applyModels(models)
+      // Picking haiku cascade-clears the now-invalid effort.
+      internals().ComposerConfig._selectModel('claude-haiku-4-5')
+      expect(localStorage.getItem('luna_effort')).toBeNull()
+      // Rejection rolls back BOTH the model and the cascade-cleared effort.
+      internals().handleFrame({
+        type: 'thread-config',
+        threadId: 'thread-abc',
+        applied: [],
+        deferred: [],
+        rejected: [{ field: 'model', reason: 'cross-lane' }],
+      })
+      expect(localStorage.getItem('luna_model')).toBe('claude-fable-5')
+      expect(localStorage.getItem('luna_effort')).toBe('max')
+      expect(document.getElementById('model-cfg-btn')!.textContent).toBe('Fable 5')
+    })
+
+    it('unsolicited rejected (no pending snapshot) changes nothing and does not throw', () => {
+      const models = [{ id: 'claude-fable-5', label: 'Fable 5', efforts: ['max'] }]
+      sendHello({ models })
+      localStorage.setItem('luna_model', 'claude-fable-5')
+      internals().ComposerConfig.applyModels(models)
+      internals().handleFrame({
+        type: 'thread-config',
+        threadId: 'thread-abc',
+        applied: [],
+        deferred: [],
+        rejected: [{ field: 'model', reason: 'cross-lane' }],
+      })
+      expect(localStorage.getItem('luna_model')).toBe('claude-fable-5')
+      expect(document.getElementById('model-cfg-btn')!.textContent).toBe('Fable 5')
+    })
+
+    it('an applied ack consumes the snapshot — a later rejected cannot restore stale values', () => {
+      const models = [
+        { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', efforts: [] },
+        { id: 'claude-fable-5', label: 'Fable 5', efforts: ['max'] },
+      ]
+      sendHello({ models, effortSelection: true })
+      internals().State.serverSupportsEffort = true
+      internals().State.activeThreadId = 'thread-abc'
+      localStorage.setItem('luna_model', 'claude-sonnet-4-6')
+      internals().ComposerConfig.applyModels(models)
+      internals().ComposerConfig._selectModel('claude-fable-5')
+      // Server confirms — snapshot must be discarded.
+      internals().handleFrame({
+        type: 'thread-config', threadId: 'thread-abc',
+        applied: ['model'], deferred: [], rejected: [],
+      })
+      // A later (unsolicited) rejected must NOT roll back to sonnet.
+      internals().handleFrame({
+        type: 'thread-config', threadId: 'thread-abc',
+        applied: [], deferred: [], rejected: [{ field: 'model', reason: 'late' }],
+      })
+      expect(localStorage.getItem('luna_model')).toBe('claude-fable-5')
+    })
+  })
+
+  // ─────────────────────────────────────────────────────────────────────────
+  describe('Escape dismissal (F10)', () => {
+    it('Esc closes an open model menu and does NOT reach VoiceEngine', () => {
+      const models = [{ id: 'claude-fable-5', label: 'Fable 5', efforts: ['max'] }]
+      sendHello({ models })
+      internals().ComposerConfig.applyModels(models)
+      const voiceEsc = vi.spyOn((internals() as any).VoiceEngine, 'handleEscape')
+      // Open the model popover via its real button.
+      document.getElementById('model-cfg-btn')!.click()
+      const menu = document.getElementById('model-cfg-menu')!
+      expect(menu.classList.contains('open')).toBe(true)
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+      expect(menu.classList.contains('open')).toBe(false)
+      expect(voiceEsc).not.toHaveBeenCalled()
+    })
+
+    it('Esc with no menu open still reaches VoiceEngine.handleEscape', () => {
+      const voiceEsc = vi.spyOn((internals() as any).VoiceEngine, 'handleEscape')
+      expect(internals().ComposerConfig.anyMenuOpen()).toBe(false)
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+      expect(voiceEsc).toHaveBeenCalledTimes(1)
+    })
+
+    it('non-Escape keys never close an open menu', () => {
+      const models = [{ id: 'claude-fable-5', label: 'Fable 5', efforts: ['max'] }]
+      sendHello({ models })
+      internals().ComposerConfig.applyModels(models)
+      document.getElementById('model-cfg-btn')!.click()
+      const menu = document.getElementById('model-cfg-menu')!
+      expect(menu.classList.contains('open')).toBe(true)
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }))
+      expect(menu.classList.contains('open')).toBe(true)
     })
   })
 

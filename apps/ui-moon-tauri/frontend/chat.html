@@ -3448,6 +3448,16 @@
       _models: [],
 
       /**
+       * Prior picks snapshotted just before an optimistic localStorage write
+       * that triggered a set-thread-config send. The server's thread-config
+       * ack consumes them: `rejected` rolls the write back (localStorage +
+       * labels); `applied`/`deferred` discard the snapshot. Keys: `model`,
+       * `modelEffort` (the effort a model pick may have cascade-cleared),
+       * `effort`. Empty string = "was unset".
+       */
+      _pendingRevert: {},
+
+      /**
        * Normalize a raw cache entry to { id, label, efforts }.
        * Handles both the new object shape and legacy plain-id strings.
        */
@@ -3597,6 +3607,10 @@
         this.closeAllMenus();
         // Mid-thread: if there's an active thread, send set-thread-config.
         if (State.activeThreadId && State.serverSupportsEffort && id !== prev) {
+          // Snapshot the prior picks so a `rejected` ack can roll back the
+          // optimistic writes above (model + any cascade-cleared effort).
+          this._pendingRevert.model = prev;
+          this._pendingRevert.modelEffort = savedEffort;
           WebSocketEngine.send({
             type: 'set-thread-config',
             threadId: State.activeThreadId,
@@ -3620,6 +3634,9 @@
         this.closeAllMenus();
         // Mid-thread: if there's an active thread and cap on, send set-thread-config.
         if (State.activeThreadId && State.serverSupportsEffort && effort !== prev) {
+          // Snapshot the prior pick so a `rejected` ack can roll back the
+          // optimistic write above.
+          this._pendingRevert.effort = prev;
           WebSocketEngine.send({
             type: 'set-thread-config',
             threadId: State.activeThreadId,
@@ -3653,6 +3670,12 @@
         if (DOM.effortCfgSep) DOM.effortCfgSep.hidden = !visible;
       },
 
+      /** True while either config popover menu is open (Esc-dismissal gate). */
+      anyMenuOpen() {
+        return !!((DOM.modelCfgMenu && DOM.modelCfgMenu.classList.contains('open'))
+          || (DOM.effortCfgMenu && DOM.effortCfgMenu.classList.contains('open')));
+      },
+
       /** Close all config popover menus. */
       closeAllMenus() {
         if (DOM.modelCfgMenu) { DOM.modelCfgMenu.classList.remove('open'); DOM.modelCfgMenu.setAttribute('aria-hidden', 'true'); }
@@ -3661,10 +3684,22 @@
         if (DOM.effortCfgBtn) DOM.effortCfgBtn.setAttribute('aria-expanded', 'false');
       },
 
+      /** Write an effort pick to localStorage + State ('' clears it). */
+      _writeEffort(value) {
+        if (value) {
+          localStorage.setItem('luna_effort', value);
+          State.selectedEffort = value;
+        } else {
+          localStorage.removeItem('luna_effort');
+          State.selectedEffort = null;
+        }
+      },
+
       /**
        * Reconcile a `thread-config` server ack. Called by the MoonFrames
        * handler. `applied` confirms picks; `deferred` triggers a subtle hint;
-       * `rejected` reverts labels.
+       * `rejected` rolls the optimistic localStorage write back to the
+       * snapshot taken at send time (_pendingRevert) and re-renders.
        */
       reconcileThreadConfig(frame) {
         if (!frame) return;
@@ -3673,25 +3708,54 @@
         const rejected = Array.isArray(frame.rejected) ? frame.rejected : [];
         if (deferred.length > 0 && DOM.cfgDeferredHint) {
           const fields = deferred.join(' & ');
-          DOM.cfgDeferredHint.textContent = `${fields} applies to next message`;
+          // "next conversation", not "next message": a cross-lane deferred
+          // model only takes effect on a NEW thread (or restart+resubscribe) —
+          // the live thread keeps its model regardless of further messages.
+          DOM.cfgDeferredHint.textContent = `${fields} applies to next conversation`;
           DOM.cfgDeferredHint.classList.add('visible');
           clearTimeout(this._deferredHintTimer);
           this._deferredHintTimer = setTimeout(() => {
             if (DOM.cfgDeferredHint) DOM.cfgDeferredHint.classList.remove('visible');
           }, 4000);
         }
+        // Rejected → roll back the optimistic write to the send-time snapshot.
+        let reverted = false;
         for (const r of rejected) {
-          // Revert the rejected field to prior value.
-          if (r && r.field === 'model') {
-            // Restore server-acked model if we have it; otherwise keep current.
-            this._refreshLabels();
+          if (!r) continue;
+          if (r.field === 'model' && this._pendingRevert.model !== undefined) {
+            const prevModel = this._pendingRevert.model;
+            if (prevModel) {
+              localStorage.setItem('luna_model', prevModel);
+            } else {
+              localStorage.removeItem('luna_model');
+            }
+            // The model pick may have cascade-cleared the effort — restore it too.
+            if (this._pendingRevert.modelEffort !== undefined) {
+              this._writeEffort(this._pendingRevert.modelEffort);
+            }
+            reverted = true;
           }
-          if (r && r.field === 'effort') {
-            this._refreshLabels();
+          if (r.field === 'effort' && this._pendingRevert.effort !== undefined) {
+            this._writeEffort(this._pendingRevert.effort);
+            reverted = true;
           }
         }
-        // applied fields are already reflected in localStorage — nothing to do.
-        void applied;
+        // Every field in this ack is settled — drop its snapshot (applied and
+        // deferred keep the optimistic value; rejected was restored above).
+        const settled = applied.concat(deferred, rejected.map((r) => r && r.field));
+        for (const f of settled) {
+          if (f === 'model') {
+            delete this._pendingRevert.model;
+            delete this._pendingRevert.modelEffort;
+          }
+          if (f === 'effort') delete this._pendingRevert.effort;
+        }
+        if (reverted) {
+          this._rebuildModelMenu();
+          this._rebuildEffortMenu();
+          this._refreshLabels();
+          this._refreshEffortVisibility();
+        }
       },
 
       /** Bootstrap: read persisted effort from localStorage into State. */
@@ -5928,11 +5992,17 @@
       });
     }
 
-    // Esc stops the spoken reply (unconditional + idempotent — it must work
-    // even when the pipeline died and no 'speaking' state will be emitted
-    // again).
+    // Esc — layered dismissal: an OPEN composer-config popover consumes the
+    // key (close it, done); otherwise Esc stops the spoken reply as before
+    // (unconditional + idempotent — it must work even when the pipeline died
+    // and no 'speaking' state will be emitted again). A second Esc after
+    // closing a menu still reaches VoiceEngine.
     window.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
+      if (ComposerConfig.anyMenuOpen()) {
+        ComposerConfig.closeAllMenus();
+        return;
+      }
       VoiceEngine.handleEscape();
     });
 

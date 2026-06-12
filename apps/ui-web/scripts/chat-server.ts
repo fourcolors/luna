@@ -231,6 +231,8 @@ import {
 import {
   ChatService,
   ThreadToolsProviderTag,
+  effortsForModel,
+  type EffortLevel,
   type ThreadToolsProvider,
 } from "@luna/chat-service"
 import {
@@ -360,60 +362,27 @@ const BUILD_SHA = resolveBuildSha()
  * without running bootstrap() (the import.meta.main guard).
  */
 
-/** Effort level values accepted by the SDK and the wire protocol. */
-export type Effort = "low" | "medium" | "high" | "xhigh" | "max"
-
-/** All effort levels in ascending strength order. */
-export const ALL_EFFORTS: readonly Effort[] = ["low", "medium", "high", "xhigh", "max"]
-
 /**
- * Effort-validity matrix — server-side single source of truth.
- *
- * Returns the subset of effort levels valid for the given model id. An empty
- * array means the model takes no effort parameter. Callers (buildAvailableModels)
- * attach this to every entry so clients never compute the matrix themselves.
- *
- * Pattern rules (lowest-specificity first):
- *   - Haiku → no effort (too fast; effort param is a no-op).
- *   - Fable / Opus 4.8 → all five levels (maximum reasoning models).
- *   - Sonnet 4.6 → low/medium/high/max (no xhigh).
- *   - Everything else → no effort (safest default for unknown models).
+ * Effort matrix — the definitions live in @luna/chat-service (effort.ts),
+ * the single source of truth shared by this hello-frame builder AND the
+ * chat-service enforcement points (createThread + setThreadConfig clamp the
+ * same matrix, so the advertised efforts and the accepted efforts can never
+ * drift). Re-exported here so the dev-rig tests and any script-level callers
+ * keep one import site.
  */
-export const effortsForModel = (id: string): readonly Effort[] => {
-  const m = id.toLowerCase()
-  if (/haiku/.test(m)) return []
-  if (/fable|opus-4-(8)|opus-4\.?8/.test(m)) return ALL_EFFORTS
-  if (/sonnet-4-6|sonnet-4\.?6/.test(m)) return ["low", "medium", "high", "max"]
-  return []
-}
-
-/**
- * Clamp an effort value to what the given model actually supports.
- * Returns the effort unchanged when it is valid for the model, drops it when
- * the model takes no effort param (e.g. Haiku), and falls back to the highest
- * supported level when the exact level is unsupported.
- *
- * `dropped: true` means the caller should omit the effort field entirely.
- */
-export const clampEffort = (
-  modelId: string | undefined,
-  effort: Effort | undefined,
-): { effort?: Effort; dropped: boolean } => {
-  if (effort === undefined) return { dropped: false }
-  if (modelId === undefined) return { effort, dropped: false }
-  const supported = effortsForModel(modelId)
-  if (supported.length === 0) return { dropped: true }
-  if ((supported as string[]).includes(effort)) return { effort, dropped: false }
-  // Unsupported level: fall back to highest supported
-  return { effort: supported[supported.length - 1]!, dropped: false }
-}
+export {
+  clampEffort,
+  effortsForModel,
+  EFFORT_LEVELS as ALL_EFFORTS,
+} from "@luna/chat-service"
+export type { EffortLevel as Effort } from "@luna/chat-service"
 
 /** A single selectable model entry (with server-computed effort matrix). */
 export interface UiModelEntry {
   readonly id: string
   readonly label: string
   /** Effort levels valid for this model — server-computed. See effortsForModel(). */
-  readonly efforts?: readonly Effort[]
+  readonly efforts?: readonly EffortLevel[]
 }
 
 /**

@@ -10,7 +10,11 @@ export { MessageBubble } from "./MessageBubble.jsx"
 export { ToolCallGroup } from "./ToolCallGroup.jsx"
 export {
   ChatPanel,
+  buildNewThreadFrame,
+  clampEffortToModel,
+  type AvailableModel,
   type ChatPanelProps,
+  type EffortLevel,
   type SlashCommand,
 } from "./ChatPanel.jsx"
 export {

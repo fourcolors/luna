@@ -944,6 +944,13 @@ export interface McpToolResultFrame {
  * NEXT thread creation (e.g. cross-lane model switch — cannot hot-swap mid-
  * conversation). `rejected` lists fields that were invalid or unsupported,
  * with a short non-sensitive reason.
+ *
+ * Effort semantic for `"max"`: the ack reports the accepted THREAD-LEVEL
+ * preference, and `effort` echoes the value the server actually accepted
+ * (clamping may adjust it). A mid-thread switch to "max" runs the current
+ * thread's live query at the closest live level ("xhigh" — the SDK's
+ * Settings.effortLevel has no "max") and applies exactly as "max" on the
+ * next rebuild (recovery or new thread, which use Options.effort).
  */
 export interface ThreadConfigFrame {
   readonly type: "thread-config"

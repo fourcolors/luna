@@ -2,14 +2,20 @@
  * thread-session-map — persists `lunaThreadId → ThreadConfig` so resume
  * across chat-server restarts is possible.
  *
- * Tests cover:
+ * Tests cover (unit level — this file exercises the map module only):
  *   - round-trip of new object entries (sid + optional model/effort)
  *   - backward-compat: legacy bare-string values load as {sid} objects
  *   - appendThreadConfigEntry merges model/effort preserving sid
+ *   - appendThreadConfigEntry creates a sid-less entry when none exists
+ *     (config-before-first-turn) and the later sid write merges into it
  *   - clearThreadSessionEntry removes one entry without disturbing others
  *   - malformed JSON returns empty map
  *   - malformed ids are rejected
- *   - recovery in subscribe() uses model/effort from the extended map
+ *
+ * The INTEGRATION that consumes this map — subscribe()-recovery rebuilding
+ * createThread with the persisted {model, effort} — is covered in
+ * chat-service.sim.test.ts ("subscribe re-creates a forgotten thread …
+ * with its persisted model and effort").
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -164,10 +170,41 @@ describe("thread-session-map", () => {
     }
   })
 
-  it("appendThreadConfigEntry no-ops when the thread has no existing entry", () => {
+  it("appendThreadConfigEntry creates a sid-less entry when none exists (config before first turn)", () => {
+    // The SDK session id arrives asynchronously (onSdkSessionId, ~first turn).
+    // A config selection made BEFORE that must not be silently dropped.
     const home = mkdtempSync(join(tmpdir(), "luna-tsmap-"))
     try {
-      appendThreadConfigEntry(home, "thr_ghost", { model: "claude-sonnet-4-6" })
+      appendThreadConfigEntry(home, "thr_ghost", { model: "claude-sonnet-4-6", effort: "high" })
+      expect(loadThreadSessionMap(home)["thr_ghost"]).toEqual({
+        model: "claude-sonnet-4-6",
+        effort: "high",
+      })
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it("a later sid write merges into a config-only entry (restart-safe ordering)", () => {
+    const home = mkdtempSync(join(tmpdir(), "luna-tsmap-"))
+    try {
+      // Config first (no sid yet) …
+      appendThreadConfigEntry(home, "thr_early", { effort: "max" })
+      // … then the SDK session id arrives.
+      appendThreadSessionEntry(home, "thr_early", "sdk-late-uuid")
+      expect(loadThreadSessionMap(home)["thr_early"]).toEqual({
+        sid: "sdk-late-uuid",
+        effort: "max",
+      })
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it("appendThreadConfigEntry never writes an empty entry (all fields invalid)", () => {
+    const home = mkdtempSync(join(tmpdir(), "luna-tsmap-"))
+    try {
+      appendThreadConfigEntry(home, "thr_ghost", { effort: "turbo" })
       expect(loadThreadSessionMap(home)).toEqual({})
     } finally {
       rmSync(home, { recursive: true, force: true })
@@ -187,7 +224,7 @@ describe("thread-session-map", () => {
     }
   })
 
-  it("loadThreadSessionMap: object entries with invalid sid are rejected", () => {
+  it("loadThreadSessionMap: present-but-invalid sid drops the entry; ABSENT sid keeps a config-only entry", () => {
     const home = mkdtempSync(join(tmpdir(), "luna-tsmap-"))
     try {
       const path = threadSessionMapPath(home)
@@ -196,13 +233,15 @@ describe("thread-session-map", () => {
         path,
         JSON.stringify({
           thr_ok: { sid: "sdk-good" },
-          thr_bad: { sid: "../path-traversal" }, // bad sid
-          thr_missing_sid: { model: "claude-test" }, // no sid
+          thr_bad: { sid: "../path-traversal" }, // present-but-invalid sid → corrupt, dropped
+          thr_config_only: { model: "claude-test" }, // sid absent → kept (config-before-sid)
+          thr_empty: {}, // neither sid nor config → meaningless, dropped
         }),
         { mode: 0o600 },
       )
       const map = loadThreadSessionMap(home)
-      expect(Object.keys(map)).toEqual(["thr_ok"])
+      expect(Object.keys(map).sort()).toEqual(["thr_config_only", "thr_ok"])
+      expect(map["thr_config_only"]).toEqual({ model: "claude-test" })
     } finally {
       rmSync(home, { recursive: true, force: true })
     }
