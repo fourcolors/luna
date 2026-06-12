@@ -399,6 +399,10 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   // so the Rust cursor poll can make the empty envelope click-through.
   // jsdom can't run the rAF loop or the Rust poll — these test the contracts:
   // the velocity-injection math and the region-publish lifecycle.
+  // ⏸️ The three rope-physics scenarios are SKIPPED while the tether bead is
+  // disabled (#110: show() early-returns until it is properly gated on actual
+  // disconnection). The machinery they cover is intact but dormant — un-skip
+  // them in the same commit that removes the early return from show().
   describe('Feature: window-drag rope physics + click-through region', () => {
     const M = () => (window as any).__MoonInternals
 
@@ -417,7 +421,7 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       return invoke
     }
 
-    it('Scenario: a window move shifts FREE points as velocity (positions move, prev-positions stay, anchor pinned)', () => {
+    it.skip('Scenario: a window move shifts FREE points as velocity (positions move, prev-positions stay, anchor pinned)', () => {
       const m = M()
       stubInvoke()
       m.MoonString.show()
@@ -441,7 +445,7 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       }
     })
 
-    it('Scenario: per-event delta is clamped (a coalesced full-screen jump injects a swing, not an explosion)', () => {
+    it.skip('Scenario: per-event delta is clamped (a coalesced full-screen jump injects a swing, not an explosion)', () => {
       const m = M()
       stubInvoke()
       m.MoonString.show()
@@ -462,7 +466,7 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(m.MoonString.getPoints()).toEqual(before)
     })
 
-    it('Scenario: show() publishes the interactive region; hideImmediate() clears it', () => {
+    it.skip('Scenario: show() publishes the interactive region; hideImmediate() clears it', () => {
       const m = M()
       const invoke = stubInvoke()
       m.MoonString.show()
