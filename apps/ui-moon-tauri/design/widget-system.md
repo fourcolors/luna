@@ -473,13 +473,20 @@ list, so prompt injection can't trigger them.
 
 ### Migration shape (staged like Archestra: render first, proxy second)
 
-1. **Render-only host** (~1 week): widget.html grows an `AppBridge(client:
-   null)` path; new UI-WS relay frames (`mcp-resource-read`, tool-input/
-   result push); server resolves `ui://` reads against its MCP sessions.
-   Third-party MCP apps render as widgets; no tool calls yet.
-2. **Full bridge** (+1–2 weeks): `tools/call` proxying through the server
-   with visibility enforcement + consent UX; `ui/update-model-context` routed
-   into the thread; host-context (theme vars from moon-theme, display modes).
+_(Estimates below are AI-build-speed — sessions of agent work + live
+verification on the real build, which is the actual bottleneck — not the
+human-team weeks the ecosystem writeups cite. Calibration: Phases 0+0.5 ≈ one
+day; the 9-finding dock sweep incl. live verification ≈ one evening.)_
+
+1. **Render-only host** (~1 session + live verify): widget.html grows an
+   `AppBridge(client: null)` path; new UI-WS relay frames
+   (`mcp-resource-read`, tool-input/result push); server resolves `ui://`
+   reads against its MCP sessions. Third-party MCP apps render as widgets;
+   no tool calls yet. (Ecosystem signal: one PR cycle for Archestra's team.)
+2. **Full bridge** (~1–2 days incl. adversarial review + consent UX live
+   verification): `tools/call` proxying through the server with visibility
+   enforcement + consent UX; `ui/update-model-context` routed into the
+   thread; host-context (theme vars from moon-theme, display modes).
 3. **Convergence**: the three probes re-author onto the standard App API +
    `luna/*` extensions; `luna.*` v0 bridge retires (only the probes use it);
    `widget_write` keeps authoring sandboxed HTML but emits spec-shaped
