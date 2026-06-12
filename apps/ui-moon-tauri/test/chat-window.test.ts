@@ -506,7 +506,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     // content was replaced; combined with the card's subtle styling it
     // looked like "response disappeared" to the operator.
     //
-    // Canonical fix (commit cf7deed, originally 44a51a9 on jax-box):
+    // Canonical fix (commit cf7deed):
     //   1. assistant-delta only reuses a TEXT bubble (excludes tool-call-card).
     //      Text bubbles get tagged with data-turn-id at creation.
     //   2. assistant-done detects whether the turn has any tool-call-cards
