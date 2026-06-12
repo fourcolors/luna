@@ -87,15 +87,27 @@ const MODEL_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
   { value: "claude-sonnet-4-5", label: "Sonnet 4.5 — prior gen" },
 ]
 
+type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max"
+
 interface PersistedConfig {
   url: string
   token: string
   model: string
+  /** Persisted effort level for new threads. Optional — absent on older configs. */
+  effort?: EffortLevel
   /** When true, plain Enter sends; Shift+Enter newline. Default false. */
   enterToSend: boolean
   /** Last-selected account id. null = use default broker rotation. */
   selectedAccountId: string | null
 }
+
+const VALID_EFFORTS: ReadonlySet<string> = new Set([
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+])
 
 const loadConfig = (): PersistedConfig => {
   const envToken =
@@ -104,11 +116,16 @@ const loadConfig = (): PersistedConfig => {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<PersistedConfig>
+      const parsedEffort =
+        typeof parsed.effort === "string" && VALID_EFFORTS.has(parsed.effort)
+          ? (parsed.effort as EffortLevel)
+          : undefined
       return {
         url: parsed.url ?? DEFAULT_URL,
         token:
           parsed.token && parsed.token.length >= 16 ? parsed.token : envToken,
         model: parsed.model ?? DEFAULT_MODEL,
+        ...(parsedEffort !== undefined ? { effort: parsedEffort } : {}),
         enterToSend: parsed.enterToSend ?? false,
         selectedAccountId: parsed.selectedAccountId ?? null,
       }
@@ -316,6 +333,31 @@ export const App: Component = () => {
         break
       }
     }
+  }
+
+  /**
+   * Handle a model change from the ChatPanel composer cluster.
+   *
+   * Persists to cfg() so the setting survives navigation, and sends
+   * `set-thread-config` to the server when a thread is active.
+   * The `thread-config` ack is a no-op in the shared reducer today —
+   * the optimistic UI update (cfg persisted immediately) is sufficient.
+   */
+  const handleModelChange = (threadId: string, model: string): void => {
+    setCfg({ ...cfg(), model })
+    send({ type: "set-thread-config", threadId, model })
+  }
+
+  /**
+   * Handle an effort change from the ChatPanel composer cluster.
+   *
+   * Same optimistic pattern as handleModelChange — persist immediately,
+   * fire set-thread-config for server-side application to the live session.
+   * The `thread-config` ack is a no-op in the shared reducer today.
+   */
+  const handleEffortChange = (threadId: string, effort: EffortLevel): void => {
+    setCfg({ ...cfg(), effort })
+    send({ type: "set-thread-config", threadId, effort })
   }
 
   const isConnected = createMemo(() => transport.status().kind === "open")
@@ -669,6 +711,12 @@ export const App: Component = () => {
                 onCommand={handleCommand}
                 disabled={!chatEnabled()}
                 enterToSend={cfg().enterToSend}
+                availableModels={store.state.availableModels}
+                effortSelection={store.state.capabilities.effortSelection}
+                model={cfg().model}
+                effort={cfg().effort}
+                onModelChange={handleModelChange}
+                onEffortChange={handleEffortChange}
               />
               <Show
                 when={

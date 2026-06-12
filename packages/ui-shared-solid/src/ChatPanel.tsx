@@ -42,6 +42,14 @@ import { MessageBubble } from "./MessageBubble.jsx"
 /** Commands recognised in the composer (slash-prefixed). */
 export type SlashCommand = "restart"
 
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max"
+
+export interface AvailableModel {
+  readonly id: string
+  readonly label: string
+  readonly efforts?: ReadonlyArray<EffortLevel>
+}
+
 export interface ChatPanelProps {
   readonly thread: ThreadView | null
   readonly onSend: (
@@ -54,6 +62,22 @@ export interface ChatPanelProps {
   readonly onCommand?: (threadId: string, command: SlashCommand) => void
   readonly disabled: boolean
   readonly enterToSend: boolean
+  // ── model + effort config (§3C) ──────────────────────────────────────
+  /**
+   * Server-advertised model list. When null/absent the cluster is hidden.
+   * null = server didn't send availableModels (old server); undefined = not yet wired.
+   */
+  readonly availableModels?: ReadonlyArray<AvailableModel> | null
+  /** When true the server supports effort selection. Cluster hidden when false/absent/undefined. */
+  readonly effortSelection?: boolean | undefined
+  /** Currently selected model id for this thread. */
+  readonly model?: string
+  /** Currently selected effort level for this thread. */
+  readonly effort?: EffortLevel | undefined
+  /** Called when the user picks a different model. */
+  readonly onModelChange?: (threadId: string, model: string) => void
+  /** Called when the user picks a different effort level. */
+  readonly onEffortChange?: (threadId: string, effort: EffortLevel) => void
 }
 
 export const ChatPanel: Component<ChatPanelProps> = (props) => {
@@ -294,6 +318,64 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
                   )}
                 </For>
               </div>
+            </Show>
+            {/*
+              Model + effort cluster (§3C). Shown only when the server
+              advertises `availableModels` AND the thread is active.
+              Effort control is additionally gated on `effortSelection` +
+              the selected model having a non-empty `efforts` array.
+              Options come from props only — no client-side matrix.
+            */}
+            <Show when={props.availableModels != null && props.availableModels.length > 0 && props.thread}>
+              {(thread) => {
+                const selectedModel = () =>
+                  props.availableModels!.find((m) => m.id === props.model) ??
+                  props.availableModels![0]!
+                const modelEfforts = () => selectedModel().efforts ?? []
+                const showEffort = () =>
+                  props.effortSelection === true && modelEfforts().length > 0
+                return (
+                  <div class="composer-config" role="group" aria-label="Model and effort">
+                    <label class="composer-config-label">
+                      <span class="muted small">Model</span>
+                      <select
+                        class="composer-config-select"
+                        value={props.model ?? selectedModel().id}
+                        onChange={(e) => {
+                          props.onModelChange?.(thread().summary.id, e.currentTarget.value)
+                        }}
+                        disabled={props.disabled}
+                        aria-label="Model"
+                      >
+                        <For each={props.availableModels}>
+                          {(m) => <option value={m.id}>{m.label}</option>}
+                        </For>
+                      </select>
+                    </label>
+                    <Show when={showEffort()}>
+                      <label class="composer-config-label">
+                        <span class="muted small">Effort</span>
+                        <select
+                          class="composer-config-select"
+                          value={props.effort ?? modelEfforts()[0]}
+                          onChange={(e) => {
+                            props.onEffortChange?.(
+                              thread().summary.id,
+                              e.currentTarget.value as EffortLevel,
+                            )
+                          }}
+                          disabled={props.disabled}
+                          aria-label="Effort"
+                        >
+                          <For each={modelEfforts()}>
+                            {(lv) => <option value={lv}>{lv}</option>}
+                          </For>
+                        </select>
+                      </label>
+                    </Show>
+                  </div>
+                )
+              }}
             </Show>
             <textarea
               value={draft()}
