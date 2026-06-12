@@ -45,6 +45,14 @@ has a registry name, so instead of digging through a modal the user can say
 "open the voice settings" and the agent summons the panel. The moon hub is the
 one non-widget: the launcher/anchor that owns the app lifecycle.
 
+**v3.1 — content widgets are MCP apps.** The mini-app tier adopts the official
+**MCP Apps** standard (SEP-1865, stable 2026-01-26) as its contract instead of
+a private bridge dialect. The thesis: Luna's tools form **the core MCP app**;
+building a widget is **building your own MCP app** that works with the full
+system — and with the rest of the world, because the same app renders in
+Claude Desktop, ChatGPT, VS Code, and Goose. Moon becomes an MCP Apps *host*
+whose native display mode is the floating window. See "Widgets are MCP Apps".
+
 ---
 
 ## The Two Contracts (server-agnostic seam)
@@ -81,6 +89,13 @@ layering is what keeps the server swappable and the OS-creep contained:
   server is connected.
 
 ### Bridge capability roadmap
+
+> **v3.1 supersession note:** this roadmap predates the MCP Apps decision. The
+> *principle* (capability-gated, fail-closed, never privilege) stands, but the
+> vocabulary is replaced by the MCP Apps standard — see "Widgets are MCP Apps"
+> for the mapping (`action`/`invoke` → spec `tools/call` with visibility
+> scopes; `events:read`/`kv` → `luna/*` host extensions). Kept for the
+> rationale and as the cap-thinking governor.
 
 The bridge grows by **capability, never by privilege** — widgets never gain
 webview powers or Tauri access. Each cap is declared on the widget artifact,
@@ -241,10 +256,12 @@ artifact pipeline — it does not fork it.** `widget_write`
 (`packages/widget-tools/src/tools.ts:74`) already gives the agent create +
 versioned-update of sandboxed widgets, registered into every thread;
 `ArtifactStore` (luna.db) already persists pin state and broadcasts changes to
-every client. Examples of what this family covers as bridge caps land:
-live workspace views (`events:read`, shipped), documents (no caps at all),
-interactive dashboards (`action`), persistent toys like the Tamagotchi (`kv`),
-CLI/MCP-connected tools (`invoke`).
+every client. **v3.1: this family's contract is the MCP Apps standard** (see
+"Widgets are MCP Apps") — a mini-app widget IS an MCP app: live workspace
+views (event push), documents (no powers at all), interactive dashboards and
+CLI/MCP-connected tools (mediated `tools/call`), persistent toys like the
+Tamagotchi (`luna/kv` extension). Third-party MCP apps render here too;
+agent-authored widgets via `widget_write` emit the same shape.
 
 | Tier | Behavior | Backed by |
 |---|---|---|
@@ -374,6 +391,107 @@ should mean *all* Luna windows).
 
 ---
 
+## Widgets are MCP Apps (v3.1)
+
+_Researched 2026-06-11 (spec, ecosystem, host-implementation tracks; citations
+inline). Direction set by Mr. Cobb: "the core MCP app which is Luna's tools…
+building a widget is effectively creating your own MCP app… that works with
+the full system."_
+
+### The standard, briefly
+
+**MCP Apps** (SEP-1865; extension id `io.modelcontextprotocol/ui`; spec rev
+`2026-01-26`, stable; repo `modelcontextprotocol/ext-apps`) is the official
+MCP extension for interactive UIs, co-developed by Anthropic + OpenAI out of
+the community mcp-ui project. An MCP server registers HTML templates as
+`ui://` resources (`text/html;profile=mcp-app`); a tool links its UI via
+`_meta.ui.resourceUri`; the host renders the template in a sandboxed iframe
+and speaks **JSON-RPC 2.0 over postMessage** with it (`ui/initialize`
+handshake → `ui/notifications/tool-input` / `tool-result` pushes; the app may
+call `tools/call`, `ui/update-model-context`, `ui/request-display-mode`).
+Hosts rendering today: Claude.ai/Claude Desktop, ChatGPT (Apps SDK converged
+on the same wire protocol), VS Code/Copilot, Goose, Cursor, Postman. Official
+SDK: `@modelcontextprotocol/ext-apps` (~v1.7) — app-side `App` class, host-side
+`AppBridge` class. Day-one apps: Figma, Canva, Slack, Asana, Box, Hex.
+
+### Why this fits Luna almost embarrassingly well
+
+We independently built the same shape. The mapping is nearly 1:1:
+
+| Luna today | MCP Apps standard |
+|---|---|
+| `vendor/widget-sandbox.js` — allow-scripts-only iframe, CSP no-network | Spec sandbox: no `allow-same-origin`; CSP `connect-src 'none'` **by default**, widened only by declared `_meta.ui.csp` domains |
+| `luna.*` postMessage bridge, `bridge_caps` fail-closed | JSON-RPC postMessage bridge; tool `visibility` scopes (`["app"]`/`["model"]`/both), same-server-only tool calls |
+| one floating window per widget | Goose's `standalone` display mode — **our native mode**; spec modes inline/fullscreen/pip |
+| pinned artifacts restore on launch | **not in spec** (its biggest gap) — pinning = store the `ui://` URI + last `tool-input` and re-mount, which is exactly the artifact-pin model |
+| `invoke` cap (was design-gated) | answered by the standard: `tools/call` mediated by the host, consent gates, app-only visibility |
+| design-doc-only `action`/`kv` caps | `ui/update-model-context` + `tools/call` cover `action`; `kv` stays a Luna extension (spec has no persistence — ChatGPT's `widgetState` is proprietary) |
+
+Two structural wins beyond the mapping:
+
+1. **The host's MCP client can live anywhere.** The bridge is transport-
+   agnostic, and `AppBridge` explicitly supports `client: null` with manual
+   handlers (`oncalltool`, resource reads) — designed for exactly our
+   topology: widget windows relay over **UI-WS to the Luna server, which owns
+   every MCP session** (auth, allowlists, one session authority — this also
+   sidesteps the ext-apps #481 dual-session bug Claude Desktop hit). The
+   server-agnostic seam and the industry standard snap together.
+2. **Two roles, one standard.** Moon as **host**: any MCP app anyone ships
+   becomes a Luna widget — instant ecosystem (connectors PRD's MCP-primary
+   bet pays off again). Luna server as **the core app**: its own tools gain
+   `ui://` templates, so Luna's UIs render in Moon *and* in Claude Desktop /
+   VS Code for free. No Tauri MCP Apps host exists as of June 2026 — Moon
+   would be the reference implementation.
+
+### What stays Luna-specific (host extensions, namespaced + degradable)
+
+The spec doesn't cover everything our probes already use. These become
+`luna/*` extension methods on the same bridge (hosts extending is normal —
+Goose added `standalone`, ChatGPT added `window.openai.*`), advertised in
+host capabilities so a portable app can feature-detect and degrade:
+
+- **`luna/notifications/event`** — push obs-event stream (today's
+  `events:read` / `luna.subscribe`). Portable apps poll via app-visible
+  tools; Luna-native apps get push.
+- **`luna/kv`** — artifact-scoped persistence (the Tamagotchi's hunger).
+  The spec's #1 practitioner complaint ("the Mermaid your user edited? gone")
+  is something we already solve server-side.
+- **Pin/restore semantics** — host-side, invisible to apps.
+
+### Trust model — unchanged
+
+MCP apps are **content tier**, full stop. The registry still maps system
+kinds only to shipped pages; no `ui://` resource can become a settings panel.
+New care points from the spec's threat model: validate message origin against
+the iframe `contentWindow`; enforce same-server tool scoping; build CSP from
+declared `_meta.ui.csp` (reject or prominently warn on undeclared
+`connectDomains` — our current widgets are no-network, MCP apps may
+legitimately declare domains and that's a **user-visible consent moment**);
+`eval` stays blocked (some libs need `unsafe-eval` — refuse by default).
+Tool-side: `visibility:["app"]`-scoped tools never enter the model's tool
+list, so prompt injection can't trigger them.
+
+### Migration shape (staged like Archestra: render first, proxy second)
+
+1. **Render-only host** (~1 week): widget.html grows an `AppBridge(client:
+   null)` path; new UI-WS relay frames (`mcp-resource-read`, tool-input/
+   result push); server resolves `ui://` reads against its MCP sessions.
+   Third-party MCP apps render as widgets; no tool calls yet.
+2. **Full bridge** (+1–2 weeks): `tools/call` proxying through the server
+   with visibility enforcement + consent UX; `ui/update-model-context` routed
+   into the thread; host-context (theme vars from moon-theme, display modes).
+3. **Convergence**: the three probes re-author onto the standard App API +
+   `luna/*` extensions; `luna.*` v0 bridge retires (only the probes use it);
+   `widget_write` keeps authoring sandboxed HTML but emits spec-shaped
+   apps; Luna server registers `ui://` templates for its own core tools.
+
+Practical notes: the app SDK is ~3MB and our CSP forbids network — bundled
+apps must inline it (or speak raw JSON-RPC, which the probes can); hosts
+prefetch templates at `tools/list` time, which our artifact pipeline already
+approximates; MCPJam Inspector + the ext-apps `basic-host` are the dev rigs.
+
+---
+
 ## AI Widget Tools (Phase 7)
 
 Evolve the `widget_*` tool family rather than introducing a parallel vocabulary.
@@ -392,8 +510,9 @@ content-tier widgets.)
 and code (escaped + highlighted). Add declarative kinds rendered by the host,
 no widget JS needed: `markdown`, `table` (JSON → sortable), `form` (field defs;
 submit routes back like `survey-response`), `live` (obs-subscribed views).
-Declarative kinds are the cheap path for simple content; `html` + bridge caps
-is the full mini-app path. Both land in the same store, tiers, and windows.
+Declarative kinds are the cheap path for simple content; `html` + the MCP Apps
+contract is the full mini-app path. Both land in the same store, tiers, and
+windows.
 
 Window placement: the existing `open_artifact_widget` honors x/y — the widget
 manager supplies positions from `hint` ("right-of-chat", "near-moon") resolved
@@ -578,12 +697,19 @@ prototype's toast is clipped to a 7px sliver).
 
 **Phase 6 — voice split + hub cleanup (S4/S5).**
 
-**Phase 7 — AI widget tools + bridge caps** — `kind: markdown|table|form`,
-`tier`, `widget_append`, `widget_close` (+ pin-respect rule), placement hints;
-bridge `action` and `kv` caps. (`invoke` stays design-gated behind its own
-review — it's the cap that turns widgets into tool-callers.) Candidate here
-too: `widget-state` report + agent `close_widget`-by-name, if summon-by-name
-demand proves it.
+**Phase 7 — MCP Apps host + AI widget tools.** The content tier adopts the
+standard (see "Widgets are MCP Apps"), staged: render-only host → full tool
+proxy + consent UX → probe convergence + `luna.*` v0 retirement; `luna/*`
+extensions (event push, kv) land here. The `widget_*` authoring tools evolve
+alongside — `kind: markdown|table|form`, `tier`, `widget_append`,
+`widget_close` (+ pin-respect rule), placement hints; declarative kinds are
+host-rendered and orthogonal to the app contract. (The old `action`/`kv`/
+`invoke` bridge-cap track is superseded; `invoke`'s design gate is satisfied
+by the spec's mediated `tools/call` + visibility scopes + consent.) **This
+phase is independent of phases 4–6** — it touches widget.html + server relay
+only, not the monolith — and can be pulled forward if MCP-app demand arrives
+before chat extraction. Candidate rider: `widget-state` report + agent
+close-by-name, if summon-by-name proves demand.
 
 **Phase 8 — agent direct lines** — `chat.html?thread=…`; protocol already
 multi-thread (`subscribe-thread`/`thread-list`/`threadId` on every frame);
@@ -592,6 +718,11 @@ needs an agent-identity/thread mapping, honors one-window-per-thread.
 **Server track (parallel):**
 - `open_widget` agent tool + `widget-open` frame + hello `widgets` capability
   (Phase 3's server half — small; the directory arrives client-side).
+- **MCP Apps relay** (Phase 7's server half): UI-WS frames for `ui://`
+  resource reads + `tools/call` proxy against the server's MCP sessions
+  (single session authority — the server already owns all MCP connections),
+  tool-input/result push routed to the owning widget connection; later, Luna's
+  own core tools register `ui://` templates (the "core MCP app").
 - A real "needs input" job status — `JobRunStatus` is `queued|running|success|
   failed|cancelled`; the waiting state the whole notification ladder keys on
   does not exist — plus an answer channel into a running job (the
