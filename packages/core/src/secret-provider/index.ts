@@ -26,5 +26,11 @@ export {
 } from "./routed-op-provider.js"
 export {
   readKeychainToken,
+  writeKeychainSecret,
+  deleteKeychainSecret,
   type KeychainQuery,
 } from "./keychain-helper.js"
+export {
+  KeychainEnvSecretProvider,
+  keychainVaultQueryForEnvName,
+} from "./keychain-env-backend.js"

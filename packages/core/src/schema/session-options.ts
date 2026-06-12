@@ -29,6 +29,12 @@ export const SessionOptionsSchema = S.Struct({
   model: S.String.pipe(S.minLength(1)),
   idleTimeoutMs: S.optional(S.Number.pipe(S.int(), S.positive())),
   disableIdleTimeout: S.optional(S.Boolean),
+  // Turn-aware inactivity watchdog (chat threads). 0 = disabled, so the bound
+  // is non-negative (unlike idleTimeoutMs, which is strictly positive).
+  turnInactivityTimeoutMs: S.optional(
+    S.Number.pipe(S.int(), S.greaterThanOrEqualTo(0)),
+  ),
+  hangCooldownMs: S.optional(S.Number.pipe(S.int(), S.positive())),
   systemPrompt: S.optional(SystemPromptSchema),
   title: S.optional(S.String),
   tags: S.optional(S.Array(S.String)),

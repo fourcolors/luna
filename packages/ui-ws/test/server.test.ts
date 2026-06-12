@@ -16,7 +16,7 @@
  * left as a follow-up because reliably stalling a localhost ws send
  * buffer in a unit test is flaky.
  */
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, afterAll, describe, expect, it, vi } from "vitest"
 import {
   Effect,
   Layer,
@@ -211,6 +211,30 @@ describe("UIWebSocketServer", () => {
     await expect(
       collectFrames(rig.url, { authorization: "Bearer wrongtoken1234567" }, 1, 1000),
     ).rejects.toThrow(/401|unexpected|Connection ended/i)
+  })
+
+  // Audit finding: auth failures must produce a console.warn (IP only — no
+  // token material). Good-token connects must NOT trigger a warn.
+  it("emits console.warn on failed-auth upgrade, not on good-token upgrade", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+    try {
+      rig = await startRig()
+      // Bad-token attempt: expect a warn to fire.
+      await collectFrames(rig.url, { authorization: "Bearer bad-token-value" }, 1, 1000).catch(
+        () => {},
+      )
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/\[ui-ws\].*auth failed/),
+      )
+      // Good-token connect: warn must NOT fire again; log fires (first-connect).
+      const warnCallsBefore = warnSpy.mock.calls.length
+      await collectFrames(rig.url, { authorization: `Bearer ${TOKEN}` }, 1)
+      expect(warnSpy.mock.calls.length).toBe(warnCallsBefore)
+    } finally {
+      warnSpy.mockRestore()
+      logSpy.mockRestore()
+    }
   })
 
   it("sends hello frame on connect with correct bearer", async () => {

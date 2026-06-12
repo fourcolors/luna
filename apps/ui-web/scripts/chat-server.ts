@@ -194,6 +194,10 @@ import {
   makeDuckDbLayer,
   makeTelemetrySqlite,
   readKeychainToken,
+  writeKeychainSecret,
+  deleteKeychainSecret,
+  keychainVaultQueryForEnvName,
+  KeychainEnvSecretProvider,
   secretProviderFirstOf,
   JobsStoreService,
   validateAccountsTableLabels,
@@ -211,6 +215,10 @@ import {
   attachSandboxLocalShell,
   resolveSandboxLocalShell,
 } from "./sandbox-local-shell.js"
+import {
+  makeVaultSecretStore,
+  normalizeVaultStorageMode,
+} from "./vault-secret-store.js"
 export { createDnaLoader, loadDna } from "./dna-loader.js"
 export { loadSystem } from "./system-loader.js"
 export { loadWorkspaces } from "./workspaces-loader.js"
@@ -1083,7 +1091,24 @@ const registerOpTokenHandler = makeRegisterOpToken({
  * future — is covered (review M2.6: an interior \n in a value would inject an
  * extra line into ~/.luna/.env).
  */
-const persistEnvSecret = (varName: string, value: string): Promise<void> =>
+/**
+ * Defense-in-depth reserved-name predicate (mirrors isEnvDenied in
+ * @luna/vault/src/internal.ts). Inlined so persistEnvSecret stays
+ * self-contained. Check is CASE-INSENSITIVE (audit finding).
+ *
+ * CONNECTOR BYPASS: the connector OAuth path (storeSecret) writes
+ * LUNA_CONNECTOR_* vars intentionally — those are legitimate internal
+ * machinery (the agent has zero control over their names; they are
+ * synthesised from the connector definition id). The guard is therefore
+ * applied ONLY to registerSecret-reachable paths (operator/agent input).
+ * The connector's storeSecret passes allowReserved=true to opt out.
+ */
+const _isEnvReservedLocal = (varName: string): boolean => {
+  const upper = varName.toUpperCase()
+  return upper === "UI_WS_TOKEN" || upper.startsWith("LUNA_")
+}
+
+const persistEnvSecret = (varName: string, value: string, allowReserved = false): Promise<void> =>
   new Promise((resolve, reject) => {
     try {
       if (/[=\r\n]/.test(varName)) {
@@ -1092,6 +1117,14 @@ const persistEnvSecret = (varName: string, value: string): Promise<void> =>
       }
       if (/[\r\n]/.test(value)) {
         reject(new Error("env secret value must not contain line breaks"))
+        return
+      }
+      // SECURITY (audit finding, defense-in-depth): a second reserved-name
+      // gate so any future writer that calls persistEnvSecret directly
+      // (bypassing makeRegisterSecret) cannot overwrite Luna internals.
+      // The connector OAuth path passes allowReserved=true — see comment above.
+      if (!allowReserved && _isEnvReservedLocal(varName)) {
+        reject(new Error(`env var name "${varName}" is reserved for Luna internals`))
         return
       }
       const envPath = resolveRuntimePaths().envFilePath
@@ -1165,6 +1198,46 @@ const removeEnvSecret = (varName: string): Promise<void> =>
     }
   })
 
+// ── Vault keychain storage (Darwin opt-in) ──────────────────────────────
+//
+// Keychain write/delete adapters for env-secret values. They map an env var
+// NAME to its `luna.vault.<NAME>` keychain entry. Only ever invoked when the
+// facade's effective mode is a keychain mode (Darwin) — on Linux/non-Darwin the
+// facade short-circuits to `.env` and these are never called.
+const writeKeychainEnvSecret = (varName: string, value: string): Promise<void> =>
+  Effect.runPromise(
+    writeKeychainSecret(keychainVaultQueryForEnvName(varName), value),
+  )
+
+const deleteKeychainEnvSecret = (varName: string): Promise<void> =>
+  Effect.runPromise(
+    deleteKeychainSecret(keychainVaultQueryForEnvName(varName)),
+  )
+
+// LUNA_VAULT_STORAGE selects where env-secret VALUES land: `.env` (default),
+// or — on Darwin only — the macOS keychain. Resolved once at boot. The same
+// mode also drives the read-side provider chain in buildBaseLayer below, so
+// write target and read source stay in lockstep.
+const vaultStorageMode = normalizeVaultStorageMode(
+  process.env["LUNA_VAULT_STORAGE"],
+  process.platform,
+)
+
+// Single write/delete facade the Vault env-secret paths funnel through
+// (registerSecret + vault mutations). `writeEnv`/`removeEnv` retain the
+// reserved-name gate + atomic .env IO; `writeKeychain`/`deleteKeychain` hit
+// the keychain. process.env is mirrored either way so live resolution needs
+// no restart.
+const vaultSecretStore = makeVaultSecretStore({
+  platform: process.platform,
+  mode: vaultStorageMode,
+  env: process.env,
+  writeEnv: persistEnvSecret,
+  removeEnv: removeEnvSecret,
+  writeKeychain: writeKeychainEnvSecret,
+  deleteKeychain: deleteKeychainEnvSecret,
+})
+
 // ── Moon agent-summoned secure secret entry ─────────────────────────────
 //
 // The `request_secret` tool (in @luna/secret-tools) calls
@@ -1186,7 +1259,10 @@ const registerSecret = makeRegisterSecret({
     return c.ok ? { ok: true, message: "" } : { ok: false, message: c.message }
   },
   persistOpToken,
-  persistEnvSecret,
+  // Vault env-secrets funnel through the storage-mode facade so a keychain
+  // mode (Darwin) writes the value to luna.vault.<NAME> instead of plaintext
+  // .env. Default `env` mode is byte-identical to the prior direct call.
+  persistEnvSecret: vaultSecretStore.persistEnvSecret,
   log: (msg) => writeSync(1, `${msg}\n`),
 })
 
@@ -1457,7 +1533,29 @@ export const buildBaseLayer = (
   }))
   const routedOpL = RoutedOpSecretProvider.make({ accounts: routedAccounts })
   const envProviderL = EnvSecretProvider.Default
-  const secretL = secretProviderFirstOf([routedOpL, envProviderL])
+  // Vault keychain migration: on a Darwin keychain mode, resolve `env:*` from
+  // luna.vault.<NAME> keychain entries FIRST, then fall through to `.env`.
+  // Both keychain modes keep the `.env` reader as the final fallback — it is
+  // load-bearing for names that are NEVER migrated to the keychain: reserved
+  // refs (connector OAuth `env:LUNA_CONNECTOR_*`, `UI_WS_TOKEN`) live only in
+  // `.env` (the migration planner skips reserved names). Dropping the env
+  // reader would strand every connector (review finding).
+  //
+  // The difference between the two keychain modes is OPERATIONAL, not in the
+  // read chain: `keychain-preferred` is the pre-prune dual-read state where
+  // `.env` still holds the migrated values (so `LUNA_VAULT_STORAGE=env`
+  // rollback works); `keychain-only` is the post-prune state where the prune
+  // step has removed the MIGRATED (non-reserved) values from `.env`, so they
+  // resolve from the keychain only — the env tail then serves reserved refs
+  // alone and can never resurrect a migrated secret. Linux/non-Darwin never reaches a
+  // keychain mode (normalizeVaultStorageMode forces env), so the chain is
+  // unchanged there.
+  const keychainEnvProviderL = KeychainEnvSecretProvider.make()
+  const secretL =
+    vaultStorageMode === "keychain-preferred" ||
+    vaultStorageMode === "keychain-only"
+      ? secretProviderFirstOf([routedOpL, keychainEnvProviderL, envProviderL])
+      : secretProviderFirstOf([routedOpL, envProviderL])
 
   // AccountBroker hydrates the §5.1 `accounts` table from the default
   // ~/.luna/luna.db. Failures here surface as ConfigError at boot —
@@ -1674,7 +1772,10 @@ export const buildBaseLayer = (
         Effect.tryPromise({
           try: async () => {
             process.env[varName] = value
-            await persistEnvSecret(varName, value)
+            // allowReserved=true: connector var names (LUNA_CONNECTOR_*) are
+            // legitimate internal machinery — their names are synthesised from
+            // the connector definition id, not controlled by operator/agent.
+            await persistEnvSecret(varName, value, true)
             return `env:${varName}`
           },
           catch: (e) =>
@@ -2172,7 +2273,12 @@ const buildServerLayer = (
 
       const vaultMutations = makeVaultMutations({
         registerSecret,
-        removeEnvSecret,
+        // Vault delete routes through the facade so a keychain-mode delete
+        // scrubs the value from BOTH luna.vault.<NAME> and the .env line — an
+        // explicit delete must stay deleted across restarts (the .env rollback
+        // copy is for copy-only migration, not for deletes). Default `env`
+        // mode deletes from .env as before.
+        removeEnvSecret: vaultSecretStore.removeEnvSecret,
         deleteOpToken,
         store: vaultStoreFacade,
         now: () => Date.now(),

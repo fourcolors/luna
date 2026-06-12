@@ -10,6 +10,7 @@ import { Effect, Exit, Redacted } from "effect"
 import {
   EnvSecretProvider,
   FileSecretProvider,
+  KeychainEnvSecretProvider,
   SecretProvider,
   secretProviderFirstOf,
 } from "./index.js"
@@ -209,5 +210,70 @@ describe("Redacted leakage", () => {
     // Sanity: extracting the value explicitly DOES yield the secret —
     // this is the only allowed escape hatch.
     expect(Redacted.value(value)).toBe(SECRET)
+  })
+})
+
+describe("KeychainEnvSecretProvider", () => {
+  it("resolves env: refs from luna.vault.<name> keychain entries", async () => {
+    const got = await Effect.runPromise(
+      Effect.gen(function* () {
+        const sp = yield* SecretProvider
+        return yield* sp.get("env:OPENAI_API_KEY")
+      }).pipe(
+        Effect.provide(
+          KeychainEnvSecretProvider.make({
+            _platform: "darwin",
+            _read: (q) =>
+              q.service === "luna.vault.OPENAI_API_KEY" &&
+              q.account === "OPENAI_API_KEY"
+                ? Effect.succeed("from-keychain")
+                : Effect.fail(new Error("wrong key") as never),
+          }),
+        ),
+      ),
+    )
+
+    expect(Redacted.value(got)).toBe("from-keychain")
+  })
+
+  it("misses non-env refs so firstOf can fall through", async () => {
+    const exit = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const sp = yield* SecretProvider
+        return yield* sp.get("file:thing")
+      }).pipe(
+        Effect.provide(
+          KeychainEnvSecretProvider.make({
+            _platform: "darwin",
+            _read: () => Effect.succeed("should-not-run"),
+          }),
+        ),
+      ),
+    )
+
+    expect(Exit.isFailure(exit)).toBe(true)
+  })
+
+  it("falls through to EnvSecretProvider when keychain misses", async () => {
+    process.env.OPENAI_API_KEY = "from-env"
+    const got = await Effect.runPromise(
+      Effect.gen(function* () {
+        const sp = yield* SecretProvider
+        return yield* sp.get("env:OPENAI_API_KEY")
+      }).pipe(
+        Effect.provide(
+          secretProviderFirstOf([
+            KeychainEnvSecretProvider.make({
+              _platform: "darwin",
+              _read: () => Effect.fail(new Error("not found") as never),
+            }),
+            EnvSecretProvider.Default,
+          ]),
+        ),
+      ),
+    )
+    delete process.env.OPENAI_API_KEY
+
+    expect(Redacted.value(got)).toBe("from-env")
   })
 })

@@ -33,6 +33,21 @@ const RESERVED_LABELS: ReadonlySet<string> = new Set(["env", "file", "op"])
 const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 /**
+ * Reserved env-var names that must never be overwritten by the agent or
+ * operator via request_secret (env-secret branch). Mirrors the FROZEN
+ * contract in packages/vault/src/internal.ts:isEnvDenied — inlined here so
+ * secret-tools stays unit-testable without pulling @luna/vault. The predicate
+ * is CASE-INSENSITIVE (audit finding): an agent calling request_secret with
+ * var_name "luna_x" or "ui_ws_token" must be rejected just like the uppercase
+ * form. Normalise to uppercase before every comparison.
+ */
+const ENV_RESERVED_DENYLIST: ReadonlySet<string> = new Set(["UI_WS_TOKEN"])
+const isEnvReserved = (varName: string): boolean => {
+  const upper = varName.toUpperCase()
+  return ENV_RESERVED_DENYLIST.has(upper) || upper.startsWith("LUNA_")
+}
+
+/**
  * Where a captured secret should be stored. Discriminated by `kind`. The agent
  * chooses this; the secret VALUE is collected separately and never appears
  * here.
@@ -149,6 +164,16 @@ export const makeRegisterSecret =
           return {
             ok: false,
             message: `Invalid environment-variable name "${varName}".`,
+          }
+        }
+        // SECURITY (audit finding): reject reserved names BEFORE calling
+        // persistEnvSecret. UI_WS_TOKEN and LUNA_* are live Luna internals —
+        // an injected agent overwriting them could hijack auth or config.
+        // Check is CASE-INSENSITIVE (mirrors isEnvDenied in @luna/vault).
+        if (isEnvReserved(varName)) {
+          return {
+            ok: false,
+            message: "That name is reserved for Luna internals.",
           }
         }
         // SECURITY: a value with a newline would corrupt `~/.luna/.env` (and

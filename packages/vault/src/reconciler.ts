@@ -22,10 +22,6 @@ import type { VaultItem } from "./types.js"
 import { humanizeName } from "./mutations.js"
 import { makeId, isEnvDenied } from "./internal.js"
 
-// Re-export so the reconciler's denylist predicate is accessible from the
-// public barrel without breaking the single-source-of-truth in internal.ts.
-export { isEnvDenied }
-
 // ---------------------------------------------------------------------------
 // Denylist
 // ---------------------------------------------------------------------------
