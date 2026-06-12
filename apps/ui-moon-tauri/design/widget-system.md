@@ -381,13 +381,13 @@ Settings panels mutate state other windows consume (always-on-top, shortcut,
 model choice). Tauri-command-backed settings fan out naturally (Rust owns the
 state and can emit app-wide — but note the cross-talk trap: targeted events
 reach every global listener, so app-wide settings emits must carry the same
-`for:`/scope discipline as `dock-group`). localStorage-backed settings are
-same-origin so the *values* are shared, but cross-window `storage` event
-delivery in multi-window WKWebView is **unverified on real Tauri** — verify
-in phase 2, and if it doesn't fire, route change notifications through a
-`settings-changed` Tauri emit instead. Per-window semantics need deciding per
-setting (e.g. "always on top" today means the hub; as a panel setting it
-should mean *all* Luna windows).
+`for:`/scope discipline as `dock-group`). **ANSWERED (Phase 2 live probe,
+2026-06-12): cross-window `storage` events DO fire between windows on real
+Tauri/WKWebView** (hub wrote `luna_voice_mode=ptt`, an open panel received
+the storage event) — Phase 3's fan-out for localStorage-backed settings rides
+native storage events; command-backed state uses Rust emits. Per-window
+semantics still need deciding per setting (e.g. "always on top" today means
+the hub; as a panel setting it should mean *all* Luna windows).
 
 ---
 

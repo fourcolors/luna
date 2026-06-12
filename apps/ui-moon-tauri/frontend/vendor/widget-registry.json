@@ -1,0 +1,16 @@
+{
+  "_comment": "Widget registry — the single source of truth for addressable widgets (design/widget-system.md, 'First-Class Widgets'). Read by JS hosts (fetch) and Rust (include_str!). System trust tier ONLY: every page here ships in the app bundle; content-tier widgets (artifacts) never appear in this file and open via open_artifact_widget instead. `kind` is the name users, the hub launcher, and the agent all use; `description` is written for the agent directory (Phase 3).",
+  "version": 1,
+  "widgets": [
+    {
+      "kind": "settings.updates",
+      "title": "Updates",
+      "page": "panel.html?type=settings.updates",
+      "trust": "system",
+      "singleton": true,
+      "width": 360,
+      "height": 200,
+      "description": "Check for Luna Moon app updates and install them"
+    }
+  ]
+}

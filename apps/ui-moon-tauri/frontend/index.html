@@ -2879,7 +2879,10 @@
         <button type="button" class="settings-tab" data-tab="skills" role="tab" aria-selected="false" id="skills-tab-btn" hidden>Skills</button>
         <!-- PRD Part A: hidden until the server's hello advertises capabilities.connectors -->
         <button type="button" class="settings-tab" data-tab="connectors" role="tab" aria-selected="false" id="connectors-tab-btn" hidden>Connectors</button>
-        <button type="button" class="settings-tab" data-tab="updates" role="tab" aria-selected="false">Updates</button>
+        <!-- Migrated to a system widget (Phase 2): this tab is a LAUNCHER —
+             clicking it opens the settings.updates panel window instead of
+             an in-modal tabpanel. The modal shrinks tab-by-tab this way. -->
+        <button type="button" class="settings-tab" data-panel-kind="settings.updates" role="tab" aria-selected="false">Updates ↗</button>
       </div>
       <div class="settings-content">
         <div class="settings-tabpanel active" data-tabpanel="general">
@@ -3133,16 +3136,9 @@
           </div>
         </div>
         </div>
-        <div class="settings-tabpanel" data-tabpanel="updates">
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">App Updates</span>
-            <span class="setting-desc">Check GitHub for a newer Luna Moon build</span>
-            <span class="update-status" id="update-status" hidden></span>
-          </div>
-          <button type="button" class="record-btn" id="check-update-btn">Check</button>
-        </div>
-        </div>
+        <!-- Updates tabpanel removed: settings.updates is a system widget
+             now (panel.html?type=settings.updates). The boot-time silent
+             update check + banner stay in SettingsEngine (null-guarded). -->
       </div>
       </div>
       <div class="settings-footer">
@@ -10724,9 +10720,20 @@
     DOM.closeSettingsBtn.addEventListener('click', () => SettingsEngine.close());
     const settingsCloseX = document.getElementById('settings-close-x');
     if (settingsCloseX) settingsCloseX.addEventListener('click', () => SettingsEngine.close());
-    // Tab switching inside the settings modal.
+    // Tab switching inside the settings modal. Tabs carrying data-panel-kind
+    // are LAUNCHERS for migrated settings panels (Phase 2): they open the
+    // system widget and close the modal instead of switching tabpanels.
     document.querySelectorAll('.settings-tab').forEach((tab) => {
       tab.addEventListener('click', () => {
+        const panelKind = tab.getAttribute('data-panel-kind');
+        if (panelKind) {
+          if (window.__TAURI__ && window.__TAURI__.core) {
+            window.__TAURI__.core.invoke('open_widget', { kind: panelKind })
+              .catch((e) => Logger.warn('open_widget failed:', e));
+          }
+          SettingsEngine.close();
+          return;
+        }
         const name = tab.getAttribute('data-tab');
         document.querySelectorAll('.settings-tab').forEach((t) => {
           const on = t === tab;

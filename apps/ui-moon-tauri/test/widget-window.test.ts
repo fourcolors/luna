@@ -144,6 +144,7 @@ describe('widget.html — snap + dock groups', () => {
     loadVendorInto(window, 'moon-protocol.js')
     loadVendorInto(window, 'moon-ws.js')
     loadVendorInto(window, 'deck-snap.js')
+    loadVendorInto(window, 'moon-dock.js')
     loadVendorInto(window, 'widget-sandbox.js')
 
     // Select the page script by CONTENT, not position — an added inline
@@ -151,7 +152,7 @@ describe('widget.html — snap + dock groups', () => {
     // here, not silently execute the wrong script.
     const inlineScripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
       .map((m) => m[1])
-      .filter((s) => s.includes('wireDeckSnap'))
+      .filter((s) => s.includes('LunaDock.wire'))
     expect(inlineScripts).toHaveLength(1)
     new Function(inlineScripts[0])()
   })

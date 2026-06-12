@@ -5574,4 +5574,37 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect((document.getElementById('workflows-btn') as HTMLElement).hidden).toBe(true)
     })
   })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Behavioral Feature: Settings tabs that migrated to system widgets (Phase 2)
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Settings panel launchers', () => {
+    it('clicking the Updates tab opens the settings.updates panel and closes the modal', async () => {
+      // The launcher reads window.__TAURI__.core at CLICK time, so injecting
+      // the mock after boot exercises the real handler path.
+      const invoke = vi.fn(async () => 'panel-settings-updates')
+      ;(window as any).__TAURI__.core = { invoke }
+
+      const settingsPanel = document.getElementById('settings-panel') as HTMLElement
+      settingsPanel.classList.add('active') // modal open
+      const tab = document.querySelector('[data-panel-kind="settings.updates"]') as HTMLElement
+      expect(tab).toBeTruthy()
+      tab.click()
+
+      expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'settings.updates' })
+      expect(settingsPanel.classList.contains('active')).toBe(false)
+      // The launcher tab must NOT have stolen tabpanel selection: no
+      // tabpanel is associated with it, so the active one stays put.
+      expect(document.querySelector('.settings-tabpanel[data-tabpanel="updates"]')).toBeNull()
+    })
+
+    it('launcher degrades to a no-op off-Tauri (no core) without throwing', () => {
+      delete ((window as any).__TAURI__ as any).core
+      const settingsPanel = document.getElementById('settings-panel') as HTMLElement
+      settingsPanel.classList.add('active')
+      const tab = document.querySelector('[data-panel-kind="settings.updates"]') as HTMLElement
+      expect(() => tab.click()).not.toThrow()
+      expect(settingsPanel.classList.contains('active')).toBe(false)
+    })
+  })
 })

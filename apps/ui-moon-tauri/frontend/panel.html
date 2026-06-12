@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Luna Panel</title>
+  <script src="vendor/moon-protocol.js"></script>
+  <script src="vendor/moon-ws.js"></script>
+  <script src="vendor/deck-snap.js"></script>
+  <script src="vendor/moon-dock.js"></script>
+  <!-- Shared theme (tokens + widget-window chrome) loads BEFORE the page
+       style so page-specific rules win ties. -->
+  <link rel="stylesheet" href="vendor/moon-theme.css">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: var(--font-body);
+      font-size: 13px;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+
+    .widget-shell {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      height: 100%;
+    }
+
+    .content-area {
+      flex: 1;
+      overflow: auto;
+      padding: 14px;
+    }
+
+    .notice {
+      padding: 12px;
+      color: var(--muted);
+      font-size: 0.75rem;
+      font-style: italic;
+    }
+
+    /* ── Panel form chrome (settings panels) ─────────────────────────────── */
+    /* display:flex would beat the [hidden] attribute's UA display:none —
+       pin it (caught live: the install row showed while hidden). */
+    [hidden] { display: none !important; }
+    .panel-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .panel-btn {
+      padding: 6px 14px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: rgba(138, 180, 248, 0.10);
+      color: var(--text);
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+    .panel-btn:hover { background: rgba(138, 180, 248, 0.2); }
+    .panel-btn.primary { background: var(--accent); color: #0a0e1c; border-color: transparent; }
+    .panel-status { font-size: 0.78rem; color: var(--muted); }
+    .panel-status.ok { color: #7ee2a8; }
+    .panel-status.warn { color: #f8c982; }
+  </style>
+</head>
+<body>
+<div class="widget-shell">
+  <div class="title-bar" data-tauri-drag-region id="title-bar">
+    <span class="grip" data-tauri-drag-region>⋮⋮</span>
+    <span class="bar-title" data-tauri-drag-region id="bar-title">Loading…</span>
+    <button class="pin-btn" id="pin-btn" title="Unpin from group" aria-label="Unpin widget from its group" hidden>
+      <!-- Lucide "pin" (ISC) — standard icon, not hand-drawn. -->
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 17v5"/>
+        <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>
+      </svg>
+    </button>
+    <button class="close-btn" id="close-btn" title="Close" aria-label="Close panel">✕</button>
+  </div>
+  <div id="seam" aria-hidden="true"></div>
+  <div id="outline" aria-hidden="true"></div>
+  <div class="content-area" id="content-area"></div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ── Window / params ────────────────────────────────────────────────────
+  var params = new URLSearchParams(location.search);
+  var type = params.get('type') || '';
+
+  var W = null;
+  var label = null;
+  try {
+    if (window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.getCurrentWindow) {
+      W = window.__TAURI__.window.getCurrentWindow();
+      label = W.label;
+    }
+  } catch (_) { /* not in Tauri (tests/browser) */ }
+
+  var contentArea = document.getElementById('content-area');
+  var barTitle = document.getElementById('bar-title');
+  var closeBtn = document.getElementById('close-btn');
+
+  closeBtn && closeBtn.addEventListener('click', function () {
+    try {
+      if (window.__TAURI__ && window.__TAURI__.core && label) {
+        window.__TAURI__.core.invoke('close_widget', { label: label }).catch(function () {});
+      }
+    } catch (_) { /* best-effort */ }
+  });
+
+  function showNotice(text) {
+    contentArea.innerHTML = '';
+    var div = document.createElement('div');
+    div.className = 'notice';
+    div.textContent = text;
+    contentArea.appendChild(div);
+  }
+
+  // ── Panel type modules ─────────────────────────────────────────────────
+  // Each system-widget type renders with safe DOM methods only (no
+  // innerHTML with dynamic content — these are trusted pages but the
+  // discipline is uniform). Phase 3 adds the remaining settings.* types.
+  var PanelTypes = {
+    'settings.updates': {
+      title: 'Updates',
+      render: function (el) {
+        var row = document.createElement('div');
+        row.className = 'panel-row';
+        var btn = document.createElement('button');
+        btn.className = 'panel-btn';
+        btn.id = 'check-update-btn';
+        btn.textContent = 'Check for updates';
+        btn.setAttribute('aria-label', 'Check for updates');
+        var status = document.createElement('span');
+        status.className = 'panel-status';
+        status.id = 'update-status';
+        status.setAttribute('role', 'status');
+        row.appendChild(btn);
+        row.appendChild(status);
+        el.appendChild(row);
+
+        var installRow = document.createElement('div');
+        installRow.className = 'panel-row';
+        installRow.hidden = true;
+        var installBtn = document.createElement('button');
+        installBtn.className = 'panel-btn primary';
+        installBtn.id = 'install-update-btn';
+        installBtn.textContent = 'Update & Restart';
+        installBtn.setAttribute('aria-label', 'Update and restart');
+        installRow.appendChild(installBtn);
+        el.appendChild(installRow);
+
+        function setStatus(text, cls) {
+          status.textContent = text;
+          status.className = 'panel-status' + (cls ? ' ' + cls : '');
+        }
+
+        btn.addEventListener('click', async function () {
+          var core = window.__TAURI__ && window.__TAURI__.core;
+          if (!core) { setStatus('Updates are only available in the desktop app.'); return; }
+          setStatus('Checking…');
+          installRow.hidden = true;
+          try {
+            var info = await core.invoke('check_for_update');
+            if (info && info.version) {
+              setStatus('Update available: v' + info.version, 'warn');
+              installRow.hidden = false;
+            } else {
+              setStatus('Up to date ✓', 'ok');
+            }
+          } catch (e) {
+            setStatus('Update check failed: ' + e, 'warn');
+          }
+        });
+
+        installBtn.addEventListener('click', async function () {
+          var core = window.__TAURI__ && window.__TAURI__.core;
+          if (!core) return;
+          installBtn.disabled = true;
+          setStatus('Downloading & installing…');
+          try {
+            await core.invoke('install_update');
+            // The app restarts on success; this only paints on failure paths.
+          } catch (e) {
+            installBtn.disabled = false;
+            setStatus('Install failed: ' + e, 'warn');
+          }
+        });
+      },
+    },
+  };
+
+  var mod = PanelTypes[type];
+  if (mod) {
+    barTitle.textContent = mod.title;
+    document.title = 'Luna — ' + mod.title;
+    try {
+      mod.render(contentArea);
+    } catch (e) {
+      showNotice('Panel failed to render: ' + (e && e.message ? e.message : String(e)));
+    }
+  } else {
+    barTitle.textContent = 'Unknown panel';
+    showNotice('Unknown panel type: "' + type + '"');
+  }
+
+  // ── Dock/snap wiring (shared vendor module) ────────────────────────────
+  if (window.LunaDock) LunaDock.wire({ win: W, label: label });
+
+  // Test hook (mirrors widget.html's convention).
+  window.__PanelInternals = { type: type, hasModule: !!mod };
+})();
+</script>
+</body>
+</html>

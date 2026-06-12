@@ -785,6 +785,234 @@ fn encode_query_value(s: &str) -> String {
     out
 }
 
+// ── widget registry: SYSTEM widgets (panel-* windows) ───────────────────────
+// design/widget-system.md "First-Class Widgets": one declarative table is the
+// single source of truth for addressable widgets. The SAME file ships to the
+// frontend (vendor/widget-registry.json) and is compiled in here — Rust is
+// the enforcement point: kinds resolve ONLY to entries in this table, so no
+// artifact/content input can ever become a system panel.
+const WIDGET_REGISTRY_JSON: &str = include_str!("../../frontend/vendor/widget-registry.json");
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct WidgetDescriptor {
+    kind: String,
+    title: String,
+    page: String,
+    trust: String,
+    #[serde(default)]
+    #[allow(dead_code)] // all v1 panels are singletons; instance suffixes come with non-singleton kinds
+    singleton: bool,
+    #[serde(default = "default_panel_width")]
+    width: f64,
+    #[serde(default = "default_panel_height")]
+    height: f64,
+}
+fn default_panel_width() -> f64 {
+    360.0
+}
+fn default_panel_height() -> f64 {
+    300.0
+}
+
+#[derive(serde::Deserialize)]
+struct WidgetRegistryFile {
+    widgets: Vec<WidgetDescriptor>,
+}
+
+fn widget_registry() -> &'static [WidgetDescriptor] {
+    static REG: std::sync::OnceLock<Vec<WidgetDescriptor>> = std::sync::OnceLock::new();
+    REG.get_or_init(|| {
+        serde_json::from_str::<WidgetRegistryFile>(WIDGET_REGISTRY_JSON)
+            .map(|r| r.widgets)
+            .unwrap_or_default()
+    })
+}
+
+fn registry_lookup(kind: &str) -> Option<&'static WidgetDescriptor> {
+    widget_registry().iter().find(|d| d.kind == kind)
+}
+
+/// panel-* label for a registry kind. Kinds use lowercase words separated by
+/// DOTS only (no dashes — pinned by a test), so dot→dash is bijective and the
+/// label always matches the panel-* capability glob.
+fn panel_label(kind: &str) -> String {
+    format!("panel-{}", kind.replace('.', "-"))
+}
+fn panel_kind_from_label(label: &str) -> Option<String> {
+    label.strip_prefix("panel-").map(|s| s.replace('-', "."))
+}
+
+/// May this label participate in the dock graph and be closed by page JS?
+/// widget-* (content tier) and panel-* (system tier); never the hub.
+fn is_dock_label(label: &str) -> bool {
+    label.starts_with("widget-") || label.starts_with("panel-")
+}
+
+/// Spawn position for a panel opened FROM another window (the stacks
+/// mechanic): flush at the opener's right edge, or its left edge when the
+/// right would overflow the monitor. Pure for tests. Rects are logical px.
+fn panel_spawn_pos(
+    opener: (i32, i32, i32, i32),
+    width: i32,
+    monitor_right: i32,
+) -> (i32, i32, &'static str) {
+    let (ox, oy, ow, _oh) = opener;
+    if ox + ow + width <= monitor_right {
+        (ox + ow, oy, "r")
+    } else {
+        (ox - width, oy, "l")
+    }
+}
+
+/// ~/.luna/layout.json — positions of OPEN system panels (and nothing else:
+/// pin state for content widgets stays server-side; design doc Persistence).
+fn layout_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    Some(
+        std::path::PathBuf::from(home)
+            .join(".luna")
+            .join("layout.json"),
+    )
+}
+
+/// Persist every open panel's logical rect. Listed = open; absence = closed.
+/// Best-effort, last-write-wins, tiny file. NEVER called during hub-owned
+/// shutdown (caller guards on the hub still existing), or quitting the app
+/// would wipe the layout as the panels die one by one.
+fn write_panel_layout(app: &tauri::AppHandle) {
+    let Some(path) = layout_path() else { return };
+    let mut entries = Vec::new();
+    for (label, win) in app.webview_windows() {
+        if !label.starts_with("panel-") {
+            continue;
+        }
+        let Some(kind) = panel_kind_from_label(&label) else {
+            continue;
+        };
+        if let Some((x, y, w, h)) = dock_logical_rect(&win) {
+            entries.push(serde_json::json!({
+                "kind": kind, "x": x, "y": y, "w": w, "h": h
+            }));
+        }
+    }
+    let doc = serde_json::json!({ "version": 1, "panels": entries });
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&doc).unwrap_or_default(),
+    );
+}
+
+/// Build a panel window for a registry descriptor at (x, y) logical. Shared
+/// by open_widget and the boot-time layout restore.
+fn spawn_panel(
+    app: &tauri::AppHandle,
+    desc: &WidgetDescriptor,
+    x: Option<f64>,
+    y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<String, String> {
+    let label = panel_label(&desc.kind);
+    let mut builder = tauri::WebviewWindowBuilder::new(
+        app,
+        &label,
+        tauri::WebviewUrl::App(desc.page.clone().into()),
+    )
+    .title(&desc.title)
+    .decorations(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .inner_size(width.unwrap_or(desc.width), height.unwrap_or(desc.height))
+    .min_inner_size(220.0, 120.0);
+    if let (Some(px), Some(py)) = (x, y) {
+        builder = builder.position(px, py);
+    }
+    builder.build().map_err(|e| e.to_string())?;
+    Ok(label)
+}
+
+/// Open a SYSTEM widget by registry kind: singleton focus, panel-* label
+/// namespace, optional opener-edge placement + dock-group join (a panel
+/// opened from another widget/panel spawns docked to it — stacks). Unknown
+/// kinds are rejected; the registry is the trust boundary.
+#[tauri::command]
+async fn open_widget(
+    app: tauri::AppHandle,
+    kind: String,
+    opener: Option<String>,
+    x: Option<f64>,
+    y: Option<f64>,
+) -> Result<String, String> {
+    let desc = registry_lookup(&kind).ok_or_else(|| format!("unknown widget kind: {kind}"))?;
+    if desc.trust != "system" {
+        return Err(format!("kind {kind} is not a system widget"));
+    }
+    let label = panel_label(&kind);
+    // Singleton: already open → show + focus, never a twin.
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.show();
+        let _ = win.set_focus();
+        return Ok(label);
+    }
+    // The opener must be a dock-namespace window that actually exists; the
+    // hub ("main") deliberately does NOT qualify — panels opened from the
+    // gear spawn free-floating (the moon is never a group member).
+    let opener = opener.filter(|o| is_dock_label(o) && app.get_webview_window(o).is_some());
+
+    let win_label = spawn_panel(&app, desc, x, y, None, None)?;
+    let Some(win) = app.get_webview_window(&win_label) else {
+        return Ok(win_label);
+    };
+
+    if let Some(anchor) = opener {
+        let app2 = app.clone();
+        let label2 = win_label.clone();
+        let width = desc.width as i32;
+        let _ = win.run_on_main_thread(move || {
+            let Some(aw) = app2.get_webview_window(&anchor) else {
+                return;
+            };
+            let Some(arect) = dock_logical_rect(&aw) else {
+                return;
+            };
+            let monitor_right = aw
+                .current_monitor()
+                .ok()
+                .flatten()
+                .map(|m| {
+                    let sf = m.scale_factor();
+                    ((f64::from(m.position().x) + m.size().width as f64) / sf) as i32
+                })
+                .unwrap_or(i32::MAX);
+            let (px, py, edge) = panel_spawn_pos(arect, width, monitor_right);
+            if let Some(w) = app2.get_webview_window(&label2) {
+                let _ =
+                    w.set_position(tauri::LogicalPosition::new(f64::from(px), f64::from(py)));
+            }
+            // Join the opener's group exactly as a settle-snap would.
+            let (diff, notify) = {
+                let state = app2.state::<DockState>();
+                let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
+                let diff = s.join(&label2, &anchor);
+                (diff, s.members_of(&label2))
+            };
+            dock_apply_and_notify(&app2, diff, notify);
+            let _ = app2.emit_to(
+                tauri::EventTarget::labeled(&anchor),
+                "dock-link",
+                serde_json::json!({ "for": anchor, "from": label2, "edge": edge }),
+            );
+        });
+    }
+    // A new panel is layout-relevant immediately (a crash before the first
+    // Moved event must not lose it).
+    write_panel_layout(&app);
+    Ok(win_label)
+}
+
 /// Pop an artifact out into its own widget window (or focus it if already open).
 /// Returns the window label so the caller can track it for layout persistence.
 #[tauri::command]
@@ -845,17 +1073,19 @@ async fn close_widget(app: tauri::AppHandle, label: String) -> Result<(), String
 }
 
 /// Pure label-namespace guard for `close_widget` (testable without a webview).
+/// widget-* AND panel-* close; the hub never does.
 fn is_closable_widget_label(label: &str) -> bool {
-    label.starts_with("widget-")
+    is_dock_label(label)
 }
 
-/// Labels of every currently-open widget window (those with the `widget-`
-/// prefix) — lets the deck reconcile its persisted layout against reality.
+/// Labels of every currently-open widget-family window (widget-* content
+/// windows AND panel-* system windows) — snap candidates for the dock wiring
+/// and the cascade counter for pop-outs.
 #[tauri::command]
 fn list_widget_windows(app: tauri::AppHandle) -> Vec<String> {
     app.webview_windows()
         .keys()
-        .filter(|l| l.starts_with("widget-"))
+        .filter(|l| is_dock_label(l))
         .cloned()
         .collect()
 }
@@ -1631,10 +1861,10 @@ fn set_dock(
             // dragging widgets can never tow the moon around.
             return Err("the hub is not a dockable anchor".into());
         }
-        if !anchor.starts_with("widget-") {
+        if !is_dock_label(&anchor) {
             // Anchor strings come straight from page JS — keep the dock
-            // graph inside the widget namespace (extend deliberately when
-            // panel-* windows arrive).
+            // graph inside the widget-family namespace (widget-* content
+            // windows + panel-* system windows; never the hub).
             return Err(format!("anchor outside the widget namespace: {anchor}"));
         }
         if app.get_webview_window(&anchor).is_none() {
@@ -1788,6 +2018,19 @@ fn main() {
         // last-window-closed exit fires. The reverse never holds: closing a
         // widget leaves the hub (and the app) alive.
         .on_window_event(|window, event| {
+            // Layout persistence (panel-* only): positions settle on Moved
+            // (macOS fires it at drag END) and Resized; the Destroyed arm
+            // below records removals. Guarded against hub-owned shutdown
+            // inside write paths via the main-window check.
+            if window.label().starts_with("panel-")
+                && matches!(
+                    event,
+                    tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)
+                )
+                && window.app_handle().get_webview_window("main").is_some()
+            {
+                write_panel_layout(&window.app_handle());
+            }
             // Detach dock edges the moment a close is REQUESTED — before the
             // window dies. Closing a native parent takes its attached
             // children down with it (AppKit cascade), so a grouped root's ✕
@@ -1860,6 +2103,13 @@ fn main() {
                             let _ = win.destroy();
                         }
                     }
+                } else if window.label().starts_with("panel-")
+                    && app.get_webview_window("main").is_some()
+                {
+                    // A panel the USER closed leaves the layout (absence =
+                    // closed). Hub-owned shutdown skips this (main is
+                    // already gone) so quitting never wipes the layout.
+                    write_panel_layout(&app);
                 }
             }
         })
@@ -1896,6 +2146,7 @@ fn main() {
         oauth_loopback_cancel,
         open_external_url,
         open_artifact_widget,
+        open_widget,
         close_widget,
         list_widget_windows,
         set_dock,
@@ -1930,6 +2181,7 @@ fn main() {
         oauth_loopback_cancel,
         open_external_url,
         open_artifact_widget,
+        open_widget,
         close_widget,
         list_widget_windows,
         set_dock,
@@ -1938,6 +2190,59 @@ fn main() {
 
     builder
         .setup(|app| {
+            // Restore open system panels from ~/.luna/layout.json (design doc
+            // Persistence): positions clamped to the primary monitor so a
+            // display change can't strand a panel off-screen. Unknown kinds
+            // (stale file, removed registry entry) are skipped silently.
+            {
+                let handle = app.handle().clone();
+                // Logical bounds of every connected monitor; a saved position
+                // clamps to the monitor that CONTAINS it (multi-display
+                // setups), falling back to the first monitor when the saved
+                // display is gone.
+                let monitors: Vec<((f64, f64), (f64, f64))> = app
+                    .available_monitors()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|m| {
+                        let sf = m.scale_factor();
+                        (
+                            (f64::from(m.position().x) / sf, f64::from(m.position().y) / sf),
+                            (m.size().width as f64 / sf, m.size().height as f64 / sf),
+                        )
+                    })
+                    .collect();
+                let clamp_to_monitors = move |x: f64, y: f64| -> (f64, f64) {
+                    if monitors.is_empty() {
+                        return (x, y);
+                    }
+                    let containing = monitors.iter().find(|((mx, my), (mw, mh))| {
+                        x >= *mx && x < mx + mw && y >= *my && y < my + mh
+                    });
+                    let ((mx, my), (mw, mh)) = containing.unwrap_or(&monitors[0]);
+                    (
+                        x.clamp(*mx, (mx + mw - 80.0).max(*mx)),
+                        y.clamp(*my, (my + mh - 80.0).max(*my)),
+                    )
+                };
+                if let Some(path) = layout_path() {
+                    if let Ok(raw) = std::fs::read_to_string(&path) {
+                        if let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) {
+                            for p in doc["panels"].as_array().unwrap_or(&Vec::new()) {
+                                let Some(kind) = p["kind"].as_str() else { continue };
+                                let Some(desc) = registry_lookup(kind) else { continue };
+                                let (x, y) = clamp_to_monitors(
+                                    p["x"].as_f64().unwrap_or(180.0),
+                                    p["y"].as_f64().unwrap_or(160.0),
+                                );
+                                let w = p["w"].as_f64().filter(|v| *v >= 220.0);
+                                let h = p["h"].as_f64().filter(|v| *v >= 120.0);
+                                let _ = spawn_panel(&handle, desc, Some(x), Some(y), w, h);
+                            }
+                        }
+                    }
+                }
+            }
             // Voice pipeline controller (lazy: no mic/model touched until the
             // first non-off voice_set_mode). The AppHandle doubles as the
             // event sink — events land on the main window via emit_to.
@@ -2152,6 +2457,61 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod panel_registry_tests {
+    use super::*;
+
+    #[test]
+    fn registry_parses_and_contains_settings_updates_as_system() {
+        let reg = widget_registry();
+        assert!(!reg.is_empty(), "bundled registry must parse (a broken JSON would silently disable every panel)");
+        let upd = registry_lookup("settings.updates").expect("settings.updates registered");
+        assert_eq!(upd.trust, "system");
+        assert!(upd.page.starts_with("panel.html?type="), "system kinds resolve only to shipped pages");
+        assert!(upd.singleton, "settings panels are singletons");
+    }
+
+    #[test]
+    fn registry_kinds_use_dots_only_so_labels_roundtrip() {
+        for d in widget_registry() {
+            assert!(
+                !d.kind.contains('-') && d.kind.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.'),
+                "kind {} must be lowercase dot-separated (dashes would break label↔kind bijectivity)",
+                d.kind
+            );
+            let label = panel_label(&d.kind);
+            assert!(label.starts_with("panel-"), "must match the panel-* capability glob");
+            assert_eq!(panel_kind_from_label(&label).as_deref(), Some(d.kind.as_str()));
+        }
+    }
+
+    #[test]
+    fn unknown_kind_is_rejected() {
+        assert!(registry_lookup("settings.nope").is_none());
+        assert!(registry_lookup("widget-abc").is_none());
+    }
+
+    #[test]
+    fn dock_namespace_admits_widget_and_panel_but_never_the_hub() {
+        assert!(is_dock_label("widget-abc123"));
+        assert!(is_dock_label("panel-settings-updates"));
+        assert!(!is_dock_label("main"));
+        assert!(!is_dock_label("settings"));
+        assert!(is_closable_widget_label("panel-settings-updates"));
+        assert!(!is_closable_widget_label("main"));
+    }
+
+    #[test]
+    fn panel_spawn_prefers_right_edge_and_falls_back_left_on_overflow() {
+        // Opener at (100, 50) 360×440, panel 360 wide, monitor right at 1600.
+        assert_eq!(panel_spawn_pos((100, 50, 360, 440), 360, 1600), (460, 50, "r"));
+        // Right edge would overflow → flush at the opener's LEFT.
+        assert_eq!(panel_spawn_pos((1300, 50, 360, 440), 360, 1600), (940, 50, "l"));
+        // Exactly fits → still right.
+        assert_eq!(panel_spawn_pos((880, 50, 360, 440), 360, 1600), (1240, 50, "r"));
+    }
 }
 
 #[cfg(test)]
