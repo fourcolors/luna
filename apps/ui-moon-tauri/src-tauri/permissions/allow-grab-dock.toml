@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-grab-dock"
+description = "Allows a window to re-root its dock group at itself on grab, so dragging any grouped window carries the whole cluster"
+
+[permission.commands]
+allow = [
+  "grab_dock"
+]

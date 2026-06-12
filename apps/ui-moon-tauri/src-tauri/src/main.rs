@@ -1092,73 +1092,240 @@ async fn voice_ensure_model(app: tauri::AppHandle) -> Result<(), String> {
     .await
 }
 
-// ── widget dock graph (group-drag via native child windows) ─────────────────
+// ── widget dock groups (symmetric group-drag via native child windows) ──────
 //
-// widget-system.md Phase 0.5 operator feedback, round 2: reactive follower
-// repositioning (delta per Moved event) was visibly laggy — every follower
-// trailed the drag by IPC ticks. The fix is the platform's own primitive:
-// `NSWindow addChildWindow:ordered:` moves children IN THE SAME window-server
-// transaction as the parent — the compositor carries the whole cluster,
-// zero lag, none of our code in the drag path.
+// widget-system.md Phase 0.5 operator feedback, round 3: groups are SYMMETRIC
+// and flat — no user-visible hierarchy. A group is a set of windows natively
+// parented in a star under one root; dragging ANY member re-roots the star at
+// the grabbed window first (`grab_dock`, fired on title-bar pointerdown), so
+// the compositor always carries the whole cluster with the drag. The ONLY way
+// out of a group is the pin (set_dock docked=false) — there is no drag-detach
+// gesture, which is what made round 2 feel "random".
 //
-// widget.html reports its dock state after every settle-snap
-// (`set_dock {docked, anchor, edge}`); anchors can be the hub OR another
-// widget, so clusters form a forest (child → parent edges). Dragging any
-// window natively carries its whole subtree. Dragging a child away is the
-// detach gesture: its settle reports docked=false and we unparent it.
-#[derive(Default)]
-struct DockState(std::sync::Mutex<DockEdges>);
+// On every membership change each member's page receives a `dock-group` event
+// with { grouped, members, outlineSides } — outlineSides are the member's
+// FREE (non-touching) sides so the pages can render a faint highlight around
+// the GROUP perimeter only, never across interior seams.
 
 #[derive(Default)]
-struct DockEdges {
-    /// child label → anchor label it is docked (natively parented) to.
-    parent_of: std::collections::HashMap<String, String>,
+struct DockState(std::sync::Mutex<DockGroups>);
+
+#[derive(Default, Debug)]
+struct DockGroups {
+    next_id: u64,
+    /// group id → flat member set + the current native root.
+    groups: std::collections::HashMap<u64, DockGroup>,
+    /// window label → group id.
+    by_label: std::collections::HashMap<String, u64>,
 }
 
-/// Would docking `child` onto `anchor` create a cycle (anchor already lives
-/// in child's subtree)? Pure, unit-testable.
-fn dock_would_cycle(edges: &DockEdges, child: &str, anchor: &str) -> bool {
-    let mut cur = anchor;
-    loop {
-        if cur == child {
-            return true;
+#[derive(Default, Debug, Clone)]
+struct DockGroup {
+    root: String,
+    members: std::collections::HashSet<String>,
+}
+
+/// A native parenting mutation: (parent, child, attach?). Applied in order on
+/// the main thread. Detaches always precede attaches within one diff.
+type DockDiff = Vec<(String, String, bool)>;
+
+impl DockGroups {
+    fn group_of(&self, label: &str) -> Option<&DockGroup> {
+        self.by_label.get(label).and_then(|id| self.groups.get(id))
+    }
+
+    fn members_of(&self, label: &str) -> Vec<String> {
+        self.group_of(label)
+            .map(|g| g.members.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Link `child` with `anchor` (settle-snap landed flush). Returns the
+    /// parenting diff. Handles every membership combination; linking two
+    /// windows already in the same group is a no-op.
+    fn join(&mut self, child: &str, anchor: &str) -> DockDiff {
+        if child == anchor {
+            return Vec::new();
         }
-        match edges.parent_of.get(cur) {
-            Some(p) => cur = p.as_str(),
-            None => return false,
+        let cg = self.by_label.get(child).copied();
+        let ag = self.by_label.get(anchor).copied();
+        match (cg, ag) {
+            (Some(c), Some(a)) if c == a => Vec::new(),
+            (None, None) => {
+                let id = self.next_id;
+                self.next_id += 1;
+                let mut members = std::collections::HashSet::new();
+                members.insert(child.to_string());
+                members.insert(anchor.to_string());
+                self.groups.insert(
+                    id,
+                    DockGroup { root: anchor.to_string(), members },
+                );
+                self.by_label.insert(child.to_string(), id);
+                self.by_label.insert(anchor.to_string(), id);
+                vec![(anchor.to_string(), child.to_string(), true)]
+            }
+            (None, Some(a)) => {
+                let g = self.groups.get_mut(&a).expect("group exists");
+                g.members.insert(child.to_string());
+                let root = g.root.clone();
+                self.by_label.insert(child.to_string(), a);
+                vec![(root, child.to_string(), true)]
+            }
+            (Some(c), None) => {
+                let g = self.groups.get_mut(&c).expect("group exists");
+                g.members.insert(anchor.to_string());
+                let root = g.root.clone();
+                self.by_label.insert(anchor.to_string(), c);
+                vec![(root, anchor.to_string(), true)]
+            }
+            (Some(c), Some(a)) => {
+                // Merge: child's whole group re-parents under anchor's root.
+                let moved = self.groups.remove(&c).expect("group exists");
+                let target = self.groups.get_mut(&a).expect("group exists");
+                let target_root = target.root.clone();
+                let mut diff: DockDiff = Vec::new();
+                for m in &moved.members {
+                    if *m != moved.root {
+                        diff.push((moved.root.clone(), m.clone(), false));
+                    }
+                }
+                for m in &moved.members {
+                    target.members.insert(m.clone());
+                    self.by_label.insert(m.clone(), a);
+                    diff.push((target_root.clone(), m.clone(), true));
+                }
+                diff
+            }
         }
+    }
+
+    /// Re-root `label`'s group at `label` (called on grab, before the native
+    /// drag carries the cluster). No-op when ungrouped or already root.
+    fn reroot(&mut self, label: &str) -> DockDiff {
+        let Some(&id) = self.by_label.get(label) else {
+            return Vec::new();
+        };
+        let g = self.groups.get_mut(&id).expect("group exists");
+        if g.root == label {
+            return Vec::new();
+        }
+        let old_root = std::mem::replace(&mut g.root, label.to_string());
+        let mut diff: DockDiff = Vec::new();
+        for m in &g.members {
+            if *m != old_root {
+                diff.push((old_root.clone(), m.clone(), false));
+            }
+        }
+        for m in &g.members {
+            if *m != label {
+                diff.push((label.to_string(), m.clone(), true));
+            }
+        }
+        diff
+    }
+
+    /// Remove `label` from its group (pin click, or window destroyed).
+    /// Returns (diff, departed members) — a 2-member group dissolves
+    /// entirely, freeing both. `gone=true` skips native ops involving the
+    /// label itself (its window is already destroyed).
+    fn leave(&mut self, label: &str, gone: bool) -> (DockDiff, Vec<String>) {
+        let Some(&id) = self.by_label.get(label) else {
+            return (Vec::new(), Vec::new());
+        };
+        let g = self.groups.get_mut(&id).expect("group exists");
+        g.members.remove(label);
+        self.by_label.remove(label);
+        let was_root = g.root == label;
+        let mut diff: DockDiff = Vec::new();
+        let mut departed = vec![label.to_string()];
+
+        if !was_root && !gone {
+            diff.push((g.root.clone(), label.to_string(), false));
+        }
+        if was_root {
+            // Detach the orphans from the dead/leaving root...
+            for m in g.members.clone() {
+                if !gone {
+                    diff.push((label.to_string(), m.clone(), false));
+                }
+            }
+            // ...and re-form the star under a surviving member.
+            if let Some(new_root) = g.members.iter().min().cloned() {
+                g.root = new_root.clone();
+                for m in g.members.clone() {
+                    if m != new_root {
+                        diff.push((new_root.clone(), m, true));
+                    }
+                }
+            }
+        }
+        // A group of one is no group.
+        if g.members.len() <= 1 {
+            let last = g.members.iter().next().cloned();
+            if let Some(last) = last {
+                if !was_root && !gone {
+                    // label was a plain member; the survivor may still be
+                    // parented if it wasn't the root — it is the root here
+                    // (star of 2), so nothing to detach.
+                }
+                self.by_label.remove(&last);
+                departed.push(last);
+            }
+            self.groups.remove(&id);
+        }
+        (diff, departed)
     }
 }
 
-/// Apply an edge change to the graph. Returns the PREVIOUS anchor (the one
-/// to natively unparent from), or an error for self-docks and cycles. Pure.
-fn dock_set_edge(
-    edges: &mut DockEdges,
-    child: &str,
-    anchor: Option<&str>,
-) -> Result<Option<String>, String> {
-    match anchor {
-        Some(a) => {
-            if a == child {
-                return Err("a widget cannot dock to itself".into());
+/// Which sides of each member face OUT of the group? A side is interior when
+/// it sits flush (≤2 px) against another member with real perpendicular
+/// overlap. Pure geometry — drives the perimeter highlight.
+fn dock_outline_sides(
+    rects: &[(String, (i32, i32, i32, i32))], // (label, (x, y, w, h))
+) -> std::collections::HashMap<String, Vec<&'static str>> {
+    const EPS: i32 = 2;
+    const MIN_OVERLAP: i32 = 8;
+    let mut out = std::collections::HashMap::new();
+    for (label, (x, y, w, h)) in rects {
+        let (l, t, r, b) = (*x, *y, x + w, y + h);
+        let mut sides: Vec<&'static str> = Vec::new();
+        let mut touched = (false, false, false, false); // l r t b
+        for (other, (ox, oy, ow, oh)) in rects {
+            if other == label {
+                continue;
             }
-            if dock_would_cycle(edges, child, a) {
-                return Err("dock would create a cycle".into());
+            let (ol, ot, or_, ob) = (*ox, *oy, ox + ow, oy + oh);
+            let v_overlap = (b.min(ob) - t.max(ot)) >= MIN_OVERLAP;
+            let h_overlap = (r.min(or_) - l.max(ol)) >= MIN_OVERLAP;
+            if v_overlap && (l - or_).abs() <= EPS {
+                touched.0 = true;
             }
-            Ok(edges.parent_of.insert(child.to_string(), a.to_string()))
+            if v_overlap && (r - ol).abs() <= EPS {
+                touched.1 = true;
+            }
+            if h_overlap && (t - ob).abs() <= EPS {
+                touched.2 = true;
+            }
+            if h_overlap && (b - ot).abs() <= EPS {
+                touched.3 = true;
+            }
         }
-        None => Ok(edges.parent_of.remove(child)),
+        if !touched.0 {
+            sides.push("l");
+        }
+        if !touched.1 {
+            sides.push("r");
+        }
+        if !touched.2 {
+            sides.push("t");
+        }
+        if !touched.3 {
+            sides.push("b");
+        }
+        out.insert(label.clone(), sides);
     }
-}
-
-/// Labels directly docked onto `label`. Pure.
-fn dock_children_of(edges: &DockEdges, label: &str) -> Vec<String> {
-    edges
-        .parent_of
-        .iter()
-        .filter(|(_, p)| p.as_str() == label)
-        .map(|(c, _)| c.clone())
-        .collect()
+    out
 }
 
 /// Native half: parent/unparent via AppKit. MUST run on the main thread.
@@ -1188,11 +1355,51 @@ fn ns_set_child(parent: &tauri::WebviewWindow, child: &tauri::WebviewWindow, att
 #[cfg(not(target_os = "macos"))]
 fn ns_set_child(_parent: &tauri::WebviewWindow, _child: &tauri::WebviewWindow, _attach: bool) {}
 
-/// widget.html calls this after every settle-snap: `docked=true, anchor=L`
-/// when it landed flush on window L (hub or another widget), `docked=false`
-/// when it settled away. Re-affirming the same anchor is a no-op. After a
-/// successful dock the ANCHOR window receives a `dock-link` event so it can
-/// flash its side of the seam.
+/// Apply a parenting diff + push fresh `dock-group` state to every window
+/// whose membership might have changed. Main thread only.
+fn dock_apply_and_notify(
+    app: &tauri::AppHandle,
+    diff: DockDiff,
+    notify: Vec<String>,
+) {
+    for (parent, child, attach) in diff {
+        if let (Some(p), Some(c)) = (
+            app.get_webview_window(&parent),
+            app.get_webview_window(&child),
+        ) {
+            ns_set_child(&p, &c, attach);
+        }
+    }
+    let state = app.state::<DockState>();
+    let s = state.0.lock().unwrap_or_else(|e| e.into_inner());
+    for label in notify {
+        let members = s.members_of(&label);
+        let payload = if members.is_empty() {
+            serde_json::json!({ "grouped": false, "members": [], "outlineSides": [] })
+        } else {
+            let rects: Vec<(String, (i32, i32, i32, i32))> = members
+                .iter()
+                .filter_map(|m| {
+                    let w = app.get_webview_window(m)?;
+                    let p = w.outer_position().ok()?;
+                    let sz = w.outer_size().ok()?;
+                    Some((m.clone(), (p.x, p.y, sz.width as i32, sz.height as i32)))
+                })
+                .collect();
+            let outline = dock_outline_sides(&rects);
+            serde_json::json!({
+                "grouped": true,
+                "members": members,
+                "outlineSides": outline.get(&label).cloned().unwrap_or_default(),
+            })
+        };
+        let _ = app.emit_to(tauri::EventTarget::labeled(&label), "dock-group", payload);
+    }
+}
+
+/// widget.html calls this after a settle-snap lands flush on `anchor`
+/// (docked=true) or from the pin (docked=false → leave the group; the window
+/// is nudged a step past the magnet range so it doesn't instantly re-link).
 #[tauri::command]
 fn set_dock(
     window: tauri::WebviewWindow,
@@ -1201,59 +1408,107 @@ fn set_dock(
     anchor: Option<String>,
     edge: Option<String>,
 ) -> Result<(), String> {
-    let child_label = window.label().to_string();
-    if child_label == "main" {
-        return Err("the hub cannot dock to anything".into());
+    let label = window.label().to_string();
+    if label == "main" {
+        return Err("the hub reports no docks of its own".into());
     }
-    let anchor_label = if docked {
-        Some(anchor.ok_or_else(|| "anchor required when docking".to_string())?)
-    } else {
-        None
-    };
     let app = window.app_handle().clone();
-    if let Some(a) = anchor_label.as_deref() {
-        if app.get_webview_window(a).is_none() {
-            return Err(format!("unknown anchor window: {a}"));
+
+    if docked {
+        let anchor = anchor.ok_or_else(|| "anchor required when docking".to_string())?;
+        if app.get_webview_window(&anchor).is_none() {
+            return Err(format!("unknown anchor window: {anchor}"));
         }
+        let (diff, notify) = {
+            let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
+            let diff = s.join(&label, &anchor);
+            (diff, s.members_of(&label))
+        };
+        let flash_anchor = anchor.clone();
+        let edge = edge.unwrap_or_default();
+        window
+            .run_on_main_thread(move || {
+                dock_apply_and_notify(&app, diff, notify);
+                // The link flash on the anchor's side of the seam.
+                let _ = app.emit_to(
+                    tauri::EventTarget::labeled(&flash_anchor),
+                    "dock-link",
+                    serde_json::json!({ "from": label, "edge": edge }),
+                );
+            })
+            .map_err(|e| e.to_string())
+    } else {
+        let (diff, departed, remaining) = {
+            let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
+            let remaining_before = s.members_of(&label);
+            let (diff, departed) = s.leave(&label, false);
+            let remaining: Vec<String> = remaining_before
+                .into_iter()
+                .filter(|m| m != &label)
+                .collect();
+            (diff, departed, remaining)
+        };
+        window
+            .run_on_main_thread(move || {
+                // Eject the leaver a step past the magnet range, away from
+                // the rest of the group, BEFORE unparenting is observable —
+                // direction from the group centroid.
+                if let Some(w) = app.get_webview_window(&label) {
+                    if let (Ok(p), Ok(sz)) = (w.outer_position(), w.outer_size()) {
+                        let (mut cx, mut cy, mut n) = (0i64, 0i64, 0i64);
+                        for m in &remaining {
+                            if let Some(mw) = app.get_webview_window(m) {
+                                if let (Ok(mp), Ok(ms)) = (mw.outer_position(), mw.outer_size()) {
+                                    cx += i64::from(mp.x) + i64::from(ms.width) / 2;
+                                    cy += i64::from(mp.y) + i64::from(ms.height) / 2;
+                                    n += 1;
+                                }
+                            }
+                        }
+                        let my_cx = i64::from(p.x) + i64::from(sz.width) / 2;
+                        let my_cy = i64::from(p.y) + i64::from(sz.height) / 2;
+                        let (dx, dy) = if n == 0 {
+                            (36, 0)
+                        } else {
+                            let ddx = my_cx - cx / n;
+                            let ddy = my_cy - cy / n;
+                            if ddx.abs() >= ddy.abs() {
+                                (if ddx >= 0 { 36 } else { -36 }, 0)
+                            } else {
+                                (0, if ddy >= 0 { 36 } else { -36 })
+                            }
+                        };
+                        let _ = w.set_position(tauri::PhysicalPosition::new(p.x + dx, p.y + dy));
+                    }
+                }
+                let mut notify = departed;
+                notify.extend(remaining);
+                dock_apply_and_notify(&app, diff, notify);
+            })
+            .map_err(|e| e.to_string())
     }
+}
 
-    let prev = {
+/// Fired on title-bar pointerdown, BEFORE the native drag session: re-root
+/// the grabbed window's group at the grabbed window, so the compositor
+/// carries the whole cluster no matter which member the user drags.
+#[tauri::command]
+fn grab_dock(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, DockState>,
+) -> Result<(), String> {
+    let label = window.label().to_string();
+    let app = window.app_handle().clone();
+    let diff = {
         let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
-        // Idempotent re-affirm: same anchor → nothing to do natively.
-        if anchor_label.is_some() && s.parent_of.get(&child_label) == anchor_label.as_ref() {
-            return Ok(());
-        }
-        dock_set_edge(&mut s, &child_label, anchor_label.as_deref())?
+        s.reroot(&label)
     };
-
-    // AppKit window-tree mutations belong on the main thread.
-    let child_for_ns = child_label.clone();
-    let anchor_for_ns = anchor_label.clone();
+    if diff.is_empty() {
+        return Ok(());
+    }
     window
         .run_on_main_thread(move || {
-            let child = match app.get_webview_window(&child_for_ns) {
-                Some(w) => w,
-                None => return,
-            };
-            if let Some(prev_label) = prev {
-                if let Some(p) = app.get_webview_window(&prev_label) {
-                    ns_set_child(&p, &child, false);
-                }
-            }
-            if let Some(a_label) = anchor_for_ns {
-                if let Some(p) = app.get_webview_window(&a_label) {
-                    ns_set_child(&p, &child, true);
-                    // Tell the anchor's page to flash its side of the seam.
-                    let _ = app.emit_to(
-                        tauri::EventTarget::labeled(&a_label),
-                        "dock-link",
-                        serde_json::json!({
-                            "from": child_for_ns,
-                            "edge": edge.unwrap_or_default(),
-                        }),
-                    );
-                }
-            }
+            dock_apply_and_notify(&app, diff, Vec::new());
         })
         .map_err(|e| e.to_string())
 }
@@ -1268,20 +1523,27 @@ fn main() {
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 let app = window.app_handle();
-                // Dock-graph hygiene: drop the dying window's own edge and
-                // orphan its children. AppKit cascades orderOut to children
-                // of a closing parent, so re-show each orphan or it would
-                // vanish with its anchor despite being its own window.
-                let orphans = {
+                // Dock hygiene: the dead window leaves its group. Survivors
+                // are re-shown (AppKit cascades orderOut to children of a
+                // dying parent) and get fresh dock-group state. This handler
+                // runs on the main thread, so native ops are direct.
+                let (diff, survivors) = {
                     let state = app.state::<DockState>();
                     let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
-                    s.parent_of.remove(window.label());
-                    let kids = dock_children_of(&s, window.label());
-                    for k in &kids {
-                        s.parent_of.remove(k);
-                    }
-                    kids
+                    let before = s.members_of(window.label());
+                    let (diff, _departed) = s.leave(window.label(), true);
+                    let survivors: Vec<String> = before
+                        .into_iter()
+                        .filter(|m| m != window.label())
+                        .collect();
+                    (diff, survivors)
                 };
+                for m in &survivors {
+                    if let Some(w) = app.get_webview_window(m) {
+                        let _ = w.show();
+                    }
+                }
+                dock_apply_and_notify(&app, diff, survivors);
                 if window.label() == "main" {
                     for (label, win) in app.webview_windows() {
                         if label != "main" {
@@ -1292,12 +1554,6 @@ fn main() {
                             // float orphaned forever. destroy() is the
                             // hard guarantee the invariant claims.
                             let _ = win.destroy();
-                        }
-                    }
-                } else {
-                    for k in orphans {
-                        if let Some(w) = app.get_webview_window(&k) {
-                            let _ = w.show();
                         }
                     }
                 }
@@ -1339,6 +1595,7 @@ fn main() {
         close_widget,
         list_widget_windows,
         set_dock,
+        grab_dock,
         voice_status,
         voice_set_mode,
         voice_ptt_down,
@@ -1371,7 +1628,8 @@ fn main() {
         open_artifact_widget,
         close_widget,
         list_widget_windows,
-        set_dock
+        set_dock,
+        grab_dock
     ]);
 
     builder
@@ -1951,68 +2209,127 @@ mod tests {
 
 #[cfg(test)]
 mod dock_tests {
-    use super::{dock_children_of, dock_set_edge, dock_would_cycle, DockEdges};
+    use super::{dock_outline_sides, DockGroups};
 
-    #[test]
-    fn docking_and_undocking_maintain_edges_and_report_previous_anchor() {
-        let mut e = DockEdges::default();
-        assert_eq!(dock_set_edge(&mut e, "widget-a", Some("main")), Ok(None));
-        // Re-docking to a NEW anchor reports the old one (to unparent from).
-        assert_eq!(
-            dock_set_edge(&mut e, "widget-a", Some("widget-b")),
-            Ok(Some("main".to_string()))
-        );
-        assert_eq!(
-            dock_set_edge(&mut e, "widget-a", None),
-            Ok(Some("widget-b".to_string()))
-        );
-        assert_eq!(dock_set_edge(&mut e, "widget-a", None), Ok(None));
+    fn attaches(diff: &[(String, String, bool)]) -> Vec<(String, String)> {
+        diff.iter()
+            .filter(|(_, _, a)| *a)
+            .map(|(p, c, _)| (p.clone(), c.clone()))
+            .collect()
     }
 
     #[test]
-    fn chains_form_and_children_enumerate() {
-        let mut e = DockEdges::default();
-        let _ = dock_set_edge(&mut e, "widget-a", Some("main"));
-        let _ = dock_set_edge(&mut e, "widget-b", Some("widget-a"));
-        let _ = dock_set_edge(&mut e, "widget-c", Some("widget-a"));
-        let mut kids = dock_children_of(&e, "widget-a");
-        kids.sort();
-        assert_eq!(kids, vec!["widget-b".to_string(), "widget-c".to_string()]);
-        assert_eq!(dock_children_of(&e, "widget-b"), Vec::<String>::new());
+    fn joining_two_loose_windows_forms_a_star_rooted_at_the_anchor() {
+        let mut g = DockGroups::default();
+        let diff = g.join("widget-a", "main");
+        assert_eq!(attaches(&diff), vec![("main".into(), "widget-a".into())]);
+        let mut members = g.members_of("widget-a");
+        members.sort();
+        assert_eq!(members, vec!["main".to_string(), "widget-a".to_string()]);
+        // Same-group re-join is a no-op.
+        assert!(g.join("widget-a", "main").is_empty());
     }
 
     #[test]
-    fn self_dock_is_rejected() {
-        let mut e = DockEdges::default();
-        assert!(dock_set_edge(&mut e, "widget-a", Some("widget-a")).is_err());
+    fn newcomers_attach_to_the_group_root_not_the_touched_member() {
+        let mut g = DockGroups::default();
+        let _ = g.join("widget-a", "main");
+        // b touches widget-a, but the star parents it to the root (main).
+        let diff = g.join("widget-b", "widget-a");
+        assert_eq!(attaches(&diff), vec![("main".into(), "widget-b".into())]);
+        assert_eq!(g.members_of("widget-b").len(), 3);
     }
 
     #[test]
-    fn direct_and_transitive_cycles_are_rejected() {
-        let mut e = DockEdges::default();
-        let _ = dock_set_edge(&mut e, "widget-b", Some("widget-a"));
-        // a → b would make a cycle (b is already docked to a).
-        assert!(dock_would_cycle(&e, "widget-a", "widget-b"));
-        assert!(dock_set_edge(&mut e, "widget-a", Some("widget-b")).is_err());
-        // Transitive: c docked to b, then a → c also cycles.
-        let _ = dock_set_edge(&mut e, "widget-c", Some("widget-b"));
-        assert!(dock_set_edge(&mut e, "widget-a", Some("widget-c")).is_err());
-        // A genuinely independent dock still works.
-        assert!(dock_set_edge(&mut e, "widget-d", Some("widget-a")).is_ok());
+    fn merging_two_groups_reparents_the_absorbed_star() {
+        let mut g = DockGroups::default();
+        let _ = g.join("widget-a", "main");
+        let _ = g.join("widget-c", "widget-b"); // second group, root widget-b
+        let diff = g.join("widget-b", "widget-a"); // merge into main's group
+        // widget-c detaches from widget-b, then both attach under main.
+        assert!(diff.contains(&("widget-b".into(), "widget-c".into(), false)));
+        assert!(diff.contains(&("main".into(), "widget-b".into(), true)));
+        assert!(diff.contains(&("main".into(), "widget-c".into(), true)));
+        assert_eq!(g.members_of("main").len(), 4);
     }
 
     #[test]
-    fn destroyed_anchor_cleanup_orphans_children() {
-        let mut e = DockEdges::default();
-        let _ = dock_set_edge(&mut e, "widget-a", Some("main"));
-        let _ = dock_set_edge(&mut e, "widget-b", Some("widget-a"));
-        // Simulate the Destroyed-arm hygiene for widget-a.
-        e.parent_of.remove("widget-a");
-        let kids = dock_children_of(&e, "widget-a");
-        for k in &kids {
-            e.parent_of.remove(k);
+    fn reroot_moves_every_member_under_the_grabbed_window() {
+        let mut g = DockGroups::default();
+        let _ = g.join("widget-a", "main");
+        let _ = g.join("widget-b", "widget-a");
+        let diff = g.reroot("widget-b");
+        // Old root detaches its children, new root adopts everyone else.
+        assert!(diff.contains(&("main".into(), "widget-a".into(), false)));
+        assert!(diff.contains(&("widget-b".into(), "main".into(), true)));
+        assert!(diff.contains(&("widget-b".into(), "widget-a".into(), true)));
+        // Grabbing the root again is a no-op.
+        assert!(g.reroot("widget-b").is_empty());
+        // Ungrouped windows are no-ops too.
+        assert!(g.reroot("widget-zzz").is_empty());
+    }
+
+    #[test]
+    fn leaving_a_three_group_keeps_the_other_two_linked() {
+        let mut g = DockGroups::default();
+        let _ = g.join("widget-a", "main");
+        let _ = g.join("widget-b", "widget-a");
+        let (diff, departed) = g.leave("widget-a", false);
+        assert_eq!(departed, vec!["widget-a".to_string()]);
+        assert!(diff.contains(&("main".into(), "widget-a".into(), false)));
+        let mut rest = g.members_of("main");
+        rest.sort();
+        assert_eq!(rest, vec!["main".to_string(), "widget-b".to_string()]);
+    }
+
+    #[test]
+    fn a_two_group_dissolves_when_either_member_leaves() {
+        let mut g = DockGroups::default();
+        let _ = g.join("widget-a", "main");
+        let (_, departed) = g.leave("widget-a", false);
+        let mut d = departed;
+        d.sort();
+        assert_eq!(d, vec!["main".to_string(), "widget-a".to_string()]);
+        assert!(g.members_of("main").is_empty());
+        assert!(g.groups.is_empty());
+    }
+
+    #[test]
+    fn root_departure_reforms_the_star_under_a_survivor() {
+        let mut g = DockGroups::default();
+        let _ = g.join("widget-a", "main");
+        let _ = g.join("widget-b", "widget-a");
+        // The root (main) is destroyed — gone=true skips ops on the corpse.
+        let (diff, _) = g.leave("main", true);
+        for (p, c, _) in &diff {
+            assert!(p != "main" && c != "main", "no native ops on a dead window");
         }
-        assert_eq!(kids, vec!["widget-b".to_string()]);
-        assert!(e.parent_of.is_empty());
+        let survivors = g.members_of("widget-a");
+        assert_eq!(survivors.len(), 2);
+        // One survivor adopted the other.
+        assert_eq!(attaches(&diff).len(), 1);
+    }
+
+    #[test]
+    fn outline_marks_only_perimeter_sides() {
+        // Two 100x100 windows side by side: a | b
+        let rects = vec![
+            ("a".to_string(), (0, 0, 100, 100)),
+            ("b".to_string(), (100, 0, 100, 100)),
+        ];
+        let out = dock_outline_sides(&rects);
+        assert_eq!(out["a"], vec!["l", "t", "b"]); // right side is interior
+        assert_eq!(out["b"], vec!["r", "t", "b"]); // left side is interior
+    }
+
+    #[test]
+    fn outline_ignores_near_misses_and_corner_touches() {
+        let rects = vec![
+            ("a".to_string(), (0, 0, 100, 100)),
+            ("far".to_string(), (110, 0, 100, 100)),   // 10px gap — not flush
+            ("corner".to_string(), (100, 95, 100, 100)), // only 5px overlap
+        ];
+        let out = dock_outline_sides(&rects);
+        assert_eq!(out["a"], vec!["l", "r", "t", "b"]);
     }
 }

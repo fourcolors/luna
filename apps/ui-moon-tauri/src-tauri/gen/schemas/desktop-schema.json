@@ -369,6 +369,12 @@
           "markdownDescription": "Allows reading the client OS identifier (macos/linux/windows)"
         },
         {
+          "description": "Allows a window to re-root its dock group at itself on grab, so dragging any grouped window carries the whole cluster",
+          "type": "string",
+          "const": "allow-grab-dock",
+          "markdownDescription": "Allows a window to re-root its dock group at itself on grab, so dragging any grouped window carries the whole cluster"
+        },
+        {
           "description": "Allows downloading + installing an available update, then relaunching",
           "type": "string",
           "const": "allow-install-update",

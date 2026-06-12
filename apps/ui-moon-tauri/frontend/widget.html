@@ -126,6 +126,20 @@
       100% { opacity: 0; }
     }
 
+    /* ── Group perimeter: a very low highlight on OUTER sides only ───────── */
+    #outline {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 49;
+      border-radius: var(--radius);
+      border: 0 solid transparent;
+    }
+    #outline.gl { border-left: 1.5px solid rgba(138, 180, 248, 0.28); }
+    #outline.gr { border-right: 1.5px solid rgba(138, 180, 248, 0.28); }
+    #outline.gt { border-top: 1.5px solid rgba(138, 180, 248, 0.28); }
+    #outline.gb { border-bottom: 1.5px solid rgba(138, 180, 248, 0.28); }
+
     /* ── Outer layout ────────────────────────────────────────────────────── */
     .widget-shell {
       display: flex;
@@ -203,14 +217,17 @@
     <span class="grip" data-tauri-drag-region>⋮⋮</span>
     <span class="bar-title" data-tauri-drag-region id="bar-title">Loading…</span>
     <button class="pin-btn" id="pin-btn" title="Unpin from group" aria-label="Unpin widget from its group" hidden>
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-        <path d="M7.2 1.2 L10.8 4.8 L8.6 5.2 L9.4 8.0 L6.6 6.6 L3.4 10.8 L5.4 6.4 L4.0 4.6 L6.8 4.4 Z"
-              fill="currentColor" opacity="0.9"/>
+      <!-- Lucide "pin" (ISC) — standard icon, not hand-drawn. -->
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 17v5"/>
+        <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>
       </svg>
     </button>
     <button class="close-btn" id="close-btn" title="Close" aria-label="Close widget">✕</button>
   </div>
   <div id="seam" aria-hidden="true"></div>
+  <div id="outline" aria-hidden="true"></div>
   <!-- CONTENT AREA — pre/code populated by JS -->
   <div class="content-area" id="content-area">
     <pre><code id="code-block"></code></pre>
@@ -462,22 +479,23 @@
 
   init();
 
-  // ── Self-snap + dock (operator-verify — best-effort, wraps every Tauri
-  //    call in try/catch so errors never propagate). The window snaps to the
-  //    hub ('main') OR any sibling widget when dragged within 22 px of an
-  //    edge, then reports the dock edge to Rust, which natively parents the
-  //    windows (addChildWindow) so the cluster drags as one with zero lag.
+  // ── Self-snap + dock groups (operator-verify — best-effort, wraps every
+  //    Tauri call in try/catch so errors never propagate). Snapping within
+  //    22 px of the hub or any sibling widget LINKS the windows into a flat
+  //    group: Rust natively parents them (zero-lag cluster drag), re-roots
+  //    the group at whichever member is grabbed (grab_dock on pointerdown),
+  //    and pushes `dock-group` state — pin visibility and the faint
+  //    perimeter outline render from that state, never from local guesses.
+  //    Leaving a group = the pin, nothing else.
   //    OPERATOR-VERIFY: requires a real Tauri build; the snap/position APIs
   //    are no-ops (or absent) in the browser/test env.
   (function wireDeckSnap() {
     if (!W) return; // not in Tauri
     var pinBtn = document.getElementById('pin-btn');
     var seamEl = document.getElementById('seam');
-    var lastDock = null;  // anchor label we're currently docked to (JS view)
-    var lastEdge = null;  // snap edge relative to that anchor
+    var outlineEl = document.getElementById('outline');
+    var groupMembers = []; // my group's labels (incl. me); [] = ungrouped
 
-    // Report dock state to the Rust dock graph. Fire-and-forget — docking is
-    // best-effort chrome. Rust treats a same-anchor re-affirm as a no-op.
     function setDock(docked, anchor, edge) {
       try {
         if (window.__TAURI__ && window.__TAURI__.core) {
@@ -506,70 +524,84 @@
       seamEl.className = '';
     });
 
-    function showPin() {
-      if (!pinBtn || !pinBtn.hidden) return;
-      pinBtn.hidden = false;
-      pinBtn.classList.add('pop');
-    }
-    function hidePin() {
-      if (!pinBtn) return;
-      pinBtn.hidden = true;
-      pinBtn.classList.remove('pop');
+    // All link state renders from Rust's dock-group events — single source
+    // of truth, no local pin/outline bookkeeping to drift out of sync.
+    function applyGroupState(payload) {
+      var grouped = !!(payload && payload.grouped);
+      groupMembers = grouped && Array.isArray(payload.members) ? payload.members : [];
+      if (pinBtn) {
+        if (grouped && pinBtn.hidden) {
+          pinBtn.hidden = false;
+          pinBtn.classList.add('pop');
+        } else if (!grouped) {
+          pinBtn.hidden = true;
+          pinBtn.classList.remove('pop');
+        }
+      }
+      if (outlineEl) {
+        var sides = grouped && Array.isArray(payload.outlineSides) ? payload.outlineSides : [];
+        outlineEl.className = sides.map(function (s) { return 'g' + s; }).join(' ');
+      }
     }
     pinBtn && pinBtn.addEventListener('animationend', function () {
       pinBtn.classList.remove('pop');
     });
 
-    // Unpin: detach from the group and eject a step past the magnet range so
-    // the very next settle doesn't immediately re-dock us.
+    // Unpin = leave the group. Rust unparents, ejects us a step past the
+    // magnet range, and pushes fresh dock-group state to everyone.
     pinBtn && pinBtn.addEventListener('click', function () {
-      var edge = lastEdge;
-      lastDock = null;
-      lastEdge = null;
       setDock(false);
-      hidePin();
-      try {
-        var dx = edge === 'r' ? 36 : edge === 'l' ? -36 : 0;
-        var dy = edge === 'b' ? 36 : edge === 't' ? -36 : 0;
-        if ((dx || dy) && window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.PhysicalPosition) {
-          W.outerPosition().then(function (p) {
-            return W.setPosition(new window.__TAURI__.window.PhysicalPosition(p.x + dx, p.y + dy));
-          }).catch(function () {});
-        }
-      } catch (_) { /* best-effort */ }
     });
 
-    // Anchor side of the link animation: Rust emits dock-link at the window
-    // something just docked TO; flash our matching side of the seam.
+    // Re-root the group at THIS window the instant it is grabbed, so the
+    // native drag carries the whole cluster regardless of which member the
+    // user picked up. Capture phase: must precede the native drag region.
+    document.addEventListener('pointerdown', function (e) {
+      try {
+        if (!e.target || !e.target.closest) return;
+        if (!e.target.closest('[data-tauri-drag-region]')) return;
+        if (window.__TAURI__ && window.__TAURI__.core) {
+          window.__TAURI__.core.invoke('grab_dock', {}).catch(function () {});
+        }
+      } catch (_) { /* best-effort */ }
+    }, true);
+
     try {
       if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen) {
         window.__TAURI__.event.listen('dock-link', function (e) {
           var edge = e && e.payload && e.payload.edge;
-          flashSeam(edge);
+          flashSeam(edge); // anchor side: our touching side IS the edge
+        }).catch(function () {});
+        window.__TAURI__.event.listen('dock-group', function (e) {
+          applyGroupState(e && e.payload);
         }).catch(function () {});
       }
     } catch (_) { /* best-effort */ }
 
     // Snap candidates: the hub first (it wins distance ties), then every
-    // sibling widget window — widgets snap to widgets, forming chains.
+    // sibling widget — minus anything already in our group (a group never
+    // re-snaps against itself; that was round 2's "random movements").
     async function candidateRects() {
       var out = [];
       var TW = window.__TAURI__ && window.__TAURI__.window;
+      var skip = groupMembers;
       try {
-        var mainWin = TW && TW.Window && typeof TW.Window.getByLabel === 'function'
-          ? await TW.Window.getByLabel('main')
-          : null;
-        if (mainWin) {
-          var mp = await mainWin.outerPosition();
-          var ms = await mainWin.outerSize();
-          out.push({ label: 'main', rect: { x: mp.x, y: mp.y, w: ms.width, h: ms.height } });
+        if (skip.indexOf('main') === -1) {
+          var mainWin = TW && TW.Window && typeof TW.Window.getByLabel === 'function'
+            ? await TW.Window.getByLabel('main')
+            : null;
+          if (mainWin) {
+            var mp = await mainWin.outerPosition();
+            var ms = await mainWin.outerSize();
+            out.push({ label: 'main', rect: { x: mp.x, y: mp.y, w: ms.width, h: ms.height } });
+          }
         }
       } catch (_) { /* hub unavailable — keep going */ }
       try {
         var labels = await window.__TAURI__.core.invoke('list_widget_windows');
         if (Array.isArray(labels)) {
           for (var i = 0; i < labels.length; i++) {
-            if (labels[i] === label) continue; // not ourselves
+            if (labels[i] === label || skip.indexOf(labels[i]) !== -1) continue;
             try {
               var w = await TW.Window.getByLabel(labels[i]);
               if (!w) continue;
@@ -602,13 +634,11 @@
             if (typeof W.isMinimized === 'function' && (await W.isMinimized())) return;
             if (!window.LunaDeckSnap) return;
 
-            // Read our own rect. (getByLabel is ASYNC in the Tauri 2 JS API —
-            // a missing await here once made this whole path silently dead.)
             var myPos = await W.outerPosition();
             var mySize = await W.outerSize();
             var widgetRect = { x: myPos.x, y: myPos.y, w: mySize.width, h: mySize.height };
 
-            // Best snap across all candidates = smallest move distance.
+            // Best NEW link across outsiders = smallest move distance.
             var cands = await candidateRects();
             var best = null;
             for (var i = 0; i < cands.length; i++) {
@@ -617,33 +647,13 @@
               var d = Math.abs(snap.x - myPos.x) + Math.abs(snap.y - myPos.y);
               if (!best || d < best.d) best = { label: cands[i].label, snap: snap, d: d };
             }
+            if (!best) return; // nothing new in range — groups only change via the pin
 
-            if (!best) {
-              if (lastDock) {
-                lastDock = null;
-                lastEdge = null;
-                setDock(false);
-                hidePin();
-              }
-              return;
-            }
-
-            // Idempotence kills the echo loop: our own setPosition (and the
-            // native group-drag) settle back here with the window ALREADY at
-            // the snap target — skip the no-op move instead of re-issuing it.
-            var already = best.snap.x === myPos.x && best.snap.y === myPos.y;
-            if (!already && window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.PhysicalPosition) {
+            if (best.d > 0 && window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.PhysicalPosition) {
               await W.setPosition(new window.__TAURI__.window.PhysicalPosition(best.snap.x, best.snap.y));
             }
-
-            var isNewLink = lastDock !== best.label;
-            lastDock = best.label;
-            lastEdge = best.snap.edge;
             setDock(true, best.label, best.snap.edge);
-            if (isNewLink) {
-              showPin();
-              flashSeam(oppositeEdge(best.snap.edge));
-            }
+            flashSeam(oppositeEdge(best.snap.edge));
           } catch (_) { /* best-effort — never throw */ }
         }, DEBOUNCE_MS);
       }).catch(function () { /* onMoved may not exist in all versions */ });

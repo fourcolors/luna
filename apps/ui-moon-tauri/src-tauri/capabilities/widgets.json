@@ -21,6 +21,7 @@
     "allow-get-platform",
     "allow-close-widget",
     "allow-list-widget-windows",
-    "allow-set-dock"
+    "allow-set-dock",
+    "allow-grab-dock"
   ]
 }

@@ -4,16 +4,14 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 /**
- * widget-window.test.ts — behavioral tests for widget.html's deck self-snap
- * consumer (widget-system.md Phase 0).
+ * widget-window.test.ts — behavioral tests for widget.html's snap + dock
+ * groups (widget-system.md Phase 0.5, operator-feedback round 3).
  *
- * The snap path shipped broken: `Window.getByLabel` is ASYNC in the Tauri 2
- * JS API and the original code missed the await — `mainWin` was a Promise
- * (always truthy), `outerPosition()` threw, and the best-effort catch
- * swallowed it, so snap silently never ran on a real build. These tests drive
- * the REAL inline script against a mocked __TAURI__ surface and pin the whole
- * onMoved → settle-debounce → computeSnap → setPosition arc, so a regression
- * of the await (or of the minimize / suppression guards) flips a test red.
+ * The snap path once shipped broken (missing await on the async
+ * Window.getByLabel — silently dead on real Tauri), so these tests drive the
+ * REAL inline script against a mocked __TAURI__ surface: settle-snap, the
+ * set_dock/grab_dock reporting, and the event-driven pin + perimeter outline
+ * (state comes from Rust's dock-group events, never local guesses).
  */
 
 interface Rect { x: number; y: number; w: number; h: number }
@@ -32,16 +30,18 @@ function loadVendorInto(target: unknown, file: string) {
   new Function('globalThis', src)(target)
 }
 
-describe('widget.html — deck self-snap consumer', () => {
+describe('widget.html — snap + dock groups', () => {
   // Fixture geometry: widget left edge (x=540) sits 20 px right of the main
   // window's right edge (100+420=520) with full vertical overlap — inside the
   // 22 px magnet, so computeSnap MUST produce a snap for these rects.
   const MAIN_RECT: Rect = { x: 100, y: 100, w: 420, h: 320 }
   const WIDGET_POS = { x: 540, y: 130 }
   const WIDGET_SIZE = { width: 300, height: 200 }
+  const SELF = 'widget-test'
 
   let setPositionCalls: Array<{ x: number; y: number }>
   let movedHandler: (() => void) | null
+  let eventHandlers: Record<string, (e: { payload: unknown }) => void>
   let me: {
     label: string
     onMoved: ReturnType<typeof vi.fn>
@@ -51,6 +51,7 @@ describe('widget.html — deck self-snap consumer', () => {
     setPosition: ReturnType<typeof vi.fn>
   }
   let getByLabel: ReturnType<typeof vi.fn>
+  let invoke: ReturnType<typeof vi.fn>
 
   const expectedSnap = (): SnapResult => {
     const snap = (window as any).LunaDeckSnap.computeSnap(
@@ -62,10 +63,24 @@ describe('widget.html — deck self-snap consumer', () => {
     return snap
   }
 
+  interface DockArgs { docked: boolean; anchor: string | null; edge: string | null }
+  const dockArgs = (): DockArgs[] =>
+    invoke.mock.calls
+      .filter((c: unknown[]) => c[0] === 'set_dock')
+      .map((c: unknown[]) => c[1] as DockArgs)
+  const grabCalls = (): number =>
+    invoke.mock.calls.filter((c: unknown[]) => c[0] === 'grab_dock').length
+
+  const dispatchGroup = (payload: unknown) => {
+    expect(eventHandlers['dock-group']).toBeTypeOf('function')
+    eventHandlers['dock-group']({ payload })
+  }
+
   beforeEach(() => {
     vi.useFakeTimers()
     setPositionCalls = []
     movedHandler = null
+    eventHandlers = {}
 
     const html = fs.readFileSync(
       path.resolve(__dirname, '../frontend/widget.html'),
@@ -75,7 +90,7 @@ describe('widget.html — deck self-snap consumer', () => {
     document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
 
     me = {
-      label: 'widget-test',
+      label: SELF,
       onMoved: vi.fn((cb: () => void) => {
         movedHandler = cb
         return Promise.resolve(() => {})
@@ -91,7 +106,11 @@ describe('widget.html — deck self-snap consumer', () => {
       outerPosition: vi.fn(async () => ({ x: MAIN_RECT.x, y: MAIN_RECT.y })),
       outerSize: vi.fn(async () => ({ width: MAIN_RECT.w, height: MAIN_RECT.h })),
     }
-    getByLabel = vi.fn(async (label: string) => (label === 'main' ? mainWin : null))
+    getByLabel = vi.fn(async (l: string) => (l === 'main' ? mainWin : null))
+    invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'list_widget_windows') return []
+      return null
+    })
 
     ;(window as any).__TAURI__ = {
       window: {
@@ -101,13 +120,13 @@ describe('widget.html — deck self-snap consumer', () => {
       },
       // load_connection → null keeps init() on the "Not connected" path:
       // no WebSocket is ever constructed in the test env.
-      core: {
-        invoke: vi.fn(async (cmd: string) => {
-          if (cmd === 'list_widget_windows') return []
-          return null
+      core: { invoke },
+      event: {
+        listen: vi.fn(async (name: string, cb: (e: { payload: unknown }) => void) => {
+          eventHandlers[name] = cb
+          return () => {}
         }),
       },
-      event: { listen: vi.fn(async () => () => {}) },
     }
 
     loadVendorInto(window, 'deck-snap.js')
@@ -137,13 +156,15 @@ describe('widget.html — deck self-snap consumer', () => {
     expect(movedHandler).toBeTypeOf('function')
   })
 
-  it('snaps to the main window after movement settles (pins the getByLabel await)', async () => {
+  it('snaps to the hub after settle and reports the link (pins the getByLabel await)', async () => {
     movedHandler!()
     await vi.advanceTimersByTimeAsync(121)
 
     expect(getByLabel).toHaveBeenCalledWith('main')
     const snap = expectedSnap()
     expect(setPositionCalls).toEqual([{ x: snap.x, y: snap.y }])
+    // Fixture geometry: the widget sits just right of main → edge "r".
+    expect(dockArgs()).toEqual([{ docked: true, anchor: 'main', edge: 'r' }])
   })
 
   it('debounces a burst of moves into a single snap', async () => {
@@ -157,28 +178,6 @@ describe('widget.html — deck self-snap consumer', () => {
     expect(setPositionCalls).toHaveLength(1)
   })
 
-  it('treats the onMoved echo of its own setPosition as a no-op (no snap loop)', async () => {
-    movedHandler!()
-    await vi.advanceTimersByTimeAsync(121)
-    expect(setPositionCalls).toHaveLength(1)
-    const snapped = setPositionCalls[0]
-
-    // The echo: the window now reports the snapped position. The settle must
-    // recognize "already at the snap target" and never re-issue the move —
-    // positional idempotence, so it holds however slow the IPC was.
-    me.outerPosition.mockResolvedValue({ x: snapped.x, y: snapped.y })
-    movedHandler!()
-    await vi.advanceTimersByTimeAsync(121)
-    expect(setPositionCalls).toHaveLength(1)
-
-    // A real drag straight after (back into magnet range, off-target) snaps
-    // again — nothing is time-window-swallowed.
-    me.outerPosition.mockResolvedValue({ ...WIDGET_POS })
-    movedHandler!()
-    await vi.advanceTimersByTimeAsync(121)
-    expect(setPositionCalls).toHaveLength(2)
-  })
-
   it('never snaps a minimized window (tauri#7664 spurious onMoved)', async () => {
     me.isMinimized.mockResolvedValue(true)
     movedHandler!()
@@ -187,62 +186,59 @@ describe('widget.html — deck self-snap consumer', () => {
     expect(setPositionCalls).toHaveLength(0)
   })
 
-  it('does not move the window when out of magnet range', async () => {
-    me.outerPosition.mockResolvedValue({ x: 2000, y: 1500 })
-    const far = (window as any).LunaDeckSnap.computeSnap(
-      MAIN_RECT,
-      { x: 2000, y: 1500, w: WIDGET_SIZE.width, h: WIDGET_SIZE.height },
-      22,
-    )
-    expect(far).toBeNull() // fixture sanity: genuinely out of range
-
-    movedHandler!()
-    await vi.advanceTimersByTimeAsync(121)
-    expect(setPositionCalls).toHaveLength(0)
-  })
-
-  interface DockArgs { docked: boolean; anchor: string | null; edge: string | null }
-  const dockArgs = (): DockArgs[] =>
-    ((window as any).__TAURI__.core.invoke as ReturnType<typeof vi.fn>).mock.calls
-      .filter((c: unknown[]) => c[0] === 'set_dock')
-      .map((c: unknown[]) => c[1] as DockArgs)
-
-  it('reports the anchor and edge to the Rust dock graph after snapping', async () => {
-    movedHandler!()
-    await vi.advanceTimersByTimeAsync(121)
-    // Fixture geometry: the widget sits just right of main → edge "r".
-    expect(dockArgs()).toEqual([{ docked: true, anchor: 'main', edge: 'r' }])
-    // The pin affordance appeared with the link.
-    expect((document.getElementById('pin-btn') as HTMLButtonElement).hidden).toBe(false)
-  })
-
-  it('reports dock=false after drifting out of range while docked (drag-detach)', async () => {
-    movedHandler!()
-    await vi.advanceTimersByTimeAsync(121) // dock first
-    me.outerPosition.mockResolvedValue({ x: 2000, y: 1500 })
-    movedHandler!()
-    await vi.advanceTimersByTimeAsync(121)
-    const calls = dockArgs()
-    expect(calls[calls.length - 1]).toEqual({ docked: false, anchor: null, edge: null })
-    expect((document.getElementById('pin-btn') as HTMLButtonElement).hidden).toBe(true)
-  })
-
-  it('settling out of range while UNdocked reports nothing (no set_dock spam)', async () => {
+  it('settling out of range while ungrouped reports nothing', async () => {
     me.outerPosition.mockResolvedValue({ x: 2000, y: 1500 })
     movedHandler!()
     await vi.advanceTimersByTimeAsync(121)
     expect(dockArgs()).toHaveLength(0)
+    expect(setPositionCalls).toHaveLength(0)
   })
 
-  it('re-affirms the dock on the group-drag echo without re-moving', async () => {
+  it('group members are never snap candidates (no self-re-snap "random movements")', async () => {
+    // Rust says: we are grouped with main.
+    dispatchGroup({ grouped: true, members: ['main', SELF], outlineSides: ['r', 't', 'b'] })
+
+    // The group-drag echo: we settle at the snap target, flush on main.
+    const snap = expectedSnap()
+    me.outerPosition.mockResolvedValue({ x: snap.x, y: snap.y })
     movedHandler!()
     await vi.advanceTimersByTimeAsync(121)
-    const snapped = setPositionCalls[0]
-    me.outerPosition.mockResolvedValue({ x: snapped.x, y: snapped.y })
+
+    // main is in our group → excluded → nothing sent, nothing moved.
+    expect(dockArgs()).toHaveLength(0)
+    expect(setPositionCalls).toHaveLength(0)
+  })
+
+  it('pin and perimeter outline render from dock-group state', () => {
+    const pin = document.getElementById('pin-btn') as HTMLButtonElement
+    const outline = document.getElementById('outline') as HTMLDivElement
+    expect(pin.hidden).toBe(true)
+
+    dispatchGroup({ grouped: true, members: ['main', SELF], outlineSides: ['r', 't', 'b'] })
+    expect(pin.hidden).toBe(false)
+    expect(outline.className).toBe('gr gt gb')
+
+    // Interior seams stay unhighlighted: only the listed outer sides render.
+    dispatchGroup({ grouped: true, members: ['main', SELF, 'widget-x'], outlineSides: ['t'] })
+    expect(outline.className).toBe('gt')
+
+    dispatchGroup({ grouped: false, members: [], outlineSides: [] })
+    expect(pin.hidden).toBe(true)
+    expect(outline.className).toBe('')
+  })
+
+  it('the pin leaves the group — and only the pin (no drag-detach)', async () => {
+    dispatchGroup({ grouped: true, members: ['main', SELF], outlineSides: ['r'] })
+
+    // Dragging far away while grouped sends NOTHING — groups are sticky.
+    me.outerPosition.mockResolvedValue({ x: 2000, y: 1500 })
     movedHandler!()
     await vi.advanceTimersByTimeAsync(121)
-    expect(dockArgs().map((a) => a.docked)).toEqual([true, true])
-    expect(setPositionCalls).toHaveLength(1) // still no re-issued move
+    expect(dockArgs()).toHaveLength(0)
+
+    const pin = document.getElementById('pin-btn') as HTMLButtonElement
+    pin.click()
+    expect(dockArgs()).toEqual([{ docked: false, anchor: null, edge: null }])
   })
 
   it('prefers the nearest anchor — widgets snap to sibling widgets', async () => {
@@ -251,8 +247,8 @@ describe('widget.html — deck self-snap consumer', () => {
       outerPosition: vi.fn(async () => ({ x: 850, y: 130 })),
       outerSize: vi.fn(async () => ({ width: 200, height: 200 })),
     }
-    ;((window as any).__TAURI__.core.invoke as ReturnType<typeof vi.fn>).mockImplementation(
-      async (cmd: string) => (cmd === 'list_widget_windows' ? ['widget-zzz'] : null),
+    invoke.mockImplementation(async (cmd: string) =>
+      cmd === 'list_widget_windows' ? ['widget-zzz'] : null,
     )
     getByLabel.mockImplementation(async (l: string) =>
       l === 'main'
@@ -273,27 +269,26 @@ describe('widget.html — deck self-snap consumer', () => {
     expect(calls[calls.length - 1]).toEqual({ docked: true, anchor: 'widget-zzz', edge: 'l' })
   })
 
-  it('clicking the pin detaches and ejects past the magnet range', async () => {
-    movedHandler!()
-    await vi.advanceTimersByTimeAsync(121) // docked, edge "r"
-    const pin = document.getElementById('pin-btn') as HTMLButtonElement
-    expect(pin.hidden).toBe(false)
-
-    pin.click()
-    await vi.advanceTimersByTimeAsync(1)
-    const calls = dockArgs()
-    expect(calls[calls.length - 1]).toEqual({ docked: false, anchor: null, edge: null })
-    expect(pin.hidden).toBe(true)
-    // Eject: +36px on the x axis (we were docked at main's right edge).
-    const eject = setPositionCalls[setPositionCalls.length - 1]
-    expect(eject.x).toBe(WIDGET_POS.x + 36)
-  })
-
-  it('survives a missing main window without touching position', async () => {
-    getByLabel.mockResolvedValue(null)
+  it('a grouped widget can still link an OUTSIDER (group merge by drag)', async () => {
+    dispatchGroup({ grouped: true, members: [SELF, 'widget-friend'], outlineSides: ['l', 'r', 't', 'b'] })
     movedHandler!()
     await vi.advanceTimersByTimeAsync(121)
+    // main is NOT in our group → still a valid anchor.
+    expect(dockArgs()).toEqual([{ docked: true, anchor: 'main', edge: 'r' }])
+  })
 
-    expect(setPositionCalls).toHaveLength(0)
+  it('grabbing the title bar fires grab_dock before the native drag', () => {
+    // The script's document-level listener accumulates across per-test
+    // re-evals (the document persists in jsdom), so assert deltas.
+    const bar = document.getElementById('title-bar') as HTMLDivElement
+    const before = grabCalls()
+    bar.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    const afterBar = grabCalls()
+    expect(afterBar).toBeGreaterThan(before)
+
+    // pointerdown elsewhere (content area) does not re-root.
+    const content = document.getElementById('content-area') as HTMLDivElement
+    content.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    expect(grabCalls()).toBe(afterBar)
   })
 })

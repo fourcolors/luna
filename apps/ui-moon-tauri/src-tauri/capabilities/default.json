@@ -6,6 +6,7 @@
     "main"
   ],
   "permissions": [
+    "allow-grab-dock",
     "core:default",
     "core:window:default",
     "core:window:allow-start-dragging",

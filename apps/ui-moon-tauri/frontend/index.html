@@ -10491,6 +10491,21 @@
     })();
 
     DOM.chatHeader.addEventListener('pointerdown', () => TauriService.startDragging());
+
+    // Dock groups (widget-system.md Phase 0.5): re-root the hub's dock group
+    // at the hub the instant ANY of its drag surfaces is grabbed, so the
+    // native drag carries every docked widget. Capture phase: must run
+    // before the native drag session begins. Fire-and-forget — the command
+    // no-ops when the hub is ungrouped or already the group root.
+    document.addEventListener('pointerdown', (e) => {
+      try {
+        if (!e.target || !e.target.closest) return;
+        if (!e.target.closest('[data-tauri-drag-region], #moon, .chat-header')) return;
+        if (window.__TAURI__ && window.__TAURI__.core) {
+          window.__TAURI__.core.invoke('grab_dock', {}).catch(() => {});
+        }
+      } catch (_) { /* best-effort */ }
+    }, true);
     // Corner grip: drag to resize the whole panel.
     // We resize the window OURSELVES via setSize (the same call that grows the window
     // on chat-open, so it's known to work) instead of the native startResizeDragging,
