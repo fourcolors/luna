@@ -96,6 +96,7 @@ describe('widget.html — snap + dock groups', () => {
         return Promise.resolve(() => {})
       }),
       isMinimized: vi.fn(async () => false),
+      scaleFactor: vi.fn(async () => 1),
       outerPosition: vi.fn(async () => ({ ...WIDGET_POS })),
       outerSize: vi.fn(async () => ({ ...WIDGET_SIZE })),
       setPosition: vi.fn(async (p: MockPhysicalPosition) => {
@@ -156,15 +157,16 @@ describe('widget.html — snap + dock groups', () => {
     expect(movedHandler).toBeTypeOf('function')
   })
 
-  it('snaps to the hub after settle and reports the link (pins the getByLabel await)', async () => {
+  it('snaps flush to the hub but NEVER links with it (alignment-only — pins the getByLabel await)', async () => {
     movedHandler!()
     await vi.advanceTimersByTimeAsync(121)
 
     expect(getByLabel).toHaveBeenCalledWith('main')
     const snap = expectedSnap()
     expect(setPositionCalls).toEqual([{ x: snap.x, y: snap.y }])
-    // Fixture geometry: the widget sits just right of main → edge "r".
-    expect(dockArgs()).toEqual([{ docked: true, anchor: 'main', edge: 'r' }])
+    // The hub is alignment-only: no group, no pin, and dragging widgets can
+    // never tow the moon around.
+    expect(dockArgs()).toHaveLength(0)
   })
 
   it('debounces a burst of moves into a single snap', async () => {
@@ -184,6 +186,23 @@ describe('widget.html — snap + dock groups', () => {
     await vi.advanceTimersByTimeAsync(121)
 
     expect(setPositionCalls).toHaveLength(0)
+  })
+
+  it('the magnet scales with the display scale factor (the live Retina bug)', async () => {
+    // 40 PHYSICAL px from main's right edge: out of range at 1x (40 > 22),
+    // inside it at 2x (40 <= 44). Window rects are physical; the threshold
+    // is designed in logical px.
+    me.outerPosition.mockResolvedValue({ x: 560, y: 130 })
+
+    movedHandler!()
+    await vi.advanceTimersByTimeAsync(121)
+    expect(setPositionCalls).toHaveLength(0) // 1x: no snap
+
+    me.scaleFactor.mockResolvedValue(2)
+    movedHandler!()
+    await vi.advanceTimersByTimeAsync(121)
+    expect(setPositionCalls).toHaveLength(1) // 2x: snaps
+    expect(setPositionCalls[0].x).toBe(MAIN_RECT.x + MAIN_RECT.w)
   })
 
   it('settling out of range while ungrouped reports nothing', async () => {
@@ -269,12 +288,21 @@ describe('widget.html — snap + dock groups', () => {
     expect(calls[calls.length - 1]).toEqual({ docked: true, anchor: 'widget-zzz', edge: 'l' })
   })
 
-  it('a grouped widget can still link an OUTSIDER (group merge by drag)', async () => {
+  it('a grouped widget can still link an OUTSIDER widget (group merge by drag)', async () => {
     dispatchGroup({ grouped: true, members: [SELF, 'widget-friend'], outlineSides: ['l', 'r', 't', 'b'] })
+    const outsider = {
+      outerPosition: vi.fn(async () => ({ x: 850, y: 130 })),
+      outerSize: vi.fn(async () => ({ width: 200, height: 200 })),
+    }
+    invoke.mockImplementation(async (cmd: string) =>
+      cmd === 'list_widget_windows' ? ['widget-friend', 'widget-out'] : null,
+    )
+    getByLabel.mockImplementation(async (l: string) => (l === 'widget-out' ? outsider : null))
+
     movedHandler!()
     await vi.advanceTimersByTimeAsync(121)
-    // main is NOT in our group → still a valid anchor.
-    expect(dockArgs()).toEqual([{ docked: true, anchor: 'main', edge: 'r' }])
+    // widget-friend is in our group (excluded); widget-out is not → links.
+    expect(dockArgs()).toEqual([{ docked: true, anchor: 'widget-out', edge: 'l' }])
   })
 
   it('grabbing the title bar fires grab_dock before the native drag', () => {

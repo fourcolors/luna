@@ -1416,6 +1416,11 @@ fn set_dock(
 
     if docked {
         let anchor = anchor.ok_or_else(|| "anchor required when docking".to_string())?;
+        if anchor == "main" {
+            // The hub is alignment-only — widget groups never include it, so
+            // dragging widgets can never tow the moon around.
+            return Err("the hub is not a dockable anchor".into());
+        }
         if app.get_webview_window(&anchor).is_none() {
             return Err(format!("unknown anchor window: {anchor}"));
         }
@@ -1467,22 +1472,29 @@ fn set_dock(
                         }
                         let my_cx = i64::from(p.x) + i64::from(sz.width) / 2;
                         let my_cy = i64::from(p.y) + i64::from(sz.height) / 2;
+                        // Positions are physical px; the 36px step is logical.
+                        let step = (36.0 * w.scale_factor().unwrap_or(1.0)) as i64;
+                        let step32 = step as i32;
                         let (dx, dy) = if n == 0 {
-                            (36, 0)
+                            (step32, 0)
                         } else {
                             let ddx = my_cx - cx / n;
                             let ddy = my_cy - cy / n;
                             if ddx.abs() >= ddy.abs() {
-                                (if ddx >= 0 { 36 } else { -36 }, 0)
+                                (if ddx >= 0 { step32 } else { -step32 }, 0)
                             } else {
-                                (0, if ddy >= 0 { 36 } else { -36 })
+                                (0, if ddy >= 0 { step32 } else { -step32 })
                             }
                         };
                         let _ = w.set_position(tauri::PhysicalPosition::new(p.x + dx, p.y + dy));
                     }
                 }
                 let mut notify = departed;
-                notify.extend(remaining);
+                for m in remaining {
+                    if !notify.contains(&m) {
+                        notify.push(m);
+                    }
+                }
                 dock_apply_and_notify(&app, diff, notify);
             })
             .map_err(|e| e.to_string())

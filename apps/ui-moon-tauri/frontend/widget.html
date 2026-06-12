@@ -135,10 +135,10 @@
       border-radius: var(--radius);
       border: 0 solid transparent;
     }
-    #outline.gl { border-left: 1.5px solid rgba(138, 180, 248, 0.28); }
-    #outline.gr { border-right: 1.5px solid rgba(138, 180, 248, 0.28); }
-    #outline.gt { border-top: 1.5px solid rgba(138, 180, 248, 0.28); }
-    #outline.gb { border-bottom: 1.5px solid rgba(138, 180, 248, 0.28); }
+    #outline.gl { border-left: 2px solid rgba(138, 180, 248, 0.45); }
+    #outline.gr { border-right: 2px solid rgba(138, 180, 248, 0.45); }
+    #outline.gt { border-top: 2px solid rgba(138, 180, 248, 0.45); }
+    #outline.gb { border-bottom: 2px solid rgba(138, 180, 248, 0.45); }
 
     /* ── Outer layout ────────────────────────────────────────────────────── */
     .widget-shell {
@@ -637,12 +637,17 @@
             var myPos = await W.outerPosition();
             var mySize = await W.outerSize();
             var widgetRect = { x: myPos.x, y: myPos.y, w: mySize.width, h: mySize.height };
+            // Window rects are PHYSICAL px; the 22px magnet is designed in
+            // LOGICAL px — scale it, or Retina displays get a half-size
+            // magnet (the live "won't snap" bug).
+            var sf = 1;
+            try { sf = (await W.scaleFactor()) || 1; } catch (_) { /* default 1 */ }
 
             // Best NEW link across outsiders = smallest move distance.
             var cands = await candidateRects();
             var best = null;
             for (var i = 0; i < cands.length; i++) {
-              var snap = LunaDeckSnap.computeSnap(cands[i].rect, widgetRect, 22);
+              var snap = LunaDeckSnap.computeSnap(cands[i].rect, widgetRect, 22 * sf);
               if (!snap) continue;
               var d = Math.abs(snap.x - myPos.x) + Math.abs(snap.y - myPos.y);
               if (!best || d < best.d) best = { label: cands[i].label, snap: snap, d: d };
@@ -652,6 +657,10 @@
             if (best.d > 0 && window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.PhysicalPosition) {
               await W.setPosition(new window.__TAURI__.window.PhysicalPosition(best.snap.x, best.snap.y));
             }
+            // The moon hub is alignment-only: widgets snap flush against it
+            // for tidy placement but NEVER link with it — groups are a
+            // widgets-only concept, so dragging widgets can't tow the moon.
+            if (best.label === 'main') return;
             setDock(true, best.label, best.snap.edge);
             flashSeam(oppositeEdge(best.snap.edge));
           } catch (_) { /* best-effort — never throw */ }
