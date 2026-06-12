@@ -43,6 +43,16 @@
       "description": "General preferences: always on top, close on click away, the global shortcut, fresh thread"
     },
     {
+      "kind": "settings.appearance",
+      "title": "Appearance",
+      "page": "panel.html?type=settings.appearance",
+      "trust": "system",
+      "singleton": true,
+      "width": 300,
+      "height": 440,
+      "description": "Watercolor palette, light/dark theme, panel chrome style, and paper grain texture — changes apply to every open Luna window instantly"
+    },
+    {
       "kind": "settings.connection",
       "title": "Connection",
       "page": "panel.html?type=settings.connection",

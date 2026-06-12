@@ -1,0 +1,149 @@
+/**
+ * moon-palette.css — watercolor palette TOKENS for every Luna window.
+ *
+ * Tokens only: no element/class selectors beyond html/:root, so this file is
+ * safe for BOTH the widget-page family (widget.html / panel.html / chat.html,
+ * which also load moon-theme.css for chrome) AND the hub (index.html, whose
+ * monolithic stylesheet must not collide with widget chrome classes).
+ *
+ * Load order contract: link this BEFORE moon-theme.css and BEFORE the page's
+ * own <style>. vendor/moon-appearance.js stamps data-palette / data-theme /
+ * data-chrome / data-grain on <html> at boot (pre-paint) and live-updates
+ * them on cross-window `storage` events.
+ *
+ * Three watercolor palettes (dawn / meadow / tide) × light/dark, transcribed
+ * from the "Luna Workspace" Claude Design handoff. Each block sets the DESIGN
+ * tokens (--paper, --ink, --wash-N, …) and the BRIDGE tokens the existing
+ * pages already consume (--bg, --text, --border, --accent, --muted, …), so
+ * legacy rules re-theme without edits.
+ *
+ * :root carries tide-dark — the closest cousin of the legacy dark-glass
+ * look — so a window paints sensibly even before (or without) the boot
+ * script.
+ */
+
+:root {
+  /* ── Typography ──────────────────────────────────────────────────────── */
+  --font-display: 'Outfit', sans-serif;            /* hub headings (legacy) */
+  --font-body: 'Albert Sans', 'Plus Jakarta Sans', 'Segoe UI', system-ui, sans-serif;
+  --font-hand: 'Caveat', 'Bradley Hand', cursive;  /* handwritten accents   */
+
+  /* ── Shape ───────────────────────────────────────────────────────────── */
+  --radius: 12px;
+
+  /* ── Moon identity (palette-independent; the moon stays the moon) ────── */
+  --moon-glow: rgba(186, 218, 255, 0.4);
+  --moon-bright: #f0f6ff;
+  --moon-shadow: #0f1225;
+
+  /* ── Default palette: tide · dark ────────────────────────────────────── */
+  --paper: #1f242b;
+  --paper-2: #2a313b;
+  --ink: #e2e8ee;
+  --ink-soft: rgba(226, 232, 238, 0.6);
+  --ink-faint: rgba(226, 232, 238, 0.22);
+  --accent: #8fb0d4;
+  --wash-0: #4d5d85;
+  --wash-1: #44696b;
+  --wash-2: #7a5862;
+  --wash-3: #4f6a82;
+  --wash-4: #6e6650;
+
+  /* ── Bridge tokens (legacy names consumed across the pages) ─────────── */
+  --bg: var(--paper);
+  --text: var(--ink);
+  --muted: var(--ink-soft);
+  --border: var(--ink-faint);
+  --primary: var(--accent);
+  /* Slightly translucent like the legacy rgba(10,14,28,0.92) glass card. */
+  --glass-bg: color-mix(in oklab, var(--paper) 92%, transparent);
+  --glass-border: var(--ink-faint);
+  --glass-glow: color-mix(in oklab, var(--accent) 6%, transparent);
+
+  /* Per-window watercolor tint (headers, dots, washes). Pages may override. */
+  --panel-tint: var(--wash-0);
+}
+
+/* ═══ dawn ═══════════════════════════════════════════════════════════════ */
+html[data-palette='dawn'] {
+  --paper: #faf6f0;
+  --paper-2: #f3ece2;
+  --ink: #43352f;
+  --ink-soft: rgba(67, 53, 47, 0.55);
+  --ink-faint: rgba(67, 53, 47, 0.22);
+  --accent: #c2596b;
+  --wash-0: #e8a7b0;
+  --wash-1: #f2c29a;
+  --wash-2: #ecd29a;
+  --wash-3: #c9b6d9;
+  --wash-4: #a8c5c0;
+}
+html[data-palette='dawn'][data-theme='dark'] {
+  --paper: #2a2226;
+  --paper-2: #362b31;
+  --ink: #f0e3dd;
+  --ink-soft: rgba(240, 227, 221, 0.6);
+  --ink-faint: rgba(240, 227, 221, 0.22);
+  --accent: #e08a99;
+  --wash-0: #8a5560;
+  --wash-1: #96714f;
+  --wash-2: #8d7a4d;
+  --wash-3: #6f5e85;
+  --wash-4: #4f6e69;
+}
+
+/* ═══ meadow ═════════════════════════════════════════════════════════════ */
+html[data-palette='meadow'] {
+  --paper: #f8f7ef;
+  --paper-2: #efeee0;
+  --ink: #3a4032;
+  --ink-soft: rgba(58, 64, 50, 0.55);
+  --ink-faint: rgba(58, 64, 50, 0.22);
+  --accent: #5f7d4f;
+  --wash-0: #b5c9a3;
+  --wash-1: #ecd9a0;
+  --wash-2: #aac9cf;
+  --wash-3: #d9c3a8;
+  --wash-4: #c2b4d6;
+}
+html[data-palette='meadow'][data-theme='dark'] {
+  --paper: #232820;
+  --paper-2: #2e342a;
+  --ink: #e8ead9;
+  --ink-soft: rgba(232, 234, 217, 0.6);
+  --ink-faint: rgba(232, 234, 217, 0.22);
+  --accent: #9dbb84;
+  --wash-0: #5d7350;
+  --wash-1: #8a7a4a;
+  --wash-2: #4f6b70;
+  --wash-3: #75634c;
+  --wash-4: #695e7e;
+}
+
+/* ═══ tide ═══════════════════════════════════════════════════════════════ */
+html[data-palette='tide'] {
+  --paper: #f5f7f8;
+  --paper-2: #eaeff1;
+  --ink: #2f3a47;
+  --ink-soft: rgba(47, 58, 71, 0.55);
+  --ink-faint: rgba(47, 58, 71, 0.22);
+  --accent: #46698f;
+  --wash-0: #a9b8dc;
+  --wash-1: #93c2c4;
+  --wash-2: #d9b3bd;
+  --wash-3: #b8cde0;
+  --wash-4: #cfc3a4;
+}
+html[data-palette='tide'][data-theme='dark'] {
+  --paper: #1f242b;
+  --paper-2: #2a313b;
+  --ink: #e2e8ee;
+  --ink-soft: rgba(226, 232, 238, 0.6);
+  --ink-faint: rgba(226, 232, 238, 0.22);
+  --accent: #8fb0d4;
+  --wash-0: #4d5d85;
+  --wash-1: #44696b;
+  --wash-2: #7a5862;
+  --wash-3: #4f6a82;
+  --wash-4: #6e6650;
+}

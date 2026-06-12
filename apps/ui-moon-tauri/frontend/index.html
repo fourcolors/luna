@@ -8,7 +8,17 @@
   <!-- Premium Modern Typography -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&family=Plus+Jakarta+Sans:wght@300;400;500;600&family=Albert+Sans:wght@400;500;600;700&family=Caveat:wght@500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Watercolor palette tokens (--paper, --ink, --wash-N, bridge tokens).
+       Must come BEFORE the inline <style> so the palette's :root defaults
+       are set, and hub rules that use the bridge tokens (--glass-bg, etc.)
+       will pick up palette values wherever no hub-local override exists. -->
+  <link rel="stylesheet" href="vendor/moon-palette.css">
+
+  <!-- Stamps data-palette/data-theme/data-chrome/data-grain on <html>
+       pre-paint; re-applies live on cross-window localStorage storage events. -->
+  <script src="vendor/moon-appearance.js"></script>
 
   <!-- Shared protocol constants + WS frame registry (Phase 1 vendor
        modules). Loaded synchronously BEFORE the app script, which uses
@@ -18,18 +28,23 @@
 
   <style>
     :root {
-      --font-display: 'Outfit', sans-serif;
-      --font-body: 'Plus Jakarta Sans', sans-serif;
-      
-      --moon-glow: rgba(186, 218, 255, 0.4);
-      --moon-bright: #f0f6ff;
-      --moon-shadow: #0f1225;
-      
-      /* Glassmorphism settings for native widget */
-      --glass-bg: rgba(10, 14, 28, 0.92);
-      --glass-border: rgba(255, 255, 255, 0.1);
-      --glass-glow: rgba(138, 180, 248, 0.04);
-      --primary: #8ab4f8;
+      /*
+       * --font-display, --font-body, --font-hand, --radius,
+       * --moon-glow, --moon-bright, --moon-shadow,
+       * --glass-bg, --glass-border, --glass-glow,
+       * --primary (alias for --accent), --bg, --text, --muted, --border
+       * are all defined in vendor/moon-palette.css and must not be
+       * duplicated here — the inline block comes later in cascade order
+       * and would pin them to literal values, defeating the palette.
+       *
+       * SCOPE NOTE: the hub's painted UI (wizard card, crescent, glow)
+       * intentionally keeps its hardcoded dark-glass literals — the moon
+       * is a night object and the wizard pairs hardcoded-dark surfaces
+       * with hardcoded-light text, so it stays self-consistent in every
+       * palette. Only the fonts (+ --moon-glow) flow from the palette
+       * here. Tokenizing the hub fully is deferred to the chat-extraction
+       * cleanup that strips this monolith to hub-only chrome.
+       */
     }
     
     * {

@@ -1,65 +1,104 @@
 /**
- * moon-theme.css — shared theme for the widget-page family (widget.html
- * today; panel.html / chat.html as they land). Holds the watercolor brand
- * tokens plus the window chrome every widget window shares: title bar,
- * grip, close/pin buttons, dock seam flash, group perimeter outline,
- * scrollbar base, and the highlight.js dark-glass palette.
+ * moon-theme.css — shared WATERCOLOR chrome for the widget-page family
+ * (widget.html / panel.html / chat.html). Holds the window chrome every
+ * widget window shares: title bar, grip, wash dot, close/pin buttons, dock
+ * seam flash, group perimeter outline, scrollbar base, the shared settings
+ * form controls, paper grain, and the highlight.js palettes.
  *
- * NOT linked from index.html: the hub's monolithic stylesheet has its own
+ * Palette TOKENS live in vendor/moon-palette.css (link it FIRST) — that file
+ * is selector-free so the hub (index.html) shares it too. This file is NOT
+ * linked from index.html: the hub's monolithic stylesheet has its own
  * `.close-btn` (chat header) and stays self-contained until the chat
  * extraction strips it down to hub-only chrome.
+ *
+ * Appearance attributes (stamped on <html> by vendor/moon-appearance.js):
+ *   data-palette dawn|meadow|tide   data-theme light|dark
+ *   data-chrome  wash|ink           data-grain  on|off
  *
  * Load this BEFORE the page's own <style> so page-specific rules win ties.
  */
 
-:root {
-  /* Brand tokens (canonical values; index.html carries the same literals). */
-  --font-display: 'Outfit', sans-serif;
-  --font-body: 'Plus Jakarta Sans', sans-serif;
-  --moon-glow: rgba(186, 218, 255, 0.4);
-  --moon-bright: #f0f6ff;
-  --moon-shadow: #0f1225;
-  --glass-bg: rgba(10, 14, 28, 0.92);
-  --glass-border: rgba(255, 255, 255, 0.1);
-  --glass-glow: rgba(138, 180, 248, 0.04);
-  --primary: #8ab4f8;
+/* ── Window envelope ─────────────────────────────────────────────────────
+   Pages set `background: var(--bg); border: 1px solid var(--border)` on
+   html/body themselves; the chrome variants refine that edge here. */
+html[data-chrome='ink'] body {
+  border: 1.5px solid color-mix(in oklab, var(--ink) 55%, transparent);
+}
 
-  /* Widget-window tokens. */
-  --bg: rgba(10, 14, 28, 0.96);
-  --border: rgba(255, 255, 255, 0.09);
-  --accent: #8ab4f8;
-  --text: #e2ecfd;
-  --muted: #64748b;
-  --radius: 10px;
+/* ── Paper grain (optional, data-grain="on") ─────────────────────────────
+   A fractal-noise wash over the whole window; multiply on paper, screen on
+   night paper. pointer-events:none keeps it purely pigmentary. */
+html[data-grain='on'] body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 0.45 0 0 0 0 0.40 0 0 0 0 0.35 0 0 0 0.06 0'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E");
+  border-radius: var(--radius);
+  z-index: 4000;
+}
+html[data-grain='on'][data-theme='dark'] body::after {
+  mix-blend-mode: screen;
+  opacity: 0.3;
 }
 
 /* ── Title bar / drag region ─────────────────────────────────────────── */
 .title-bar {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   padding: 6px 8px 6px 10px;
-  background: rgba(138, 180, 248, 0.04);
-  border-bottom: 1px solid var(--border);
+  /* Soft wash: the window's tint pools at the top edge and feathers out. */
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--panel-tint) 26%, transparent) 0%,
+    transparent 100%
+  );
+  border-bottom: 1px solid color-mix(in oklab, var(--ink) 8%, transparent);
   user-select: none;
   flex-shrink: 0;
   min-height: 34px;
 }
+/* Ink outline chrome: flat header, the drawn edge carries the structure. */
+html[data-chrome='ink'] .title-bar {
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--panel-tint) 16%, transparent) 0%,
+    transparent 100%
+  );
+}
 
 .grip {
-  color: var(--muted);
+  color: color-mix(in oklab, var(--ink) 35%, transparent);
   font-size: 10px;
   letter-spacing: -1px;
   flex-shrink: 0;
   cursor: grab;
 }
 
+/* Watercolor blot beside the title — takes the window's tint. The slightly
+   irregular radius reads hand-painted; the wobble filter (when the page
+   carries the #wc-wobble defs) roughs the edge. */
+.wash-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50% 46% 52% 48%;
+  background: var(--panel-tint);
+  filter: url(#wc-wobble);
+  flex: 0 0 auto;
+  pointer-events: none;
+}
+
 .bar-title {
   flex: 1;
   min-width: 0;
-  font-size: 0.75rem;
+  font-family: var(--font-hand);
+  font-size: 16px;
   font-weight: 600;
-  color: var(--text);
+  letter-spacing: 0.01em;
+  color: var(--ink);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -69,19 +108,22 @@
   flex-shrink: 0;
   background: none;
   border: none;
-  color: var(--muted);
+  color: var(--ink-soft);
   font-size: 14px;
   line-height: 1;
   width: 22px;
   height: 22px;
-  border-radius: 4px;
+  border-radius: 50%;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   transition: background 0.1s, color 0.1s;
 }
-.close-btn:hover { background: rgba(239, 68, 68, 0.18); color: #fca5a5; }
+.close-btn:hover {
+  background: color-mix(in oklab, var(--ink) 9%, transparent);
+  color: var(--ink);
+}
 
 /* ── Dock pin (visible while snapped into a group) ───────────────────── */
 .pin-btn {
@@ -91,14 +133,14 @@
   color: var(--accent);
   width: 22px;
   height: 22px;
-  border-radius: 4px;
+  border-radius: 50%;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   transition: background 0.1s;
 }
-.pin-btn:hover { background: rgba(138, 180, 248, 0.15); }
+.pin-btn:hover { background: color-mix(in oklab, var(--accent) 15%, transparent); }
 .pin-btn[hidden] { display: none; }
 .pin-btn.pop { animation: pin-pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1); }
 @keyframes pin-pop {
@@ -114,13 +156,13 @@
   z-index: 50;
 }
 #seam.flash-l { left: 0; top: 0; bottom: 0; width: 7px;
-  background: linear-gradient(to right, rgba(138, 180, 248, 0.85), transparent); }
+  background: linear-gradient(to right, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
 #seam.flash-r { right: 0; top: 0; bottom: 0; width: 7px;
-  background: linear-gradient(to left, rgba(138, 180, 248, 0.85), transparent); }
+  background: linear-gradient(to left, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
 #seam.flash-t { top: 0; left: 0; right: 0; height: 7px;
-  background: linear-gradient(to bottom, rgba(138, 180, 248, 0.85), transparent); }
+  background: linear-gradient(to bottom, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
 #seam.flash-b { bottom: 0; left: 0; right: 0; height: 7px;
-  background: linear-gradient(to top, rgba(138, 180, 248, 0.85), transparent); }
+  background: linear-gradient(to top, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
 #seam.on { animation: seam-flash 0.7s ease-out; }
 @keyframes seam-flash {
   0% { opacity: 0; }
@@ -137,31 +179,193 @@
   border-radius: var(--radius);
   border: 0 solid transparent;
 }
-#outline.gl { border-left: 2px solid rgba(138, 180, 248, 0.45); }
-#outline.gr { border-right: 2px solid rgba(138, 180, 248, 0.45); }
-#outline.gt { border-top: 2px solid rgba(138, 180, 248, 0.45); }
-#outline.gb { border-bottom: 2px solid rgba(138, 180, 248, 0.45); }
+#outline.gl { border-left: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
+#outline.gr { border-right: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
+#outline.gt { border-top: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
+#outline.gb { border-bottom: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
 
 /* ── Scrollbar base ──────────────────────────────────────────────────── */
 .content-area::-webkit-scrollbar { width: 5px; }
 .content-area::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.10);
+  background: var(--ink-faint);
   border-radius: 3px;
 }
 
-/* ── highlight.js tokens — Luna's dark-glass palette ─────────────────── */
-.hljs                               { color: #e2e8f0; background: transparent; }
-.hljs-comment, .hljs-quote          { color: #6b7896; font-style: italic; }
+/* ── Settings form controls (shared by the settings.* panels) ────────────
+   panels/settings-*.js render .setting-item rows with .switch toggles; the
+   classes were only ever styled inside chat.html's monolith, so the panels
+   rendered bare in panel.html. Canonical, tokenized versions live here now
+   (page styles still win ties by load order). */
+.setting-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+}
+.setting-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.setting-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+.setting-desc {
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+  line-height: 1.4;
+}
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 34px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.switch .slider {
+  position: absolute;
+  inset: 0;
+  /* 22% ink + a faint drawn edge: 14% alone melts into light paper
+     (~1.3:1 contrast); the off-state track must read at a glance. */
+  background: color-mix(in oklab, var(--ink) 22%, transparent);
+  border: 1px solid var(--ink-faint);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.switch .slider::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50% 46% 52% 48%;
+  background: var(--paper);
+  transition: transform 0.15s ease;
+}
+.switch input:checked + .slider { background: var(--accent); }
+.switch input:checked + .slider::before { transform: translateX(14px); }
+
+/* Quiet uppercase section caption (settings panels, lists). */
+.section-label {
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin: 12px 0 6px;
+  font-weight: 600;
+}
+
+/* ── highlight.js tokens ──────────────────────────────────────────────────
+   Ink-on-paper by default (light watercolor); the night palettes keep the
+   familiar dark-glass colors. */
+.hljs                               { color: var(--ink); background: transparent; }
+.hljs-comment, .hljs-quote          { color: var(--ink-soft); font-style: italic; }
 .hljs-keyword, .hljs-selector-tag,
 .hljs-literal, .hljs-section,
-.hljs-doctag                        { color: #c792ea; }
+.hljs-doctag                        { color: #8d5bb0; }
 .hljs-built_in, .hljs-type,
-.hljs-class .hljs-title             { color: #ffcb6b; }
-.hljs-string, .hljs-attr            { color: #c3e88d; }
-.hljs-variable, .hljs-template-variable { color: #f07178; }
+.hljs-class .hljs-title             { color: #9a6b1f; }
+.hljs-string, .hljs-attr            { color: #4a7d3a; }
+.hljs-variable, .hljs-template-variable { color: #b3424a; }
 .hljs-number, .hljs-regexp,
-.hljs-link                          { color: #f78c6c; }
-.hljs-title, .hljs-function .hljs-title { color: #82aaff; }
-.hljs-operator, .hljs-punctuation  { color: #89ddff; }
-.hljs-deletion                      { color: #f07178; }
-.hljs-addition                      { color: #c3e88d; }
+.hljs-link                          { color: #ad5a31; }
+.hljs-title, .hljs-function .hljs-title { color: #3d6fa8; }
+.hljs-operator, .hljs-punctuation   { color: #3a7a8c; }
+.hljs-deletion                      { color: #b3424a; }
+.hljs-addition                      { color: #4a7d3a; }
+
+html[data-theme='dark'] .hljs                               { color: #e2e8f0; }
+html[data-theme='dark'] .hljs-comment,
+html[data-theme='dark'] .hljs-quote                         { color: #6b7896; }
+html[data-theme='dark'] .hljs-keyword,
+html[data-theme='dark'] .hljs-selector-tag,
+html[data-theme='dark'] .hljs-literal,
+html[data-theme='dark'] .hljs-section,
+html[data-theme='dark'] .hljs-doctag                        { color: #c792ea; }
+html[data-theme='dark'] .hljs-built_in,
+html[data-theme='dark'] .hljs-type,
+html[data-theme='dark'] .hljs-class .hljs-title             { color: #ffcb6b; }
+html[data-theme='dark'] .hljs-string,
+html[data-theme='dark'] .hljs-attr                          { color: #c3e88d; }
+html[data-theme='dark'] .hljs-variable,
+html[data-theme='dark'] .hljs-template-variable             { color: #f07178; }
+html[data-theme='dark'] .hljs-number,
+html[data-theme='dark'] .hljs-regexp,
+html[data-theme='dark'] .hljs-link                          { color: #f78c6c; }
+html[data-theme='dark'] .hljs-title,
+html[data-theme='dark'] .hljs-function .hljs-title          { color: #82aaff; }
+html[data-theme='dark'] .hljs-operator,
+html[data-theme='dark'] .hljs-punctuation                   { color: #89ddff; }
+html[data-theme='dark'] .hljs-deletion                      { color: #f07178; }
+html[data-theme='dark'] .hljs-addition                      { color: #c3e88d; }
+
+/* ── Appearance panel controls (settings.appearance) ─────────────────────
+   Swatch row: palette preview tiles; chip row: binary-choice pill buttons.
+   All tokens from moon-palette.css; no hard-coded colors. */
+
+.swatch-row {
+  display: flex;
+  gap: 10px;
+}
+
+.swatch {
+  width: 44px;
+  height: 32px;
+  border-radius: 9px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  display: flex;
+  overflow: hidden;
+  padding: 0;
+  background: none;
+}
+
+.swatch.active {
+  border-color: var(--ink);
+}
+
+.swatch span {
+  flex: 1;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 2px 0 4px;
+}
+
+.chip {
+  white-space: nowrap;
+  border: 1.3px solid var(--ink-faint);
+  background: transparent;
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 6px 13px;
+  font-size: 0.78rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.chip:hover {
+  background: color-mix(in oklab, var(--panel-tint) 20%, transparent);
+  border-color: var(--ink-soft);
+}
+
+.chip.on {
+  border-color: color-mix(in oklab, var(--accent) 55%, transparent);
+  color: var(--accent);
+  font-weight: 600;
+}

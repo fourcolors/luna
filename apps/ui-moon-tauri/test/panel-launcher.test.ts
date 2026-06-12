@@ -18,6 +18,7 @@ const html = fs.readFileSync(path.resolve(__dirname, '../frontend/panel.html'), 
 
 const EXPECTED_KINDS = [
   'settings.general',
+  'settings.appearance',
   'settings.connection',
   'settings.voice',
   'settings.vault',
@@ -112,7 +113,7 @@ describe('settings-launcher panel (kind "settings")', () => {
   it('buttons are real type="button" menu items (no implicit form submits)', () => {
     bootLauncher()
     const buttons = [...document.querySelectorAll('#launcher-list button')] as HTMLButtonElement[]
-    expect(buttons).toHaveLength(7)
+    expect(buttons).toHaveLength(8)
     expect(buttons.every((b) => b.type === 'button')).toBe(true)
     expect(buttons.every((b) => b.getAttribute('role') === 'menuitem')).toBe(true)
     expect(document.getElementById('launcher-list')!.getAttribute('role')).toBe('menu')

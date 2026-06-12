@@ -8,9 +8,17 @@
   <script src="vendor/moon-ws.js"></script>
   <script src="vendor/deck-snap.js"></script>
   <script src="vendor/moon-dock.js"></script>
+  <!-- Google Fonts: Albert Sans (body) + Caveat (handwritten accent) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Albert+Sans:wght@400;500;600;700&family=Caveat:wght@500;600;700&display=swap" rel="stylesheet">
+  <!-- Watercolor palette tokens (must precede moon-theme.css so theme overrides win) -->
+  <link rel="stylesheet" href="vendor/moon-palette.css">
   <!-- Shared theme (tokens + widget-window chrome) loads BEFORE the page
        style so page-specific rules win ties. -->
   <link rel="stylesheet" href="vendor/moon-theme.css">
+  <!-- Stamps data-palette/data-theme/data-chrome/data-grain on <html> pre-paint -->
+  <script src="vendor/moon-appearance.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -55,24 +63,35 @@
       padding: 6px 14px;
       border: 1px solid var(--border);
       border-radius: 7px;
-      background: rgba(138, 180, 248, 0.10);
+      background: color-mix(in oklab, var(--accent) 12%, transparent);
       color: var(--text);
       font-size: 0.8rem;
       font-weight: 600;
       cursor: pointer;
       transition: background 0.1s;
     }
-    .panel-btn:hover { background: rgba(138, 180, 248, 0.2); }
-    .panel-btn.primary { background: var(--accent); color: #0a0e1c; border-color: transparent; }
+    .panel-btn:hover { background: color-mix(in oklab, var(--accent) 22%, transparent); }
+    .panel-btn.primary { background: var(--accent); color: var(--paper); border-color: transparent; }
     .panel-status { font-size: 0.78rem; color: var(--muted); }
-    .panel-status.ok { color: #7ee2a8; }
-    .panel-status.warn { color: #f8c982; }
+    .panel-status.ok { color: #4a7d3a; }
+    .panel-status.warn { color: #9a6b1f; }
+    html[data-theme='dark'] .panel-status.ok { color: #7ee2a8; }
+    html[data-theme='dark'] .panel-status.warn { color: #f8c982; }
   </style>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <filter id="wc-wobble">
+      <feTurbulence type="fractalNoise" baseFrequency="0.015" numOctaves="3" result="n" seed="7"></feTurbulence>
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="6" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap>
+    </filter>
+  </defs>
+</svg>
 <div class="widget-shell">
   <div class="title-bar" data-tauri-drag-region id="title-bar">
     <span class="grip" data-tauri-drag-region>⋮⋮</span>
+    <span class="wash-dot" aria-hidden="true"></span>
     <span class="bar-title" data-tauri-drag-region id="bar-title">Loading…</span>
     <button class="pin-btn" id="pin-btn" title="Unpin from group" aria-label="Unpin widget from its group" hidden>
       <!-- Lucide "pin" (ISC) — standard icon, not hand-drawn. -->
