@@ -127,98 +127,70 @@
   }
 
   // ── Panel type modules ─────────────────────────────────────────────────
-  // Each system-widget type renders with safe DOM methods only (no
-  // innerHTML with dynamic content — these are trusted pages but the
-  // discipline is uniform). Phase 3 adds the remaining settings.* types.
-  var PanelTypes = {
-    'settings.updates': {
-      title: 'Updates',
-      render: function (el) {
-        var row = document.createElement('div');
-        row.className = 'panel-row';
-        var btn = document.createElement('button');
-        btn.className = 'panel-btn';
-        btn.id = 'check-update-btn';
-        btn.textContent = 'Check for updates';
-        btn.setAttribute('aria-label', 'Check for updates');
-        var status = document.createElement('span');
-        status.className = 'panel-status';
-        status.id = 'update-status';
-        status.setAttribute('role', 'status');
-        row.appendChild(btn);
-        row.appendChild(status);
-        el.appendChild(row);
-
-        var installRow = document.createElement('div');
-        installRow.className = 'panel-row';
-        installRow.hidden = true;
-        var installBtn = document.createElement('button');
-        installBtn.className = 'panel-btn primary';
-        installBtn.id = 'install-update-btn';
-        installBtn.textContent = 'Update & Restart';
-        installBtn.setAttribute('aria-label', 'Update and restart');
-        installRow.appendChild(installBtn);
-        el.appendChild(installRow);
-
-        function setStatus(text, cls) {
-          status.textContent = text;
-          status.className = 'panel-status' + (cls ? ' ' + cls : '');
+  // Each type lives in panels/<kind-with-dashes>.js and registers into
+  // window.LunaPanelTypes (so harnesses can preload modules without a
+  // network). The loader injects the script only when the type is not
+  // already registered. Modules render with safe DOM methods only.
+  var ctx = {
+    label: label,
+    win: W,
+    hasTauri: !!(window.__TAURI__ && window.__TAURI__.core),
+    invoke: function (cmd, args) {
+      if (!window.__TAURI__ || !window.__TAURI__.core) {
+        return Promise.reject(new Error('not in Tauri'));
+      }
+      return args === undefined
+        ? window.__TAURI__.core.invoke(cmd)
+        : window.__TAURI__.core.invoke(cmd, args);
+    },
+    // For WS-backed panels (vault/skills/connectors): build a gen-gated
+    // client over the shared transport, connected with the stored creds.
+    // Returns the client (already connecting); callers register frames on
+    // the registry they passed in.
+    connectWs: function (registry, opts) {
+      var client = LunaWS.createClient(Object.assign({ registry: registry, autoPong: true }, opts || {}));
+      ctx.invoke('load_connection').then(function (creds) {
+        if (creds && creds.wsUrl) {
+          try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) { /* notice handled by caller */ }
         }
-
-        btn.addEventListener('click', async function () {
-          var core = window.__TAURI__ && window.__TAURI__.core;
-          if (!core) { setStatus('Updates are only available in the desktop app.'); return; }
-          setStatus('Checking…');
-          installRow.hidden = true;
-          try {
-            var info = await core.invoke('check_for_update');
-            if (info && info.version) {
-              setStatus('Update available: v' + info.version, 'warn');
-              installRow.hidden = false;
-            } else {
-              setStatus('Up to date ✓', 'ok');
-            }
-          } catch (e) {
-            setStatus('Update check failed: ' + e, 'warn');
-          }
-        });
-
-        installBtn.addEventListener('click', async function () {
-          var core = window.__TAURI__ && window.__TAURI__.core;
-          if (!core) return;
-          installBtn.disabled = true;
-          setStatus('Downloading & installing…');
-          try {
-            await core.invoke('install_update');
-            // The app restarts on success; this only paints on failure paths.
-          } catch (e) {
-            installBtn.disabled = false;
-            setStatus('Install failed: ' + e, 'warn');
-          }
-        });
-      },
+      }).catch(function () { /* off-Tauri */ });
+      return client;
     },
   };
 
-  var mod = PanelTypes[type];
-  if (mod) {
-    barTitle.textContent = mod.title;
-    document.title = 'Luna — ' + mod.title;
-    try {
-      mod.render(contentArea);
-    } catch (e) {
-      showNotice('Panel failed to render: ' + (e && e.message ? e.message : String(e)));
+  function bootModule(mod) {
+    if (mod) {
+      barTitle.textContent = mod.title;
+      document.title = 'Luna — ' + mod.title;
+      try {
+        mod.render(contentArea, ctx);
+      } catch (e) {
+        showNotice('Panel failed to render: ' + (e && e.message ? e.message : String(e)));
+      }
+    } else {
+      barTitle.textContent = 'Unknown panel';
+      showNotice('Unknown panel type: "' + type + '"');
     }
+    window.__PanelInternals = { type: type, hasModule: !!mod };
+  }
+
+  var registered = window.LunaPanelTypes && window.LunaPanelTypes[type];
+  if (registered) {
+    bootModule(registered);
+  } else if (/^[a-z0-9.]+$/.test(type)) {
+    var s = document.createElement('script');
+    s.src = 'panels/' + type.replace(/\./g, '-') + '.js';
+    s.onload = function () {
+      bootModule((window.LunaPanelTypes && window.LunaPanelTypes[type]) || null);
+    };
+    s.onerror = function () { bootModule(null); };
+    document.head.appendChild(s);
   } else {
-    barTitle.textContent = 'Unknown panel';
-    showNotice('Unknown panel type: "' + type + '"');
+    bootModule(null);
   }
 
   // ── Dock/snap wiring (shared vendor module) ────────────────────────────
   if (window.LunaDock) LunaDock.wire({ win: W, label: label });
-
-  // Test hook (mirrors widget.html's convention).
-  window.__PanelInternals = { type: type, hasModule: !!mod };
 })();
 </script>
 </body>

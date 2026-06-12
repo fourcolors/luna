@@ -708,6 +708,10 @@
       overflow-y: auto;
       padding: 14px 16px;
     }
+    /* Phase 3 launcher: the modal is a vertical list of panel launchers. */
+    .settings-launcher-list { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+    .settings-launcher-list .settings-tab { text-align: left; width: 100%; }
+
     .settings-tabpanel { display: none; }
     .settings-tabpanel.active {
       display: flex;
@@ -2868,278 +2872,23 @@
           </svg>
         </button>
       </div>
-      <div class="settings-body">
-      <div class="settings-tabs" role="tablist">
-        <button type="button" class="settings-tab active" data-tab="general" role="tab" aria-selected="true">General</button>
-        <button type="button" class="settings-tab" data-tab="connection" role="tab" aria-selected="false">Connection</button>
-        <button type="button" class="settings-tab" data-tab="voice" role="tab" aria-selected="false">Voice</button>
-        <!-- Luna Vault: friendlier name, same data-tab value (minimal churn) -->
-        <button type="button" class="settings-tab" data-tab="secrets" role="tab" aria-selected="false">Vault</button>
-        <!-- PRD Part B: hidden until the server's hello advertises capabilities.skills -->
-        <button type="button" class="settings-tab" data-tab="skills" role="tab" aria-selected="false" id="skills-tab-btn" hidden>Skills</button>
-        <!-- PRD Part A: hidden until the server's hello advertises capabilities.connectors -->
-        <button type="button" class="settings-tab" data-tab="connectors" role="tab" aria-selected="false" id="connectors-tab-btn" hidden>Connectors</button>
-        <!-- Migrated to a system widget (Phase 2): this tab is a LAUNCHER —
-             clicking it opens the settings.updates panel window instead of
-             an in-modal tabpanel. The modal shrinks tab-by-tab this way. -->
-        <button type="button" class="settings-tab" data-panel-kind="settings.updates" role="tab" aria-selected="false">Updates ↗</button>
-      </div>
-      <div class="settings-content">
-        <div class="settings-tabpanel active" data-tabpanel="general">
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Always on Top</span>
-            <span class="setting-desc">Keep Luna floating above other windows</span>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="always-on-top-toggle" checked>
-            <span class="slider"></span>
-          </label>
+      <div class="settings-body settings-launcher">
+        <!-- Phase 3: every settings tab is a SYSTEM WIDGET now — the modal is
+             a pure LAUNCHER (design/widget-system.md: "the modal dies when
+             empty; the gear becomes a launcher"). Buttons carry
+             data-panel-kind; the shared handler opens the panel window and
+             closes this overlay. Skills/Connectors keep their ids so hello
+             capability gating toggles launcher visibility, exactly as it
+             toggled the old tabs. -->
+        <div class="settings-launcher-list" role="menu">
+          <button type="button" class="settings-tab launcher" data-panel-kind="settings.general" role="menuitem">General ↗</button>
+          <button type="button" class="settings-tab launcher" data-panel-kind="settings.connection" role="menuitem">Connection ↗</button>
+          <button type="button" class="settings-tab launcher" data-panel-kind="settings.voice" role="menuitem">Voice ↗</button>
+          <button type="button" class="settings-tab launcher" data-panel-kind="settings.vault" role="menuitem">Vault ↗</button>
+          <button type="button" class="settings-tab launcher" data-panel-kind="settings.skills" role="menuitem" id="skills-tab-btn" hidden>Skills ↗</button>
+          <button type="button" class="settings-tab launcher" data-panel-kind="settings.connectors" role="menuitem" id="connectors-tab-btn" hidden>Connectors ↗</button>
+          <button type="button" class="settings-tab launcher" data-panel-kind="settings.updates" role="menuitem">Updates ↗</button>
         </div>
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Close on Click Away</span>
-            <span class="setting-desc">Collapse chat automatically when unfocused</span>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="close-on-blur-toggle">
-            <span class="slider"></span>
-          </label>
-        </div>
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Global Shortcut</span>
-            <span class="setting-desc">Press shortcut to toggle Luna window</span>
-          </div>
-          <div class="shortcut-recorder-group">
-            <input type="text" class="shortcut-input" id="shortcut-input" readonly value="⌥Space">
-            <button type="button" class="record-btn" id="record-shortcut-btn">Record</button>
-          </div>
-        </div>
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Start a fresh thread</span>
-            <span class="setting-desc">Luna keeps one ongoing thread. This abandons the current conversation and begins a new one — your history stays on the server.</span>
-          </div>
-          <button type="button" class="record-btn" id="fresh-thread-btn">Start fresh</button>
-        </div>
-        </div>
-        <div class="settings-tabpanel" data-tabpanel="connection">
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Channel</span>
-            <span class="setting-desc">Switch this moon between the stable and dev servers</span>
-            <span class="channel-error" id="channel-error" hidden></span>
-          </div>
-          <select id="channel-select" class="channel-select">
-            <option value="stable">Stable</option>
-            <option value="dev">Dev</option>
-          </select>
-        </div>
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Model</span>
-            <span class="setting-desc">Model for new conversations — existing threads keep theirs</span>
-          </div>
-          <!-- Options beyond "Server default" are populated from the server's
-               hello `availableModels` (additive; absent on older servers). -->
-          <select id="model-select" class="channel-select">
-            <option value="">Server default</option>
-          </select>
-        </div>
-        <div class="setting-item flex-column">
-          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
-            <span class="setting-label">WebSocket Server URL</span>
-            <span class="setting-desc">Luna Central server WebSocket address (for the selected channel)</span>
-          </div>
-          <input type="text" id="ws-url-input" class="premium-text-input" placeholder="ws://127.0.0.1:4753/ui">
-        </div>
-        <div class="setting-item flex-column">
-          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
-            <span class="setting-label">Auth Token</span>
-            <span class="setting-desc">Optional authentication bearer token</span>
-          </div>
-          <input type="password" id="ws-token-input" class="premium-text-input" placeholder="Enter token (optional)...">
-        </div>
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Setup wizard</span>
-            <span class="setting-desc">Guided setup — install Luna on this Mac, on a server, or point at one already running</span>
-          </div>
-          <button type="button" class="record-btn" id="open-wizard-btn">Open</button>
-        </div>
-        </div>
-        <div class="settings-tabpanel" data-tabpanel="voice">
-        <!-- Voice pipeline lives in the Rust core (mic → VAD → whisper → TTS);
-             these controls persist to localStorage and re-apply on boot via
-             voice_set_mode / voice_set_voice / voice_set_config. The whole
-             section degrades gracefully when the Rust core predates voice:
-             the probe (voice_status) fails once → controls disable + the note
-             below shows. -->
-        <div class="setting-item" id="voice-unavailable-note" hidden>
-          <div class="setting-info">
-            <span class="setting-label">Voice isn't available</span>
-            <span class="setting-desc">This build of Luna Moon doesn't include the voice pipeline. Update the app to talk to Luna hands-free.</span>
-          </div>
-        </div>
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Voice mode</span>
-            <span class="setting-desc">Off, push-to-talk (hold the mic), or hands-free listening</span>
-          </div>
-          <div class="voice-mode-seg" id="voice-mode-seg" role="radiogroup" aria-label="Voice mode">
-            <button type="button" class="voice-mode-btn active" data-voice-mode="off" role="radio" aria-checked="true">Off</button>
-            <button type="button" class="voice-mode-btn" data-voice-mode="ptt" role="radio" aria-checked="false">Push-to-talk</button>
-            <button type="button" class="voice-mode-btn" data-voice-mode="auto" role="radio" aria-checked="false">Hands-free</button>
-          </div>
-        </div>
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Speak replies</span>
-            <span class="setting-desc">Read Luna's answers aloud as they stream in</span>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="voice-speak-replies-toggle" checked>
-            <span class="slider"></span>
-          </label>
-        </div>
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Voice</span>
-            <span class="setting-desc">The system voice used for spoken replies</span>
-          </div>
-          <select id="voice-voice-select" class="channel-select">
-            <option value="">System default</option>
-          </select>
-        </div>
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Silence hang</span>
-            <span class="setting-desc">How long a pause ends your utterance (<span id="voice-silence-value">600</span>&nbsp;ms)</span>
-          </div>
-          <input type="range" id="voice-silence-slider" class="voice-range" min="300" max="1200" step="50" value="600" aria-label="Silence hang in milliseconds">
-        </div>
-        <div class="setting-item">
-          <div class="setting-info">
-            <span class="setting-label">Speech model</span>
-            <span class="setting-desc" id="voice-model-status">Checking…</span>
-            <div class="voice-progress" id="voice-model-progress" hidden><div class="voice-progress-fill" id="voice-model-progress-fill"></div></div>
-          </div>
-          <button type="button" class="record-btn" id="voice-model-download" hidden>Download</button>
-        </div>
-        </div>
-        <div class="settings-tabpanel" data-tabpanel="secrets">
-        <!-- Luna Vault (V1): the friendly credential registry. Hidden until the
-             server's hello advertises capabilities.vault — old servers keep the
-             legacy 1Password-token-only form below, byte-identical. The list
-             carries METADATA + POINTERS only; the value input is one-shot
-             (wiped on send/close — SecretPromptEngine discipline). -->
-        <div class="setting-item flex-column" id="vault-section" hidden>
-          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
-            <span class="setting-label">Vault</span>
-            <span class="setting-desc">Keys and tokens Luna can use. Values are stored safely on the server — once saved, they never appear here again.</span>
-          </div>
-          <div class="skills-list" id="vault-list" style="margin-bottom: 10px;">
-            <span class="setting-desc">Nothing stored yet — add your first key below.</span>
-          </div>
-          <div class="vault-add-form">
-            <input type="text" id="vault-name-input" class="premium-text-input" placeholder="Name (e.g. Notion API Key)" autocomplete="off" spellcheck="false" maxlength="64">
-            <select id="vault-kind-select" class="channel-select">
-              <option value="env-secret" selected>API key / secret</option>
-              <option value="op-token">1Password service-account token</option>
-            </select>
-            <div class="vault-var-row" id="vault-var-row">
-              <span class="setting-desc">Stored as <code id="vault-var-preview" class="vault-ref">ENV_VAR_NAME</code></span>
-              <button type="button" class="vault-link-btn" id="vault-var-edit">change</button>
-              <input type="text" id="vault-var-input" class="premium-text-input" placeholder="ENV_VAR_NAME" autocomplete="off" spellcheck="false" hidden>
-            </div>
-            <input type="text" id="vault-label-input" class="premium-text-input" placeholder="Account label (e.g. primary)" autocomplete="off" spellcheck="false" hidden>
-            <input type="password" id="vault-value-input" class="premium-text-input" placeholder="Paste the secret value" autocomplete="off" spellcheck="false">
-            <input type="text" id="vault-desc-input" class="premium-text-input" placeholder="Note (optional)" autocomplete="off" spellcheck="false">
-            <span class="setting-desc" id="vault-restart-note" hidden>Saving verifies the token and briefly restarts the server.</span>
-            <div style="display: flex; align-items: center; gap: 10px;">
-              <button type="button" class="record-btn" id="vault-add-btn">Save to server</button>
-              <span class="setting-desc" id="vault-status-line" style="font-size: 0.75rem;" hidden></span>
-            </div>
-          </div>
-          <!-- 1Password sync sub-section — rendered/updated by VaultEngine.renderSync() -->
-          <div class="vault-sync-section" id="vault-sync-section">
-            <div class="vault-sync-header">
-              <span class="vault-sync-label">1Password Sync</span>
-              <span class="vault-sync-state" id="vault-sync-state">Sync: off</span>
-            </div>
-            <span class="vault-sync-error" id="vault-sync-error" hidden></span>
-            <div class="vault-sync-fields" id="vault-sync-fields" hidden>
-              <label class="switch" title="Enable 1Password sync">
-                <input type="checkbox" id="vault-sync-enabled">
-                <span class="slider"></span>
-              </label>
-              <input type="text" id="vault-sync-op-label" class="premium-text-input"
-                placeholder="Service-account label (e.g. primary)"
-                autocomplete="off" spellcheck="false">
-              <input type="text" id="vault-sync-op-vault" class="premium-text-input"
-                placeholder="Vault name (e.g. Luna)"
-                autocomplete="off" spellcheck="false" value="Luna">
-              <span class="vault-sync-helper">Create this vault in 1Password and share it with your service account</span>
-              <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
-                <span class="setting-desc" style="font-size: 0.65rem;">Poll every</span>
-                <input type="number" id="vault-sync-poll" class="premium-text-input"
-                  min="60" value="300"
-                  style="width: 72px; text-align: right; padding: 3px 6px; font-size: 0.75rem;">
-                <span class="setting-desc" style="font-size: 0.65rem;">seconds</span>
-              </div>
-              <div style="display: flex; align-items: center; gap: 10px;">
-                <button type="button" class="record-btn" id="vault-sync-save-btn">Save sync settings</button>
-                <span class="setting-desc" id="vault-sync-status" style="font-size: 0.75rem;" hidden></span>
-              </div>
-              <span class="vault-sync-import-note" id="vault-sync-import-note" hidden>Import Apple Passwords exports from the web client.</span>
-            </div>
-          </div>
-        </div>
-        <div class="setting-item flex-column" id="legacy-op-token-section">
-          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
-            <span class="setting-label">1Password Service Account</span>
-            <span class="setting-desc">Send an <code>ops_…</code> service-account token to the server securely. It is verified and stored on the server — never kept in chat history or on this device.</span>
-          </div>
-          <input type="text" id="op-label-input" class="premium-text-input" placeholder="Account label (e.g. primary)" autocomplete="off" spellcheck="false" style="margin-bottom: 8px;">
-          <input type="password" id="op-token-input" class="premium-text-input" placeholder="ops_… service-account token" autocomplete="off" spellcheck="false">
-          <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
-            <button type="button" class="record-btn" id="save-op-token-btn">Save to server</button>
-            <span class="setting-desc" id="op-token-status" style="font-size: 0.75rem;" hidden></span>
-          </div>
-          <span class="setting-desc" style="margin-top: 6px;">Saving verifies the token and briefly restarts the server.</span>
-        </div>
-        </div>
-        <div class="settings-tabpanel" data-tabpanel="skills">
-        <div class="setting-item flex-column">
-          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
-            <span class="setting-label">Skills <span class="setting-desc" id="skills-count" style="display:inline"></span></span>
-            <span class="setting-desc">What Luna knows how to do. Toggle one off and it leaves her mind on the very next conversation — nothing is uninstalled.</span>
-          </div>
-          <input type="text" id="skills-search-input" class="premium-text-input" placeholder="Search skills…" autocomplete="off" spellcheck="false" style="margin-bottom: 8px;">
-          <div class="skills-chips" id="skills-chips"></div>
-          <span class="setting-desc skills-error" id="skills-error" hidden></span>
-          <div class="skills-list" id="skills-list">
-            <span class="setting-desc">Not connected — skills appear when the server sends its catalog.</span>
-          </div>
-        </div>
-        </div>
-        <div class="settings-tabpanel" data-tabpanel="connectors">
-        <div class="setting-item flex-column">
-          <div class="setting-info" style="margin-bottom: 8px; width: 100%;">
-            <span class="setting-label">Connectors</span>
-            <span class="setting-desc">Plug Luna into your services. Connecting opens the provider's own consent page in your browser — Luna only ever holds what you grant, and you can disconnect any time.</span>
-          </div>
-          <span class="setting-desc skills-error" id="connectors-error" hidden></span>
-          <div class="skills-list" id="connectors-list" style="max-height: 300px;">
-            <span class="setting-desc">Not connected — connectors appear when the server sends its catalog.</span>
-          </div>
-        </div>
-        </div>
-        <!-- Updates tabpanel removed: settings.updates is a system widget
-             now (panel.html?type=settings.updates). The boot-time silent
-             update check + banner stay in SettingsEngine (null-guarded). -->
-      </div>
       </div>
       <div class="settings-footer">
         <button class="save-settings-btn" id="close-settings-btn">Done</button>
@@ -6564,6 +6313,34 @@
         }
       },
 
+      /**
+       * Summon-by-name: send the widget registry (kind/title/description) as
+       * a widget-directory frame. The registry ships with the app
+       * (vendor/widget-registry.json — the same file Rust compiles in), so
+       * the server learns what is openable FROM the client and the agent can
+       * only ever name kinds this build actually ships.
+       */
+      async sendWidgetDirectory() {
+        if (this._widgetDirectory === undefined) {
+          try {
+            const res = await fetch('vendor/widget-registry.json');
+            const reg = await res.json();
+            this._widgetDirectory = (reg && Array.isArray(reg.widgets) ? reg.widgets : [])
+              .filter((w) => w && typeof w.kind === 'string')
+              .map((w) => ({
+                kind: w.kind,
+                title: typeof w.title === 'string' ? w.title : w.kind,
+                description: typeof w.description === 'string' ? w.description : '',
+              }));
+          } catch (_) {
+            this._widgetDirectory = []; // fetch unavailable (jsdom/dev) — announce nothing
+          }
+        }
+        if (this._widgetDirectory.length > 0) {
+          this.send({ type: 'widget-directory', widgets: this._widgetDirectory });
+        }
+      },
+
       send(frame) {
         if (State.ws && State.ws.readyState === WebSocket.OPEN) {
           try {
@@ -6678,9 +6455,18 @@
        * re-deliver hello; the rebuild is idempotent.
        */
       applyAvailableModels(frame) {
+        const models = frame && Array.isArray(frame.availableModels) ? frame.availableModels : [];
+        // Cache the id list for the settings.connection PANEL (its window has
+        // no hello of its own at open time; it reads this on render). Written
+        // before the DOM guard so the cache works even after the modal dies.
+        try {
+          localStorage.setItem(
+            'luna_available_models',
+            JSON.stringify(models.filter((m) => m && typeof m.id === 'string' && m.id).map((m) => m.id))
+          );
+        } catch (_) { /* quota/serialization — cosmetic cache only */ }
         const el = DOM.modelSelect;
         if (!el) return;
-        const models = frame && Array.isArray(frame.availableModels) ? frame.availableModels : [];
         const saved = localStorage.getItem('luna_model') || '';
         // Rebuild from scratch (reconnect-safe): default option first.
         el.innerHTML = '';
@@ -6915,12 +6701,20 @@
     // order carries no TDZ risk.
     const MoonFrames = LunaWS.createFrameRegistry();
 
+    // skill-*/connector-*/vault-*/register-op-token-status frames are NOT
+    // registered here anymore (Phase 3): the settings PANELS consume them on
+    // their own WS connections. The hub ignores those broadcasts.
+
     MoonFrames.register('hello', (frame) => {
       // authenticated successfully. The chat flow (syncThread →
       // list-threads/subscribe) is kicked off by the socket 'open'
       // handler, NOT here — so this version check is purely additive and
       // does not gate or regress the existing hello behavior.
       WebSocketEngine.checkProtocolVersion(frame);
+      // Summon-by-name (widget-system.md): announce this host's widget
+      // directory so the agent's open_widget tool can summon panels. Sent on
+      // every hello — the server stores it per-connection.
+      WebSocketEngine.sendWidgetDirectory();
       // Additive: show the server's build short-SHA when advertised.
       WebSocketEngine.applyBuildSha(frame);
       // Additive: populate the settings model switcher when advertised.
@@ -6938,48 +6732,27 @@
       // advertises the skill frames. Re-evaluated on every hello so a
       // channel switch to an older server hides the tab again.
       State.serverSupportsSkills = caps.skills;
-      SkillsEngine.applyCapability(State.serverSupportsSkills);
-      // PRD Part A: same additive gating for the Connectors tab.
+      if (DOM.skillsTabBtn) DOM.skillsTabBtn.hidden = !caps.skills;
+      // PRD Part A: same additive gating for the Connectors launcher.
       State.serverSupportsConnectors = caps.connectors;
-      ConnectorsEngine.applyCapability(State.serverSupportsConnectors);
+      if (DOM.connectorsTabBtn) DOM.connectorsTabBtn.hidden = !caps.connectors;
       // PRD Part C W1: additive gating for the Artifacts panel.
       State.serverSupportsArtifacts = caps.artifacts;
       ArtifactsEngine.applyCapability(State.serverSupportsArtifacts);
       // PRD Part C W3: additive gating for the Workflows gallery.
       State.serverSupportsWorkflows = caps.workflows;
       WorkflowsEngine.applyCapability(State.serverSupportsWorkflows);
-      // Luna Vault (V1): additive gating for the Vault UI inside the
-      // (renamed) Secrets tab. Absent/false (old server) → the legacy
-      // op-token-only form renders, byte-identical to pre-vault.
-      VaultEngine.applyCapability(caps.vault);
+      // Luna Vault (V1): the vault UI lives in the settings.vault PANEL,
+      // which does its own hello gating on its own connection. The hub only
+      // tracks the flag.
+      State.serverSupportsVault = caps.vault;
     });
 
-    MoonFrames.register('skill-catalog', (frame) => {
-      // Server-authored catalog (sent after hello + after each toggle).
-      SkillsEngine.applyCatalog(frame.skills || []);
-    });
 
-    MoonFrames.register('skill-status', (frame) => {
-      SkillsEngine.applyStatus(frame);
-    });
 
-    MoonFrames.register('connector-catalog', (frame) => {
-      ConnectorsEngine.applyCatalog(frame.connectors || []);
-    });
 
-    MoonFrames.register('connector-list', (frame) => {
-      ConnectorsEngine.applyList(frame.instances || []);
-    });
 
-    MoonFrames.register('connector-oauth-redirect', (frame) => {
-      // The async consent hop (browser + loopback wait) continues
-      // outside the frame handler.
-      ConnectorsEngine.applyOauthRedirect(frame);
-    });
 
-    MoonFrames.register('connector-status', (frame) => {
-      ConnectorsEngine.applyStatus(frame);
-    });
 
     MoonFrames.register('artifact-list', (frame) => {
       // Full replacement list of pinned artifacts from the server.
@@ -7151,10 +6924,6 @@
       // The user message was accepted by the server. Remove typing indicator when streaming starts
     });
 
-    MoonFrames.register('register-op-token-status', (frame) => {
-      // Secure-entry ack (Moon 1Password form). Never carries the token.
-      SettingsEngine.handleOpTokenStatus(frame);
-    });
 
     MoonFrames.register('secret-request', (frame) => {
       // Agent-summoned secure secret entry. SecretPromptEngine paints the
@@ -7168,16 +6937,17 @@
       SecretPromptEngine.handleStatus(frame);
     });
 
-    MoonFrames.register('vault-list', (frame) => {
-      // The credential registry (metadata + pointers ONLY — never
-      // values). Arrives after hello and is broadcast after every
-      // successful mutation; the rebuild is idempotent.
-      VaultEngine.applyList(frame);
-    });
 
-    MoonFrames.register('vault-status', (frame) => {
-      // Ack for a vault-put / vault-delete. Never carries the value.
-      VaultEngine.handleStatus(frame);
+
+    MoonFrames.register('widget-open', (frame) => {
+      // Summon-by-name, return leg: the agent asked for a widget by kind.
+      // open_widget resolves it through the COMPILED-IN registry (unknown
+      // kinds are rejected in Rust), so this frame can summon shipped UI but
+      // never conjure anything else.
+      if (window.__TAURI__ && window.__TAURI__.core && typeof frame.kind === 'string') {
+        window.__TAURI__.core.invoke('open_widget', { kind: frame.kind })
+          .catch((e) => Logger.warn('widget-open failed:', e));
+      }
     });
 
     // ── WS close hooks ────────────────────────────────────────────────────
@@ -7188,30 +6958,10 @@
       // Defensive: never retain a typed secret across a socket drop. Clear
       // the VALUE only — do NOT hide the panel, so the success flow's brief
       // "saved" message (server restarts → socket closes → auto-reconnect)
-      // isn't killed early.
+      // isn't killed early. (The Vault wipe discipline moved to the
+      // settings.vault PANEL, which registers the same hook on its own
+      // connection — the hub no longer hosts vault inputs.)
       if (DOM.secretPromptInput) DOM.secretPromptInput.value = '';
-      // Same discipline for the Vault add-form value (an op-token save
-      // restarts the server → this close fires mid-flow by design).
-      VaultEngine.wipeValue();
-      // Clear any stale in-flight Vault request. The ack will never arrive
-      // on this session, so stale _reqId/_syncReqId would block future submits
-      // from correlating. For env-secret puts and deletes also replace the
-      // status text with an actionable message. Op-token saves deliberately
-      // restart the server so their 'Verifying…' status should stay.
-      if (VaultEngine._reqId) {
-        const lostKind = VaultEngine._reqKind;
-        VaultEngine._reqId = null;
-        VaultEngine._reqKind = null;
-        if (lostKind && lostKind !== 'put-op-token') {
-          VaultEngine.setStatus('Connection lost — check the list after reconnecting.', 'error');
-        }
-      }
-      // Sync save slot: a dropped sync ack leaves the sync status stuck at
-      // 'Saving sync settings…' — replace it with an actionable error.
-      if (VaultEngine._syncReqId) {
-        VaultEngine._syncReqId = null;
-        VaultEngine.setSyncStatus('Connection lost — check sync state after reconnecting.', 'error');
-      }
     });
 
     /**
@@ -9100,26 +8850,12 @@
 
       async load() {
         Logger.info("Loading saved settings from localStorage...");
+        // The preference CONTROLS live in settings panels now (Phase 3); the
+        // hub only APPLIES the persisted values at boot. close-on-blur is
+        // read at blur time and the shortcut is registered Rust-side, so
+        // always-on-top is the only boot-apply left.
         const savedAlwaysOnTop = localStorage.getItem('luna_always_on_top');
-        if (savedAlwaysOnTop !== null) {
-          DOM.alwaysOnTopToggle.checked = savedAlwaysOnTop === 'true';
-          TauriService.applyAlwaysOnTop(DOM.alwaysOnTopToggle.checked);
-        } else {
-          DOM.alwaysOnTopToggle.checked = true;
-          TauriService.applyAlwaysOnTop(true);
-        }
-
-        const savedCloseOnBlur = localStorage.getItem('luna_close_on_blur');
-        if (savedCloseOnBlur !== null) {
-          DOM.closeOnBlurToggle.checked = savedCloseOnBlur === 'true';
-        } else {
-          DOM.closeOnBlurToggle.checked = false;
-        }
-
-        const savedShortcut = localStorage.getItem('luna_global_shortcut');
-        if (savedShortcut !== null) {
-          DOM.shortcutInput.value = savedShortcut;
-        }
+        TauriService.applyAlwaysOnTop(savedAlwaysOnTop === null || savedAlwaysOnTop === 'true');
 
         // Load WebSocket configurations.
         //
@@ -9193,12 +8929,11 @@
         const savedWsUrl = localStorage.getItem('luna_ws_url');
         const resolvedUrl = loadedUrl || savedWsUrl || 'ws://127.0.0.1:4753/ui';
         State.wsUrl = resolvedUrl;
-        DOM.wsUrlInput.value = resolvedUrl;
 
         // Token: from secure file (or localStorage fallback off-Tauri), else empty.
+        // (The URL/token INPUTS live in the settings.connection panel now.)
         const resolvedToken = loadedToken !== null ? loadedToken : '';
         State.wsToken = resolvedToken;
-        DOM.wsTokenInput.value = resolvedToken;
 
         // Reflect the active channel in the header + keep the dropdown in sync.
         this.renderActiveProfile();
@@ -9246,32 +8981,9 @@
         wipeSecretInputs();
         this.setOpStatus('', null);
 
-        // Save the WS configuration changes and reconnect if they changed!
-        const newUrl = DOM.wsUrlInput.value.trim() || 'ws://127.0.0.1:4753/ui';
-        const newToken = DOM.wsTokenInput.value.trim();
-        
-        if (newUrl !== State.wsUrl || newToken !== State.wsToken) {
-          Logger.info("WebSocket connection settings changed; reconnecting...");
-          State.wsUrl = newUrl;
-          State.wsToken = newToken;
-          // URL is non-secret; keep it in localStorage as a convenience. The
-          // TOKEN goes only to the mode-600 secure file under Tauri (never
-          // localStorage). persistConnection writes the full pair so the URL is
-          // also recovered from the file on next launch even off-localStorage.
-          localStorage.setItem('luna_ws_url', newUrl);
-          this.persistConnection(newUrl, newToken);
-          // Thread IDs are scoped to a server's DB. After switching servers the
-          // previous thread does not exist here, so reset thread state, ignore
-          // the cross-server last-thread file, and clear the transcript before
-          // reconnecting. (Transient network reconnects go through connect()
-          // directly and intentionally keep the current thread.)
-          State.activeThreadId = null;
-          State.activeTurnId = null;
-          State.pendingUserMessage = null;
-          State.skipLastThreadFile = true;
-          DOM.chatMessages.innerHTML = '';
-          WebSocketEngine.connect();
-        }
+        // Connection changes are panel-owned now (settings.connection →
+        // save_connection + hub-event 'connection-changed' → the fan-out's
+        // reloadAndReconnect). Closing the launcher saves nothing.
       },
 
       // ---- App self-update (GitHub Releases, via the Rust updater commands) ----
@@ -10157,7 +9869,10 @@
       },
 
       handleBlur() {
-        if (!DOM.closeOnBlurToggle.checked || State.isRecordingShortcut || State.suppressBlurClose) return;
+        // close-on-blur moved to the settings.general PANEL — read the
+        // preference from storage (cross-window storage events keep the
+        // VALUE current; reading at blur time needs no listener at all).
+        if (localStorage.getItem('luna_close_on_blur') !== 'true' || State.isRecordingShortcut || State.suppressBlurClose) return;
         const settingsOpen = DOM.settingsPanel.classList.contains('active');
         const chatOpen = DOM.chatPanel.classList.contains('active');
         // The settings modal can be open while the chat is still minimized (it's
@@ -10616,6 +10331,86 @@
         SettingsEngine.close();
       });
     }
+
+    // ── Panel fan-out (Phase 3) ──────────────────────────────────────────
+    // Settings live in panel WINDOWS now. Two return channels reach the hub:
+    // 1. hub-event — the Rust hub_event command (allowlisted names, targeted
+    //    at "main" with the same `for:` discipline as dock-group) for the
+    //    few actions only the hub window can perform.
+    // 2. cross-window storage events (live-verified on WKWebView, Phase 2)
+    //    for localStorage-backed preferences the hub consumes.
+    (function wirePanelFanout() {
+      // profile-changed / connection-changed: the panel already persisted
+      // the change (set_active_profile / save_connection); the hub re-reads
+      // and reconnects — the same choreography switchChannel performs.
+      const reloadAndReconnect = async () => {
+        try {
+          const core = window.__TAURI__ && window.__TAURI__.core;
+          if (!core) return;
+          try {
+            const profiles = await core.invoke('load_profiles');
+            if (profiles && typeof profiles.activeProfile === 'string') {
+              State.activeProfile = profiles.activeProfile;
+            }
+          } catch (_) { /* older command surface — keep current profile */ }
+          const creds = await core.invoke('load_connection');
+          State.wsUrl = creds && creds.wsUrl ? creds.wsUrl : '';
+          State.wsToken = creds && typeof creds.wsToken === 'string' ? creds.wsToken : '';
+          localStorage.setItem('luna_ws_url', State.wsUrl);
+          SettingsEngine.renderActiveProfile();
+          // Thread ids are scoped to a server's DB — reset exactly like
+          // switchChannel does before reconnecting.
+          State.activeThreadId = null;
+          State.activeTurnId = null;
+          State.pendingUserMessage = null;
+          State.skipLastThreadFile = true;
+          DOM.chatMessages.innerHTML = '';
+          if (State.wsUrl) {
+            WebSocketEngine.connect();
+          } else {
+            WebSocketEngine.disconnect();
+            WebSocketEngine.updateStatus('disconnected', 'Disconnected');
+          }
+        } catch (e) {
+          Logger.warn('panel-driven reconnect failed:', e);
+        }
+      };
+      const HUB_ACTIONS = {
+        'fresh-thread': async () => {
+          if (!DOM.chatPanel.classList.contains('active')) {
+            await UIController.toggleChat({ sync: false });
+          }
+          ChatEngine.newConversation();
+        },
+        'profile-changed': reloadAndReconnect,
+        'connection-changed': reloadAndReconnect,
+        'open-wizard': () => SetupWizard.open(),
+      };
+      try {
+        const TW = window.__TAURI__ && window.__TAURI__.window;
+        const me = TW && typeof TW.getCurrentWindow === 'function' ? TW.getCurrentWindow() : null;
+        if (me && typeof me.listen === 'function') {
+          me.listen('hub-event', (e) => {
+            const p = e && e.payload;
+            if (!p || p['for'] !== 'main') return; // targeted-event discipline
+            const fn = HUB_ACTIONS[p.name];
+            if (fn) {
+              Promise.resolve()
+                .then(fn)
+                .catch((err) => Logger.warn(`hub-event ${p.name} failed:`, err));
+            }
+          }).catch(() => {});
+        }
+      } catch (_) { /* off-Tauri */ }
+      window.addEventListener('storage', (e) => {
+        if (!e || !e.key) return;
+        if (e.key === 'luna_always_on_top') {
+          TauriService.applyAlwaysOnTop(e.newValue === 'true');
+        } else if (e.key === 'luna_voice_speak_replies' && e.newValue === '0') {
+          VoiceEngine.stopSpeaking();
+        }
+      });
+    })();
     DOM.chatForm.addEventListener('submit', (e) => ChatEngine.handleSubmit(e));
     // Textarea: Enter sends, Shift+Enter inserts a newline (a textarea otherwise newlines on Enter).
     DOM.messageInput.addEventListener('keydown', (e) => {
@@ -10720,33 +10515,21 @@
     DOM.closeSettingsBtn.addEventListener('click', () => SettingsEngine.close());
     const settingsCloseX = document.getElementById('settings-close-x');
     if (settingsCloseX) settingsCloseX.addEventListener('click', () => SettingsEngine.close());
-    // Tab switching inside the settings modal. Tabs carrying data-panel-kind
-    // are LAUNCHERS for migrated settings panels (Phase 2): they open the
-    // system widget and close the modal instead of switching tabpanels.
-    document.querySelectorAll('.settings-tab').forEach((tab) => {
+    // Settings launchers (Phase 3): every entry opens its system widget and
+    // closes the overlay — the old tabpanel switching is gone with the tabs.
+    document.querySelectorAll('.settings-tab[data-panel-kind]').forEach((tab) => {
       tab.addEventListener('click', () => {
         const panelKind = tab.getAttribute('data-panel-kind');
-        if (panelKind) {
-          if (window.__TAURI__ && window.__TAURI__.core) {
-            window.__TAURI__.core.invoke('open_widget', { kind: panelKind })
-              .catch((e) => Logger.warn('open_widget failed:', e));
-          }
-          SettingsEngine.close();
-          return;
+        if (window.__TAURI__ && window.__TAURI__.core) {
+          window.__TAURI__.core.invoke('open_widget', { kind: panelKind })
+            .catch((e) => Logger.warn('open_widget failed:', e));
         }
-        const name = tab.getAttribute('data-tab');
-        document.querySelectorAll('.settings-tab').forEach((t) => {
-          const on = t === tab;
-          t.classList.toggle('active', on);
-          t.setAttribute('aria-selected', String(on));
-        });
-        document.querySelectorAll('.settings-tabpanel').forEach((p) => {
-          p.classList.toggle('active', p.getAttribute('data-tabpanel') === name);
-        });
+        SettingsEngine.close();
       });
     });
-    DOM.alwaysOnTopToggle.addEventListener('change', () => SettingsEngine.handleAlwaysOnTopChange());
-    DOM.closeOnBlurToggle.addEventListener('change', () => SettingsEngine.handleCloseOnBlurChange());
+    // always-on-top / close-on-blur / shortcut / model / channel controls
+    // live in settings PANELS now; the hub consumes their localStorage via
+    // the storage fan-out above.
     if (DOM.channelSelect) {
       DOM.channelSelect.addEventListener('change', (e) => SettingsEngine.switchChannel(e.target.value));
     }
@@ -10799,13 +10582,6 @@
       });
     }
 
-    DOM.recordShortcutBtn.addEventListener('click', () => {
-      if (State.isRecordingShortcut) {
-        SettingsEngine.stopRecordingShortcut(true);
-      } else {
-        SettingsEngine.startRecordingShortcut();
-      }
-    });
 
     /**
      * SetupWizard — multi-step first-run installer/onboarding flow.

@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-hub-event"
+description = "Allows a settings panel to request an ALLOWLISTED hub action (fresh-thread, profile-changed, connection-changed, open-wizard) — named events only, never arbitrary payloads."
+
+[permission.commands]
+allow = [
+  "hub_event"
+]

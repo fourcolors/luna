@@ -764,6 +764,31 @@ export interface PtyResizeFrame {
   readonly rows: number
 }
 
+/**
+ * One entry of a client's widget directory (widget-system.md
+ * "Summon-by-name"). `kind` is the addressable name (e.g. "settings.voice");
+ * `description` is written for the agent to pick the right widget from a
+ * user request. The DIRECTORY comes from the client — the server never
+ * hardcodes a host's widget list, so a different host can offer a different
+ * directory and a different server can ignore it entirely.
+ */
+export interface WidgetDirectoryEntry {
+  readonly kind: string
+  readonly title: string
+  readonly description: string
+}
+
+/**
+ * Server→client: open (or focus) the widget registered under `kind`. Sent in
+ * response to the agent's open_widget tool; the host resolves the kind
+ * through ITS OWN registry and ignores unknown kinds — the frame can never
+ * conjure a window the host didn't already ship.
+ */
+export interface WidgetOpenFrame {
+  readonly type: "widget-open"
+  readonly kind: string
+}
+
 export type ServerFrame =
   | HelloFrame
   | EventFrame
@@ -803,6 +828,7 @@ export type ServerFrame =
   | PtyOutputFrame
   | VaultListFrame
   | VaultStatusFrame
+  | WidgetOpenFrame
 
 /* -------------------------------------------------------------------------- */
 /* Client → server                                                            */
@@ -1002,6 +1028,16 @@ export interface SurveyResponseFrame {
  * the live registry, and acks with `skill-status` + a fresh `skill-catalog`.
  * Idempotent: re-sending the current state is a no-op server-side.
  */
+/**
+ * Client→server: the host's widget directory (sent once after hello by hosts
+ * that can open widgets). Replaces any previously announced directory for
+ * this connection.
+ */
+export interface WidgetDirectoryFrame {
+  readonly type: "widget-directory"
+  readonly widgets: ReadonlyArray<WidgetDirectoryEntry>
+}
+
 export interface SkillToggleFrame {
   readonly type: "skill-toggle"
   readonly id: string
@@ -1033,6 +1069,7 @@ export type ClientFrame =
   | ArtifactUnpinFrame
   | WorkflowRunsRequestFrame
   | WorkflowRefreshFrame
+  | WidgetDirectoryFrame
   | PtyInputFrame
   | PtyResizeFrame
   | VaultPutFrame

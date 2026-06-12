@@ -934,6 +934,32 @@ fn spawn_panel(
     Ok(label)
 }
 
+/// Allowlisted hub actions a settings panel may request. Panels own their
+/// settings; a few actions only the hub window can perform (its WS
+/// reconnect, its chat thread, its wizard) — those route through here as
+/// named events, NEVER as arbitrary payloads.
+const HUB_EVENT_NAMES: &[&str] = &[
+    "fresh-thread",
+    "profile-changed",
+    "connection-changed",
+    "open-wizard",
+];
+
+/// Forward an allowlisted action to the hub window (`hub-event` with a
+/// `for:"main"` payload — the same targeted-event discipline as dock-group).
+#[tauri::command]
+fn hub_event(app: tauri::AppHandle, name: String) -> Result<(), String> {
+    if !HUB_EVENT_NAMES.contains(&name.as_str()) {
+        return Err(format!("unknown hub event: {name}"));
+    }
+    app.emit_to(
+        tauri::EventTarget::labeled("main"),
+        "hub-event",
+        serde_json::json!({ "for": "main", "name": name }),
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// Open a SYSTEM widget by registry kind: singleton focus, panel-* label
 /// namespace, optional opener-edge placement + dock-group join (a panel
 /// opened from another widget/panel spawns docked to it — stacks). Unknown
@@ -1186,8 +1212,7 @@ fn sync_ptt_shortcut(app: &tauri::AppHandle, want_registered: bool) {
             }
         });
         if let Err(e) = result {
-            let _ = app.emit_to(
-                tauri::EventTarget::labeled("main"),
+            let _ = tauri::Emitter::emit(app,
                 "voice-error",
                 serde_json::json!({
                     "message": format!("global PTT shortcut unavailable: {e}")
@@ -1284,8 +1309,7 @@ async fn voice_set_voice(
         // Settings): the engine fell back to the system default. Surface it
         // — stderr-only logging left Settings showing the stale pick as the
         // active voice indefinitely while a different voice spoke.
-        let _ = app.emit_to(
-            tauri::EventTarget::labeled("main"),
+        let _ = tauri::Emitter::emit(&app,
             "voice-error",
             serde_json::json!({
                 "message": format!(
@@ -1313,8 +1337,7 @@ async fn voice_set_config(
 #[tauri::command]
 async fn voice_ensure_model(app: tauri::AppHandle) -> Result<(), String> {
     voice::model::ensure_model(move |payload| {
-        let _ = app.emit_to(
-            tauri::EventTarget::labeled("main"),
+        let _ = tauri::Emitter::emit(&app,
             "voice-model-progress",
             payload,
         );
@@ -2147,6 +2170,7 @@ fn main() {
         open_external_url,
         open_artifact_widget,
         open_widget,
+        hub_event,
         close_widget,
         list_widget_windows,
         set_dock,
@@ -2182,6 +2206,7 @@ fn main() {
         open_external_url,
         open_artifact_widget,
         open_widget,
+        hub_event,
         close_widget,
         list_widget_windows,
         set_dock,

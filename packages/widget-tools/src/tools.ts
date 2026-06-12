@@ -135,3 +135,65 @@ export const makeWidgetTools = (store: (typeof ArtifactStore)["Service"]) => {
 
   return [widgetWrite] as const
 }
+
+/**
+ * open_widget — summon-by-name (widget-system.md "Summon-by-name").
+ *
+ * Two verbs, deliberately distinct: widget_write CREATES sandboxed content;
+ * open_widget SUMMONS an existing surface by its registry kind ("open the
+ * voice settings"). The directory comes from the connected host client and
+ * the host resolves kinds through its own shipped registry, so this tool can
+ * summon UI but can never conjure a window the host didn't already ship —
+ * and every mutation inside an opened panel remains a user gesture.
+ */
+export interface WidgetSummonerPort {
+  readonly directory: () => ReadonlyArray<{
+    readonly kind: string
+    readonly title: string
+    readonly description: string
+  }>
+  readonly open: (kind: string) => { readonly ok: boolean; readonly message: string }
+}
+
+export const makeOpenWidgetTool = (summoner: WidgetSummonerPort) => {
+  const openWidget = defineTool({
+    name: "open_widget",
+    description:
+      "Open (or focus) one of the user's app widgets/panels by kind — e.g. " +
+      "settings panels ('settings.voice', 'settings.connection'). Use when " +
+      "the user asks to open/show a settings panel or named widget instead " +
+      "of describing where to click. The window opens on their screen; you " +
+      "do not see or operate its contents. Call with no/unknown kind to get " +
+      "the list of available kinds in the error message.",
+    inputSchema: {
+      kind: z
+        .string()
+        .min(1)
+        .describe(
+          "The widget kind to open, e.g. 'settings.voice'. Kinds and their " +
+            "descriptions come from the connected app's widget directory.",
+        ),
+    },
+    alwaysLoad: true,
+    searchHint:
+      "Open or focus an app widget/settings panel window by name (summon UI on the user's screen).",
+    handler: (args) =>
+      Effect.sync(() => {
+        const result = summoner.open(args.kind)
+        if (!result.ok) {
+          const dir = summoner
+            .directory()
+            .map((w) => `${w.kind} — ${w.description}`)
+            .join("\n")
+          return {
+            ok: false,
+            message: result.message,
+            ...(dir ? { available: dir } : {}),
+          }
+        }
+        return { ok: true, message: result.message }
+      }),
+  })
+
+  return openWidget
+}

@@ -334,30 +334,12 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(settingsPanel!.classList.contains('active')).toBe(false)
     })
 
-    it('Scenario: Toggling Always on Top saves state and calls Tauri API', () => {
-      const alwaysOnTopToggle = document.getElementById('always-on-top-toggle') as HTMLInputElement
-      const mockSetAlwaysOnTop = (window as any).__TAURI__.mockSetAlwaysOnTop
-
-      // Mock localStorage setItem
-      const setItemSpy = vi.spyOn(Storage.prototype, 'setItem')
-
-      // Switch Always on Top off
-      alwaysOnTopToggle.checked = false
-      alwaysOnTopToggle.dispatchEvent(new Event('change', { bubbles: true }))
-
-      expect(setItemSpy).toHaveBeenCalledWith('luna_always_on_top', 'false')
-      expect(mockSetAlwaysOnTop).toHaveBeenCalledWith(false)
-
-      // Switch Always on Top on
-      alwaysOnTopToggle.checked = true
-      alwaysOnTopToggle.dispatchEvent(new Event('change', { bubbles: true }))
-
-      expect(setItemSpy).toHaveBeenCalledWith('luna_always_on_top', 'true')
-      expect(mockSetAlwaysOnTop).toHaveBeenCalledWith(true)
-    })
+    // The Always-on-Top toggle and Global-Shortcut recorder UI moved to the
+    // standalone General panel — covered in test/panel-general.test.ts.
 
     it('Scenario: Close on Blur collapses the chat panel on click away', async () => {
-      const closeOnBlurToggle = document.getElementById('close-on-blur-toggle') as HTMLInputElement
+      // The checkbox moved to the General panel (test/panel-general.test.ts);
+      // the hub reads the persisted luna_close_on_blur key directly on blur.
       const chatPanel = document.getElementById('chat-panel')
       const mockSetSize = (window as any).__TAURI__.mockSetSize
 
@@ -366,15 +348,13 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(chatPanel!.classList.contains('active')).toBe(true)
 
       // 1. When Close on Blur is disabled -> click away (blur) does NOT collapse chat
-      closeOnBlurToggle.checked = false
-      closeOnBlurToggle.dispatchEvent(new Event('change', { bubbles: true }))
+      localStorage.setItem('luna_close_on_blur', 'false')
 
       window.dispatchEvent(new Event('blur'))
       expect(chatPanel!.classList.contains('active')).toBe(true)
 
       // 2. When Close on Blur is enabled -> click away (blur) collapses chat
-      closeOnBlurToggle.checked = true
-      closeOnBlurToggle.dispatchEvent(new Event('change', { bubbles: true }))
+      localStorage.setItem('luna_close_on_blur', 'true')
 
       window.dispatchEvent(new Event('blur'))
       expect(chatPanel!.classList.contains('active')).toBe(false)
@@ -385,35 +365,6 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       await Promise.resolve()
 
       expect(mockSetSize).toHaveBeenCalledWith({ type: 'Logical', width: 140, height: 185 })
-    })
-
-    it('Scenario: Global Shortcut recorder captures key combinations', () => {
-      const recordBtn = document.getElementById('record-shortcut-btn')
-      const shortcutInput = document.getElementById('shortcut-input') as HTMLInputElement
-      const setItemSpy = vi.spyOn(Storage.prototype, 'setItem')
-
-      // Start recording
-      recordBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      expect(recordBtn!.textContent).toBe('Cancel')
-      expect(shortcutInput.classList.contains('recording')).toBe(true)
-      expect(shortcutInput.value).toBe('Press keys...')
-
-      // Press Option (Alt) + Shift + S
-      const keydownEvent = new KeyboardEvent('keydown', {
-        bubbles: true,
-        cancelable: true,
-        key: 's',
-        altKey: true,
-        shiftKey: true,
-      })
-      window.dispatchEvent(keydownEvent)
-
-      // Verifications:
-      // Option + Shift symbols should be combined: ⌥⇧S
-      expect(shortcutInput.value).toBe('⌥⇧S')
-      expect(setItemSpy).toHaveBeenCalledWith('luna_global_shortcut', '⌥⇧S')
-      expect(recordBtn!.textContent).toBe('Record')
-      expect(shortcutInput.classList.contains('recording')).toBe(false)
     })
   })
 
@@ -1531,1571 +1482,34 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(chat.querySelector('.timeline .typing-dots')).toBeNull()
       expect(chat.querySelector('.timeline-summary-label')!.textContent).toContain('Worked for')
     })
-  // ───────────────────────────────────────────────────────────────────────────
-  // Feature: Skills settings tab (PRD Part B §12, Moon-side wiring)
-  //
-  // Driven at the production seam (__MoonInternals.handleFrame): hello
-  // reveals/hides the tab via capabilities.skills; skill-catalog renders the
-  // watercolor rows; clicking a row sends skill-toggle and goes pending (no
-  // optimistic flip); skill-status ok settles it, ok:false surfaces the error.
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Skills settings tab', () => {
+  // ─────────────────────────────────────────────────────────────────────────
+  // The Skills / Connectors / Vault settings tabs moved out of the hub modal
+  // into standalone panel windows. Their frame-pipeline + UI coverage now
+  // lives in test/panel-skills.test.ts, test/panel-connectors.test.ts and
+  // test/panel-vault.test.ts. The secret-prompt panel (agent request_secret)
+  // is still hub-hosted, so its collapse-wipe keeps a test here.
+  // ─────────────────────────────────────────────────────────────────────────
+  describe('Feature: secret-prompt wipe on chat collapse', () => {
     const M = () => (window as any).__MoonInternals
 
-    const catalog = () => ({
-      type: 'skill-catalog',
-      skills: [
-        { id: 'clear-writing', name: 'Clear Writing', description: 'Strunk rules.',
-          whenToUse: 'Writing prose.', category: 'writing', tags: ['style'], source: 'builtin', enabled: true },
-        { id: 'duck-query', name: 'Duck Query', description: 'SQL over files.',
-          whenToUse: 'Data questions.', category: 'data', tags: ['sql'], source: 'user', enabled: false },
-      ],
-    })
-
-    const sentFrames: any[] = []
-    beforeEach(() => {
-      sentFrames.length = 0
-      const m = M()
-      // capture outbound frames at the engine seam (no real socket in jsdom)
-      m.WebSocketEngine.send = (f: any) => { sentFrames.push(f) }
-      ;(window as any).State = m.State
-      m.State.skills = []
-      m.State.skillsPending = {}
-      // pretend the socket is open so toggle() passes its connection guard
-      m.State.ws = { readyState: WebSocket.OPEN }
-      const err = document.getElementById('skills-error')
-      if (err) { err.hidden = true; err.textContent = '' }
-    })
-
-    it('hello capabilities.skills reveals the tab; an old server hides it again', () => {
-      const tab = document.getElementById('skills-tab-btn')!
-      M().handleFrame({ type: 'hello', protocolVersion: 2, kinds: [],
-        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false, skills: true } })
-      expect(M().State.serverSupportsSkills).toBe(true)
-      expect(tab.hidden).toBe(false)
-      M().handleFrame({ type: 'hello', protocolVersion: 2, kinds: [],
-        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false } })
-      expect(M().State.serverSupportsSkills).toBe(false)
-      expect(tab.hidden).toBe(true)
-    })
-
-    it('skill-catalog renders one watercolor row per skill, off-rows dimmed', () => {
-      M().handleFrame(catalog())
-      const rows = document.querySelectorAll('#skills-list .skill-row')
-      expect(rows.length).toBe(2)
-      expect(rows[0]!.classList.contains('off')).toBe(false)
-      expect(rows[1]!.classList.contains('off')).toBe(true)
-      expect(rows[0]!.querySelector('.skill-blot')).not.toBeNull()
-      expect(rows[0]!.textContent).toContain('Clear Writing')
-      expect(rows[1]!.textContent).toContain('yours') // source=user badge
-      expect(document.getElementById('skills-count')!.textContent).toContain('1/2')
-    })
-
-    it('clicking a row sends skill-toggle and marks pending WITHOUT flipping', () => {
-      M().handleFrame(catalog())
-      const row = document.querySelectorAll('#skills-list .skill-row')[0] as HTMLElement
-      row.click()
-      expect(sentFrames).toEqual([{ type: 'skill-toggle', id: 'clear-writing', enabled: false }])
-      const rerendered = document.querySelectorAll('#skills-list .skill-row')[0]!
-      expect(rerendered.classList.contains('pending')).toBe(true)
-      expect(rerendered.classList.contains('off')).toBe(false) // not flipped yet
-      // a second click while pending is a no-op
-      ;(rerendered as HTMLElement).click()
-      expect(sentFrames.length).toBe(1)
-    })
-
-    it('skill-status ok settles the row; ok:false surfaces the message and reverts nothing', () => {
-      M().handleFrame(catalog())
-      ;(document.querySelectorAll('#skills-list .skill-row')[0] as HTMLElement).click()
-      M().handleFrame({ type: 'skill-status', id: 'clear-writing', enabled: false, ok: true })
-      const row = document.querySelectorAll('#skills-list .skill-row')[0]!
-      expect(row.classList.contains('pending')).toBe(false)
-      expect(row.classList.contains('off')).toBe(true)
-
-      M().handleFrame({ type: 'skill-status', id: 'duck-query', enabled: true, ok: false, message: 'nope' })
-      const err = document.getElementById('skills-error')!
-      expect(err.hidden).toBe(false)
-      expect(err.textContent).toBe('nope')
-      // duck-query stays off — no phantom enable
-      expect(document.querySelectorAll('#skills-list .skill-row')[1]!.classList.contains('off')).toBe(true)
-    })
-
-    it('search + chips filter the list client-side', () => {
-      M().handleFrame(catalog())
-      const search = document.getElementById('skills-search-input') as HTMLInputElement
-      search.value = 'sql'
-      search.dispatchEvent(new Event('input'))
-      let rows = document.querySelectorAll('#skills-list .skill-row')
-      expect(rows.length).toBe(1)
-      expect(rows[0]!.textContent).toContain('Duck Query')
-      // reset search, filter by category chip "writing"
-      search.value = ''
-      search.dispatchEvent(new Event('input'))
-      const chips = Array.from(document.querySelectorAll('#skills-chips .skills-chip'))
-      const writing = chips.find((c) => c.textContent === 'writing') as HTMLElement
-      writing.click()
-      rows = document.querySelectorAll('#skills-list .skill-row')
-      expect(rows.length).toBe(1)
-      expect(rows[0]!.textContent).toContain('Clear Writing')
-    })
-  })
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Feature: Connectors settings tab (PRD Part A §17, Moon-side wiring)
-  //
-  // Driven at the production seam (__MoonInternals.handleFrame), with the
-  // Tauri bridge stubbed: connect → consent sheet → Authorize walks the
-  // full client-brokered OAuth arc (loopback start → oauth-begin frame →
-  // redirect → open browser + wait → oauth-code frame). Tokens never
-  // appear anywhere in this file by construction.
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Connectors settings tab', () => {
-    const M = () => (window as any).__MoonInternals
-    // Fake timers are active (line 59) → setTimeout never fires; the OAuth
-    // arc is pure microtasks (awaited Tauri invoke promises), so flush those.
-    const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve() }
-
-    const catalogFrame = () => ({
-      type: 'connector-catalog',
-      connectors: [
-        {
-          id: 'google-workspace', name: 'Google Workspace', blurb: 'Mail & files.',
-          category: 'productivity', authKind: 'oauth2',
-          capabilities: [
-            { id: 'gmail-read', label: 'Read email', scopes: ['g.read'], defaultGranted: true },
-            { id: 'gmail-send', label: 'Send email', scopes: ['g.send'], defaultGranted: false },
-          ],
-        },
-        {
-          id: 'slack', name: 'Slack', blurb: 'Channels & DMs.',
-          category: 'communication', authKind: 'api-key',
-          capabilities: [
-            { id: 'read', label: 'Read', scopes: [], defaultGranted: true },
-          ],
-        },
-      ],
-    })
-
-    const sentFrames: any[] = []
-    const invokeCalls: Array<{ cmd: string; args: any }> = []
-    let invokeImpl: (cmd: string, args?: any) => Promise<any>
-
-    beforeEach(() => {
-      sentFrames.length = 0
-      invokeCalls.length = 0
-      const m = M()
-      m.WebSocketEngine.send = (f: any) => { sentFrames.push(f) }
-      m.State.ws = { readyState: WebSocket.OPEN }
-      m.State.connectorCatalog = []
-      m.State.connectorInstances = []
-      m.State.connectorBusy = {}
-      m.ConnectorsEngine._consentOpen = null
-      m.ConnectorsEngine._oauthRequestId = null
-      m.ConnectorsEngine._oauthDefinitionId = null
-      m.ConnectorsEngine._plainRequests = {}
-      m.ConnectorsEngine._consentDraft = {}
-      m.ConnectorsEngine._reconnectLabel = null
-      invokeImpl = async (cmd: string) => {
-        if (cmd === 'oauth_loopback_start') return 49152
-        if (cmd === 'oauth_loopback_wait') return { code: 'captured-code', state: 'captured-state' }
-        return undefined
-      }
-      ;(window as any).__TAURI__ = {
-        core: {
-          invoke: (cmd: string, args?: any) => {
-            invokeCalls.push({ cmd, args })
-            return invokeImpl(cmd, args)
-          },
-        },
-      }
-      const err = document.getElementById('connectors-error')
-      if (err) { err.hidden = true; err.textContent = '' }
-    })
-
-    it('hello capabilities.connectors reveals the tab; catalog renders cards', () => {
-      const tab = document.getElementById('connectors-tab-btn')!
-      M().handleFrame({ type: 'hello', protocolVersion: 2, kinds: [],
-        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false, connectors: true } })
-      expect(tab.hidden).toBe(false)
-      M().handleFrame(catalogFrame())
-      const cards = document.querySelectorAll('#connectors-list .connector-card')
-      expect(cards.length).toBe(2)
-      expect(cards[0]!.textContent).toContain('Google Workspace')
-      expect(cards[0]!.querySelector('.skill-blot')).not.toBeNull() // watercolor status blot
-      // old server hides the tab again
-      M().handleFrame({ type: 'hello', protocolVersion: 2, kinds: [],
-        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false } })
-      expect(tab.hidden).toBe(true)
-    })
-
-    it('Connect opens the consent sheet with defaultGranted prechecked; Authorize walks the OAuth arc', async () => {
-      M().handleFrame(catalogFrame())
-      const googleCard = document.querySelectorAll('#connectors-list .connector-card')[0] as HTMLElement
-      ;(googleCard.querySelector('.connector-btn') as HTMLElement).click()
-
-      const sheet = document.querySelector('#connectors-list .connector-consent')!
-      const boxes = Array.from(sheet.querySelectorAll('input[type=checkbox]')) as HTMLInputElement[]
-      expect(boxes.map((b) => b.checked)).toEqual([true, false]) // gmail-read yes, gmail-send no
-      expect(sheet.textContent).toContain('g.read') // scopes visible pre-consent
-
-      ;(sheet.querySelector('.connector-btn') as HTMLElement).click() // Authorize
-      await flush() // let the async arc start
-
-      // loopback bound, then the begin frame with the bound port + narrowed caps
-      expect(invokeCalls[0]?.cmd).toBe('oauth_loopback_start')
-      const begin = sentFrames.find((f) => f.type === 'connector-oauth-begin')
-      expect(begin).toMatchObject({
-        definitionId: 'google-workspace',
-        capabilityIds: ['gmail-read'],
-        loopbackPort: 49152,
-      })
-
-      // server answers with the consent URL → browser hop + wait → code frame
-      M().handleFrame({
-        type: 'connector-oauth-redirect',
-        requestId: begin.requestId,
-        pendingId: 'pend-1',
-        authUrl: 'https://accounts.fake.test/auth?x=1',
-      })
-      await flush()
-      await flush()
-      expect(invokeCalls.map((c) => c.cmd)).toContain('open_external_url')
-      expect(invokeCalls.find((c) => c.cmd === 'open_external_url')?.args?.url)
-        .toBe('https://accounts.fake.test/auth?x=1')
-      const codeFrame = sentFrames.find((f) => f.type === 'connector-oauth-code')
-      expect(codeFrame).toMatchObject({
-        pendingId: 'pend-1',
-        code: 'captured-code',
-        state: 'captured-state',
-      })
-
-      // connector-list broadcast settles the card into Connected + Disconnect
-      M().handleFrame({
-        type: 'connector-list',
-        instances: [{
-          id: 'inst-1', definitionId: 'google-workspace', label: 'Google Workspace',
-          status: 'connected', grantedScopes: ['g.read'], createdAt: 1, lastHealthyAt: 1,
-        }],
-      })
-      const settled = document.querySelectorAll('#connectors-list .connector-card')[0]!
-      expect(settled.textContent).toContain('Connected')
-      expect(settled.textContent).toContain('Disconnect')
-    })
-
-    it('a failed consent hop cancels the loopback and surfaces the error', async () => {
-      invokeImpl = async (cmd: string) => {
-        if (cmd === 'oauth_loopback_start') return 49200
-        if (cmd === 'oauth_loopback_wait') throw 'timed out waiting for the browser consent'
-        return undefined
-      }
-      M().handleFrame(catalogFrame())
-      const card = document.querySelectorAll('#connectors-list .connector-card')[0] as HTMLElement
-      ;(card.querySelector('.connector-btn') as HTMLElement).click()
-      ;(document.querySelector('#connectors-list .connector-consent .connector-btn') as HTMLElement).click()
-      await flush()
-      const begin = sentFrames.find((f) => f.type === 'connector-oauth-begin')
-      M().handleFrame({ type: 'connector-oauth-redirect', requestId: begin.requestId, pendingId: 'p', authUrl: 'https://x.test/a' })
-      await flush()
-      await flush()
-      expect(invokeCalls.map((c) => c.cmd)).toContain('oauth_loopback_cancel')
-      const err = document.getElementById('connectors-error')!
-      expect(err.hidden).toBe(false)
-      expect(err.textContent).toContain('timed out')
-      expect(sentFrames.find((f) => f.type === 'connector-oauth-code')).toBeUndefined()
-    })
-
-    it('api-key connect sends the secretRef POINTER; needs-reauth shows gold + Reconnect', () => {
-      M().handleFrame(catalogFrame())
-      const slackCard = document.querySelectorAll('#connectors-list .connector-card')[1] as HTMLElement
-      ;(slackCard.querySelector('.connector-btn') as HTMLElement).click()
-      const sheet = document.querySelector('#connectors-list .connector-consent')!
-      // The consent sheet now has a label input first; use the secretref-specific class.
-      const ref = sheet.querySelector('.connector-secretref-input') as HTMLInputElement
-      ref.value = 'env:SLACK_MCP_XOXB_TOKEN'
-      ;(sheet.querySelector('.connector-btn') as HTMLElement).click()
-      const frame = sentFrames.find((f) => f.type === 'connector-connect')
-      expect(frame).toMatchObject({
-        definitionId: 'slack',
-        secretRef: 'env:SLACK_MCP_XOXB_TOKEN',
-        capabilityIds: ['read'],
-      })
-      expect(JSON.stringify(sentFrames)).not.toContain('xoxb-') // pointer, never a value
-
-      M().handleFrame({
-        type: 'connector-list',
-        instances: [{
-          id: 'inst-g', definitionId: 'google-workspace', label: 'G',
-          status: 'needs-reauth', grantedScopes: [], createdAt: 1, lastHealthyAt: null,
-        }],
-      })
-      const gCard = document.querySelectorAll('#connectors-list .connector-card')[0]!
-      expect(gCard.classList.contains('needs-reauth')).toBe(true)
-      expect(gCard.textContent).toContain('Reconnect')
-    })
-
-    it('clientSetup.configured=false renders setup form; no Authorize button visible', () => {
-      // A catalog with a Google Workspace connector that needs its OAuth client
-      // configured first — the normal Authorize path must be gated.
-      M().handleFrame({
-        type: 'connector-catalog',
-        connectors: [
-          {
-            id: 'google_workspace',
-            name: 'Google Workspace',
-            blurb: 'Mail & files.',
-            category: 'productivity',
-            authKind: 'oauth2',
-            clientSetup: { configured: false },
-            capabilities: [
-              { id: 'gmail-read', label: 'Read email', scopes: ['gmail.readonly'], defaultGranted: true },
-            ],
-          },
-        ],
-      })
-      const card = document.querySelector('#connectors-list .connector-card') as HTMLElement
-      expect(card).not.toBeNull()
-      // Setup form present
-      const setup = card.querySelector('.connector-client-setup')!
-      expect(setup).not.toBeNull()
-      // Client ID input present and a Save client button
-      const clientIdInput = setup.querySelector('input[type=text]') as HTMLInputElement
-      expect(clientIdInput).not.toBeNull()
-      const secretInput = setup.querySelector('input[type=password]') as HTMLInputElement
-      expect(secretInput).not.toBeNull()
-      expect(setup.textContent).toContain('Save client')
-      // Explainer references Google Cloud Console
-      expect(setup.textContent).toContain('Google Cloud Console')
-      // No Authorize button — blocked until client is configured
-      const btns = Array.from(card.querySelectorAll('.connector-btn')).map((b) => b.textContent)
-      expect(btns).not.toContain('Authorize in browser')
-      // And no dead Connect button either (review M2.6) — the setup form is
-      // the only actionable step while the client is missing.
-      expect(btns).not.toContain('Connect')
-      expect(btns).toContain('Save client')
-    })
-
-    it('Save clears the credential inputs immediately (no secrets lingering in the DOM)', () => {
-      const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN }
-      m.handleFrame({
-        type: 'connector-catalog',
-        connectors: [{
-          id: 'google_workspace', name: 'Google Workspace', blurb: 'Mail.',
-          category: 'productivity', authKind: 'oauth2',
-          clientSetup: { configured: false }, capabilities: [],
-        }],
-      })
-      const setup = document.querySelector('#connectors-list .connector-client-setup')!
-      const idInput = setup.querySelector('input[type=text]') as HTMLInputElement
-      const secInput = setup.querySelector('input[type=password]') as HTMLInputElement
-      idInput.value = 'my-id'
-      secInput.value = 'my-secret'
-      const save = Array.from(setup.querySelectorAll('.connector-btn'))
-        .find((b) => b.textContent === 'Save client') as HTMLButtonElement
-      save.click()
-      // The frame went out with the values…
-      const frame = sentFrames.find((f: any) => f.type === 'connector-set-client')
-      expect(frame).toMatchObject({ clientId: 'my-id', clientSecret: 'my-secret' })
-      // …and the inputs were cleared at once (review M2.6).
-      expect(idInput.value).toBe('')
-      expect(secInput.value).toBe('')
-    })
-
-    it('configured=true shows the badge with an Edit toggle that reopens the setup form (recovery path)', () => {
-      const m = M()
-      m.handleFrame({
-        type: 'connector-catalog',
-        connectors: [{
-          id: 'google_workspace', name: 'Google Workspace', blurb: 'Mail.',
-          category: 'productivity', authKind: 'oauth2',
-          clientSetup: { configured: true }, capabilities: [],
-        }],
-      })
-      const card = document.querySelector('#connectors-list .connector-card') as HTMLElement
-      expect(card.textContent).toContain('✓ OAuth client configured')
-      // No form while closed…
-      expect(card.querySelector('.connector-client-setup')).toBeNull()
-      // …Edit opens it (so a wrong/half-written credential can be re-entered
-      // without hand-editing ~/.luna/.env — review M2.6).
-      const edit = Array.from(card.querySelectorAll('.connector-btn'))
-        .find((b) => b.textContent === 'Edit') as HTMLButtonElement
-      expect(edit).toBeDefined()
-      edit.click()
-      const reopened = document.querySelector('#connectors-list .connector-client-setup')
-      expect(reopened).not.toBeNull()
-    })
-
-    it('setClient sends connector-set-client frame with definitionId + clientId; omits empty secret', () => {
-      const m = M()
-      // Ensure ws is OPEN (already done in beforeEach but re-assert for clarity)
-      m.State.ws = { readyState: WebSocket.OPEN }
-      m.ConnectorsEngine.setClient('google_workspace', 'abc.apps.googleusercontent.com', '')
-      const frame = sentFrames.find((f: any) => f.type === 'connector-set-client')
-      expect(frame).toMatchObject({
-        type: 'connector-set-client',
-        definitionId: 'google_workspace',
-        clientId: 'abc.apps.googleusercontent.com',
-      })
-      // Empty secret must NOT be forwarded
-      expect(frame).not.toHaveProperty('clientSecret')
-      // requestId has the setclient_ prefix
-      expect(frame.requestId).toMatch(/^setclient_/)
-    })
-
-    // ── C1: Multi-account tests ─────────────────────────────────────────────
-
-    it('C1: connector-list with TWO instances of one definition renders two labeled rows each with Disconnect', () => {
-      M().handleFrame(catalogFrame())
-      M().handleFrame({
-        type: 'connector-list',
-        instances: [
-          {
-            id: 'inst-personal', definitionId: 'google-workspace', label: 'personal',
-            status: 'connected', grantedScopes: ['g.read'], createdAt: 1, lastHealthyAt: 1,
-          },
-          {
-            id: 'inst-flowstay', definitionId: 'google-workspace', label: 'flowstay',
-            status: 'connected', grantedScopes: ['g.read', 'g.send'], createdAt: 2, lastHealthyAt: 2,
-          },
-        ],
-      })
-      const gCard = document.querySelectorAll('#connectors-list .connector-card')[0] as HTMLElement
-      // Two instance rows rendered
-      const rows = gCard.querySelectorAll('.connector-instance-row')
-      expect(rows.length).toBe(2)
-      // Labels appear in the rows
-      const labels = Array.from(rows).map((r) => r.querySelector('.connector-instance-label')!.textContent)
-      expect(labels).toContain('personal')
-      expect(labels).toContain('flowstay')
-      // Each row has a Disconnect button
-      for (const row of Array.from(rows)) {
-        const btns = Array.from(row.querySelectorAll('.connector-btn')).map((b) => b.textContent)
-        expect(btns).toContain('Disconnect')
-      }
-    })
-
-    it('C1: card button reads "Add account" when ≥1 instance exists and opens the consent sheet with a label input', () => {
-      M().handleFrame(catalogFrame())
-      M().handleFrame({
-        type: 'connector-list',
-        instances: [{
-          id: 'inst-1', definitionId: 'google-workspace', label: 'personal',
-          status: 'connected', grantedScopes: ['g.read'], createdAt: 1, lastHealthyAt: 1,
-        }],
-      })
-      const gCard = document.querySelectorAll('#connectors-list .connector-card')[0] as HTMLElement
-      // Head button should say "Add account" when an instance exists
-      const headBtn = gCard.querySelector('.connector-head .connector-btn') as HTMLElement
-      expect(headBtn.textContent).toBe('Add account')
-      // Clicking it opens the consent sheet
-      headBtn.click()
-      const sheet = document.querySelector('#connectors-list .connector-consent')!
-      expect(sheet).not.toBeNull()
-      // Consent sheet contains the account label input
-      const labelInput = sheet.querySelector('.connector-label-input') as HTMLInputElement
-      expect(labelInput).not.toBeNull()
-      // (#10) Add-account opens with an EMPTY value, not prefilled with the
-      // existing account label — the operator is adding a NEW account.
-      expect(labelInput.value).toBe('')
-      // (#7/#10) Clicking Reconnect on a needs-reauth instance prefills the label.
-      M().handleFrame({
-        type: 'connector-list',
-        instances: [{
-          id: 'inst-1', definitionId: 'google-workspace', label: 'personal',
-          status: 'needs-reauth', grantedScopes: [], createdAt: 1, lastHealthyAt: null,
-        }],
-      })
-      const reconCard = document.querySelectorAll('#connectors-list .connector-card')[0] as HTMLElement
-      const reconBtn = Array.from(reconCard.querySelectorAll('.connector-btn'))
-        .find((b) => b.textContent === 'Reconnect') as HTMLElement
-      expect(reconBtn).toBeDefined()
-      reconBtn.click()
-      const reconSheet = document.querySelector('#connectors-list .connector-consent')!
-      expect(reconSheet).not.toBeNull()
-      const reconLabelInput = reconSheet.querySelector('.connector-label-input') as HTMLInputElement
-      expect(reconLabelInput.value).toBe('personal')
-    })
-
-    it('C1: filling the label input + clicking Authorize sends connector-oauth-begin with that label', async () => {
-      M().handleFrame(catalogFrame())
-      // Start with one existing instance so "Add account" is shown
-      M().handleFrame({
-        type: 'connector-list',
-        instances: [{
-          id: 'inst-1', definitionId: 'google-workspace', label: 'personal',
-          status: 'connected', grantedScopes: ['g.read'], createdAt: 1, lastHealthyAt: 1,
-        }],
-      })
-      const gCard = document.querySelectorAll('#connectors-list .connector-card')[0] as HTMLElement
-      // Open the consent sheet via "Add account"
-      ;(gCard.querySelector('.connector-head .connector-btn') as HTMLElement).click()
-      const sheet = document.querySelector('#connectors-list .connector-consent')!
-      // Type a label
-      const labelInput = sheet.querySelector('.connector-label-input') as HTMLInputElement
-      labelInput.value = 'flowstay'
-      // Click Authorize
-      ;(sheet.querySelector('.connector-btn') as HTMLElement).click()
-      await flush()
-      // loopback was started
-      expect(invokeCalls[0]?.cmd).toBe('oauth_loopback_start')
-      // connector-oauth-begin carries the typed label
-      const begin = sentFrames.find((f: any) => f.type === 'connector-oauth-begin')
-      expect(begin).toMatchObject({
-        definitionId: 'google-workspace',
-        label: 'flowstay',
-        loopbackPort: 49152,
-      })
-    })
-
-    // ── Review-finding regression tests ────────────────────────────────────
-
-    it('#5: connector-status {ok:false, requestId} matching a sent connector-connect clears busy and shows error', () => {
-      M().handleFrame(catalogFrame())
-      const slackCard = document.querySelectorAll('#connectors-list .connector-card')[1] as HTMLElement
-      ;(slackCard.querySelector('.connector-btn') as HTMLElement).click()
-      const sheet = document.querySelector('#connectors-list .connector-consent')!
-      const ref = sheet.querySelector('.connector-secretref-input') as HTMLInputElement
-      ref.value = 'env:SLACK_TOKEN'
-      ;(sheet.querySelector('.connector-btn') as HTMLElement).click()
-      // Grab the requestId that was sent
-      const frame = sentFrames.find((f: any) => f.type === 'connector-connect')
-      expect(frame).toBeDefined()
-      expect(M().State.connectorBusy['slack']).toBe('connecting')
-
-      // Server rejects (e.g. duplicate-label): {ok:false, requestId, message}
-      M().handleFrame({ type: 'connector-status', ok: false, requestId: frame.requestId, message: 'Duplicate label' })
-
-      // Busy must be cleared
-      expect(M().State.connectorBusy['slack']).toBeUndefined()
-      // Error message shown
-      const err = document.getElementById('connectors-error')!
-      expect(err.hidden).toBe(false)
-      expect(err.textContent).toContain('Duplicate label')
-      // Card must no longer show "Connecting…"
-      const updatedCard = document.querySelectorAll('#connectors-list .connector-card')[1] as HTMLElement
-      expect(updatedCard.textContent).not.toContain('Connecting')
-    })
-
-    it('#6: an unrelated connector-list broadcast does NOT clear busy for a definition with an in-flight add-account attempt', () => {
-      M().handleFrame(catalogFrame())
-      // Open Add account for google-workspace and start authorizing
-      const gCard = document.querySelectorAll('#connectors-list .connector-card')[0] as HTMLElement
-      ;(gCard.querySelector('.connector-head .connector-btn') as HTMLElement).click()
-      // Manually set busy for google-workspace (simulates in-flight oauth)
-      M().State.connectorBusy['google-workspace'] = 'authorizing'
-
-      // A connector-list broadcast for an unrelated instance arrives
-      M().handleFrame({
-        type: 'connector-list',
-        instances: [{
-          id: 'inst-slack', definitionId: 'slack', label: 'work',
-          status: 'connected', grantedScopes: ['read'], createdAt: 1, lastHealthyAt: 1,
-        }],
-      })
-
-      // google-workspace's in-flight busy must NOT have been cleared
-      expect(M().State.connectorBusy['google-workspace']).toBe('authorizing')
-    })
-
-    it('#8: typing a label, then receiving a connector-list broadcast, preserves the typed label in the rebuilt sheet', () => {
-      M().handleFrame(catalogFrame())
-      // Open the consent sheet for google-workspace
-      const gCard = document.querySelectorAll('#connectors-list .connector-card')[0] as HTMLElement
-      ;(gCard.querySelector('.connector-head .connector-btn') as HTMLElement).click()
-      const sheet = document.querySelector('#connectors-list .connector-consent')!
-      const labelInput = sheet.querySelector('.connector-label-input') as HTMLInputElement
-      // Type a label — fire the input event so the draft is saved
-      labelInput.value = 'typed-label'
-      labelInput.dispatchEvent(new Event('input'))
-
-      // A connector-list broadcast arrives (re-render)
-      M().handleFrame({ type: 'connector-list', instances: [] })
-
-      // Sheet must still be open and label must be preserved
-      const rebuiltSheet = document.querySelector('#connectors-list .connector-consent')!
-      expect(rebuiltSheet).not.toBeNull()
-      const rebuiltLabel = rebuiltSheet.querySelector('.connector-label-input') as HTMLInputElement
-      expect(rebuiltLabel.value).toBe('typed-label')
-    })
-
-    it('#9: connector-status {ok:false} while oauth is in flight invokes oauth_loopback_cancel', async () => {
-      M().handleFrame(catalogFrame())
-      const gCard = document.querySelectorAll('#connectors-list .connector-card')[0] as HTMLElement
-      ;(gCard.querySelector('.connector-head .connector-btn') as HTMLElement).click()
-      ;(document.querySelector('#connectors-list .connector-consent .connector-btn') as HTMLElement).click()
-      await flush()
-      // OAuth arc is in flight
-      const begin = sentFrames.find((f: any) => f.type === 'connector-oauth-begin')
-      expect(begin).toBeDefined()
-      expect(M().ConnectorsEngine._oauthRequestId).toBe(begin.requestId)
-
-      // Server sends a failure status (without a plain requestId match)
-      M().handleFrame({ type: 'connector-status', ok: false, message: 'Server error' })
-
-      // Must have invoked oauth_loopback_cancel to tear down the Rust listener
-      expect(invokeCalls.some((c) => c.cmd === 'oauth_loopback_cancel')).toBe(true)
-      // Error shown
-      const err = document.getElementById('connectors-error')!
-      expect(err.hidden).toBe(false)
-      expect(err.textContent).toContain('Server error')
-      // Busy cleared
-      expect(M().State.connectorBusy['google-workspace']).toBeUndefined()
-    })
-  })
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Feature: Vault settings tab (Luna Vault V1)
-  //
-  // The friendly credential registry inside the (renamed) Secrets tab. The
-  // wire is METADATA + POINTERS down (`vault-list`), value UP exactly once
-  // (`vault-put`). These suites drive the same seam production uses
-  // (__MoonInternals.handleFrame) and pin the one-shot wipe discipline: the
-  // typed value must never survive a send, a settings close, or a socket
-  // close, and validation failures must never put a frame on the wire.
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Vault settings tab (Luna Vault V1)', () => {
-    const M = () => (window as any).__MoonInternals
-
-    const sentFrames: any[] = []
-
-    const helloVault = (vault: boolean) => ({
-      type: 'hello', protocolVersion: 2, kinds: [],
-      capabilities: {
-        chat: true, streamingDeltas: true, localShell: false, setup: false,
-        ...(vault ? { vault: true } : {}),
-      },
-    })
-
-    const listFrame = () => ({
-      type: 'vault-list',
-      items: [
-        {
-          id: 'itm-1', name: 'Notion API Key', kind: 'env-secret',
-          ref: 'env:NOTION_API_KEY', source: 'manual', description: null,
-          createdAt: 1, updatedAt: 1, synced: true, shadowed: false,
-        },
-        {
-          id: 'itm-2', name: 'Deploy Token', kind: 'op-token',
-          ref: 'luna-op://primary', source: 'agent', description: 'For deploys',
-          createdAt: 1, updatedAt: 2, synced: false, shadowed: true,
-        },
-      ],
-    })
-
-    const el = <T extends HTMLElement = HTMLElement>(id: string) =>
-      document.getElementById(id) as T
-    const input = (id: string) => el<HTMLInputElement>(id)
-    const fire = (target: HTMLElement, type: string) =>
-      target.dispatchEvent(new Event(type, { bubbles: true }))
-
-    beforeEach(() => {
-      sentFrames.length = 0
-      const m = M()
-      m.WebSocketEngine.send = (f: any) => { sentFrames.push(f) }
-      m.State.ws = { readyState: WebSocket.OPEN }
-      m.handleFrame(helloVault(true))
-    })
-
-    it('hello capabilities.vault gates the Vault UI; old servers keep the legacy op-token form', () => {
-      const section = el('vault-section')
-      const legacy = el('legacy-op-token-section')
-      // The tab is renamed "Vault" but keeps data-tab="secrets" (minimal churn).
-      const tab = document.querySelector('.settings-tab[data-tab="secrets"]')!
-      expect(tab.textContent).toBe('Vault')
-
-      // beforeEach hello advertised vault → new UI shown, legacy hidden.
-      expect(section.hidden).toBe(false)
-      expect(legacy.hidden).toBe(true)
-
-      // Channel switch to an OLD server (no vault capability) → fallback:
-      // legacy form back, vault UI hidden, stale registry state dropped.
-      M().handleFrame(helloVault(false))
-      expect(section.hidden).toBe(true)
-      expect(legacy.hidden).toBe(false)
-      expect(M().State.vaultItems).toEqual([])
-      // Legacy form pieces are intact (byte-identical old-server behavior).
-      expect(el('op-label-input')).not.toBeNull()
-      expect(el('op-token-input')).not.toBeNull()
-      expect(el('save-op-token-btn')).not.toBeNull()
-    })
-
-    it('applyVaultList is an idempotent rebuild with kind/synced/shadowed badges', () => {
-      const m = M()
-      m.handleFrame(listFrame())
-      let rows = document.querySelectorAll('#vault-list .vault-row')
-      expect(rows.length).toBe(2)
-
-      // Re-delivery of the same frame (reconnect / post-mutation broadcast)
-      // must not duplicate rows.
-      m.handleFrame(listFrame())
-      rows = document.querySelectorAll('#vault-list .vault-row')
-      expect(rows.length).toBe(2)
-
-      // Row 1: name + kind badge + ref (small mono) + source + synced "1P" chip.
-      const first = rows[0] as HTMLElement
-      expect(first.textContent).toContain('Notion API Key')
-      expect(first.querySelector('.skill-row-badge')!.textContent).toBe('API key')
-      expect(first.querySelector('.vault-ref')!.textContent).toBe('env:NOTION_API_KEY')
-      expect(first.querySelector('.vault-source')!.textContent).toBe('added by you')
-      expect(first.querySelector('.vault-chip.synced')!.textContent).toBe('1P')
-      expect(first.querySelector('.vault-chip.shadowed')).toBeNull()
-
-      // Row 2: shadowed warning glyph with the exact tooltip + description.
-      const second = rows[1] as HTMLElement
-      expect(second.classList.contains('shadowed')).toBe(true)
-      const warn = second.querySelector('.vault-chip.shadowed') as HTMLElement
-      expect(warn).not.toBeNull()
-      expect(warn.title).toBe(
-        "Defined by the server's environment — edits here won't take effect")
-      expect(second.querySelector('.skill-row-badge')!.textContent).toBe('1P token')
-      expect(second.textContent).toContain('For deploys')
-
-      // Shrink + empty re-renders (full replacement, not append).
-      m.handleFrame({ type: 'vault-list', items: [listFrame().items[0]] })
-      expect(document.querySelectorAll('#vault-list .vault-row').length).toBe(1)
-      m.handleFrame({ type: 'vault-list', items: [] })
-      expect(document.querySelectorAll('#vault-list .vault-row').length).toBe(0)
-      expect(el('vault-list').textContent).toContain('Nothing stored yet')
-    })
-
-    it('the env var name is auto-derived from the friendly Name (with live preview + override)', () => {
-      const ve = M().VaultEngine
-      expect(ve.deriveVarName('Notion API Key')).toBe('NOTION_API_KEY')
-      expect(ve.deriveVarName('  spaces & symbols!! ')).toBe('SPACES_SYMBOLS')
-      expect(ve.deriveVarName('123 starts numeric')).toBe('_123_STARTS_NUMERIC')
-
-      input('vault-name-input').value = 'Notion API Key'
-      fire(input('vault-name-input'), 'input')
-      expect(el('vault-var-preview').textContent).toBe('NOTION_API_KEY')
-
-      // "change" reveals the advanced override, prefilled with the derivation;
-      // the preview then follows the override.
-      el('vault-var-edit').click()
-      const override = input('vault-var-input')
-      expect(override.hidden).toBe(false)
-      expect(override.value).toBe('NOTION_API_KEY')
-      override.value = 'MY_CUSTOM_KEY'
-      fire(override, 'input')
-      expect(el('vault-var-preview').textContent).toBe('MY_CUSTOM_KEY')
-    })
-
-    it('validation failures stay local — no frame ever leaves the client', () => {
-      const add = el('vault-add-btn')
-      const status = el('vault-status-line')
-
-      // Empty name.
-      input('vault-value-input').value = 'sk-something'
-      add.click()
-      expect(sentFrames.length).toBe(0)
-      expect(status.hidden).toBe(false)
-      expect(status.textContent).toContain('name')
-
-      // Invalid env var override.
-      input('vault-name-input').value = 'Notion API Key'
-      el('vault-var-edit').click()
-      input('vault-var-input').value = 'BAD-NAME'
-      fire(input('vault-var-input'), 'input')
-      add.click()
-      expect(sentFrames.length).toBe(0)
-
-      // Empty value.
-      input('vault-var-input').value = 'GOOD_NAME'
-      fire(input('vault-var-input'), 'input')
-      input('vault-value-input').value = ''
-      add.click()
-      expect(sentFrames.length).toBe(0)
-
-      // Value with a newline: jsdom (like real browsers) strips line breaks
-      // on input.value assignment, so shadow the accessor to exercise the
-      // engine's own defence-in-depth check.
-      const valueInput = input('vault-value-input')
-      Object.defineProperty(valueInput, 'value', {
-        configurable: true, get: () => 'line1\nline2', set: () => {},
-      })
-      add.click()
-      expect(sentFrames.length).toBe(0)
-      expect(status.textContent).toContain('line breaks')
-      delete (valueInput as any).value   // restore the prototype accessor
-
-      // Socket not OPEN: valid form, but the OPEN guard must block the send
-      // (WebSocketEngine.send logs the WHOLE frame when not open).
-      valueInput.value = 'sk-123'
-      M().State.ws = { readyState: WebSocket.CLOSED }
-      add.click()
-      expect(sentFrames.length).toBe(0)
-      expect(status.textContent).toContain('Not connected')
-      // …and the un-sent value is kept so the operator can retry.
-      expect(valueInput.value).toBe('sk-123')
-    })
-
-    it('a valid submit sends vault-put once and one-shot wipes the value input', () => {
-      input('vault-name-input').value = 'Notion API Key'
-      fire(input('vault-name-input'), 'input')
-      input('vault-value-input').value = 'sk-super-secret'
-      input('vault-desc-input').value = 'workspace key'
-      el('vault-add-btn').click()
-
-      expect(sentFrames.length).toBe(1)
-      const frame = sentFrames[0]
-      expect(frame).toMatchObject({
-        type: 'vault-put',
-        name: 'Notion API Key',
-        kind: 'env-secret',
-        varName: 'NOTION_API_KEY',
-        value: 'sk-super-secret',
-        description: 'workspace key',
-      })
-      expect(frame.requestId).toMatch(/^vlt_/)
-      expect(frame.label).toBeUndefined()
-
-      // One-shot: the value is gone from the DOM the moment the frame left.
-      expect(input('vault-value-input').value).toBe('')
-      // The rest of the form survives until the server confirms.
-      expect(input('vault-name-input').value).toBe('Notion API Key')
-      expect(el('vault-status-line').textContent).toContain('Saving')
-    })
-
-    it('op-token kind swaps in the label field + restart warning and sends label (no varName)', () => {
-      const kind = el<HTMLSelectElement>('vault-kind-select')
-      kind.value = 'op-token'
-      fire(kind, 'change')
-
-      expect(input('vault-label-input').hidden).toBe(false)
-      expect(el('vault-var-row').hidden).toBe(true)
-      // Saving an op-token warns about the server restart up front.
-      expect(el('vault-restart-note').hidden).toBe(false)
-      expect(el('vault-restart-note').textContent).toContain('restarts')
-
-      input('vault-name-input').value = 'Deploy Token'
-      input('vault-value-input').value = 'ops_abc123'
-      el('vault-add-btn').click()
-
-      const frame = sentFrames.find((f) => f.type === 'vault-put')
-      expect(frame).toMatchObject({
-        kind: 'op-token', name: 'Deploy Token', label: 'primary', value: 'ops_abc123',
-      })
-      expect(frame.varName).toBeUndefined()
-      expect(input('vault-value-input').value).toBe('')          // one-shot wipe
-      expect(el('vault-status-line').textContent).toContain('restart')
-    })
-
-    it('delete is a two-step inline confirm; op-token rows warn about the restart', () => {
-      const m = M()
-      m.handleFrame(listFrame())
-      const rowDelete = (i: number) =>
-        document.querySelectorAll('#vault-list .vault-row')[i]!
-          .querySelector('.connector-btn.danger') as HTMLElement
-
-      // First click ARMS — nothing on the wire yet.
-      rowDelete(0).click()
-      expect(sentFrames.filter((f) => f.type === 'vault-delete').length).toBe(0)
-      let armed = document.querySelectorAll('#vault-list .vault-row')[0]!
-      expect(armed.textContent).toContain('Remove this credential?')
-
-      // Keep cancels.
-      const keep = Array.from(armed.querySelectorAll('.connector-btn'))
-        .find((b) => b.textContent === 'Keep') as HTMLElement
-      keep.click()
-      expect(sentFrames.filter((f) => f.type === 'vault-delete').length).toBe(0)
-      expect(document.querySelectorAll('#vault-list .vault-row')[0]!.textContent)
-        .not.toContain('Remove this credential?')
-
-      // Arm again, confirm — exactly one vault-delete with the row id.
-      rowDelete(0).click()
-      rowDelete(0).click()   // the armed row's danger button IS the confirm
-      const delFrames = sentFrames.filter((f) => f.type === 'vault-delete')
-      expect(delFrames.length).toBe(1)
-      expect(delFrames[0]).toMatchObject({ id: 'itm-1' })
-      expect(delFrames[0].requestId).toMatch(/^vlt_/)
-
-      // An armed op-token row warns the server restarts.
-      rowDelete(1).click()
-      const opArmed = document.querySelectorAll('#vault-list .vault-row')[1]!
-      expect(opArmed.textContent).toContain('Remove? The server restarts.')
-    })
-
-    it('vault-status correlates by requestId; ok clears the form; message renders as text', () => {
-      const m = M()
-      input('vault-name-input').value = 'Notion API Key'
-      input('vault-value-input').value = 'sk-secret'
-      el('vault-add-btn').click()
-      const reqId = sentFrames[0].requestId
-      const status = el('vault-status-line')
-
-      // A status for someone ELSE's request is ignored (stale/unmatched).
-      m.handleFrame({ type: 'vault-status', requestId: 'vlt_other', ok: false, message: 'nope' })
-      expect(status.textContent).toContain('Saving')
-      expect(input('vault-name-input').value).toBe('Notion API Key')
-
-      // The matching ok lands: message shown via textContent (never parsed as
-      // HTML) and the form clears.
-      m.handleFrame({
-        type: 'vault-status', requestId: reqId, ok: true,
-        message: '<b>Saved NOTION_API_KEY</b>',
-      })
-      expect(status.textContent).toBe('<b>Saved NOTION_API_KEY</b>')
-      expect(status.querySelector('b')).toBeNull()
-      expect(input('vault-name-input').value).toBe('')
-      expect(input('vault-desc-input').value).toBe('')
-
-      // A failed put keeps the typed fields so the operator can fix + resend.
-      input('vault-name-input').value = 'Other Key'
-      input('vault-value-input').value = 'sk-2'
-      el('vault-add-btn').click()
-      const req2 = sentFrames[sentFrames.length - 1].requestId
-      m.handleFrame({ type: 'vault-status', requestId: req2, ok: false, message: 'env var name invalid' })
-      expect(status.textContent).toBe('env var name invalid')
-      expect(input('vault-name-input').value).toBe('Other Key')
-      // …but the value was already one-shot wiped on send regardless.
-      expect(input('vault-value-input').value).toBe('')
-    })
-
-    it('closing the settings modal wipes a typed-but-unsent value', () => {
-      const m = M()
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      el('toggle-settings').click()   // open the modal
-      input('vault-value-input').value = 'sk-typed-then-abandoned'
-      el('close-settings-btn').click()
-      expect(input('vault-value-input').value).toBe('')
-    })
-
-    it('a socket close wipes a typed-but-unsent value (op-token saves restart the server)', () => {
-      const m = M()
-      class FakeWS extends EventTarget {
-        static OPEN = 1; static CONNECTING = 0; static CLOSING = 2; static CLOSED = 3
-        readyState = FakeWS.OPEN
-        url: string
-        constructor(url: string) { super(); this.url = url }
-        send() {}
-        close() { this.readyState = FakeWS.CLOSED }
-      }
-      const RealWS = globalThis.WebSocket
-      ;(globalThis as any).WebSocket = FakeWS
-      try {
-        m.State.ws = null            // fresh connect (no stale fake to tear down)
-        m.WebSocketEngine.connect()
-        expect(m.State.ws).toBeInstanceOf(FakeWS)
-        input('vault-value-input').value = 'sk-mid-flight'
-        m.State.ws.dispatchEvent(new Event('close'))
-        expect(input('vault-value-input').value).toBe('')
-      } finally {
-        ;(globalThis as any).WebSocket = RealWS
-      }
-    })
-
-    // ── Finding #1: collapse-path wipe ───────────────────────────────────────
-    it('chat-collapse path wipes the vault value, op-token input, and secret-prompt input', async () => {
+    it('chat-collapse path wipes the secret-prompt input', async () => {
       const m = M()
       vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
 
-      // Open the chat panel then the settings panel.
       const chatPanel = document.getElementById('chat-panel')!
       chatPanel.classList.add('active')
-      el('toggle-settings').click()
-      expect(chatPanel.classList.contains('active')).toBe(true)
-      expect(el('settings-panel').classList.contains('active')).toBe(true)
 
-      // Type values into the three sensitive inputs.
-      input('vault-value-input').value = 'sk-collapse-test'
-      const opIn = document.getElementById('op-token-input') as HTMLInputElement | null
-      if (opIn) opIn.value = 'ops_collapse'
-      const secretIn = document.getElementById('secret-prompt-input') as HTMLInputElement | null
-      if (secretIn) secretIn.value = 'my-secret'
+      const secretIn = document.getElementById('secret-prompt-input') as HTMLInputElement
+      secretIn.value = 'my-secret'
 
       // Clicking close-chat collapses the chat — this is the collapse path that
       // previously bypassed SettingsEngine.close().
-      el('close-chat').click()
-
-      // Allow async microtasks from toggleChat to flush.
+      document.getElementById('close-chat')!.click()
       await Promise.resolve()
       await Promise.resolve()
 
       expect(chatPanel.classList.contains('active')).toBe(false)
-      expect(input('vault-value-input').value).toBe('')
-      if (opIn)     expect(opIn.value).toBe('')
-      if (secretIn) expect(secretIn.value).toBe('')
-    })
-
-    // ── Finding #2: stale in-flight request across socket drop ───────────────
-    it('socket drop clears _reqId/_reqKind and replaces Saving… for env-secret and delete; leaves op-token status', () => {
-      const m = M()
-      const ve = M().VaultEngine
-
-      class FakeWS extends EventTarget {
-        static OPEN = 1; static CONNECTING = 0; static CLOSING = 2; static CLOSED = 3
-        readyState = FakeWS.OPEN
-        url: string
-        constructor(url: string) { super(); this.url = url }
-        send() {}
-        close() { this.readyState = FakeWS.CLOSED }
-      }
-      const RealWS = globalThis.WebSocket
-      ;(globalThis as any).WebSocket = FakeWS
-      try {
-        m.State.ws = null
-        m.WebSocketEngine.connect()
-        const ws = m.State.ws as typeof FakeWS.prototype
-
-        // ── env-secret put in flight ──
-        m.WebSocketEngine.send = (f: any) => { sentFrames.push(f) }
-        // Seed an in-flight env-secret put directly (status already 'Saving…').
-        ve._reqId = 'vlt_test_env'
-        ve._reqKind = 'put'
-        ve.setStatus('Saving…', 'info')
-        ws.dispatchEvent(new Event('close'))
-        expect(ve._reqId).toBeNull()
-        expect(ve._reqKind).toBeNull()
-        expect(el('vault-status-line').textContent).toContain('Connection lost')
-
-        // ── op-token put in flight — status must survive ──
-        m.State.ws = null
-        m.WebSocketEngine.connect()
-        const ws2 = m.State.ws as typeof FakeWS.prototype
-        ve._reqId = 'vlt_test_op'
-        ve._reqKind = 'put-op-token'
-        ve.setStatus('Verifying… the server will restart briefly.', 'info')
-        ws2.dispatchEvent(new Event('close'))
-        expect(ve._reqId).toBeNull()
-        expect(ve._reqKind).toBeNull()
-        // Status must NOT be overwritten — the restart drop is expected.
-        expect(el('vault-status-line').textContent).toContain('Verifying')
-      } finally {
-        ;(globalThis as any).WebSocket = RealWS
-      }
-    })
-
-    // ── Finding #3: defensive coercion in render() ───────────────────────────
-    it('render() with a row missing fields shows empty strings not "undefined"', () => {
-      const m = M()
-      // Push a vault-list with a malformed row: name/ref/source/description absent.
-      m.handleFrame({
-        type: 'vault-list',
-        items: [
-          {
-            id: 'bad-row',
-            // name, kind, ref, source, description intentionally omitted
-          },
-        ],
-      })
-      const rows = document.querySelectorAll('#vault-list .vault-row')
-      expect(rows.length).toBe(1)
-      const row = rows[0]!
-      // None of the text content should contain the literal string 'undefined'.
-      expect(row.textContent).not.toContain('undefined')
-      // The ref span must be empty string, not 'undefined'.
-      expect(row.querySelector('.vault-ref')!.textContent).toBe('')
-    })
-
-    // ── 1Password sync sub-section ────────────────────────────────────────────
-    // These tests drive the sync section that lives BELOW the add form, rendered
-    // by VaultEngine.renderSync() from State.vaultSync. Key invariants:
-    //   - section renders from vault-list .sync; idempotent re-render is a no-op
-    //   - enable+save sends the exact vault-sync-config frame (OPEN-guard)
-    //   - sync ack (vault-status with a sync requestId) NEVER clears the add form
-    //   - lastError renders via textContent (server HTML stays literal)
-    // ─────────────────────────────────────────────────────────────────────────
-
-    it('sync section renders from a vault-list with .sync state', () => {
-      const m = M()
-      m.handleFrame({
-        type: 'vault-list',
-        items: [],
-        sync: {
-          enabled: true,
-          opLabel: 'primary',
-          opVault: 'Luna',
-          pollSeconds: 120,
-          lastSyncedAt: Date.now() - 4 * 60 * 1000, // 4 minutes ago
-          lastError: null,
-        },
-      })
-
-      // State was stored.
-      expect(m.State.vaultSync).toMatchObject({ enabled: true, opLabel: 'primary' })
-
-      // Status line shows 'Sync: on' + relative time.
-      const state = el('vault-sync-state')
-      expect(state.textContent).toContain('Sync: on')
-      expect(state.textContent).toMatch(/\d+m ago/)
-
-      // Enabled checkbox is checked.
-      const checkbox = input('vault-sync-enabled') as HTMLInputElement
-      expect(checkbox.checked).toBe(true)
-
-      // Fields are populated from server state.
-      expect(input('vault-sync-op-label').value).toBe('primary')
-      expect(input('vault-sync-op-vault').value).toBe('Luna')
-      expect(input('vault-sync-poll').value).toBe('120')
-
-      // When sync is enabled, the Apple Passwords import nudge is visible.
-      expect(el('vault-sync-import-note').hidden).toBe(false)
-
-      // Error line is hidden when lastError is null.
-      expect(el('vault-sync-error').hidden).toBe(true)
-    })
-
-    it('sync section: lastError renders via textContent (HTML stays literal)', () => {
-      const m = M()
-      const htmlPayload = '<script>alert(1)</script>'
-      m.handleFrame({
-        type: 'vault-list',
-        items: [],
-        sync: {
-          enabled: false,
-          opLabel: 'primary',
-          opVault: 'Luna',
-          lastError: htmlPayload,
-        },
-      })
-
-      const errEl = el('vault-sync-error')
-      // textContent means the raw HTML string is shown, not parsed.
-      expect(errEl.textContent).toBe(htmlPayload)
-      // No <script> element was injected into the DOM.
-      expect(errEl.querySelector('script')).toBeNull()
-      expect(errEl.hidden).toBe(false)
-
-      // When sync is disabled the import nudge is hidden.
-      expect(el('vault-sync-import-note').hidden).toBe(true)
-    })
-
-    it('sync section idempotent re-render: re-delivering the same frame does not duplicate elements', () => {
-      const m = M()
-      const frame = {
-        type: 'vault-list',
-        items: [],
-        sync: { enabled: true, opLabel: 'primary', opVault: 'Luna' },
-      }
-      m.handleFrame(frame)
-      m.handleFrame(frame)
-      m.handleFrame(frame)
-
-      // The sync section exists exactly once (no duplicates from re-renders).
-      expect(document.querySelectorAll('#vault-sync-section').length).toBe(1)
-      expect(document.querySelectorAll('#vault-sync-enabled').length).toBe(1)
-    })
-
-    it('enable+save sends exact vault-sync-config frame with the OPEN-socket guard', () => {
-      const m = M()
-
-      // Pre-populate op-label and vault name.
-      const labelInput = input('vault-sync-op-label')
-      const vaultInput = input('vault-sync-op-vault')
-      const pollInput  = input('vault-sync-poll')
-      const checkbox   = input('vault-sync-enabled') as HTMLInputElement
-
-      checkbox.checked = true
-      labelInput.value = 'primary'
-      vaultInput.value = 'Luna'
-      pollInput.value  = '180'
-
-      // ── OPEN socket: frame goes out ──────────────────────────────────────────
-      m.State.ws = { readyState: WebSocket.OPEN }
-      el('vault-sync-save-btn').click()
-
-      expect(sentFrames.length).toBe(1)
-      const frame = sentFrames[0]
-      expect(frame).toMatchObject({
-        type: 'vault-sync-config',
-        enabled: true,
-        opLabel: 'primary',
-        opVault: 'Luna',
-        pollSeconds: 180,
-      })
-      expect(frame.requestId).toMatch(/^vlt_/)
-      // No credential value in the frame — this is a config-only send.
-      expect(frame.value).toBeUndefined()
-
-      sentFrames.length = 0
-
-      // ── NOT-OPEN socket: guard blocks the send; status is value-free ─────────
-      m.State.ws = { readyState: WebSocket.CLOSED }
-      el('vault-sync-save-btn').click()
-
-      // Nothing was sent.
-      expect(sentFrames.length).toBe(0)
-      // A value-free status message is shown (no credential content).
-      const syncStatus = el('vault-sync-status')
-      expect(syncStatus.hidden).toBe(false)
-      expect(syncStatus.textContent).toContain('Not connected')
-      // Crucially: the status text does NOT contain any credential/config value.
-      expect(syncStatus.textContent).not.toContain('primary')
-      expect(syncStatus.textContent).not.toContain('Luna')
-    })
-
-    it('sync ack (vault-status with sync requestId) does NOT wipe the half-typed add form', () => {
-      const m = M()
-
-      // Type into the add form (simulating the user mid-entry).
-      input('vault-name-input').value = 'Half-typed Name'
-      input('vault-value-input').value = 'sk-half-typed'
-      input('vault-desc-input').value = 'some note'
-
-      // Send a sync-config (triggers _reqKind = 'sync').
-      m.State.ws = { readyState: WebSocket.OPEN }
-      el('vault-sync-save-btn').click()
-      const syncReqId = sentFrames[sentFrames.length - 1].requestId
-
-      // Arrive sync ack.
-      m.handleFrame({ type: 'vault-status', requestId: syncReqId, ok: true, message: 'Sync saved.' })
-
-      // Sync status shows ok.
-      const syncStatus = el('vault-sync-status')
-      expect(syncStatus.textContent).toBe('Sync saved.')
-
-      // The ADD FORM is untouched — name + value fields kept.
-      expect(input('vault-name-input').value).toBe('Half-typed Name')
-      expect(input('vault-value-input').value).toBe('sk-half-typed')
-      expect(input('vault-desc-input').value).toBe('some note')
-      // The add-form status line was NOT changed (not an add-form ack).
-      expect(el('vault-status-line').textContent).toBe('')
-    })
-
-    it('a failed sync ack surfaces the message on the sync status line, not the add form', () => {
-      const m = M()
-
-      // Populate add form to confirm it stays untouched.
-      input('vault-name-input').value = 'My Key'
-      input('vault-value-input').value = 'sk-mine'
-
-      m.State.ws = { readyState: WebSocket.OPEN }
-      el('vault-sync-save-btn').click()
-      const reqId = sentFrames[sentFrames.length - 1].requestId
-
-      m.handleFrame({
-        type: 'vault-status', requestId: reqId, ok: false,
-        message: '<b>vault not found</b>',
-      })
-
-      // Sync status shows the error via textContent (no HTML parsed).
-      const syncStatus = el('vault-sync-status')
-      expect(syncStatus.textContent).toBe('<b>vault not found</b>')
-      expect(syncStatus.querySelector('b')).toBeNull()
-
-      // Add form untouched.
-      expect(input('vault-name-input').value).toBe('My Key')
-      expect(input('vault-value-input').value).toBe('sk-mine')
-
-      // Add-form status line unchanged.
-      expect(el('vault-status-line').textContent).toBe('')
-    })
-
-    it('op-label placeholder is derived from existing op-token items in the registry', () => {
-      const m = M()
-      // Push a vault-list with an op-token row; the label in ref = 'primary'.
-      m.handleFrame({
-        type: 'vault-list',
-        items: [
-          {
-            id: 'tok-1', name: 'Primary Token', kind: 'op-token',
-            ref: 'luna-op://myaccount', source: 'manual', description: null,
-            createdAt: 1, updatedAt: 1, synced: false, shadowed: false,
-          },
-        ],
-        sync: { enabled: false, opLabel: '', opVault: 'Luna' },
-      })
-
-      // The label input placeholder should be derived from the op-token ref.
-      const labelInput = input('vault-sync-op-label')
-      expect(labelInput.placeholder).toBe('myaccount')
-    })
-
-    it('pollSeconds value is clamped to minimum 60 on send', () => {
-      const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN }
-
-      const pollInput = input('vault-sync-poll')
-      pollInput.value = '10'   // below minimum
-      el('vault-sync-save-btn').click()
-
-      const frame = sentFrames.find((f) => f.type === 'vault-sync-config')
-      expect(frame).toBeDefined()
-      expect(frame.pollSeconds).toBe(60)   // clamped to floor
-    })
-
-    // ── Fix 1: socket-close sync status isolation ─────────────────────────────
-    it('socket drop with in-flight sync save routes the lost-connection message to the sync status line, not the add-form line', () => {
-      const m = M()
-      const ve = M().VaultEngine
-
-      class FakeWS2 extends EventTarget {
-        static OPEN = 1; static CONNECTING = 0; static CLOSING = 2; static CLOSED = 3
-        readyState = FakeWS2.OPEN
-        url: string
-        constructor(url: string) { super(); this.url = url }
-        send() {}
-        close() { this.readyState = FakeWS2.CLOSED }
-      }
-      const RealWS = globalThis.WebSocket
-      ;(globalThis as any).WebSocket = FakeWS2
-      try {
-        m.State.ws = null
-        m.WebSocketEngine.connect()
-        const ws = m.State.ws as typeof FakeWS2.prototype
-
-        // Seed a sync save in-flight directly.
-        ve._syncReqId = 'vlt_sync_lost'
-        ve.setSyncStatus('Saving sync settings…', 'info')
-        // Ensure add-form status is empty before drop.
-        ve.setStatus('', null)
-
-        ws.dispatchEvent(new Event('close'))
-
-        // The sync slot is cleared.
-        expect(ve._syncReqId).toBeNull()
-        // The SYNC status line shows the connection-lost message.
-        expect(el('vault-sync-status').textContent).toContain('Connection lost')
-        // The ADD-FORM status line must NOT be touched.
-        expect(el('vault-status-line').textContent).toBe('')
-      } finally {
-        ;(globalThis as any).WebSocket = RealWS
-      }
-    })
-
-    it('applyCapability(false) clears a stale sync status line', () => {
-      const m = M()
-      const ve = M().VaultEngine
-
-      // Seed a stuck 'Saving sync settings…' on the sync line.
-      ve.setSyncStatus('Saving sync settings…', 'info')
-      expect(el('vault-sync-status').hidden).toBe(false)
-
-      // Channel switch to an older server drops vault capability.
-      m.handleFrame({
-        type: 'hello', protocolVersion: 2, kinds: [],
-        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false },
-      })
-
-      // The sync status line must be hidden/cleared after the capability drop.
-      expect(el('vault-sync-status').hidden).toBe(true)
-    })
-
-    // ── Fix 2: separate sync slot — both acks resolve independently ───────────
-    it('put + sync save in flight together: both vault-status acks land on their own status lines', () => {
-      const m = M()
-      const ve = M().VaultEngine
-
-      m.State.ws = { readyState: WebSocket.OPEN }
-
-      // Kick off an add-form put.
-      input('vault-name-input').value = 'Notion API Key'
-      fire(input('vault-name-input'), 'input')
-      input('vault-value-input').value = 'sk-concurrent'
-      el('vault-add-btn').click()
-      const putReqId = sentFrames[sentFrames.length - 1].requestId
-
-      // Kick off a sync save (uses a different slot, does not displace the put).
-      input('vault-sync-op-label').value = 'primary'
-      input('vault-sync-op-vault').value = 'Luna'
-      el('vault-sync-save-btn').click()
-      const syncReqId = sentFrames[sentFrames.length - 1].requestId
-
-      // Both slots are live.
-      expect(ve._reqId).toBe(putReqId)
-      expect(ve._syncReqId).toBe(syncReqId)
-
-      // Sync ack arrives first.
-      m.handleFrame({ type: 'vault-status', requestId: syncReqId, ok: true, message: 'Sync ok.' })
-      expect(ve._syncReqId).toBeNull()
-      expect(ve._reqId).toBe(putReqId)          // put slot untouched
-      expect(el('vault-sync-status').textContent).toBe('Sync ok.')
-      // Add-form status line must not have been touched by the sync ack.
-      expect(el('vault-status-line').textContent).toContain('Saving')
-
-      // Put ack arrives second.
-      m.handleFrame({ type: 'vault-status', requestId: putReqId, ok: true, message: 'Saved.' })
-      expect(ve._reqId).toBeNull()
-      expect(el('vault-status-line').textContent).toBe('Saved.')
-    })
-
-    // ── Fix 3: checkbox dirty flag ────────────────────────────────────────────
-    it('user toggle survives a concurrent vault-list broadcast with opposite server state', () => {
-      const m = M()
-
-      // Server says sync is OFF.
-      m.handleFrame({
-        type: 'vault-list', items: [],
-        sync: { enabled: false, opLabel: 'primary', opVault: 'Luna', pollSeconds: 300 },
-      })
-      const checkbox = input('vault-sync-enabled') as HTMLInputElement
-      expect(checkbox.checked).toBe(false)
-
-      // User toggles ON manually (marks dirty).
-      checkbox.checked = true
-      fire(checkbox, 'change')
-      expect(M().VaultEngine._syncCheckboxDirty).toBe(true)
-
-      // Server broadcasts a vault-list with enabled=false (e.g. another client saved).
-      m.handleFrame({
-        type: 'vault-list', items: [],
-        sync: { enabled: false, opLabel: 'primary', opVault: 'Luna', pollSeconds: 300 },
-      })
-
-      // The user's toggle must survive — checkbox still ON.
-      expect(checkbox.checked).toBe(true)
-    })
-
-    it('after a successful sync save ack, a subsequent vault-list applies the server state again', () => {
-      const m = M()
-      const ve = M().VaultEngine
-
-      // Server says OFF; user toggles ON; save is sent.
-      m.handleFrame({
-        type: 'vault-list', items: [],
-        sync: { enabled: false, opLabel: 'primary', opVault: 'Luna', pollSeconds: 300 },
-      })
-      const checkbox = input('vault-sync-enabled') as HTMLInputElement
-      checkbox.checked = true
-      fire(checkbox, 'change')
-
-      m.State.ws = { readyState: WebSocket.OPEN }
-      el('vault-sync-save-btn').click()
-      const syncReqId = sentFrames[sentFrames.length - 1].requestId
-
-      // Successful ack — dirty flag should be cleared.
-      m.handleFrame({ type: 'vault-status', requestId: syncReqId, ok: true, message: 'Saved.' })
-      expect(ve._syncCheckboxDirty).toBe(false)
-
-      // Now a vault-list arrives with enabled=false (hypothetical server-side rollback).
-      m.handleFrame({
-        type: 'vault-list', items: [],
-        sync: { enabled: false, opLabel: 'primary', opVault: 'Luna', pollSeconds: 300 },
-      })
-      // Dirty flag is clear, so server state is applied (checkbox reverts to OFF).
-      expect(checkbox.checked).toBe(false)
-    })
-
-    // ── Fix 4: poll-seconds seeded from State.vaultSync.pollSeconds ───────────
-    it('renderSync seeds poll-seconds input from sync.pollSeconds (now a legitimate wire field)', () => {
-      const m = M()
-
-      // Frame includes pollSeconds — the now-standard wire shape.
-      m.handleFrame({
-        type: 'vault-list', items: [],
-        sync: {
-          enabled: true, opLabel: 'primary', opVault: 'Luna',
-          pollSeconds: 600,
-        },
-      })
-
-      // The poll input must be populated from the wire value, not the hardcoded 300.
-      expect(input('vault-sync-poll').value).toBe('600')
-    })
-
-    it('renderSync falls back to 300 when sync.pollSeconds is absent', () => {
-      const m = M()
-
-      // Frame without pollSeconds (e.g. older server or initial state).
-      m.handleFrame({
-        type: 'vault-list', items: [],
-        sync: { enabled: true, opLabel: 'primary', opVault: 'Luna' },
-      })
-
-      // Fallback: 300 is used when pollSeconds is absent.
-      expect(input('vault-sync-poll').value).toBe('300')
-    })
-
-    // ── C3: serverSupportsVault guard on submitAdd / requestDelete / submitSyncConfig ──
-    it('C3: serverSupportsVault=false + OPEN socket — no frame sent, error status shown on submitAdd', () => {
-      const m = M()
-      // Switch to a server that does NOT advertise vault support.
-      m.handleFrame({
-        type: 'hello', protocolVersion: 2, kinds: [],
-        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false },
-      })
-      // Socket is open but server does not support vault.
-      m.State.ws = { readyState: WebSocket.OPEN }
-
-      // Fill in a valid form so the only blocker is the vault-support flag.
-      input('vault-name-input').value = 'Test Key'
-      fire(input('vault-name-input'), 'input')
-      input('vault-value-input').value = 'sk-abc'
-
-      // Attempt to add — must be blocked.
-      el('vault-add-btn').click()
-
-      expect(sentFrames.filter((f: any) => f.type === 'vault-put').length).toBe(0)
-      const status = el('vault-status-line')
-      expect(status.hidden).toBe(false)
-      expect(status.textContent).toContain("doesn't support the Vault")
-    })
-
-    it('C3: serverSupportsVault=false + OPEN socket — no frame sent on requestDelete (two-step confirm)', () => {
-      const m = M()
-      // Seed the registry so there is a row to delete.
-      m.handleFrame({
-        type: 'hello', protocolVersion: 2, kinds: [],
-        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false, vault: true },
-      })
-      m.handleFrame({
-        type: 'vault-list',
-        items: [
-          { id: 'del-1', name: 'Old Key', kind: 'env-secret', ref: 'env:OLD_KEY',
-            source: 'manual', description: null, createdAt: 1, updatedAt: 1,
-            synced: false, shadowed: false },
-        ],
-      })
-
-      // Now drop vault support (channel switch to old server).
-      m.handleFrame({
-        type: 'hello', protocolVersion: 2, kinds: [],
-        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false },
-      })
-      m.State.ws = { readyState: WebSocket.OPEN }
-
-      // The vault section is hidden (old server path), but we can still invoke
-      // requestDelete directly to exercise the guard.
-      const ve = M().VaultEngine
-      ve._confirmId = 'del-1'   // arm the row manually
-      ve.requestDelete('del-1') // second click → should hit the guard
-
-      expect(sentFrames.filter((f: any) => f.type === 'vault-delete').length).toBe(0)
-    })
-
-    it('C3: serverSupportsVault=false + OPEN socket — no frame sent on submitSyncConfig, sync status shown', () => {
-      const m = M()
-      m.handleFrame({
-        type: 'hello', protocolVersion: 2, kinds: [],
-        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false },
-      })
-      m.State.ws = { readyState: WebSocket.OPEN }
-
-      el('vault-sync-save-btn').click()
-
-      expect(sentFrames.filter((f: any) => f.type === 'vault-sync-config').length).toBe(0)
-      const syncStatus = el('vault-sync-status')
-      expect(syncStatus.hidden).toBe(false)
-      expect(syncStatus.textContent).toContain("doesn't support the Vault")
-    })
-
-    // ── C4: wipeSecretInputs covers connector client-secret password input ──────
-    it('C4: wipeSecretInputs clears dynamically-created password inputs inside connectors-list', () => {
-      const m = M()
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-
-      // Grab the connectors-list element and inject a fake connector client-setup
-      // form with a password input — simulating what ConnectorsEngine.render() does.
-      const connectorsList = document.getElementById('connectors-list')
-      expect(connectorsList).not.toBeNull()
-
-      const fakeSetup = document.createElement('div')
-      fakeSetup.className = 'connector-client-setup'
-      const fakeSecret = document.createElement('input')
-      fakeSecret.type = 'password'
-      fakeSecret.value = 'fake-client-secret-value'
-      fakeSetup.appendChild(fakeSecret)
-      connectorsList!.appendChild(fakeSetup)
-
-      // Confirm it has the value.
-      expect(fakeSecret.value).toBe('fake-client-secret-value')
-
-      // wipeSecretInputs is not exported — exercise it via the settings-close path
-      // (SettingsEngine.close calls wipeSecretInputs).
-      el('toggle-settings').click()    // open settings modal
-      el('close-settings-btn').click() // close → wipeSecretInputs runs
-
-      // The connector password input must have been wiped.
-      expect(fakeSecret.value).toBe('')
+      expect(secretIn.value).toBe('')
     })
   })
 
@@ -3570,30 +1984,9 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Feature: single-thread controls. The "+ new chat" satellite is gone (Luna is
-  // single-thread); the rare reset moves into Settings → General.
+  // Feature: single-thread controls — the "+ new chat" satellite stays gone and
+  // the fresh-thread reset moved to the General panel: test/panel-general.test.ts.
   // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: single-thread controls (removed "+", Settings reset)', () => {
-    const M = () => (window as any).__MoonInternals
-
-    it('Scenario: the "+ new chat" satellite is gone; Settings has the reset instead', () => {
-      expect(document.getElementById('new-chat')).toBeNull()
-      expect(document.getElementById('fresh-thread-btn')).not.toBeNull()
-    })
-
-    it('Scenario: "Start a fresh thread" clears the active thread and closes Settings', () => {
-      const m = M()
-      document.getElementById('chat-panel')!.classList.add('active') // skip the async open branch
-      document.getElementById('toggle-settings')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      expect(document.getElementById('settings-panel')!.classList.contains('active')).toBe(true)
-
-      m.State.activeThreadId = 'old-thread'
-      document.getElementById('fresh-thread-btn')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-
-      expect(m.State.activeThreadId).toBeNull() // newConversation() ran
-      expect(document.getElementById('settings-panel')!.classList.contains('active')).toBe(false) // close() ran
-    })
-  })
 
   // ───────────────────────────────────────────────────────────────────────────
   // Feature: re-tether swing envelope. The window grows + re-origins so the moon
@@ -4511,14 +2904,8 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(W()._remoteWsGuess).toBe('')                    // no bogus prefill either
     })
 
-    it('Scenario: Settings → Connection has a re-entry point for the wizard', () => {
-      stubCore(() => undefined)
-      const settingsPanel = document.getElementById('settings-panel')!
-      settingsPanel.classList.add('active')
-      document.getElementById('open-wizard-btn')!.click()
-      expect(settingsPanel.classList.contains('active')).toBe(false)
-      expect(panel().classList.contains('active')).toBe(true)
-    })
+    // The wizard re-entry button (#open-wizard-btn) moved to the standalone
+    // Connection panel — its wiring is covered in test/panel-connection.test.ts.
   })
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -4793,118 +3180,15 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   describe('Feature: Voice settings persistence', () => {
     const M = () => (window as any).__MoonInternals
 
-    // The shared beforeEach Tauri mock has no `core.invoke`; give each test one
-    // (same convention as the thread-id and wizard suites above).
-    function stubInvoke(impl?: (cmd: string, args?: any) => any) {
-      const invoke = vi.fn(impl ?? (() => Promise.resolve(null)))
-      ;(window as any).__TAURI__.core = { invoke }
-      return invoke
-    }
-
-    it('Scenario: picking a mode persists luna_voice_mode and applies voice_set_mode', () => {
-      const invoke = stubInvoke()
-      M().VoiceEngine.setAvailable(true)   // jsdom boots voice-unavailable; enable the controls
-      const autoBtn = document.querySelector('.voice-mode-btn[data-voice-mode="auto"]') as HTMLButtonElement
-      autoBtn.click()
-
-      expect(localStorage.getItem('luna_voice_mode')).toBe('auto')
-      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })
-      expect(autoBtn.classList.contains('active')).toBe(true)
-      expect(autoBtn.getAttribute('aria-checked')).toBe('true')
-    })
-
-    it('Scenario: turning Speak replies off persists "0"', () => {
-      stubInvoke()
-      M().VoiceEngine.setAvailable(true)
-      const toggle = document.getElementById('voice-speak-replies-toggle') as HTMLInputElement
-      toggle.checked = false
-      toggle.dispatchEvent(new Event('change', { bubbles: true }))
-      expect(localStorage.getItem('luna_voice_speak_replies')).toBe('0')
-      expect(M().VoiceEngine.speakReplies).toBe(false)
-    })
-
-    it('Scenario: the silence-hang slider live-updates its label and persists on change', () => {
-      const invoke = stubInvoke()
-      M().VoiceEngine.setAvailable(true)
-      const slider = document.getElementById('voice-silence-slider') as HTMLInputElement
-      slider.value = '900'
-      slider.dispatchEvent(new Event('input', { bubbles: true }))
-      expect(document.getElementById('voice-silence-value')!.textContent).toBe('900')
-      slider.dispatchEvent(new Event('change', { bubbles: true }))
-      expect(localStorage.getItem('luna_voice_silence_hang_ms')).toBe('900')
-      expect(invoke).toHaveBeenCalledWith('voice_set_config', { silenceHangMs: 900 })
-    })
-
-    it('Scenario: persisted settings round-trip back into the controls via loadSettings', () => {
-      localStorage.setItem('luna_voice_mode', 'ptt')
-      localStorage.setItem('luna_voice_speak_replies', '0')
-      localStorage.setItem('luna_voice_silence_hang_ms', '750')
-      localStorage.setItem('luna_voice_id', 'com.apple.voice.premium.en-US.Zoe')
-
-      M().VoiceEngine.loadSettings()
-
-      expect(M().VoiceEngine.mode).toBe('ptt')
-      const pttBtn = document.querySelector('.voice-mode-btn[data-voice-mode="ptt"]')!
-      expect(pttBtn.classList.contains('active')).toBe(true)
-      expect((document.getElementById('voice-speak-replies-toggle') as HTMLInputElement).checked).toBe(false)
-      expect((document.getElementById('voice-silence-slider') as HTMLInputElement).value).toBe('750')
-      expect(document.getElementById('voice-silence-value')!.textContent).toBe('750')
-      // The persisted voice id survives even before voice_list_voices populates.
-      const sel = document.getElementById('voice-voice-select') as HTMLSelectElement
-      expect(sel.value).toBe('com.apple.voice.premium.en-US.Zoe')
-    })
+    // The Settings → Voice controls (mode segment, speak-replies toggle,
+    // silence slider, voice picker) moved to the standalone voice panel —
+    // covered in test/panel-voice.test.ts. The hub still owns loadSettings()
+    // (localStorage → VoiceEngine state at boot), pinned here.
 
     it('Scenario: a stored out-of-range silence hang is clamped on load', () => {
       localStorage.setItem('luna_voice_silence_hang_ms', '99999')
       M().VoiceEngine.loadSettings()
       expect(M().VoiceEngine.silenceHangMs).toBe(1200)
-    })
-
-    it('Scenario: voice picker populates from voice_list_voices with quality tags and persists luna_voice_id', async () => {
-      stubInvoke((cmd) => Promise.resolve(
-        cmd === 'voice_list_voices'
-          ? [
-              { id: 'v1', name: 'Samantha', lang: 'en-US', quality: 'premium' },
-              { id: 'v2', name: 'Fred', lang: 'en-US', quality: 'default' },
-            ]
-          : null
-      ))
-      M().VoiceEngine.setAvailable(true)
-      await M().VoiceEngine.populateVoices()
-
-      const sel = document.getElementById('voice-voice-select') as HTMLSelectElement
-      const labels = Array.from(sel.options).map((o) => o.textContent)
-      expect(labels).toContain('Samantha · premium')
-      expect(labels).toContain('Fred')                    // "default" quality is untagged
-      expect(labels[0]).toBe('System default')
-
-      sel.value = 'v1'
-      sel.dispatchEvent(new Event('change', { bubbles: true }))
-      expect(localStorage.getItem('luna_voice_id')).toBe('v1')
-    })
-
-    // Regression (finding: "System default" never reached Rust): the empty
-    // id IS the engine's explicit reset command — guarding the invoke on a
-    // truthy id left the previously pinned voice speaking until restart.
-    it('Scenario: picking "System default" (empty id) still invokes voice_set_voice with id ""', async () => {
-      const invoke = stubInvoke((cmd) => Promise.resolve(
-        cmd === 'voice_list_voices'
-          ? [{ id: 'v1', name: 'Samantha', lang: 'en-US', quality: 'premium' }]
-          : null
-      ))
-      const V = M().VoiceEngine
-      V.setAvailable(true)
-      V.voiceId = 'v1'
-      localStorage.setItem('luna_voice_id', 'v1')
-      await V.populateVoices()
-      const sel = document.getElementById('voice-voice-select') as HTMLSelectElement
-      expect(sel.value).toBe('v1')
-
-      sel.value = ''
-      sel.dispatchEvent(new Event('change', { bubbles: true }))
-
-      expect(localStorage.getItem('luna_voice_id')).toBeNull()
-      expect(invoke).toHaveBeenCalledWith('voice_set_voice', { id: '' })
     })
   })
 
@@ -5060,14 +3344,15 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   describe('Feature: Voice availability + boot wiring', () => {
     const M = () => (window as any).__MoonInternals
 
-    it('Scenario: without a Tauri voice backend the section degrades (mic hidden, controls disabled, note shown)', () => {
+    // The settings-side degradation (disabled controls, unavailable note,
+    // model download row) moved to the voice panel: test/panel-voice.test.ts.
+    // Here we pin the hub-side half — the mic button and the engine flag.
+
+    it('Scenario: without a Tauri voice backend the hub degrades (mic hidden, engine unavailable)', () => {
       // The shared beforeEach has no __TAURI__.core: VoiceEngine.init() lands
       // in "unavailable" synchronously at boot.
+      expect(M().VoiceEngine.available).toBe(false)
       expect(document.getElementById('voice-mic-btn')!.hidden).toBe(true)
-      expect(document.getElementById('voice-unavailable-note')!.hidden).toBe(false)
-      expect((document.getElementById('voice-silence-slider') as HTMLInputElement).disabled).toBe(true)
-      expect((document.querySelector('.voice-mode-btn') as HTMLButtonElement).disabled).toBe(true)
-      expect(document.getElementById('voice-model-status')!.textContent).toBe('Unavailable in this build')
     })
 
     it('Scenario: a Rust core whose voice_status REJECTS (older build) degrades silently, no throw', async () => {
@@ -5076,7 +3361,6 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       await M().VoiceEngine.init()
       expect(M().VoiceEngine.available).toBe(false)
       expect(document.getElementById('voice-mic-btn')!.hidden).toBe(true)
-      expect(document.getElementById('voice-unavailable-note')!.hidden).toBe(false)
       // Only the probe was attempted — no follow-up voice commands to spam.
       expect(invoke.mock.calls.map((c) => c[0])).toEqual(['voice_status'])
     })
@@ -5103,9 +3387,8 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
         'voice-state', 'voice-transcript', 'voice-model-progress', 'voice-error',
       ]))
       expect(document.getElementById('voice-mic-btn')!.hidden).toBe(false)
-      expect(document.getElementById('voice-model-status')!.textContent).toContain('ready')
-      const sel = document.getElementById('voice-voice-select') as HTMLSelectElement
-      expect(Array.from(sel.options).some((o) => o.textContent === 'Samantha · enhanced')).toBe(true)
+      // (Model-status text + voice-picker rendering moved to the voice panel:
+      // test/panel-voice.test.ts.)
 
       // A captured voice-transcript event routes through the real send path.
       const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
@@ -5116,27 +3399,8 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       }))
     })
 
-    it('Scenario: model-progress events drive the download bar; done marks the model ready', () => {
-      const V = M().VoiceEngine
-      V.onModelProgress({ downloadedBytes: 50 * 1024 * 1024, totalBytes: 100 * 1024 * 1024, done: false })
-      const bar = document.getElementById('voice-model-progress')!
-      expect(bar.hidden).toBe(false)
-      expect((document.getElementById('voice-model-progress-fill') as HTMLElement).style.width).toBe('50%')
-      expect(document.getElementById('voice-model-status')!.textContent).toContain('50.0 / 100.0 MB')
-
-      V.onModelProgress({ done: true })
-      expect(document.getElementById('voice-model-status')!.textContent).toContain('Model ready')
-      expect(bar.hidden).toBe(true)
-      expect(document.getElementById('voice-model-download')!.hidden).toBe(true)
-    })
-
-    it('Scenario: a failed model download re-arms the Download button', () => {
-      const V = M().VoiceEngine
-      V.onModelProgress({ downloadedBytes: 0, totalBytes: 0, done: false, error: 'network unreachable' })
-      expect(document.getElementById('voice-model-status')!.textContent).toContain('network unreachable')
-      expect(document.getElementById('voice-model-download')!.hidden).toBe(false)
-      expect(document.getElementById('voice-model-progress')!.hidden).toBe(true)
-    })
+    // The model download bar / Download-button re-arm UI moved to the voice
+    // panel — covered in test/panel-voice.test.ts (voice-model-progress tests).
 
     // Regression (finding: after model download the pipeline stayed off while
     // the UI showed Hands-free active): mod.rs's contract is "the frontend
@@ -5161,7 +3425,8 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })
       expect(V.micPaused).toBe(false)
       expect(V.rustMode).toBe('auto')
-      expect(document.getElementById('voice-model-status')!.textContent).toContain('Model ready')
+      // (The "Model ready" status text now renders in the voice panel:
+      // test/panel-voice.test.ts.)
     })
 
     // Regression (finding: inverted first mic click): when Rust REFUSES a
@@ -5210,10 +3475,10 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(htmlContent).toMatch(/\.setting-item\[hidden\]\s*\{\s*display:\s*none\s*!important/)
     })
 
-    it('the voice-unavailable note and mic button still carry the hidden attribute by default', () => {
-      // The override only matters because both elements SHIP hidden and are
-      // toggled via the property; keep that contract pinned.
-      expect(htmlContent).toMatch(/id="voice-unavailable-note"[^>]*hidden/)
+    it('the mic button still carries the hidden attribute by default', () => {
+      // The override only matters because the element SHIPS hidden and is
+      // toggled via the property; keep that contract pinned. (The
+      // voice-unavailable note moved to the voice panel: test/panel-voice.test.ts.)
       expect(htmlContent).toMatch(/id="voice-mic-btn"[^>]*hidden/)
     })
   })
@@ -5578,6 +3843,44 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   // ───────────────────────────────────────────────────────────────────────────
   // Behavioral Feature: Settings tabs that migrated to system widgets (Phase 2)
   // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Summon-by-name (widget directory + widget-open)', () => {
+    const M = () => (window as any).__MoonInternals
+
+    it('hello announces the widget directory from the shipped registry', async () => {
+      const m = M()
+      const sent: any[] = []
+      m.WebSocketEngine.send = (f: any) => { sent.push(f) }
+      m.State.ws = { readyState: WebSocket.OPEN }
+      // The harness has no network: serve the real registry file via a fetch mock.
+      const registry = JSON.parse(
+        fs.readFileSync(path.resolve(__dirname, '../frontend/vendor/widget-registry.json'), 'utf8'))
+      ;(window as any).fetch = vi.fn(async () => ({ json: async () => registry }))
+
+      m.WebSocketEngine.handleFrame({
+        type: 'hello', protocolVersion: 2, kinds: [],
+        capabilities: { chat: true, streamingDeltas: true },
+      })
+      await vi.waitFor(() => expect(sent.some((f) => f.type === 'widget-directory')).toBe(true))
+      const dir = sent.find((f) => f.type === 'widget-directory')
+      expect(dir.widgets.map((w: any) => w.kind)).toContain('settings.voice')
+      expect(dir.widgets.every((w: any) => typeof w.description === 'string')).toBe(true)
+      delete (window as any).fetch
+    })
+
+    it('widget-open dispatches to the Rust open_widget command (registry-validated there)', async () => {
+      const m = M()
+      const invoke = vi.fn(async () => 'panel-settings-voice')
+      ;(window as any).__TAURI__.core = { invoke }
+      m.WebSocketEngine.handleFrame({ type: 'widget-open', kind: 'settings.voice' })
+      await vi.waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'settings.voice' }))
+      // Malformed frames never reach invoke.
+      invoke.mockClear()
+      m.WebSocketEngine.handleFrame({ type: 'widget-open' })
+      expect(invoke).not.toHaveBeenCalled()
+    })
+  })
+
   describe('Feature: Settings panel launchers', () => {
     it('clicking the Updates tab opens the settings.updates panel and closes the modal', async () => {
       // The launcher reads window.__TAURI__.core at CLICK time, so injecting

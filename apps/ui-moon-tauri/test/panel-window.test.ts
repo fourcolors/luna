@@ -41,11 +41,24 @@ function bootPanel(opts: { type: string; invoke?: (cmd: string, args?: any) => a
   loadVendorInto(window, 'deck-snap.js')
   loadVendorInto(window, 'moon-dock.js')
 
+  // Preload the panel module the way the harness must (jsdom never fetches
+  // the loader's injected <script src>); the loader sees it registered and
+  // boots it directly. Unknown types stay unregistered → notice path.
+  const moduleFile = path.resolve(__dirname, '../frontend/panels', opts.type.replace(/\./g, '-') + '.js')
+  if (fs.existsSync(moduleFile)) {
+    new Function('globalThis', fs.readFileSync(moduleFile, 'utf8'))(window)
+  }
+
   const inline = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
     .map((m) => m[1])
-    .filter((s) => s.includes('PanelTypes'))
+    .filter((s) => s.includes('LunaPanelTypes'))
   expect(inline).toHaveLength(1)
   new Function(inline[0])()
+
+  // jsdom never loads injected <script src> tags: fire the error event the
+  // way a real 404 would, so unknown types reach the notice path.
+  const injected = document.head.querySelector('script[src^="panels/"]')
+  if (injected) injected.dispatchEvent(new Event('error'))
 
   return { invoke }
 }
@@ -54,6 +67,7 @@ afterEach(() => {
   document.body.innerHTML = ''
   delete (window as any).__TAURI__
   delete (window as any).__PanelInternals
+  delete (window as any).LunaPanelTypes
   delete (window as any).LunaProtocol
   delete (window as any).LunaWS
   delete (window as any).LunaDeckSnap

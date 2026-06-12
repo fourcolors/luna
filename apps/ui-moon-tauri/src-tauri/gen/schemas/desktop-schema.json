@@ -375,6 +375,12 @@
           "markdownDescription": "Allows a window to re-root its dock group at itself on grab, so dragging any grouped window carries the whole cluster"
         },
         {
+          "description": "Allows a settings panel to request an ALLOWLISTED hub action (fresh-thread, profile-changed, connection-changed, open-wizard) — named events only, never arbitrary payloads.",
+          "type": "string",
+          "const": "allow-hub-event",
+          "markdownDescription": "Allows a settings panel to request an ALLOWLISTED hub action (fresh-thread, profile-changed, connection-changed, open-wizard) — named events only, never arbitrary payloads."
+        },
+        {
           "description": "Allows downloading + installing an available update, then relaunching",
           "type": "string",
           "const": "allow-install-update",

@@ -235,6 +235,7 @@ import {
 import {
   createLocalShellBridge,
   createSecretRequestBridge,
+  createWidgetSummonBridge,
   startUIWebSocketServer,
 } from "@luna/ui-ws"
 import { LunaSqliteBootstrapLive, MemoryRouterTag } from "@luna/memory"
@@ -1170,6 +1171,12 @@ let vaultCaptureHook:
   | ((destination: SecretDestination, source: "agent" | "manual", value: string) => void)
   | null = null
 
+// Summon-by-name (widget-system.md): the Moon announces its widget
+// directory after hello; the agent's open_widget tool sends widget-open
+// frames back through this bridge. Constructed before the tool layers so
+// the open_widget tool and the WS server share the instance.
+const widgetSummonBridge = createWidgetSummonBridge()
+
 const secretRequestBridge = createSecretRequestBridge({
   persistSecret: async (destination, secret) => {
     const result = await registerSecret(destination as SecretDestination, secret)
@@ -1653,7 +1660,7 @@ export const buildBaseLayer = (
     // PRD Part C/W4: widget_tools (widget_write) — describe-to-spawn authoring.
     // WidgetToolsLayer requires ArtifactStore; provide the tools layer first,
     // then artifactStoreL satisfies both it and the WS handle (memoized).
-    Layer.provide(WidgetToolsLayer()),
+    Layer.provide(WidgetToolsLayer(widgetSummonBridge)),
     Layer.provide(artifactStoreL),
     Layer.provide(connectorServiceL), // PRD Part A: mounts read by decorate()
     Layer.provide(obsL),
@@ -2545,6 +2552,7 @@ const buildServerLayer = (
           return result
         },
         secretBridge: secretRequestBridge,
+        widgetSummoner: widgetSummonBridge,
       })
     }),
   ).pipe(

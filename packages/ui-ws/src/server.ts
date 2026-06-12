@@ -468,6 +468,13 @@ export interface UIWebSocketServerConfig {
    * is handed straight to the bridge. Pass `null`/absent to disable.
    */
   readonly secretBridge?: SecretRequestBridge | null
+  /**
+   * Optional summon-by-name bridge (widget-system.md). When provided, an
+   * inbound `widget-directory` frame announces this connection as the
+   * widget host; the agent's open_widget tool sends `widget-open` frames
+   * back through it. Pass `null`/absent to disable (frames ignored).
+   */
+  readonly widgetSummoner?: import("./widget-summon-bridge.js").WidgetSummonBridge | null
 }
 
 export interface UIWebSocketServerHandle {
@@ -612,6 +619,7 @@ export const startUIWebSocketServer = (
     const survey = config.survey ?? null
     const setupPty = config.setupPty ?? null
     const registerOpToken = config.registerOpToken ?? null
+    const widgetSummoner = config.widgetSummoner ?? null
     const secretBridge = config.secretBridge ?? null
     const skillRegistry = config.skillRegistry ?? null
     const connectorService = config.connectorService ?? null
@@ -1124,6 +1132,17 @@ export const startUIWebSocketServer = (
           )
         }
 
+        // Summon-by-name: this connection may announce a widget directory.
+        // Reuses the secret connection id for identity; the finalizer only
+        // clears the bridge when THIS connection is still the active host.
+        if (widgetSummoner !== null) {
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              widgetSummoner.unregisterClient(secretConnId)
+            }),
+          )
+        }
+
         // Single-fiber forwarder. The pattern is: take ONE event from the
         // UIService stream, send it to the ws synchronously, repeat. ws.send
         // is fire-and-forget at the protocol level (the underlying socket
@@ -1322,6 +1341,16 @@ export const startUIWebSocketServer = (
             const handle = (): Effect.Effect<void, never> =>
               Effect.gen(function* () {
                 switch (frame.type) {
+                  case "widget-directory": {
+                    if (widgetSummoner !== null) {
+                      const widgets = (frame as import("./protocol.js").WidgetDirectoryFrame).widgets
+                      widgetSummoner.registerClient(secretConnId, (out) => send(ws, out), widgets)
+                      console.log(
+                        `[ui-ws] widget host announced ${widgetSummoner.directory().length} summonable widget(s)`,
+                      )
+                    }
+                    break
+                  }
                   case "pong":
                   case "bye":
                     return

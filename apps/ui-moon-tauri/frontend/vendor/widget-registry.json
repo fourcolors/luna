@@ -1,5 +1,5 @@
 {
-  "_comment": "Widget registry — the single source of truth for addressable widgets (design/widget-system.md, 'First-Class Widgets'). Read by JS hosts (fetch) and Rust (include_str!). System trust tier ONLY: every page here ships in the app bundle; content-tier widgets (artifacts) never appear in this file and open via open_artifact_widget instead. `kind` is the name users, the hub launcher, and the agent all use; `description` is written for the agent directory (Phase 3).",
+  "_comment": "Widget registry \u2014 the single source of truth for addressable widgets (design/widget-system.md, 'First-Class Widgets'). Read by JS hosts (fetch) and Rust (include_str!). System trust tier ONLY: every page here ships in the app bundle; content-tier widgets (artifacts) never appear in this file and open via open_artifact_widget instead. `kind` is the name users, the hub launcher, and the agent all use; `description` is written for the agent directory (Phase 3).",
   "version": 1,
   "widgets": [
     {
@@ -11,6 +11,66 @@
       "width": 360,
       "height": 200,
       "description": "Check for Luna Moon app updates and install them"
+    },
+    {
+      "kind": "settings.general",
+      "title": "General",
+      "page": "panel.html?type=settings.general",
+      "trust": "system",
+      "singleton": true,
+      "width": 380,
+      "height": 320,
+      "description": "General preferences: always on top, close on click away, the global shortcut, fresh thread"
+    },
+    {
+      "kind": "settings.connection",
+      "title": "Connection",
+      "page": "panel.html?type=settings.connection",
+      "trust": "system",
+      "singleton": true,
+      "width": 400,
+      "height": 380,
+      "description": "Server connection: channel (stable/dev), model choice, WebSocket URL and auth token, setup wizard"
+    },
+    {
+      "kind": "settings.voice",
+      "title": "Voice",
+      "page": "panel.html?type=settings.voice",
+      "trust": "system",
+      "singleton": true,
+      "width": 400,
+      "height": 420,
+      "description": "Voice settings: voice mode (off, push-to-talk, hands-free), spoken replies, TTS voice, silence timing, speech model"
+    },
+    {
+      "kind": "settings.vault",
+      "title": "Vault",
+      "page": "panel.html?type=settings.vault",
+      "trust": "system",
+      "singleton": true,
+      "width": 420,
+      "height": 520,
+      "description": "Secrets vault: stored credentials, add API keys and 1Password service-account tokens, 1Password sync"
+    },
+    {
+      "kind": "settings.skills",
+      "title": "Skills",
+      "page": "panel.html?type=settings.skills",
+      "trust": "system",
+      "singleton": true,
+      "width": 400,
+      "height": 460,
+      "description": "Enable, disable and search the agent skills the server offers"
+    },
+    {
+      "kind": "settings.connectors",
+      "title": "Connectors",
+      "page": "panel.html?type=settings.connectors",
+      "trust": "system",
+      "singleton": true,
+      "width": 420,
+      "height": 460,
+      "description": "Connect external services (Google Workspace and others): add accounts, authorize, manage instances"
     }
   ]
 }

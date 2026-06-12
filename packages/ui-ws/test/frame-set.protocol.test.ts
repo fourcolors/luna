@@ -100,6 +100,7 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "pty-output",
   "vault-list",
   "vault-status",
+  "widget-open",
 ].sort()
 
 const EXPECTED_CLIENT_FRAME_TYPES = [
@@ -133,6 +134,7 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "vault-delete",
   "vault-sync-config",
   "vault-import",
+  "widget-directory",
 ].sort()
 
 const EXPECTED_PROTOCOL_VERSION = 2
@@ -236,9 +238,11 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // connector-set-client (client) for the inline OAuth-client setup form
     // → 36 server / 26 client. Luna Vault V1 adds vault-list + vault-status
     // (server) and vault-put + vault-delete + vault-sync-config + vault-import
-    // (client) → 38 server / 30 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(38)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(30)
+    // (client) → 38 server / 30 client. Summon-by-name (widget-system.md)
+    // adds widget-open (server) and widget-directory (client)
+    // → 39 server / 31 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(39)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(31)
   })
 
   // VERSION-SKEW (client half): nothing else pins the ui-shared wire.ts mirror

@@ -125,16 +125,15 @@ pub trait EventSink: Send + Sync + 'static {
     fn emit(&self, event: &str, payload: serde_json::Value);
 }
 
-/// Production sink: target ONLY the main window, mirroring the luna-config
-/// emit in main.rs (emit() would broadcast to all windows).
+/// Production sink: BROADCAST to every window (Phase 3). Voice events are
+/// global telemetry (state/transcript/progress/errors) with no per-window
+/// state, so any window may render them — the hub paints the moon's
+/// data-voice-state, the settings.voice panel paints model progress. The
+/// window-targeted discipline (`for:` payloads) stays reserved for events
+/// that carry per-window state, like dock-group.
 impl<R: tauri::Runtime> EventSink for tauri::AppHandle<R> {
     fn emit(&self, event: &str, payload: serde_json::Value) {
-        let _ = tauri::Emitter::emit_to(
-            self,
-            tauri::EventTarget::labeled("main"),
-            event,
-            payload,
-        );
+        let _ = tauri::Emitter::emit(self, event, payload);
     }
 }
 
