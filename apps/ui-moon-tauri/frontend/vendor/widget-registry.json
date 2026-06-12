@@ -3,6 +3,26 @@
   "version": 1,
   "widgets": [
     {
+      "kind": "chat",
+      "title": "Luna",
+      "page": "chat.html",
+      "trust": "system",
+      "singleton": true,
+      "width": 560,
+      "height": 520,
+      "description": "The Luna conversation \u2014 chat with Luna, attachments, voice, artifacts and workflows"
+    },
+    {
+      "kind": "settings",
+      "title": "Settings",
+      "page": "panel.html?type=settings",
+      "trust": "system",
+      "singleton": true,
+      "width": 300,
+      "height": 360,
+      "description": "The settings launcher \u2014 lists every settings panel"
+    },
+    {
       "kind": "settings.updates",
       "title": "Updates",
       "page": "panel.html?type=settings.updates",

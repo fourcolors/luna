@@ -38,6 +38,7 @@
     "allow-load-profiles",
     "allow-set-active-profile",
     "allow-open-external-url",
-    "opener:allow-open-url"
+    "opener:allow-open-url",
+    "allow-open-widget"
   ]
 }

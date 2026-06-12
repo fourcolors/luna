@@ -945,19 +945,35 @@ const HUB_EVENT_NAMES: &[&str] = &[
     "open-wizard",
 ];
 
-/// Forward an allowlisted action to the hub window (`hub-event` with a
-/// `for:"main"` payload — the same targeted-event discipline as dock-group).
+/// Forward an allowlisted action to the window that owns it (`hub-event`
+/// with a `for:` payload — the same targeted-event discipline as dock-group).
+/// Most actions are hub-owned; `fresh-thread` belongs to the CHAT widget
+/// (Phase 4: the chat window owns the thread). When the chat window is
+/// closed, fresh-thread falls back to the hub, whose handler opens it (a
+/// fresh boot lands on the thread bootstrap).
 #[tauri::command]
 fn hub_event(app: tauri::AppHandle, name: String) -> Result<(), String> {
     if !HUB_EVENT_NAMES.contains(&name.as_str()) {
         return Err(format!("unknown hub event: {name}"));
     }
-    app.emit_to(
-        tauri::EventTarget::labeled("main"),
-        "hub-event",
-        serde_json::json!({ "for": "main", "name": name }),
-    )
-    .map_err(|e| e.to_string())
+    let chat_open = app.get_webview_window("panel-chat").is_some();
+    let targets: &[&str] = match name.as_str() {
+        // The chat window owns the thread; the hub is the fallback opener.
+        "fresh-thread" if chat_open => &["panel-chat"],
+        // Both sockets react to a credential/channel swap: the hub rebuilds
+        // its hello-only connection, the chat window its thread connection.
+        "profile-changed" | "connection-changed" if chat_open => &["main", "panel-chat"],
+        _ => &["main"],
+    };
+    for target in targets {
+        app.emit_to(
+            tauri::EventTarget::labeled(*target),
+            "hub-event",
+            serde_json::json!({ "for": target, "name": name }),
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Open a SYSTEM widget by registry kind: singleton focus, panel-* label

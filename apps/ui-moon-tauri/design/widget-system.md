@@ -690,19 +690,35 @@ the hub joins the shared theme when Phase 4 strips its stylesheet to hub-only.
 - Verify cross-window `storage` event delivery on real Tauri (decides the
   settings fan-out mechanism).
 
-**Phase 3 — settings migration + summon-by-name.**
-- Remaining tabs in the order of the settings table (voice → general →
-  connection → skills → connectors → **vault last**, wipe-policy traveling).
-  Modal dies when empty; gear becomes the launcher.
-- Hello `widgets` directory + `widget-open` frame + server-side `open_widget`
-  tool. Milestone: *"open the voice settings"* spoken/typed → panel appears.
-- AI summons UI only; agent-driven settings changes stay design-gated.
+**Phase 3 — settings migration + summon-by-name. ✅ DONE 2026-06-12**
+(`91de7cd`, live-verified on the rig).
+- All seven tabs are panels (frontend/panels/*.js modules, 82 panel tests);
+  the modal died → a pure launcher; hub fan-out = `hub_event` (allowlisted
+  names, `for:` discipline) + cross-window storage events (live-verified) +
+  an available-models localStorage cache; voice events broadcast app-wide
+  (Phase 6 item pulled forward); the vault panel carries its wipe policy on
+  its own connection via the LunaWS close-hook seam.
+- Summon-by-name shipped: `widget-directory` / `widget-open` frames,
+  WidgetSummonBridge (last-announcer-wins, kind-validated), `open_widget`
+  agent tool in widget_tools. Live: the hub announces 7 widgets on every
+  hello (server log). The full spoken *"open the voice settings"* demo
+  needs a model-bearing server — operator-verify on the real moon.
 
 **Phase 4 — chat widget (S2/S3)** — `chat.html` as registry kind `chat`;
 moon click → `open_widget("chat")`; sub-engines move; snap anchor
 parameterized to chat; hub reattach signal redefined. Still the overhaul's
 riskiest slice — but now on a platform that's been carrying settings panels
 for two phases.
+_As-built decisions (2026-06-12):_ the chat window's label is `panel-chat`
+(rides the panel-* dock/layout/capability surface; an ADDITIVE chat.json
+capability grants attachments/local-shell/thread-persistence/voice-surface/
+open_widget on that exact label). Once chat leaves, the hub is permanently
+moon-sized — so the Phase 3 launcher modal becomes a **`settings` launcher
+PANEL** and the gear lives in the chat header. `hub_event('fresh-thread')`
+routes to `panel-chat` when open (the chat window owns the thread), falling
+back to the hub, which opens the chat. Extraction is copy-based: the hub's
+chat code goes dormant in Phase 4 and is deleted in Phase 6 (S5), so every
+commit stays green. `moon-markdown.js` extracts now (chat.html consumes it).
 
 **Phase 5 — prebuilt widgets + hub ambient** — NOW rail / briefing / inspector
 as registry kinds on `panel.html` (data already on the wire); hub ambient
