@@ -172,7 +172,7 @@ they reimplement window management the OS already provides.
 
 | Constraint | Consequence |
 |---|---|
-| `onMoved` fires at drag **end** on macOS (`windowDidMove`; Apple forums thread/69721). WinAmp's continuous `WM_MOVING` is Win32-only. | **Snap-on-release**, like Rectangle/Photoshop. No live snap-during-drag in v1. Ghost preview only if real-Tauri verification shows mid-drag move events (operator-verify; evidence is mixed). |
+| ~~`onMoved` fires at drag **end** on macOS~~ **DISPROVEN live**: macOS streams `Moved` continuously during native drags. The release is invisible to the webview, so snap-on-release needs an AppKit probe. | **Snap-on-release** enforced via the `pointer_button_down` command (`NSEvent.pressedMouseButtons`) gating the settle, re-checked every 90 ms while held. See Snap/Stick as-built note. |
 | No relative z-order among always-on-top windows (Tauri #5656 closed-not-planned); last-focused wins. | Accepted (already accepted in PRD §23). Hub gets a **gather** action (raise + regroup all widgets). Global shortcut must show/hide **all** windows, not just `main` (`main.rs:1252` today targets only main). |
 | `visibleOnAllWorkspaces` doesn't float over fullscreen apps (Tauri #11488). `tauri-nspanel` fixes Spaces behavior but its high panel level can block IME input (nspanel #104) — fatal for the chat composer. | v1 ships plain always-on-top windows. nspanel is a later, per-widget-type opt-in for **non-text** widgets only. |
 | Each window = one WKWebView = own WebContent process, ~50–100 MB; process pooling is no longer controllable (Apple WKProcessPool docs). Closed webviews linger ~30 min in WebKit's process cache. | Widget budget: lazy spawn, **hide instead of destroy** for prebuilt widgets, soft cap ~8–10 concurrently open. Profile with Instruments before raising. |
@@ -563,6 +563,14 @@ against the live layout.
   Guard against the spurious `onMoved` from minimize (Tauri #7664) and from
   programmatic `setPosition` (suppression flag — the feedback-loop trap is
   documented at `index.html:10470`).
+  ✅ **As-built correction (operator feedback "a bit aggressive"):** macOS
+  DOES stream `Moved` events during a native drag — the derisk table's
+  "fires at drag end" claim was wrong — so a hover-pause over a neighbor
+  satisfied the debounce and linked mid-drag. The settle is now gated on
+  the `pointer_button_down` command (`NSEvent.pressedMouseButtons`):
+  while held it re-arms every 90 ms until the real release. The webview
+  never sees `pointerup` once the native drag loop owns the window, so
+  AppKit is the only honest source. Cores without the command fail open.
 - **Group-drag** (dragging a docked cluster as one): **shipped, native, v3**
   (Phase 0.5 operator feedback, three rounds). Round 1 applied drag deltas to
   followers per `Moved` event — laggy. Round 2 went native
@@ -574,7 +582,15 @@ against the live layout.
   whichever member is grabbed** (`grab_dock` on drag-region pointerdown), so
   dragging anything carries everything. The ONLY detach is the **pin**
   (standard Lucide icon) in every grouped member's title bar — click to leave;
-  Rust ejects the leaver past the magnet range, away from the group centroid.
+  Rust ejects the leaver past the magnet range, away from the crowd centroid.
+  ✅ **As-built:** the eject vector must clear the magnet of EVERY dock
+  window, not just the old group's bodies — the ex-member cooldown doesn't
+  shield bystanders, and the eject's own `setPosition` fires `onMoved`
+  (live-observed: an unpin landed flush on a third window's seam and the
+  settle linked them instantly). `dock_eject_vector` tries magnet-clear
+  spots first, falls back to overlap-free on crowded screens. The hub is
+  deliberately not an obstacle (panels float over the moon in normal
+  layouts; worst case near it is an alignment glide, never a link).
   A grouped window never snaps against its own group (groups merge only with
   outsiders). All link UI is event-driven from Rust (`dock-group`): pin
   visibility plus a **very low perimeter highlight rendered only on
