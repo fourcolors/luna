@@ -260,16 +260,20 @@ against the live layout.
   Guard against the spurious `onMoved` from minimize (Tauri #7664) and from
   programmatic `setPosition` (suppression flag — the feedback-loop trap is
   documented at `index.html:10470`).
-- **Group-drag** (dragging a docked cluster as one): **shipped** (Phase 0.5
-  operator feedback). Rust-side dock graph in `main.rs`: widgets report dock
-  state after every settle-snap (`set_dock`); the `WindowEvent::Moved` arm
-  applies the hub's drag delta to every docked widget, with per-label
-  suppression *counters* so follower echoes don't re-propagate. WinAmp
-  semantics: dragging the hub carries the group; dragging a docked widget by
-  itself moves only that widget — that is the detach gesture. (JS-side
-  follower dragging was rejected: it would oscillate and lag per IPC tick.
-  Native `addChildWindow` remains a future option but kills independent drag
-  while parented.)
+- **Group-drag** (dragging a docked cluster as one): **shipped, native**
+  (Phase 0.5 operator feedback, two rounds). Round 1 applied the hub's drag
+  delta to followers per `Moved` event — visibly laggy, since every follower
+  trailed by IPC ticks. Round 2 replaced it with the platform primitive:
+  docking natively parents the windows (`NSWindow addChildWindow:ordered:`),
+  so the compositor carries the whole cluster in the same window-server
+  transaction — zero lag, none of our code in the drag path. Anchors are the
+  hub **or any sibling widget** (nearest-snap wins, hub wins ties), so
+  clusters form chains; the Rust dock graph is a forest with cycle rejection,
+  and destroying an anchor orphans + re-shows its children. The link is
+  visible: a moonlight seam-glow flashes on both sides of the join and a pin
+  pops into the docked widget's title bar — click to eject past the magnet
+  range, or just drag the widget away (detach gesture). Dragging a child
+  carries its own subtree but never its parent.
 - ⚠️ **Phase 0 blocker:** the shipped self-snap has never run — `widget.html:438`
   misses `await` on `Window.getByLabel('main')` (async in Tauri 2), so
   `mainWin.outerPosition()` throws into the swallow-catch at `:460`. Fix,
