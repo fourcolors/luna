@@ -153,7 +153,7 @@ const bootShadowedEnvKeys = new Set<string>()
   }
   applyRuntimePathEnvDefaults(resolveRuntimePaths())
 }
-import { Context, Effect, Layer, ManagedRuntime, Option, Stream } from "effect"
+import { Context, Effect, Layer, ManagedRuntime, Option, Runtime, Stream } from "effect"
 import {
   AccountBroker,
   AccountBrokerLayer,
@@ -226,6 +226,7 @@ import {
   WakeReasonerDefault,
   PromptWorkerLayer,
   WorkflowWorkerLayer,
+  JobRunToolsProviderTag,
 } from "@luna/adapter-sdk"
 import {
   ChatService,
@@ -233,6 +234,7 @@ import {
   type ThreadToolsProvider,
 } from "@luna/chat-service"
 import {
+  createJobInputBridge,
   createLocalShellBridge,
   createSecretRequestBridge,
   createWidgetSummonBridge,
@@ -266,6 +268,7 @@ import {
 } from "@luna/secret-tools"
 import { SkillToolsLayer, SkillToolsService } from "@luna/skill-tools"
 import { WidgetToolsLayer, WidgetToolsService } from "@luna/widget-tools"
+import { createJobInputToolsProvider } from "@luna/job-input-tools"
 import {
   BUILTIN_CONNECTORS,
   ConnectorError,
@@ -1177,6 +1180,17 @@ let vaultCaptureHook:
 // the open_widget tool and the WS server share the instance.
 const widgetSummonBridge = createWidgetSummonBridge()
 
+// Job-summoned operator input (widget-system.md Phase 5): a running job's
+// `request_input` tool broadcasts a question to every connected client and
+// awaits the first answer (the run parks in job_runs.status='waiting'
+// meanwhile). Constructed before the worker layers so the request_input
+// provider and the WS server share the instance — same shape as the
+// widget-summon bridge above. The answer is operator input, not a secret,
+// but the log dep still only ever sees request metadata, never the text.
+const jobInputBridge = createJobInputBridge({
+  log: (msg) => writeSync(1, `${msg}\n`),
+})
+
 const secretRequestBridge = createSecretRequestBridge({
   persistSecret: async (destination, secret) => {
     const result = await registerSecret(destination as SecretDestination, secret)
@@ -1765,6 +1779,31 @@ export const buildBaseLayer = (
   if (schedulerV2Enabled) {
     console.log("[luna/sched] V2 ticker ENABLED (LUNA_SCHEDULER_V2_ENABLED=1) — kinds=prompt,workflow registered")
   }
+  // Phase 5 (widget-system.md): per-run request_input tool for the job
+  // workers. The provider closes over the jobs store (to flip the run
+  // running↔waiting) and the broadcast jobInputBridge (to reach connected
+  // clients). The workers read the Tag via Effect.serviceOption, so this
+  // layer is purely additive — omit it and they run tool-free as before.
+  const jobInputToolsL = Layer.effect(
+    JobRunToolsProviderTag,
+    Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const runtime = yield* Effect.runtime<never>()
+      const runPromise = Runtime.runPromise(runtime)
+      return createJobInputToolsProvider({
+        bridge: jobInputBridge,
+        // Best-effort flip: a store failure resolves false (the tool treats
+        // it as a no-op) — it must never fail the job's model turn.
+        setRunStatus: (runId, status) =>
+          runPromise(
+            store
+              .updateRunStatus(runId, status)
+              .pipe(Effect.catchAll(() => Effect.succeed(false))),
+          ),
+      })
+    }),
+  ).pipe(Layer.provide(jobsStoreL))
+
   // V2 registry: empty by default + PromptWorkerLayer registers the
   // 'prompt' worker at boot. Layer.provideMerge so the registry remains
   // visible to JobTickerLayer above it.
@@ -1777,6 +1816,7 @@ export const buildBaseLayer = (
         sdkClientL,
         makeWorkerRegistry({}),
         agentNotesL,
+        jobInputToolsL,
       ),
     ),
   )
@@ -1955,6 +1995,8 @@ export const buildSetupServerLayer = (
         // No chat in setup-mode → the request_secret tool is never bound, so the
         // secret bridge has nothing to drive. Disabled here.
         secretBridge: null,
+        // No job workers in setup-mode → request_input is never bound either.
+        jobInputBridge: null,
         setupPty: resolvedSetupPty,
         // Allow OP-token entry in setup-mode too — useful when LUNA_OP_ACCOUNTS
         // is configured but the account still needs its token. The handler
@@ -2553,6 +2595,10 @@ const buildServerLayer = (
         },
         secretBridge: secretRequestBridge,
         widgetSummoner: widgetSummonBridge,
+        // Phase 5 (widget-system.md): job-summoned operator input. Every
+        // connection registers with the broadcast bridge; the job workers'
+        // request_input tool drives it (see jobInputToolsL above).
+        jobInputBridge,
       })
     }),
   ).pipe(

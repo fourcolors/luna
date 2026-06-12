@@ -339,4 +339,108 @@ describe("JobsStoreService (Memory layer)", () => {
     await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
   })
 
+  // ── Phase 5 (widget-system.md): live-status flip running↔waiting ──────────
+
+  it("updateRunStatus flips a LIVE run running→waiting→running without touching finishedAt", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      yield* store.record({ id: "w", kind: "prompt", spec: "*", payload: { label: "w" } })
+      const run = yield* store.recordRunStart({ jobId: "w", startedAt: 100 })
+
+      const parked = yield* store.updateRunStatus(run.id, "waiting")
+      expect(parked).toBe(true)
+      let rows = yield* store.listRuns("w")
+      expect(rows[0]?.status).toBe("waiting")
+      expect(rows[0]?.finishedAt).toBeNull() // waiting is NOT an end state
+
+      const resumed = yield* store.updateRunStatus(run.id, "running")
+      expect(resumed).toBe(true)
+      rows = yield* store.listRuns("w")
+      expect(rows[0]?.status).toBe("running")
+      expect(rows[0]?.finishedAt).toBeNull()
+
+      // only recordRunEnd closes the row
+      yield* store.recordRunEnd(run.id, { finishedAt: 500, status: "success" })
+      rows = yield* store.listRuns("w")
+      expect(rows[0]?.status).toBe("success")
+      expect(rows[0]?.finishedAt).toBe(500)
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
+  it("updateRunStatus refuses a CLOSED run (no zombie resurrection) and missing ids", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      yield* store.record({ id: "z", kind: "prompt", spec: "*", payload: { label: "z" } })
+      const run = yield* store.recordRunStart({ jobId: "z", startedAt: 100 })
+      yield* store.recordRunEnd(run.id, { finishedAt: 200, status: "failed", error: "boom" })
+
+      // a late flip-back (the tool resumed after the ticker closed the run)
+      // must NOT overwrite the terminal status
+      const flipped = yield* store.updateRunStatus(run.id, "running")
+      expect(flipped).toBe(false)
+      const rows = yield* store.listRuns("z")
+      expect(rows[0]?.status).toBe("failed")
+      expect(rows[0]?.finishedAt).toBe(200)
+
+      // unknown run id → false, no throw
+      const ghost = yield* store.updateRunStatus(424_242, "waiting")
+      expect(ghost).toBe(false)
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
+})
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * SQLite layer — updateRunStatus only (the broader SQLite coverage rides on
+ * scheduler-tools' integration tests). The `AND finished_at IS NULL` zombie
+ * guard lives in SQL, so it needs a real bun:sqlite run, not just the Memory
+ * mirror. Bun-gated like session-store-sqlite.test.ts: a non-bun runner
+ * skips cleanly.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
+
+const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined"
+const dSqlite = isBun ? describe : describe.skip
+
+const bootstrapStubL = Layer.succeed(LunaSqliteBootstrap, {
+  ok: false,
+  reason: "jobs-store test — bootstrap stub",
+} as const)
+
+const SqliteTestLayer = JobsStoreService.makeLayer(":memory:").pipe(
+  Layer.provide(Clock.Default),
+  Layer.provide(bootstrapStubL),
+)
+
+dSqlite("JobsStoreService (SQLite layer) — updateRunStatus", () => {
+  it("flips a live run, leaves finishedAt NULL, and refuses closed rows", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      yield* store.record({ id: "sw", kind: "prompt", spec: "*", payload: { label: "sw" } })
+      const run = yield* store.recordRunStart({ jobId: "sw", startedAt: 100 })
+
+      expect(yield* store.updateRunStatus(run.id, "waiting")).toBe(true)
+      let rows = yield* store.listRuns("sw")
+      expect(rows[0]?.status).toBe("waiting")
+      expect(rows[0]?.finishedAt).toBeNull()
+
+      expect(yield* store.updateRunStatus(run.id, "running")).toBe(true)
+
+      yield* store.recordRunEnd(run.id, { finishedAt: 900, status: "success" })
+      // SQL guard: closed row is untouched by a late flip
+      expect(yield* store.updateRunStatus(run.id, "waiting")).toBe(false)
+      rows = yield* store.listRuns("sw")
+      expect(rows[0]?.status).toBe("success")
+      expect(rows[0]?.finishedAt).toBe(900)
+
+      // unknown run id → false
+      expect(yield* store.updateRunStatus(999_999, "waiting")).toBe(false)
+    })
+    await Effect.runPromise(
+      Effect.scoped(program.pipe(Effect.provide(SqliteTestLayer))),
+    )
+  })
 })

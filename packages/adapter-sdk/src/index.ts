@@ -20,6 +20,13 @@ export {
 } from "./wake-reasoner.js"
 
 export {
+  JobRunToolsProviderTag,
+  type JobRunIdentity,
+  type JobRunToolsBinding,
+  type JobRunToolsProvider,
+} from "./job-run-tools.js"
+
+export {
   PromptWorkerLayer,
   buildPromptWorker,
   parsePromptPayload,

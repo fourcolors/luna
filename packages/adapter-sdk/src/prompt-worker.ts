@@ -37,7 +37,7 @@
  *   - delivery write fails        → logged at WARN, worker still returns success
  *                                   (the result text is preserved in job_runs.output_text)
  */
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option } from "effect"
 import {
   AgentNotesService,
   WorkerRegistry,
@@ -52,6 +52,10 @@ import {
   type QueryParams,
 } from "./sdk-client.js"
 import { runBoundedQuery, DEFAULT_QUERY_TIMEOUT_MS } from "./bounded-query.js"
+import {
+  JobRunToolsProviderTag,
+  type JobRunToolsProvider,
+} from "./job-run-tools.js"
 
 // ── Public payload types ────────────────────────────────────────────────────
 
@@ -192,14 +196,30 @@ function boundedResultText(
 
 // ── Closure builder (pure, exported for tests) ──────────────────────────────
 
+/** The human label for a run: the job payload's `label`, else the jobId. */
+const jobNameFrom = (rawPayload: unknown, jobId: string): string => {
+  if (typeof rawPayload === "object" && rawPayload !== null) {
+    const label = (rawPayload as { label?: unknown }).label
+    if (typeof label === "string" && label.length > 0) return label
+  }
+  return jobId
+}
+
 /**
  * Build a `Worker<never>` from a resolved SDKClient + optional AgentNotesService.
  * Tests use this directly with a faked SDK and an in-memory AgentNotesService;
  * production goes through `PromptWorkerLayer` below.
+ *
+ * `jobTools` (optional, widget-system.md Phase 5) is the per-run tool
+ * factory: when present, each dispatch gets a fresh MCP server bound to its
+ * own runId (the `request_input` tool), spliced into the query's
+ * `mcpServers`/`allowedTools` plus a system-prompt addendum. Absent →
+ * byte-identical query options to the tool-free worker.
  */
 export const buildPromptWorker = (
   sdk: SDKClientService,
   notes: AgentNotesApi | null,
+  jobTools: JobRunToolsProvider | null = null,
 ): Worker<never> => {
   return (rawPayload, ctx) =>
     Effect.gen(function* () {
@@ -214,9 +234,31 @@ export const buildPromptWorker = (
         )
       }
 
-      const prompt = parsed.system_prompt
-        ? `${parsed.system_prompt}\n\n${parsed.user_prompt}`
+      // Per-run tool wiring (request_input). The binding is built fresh per
+      // dispatch so the tool closure carries THIS run's id.
+      const binding = jobTools
+        ? jobTools.forRun({
+            jobId: ctx.jobId,
+            runId: ctx.runId,
+            jobName: jobNameFrom(rawPayload, ctx.jobId),
+          })
+        : null
+
+      const systemText = [
+        ...(parsed.system_prompt ? [parsed.system_prompt] : []),
+        ...(binding ? [binding.systemPromptAddendum] : []),
+      ].join("\n\n")
+      const prompt = systemText
+        ? `${systemText}\n\n${parsed.user_prompt}`
         : parsed.user_prompt
+
+      // allowedTools is permissive-additive in the SDK (it pre-approves,
+      // it does not restrict others), so appending the binding's names is
+      // safe whether or not the payload set its own list.
+      const allowedTools = [
+        ...(parsed.allowed_tools ?? []),
+        ...(binding ? binding.allowedTools : []),
+      ]
 
       const resultText = yield* boundedResultText(
         sdk,
@@ -224,8 +266,9 @@ export const buildPromptWorker = (
           prompt,
           options: {
             maxTurns: parsed.max_turns ?? 1,
-            ...(parsed.allowed_tools
-              ? { allowedTools: [...parsed.allowed_tools] }
+            ...(allowedTools.length > 0 ? { allowedTools } : {}),
+            ...(binding
+              ? { mcpServers: { [binding.serverName]: binding.server } }
               : {}),
             ...(parsed.model ? { model: parsed.model } : {}),
           },
@@ -291,7 +334,12 @@ export const PromptWorkerLayer = (
       const sdk = yield* SDKClient
       const reg = yield* WorkerRegistry
       const notes = yield* AgentNotesService
-      const worker = buildPromptWorker(sdk, notes)
+      // Optional per-run tool wiring (request_input). Read via serviceOption
+      // — same pattern as the dream cron's calibration sink — so the layer's
+      // R does not grow and compositions without the provider (tests, boot
+      // smokes) keep working unchanged.
+      const jobTools = yield* Effect.serviceOption(JobRunToolsProviderTag)
+      const worker = buildPromptWorker(sdk, notes, Option.getOrNull(jobTools))
       yield* reg.register(kind, worker)
     }),
   )

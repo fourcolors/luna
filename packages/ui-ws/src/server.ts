@@ -475,6 +475,17 @@ export interface UIWebSocketServerConfig {
    * back through it. Pass `null`/absent to disable (frames ignored).
    */
   readonly widgetSummoner?: import("./widget-summon-bridge.js").WidgetSummonBridge | null
+  /**
+   * Optional bridge for job-summoned operator input (widget-system.md
+   * Phase 5). When provided, the server registers EVERY connection's
+   * send-handle with the bridge (broadcast model — a job has no owning
+   * thread, so any connected surface may answer) and routes inbound
+   * `job-input-result` frames to `acceptResult` with that connection's
+   * send-handle as the reply target. The answer value is operator input,
+   * not a secret, but it is still never logged by this package — the frame
+   * is handed straight to the bridge. Pass `null`/absent to disable.
+   */
+  readonly jobInputBridge?: import("./job-input-bridge.js").JobInputBridge | null
 }
 
 export interface UIWebSocketServerHandle {
@@ -621,6 +632,7 @@ export const startUIWebSocketServer = (
     const registerOpToken = config.registerOpToken ?? null
     const widgetSummoner = config.widgetSummoner ?? null
     const secretBridge = config.secretBridge ?? null
+    const jobInputBridge = config.jobInputBridge ?? null
     const skillRegistry = config.skillRegistry ?? null
     const connectorService = config.connectorService ?? null
     const artifactStore = config.artifactStore ?? null
@@ -1143,6 +1155,20 @@ export const startUIWebSocketServer = (
           )
         }
 
+        // Job-summoned operator input (widget-system.md Phase 5): EVERY
+        // connection registers with the broadcast bridge at setup (no
+        // subscribe step — a job has no owning thread, so any surface may
+        // answer a job-input-request). Reuses the secret connection id for
+        // identity; the finalizer drops exactly this handle on teardown.
+        if (jobInputBridge !== null) {
+          jobInputBridge.registerClient(secretConnId, (out) => send(ws, out))
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              jobInputBridge.unregisterClient(secretConnId)
+            }),
+          )
+        }
+
         // Single-fiber forwarder. The pattern is: take ONE event from the
         // UIService stream, send it to the ws synchronously, repeat. ws.send
         // is fire-and-forget at the protocol level (the underlying socket
@@ -1298,7 +1324,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || vaultService !== null) {
+        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || vaultService !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -1394,6 +1420,16 @@ export const startUIWebSocketServer = (
                     // bridge — the secret value is never logged or echoed here.
                     if (secretBridge !== null) {
                       secretBridge.acceptResult(frame)
+                    }
+                    return
+                  }
+                  case "job-input-result": {
+                    // Operator's answer to a job-input-request. Hand the frame
+                    // straight to the bridge with THIS connection's send-handle
+                    // as the reply target (win / already-answered ack). The
+                    // answer value is never logged or echoed here.
+                    if (jobInputBridge !== null) {
+                      jobInputBridge.acceptResult(frame, (out) => send(ws, out))
                     }
                     return
                   }

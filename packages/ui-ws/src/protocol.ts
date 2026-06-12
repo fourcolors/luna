@@ -694,6 +694,61 @@ export interface SecretStatusFrame {
   readonly message: string
 }
 
+/* ── job-summoned operator input (widget-system.md Phase 5) ─────────── */
+
+/**
+ * Server→client: a RUNNING JOB (via the `request_input` tool) is asking the
+ * operator for a piece of input — e.g. "Which of these drafts should I
+ * send?". Additive and optional; older clients ignore it.
+ *
+ * BROADCAST: unlike `secret-request` (which targets the thread's registered
+ * client), this frame goes to EVERY connected client — a job has no owning
+ * thread, so any surface may answer. First `job-input-result` wins.
+ *
+ * `runId`/`jobId`/`jobName` identify the waiting run (the run's
+ * `job_runs.status` is `waiting` while this is pending — the workflow
+ * gallery shows the same state). `timeoutMs` is the wall-clock the operator
+ * has before the request resolves failed; clients should dismiss the prompt
+ * when it elapses. The answer is OPERATOR INPUT, not a secret — but the
+ * server still never logs it.
+ */
+export interface JobInputRequestFrame {
+  readonly type: "job-input-request"
+  readonly requestId: string
+  readonly runId: number
+  readonly jobId: string
+  readonly jobName: string
+  /** What the job is asking — shown above the input field. */
+  readonly prompt: string
+  readonly timeoutMs: number
+}
+
+/**
+ * Client→server: the operator's answer to a `job-input-request`. `answer` is
+ * the typed reply (delivered verbatim to the waiting job's model turn; never
+ * logged). When `cancelled` is true the operator dismissed the prompt and
+ * `answer` is absent. `requestId` correlates back to the request.
+ */
+export interface JobInputResultFrame {
+  readonly type: "job-input-result"
+  readonly requestId: string
+  readonly answer?: string
+  readonly cancelled?: boolean
+}
+
+/**
+ * Server→client ack for a `job-input-result` (and the broadcast dismissal on
+ * timeout). The winning sender gets `ok:true`; a late/duplicate answer gets
+ * `ok:false, "already answered"` so its UI can settle. The answer value is
+ * NEVER echoed back here.
+ */
+export interface JobInputStatusFrame {
+  readonly type: "job-input-status"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly message: string
+}
+
 /* ── memory search ──────────────────────────────────────────────────── */
 
 export interface MemorySearchHit {
@@ -822,6 +877,8 @@ export type ServerFrame =
   | RegisterOpTokenStatusFrame
   | SecretRequestFrame
   | SecretStatusFrame
+  | JobInputRequestFrame
+  | JobInputStatusFrame
   | MemorySearchResultFrame
   | MemorySearchErrorFrame
   | SurveyRequestFrame
@@ -1058,6 +1115,7 @@ export type ClientFrame =
   | MemorySearchRequestFrame
   | RegisterOpTokenFrame
   | SecretResultFrame
+  | JobInputResultFrame
   | SurveyResponseFrame
   | SkillToggleFrame
   | ConnectorOauthBeginFrame

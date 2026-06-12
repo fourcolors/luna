@@ -38,7 +38,7 @@
     },
     "apps/ui-moon-tauri": {
       "name": "@luna/ui-moon-tauri",
-      "version": "0.0.22",
+      "version": "0.0.24",
       "devDependencies": {
         "@tauri-apps/cli": "^2.1.0",
         "jsdom": "^29.1.1",
@@ -60,6 +60,7 @@
         "@luna/connectors": "workspace:*",
         "@luna/control-server": "workspace:*",
         "@luna/core": "workspace:*",
+        "@luna/job-input-tools": "workspace:*",
         "@luna/local-shell-tools": "workspace:*",
         "@luna/memory": "workspace:*",
         "@luna/memory-tools": "workspace:*",
@@ -152,6 +153,26 @@
       "dependencies": {
         "@luna/memory": "workspace:*",
         "effect": "^3.21.0",
+      },
+    },
+    "packages/job-input-tools": {
+      "name": "@luna/job-input-tools",
+      "version": "0.0.1",
+      "dependencies": {
+        "@luna/adapter-sdk": "workspace:*",
+        "@luna/tools": "workspace:*",
+        "@luna/ui-ws": "workspace:*",
+        "effect": "^3.21.0",
+      },
+      "devDependencies": {
+        "@anthropic-ai/claude-agent-sdk": "^0.3.170",
+        "typescript": "^5.6.3",
+        "vitest": "^2.1.5",
+        "zod": "^4.0.0",
+      },
+      "peerDependencies": {
+        "@anthropic-ai/claude-agent-sdk": ">=0.3.0 <1",
+        "zod": "^4.0.0",
       },
     },
     "packages/local-shell-tools": {
@@ -554,6 +575,8 @@
     "@luna/control-server": ["@luna/control-server@workspace:packages/control-server"],
 
     "@luna/core": ["@luna/core@workspace:packages/core"],
+
+    "@luna/job-input-tools": ["@luna/job-input-tools@workspace:packages/job-input-tools"],
 
     "@luna/local-shell-tools": ["@luna/local-shell-tools@workspace:packages/local-shell-tools"],
 
