@@ -1,0 +1,167 @@
+/**
+ * moon-theme.css — shared theme for the widget-page family (widget.html
+ * today; panel.html / chat.html as they land). Holds the watercolor brand
+ * tokens plus the window chrome every widget window shares: title bar,
+ * grip, close/pin buttons, dock seam flash, group perimeter outline,
+ * scrollbar base, and the highlight.js dark-glass palette.
+ *
+ * NOT linked from index.html: the hub's monolithic stylesheet has its own
+ * `.close-btn` (chat header) and stays self-contained until the chat
+ * extraction strips it down to hub-only chrome.
+ *
+ * Load this BEFORE the page's own <style> so page-specific rules win ties.
+ */
+
+:root {
+  /* Brand tokens (canonical values; index.html carries the same literals). */
+  --font-display: 'Outfit', sans-serif;
+  --font-body: 'Plus Jakarta Sans', sans-serif;
+  --moon-glow: rgba(186, 218, 255, 0.4);
+  --moon-bright: #f0f6ff;
+  --moon-shadow: #0f1225;
+  --glass-bg: rgba(10, 14, 28, 0.92);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-glow: rgba(138, 180, 248, 0.04);
+  --primary: #8ab4f8;
+
+  /* Widget-window tokens. */
+  --bg: rgba(10, 14, 28, 0.96);
+  --border: rgba(255, 255, 255, 0.09);
+  --accent: #8ab4f8;
+  --text: #e2ecfd;
+  --muted: #64748b;
+  --radius: 10px;
+}
+
+/* ── Title bar / drag region ─────────────────────────────────────────── */
+.title-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 6px 10px;
+  background: rgba(138, 180, 248, 0.04);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+  flex-shrink: 0;
+  min-height: 34px;
+}
+
+.grip {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: -1px;
+  flex-shrink: 0;
+  cursor: grab;
+}
+
+.bar-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.close-btn {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.1s, color 0.1s;
+}
+.close-btn:hover { background: rgba(239, 68, 68, 0.18); color: #fca5a5; }
+
+/* ── Dock pin (visible while snapped into a group) ───────────────────── */
+.pin-btn {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--accent);
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.1s;
+}
+.pin-btn:hover { background: rgba(138, 180, 248, 0.15); }
+.pin-btn[hidden] { display: none; }
+.pin-btn.pop { animation: pin-pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1); }
+@keyframes pin-pop {
+  0% { transform: scale(0) rotate(-35deg); opacity: 0; }
+  100% { transform: scale(1) rotate(0); opacity: 1; }
+}
+
+/* ── Seam glow: the link animation when two windows click together ───── */
+#seam {
+  position: fixed;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 50;
+}
+#seam.flash-l { left: 0; top: 0; bottom: 0; width: 7px;
+  background: linear-gradient(to right, rgba(138, 180, 248, 0.85), transparent); }
+#seam.flash-r { right: 0; top: 0; bottom: 0; width: 7px;
+  background: linear-gradient(to left, rgba(138, 180, 248, 0.85), transparent); }
+#seam.flash-t { top: 0; left: 0; right: 0; height: 7px;
+  background: linear-gradient(to bottom, rgba(138, 180, 248, 0.85), transparent); }
+#seam.flash-b { bottom: 0; left: 0; right: 0; height: 7px;
+  background: linear-gradient(to top, rgba(138, 180, 248, 0.85), transparent); }
+#seam.on { animation: seam-flash 0.7s ease-out; }
+@keyframes seam-flash {
+  0% { opacity: 0; }
+  25% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* ── Group perimeter: a very low highlight on OUTER sides only ───────── */
+#outline {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 49;
+  border-radius: var(--radius);
+  border: 0 solid transparent;
+}
+#outline.gl { border-left: 2px solid rgba(138, 180, 248, 0.45); }
+#outline.gr { border-right: 2px solid rgba(138, 180, 248, 0.45); }
+#outline.gt { border-top: 2px solid rgba(138, 180, 248, 0.45); }
+#outline.gb { border-bottom: 2px solid rgba(138, 180, 248, 0.45); }
+
+/* ── Scrollbar base ──────────────────────────────────────────────────── */
+.content-area::-webkit-scrollbar { width: 5px; }
+.content-area::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.10);
+  border-radius: 3px;
+}
+
+/* ── highlight.js tokens — Luna's dark-glass palette ─────────────────── */
+.hljs                               { color: #e2e8f0; background: transparent; }
+.hljs-comment, .hljs-quote          { color: #6b7896; font-style: italic; }
+.hljs-keyword, .hljs-selector-tag,
+.hljs-literal, .hljs-section,
+.hljs-doctag                        { color: #c792ea; }
+.hljs-built_in, .hljs-type,
+.hljs-class .hljs-title             { color: #ffcb6b; }
+.hljs-string, .hljs-attr            { color: #c3e88d; }
+.hljs-variable, .hljs-template-variable { color: #f07178; }
+.hljs-number, .hljs-regexp,
+.hljs-link                          { color: #f78c6c; }
+.hljs-title, .hljs-function .hljs-title { color: #82aaff; }
+.hljs-operator, .hljs-punctuation  { color: #89ddff; }
+.hljs-deletion                      { color: #f07178; }
+.hljs-addition                      { color: #c3e88d; }

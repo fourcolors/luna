@@ -668,6 +668,14 @@ feel) remain open and ride along during phases 1-3.
 green, zero behavior change. Scope note: `moon-markdown` extraction can slide
 to Phase 4 (chat) — panel.html doesn't need it; the first three modules are
 exactly what panel.html consumes.
+_As-built decisions (2026-06-11):_ the hub adopts the **registry + close-hook
+seam + protocol constants** but keeps its bespoke transport (turn watchdogs /
+tether choreography are too entangled to move before the chat extraction);
+`LunaWS.createClient` is the shared transport for the widget-page family —
+widget.html converged now, panel.html consumes it in Phase 2. And
+`moon-theme.css` is linked by the widget-page family ONLY: index.html has its
+own `.close-btn` (chat header) that the shared chrome would silently restyle —
+the hub joins the shared theme when Phase 4 strips its stylesheet to hub-only.
 
 **Phase 2 — widget platform core + first panel.**
 - `vendor/widget-registry.json` + descriptor loading (JS + Rust `include_str!`).

@@ -14,6 +14,11 @@
        script registers `window.hljs` synchronously; renderMarkdown() does
        NOT depend on it (graceful degrade to plain monospace if missing). -->
   <script src="vendor/highlight.min.js"></script>
+  <!-- Shared protocol constants + WS frame registry (Phase 1 vendor
+       modules). Loaded synchronously BEFORE the app script, which uses
+       LunaProtocol/LunaWS at definition time. -->
+  <script src="vendor/moon-protocol.js"></script>
+  <script src="vendor/moon-ws.js"></script>
 
   <style>
     :root {
@@ -3552,7 +3557,8 @@
     // see this client-side number. If you bump UI_WS_PROTOCOL_VERSION on the
     // server, BUMP THIS TOO. The only mitigation is this loud comment + the
     // runtime hello-handshake check below (which warns the operator on mismatch).
-    const MOON_EXPECTED_PROTOCOL_VERSION = 2;
+    // Single source: vendor/moon-protocol.js mirrors packages/ui-ws.
+    const MOON_EXPECTED_PROTOCOL_VERSION = LunaProtocol.PROTOCOL_VERSION;
 
     // =========================================================================
     // ── LUNA COMPANION NATIVE MODULE ─────────────────────────────────────────
@@ -6442,6 +6448,12 @@
     };
 
     const WebSocketEngine = {
+      // registerCloseHook seam (design doc, Monolith Decomposition): code
+      // that must run when the socket drops — secret wipes today — registers
+      // here instead of living inline in the close handler.
+      _closeHooks: [],
+      registerCloseHook(fn) { this._closeHooks.push(fn); },
+
       connect() {
         if (State.ws) {
           this.disconnect();
@@ -6459,10 +6471,7 @@
         this.updateStatus('connecting', 'Connecting...');
         State.isManuallyClosing = false;
 
-        const sep = State.wsUrl.includes('?') ? '&' : '?';
-        const fullUrl = State.wsToken
-          ? `${State.wsUrl}${sep}token=${encodeURIComponent(State.wsToken)}`
-          : State.wsUrl;
+        const fullUrl = LunaProtocol.buildWsUrl(State.wsUrl, State.wsToken);
 
         try {
           State.ws = new WebSocket(fullUrl);
@@ -6499,32 +6508,12 @@
           this.updateStatus('disconnected', 'Disconnected');
           this.clearTurnTimeout();                         // fix-3 — no leaked timer across reconnects
           this.clearSubscribeTimeout();                    // socket gone → the close path owns recovery now
-          // Defensive: never retain a typed secret across a socket drop. Clear
-          // the VALUE only — do NOT hide the panel, so the success flow's brief
-          // "saved" message (server restarts → socket closes → auto-reconnect)
-          // isn't killed early.
-          if (DOM.secretPromptInput) DOM.secretPromptInput.value = '';
-          // Same discipline for the Vault add-form value (an op-token save
-          // restarts the server → this close fires mid-flow by design).
-          VaultEngine.wipeValue();
-          // Clear any stale in-flight Vault request. The ack will never arrive
-          // on this session, so stale _reqId/_syncReqId would block future submits
-          // from correlating. For env-secret puts and deletes also replace the
-          // status text with an actionable message. Op-token saves deliberately
-          // restart the server so their 'Verifying…' status should stay.
-          if (VaultEngine._reqId) {
-            const lostKind = VaultEngine._reqKind;
-            VaultEngine._reqId = null;
-            VaultEngine._reqKind = null;
-            if (lostKind && lostKind !== 'put-op-token') {
-              VaultEngine.setStatus('Connection lost — check the list after reconnecting.', 'error');
-            }
-          }
-          // Sync save slot: a dropped sync ack leaves the sync status stuck at
-          // 'Saving sync settings…' — replace it with an actionable error.
-          if (VaultEngine._syncReqId) {
-            VaultEngine._syncReqId = null;
-            VaultEngine.setSyncStatus('Connection lost — check sync state after reconnecting.', 'error');
+          // Close hooks (registerCloseHook seam): secret/Vault wipe policies
+          // live with the engines that own those inputs, so they can travel
+          // to whichever window hosts them after the panel split. Runs at
+          // exactly the point the inline wipe block used to.
+          for (const hook of this._closeHooks) {
+            try { hook(); } catch (e) { Logger.warn('WS close hook failed:', e); }
           }
           if (State.activeTurnId) {                        // only decorate an actually in-flight turn
             State.activeTurnId = null;
@@ -6916,286 +6905,318 @@
 
       handleFrame(frame) {
         Logger.info(`Received frame type: "${frame.type}"`, frame);
-
-        switch (frame.type) {
-          case 'hello':
-            // authenticated successfully. The chat flow (syncThread →
-            // list-threads/subscribe) is kicked off by the socket 'open'
-            // handler, NOT here — so this version check is purely additive and
-            // does not gate or regress the existing hello behavior.
-            this.checkProtocolVersion(frame);
-            // Additive: show the server's build short-SHA when advertised.
-            this.applyBuildSha(frame);
-            // Additive: populate the settings model switcher when advertised.
-            this.applyAvailableModels(frame);
-            // version-skew: gate the grouped activity timeline on the server
-            // advertising the `turn-complete` frame. An older server omits this
-            // capability → fall back to per-turn timelines that collapse on
-            // their own `assistant-done` (else the grouped timeline, which only
-            // settles on turn-complete, would hang on "Working on it…").
-            State.serverSupportsTurnComplete =
-              !!(frame.capabilities && frame.capabilities.turnComplete);
-            // PRD Part B: reveal the Skills settings tab only when the server
-            // advertises the skill frames. Re-evaluated on every hello so a
-            // channel switch to an older server hides the tab again.
-            State.serverSupportsSkills =
-              !!(frame.capabilities && frame.capabilities.skills);
-            SkillsEngine.applyCapability(State.serverSupportsSkills);
-            // PRD Part A: same additive gating for the Connectors tab.
-            State.serverSupportsConnectors =
-              !!(frame.capabilities && frame.capabilities.connectors);
-            ConnectorsEngine.applyCapability(State.serverSupportsConnectors);
-            // PRD Part C W1: additive gating for the Artifacts panel.
-            State.serverSupportsArtifacts =
-              !!(frame.capabilities && frame.capabilities.artifacts);
-            ArtifactsEngine.applyCapability(State.serverSupportsArtifacts);
-            // PRD Part C W3: additive gating for the Workflows gallery.
-            State.serverSupportsWorkflows =
-              !!(frame.capabilities && frame.capabilities.workflows);
-            WorkflowsEngine.applyCapability(State.serverSupportsWorkflows);
-            // Luna Vault (V1): additive gating for the Vault UI inside the
-            // (renamed) Secrets tab. Absent/false (old server) → the legacy
-            // op-token-only form renders, byte-identical to pre-vault.
-            VaultEngine.applyCapability(
-              !!(frame.capabilities && frame.capabilities.vault));
-            break;
-
-          case 'skill-catalog':
-            // Server-authored catalog (sent after hello + after each toggle).
-            SkillsEngine.applyCatalog(frame.skills || []);
-            break;
-
-          case 'skill-status':
-            SkillsEngine.applyStatus(frame);
-            break;
-
-          case 'connector-catalog':
-            ConnectorsEngine.applyCatalog(frame.connectors || []);
-            break;
-
-          case 'connector-list':
-            ConnectorsEngine.applyList(frame.instances || []);
-            break;
-
-          case 'connector-oauth-redirect':
-            // The async consent hop (browser + loopback wait) continues
-            // outside the frame handler.
-            ConnectorsEngine.applyOauthRedirect(frame);
-            break;
-
-          case 'connector-status':
-            ConnectorsEngine.applyStatus(frame);
-            break;
-
-          case 'artifact-list':
-            // Full replacement list of pinned artifacts from the server.
-            ArtifactsEngine.applyPinned(frame.artifacts || []);
-            break;
-
-          case 'artifact-update':
-            // Single pinned artifact was created or updated.
-            ArtifactsEngine.applyUpdate(frame.artifact);
-            break;
-
-          case 'artifacts-extracted':
-            // Ephemeral per-turn artifacts (code fences / tool writes).
-            ArtifactsEngine.applySession(frame);
-            break;
-
-          case 'workflow-list':
-            // Full replacement list of workflows from the server.
-            WorkflowsEngine.applyList(frame.workflows || []);
-            break;
-
-          case 'workflow-runs':
-            // Run history for a specific workflow job.
-            WorkflowsEngine.applyRuns(frame.jobId, frame.runs || []);
-            break;
-
-          case 'thread-list': {
-            // If we don't have an active thread subscribed yet, subscribe to the most recent one
-            const threads = frame.threads || [];
-            if (!State.activeThreadId && threads.length > 0) {
-              const mostRecent = threads[0];
-              State.activeThreadId = mostRecent.id;
-              Logger.info(`No active thread; auto-subscribing to most recent thread "${mostRecent.id}"`);
-              this.send({ type: 'subscribe', threadId: mostRecent.id });
-            } else if (!State.activeThreadId) {
-              // No threads exist! Let's start a brand new thread.
-              Logger.info("No threads exist on the server; creating a brand new thread");
-              this.sendNewThread();
-            }
-            break;
-          }
-
-          case 'thread-created':
-            // A new thread was created (either by us or elsewhere)
-            if (!State.activeThreadId || State.activeThreadId !== frame.thread.id) {
-              State.activeThreadId = frame.thread.id;
-              Logger.info(`Auto-subscribing to newly created thread "${frame.thread.id}"`);
-              this.send({ type: 'subscribe', threadId: frame.thread.id });
-              
-              if (State.pendingUserMessage) {
-                const pending = State.pendingUserMessage;
-                State.pendingUserMessage = null;
-                // Wait slightly for subscription to settle, then send message
-                setTimeout(() => {
-                  this.send({
-                    type: 'user-message',
-                    threadId: State.activeThreadId,
-                    text: pending.text,
-                    client: MoonClient.CLIENT_INFO,
-                    ...(pending.attachments ? { attachments: pending.attachments } : {})
-                  });
-                }, 100);
-              }
-            }
-            break;
-
-          case 'thread-snapshot': {
-            // Whole-history replay from the server. Build state from scratch
-            // and flush a single render — ChatRenderer reconciles the entire
-            // chat-messages container against ChatState in one pass.
-            this.clearSubscribeTimeout();        // reattach SUCCEEDED — we're back on a thread
-            ChatState.reset();
-            ChatState.loadHistory(frame.messages || []);
-            if (ChatState.turns.length === 0) {
-              ChatState.appendBanner('This thread is empty. Type a message below to start chatting!');
-            }
-            ChatLoop.flush();
-            LocalShell.sendCapability();
-            // Restart-survival: persist the thread we just landed on so reopening
-            // the app re-tethers to it. The snapshot proves this thread is valid
-            // on the CURRENT server, so it's always safe to remember. Fire-and-
-            // forget; never blocks or throws into the UI.
-            if (window.__TAURI__ && State.activeThreadId) {
-              window.__TAURI__.core.invoke('set_last_thread_id', { threadId: State.activeThreadId })
-                .catch((e) => Logger.warn('set_last_thread_id failed (non-fatal):', e));
-            }
-            this.onReattached();   // clear the grace timer + retract the string (if it was out)
-            break;
-          }
-
-          case 'local-shell-request':
-            LocalShell.handleRequest(frame);
-            break;
-
-          case 'assistant-delta': {
-            // Append delta to the active assistant turn. The reducer creates
-            // a fresh text segment if the last segment is a closed text or a
-            // tool card; otherwise it extends the in-progress text segment.
-            // The renderer paints the result on the next animation frame.
-            State.activeTurnId = frame.turnId;
-            this.startTurnTimeout();
-            ChatState.applyDelta(frame.turnId, frame.text || '');
-            ChatLoop.schedule();
-            // Spoken replies: feed the (cumulative) delta to the voice
-            // sentence pipeline. No-ops unless voice is on + speakReplies.
-            VoiceEngine.onAssistantDelta(frame.turnId, frame.text || '');
-            break;
-          }
-
-          case 'assistant-done': {
-            // Finalize the active turn. flush() forces an immediate render so
-            // a still-pending rAF frame can't overwrite the closed state.
-            this.clearTurnTimeout();
-            const doneTurnId = frame.turnId || State.activeTurnId;
-            State.activeTurnId = null;
-            ChatState.finishTurn(doneTurnId, frame.message ? frame.message.text : null);
-            ChatLoop.flush();
-            // Spoken replies: this message ended — flush its sentence
-            // remainder (per message, so intermediate agentic steps speak too).
-            VoiceEngine.onAssistantDone(doneTurnId);
-            break;
-          }
-
-          case 'assistant-error': {
-            this.clearTurnTimeout();
-            const errTurnId = frame.turnId || State.activeTurnId;
-            State.activeTurnId = null;
-            ChatState.failTurn(errTurnId, frame.error && frame.error.message);
-            ChatLoop.flush();
-            break;
-          }
-
-          case 'turn-complete': {
-            // The whole agentic turn ended (SDK `result`). Settle the trailing
-            // assistant run so its grouped activity timeline auto-collapses to
-            // the "Worked for N steps" pill. This is the ONLY end-of-turn
-            // signal — per-message `assistant-done` fires once per intermediate
-            // step and can't distinguish a tool step from the final answer.
-            this.clearTurnTimeout();
-            ChatState.markRunSettled();
-            ChatLoop.flush();
-            // Spoken replies: safety flush — anything still buffered for any
-            // message in this turn gets spoken now.
-            VoiceEngine.onTurnComplete();
-            break;
-          }
-
-          case 'tool-call': {
-            // Tool the assistant is invoking. Reducer appends a tool segment
-            // to the active turn (closing any open text segment first).
-            ChatState.applyToolCall(frame.turnId, frame.toolCallId, frame.name, frame.input);
-            ChatLoop.schedule();
-            break;
-          }
-
-          case 'tool-result': {
-            // Pair with the previously-emitted tool-call by toolCallId.
-            ChatState.applyToolResult(
-              frame.toolCallId,
-              frame.status === 'ok',
-              frame.output,
-              frame.truncated
-            );
-            ChatLoop.schedule();
-            break;
-          }
-
-          case 'survey-request':
-            // Phase 3 D3: alignment check-in pushed by the server. Hand to
-            // SurveyEngine which paints the docked user-ask-panel; the user
-            // submits with a Submit click (sends `survey-response`) or
-            // dismisses (client-side no-op — resurfaces next connection).
-            SurveyEngine.show(frame);
-            break;
-
-          case 'user-accepted':
-            // The user message was accepted by the server. Remove typing indicator when streaming starts
-            break;
-
-          case 'register-op-token-status':
-            // Secure-entry ack (Moon 1Password form). Never carries the token.
-            SettingsEngine.handleOpTokenStatus(frame);
-            break;
-
-          case 'secret-request':
-            // Agent-summoned secure secret entry. SecretPromptEngine paints the
-            // docked secret-prompt-panel; the user submits (sends `secret-result`
-            // with the secret) or cancels (sends `secret-result` cancelled:true).
-            SecretPromptEngine.show(frame);
-            break;
-
-          case 'secret-status':
-            // Server ack for a submitted secret. Never carries the secret.
-            SecretPromptEngine.handleStatus(frame);
-            break;
-
-          case 'vault-list':
-            // The credential registry (metadata + pointers ONLY — never
-            // values). Arrives after hello and is broadcast after every
-            // successful mutation; the rebuild is idempotent.
-            VaultEngine.applyList(frame);
-            break;
-
-          case 'vault-status':
-            // Ack for a vault-put / vault-delete. Never carries the value.
-            VaultEngine.handleStatus(frame);
-            break;
-        }
+        // Dispatch via the vendor frame registry. Unknown frame types are
+        // ignored — exactly the old switch's missing-default behavior.
+        MoonFrames.dispatch(frame);
       }
     };
+
+    // ── UI-WS frame handlers ──────────────────────────────────────────────
+    // The former handleFrame switch, case by case, on the shared registry
+    // (vendor/moon-ws.js). Bodies are verbatim; `this` became
+    // WebSocketEngine. Engines referenced inside handlers resolve at frame
+    // time — after every const below has initialized — so registration
+    // order carries no TDZ risk.
+    const MoonFrames = LunaWS.createFrameRegistry();
+
+    MoonFrames.register('hello', (frame) => {
+      // authenticated successfully. The chat flow (syncThread →
+      // list-threads/subscribe) is kicked off by the socket 'open'
+      // handler, NOT here — so this version check is purely additive and
+      // does not gate or regress the existing hello behavior.
+      WebSocketEngine.checkProtocolVersion(frame);
+      // Additive: show the server's build short-SHA when advertised.
+      WebSocketEngine.applyBuildSha(frame);
+      // Additive: populate the settings model switcher when advertised.
+      WebSocketEngine.applyAvailableModels(frame);
+      // Capability gates, normalized by vendor/moon-protocol.js (absent
+      // flags coerce to false so older servers degrade instead of throwing).
+      const caps = LunaProtocol.parseHelloCapabilities(frame);
+      // version-skew: gate the grouped activity timeline on the server
+      // advertising the `turn-complete` frame. An older server omits this
+      // capability → fall back to per-turn timelines that collapse on
+      // their own `assistant-done` (else the grouped timeline, which only
+      // settles on turn-complete, would hang on "Working on it…").
+      State.serverSupportsTurnComplete = caps.turnComplete;
+      // PRD Part B: reveal the Skills settings tab only when the server
+      // advertises the skill frames. Re-evaluated on every hello so a
+      // channel switch to an older server hides the tab again.
+      State.serverSupportsSkills = caps.skills;
+      SkillsEngine.applyCapability(State.serverSupportsSkills);
+      // PRD Part A: same additive gating for the Connectors tab.
+      State.serverSupportsConnectors = caps.connectors;
+      ConnectorsEngine.applyCapability(State.serverSupportsConnectors);
+      // PRD Part C W1: additive gating for the Artifacts panel.
+      State.serverSupportsArtifacts = caps.artifacts;
+      ArtifactsEngine.applyCapability(State.serverSupportsArtifacts);
+      // PRD Part C W3: additive gating for the Workflows gallery.
+      State.serverSupportsWorkflows = caps.workflows;
+      WorkflowsEngine.applyCapability(State.serverSupportsWorkflows);
+      // Luna Vault (V1): additive gating for the Vault UI inside the
+      // (renamed) Secrets tab. Absent/false (old server) → the legacy
+      // op-token-only form renders, byte-identical to pre-vault.
+      VaultEngine.applyCapability(caps.vault);
+    });
+
+    MoonFrames.register('skill-catalog', (frame) => {
+      // Server-authored catalog (sent after hello + after each toggle).
+      SkillsEngine.applyCatalog(frame.skills || []);
+    });
+
+    MoonFrames.register('skill-status', (frame) => {
+      SkillsEngine.applyStatus(frame);
+    });
+
+    MoonFrames.register('connector-catalog', (frame) => {
+      ConnectorsEngine.applyCatalog(frame.connectors || []);
+    });
+
+    MoonFrames.register('connector-list', (frame) => {
+      ConnectorsEngine.applyList(frame.instances || []);
+    });
+
+    MoonFrames.register('connector-oauth-redirect', (frame) => {
+      // The async consent hop (browser + loopback wait) continues
+      // outside the frame handler.
+      ConnectorsEngine.applyOauthRedirect(frame);
+    });
+
+    MoonFrames.register('connector-status', (frame) => {
+      ConnectorsEngine.applyStatus(frame);
+    });
+
+    MoonFrames.register('artifact-list', (frame) => {
+      // Full replacement list of pinned artifacts from the server.
+      ArtifactsEngine.applyPinned(frame.artifacts || []);
+    });
+
+    MoonFrames.register('artifact-update', (frame) => {
+      // Single pinned artifact was created or updated.
+      ArtifactsEngine.applyUpdate(frame.artifact);
+    });
+
+    MoonFrames.register('artifacts-extracted', (frame) => {
+      // Ephemeral per-turn artifacts (code fences / tool writes).
+      ArtifactsEngine.applySession(frame);
+    });
+
+    MoonFrames.register('workflow-list', (frame) => {
+      // Full replacement list of workflows from the server.
+      WorkflowsEngine.applyList(frame.workflows || []);
+    });
+
+    MoonFrames.register('workflow-runs', (frame) => {
+      // Run history for a specific workflow job.
+      WorkflowsEngine.applyRuns(frame.jobId, frame.runs || []);
+    });
+
+    MoonFrames.register('thread-list', (frame) => {
+      // If we don't have an active thread subscribed yet, subscribe to the most recent one
+      const threads = frame.threads || [];
+      if (!State.activeThreadId && threads.length > 0) {
+        const mostRecent = threads[0];
+        State.activeThreadId = mostRecent.id;
+        Logger.info(`No active thread; auto-subscribing to most recent thread "${mostRecent.id}"`);
+        WebSocketEngine.send({ type: 'subscribe', threadId: mostRecent.id });
+      } else if (!State.activeThreadId) {
+        // No threads exist! Let's start a brand new thread.
+        Logger.info("No threads exist on the server; creating a brand new thread");
+        WebSocketEngine.sendNewThread();
+      }
+    });
+
+    MoonFrames.register('thread-created', (frame) => {
+      // A new thread was created (either by us or elsewhere)
+      if (!State.activeThreadId || State.activeThreadId !== frame.thread.id) {
+        State.activeThreadId = frame.thread.id;
+        Logger.info(`Auto-subscribing to newly created thread "${frame.thread.id}"`);
+        WebSocketEngine.send({ type: 'subscribe', threadId: frame.thread.id });
+
+        if (State.pendingUserMessage) {
+          const pending = State.pendingUserMessage;
+          State.pendingUserMessage = null;
+          // Wait slightly for subscription to settle, then send message
+          setTimeout(() => {
+            WebSocketEngine.send({
+              type: 'user-message',
+              threadId: State.activeThreadId,
+              text: pending.text,
+              client: MoonClient.CLIENT_INFO,
+              ...(pending.attachments ? { attachments: pending.attachments } : {})
+            });
+          }, 100);
+        }
+      }
+    });
+
+    MoonFrames.register('thread-snapshot', (frame) => {
+      // Whole-history replay from the server. Build state from scratch
+      // and flush a single render — ChatRenderer reconciles the entire
+      // chat-messages container against ChatState in one pass.
+      WebSocketEngine.clearSubscribeTimeout();        // reattach SUCCEEDED — we're back on a thread
+      ChatState.reset();
+      ChatState.loadHistory(frame.messages || []);
+      if (ChatState.turns.length === 0) {
+        ChatState.appendBanner('This thread is empty. Type a message below to start chatting!');
+      }
+      ChatLoop.flush();
+      LocalShell.sendCapability();
+      // Restart-survival: persist the thread we just landed on so reopening
+      // the app re-tethers to it. The snapshot proves this thread is valid
+      // on the CURRENT server, so it's always safe to remember. Fire-and-
+      // forget; never blocks or throws into the UI.
+      if (window.__TAURI__ && State.activeThreadId) {
+        window.__TAURI__.core.invoke('set_last_thread_id', { threadId: State.activeThreadId })
+          .catch((e) => Logger.warn('set_last_thread_id failed (non-fatal):', e));
+      }
+      WebSocketEngine.onReattached();   // clear the grace timer + retract the string (if it was out)
+    });
+
+    MoonFrames.register('local-shell-request', (frame) => {
+      LocalShell.handleRequest(frame);
+    });
+
+    MoonFrames.register('assistant-delta', (frame) => {
+      // Append delta to the active assistant turn. The reducer creates
+      // a fresh text segment if the last segment is a closed text or a
+      // tool card; otherwise it extends the in-progress text segment.
+      // The renderer paints the result on the next animation frame.
+      State.activeTurnId = frame.turnId;
+      WebSocketEngine.startTurnTimeout();
+      ChatState.applyDelta(frame.turnId, frame.text || '');
+      ChatLoop.schedule();
+      // Spoken replies: feed the (cumulative) delta to the voice
+      // sentence pipeline. No-ops unless voice is on + speakReplies.
+      VoiceEngine.onAssistantDelta(frame.turnId, frame.text || '');
+    });
+
+    MoonFrames.register('assistant-done', (frame) => {
+      // Finalize the active turn. flush() forces an immediate render so
+      // a still-pending rAF frame can't overwrite the closed state.
+      WebSocketEngine.clearTurnTimeout();
+      const doneTurnId = frame.turnId || State.activeTurnId;
+      State.activeTurnId = null;
+      ChatState.finishTurn(doneTurnId, frame.message ? frame.message.text : null);
+      ChatLoop.flush();
+      // Spoken replies: this message ended — flush its sentence
+      // remainder (per message, so intermediate agentic steps speak too).
+      VoiceEngine.onAssistantDone(doneTurnId);
+    });
+
+    MoonFrames.register('assistant-error', (frame) => {
+      WebSocketEngine.clearTurnTimeout();
+      const errTurnId = frame.turnId || State.activeTurnId;
+      State.activeTurnId = null;
+      ChatState.failTurn(errTurnId, frame.error && frame.error.message);
+      ChatLoop.flush();
+    });
+
+    MoonFrames.register('turn-complete', (frame) => {
+      // The whole agentic turn ended (SDK `result`). Settle the trailing
+      // assistant run so its grouped activity timeline auto-collapses to
+      // the "Worked for N steps" pill. This is the ONLY end-of-turn
+      // signal — per-message `assistant-done` fires once per intermediate
+      // step and can't distinguish a tool step from the final answer.
+      WebSocketEngine.clearTurnTimeout();
+      ChatState.markRunSettled();
+      ChatLoop.flush();
+      // Spoken replies: safety flush — anything still buffered for any
+      // message in this turn gets spoken now.
+      VoiceEngine.onTurnComplete();
+    });
+
+    MoonFrames.register('tool-call', (frame) => {
+      // Tool the assistant is invoking. Reducer appends a tool segment
+      // to the active turn (closing any open text segment first).
+      ChatState.applyToolCall(frame.turnId, frame.toolCallId, frame.name, frame.input);
+      ChatLoop.schedule();
+    });
+
+    MoonFrames.register('tool-result', (frame) => {
+      // Pair with the previously-emitted tool-call by toolCallId.
+      ChatState.applyToolResult(
+        frame.toolCallId,
+        frame.status === 'ok',
+        frame.output,
+        frame.truncated
+      );
+      ChatLoop.schedule();
+    });
+
+    MoonFrames.register('survey-request', (frame) => {
+      // Phase 3 D3: alignment check-in pushed by the server. Hand to
+      // SurveyEngine which paints the docked user-ask-panel; the user
+      // submits with a Submit click (sends `survey-response`) or
+      // dismisses (client-side no-op — resurfaces next connection).
+      SurveyEngine.show(frame);
+    });
+
+    MoonFrames.register('user-accepted', (frame) => {
+      // The user message was accepted by the server. Remove typing indicator when streaming starts
+    });
+
+    MoonFrames.register('register-op-token-status', (frame) => {
+      // Secure-entry ack (Moon 1Password form). Never carries the token.
+      SettingsEngine.handleOpTokenStatus(frame);
+    });
+
+    MoonFrames.register('secret-request', (frame) => {
+      // Agent-summoned secure secret entry. SecretPromptEngine paints the
+      // docked secret-prompt-panel; the user submits (sends `secret-result`
+      // with the secret) or cancels (sends `secret-result` cancelled:true).
+      SecretPromptEngine.show(frame);
+    });
+
+    MoonFrames.register('secret-status', (frame) => {
+      // Server ack for a submitted secret. Never carries the secret.
+      SecretPromptEngine.handleStatus(frame);
+    });
+
+    MoonFrames.register('vault-list', (frame) => {
+      // The credential registry (metadata + pointers ONLY — never
+      // values). Arrives after hello and is broadcast after every
+      // successful mutation; the rebuild is idempotent.
+      VaultEngine.applyList(frame);
+    });
+
+    MoonFrames.register('vault-status', (frame) => {
+      // Ack for a vault-put / vault-delete. Never carries the value.
+      VaultEngine.handleStatus(frame);
+    });
+
+    // ── WS close hooks ────────────────────────────────────────────────────
+    // Secret hygiene on socket drop (was inline in the close handler). The
+    // registerCloseHook seam exists so this policy can travel with whichever
+    // window hosts the secret inputs once settings become panels.
+    WebSocketEngine.registerCloseHook(() => {
+      // Defensive: never retain a typed secret across a socket drop. Clear
+      // the VALUE only — do NOT hide the panel, so the success flow's brief
+      // "saved" message (server restarts → socket closes → auto-reconnect)
+      // isn't killed early.
+      if (DOM.secretPromptInput) DOM.secretPromptInput.value = '';
+      // Same discipline for the Vault add-form value (an op-token save
+      // restarts the server → this close fires mid-flow by design).
+      VaultEngine.wipeValue();
+      // Clear any stale in-flight Vault request. The ack will never arrive
+      // on this session, so stale _reqId/_syncReqId would block future submits
+      // from correlating. For env-secret puts and deletes also replace the
+      // status text with an actionable message. Op-token saves deliberately
+      // restart the server so their 'Verifying…' status should stay.
+      if (VaultEngine._reqId) {
+        const lostKind = VaultEngine._reqKind;
+        VaultEngine._reqId = null;
+        VaultEngine._reqKind = null;
+        if (lostKind && lostKind !== 'put-op-token') {
+          VaultEngine.setStatus('Connection lost — check the list after reconnecting.', 'error');
+        }
+      }
+      // Sync save slot: a dropped sync ack leaves the sync status stuck at
+      // 'Saving sync settings…' — replace it with an actionable error.
+      if (VaultEngine._syncReqId) {
+        VaultEngine._syncReqId = null;
+        VaultEngine.setSyncStatus('Connection lost — check sync state after reconnecting.', 'error');
+      }
+    });
 
     /**
      * Minimal, security-first Markdown -> HTML for assistant messages.

@@ -5,19 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Luna Widget</title>
   <script src="vendor/highlight.min.js"></script>
+  <script src="vendor/moon-protocol.js"></script>
+  <script src="vendor/moon-ws.js"></script>
   <script src="vendor/deck-snap.js"></script>
   <script src="vendor/widget-sandbox.js"></script>
+  <!-- Shared theme (tokens + widget-window chrome) loads BEFORE the page
+       style so page-specific rules win ties. -->
+  <link rel="stylesheet" href="vendor/moon-theme.css">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    :root {
-      --bg: rgba(10, 14, 28, 0.96);
-      --border: rgba(255, 255, 255, 0.09);
-      --accent: #8ab4f8;
-      --text: #e2ecfd;
-      --muted: #64748b;
-      --radius: 10px;
-    }
 
     html, body {
       width: 100%;
@@ -31,114 +27,7 @@
       border-radius: var(--radius);
     }
 
-    /* ── Title bar / drag region ─────────────────────────────────────────── */
-    .title-bar {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 8px 6px 10px;
-      background: rgba(138, 180, 248, 0.04);
-      border-bottom: 1px solid var(--border);
-      user-select: none;
-      flex-shrink: 0;
-      min-height: 34px;
-    }
-
-    .grip {
-      color: var(--muted);
-      font-size: 10px;
-      letter-spacing: -1px;
-      flex-shrink: 0;
-      cursor: grab;
-    }
-
-    .bar-title {
-      flex: 1;
-      min-width: 0;
-      font-size: 0.75rem;
-      font-weight: 600;
-      color: var(--text);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .close-btn {
-      flex-shrink: 0;
-      background: none;
-      border: none;
-      color: var(--muted);
-      font-size: 14px;
-      line-height: 1;
-      width: 22px;
-      height: 22px;
-      border-radius: 4px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: background 0.1s, color 0.1s;
-    }
-    .close-btn:hover { background: rgba(239, 68, 68, 0.18); color: #fca5a5; }
-
-    /* ── Dock pin (visible while snapped into a group) ───────────────────── */
-    .pin-btn {
-      flex-shrink: 0;
-      background: none;
-      border: none;
-      color: var(--accent);
-      width: 22px;
-      height: 22px;
-      border-radius: 4px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: background 0.1s;
-    }
-    .pin-btn:hover { background: rgba(138, 180, 248, 0.15); }
-    .pin-btn[hidden] { display: none; }
-    .pin-btn.pop { animation: pin-pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1); }
-    @keyframes pin-pop {
-      0% { transform: scale(0) rotate(-35deg); opacity: 0; }
-      100% { transform: scale(1) rotate(0); opacity: 1; }
-    }
-
-    /* ── Seam glow: the link animation when two windows click together ───── */
-    #seam {
-      position: fixed;
-      pointer-events: none;
-      opacity: 0;
-      z-index: 50;
-    }
-    #seam.flash-l { left: 0; top: 0; bottom: 0; width: 7px;
-      background: linear-gradient(to right, rgba(138, 180, 248, 0.85), transparent); }
-    #seam.flash-r { right: 0; top: 0; bottom: 0; width: 7px;
-      background: linear-gradient(to left, rgba(138, 180, 248, 0.85), transparent); }
-    #seam.flash-t { top: 0; left: 0; right: 0; height: 7px;
-      background: linear-gradient(to bottom, rgba(138, 180, 248, 0.85), transparent); }
-    #seam.flash-b { bottom: 0; left: 0; right: 0; height: 7px;
-      background: linear-gradient(to top, rgba(138, 180, 248, 0.85), transparent); }
-    #seam.on { animation: seam-flash 0.7s ease-out; }
-    @keyframes seam-flash {
-      0% { opacity: 0; }
-      25% { opacity: 1; }
-      100% { opacity: 0; }
-    }
-
-    /* ── Group perimeter: a very low highlight on OUTER sides only ───────── */
-    #outline {
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      z-index: 49;
-      border-radius: var(--radius);
-      border: 0 solid transparent;
-    }
-    #outline.gl { border-left: 2px solid rgba(138, 180, 248, 0.45); }
-    #outline.gr { border-right: 2px solid rgba(138, 180, 248, 0.45); }
-    #outline.gt { border-top: 2px solid rgba(138, 180, 248, 0.45); }
-    #outline.gb { border-bottom: 2px solid rgba(138, 180, 248, 0.45); }
+    /* Title bar, grip, close/pin buttons, #seam, #outline: vendor/moon-theme.css */
 
     /* ── Outer layout ────────────────────────────────────────────────────── */
     .widget-shell {
@@ -154,11 +43,7 @@
       overflow: auto;
       padding: 10px 12px;
     }
-    .content-area::-webkit-scrollbar { width: 5px; }
-    .content-area::-webkit-scrollbar-thumb {
-      background: rgba(255, 255, 255, 0.10);
-      border-radius: 3px;
-    }
+    /* Scrollbar base: vendor/moon-theme.css */
 
     /* ── Status / notices ────────────────────────────────────────────────── */
     .notice {
@@ -187,22 +72,7 @@
       background: transparent;
     }
 
-    /* highlight.js tokens — matches Luna's dark-glass palette */
-    .hljs                               { color: #e2e8f0; background: transparent; }
-    .hljs-comment, .hljs-quote          { color: #6b7896; font-style: italic; }
-    .hljs-keyword, .hljs-selector-tag,
-    .hljs-literal, .hljs-section,
-    .hljs-doctag                        { color: #c792ea; }
-    .hljs-built_in, .hljs-type,
-    .hljs-class .hljs-title             { color: #ffcb6b; }
-    .hljs-string, .hljs-attr            { color: #c3e88d; }
-    .hljs-variable, .hljs-template-variable { color: #f07178; }
-    .hljs-number, .hljs-regexp,
-    .hljs-link                          { color: #f78c6c; }
-    .hljs-title, .hljs-function .hljs-title { color: #82aaff; }
-    .hljs-operator, .hljs-punctuation  { color: #89ddff; }
-    .hljs-deletion                      { color: #f07178; }
-    .hljs-addition                      { color: #c3e88d; }
+    /* highlight.js tokens: vendor/moon-theme.css */
     /* kind=widget: the sandboxed iframe fills the content area. The widget
        controls its own background; we give it a white base so a transparent
        widget is legible. */
@@ -364,86 +234,64 @@
     }
   }
 
-  // ── WebSocket wiring ──────────────────────────────────────────────────────
-  var ws = null;
+  // ── WebSocket wiring (vendor/moon-ws.js client + frame registry) ─────────
   var reconnectTimer = null;
   var didReconnect = false; // only attempt one reconnect
 
-  function connect(wsUrl, wsToken) {
-    if (ws) { try { ws.close(); } catch (_) {} ws = null; }
-    var sep = wsUrl.includes('?') ? '&' : '?';
-    var fullUrl = wsToken ? wsUrl + sep + 'token=' + encodeURIComponent(wsToken) : wsUrl;
-    try {
-      ws = new WebSocket(fullUrl);
-    } catch (e) {
-      showNotice('WebSocket error: ' + (e && e.message ? e.message : String(e)));
-      return;
-    }
+  var frames = LunaWS.createFrameRegistry()
+    .register('hello', function (frame) {
+      if (!LunaProtocol.parseHelloCapabilities(frame).artifacts) {
+        showNotice("This server doesn't support pinned artifacts.");
+      }
+    })
+    .register('artifact-list', function (frame) {
+      var list = frame.artifacts;
+      if (!Array.isArray(list)) return;
+      var found = null;
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].id === id) { found = list[i]; break; }
+      }
+      if (found) {
+        render(found);
+      } else {
+        showNotice('This artifact is no longer pinned.');
+      }
+    })
+    .register('artifact-update', function (frame) {
+      if (frame.artifact && frame.artifact.id === id) {
+        render(frame.artifact);
+      }
+    })
+    .register('event', function (frame) {
+      // Obs-event stream → forward to a SUBSCRIBED widget, but ONLY for the
+      // kinds its bridge_caps allow (cap-gated; fails closed). This is the
+      // single read-only door out of the sandbox (luna.subscribe).
+      if (
+        widgetFrame &&
+        widgetSubscribed &&
+        frame.event &&
+        window.LunaWidgetSandbox &&
+        LunaWidgetSandbox.subscribeAllowed(widgetBridgeCaps, frame.event.kind)
+      ) {
+        try {
+          widgetFrame.contentWindow.postMessage(
+            { __luna: 'event', event: frame.event },
+            '*'
+          );
+        } catch (_) { /* iframe gone */ }
+      }
+    });
 
-    ws.addEventListener('open', function () {
+  var client = LunaWS.createClient({
+    registry: frames,
+    autoPong: true, // ping → {type:'pong', ts}, same as the old inline case
+    onOpen: function () {
       // A fresh socket is up → re-arm the single-retry budget so each DISTINCT
       // disconnect gets its own one delayed reconnect (review G3 — without this
       // the window gives up forever after the first drop+retry).
       didReconnect = false;
-    });
-
-    ws.addEventListener('message', function (evt) {
-      var frame;
-      try { frame = JSON.parse(evt.data); } catch (_) { return; }
-
-      switch (frame.type) {
-        case 'hello':
-          if (!frame.capabilities || !frame.capabilities.artifacts) {
-            showNotice("This server doesn't support pinned artifacts.");
-          }
-          break;
-        case 'artifact-list': {
-          var list = frame.artifacts;
-          if (!Array.isArray(list)) break;
-          var found = null;
-          for (var i = 0; i < list.length; i++) {
-            if (list[i].id === id) { found = list[i]; break; }
-          }
-          if (found) {
-            render(found);
-          } else {
-            showNotice('This artifact is no longer pinned.');
-          }
-          break;
-        }
-        case 'artifact-update':
-          if (frame.artifact && frame.artifact.id === id) {
-            render(frame.artifact);
-          }
-          break;
-        case 'ping':
-          try { ws.send(JSON.stringify({ type: 'pong', ts: frame.ts })); } catch (_) {}
-          break;
-        case 'event':
-          // Obs-event stream → forward to a SUBSCRIBED widget, but ONLY for the
-          // kinds its bridge_caps allow (cap-gated; fails closed). This is the
-          // single read-only door out of the sandbox (luna.subscribe).
-          if (
-            widgetFrame &&
-            widgetSubscribed &&
-            frame.event &&
-            window.LunaWidgetSandbox &&
-            LunaWidgetSandbox.subscribeAllowed(widgetBridgeCaps, frame.event.kind)
-          ) {
-            try {
-              widgetFrame.contentWindow.postMessage(
-                { __luna: 'event', event: frame.event },
-                '*'
-              );
-            } catch (_) { /* iframe gone */ }
-          }
-          break;
-        default:
-          break;
-      }
-    });
-
-    ws.addEventListener('close', function () {
+    },
+    onClose: function () {
       showNotice('Disconnected');
       // One reconnect attempt after 2 s — don't hammer.
       if (!didReconnect) {
@@ -453,11 +301,17 @@
           init(); // re-read creds and reconnect
         }, 2000);
       }
-    });
+    },
+    // 'error' intentionally unhandled: the 'close' event fires next and owns
+    // the reconnect logic (same as the old inline listener).
+  });
 
-    ws.addEventListener('error', function () {
-      // The 'close' event will fire next; let it drive reconnect logic.
-    });
+  function connect(wsUrl, wsToken) {
+    try {
+      client.connect(wsUrl, wsToken);
+    } catch (e) {
+      showNotice('WebSocket error: ' + (e && e.message ? e.message : String(e)));
+    }
   }
 
   // ── Boot ──────────────────────────────────────────────────────────────────

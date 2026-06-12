@@ -141,6 +141,8 @@ describe('widget.html — snap + dock groups', () => {
       event: { listen: vi.fn(async () => () => {}) },
     }
 
+    loadVendorInto(window, 'moon-protocol.js')
+    loadVendorInto(window, 'moon-ws.js')
     loadVendorInto(window, 'deck-snap.js')
     loadVendorInto(window, 'widget-sandbox.js')
 
@@ -160,6 +162,8 @@ describe('widget.html — snap + dock groups', () => {
     delete (window as any).__TAURI__
     delete (window as any).LunaDeckSnap
     delete (window as any).LunaWidgetSandbox
+    delete (window as any).LunaProtocol
+    delete (window as any).LunaWS
     vi.restoreAllMocks()
   })
 

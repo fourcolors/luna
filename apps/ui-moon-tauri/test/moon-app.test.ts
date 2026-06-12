@@ -3,6 +3,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
+// jsdom never fetches external <script src> tags, so required vendor files
+// are loaded by hand, in the same order the page declares them (same
+// mechanism as widget-window.test.ts).
+function loadVendorInto(target: any, file: string) {
+  const src = fs.readFileSync(path.resolve(__dirname, '../frontend/vendor', file), 'utf8')
+  new Function('globalThis', src)(target)
+}
+
 describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   let mockStartDragging: any
   let mockGetCurrentWindow: any
@@ -44,7 +52,11 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
     ;(window as any).__TAURI__.mockSetSize = mockSetSize
     ;(window as any).__TAURI__.mockSetAlwaysOnTop = mockSetAlwaysOnTop
 
-    // 4. Extract and execute the frontend script to bind event listeners
+    // 4. Load the vendor modules the app script uses at definition time
+    // (LunaProtocol.PROTOCOL_VERSION, LunaWS.createFrameRegistry), then
+    // extract and execute the frontend script to bind event listeners.
+    loadVendorInto(window, 'moon-protocol.js')
+    loadVendorInto(window, 'moon-ws.js')
     const scriptMatch = htmlContent.match(/<script>([\s\S]*?)<\/script>/)
     const jsCode = scriptMatch ? scriptMatch[1] : ''
     
@@ -61,6 +73,8 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
 
   afterEach(() => {
     document.body.innerHTML = ''
+    delete (window as any).LunaProtocol
+    delete (window as any).LunaWS
     vi.restoreAllMocks()
     vi.useRealTimers()
   })
