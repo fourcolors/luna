@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Luna Panel</title>
+  <script src="vendor/moon-protocol.js"></script>
+  <script src="vendor/moon-ws.js"></script>
+  <script src="vendor/deck-snap.js"></script>
+  <script src="vendor/moon-dock.js"></script>
+  <!-- Shared theme (tokens + widget-window chrome) loads BEFORE the page
+       style so page-specific rules win ties. -->
+  <link rel="stylesheet" href="vendor/moon-theme.css">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: var(--font-body);
+      font-size: 13px;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+
+    .widget-shell {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      height: 100%;
+    }
+
+    .content-area {
+      flex: 1;
+      overflow: auto;
+      padding: 14px;
+    }
+
+    .notice {
+      padding: 12px;
+      color: var(--muted);
+      font-size: 0.75rem;
+      font-style: italic;
+    }
+
+    /* ── Panel form chrome (settings panels) ─────────────────────────────── */
+    /* display:flex would beat the [hidden] attribute's UA display:none —
+       pin it (caught live: the install row showed while hidden). */
+    [hidden] { display: none !important; }
+    .panel-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .panel-btn {
+      padding: 6px 14px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: rgba(138, 180, 248, 0.10);
+      color: var(--text);
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+    .panel-btn:hover { background: rgba(138, 180, 248, 0.2); }
+    .panel-btn.primary { background: var(--accent); color: #0a0e1c; border-color: transparent; }
+    .panel-status { font-size: 0.78rem; color: var(--muted); }
+    .panel-status.ok { color: #7ee2a8; }
+    .panel-status.warn { color: #f8c982; }
+  </style>
+</head>
+<body>
+<div class="widget-shell">
+  <div class="title-bar" data-tauri-drag-region id="title-bar">
+    <span class="grip" data-tauri-drag-region>⋮⋮</span>
+    <span class="bar-title" data-tauri-drag-region id="bar-title">Loading…</span>
+    <button class="pin-btn" id="pin-btn" title="Unpin from group" aria-label="Unpin widget from its group" hidden>
+      <!-- Lucide "pin" (ISC) — standard icon, not hand-drawn. -->
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 17v5"/>
+        <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>
+      </svg>
+    </button>
+    <button class="close-btn" id="close-btn" title="Close" aria-label="Close panel">✕</button>
+  </div>
+  <div id="seam" aria-hidden="true"></div>
+  <div id="outline" aria-hidden="true"></div>
+  <div class="content-area" id="content-area"></div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ── Window / params ────────────────────────────────────────────────────
+  var params = new URLSearchParams(location.search);
+  var type = params.get('type') || '';
+
+  var W = null;
+  var label = null;
+  try {
+    if (window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.getCurrentWindow) {
+      W = window.__TAURI__.window.getCurrentWindow();
+      label = W.label;
+    }
+  } catch (_) { /* not in Tauri (tests/browser) */ }
+
+  var contentArea = document.getElementById('content-area');
+  var barTitle = document.getElementById('bar-title');
+  var closeBtn = document.getElementById('close-btn');
+
+  closeBtn && closeBtn.addEventListener('click', function () {
+    try {
+      if (window.__TAURI__ && window.__TAURI__.core && label) {
+        window.__TAURI__.core.invoke('close_widget', { label: label }).catch(function () {});
+      }
+    } catch (_) { /* best-effort */ }
+  });
+
+  function showNotice(text) {
+    contentArea.innerHTML = '';
+    var div = document.createElement('div');
+    div.className = 'notice';
+    div.textContent = text;
+    contentArea.appendChild(div);
+  }
+
+  // ── Panel type modules ─────────────────────────────────────────────────
+  // Each type lives in panels/<kind-with-dashes>.js and registers into
+  // window.LunaPanelTypes (so harnesses can preload modules without a
+  // network). The loader injects the script only when the type is not
+  // already registered. Modules render with safe DOM methods only.
+  var ctx = {
+    label: label,
+    win: W,
+    hasTauri: !!(window.__TAURI__ && window.__TAURI__.core),
+    invoke: function (cmd, args) {
+      if (!window.__TAURI__ || !window.__TAURI__.core) {
+        return Promise.reject(new Error('not in Tauri'));
+      }
+      return args === undefined
+        ? window.__TAURI__.core.invoke(cmd)
+        : window.__TAURI__.core.invoke(cmd, args);
+    },
+    // For WS-backed panels (vault/skills/connectors): build a gen-gated
+    // client over the shared transport, connected with the stored creds.
+    // Returns the client (already connecting); callers register frames on
+    // the registry they passed in.
+    connectWs: function (registry, opts) {
+      var client = LunaWS.createClient(Object.assign({ registry: registry, autoPong: true }, opts || {}));
+      ctx.invoke('load_connection').then(function (creds) {
+        if (creds && creds.wsUrl) {
+          try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) { /* notice handled by caller */ }
+        }
+      }).catch(function () { /* off-Tauri */ });
+      return client;
+    },
+  };
+
+  function bootModule(mod) {
+    if (mod) {
+      barTitle.textContent = mod.title;
+      document.title = 'Luna — ' + mod.title;
+      try {
+        mod.render(contentArea, ctx);
+      } catch (e) {
+        showNotice('Panel failed to render: ' + (e && e.message ? e.message : String(e)));
+      }
+    } else {
+      barTitle.textContent = 'Unknown panel';
+      showNotice('Unknown panel type: "' + type + '"');
+    }
+    window.__PanelInternals = { type: type, hasModule: !!mod };
+  }
+
+  var registered = window.LunaPanelTypes && window.LunaPanelTypes[type];
+  if (registered) {
+    bootModule(registered);
+  } else if (/^[a-z0-9.]+$/.test(type)) {
+    var s = document.createElement('script');
+    s.src = 'panels/' + type.replace(/\./g, '-') + '.js';
+    s.onload = function () {
+      bootModule((window.LunaPanelTypes && window.LunaPanelTypes[type]) || null);
+    };
+    s.onerror = function () { bootModule(null); };
+    document.head.appendChild(s);
+  } else {
+    bootModule(null);
+  }
+
+  // ── Dock/snap wiring (shared vendor module) ────────────────────────────
+  if (window.LunaDock) LunaDock.wire({ win: W, label: label });
+})();
+</script>
+</body>
+</html>

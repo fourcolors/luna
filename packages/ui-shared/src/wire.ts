@@ -333,7 +333,7 @@ export interface ConnectorSetClientFrame {
 /* PRD Part C (W1) — artifact frames (mirror packages/ui-ws/src/protocol.ts).
  * The ephemeral `Artifact` above evaporates per session; a PINNED artifact is
  * the durable form persisted in luna.db (artifacts + artifact_versions). */
-export type ArtifactKind = "code" | "markdown" | "html" | "widget"
+export type ArtifactKind = "code" | "markdown" | "html" | "widget" | "mcp-app"
 
 export interface PinnedArtifactItem {
   readonly id: string

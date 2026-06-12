@@ -33,7 +33,7 @@ import { Cron, Duration, Effect, Either, Layer, Schedule } from "effect"
 import * as EffectClock from "effect/Clock"
 import { Clock } from "../clock.js"
 import { JobsStoreService } from "./jobs-store.js"
-import type { JobRunStatus, PersistedJob } from "./jobs-store-types.js"
+import type { JobRunTerminalStatus, PersistedJob } from "./jobs-store-types.js"
 import { WorkerRegistry, WorkerError } from "./worker-registry.js"
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -108,7 +108,7 @@ const computeNextRunAt = (
 
 const terminalStatusFrom = (
   result: { _tag: "Right"; right: unknown } | { _tag: "Left"; left: unknown },
-): Exclude<JobRunStatus, "queued" | "running"> =>
+): JobRunTerminalStatus =>
   result._tag === "Right" ? "success" : "failed"
 
 // ── Layer ───────────────────────────────────────────────────────────────────

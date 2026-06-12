@@ -44,6 +44,7 @@
     "allow-open-external-url",
     "opener:allow-open-url",
     "allow-open-artifact-widget",
+    "allow-open-widget",
     "allow-close-widget",
     "allow-list-widget-windows"
   ]

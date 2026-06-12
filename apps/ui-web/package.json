@@ -26,6 +26,7 @@
     "@luna/chat-service": "workspace:*",
     "@luna/connectors": "workspace:*",
     "@luna/core": "workspace:*",
+    "@luna/job-input-tools": "workspace:*",
     "@luna/local-shell-tools": "workspace:*",
     "@luna/memory": "workspace:*",
     "@luna/memory-tools": "workspace:*",

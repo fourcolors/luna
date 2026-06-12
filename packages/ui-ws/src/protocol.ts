@@ -96,6 +96,14 @@ export interface HelloFrame {
      * — clients hide the Vault settings section when absent/false.
      */
     readonly vault?: boolean
+    /**
+     * MCP Apps host relay (widget-system.md Phase 7): the server has an
+     * McpAppHost bound — it routes `mcp-resource-read` / `mcp-tool-call`
+     * and replies `mcp-resource-result` / `mcp-tool-result` on the same
+     * connection. OPTIONAL/additive: clients show an honest "not supported"
+     * notice for kind `mcp-app` artifacts when absent/false.
+     */
+    readonly mcpApps?: boolean
   }
 }
 
@@ -386,8 +394,11 @@ export interface ConnectorStatusFrame {
 
 /* PRD Part C (W1) — artifact frames. The ephemeral `Artifact` (above) is
  * recomputed per session; a PINNED artifact is the durable form persisted in
- * luna.db (artifacts + artifact_versions). Mirrors ui-shared/wire.ts. */
-export type ArtifactKind = "code" | "markdown" | "html" | "widget"
+ * luna.db (artifacts + artifact_versions). Mirrors ui-shared/wire.ts.
+ * `mcp-app` (widget-system.md Phase 7): content is a `ui://` resource URI —
+ * the host fetches the app HTML via `mcp-resource-read` and renders it as an
+ * MCP App (raw JSON-RPC over postMessage), never as inline widget HTML. */
+export type ArtifactKind = "code" | "markdown" | "html" | "widget" | "mcp-app"
 
 export interface PinnedArtifactItem {
   readonly id: string
@@ -694,6 +705,61 @@ export interface SecretStatusFrame {
   readonly message: string
 }
 
+/* ── job-summoned operator input (widget-system.md Phase 5) ─────────── */
+
+/**
+ * Server→client: a RUNNING JOB (via the `request_input` tool) is asking the
+ * operator for a piece of input — e.g. "Which of these drafts should I
+ * send?". Additive and optional; older clients ignore it.
+ *
+ * BROADCAST: unlike `secret-request` (which targets the thread's registered
+ * client), this frame goes to EVERY connected client — a job has no owning
+ * thread, so any surface may answer. First `job-input-result` wins.
+ *
+ * `runId`/`jobId`/`jobName` identify the waiting run (the run's
+ * `job_runs.status` is `waiting` while this is pending — the workflow
+ * gallery shows the same state). `timeoutMs` is the wall-clock the operator
+ * has before the request resolves failed; clients should dismiss the prompt
+ * when it elapses. The answer is OPERATOR INPUT, not a secret — but the
+ * server still never logs it.
+ */
+export interface JobInputRequestFrame {
+  readonly type: "job-input-request"
+  readonly requestId: string
+  readonly runId: number
+  readonly jobId: string
+  readonly jobName: string
+  /** What the job is asking — shown above the input field. */
+  readonly prompt: string
+  readonly timeoutMs: number
+}
+
+/**
+ * Client→server: the operator's answer to a `job-input-request`. `answer` is
+ * the typed reply (delivered verbatim to the waiting job's model turn; never
+ * logged). When `cancelled` is true the operator dismissed the prompt and
+ * `answer` is absent. `requestId` correlates back to the request.
+ */
+export interface JobInputResultFrame {
+  readonly type: "job-input-result"
+  readonly requestId: string
+  readonly answer?: string
+  readonly cancelled?: boolean
+}
+
+/**
+ * Server→client ack for a `job-input-result` (and the broadcast dismissal on
+ * timeout). The winning sender gets `ok:true`; a late/duplicate answer gets
+ * `ok:false, "already answered"` so its UI can settle. The answer value is
+ * NEVER echoed back here.
+ */
+export interface JobInputStatusFrame {
+  readonly type: "job-input-status"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly message: string
+}
+
 /* ── memory search ──────────────────────────────────────────────────── */
 
 export interface MemorySearchHit {
@@ -764,6 +830,94 @@ export interface PtyResizeFrame {
   readonly rows: number
 }
 
+/**
+ * One entry of a client's widget directory (widget-system.md
+ * "Summon-by-name"). `kind` is the addressable name (e.g. "settings.voice");
+ * `description` is written for the agent to pick the right widget from a
+ * user request. The DIRECTORY comes from the client — the server never
+ * hardcodes a host's widget list, so a different host can offer a different
+ * directory and a different server can ignore it entirely.
+ */
+export interface WidgetDirectoryEntry {
+  readonly kind: string
+  readonly title: string
+  readonly description: string
+}
+
+/**
+ * Server→client: open (or focus) the widget registered under `kind`. Sent in
+ * response to the agent's open_widget tool; the host resolves the kind
+ * through ITS OWN registry and ignores unknown kinds — the frame can never
+ * conjure a window the host didn't already ship.
+ */
+export interface WidgetOpenFrame {
+  readonly type: "widget-open"
+  readonly kind: string
+  /**
+   * Optional instance params (Phase 8 direct lines / parameterized panels):
+   * scalar key→value pairs the host appends to the page URL — e.g.
+   * {thread: "thr_…"} opens a chat window PINNED to that thread, its own
+   * window per distinct params. The host validates keys fail-closed.
+   */
+  readonly params?: Readonly<Record<string, string | number | boolean>>
+}
+
+/* ── MCP Apps host relay (widget-system.md Phase 7, SEP-1865) ───────────
+ * The Moon is an MCP Apps HOST; the Luna server owns every MCP session
+ * (single session authority). v1 serves an in-process CoreAppRegistry —
+ * the server is the first app provider — but the frames are deliberately
+ * provider-agnostic so an external-MCP-server relay rides the same seam.
+ * All four are additive, gated on the hello `mcpApps` capability. */
+
+/** Client→server: resolve a `ui://` app resource (the app's HTML template). */
+export interface McpResourceReadFrame {
+  readonly type: "mcp-resource-read"
+  readonly requestId: string
+  readonly uri: string
+}
+
+/**
+ * Server→client: the resource read outcome. `text` is the app HTML
+ * (mimeType `text/html;profile=mcp-app`); `ok:false` carries a short,
+ * non-sensitive reason (unknown uri, provider failure).
+ */
+export interface McpResourceResultFrame {
+  readonly type: "mcp-resource-result"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly mimeType?: string
+  readonly text?: string
+  readonly message?: string
+}
+
+/**
+ * Client→server: a rendered MCP app called `tools/call`. `appUri` is the
+ * `ui://` resource the calling app was rendered from — the server enforces
+ * the spec's same-server rule (an app may ONLY call its own app's tools).
+ * `args` is the tool's arguments object (any JSON value).
+ */
+export interface McpToolCallFrame {
+  readonly type: "mcp-tool-call"
+  readonly requestId: string
+  readonly appUri: string
+  readonly tool: string
+  readonly args: unknown
+}
+
+/**
+ * Server→client: the tool call outcome. `result` is the tool's content
+ * (any JSON value — spec-shaped CallToolResult for core apps). It is the
+ * app's data: this package NEVER logs it. `ok:false` carries a short,
+ * non-sensitive reason (unknown app, tool not on that app, handler failure).
+ */
+export interface McpToolResultFrame {
+  readonly type: "mcp-tool-result"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly result?: unknown
+  readonly message?: string
+}
+
 export type ServerFrame =
   | HelloFrame
   | EventFrame
@@ -797,12 +951,17 @@ export type ServerFrame =
   | RegisterOpTokenStatusFrame
   | SecretRequestFrame
   | SecretStatusFrame
+  | JobInputRequestFrame
+  | JobInputStatusFrame
   | MemorySearchResultFrame
   | MemorySearchErrorFrame
   | SurveyRequestFrame
   | PtyOutputFrame
   | VaultListFrame
   | VaultStatusFrame
+  | WidgetOpenFrame
+  | McpResourceResultFrame
+  | McpToolResultFrame
 
 /* -------------------------------------------------------------------------- */
 /* Client → server                                                            */
@@ -1002,6 +1161,16 @@ export interface SurveyResponseFrame {
  * the live registry, and acks with `skill-status` + a fresh `skill-catalog`.
  * Idempotent: re-sending the current state is a no-op server-side.
  */
+/**
+ * Client→server: the host's widget directory (sent once after hello by hosts
+ * that can open widgets). Replaces any previously announced directory for
+ * this connection.
+ */
+export interface WidgetDirectoryFrame {
+  readonly type: "widget-directory"
+  readonly widgets: ReadonlyArray<WidgetDirectoryEntry>
+}
+
 export interface SkillToggleFrame {
   readonly type: "skill-toggle"
   readonly id: string
@@ -1022,6 +1191,7 @@ export type ClientFrame =
   | MemorySearchRequestFrame
   | RegisterOpTokenFrame
   | SecretResultFrame
+  | JobInputResultFrame
   | SurveyResponseFrame
   | SkillToggleFrame
   | ConnectorOauthBeginFrame
@@ -1033,6 +1203,9 @@ export type ClientFrame =
   | ArtifactUnpinFrame
   | WorkflowRunsRequestFrame
   | WorkflowRefreshFrame
+  | WidgetDirectoryFrame
+  | McpResourceReadFrame
+  | McpToolCallFrame
   | PtyInputFrame
   | PtyResizeFrame
   | VaultPutFrame

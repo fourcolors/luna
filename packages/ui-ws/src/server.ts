@@ -468,6 +468,36 @@ export interface UIWebSocketServerConfig {
    * is handed straight to the bridge. Pass `null`/absent to disable.
    */
   readonly secretBridge?: SecretRequestBridge | null
+  /**
+   * Optional summon-by-name bridge (widget-system.md). When provided, an
+   * inbound `widget-directory` frame announces this connection as the
+   * widget host; the agent's open_widget tool sends `widget-open` frames
+   * back through it. Pass `null`/absent to disable (frames ignored).
+   */
+  readonly widgetSummoner?: import("./widget-summon-bridge.js").WidgetSummonBridge | null
+  /**
+   * Optional bridge for job-summoned operator input (widget-system.md
+   * Phase 5). When provided, the server registers EVERY connection's
+   * send-handle with the bridge (broadcast model — a job has no owning
+   * thread, so any connected surface may answer) and routes inbound
+   * `job-input-result` frames to `acceptResult` with that connection's
+   * send-handle as the reply target. The answer value is operator input,
+   * not a secret, but it is still never logged by this package — the frame
+   * is handed straight to the bridge. Pass `null`/absent to disable.
+   */
+  readonly jobInputBridge?: import("./job-input-bridge.js").JobInputBridge | null
+  /**
+   * Optional MCP Apps host (widget-system.md Phase 7, SEP-1865 v1). When
+   * provided, the server advertises `capabilities.mcpApps` and routes the two
+   * inbound relay frames through it, replying on the SAME connection:
+   *   - `mcp-resource-read` → handleResourceRead → `mcp-resource-result`
+   *   - `mcp-tool-call`     → handleToolCall     → `mcp-tool-result`
+   * Pure request/response (requestId-correlated) — no per-connection
+   * registration. The host contract: NEVER rejects; every failure is an
+   * `ok:false` reply frame. Tool results are app data and are never logged
+   * by this package. Pass `null`/absent to disable (frames ignored).
+   */
+  readonly mcpAppHost?: import("./mcp-app-host.js").McpAppHost | null
 }
 
 export interface UIWebSocketServerHandle {
@@ -612,7 +642,10 @@ export const startUIWebSocketServer = (
     const survey = config.survey ?? null
     const setupPty = config.setupPty ?? null
     const registerOpToken = config.registerOpToken ?? null
+    const widgetSummoner = config.widgetSummoner ?? null
     const secretBridge = config.secretBridge ?? null
+    const jobInputBridge = config.jobInputBridge ?? null
+    const mcpAppHost = config.mcpAppHost ?? null
     const skillRegistry = config.skillRegistry ?? null
     const connectorService = config.connectorService ?? null
     const artifactStore = config.artifactStore ?? null
@@ -859,6 +892,9 @@ export const startUIWebSocketServer = (
             // Luna Vault (V1): credential registry + put/delete/sync routing.
             // Clients hide the Vault section when absent/false.
             vault: vaultService !== null,
+            // MCP Apps host relay (widget-system.md Phase 7): ui:// resource
+            // reads + same-app tool calls route through the bound McpAppHost.
+            mcpApps: mcpAppHost !== null,
           },
         })
 
@@ -1124,6 +1160,31 @@ export const startUIWebSocketServer = (
           )
         }
 
+        // Summon-by-name: this connection may announce a widget directory.
+        // Reuses the secret connection id for identity; the finalizer only
+        // clears the bridge when THIS connection is still the active host.
+        if (widgetSummoner !== null) {
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              widgetSummoner.unregisterClient(secretConnId)
+            }),
+          )
+        }
+
+        // Job-summoned operator input (widget-system.md Phase 5): EVERY
+        // connection registers with the broadcast bridge at setup (no
+        // subscribe step — a job has no owning thread, so any surface may
+        // answer a job-input-request). Reuses the secret connection id for
+        // identity; the finalizer drops exactly this handle on teardown.
+        if (jobInputBridge !== null) {
+          jobInputBridge.registerClient(secretConnId, (out) => send(ws, out))
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              jobInputBridge.unregisterClient(secretConnId)
+            }),
+          )
+        }
+
         // Single-fiber forwarder. The pattern is: take ONE event from the
         // UIService stream, send it to the ws synchronously, repeat. ws.send
         // is fire-and-forget at the protocol level (the underlying socket
@@ -1279,7 +1340,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || vaultService !== null) {
+        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || vaultService !== null || mcpAppHost !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -1322,6 +1383,16 @@ export const startUIWebSocketServer = (
             const handle = (): Effect.Effect<void, never> =>
               Effect.gen(function* () {
                 switch (frame.type) {
+                  case "widget-directory": {
+                    if (widgetSummoner !== null) {
+                      const widgets = (frame as import("./protocol.js").WidgetDirectoryFrame).widgets
+                      widgetSummoner.registerClient(secretConnId, (out) => send(ws, out), widgets)
+                      console.log(
+                        `[ui-ws] widget host announced ${widgetSummoner.directory().length} summonable widget(s)`,
+                      )
+                    }
+                    break
+                  }
                   case "pong":
                   case "bye":
                     return
@@ -1365,6 +1436,16 @@ export const startUIWebSocketServer = (
                     // bridge — the secret value is never logged or echoed here.
                     if (secretBridge !== null) {
                       secretBridge.acceptResult(frame)
+                    }
+                    return
+                  }
+                  case "job-input-result": {
+                    // Operator's answer to a job-input-request. Hand the frame
+                    // straight to the bridge with THIS connection's send-handle
+                    // as the reply target (win / already-answered ack). The
+                    // answer value is never logged or echoed here.
+                    if (jobInputBridge !== null) {
+                      jobInputBridge.acceptResult(frame, (out) => send(ws, out))
                     }
                     return
                   }
@@ -1889,6 +1970,53 @@ export const startUIWebSocketServer = (
                         ),
                         Effect.catchAllCause(() => Effect.void),
                       )
+                    return
+                  }
+                  case "mcp-resource-read": {
+                    // MCP Apps relay (Phase 7): resolve a ui:// app resource.
+                    // The host NEVER rejects by contract; the catchAllCause is
+                    // belt-and-suspenders so a defect can't kill the socket
+                    // loop — it collapses to a generic ok:false reply.
+                    if (mcpAppHost === null) return
+                    const host = mcpAppHost
+                    const out = yield* Effect.promise(() =>
+                      host.handleResourceRead(frame),
+                    ).pipe(
+                      Effect.catchAllCause(() =>
+                        Effect.succeed<ServerFrame>({
+                          type: "mcp-resource-result",
+                          requestId: String(
+                            (frame as { requestId?: unknown }).requestId ?? "",
+                          ),
+                          ok: false,
+                          message: "resource read failed",
+                        }),
+                      ),
+                    )
+                    send(ws, out)
+                    return
+                  }
+                  case "mcp-tool-call": {
+                    // MCP Apps relay (Phase 7): a rendered app called
+                    // tools/call. Same-app enforcement lives in the provider;
+                    // the result is app data and is never logged here.
+                    if (mcpAppHost === null) return
+                    const host = mcpAppHost
+                    const out = yield* Effect.promise(() =>
+                      host.handleToolCall(frame),
+                    ).pipe(
+                      Effect.catchAllCause(() =>
+                        Effect.succeed<ServerFrame>({
+                          type: "mcp-tool-result",
+                          requestId: String(
+                            (frame as { requestId?: unknown }).requestId ?? "",
+                          ),
+                          ok: false,
+                          message: "tool call failed",
+                        }),
+                      ),
+                    )
+                    send(ws, out)
                     return
                   }
                   case "pty-input": {

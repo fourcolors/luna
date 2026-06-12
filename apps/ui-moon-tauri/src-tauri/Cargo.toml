@@ -54,7 +54,6 @@ optional = true
 # audio-toolbox surface this engine never touches.
 [target.'cfg(target_os = "macos")'.dependencies.objc2]
 version = "0.6.4"
-optional = true
 
 [target.'cfg(target_os = "macos")'.dependencies.objc2-foundation]
 version = "0.3.2"
@@ -81,7 +80,6 @@ voice = [
   "dep:voice_activity_detector",
   "dep:whisper-rs",
   "dep:hound",
-  "dep:objc2",
   "dep:objc2-foundation",
   "dep:objc2-avf-audio",
 ]
