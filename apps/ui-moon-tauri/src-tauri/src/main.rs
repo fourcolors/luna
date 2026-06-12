@@ -1092,110 +1092,170 @@ async fn voice_ensure_model(app: tauri::AppHandle) -> Result<(), String> {
     .await
 }
 
-// ── widget dock graph (group-drag) ──────────────────────────────────────────
+// ── widget dock graph (group-drag via native child windows) ─────────────────
 //
-// widget-system.md Phase 0.5 operator feedback: snapped widgets must MOVE WITH
-// the window they snapped to. widget.html reports its dock state after every
-// settle-snap (`set_dock`); the Moved arm of on_window_event then applies the
-// hub's drag delta to every docked widget. WinAmp model: dragging the HUB
-// carries the group; dragging a docked widget by itself moves only that
-// widget — that IS the detach gesture (its next settle clears the edge).
+// widget-system.md Phase 0.5 operator feedback, round 2: reactive follower
+// repositioning (delta per Moved event) was visibly laggy — every follower
+// trailed the drag by IPC ticks. The fix is the platform's own primitive:
+// `NSWindow addChildWindow:ordered:` moves children IN THE SAME window-server
+// transaction as the parent — the compositor carries the whole cluster,
+// zero lag, none of our code in the drag path.
 //
-// `suppressed` counts pending PROGRAMMATIC moves per label (a counter, not a
-// flag) so a follower's echoed Moved event neither re-propagates nor eats a
-// concurrent real user drag.
+// widget.html reports its dock state after every settle-snap
+// (`set_dock {docked, anchor, edge}`); anchors can be the hub OR another
+// widget, so clusters form a forest (child → parent edges). Dragging any
+// window natively carries its whole subtree. Dragging a child away is the
+// detach gesture: its settle reports docked=false and we unparent it.
 #[derive(Default)]
-struct DockState(std::sync::Mutex<DockInner>);
+struct DockState(std::sync::Mutex<DockEdges>);
 
 #[derive(Default)]
-struct DockInner {
-    /// widget labels currently docked to the hub ("main").
-    docked: std::collections::HashSet<String>,
-    /// last known outer position per label, physical px.
-    positions: std::collections::HashMap<String, (i32, i32)>,
-    /// pending programmatic moves per label.
-    suppressed: std::collections::HashMap<String, u32>,
+struct DockEdges {
+    /// child label → anchor label it is docked (natively parented) to.
+    parent_of: std::collections::HashMap<String, String>,
 }
 
-/// Pure half of the group-drag: fold one Moved(label → x,y) event into the
-/// dock state and return the follower moves to apply (empty when the event
-/// was a suppressed echo, a non-hub window, a first sighting, or a no-op).
-/// Kept free of window handles so the arithmetic is unit-testable.
-fn dock_fold_move(
-    s: &mut DockInner,
-    label: &str,
-    x: i32,
-    y: i32,
-) -> Vec<(String, i32, i32)> {
-    if let Some(n) = s.suppressed.get_mut(label) {
-        if *n > 0 {
-            *n -= 1;
-            s.positions.insert(label.to_string(), (x, y));
-            return Vec::new();
+/// Would docking `child` onto `anchor` create a cycle (anchor already lives
+/// in child's subtree)? Pure, unit-testable.
+fn dock_would_cycle(edges: &DockEdges, child: &str, anchor: &str) -> bool {
+    let mut cur = anchor;
+    loop {
+        if cur == child {
+            return true;
+        }
+        match edges.parent_of.get(cur) {
+            Some(p) => cur = p.as_str(),
+            None => return false,
         }
     }
-    let prev = s.positions.insert(label.to_string(), (x, y));
-    if label != "main" {
-        return Vec::new();
+}
+
+/// Apply an edge change to the graph. Returns the PREVIOUS anchor (the one
+/// to natively unparent from), or an error for self-docks and cycles. Pure.
+fn dock_set_edge(
+    edges: &mut DockEdges,
+    child: &str,
+    anchor: Option<&str>,
+) -> Result<Option<String>, String> {
+    match anchor {
+        Some(a) => {
+            if a == child {
+                return Err("a widget cannot dock to itself".into());
+            }
+            if dock_would_cycle(edges, child, a) {
+                return Err("dock would create a cycle".into());
+            }
+            Ok(edges.parent_of.insert(child.to_string(), a.to_string()))
+        }
+        None => Ok(edges.parent_of.remove(child)),
     }
-    let Some((px, py)) = prev else {
-        return Vec::new();
+}
+
+/// Labels directly docked onto `label`. Pure.
+fn dock_children_of(edges: &DockEdges, label: &str) -> Vec<String> {
+    edges
+        .parent_of
+        .iter()
+        .filter(|(_, p)| p.as_str() == label)
+        .map(|(c, _)| c.clone())
+        .collect()
+}
+
+/// Native half: parent/unparent via AppKit. MUST run on the main thread.
+/// NSWindowAbove = 1 — the child orders above its parent, which matches the
+/// accepted always-on-top stacking (PRD §23).
+#[cfg(target_os = "macos")]
+fn ns_set_child(parent: &tauri::WebviewWindow, child: &tauri::WebviewWindow, attach: bool) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    let (Ok(p), Ok(c)) = (parent.ns_window(), child.ns_window()) else {
+        return;
     };
-    let (dx, dy) = (x - px, y - py);
-    if dx == 0 && dy == 0 {
-        return Vec::new();
+    let p = p as *mut AnyObject;
+    let c = c as *mut AnyObject;
+    if p.is_null() || c.is_null() {
+        return;
     }
-    let docked: Vec<String> = s.docked.iter().cloned().collect();
-    let mut moves = Vec::new();
-    for fl in docked {
-        // A docked widget without a seeded position can't be deltaed safely —
-        // skip it; its next settle-snap re-seeds via set_dock.
-        let Some(cur) = s.positions.get(&fl).copied() else {
-            continue;
-        };
-        let next = (cur.0 + dx, cur.1 + dy);
-        *s.suppressed.entry(fl.clone()).or_insert(0) += 1;
-        s.positions.insert(fl.clone(), next);
-        moves.push((fl, next.0, next.1));
+    unsafe {
+        if attach {
+            let _: () = msg_send![&*p, addChildWindow: &*c, ordered: 1isize];
+        } else {
+            let _: () = msg_send![&*p, removeChildWindow: &*c];
+        }
     }
-    moves
 }
 
-/// Remove a window from the dock state entirely (close/destroy).
-fn dock_forget(s: &mut DockInner, label: &str) {
-    s.docked.remove(label);
-    s.positions.remove(label);
-    s.suppressed.remove(label);
-}
+#[cfg(not(target_os = "macos"))]
+fn ns_set_child(_parent: &tauri::WebviewWindow, _child: &tauri::WebviewWindow, _attach: bool) {}
 
-/// widget.html calls this after every settle-snap: docked=true when it landed
-/// flush on the hub, false when it settled away. Seeds both rects so the next
-/// hub delta starts from fresh truth. The hub itself can never dock.
+/// widget.html calls this after every settle-snap: `docked=true, anchor=L`
+/// when it landed flush on window L (hub or another widget), `docked=false`
+/// when it settled away. Re-affirming the same anchor is a no-op. After a
+/// successful dock the ANCHOR window receives a `dock-link` event so it can
+/// flash its side of the seam.
 #[tauri::command]
 fn set_dock(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, DockState>,
     docked: bool,
+    anchor: Option<String>,
+    edge: Option<String>,
 ) -> Result<(), String> {
-    let label = window.label().to_string();
-    if label == "main" {
-        return Err("the hub cannot dock to itself".into());
+    let child_label = window.label().to_string();
+    if child_label == "main" {
+        return Err("the hub cannot dock to anything".into());
     }
-    let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
-    if docked {
-        if let Ok(p) = window.outer_position() {
-            s.positions.insert(label.clone(), (p.x, p.y));
-        }
-        if let Some(main) = window.app_handle().get_webview_window("main") {
-            if let Ok(p) = main.outer_position() {
-                s.positions.insert("main".to_string(), (p.x, p.y));
-            }
-        }
-        s.docked.insert(label);
+    let anchor_label = if docked {
+        Some(anchor.ok_or_else(|| "anchor required when docking".to_string())?)
     } else {
-        s.docked.remove(&label);
+        None
+    };
+    let app = window.app_handle().clone();
+    if let Some(a) = anchor_label.as_deref() {
+        if app.get_webview_window(a).is_none() {
+            return Err(format!("unknown anchor window: {a}"));
+        }
     }
-    Ok(())
+
+    let prev = {
+        let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
+        // Idempotent re-affirm: same anchor → nothing to do natively.
+        if anchor_label.is_some() && s.parent_of.get(&child_label) == anchor_label.as_ref() {
+            return Ok(());
+        }
+        dock_set_edge(&mut s, &child_label, anchor_label.as_deref())?
+    };
+
+    // AppKit window-tree mutations belong on the main thread.
+    let child_for_ns = child_label.clone();
+    let anchor_for_ns = anchor_label.clone();
+    window
+        .run_on_main_thread(move || {
+            let child = match app.get_webview_window(&child_for_ns) {
+                Some(w) => w,
+                None => return,
+            };
+            if let Some(prev_label) = prev {
+                if let Some(p) = app.get_webview_window(&prev_label) {
+                    ns_set_child(&p, &child, false);
+                }
+            }
+            if let Some(a_label) = anchor_for_ns {
+                if let Some(p) = app.get_webview_window(&a_label) {
+                    ns_set_child(&p, &child, true);
+                    // Tell the anchor's page to flash its side of the seam.
+                    let _ = app.emit_to(
+                        tauri::EventTarget::labeled(&a_label),
+                        "dock-link",
+                        serde_json::json!({
+                            "from": child_for_ns,
+                            "edge": edge.unwrap_or_default(),
+                        }),
+                    );
+                }
+            }
+        })
+        .map_err(|e| e.to_string())
 }
 
 fn main() {
@@ -1205,45 +1265,42 @@ fn main() {
         // (widget-*/panel-*) closes with it, and Tauri's natural
         // last-window-closed exit fires. The reverse never holds: closing a
         // widget leaves the hub (and the app) alive.
-        // The Moved arm drives dock group-drag (see DockState above).
         .on_window_event(|window, event| {
-            match event {
-                tauri::WindowEvent::Destroyed => {
-                    {
-                        let state = window.app_handle().state::<DockState>();
-                        let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
-                        dock_forget(&mut s, window.label());
-                    }
-                    if window.label() == "main" {
-                        for (label, win) in window.app_handle().webview_windows() {
-                            if label != "main" {
-                                // destroy(), not close(): close() emits
-                                // CloseRequested first, which page JS can
-                                // intercept — a widget with an "unsaved
-                                // changes" guard would survive the hub and
-                                // float orphaned forever. destroy() is the
-                                // hard guarantee the invariant claims.
-                                let _ = win.destroy();
-                            }
-                        }
-                    }
-                }
-                tauri::WindowEvent::Moved(pos) => {
-                    let app = window.app_handle();
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                let app = window.app_handle();
+                // Dock-graph hygiene: drop the dying window's own edge and
+                // orphan its children. AppKit cascades orderOut to children
+                // of a closing parent, so re-show each orphan or it would
+                // vanish with its anchor despite being its own window.
+                let orphans = {
                     let state = app.state::<DockState>();
-                    // Fold under the lock; APPLY outside it — set_position can
-                    // re-enter this handler with the follower's own Moved.
-                    let moves = {
-                        let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
-                        dock_fold_move(&mut s, window.label(), pos.x, pos.y)
-                    };
-                    for (fl, nx, ny) in moves {
-                        if let Some(w) = app.get_webview_window(&fl) {
-                            let _ = w.set_position(tauri::PhysicalPosition::new(nx, ny));
+                    let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
+                    s.parent_of.remove(window.label());
+                    let kids = dock_children_of(&s, window.label());
+                    for k in &kids {
+                        s.parent_of.remove(k);
+                    }
+                    kids
+                };
+                if window.label() == "main" {
+                    for (label, win) in app.webview_windows() {
+                        if label != "main" {
+                            // destroy(), not close(): close() emits
+                            // CloseRequested first, which page JS can
+                            // intercept — a widget with an "unsaved
+                            // changes" guard would survive the hub and
+                            // float orphaned forever. destroy() is the
+                            // hard guarantee the invariant claims.
+                            let _ = win.destroy();
+                        }
+                    }
+                } else {
+                    for k in orphans {
+                        if let Some(w) = app.get_webview_window(&k) {
+                            let _ = w.show();
                         }
                     }
                 }
-                _ => {}
             }
         })
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -1252,7 +1309,7 @@ fn main() {
         // PRD A §09: open the system browser for the connector OAuth hop.
         .plugin(tauri_plugin_opener::init())
         .manage(InteractiveRegion::default())
-        // Widget dock graph for group-drag (set_dock + the Moved arm above).
+        // Widget dock graph for group-drag (set_dock + native child windows).
         .manage(DockState::default())
         // PRD A §09: the client-brokered OAuth loopback state.
         .manage(OauthLoopback::default());
@@ -1894,93 +1951,68 @@ mod tests {
 
 #[cfg(test)]
 mod dock_tests {
-    use super::{dock_fold_move, dock_forget, DockInner};
-
-    fn seeded() -> DockInner {
-        let mut s = DockInner::default();
-        s.docked.insert("widget-a".to_string());
-        s.docked.insert("widget-b".to_string());
-        s.positions.insert("main".to_string(), (100, 100));
-        s.positions.insert("widget-a".to_string(), (500, 120));
-        s.positions.insert("widget-b".to_string(), (500, 400));
-        s
-    }
+    use super::{dock_children_of, dock_set_edge, dock_would_cycle, DockEdges};
 
     #[test]
-    fn hub_move_carries_every_seeded_docked_widget_by_the_same_delta() {
-        let mut s = seeded();
-        let mut moves = dock_fold_move(&mut s, "main", 130, 90);
-        moves.sort();
+    fn docking_and_undocking_maintain_edges_and_report_previous_anchor() {
+        let mut e = DockEdges::default();
+        assert_eq!(dock_set_edge(&mut e, "widget-a", Some("main")), Ok(None));
+        // Re-docking to a NEW anchor reports the old one (to unparent from).
         assert_eq!(
-            moves,
-            vec![
-                ("widget-a".to_string(), 530, 110),
-                ("widget-b".to_string(), 530, 390),
-            ]
+            dock_set_edge(&mut e, "widget-a", Some("widget-b")),
+            Ok(Some("main".to_string()))
         );
-        // Follower bookkeeping advanced with the move and armed suppression.
-        assert_eq!(s.positions["widget-a"], (530, 110));
-        assert_eq!(s.suppressed["widget-a"], 1);
+        assert_eq!(
+            dock_set_edge(&mut e, "widget-a", None),
+            Ok(Some("widget-b".to_string()))
+        );
+        assert_eq!(dock_set_edge(&mut e, "widget-a", None), Ok(None));
     }
 
     #[test]
-    fn consecutive_hub_moves_accumulate_correctly() {
-        let mut s = seeded();
-        let _ = dock_fold_move(&mut s, "main", 110, 100);
-        let moves = dock_fold_move(&mut s, "main", 120, 100);
-        assert!(moves.contains(&("widget-a".to_string(), 520, 120)));
+    fn chains_form_and_children_enumerate() {
+        let mut e = DockEdges::default();
+        let _ = dock_set_edge(&mut e, "widget-a", Some("main"));
+        let _ = dock_set_edge(&mut e, "widget-b", Some("widget-a"));
+        let _ = dock_set_edge(&mut e, "widget-c", Some("widget-a"));
+        let mut kids = dock_children_of(&e, "widget-a");
+        kids.sort();
+        assert_eq!(kids, vec!["widget-b".to_string(), "widget-c".to_string()]);
+        assert_eq!(dock_children_of(&e, "widget-b"), Vec::<String>::new());
     }
 
     #[test]
-    fn non_hub_moves_never_propagate_but_update_position() {
-        let mut s = seeded();
-        let moves = dock_fold_move(&mut s, "widget-a", 700, 700);
-        assert!(moves.is_empty());
-        assert_eq!(s.positions["widget-a"], (700, 700));
+    fn self_dock_is_rejected() {
+        let mut e = DockEdges::default();
+        assert!(dock_set_edge(&mut e, "widget-a", Some("widget-a")).is_err());
     }
 
     #[test]
-    fn suppressed_echo_is_consumed_exactly_once() {
-        let mut s = seeded();
-        let _ = dock_fold_move(&mut s, "main", 130, 90); // arms suppression=1
-        // The follower's echoed Moved: consumed, no propagation, counter drops.
-        let moves = dock_fold_move(&mut s, "widget-a", 530, 110);
-        assert!(moves.is_empty());
-        assert_eq!(s.suppressed["widget-a"], 0);
-        // A real user drag of the follower afterwards is NOT suppressed.
-        let moves = dock_fold_move(&mut s, "widget-a", 900, 900);
-        assert!(moves.is_empty()); // non-hub: bookkeeping only
-        assert_eq!(s.positions["widget-a"], (900, 900));
+    fn direct_and_transitive_cycles_are_rejected() {
+        let mut e = DockEdges::default();
+        let _ = dock_set_edge(&mut e, "widget-b", Some("widget-a"));
+        // a → b would make a cycle (b is already docked to a).
+        assert!(dock_would_cycle(&e, "widget-a", "widget-b"));
+        assert!(dock_set_edge(&mut e, "widget-a", Some("widget-b")).is_err());
+        // Transitive: c docked to b, then a → c also cycles.
+        let _ = dock_set_edge(&mut e, "widget-c", Some("widget-b"));
+        assert!(dock_set_edge(&mut e, "widget-a", Some("widget-c")).is_err());
+        // A genuinely independent dock still works.
+        assert!(dock_set_edge(&mut e, "widget-d", Some("widget-a")).is_ok());
     }
 
     #[test]
-    fn first_hub_sighting_and_zero_delta_produce_no_moves() {
-        let mut s = DockInner::default();
-        s.docked.insert("widget-a".to_string());
-        s.positions.insert("widget-a".to_string(), (500, 120));
-        assert!(dock_fold_move(&mut s, "main", 100, 100).is_empty()); // no prev
-        assert!(dock_fold_move(&mut s, "main", 100, 100).is_empty()); // no delta
-        assert!(!dock_fold_move(&mut s, "main", 110, 100).is_empty());
-    }
-
-    #[test]
-    fn unseeded_docked_widget_is_skipped_not_invented() {
-        let mut s = DockInner::default();
-        s.docked.insert("widget-ghost".to_string());
-        s.positions.insert("main".to_string(), (100, 100));
-        let moves = dock_fold_move(&mut s, "main", 150, 150);
-        assert!(moves.is_empty());
-    }
-
-    #[test]
-    fn dock_forget_clears_all_traces() {
-        let mut s = seeded();
-        s.suppressed.insert("widget-a".to_string(), 2);
-        dock_forget(&mut s, "widget-a");
-        assert!(!s.docked.contains("widget-a"));
-        assert!(!s.positions.contains_key("widget-a"));
-        assert!(!s.suppressed.contains_key("widget-a"));
-        // Others untouched.
-        assert!(s.docked.contains("widget-b"));
+    fn destroyed_anchor_cleanup_orphans_children() {
+        let mut e = DockEdges::default();
+        let _ = dock_set_edge(&mut e, "widget-a", Some("main"));
+        let _ = dock_set_edge(&mut e, "widget-b", Some("widget-a"));
+        // Simulate the Destroyed-arm hygiene for widget-a.
+        e.parent_of.remove("widget-a");
+        let kids = dock_children_of(&e, "widget-a");
+        for k in &kids {
+            e.parent_of.remove(k);
+        }
+        assert_eq!(kids, vec!["widget-b".to_string()]);
+        assert!(e.parent_of.is_empty());
     }
 }

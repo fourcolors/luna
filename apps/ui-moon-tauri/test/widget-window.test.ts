@@ -101,7 +101,13 @@ describe('widget.html — deck self-snap consumer', () => {
       },
       // load_connection → null keeps init() on the "Not connected" path:
       // no WebSocket is ever constructed in the test env.
-      core: { invoke: vi.fn(async () => null) },
+      core: {
+        invoke: vi.fn(async (cmd: string) => {
+          if (cmd === 'list_widget_windows') return []
+          return null
+        }),
+      },
+      event: { listen: vi.fn(async () => () => {}) },
     }
 
     loadVendorInto(window, 'deck-snap.js')
@@ -195,33 +201,92 @@ describe('widget.html — deck self-snap consumer', () => {
     expect(setPositionCalls).toHaveLength(0)
   })
 
-  const dockCalls = () =>
+  interface DockArgs { docked: boolean; anchor: string | null; edge: string | null }
+  const dockArgs = (): DockArgs[] =>
     ((window as any).__TAURI__.core.invoke as ReturnType<typeof vi.fn>).mock.calls
       .filter((c: unknown[]) => c[0] === 'set_dock')
-      .map((c: unknown[]) => (c[1] as { docked: boolean }).docked)
+      .map((c: unknown[]) => c[1] as DockArgs)
 
-  it('reports dock=true to the Rust dock graph after snapping', async () => {
+  it('reports the anchor and edge to the Rust dock graph after snapping', async () => {
     movedHandler!()
     await vi.advanceTimersByTimeAsync(121)
-    expect(dockCalls()).toEqual([true])
+    // Fixture geometry: the widget sits just right of main → edge "r".
+    expect(dockArgs()).toEqual([{ docked: true, anchor: 'main', edge: 'r' }])
+    // The pin affordance appeared with the link.
+    expect((document.getElementById('pin-btn') as HTMLButtonElement).hidden).toBe(false)
   })
 
-  it('reports dock=false after settling out of range (the detach gesture)', async () => {
+  it('reports dock=false after drifting out of range while docked (drag-detach)', async () => {
+    movedHandler!()
+    await vi.advanceTimersByTimeAsync(121) // dock first
     me.outerPosition.mockResolvedValue({ x: 2000, y: 1500 })
     movedHandler!()
     await vi.advanceTimersByTimeAsync(121)
-    expect(dockCalls()).toEqual([false])
+    const calls = dockArgs()
+    expect(calls[calls.length - 1]).toEqual({ docked: false, anchor: null, edge: null })
+    expect((document.getElementById('pin-btn') as HTMLButtonElement).hidden).toBe(true)
   })
 
-  it('re-affirms dock=true on the group-drag echo (already flush, no move)', async () => {
+  it('settling out of range while UNdocked reports nothing (no set_dock spam)', async () => {
+    me.outerPosition.mockResolvedValue({ x: 2000, y: 1500 })
+    movedHandler!()
+    await vi.advanceTimersByTimeAsync(121)
+    expect(dockArgs()).toHaveLength(0)
+  })
+
+  it('re-affirms the dock on the group-drag echo without re-moving', async () => {
     movedHandler!()
     await vi.advanceTimersByTimeAsync(121)
     const snapped = setPositionCalls[0]
     me.outerPosition.mockResolvedValue({ x: snapped.x, y: snapped.y })
     movedHandler!()
     await vi.advanceTimersByTimeAsync(121)
-    expect(dockCalls()).toEqual([true, true])
+    expect(dockArgs().map((a) => a.docked)).toEqual([true, true])
     expect(setPositionCalls).toHaveLength(1) // still no re-issued move
+  })
+
+  it('prefers the nearest anchor — widgets snap to sibling widgets', async () => {
+    // A sibling widget 10px right of us (vs main 20px to our left).
+    const sibling = {
+      outerPosition: vi.fn(async () => ({ x: 850, y: 130 })),
+      outerSize: vi.fn(async () => ({ width: 200, height: 200 })),
+    }
+    ;((window as any).__TAURI__.core.invoke as ReturnType<typeof vi.fn>).mockImplementation(
+      async (cmd: string) => (cmd === 'list_widget_windows' ? ['widget-zzz'] : null),
+    )
+    getByLabel.mockImplementation(async (l: string) =>
+      l === 'main'
+        ? {
+            outerPosition: vi.fn(async () => ({ x: MAIN_RECT.x, y: MAIN_RECT.y })),
+            outerSize: vi.fn(async () => ({ width: MAIN_RECT.w, height: MAIN_RECT.h })),
+          }
+        : l === 'widget-zzz'
+          ? sibling
+          : null,
+    )
+
+    movedHandler!()
+    await vi.advanceTimersByTimeAsync(121)
+    const calls = dockArgs()
+    // Our right edge (840) is 10px from the sibling's left edge (850) — closer
+    // than main's right edge (520) is to our left (540, 20px). Sibling wins.
+    expect(calls[calls.length - 1]).toEqual({ docked: true, anchor: 'widget-zzz', edge: 'l' })
+  })
+
+  it('clicking the pin detaches and ejects past the magnet range', async () => {
+    movedHandler!()
+    await vi.advanceTimersByTimeAsync(121) // docked, edge "r"
+    const pin = document.getElementById('pin-btn') as HTMLButtonElement
+    expect(pin.hidden).toBe(false)
+
+    pin.click()
+    await vi.advanceTimersByTimeAsync(1)
+    const calls = dockArgs()
+    expect(calls[calls.length - 1]).toEqual({ docked: false, anchor: null, edge: null })
+    expect(pin.hidden).toBe(true)
+    // Eject: +36px on the x axis (we were docked at main's right edge).
+    const eject = setPositionCalls[setPositionCalls.length - 1]
+    expect(eject.x).toBe(WIDGET_POS.x + 36)
   })
 
   it('survives a missing main window without touching position', async () => {
