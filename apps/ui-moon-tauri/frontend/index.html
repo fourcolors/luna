@@ -6079,11 +6079,17 @@
             popOutBtnP.textContent = '⤢';
             popOutBtnP.title = 'Open in widget window';
             popOutBtnP.setAttribute('data-action', 'pop-out');
-            popOutBtnP.addEventListener('click', (e) => {
+            popOutBtnP.addEventListener('click', async (e) => {
               e.stopPropagation();
               if (window.__TAURI__ && window.__TAURI__.core) {
-                window.__TAURI__.core.invoke('open_artifact_widget', { artifactId: a.id, title: a.title || '' })
-                  .catch(() => {/* best-effort */});
+                // Cascade new windows — N pop-outs at the same default frame
+                // look like one window (perfectly stacked).
+                const open = await window.__TAURI__.core.invoke('list_widget_windows').catch(() => []);
+                const n = Array.isArray(open) ? open.length : 0;
+                window.__TAURI__.core.invoke('open_artifact_widget', {
+                  artifactId: a.id, title: a.title || '',
+                  x: 180 + n * 44, y: 160 + n * 44,
+                }).catch(() => {/* best-effort */});
               }
             });
 
@@ -6134,11 +6140,20 @@
             popOutBtnS.textContent = '⤢';
             popOutBtnS.title = 'Open in widget window';
             popOutBtnS.setAttribute('data-action', 'pop-out');
-            popOutBtnS.addEventListener('click', (e) => {
+            popOutBtnS.addEventListener('click', async (e) => {
               e.stopPropagation();
               if (window.__TAURI__ && window.__TAURI__.core) {
-                window.__TAURI__.core.invoke('open_artifact_widget', { artifactId: a.id, title: a.title || a.path || '' })
-                  .catch(() => {/* best-effort */});
+                // Widget windows render PINNED artifacts — pin this session
+                // artifact first (popping out IS pinning it as a widget),
+                // then spawn cascaded. The widget self-heals via the
+                // artifact-list broadcast once the pin lands.
+                if (!this._isPinned(a.id)) this.pin(a);
+                const open = await window.__TAURI__.core.invoke('list_widget_windows').catch(() => []);
+                const n = Array.isArray(open) ? open.length : 0;
+                window.__TAURI__.core.invoke('open_artifact_widget', {
+                  artifactId: a.id, title: a.title || a.path || '',
+                  x: 180 + n * 44, y: 160 + n * 44,
+                }).catch(() => {/* best-effort */});
               }
             });
 

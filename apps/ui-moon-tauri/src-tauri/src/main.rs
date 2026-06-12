@@ -1276,6 +1276,178 @@ impl DockGroups {
         }
         (diff, departed)
     }
+
+    /// Re-partition the group containing `member` by actual geometry: pieces
+    /// that no longer touch split into separate groups; singletons dissolve.
+    /// Survivor groups keep working natives via fresh detach/attach diffs.
+    /// Returns (diff, all labels whose state may have changed).
+    fn regroup_by_geometry(
+        &mut self,
+        member: &str,
+        rects: &[(String, (i32, i32, i32, i32))],
+    ) -> (DockDiff, Vec<String>) {
+        let Some(&id) = self.by_label.get(member) else {
+            return (Vec::new(), Vec::new());
+        };
+        let comps = dock_components(rects);
+        if comps.len() <= 1 {
+            return (Vec::new(), Vec::new());
+        }
+        let old = self.groups.remove(&id).expect("group exists");
+        let mut diff: DockDiff = Vec::new();
+        let mut touched: Vec<String> = Vec::new();
+        // Tear the old star down completely…
+        for m in &old.members {
+            self.by_label.remove(m);
+            touched.push(m.clone());
+            if *m != old.root {
+                diff.push((old.root.clone(), m.clone(), false));
+            }
+        }
+        // …and re-star each connected component (singletons stay free).
+        for comp in comps {
+            if comp.len() < 2 {
+                continue;
+            }
+            let root = comp.iter().min().cloned().expect("non-empty");
+            let gid = self.next_id;
+            self.next_id += 1;
+            let mut members = std::collections::HashSet::new();
+            for m in &comp {
+                members.insert(m.clone());
+                self.by_label.insert(m.clone(), gid);
+                if *m != root {
+                    diff.push((root.clone(), m.clone(), true));
+                }
+            }
+            self.groups.insert(gid, DockGroup { root, members });
+        }
+        (diff, touched)
+    }
+}
+
+/// A window's outer rect in LOGICAL px (its own monitor's scale) — all dock
+/// geometry runs in logical units so mixed-DPI setups compare coherently.
+fn dock_logical_rect(w: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i32)> {
+    let p = w.outer_position().ok()?;
+    let s = w.outer_size().ok()?;
+    let sf = w.scale_factor().unwrap_or(1.0);
+    Some((
+        (f64::from(p.x) / sf) as i32,
+        (f64::from(p.y) / sf) as i32,
+        (f64::from(s.width) / sf) as i32,
+        (f64::from(s.height) / sf) as i32,
+    ))
+}
+
+/// Is rect `a` within `t` px of a snapable seam against `b` (same candidate
+/// geometry as deck-snap.js computeSnap)? Used to validate eject clearance.
+fn dock_in_magnet(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32), t: i32) -> bool {
+    let (ax, ay, aw, ah) = a;
+    let (bx, by, bw, bh) = b;
+    let (al, at_, ar, ab) = (ax, ay, ax + aw, ay + ah);
+    let (bl, bt, br, bb) = (bx, by, bx + bw, by + bh);
+    let v_overlap = at_ < bb && ab > bt;
+    let h_overlap = al < br && ar > bl;
+    (v_overlap && ((al - br).abs() <= t || (ar - bl).abs() <= t))
+        || (h_overlap && ((at_ - bb).abs() <= t || (ab - bt).abs() <= t))
+}
+
+/// Do two rects intersect?
+fn dock_rects_overlap(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
+    let (ax, ay, aw, ah) = a;
+    let (bx, by, bw, bh) = b;
+    ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by
+}
+
+/// Pick an eject vector (logical px) that doesn't land the leaver INSIDE a
+/// former neighbor. Instant re-linking is prevented separately by the
+/// ex-member cooldown (the leaver ignores its old group briefly), so a
+/// surviving flush seam here is fine. Prefers the axis pointing away from
+/// the group centroid.
+fn dock_eject_vector(
+    leaver: (i32, i32, i32, i32),
+    others: &[(i32, i32, i32, i32)],
+) -> (i32, i32) {
+    const STEP: i32 = 36;
+    let (lx, ly, lw, lh) = leaver;
+    let (lcx, lcy) = (i64::from(lx) + i64::from(lw) / 2, i64::from(ly) + i64::from(lh) / 2);
+    let (mut cx, mut cy, mut n) = (0i64, 0i64, 0i64);
+    for (ox, oy, ow, oh) in others {
+        cx += i64::from(*ox) + i64::from(*ow) / 2;
+        cy += i64::from(*oy) + i64::from(*oh) / 2;
+        n += 1;
+    }
+    let (sx, sy) = if n == 0 {
+        (1, 0)
+    } else {
+        (
+            if lcx >= cx / n { 1 } else { -1 },
+            if lcy >= cy / n { 1 } else { -1 },
+        )
+    };
+    let candidates = [
+        (STEP * sx, 0),
+        (0, STEP * sy),
+        (STEP * sx, STEP * sy),
+        (-STEP * sx, 0),
+        (0, -STEP * sy),
+        (2 * STEP * sx, 0),
+        (0, 2 * STEP * sy),
+        (2 * STEP * sx, 2 * STEP * sy),
+    ];
+    for (dx, dy) in candidates {
+        let moved = (lx + dx, ly + dy, lw, lh);
+        if others.iter().all(|o| !dock_rects_overlap(moved, *o)) {
+            return (dx, dy);
+        }
+    }
+    (STEP * sx, STEP * sy) // give up gracefully: diagonal shove
+}
+
+/// Two rects touch when an edge pair sits flush (≤2 px) with real
+/// perpendicular overlap — the shared predicate for the perimeter outline
+/// and geometric regrouping.
+fn dock_rects_touch(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
+    const EPS: i32 = 2;
+    const MIN_OVERLAP: i32 = 8;
+    let (ax, ay, aw, ah) = a;
+    let (bx, by, bw, bh) = b;
+    let (al, at, ar, ab) = (ax, ay, ax + aw, ay + ah);
+    let (bl, bt, br, bb) = (bx, by, bx + bw, by + bh);
+    let v_overlap = (ab.min(bb) - at.max(bt)) >= MIN_OVERLAP;
+    let h_overlap = (ar.min(br) - al.max(bl)) >= MIN_OVERLAP;
+    (v_overlap && ((al - br).abs() <= EPS || (ar - bl).abs() <= EPS))
+        || (h_overlap && ((at - bb).abs() <= EPS || (ab - bt).abs() <= EPS))
+}
+
+/// Split a member list into geometry-connected components (flood fill over
+/// the touch predicate). Pure.
+fn dock_components(
+    rects: &[(String, (i32, i32, i32, i32))],
+) -> Vec<Vec<String>> {
+    let n = rects.len();
+    let mut seen = vec![false; n];
+    let mut out = Vec::new();
+    for start in 0..n {
+        if seen[start] {
+            continue;
+        }
+        let mut comp = Vec::new();
+        let mut stack = vec![start];
+        seen[start] = true;
+        while let Some(i) = stack.pop() {
+            comp.push(rects[i].0.clone());
+            for j in 0..n {
+                if !seen[j] && dock_rects_touch(rects[i].1, rects[j].1) {
+                    seen[j] = true;
+                    stack.push(j);
+                }
+            }
+        }
+        out.push(comp);
+    }
+    out
 }
 
 /// Which sides of each member face OUT of the group? A side is interior when
@@ -1375,19 +1547,18 @@ fn dock_apply_and_notify(
     for label in notify {
         let members = s.members_of(&label);
         let payload = if members.is_empty() {
-            serde_json::json!({ "grouped": false, "members": [], "outlineSides": [] })
+            serde_json::json!({ "for": label, "grouped": false, "members": [], "outlineSides": [] })
         } else {
             let rects: Vec<(String, (i32, i32, i32, i32))> = members
                 .iter()
                 .filter_map(|m| {
                     let w = app.get_webview_window(m)?;
-                    let p = w.outer_position().ok()?;
-                    let sz = w.outer_size().ok()?;
-                    Some((m.clone(), (p.x, p.y, sz.width as i32, sz.height as i32)))
+                    Some((m.clone(), dock_logical_rect(&w)?))
                 })
                 .collect();
             let outline = dock_outline_sides(&rects);
             serde_json::json!({
+                "for": label,
                 "grouped": true,
                 "members": members,
                 "outlineSides": outline.get(&label).cloned().unwrap_or_default(),
@@ -1397,9 +1568,46 @@ fn dock_apply_and_notify(
     }
 }
 
+/// After a member departs, re-partition its old group by geometry and apply
+/// the native changes. Survivors that no longer touch split into separate
+/// groups; singletons dissolve. Returns every label whose state changed.
+/// MUST run on the main thread.
+fn dock_regroup_after_leave(app: &tauri::AppHandle, survivors: &[String]) -> Vec<String> {
+    if survivors.len() < 2 {
+        return Vec::new();
+    }
+    let rects: Vec<(String, (i32, i32, i32, i32))> = survivors
+        .iter()
+        .filter_map(|m| {
+            let w = app.get_webview_window(m)?;
+            Some((m.clone(), dock_logical_rect(&w)?))
+        })
+        .collect();
+    let (diff, touched) = {
+        let state = app.state::<DockState>();
+        let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(seed) = survivors.first() else {
+            return Vec::new();
+        };
+        s.regroup_by_geometry(seed, &rects)
+    };
+    for (parent, child, attach) in diff {
+        if let (Some(p), Some(c)) = (
+            app.get_webview_window(&parent),
+            app.get_webview_window(&child),
+        ) {
+            ns_set_child(&p, &c, attach);
+        }
+    }
+    touched
+}
+
 /// widget.html calls this after a settle-snap lands flush on `anchor`
 /// (docked=true) or from the pin (docked=false → leave the group; the window
-/// is nudged a step past the magnet range so it doesn't instantly re-link).
+/// is ejected past the magnet range of every former neighbor). For a GROUPED
+/// caller reporting a merge, (dx, dy) is the snap delta in logical px and the
+/// caller's whole group is translated so the seam lands flush — individual
+/// members never move themselves (that would tear the cluster).
 #[tauri::command]
 fn set_dock(
     window: tauri::WebviewWindow,
@@ -1407,6 +1615,8 @@ fn set_dock(
     docked: bool,
     anchor: Option<String>,
     edge: Option<String>,
+    dx: Option<i32>,
+    dy: Option<i32>,
 ) -> Result<(), String> {
     let label = window.label().to_string();
     if label == "main" {
@@ -1421,24 +1631,57 @@ fn set_dock(
             // dragging widgets can never tow the moon around.
             return Err("the hub is not a dockable anchor".into());
         }
+        if !anchor.starts_with("widget-") {
+            // Anchor strings come straight from page JS — keep the dock
+            // graph inside the widget namespace (extend deliberately when
+            // panel-* windows arrive).
+            return Err(format!("anchor outside the widget namespace: {anchor}"));
+        }
         if app.get_webview_window(&anchor).is_none() {
             return Err(format!("unknown anchor window: {anchor}"));
         }
-        let (diff, notify) = {
+        let (diff, notify, group_translate) = {
             let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
+            // Same-group re-affirm: nothing to do.
+            if s.group_of(&label).is_some()
+                && s.by_label.get(&label) == s.by_label.get(&anchor)
+            {
+                return Ok(());
+            }
+            // A grouped caller merging into an outsider: translate its whole
+            // CURRENT group by the snap delta first (collected before join
+            // rewires membership).
+            let translate: Vec<String> = if s.group_of(&label).is_some() {
+                s.members_of(&label)
+            } else {
+                Vec::new()
+            };
             let diff = s.join(&label, &anchor);
-            (diff, s.members_of(&label))
+            (diff, s.members_of(&label), translate)
         };
+        let (tdx, tdy) = (dx.unwrap_or(0), dy.unwrap_or(0));
         let flash_anchor = anchor.clone();
         let edge = edge.unwrap_or_default();
         window
             .run_on_main_thread(move || {
+                if (tdx != 0 || tdy != 0) && !group_translate.is_empty() {
+                    for m in &group_translate {
+                        if let Some(w) = app.get_webview_window(m) {
+                            if let Some((x, y, _, _)) = dock_logical_rect(&w) {
+                                let _ = w.set_position(tauri::LogicalPosition::new(
+                                    f64::from(x + tdx),
+                                    f64::from(y + tdy),
+                                ));
+                            }
+                        }
+                    }
+                }
                 dock_apply_and_notify(&app, diff, notify);
-                // The link flash on the anchor's side of the seam.
+                // Tell the anchor's page to flash its side of the seam.
                 let _ = app.emit_to(
                     tauri::EventTarget::labeled(&flash_anchor),
                     "dock-link",
-                    serde_json::json!({ "from": label, "edge": edge }),
+                    serde_json::json!({ "for": flash_anchor, "from": label, "edge": edge }),
                 );
             })
             .map_err(|e| e.to_string())
@@ -1453,49 +1696,61 @@ fn set_dock(
                 .collect();
             (diff, departed, remaining)
         };
+        if departed.is_empty() {
+            // Not in any group (double-click, stale pin) — nothing to do,
+            // and definitely no eject of an innocent loose window.
+            return Ok(());
+        }
         window
             .run_on_main_thread(move || {
-                // Eject the leaver a step past the magnet range, away from
-                // the rest of the group, BEFORE unparenting is observable —
-                // direction from the group centroid.
+                // ORDER MATTERS: detach natives FIRST (an ejected window that
+                // still parents survivors would tow them), then eject the
+                // now-loose leaver to a spot that clears EVERY former
+                // neighbor's magnet, then regroup survivors by geometry and
+                // notify everyone with the final state.
+                dock_apply_and_notify(&app, diff, Vec::new());
                 if let Some(w) = app.get_webview_window(&label) {
-                    if let (Ok(p), Ok(sz)) = (w.outer_position(), w.outer_size()) {
-                        let (mut cx, mut cy, mut n) = (0i64, 0i64, 0i64);
-                        for m in &remaining {
-                            if let Some(mw) = app.get_webview_window(m) {
-                                if let (Ok(mp), Ok(ms)) = (mw.outer_position(), mw.outer_size()) {
-                                    cx += i64::from(mp.x) + i64::from(ms.width) / 2;
-                                    cy += i64::from(mp.y) + i64::from(ms.height) / 2;
-                                    n += 1;
-                                }
-                            }
-                        }
-                        let my_cx = i64::from(p.x) + i64::from(sz.width) / 2;
-                        let my_cy = i64::from(p.y) + i64::from(sz.height) / 2;
-                        // Positions are physical px; the 36px step is logical.
-                        let step = (36.0 * w.scale_factor().unwrap_or(1.0)) as i64;
-                        let step32 = step as i32;
-                        let (dx, dy) = if n == 0 {
-                            (step32, 0)
-                        } else {
-                            let ddx = my_cx - cx / n;
-                            let ddy = my_cy - cy / n;
-                            if ddx.abs() >= ddy.abs() {
-                                (if ddx >= 0 { step32 } else { -step32 }, 0)
-                            } else {
-                                (0, if ddy >= 0 { step32 } else { -step32 })
-                            }
-                        };
-                        let _ = w.set_position(tauri::PhysicalPosition::new(p.x + dx, p.y + dy));
+                    if let Some(leaver) = dock_logical_rect(&w) {
+                        let others: Vec<(i32, i32, i32, i32)> = remaining
+                            .iter()
+                            .filter_map(|m| {
+                                let mw = app.get_webview_window(m)?;
+                                dock_logical_rect(&mw)
+                            })
+                            .collect();
+                        let (ex, ey) = dock_eject_vector(leaver, &others);
+                        let _ = w.set_position(tauri::LogicalPosition::new(
+                            f64::from(leaver.0 + ex),
+                            f64::from(leaver.1 + ey),
+                        ));
                     }
                 }
-                let mut notify = departed;
-                for m in remaining {
+                let touched = dock_regroup_after_leave(&app, &remaining);
+                // The leaver gets its grouped:false payload with exMembers so
+                // its settle ignores the old group briefly (no instant
+                // re-link off a surviving flush seam); everyone else gets the
+                // generic final state.
+                let _ = app.emit_to(
+                    tauri::EventTarget::labeled(&label),
+                    "dock-group",
+                    serde_json::json!({
+                        "for": label,
+                        "grouped": false,
+                        "members": [],
+                        "outlineSides": [],
+                        "exMembers": remaining,
+                    }),
+                );
+                let mut notify: Vec<String> = departed
+                    .into_iter()
+                    .filter(|d| d != &label)
+                    .collect();
+                for m in remaining.into_iter().chain(touched) {
                     if !notify.contains(&m) {
                         notify.push(m);
                     }
                 }
-                dock_apply_and_notify(&app, diff, notify);
+                dock_apply_and_notify(&app, Vec::new(), notify);
             })
             .map_err(|e| e.to_string())
     }
@@ -1552,7 +1807,15 @@ fn main() {
                         .collect();
                     (diff, survivors)
                 };
-                dock_apply_and_notify(&app, diff, survivors);
+                dock_apply_and_notify(&app, diff, Vec::new());
+                let touched = dock_regroup_after_leave(&app, &survivors);
+                let mut notify = survivors;
+                for t in touched {
+                    if !notify.contains(&t) {
+                        notify.push(t);
+                    }
+                }
+                dock_apply_and_notify(&app, Vec::new(), notify);
             }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 let app = window.app_handle();
@@ -1576,7 +1839,15 @@ fn main() {
                         let _ = w.show();
                     }
                 }
-                dock_apply_and_notify(&app, diff, survivors);
+                dock_apply_and_notify(&app, diff, Vec::new());
+                let touched = dock_regroup_after_leave(&app, &survivors);
+                let mut notify = survivors;
+                for t in touched {
+                    if !notify.contains(&t) {
+                        notify.push(t);
+                    }
+                }
+                dock_apply_and_notify(&app, Vec::new(), notify);
                 if window.label() == "main" {
                     for (label, win) in app.webview_windows() {
                         if label != "main" {
@@ -2364,5 +2635,128 @@ mod dock_tests {
         ];
         let out = dock_outline_sides(&rects);
         assert_eq!(out["a"], vec!["l", "r", "t", "b"]);
+    }
+}
+
+#[cfg(test)]
+mod dock_geometry_tests {
+    use super::{dock_components, dock_rects_touch, DockGroups};
+
+    #[test]
+    fn touch_predicate_matches_flush_edges_only() {
+        let a = (0, 0, 100, 100);
+        assert!(dock_rects_touch(a, (100, 0, 100, 100))); // flush right
+        assert!(dock_rects_touch(a, (0, 100, 100, 100))); // flush below
+        assert!(!dock_rects_touch(a, (110, 0, 100, 100))); // 10px gap
+        assert!(!dock_rects_touch(a, (100, 95, 100, 100))); // 5px overlap only
+    }
+
+    #[test]
+    fn chain_minus_middle_splits_into_two_singletons_that_dissolve() {
+        let mut g = DockGroups::default();
+        let _ = g.join("b", "a");
+        let _ = g.join("c", "b");
+        // The middle (b) leaves; survivors a and c are 280px apart.
+        let _ = g.leave("b", false);
+        let rects = vec![
+            ("a".to_string(), (0, 0, 280, 220)),
+            ("c".to_string(), (560, 0, 280, 220)),
+        ];
+        let (diff, touched) = g.regroup_by_geometry("a", &rects);
+        // Both singletons dissolve: no attaches, both freed.
+        assert!(diff.iter().all(|(_, _, attach)| !attach));
+        let mut t = touched;
+        t.sort();
+        assert_eq!(t, vec!["a".to_string(), "c".to_string()]);
+        assert!(g.members_of("a").is_empty());
+        assert!(g.members_of("c").is_empty());
+    }
+
+    #[test]
+    fn four_chain_minus_one_keeps_the_touching_pair_linked() {
+        let mut g = DockGroups::default();
+        let _ = g.join("b", "a");
+        let _ = g.join("c", "b");
+        let _ = g.join("d", "c");
+        let _ = g.leave("c", false);
+        // a|b still flush; d is far away.
+        let rects = vec![
+            ("a".to_string(), (0, 0, 280, 220)),
+            ("b".to_string(), (280, 0, 280, 220)),
+            ("d".to_string(), (840, 0, 280, 220)),
+        ];
+        let (_, touched) = g.regroup_by_geometry("a", &rects);
+        assert_eq!(touched.len(), 3);
+        let mut ab = g.members_of("a");
+        ab.sort();
+        assert_eq!(ab, vec!["a".to_string(), "b".to_string()]);
+        assert!(g.members_of("d").is_empty());
+    }
+
+    #[test]
+    fn connected_survivors_are_left_alone() {
+        let mut g = DockGroups::default();
+        let _ = g.join("b", "a");
+        let rects = vec![
+            ("a".to_string(), (0, 0, 280, 220)),
+            ("b".to_string(), (280, 0, 280, 220)),
+        ];
+        let (diff, touched) = g.regroup_by_geometry("a", &rects);
+        assert!(diff.is_empty());
+        assert!(touched.is_empty());
+        assert_eq!(g.members_of("a").len(), 2);
+    }
+
+    #[test]
+    fn components_flood_fill_handles_l_shapes() {
+        let rects = vec![
+            ("a".to_string(), (0, 0, 100, 100)),
+            ("b".to_string(), (100, 0, 100, 100)),
+            ("c".to_string(), (100, 100, 100, 100)), // touches b's bottom
+            ("lone".to_string(), (500, 500, 100, 100)),
+        ];
+        let comps = dock_components(&rects);
+        assert_eq!(comps.len(), 2);
+        let big = comps.iter().find(|c| c.len() == 3).expect("L-component");
+        assert!(big.contains(&"a".to_string()) && big.contains(&"c".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod dock_eject_tests {
+    use super::{dock_eject_vector, dock_in_magnet, dock_rects_overlap};
+
+    #[test]
+    fn magnet_check_matches_snap_candidates() {
+        let a = (336, 0, 300, 300);
+        assert!(dock_in_magnet(a, (300, 300, 300, 300), 28)); // flush below seam
+        assert!(!dock_in_magnet(a, (800, 0, 300, 300), 28)); // far away
+    }
+
+    #[test]
+    fn straight_eject_when_clear() {
+        // Pair: leaver right of the survivor — +x eject is clear.
+        let leaver = (300, 0, 300, 300);
+        let others = vec![(0, 0, 300, 300)];
+        assert_eq!(dock_eject_vector(leaver, &others), (36, 0));
+    }
+
+    #[test]
+    fn middle_of_row_never_lands_inside_a_neighbor() {
+        // L(0,0) M(300,0) R(600,0): +x would bury M in R — the ladder must
+        // pick a non-overlapping vector (vertical slide).
+        let leaver = (300, 0, 300, 300);
+        let others = vec![(0, 0, 300, 300), (600, 0, 300, 300)];
+        let (dx, dy) = dock_eject_vector(leaver, &others);
+        let moved = (300 + dx, dy, 300, 300);
+        assert!(
+            others.iter().all(|o| !dock_rects_overlap(moved, *o)),
+            "eject ({dx},{dy}) buried the leaver in a neighbor"
+        );
+    }
+
+    #[test]
+    fn lone_leaver_gets_the_default_shove() {
+        assert_eq!(dock_eject_vector((0, 0, 100, 100), &[]), (36, 0));
     }
 }

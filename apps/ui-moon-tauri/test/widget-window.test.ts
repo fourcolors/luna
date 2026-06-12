@@ -20,6 +20,9 @@ interface SnapResult { x: number; y: number; edge: string }
 class MockPhysicalPosition {
   constructor(public x: number, public y: number) {}
 }
+class MockLogicalPosition {
+  constructor(public x: number, public y: number) {}
+}
 
 function loadVendorInto(target: unknown, file: string) {
   const src = fs.readFileSync(
@@ -44,6 +47,7 @@ describe('widget.html — snap + dock groups', () => {
   let eventHandlers: Record<string, (e: { payload: unknown }) => void>
   let me: {
     label: string
+    listen: ReturnType<typeof vi.fn>
     onMoved: ReturnType<typeof vi.fn>
     isMinimized: ReturnType<typeof vi.fn>
     outerPosition: ReturnType<typeof vi.fn>
@@ -63,7 +67,13 @@ describe('widget.html — snap + dock groups', () => {
     return snap
   }
 
-  interface DockArgs { docked: boolean; anchor: string | null; edge: string | null }
+  interface DockArgs {
+    docked: boolean
+    anchor: string | null
+    edge: string | null
+    dx: number
+    dy: number
+  }
   const dockArgs = (): DockArgs[] =>
     invoke.mock.calls
       .filter((c: unknown[]) => c[0] === 'set_dock')
@@ -71,9 +81,10 @@ describe('widget.html — snap + dock groups', () => {
   const grabCalls = (): number =>
     invoke.mock.calls.filter((c: unknown[]) => c[0] === 'grab_dock').length
 
-  const dispatchGroup = (payload: unknown) => {
+  const dispatchGroup = (payload: Record<string, unknown>) => {
     expect(eventHandlers['dock-group']).toBeTypeOf('function')
-    eventHandlers['dock-group']({ payload })
+    // The page filters on the recipient field — stamp it like Rust does.
+    eventHandlers['dock-group']({ payload: { for: SELF, ...payload } })
   }
 
   beforeEach(() => {
@@ -91,6 +102,10 @@ describe('widget.html — snap + dock groups', () => {
 
     me = {
       label: SELF,
+      listen: vi.fn(async (name: string, cb: (e: { payload: unknown }) => void) => {
+        eventHandlers[name] = cb
+        return () => {}
+      }),
       onMoved: vi.fn((cb: () => void) => {
         movedHandler = cb
         return Promise.resolve(() => {})
@@ -118,16 +133,12 @@ describe('widget.html — snap + dock groups', () => {
         getCurrentWindow: () => me,
         Window: { getByLabel },
         PhysicalPosition: MockPhysicalPosition,
+        LogicalPosition: MockLogicalPosition,
       },
       // load_connection → null keeps init() on the "Not connected" path:
       // no WebSocket is ever constructed in the test env.
       core: { invoke },
-      event: {
-        listen: vi.fn(async (name: string, cb: (e: { payload: unknown }) => void) => {
-          eventHandlers[name] = cb
-          return () => {}
-        }),
-      },
+      event: { listen: vi.fn(async () => () => {}) },
     }
 
     loadVendorInto(window, 'deck-snap.js')
@@ -188,21 +199,54 @@ describe('widget.html — snap + dock groups', () => {
     expect(setPositionCalls).toHaveLength(0)
   })
 
-  it('the magnet scales with the display scale factor (the live Retina bug)', async () => {
-    // 40 PHYSICAL px from main's right edge: out of range at 1x (40 > 22),
-    // inside it at 2x (40 <= 44). Window rects are physical; the threshold
-    // is designed in logical px.
-    me.outerPosition.mockResolvedValue({ x: 560, y: 130 })
-
-    movedHandler!()
-    await vi.advanceTimersByTimeAsync(121)
-    expect(setPositionCalls).toHaveLength(0) // 1x: no snap
-
+  it('dock math runs in logical px — physical rects are divided by the scale (the live Retina bug)', async () => {
+    // Same logical geometry as the base fixture, reported in 2x physical px.
+    // The settle must divide by the window scale and snap to LOGICAL coords.
     me.scaleFactor.mockResolvedValue(2)
+    me.outerPosition.mockResolvedValue({ x: WIDGET_POS.x * 2, y: WIDGET_POS.y * 2 })
+    me.outerSize.mockResolvedValue({ width: WIDGET_SIZE.width * 2, height: WIDGET_SIZE.height * 2 })
+
     movedHandler!()
     await vi.advanceTimersByTimeAsync(121)
-    expect(setPositionCalls).toHaveLength(1) // 2x: snaps
-    expect(setPositionCalls[0].x).toBe(MAIN_RECT.x + MAIN_RECT.w)
+    const snap = expectedSnap() // logical-space target
+    expect(setPositionCalls).toEqual([{ x: snap.x, y: snap.y }])
+  })
+
+  it('a grouped member reports a merge with the snap delta and NEVER moves itself', async () => {
+    dispatchGroup({ grouped: true, members: [SELF, 'widget-friend'], outlineSides: ['l'] })
+    const outsider = {
+      outerPosition: vi.fn(async () => ({ x: 850, y: 130 })),
+      outerSize: vi.fn(async () => ({ width: 200, height: 200 })),
+    }
+    invoke.mockImplementation(async (cmd: string) =>
+      cmd === 'list_widget_windows' ? ['widget-friend', 'widget-out'] : null,
+    )
+    getByLabel.mockImplementation(async (l: string) => (l === 'widget-out' ? outsider : null))
+
+    movedHandler!()
+    await vi.advanceTimersByTimeAsync(121)
+    expect(setPositionCalls).toHaveLength(0) // cluster integrity: no self-move
+    const last = dockArgs()[dockArgs().length - 1]
+    // Snap target x = outsider.x - width = 550 → dx = 550 - 540 = 10.
+    expect(last).toEqual({ docked: true, anchor: 'widget-out', edge: 'l', dx: 10, dy: 0 })
+  })
+
+  it('a stale settle aborts when the window moves again mid-flight (generation guard)', async () => {
+    // Make candidate enumeration slow, and move the window again meanwhile.
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'list_widget_windows') {
+        await new Promise((r) => setTimeout(r, 50))
+        return []
+      }
+      return null
+    })
+    movedHandler!()
+    await vi.advanceTimersByTimeAsync(121) // settle starts, enumeration pending
+    movedHandler!() // window moved again — bump the generation
+    await vi.advanceTimersByTimeAsync(300) // let everything flush
+
+    // The first (stale) settle must NOT have applied; the second one did.
+    expect(setPositionCalls).toHaveLength(1)
   })
 
   it('settling out of range while ungrouped reports nothing', async () => {
@@ -226,6 +270,17 @@ describe('widget.html — snap + dock groups', () => {
     // main is in our group → excluded → nothing sent, nothing moved.
     expect(dockArgs()).toHaveLength(0)
     expect(setPositionCalls).toHaveLength(0)
+  })
+
+  it('ignores dock-group events addressed to OTHER windows (cross-talk immunity)', () => {
+    const pin = document.getElementById('pin-btn') as HTMLButtonElement
+    expect(eventHandlers['dock-group']).toBeTypeOf('function')
+    // A third-party event leaking through must not create phantom state.
+    eventHandlers['dock-group']({
+      payload: { for: 'widget-other', grouped: true, members: ['widget-other', 'widget-x'], outlineSides: ['l'] },
+    })
+    expect(pin.hidden).toBe(true)
+    expect((document.getElementById('outline') as HTMLDivElement).className).toBe('')
   })
 
   it('pin and perimeter outline render from dock-group state', () => {
@@ -257,7 +312,7 @@ describe('widget.html — snap + dock groups', () => {
 
     const pin = document.getElementById('pin-btn') as HTMLButtonElement
     pin.click()
-    expect(dockArgs()).toEqual([{ docked: false, anchor: null, edge: null }])
+    expect(dockArgs()).toEqual([{ docked: false, anchor: null, edge: null, dx: 0, dy: 0 }])
   })
 
   it('prefers the nearest anchor — widgets snap to sibling widgets', async () => {
@@ -285,7 +340,7 @@ describe('widget.html — snap + dock groups', () => {
     const calls = dockArgs()
     // Our right edge (840) is 10px from the sibling's left edge (850) — closer
     // than main's right edge (520) is to our left (540, 20px). Sibling wins.
-    expect(calls[calls.length - 1]).toEqual({ docked: true, anchor: 'widget-zzz', edge: 'l' })
+    expect(calls[calls.length - 1]).toEqual({ docked: true, anchor: 'widget-zzz', edge: 'l', dx: 0, dy: 0 })
   })
 
   it('a grouped widget can still link an OUTSIDER widget (group merge by drag)', async () => {
@@ -302,7 +357,9 @@ describe('widget.html — snap + dock groups', () => {
     movedHandler!()
     await vi.advanceTimersByTimeAsync(121)
     // widget-friend is in our group (excluded); widget-out is not → links.
-    expect(dockArgs()).toEqual([{ docked: true, anchor: 'widget-out', edge: 'l' }])
+    const last = dockArgs()[dockArgs().length - 1]
+    expect(last.docked).toBe(true)
+    expect(last.anchor).toBe('widget-out')
   })
 
   it('grabbing the title bar fires grab_dock before the native drag', () => {

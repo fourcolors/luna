@@ -5352,10 +5352,12 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(m.State.sessionArtifacts.map((a: any) => a.id)).toEqual(['msg-2:0', 'msg-3:0'])
     })
 
-    it('(e) pop-out button on a pinned artifact invokes open_artifact_widget when Tauri is present', () => {
+    it('(e) pop-out button on a pinned artifact invokes open_artifact_widget when Tauri is present', async () => {
       const m = M()
-      // Seed __TAURI__.core.invoke mock.
-      const invokeMock = vi.fn().mockResolvedValue(undefined)
+      // Seed __TAURI__.core.invoke mock (list_widget_windows feeds the
+      // cascade-position math; empty deck → first slot).
+      const invokeMock = vi.fn(async (cmd: string) =>
+        cmd === 'list_widget_windows' ? [] : undefined)
       ;(window as any).__TAURI__ = {
         ...(window as any).__TAURI__,
         core: { invoke: invokeMock },
@@ -5373,19 +5375,23 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(popBtn.textContent).toBe('⤢')
 
       popBtn.click()
+      await vi.advanceTimersByTimeAsync(1) // the handler awaits the deck census
 
-      expect(invokeMock).toHaveBeenCalledOnce()
+      expect(invokeMock).toHaveBeenCalledWith('list_widget_windows')
       expect(invokeMock).toHaveBeenCalledWith('open_artifact_widget', {
         artifactId: 'pin-pop',
         title: 'deploy.sh',
+        x: 180,
+        y: 160,
       })
     })
 
-    it('(f) pop-out button on a session artifact invokes open_artifact_widget; no-ops without Tauri', () => {
+    it('(f) pop-out button on a session artifact PINS it, then opens the widget; no-ops without Tauri', async () => {
       const m = M()
 
       // Part 1 — with Tauri present.
-      const invokeMock = vi.fn().mockResolvedValue(undefined)
+      const invokeMock = vi.fn(async (cmd: string) =>
+        cmd === 'list_widget_windows' ? [] : undefined)
       ;(window as any).__TAURI__ = {
         ...(window as any).__TAURI__,
         core: { invoke: invokeMock },
@@ -5405,11 +5411,15 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(popBtn).not.toBeNull()
 
       popBtn.click()
+      await vi.advanceTimersByTimeAsync(1)
 
-      expect(invokeMock).toHaveBeenCalledOnce()
+      // Widget windows render PINNED artifacts: popping out a session row
+      // pins it first (artifact-pin rides the WS), then opens cascaded.
       expect(invokeMock).toHaveBeenCalledWith('open_artifact_widget', {
         artifactId: 'msg-pop:0',
         title: 'snippet.py',
+        x: 180,
+        y: 160,
       })
 
       // Part 2 — without Tauri (browser env): clicking must NOT throw.
