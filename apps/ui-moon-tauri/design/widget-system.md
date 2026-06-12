@@ -260,20 +260,23 @@ against the live layout.
   Guard against the spurious `onMoved` from minimize (Tauri #7664) and from
   programmatic `setPosition` (suppression flag — the feedback-loop trap is
   documented at `index.html:10470`).
-- **Group-drag** (dragging a docked cluster as one): **shipped, native**
-  (Phase 0.5 operator feedback, two rounds). Round 1 applied the hub's drag
-  delta to followers per `Moved` event — visibly laggy, since every follower
-  trailed by IPC ticks. Round 2 replaced it with the platform primitive:
-  docking natively parents the windows (`NSWindow addChildWindow:ordered:`),
-  so the compositor carries the whole cluster in the same window-server
-  transaction — zero lag, none of our code in the drag path. Anchors are the
-  hub **or any sibling widget** (nearest-snap wins, hub wins ties), so
-  clusters form chains; the Rust dock graph is a forest with cycle rejection,
-  and destroying an anchor orphans + re-shows its children. The link is
-  visible: a moonlight seam-glow flashes on both sides of the join and a pin
-  pops into the docked widget's title bar — click to eject past the magnet
-  range, or just drag the widget away (detach gesture). Dragging a child
-  carries its own subtree but never its parent.
+- **Group-drag** (dragging a docked cluster as one): **shipped, native, v3**
+  (Phase 0.5 operator feedback, three rounds). Round 1 applied drag deltas to
+  followers per `Moved` event — laggy. Round 2 went native
+  (`NSWindow addChildWindow:ordered:` — the compositor carries the cluster in
+  the same window-server transaction, zero lag) but exposed the parent/child
+  hierarchy to the user: dragging different members did different things, and
+  drag-detach caused phantom re-snaps. Round 3 made groups **flat and
+  symmetric**: a star parented under one root that is silently **re-rooted at
+  whichever member is grabbed** (`grab_dock` on drag-region pointerdown), so
+  dragging anything carries everything. The ONLY detach is the **pin**
+  (standard Lucide icon) in every grouped member's title bar — click to leave;
+  Rust ejects the leaver past the magnet range, away from the group centroid.
+  A grouped window never snaps against its own group (groups merge only with
+  outsiders). All link UI is event-driven from Rust (`dock-group`): pin
+  visibility plus a **very low perimeter highlight rendered only on
+  outward-facing sides** (pure rect geometry decides which sides are
+  interior) — the group reads as one piece without highlighting the seams.
 - ⚠️ **Phase 0 blocker:** the shipped self-snap has never run — `widget.html:438`
   misses `await` on `Window.getByLabel('main')` (async in Tauri 2), so
   `mainWin.outerPosition()` throws into the swallow-catch at `:460`. Fix,
