@@ -66,6 +66,12 @@ export interface UIState {
     readonly workflows?: boolean
     /** Luna Vault (V1): vault-list pushed after hello; vault mutations routed. */
     readonly vault?: boolean
+    /**
+     * Server accepts `set-thread-config` frames and computes the effort-validity
+     * matrix per-model (advertised in `availableModels.efforts`). Clients hide
+     * effort controls when absent/false. OPTIONAL/additive.
+     */
+    readonly effortSelection?: boolean
   }
   /**
    * Server-advertised model list (from the `hello` frame's `availableModels`
@@ -73,7 +79,12 @@ export interface UIState {
    * falls back to its own hardcoded MODEL_OPTIONS list. When non-null (even
    * if empty) the server has explicitly taken ownership of the list.
    */
-  readonly availableModels: ReadonlyArray<{ readonly id: string; readonly label: string }> | null
+  readonly availableModels: ReadonlyArray<{
+    readonly id: string
+    readonly label: string
+    /** Effort levels valid for this model, server-computed. Absent = no effort param. */
+    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max">
+  }> | null
   /** Sidebar projection — most-recently-active first (server orders). */
   readonly threadList: ReadonlyArray<SessionSummary>
   /** Per-thread state, keyed by threadId. */
@@ -440,6 +451,11 @@ export const reduce = (state: UIState, action: Action): UIState => {
       // Mutation ack — consumed by the UI's pending-request tracker, not
       // folded into persistent store state (the fresh vault-list that follows
       // a successful mutation already updates the list).
+      return state
+    case "thread-config":
+      // Ack for set-thread-config. The store has no model/effort state today
+      // (that lives in cfg().model/cfg().effort in App.tsx). The UI layer
+      // reads applied/deferred/rejected from this frame directly. No-op here.
       return state
     default: {
       // Exhaustiveness guard: when every ServerFrame member has a matching

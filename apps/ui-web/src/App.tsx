@@ -37,8 +37,11 @@ import {
   SkillsPanel,
   VaultPanel,
   WorkflowGallery,
+  buildNewThreadFrame,
+  clampEffortToModel,
   createTransport,
   createUiStore,
+  type EffortLevel,
   type SlashCommand,
   type VaultStatusAck,
 } from "@luna/ui-shared-solid"
@@ -91,11 +94,26 @@ interface PersistedConfig {
   url: string
   token: string
   model: string
+  /**
+   * Persisted effort level for new threads. Optional — absent on older
+   * configs. `| undefined` so a model switch can clear a now-invalid value
+   * in one assignment (review F11); JSON.stringify drops undefined keys, so
+   * the persisted localStorage form never carries an explicit null/undefined.
+   */
+  effort?: EffortLevel | undefined
   /** When true, plain Enter sends; Shift+Enter newline. Default false. */
   enterToSend: boolean
   /** Last-selected account id. null = use default broker rotation. */
   selectedAccountId: string | null
 }
+
+const VALID_EFFORTS: ReadonlySet<string> = new Set([
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+])
 
 const loadConfig = (): PersistedConfig => {
   const envToken =
@@ -104,11 +122,16 @@ const loadConfig = (): PersistedConfig => {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<PersistedConfig>
+      const parsedEffort =
+        typeof parsed.effort === "string" && VALID_EFFORTS.has(parsed.effort)
+          ? (parsed.effort as EffortLevel)
+          : undefined
       return {
         url: parsed.url ?? DEFAULT_URL,
         token:
           parsed.token && parsed.token.length >= 16 ? parsed.token : envToken,
         model: parsed.model ?? DEFAULT_MODEL,
+        ...(parsedEffort !== undefined ? { effort: parsedEffort } : {}),
         enterToSend: parsed.enterToSend ?? false,
         selectedAccountId: parsed.selectedAccountId ?? null,
       }
@@ -253,14 +276,22 @@ export const App: Component = () => {
     send({ type: "subscribe", threadId: id })
   }
 
+  /**
+   * Open a fresh thread on the persisted model + effort (review F5: effort
+   * was previously dropped here, so new threads silently reverted to the
+   * server default). buildNewThreadFrame includes `effort` only when the
+   * server-advertised matrix lists it for the chosen model — never computed
+   * client-side, and safely omitted against old servers (availableModels null).
+   */
   const newThread = (): void => {
-    send({
-      type: "new-thread",
-      model: cfg().model,
-      ...(store.state.selectedAccountId !== null
-        ? { accountId: store.state.selectedAccountId }
-        : {}),
-    })
+    send(
+      buildNewThreadFrame({
+        model: cfg().model,
+        effort: cfg().effort,
+        accountId: store.state.selectedAccountId,
+        availableModels: store.state.availableModels,
+      }),
+    )
   }
 
   // Client-identity stamp so Luna can see which surface the operator is
@@ -303,19 +334,57 @@ export const App: Component = () => {
       case "restart": {
         // Best-effort interrupt — safe to fire even if no turn is in-flight.
         send({ type: "interrupt", threadId })
-        // Open a new thread on the same model. The `thread-created` server
-        // frame triggers auto-subscribe; the reducer selects the new thread
-        // once `thread-created` arrives (handled in onFrame above).
-        send({
-          type: "new-thread",
-          model: cfg().model,
-          ...(store.state.selectedAccountId !== null
-            ? { accountId: store.state.selectedAccountId }
-            : {}),
-        })
+        // Open a new thread on the same model + effort (review F5 — this
+        // site must match newThread(), clamped to the server matrix). The
+        // `thread-created` server frame triggers auto-subscribe; the reducer
+        // selects the new thread once `thread-created` arrives (handled in
+        // onFrame above).
+        send(
+          buildNewThreadFrame({
+            model: cfg().model,
+            effort: cfg().effort,
+            accountId: store.state.selectedAccountId,
+            availableModels: store.state.availableModels,
+          }),
+        )
         break
       }
     }
+  }
+
+  /**
+   * Handle a model change from the ChatPanel composer cluster.
+   *
+   * Persists to cfg() so the setting survives navigation, and sends
+   * `set-thread-config` to the server when a thread is active.
+   * The `thread-config` ack is a no-op in the shared reducer today —
+   * the optimistic UI update (cfg persisted immediately) is sufficient.
+   *
+   * Review F11: a model switch can invalidate the persisted effort (e.g.
+   * effort=max → a model whose server-computed `efforts` is empty). Clamp
+   * against the server matrix and clear the stale value — undefined is
+   * dropped by JSON.stringify on save, so the persisted config forgets it
+   * (mirrors moon's `_selectModel` localStorage.removeItem('luna_effort')).
+   */
+  const handleModelChange = (threadId: string, model: string): void => {
+    setCfg({
+      ...cfg(),
+      model,
+      effort: clampEffortToModel(store.state.availableModels, model, cfg().effort),
+    })
+    send({ type: "set-thread-config", threadId, model })
+  }
+
+  /**
+   * Handle an effort change from the ChatPanel composer cluster.
+   *
+   * Same optimistic pattern as handleModelChange — persist immediately,
+   * fire set-thread-config for server-side application to the live session.
+   * The `thread-config` ack is a no-op in the shared reducer today.
+   */
+  const handleEffortChange = (threadId: string, effort: EffortLevel): void => {
+    setCfg({ ...cfg(), effort })
+    send({ type: "set-thread-config", threadId, effort })
   }
 
   const isConnected = createMemo(() => transport.status().kind === "open")
@@ -669,6 +738,12 @@ export const App: Component = () => {
                 onCommand={handleCommand}
                 disabled={!chatEnabled()}
                 enterToSend={cfg().enterToSend}
+                availableModels={store.state.availableModels}
+                effortSelection={store.state.capabilities.effortSelection}
+                model={cfg().model}
+                effort={cfg().effort}
+                onModelChange={handleModelChange}
+                onEffortChange={handleEffortChange}
               />
               <Show
                 when={

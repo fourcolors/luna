@@ -173,7 +173,16 @@ export interface UIWebSocketServerConfig {
    * `buildAvailableModels()` in chat-server.ts, which merges
    * `LUNA_UI_MODELS` overrides with the built-in base list.
    */
-  readonly availableModels?: ReadonlyArray<{ readonly id: string; readonly label: string }>
+  readonly availableModels?: ReadonlyArray<{
+    readonly id: string
+    readonly label: string
+    /**
+     * Effort levels valid for THIS model, server-computed via effortsForModel().
+     * Absent on older servers; empty array = model takes no effort param.
+     * Clients never compute this matrix — always defer to this field.
+     */
+    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max">
+  }>
   /**
    * Optional ChatService binding. When provided, the server:
    *   - flips `capabilities.chat` and `capabilities.streamingDeltas` to
@@ -895,6 +904,10 @@ export const startUIWebSocketServer = (
             // MCP Apps host relay (widget-system.md Phase 7): ui:// resource
             // reads + same-app tool calls route through the bound McpAppHost.
             mcpApps: mcpAppHost !== null,
+            // Model+effort switcher: server accepts set-thread-config and has
+            // pre-computed the effort-validity matrix in availableModels.efforts.
+            // Clients hide effort controls when absent/false.
+            effortSelection: chat !== null,
           },
         })
 
@@ -1494,6 +1507,10 @@ export const startUIWebSocketServer = (
                     if (chat === null) return
                     const summary = yield* chat.createThread({
                       model: frame.model,
+                      // effort is forwarded verbatim — chat-service clamps it
+                      // per-model inside createThread (buildSessionOptions),
+                      // so an invalid combo never reaches the SDK options.
+                      ...(frame.effort !== undefined ? { effort: frame.effort } : {}),
                       ...(frame.title !== undefined ? { title: frame.title } : {}),
                       ...(frame.tags !== undefined ? { tags: frame.tags } : {}),
                       ...(frame.systemPrompt !== undefined
@@ -1555,6 +1572,26 @@ export const startUIWebSocketServer = (
                   case "interrupt": {
                     if (chat === null) return
                     yield* chat.interrupt(frame.threadId)
+                    return
+                  }
+                  case "set-thread-config": {
+                    // Model + effort switcher. Gated on chat being bound (which
+                    // implies effortSelection: true in capabilities). The ack
+                    // is sent only to the requesting connection — broadcast is
+                    // optional per §1.D (comment left intentionally). Both
+                    // fields are forwarded verbatim — chat-service clamps the
+                    // effort against the thread's reference model and reports
+                    // invalid combos in the ack's `rejected` list.
+                    if (chat === null) return
+                    const threadId = typeof frame.threadId === "string"
+                      ? frame.threadId : ""
+                    if (!threadId) return
+                    const result = yield* chat.setThreadConfig({
+                      threadId,
+                      ...(frame.model !== undefined ? { model: frame.model } : {}),
+                      ...(frame.effort !== undefined ? { effort: frame.effort } : {}),
+                    })
+                    send(ws, { type: "thread-config", ...result })
                     return
                   }
                   case "survey-response": {

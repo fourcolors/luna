@@ -231,6 +231,8 @@ import {
 import {
   ChatService,
   ThreadToolsProviderTag,
+  effortsForModel,
+  type EffortLevel,
   type ThreadToolsProvider,
 } from "@luna/chat-service"
 import {
@@ -360,10 +362,27 @@ const BUILD_SHA = resolveBuildSha()
  * without running bootstrap() (the import.meta.main guard).
  */
 
-/** A single selectable model entry. */
+/**
+ * Effort matrix — the definitions live in @luna/chat-service (effort.ts),
+ * the single source of truth shared by this hello-frame builder AND the
+ * chat-service enforcement points (createThread + setThreadConfig clamp the
+ * same matrix, so the advertised efforts and the accepted efforts can never
+ * drift). Re-exported here so the dev-rig tests and any script-level callers
+ * keep one import site.
+ */
+export {
+  clampEffort,
+  effortsForModel,
+  EFFORT_LEVELS as ALL_EFFORTS,
+} from "@luna/chat-service"
+export type { EffortLevel as Effort } from "@luna/chat-service"
+
+/** A single selectable model entry (with server-computed effort matrix). */
 export interface UiModelEntry {
   readonly id: string
   readonly label: string
+  /** Effort levels valid for this model — server-computed. See effortsForModel(). */
+  readonly efforts?: readonly EffortLevel[]
 }
 
 /**
@@ -405,11 +424,14 @@ export const parseUiModels = (raw: string | undefined): ReadonlyArray<UiModelEnt
  * The built-in base list of selectable models shown when the operator has
  * not overridden via LUNA_UI_MODELS. This list is the recommended default
  * capability spread; entries are deduped (extras-first) in buildAvailableModels.
+ * The first entry is the recommended default (highest capability or operator-
+ * preferred). Efforts are attached server-side via effortsForModel().
  */
-const BASE_MODELS: ReadonlyArray<UiModelEntry> = [
-  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 — balanced" },
-  { id: "claude-opus-4-7",   label: "Claude Opus 4.7 — most capable" },
-  { id: "claude-haiku-4-5",  label: "Claude Haiku 4.5 — fastest" },
+const BASE_MODELS: ReadonlyArray<{ readonly id: string; readonly label: string }> = [
+  { id: "claude-sonnet-4-6",   label: "Claude Sonnet 4.6 — balanced" },
+  { id: "claude-fable-5",       label: "Fable 5 (1M context)" },
+  { id: "claude-opus-4-8",      label: "Claude Opus 4.8 — most capable" },
+  { id: "claude-haiku-4-5",     label: "Claude Haiku 4.5 — fastest" },
 ]
 
 /**
@@ -418,7 +440,8 @@ const BASE_MODELS: ReadonlyArray<UiModelEntry> = [
  * Operator-configured extras (from LUNA_UI_MODELS) come FIRST in the
  * output, making them the UI's recommended default.  The built-in base
  * models follow, deduped by id (an extra that overrides a base model id
- * keeps the extra's label and position).
+ * keeps the extra's label and position). Efforts are attached to every entry
+ * via effortsForModel() so clients never compute the matrix themselves.
  *
  * Accepts an optional `env` parameter (defaults to `process.env`) so unit
  * tests can inject a synthetic environment without touching process.env.
@@ -426,10 +449,13 @@ const BASE_MODELS: ReadonlyArray<UiModelEntry> = [
 export const buildAvailableModels = (env: NodeJS.ProcessEnv = process.env): Array<UiModelEntry> => {
   const extras = parseUiModels(env["LUNA_UI_MODELS"])
   const seenIds = new Set(extras.map((e) => e.id))
-  const deduped: Array<UiModelEntry> = [...extras]
+  const deduped: Array<UiModelEntry> = extras.map((e) => ({
+    ...e,
+    efforts: effortsForModel(e.id),
+  }))
   for (const base of BASE_MODELS) {
     if (!seenIds.has(base.id)) {
-      deduped.push(base)
+      deduped.push({ ...base, efforts: effortsForModel(base.id) })
     }
   }
   return deduped

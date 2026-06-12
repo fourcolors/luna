@@ -117,6 +117,12 @@ export interface HelloFrame {
     /** Luna Vault (V1): server routes vault-put/delete/sync-config/import and
      *  pushes vault-list after hello. OPTIONAL/additive. */
     readonly vault?: boolean
+    /**
+     * Server accepts `set-thread-config` frames and computes the effort-validity
+     * matrix per-model (advertised in `availableModels.efforts`). Clients hide
+     * effort controls when absent/false. OPTIONAL/additive.
+     */
+    readonly effortSelection?: boolean
   }
   /**
    * Models the operator can pick for new threads. OPTIONAL and additive —
@@ -124,7 +130,15 @@ export interface HelloFrame {
    * The FIRST entry is the recommended default.  Mirrors the same field in
    * packages/ui-ws/src/protocol.ts — keep in sync.
    */
-  readonly availableModels?: ReadonlyArray<{ readonly id: string; readonly label: string }>
+  readonly availableModels?: ReadonlyArray<{
+    readonly id: string
+    readonly label: string
+    /**
+     * Effort levels valid for THIS model, server-computed. Absent on older
+     * servers; empty array = model takes no effort param (e.g. Haiku).
+     */
+    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max">
+  }>
 }
 export interface EventFrame {
   readonly type: "event"
@@ -562,6 +576,41 @@ export interface VaultImportFrame {
   }>
 }
 
+/**
+ * Server→client: ack for a `set-thread-config` request. `applied` = effective
+ * NOW; `deferred` = queued for next thread creation (e.g. cross-lane model
+ * switch); `rejected` = invalid/unsupported fields with a short reason.
+ *
+ * Effort semantic for `"max"`: the ack reports the accepted THREAD-LEVEL
+ * preference, and `effort` echoes the value the server actually accepted
+ * (clamping may adjust it). A mid-thread switch to "max" runs the current
+ * thread's live query at the closest live level ("xhigh" — the SDK's
+ * Settings.effortLevel has no "max") and applies exactly as "max" on the
+ * next rebuild (recovery or new thread, which use Options.effort).
+ * Mirrors packages/ui-ws/src/protocol.ts — keep in sync.
+ */
+export interface ThreadConfigFrame {
+  readonly type: "thread-config"
+  readonly threadId: string
+  readonly model?: string
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
+  readonly applied: ReadonlyArray<"model" | "effort">
+  readonly deferred: ReadonlyArray<"model" | "effort">
+  readonly rejected?: ReadonlyArray<{ readonly field: "model" | "effort"; readonly reason: string }>
+}
+
+/**
+ * Client→server: update model and/or effort for an existing thread.
+ * Gated on the `effortSelection` capability. Older servers ignore it.
+ * Mirrors packages/ui-ws/src/protocol.ts — keep in sync.
+ */
+export interface SetThreadConfigFrame {
+  readonly type: "set-thread-config"
+  readonly threadId: string
+  readonly model?: string
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
+}
+
 export type ServerFrame =
   | HelloFrame
   | EventFrame
@@ -591,6 +640,7 @@ export type ServerFrame =
   | PtyOutputFrame
   | VaultListFrame
   | VaultStatusFrame
+  | ThreadConfigFrame
 
 /* Client → server frames */
 
@@ -617,6 +667,8 @@ export interface NewThreadFrame {
   readonly title?: string
   readonly tags?: ReadonlyArray<string>
   readonly systemPrompt?: string
+  /** Additive effort level for this thread. Older servers ignore it. */
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
 }
 /**
  * Small identity blob clients attach to each user-message so the server (and
@@ -683,3 +735,4 @@ export type ClientFrame =
   | VaultDeleteFrame
   | VaultSyncConfigFrame
   | VaultImportFrame
+  | SetThreadConfigFrame

@@ -167,6 +167,7 @@ const makeChatLoopQuery = (params: {
     interrupt: async () => {},
     setPermissionMode: async () => {},
     setModel: async () => {},
+    applyFlagSettings: async () => {},
     setMaxThinkingTokens: async () => {},
     supplyToolPermissionResponse: async () => {},
     mcpServerStatus: async () => ({}),
@@ -206,6 +207,7 @@ const makeStreamingQuery = (params: {
     interrupt: async () => {},
     setPermissionMode: async () => {},
     setModel: async () => {},
+    applyFlagSettings: async () => {},
     setMaxThinkingTokens: async () => {},
     supplyToolPermissionResponse: async () => {},
     mcpServerStatus: async () => ({}),
@@ -531,6 +533,7 @@ describe("ChatService (Tier-2 sim)", () => {
           interrupt: async () => {},
           setPermissionMode: async () => {},
           setModel: async () => {},
+          applyFlagSettings: async () => {},
           setMaxThinkingTokens: async () => {},
           supplyToolPermissionResponse: async () => {},
           mcpServerStatus: async () => ({}),
@@ -605,6 +608,7 @@ describe("ChatService (Tier-2 sim)", () => {
           interrupt: async () => {},
           setPermissionMode: async () => {},
           setModel: async () => {},
+          applyFlagSettings: async () => {},
           setMaxThinkingTokens: async () => {},
           supplyToolPermissionResponse: async () => {},
           mcpServerStatus: async () => ({}),
@@ -983,6 +987,85 @@ describe("ChatService (Tier-2 sim)", () => {
     },
   )
 
+  // PING: the extended map shape — recovery must rebuild createThread with
+  // the persisted {model, effort}, not just the sid, so a recovered thread
+  // routes to the same provider lane and runs at the same effort level the
+  // user selected before the restart (the D3 "survives restart" risk).
+  it(
+    "subscribe re-creates a forgotten thread with its persisted model and effort",
+    async () => {
+      const fs = require("node:fs") as typeof import("node:fs")
+      const path = require("node:path") as typeof import("node:path")
+      const os = require("node:os") as typeof import("node:os")
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "luna-resume-cfg-"))
+      const prevHome = process.env["LUNA_HOME"]
+      process.env["LUNA_HOME"] = home
+      try {
+        // Pre-populate the persisted map with the EXTENDED object shape, as
+        // a prior session's createThread + setThreadConfig would have left it.
+        const RESUMED_ID = "thr_resumecfg_def456"
+        const PERSISTED_SDK_ID = "sdk-prior-uuid-cfg"
+        const SAVED_MODEL = "claude-fable-5"
+        const SAVED_EFFORT = "xhigh" // valid for fable — survives the clamp
+        const mapDir = path.join(home, ".luna")
+        fs.mkdirSync(mapDir, { recursive: true })
+        fs.writeFileSync(
+          path.join(mapDir, "thread-session-map.json"),
+          JSON.stringify({
+            [RESUMED_ID]: { sid: PERSISTED_SDK_ID, model: SAVED_MODEL, effort: SAVED_EFFORT },
+          }),
+          { mode: 0o600 },
+        )
+
+        let capturedOptions: Record<string, unknown> | undefined
+        const fakeLayer = SDKClient.fake((p) => {
+          capturedOptions = p.options as Record<string, unknown> | undefined
+          return makeChatLoopQuery({
+            prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+            sessionId: PERSISTED_SDK_ID,
+            responseFor: (t) => `echo:${t}`,
+          })
+        })
+
+        const storedOptions = await runScoped(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+            const store = yield* SessionStore
+            // Subscribe to a thread the in-memory map forgot — recovery
+            // must rebuild createThread from the persisted entry.
+            const sub = chat.subscribe(RESUMED_ID)
+            const fiber = yield* Effect.fork(
+              sub.pipe(
+                Stream.take(1),
+                Stream.runCollect,
+              ),
+            )
+            yield* Effect.sleep("100 millis")
+            yield* Fiber.interrupt(fiber)
+            return yield* store.getOptions(RESUMED_ID)
+          }),
+          fakeLayer,
+        )
+
+        // The rebuilt SDK query received resume + the saved model + effort.
+        expect(capturedOptions?.["resume"]).toBe(PERSISTED_SDK_ID)
+        expect(capturedOptions?.["model"]).toBe(SAVED_MODEL)
+        expect(capturedOptions?.["effort"]).toBe(SAVED_EFFORT)
+        // And the recovered session row reflects both in its sdkOptions.
+        const sdkOpts = storedOptions?.sdkOptions as Record<string, unknown> | undefined
+        expect(sdkOpts?.["model"]).toBe(SAVED_MODEL)
+        expect(sdkOpts?.["effort"]).toBe(SAVED_EFFORT)
+      } finally {
+        if (prevHome !== undefined) {
+          process.env["LUNA_HOME"] = prevHome
+        } else {
+          delete process.env["LUNA_HOME"]
+        }
+        fs.rmSync(home, { recursive: true, force: true })
+      }
+    },
+  )
+
   // PING: when LUNA_HOME is set, ChatService must persist the
   // lunaThreadId → sdkSessionId mapping so threads can be resumed after
   // a chat-server restart.
@@ -1027,9 +1110,15 @@ describe("ChatService (Tier-2 sim)", () => {
         expect(fs.existsSync(mapPath)).toBe(true)
         const map = JSON.parse(fs.readFileSync(mapPath, "utf8")) as Record<
           string,
-          string
+          unknown
         >
-        expect(map[createdThreadId!]).toBe(SDK_UUID)
+        // New format: object with sid field (legacy bare strings also supported)
+        const entry = map[createdThreadId!]
+        const sid = typeof entry === "string" ? entry
+          : (entry !== null && typeof entry === "object" && "sid" in (entry as Record<string, unknown>)
+            ? (entry as Record<string, unknown>)["sid"]
+            : undefined)
+        expect(sid).toBe(SDK_UUID)
       } finally {
         if (prevHome !== undefined) {
           process.env["LUNA_HOME"] = prevHome
@@ -1291,6 +1380,7 @@ describe("ChatService (Tier-2 sim)", () => {
           interrupt: async () => {},
           setPermissionMode: async () => {},
           setModel: async () => {},
+          applyFlagSettings: async () => {},
           setMaxThinkingTokens: async () => {},
           supplyToolPermissionResponse: async () => {},
           mcpServerStatus: async () => ({}),

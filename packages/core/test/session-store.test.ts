@@ -254,4 +254,52 @@ describe("SessionStore (in-memory)", () => {
     )
     expect(exit._tag).toBe("Failure")
   })
+
+  it("setOptions merges a patch into existing options", async () => {
+    const result = await program(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        yield* store.create({
+          id: "opts",
+          options: { model: "claude-sonnet-4-6", title: "Original" },
+          createdAt: 0,
+        })
+        yield* store.setOptions("opts", { sdkOptions: { effort: "high" } })
+        return yield* store.getOptions("opts")
+      }),
+    )
+    // Patch merges: original model/title are preserved, sdkOptions added.
+    expect(result?.model).toBe("claude-sonnet-4-6")
+    expect(result?.title).toBe("Original")
+    expect((result?.sdkOptions as Record<string, unknown>)?.["effort"]).toBe("high")
+  })
+
+  it("setOptions does not wipe fields not included in the patch", async () => {
+    const result = await program(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        yield* store.create({
+          id: "patch",
+          options: { model: "claude-sonnet-4-6", tags: ["keep-me"] },
+          createdAt: 0,
+        })
+        // Patch only sdkOptions — tags must survive.
+        yield* store.setOptions("patch", { sdkOptions: { effort: "low" } })
+        return yield* store.getOptions("patch")
+      }),
+    )
+    expect(result?.tags).toEqual(["keep-me"])
+  })
+
+  it("setOptions is a no-op for an unknown session id", async () => {
+    // Must not throw — the thread may have been evicted.
+    await expect(
+      program(
+        Effect.gen(function* () {
+          const store = yield* SessionStore
+          yield* store.setOptions("ghost", { sdkOptions: { effort: "max" } })
+        }),
+      ),
+    ).resolves.toBeUndefined()
+  })
 })

@@ -230,6 +230,12 @@ export const makeSessionStoreSqlite = (
       const sessionSetStatus = db.query(
         `UPDATE sessions SET status = ?, ended_at = ? WHERE id = ?`,
       )
+      const sessionSetOptions = db.query(
+        `UPDATE sessions SET options_json = ? WHERE id = ?`,
+      )
+      const sessionGetOptions = db.query(
+        `SELECT options_json FROM sessions WHERE id = ?`,
+      )
       const sessionSetMeta = db.query(
         `UPDATE sessions SET meta_json = ? WHERE id = ?`,
       )
@@ -343,6 +349,34 @@ export const makeSessionStoreSqlite = (
           }
           sessionSetStatus.run(status, endedAt, id)
           return Effect.void
+        })
+
+      /**
+       * Patch the stored options blob for an existing session.
+       * Silently no-ops on unknown session ids (best-effort — the caller
+       * may race a session close). Mirrors the in-memory setOptions semantics.
+       */
+      const setOptions = (
+        id: string,
+        patch: Partial<SessionOptions>,
+      ): Effect.Effect<void, never> =>
+        Effect.sync(() => {
+          const row = sessionGetOptions.get(id) as
+            | { options_json: string }
+            | undefined
+          if (!row) return
+          let existing: SessionOptions
+          try {
+            existing = JSON.parse(row.options_json) as SessionOptions
+          } catch {
+            return // corrupted — skip silently
+          }
+          const merged = { ...existing, ...patch }
+          try {
+            sessionSetOptions.run(JSON.stringify(merged), id)
+          } catch {
+            // best-effort: a failed options patch is not a hard error
+          }
         })
 
       const appendMessage = (input: {
@@ -485,6 +519,7 @@ export const makeSessionStoreSqlite = (
         create,
         get,
         getOptions,
+        setOptions,
         setStatus,
         appendMessage,
         readMessages,

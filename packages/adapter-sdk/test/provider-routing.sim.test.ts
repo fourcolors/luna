@@ -36,6 +36,7 @@ const makeClosedQuery = (): Query => {
     interrupt: async () => {},
     setPermissionMode: async () => {},
     setModel: async () => {},
+    applyFlagSettings: async () => {},
     setMaxThinkingTokens: async () => {},
     supplyToolPermissionResponse: async () => {},
     mcpServerStatus: async () => ({}),

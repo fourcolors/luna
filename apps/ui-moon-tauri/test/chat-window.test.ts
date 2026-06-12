@@ -1890,12 +1890,17 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       M().ChatState.reset()
     })
 
-    it('hello caches advertised model ids to localStorage luna_available_models', () => {
+    it('hello caches advertised model list (with label + efforts) to luna_available_models', () => {
       M().handleFrame({
         type: 'hello', protocolVersion: 2, capabilities: {},
-        availableModels: [{ id: 'm-1', label: 'One' }, { id: 'm-2' }, { bogus: true }],
+        availableModels: [{ id: 'm-1', label: 'One', efforts: ['low', 'max'] }, { id: 'm-2' }, { bogus: true }],
       })
-      expect(JSON.parse(localStorage.getItem('luna_available_models')!)).toEqual(['m-1', 'm-2'])
+      const cached = JSON.parse(localStorage.getItem('luna_available_models')!)
+      // New cache shape: array of {id, label, efforts} objects (not plain id strings).
+      expect(cached).toHaveLength(2)
+      expect(cached[0]).toEqual({ id: 'm-1', label: 'One', efforts: ['low', 'max'] })
+      // m-2 has no label or efforts — defaults applied.
+      expect(cached[1]).toEqual({ id: 'm-2', label: 'm-2', efforts: [] })
     })
 
     it('hello with a buildSha reveals the header build label; absent hides it again', () => {

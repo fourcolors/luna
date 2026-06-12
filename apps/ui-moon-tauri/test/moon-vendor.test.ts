@@ -81,8 +81,10 @@ describe('moon-protocol.js', () => {
     expect(P().parseHelloCapabilities({})).toEqual({
       turnComplete: false, skills: false, connectors: false,
       artifacts: false, workflows: false, vault: false, mcpApps: false,
+      effortSelection: false,
     })
     expect(P().parseHelloCapabilities(undefined).vault).toBe(false)
+    expect(P().parseHelloCapabilities(undefined).effortSelection).toBe(false)
   })
 
   it('parseHelloCapabilities passes advertised flags through', () => {

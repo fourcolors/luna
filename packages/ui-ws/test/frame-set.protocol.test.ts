@@ -105,6 +105,7 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "widget-open",
   "mcp-resource-result",
   "mcp-tool-result",
+  "thread-config",
 ].sort()
 
 const EXPECTED_CLIENT_FRAME_TYPES = [
@@ -142,6 +143,7 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "widget-directory",
   "mcp-resource-read",
   "mcp-tool-call",
+  "set-thread-config",
 ].sort()
 
 const EXPECTED_PROTOCOL_VERSION = 2
@@ -227,7 +229,7 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     expect(UI_WS_PROTOCOL_VERSION).toBe(EXPECTED_PROTOCOL_VERSION)
   })
 
-  it("parser self-check: derived counts are sane (43 server, 34 client) — guards the regex itself", () => {
+  it("parser self-check: derived counts are sane (44 server, 35 client) — guards the regex itself", () => {
     // If the regex silently mis-parses, the toEqual above could pass for the
     // wrong reason. Pin the counts so a broken parser is caught here.
     // Prior base = 24 server / 15 client; the agent-summoned secure-secret-entry
@@ -252,9 +254,10 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // job-input-result (client) → 41 server / 32 client. The MCP Apps host
     // relay (widget-system.md Phase 7, SEP-1865) adds mcp-resource-result +
     // mcp-tool-result (server) and mcp-resource-read + mcp-tool-call (client)
-    // → 43 server / 34 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(43)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(34)
+    // → 43 server / 34 client. The model+effort switcher adds thread-config
+    // (server) and set-thread-config (client) → 44 server / 35 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(44)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(35)
   })
 
   // VERSION-SKEW (client half): nothing else pins the ui-shared wire.ts mirror

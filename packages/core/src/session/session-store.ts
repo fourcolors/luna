@@ -272,10 +272,37 @@ export class SessionStore extends Effect.Service<SessionStore>()(
           ),
         )
 
+      /**
+       * Patch the stored options for an existing session. Only the provided
+       * fields are updated; the rest of the options object is preserved.
+       * Used by setThreadConfig() to persist model/effort changes so that
+       * a future re-subscribe sees the correct options without a restart.
+       *
+       * Best-effort: silently ignores unknown session ids (the thread may
+       * have been evicted already; the durable record in thread-session-map
+       * is the source of truth for cross-restart recovery).
+       */
+      const setOptions = (
+        id: string,
+        patch: Partial<SessionOptions>,
+      ): Effect.Effect<void, never> =>
+        Ref.update(ref, (state) => {
+          const row = state.sessions.get(id)
+          if (!row) return state
+          const updated: SessionRow = {
+            ...row,
+            options: { ...row.options, ...patch },
+          }
+          const sessions = new Map(state.sessions)
+          sessions.set(id, updated)
+          return { ...state, sessions }
+        })
+
       return {
         create,
         get,
         getOptions,
+        setOptions,
         setStatus,
         appendMessage,
         readMessages,

@@ -285,4 +285,142 @@ describe('settings.connection panel', () => {
     expect(invoke).toHaveBeenCalledWith('hub_event', { name: 'open-wizard' })
   })
 
+  // ── New cache shape (extended: {id, label, efforts} objects) ────────────
+
+  it('model select shows label text from new-shape cache (not raw id)', async () => {
+    localStorage.setItem('luna_available_models', JSON.stringify([
+      { id: 'claude-fable-5', label: 'Fable 5 (1M context)', efforts: ['low', 'max'] },
+      { id: 'claude-haiku-4-5', label: 'Haiku 4.5', efforts: [] },
+    ]))
+    bootPanel({ type: 'settings.connection', invoke: () => null })
+    await flush()
+
+    const sel = document.getElementById('model-select') as HTMLSelectElement
+    const opts = Array.from(sel.options).map((o) => ({ value: o.value, text: o.textContent }))
+    expect(opts.find((o) => o.value === 'claude-fable-5')?.text).toBe('Fable 5 (1M context)')
+    expect(opts.find((o) => o.value === 'claude-haiku-4-5')?.text).toBe('Haiku 4.5')
+  })
+
+  it('model select back-compat: accepts legacy plain-id string array', async () => {
+    localStorage.setItem('luna_available_models', JSON.stringify(['claude-3-opus', 'claude-3-haiku']))
+    bootPanel({ type: 'settings.connection', invoke: () => null })
+    await flush()
+
+    const sel = document.getElementById('model-select') as HTMLSelectElement
+    expect(sel.options.length).toBeGreaterThanOrEqual(3) // default + 2 models
+    expect(Array.from(sel.options).some((o) => o.value === 'claude-3-opus')).toBe(true)
+    // Legacy: no label → id is used as text
+    const opusOpt = Array.from(sel.options).find((o) => o.value === 'claude-3-opus')!
+    expect(opusOpt.textContent).toBe('claude-3-opus')
+  })
+
+  it('effort select is hidden when selected model has no efforts', async () => {
+    localStorage.setItem('luna_available_models', JSON.stringify([
+      { id: 'claude-haiku-4-5', label: 'Haiku 4.5', efforts: [] },
+    ]))
+    localStorage.setItem('luna_model', 'claude-haiku-4-5')
+    bootPanel({ type: 'settings.connection', invoke: () => null })
+    await flush()
+
+    const effortRow = document.getElementById('effort-row') as HTMLElement
+    expect(effortRow.hidden).toBe(true)
+  })
+
+  it('effort select is visible when selected model has efforts', async () => {
+    localStorage.setItem('luna_available_models', JSON.stringify([
+      { id: 'claude-fable-5', label: 'Fable 5', efforts: ['low', 'max'] },
+    ]))
+    localStorage.setItem('luna_model', 'claude-fable-5')
+    bootPanel({ type: 'settings.connection', invoke: () => null })
+    await flush()
+
+    const effortRow = document.getElementById('effort-row') as HTMLElement
+    expect(effortRow.hidden).toBe(false)
+    const sel = document.getElementById('effort-select') as HTMLSelectElement
+    expect(sel).toBeTruthy()
+    const effortValues = Array.from(sel.options).map((o) => o.value)
+    expect(effortValues).toContain('low')
+    expect(effortValues).toContain('max')
+  })
+
+  it('effort select restores persisted luna_effort', async () => {
+    localStorage.setItem('luna_available_models', JSON.stringify([
+      { id: 'claude-fable-5', label: 'Fable 5', efforts: ['low', 'max'] },
+    ]))
+    localStorage.setItem('luna_model', 'claude-fable-5')
+    localStorage.setItem('luna_effort', 'max')
+    bootPanel({ type: 'settings.connection', invoke: () => null })
+    await flush()
+
+    const sel = document.getElementById('effort-select') as HTMLSelectElement
+    expect(sel.value).toBe('max')
+  })
+
+  it('effort select change writes luna_effort to localStorage', async () => {
+    localStorage.setItem('luna_available_models', JSON.stringify([
+      { id: 'claude-fable-5', label: 'Fable 5', efforts: ['low', 'max'] },
+    ]))
+    localStorage.setItem('luna_model', 'claude-fable-5')
+    bootPanel({ type: 'settings.connection', invoke: () => null })
+    await flush()
+
+    const sel = document.getElementById('effort-select') as HTMLSelectElement
+    sel.value = 'low'
+    sel.dispatchEvent(new Event('change'))
+
+    expect(localStorage.getItem('luna_effort')).toBe('low')
+  })
+
+  it('effort select change to Default removes luna_effort from localStorage', async () => {
+    localStorage.setItem('luna_available_models', JSON.stringify([
+      { id: 'claude-fable-5', label: 'Fable 5', efforts: ['low', 'max'] },
+    ]))
+    localStorage.setItem('luna_model', 'claude-fable-5')
+    localStorage.setItem('luna_effort', 'max')
+    bootPanel({ type: 'settings.connection', invoke: () => null })
+    await flush()
+
+    const sel = document.getElementById('effort-select') as HTMLSelectElement
+    sel.value = ''
+    sel.dispatchEvent(new Event('change'))
+
+    expect(localStorage.getItem('luna_effort')).toBeNull()
+  })
+
+  it('changing model updates effort select to that model\'s efforts and hides row when empty', async () => {
+    localStorage.setItem('luna_available_models', JSON.stringify([
+      { id: 'claude-fable-5', label: 'Fable 5', efforts: ['low', 'max'] },
+      { id: 'claude-haiku-4-5', label: 'Haiku 4.5', efforts: [] },
+    ]))
+    localStorage.setItem('luna_model', 'claude-fable-5')
+    bootPanel({ type: 'settings.connection', invoke: () => null })
+    await flush()
+
+    const modelSel = document.getElementById('model-select') as HTMLSelectElement
+    const effortRow = document.getElementById('effort-row') as HTMLElement
+    expect(effortRow.hidden).toBe(false)
+
+    modelSel.value = 'claude-haiku-4-5'
+    modelSel.dispatchEvent(new Event('change'))
+
+    expect(effortRow.hidden).toBe(true)
+  })
+
+  it('changing to model without saved effort support clears luna_effort', async () => {
+    localStorage.setItem('luna_available_models', JSON.stringify([
+      { id: 'claude-fable-5', label: 'Fable 5', efforts: ['max'] },
+      { id: 'claude-haiku-4-5', label: 'Haiku 4.5', efforts: [] },
+    ]))
+    localStorage.setItem('luna_model', 'claude-fable-5')
+    localStorage.setItem('luna_effort', 'max')
+    bootPanel({ type: 'settings.connection', invoke: () => null })
+    await flush()
+
+    const modelSel = document.getElementById('model-select') as HTMLSelectElement
+    modelSel.value = 'claude-haiku-4-5'
+    modelSel.dispatchEvent(new Event('change'))
+
+    expect(localStorage.getItem('luna_effort')).toBeNull()
+  })
+
 })
