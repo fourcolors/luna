@@ -3844,6 +3844,42 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   // ───────────────────────────────────────────────────────────────────────────
   // Behavioral Feature: Settings tabs that migrated to system widgets (Phase 2)
   // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: needs-input pip (ambient ladder rung 1)', () => {
+    const M = () => (window as any).__MoonInternals
+
+    it('job-input-request lights the pip and summons the NOW rail; status clears it', async () => {
+      const m = M()
+      const invoke = vi.fn(async () => 'panel-now')
+      ;(window as any).__TAURI__.core = { invoke }
+      const pip = document.getElementById('needs-input-pip') as HTMLElement
+      expect(pip.hidden).toBe(true)
+
+      m.WebSocketEngine.handleFrame({
+        type: 'job-input-request', requestId: 'jin_1', runId: 7,
+        jobId: 'job-x', jobName: 'Nightly sweep', prompt: 'Continue?', timeoutMs: 300000,
+      })
+      expect(pip.hidden).toBe(false)
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'now' }))
+
+      // A second request keeps it lit; settling ONE leaves the other.
+      m.WebSocketEngine.handleFrame({
+        type: 'job-input-request', requestId: 'jin_2', runId: 8,
+        jobId: 'job-y', jobName: 'Other', prompt: 'Go?', timeoutMs: 300000,
+      })
+      m.WebSocketEngine.handleFrame({ type: 'job-input-status', requestId: 'jin_1', ok: true, message: 'Answered.' })
+      expect(pip.hidden).toBe(false)
+      m.WebSocketEngine.handleFrame({ type: 'job-input-status', requestId: 'jin_2', ok: false, message: 'Timed out.' })
+      expect(pip.hidden).toBe(true)
+    })
+
+    it('malformed frames never light the pip', () => {
+      const m = M()
+      const pip = document.getElementById('needs-input-pip') as HTMLElement
+      m.WebSocketEngine.handleFrame({ type: 'job-input-request' })
+      expect(pip.hidden).toBe(true)
+    })
+  })
+
   describe('Feature: Summon-by-name (widget directory + widget-open)', () => {
     const M = () => (window as any).__MoonInternals
 

@@ -838,6 +838,43 @@ fn registry_lookup(kind: &str) -> Option<&'static WidgetDescriptor> {
 fn panel_label(kind: &str) -> String {
     format!("panel-{}", kind.replace('.', "-"))
 }
+
+/// Label for a non-singleton panel INSTANCE: the base label plus a stable
+/// hash of its params (e.g. panel-flow-1a2b3c) — same params focus the same
+/// window, different params open siblings. djb2, like widget_label.
+fn panel_instance_label(kind: &str, params: &serde_json::Value) -> String {
+    let canon = params.to_string();
+    let mut hash: u64 = 5381;
+    for b in canon.bytes() {
+        hash = hash.wrapping_mul(33).wrapping_add(u64::from(b));
+    }
+    format!("{}-{hash:x}", panel_label(kind))
+}
+
+/// Append registry params as query parameters onto a descriptor page URL
+/// (only scalar values; keys must be ASCII-alphanumeric — fail closed).
+fn panel_url_with_params(page: &str, params: &serde_json::Value) -> String {
+    let mut url = page.to_string();
+    if let Some(obj) = params.as_object() {
+        for (k, v) in obj {
+            if !k.chars().all(|c| c.is_ascii_alphanumeric()) {
+                continue;
+            }
+            let val = match v {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                _ => continue,
+            };
+            let sep = if url.contains('?') { '&' } else { '?' };
+            url.push(sep);
+            url.push_str(k);
+            url.push('=');
+            url.push_str(&encode_query_value(&val));
+        }
+    }
+    url
+}
 fn panel_kind_from_label(label: &str) -> Option<String> {
     label.strip_prefix("panel-").map(|s| s.replace('-', "."))
 }
@@ -915,11 +952,26 @@ fn spawn_panel(
     width: Option<f64>,
     height: Option<f64>,
 ) -> Result<String, String> {
-    let label = panel_label(&desc.kind);
+    spawn_panel_at(app, desc, &panel_label(&desc.kind), &desc.page, x, y, width, height)
+}
+
+/// spawn_panel with an explicit label + url (non-singleton instances).
+#[allow(clippy::too_many_arguments)]
+fn spawn_panel_at(
+    app: &tauri::AppHandle,
+    desc: &WidgetDescriptor,
+    label: &str,
+    url: &str,
+    x: Option<f64>,
+    y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<String, String> {
+    let label = label.to_string();
     let mut builder = tauri::WebviewWindowBuilder::new(
         app,
         &label,
-        tauri::WebviewUrl::App(desc.page.clone().into()),
+        tauri::WebviewUrl::App(url.to_string().into()),
     )
     .title(&desc.title)
     .decorations(false)
@@ -984,6 +1036,7 @@ fn hub_event(app: tauri::AppHandle, name: String) -> Result<(), String> {
 async fn open_widget(
     app: tauri::AppHandle,
     kind: String,
+    params: Option<serde_json::Value>,
     opener: Option<String>,
     x: Option<f64>,
     y: Option<f64>,
@@ -992,8 +1045,16 @@ async fn open_widget(
     if desc.trust != "system" {
         return Err(format!("kind {kind} is not a system widget"));
     }
-    let label = panel_label(&kind);
-    // Singleton: already open → show + focus, never a twin.
+    let params = params.unwrap_or(serde_json::Value::Null);
+    let (label, url) = if desc.singleton || params.is_null() {
+        (panel_label(&kind), desc.page.clone())
+    } else {
+        (
+            panel_instance_label(&kind, &params),
+            panel_url_with_params(&desc.page, &params),
+        )
+    };
+    // Singleton (or same-params instance): already open → show + focus.
     if let Some(win) = app.get_webview_window(&label) {
         let _ = win.show();
         let _ = win.set_focus();
@@ -1004,7 +1065,7 @@ async fn open_widget(
     // gear spawn free-floating (the moon is never a group member).
     let opener = opener.filter(|o| is_dock_label(o) && app.get_webview_window(o).is_some());
 
-    let win_label = spawn_panel(&app, desc, x, y, None, None)?;
+    let win_label = spawn_panel_at(&app, desc, &label, &url, x, y, None, None)?;
     let Some(win) = app.get_webview_window(&win_label) else {
         return Ok(win_label);
     };

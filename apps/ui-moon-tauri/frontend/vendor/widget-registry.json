@@ -91,6 +91,36 @@
       "width": 420,
       "height": 460,
       "description": "Connect external services (Google Workspace and others): add accounts, authorize, manage instances"
+    },
+    {
+      "kind": "now",
+      "title": "Now",
+      "page": "panel.html?type=now",
+      "trust": "system",
+      "singleton": true,
+      "width": 320,
+      "height": 440,
+      "description": "The live rail: running and waiting jobs, with answer cards when Luna needs the user's input"
+    },
+    {
+      "kind": "briefing",
+      "title": "Briefing",
+      "page": "panel.html?type=briefing",
+      "trust": "system",
+      "singleton": true,
+      "width": 360,
+      "height": 460,
+      "description": "While-you-were-away digest: jobs needing attention, recent runs, upcoming schedules"
+    },
+    {
+      "kind": "flow",
+      "title": "Run history",
+      "page": "panel.html?type=flow",
+      "trust": "system",
+      "singleton": false,
+      "width": 380,
+      "height": 460,
+      "description": "Run history inspector for one workflow/job (open with params {jobId})"
     }
   ]
 }

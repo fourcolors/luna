@@ -61,6 +61,24 @@
       Adding data-tauri-drag-region tells Tauri to drag the native window 
       when clicking and dragging this element.
     */
+    .needs-input-pip {
+      position: absolute;
+      top: 14px;
+      right: 16px;
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%, #ffe2ae, #f8c982 60%, #d99a3e);
+      box-shadow: 0 0 8px 2px rgba(248, 201, 130, 0.55);
+      z-index: 30;
+      pointer-events: none;
+      animation: pip-breathe 2.4s ease-in-out infinite;
+    }
+    @keyframes pip-breathe {
+      0%, 100% { transform: scale(1); opacity: 0.85; }
+      50% { transform: scale(1.25); opacity: 1; }
+    }
+
     .moon-container {
       position: absolute;
       left: 15px;
@@ -2808,6 +2826,10 @@
 
   <!-- The Draggable Moon -->
   <div class="moon-container" id="moon" data-tauri-drag-region>
+    <!-- Ambient ladder, rung 1 (Phase 5): the needs-input pip. Lights when a
+         job asks for operator input (job-input-request broadcast); clears on
+         the bridge's dismissal broadcast (answered/cancelled/expired). -->
+    <div class="needs-input-pip" id="needs-input-pip" aria-hidden="true" hidden></div>
     <div class="moon-aura" aria-hidden="true"></div>
     <div class="moon-wrapper" id="moon-wrapper">
       <div class="moon-glow"></div>
@@ -6946,6 +6968,32 @@
     });
 
 
+
+    // Ambient ladder rung 1 (Phase 5): a running job asked for input. Light
+    // the pip and summon the NOW rail (singleton — focuses if already open).
+    // The hub's hello-only connection receives these broadcasts; the rail
+    // (its own connection) hosts the actual answer card.
+    const PendingInputs = new Set();
+    const renderPip = () => {
+      const pip = document.getElementById('needs-input-pip');
+      if (pip) pip.hidden = PendingInputs.size === 0;
+    };
+    MoonFrames.register('job-input-request', (frame) => {
+      if (!frame || typeof frame.requestId !== 'string') return;
+      PendingInputs.add(frame.requestId);
+      renderPip();
+      if (window.__TAURI__ && window.__TAURI__.core) {
+        window.__TAURI__.core.invoke('open_widget', { kind: 'now' })
+          .catch((e) => Logger.warn('auto-open now rail failed:', e));
+      }
+    });
+    MoonFrames.register('job-input-status', (frame) => {
+      // Any status for a request settles it (answered/cancelled/expired —
+      // the bridge broadcasts dismissals to every surface).
+      if (!frame || typeof frame.requestId !== 'string') return;
+      PendingInputs.delete(frame.requestId);
+      renderPip();
+    });
 
     MoonFrames.register('widget-open', (frame) => {
       // Summon-by-name, return leg: the agent asked for a widget by kind.

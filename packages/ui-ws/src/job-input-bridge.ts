@@ -231,6 +231,14 @@ export const createJobInputBridge = (
         ok: false,
         message: "The operator cancelled the input request.",
       })
+      // Dismiss the prompt EVERYWHERE (other windows' cards, the hub's
+      // ambient pip) — not only on the cancelling client.
+      broadcast({
+        type: "job-input-status",
+        requestId: frame.requestId,
+        ok: false,
+        message: "Dismissed.",
+      })
       try {
         replyTo({
           type: "job-input-status",
@@ -248,6 +256,13 @@ export const createJobInputBridge = (
     // awaiting tool) — never into a log line or an outbound frame.
     deps.log?.(`[job-input] ${frame.requestId} answered`)
     settle(frame.requestId, { ok: true, answer: frame.answer })
+    // Same dismissal fan-out on a win: every other surface drops the card.
+    broadcast({
+      type: "job-input-status",
+      requestId: frame.requestId,
+      ok: true,
+      message: "Answered.",
+    })
     try {
       replyTo({
         type: "job-input-status",

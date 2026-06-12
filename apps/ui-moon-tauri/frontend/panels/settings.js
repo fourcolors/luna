@@ -27,33 +27,48 @@
     { kind: 'settings.updates',    label: 'Updates' },
   ];
 
+  // Ambient widgets (Phase 5): a manual way to open the rails — the deck
+  // also summons them by itself (needs-input auto-opens Now) and the agent
+  // can summon any of them by name.
+  var WIDGETS = [
+    { kind: 'now',      label: 'Now' },
+    { kind: 'briefing', label: 'Briefing' },
+  ];
+
   var mod = {
     title: 'Settings',
     render: function (el, ctx) {
-      var list = document.createElement('div');
-      list.id = 'launcher-list';
-      list.setAttribute('role', 'menu');
-      list.style.display = 'flex';
-      list.style.flexDirection = 'column';
-      list.style.gap = '6px';
-      PANELS.forEach(function (p) {
-        var btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'panel-btn launcher-btn';
-        btn.setAttribute('role', 'menuitem');
-        btn.setAttribute('data-panel-kind', p.kind);
-        btn.setAttribute('aria-label', 'Open ' + p.label + ' settings');
-        btn.style.textAlign = 'left';
-        btn.style.width = '100%';
-        btn.textContent = p.label + ' ↗';
-        btn.addEventListener('click', function () {
-          // Best-effort: off-Tauri (browser dev / jsdom) the invoke rejects
-          // and the launcher simply stays put.
-          ctx.invoke('open_widget', { kind: p.kind }).catch(function () {});
+      var makeSection = function (id, entries, suffix) {
+        var list = document.createElement('div');
+        list.id = id;
+        list.setAttribute('role', 'menu');
+        list.style.display = 'flex';
+        list.style.flexDirection = 'column';
+        list.style.gap = '6px';
+        entries.forEach(function (p) {
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'panel-btn launcher-btn';
+          btn.setAttribute('role', 'menuitem');
+          btn.setAttribute('data-panel-kind', p.kind);
+          btn.setAttribute('aria-label', 'Open ' + p.label + suffix);
+          btn.style.textAlign = 'left';
+          btn.style.width = '100%';
+          btn.textContent = p.label + ' ↗';
+          btn.addEventListener('click', function () {
+            // Best-effort: off-Tauri (browser dev / jsdom) the invoke rejects
+            // and the launcher simply stays put.
+            ctx.invoke('open_widget', { kind: p.kind }).catch(function () {});
+          });
+          list.appendChild(btn);
         });
-        list.appendChild(btn);
-      });
-      el.appendChild(list);
+        return list;
+      };
+      el.appendChild(makeSection('launcher-list', PANELS, ' settings'));
+      var divider = document.createElement('div');
+      divider.style.cssText = 'border-top:1px solid var(--border);margin:10px 0;';
+      el.appendChild(divider);
+      el.appendChild(makeSection('launcher-widgets', WIDGETS, ''));
     },
   };
 

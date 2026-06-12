@@ -5,6 +5,10 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
 
   <!-- The Draggable Moon -->
   <div class="moon-container" id="moon" data-tauri-drag-region="">
+    <!-- Ambient ladder, rung 1 (Phase 5): the needs-input pip. Lights when a
+         job asks for operator input (job-input-request broadcast); clears on
+         the bridge's dismissal broadcast (answered/cancelled/expired). -->
+    <div class="needs-input-pip" id="needs-input-pip" aria-hidden="true" hidden=""></div>
     <div class="moon-aura" aria-hidden="true"></div>
     <div class="moon-wrapper" id="moon-wrapper">
       <div class="moon-glow"></div>
@@ -479,6 +483,10 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
 
   <!-- The Draggable Moon -->
   <div class="moon-container" id="moon" data-tauri-drag-region="">
+    <!-- Ambient ladder, rung 1 (Phase 5): the needs-input pip. Lights when a
+         job asks for operator input (job-input-request broadcast); clears on
+         the bridge's dismissal broadcast (answered/cancelled/expired). -->
+    <div class="needs-input-pip" id="needs-input-pip" aria-hidden="true" hidden=""></div>
     <div class="moon-aura" aria-hidden="true"></div>
     <div class="moon-wrapper" id="moon-wrapper" style="transform: none;">
       <div class="moon-glow"></div>
