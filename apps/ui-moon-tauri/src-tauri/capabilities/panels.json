@@ -39,6 +39,7 @@
     "allow-set-active-profile",
     "allow-open-external-url",
     "opener:allow-open-url",
-    "allow-open-widget"
+    "allow-open-widget",
+    "allow-pointer-button-down"
   ]
 }

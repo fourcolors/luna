@@ -204,6 +204,46 @@ describe('widget.html — snap + dock groups', () => {
     expect(setPositionCalls).toHaveLength(0)
   })
 
+  it('a hover-pause while the button is HELD never snaps — the settle waits for the real release', async () => {
+    // macOS streams Moved during a drag; pausing 120ms over a neighbor used
+    // to link the group under the user's hand ("a bit aggressive"). The
+    // settle now polls pointer_button_down and only acts on button-up.
+    let held = true
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'pointer_button_down') return held
+      if (cmd === 'list_widget_windows') return []
+      return null
+    })
+
+    movedHandler!()
+    await vi.advanceTimersByTimeAsync(121) // settle fires → sees button held
+    expect(setPositionCalls).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(300) // several re-check polls — still held
+    expect(setPositionCalls).toHaveLength(0)
+
+    held = false // the user finally drops
+    await vi.advanceTimersByTimeAsync(91)  // next poll sees the release
+    const snap = expectedSnap()
+    expect(setPositionCalls).toEqual([{ x: snap.x, y: snap.y }])
+  })
+
+  it('a new move while held kills the stale re-check chain (no double settles)', async () => {
+    let held = true
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'pointer_button_down') return held
+      if (cmd === 'list_widget_windows') return []
+      return null
+    })
+    movedHandler!()
+    await vi.advanceTimersByTimeAsync(121) // settle → held → re-arm chain
+    movedHandler!()                         // user keeps dragging — gen bumps
+    held = false
+    await vi.advanceTimersByTimeAsync(121) // only the NEW settle may act
+    expect(setPositionCalls).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(400) // the stale chain must stay dead
+    expect(setPositionCalls).toHaveLength(1)
+  })
+
   it('dock math runs in logical px — physical rects are divided by the scale (the live Retina bug)', async () => {
     // Same logical geometry as the base fixture, reported in 2x physical px.
     // The settle must divide by the window scale and snap to LOGICAL coords.

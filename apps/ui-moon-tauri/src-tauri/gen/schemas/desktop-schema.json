@@ -447,6 +447,12 @@
           "markdownDescription": "Allows opening a SYSTEM widget by registry kind (panel-* windows). The registry maps kinds only to shipped pages, so no content input can become a system panel."
         },
         {
+          "description": "Allows a widget-family window to ask whether the primary mouse button is held — the dock settle defers snapping/linking until the user actually releases the drag.",
+          "type": "string",
+          "const": "allow-pointer-button-down",
+          "markdownDescription": "Allows a widget-family window to ask whether the primary mouse button is held — the dock settle defers snapping/linking until the user actually releases the drag."
+        },
+        {
           "description": "Allows writing the mode-600 WS connection file",
           "type": "string",
           "const": "allow-save-connection",

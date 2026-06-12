@@ -180,18 +180,44 @@
       var settleGen = 0; // bumped on every move: stale async settles abort
       var THROTTLE_MS = 16;
       var DEBOUNCE_MS = 120;
+      var RECHECK_MS = 90; // button-held poll cadence until the real release
+
+      function armSettle(delay) {
+        if (snapSettleTimer) { clearTimeout(snapSettleTimer); snapSettleTimer = null; }
+        snapSettleTimer = setTimeout(runSettle, delay);
+      }
 
       W.onMoved(function () {
         var now = Date.now();
         settleGen++;
         if (now - lastMoveTime < THROTTLE_MS) return;
         lastMoveTime = now;
+        armSettle(DEBOUNCE_MS);
+      }).catch(function () { /* onMoved may not exist in all versions */ });
 
-        if (snapSettleTimer) { clearTimeout(snapSettleTimer); snapSettleTimer = null; }
-        snapSettleTimer = setTimeout(async function () {
+      async function runSettle() {
           try {
             var gen = settleGen;
             var fresh = function () { return settleGen === gen; };
+            // SNAP-ON-RELEASE, literally. macOS streams Moved events DURING
+            // a drag, so a hover-pause over a neighbor satisfies the
+            // debounce while the hand is still down — and used to link the
+            // group mid-drag (operator feedback: "a bit aggressive"). The
+            // webview never sees pointerup once the native drag loop owns
+            // the window, so ask AppKit whether the button is still held
+            // and just keep re-checking until the actual drop. An older
+            // core without the command fails OPEN (snap now, old behavior).
+            var held = false;
+            try {
+              if (window.__TAURI__ && window.__TAURI__.core) {
+                held = !!(await window.__TAURI__.core.invoke('pointer_button_down'));
+              }
+            } catch (_) { /* command absent — fail open */ }
+            if (held) {
+              if (!fresh()) return; // a newer move owns the settle now
+              armSettle(RECHECK_MS);
+              return;
+            }
             // Minimize fires a spurious onMoved with nonsense coordinates
             // (tauri#7664) — never snap a minimized window.
             if (typeof W.isMinimized === 'function' && (await W.isMinimized())) return;
@@ -234,8 +260,7 @@
                 Math.round(best.snap.y - widgetRect.y));
             }
           } catch (_) { /* best-effort — never throw */ }
-        }, DEBOUNCE_MS);
-      }).catch(function () { /* onMoved may not exist in all versions */ });
+      }
     } catch (_) { /* best-effort */ }
   }
 

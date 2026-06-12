@@ -1695,11 +1695,15 @@ fn dock_rects_overlap(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool 
     ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by
 }
 
-/// Pick an eject vector (logical px) that doesn't land the leaver INSIDE a
-/// former neighbor. Instant re-linking is prevented separately by the
-/// ex-member cooldown (the leaver ignores its old group briefly), so a
-/// surviving flush seam here is fine. Prefers the axis pointing away from
-/// the group centroid.
+/// Pick an eject vector (logical px) that lands the leaver clear of every
+/// other dock window's MAGNET, not just its body. The ex-member cooldown
+/// only shields the group the leaver just left — a bystander's magnet has
+/// no cooldown, and the eject's own setPosition fires onMoved, so landing
+/// flush with one re-links instantly (live-observed: an unpin stepped a
+/// panel straight onto a third window's seam). When the screen is too
+/// crowded for a fully-clear spot, settle for overlap-free — the cooldown
+/// covers the seams that can survive that. Prefers the axis pointing away
+/// from the crowd centroid.
 fn dock_eject_vector(
     leaver: (i32, i32, i32, i32),
     others: &[(i32, i32, i32, i32)],
@@ -1721,6 +1725,8 @@ fn dock_eject_vector(
             if lcy >= cy / n { 1 } else { -1 },
         )
     };
+    // Same threshold as deck-snap.js computeSnap — keep them in lockstep.
+    const MAGNET: i32 = 22;
     let candidates = [
         (STEP * sx, 0),
         (0, STEP * sy),
@@ -1730,7 +1736,20 @@ fn dock_eject_vector(
         (2 * STEP * sx, 0),
         (0, 2 * STEP * sy),
         (2 * STEP * sx, 2 * STEP * sy),
+        (3 * STEP * sx, 0),
+        (0, 3 * STEP * sy),
+        (3 * STEP * sx, 3 * STEP * sy),
     ];
+    for (dx, dy) in candidates {
+        let moved = (lx + dx, ly + dy, lw, lh);
+        if others
+            .iter()
+            .all(|o| !dock_rects_overlap(moved, *o) && !dock_in_magnet(moved, *o, MAGNET))
+        {
+            return (dx, dy);
+        }
+    }
+    // No magnet-free spot in ladder range: fall back to overlap-free only.
     for (dx, dy) in candidates {
         let moved = (lx + dx, ly + dy, lw, lh);
         if others.iter().all(|o| !dock_rects_overlap(moved, *o)) {
@@ -1861,6 +1880,28 @@ fn ns_set_child(parent: &tauri::WebviewWindow, child: &tauri::WebviewWindow, att
 
 #[cfg(not(target_os = "macos"))]
 fn ns_set_child(_parent: &tauri::WebviewWindow, _child: &tauri::WebviewWindow, _attach: bool) {}
+
+/// Is the PRIMARY mouse button currently held? The dock settle uses this to
+/// make snap-on-release literal: macOS streams `Moved` events DURING a drag
+/// (the old drag-end-only claim was wrong for these windows), so a hover-
+/// pause over a neighbor used to satisfy the settle debounce and link a
+/// group mid-drag — under the user's hand. The webview cannot track this
+/// itself: the native drag loop swallows pointermove/pointerup, so JS asks
+/// AppKit. Global state, no window access needed; safe from any thread.
+#[tauri::command]
+fn pointer_button_down() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::{class, msg_send};
+        // +[NSEvent pressedMouseButtons]: bit 0 = primary button.
+        let pressed: usize = unsafe { msg_send![class!(NSEvent), pressedMouseButtons] };
+        pressed & 1 != 0
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false // fail-open: behaves like the pre-gate settle
+    }
+}
 
 /// Apply a parenting diff + push fresh `dock-group` state to every window
 /// whose membership might have changed. Main thread only.
@@ -2040,18 +2081,22 @@ fn set_dock(
             .run_on_main_thread(move || {
                 // ORDER MATTERS: detach natives FIRST (an ejected window that
                 // still parents survivors would tow them), then eject the
-                // now-loose leaver to a spot that clears EVERY former
-                // neighbor's magnet, then regroup survivors by geometry and
-                // notify everyone with the final state.
+                // now-loose leaver to a spot that clears EVERY dock window's
+                // magnet — bystanders included, they have no cooldown — then
+                // regroup survivors by geometry and notify everyone with the
+                // final state. The hub is deliberately NOT an obstacle:
+                // panels float over the moon in normal layouts, so counting
+                // it can make every ladder spot "occupied" (live-observed);
+                // the worst a hub-adjacent landing causes is an alignment
+                // glide, never a link.
                 dock_apply_and_notify(&app, diff, Vec::new());
                 if let Some(w) = app.get_webview_window(&label) {
                     if let Some(leaver) = dock_logical_rect(&w) {
-                        let others: Vec<(i32, i32, i32, i32)> = remaining
+                        let others: Vec<(i32, i32, i32, i32)> = app
+                            .webview_windows()
                             .iter()
-                            .filter_map(|m| {
-                                let mw = app.get_webview_window(m)?;
-                                dock_logical_rect(&mw)
-                            })
+                            .filter(|(l, _)| l.as_str() != label && is_dock_label(l))
+                            .filter_map(|(_, mw)| dock_logical_rect(mw))
                             .collect();
                         let (ex, ey) = dock_eject_vector(leaver, &others);
                         let _ = w.set_position(tauri::LogicalPosition::new(
@@ -2257,6 +2302,7 @@ fn main() {
         list_widget_windows,
         set_dock,
         grab_dock,
+        pointer_button_down,
         voice_status,
         voice_set_mode,
         voice_ptt_down,
@@ -2292,7 +2338,8 @@ fn main() {
         close_widget,
         list_widget_windows,
         set_dock,
-        grab_dock
+        grab_dock,
+        pointer_button_down
     ]);
 
     builder
@@ -3225,5 +3272,43 @@ mod dock_eject_tests {
     #[test]
     fn lone_leaver_gets_the_default_shove() {
         assert_eq!(dock_eject_vector((0, 0, 100, 100), &[]), (36, 0));
+    }
+
+    #[test]
+    fn eject_clears_a_bystanders_magnet() {
+        // The live incident, verbatim: voice unpins from chat (its survivor,
+        // below) while the Now panel sits a hair right of the +x step. The
+        // old overlap-only ladder took (+36, 0) and landed flush on Now's
+        // left seam — a window with NO cooldown — and the settle linked
+        // them instantly. The vector must clear every magnet, not just
+        // every body.
+        let leaver = (1080, 208, 400, 420); // voice
+        let others = vec![
+            (959, 628, 560, 520),  // chat (ex-member survivor)
+            (1519, 195, 320, 440), // Now (bystander)
+        ];
+        let (dx, dy) = dock_eject_vector(leaver, &others);
+        let moved = (1080 + dx, 208 + dy, 400, 420);
+        assert!(
+            others
+                .iter()
+                .all(|o| !dock_rects_overlap(moved, *o) && !dock_in_magnet(moved, *o, 22)),
+            "eject ({dx},{dy}) landed inside someone's magnet"
+        );
+    }
+
+    #[test]
+    fn crowded_screen_falls_back_to_overlap_free() {
+        // Sandwiched mid-row: every ladder spot keeps a flush seam with an
+        // ex-member, so tier 1 finds nothing — the fallback must still
+        // return an overlap-free vector (the cooldown covers those seams).
+        let leaver = (300, 0, 300, 300);
+        let others = vec![(0, 0, 300, 300), (600, 0, 300, 300)];
+        let (dx, dy) = dock_eject_vector(leaver, &others);
+        let moved = (300 + dx, dy, 300, 300);
+        assert!(
+            others.iter().all(|o| !dock_rects_overlap(moved, *o)),
+            "fallback eject ({dx},{dy}) buried the leaver"
+        );
     }
 }
