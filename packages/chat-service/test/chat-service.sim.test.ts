@@ -673,7 +673,7 @@ describe("ChatService (Tier-2 sim)", () => {
   )
 
   it(
-    "SDK defaults isolate settings, disable auto memory, and remove Claude Code built-ins",
+    "SDK defaults isolate settings, disable auto memory, and remove Claude Code built-ins except Task",
     async () => {
       let capturedOptions: Record<string, unknown> | undefined
       const fakeLayer = SDKClient.fake((p) => {
@@ -696,13 +696,16 @@ describe("ChatService (Tier-2 sim)", () => {
       )
       expect(capturedOptions).toBeDefined()
       expect(capturedOptions!["settingSources"]).toEqual([])
-      expect(capturedOptions!["tools"]).toEqual([])
+      // "Task" is the ONE built-in kept: the subagent spawn tool. An explicit
+      // tools array still removes every other Claude Code built-in.
+      expect(capturedOptions!["tools"]).toEqual(["Task"])
       expect(capturedOptions!["allowedTools"]).toEqual([
         "mcp__memory__*",
         "mcp__scheduler__*",
         "mcp__observability__*",
         "mcp__local_shell__*",
         "mcp__secret_tools__*",
+        "Task",
       ])
       expect(capturedOptions!["strictMcpConfig"]).toBe(true)
       expect(capturedOptions!["env"]).toMatchObject({
@@ -741,7 +744,7 @@ describe("ChatService (Tier-2 sim)", () => {
         fakeLayer,
       )
       expect(capturedOptions).toBeDefined()
-      expect(capturedOptions!["tools"]).toEqual([])
+      expect(capturedOptions!["tools"]).toEqual(["Task"])
       expect(capturedOptions!["allowedTools"]).toContain("mcp__memory__*")
       expect(capturedOptions!["allowedTools"]).toContain("mcp__scheduler__*")
       expect(capturedOptions!["mcpServers"]).toEqual(mcpServers)

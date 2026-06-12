@@ -431,6 +431,108 @@ describe("SDKAdapter rotation simulation (WithBroker)", () => {
     }
   })
 
+  // ── B4b: multi-model turn (Task subagent on another model) → one usage
+  // report PER modelUsage entry, each priced at its own model — never the
+  // aggregate collapsed onto the lane model. ──────────────────────────────
+  it("B4b: multi-model result → per-model usage reports (subagent pricing)", async () => {
+    const spy: BrokerSpy = { reports: [] }
+    const makeMultiModelResult = (): Query => {
+      async function* gen(): AsyncGenerator<SDKMessage, void> {
+        yield {
+          type: "result",
+          subtype: "success",
+          session_id: "sid",
+          uuid: "u-result-mm",
+          is_error: false,
+          duration_ms: 10,
+          duration_api_ms: 5,
+          num_turns: 1,
+          result: "ok",
+          usage: {
+            input_tokens: 1100,
+            output_tokens: 220,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+          modelUsage: {
+            "claude-haiku-4-5-20251001": {
+              inputTokens: 1000,
+              outputTokens: 200,
+              cacheReadInputTokens: 0,
+              cacheCreationInputTokens: 0,
+            },
+            "claude-opus-4-8": {
+              inputTokens: 100,
+              outputTokens: 20,
+              cacheReadInputTokens: 0,
+              cacheCreationInputTokens: 0,
+            },
+          },
+        } as unknown as SDKMessage
+      }
+      const iterator = gen()
+      return Object.assign(iterator, {
+        interrupt: async () => {},
+        setPermissionMode: async () => {},
+        setModel: async () => {},
+        applyFlagSettings: async () => {},
+        setMaxThinkingTokens: async () => {},
+        supplyToolPermissionResponse: async () => {},
+        mcpServerStatus: async () => ({}),
+      } as Partial<Query>) as Query
+    }
+    const sdkLayer = SDKClient.fake(() => makeMultiModelResult())
+    const brokerL = AccountBrokerLayer.fromAccounts(seeds).pipe(
+      Layer.provide(Layer.mergeAll(EnvSecretProvider.Default, CoreClock.Default)),
+    )
+    const spiedBrokerL = reportSpyLayer(spy).pipe(Layer.provide(brokerL))
+    const layer = Layer.provideMerge(
+      SDKAdapter.WithBroker,
+      Layer.mergeAll(sdkLayer, baseLayer, spiedBrokerL),
+    )
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* SDKAdapter
+        const store = yield* SessionStore
+        const localSid = `${sid}-mmusage-${sidCounter++}`
+        yield* store.create({
+          id: localSid,
+          options: { model: "claude-haiku-4-5-20251001" },
+          createdAt: 0,
+        })
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const out = yield* adapter.query({
+              sessionId: localSid,
+              prompt: emptyPrompt,
+              sessionOptions: {
+                model: "claude-haiku-4-5-20251001",
+                idleTimeoutMs: 5_000,
+                sdkOptions: { model: "claude-haiku-4-5-20251001" },
+              },
+            })
+            yield* Stream.runDrain(out)
+          }),
+        )
+      }).pipe(Effect.provide(layer)),
+    )
+    await new Promise((r) => setTimeout(r, 20))
+    const usageReports = spy.reports.filter((r) => r.kind === "usage")
+    expect(usageReports.length).toBe(2)
+    const byModel = new Map(
+      usageReports.flatMap((r) =>
+        r.kind === "usage" ? [[r.model, r] as const] : [],
+      ),
+    )
+    const haiku = byModel.get("claude-haiku-4-5-20251001")
+    const opus = byModel.get("claude-opus-4-8")
+    expect(haiku?.kind === "usage" ? haiku.tokensIn : -1).toBe(1000)
+    expect(haiku?.kind === "usage" ? haiku.tokensOut : -1).toBe(200)
+    expect(opus?.kind === "usage" ? opus.tokensIn : -1).toBe(100)
+    expect(opus?.kind === "usage" ? opus.tokensOut : -1).toBe(20)
+  })
+
   // ── B8: chain advance emits the warn alert ────────────────────────────────
   it("B8: overflow chain advance logs a warn alert (step 0 cooled → step 1)", async () => {
     const chains = {

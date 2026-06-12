@@ -431,8 +431,13 @@ export const makeSessionStoreSqlite = (
             lastMessageAt: null,
             lastMessagePreview: null,
           }
+          // Parented (subagent-internal) messages never refresh the preview:
+          // the SDK forwards a subagent's seed prompt as a parented user
+          // message, and without this gate every Task spawn would overwrite
+          // the sidebar with internal prompt text. lastMessageAt still bumps.
           const nextPreview =
-            input.kind === "user" || input.kind === "assistant"
+            input.parentId == null &&
+            (input.kind === "user" || input.kind === "assistant")
               ? extractTextPreview(input.payload) ?? meta.lastMessagePreview
               : meta.lastMessagePreview
           const nextMeta: SessionMeta = {

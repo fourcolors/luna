@@ -924,6 +924,9 @@ export const startUIWebSocketServer = (
             // pre-computed the effort-validity matrix in availableModels.efforts.
             // Clients hide effort controls when absent/false.
             effortSelection: chat !== null,
+            // Subagents: chat threads can spawn SDK Task subagents; tool
+            // frames may carry the additive parentToolUseId linkage.
+            subagents: chat !== null,
           },
         })
 

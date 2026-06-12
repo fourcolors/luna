@@ -61,6 +61,8 @@ import {
   sdkMessageId,
   sdkMessageParentId,
   sdkMessageSessionId,
+  sdkAgentSpawnIds,
+  sdkToolResultIds,
 } from "./message-kind.js"
 import { mergeOptionsLogged } from "./merge-options.js"
 import { mergeEnvOverlayLogged } from "./merge-env.js"
@@ -82,6 +84,19 @@ const DEFAULT_IDLE_TIMEOUT_MS = 120_000
  * Env override: `LUNA_TURN_INACTIVITY_TIMEOUT_MS`; `0` disables.
  */
 const DEFAULT_TURN_INACTIVITY_TIMEOUT_MS = 300_000
+
+/**
+ * Inactivity window used INSTEAD of the turn window while ≥1 Task/Agent
+ * subagent call is outstanding. While the parent waits on a subagent, the
+ * stream legitimately goes silent for the subagent's whole model call
+ * (live-probed: nothing flows between `task_started` and the settling
+ * tool_result unless the subagent itself uses tools) — a long-thinking
+ * subagent would trip the 300s window and cost a 15-min account cooldown.
+ * Still bounded: a genuinely wedged subprocess trips after this window.
+ * Never shorter than the turn window. Env override:
+ * `LUNA_TASK_INACTIVITY_TIMEOUT_MS`.
+ */
+const DEFAULT_TASK_INACTIVITY_TIMEOUT_MS = 1_800_000
 
 /**
  * Cooldown parked on the acquired account when the inactivity watchdog trips,
@@ -218,6 +233,10 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
       const envHangCooldownMs = readPositiveMsEnv(
         "LUNA_HANG_COOLDOWN_MS",
         DEFAULT_HANG_COOLDOWN_MS,
+      )
+      const envTaskInactivityMs = readPositiveMsEnv(
+        "LUNA_TASK_INACTIVITY_TIMEOUT_MS",
+        DEFAULT_TASK_INACTIVITY_TIMEOUT_MS,
       )
 
       const hooksRef = yield* Ref.make<ReadonlyArray<HookRegistration>>([])
@@ -470,7 +489,17 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
            * so a plain mutable object is race-free (same convention as the
            * `acquiredAccountId` / `reportedSdkSessionId` locals above).
            */
-          const watchdog = { turnInFlight: false }
+          const watchdog = {
+            turnInFlight: false,
+            /**
+             * tool_use ids of Task/Agent subagent calls that have NOT yet
+             * received their tool_result. While non-empty, the consumer's
+             * inactivity window widens to `taskInactivityMs` (a subagent's
+             * model call legitimately streams nothing on the parent stream).
+             * Same single-threaded-Scope convention as `turnInFlight`.
+             */
+            pendingTaskIds: new Set<string>(),
+          }
 
           // Stream → AsyncIterable for the SDK to consume. Tap each outbound
           // user prompt to ARM the watchdog: a freshly-submitted turn is now
@@ -530,6 +559,11 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
           const hangCooldownMs =
             req.sessionOptions.hangCooldownMs ?? envHangCooldownMs
           const watchdogActive = idleTimeoutDisabled && turnInactivityMs > 0
+          // Subagent-aware window: while a Task/Agent call is outstanding the
+          // window is this instead of turnInactivityMs. Clamped to never be
+          // shorter than the turn window (an operator who widened the turn
+          // window must not get a TIGHTER one during subagents).
+          const taskInactivityMs = Math.max(turnInactivityMs, envTaskInactivityMs)
 
           /**
            * Producer pattern: a detached async function pushes from the SDK's
@@ -601,11 +635,40 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             const id = acquiredAccountId
             // Price against the model that ACTUALLY served the turn when the
             // result frame's modelUsage reports exactly one (alias lanes like
-            // "default"/"opus" otherwise price at a tier default). Multi-model
-            // turns (subagents) fall back to the broker-picked lane model.
-            const mu = (msg as { modelUsage?: Record<string, unknown> })
-              .modelUsage
+            // "default"/"opus" otherwise price at a tier default).
+            // Multi-model turns (a Task subagent on a different model):
+            // report ONE usage per modelUsage entry, each priced at its own
+            // model, instead of collapsing the aggregate onto the lane model
+            // — a haiku-lane thread spawning an opus subagent must not bill
+            // opus tokens at haiku rates against the account budget. The
+            // entries partition the turn's tokens, so the spend-meter's
+            // accumulated total matches the old aggregate count.
+            const mu = (msg as { modelUsage?: Record<string, {
+              inputTokens?: number
+              outputTokens?: number
+              cacheReadInputTokens?: number
+              cacheCreationInputTokens?: number
+            }> }).modelUsage
             const muKeys = mu ? Object.keys(mu) : []
+            if (mu && muKeys.length > 1) {
+              for (const [model, pm] of Object.entries(mu)) {
+                Effect.runPromise(
+                  broker.report({
+                    accountId: id,
+                    kind: "usage",
+                    model,
+                    tokensIn: pm.inputTokens ?? 0,
+                    tokensOut: pm.outputTokens ?? 0,
+                    cacheRead: pm.cacheReadInputTokens ?? 0,
+                    cacheWrite: pm.cacheCreationInputTokens ?? 0,
+                    ...(acquiredBudgetUsd !== null
+                      ? { budgetUsd: acquiredBudgetUsd }
+                      : {}),
+                  }),
+                ).catch(() => {})
+              }
+              return
+            }
             const model =
               muKeys.length === 1 ? muKeys[0]! : acquiredModel
             Effect.runPromise(
@@ -683,12 +746,29 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
               for await (const msg of handle as AsyncIterable<SDKMessage>) {
                 // B4: meter the turn at the result frame (fire-and-forget).
                 reportUsage(msg)
+                // Subagent tracking for the watchdog window: an assistant
+                // message opens a pending Task per Agent/Task tool_use; a
+                // user message's tool_result blocks settle them. Parented
+                // (subagent-internal) spawns count too — a nested Task keeps
+                // the turn legitimately silent the same way.
+                for (const id of sdkAgentSpawnIds(msg)) {
+                  watchdog.pendingTaskIds.add(id)
+                }
+                for (const id of sdkToolResultIds(msg)) {
+                  watchdog.pendingTaskIds.delete(id)
+                }
                 // Watchdog DISARM: a `result` frame closes the turn. After it,
                 // the stream waits for the NEXT user prompt (inter-turn
                 // think-time), which must NOT trip the inactivity watchdog. The
-                // prompt-tap re-arms on the next submitted turn.
+                // prompt-tap re-arms on the next submitted turn. Pending Task
+                // ids are cleared too: an aborted turn must not leak a wide
+                // window into the next one. (Interrupt is covered: live-probed
+                // on SDK 0.3.175, Query.interrupt() mid-Task emits a synthetic
+                // settling tool_result AND a result/error_during_execution
+                // frame, so both clear paths fire.)
                 if (sdkMessageKind(msg) === "result") {
                   watchdog.turnInFlight = false
+                  watchdog.pendingTaskIds.clear()
                 }
                 await Effect.runPromise(
                   Queue.offer(queue, { _tag: "value", value: msg }),
@@ -781,14 +861,33 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
                   // tripping — only an expiry WHILE a turn is in flight is a
                   // hang.
                   while (true) {
+                    // Window picked per take: while ≥1 subagent (Task/Agent
+                    // call) is outstanding the parent stream is legitimately
+                    // silent for the subagent's whole model call, so the
+                    // wider task window applies. Re-evaluated every loop —
+                    // the set shrinks as results land, restoring the tight
+                    // window for the rest of the turn.
+                    const windowMs =
+                      watchdog.pendingTaskIds.size > 0
+                        ? taskInactivityMs
+                        : turnInactivityMs
                     const taken = yield* Queue.take(queue).pipe(
-                      Effect.timeoutOption(Duration.millis(turnInactivityMs)),
+                      Effect.timeoutOption(Duration.millis(windowMs)),
                     )
                     if (Option.isSome(taken)) {
                       return yield* decodeFrame(taken.value)
                     }
                     if (!watchdog.turnInFlight) {
                       // Between turns — not a hang. Block again.
+                      continue
+                    }
+                    if (
+                      watchdog.pendingTaskIds.size > 0 &&
+                      windowMs < taskInactivityMs
+                    ) {
+                      // A Task started DURING this take's tight window — the
+                      // silence may be the subagent working, not a wedge.
+                      // Re-take under the wide window before declaring a hang.
                       continue
                     }
                     // TRIP: a turn streamed nothing for the whole window.
@@ -805,7 +904,11 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
                           sessionId: sessionIdForErr,
                           cause:
                             `model call stalled (no response for ` +
-                            `${turnInactivityMs}ms; suspected usage limit on ` +
+                            `${windowMs}ms` +
+                            (watchdog.pendingTaskIds.size > 0
+                              ? ` with ${watchdog.pendingTaskIds.size} subagent(s) outstanding`
+                              : "") +
+                            `; suspected usage limit on ` +
                             `account ${acquiredAccountId ?? "unknown"}). The ` +
                             `account was cooled — your next message will use ` +
                             `another account. Please resend.`,

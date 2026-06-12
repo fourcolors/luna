@@ -341,13 +341,24 @@ export class ChatService extends Effect.Service<ChatService>()(
           // unless a caller explicitly opts in for a thread.
           settingSources: opts.settingSources ?? [],
           // Availability, not permission: `allowedTools` only pre-approves
-          // calls. `tools: []` removes Claude Code built-ins (Task, WebFetch,
-          // TodoWrite, Bash, etc.) while leaving Luna's MCP tools available.
-          tools: [],
+          // calls. An explicit `tools` array removes Claude Code built-ins
+          // (WebFetch, TodoWrite, Bash, etc.) while leaving Luna's MCP tools
+          // available. "Task" is the ONE built-in Luna keeps: the subagent
+          // spawn tool (wire name of the emitted tool_use block is "Agent";
+          // "Task" is the options-layer alias the SDK accepts here). It is
+          // surgical — live-probed on SDK 0.3.175: no other built-in leaks
+          // back in, and the built-in subagent types (general-purpose,
+          // Explore, Plan) plus any ~/.luna/agents definitions become
+          // spawnable. A subagent inherits the parent's tool set, so this
+          // grants no capability the thread doesn't already have.
+          tools: ["Task"],
           // MCP tools still need SDK permission approval. Luna's own tool
           // handlers enforce their safety rules, so the SDK layer can
           // auto-approve these without reintroducing Claude Code built-ins.
-          allowedTools: [...LUNA_ALLOWED_MCP_TOOLS],
+          // "Task" is pre-approved belt-and-braces: live probes show the SDK
+          // executes it under permissionMode "default" without canUseTool,
+          // but pre-approval keeps that working if a future CLI tightens it.
+          allowedTools: [...LUNA_ALLOWED_MCP_TOOLS, "Task"],
           strictMcpConfig: true,
           env: sdkEnv,
           // SDK subprocess stderr → parent process stderr → journalctl.
@@ -652,7 +663,22 @@ export class ChatService extends Effect.Service<ChatService>()(
       }): Effect.Effect<void, never> =>
         Effect.gen(function* () {
           const t = (args.msg as { type?: string }).type
+          // Subagent linkage: the SDK forwards a subagent's tool_use /
+          // tool_result blocks (and its seed prompt) onto the parent stream
+          // with `parent_tool_use_id` set to the spawning Agent/Task call.
+          // Parented traffic is NOT part of the top-level conversation — it
+          // must never drive assistant-done, the in-flight turn state, or
+          // user-message rendering. (Live-probed on SDK 0.3.175 with
+          // forwardSubagentText unset: parented messages = the seed user
+          // text + the subagent's own tool_use/tool_result blocks.)
+          const parentToolUseId =
+            (args.msg as { parent_tool_use_id?: string | null })
+              .parent_tool_use_id ?? null
           if (t === "stream_event") {
+            // Defensive: today no parented stream_events arrive (probed),
+            // but if a future SDK forwards subagent deltas they must not be
+            // appended to the PARENT's streaming bubble.
+            if (parentToolUseId !== null) return
             const deltaText = extractStreamEventText(args.msg)
             if (deltaText === null) return
             yield* inc("luna.chat.assistant_deltas.total")
@@ -677,6 +703,55 @@ export class ChatService extends Effect.Service<ChatService>()(
             return
           }
           if (t === "assistant") {
+            if (parentToolUseId !== null) {
+              // Subagent-internal assistant message: by default the SDK
+              // forwards only its tool_use blocks. Surface them as TAGGED
+              // tool-call frames (clients nest/label them under the parent
+              // Agent card; pre-subagent clients render them as ordinary
+              // steps in the open timeline). Crucially: no assistant-done,
+              // no in-flight reset, no store lookup — a parented message is
+              // not a top-level turn, and the parent turn's streaming state
+              // must survive it untouched.
+              const subTurnId = turnIdOf(args.msg) ?? "unknown"
+              const subBlocks = (
+                args.msg as {
+                  message?: {
+                    content?: ReadonlyArray<{
+                      type?: string
+                      id?: string
+                      name?: string
+                      input?: unknown
+                    }>
+                  }
+                }
+              ).message?.content ?? []
+              for (const b of subBlocks) {
+                if (b.type === "tool_use" && typeof b.name === "string") {
+                  yield* inc("luna.chat.tool_uses.reported", { tool: b.name })
+                  yield* obs.emit({
+                    kind: "ToolCall",
+                    ts: new Date().toISOString(),
+                    level: "info",
+                    sessionId: args.threadId,
+                    toolName: b.name,
+                    durationMs: 0,
+                    status: "success",
+                  })
+                  if (typeof b.id === "string") {
+                    yield* PubSub.publish(args.pubsub, {
+                      type: "tool-call",
+                      threadId: args.threadId,
+                      turnId: subTurnId,
+                      toolCallId: b.id,
+                      name: b.name,
+                      input: b.input,
+                      parentToolUseId,
+                    })
+                  }
+                }
+              }
+              return
+            }
             // Final assistant turn — adapter has already mirrored to store.
             // Pull the persisted seq via projectOne over a synthesized envelope:
             // we don't have the StoredMessage in hand here, so we read the
@@ -833,6 +908,10 @@ export class ChatService extends Effect.Service<ChatService>()(
                 }
               }
             ).message?.content ?? []
+            // Parented user messages also carry the subagent's SEED PROMPT as
+            // a text block — the loop below ignores text blocks, so the seed
+            // never renders. Only tool_result blocks surface, tagged with the
+            // parent linkage when they came from inside a subagent.
             for (const b of content) {
               if (b.type === "tool_result" && typeof b.tool_use_id === "string") {
                 const { output, truncated } = truncateOutput(
@@ -845,6 +924,7 @@ export class ChatService extends Effect.Service<ChatService>()(
                   status: b.is_error === true ? "error" : "ok",
                   output,
                   truncated,
+                  ...(parentToolUseId !== null ? { parentToolUseId } : {}),
                 })
               }
             }

@@ -355,6 +355,43 @@ automatically:
 - **`auditor`** — consult *after* work is done. Verifies the deliverable.
 - **`dev-agent`** — coding and implementation tasks.
 
+### Spawning subagents from chat
+
+Chat threads expose the SDK's built-in **Task tool** (wire name `Agent`;
+`Task` is the options-layer alias). You can spawn a subagent with:
+
+```
+{ description, prompt, subagent_type?, model? }
+```
+
+`model` accepts `"sonnet"` | `"opus"` | `"haiku"` | `"fable"` per call.
+
+**Built-in subagent types** are always available, even with an empty
+`~/.luna/agents/`: `general-purpose`, `Explore`, `Plan`. Agent definitions
+loaded from `~/.luna/agents/*.md` appear as *additional* `subagent_type`
+values, merged with the built-ins. Definitions are loaded when a thread's
+SDK query starts — a newly added file is picked up by **new** threads; an
+already-open thread keeps the definitions it started with.
+
+The subagent runs to completion; you receive its full report as the tool
+result (the chat UI's copy is display-truncated to 40 lines / 2048 chars).
+Subagent text does **not** stream into chat; on subagent-aware clients its
+tool calls surface as `↳`-tagged steps in the Moon timeline (older clients
+show them as ordinary flat steps). Subagents inherit the parent's tools
+unless the agent definition restricts them.
+
+**Background jobs and `~/.luna/agents` definitions:** prompt-worker and
+workflow-worker bypass the agent-loading path, so jobs never see
+`~/.luna/agents` definitions (they run the SDK default toolset, where only
+the built-in subagent types could be reachable — and the default
+`max_turns: 1` leaves no room for a spawn round-trip). The curated,
+supported subagent path is interactive chat.
+
+**Inactivity watchdog:** while a Task call is outstanding, the window is
+governed by `LUNA_TASK_INACTIVITY_TIMEOUT_MS` (default 30 minutes,
+clamped to never be shorter than the turn window) instead of
+`LUNA_TURN_INACTIVITY_TIMEOUT_MS`.
+
 ### Agent definition format
 
 ```markdown

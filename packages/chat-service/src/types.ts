@@ -111,6 +111,10 @@ export interface ChatToolCall {
   readonly toolCallId: string
   readonly name: string
   readonly input: unknown
+  /** Set when this call happened INSIDE a subagent: the `tool_use.id` of the
+   *  parent Agent/Task call it nests under. Absent for top-level calls —
+   *  additive, so pre-subagent clients render these as ordinary steps. */
+  readonly parentToolUseId?: string
 }
 
 /** The result of a previously-announced tool call. `toolCallId` equals the
@@ -122,6 +126,9 @@ export interface ChatToolResult {
   readonly status: "ok" | "error"
   readonly output: string
   readonly truncated: boolean
+  /** Mirror of ChatToolCall.parentToolUseId for results produced inside a
+   *  subagent. Absent for top-level results. */
+  readonly parentToolUseId?: string
 }
 
 /**

@@ -300,6 +300,44 @@ d("SessionStore.fromPath (sqlite)", () => {
     expect(summary?.lastMessagePreview).toContain("hello")
   })
 
+  it("preview ignores parented (subagent-internal) messages; lastMessageAt still bumps", async () => {
+    // The SDK forwards a subagent's seed prompt as a parented user message —
+    // without the parentId gate every Task spawn would overwrite the sidebar
+    // preview with internal prompt text.
+    const summary = await provideMem(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        yield* store.create({
+          id: "psub",
+          options: { model: "m" },
+          createdAt: 0,
+        })
+        yield* store.appendMessage({
+          sessionId: "psub",
+          messageId: "u1",
+          ts: 1,
+          parentId: null,
+          kind: "user",
+          payload: { type: "user", message: { content: "real user text" } },
+        })
+        yield* store.appendMessage({
+          sessionId: "psub",
+          messageId: "seed1",
+          ts: 2,
+          parentId: "agent_call_1",
+          kind: "user",
+          payload: {
+            type: "user",
+            message: { content: "You are a subagent. Do the thing." },
+          },
+        })
+        return yield* store.get("psub")
+      }),
+    )
+    expect(summary?.lastMessageAt).toBe(2)
+    expect(summary?.lastMessagePreview).toContain("real user text")
+  })
+
   it("persists across reopen (round-trip through restart)", async () => {
     const dbPath = tmpDb()
     try {

@@ -123,6 +123,10 @@ export interface HelloFrame {
      * effort controls when absent/false. OPTIONAL/additive.
      */
     readonly effortSelection?: boolean
+    /** Chat threads can spawn SDK Task subagents; tool frames may carry the
+     *  additive `parentToolUseId` linkage. OPTIONAL/additive. Mirrors
+     *  packages/ui-ws/src/protocol.ts — keep in sync. */
+    readonly subagents?: boolean
   }
   /**
    * Models the operator can pick for new threads. OPTIONAL and additive —

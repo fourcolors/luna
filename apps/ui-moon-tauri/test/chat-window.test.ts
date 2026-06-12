@@ -2843,4 +2843,228 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(A().textBlock()).toBe('<attached-file name="n.md">\n# hi\n</attached-file>')
     })
   })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: Subagent (Agent tool) rendering
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Subagent (Agent tool) rendering', () => {
+    const M = () => (window as any).__MoonInternals
+
+    beforeEach(() => {
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      ;(window as any).cancelAnimationFrame = () => {}
+      M().ChatState.reset()
+      const chat = document.getElementById('chat-messages')!
+      chat.innerHTML = ''
+    })
+
+    // ── ChatState.applyToolCall preserves parentToolUseId ────────────────────
+    it('applyToolCall stores parentToolUseId on the segment when present', () => {
+      const state = M().ChatState
+      state.applyToolCall('t1', 'tc-1', 'Agent', { description: 'do stuff', prompt: 'x' }, 'parent-42')
+      const seg = state.turns[0].segments[0]
+      expect(seg.kind).toBe('tool')
+      expect(seg.name).toBe('Agent')
+      expect(seg.parentToolUseId).toBe('parent-42')
+    })
+
+    it('applyToolCall without parentToolUseId leaves the field absent (no undefined key)', () => {
+      const state = M().ChatState
+      state.applyToolCall('t1', 'tc-1', 'Read', { file_path: '/etc/hosts' })
+      const seg = state.turns[0].segments[0]
+      expect(seg.kind).toBe('tool')
+      expect('parentToolUseId' in seg).toBe(false)
+    })
+
+    // ── ChatRenderer.buildToolStep: Agent label with description ─────────────
+    it('buildToolStep renders "Agent — <description>" for an Agent tool call with a description', () => {
+      const seg = {
+        kind: 'tool',
+        id: 'tc-agent',
+        name: 'Agent',
+        input: { description: 'Research lunar cycles', prompt: 'look it up' },
+        result: null,
+      }
+      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const nameEl = card.querySelector('.tool-card-name')!
+      expect(nameEl.textContent).toBe('Agent — Research lunar cycles')
+    })
+
+    it('buildToolStep renders "Agent — <description>" for a Task (legacy alias) tool call', () => {
+      const seg = {
+        kind: 'tool',
+        id: 'tc-task',
+        name: 'Task',
+        input: { description: 'Compile the report', prompt: 'do it' },
+        result: null,
+      }
+      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const nameEl = card.querySelector('.tool-card-name')!
+      expect(nameEl.textContent).toBe('Agent — Compile the report')
+    })
+
+    it('buildToolStep renders just the tool name for Agent/Task when input has no description', () => {
+      const seg = {
+        kind: 'tool',
+        id: 'tc-noDesc',
+        name: 'Agent',
+        input: { prompt: 'do something' },
+        result: null,
+      }
+      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const nameEl = card.querySelector('.tool-card-name')!
+      expect(nameEl.textContent).toBe('Agent')
+    })
+
+    it('buildToolStep appends a muted subagent_type span when subagent_type is present', () => {
+      const seg = {
+        kind: 'tool',
+        id: 'tc-sub',
+        name: 'Agent',
+        input: { description: 'Analyze code', prompt: 'x', subagent_type: 'codebase-analyzer' },
+        result: null,
+      }
+      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const nameEl = card.querySelector('.tool-card-name')!
+      expect(nameEl.textContent).toBe('Agent — Analyze code')
+      const sub = card.querySelector('.tool-card-subtype')!
+      expect(sub).not.toBeNull()
+      expect(sub.textContent).toBe('codebase-analyzer')
+    })
+
+    // ── ↳ prefix for parented (nested subagent) segments ────────────────────
+    it('buildToolStep prefixes the label with "↳ " when seg.parentToolUseId is set', () => {
+      const seg = {
+        kind: 'tool',
+        id: 'tc-nested',
+        name: 'Read',
+        input: { file_path: '/etc/hosts' },
+        result: null,
+        parentToolUseId: 'parent-agent-id',
+      }
+      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const nameEl = card.querySelector('.tool-card-name')!
+      expect(nameEl.textContent).toBe('↳ Read')
+    })
+
+    it('buildToolStep prefixes "↳ Agent — <desc>" when a parented Agent has a description', () => {
+      const seg = {
+        kind: 'tool',
+        id: 'tc-nested-agent',
+        name: 'Agent',
+        input: { description: 'Sub-task', prompt: 'do it' },
+        result: null,
+        parentToolUseId: 'outer-agent-call',
+      }
+      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const nameEl = card.querySelector('.tool-card-name')!
+      expect(nameEl.textContent).toBe('↳ Agent — Sub-task')
+    })
+
+    it('buildToolStep does NOT add the "↳ " prefix when parentToolUseId is absent', () => {
+      const seg = {
+        kind: 'tool',
+        id: 'tc-top',
+        name: 'Bash',
+        input: { command: 'ls' },
+        result: null,
+      }
+      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const nameEl = card.querySelector('.tool-card-name')!
+      expect(nameEl.textContent).toBe('Bash')
+      expect(nameEl.textContent).not.toContain('↳')
+    })
+
+    // ── Input-dump clamp for long string values ──────────────────────────────
+    it('buildToolStep elides a string field over 400 chars in the input dump', () => {
+      const longPrompt = 'x'.repeat(600)
+      const seg = {
+        kind: 'tool',
+        id: 'tc-long',
+        name: 'Agent',
+        input: { description: 'big task', prompt: longPrompt },
+        result: null,
+      }
+      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const inputEl = card.querySelector('.tool-card-input')!
+      expect(inputEl.textContent).toContain('… (+200 chars)')
+      // The full value must not appear (it was elided).
+      expect(inputEl.textContent).not.toContain(longPrompt)
+      // The first 400 chars should appear.
+      expect(inputEl.textContent).toContain('x'.repeat(400))
+    })
+
+    it('buildToolStep does NOT elide string fields at or under 400 chars', () => {
+      const borderline = 'y'.repeat(400)
+      const seg = {
+        kind: 'tool',
+        id: 'tc-border',
+        name: 'Read',
+        input: { file_path: borderline },
+        result: null,
+      }
+      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const inputEl = card.querySelector('.tool-card-input')!
+      expect(inputEl.textContent).not.toContain('… (+')
+      expect(inputEl.textContent).toContain(borderline)
+    })
+
+    it('buildToolStep clamp applies to ALL tools, not just Agent (a large Bash command is also elided)', () => {
+      const bigCmd = 'z'.repeat(500)
+      const seg = {
+        kind: 'tool',
+        id: 'tc-bash-long',
+        name: 'Bash',
+        input: { command: bigCmd },
+        result: null,
+      }
+      const card = M().ChatRenderer.buildToolStep(seg, 'turn-1')
+      const inputEl = card.querySelector('.tool-card-input')!
+      expect(inputEl.textContent).toContain('… (+100 chars)')
+      expect(inputEl.textContent).not.toContain(bigCmd)
+    })
+
+    // ── End-to-end via handleFrame (regression guard) ────────────────────────
+    it('a tool-call frame with name=Agent renders "Agent — <description>" in the timeline', () => {
+      M().handleFrame({
+        type: 'tool-call',
+        turnId: 't1',
+        toolCallId: 'tc-agent',
+        name: 'Agent',
+        input: { description: 'Run the search', prompt: 'find stuff' },
+      })
+      const nameEl = document.querySelector('.tool-card-name')!
+      expect(nameEl).not.toBeNull()
+      expect(nameEl.textContent).toBe('Agent — Run the search')
+    })
+
+    it('a tool-call frame with parentToolUseId stores the id in ChatState and renders "↳ " prefix', () => {
+      M().handleFrame({
+        type: 'tool-call',
+        turnId: 't1',
+        toolCallId: 'tc-nested',
+        name: 'Read',
+        input: { file_path: '/tmp/x' },
+        parentToolUseId: 'parent-call-id',
+      })
+      // Reducer stored it.
+      const seg = M().ChatState.turns[0].segments[0]
+      expect(seg.parentToolUseId).toBe('parent-call-id')
+      // Renderer showed the ↳ prefix.
+      const nameEl = document.querySelector('.tool-card-name')!
+      expect(nameEl.textContent).toBe('↳ Read')
+    })
+
+    it('an old server frame without parentToolUseId renders exactly as before (no prefix, no breakage)', () => {
+      M().handleFrame({
+        type: 'tool-call',
+        turnId: 't1',
+        toolCallId: 'tc-plain',
+        name: 'Bash',
+        input: { command: 'echo hi' },
+      })
+      const nameEl = document.querySelector('.tool-card-name')!
+      expect(nameEl.textContent).toBe('Bash')
+    })
+  })
 })
