@@ -728,7 +728,7 @@ the hub joins the shared theme when Phase 4 strips its stylesheet to hub-only.
   hello (server log). The full spoken *"open the voice settings"* demo
   needs a model-bearing server — operator-verify on the real moon.
 
-**Phase 4 — chat widget (S2/S3)** — `chat.html` as registry kind `chat`;
+**Phase 4 — chat widget (S2/S3). ✅ DONE 2026-06-12** (`8f08d6d`, live-verified) — `chat.html` as registry kind `chat`;
 moon click → `open_widget("chat")`; sub-engines move; snap anchor
 parameterized to chat; hub reattach signal redefined. Still the overhaul's
 riskiest slice — but now on a platform that's been carrying settings panels
@@ -744,15 +744,15 @@ back to the hub, which opens the chat. Extraction is copy-based: the hub's
 chat code goes dormant in Phase 4 and is deleted in Phase 6 (S5), so every
 commit stays green. `moon-markdown.js` extracts now (chat.html consumes it).
 
-**Phase 5 — prebuilt widgets + hub ambient** — NOW rail / briefing / inspector
+**Phase 5 — prebuilt widgets + hub ambient. ✅ DONE 2026-06-12** (server `6ae66ad`, client `006cc2c`, live-verified; needs-input answer-card E2E = model-bearing operator item) — NOW rail / briefing / inspector
 as registry kinds on `panel.html` (data already on the wire); hub ambient
 ladder (pip → motes → toast) ported from the deck prototype branch; toast
 renders via the envelope-grow machinery (it cannot fit the 140px window — the
 prototype's toast is clipped to a 7px sliver).
 
-**Phase 6 — voice split + hub cleanup (S4/S5).**
+**Phase 6 — voice split + hub cleanup (S4/S5). ✅ DONE 2026-06-12** (`86226f9`; voice broadcast landed early in Phase 3; index.html 11,164 → 3,237 lines, hub registry = hello/job-input-request/job-input-status/widget-open).
 
-**Phase 7 — MCP Apps host + AI widget tools.** The content tier adopts the
+**Phase 7 — MCP Apps host + AI widget tools. ✅ DONE 2026-06-12 (v1 as-built — see the section note)** (`4424ca0`; ui://luna/workspace-pulse live on the rig; external-server relay + luna/* push + remaining probe convergence = documented follow-ups). The content tier adopts the
 standard (see "Widgets are MCP Apps"), staged: render-only host → full tool
 proxy + consent UX → probe convergence + `luna.*` v0 retirement; `luna/*`
 extensions (event push, kv) land here. The `widget_*` authoring tools evolve
@@ -766,7 +766,7 @@ only, not the monolith — and can be pulled forward if MCP-app demand arrives
 before chat extraction. Candidate rider: `widget-state` report + agent
 close-by-name, if summon-by-name proves demand.
 
-**Phase 8 — agent direct lines** — `chat.html?thread=…`; protocol already
+**Phase 8 — agent direct lines. ✅ DONE 2026-06-12** (`ebd2ec3`, two pinned chat windows live-verified) — `chat.html?thread=…`; protocol already
 multi-thread (`subscribe-thread`/`thread-list`/`threadId` on every frame);
 needs an agent-identity/thread mapping, honors one-window-per-thread.
 
