@@ -20,7 +20,7 @@
  *   - useRef<TransportHandle> → composable owns the live handle internally
  *   - useEffect cleanup on unmount is implicit via composable.onCleanup
  */
-import { type Component, For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js"
+import { type Component, For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import {
   filterEvents,
   type ClientFrame,
@@ -46,6 +46,13 @@ import {
   type VaultStatusAck,
 } from "@luna/ui-shared-solid"
 import { SetupTerminal, b64ToBytes } from "./SetupTerminal"
+import {
+  getAppearance,
+  setAppearance,
+  onAppearanceChange,
+  PALETTES,
+  PALETTE_SWATCHES,
+} from "./appearance.js"
 
 const CONTROL_URL = "http://127.0.0.1:4754/trpc"
 
@@ -441,11 +448,15 @@ export const App: Component = () => {
     () => !activeModelOptions().some((o) => o.value === cfg().model),
   )
 
+  const [appearance, setAppearanceState] = createSignal(getAppearance())
+  onCleanup(onAppearanceChange((a) => setAppearanceState(a)))
+
   return (
     <div class="app">
+      <div class="bg-blooms" aria-hidden="true"><div class="bloom b1" /><div class="bloom b2" /><div class="bloom b3" /></div>
       <header class="topbar">
         <div class="row">
-          <strong class="brand">⚡ Agent Chat</strong>
+          <span class="wordmark"><span class="name">Luna</span><span class="sub">studio</span></span>
           <ConnectionSummary
             status={transport.status()}
             url={cfg().url}
@@ -588,6 +599,59 @@ export const App: Component = () => {
             >
               {restarting() ? "⟳ Restarting…" : "↺ Restart Server"}
             </button>
+          </div>
+          {/* Appearance controls — palette, theme, chrome, grain. Purely
+              client-side: NOT gated on isConnected. The settings panel
+              auto-shows when disconnected, so appearance must work then too. */}
+          <div class="row settings-row">
+            <label>Appearance</label>
+            <div class="swatch-row">
+              <For each={PALETTES}>
+                {(p) => (
+                  <button
+                    class={`swatch${appearance().palette === p ? " active" : ""}`}
+                    title={p}
+                    aria-label={p}
+                    onClick={() => { setAppearance("palette", p); setAppearanceState(getAppearance()) }}
+                  >
+                    <For each={PALETTE_SWATCHES[p]}>
+                      {(hex) => <span style={{ background: hex }} />}
+                    </For>
+                  </button>
+                )}
+              </For>
+            </div>
+            <For each={["light", "dark"] as const}>
+              {(t) => (
+                <button
+                  class={`chip${appearance().theme === t ? " active" : ""}`}
+                  onClick={() => { setAppearance("theme", t); setAppearanceState(getAppearance()) }}
+                >
+                  {t}
+                </button>
+              )}
+            </For>
+            <For each={[{ label: "soft wash", value: "wash" }, { label: "ink outline", value: "ink" }] as const}>
+              {(c) => (
+                <button
+                  class={`chip${appearance().chrome === c.value ? " active" : ""}`}
+                  onClick={() => { setAppearance("chrome", c.value); setAppearanceState(getAppearance()) }}
+                >
+                  {c.label}
+                </button>
+              )}
+            </For>
+            <label
+              class="toggle"
+              title="Add a subtle paper texture to the canvas"
+            >
+              <input
+                type="checkbox"
+                checked={appearance().grain}
+                onChange={(e) => { setAppearance("grain", String(e.currentTarget.checked)); setAppearanceState(getAppearance()) }}
+              />
+              <span>Paper grain</span>
+            </label>
           </div>
           {/* PRD Part B §12 — gated on the additive hello capability: an
               older server never advertises `skills`, so the section simply
