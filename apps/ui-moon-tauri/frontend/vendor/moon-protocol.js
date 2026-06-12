@@ -29,6 +29,7 @@
       artifacts: !!c.artifacts,
       workflows: !!c.workflows,
       vault: !!c.vault,
+      mcpApps: !!c.mcpApps,
     };
   }
 

@@ -236,6 +236,7 @@ import {
 import {
   createJobInputBridge,
   createLocalShellBridge,
+  createMcpAppHost,
   createSecretRequestBridge,
   createWidgetSummonBridge,
   startUIWebSocketServer,
@@ -299,6 +300,11 @@ import {
   type TokenCheck,
 } from "./register-op-token.js"
 import { resolveUiWsToken } from "./ui-ws-token.js"
+import {
+  buildWorkspacePulseApp,
+  createCoreAppRegistry,
+  pulseFromSnapshot,
+} from "./core-apps.js"
 import { decideMode, probeCredentialReadiness, probeAuthLoggedIn } from "./credential-readiness.js"
 import { spawnSetupPty } from "./setup-pty.js"
 import { onLoginAttemptComplete } from "./setup-login.js"
@@ -1997,6 +2003,8 @@ export const buildSetupServerLayer = (
         secretBridge: null,
         // No job workers in setup-mode → request_input is never bound either.
         jobInputBridge: null,
+        // No MCP-app provider in setup-mode (no telemetry/registry layers).
+        mcpAppHost: null,
         setupPty: resolvedSetupPty,
         // Allow OP-token entry in setup-mode too — useful when LUNA_OP_ACCOUNTS
         // is configured but the account still needs its token. The handler
@@ -2035,6 +2043,7 @@ const buildServerLayer = (
       const connectorServiceHandle = yield* ConnectorService // PRD Part A
       const artifactStoreService = yield* ArtifactStore // PRD Part C/W1
       const jobsStore = yield* JobsStoreService // PRD Part C/W3 (gallery source)
+      const telemetry = yield* TelemetryService // Phase 7: pulse-snapshot source
 
       // PRD A §08: access tokens live ~1h; refresh AHEAD of expiry so the
       // mount snapshot's bearer never goes stale mid-conversation. The
@@ -2445,6 +2454,19 @@ const buildServerLayer = (
         updatedAt: a.updatedAt,
         bridgeCaps: a.bridgeCaps,
       })
+      // Phase 7 (widget-system.md "Widgets are MCP Apps" v1): the in-process
+      // CoreAppRegistry makes the Luna server the FIRST MCP-app provider.
+      // pulse-snapshot aggregates the TelemetryService counters EventCounter
+      // already mirrors from the obs stream (sqlite-backed here, so the tiles
+      // show running totals that survive restarts) — no new obs tap needed.
+      const mcpAppHost = createMcpAppHost(
+        createCoreAppRegistry([
+          buildWorkspacePulseApp(() =>
+            Effect.runPromise(telemetry.snapshot).then(pulseFromSnapshot),
+          ),
+        ]),
+      )
+
       const artifactsWsHandle = {
         list: () =>
           artifactStoreService.list().pipe(Effect.map((xs) => xs.map(toWireArtifact))),
@@ -2599,6 +2621,9 @@ const buildServerLayer = (
         // connection registers with the broadcast bridge; the job workers'
         // request_input tool drives it (see jobInputToolsL above).
         jobInputBridge,
+        // Phase 7 (widget-system.md): MCP Apps relay — ui:// resource reads +
+        // same-app tool calls against the in-process CoreAppRegistry.
+        mcpAppHost,
       })
     }),
   ).pipe(

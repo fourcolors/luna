@@ -75,6 +75,28 @@
   }
 
   /**
+   * Assemble the srcdoc for an MCP APP (widget-system.md Phase 7): same
+   * strict CSP and the same sandbox attribute as buildSrcdoc, but NO luna.*
+   * bridge shim — an MCP app brings its own protocol script and speaks raw
+   * MCP Apps JSON-RPC over postMessage with the host (vendor/mcp-app-host.js).
+   * Injecting the shim here would hand every third-party app a second,
+   * cap-gated door it was never granted.
+   */
+  function buildMcpSrcdoc(html) {
+    var body = typeof html === "string" ? html : ""
+    return (
+      "<!doctype html><html><head>" +
+      '<meta charset="utf-8">' +
+      '<meta http-equiv="Content-Security-Policy" content="' +
+      CSP +
+      '">' +
+      "</head><body>" +
+      body +
+      "</body></html>"
+    )
+  }
+
+  /**
    * Does this widget's bridge_caps allowlist permit subscribing to an obs-event
    * of `kind`? Caps are entries like "obs:ToolCall" or the wildcard "obs:*".
    * FAILS CLOSED: null/empty/garbage caps permit nothing.
@@ -94,6 +116,7 @@
 
   g.LunaWidgetSandbox = {
     buildSrcdoc: buildSrcdoc,
+    buildMcpSrcdoc: buildMcpSrcdoc,
     subscribeAllowed: subscribeAllowed,
     SANDBOX_ATTR: SANDBOX_ATTR,
     CSP: CSP,

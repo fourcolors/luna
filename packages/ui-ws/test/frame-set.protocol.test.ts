@@ -103,6 +103,8 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "vault-list",
   "vault-status",
   "widget-open",
+  "mcp-resource-result",
+  "mcp-tool-result",
 ].sort()
 
 const EXPECTED_CLIENT_FRAME_TYPES = [
@@ -138,6 +140,8 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "vault-sync-config",
   "vault-import",
   "widget-directory",
+  "mcp-resource-read",
+  "mcp-tool-call",
 ].sort()
 
 const EXPECTED_PROTOCOL_VERSION = 2
@@ -223,7 +227,7 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     expect(UI_WS_PROTOCOL_VERSION).toBe(EXPECTED_PROTOCOL_VERSION)
   })
 
-  it("parser self-check: derived counts are sane (41 server, 32 client) — guards the regex itself", () => {
+  it("parser self-check: derived counts are sane (43 server, 34 client) — guards the regex itself", () => {
     // If the regex silently mis-parses, the toEqual above could pass for the
     // wrong reason. Pin the counts so a broken parser is caught here.
     // Prior base = 24 server / 15 client; the agent-summoned secure-secret-entry
@@ -245,9 +249,12 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // adds widget-open (server) and widget-directory (client)
     // → 39 server / 31 client. Job-summoned operator input (widget-system.md
     // Phase 5) adds job-input-request + job-input-status (server) and
-    // job-input-result (client) → 41 server / 32 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(41)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(32)
+    // job-input-result (client) → 41 server / 32 client. The MCP Apps host
+    // relay (widget-system.md Phase 7, SEP-1865) adds mcp-resource-result +
+    // mcp-tool-result (server) and mcp-resource-read + mcp-tool-call (client)
+    // → 43 server / 34 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(43)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(34)
   })
 
   // VERSION-SKEW (client half): nothing else pins the ui-shared wire.ts mirror

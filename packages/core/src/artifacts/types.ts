@@ -10,9 +10,13 @@
  * `widget` is the kind set by describe-to-spawn (W4) — a self-contained
  * HTML/JS bundle rendered in a sandboxed iframe. For W1 it is only ever set
  * explicitly; {@link deriveArtifactKind} never produces it.
+ *
+ * `mcp-app` (widget-system.md Phase 7) is also explicit-only: content is a
+ * `ui://` resource URI (NOT inline HTML) — the host fetches the app template
+ * through the MCP Apps relay and renders it under the MCP Apps contract.
  */
 
-export type ArtifactKind = "code" | "markdown" | "html" | "widget"
+export type ArtifactKind = "code" | "markdown" | "html" | "widget" | "mcp-app"
 
 /** Who authored a version — drives the time-travel ledger's `edited_by`. */
 export type ArtifactEditor = "user" | "agent"

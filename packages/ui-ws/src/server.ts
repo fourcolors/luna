@@ -486,6 +486,18 @@ export interface UIWebSocketServerConfig {
    * is handed straight to the bridge. Pass `null`/absent to disable.
    */
   readonly jobInputBridge?: import("./job-input-bridge.js").JobInputBridge | null
+  /**
+   * Optional MCP Apps host (widget-system.md Phase 7, SEP-1865 v1). When
+   * provided, the server advertises `capabilities.mcpApps` and routes the two
+   * inbound relay frames through it, replying on the SAME connection:
+   *   - `mcp-resource-read` → handleResourceRead → `mcp-resource-result`
+   *   - `mcp-tool-call`     → handleToolCall     → `mcp-tool-result`
+   * Pure request/response (requestId-correlated) — no per-connection
+   * registration. The host contract: NEVER rejects; every failure is an
+   * `ok:false` reply frame. Tool results are app data and are never logged
+   * by this package. Pass `null`/absent to disable (frames ignored).
+   */
+  readonly mcpAppHost?: import("./mcp-app-host.js").McpAppHost | null
 }
 
 export interface UIWebSocketServerHandle {
@@ -633,6 +645,7 @@ export const startUIWebSocketServer = (
     const widgetSummoner = config.widgetSummoner ?? null
     const secretBridge = config.secretBridge ?? null
     const jobInputBridge = config.jobInputBridge ?? null
+    const mcpAppHost = config.mcpAppHost ?? null
     const skillRegistry = config.skillRegistry ?? null
     const connectorService = config.connectorService ?? null
     const artifactStore = config.artifactStore ?? null
@@ -879,6 +892,9 @@ export const startUIWebSocketServer = (
             // Luna Vault (V1): credential registry + put/delete/sync routing.
             // Clients hide the Vault section when absent/false.
             vault: vaultService !== null,
+            // MCP Apps host relay (widget-system.md Phase 7): ui:// resource
+            // reads + same-app tool calls route through the bound McpAppHost.
+            mcpApps: mcpAppHost !== null,
           },
         })
 
@@ -1324,7 +1340,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || vaultService !== null) {
+        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || vaultService !== null || mcpAppHost !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -1954,6 +1970,53 @@ export const startUIWebSocketServer = (
                         ),
                         Effect.catchAllCause(() => Effect.void),
                       )
+                    return
+                  }
+                  case "mcp-resource-read": {
+                    // MCP Apps relay (Phase 7): resolve a ui:// app resource.
+                    // The host NEVER rejects by contract; the catchAllCause is
+                    // belt-and-suspenders so a defect can't kill the socket
+                    // loop — it collapses to a generic ok:false reply.
+                    if (mcpAppHost === null) return
+                    const host = mcpAppHost
+                    const out = yield* Effect.promise(() =>
+                      host.handleResourceRead(frame),
+                    ).pipe(
+                      Effect.catchAllCause(() =>
+                        Effect.succeed<ServerFrame>({
+                          type: "mcp-resource-result",
+                          requestId: String(
+                            (frame as { requestId?: unknown }).requestId ?? "",
+                          ),
+                          ok: false,
+                          message: "resource read failed",
+                        }),
+                      ),
+                    )
+                    send(ws, out)
+                    return
+                  }
+                  case "mcp-tool-call": {
+                    // MCP Apps relay (Phase 7): a rendered app called
+                    // tools/call. Same-app enforcement lives in the provider;
+                    // the result is app data and is never logged here.
+                    if (mcpAppHost === null) return
+                    const host = mcpAppHost
+                    const out = yield* Effect.promise(() =>
+                      host.handleToolCall(frame),
+                    ).pipe(
+                      Effect.catchAllCause(() =>
+                        Effect.succeed<ServerFrame>({
+                          type: "mcp-tool-result",
+                          requestId: String(
+                            (frame as { requestId?: unknown }).requestId ?? "",
+                          ),
+                          ok: false,
+                          message: "tool call failed",
+                        }),
+                      ),
+                    )
+                    send(ws, out)
                     return
                   }
                   case "pty-input": {

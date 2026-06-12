@@ -1,0 +1,265 @@
+<!--
+  workspace-pulse — Luna's first CORE MCP APP (widget-system.md Phase 7).
+
+  Served as the ui://luna/workspace-pulse resource
+  (text/html;profile=mcp-app). Unlike the Phase 0.5 probe (which used the
+  luna.* bridge shim), this is a REAL MCP App: it brings its own protocol
+  script and speaks raw MCP Apps JSON-RPC 2.0 over postMessage (SEP-1865,
+  spec rev 2026-01-26) — ui/initialize handshake, then tools/call
+  { name: 'pulse-snapshot' } every 5 s.
+
+  Self-contained on purpose: the host sandbox CSP forbids ALL network, so
+  there are no external refs and no SDK bundle (the protocol surface this
+  app needs is ~40 lines).
+-->
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 100%; height: 100%;
+    background: #0a0e1c;
+    color: #e2ecfd;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 13px;
+    overflow: hidden;
+  }
+
+  #root {
+    display: flex;
+    flex-direction: column;
+    width: 100%; height: 100%;
+    min-width: 220px; min-height: 140px;
+    overflow: hidden;
+  }
+
+  /* ── Header ─────────────────────────────────────────── */
+  #header {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 10px 14px 8px;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    flex-shrink: 0;
+  }
+
+  #header-title {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: #8ab4f8;
+    text-transform: uppercase;
+    flex: 1;
+  }
+
+  #status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #4b5563;
+    flex-shrink: 0;
+    transition: background 0.4s ease;
+  }
+  #status-dot.live { background: #34d399; box-shadow: 0 0 5px #34d39966; }
+  #status-dot.err  { background: #f87171; box-shadow: 0 0 4px #f8717155; }
+
+  #status-label {
+    font-size: 10px;
+    color: #64748b;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Stat tiles ─────────────────────────────────────── */
+  #tiles-wrap { position: relative; flex: 1 1 0; display: flex; align-items: center; }
+  #tiles-glow {
+    position: absolute;
+    top: 0; left: 50%;
+    transform: translateX(-50%);
+    width: 220px; height: 120px;
+    background: radial-gradient(ellipse at center, rgba(138,180,248,0.06) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  #tiles {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    padding: 8px 14px;
+    width: 100%;
+  }
+
+  .tile {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 8px;
+    padding: 7px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .tile-label {
+    font-size: 10px;
+    color: #64748b;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+
+  .tile-value {
+    font-family: ui-monospace, "SFMono-Regular", "Cascadia Code", Menlo, monospace;
+    font-size: 18px;
+    font-weight: 700;
+    color: #e2ecfd;
+    line-height: 1.1;
+    transition: color 0.3s ease;
+  }
+  .tile-value.bumped { color: #34d399; }
+
+  #footer {
+    flex-shrink: 0;
+    padding: 4px 14px 9px;
+    font-size: 10px;
+    color: #3d4d65;
+    letter-spacing: 0.02em;
+  }
+</style>
+
+<div id="root">
+  <div id="header">
+    <span id="header-title">Workspace Pulse</span>
+    <span id="status-dot"></span>
+    <span id="status-label">connecting</span>
+  </div>
+
+  <div id="tiles-wrap">
+    <div id="tiles-glow"></div>
+    <div id="tiles">
+      <div class="tile">
+        <span class="tile-label">Tools Called</span>
+        <span class="tile-value" id="stat-tools">–</span>
+      </div>
+      <div class="tile">
+        <span class="tile-label">Errors</span>
+        <span class="tile-value" id="stat-errors">–</span>
+      </div>
+      <div class="tile">
+        <span class="tile-label">Est. Cost</span>
+        <span class="tile-value" id="stat-cost">–</span>
+      </div>
+      <div class="tile">
+        <span class="tile-label">Active Sessions</span>
+        <span class="tile-value" id="stat-sessions">–</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="footer">mcp app · ui://luna/workspace-pulse</div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ── Raw MCP Apps JSON-RPC endpoint (postMessage, parent = the host) ──
+  var nextId = 1;
+  var pending = {}; // id → {resolve, reject}
+
+  function post(msg) {
+    window.parent.postMessage(msg, '*');
+  }
+
+  function request(method, params) {
+    return new Promise(function (resolve, reject) {
+      var id = nextId++;
+      pending[id] = { resolve: resolve, reject: reject };
+      post({ jsonrpc: '2.0', id: id, method: method, params: params || {} });
+    });
+  }
+
+  function notify(method, params) {
+    post({ jsonrpc: '2.0', method: method, params: params || {} });
+  }
+
+  window.addEventListener('message', function (e) {
+    if (e.source !== window.parent) return; // only trust the host
+    var m = e.data;
+    if (!m || typeof m !== 'object' || m.jsonrpc !== '2.0') return;
+    // Response to one of our requests?
+    if (m.id !== undefined && m.id !== null && ('result' in m || 'error' in m)) {
+      var p = pending[m.id];
+      if (!p) return;
+      delete pending[m.id];
+      if ('error' in m) p.reject(m.error || { message: 'error' });
+      else p.resolve(m.result);
+      return;
+    }
+    // Host notifications. ui/notifications/tool-input: ignored in v1 (this
+    // app pulls its own data); everything else: ignore unknowns per spec.
+    return;
+  });
+
+  // ── DOM ───────────────────────────────────────────────
+  var dotEl        = document.getElementById('status-dot');
+  var labelEl      = document.getElementById('status-label');
+  var statTools    = document.getElementById('stat-tools');
+  var statErrors   = document.getElementById('stat-errors');
+  var statCost     = document.getElementById('stat-cost');
+  var statSessions = document.getElementById('stat-sessions');
+
+  function fmtCost(usd) {
+    var n = Number(usd) || 0;
+    if (n === 0) return '$0.00';
+    if (n < 0.001) return '<$0.001';
+    if (n < 1) return '$' + n.toFixed(4);
+    return '$' + n.toFixed(2);
+  }
+
+  function setTile(el, text) {
+    if (el.textContent !== text) {
+      el.textContent = text;
+      el.classList.add('bumped');
+      setTimeout(function () { el.classList.remove('bumped'); }, 600);
+    }
+  }
+
+  function renderStats(s) {
+    if (!s || typeof s !== 'object') return;
+    setTile(statTools, String(Number(s.toolsCalled) || 0));
+    setTile(statErrors, String(Number(s.errors) || 0));
+    setTile(statCost, fmtCost(s.estimatedUsd));
+    setTile(statSessions, String(Math.max(0, Number(s.activeSessions) || 0)));
+  }
+
+  function setStatus(cls, label) {
+    dotEl.className = cls;
+    labelEl.textContent = label;
+  }
+
+  // ── Snapshot loop ─────────────────────────────────────
+  function tick() {
+    request('tools/call', { name: 'pulse-snapshot', arguments: {} })
+      .then(function (result) {
+        // Core apps reply spec-shaped: { content: [...], structuredContent }.
+        var stats = result && typeof result === 'object' && result.structuredContent
+          ? result.structuredContent
+          : result;
+        renderStats(stats);
+        setStatus('live', 'live');
+      })
+      .catch(function () {
+        setStatus('err', 'error');
+      });
+  }
+
+  // ── Handshake: initialize → initialized → poll ────────
+  request('ui/initialize', {
+    protocolVersion: '2026-01-26',
+    appInfo: { name: 'workspace-pulse', version: '1.0.0' },
+  })
+    .then(function () {
+      notify('ui/notifications/initialized');
+      tick();
+      setInterval(tick, 5000);
+    })
+    .catch(function () {
+      setStatus('err', 'init failed');
+    });
+})();
+</script>

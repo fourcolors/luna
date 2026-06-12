@@ -15,6 +15,7 @@ import { describe, expect, it, beforeAll } from "vitest"
 
 interface Sandbox {
   buildSrcdoc: (html: string) => string
+  buildMcpSrcdoc: (html: string) => string
   subscribeAllowed: (caps: unknown, kind: unknown) => boolean
   SANDBOX_ATTR: string
   CSP: string
@@ -77,6 +78,27 @@ describe("buildSrcdoc", () => {
   it("tolerates non-string html", () => {
     expect(() => SB.buildSrcdoc(undefined as unknown as string)).not.toThrow()
     expect(SB.buildSrcdoc(null as unknown as string)).toContain("window.luna")
+  })
+})
+
+describe("buildMcpSrcdoc (MCP apps — same cage, NO bridge shim)", () => {
+  it("keeps the identical strict CSP but injects NO luna.* shim", () => {
+    const doc = SB.buildMcpSrcdoc("<h1>MCP APP</h1>")
+    expect(doc).toContain('http-equiv="Content-Security-Policy"')
+    expect(doc).toContain(SB.CSP) // byte-identical policy to widgets
+    expect(doc).toContain("MCP APP")
+    // The whole point: an MCP app brings its own protocol script — handing it
+    // the cap-gated luna.* door would be an ungated capability grant.
+    expect(doc).not.toContain("window.luna")
+    expect(doc).not.toContain("__luna")
+  })
+
+  it("tolerates non-string html and never strips the CSP on hostile bodies", () => {
+    expect(() => SB.buildMcpSrcdoc(undefined as unknown as string)).not.toThrow()
+    const hostile =
+      "</head><meta http-equiv='Content-Security-Policy' content=\"default-src *\">"
+    const doc = SB.buildMcpSrcdoc(hostile)
+    expect(doc.indexOf("default-src 'none'")).toBeLessThan(doc.indexOf("default-src *"))
   })
 })
 

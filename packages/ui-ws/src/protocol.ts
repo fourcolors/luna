@@ -96,6 +96,14 @@ export interface HelloFrame {
      * — clients hide the Vault settings section when absent/false.
      */
     readonly vault?: boolean
+    /**
+     * MCP Apps host relay (widget-system.md Phase 7): the server has an
+     * McpAppHost bound — it routes `mcp-resource-read` / `mcp-tool-call`
+     * and replies `mcp-resource-result` / `mcp-tool-result` on the same
+     * connection. OPTIONAL/additive: clients show an honest "not supported"
+     * notice for kind `mcp-app` artifacts when absent/false.
+     */
+    readonly mcpApps?: boolean
   }
 }
 
@@ -386,8 +394,11 @@ export interface ConnectorStatusFrame {
 
 /* PRD Part C (W1) — artifact frames. The ephemeral `Artifact` (above) is
  * recomputed per session; a PINNED artifact is the durable form persisted in
- * luna.db (artifacts + artifact_versions). Mirrors ui-shared/wire.ts. */
-export type ArtifactKind = "code" | "markdown" | "html" | "widget"
+ * luna.db (artifacts + artifact_versions). Mirrors ui-shared/wire.ts.
+ * `mcp-app` (widget-system.md Phase 7): content is a `ui://` resource URI —
+ * the host fetches the app HTML via `mcp-resource-read` and renders it as an
+ * MCP App (raw JSON-RPC over postMessage), never as inline widget HTML. */
+export type ArtifactKind = "code" | "markdown" | "html" | "widget" | "mcp-app"
 
 export interface PinnedArtifactItem {
   readonly id: string
@@ -844,6 +855,62 @@ export interface WidgetOpenFrame {
   readonly kind: string
 }
 
+/* ── MCP Apps host relay (widget-system.md Phase 7, SEP-1865) ───────────
+ * The Moon is an MCP Apps HOST; the Luna server owns every MCP session
+ * (single session authority). v1 serves an in-process CoreAppRegistry —
+ * the server is the first app provider — but the frames are deliberately
+ * provider-agnostic so an external-MCP-server relay rides the same seam.
+ * All four are additive, gated on the hello `mcpApps` capability. */
+
+/** Client→server: resolve a `ui://` app resource (the app's HTML template). */
+export interface McpResourceReadFrame {
+  readonly type: "mcp-resource-read"
+  readonly requestId: string
+  readonly uri: string
+}
+
+/**
+ * Server→client: the resource read outcome. `text` is the app HTML
+ * (mimeType `text/html;profile=mcp-app`); `ok:false` carries a short,
+ * non-sensitive reason (unknown uri, provider failure).
+ */
+export interface McpResourceResultFrame {
+  readonly type: "mcp-resource-result"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly mimeType?: string
+  readonly text?: string
+  readonly message?: string
+}
+
+/**
+ * Client→server: a rendered MCP app called `tools/call`. `appUri` is the
+ * `ui://` resource the calling app was rendered from — the server enforces
+ * the spec's same-server rule (an app may ONLY call its own app's tools).
+ * `args` is the tool's arguments object (any JSON value).
+ */
+export interface McpToolCallFrame {
+  readonly type: "mcp-tool-call"
+  readonly requestId: string
+  readonly appUri: string
+  readonly tool: string
+  readonly args: unknown
+}
+
+/**
+ * Server→client: the tool call outcome. `result` is the tool's content
+ * (any JSON value — spec-shaped CallToolResult for core apps). It is the
+ * app's data: this package NEVER logs it. `ok:false` carries a short,
+ * non-sensitive reason (unknown app, tool not on that app, handler failure).
+ */
+export interface McpToolResultFrame {
+  readonly type: "mcp-tool-result"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly result?: unknown
+  readonly message?: string
+}
+
 export type ServerFrame =
   | HelloFrame
   | EventFrame
@@ -886,6 +953,8 @@ export type ServerFrame =
   | VaultListFrame
   | VaultStatusFrame
   | WidgetOpenFrame
+  | McpResourceResultFrame
+  | McpToolResultFrame
 
 /* -------------------------------------------------------------------------- */
 /* Client → server                                                            */
@@ -1128,6 +1197,8 @@ export type ClientFrame =
   | WorkflowRunsRequestFrame
   | WorkflowRefreshFrame
   | WidgetDirectoryFrame
+  | McpResourceReadFrame
+  | McpToolCallFrame
   | PtyInputFrame
   | PtyResizeFrame
   | VaultPutFrame

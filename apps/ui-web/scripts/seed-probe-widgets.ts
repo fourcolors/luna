@@ -251,6 +251,20 @@ const main = async () => {
       bridgeCaps: null,
       editedBy: "user",
     },
+    {
+      // Phase 7 (widget-system.md "Widgets are MCP Apps" v1): content is the
+      // ui:// resource URI, NOT inline HTML — the widget window fetches the
+      // app template through the server's MCP Apps relay and renders it under
+      // the MCP Apps contract (no luna.* bridge, hence bridgeCaps null).
+      id: "probe-mcp-pulse",
+      kind: "mcp-app",
+      title: "Workspace Pulse (MCP)",
+      lang: null,
+      content: "ui://luna/workspace-pulse",
+      origin: ORIGIN,
+      bridgeCaps: null,
+      editedBy: "user",
+    },
   ]
 
   const program = Effect.gen(function* () {

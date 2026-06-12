@@ -80,15 +80,16 @@ describe('moon-protocol.js', () => {
   it('parseHelloCapabilities coerces every absent flag to false (fail closed)', () => {
     expect(P().parseHelloCapabilities({})).toEqual({
       turnComplete: false, skills: false, connectors: false,
-      artifacts: false, workflows: false, vault: false,
+      artifacts: false, workflows: false, vault: false, mcpApps: false,
     })
     expect(P().parseHelloCapabilities(undefined).vault).toBe(false)
   })
 
   it('parseHelloCapabilities passes advertised flags through', () => {
-    const caps = P().parseHelloCapabilities({ capabilities: { artifacts: true, vault: 1 } })
+    const caps = P().parseHelloCapabilities({ capabilities: { artifacts: true, vault: 1, mcpApps: true } })
     expect(caps.artifacts).toBe(true)
     expect(caps.vault).toBe(true)
+    expect(caps.mcpApps).toBe(true)
     expect(caps.skills).toBe(false)
   })
 })

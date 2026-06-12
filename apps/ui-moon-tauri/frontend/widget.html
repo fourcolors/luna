@@ -10,6 +10,7 @@
   <script src="vendor/deck-snap.js"></script>
   <script src="vendor/moon-dock.js"></script>
   <script src="vendor/widget-sandbox.js"></script>
+  <script src="vendor/mcp-app-host.js"></script>
   <!-- Shared theme (tokens + widget-window chrome) loads BEFORE the page
        style so page-specific rules win ties. -->
   <link rel="stylesheet" href="vendor/moon-theme.css">
@@ -161,6 +162,85 @@
     widgetSubscribed = false;
   }
 
+  // ── MCP app state (widget-system.md Phase 7) ──────────────────────────────
+  // kind='mcp-app': content is a ui:// resource URI. The app renders via
+  // LunaMcpHost (raw MCP Apps JSON-RPC over postMessage) in the SAME sandbox
+  // cage but WITHOUT the luna.* shim; its resource read + tools/call relay
+  // over this window's WebSocket as mcp-resource-read / mcp-tool-call frames,
+  // requestId-correlated through mcpPending.
+  var mcpHostHandle = null;      // LunaMcpHost handle for the mounted app
+  var mcpAppsSupported = false;  // hello `mcpApps` capability (fail closed)
+  var mcpSeq = 0;
+  var mcpPending = {};           // requestId → resolve(resultFrame)
+
+  function disposeMcpApp() {
+    if (mcpHostHandle) {
+      try { mcpHostHandle.dispose(); } catch (_) { /* already gone */ }
+      mcpHostHandle = null;
+    }
+  }
+
+  // Send a relay frame and resolve with its requestId-matched result frame.
+  // Resolves ok:false immediately when the socket is down (never hangs).
+  function mcpRequest(frame) {
+    return new Promise(function (resolve) {
+      mcpPending[frame.requestId] = resolve;
+      if (!client.send(frame)) {
+        delete mcpPending[frame.requestId];
+        resolve({ ok: false, message: 'Not connected.' });
+      }
+    });
+  }
+
+  // Transport scoped to ONE app: every tools/call is stamped with the app's
+  // own uri, so the server can enforce the spec's same-app tool rule.
+  function makeMcpTransport(appUri) {
+    return {
+      readResource: function (uri) {
+        return mcpRequest({ type: 'mcp-resource-read', requestId: 'mcp-r' + (++mcpSeq), uri: uri });
+      },
+      callTool: function (tool, args) {
+        return mcpRequest({
+          type: 'mcp-tool-call',
+          requestId: 'mcp-t' + (++mcpSeq),
+          appUri: appUri,
+          tool: tool,
+          args: args === undefined ? {} : args,
+        });
+      },
+    };
+  }
+
+  function renderMcpApp(artifact) {
+    lastArtifact = artifact;
+    clearWidgetState();
+    disposeMcpApp();
+    if (!mcpAppsSupported) {
+      showNotice("This server doesn't support MCP apps.");
+      return;
+    }
+    if (!window.LunaMcpHost || !window.LunaWidgetSandbox ||
+        typeof LunaWidgetSandbox.buildMcpSrcdoc !== 'function') {
+      showNotice('MCP app host unavailable in this build.');
+      return;
+    }
+    var uri = (artifact.content || '').trim();
+    contentArea.innerHTML = '';
+    var iframe = document.createElement('iframe');
+    iframe.className = 'widget-frame';
+    // Same trust boundary as kind='widget': allow-scripts WITHOUT
+    // allow-same-origin; srcdoc assembled by buildMcpSrcdoc (CSP, no shim).
+    iframe.setAttribute('sandbox', LunaWidgetSandbox.SANDBOX_ATTR);
+    iframe.setAttribute('referrerpolicy', 'no-referrer');
+    contentArea.appendChild(iframe);
+    mcpHostHandle = LunaMcpHost.host({
+      frameEl: iframe,
+      uri: uri,
+      transport: makeMcpTransport(uri),
+      onError: function (msg) { showNotice(msg); },
+    });
+  }
+
   function renderWidget(artifact) {
     lastArtifact = artifact;
     widgetBridgeCaps = Array.isArray(artifact.bridgeCaps) ? artifact.bridgeCaps : [];
@@ -211,11 +291,17 @@
     var titleText = (artifact.title || 'Artifact') + ' · v' + (artifact.version || 1);
     barTitle.textContent = titleText;
 
+    if (artifact.kind === 'mcp-app') {
+      renderMcpApp(artifact);
+      return;
+    }
     if (artifact.kind === 'widget') {
+      disposeMcpApp();
       renderWidget(artifact);
       return;
     }
     clearWidgetState();
+    disposeMcpApp();
 
     // Restore the pre>code structure (may have been replaced by a notice/iframe).
     if (!document.getElementById('code-block')) {
@@ -241,7 +327,9 @@
 
   var frames = LunaWS.createFrameRegistry()
     .register('hello', function (frame) {
-      if (!LunaProtocol.parseHelloCapabilities(frame).artifacts) {
+      var caps = LunaProtocol.parseHelloCapabilities(frame);
+      mcpAppsSupported = !!caps.mcpApps;
+      if (!caps.artifacts) {
         showNotice("This server doesn't support pinned artifacts.");
       }
     })
@@ -262,6 +350,16 @@
       if (frame.artifact && frame.artifact.id === id) {
         render(frame.artifact);
       }
+    })
+    // MCP relay results (Phase 7): settle the requestId-matched promise.
+    // Late/unknown requestIds are dropped (a disposed app's stragglers).
+    .register('mcp-resource-result', function (frame) {
+      var resolve = mcpPending[frame.requestId];
+      if (resolve) { delete mcpPending[frame.requestId]; resolve(frame); }
+    })
+    .register('mcp-tool-result', function (frame) {
+      var resolve = mcpPending[frame.requestId];
+      if (resolve) { delete mcpPending[frame.requestId]; resolve(frame); }
     })
     .register('event', function (frame) {
       // Obs-event stream → forward to a SUBSCRIBED widget, but ONLY for the
@@ -305,6 +403,16 @@
     },
     // 'error' intentionally unhandled: the 'close' event fires next and owns
     // the reconnect logic (same as the old inline listener).
+  });
+
+  // Settle in-flight MCP relay requests on disconnect so a mounted app's
+  // tools/call resolves to a JSON-RPC error instead of hanging forever.
+  client.registerCloseHook(function () {
+    var pendingNow = mcpPending;
+    mcpPending = {};
+    for (var k in pendingNow) {
+      try { pendingNow[k]({ ok: false, message: 'disconnected' }); } catch (_) { /* settled */ }
+    }
   });
 
   function connect(wsUrl, wsToken) {

@@ -497,6 +497,30 @@ apps must inline it (or speak raw JSON-RPC, which the probes can); hosts
 prefetch templates at `tools/list` time, which our artifact pipeline already
 approximates; MCPJam Inspector + the ext-apps `basic-host` are the dev rigs.
 
+### As-built (Phase 7 v1, 2026-06-12)
+
+The render-only host + same-app tool calls shipped, **core-app-provider
+first**: the Luna server is the first MCP-app provider via an in-process
+`CoreAppRegistry` (`apps/ui-web/scripts/core-apps.ts`) — no external MCP
+session involved yet. Four additive UI-WS frames carry the relay
+(`mcp-resource-read`/`-result`, `mcp-tool-call`/`-result`, hello cap
+`mcpApps`; 43 server / 34 client), routed through
+`@luna/ui-ws createMcpAppHost` (never-throws, requestId-correlated, same
+connection). Artifacts gained kind `mcp-app` (content = the `ui://` URI);
+widget.html renders them via `vendor/mcp-app-host.js` (`LunaMcpHost`) into
+the SAME sandbox cage via `buildMcpSrcdoc` — identical CSP, **no `luna.*`
+shim**. We deliberately speak **raw JSON-RPC, not the ~3MB official SDK**
+(CSP forbids network; the needed surface is ~100 lines/side). First core
+app: `ui://luna/workspace-pulse` (`pulse-snapshot` tool over the
+EventCounter→TelemetryService counters; seeded as artifact
+`probe-mcp-pulse`). Spec deviations (v1): no `ui/resource-teardown`, no
+display-mode negotiation, no `ui/update-model-context`, no host-pushed
+`tool-result` (apps pull), `tool-input` pushed once with empty arguments,
+no `_meta.ui.csp` widening (network stays closed). **Follow-ups:**
+external-MCP-server relay behind the same deps seam, `luna/*` push
+extensions (event stream, kv), consent UX for declared CSP domains, full
+probe convergence + `luna.*` v0 retirement.
+
 ---
 
 ## AI Widget Tools (Phase 7)
