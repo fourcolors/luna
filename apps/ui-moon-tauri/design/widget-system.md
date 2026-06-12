@@ -1,6 +1,11 @@
-# Luna Widget System — Design v2
+# Luna Widget System — Design v3
 
 _Status: accepted direction · Date: 2026-06-11_
+_v3 (same day, post-probe verdict): **widgets become the main interaction mode.**
+Settings panels become widgets, every widget gets a registry name + trust tier,
+related widgets form stacks, and the agent can summon any widget by name. Chat
+extraction is unchanged in content but now rides on the proven platform. See
+"First-Class Widgets" and the revised Build Phases._
 _Supersedes the v1 "panel system" draft (single fullscreen-overlay model — rejected,
 see "Why not an overlay window")._
 
@@ -32,6 +37,13 @@ Two principles bound the scope:
 There is no fixed widget count. Widgets spawn on demand — by the user from the
 moon, by the agent mid-turn, or by events — and are fully independent of each
 other.
+
+**v3 — widgets are the main interaction mode, not a side feature.** Every
+surface the app shows is a widget: settings panels, the chat itself, rails,
+documents, mini-apps. Being a widget makes a surface **addressable** — each one
+has a registry name, so instead of digging through a modal the user can say
+"open the voice settings" and the agent summons the panel. The moon hub is the
+one non-widget: the launcher/anchor that owns the app lifecycle.
 
 ---
 
@@ -77,8 +89,8 @@ fail-closed, and individually grantable:
 | Cap | API | Status | Enables |
 |---|---|---|---|
 | `events:read` | `luna.subscribe(kinds, cb)`, `luna.refresh()`, `luna.ready()` | **shipped** | live data widgets (workspace views, NOW-style dashboards) |
-| `action` | `luna.action(event, payload)` → routes to chat/agent as an event | phase 5 | buttons, forms, "approve/skip" — the survey/`request_secret` frames are the shipped precedent |
-| `kv` | `luna.store.get/set` (artifact-scoped, size-capped, host-persisted) | phase 5 | stateful mini-apps — the Tamagotchi's hunger survives restart |
+| `action` | `luna.action(event, payload)` → routes to chat/agent as an event | phase 7 | buttons, forms, "approve/skip" — the survey/`request_secret` frames are the shipped precedent |
+| `kv` | `luna.store.get/set` (artifact-scoped, size-capped, host-persisted) | phase 7 | stateful mini-apps — the Tamagotchi's hunger survives restart |
 | `invoke` | `luna.invoke(tool, args)` → server-side allowlisted MCP/CLI calls | later, design-gated | widgets that tie back into CLI/MCP; needs per-widget tool allowlists + rate limits server-side |
 
 This table is the OS-creep governor: every "could a widget…?" question is
@@ -98,16 +110,17 @@ moon hub window (140×185, label "main")
   ├─ moon render + parallax + drag
   ├─ re-tether string episode (unchanged)
   ├─ ambient ladder: pip / orbit motes / toast   ← deck design language
-  ├─ settings modal (incl. Vault/Skills/Connectors tabs)  [phase 1]
+  ├─ settings modal — shrinks tab-by-tab into settings.* panels [phases 2-3]
   ├─ setup wizard, updater, boot/token plumbing
   └─ voice pipeline ownership (hands-free works with no widgets open)
 
 widget windows (one each)
   ├─ chat (main widget)  chat.html            owns the thread; voice UI lives here
+  ├─ settings panels     panel.html?type=settings.updates | .voice | …  [phases 2-3]
   ├─ now rail            panel.html?type=now
   ├─ briefing            panel.html?type=briefing
   ├─ workflow            panel.html?type=flow&id=…
-  ├─ agent line          chat.html?thread=…    [phase 6]
+  ├─ agent line          chat.html?thread=…    [phase 8]
   └─ mini-apps           widget.html?id=…      (already shipped: artifact widgets)
 ```
 
@@ -197,12 +210,29 @@ Ship with Luna; designed UI; live data subscriptions. Opened from the moon
 | NOW rail | `panel.html?type=now` | `workflow-list` broadcast + obs | live job list, mini-moon phases |
 | Briefing | `panel.html?type=briefing` | workflow runs + obs digest | "while you were away" |
 | Workflow inspector | `panel.html?type=flow&id=…` | `workflow-runs` (+ request frame) | per-job step view |
-| Agent direct line | `chat.html?thread=…` | own thread subscription | phase 6; a chat widget pointed at another thread |
+| Agent direct line | `chat.html?thread=…` | own thread subscription | phase 8; a chat widget pointed at another thread |
 
-Settings (incl. Vault/Skills/Connectors tabs) is **not** a widget in phase 1 —
-it stays a hub overlay (it already is body-level DOM independent of chat).
-It can become `panel.html?type=settings` later; VaultEngine is the cleanest-cut
-engine in the monolith (own state slice, zero Tauri commands) when that day comes.
+### System widgets: settings panels (v3)
+
+The settings modal (7 tabs today, inventoried from `index.html` 2026-06-11)
+decomposes into one **system widget per tab**, migrated tab-by-tab — the modal
+keeps serving unmigrated tabs and dies when empty; the gear then becomes a
+launcher. Each panel keeps its existing engine + backend wiring; only the
+window changes:
+
+| Kind | Today's tab | Backend channel | Migration order |
+|---|---|---|---|
+| `settings.updates` | Updates | Tauri `check_for_update` | **1st — smallest; proves the panel host** |
+| `settings.voice` | Voice | Tauri `voice_*` + localStorage | 2nd — the summon-by-name demo ("open voice settings") |
+| `settings.general` | General | localStorage + always-on-top | 3rd — exercises cross-window state fan-out |
+| `settings.connection` | Connection | Tauri `save_connection`/`set_active_profile` | 4th — touches reconnect choreography |
+| `settings.skills` | Skills | `skill-*` WS frames (broadcast) | 5th |
+| `settings.connectors` | Connectors | `connector-*` WS frames (broadcast) | 6th |
+| `settings.vault` | Vault | `vault-*` WS frames | **last — secret hygiene must travel** (wipe-on-close policy moves with the window; values never leave the panel) |
+
+None of these violate thread ownership: settings frames (`vault-put`,
+`register-op-token`, catalog broadcasts) are not thread-bound, so a settings
+panel on its own WS connection is safe by construction.
 
 ### Mini-app widgets
 Sandboxed HTML mini-apps hosted by `widget.html` — agent-authored today via
@@ -224,9 +254,132 @@ CLI/MCP-connected tools (`invoke`).
 
 ---
 
-## AI Widget Tools (Phase 5)
+## First-Class Widgets (v3): Registry, Trust Tiers, Stacks, Summon-by-Name
 
-Evolve the `widget_*` tool family rather than introducing a parallel vocabulary:
+The abstractions that make "everything is a widget" real. Four pieces, each
+small; together they turn surfaces into addressable, relatable, AI-summonable
+objects.
+
+### Widget registry
+
+One declarative table — **the single source of truth for what widgets exist** —
+shipped with the app (single JSON, read by both the JS hosts and Rust via
+`include_str!`). Every entry is a `WidgetDescriptor`:
+
+```json
+{ "kind": "settings.voice",
+  "title": "Voice",
+  "page": "panel.html?type=settings.voice",
+  "trust": "system",
+  "singleton": true,
+  "description": "Voice mode, TTS voice, silence timing, speech model" }
+```
+
+- `kind` — the addressable name, dot-namespaced. This is what users, the hub
+  launcher, and the agent all use to refer to a widget.
+- `page` — which host page serves it. Only registry entries can resolve to
+  trusted pages (see trust tiers).
+- `singleton` — open = focus the existing window instead of spawning a twin
+  (right default for every settings panel and rail).
+- `description` — written for the **agent directory** (see summon-by-name);
+  one line that lets a model pick the right widget from a user request.
+- Parameterized kinds (`chat?thread=…`, `flow&id=…`) declare their params in
+  the descriptor; instances get labels like `panel-settings-voice` /
+  `chat-<thread>`.
+
+A single Rust command `open_widget(kind, params, opener?)` replaces ad-hoc
+spawning for everything except artifacts: resolve descriptor → enforce
+singleton → place near opener (see stacks) → create/focus window. The shipped
+`open_artifact_widget` stays as the **content-tier** path; it never consults
+the registry.
+
+### Trust tiers — the careful boundary
+
+Two tiers, decided by **which host page serves the widget**, never by content:
+
+| | **system** | **content** |
+|---|---|---|
+| Examples | settings.*, chat, rails, inspector | artifacts, mini-apps, probes |
+| Host page | `panel.html` / `chat.html` (shipped HTML) | `widget.html` (sandboxed iframe) |
+| Powers | Tauri IPC per window-label capability file, own WS connection, full frames | `luna.*` bridge only, cap-gated, CSP no-network |
+| Window label | `panel-*` / `chat-*` | `widget-*` |
+| Authored by | us, shipped in the app bundle | agent (`widget_write`) / user, stored server-side |
+
+Hard rules: the registry only ever maps kinds to shipped pages, so **no
+agent-authored artifact can become a system widget** — there is no input that
+turns content into a `panel-*` window. And system pages never render
+server-supplied HTML outside the sandbox. The dock/snap layer treats both
+tiers identically (label allowlist in `set_dock` widens from `widget-*` to
+include `panel-*`/`chat-*`; the moon stays alignment-only).
+
+### Stacks — relationships between widgets
+
+A **stack is a dock group plus provenance**. No new window-management
+machinery — the live-verified group system (native parenting, flat symmetric
+groups, pin-to-detach, perimeter highlight) *is* the stack mechanic. v3 adds
+only the relationship data:
+
+- **`openedBy` edge:** the host records which widget spawned which
+  (`open_widget`'s `opener` arg). Default placement: a widget opened *from*
+  another widget spawns docked to its opener's free edge, already joined to
+  its group — open three settings panels from the gear and you naturally get
+  a settings stack that drags as one and unpins like everything else.
+- **Closing stays per-widget** (the ✕-closes-one rule, already shipped);
+  survivors regroup by geometry. No cascade-close in v1 of stacks.
+- Singleton + opener placement replaces the blind x/y cascade for system
+  widgets.
+- Later (not now): named/persisted stacks in `layout.json`, a hub "gather"
+  raise, and a `widget-state` report (host → server: what's open, how
+  grouped) so the agent can also *close* or arrange by name. Deferred until
+  summon-by-name proves out.
+
+### Summon-by-name (the AI opens widgets)
+
+The user's ask: "open that settings panel" should be a sentence, not a hunt.
+Three small pieces, all riding the existing server-agnostic seam:
+
+1. **Directory in hello (client → server):** the hub reports its registry —
+   `widgets: [{kind, description, params?}]` — as a hello capability. The
+   server learns what's openable from the client, so it never hardcodes
+   Moon's widget list (a different host can offer a different directory; a
+   different server can ignore it).
+2. **`widget-open` frame (server → client):** `{type: "widget-open", kind,
+   params?}` → host resolves through the registry → `open_widget`. Unknown
+   kind = reject, log, tell the agent.
+3. **`open_widget` agent tool (server-side):** registered alongside the
+   `widget_*` family, described from the directory the client sent. Two
+   verbs, deliberately distinct: `widget_write` **creates content** (sandboxed,
+   content tier); `open_widget` **summons existing surfaces by name** (any
+   tier). The agent never composes a system widget — it can only name one.
+
+**Safety default — the agent summons UI, it does not operate it.** Opening
+`settings.vault` shows the panel; every mutation in it remains a user gesture.
+Agent-driven settings *changes* are a separate, later design gate (they'd ride
+the `action` cap review), and secret values never appear in any frame the
+agent can read either way.
+
+### Cross-window settings state (operator-verify before depending on it)
+
+Settings panels mutate state other windows consume (always-on-top, shortcut,
+model choice). Tauri-command-backed settings fan out naturally (Rust owns the
+state and can emit app-wide — but note the cross-talk trap: targeted events
+reach every global listener, so app-wide settings emits must carry the same
+`for:`/scope discipline as `dock-group`). localStorage-backed settings are
+same-origin so the *values* are shared, but cross-window `storage` event
+delivery in multi-window WKWebView is **unverified on real Tauri** — verify
+in phase 2, and if it doesn't fire, route change notifications through a
+`settings-changed` Tauri emit instead. Per-window semantics need deciding per
+setting (e.g. "always on top" today means the hub; as a panel setting it
+should mean *all* Luna windows).
+
+---
+
+## AI Widget Tools (Phase 7)
+
+Evolve the `widget_*` tool family rather than introducing a parallel vocabulary.
+(`open_widget` — summoning *existing* widgets by registry name — is a separate,
+earlier verb; see "Summon-by-name". This section is the agent **creating**
+content-tier widgets.)
 
 | Tool | Status | Work |
 |---|---|---|
@@ -277,7 +430,7 @@ against the live layout.
   visibility plus a **very low perimeter highlight rendered only on
   outward-facing sides** (pure rect geometry decides which sides are
   interior) — the group reads as one piece without highlighting the seams.
-- ⚠️ **Phase 0 blocker:** the shipped self-snap has never run — `widget.html:438`
+- ✅ **Fixed in Phase 0** (was the v2 blocker): the shipped self-snap had never run — `widget.html:438`
   misses `await` on `Window.getByLabel('main')` (async in Tauri 2), so
   `mainWin.outerPosition()` throws into the swallow-catch at `:460`. Fix,
   then operator-verify on real Tauri before stacking anything on it.
@@ -365,69 +518,85 @@ window registry.
 
 ---
 
-## Build Phases
+## Build Phases (v3 ordering)
 
-**Phase 0 — unbreak the foundation** (small, do first)
-- Fix the `widget.html:438` missing-await; operator-verify snap on real Tauri.
-- Capability entries for new window labels; global shortcut + show/hide iterate
-  all windows; hub-owns-exit lifecycle policy in `main.rs`.
+v3 reorders v2: the widget platform + settings migration land **before** chat
+extraction, because settings panels prove the system-widget path (registry,
+panel host, capabilities, stacks, summon-by-name) on small low-risk surfaces —
+then the riskiest slice, chat, rides proven machinery. v2→v3 mapping: old
+Phase 2 (chat) → 4; old 3/4/5/6 → 5/6/7/8.
 
-**Phase 0.5 — mini-app probes (gates Phase 2).** Prove the widget thesis on the
-**shipped pipeline** — not lorem windows. Author three probe widgets as pinned
-artifacts (via `widget_write` or seeded directly) and pop them out through the
-real `open_artifact_widget` path:
+**Phase 0 — unbreak the foundation. ✅ DONE 2026-06-11** (`43d35e3`) — await
+fix, lifecycle policy, all-window shortcut, capability entries.
 
-1. **Live workspace widget** (`html` + `events:read`) — renders live data off
-   the obs stream. Proves: the bridge data path, live updates, a real mini-app
-   with zero new platform code.
-2. **Tamagotchi** (`html`, local-state-only for now) — an ambient toy with
-   timers and animation. Proves: long-lived widget processes, idle CPU/memory
-   behavior, whether an always-on-top companion *feels* good. (Its hunger
-   resets on restart until the `kv` cap exists — that's fine for the probe.)
-3. **Document widget** — this design doc rendered as HTML. Proves: the
-   throwaway-document use case end-to-end, content ergonomics, scrolling/read
-   feel in a frameless window.
+**Phase 0.5 — mini-app probes. ✅ DONE 2026-06-11** — three probes built +
+seeded; group-drag iterated three rounds on live feedback to the native flat
+symmetric dock-group system; full bug sweep live-verified (`60fad82`).
+**Operator verdict 2026-06-11: positive** ("I like this panel system. It seems
+to be working well") → widgets confirmed as the main interaction mode (this v3).
+Long-horizon items (memory at 10-30 windows via Instruments, days-long ambient
+feel) remain open and ride along during phases 1-3.
 
-Live with all three plus chat for a few days. Operator verdict on: spawn
-latency, snap-on-release feel, last-touched-wins z-order livability, memory at
-10/20/30 windows (Instruments). Prototype the risk, not the product — the
-platform unknowns and the mini-app thesis get answered for days of work before
-the expensive extraction bet, using machinery that ships either way. Delete the
-probe widgets after the verdict; keep the numbers in this doc.
+**Phase 1 — shared modules (S0/S1)** — extract `moon-protocol/theme/ws`
+(frame switch → registry), consume from `index.html`. Pure refactor, tests
+green, zero behavior change. Scope note: `moon-markdown` extraction can slide
+to Phase 4 (chat) — panel.html doesn't need it; the first three modules are
+exactly what panel.html consumes.
 
-**Phase 1 — shared modules (S0/S1)** — extract `moon-protocol/markdown/theme/ws`,
-consume from `index.html`, frame switch → registry. Pure refactor, tests green,
-zero behavior change. Ship alone — worth it even if the probe verdict changes
-the widget plan, because the 11.5k-line monolith is a liability either way.
+**Phase 2 — widget platform core + first panel.**
+- `vendor/widget-registry.json` + descriptor loading (JS + Rust `include_str!`).
+- `panel.html` system-widget host (theme + moon-ws + a per-type module slot).
+- `open_widget(kind, params, opener?)` command: singleton focus, opener-edge
+  placement + stack join (`openedBy`), `panel-*` labels; capability file for
+  `panel-*`; widen `set_dock`'s anchor allowlist to `panel-*` (moon stays
+  alignment-only).
+- `layout.json` save/restore for open system widgets (clamped to monitor).
+- Migrate **`settings.updates`** end-to-end: its modal tab becomes a launcher
+  button → panel opens docked to nothing, singleton, fully functional.
+- Verify cross-window `storage` event delivery on real Tauri (decides the
+  settings fan-out mechanism).
 
-**Phase 2 — chat widget (S2/S3)** — `chat.html` + `open_chat_panel` command;
-moon click spawns/focuses it; sub-engines move; snap anchor parameterized to
-chat; `layout.json` save/restore; hub reattach signal redefined. The overhaul's
-riskiest slice; everything after it is additive.
+**Phase 3 — settings migration + summon-by-name.**
+- Remaining tabs in the order of the settings table (voice → general →
+  connection → skills → connectors → **vault last**, wipe-policy traveling).
+  Modal dies when empty; gear becomes the launcher.
+- Hello `widgets` directory + `widget-open` frame + server-side `open_widget`
+  tool. Milestone: *"open the voice settings"* spoken/typed → panel appears.
+- AI summons UI only; agent-driven settings changes stay design-gated.
 
-**Phase 3 — prebuilt widgets + hub ambient** — `panel.html` host for NOW rail /
-briefing / inspector (data already on the wire); hub ambient ladder (pip →
-motes → toast) driven by the obs stream, ported from the deck prototype branch
-(`worktree-moon-agent-dropdown`, kept as reference); toast renders via the
-envelope-grow machinery (it cannot fit the 140px window — the prototype's toast
-is clipped to a 7px sliver).
+**Phase 4 — chat widget (S2/S3)** — `chat.html` as registry kind `chat`;
+moon click → `open_widget("chat")`; sub-engines move; snap anchor
+parameterized to chat; hub reattach signal redefined. Still the overhaul's
+riskiest slice — but now on a platform that's been carrying settings panels
+for two phases.
 
-**Phase 4 — voice split + hub cleanup (S4/S5).**
+**Phase 5 — prebuilt widgets + hub ambient** — NOW rail / briefing / inspector
+as registry kinds on `panel.html` (data already on the wire); hub ambient
+ladder (pip → motes → toast) ported from the deck prototype branch; toast
+renders via the envelope-grow machinery (it cannot fit the 140px window — the
+prototype's toast is clipped to a 7px sliver).
 
-**Phase 5 — AI widget tools + bridge caps** — `kind: markdown|table|form`,
+**Phase 6 — voice split + hub cleanup (S4/S5).**
+
+**Phase 7 — AI widget tools + bridge caps** — `kind: markdown|table|form`,
 `tier`, `widget_append`, `widget_close` (+ pin-respect rule), placement hints;
 bridge `action` and `kv` caps. (`invoke` stays design-gated behind its own
-review — it's the cap that turns widgets into tool-callers.)
+review — it's the cap that turns widgets into tool-callers.) Candidate here
+too: `widget-state` report + agent `close_widget`-by-name, if summon-by-name
+demand proves it.
 
-**Phase 6 — agent direct lines** — `chat.html?thread=…`; protocol already
+**Phase 8 — agent direct lines** — `chat.html?thread=…`; protocol already
 multi-thread (`subscribe-thread`/`thread-list`/`threadId` on every frame);
 needs an agent-identity/thread mapping, honors one-window-per-thread.
 
-**Server track (parallel, required for the deck's golden path):** a real
-"needs input" job status — `JobRunStatus` is `queued|running|success|failed|
-cancelled`; the waiting state the whole notification ladder keys on does not
-exist — plus an answer channel into a running job (the `request_secret` bridge
-is the template). Without this, NOW/briefing/toast only ever demo on fake data.
+**Server track (parallel):**
+- `open_widget` agent tool + `widget-open` frame + hello `widgets` capability
+  (Phase 3's server half — small; the directory arrives client-side).
+- A real "needs input" job status — `JobRunStatus` is `queued|running|success|
+  failed|cancelled`; the waiting state the whole notification ladder keys on
+  does not exist — plus an answer channel into a running job (the
+  `request_secret` bridge is the template). Without this, NOW/briefing/toast
+  only ever demo on fake data.
 
 ---
 
