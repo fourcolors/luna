@@ -1046,7 +1046,12 @@ async fn open_widget(
         return Err(format!("kind {kind} is not a system widget"));
     }
     let params = params.unwrap_or(serde_json::Value::Null);
-    let (label, url) = if desc.singleton || params.is_null() {
+    // No params → the kind's base window (one per kind). WITH params → one
+    // window per DISTINCT params-set (deterministic hash label), regardless
+    // of the singleton flag: open_widget('chat') is the main line, while
+    // open_widget('chat', {thread}) is a Phase 8 direct line in its own
+    // window — same params always focus the same instance.
+    let (label, url) = if params.is_null() {
         (panel_label(&kind), desc.page.clone())
     } else {
         (

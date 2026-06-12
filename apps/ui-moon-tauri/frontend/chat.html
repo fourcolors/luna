@@ -3235,6 +3235,17 @@
       },
 
       async syncThread() {
+        // Phase 8 — DIRECT LINE: a ?thread=<id> URL param pins this window to
+        // ONE thread for its whole life: always subscribe to it, never read
+        // or write the last-thread file (that memory belongs to the MAIN
+        // line), never list/auto-create.
+        if (PINNED_THREAD) {
+          State.activeThreadId = PINNED_THREAD;
+          Logger.info(`Direct line: subscribing to pinned thread "${PINNED_THREAD}"`);
+          this.send({ type: 'subscribe', threadId: PINNED_THREAD });
+          this.startSubscribeTimeout();
+          return;
+        }
         // The last-thread file (~/.luna/.last-thread-default) is NOT scoped per
         // server. After switching servers its thread belongs to the old server's
         // DB ("unknown thread" here), so skip it once and list fresh instead.
@@ -5486,6 +5497,12 @@
     // and subscribe to the voice-* events (window-targeted).
     Promise.resolve(VoiceEngine.init())
       .catch((e) => Logger.warn('Voice init failed (non-fatal):', e));
+
+    // Phase 8 — direct lines: chat.html?thread=<id> pins this WINDOW to one
+    // thread (its own open_widget instance label). Null = the main line.
+    // Declared here, consumed at runtime by syncThread / the snapshot
+    // persist (same IIFE scope; TDZ is safe — both run after evaluation).
+    const PINNED_THREAD = new URLSearchParams(location.search).get('thread') || null;
 
     // ── Widget-window chrome (panel.html conventions) ──────────────────────
     let W = null;

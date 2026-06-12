@@ -40,7 +40,10 @@ export interface WidgetSummonBridge {
    * Ask the current host to open `kind`. Validates against the announced
    * directory. Returns ok/message for the tool to relay to the model.
    */
-  readonly open: (kind: string) => { readonly ok: boolean; readonly message: string }
+  readonly open: (
+    kind: string,
+    params?: Readonly<Record<string, string | number | boolean>>,
+  ) => { readonly ok: boolean; readonly message: string }
 }
 
 interface Registrant {
@@ -69,7 +72,7 @@ export const createWidgetSummonBridge = (): WidgetSummonBridge => {
     directory() {
       return current ? current.widgets : []
     },
-    open(kind) {
+    open(kind, params) {
       if (!current) {
         return {
           ok: false,
@@ -86,7 +89,11 @@ export const createWidgetSummonBridge = (): WidgetSummonBridge => {
         }
       }
       try {
-        current.send({ type: "widget-open", kind })
+        current.send({
+          type: "widget-open",
+          kind,
+          ...(params && Object.keys(params).length > 0 ? { params } : {}),
+        })
         return { ok: true, message: `Asked the app to open ${kind}.` }
       } catch {
         return { ok: false, message: "The widget host connection failed mid-send." }

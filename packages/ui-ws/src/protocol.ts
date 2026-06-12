@@ -853,6 +853,13 @@ export interface WidgetDirectoryEntry {
 export interface WidgetOpenFrame {
   readonly type: "widget-open"
   readonly kind: string
+  /**
+   * Optional instance params (Phase 8 direct lines / parameterized panels):
+   * scalar key→value pairs the host appends to the page URL — e.g.
+   * {thread: "thr_…"} opens a chat window PINNED to that thread, its own
+   * window per distinct params. The host validates keys fail-closed.
+   */
+  readonly params?: Readonly<Record<string, string | number | boolean>>
 }
 
 /* ── MCP Apps host relay (widget-system.md Phase 7, SEP-1865) ───────────

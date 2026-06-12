@@ -1702,7 +1702,12 @@
       // kinds are rejected in Rust), so this frame can summon shipped UI but
       // never conjure anything else.
       if (window.__TAURI__ && window.__TAURI__.core && typeof frame.kind === 'string') {
-        window.__TAURI__.core.invoke('open_widget', { kind: frame.kind })
+        // Phase 8: optional instance params ride through to Rust, which
+        // appends them to the page URL with fail-closed key validation —
+        // e.g. {thread} opens a direct-line chat window per thread.
+        const args = { kind: frame.kind };
+        if (frame.params && typeof frame.params === 'object') args.params = frame.params;
+        window.__TAURI__.core.invoke('open_widget', args)
           .catch((e) => Logger.warn('widget-open failed:', e));
       }
     });

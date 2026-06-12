@@ -152,7 +152,10 @@ export interface WidgetSummonerPort {
     readonly title: string
     readonly description: string
   }>
-  readonly open: (kind: string) => { readonly ok: boolean; readonly message: string }
+  readonly open: (
+    kind: string,
+    params?: Readonly<Record<string, string | number | boolean>>,
+  ) => { readonly ok: boolean; readonly message: string }
 }
 
 export const makeOpenWidgetTool = (summoner: WidgetSummonerPort) => {
@@ -173,13 +176,23 @@ export const makeOpenWidgetTool = (summoner: WidgetSummonerPort) => {
           "The widget kind to open, e.g. 'settings.voice'. Kinds and their " +
             "descriptions come from the connected app's widget directory.",
         ),
+      params: z
+        .record(z.union([z.string(), z.number(), z.boolean()]))
+        .optional()
+        .describe(
+          "Optional instance params for parameterized widgets — e.g. " +
+            "{thread: '<threadId>'} with kind 'chat' opens a DIRECT LINE " +
+            "window pinned to that thread, or {jobId: '<id>'} with kind " +
+            "'flow' opens that job's run history. Same params focus the " +
+            "same window.",
+        ),
     },
     alwaysLoad: true,
     searchHint:
       "Open or focus an app widget/settings panel window by name (summon UI on the user's screen).",
     handler: (args) =>
       Effect.sync(() => {
-        const result = summoner.open(args.kind)
+        const result = summoner.open(args.kind, args.params)
         if (!result.ok) {
           const dir = summoner
             .directory()
