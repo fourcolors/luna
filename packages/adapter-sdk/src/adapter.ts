@@ -19,6 +19,7 @@
  *      handle dropped from Ref.
  */
 import {
+  Duration,
   Effect,
   Layer,
   Option,
@@ -66,6 +67,49 @@ import { mergeEnvOverlayLogged } from "./merge-env.js"
 import { loadAgents } from "./agent-loader.js"
 
 const DEFAULT_IDLE_TIMEOUT_MS = 120_000
+
+/**
+ * Turn-aware inactivity watchdog (chat threads). When a chat turn streams no
+ * SDK message for this long, the subprocess is presumed wedged (the live bug:
+ * a usage-limited subscription account makes the `claude` CLI hang internally
+ * retrying the throttle instead of returning a 429). 300s, not tighter: while
+ * an in-process MCP tool executes (e.g. a multi-minute local-shell command)
+ * the subprocess legitimately streams NOTHING between the tool_use frame and
+ * its tool_result, so the window must clear real tool latencies — a wedge is
+ * still converted from "hangs forever" into a bounded trip + failover.
+ * (Follow-up refinement: suspend the watchdog between tool_use and
+ * tool_result — in-process tool execution can't wedge on the model API.)
+ * Env override: `LUNA_TURN_INACTIVITY_TIMEOUT_MS`; `0` disables.
+ */
+const DEFAULT_TURN_INACTIVITY_TIMEOUT_MS = 300_000
+
+/**
+ * Cooldown parked on the acquired account when the inactivity watchdog trips,
+ * so the next message fails over to a healthy account instead of re-wedging on
+ * the same usage-limited one. 15 min ≫ a transient 429's retry-after — a hang
+ * is not transient (observed 200-700s, SIGKILL-only). Env override:
+ * `LUNA_HANG_COOLDOWN_MS`.
+ */
+const DEFAULT_HANG_COOLDOWN_MS = 900_000
+
+/**
+ * Parse a non-negative-ms env var (watchdog window: `0` is a meaningful
+ * "disable", so an explicit 0 is honored; absent/non-numeric ⇒ fallback).
+ */
+const readNonNegativeMsEnv = (name: string, fallback: number): number => {
+  const raw = process.env[name]?.trim()
+  if (!raw) return fallback
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : fallback
+}
+
+/** Parse a strictly-positive-ms env var (cooldown; 0/negative ⇒ fallback). */
+const readPositiveMsEnv = (name: string, fallback: number): number => {
+  const raw = process.env[name]?.trim()
+  if (!raw) return fallback
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : fallback
+}
 
 export interface QueryRequest {
   readonly sessionId: string
@@ -164,6 +208,17 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
       // Provider env (gateway URLs + LUNA_MODEL_PROVIDER_MAP) is immutable for
       // the process — parse once at layer build instead of per turn.
       const providerEnv = readProviderEnv()
+
+      // Turn-inactivity watchdog process defaults (immutable for the process —
+      // read once here; a per-query sessionOptions value overrides them).
+      const envTurnInactivityMs = readNonNegativeMsEnv(
+        "LUNA_TURN_INACTIVITY_TIMEOUT_MS",
+        DEFAULT_TURN_INACTIVITY_TIMEOUT_MS,
+      )
+      const envHangCooldownMs = readPositiveMsEnv(
+        "LUNA_HANG_COOLDOWN_MS",
+        DEFAULT_HANG_COOLDOWN_MS,
+      )
 
       const hooksRef = yield* Ref.make<ReadonlyArray<HookRegistration>>([])
       const permissionCbRef = yield* Ref.make<
@@ -405,8 +460,31 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             delete (mergedOpts as { model?: unknown }).model
           }
 
-          // Stream → AsyncIterable for the SDK to consume.
-          const promptIterable = yield* Stream.toAsyncIterableEffect(req.prompt)
+          /**
+           * Turn-aware inactivity watchdog state (chat threads only — see the
+           * consumer below). `turnInFlight` is the ARM bit: true while we are
+           * mid-turn (a user prompt was offered and no `result` frame has
+           * closed it), false between turns. The prompt-tap arms it; the
+           * consumer disarms it on a `result` frame. JS is single-threaded and
+           * the producer/consumer/prompt-tap all run inside this query Scope,
+           * so a plain mutable object is race-free (same convention as the
+           * `acquiredAccountId` / `reportedSdkSessionId` locals above).
+           */
+          const watchdog = { turnInFlight: false }
+
+          // Stream → AsyncIterable for the SDK to consume. Tap each outbound
+          // user prompt to ARM the watchdog: a freshly-submitted turn is now
+          // expecting a response. The tap is a pass-through — it never alters
+          // or drops the message handed to the SDK.
+          const promptIterable = yield* Stream.toAsyncIterableEffect(
+            req.prompt.pipe(
+              Stream.tap(() =>
+                Effect.sync(() => {
+                  watchdog.turnInFlight = true
+                }),
+              ),
+            ),
+          )
 
           const params: QueryParams = {
             prompt: promptIterable,
@@ -437,6 +515,21 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
           const idleTimeoutDisabled =
             req.sessionOptions.disableIdleTimeout === true
           const sessionIdForErr = req.sessionId
+
+          /**
+           * Turn-inactivity watchdog config. ONLY engaged on the
+           * `disableIdleTimeout` path (chat threads) — the always-on idle
+           * timeout already covers every other caller (reasoner lanes use
+           * runBoundedQuery, not this adapter, so they are untouched either
+           * way). sessionOptions wins over the process-env default; `0`
+           * disables (legacy behavior — a hang is not converted). Active only
+           * when both the chat opt-out is set AND the window is positive.
+           */
+          const turnInactivityMs =
+            req.sessionOptions.turnInactivityTimeoutMs ?? envTurnInactivityMs
+          const hangCooldownMs =
+            req.sessionOptions.hangCooldownMs ?? envHangCooldownMs
+          const watchdogActive = idleTimeoutDisabled && turnInactivityMs > 0
 
           /**
            * Producer pattern: a detached async function pushes from the SDK's
@@ -560,11 +653,43 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             ).catch(() => {})
           }
 
+          /**
+           * Inactivity-watchdog trip: cool the acquired account so the NEXT
+           * message fails over to a healthy one. Fire-and-forget (a metering
+           * failure must not poison the already-dead turn).
+           *
+           * UNLIKE the B9 throttle path, this does NOT gate on
+           * `throttleFailoverPossible`. A hang is categorically different from
+           * a transient 429: the turn is already dead (no retry is in flight),
+           * so cooling a sole account cannot make things worse — it only stops
+           * the next turn from re-picking the same wedged account. With no
+           * failover target the next acquire surfaces AllAccountsExhausted (a
+           * clean error), which is strictly better than another silent hang.
+           */
+          const reportHangCooldown = () => {
+            if (broker === null || acquiredAccountId === null) return
+            const id = acquiredAccountId
+            Effect.runPromise(
+              broker.report({
+                accountId: id,
+                kind: "rate_limit",
+                retryAfterMs: hangCooldownMs,
+              }),
+            ).catch(() => {})
+          }
+
           const runProducer = async () => {
             try {
               for await (const msg of handle as AsyncIterable<SDKMessage>) {
                 // B4: meter the turn at the result frame (fire-and-forget).
                 reportUsage(msg)
+                // Watchdog DISARM: a `result` frame closes the turn. After it,
+                // the stream waits for the NEXT user prompt (inter-turn
+                // think-time), which must NOT trip the inactivity watchdog. The
+                // prompt-tap re-arms on the next submitted turn.
+                if (sdkMessageKind(msg) === "result") {
+                  watchdog.turnInFlight = false
+                }
                 await Effect.runPromise(
                   Queue.offer(queue, { _tag: "value", value: msg }),
                 )
@@ -595,13 +720,47 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
           // isolated and will be GC'd once the Scope's Ref releases it.
           void runProducer()
 
-          // Consumer stream: repeatEffectOption to signal `done` via None.
-          // When `disableIdleTimeout` is true (chat threads), we omit the
-          // timeoutFail wrapper so user think-time between turns does not
-          // trip §12.2 #5 — Queue.take just blocks until the next message.
-          const takeFrame = idleTimeoutDisabled
-            ? Queue.take(queue)
-            : Queue.take(queue).pipe(
+          // Decode one Queue frame into the repeatEffectOption shape: a value,
+          // `None` for clean end, or `Some(err)` for a terminal error.
+          const decodeFrame = (
+            frame: Frame,
+          ): Effect.Effect<SDKMessage, Option.Option<SDKError>> => {
+            switch (frame._tag) {
+              case "value":
+                return Effect.succeed(frame.value)
+              case "end":
+                return Effect.fail(Option.none<SDKError>())
+              case "error":
+                return Effect.fail(Option.some(frame.err))
+            }
+          }
+
+          /**
+           * Consumer take, three modes:
+           *
+           *  1. NON-chat (idle timeout on): the original §12.2 #5 idle race —
+           *     every Queue.take is bounded by `idleMs`, resets on each
+           *     message. Byte-identical to before.
+           *
+           *  2. Chat + watchdog OFF (`turnInactivityTimeoutMs`/env = 0): a
+           *     plain blocking take — legacy `disableIdleTimeout` behavior, a
+           *     hang is NOT converted.
+           *
+           *  3. Chat + watchdog ON: the TURN-AWARE inactivity watchdog. Each
+           *     take is raced against `turnInactivityMs`. On expiry we re-read
+           *     the arm bit: if a turn is STILL in flight (no `result` closed
+           *     it), the subprocess is presumed wedged → abort it, cool the
+           *     account, and fail the turn with a clean SDKError. If the turn
+           *     already ended (disarmed — we are between turns waiting on the
+           *     next prompt), the expiry is benign: loop and block again, so
+           *     hours-long think-time never trips. Activity (any frame) lands
+           *     in the Queue and satisfies the take, resetting the window.
+           */
+          const pullOne: Effect.Effect<
+            SDKMessage,
+            Option.Option<SDKError>
+          > = !idleTimeoutDisabled
+            ? Queue.take(queue).pipe(
                 Effect.timeoutFail({
                   onTimeout: (): Option.Option<SDKError> =>
                     Option.some(
@@ -613,20 +772,48 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
                     ),
                   duration: idleMs,
                 }),
+                Effect.flatMap(decodeFrame),
               )
-          const pullOne: Effect.Effect<SDKMessage, Option.Option<SDKError>> =
-            takeFrame.pipe(
-              Effect.flatMap((frame) => {
-                switch (frame._tag) {
-                  case "value":
-                    return Effect.succeed(frame.value)
-                  case "end":
-                    return Effect.fail(Option.none<SDKError>())
-                  case "error":
-                    return Effect.fail(Option.some(frame.err))
-                }
-              }),
-            )
+            : !watchdogActive
+              ? Queue.take(queue).pipe(Effect.flatMap(decodeFrame))
+              : Effect.gen(function* () {
+                  // Loop so a benign (disarmed) expiry re-blocks instead of
+                  // tripping — only an expiry WHILE a turn is in flight is a
+                  // hang.
+                  while (true) {
+                    const taken = yield* Queue.take(queue).pipe(
+                      Effect.timeoutOption(Duration.millis(turnInactivityMs)),
+                    )
+                    if (Option.isSome(taken)) {
+                      return yield* decodeFrame(taken.value)
+                    }
+                    if (!watchdog.turnInFlight) {
+                      // Between turns — not a hang. Block again.
+                      continue
+                    }
+                    // TRIP: a turn streamed nothing for the whole window.
+                    // Kill the wedged subprocess so it stops burning the
+                    // usage-limited account (the Scope finalizer also aborts,
+                    // but we do it eagerly at trip time).
+                    abortController.abort()
+                    // Cool the account so the NEXT message fails over.
+                    reportHangCooldown()
+                    return yield* Effect.fail(
+                      Option.some(
+                        new SDKError({
+                          op: "inactivity-watchdog",
+                          sessionId: sessionIdForErr,
+                          cause:
+                            `model call stalled (no response for ` +
+                            `${turnInactivityMs}ms; suspected usage limit on ` +
+                            `account ${acquiredAccountId ?? "unknown"}). The ` +
+                            `account was cooled — your next message will use ` +
+                            `another account. Please resend.`,
+                        }),
+                      ),
+                    )
+                  }
+                })
 
           const consumer: Stream.Stream<SDKMessage, SDKError> =
             Stream.repeatEffectOption(pullOne)

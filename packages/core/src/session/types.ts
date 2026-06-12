@@ -30,8 +30,43 @@ export interface SessionOptions {
    * (chat threads) where user think-time legitimately exceeds any sane
    * timeout. Trades the silent-hang safety net (§12.2 #5) for survivability
    * across multi-minute pauses. Default: false.
+   *
+   * NOTE: this opt-out only disables the BETWEEN-turn idle watchdog. Chat
+   * threads still get the TURN-AWARE inactivity watchdog below, which is armed
+   * only while a turn is in flight — so a wedged subprocess is still caught
+   * without false-tripping on inter-turn think-time.
    */
   readonly disableIdleTimeout?: boolean
+  /**
+   * Turn-aware inactivity watchdog window, in ms. ONLY consulted when
+   * `disableIdleTimeout` is true (interactive chat threads — the path the
+   * always-on idle timeout above is deliberately off for). The watchdog is
+   * ARMED while a turn is in flight (a user prompt was offered and no SDK
+   * `result` frame has closed it) and DISARMED between turns, so an hours-long
+   * inter-turn pause never trips it. Any SDK message (assistant-delta,
+   * tool-call event, partial) resets the window — a legitimately long agentic
+   * turn that keeps streaming stays alive.
+   *
+   * On trip the adapter aborts the SDK query (kills the wedged subprocess),
+   * reports a `rate_limit` to the broker so the account cools and the next
+   * message routes to a healthy account, and fails the turn with a clean
+   * SDKError (surfaced to the client as an assistant-error). It does NOT retry
+   * the hung turn — deltas/tools may already have executed.
+   *
+   * `0` disables the watchdog (legacy `disableIdleTimeout` behavior — the hang
+   * is NOT converted). Default in the adapter: 120_000 (env
+   * `LUNA_TURN_INACTIVITY_TIMEOUT_MS`). Ignored when `disableIdleTimeout` is
+   * false/unset.
+   */
+  readonly turnInactivityTimeoutMs?: number
+  /**
+   * Cooldown (ms) applied to the acquired account when the turn-inactivity
+   * watchdog trips. Passed to the broker as the `rate_limit` retryAfterMs so
+   * the wedged account is parked long enough that the next message fails over.
+   * Default in the adapter: 900_000 (15 min; env `LUNA_HANG_COOLDOWN_MS`).
+   * Ignored unless the watchdog is active and trips.
+   */
+  readonly hangCooldownMs?: number
   /**
    * Full SDK-shape options snapshot. Typed loosely here; schema'd in Phase 4.
    *

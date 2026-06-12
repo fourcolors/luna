@@ -31,6 +31,8 @@ export const MERGE_POLICIES: Readonly<Record<string, MergePolicy>> = {
   model: "replace",
   idleTimeoutMs: "replace",
   disableIdleTimeout: "replace",
+  turnInactivityTimeoutMs: "replace",
+  hangCooldownMs: "replace",
   systemPrompt: "replace",
   title: "replace",
   tags: "concat-unique",

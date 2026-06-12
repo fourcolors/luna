@@ -3,6 +3,7 @@ import { defineCommand, runMain } from "citty"
 import { createReadStream, createWriteStream, openSync } from "node:fs"
 import { createInterface } from "node:readline/promises"
 import { accountCommand } from "./commands/account/index.js"
+import { accountsCommand } from "./commands/accounts.js"
 import { chatCommand } from "./commands/chat.js"
 import { doctorCommand } from "./commands/doctor.js"
 import { memoryCommand } from "./commands/memory.js"
@@ -38,6 +39,7 @@ const root = defineCommand({
   subCommands: {
     chat: chatCommand,
     account: accountCommand,
+    accounts: accountsCommand,
     memory: memoryCommand,
     doctor: doctorCommand,
     pair: pairCommand,
