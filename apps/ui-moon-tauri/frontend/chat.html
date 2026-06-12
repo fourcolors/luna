@@ -1225,6 +1225,95 @@
     .scope-menu-check { color: #8ab4f8; font-weight: 700; opacity: 0; }
     .scope-menu-item.checked .scope-menu-check { opacity: 1; }
 
+    /* ── Composer config cluster (model + effort) ─────────────────────────────
+       A compact, right-aligned row below the composer, showing the current
+       model label and effort label as subtle text buttons. Aesthetic: flat /
+       painterly — same muted ink tones as the rest of moon; no glossy chrome.
+       The whole cluster is hidden when no models are advertised (older server). */
+    .composer-config {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 4px;
+      padding: 0 2px;
+      min-height: 0;
+    }
+    .composer-config[hidden] { display: none !important; }
+
+    /* A single config label-button (model or effort). */
+    .cfg-btn {
+      background: none;
+      border: none;
+      padding: 2px 7px;
+      border-radius: 6px;
+      font-size: 0.71rem;
+      color: #64748b;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: color 0.15s, background 0.15s;
+      line-height: 1.5;
+    }
+    .cfg-btn:hover {
+      color: #94a3b8;
+      background: rgba(255, 255, 255, 0.05);
+    }
+    .cfg-btn[hidden] { display: none !important; }
+    /* Separator dot between model and effort buttons */
+    .cfg-sep {
+      width: 3px;
+      height: 3px;
+      border-radius: 50%;
+      background: #334155;
+      flex: 0 0 auto;
+    }
+    .cfg-sep[hidden] { display: none !important; }
+
+    /* Upward popover for model / effort pickers — clones .scope-menu aesthetic. */
+    .cfg-menu {
+      position: absolute;
+      right: 24px;
+      bottom: 74px;
+      min-width: 200px;
+      background: var(--glass-bg);
+      border: 1px solid var(--glass-border);
+      border-radius: 12px;
+      padding: 6px;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+      z-index: 80;
+      display: none;
+    }
+    .cfg-menu.open { display: block; }
+    .cfg-menu-hint {
+      padding: 6px 10px 4px;
+      font-size: 0.68rem;
+      color: #475569;
+    }
+    .cfg-menu-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      color: #e8eefc;
+      cursor: pointer;
+      user-select: none;
+    }
+    .cfg-menu-item:hover { background: rgba(255, 255, 255, 0.06); }
+    .cfg-menu-check { color: #8ab4f8; font-weight: 700; opacity: 0; }
+    .cfg-menu-item.selected .cfg-menu-check { opacity: 1; }
+    /* "applies to next" deferred hint — shows briefly then fades */
+    .cfg-deferred-hint {
+      font-size: 0.68rem;
+      color: #475569;
+      text-align: right;
+      padding: 1px 2px 0;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .cfg-deferred-hint.visible { opacity: 1; }
+
     .chat-input {
       flex: 1;
       min-height: 38px;        /* one-line floor */
@@ -1631,6 +1720,22 @@
           </svg>
         </button>
       </div>
+      <!-- Model + effort config cluster — compact right-aligned row below the
+           composer. Hidden until the server advertises availableModels (hello).
+           The two upward popovers (#model-cfg-menu, #effort-cfg-menu) are
+           anchored to .chat-input-area (position:relative). -->
+      <div id="model-cfg-menu" class="cfg-menu" role="menu" aria-hidden="true">
+        <div class="cfg-menu-hint">Model for new conversations</div>
+      </div>
+      <div id="effort-cfg-menu" class="cfg-menu" role="menu" aria-hidden="true">
+        <div class="cfg-menu-hint">Effort level</div>
+      </div>
+      <div class="composer-config" id="composer-config" hidden>
+        <button type="button" class="cfg-btn" id="model-cfg-btn" aria-label="Change model" aria-haspopup="true">Server default</button>
+        <div class="cfg-sep" id="effort-cfg-sep" hidden></div>
+        <button type="button" class="cfg-btn" id="effort-cfg-btn" aria-label="Change effort" aria-haspopup="true" hidden>—</button>
+        <div class="cfg-deferred-hint" id="cfg-deferred-hint"></div>
+      </div>
     </form>
   </div>
 </div>
@@ -1732,6 +1837,14 @@
       scopeBtn: document.getElementById('scope-btn'),
       scopeMenu: document.getElementById('scope-menu'),
       scopeFullAccess: document.getElementById('scope-full-access'),
+      // Composer config cluster (model + effort switcher).
+      composerConfig:    document.getElementById('composer-config'),
+      modelCfgBtn:       document.getElementById('model-cfg-btn'),
+      modelCfgMenu:      document.getElementById('model-cfg-menu'),
+      effortCfgBtn:      document.getElementById('effort-cfg-btn'),
+      effortCfgMenu:     document.getElementById('effort-cfg-menu'),
+      effortCfgSep:      document.getElementById('effort-cfg-sep'),
+      cfgDeferredHint:   document.getElementById('cfg-deferred-hint'),
     };
 
     /**
@@ -1810,6 +1923,14 @@
       workflowRuns: {},     // { [jobId: string]: WorkflowRunItem[] }
       selectedWorkflowId: null,  // currently-expanded tile id (string|null)
       workflowsPanelOpen: false,
+      // Model + effort switcher (§1 wire contract). effortSelection cap gates
+      // whether the server accepts set-thread-config + computes efforts per model.
+      // Defaults false; `hello` corrects to true when the server supports it.
+      serverSupportsEffort: false,
+      // The operator's persisted effort pick. Null = use server default.
+      // Persisted to localStorage `luna_effort`. Only sent when the chosen
+      // model's `efforts` list includes this value.
+      selectedEffort: null,
       // local-shell: the machine-access scope this client advertises. roots are
       // explicitly attached folders (auto-approve set, may be empty); fullAccess
       // lets Luna run anywhere. enabled = fullAccess || roots.length > 0.
@@ -3113,50 +3234,71 @@
        * re-deliver hello; the rebuild is idempotent.
        */
       applyAvailableModels(frame) {
-        const models = frame && Array.isArray(frame.availableModels) ? frame.availableModels : [];
-        // Cache the id list for the settings.connection PANEL (its window has
-        // no hello of its own at open time; it reads this on render). Written
-        // before the DOM guard so the cache works even after the modal dies.
+        const raw = frame && Array.isArray(frame.availableModels) ? frame.availableModels : [];
+        // Normalize: each entry may be a full object {id, label, efforts} (new
+        // servers) or a plain id string (should not happen, but defensive).
+        const models = raw
+          .filter((m) => m && (typeof m === 'object' ? typeof m.id === 'string' && m.id : false))
+          .map((m) => ({
+            id: m.id,
+            label: typeof m.label === 'string' && m.label ? m.label : m.id,
+            efforts: Array.isArray(m.efforts) ? m.efforts : [],
+          }));
+        // Cache the FULL object list (id + label + efforts) for the
+        // settings.connection PANEL (its window has no hello of its own at open
+        // time; it reads this on render). Back-compat: old panel code that
+        // expects a plain id string array will receive objects — the panel is
+        // updated to handle both shapes (see settings-connection.js).
+        // Written before the DOM guard so the cache works even after the modal.
         try {
-          localStorage.setItem(
-            'luna_available_models',
-            JSON.stringify(models.filter((m) => m && typeof m.id === 'string' && m.id).map((m) => m.id))
-          );
+          localStorage.setItem('luna_available_models', JSON.stringify(models));
         } catch (_) { /* quota/serialization — cosmetic cache only */ }
+        // Update the settings hub model select if present (hub pages only;
+        // absent in the chat window — DOM.modelSelect is undefined here).
         const el = DOM.modelSelect;
-        if (!el) return;
-        const saved = localStorage.getItem('luna_model') || '';
-        // Rebuild from scratch (reconnect-safe): default option first.
-        el.innerHTML = '';
-        const defOpt = document.createElement('option');
-        defOpt.value = '';
-        defOpt.textContent = 'Server default';
-        el.appendChild(defOpt);
-        for (const m of models) {
-          if (!m || typeof m.id !== 'string' || !m.id) continue;
-          const opt = document.createElement('option');
-          opt.value = m.id;
-          opt.textContent = typeof m.label === 'string' && m.label ? m.label : m.id;
-          el.appendChild(opt);
+        if (el) {
+          const saved = localStorage.getItem('luna_model') || '';
+          el.innerHTML = '';
+          const defOpt = document.createElement('option');
+          defOpt.value = '';
+          defOpt.textContent = 'Server default';
+          el.appendChild(defOpt);
+          for (const m of models) {
+            const opt = document.createElement('option');
+            opt.value = m.id;
+            opt.textContent = m.label;
+            el.appendChild(opt);
+          }
+          if (saved && !Array.from(el.options).some((o) => o.value === saved)) {
+            const opt = document.createElement('option');
+            opt.value = saved;
+            opt.textContent = `${saved} (custom)`;
+            el.appendChild(opt);
+          }
+          el.value = saved;
         }
-        if (saved && !Array.from(el.options).some((o) => o.value === saved)) {
-          const opt = document.createElement('option');
-          opt.value = saved;
-          opt.textContent = `${saved} (custom)`;
-          el.appendChild(opt);
-        }
-        el.value = saved;
+        // Refresh the composer config cluster with the new model list.
+        ComposerConfig.applyModels(models);
       },
 
       /**
        * The ONE place a new-thread frame is built: carries the operator's
-       * persisted model pick (settings switcher). Empty/unset ⇒ no `model`
-       * field ⇒ the server's default lane — byte-identical to the pre-switcher
-       * frame, so older servers are unaffected.
+       * persisted model pick (settings switcher) and, when the server supports
+       * effort selection, the persisted effort pick — IF that effort is valid
+       * for the chosen model. Old servers ignore unknown fields (additive).
        */
       sendNewThread() {
         const model = localStorage.getItem('luna_model') || '';
-        this.send(model ? { type: 'new-thread', model } : { type: 'new-thread' });
+        const frame = model ? { type: 'new-thread', model } : { type: 'new-thread' };
+        // Include effort only when: (a) server supports effortSelection cap,
+        // (b) an effort is set, and (c) the effort is valid for the chosen model.
+        if (State.serverSupportsEffort) {
+          const effort = localStorage.getItem('luna_effort') || '';
+          if (effort && ComposerConfig.isEffortValidForCurrentModel(effort)) {
+            frame.effort = effort;
+          }
+        }
+        this.send(frame);
       },
 
       clearTurnTimeout() {
@@ -3290,6 +3432,307 @@
       }
     };
 
+    // ── Composer Config Engine (model + effort switcher) ─────────────────────
+    // Manages the compact right-aligned config cluster below the composer row:
+    // model label button + effort label button, each opening an upward popover.
+    // Logic kept inline (no separate JS file) — same pattern as ArtifactsEngine /
+    // WorkflowsEngine / SurveyEngine above. Exposed via __MoonInternals for tests.
+    //
+    // Available-models list: from applyAvailableModels() (called during hello).
+    // Each entry: { id: string, label: string, efforts: string[] }
+    // Back-compat: the cache may contain old plain-id entries from an older
+    // moon build; the normalisation in applyAvailableModels handles that,
+    // so ComposerConfig always sees full objects.
+    const ComposerConfig = {
+      /** Current normalized model list (full objects). Set by applyModels(). */
+      _models: [],
+
+      /**
+       * Normalize a raw cache entry to { id, label, efforts }.
+       * Handles both the new object shape and legacy plain-id strings.
+       */
+      _normalizeEntry(entry) {
+        if (typeof entry === 'string') return { id: entry, label: entry, efforts: [] };
+        if (entry && typeof entry.id === 'string' && entry.id) {
+          return {
+            id: entry.id,
+            label: typeof entry.label === 'string' && entry.label ? entry.label : entry.id,
+            efforts: Array.isArray(entry.efforts) ? entry.efforts : [],
+          };
+        }
+        return null;
+      },
+
+      /**
+       * Called by applyAvailableModels() after the hello model list is
+       * received. Rebuilds the composer model popover and refreshes labels.
+       */
+      applyModels(models) {
+        this._models = (models || []).map((m) => this._normalizeEntry(m)).filter(Boolean);
+        this._rebuildModelMenu();
+        this._refreshLabels();
+        // Show the cluster only when there are models to choose from.
+        if (DOM.composerConfig) {
+          DOM.composerConfig.hidden = this._models.length === 0;
+        }
+      },
+
+      /**
+       * Capability gate: called after the hello caps are parsed.
+       * When false (older server), hide the effort button and separator.
+       */
+      applyCapability(supportsEffort) {
+        this._refreshEffortVisibility(supportsEffort);
+      },
+
+      /** Find the model object for the currently selected model id. */
+      _currentModelEntry() {
+        const id = localStorage.getItem('luna_model') || '';
+        if (!id) return this._models[0] || null;
+        return this._models.find((m) => m.id === id) || null;
+      },
+
+      /**
+       * True when `effort` is in the current model's efforts list.
+       * Used by sendNewThread to decide whether to include the effort field.
+       */
+      isEffortValidForCurrentModel(effort) {
+        const entry = this._currentModelEntry();
+        return !!(entry && Array.isArray(entry.efforts) && entry.efforts.includes(effort));
+      },
+
+      /** Rebuild the model popover menu items. */
+      _rebuildModelMenu() {
+        const menu = DOM.modelCfgMenu;
+        if (!menu) return;
+        // Keep the hint div (first child), remove the rest.
+        while (menu.children.length > 1) menu.removeChild(menu.lastChild);
+        const current = localStorage.getItem('luna_model') || '';
+        for (const m of this._models) {
+          const item = document.createElement('div');
+          item.className = 'cfg-menu-item' + (m.id === current ? ' selected' : '');
+          item.dataset.modelId = m.id;
+          item.tabIndex = 0;
+          item.setAttribute('role', 'menuitemradio');
+          item.setAttribute('aria-checked', m.id === current ? 'true' : 'false');
+          const label = document.createElement('span');
+          label.textContent = m.label;
+          const check = document.createElement('span');
+          check.className = 'cfg-menu-check';
+          check.setAttribute('aria-hidden', 'true');
+          check.textContent = '✓';
+          item.appendChild(label);
+          item.appendChild(check);
+          item.addEventListener('click', () => this._selectModel(m.id));
+          item.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this._selectModel(m.id); } });
+          menu.appendChild(item);
+        }
+      },
+
+      /** Rebuild the effort popover menu items for the current model. */
+      _rebuildEffortMenu() {
+        const menu = DOM.effortCfgMenu;
+        if (!menu) return;
+        while (menu.children.length > 1) menu.removeChild(menu.lastChild);
+        const entry = this._currentModelEntry();
+        const efforts = (entry && entry.efforts) || [];
+        const current = localStorage.getItem('luna_effort') || '';
+        // "Server default" item (empty effort = omit from frame)
+        const defItem = document.createElement('div');
+        defItem.className = 'cfg-menu-item' + (!current ? ' selected' : '');
+        defItem.dataset.effortId = '';
+        defItem.tabIndex = 0;
+        defItem.setAttribute('role', 'menuitemradio');
+        defItem.setAttribute('aria-checked', !current ? 'true' : 'false');
+        const defLabel = document.createElement('span');
+        defLabel.textContent = 'Default';
+        const defCheck = document.createElement('span');
+        defCheck.className = 'cfg-menu-check';
+        defCheck.setAttribute('aria-hidden', 'true');
+        defCheck.textContent = '✓';
+        defItem.appendChild(defLabel);
+        defItem.appendChild(defCheck);
+        defItem.addEventListener('click', () => this._selectEffort(''));
+        menu.appendChild(defItem);
+        for (const ef of efforts) {
+          const item = document.createElement('div');
+          item.className = 'cfg-menu-item' + (ef === current ? ' selected' : '');
+          item.dataset.effortId = ef;
+          item.tabIndex = 0;
+          item.setAttribute('role', 'menuitemradio');
+          item.setAttribute('aria-checked', ef === current ? 'true' : 'false');
+          const itemLabel = document.createElement('span');
+          // Capitalize the effort label (low → Low, xhigh → Xhigh, max → Max)
+          itemLabel.textContent = ef.charAt(0).toUpperCase() + ef.slice(1);
+          const check = document.createElement('span');
+          check.className = 'cfg-menu-check';
+          check.setAttribute('aria-hidden', 'true');
+          check.textContent = '✓';
+          item.appendChild(itemLabel);
+          item.appendChild(check);
+          item.addEventListener('click', () => this._selectEffort(ef));
+          item.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this._selectEffort(ef); } });
+          menu.appendChild(item);
+        }
+      },
+
+      /** Persist model selection, update labels, send mid-thread config if live. */
+      _selectModel(id) {
+        const prev = localStorage.getItem('luna_model') || '';
+        if (id) {
+          localStorage.setItem('luna_model', id);
+        } else {
+          localStorage.removeItem('luna_model');
+        }
+        // Validate effort for new model; clear if no longer in the new model's list.
+        const entry = this._models.find((m) => m.id === id) || this._models[0] || null;
+        const savedEffort = localStorage.getItem('luna_effort') || '';
+        if (savedEffort && entry && !entry.efforts.includes(savedEffort)) {
+          localStorage.removeItem('luna_effort');
+          State.selectedEffort = null;
+        }
+        this._rebuildModelMenu();
+        this._rebuildEffortMenu();
+        this._refreshLabels();
+        this.closeAllMenus();
+        // Mid-thread: if there's an active thread, send set-thread-config.
+        if (State.activeThreadId && State.serverSupportsEffort && id !== prev) {
+          WebSocketEngine.send({
+            type: 'set-thread-config',
+            threadId: State.activeThreadId,
+            model: id || undefined,
+          });
+        }
+      },
+
+      /** Persist effort selection, update labels, send mid-thread config if live. */
+      _selectEffort(effort) {
+        const prev = localStorage.getItem('luna_effort') || '';
+        if (effort) {
+          localStorage.setItem('luna_effort', effort);
+          State.selectedEffort = effort;
+        } else {
+          localStorage.removeItem('luna_effort');
+          State.selectedEffort = null;
+        }
+        this._rebuildEffortMenu();
+        this._refreshLabels();
+        this.closeAllMenus();
+        // Mid-thread: if there's an active thread and cap on, send set-thread-config.
+        if (State.activeThreadId && State.serverSupportsEffort && effort !== prev) {
+          WebSocketEngine.send({
+            type: 'set-thread-config',
+            threadId: State.activeThreadId,
+            effort: effort || undefined,
+          });
+        }
+      },
+
+      /** Update the visible button labels from current localStorage picks. */
+      _refreshLabels() {
+        const modelId = localStorage.getItem('luna_model') || '';
+        const entry = this._models.find((m) => m.id === modelId) || this._models[0] || null;
+        if (DOM.modelCfgBtn) {
+          DOM.modelCfgBtn.textContent = entry ? entry.label : 'Server default';
+        }
+        const effort = localStorage.getItem('luna_effort') || '';
+        if (DOM.effortCfgBtn) {
+          DOM.effortCfgBtn.textContent = effort
+            ? effort.charAt(0).toUpperCase() + effort.slice(1)
+            : 'Default';
+        }
+      },
+
+      /** Show/hide the effort button + separator based on capability and model efforts. */
+      _refreshEffortVisibility(supportsEffort) {
+        const supEff = supportsEffort !== undefined ? supportsEffort : State.serverSupportsEffort;
+        const entry = this._currentModelEntry();
+        const hasEfforts = !!(entry && entry.efforts && entry.efforts.length > 0);
+        const visible = supEff && hasEfforts;
+        if (DOM.effortCfgBtn) DOM.effortCfgBtn.hidden = !visible;
+        if (DOM.effortCfgSep) DOM.effortCfgSep.hidden = !visible;
+      },
+
+      /** Close all config popover menus. */
+      closeAllMenus() {
+        if (DOM.modelCfgMenu) { DOM.modelCfgMenu.classList.remove('open'); DOM.modelCfgMenu.setAttribute('aria-hidden', 'true'); }
+        if (DOM.effortCfgMenu) { DOM.effortCfgMenu.classList.remove('open'); DOM.effortCfgMenu.setAttribute('aria-hidden', 'true'); }
+        if (DOM.modelCfgBtn) DOM.modelCfgBtn.setAttribute('aria-expanded', 'false');
+        if (DOM.effortCfgBtn) DOM.effortCfgBtn.setAttribute('aria-expanded', 'false');
+      },
+
+      /**
+       * Reconcile a `thread-config` server ack. Called by the MoonFrames
+       * handler. `applied` confirms picks; `deferred` triggers a subtle hint;
+       * `rejected` reverts labels.
+       */
+      reconcileThreadConfig(frame) {
+        if (!frame) return;
+        const applied = Array.isArray(frame.applied) ? frame.applied : [];
+        const deferred = Array.isArray(frame.deferred) ? frame.deferred : [];
+        const rejected = Array.isArray(frame.rejected) ? frame.rejected : [];
+        if (deferred.length > 0 && DOM.cfgDeferredHint) {
+          const fields = deferred.join(' & ');
+          DOM.cfgDeferredHint.textContent = `${fields} applies to next message`;
+          DOM.cfgDeferredHint.classList.add('visible');
+          clearTimeout(this._deferredHintTimer);
+          this._deferredHintTimer = setTimeout(() => {
+            if (DOM.cfgDeferredHint) DOM.cfgDeferredHint.classList.remove('visible');
+          }, 4000);
+        }
+        for (const r of rejected) {
+          // Revert the rejected field to prior value.
+          if (r && r.field === 'model') {
+            // Restore server-acked model if we have it; otherwise keep current.
+            this._refreshLabels();
+          }
+          if (r && r.field === 'effort') {
+            this._refreshLabels();
+          }
+        }
+        // applied fields are already reflected in localStorage — nothing to do.
+        void applied;
+      },
+
+      /** Bootstrap: read persisted effort from localStorage into State. */
+      init() {
+        const saved = localStorage.getItem('luna_effort') || '';
+        State.selectedEffort = saved || null;
+        // Wire button click handlers (idempotent: buttons exist at boot time).
+        if (DOM.modelCfgBtn) {
+          DOM.modelCfgBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const open = DOM.modelCfgMenu && DOM.modelCfgMenu.classList.contains('open');
+            this.closeAllMenus();
+            if (!open && DOM.modelCfgMenu) {
+              this._rebuildModelMenu();
+              DOM.modelCfgMenu.classList.add('open');
+              DOM.modelCfgMenu.setAttribute('aria-hidden', 'false');
+              DOM.modelCfgBtn.setAttribute('aria-expanded', 'true');
+            }
+          });
+        }
+        if (DOM.effortCfgBtn) {
+          DOM.effortCfgBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const open = DOM.effortCfgMenu && DOM.effortCfgMenu.classList.contains('open');
+            this.closeAllMenus();
+            if (!open && DOM.effortCfgMenu) {
+              this._rebuildEffortMenu();
+              DOM.effortCfgMenu.classList.add('open');
+              DOM.effortCfgMenu.setAttribute('aria-hidden', 'false');
+              DOM.effortCfgBtn.setAttribute('aria-expanded', 'true');
+            }
+          });
+        }
+        // Close menus on outside click.
+        document.addEventListener('click', () => this.closeAllMenus());
+      },
+    };
+
+    // Bootstrap ComposerConfig as soon as the const is defined.
+    ComposerConfig.init();
+
     // ── UI-WS frame handlers ──────────────────────────────────────────────
     // The former handleFrame switch, case by case, on the shared registry
     // (vendor/moon-ws.js). Bodies are verbatim; `this` became
@@ -3329,6 +3772,11 @@
       // PRD Part C W3: additive gating for the Workflows gallery.
       State.serverSupportsWorkflows = caps.workflows;
       WorkflowsEngine.applyCapability(State.serverSupportsWorkflows);
+      // Model + effort switcher: server advertises effort selection support.
+      // applyAvailableModels (called above) has already refreshed the model
+      // list in ComposerConfig; now apply the effort capability gate.
+      State.serverSupportsEffort = caps.effortSelection;
+      ComposerConfig.applyCapability(State.serverSupportsEffort);
       // (skills/connectors/vault capability gating + the widget-directory
       // announce are HUB concerns — the launchers and panels live there.)
     });
@@ -3362,6 +3810,12 @@
     MoonFrames.register('workflow-runs', (frame) => {
       // Run history for a specific workflow job.
       WorkflowsEngine.applyRuns(frame.jobId, frame.runs || []);
+    });
+
+    MoonFrames.register('thread-config', (frame) => {
+      // Server ack for a set-thread-config client frame. Reconcile applied /
+      // deferred / rejected fields in the composer config cluster.
+      ComposerConfig.reconcileThreadConfig(frame);
     });
 
     MoonFrames.register('thread-list', (frame) => {
@@ -5623,6 +6077,7 @@
       window.__MoonInternals.WorkflowsEngine = WorkflowsEngine;
       window.__MoonInternals.SecretPromptEngine = SecretPromptEngine;
       window.__MoonInternals.buildSurveyVerdicts = buildSurveyVerdicts;
+      window.__MoonInternals.ComposerConfig = ComposerConfig;
       window.__MoonInternals.WebSocketEngine = WebSocketEngine;
       window.__MoonInternals.State = State;
       window.__MoonInternals.ChatState = ChatState;

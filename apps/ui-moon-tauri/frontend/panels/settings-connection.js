@@ -120,21 +120,36 @@
       defOpt.textContent = 'Server default';
       modelSelect.appendChild(defOpt);
 
-      // Populate from locally-cached available models list (array of id strings).
+      // Populate from locally-cached available models list.
+      // Back-compat: old cache = array of id strings; new cache = array of
+      // {id, label, efforts} objects (written by applyAvailableModels in chat.html).
       var availableModels = [];
       try {
         var raw = localStorage.getItem('luna_available_models');
         if (raw) availableModels = JSON.parse(raw);
       } catch (_) { /* malformed — ignore */ }
+      // Normalize: accept both string and object entries.
+      var normalizedModels = [];
       if (Array.isArray(availableModels)) {
-        availableModels.forEach(function (id) {
-          if (!id || typeof id !== 'string') return;
-          var opt = document.createElement('option');
-          opt.value = id;
-          opt.textContent = id;
-          modelSelect.appendChild(opt);
+        availableModels.forEach(function (entry) {
+          if (!entry) return;
+          if (typeof entry === 'string' && entry) {
+            normalizedModels.push({ id: entry, label: entry, efforts: [] });
+          } else if (typeof entry === 'object' && typeof entry.id === 'string' && entry.id) {
+            normalizedModels.push({
+              id: entry.id,
+              label: (typeof entry.label === 'string' && entry.label) ? entry.label : entry.id,
+              efforts: Array.isArray(entry.efforts) ? entry.efforts : [],
+            });
+          }
         });
       }
+      normalizedModels.forEach(function (m) {
+        var opt = document.createElement('option');
+        opt.value = m.id;
+        opt.textContent = m.label;
+        modelSelect.appendChild(opt);
+      });
       // Restore persisted selection (keep even if not in list).
       var savedModel = localStorage.getItem('luna_model') || '';
       if (savedModel && !Array.from(modelSelect.options).some(function (o) { return o.value === savedModel; })) {
@@ -148,6 +163,39 @@
       modelRow.appendChild(modelInfo);
       modelRow.appendChild(modelSelect);
       el.appendChild(modelRow);
+
+      // ── Effort select ─────────────────────────────────────────────────────
+      // Only shown when the selected model has efforts in the extended cache.
+      // Hidden when legacy cache (no efforts) or no model selected.
+
+      var selectedModelEntry = normalizedModels.find(function (m) { return m.id === savedModel; }) || null;
+      var initialEfforts = (selectedModelEntry && selectedModelEntry.efforts) || [];
+
+      var effortRow = splitRow();
+      effortRow.id = 'effort-row';
+      effortRow.hidden = initialEfforts.length === 0;
+      var effortInfo = document.createElement('div');
+      effortInfo.style.cssText = 'display:flex;flex-direction:column;gap:2px;flex:1;';
+      effortInfo.appendChild(makeLabel('Effort'));
+      effortInfo.appendChild(makeDesc('Thinking effort for the selected model'));
+
+      var effortSelect = makeSelect('effort-select');
+      var effortDefOpt = document.createElement('option');
+      effortDefOpt.value = '';
+      effortDefOpt.textContent = 'Default';
+      effortSelect.appendChild(effortDefOpt);
+      initialEfforts.forEach(function (ef) {
+        var opt = document.createElement('option');
+        opt.value = ef;
+        opt.textContent = ef.charAt(0).toUpperCase() + ef.slice(1);
+        effortSelect.appendChild(opt);
+      });
+      var savedEffort = localStorage.getItem('luna_effort') || '';
+      effortSelect.value = savedEffort;
+
+      effortRow.appendChild(effortInfo);
+      effortRow.appendChild(effortSelect);
+      el.appendChild(effortRow);
 
       // ── WS URL input ─────────────────────────────────────────────────────
 
@@ -267,6 +315,36 @@
           localStorage.setItem('luna_model', v);
         } else {
           localStorage.removeItem('luna_model');
+        }
+        // Update effort select for the newly selected model.
+        var entry = normalizedModels.find(function (m) { return m.id === v; }) || null;
+        var efforts = (entry && entry.efforts) || [];
+        var effortRowEl = document.getElementById('effort-row');
+        if (effortRowEl) effortRowEl.hidden = efforts.length === 0;
+        // Rebuild effort options.
+        while (effortSelect.children.length > 1) effortSelect.removeChild(effortSelect.lastChild);
+        efforts.forEach(function (ef) {
+          var opt = document.createElement('option');
+          opt.value = ef;
+          opt.textContent = ef.charAt(0).toUpperCase() + ef.slice(1);
+          effortSelect.appendChild(opt);
+        });
+        // Keep saved effort if still valid, else reset.
+        var curEffort = localStorage.getItem('luna_effort') || '';
+        if (curEffort && efforts.indexOf(curEffort) === -1) {
+          localStorage.removeItem('luna_effort');
+          effortSelect.value = '';
+        } else {
+          effortSelect.value = curEffort;
+        }
+      });
+
+      effortSelect.addEventListener('change', function () {
+        var v = effortSelect.value;
+        if (v) {
+          localStorage.setItem('luna_effort', v);
+        } else {
+          localStorage.removeItem('luna_effort');
         }
       });
 

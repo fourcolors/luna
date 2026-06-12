@@ -30,6 +30,9 @@
       workflows: !!c.workflows,
       vault: !!c.vault,
       mcpApps: !!c.mcpApps,
+      // model+effort switcher (§1 wire contract): server advertises effort
+      // selection support via this capability; absent on older servers → false.
+      effortSelection: !!c.effortSelection,
     };
   }
 
