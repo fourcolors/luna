@@ -5272,6 +5272,8 @@
         }
         node.appendChild(body);
         // Always-visible action row: copy + relative send-time (skip image-only).
+        // NOTE: meta rows attach ONLY here and in _paintText — keep the two in
+        // sync (banners/errors/typing/timelines intentionally have none).
         if (text) node.appendChild(buildMessageMeta(text, w.turn.ts));
       },
 
@@ -5317,6 +5319,7 @@
         // Settled answers get the action row (copy + send-time). Gated on
         // `done` so a still-streaming bubble doesn't sprout (and re-sprout,
         // every coalesced frame) the row — it appears when the text is final.
+        // The other (and only other) meta-row attach point is _paintUser.
         if (seg.done && seg.raw) node.appendChild(buildMessageMeta(seg.raw, w.turn.ts));
       },
 
