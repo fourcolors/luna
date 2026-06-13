@@ -144,7 +144,11 @@
        --moon-bright→--accent blend the old orb used, so it re-themes across
        every palette), faint craters, blinking eyes, a soft smile. Reacts to
        connection / thinking / voice / suggesting via [data-state], set by the
-       MoonFace controller. All motion is compositor-only transform/opacity. ── */
+       MoonFace controller. Continuous motion is transform/opacity ONLY; the
+       soft drop-shadow "glow" is a static rest filter that TRANSITIONS (not
+       loops) between states, and the listening breath is an opacity/scale glow
+       layer (::before) — so nothing re-rasters a filter every frame (which is
+       costly in WKWebView). ── */
     .luna-face {
       width: 38px;
       height: 38px;
@@ -155,6 +159,20 @@
       transition: filter 0.5s ease, opacity 0.5s ease;
     }
     .luna-face-svg { width: 100%; height: 100%; display: block; overflow: visible; }
+
+    /* Listening "breath" glow — a cheap radial gradient (no filter) painted
+       BEHIND the moon (::before is the first pseudo-child, so it sits under the
+       in-flow <svg>) that pulses via opacity/scale. Compositor-only, so it
+       replaces the old animated drop-shadow which re-rastered each frame. */
+    .luna-face::before {
+      content: '';
+      position: absolute;
+      inset: -30%;
+      border-radius: 50%;
+      background: radial-gradient(circle, color-mix(in oklab, var(--accent) 45%, transparent) 0%, transparent 72%);
+      opacity: 0;
+      pointer-events: none;
+    }
 
     .luna-bob {
       transform-box: fill-box;
@@ -220,12 +238,13 @@
       100% { opacity: 0;   transform: rotate(120deg) scale(1); }
     }
 
-    /* listening (voice) — wide eyes, breathing glow. */
+    /* listening (voice) — wide eyes + a breathing glow on the ::before layer
+       (opacity/scale, NOT an animated filter). */
     .luna-face[data-state="listening"] .luna-eye { animation: none; transform: scale(1.18); }
-    .luna-face[data-state="listening"]           { animation: luna-listen-glow 2.2s ease-in-out infinite; }
-    @keyframes luna-listen-glow {
-      0%,100% { filter: drop-shadow(0 0 6px color-mix(in oklab, var(--accent) 45%, transparent)); }
-      50%     { filter: drop-shadow(0 0 13px color-mix(in oklab, var(--accent) 75%, transparent)); }
+    .luna-face[data-state="listening"]::before   { animation: luna-listen-pulse 2.2s ease-in-out infinite; }
+    @keyframes luna-listen-pulse {
+      0%, 100% { opacity: 0.4; transform: scale(0.9); }
+      50%      { opacity: 0.8; transform: scale(1.12); }
     }
 
     /* speaking — mouth chatters. */
@@ -258,7 +277,7 @@
 
     @media (prefers-reduced-motion: reduce) {
       .luna-bob, .luna-eye, .luna-mouth-o, .luna-sparkle,
-      .luna-face[data-state],          /* face-level glow, e.g. luna-listen-glow */
+      .luna-face[data-state="listening"]::before,   /* listening breath glow */
       .luna-face[data-state] .luna-bob,
       .luna-face[data-state] .luna-mouth-o,
       .luna-face[data-state] .luna-sparkle { animation: none !important; }
