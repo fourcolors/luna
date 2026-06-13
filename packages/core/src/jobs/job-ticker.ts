@@ -344,6 +344,12 @@ export const JobTickerLayer = (
                 job.spec,
               )}); disabled it to stop the every-tick re-fire`,
             )
+            // claim() set last_status='running'; this row will NOT run, so clear
+            // that marker — otherwise a UI/gallery reading jobs.last_status shows
+            // a disabled, quarantined schedule as perpetually 'running'.
+            yield* store
+              .touch(job.id, { lastStatus: "errored" })
+              .pipe(Effect.catchAll(() => Effect.void))
             continue
           }
 
@@ -363,7 +369,13 @@ export const JobTickerLayer = (
               }),
             ),
           )
-          if (!run) continue
+          if (!run) {
+            // Claimed but no run row — don't leave it stuck 'running'.
+            yield* store
+              .touch(job.id, { lastStatus: "errored" })
+              .pipe(Effect.catchAll(() => Effect.void))
+            continue
+          }
 
           // Worker absent — close the run as failed.
           if (!worker) {
@@ -403,6 +415,20 @@ export const JobTickerLayer = (
                   }),
                 duration: Duration.millis(workerDeadlineMs),
               }),
+              // Convert an uncaught worker DEFECT (a synchronous throw /
+              // Effect.die — e.g. JSON.parse on a malformed payload) into a
+              // typed failure. Otherwise it escapes the for-loop, leaving this
+              // run stuck `running` and skipping every remaining due job this
+              // tick. `Effect.either` only traps the typed E channel, not defects.
+              Effect.catchAllDefect((defect) =>
+                Effect.fail(
+                  new WorkerError({
+                    reason: "defect",
+                    kind: job.kind,
+                    message: `worker for kind "${job.kind}" raised an unexpected defect: ${String(defect)}`,
+                  }),
+                ),
+              ),
               Effect.either,
             )
 

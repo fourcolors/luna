@@ -1660,11 +1660,11 @@ export const buildBaseLayer = (
   )
 
   // JobsStoreService: SQLite-backed `jobs` table (DESIGN.md §5.1) in luna.db.
-  // Required by SchedulerToolsLayer so cron schedules registered via
-  // mcp__scheduler__schedule_create survive chat-server restarts — at next
-  // boot the layer reads every row and re-registers the trigger into a
-  // fresh TriggerAgent. LunaSqliteBootstrap satisfied at the bottom of
-  // buildServerLayer, same pattern as agent-notes / workspaces.
+  // Required by SchedulerToolsLayer: a schedule created via
+  // mcp__scheduler__schedule_create is a durable `jobs` row, and the V2
+  // JobTicker reads it via listDue every tick — so a chat-server restart is a
+  // zero-tick gap with nothing to re-register. LunaSqliteBootstrap satisfied at
+  // the bottom of buildServerLayer, same pattern as agent-notes / workspaces.
   const jobsStoreL = JobsStoreService.makeLayer(paths.lunaDbPath).pipe(
     Layer.provide(clockL),
   )

@@ -252,6 +252,41 @@ describe("scheduler tools — V2", () => {
     expect(result.sys.cancelled).toBe(false)
   })
 
+  it("schedule_list/cancel handle LEGACY kind:'cron' scheduler rows (upgrade continuity)", async () => {
+    const result = await Effect.runPromise(
+      withScheduler(
+        Effect.gen(function* () {
+          const jobsStore = yield* JobsStoreService
+          const [, listTool, cancelTool] = makeSchedulerTools(jobsStore)
+          // A legacy V1 row as the old scheduler-tools persisted it (kind:"cron").
+          yield* jobsStore.record({
+            id: "trigger-legacy-1",
+            kind: "cron",
+            spec: "0 9 * * 1",
+            payload: { label: "old", source: "scheduler-tools" },
+          })
+          yield* jobsStore.setV2Fields("trigger-legacy-1", { enabled: false })
+          const listed = parseTextResult<{
+            triggers: Array<{ triggerId: string; expr: string | null; cancellable: boolean }>
+          }>((yield* Effect.promise(() => listTool.handler({}, undefined))) as ToolCallResult)
+          const cancelled = parseTextResult<{ cancelled: boolean }>(
+            (yield* Effect.promise(() =>
+              cancelTool.handler({ triggerId: "trigger-legacy-1" }, undefined),
+            )) as ToolCallResult,
+          )
+          const gone = yield* jobsStore.getById("trigger-legacy-1")
+          return { listed, cancelled, gone }
+        }),
+      ),
+    )
+    const entry = result.listed.triggers.find((t) => t.triggerId === "trigger-legacy-1")
+    expect(entry).toBeDefined() // visible, not stranded
+    expect(entry?.expr).toBe("0 9 * * 1")
+    expect(entry?.cancellable).toBe(true)
+    expect(result.cancelled.cancelled).toBe(true) // and removable
+    expect(result.gone).toBeNull()
+  })
+
   it("schedule_list reports each agent schedule's enabled flag (quarantined → enabled:false)", async () => {
     const result = await Effect.runPromise(
       withScheduler(

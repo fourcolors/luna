@@ -456,6 +456,38 @@ describe("JobTicker", () => {
     )
   })
 
+  it("a worker DEFECT is recorded as failed and does NOT abort the rest of the tick", async () => {
+    let okRan = false
+    const worker: Worker = (_p, ctx) =>
+      ctx.jobId === "boom"
+        ? // synchronous throw INSIDE the effect → a defect, not a typed WorkerError
+          Effect.sync(() => {
+            throw new Error("kaboom-defect")
+          })
+        : Effect.sync(() => {
+            okRan = true
+            return { outputText: "ok" }
+          })
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const ticker = yield* JobTicker
+      yield* store.record({ id: "boom", kind: "wake", spec: "0 0 * * *", payload: { label: "b" } })
+      yield* store.setV2Fields("boom", { schedule: "0 0 * * *", nextRunAt: 0 })
+      yield* store.record({ id: "ok", kind: "wake", spec: "0 0 * * *", payload: { label: "o" } })
+      yield* store.setV2Fields("ok", { schedule: "0 0 * * *", nextRunAt: 0 })
+
+      const s = yield* ticker.drain
+      // The defect was caught (failed=1), the other due job still ran.
+      expect(s.failed).toBe(1)
+      expect(s.succeeded).toBe(1)
+      expect(okRan).toBe(true)
+      const runs = yield* store.listRuns("boom", 1)
+      expect(runs[0]?.status).toBe("failed")
+      expect(runs[0]?.error ?? "").toMatch(/defect/i)
+    })
+    await Effect.runPromise(prog.pipe(Effect.provide(buildStack({ wake: worker }))))
+  })
+
   it("bounds a hung worker by the deadline and still processes the other due jobs", async () => {
     // One worker fn for kind "wake": hangs forever for "hang", succeeds otherwise.
     const worker: Worker = (_p, ctx) =>
@@ -594,6 +626,8 @@ describe("JobTicker", () => {
       expect(runs).toBe(0)
       const after = yield* store.getById("nomatch")
       expect(after?.enabled).toBe(false)
+      // Not left stuck 'running' from the claim (it never ran).
+      expect(after?.lastStatus).not.toBe("running")
     })
     await Effect.runPromise(
       prog.pipe(Effect.provide(buildStack({ wake: counting }))),

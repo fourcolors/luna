@@ -213,7 +213,13 @@ export const makeSchedulerTools = (
           )
         const agentEntries = rows
           .filter(
-            (r) => r.kind === "prompt" && r.payload.source === "scheduler-tools",
+            // kind:"prompt" = current V2 schedules; kind:"cron" = LEGACY rows
+            // persisted by the old V1 scheduler-tools (now no-ops). Surface both
+            // so post-upgrade legacy schedules stay visible + cancellable rather
+            // than stranded invisibly in the jobs table.
+            (r) =>
+              (r.kind === "prompt" || r.kind === "cron") &&
+              r.payload.source === "scheduler-tools",
           )
           .map((r) => ({
             triggerId: r.id,
@@ -268,7 +274,7 @@ export const makeSchedulerTools = (
           )
         if (
           !row ||
-          row.kind !== "prompt" ||
+          (row.kind !== "prompt" && row.kind !== "cron") ||
           row.payload.source !== "scheduler-tools"
         ) {
           return { cancelled: false } as const
