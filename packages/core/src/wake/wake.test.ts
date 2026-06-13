@@ -5,6 +5,8 @@ import { FakeWakeReasoner } from "./reasoner.js"
 import { WakeLogStore } from "./wake-log-store.js"
 import { WakeReasoner } from "./reasoner.js"
 import { WakeError } from "./types.js"
+import { AgentNotesService } from "../agent-notes/agent-notes.js"
+import { Clock } from "../clock.js"
 import type { WakeDigest } from "./types.js"
 import { tmpdir } from "node:os"
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"
@@ -62,6 +64,12 @@ function makeTempWorkspace(opts: {
   }
 }
 
+// runWake mirrors every wake event into agent notes, so it requires
+// AgentNotesService. Provide its in-memory layer to every run; without it the
+// Effect dies with "Service not found: luna/AgentNotesService" — a failure only
+// surfaced at runtime because *.test.ts is excluded from `tsc` (tsconfig.json).
+const AgentNotesL = AgentNotesService.Memory.pipe(Layer.provide(Clock.Default))
+
 describe("runWake", () => {
   it("writes a success row when the reasoner picks an action", async () => {
     const { path, cleanup } = makeTempWorkspace({
@@ -76,9 +84,10 @@ describe("runWake", () => {
         pickedReason: "highest priority + actionable",
         proposedActions: [],
       }
-      const layer = Layer.merge(
+      const layer = Layer.mergeAll(
         FakeWakeReasoner.of(digest),
         WakeLogStore.Memory,
+        AgentNotesL,
       )
       const rows = await Effect.runPromise(
         Effect.gen(function* () {
@@ -111,9 +120,10 @@ describe("runWake", () => {
         pickedReason: "nothing actionable",
         proposedActions: [],
       }
-      const layer = Layer.merge(
+      const layer = Layer.mergeAll(
         FakeWakeReasoner.of(digest),
         WakeLogStore.Memory,
+        AgentNotesL,
       )
       const rows = await Effect.runPromise(
         Effect.gen(function* () {
@@ -145,7 +155,11 @@ describe("runWake", () => {
             }),
           ),
       })
-      const layer = Layer.merge(failingReasoner, WakeLogStore.Memory)
+      const layer = Layer.mergeAll(
+        failingReasoner,
+        WakeLogStore.Memory,
+        AgentNotesL,
+      )
       const rows = await Effect.runPromise(
         Effect.gen(function* () {
           yield* runWake(3_000, {
@@ -177,9 +191,10 @@ describe("runWake", () => {
       pickedReason: "",
       proposedActions: [],
     }
-    const layer = Layer.merge(
+    const layer = Layer.mergeAll(
       FakeWakeReasoner.of(digest),
       WakeLogStore.Memory,
+      AgentNotesL,
     )
     const rows = await Effect.runPromise(
       Effect.gen(function* () {
@@ -221,7 +236,11 @@ describe("runWake", () => {
             }
           }),
       })
-      const layer = Layer.merge(capturingReasoner, WakeLogStore.Memory)
+      const layer = Layer.mergeAll(
+        capturingReasoner,
+        WakeLogStore.Memory,
+        AgentNotesL,
+      )
       await Effect.runPromise(
         runWake(5_000, {
           workspaceSlug: "luna",
