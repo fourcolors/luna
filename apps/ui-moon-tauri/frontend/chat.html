@@ -4554,6 +4554,22 @@
         if (!a) return;
         e.preventDefault();
         const href = a.getAttribute('href') || '';
+        // luna://artifact/<id> → reopen a pinned artifact in its own widget
+        // window. The title comes from the client's pinned-artifact cache
+        // (populated by the artifact-list frame); open_artifact_widget tolerates
+        // an empty/unknown title and renders by id, so an uncached id still opens.
+        const artMatch = /^luna:\/\/artifact\/([^?\s]+)$/i.exec(href);
+        if (artMatch) {
+          const id = decodeURIComponent(artMatch[1]);
+          const known = State.pinnedArtifacts.find((p) => p.id === id);
+          if (window.__TAURI__ && window.__TAURI__.core) {
+            window.__TAURI__.core.invoke('open_artifact_widget', {
+              artifactId: id,
+              title: (known && known.title) || '',
+            }).catch((err) => Logger.warn('luna-link artifact open failed:', err));
+          }
+          return;
+        }
         const m = /^luna:\/\/widget\/([a-z0-9.]+)(?:\?(.*))?$/i.exec(href);
         if (!m) return;
         const args = { kind: m[1] };
@@ -6566,8 +6582,20 @@
       }
       const a = e.target.closest && e.target.closest('a[href]');
       if (!a) return;
+      // luna:// widget/artifact links are owned by the delegated handler above
+      // (open_widget / open_artifact_widget). Leave them to it.
+      if (a.hasAttribute('data-luna-link')) return;
       e.preventDefault();
-      try { window.open(a.href, '_blank', 'noopener'); } catch (_) { /* inert link; UI preserved */ }
+      // In a Tauri webview window.open() can't reach the system browser, so
+      // route through the native opener (https + mailto only, enforced in Rust).
+      // Outside Tauri (dev-in-a-browser) window.open is still the right fallback.
+      const url = a.href;
+      if (window.__TAURI__ && window.__TAURI__.core) {
+        window.__TAURI__.core.invoke('open_external_url', { url })
+          .catch((err) => Logger.warn('open link failed:', err));
+      } else {
+        try { window.open(url, '_blank', 'noopener'); } catch (_) { /* inert link; UI preserved */ }
+      }
     });
 
     // ---- Attachment composer wiring ----

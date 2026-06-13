@@ -3351,7 +3351,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'agents', params: { thread: 'thr-1' } })
     })
 
-    it('a non-luna markdown link is NOT tagged and does not trigger open_widget', () => {
+    it('a non-luna markdown link is NOT tagged and routes to open_external_url (not open_widget)', () => {
       const invoke = vi.fn().mockResolvedValue(undefined)
       ;(window as any).__TAURI__.core = { invoke }
       const chat = document.getElementById('chat-messages')!
@@ -3359,8 +3359,55 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       bubble.innerHTML = M().renderMarkdown('[docs](https://example.com)')
       chat.appendChild(bubble)
       expect(chat.querySelector('a[data-luna-link]')).toBeNull()
-      ;(chat.querySelector('a') as HTMLAnchorElement).click()
-      expect(invoke).not.toHaveBeenCalled()
+      const a = chat.querySelector('a') as HTMLAnchorElement
+      a.click()
+      expect(invoke).not.toHaveBeenCalledWith('open_widget', expect.anything())
+      expect(invoke).toHaveBeenCalledWith('open_external_url', { url: a.href })
+    })
+
+    it('an external https link opens the system browser via open_external_url', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      const chat = document.getElementById('chat-messages')!
+      const bubble = document.createElement('div')
+      bubble.innerHTML = M().renderMarkdown('[PR #123](https://github.com/fourcolors/luna/pull/123)')
+      chat.appendChild(bubble)
+      const a = chat.querySelector('a[href]') as HTMLAnchorElement
+      expect(a).not.toBeNull()
+      a.click()
+      expect(invoke).toHaveBeenCalledWith('open_external_url', { url: a.href })
+    })
+
+    it('a luna://artifact/<id> link reopens the pinned artifact via open_artifact_widget (title from cache)', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      M().State.pinnedArtifacts = [{ id: 'widget:pr-tracker', title: 'PR Tracker', kind: 'widget' }]
+      const chat = document.getElementById('chat-messages')!
+      const bubble = document.createElement('div')
+      bubble.innerHTML = M().renderMarkdown('[reopen the tracker](luna://artifact/widget:pr-tracker)')
+      chat.appendChild(bubble)
+      const a = chat.querySelector('a[data-luna-link]') as HTMLAnchorElement
+      expect(a).not.toBeNull()
+      a.click()
+      expect(invoke).toHaveBeenCalledWith('open_artifact_widget', {
+        artifactId: 'widget:pr-tracker',
+        title: 'PR Tracker',
+      })
+    })
+
+    it('a luna://artifact/<id> link still opens (empty title) when the id is not in the pinned cache', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      M().State.pinnedArtifacts = []
+      const chat = document.getElementById('chat-messages')!
+      const bubble = document.createElement('div')
+      bubble.innerHTML = M().renderMarkdown('[reopen](luna://artifact/widget:unknown)')
+      chat.appendChild(bubble)
+      ;(chat.querySelector('a[data-luna-link]') as HTMLAnchorElement).click()
+      expect(invoke).toHaveBeenCalledWith('open_artifact_widget', {
+        artifactId: 'widget:unknown',
+        title: '',
+      })
     })
   })
 })

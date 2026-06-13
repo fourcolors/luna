@@ -795,17 +795,20 @@ fn oauth_loopback_cancel(state: tauri::State<'_, OauthLoopback>) {
     }
 }
 
-/// Open a URL in the system browser. https-only by design: this exists for
-/// OAuth consent pages; it must not become a general shell-open primitive.
+/// Open a URL in the user's default handler. Allows only https:// (web links,
+/// OAuth consent) and mailto: (compose in the mail client). Everything else —
+/// http://, file://, javascript:, custom schemes — is refused so that
+/// agent-authored prose can never open an arbitrary handler. This must not
+/// become a general shell-open primitive.
 #[tauri::command]
 fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    if !url.starts_with("https://") {
-        return Err("only https:// URLs can be opened".into());
+    if !(url.starts_with("https://") || url.starts_with("mailto:")) {
+        return Err("only https:// or mailto: URLs can be opened".into());
     }
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .open_url(url, None::<String>)
-        .map_err(|e| format!("could not open the browser: {e}"))
+        .map_err(|e| format!("could not open the link: {e}"))
 }
 
 // ── the deck: artifact widget windows (PRD Part C / W2) ──────────────────────
