@@ -696,15 +696,27 @@ describe("ChatService (Tier-2 sim)", () => {
       )
       expect(capturedOptions).toBeDefined()
       expect(capturedOptions!["settingSources"]).toEqual([])
-      // "Task" is the ONE built-in kept: the subagent spawn tool. An explicit
-      // tools array still removes every other Claude Code built-in.
-      expect(capturedOptions!["tools"]).toEqual(["Task"])
+      // Luna grants the research/fix built-ins (web, filesystem, shell) plus
+      // "Task" (subagent spawn). These route through the canUseTool safety rail
+      // installed in chat-server. TodoWrite et al. stay removed.
+      expect(capturedOptions!["tools"]).toEqual([
+        "Task",
+        "WebFetch",
+        "WebSearch",
+        "Read",
+        "Edit",
+        "Write",
+        "Grep",
+        "Glob",
+      ])
       expect(capturedOptions!["allowedTools"]).toEqual([
         "mcp__memory__*",
         "mcp__scheduler__*",
         "mcp__observability__*",
         "mcp__local_shell__*",
         "mcp__secret_tools__*",
+        "mcp__skill_tools__*",
+        "mcp__widget_tools__*",
         "Task",
       ])
       expect(capturedOptions!["strictMcpConfig"]).toBe(true)
@@ -716,7 +728,7 @@ describe("ChatService (Tier-2 sim)", () => {
   )
 
   it(
-    "programmatic MCP servers stay available while Claude Code built-ins are removed",
+    "programmatic MCP servers stay available alongside the research/fix built-ins",
     async () => {
       const mcpServers = {
         memory: { type: "sdk", instance: {} },
@@ -744,7 +756,10 @@ describe("ChatService (Tier-2 sim)", () => {
         fakeLayer,
       )
       expect(capturedOptions).toBeDefined()
-      expect(capturedOptions!["tools"]).toEqual(["Task"])
+      // Built-ins are now granted (Task + research/fix tools), and the
+      // caller-supplied MCP servers still pass through unchanged.
+      expect(capturedOptions!["tools"]).toContain("Task")
+      expect(capturedOptions!["tools"]).toContain("WebFetch")
       expect(capturedOptions!["allowedTools"]).toContain("mcp__memory__*")
       expect(capturedOptions!["allowedTools"]).toContain("mcp__scheduler__*")
       expect(capturedOptions!["mcpServers"]).toEqual(mcpServers)

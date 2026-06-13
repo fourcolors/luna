@@ -226,6 +226,13 @@ const LUNA_ALLOWED_MCP_TOOLS = [
   "mcp__observability__*",
   "mcp__local_shell__*",
   "mcp__secret_tools__*",
+  // skill_tools (skill_load) + widget_tools (widget_write) are mounted into
+  // every thread's mcpServers by decorate(), so the agent SEES them — but
+  // without pre-approval each first call stalls on the SDK permission prompt
+  // in a headless server ("the skill needs permission — skip it"). Pre-approve
+  // them so the agent can load skills + author widgets autonomously.
+  "mcp__skill_tools__*",
+  "mcp__widget_tools__*",
 ] as const
 
 /**
@@ -340,24 +347,49 @@ export class ChatService extends Effect.Service<ChatService>()(
           // programmatically. Do not inherit Claude Code filesystem settings
           // unless a caller explicitly opts in for a thread.
           settingSources: opts.settingSources ?? [],
-          // Availability, not permission: `allowedTools` only pre-approves
-          // calls. An explicit `tools` array removes Claude Code built-ins
-          // (WebFetch, TodoWrite, Bash, etc.) while leaving Luna's MCP tools
-          // available. "Task" is the ONE built-in Luna keeps: the subagent
-          // spawn tool (wire name of the emitted tool_use block is "Agent";
-          // "Task" is the options-layer alias the SDK accepts here). It is
-          // surgical — live-probed on SDK 0.3.175: no other built-in leaks
-          // back in, and the built-in subagent types (general-purpose,
-          // Explore, Plan) plus any ~/.luna/agents definitions become
-          // spawnable. A subagent inherits the parent's tool set, so this
-          // grants no capability the thread doesn't already have.
-          tools: ["Task"],
-          // MCP tools still need SDK permission approval. Luna's own tool
-          // handlers enforce their safety rules, so the SDK layer can
-          // auto-approve these without reintroducing Claude Code built-ins.
-          // "Task" is pre-approved belt-and-braces: live probes show the SDK
-          // executes it under permissionMode "default" without canUseTool,
-          // but pre-approval keeps that working if a future CLI tightens it.
+          // Availability, not permission: the `tools` array is what the agent
+          // CAN call; `allowedTools` only pre-approves (skips canUseTool).
+          //
+          // Luna agents do real research-and-fix work, so they get the
+          // research/fix built-ins: web research (WebFetch/WebSearch) and
+          // filesystem (Read/Edit/Write/Grep/Glob), plus "Task", the
+          // subagent-spawn tool (emitted wire name "Agent"; "Task" is the
+          // options-layer alias the SDK accepts). A subagent inherits the
+          // parent's tool set, so this is also what every spawned agent gets.
+          //
+          // SHELL runs through the pre-approved `mcp__local_shell__*` tool, NOT
+          // the SDK's raw `Bash` built-in. local_shell scrubs secret env vars
+          // (TOKEN/SECRET/API_KEY/…) and can be OS-sandboxed; raw Bash would
+          // inherit the server's full process.env (live model keys / OAuth
+          // token) with no scrub and bypass the canUseTool rail's value, so
+          // Bash — and TodoWrite et al. — stay OUT. (Both security reviews of
+          // this change flagged raw Bash as the dominant risk.)
+          //
+          // The file built-ins are NOT in allowedTools: under permissionMode
+          // "default" each routes through the canUseTool callback chat-server
+          // installs at boot (composeInterceptors / @luna/tools) — default-
+          // allow, but DENY reads/writes of secret paths (.env, secrets/, key
+          // files). HONEST SCOPE: these rails are a best-effort accident guard,
+          // NOT a sandbox; and WEB EGRESS (WebFetch/WebSearch) is NOT railed —
+          // combined with local read that is an exfiltration path, so treat the
+          // box as one where the agent can read non-rail-blocked files and send
+          // them outbound.
+          tools: [
+            "Task",
+            "WebFetch",
+            "WebSearch",
+            "Read",
+            "Edit",
+            "Write",
+            "Grep",
+            "Glob",
+          ],
+          // Luna's MCP tools are pre-approved (availability already granted via
+          // mcpServers): their own handlers enforce safety, so the SDK layer
+          // auto-approves them without a canUseTool round-trip. "Task" is
+          // pre-approved belt-and-braces: live probes show the SDK executes it
+          // under permissionMode "default" without canUseTool, but pre-approval
+          // keeps that working if a future CLI tightens it.
           allowedTools: [...LUNA_ALLOWED_MCP_TOOLS, "Task"],
           strictMcpConfig: true,
           env: sdkEnv,

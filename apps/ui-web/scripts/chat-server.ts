@@ -243,6 +243,7 @@ import {
   type EffortLevel,
   type ThreadToolsProvider,
 } from "@luna/chat-service"
+import { composeInterceptors, defaultSafetyInterceptors } from "@luna/tools"
 import {
   createJobInputBridge,
   createLocalShellBridge,
@@ -2934,6 +2935,44 @@ const bootstrap = async (): Promise<void> => {
   // The guard makes a second signal (or SIGINT-then-SIGTERM) a no-op so
   // dispose() can't run twice.
   installShutdown(runtime)
+
+  // Install Luna's default agent permission policy on the shared SDKAdapter
+  // BEFORE the WS server accepts connections, so every thread's queries use it.
+  // Default-ALLOW (agents never stall on a permission prompt in this headless
+  // server); the canUseTool rail DENIES reads/writes of secret paths (.env,
+  // secrets/, key files) for the file built-ins, plus a defense-in-depth
+  // destructive-command rail (agents run shell through the sandboxed
+  // mcp__local_shell__*, not raw Bash). It only fires under permissionMode
+  // "default"; LUNA_TRUSTED_LOCAL=1 (bypassPermissions) skips canUseTool
+  // entirely — the explicit full-trust opt-in (no rails).
+  //
+  // This is now the FIRST runPromise on the runtime, so it forces the layer
+  // graph to build — a boot-time layer failure surfaces HERE, ahead of
+  // buildMain's catch. Mirror that diagnostic so a fail-fast boot stays loud
+  // instead of becoming a silent unhandled rejection.
+  await runtime
+    .runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* SDKAdapter
+        yield* adapter.setPermissionCallback(
+          composeInterceptors(defaultSafetyInterceptors()),
+        )
+      }),
+    )
+    .catch((err) => {
+      console.error(
+        "❌ chat server failed to boot (permission policy install):",
+        err,
+      )
+      const msg = String(err)
+      if (msg.includes("OnePasswordSecretProvider") || msg.includes("'op'")) {
+        console.error(
+          "   hint: 1Password CLI not authenticated. Add a " +
+            "luna.op.<label> keychain entry or set LUNA_OP_TOKEN_<LABEL>, then restart.",
+        )
+      }
+      process.exit(1)
+    })
 
   // runPromise keeps the event loop alive until the effect resolves (which
   // it never does because of Effect.never). runFork returns immediately,

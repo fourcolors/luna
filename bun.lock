@@ -38,7 +38,7 @@
     },
     "apps/ui-moon-tauri": {
       "name": "@luna/ui-moon-tauri",
-      "version": "0.0.25",
+      "version": "0.0.30",
       "devDependencies": {
         "@tauri-apps/cli": "^2.1.0",
         "jsdom": "^29.1.1",
@@ -69,6 +69,7 @@
         "@luna/scheduler-tools": "workspace:*",
         "@luna/secret-tools": "workspace:*",
         "@luna/skill-tools": "workspace:*",
+        "@luna/tools": "workspace:*",
         "@luna/ui-shared": "workspace:*",
         "@luna/ui-shared-solid": "workspace:*",
         "@luna/ui-ws": "workspace:*",
