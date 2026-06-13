@@ -125,3 +125,74 @@ describe("widget-summon-bridge — openArtifact (content tier)", () => {
     expect(r.message).toContain("connection failed")
   })
 })
+
+describe("widget-summon-bridge — open-intent replay (mid-reconnect)", () => {
+  it("buffers an open issued with no host, then replays it to the next host", () => {
+    const sent: Array<WidgetOpenFrame | OpenArtifactWidgetFrame> = []
+    const b = createWidgetSummonBridge()
+
+    // No host connected yet (Moon mid-reconnect during a long turn).
+    const r = b.openArtifact("widget:pr-99", "PR #99", "widget")
+    expect(r.ok).toBe(false)
+    expect(r.message).toContain("queued")
+    expect(sent).toHaveLength(0)
+
+    // The host reconnects and announces → the queued open is replayed.
+    b.registerClient("c1", (f) => sent.push(f), [])
+    expect(sent).toEqual([
+      { type: "open-artifact-widget", artifactId: "widget:pr-99", title: "PR #99", kind: "widget" },
+    ])
+  })
+
+  it("dedups by artifactId — an iterate-then-reopen loop replays only the latest", () => {
+    const sent: Array<WidgetOpenFrame | OpenArtifactWidgetFrame> = []
+    const b = createWidgetSummonBridge()
+    b.openArtifact("widget:x", "old title", "widget")
+    b.openArtifact("widget:x", "new title", "widget")
+    b.registerClient("c1", (f) => sent.push(f), [])
+    expect(sent).toEqual([
+      { type: "open-artifact-widget", artifactId: "widget:x", title: "new title", kind: "widget" },
+    ])
+  })
+
+  it("flushes exactly once — a second register with no new opens replays nothing", () => {
+    const sentA: Array<WidgetOpenFrame | OpenArtifactWidgetFrame> = []
+    const sentB: Array<WidgetOpenFrame | OpenArtifactWidgetFrame> = []
+    const b = createWidgetSummonBridge()
+    b.openArtifact("widget:x", "X", "widget")
+    b.registerClient("a", (f) => sentA.push(f), [])
+    expect(sentA).toHaveLength(1)
+    // A fresh reconnect (no opens in between) must NOT re-pop the window.
+    b.registerClient("b", (f) => sentB.push(f), [])
+    expect(sentB).toHaveLength(0)
+  })
+
+  it("does NOT buffer opens issued while a host is connected", () => {
+    const sentA: Array<WidgetOpenFrame | OpenArtifactWidgetFrame> = []
+    const sentB: Array<WidgetOpenFrame | OpenArtifactWidgetFrame> = []
+    const b = createWidgetSummonBridge()
+    b.registerClient("a", (f) => sentA.push(f), [])
+    expect(b.openArtifact("widget:x", "X", "widget").ok).toBe(true)
+    expect(sentA).toHaveLength(1)
+    // The next host to register inherits NO replay — the open already happened.
+    b.registerClient("b", (f) => sentB.push(f), [])
+    expect(sentB).toHaveLength(0)
+  })
+
+  it("bounds the buffer — only the most recent opens survive", () => {
+    const sent: Array<WidgetOpenFrame | OpenArtifactWidgetFrame> = []
+    const b = createWidgetSummonBridge()
+    // Issue more distinct opens than the bound (8) while disconnected.
+    for (let i = 0; i < 12; i++) {
+      b.openArtifact(`widget:a${i}`, `A${i}`, "widget")
+    }
+    b.registerClient("c1", (f) => sent.push(f), [])
+    // Bounded to the 8 most-recent; the 4 oldest (a0..a3) are dropped.
+    expect(sent).toHaveLength(8)
+    const ids = sent.map((f) => (f as OpenArtifactWidgetFrame).artifactId)
+    expect(ids).toEqual([
+      "widget:a4", "widget:a5", "widget:a6", "widget:a7",
+      "widget:a8", "widget:a9", "widget:a10", "widget:a11",
+    ])
+  })
+})

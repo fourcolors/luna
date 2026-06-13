@@ -19,6 +19,7 @@ import {
   makeMcpAppTools,
   makeOpenArtifactTool,
   makeSearchArtifactsTool,
+  makeShowArtifactTool,
   makeWidgetTools,
 } from "../src/index.js"
 import type { WidgetSummonerPort } from "../src/index.js"
@@ -294,6 +295,117 @@ describe("widget_write tool", () => {
     ])
   })
 
+  it("show_artifact pins a kind-aware CONTENT artifact and opens it (create + iterate both open)", async () => {
+    const summoner = makeFakeSummoner()
+    const out = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ArtifactStore
+        const show = makeShowArtifactTool(store, summoner.port)
+        // markdown content → kind=markdown, id `doc:<slug>`
+        const c1 = parseJson<{ artifactId: string; kind: string; version: number; action: string; opened: boolean }>(
+          yield* Effect.promise(() =>
+            callTool(show, { artifactId: "release-notes", title: "Release notes", content: "# v1", lang: "md" }),
+          ),
+        )
+        // Iterate the SAME slug with new content → v2, and SHOW re-opens (unlike
+        // widget_write, "show me again" should re-surface the panel).
+        const c2 = parseJson<{ version: number; action: string; opened: boolean }>(
+          yield* Effect.promise(() =>
+            callTool(show, { artifactId: "release-notes", title: "Release notes", content: "# v2", lang: "md" }),
+          ),
+        )
+        const head = yield* store.get("doc:release-notes")
+        const versions = yield* store.versions("doc:release-notes")
+        return { c1, c2, head, versions }
+      }).pipe(Effect.provide(ArtifactStore.Memory), Effect.provide(Clock.Default)),
+    )
+    expect(out.c1).toMatchObject({
+      artifactId: "doc:release-notes",
+      kind: "markdown",
+      version: 1,
+      action: "created",
+      opened: true,
+    })
+    expect(out.c2).toMatchObject({ version: 2, action: "updated", opened: true })
+    expect(out.head?.kind).toBe("markdown")
+    expect(out.head?.content).toBe("# v2")
+    expect(out.versions.map((v) => v.content)).toEqual(["# v1", "# v2"])
+    // SHOW always shows — opened on BOTH the create and the iterate.
+    expect(summoner.opened).toEqual([
+      { artifactId: "doc:release-notes", title: "Release notes", kind: "markdown" },
+      { artifactId: "doc:release-notes", title: "Release notes", kind: "markdown" },
+    ])
+  })
+
+  it("show_artifact iterate can CHANGE the format/title (head kind+title refreshed, not frozen)", async () => {
+    const summoner = makeFakeSummoner()
+    const head = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ArtifactStore
+        const show = makeShowArtifactTool(store, summoner.port)
+        // First show as markdown…
+        yield* Effect.promise(() =>
+          callTool(show, { artifactId: "spec", title: "Spec (draft)", content: "# draft", lang: "md" }),
+        )
+        // …then re-show the SAME slug as an HTML preview with a new title.
+        yield* Effect.promise(() =>
+          callTool(show, { artifactId: "spec", title: "Spec (preview)", content: "<h1>final</h1>", lang: "html" }),
+        )
+        return yield* store.get("doc:spec")
+      }).pipe(Effect.provide(ArtifactStore.Memory), Effect.provide(Clock.Default)),
+    )
+    // The head reflects the LATEST kind/title — so Moon renders it as a live
+    // HTML preview, not stale markdown (review S2-F1).
+    expect(head?.kind).toBe("html")
+    expect(head?.title).toBe("Spec (preview)")
+    expect(head?.content).toBe("<h1>final</h1>")
+    expect(head?.version).toBe(2)
+    // openArtifact is called on BOTH shows, with the CURRENT kind each time.
+    expect(summoner.opened.map((o) => o.kind)).toEqual(["markdown", "html"])
+  })
+
+  it("show_artifact derives the kind from lang (html → html, code default → code)", async () => {
+    const summoner = makeFakeSummoner()
+    const kinds = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ArtifactStore
+        const show = makeShowArtifactTool(store, summoner.port)
+        yield* Effect.promise(() =>
+          callTool(show, { artifactId: "preview", title: "Preview", content: "<h1>hi</h1>", lang: "html" }),
+        )
+        yield* Effect.promise(() =>
+          callTool(show, { artifactId: "snippet", title: "Snippet", content: "const x = 1", lang: "ts" }),
+        )
+        yield* Effect.promise(() =>
+          callTool(show, { artifactId: "plain", title: "Plain", content: "just text" }),
+        )
+        const html = yield* store.get("doc:preview")
+        const code = yield* store.get("doc:snippet")
+        const plain = yield* store.get("doc:plain")
+        return { html: html?.kind, code: code?.kind, plain: plain?.kind }
+      }).pipe(Effect.provide(ArtifactStore.Memory), Effect.provide(Clock.Default)),
+    )
+    expect(kinds).toEqual({ html: "html", code: "code", plain: "code" })
+  })
+
+  it("show_artifact reports opened:false when no host is connected (open buffered for replay)", async () => {
+    const summoner = makeFakeSummoner({ ok: false, message: "No widget-capable client is connected right now — queued \"Doc\"." })
+    const out = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* ArtifactStore
+        const show = makeShowArtifactTool(store, summoner.port)
+        return parseJson<{ action: string; opened: boolean; message: string }>(
+          yield* Effect.promise(() =>
+            callTool(show, { artifactId: "doc", title: "Doc", content: "x", lang: "md" }),
+          ),
+        )
+      }).pipe(Effect.provide(ArtifactStore.Memory), Effect.provide(Clock.Default)),
+    )
+    // The artifact is still pinned (durable + reopenable); only the open degraded.
+    expect(out).toMatchObject({ action: "created", opened: false })
+    expect(out.message).toContain("queued")
+  })
+
   it("exposes the widget_tools server config shape (ThreadToolsProvider contract)", async () => {
     const cfg = await Effect.runPromise(
       Effect.gen(function* () {
@@ -319,6 +431,7 @@ describe("buildWidgetToolsAddendum (S3 best-guess rubric)", () => {
       "open_widget",
       "search_artifacts",
       "open_artifact",
+      "show_artifact",
       "widget_write",
       "mcp_app_write",
     ]) {

@@ -23,19 +23,217 @@
 import {
   type Component,
   For,
+  Match,
   Show,
+  Switch,
   createEffect,
   createMemo,
   createSignal,
+  onCleanup,
+  onMount,
 } from "solid-js"
 import {
   countLines,
   downloadArtifact,
   formatBytes,
   type Artifact,
+  type ArtifactKind,
+  type ObsEvent,
   type PinnedArtifactItem,
 } from "@luna/ui-shared/core"
+import {
+  SANDBOX_ATTR,
+  buildMcpSrcdoc,
+  buildSrcdoc,
+  subscribeAllowed,
+} from "@luna/ui-shared/widget-sandbox"
+import {
+  host as mcpHost,
+  type McpHostHandle,
+} from "@luna/ui-shared/mcp-app-host"
 import { CodeBlock, CodeBlockFallback, canonLang } from "./CodeBlock.jsx"
+import { MarkdownView } from "./MarkdownView.jsx"
+
+/** The web client's MCP relay (App stamps requestId + correlates results). */
+export interface WebMcpRelay {
+  readonly readResource: (
+    uri: string,
+  ) => Promise<{ ok: boolean; mimeType?: string; text?: string; message?: string }>
+  readonly callTool: (
+    appUri: string,
+    tool: string,
+    args: unknown,
+  ) => Promise<{ ok: boolean; result?: unknown; message?: string }>
+}
+
+/** Kind for an EPHEMERAL artifact (no explicit kind) from its lang/path —
+ *  mirrors @luna/core deriveArtifactKind; never returns widget/mcp-app (those
+ *  are explicit-only and only ever arrive on PINNED items). */
+const deriveContentKind = (
+  lang: string | null,
+  path: string | null,
+): ArtifactKind => {
+  const l = (lang ?? "").toLowerCase().trim()
+  const p = (path ?? "").toLowerCase().trim()
+  if (l === "html" || l === "htm" || p.endsWith(".html") || p.endsWith(".htm")) {
+    return "html"
+  }
+  if (l === "md" || l === "markdown" || p.endsWith(".md") || p.endsWith(".markdown")) {
+    return "markdown"
+  }
+  return "code"
+}
+
+/**
+ * kind="html": a static HTML PREVIEW rendered LIVE in a hard sandbox — the
+ * SAME cage Moon uses (no allow-same-origin, strict CSP, no network), with NO
+ * luna.* bridge (a preview has no live-data door). Solid updates `srcdoc`
+ * reactively when the content changes.
+ */
+const HtmlPreviewFrame: Component<{ content: string; title: string }> = (props) => (
+  <iframe
+    class="artifact-iframe"
+    title={`${props.title} (HTML preview)`}
+    sandbox={SANDBOX_ATTR}
+    referrerpolicy="no-referrer"
+    srcdoc={buildMcpSrcdoc(props.content)}
+  />
+)
+
+/**
+ * The obs events to forward to a subscribed widget, given the store's
+ * NEWEST-FIRST (and 500-capped) event list and the newest event already seen
+ * (by IDENTITY — the store PREPENDS new events, so we can't index by position).
+ * Returns the not-yet-seen events that pass the widget's cap gate, in
+ * CHRONOLOGICAL (oldest-first) order — the order luna.subscribe callbacks
+ * expect. Pure + exported so the forwarding logic is unit-testable in isolation
+ * (it was the source of a real bug: index-based forwarding against a
+ * newest-first capped array sends stale tail events, then stops at the cap).
+ */
+export const widgetEventsToForward = (
+  events: ReadonlyArray<ObsEvent>,
+  lastSeen: ObsEvent | null,
+  bridgeCaps: ReadonlyArray<string> | null,
+): ReadonlyArray<ObsEvent> => {
+  const fresh: ObsEvent[] = []
+  for (const ev of events) {
+    // events is newest-first; stop at the boundary we already forwarded.
+    if (ev === lastSeen) break
+    fresh.push(ev)
+  }
+  fresh.reverse() // → oldest-first (chronological)
+  return fresh.filter((ev) => subscribeAllowed(bridgeCaps, ev.kind))
+}
+
+/**
+ * kind="widget": agent-authored code that EXECUTES, caged in the same sandbox
+ * PLUS the luna.* bridge. The host half of that bridge lives here: accept
+ * postMessages only from THIS iframe, and forward live obs events into a
+ * subscribed widget — but ONLY for kinds its bridge_caps allow (fails closed
+ * via subscribeAllowed). Events from subscribe-time onward only (no backlog
+ * replay), mirroring Moon's widget.html host loop (which forwards per WS frame;
+ * here we advance by event identity over the store's newest-first list).
+ */
+const LiveWidgetFrame: Component<{
+  content: string
+  title: string
+  bridgeCaps: ReadonlyArray<string> | null
+  obsEvents: () => ReadonlyArray<ObsEvent>
+}> = (props) => {
+  let frame: HTMLIFrameElement | undefined
+  let subscribed = false
+  // Newest obs event already considered for forwarding (by identity).
+  let lastSeen: ObsEvent | null = null
+
+  const onMessage = (e: MessageEvent) => {
+    if (!frame || e.source !== frame.contentWindow) return
+    const m = e.data as { __luna?: string } | null
+    if (!m || typeof m !== "object") return
+    if (m.__luna === "subscribe") {
+      subscribed = true
+      // Anchor at the current newest → forward only events that arrive AFTER
+      // subscribe (never replay the backlog).
+      lastSeen = props.obsEvents()[0] ?? null
+    } else if (m.__luna === "refresh") {
+      if (frame) frame.srcdoc = buildSrcdoc(props.content)
+    }
+  }
+
+  onMount(() => window.addEventListener("message", onMessage))
+  onCleanup(() => window.removeEventListener("message", onMessage))
+
+  // Forward newly-arrived obs events to a subscribed widget, cap-gated and in
+  // chronological order. The store prepends + caps, so advance by IDENTITY.
+  createEffect(() => {
+    const events = props.obsEvents()
+    if (!subscribed || !frame || !frame.contentWindow) return
+    for (const ev of widgetEventsToForward(events, lastSeen, props.bridgeCaps)) {
+      frame.contentWindow.postMessage({ __luna: "event", event: ev }, "*")
+    }
+    if (events.length > 0) lastSeen = events[0]!
+  })
+
+  return (
+    <iframe
+      ref={frame}
+      class="artifact-iframe"
+      title={`${props.title} (widget)`}
+      sandbox={SANDBOX_ATTR}
+      referrerpolicy="no-referrer"
+      srcdoc={buildSrcdoc(props.content)}
+    />
+  )
+}
+
+/**
+ * kind="mcp-app": a LIVE MCP App. Mounted in the same sandbox cage; the shared
+ * LunaMcpHost drives the JSON-RPC handshake and routes tools/call over the web
+ * MCP relay (props.mcp → WS frames, server-enforced same-server + curated
+ * allowlist). Generated/store-backed apps store inline HTML (mounted directly);
+ * a `ui://` pointer is fetched via readResource. Re-hosts on content/id change.
+ */
+const McpAppFrame: Component<{
+  content: string
+  title: string
+  artifactId: string
+  mcp: WebMcpRelay
+}> = (props) => {
+  let frame: HTMLIFrameElement | undefined
+  let handle: McpHostHandle | null = null
+
+  createEffect(() => {
+    const content = props.content
+    const artifactId = props.artifactId
+    if (!frame) return
+    handle?.dispose()
+    const trimmed = content.trim()
+    const isPointer = /^ui:\/\//i.test(trimmed)
+    const appUri = isPointer
+      ? trimmed
+      : "ui://luna/app/" + encodeURIComponent(artifactId)
+    handle = mcpHost({
+      frameEl: frame,
+      uri: appUri,
+      html: isPointer ? null : content,
+      transport: {
+        readResource: (uri) => props.mcp.readResource(uri),
+        callTool: (tool, args) => props.mcp.callTool(appUri, tool, args),
+      },
+    })
+  })
+
+  onCleanup(() => handle?.dispose())
+
+  return (
+    <iframe
+      ref={frame}
+      class="artifact-iframe"
+      title={`${props.title} (app)`}
+      sandbox={SANDBOX_ATTR}
+      referrerpolicy="no-referrer"
+    />
+  )
+}
 
 /** Normalised display shape shared between ephemeral Artifact and
  *  PinnedArtifactItem so the detail view can render either. */
@@ -45,6 +243,11 @@ interface DisplayItem {
   readonly lang: string | null
   readonly content: string
   readonly path: string | null
+  /** Drives kind-aware rendering: code→highlight, markdown→formatted,
+   *  html→sandboxed preview, widget→sandboxed iframe + luna.* bridge. */
+  readonly kind: ArtifactKind
+  /** Widget-only luna.* obs-event allowlist (null for every other kind). */
+  readonly bridgeCaps: ReadonlyArray<string> | null
 }
 
 export interface ArtifactPanelProps {
@@ -57,6 +260,17 @@ export interface ArtifactPanelProps {
   readonly onPin?: (a: Artifact) => void
   /** Called when the user clicks the unpin chip on a pinned artifact. */
   readonly onUnpin?: (id: string) => void
+  /** Agent-driven focus (an `open-artifact-widget` frame): select + preview
+   *  this artifact. The nonce re-triggers selection even for the same id. */
+  readonly focusSignal?: { readonly id: string; readonly nonce: number } | null
+  /** Live obs-event stream forwarded (cap-gated) into a kind="widget" iframe.
+   *  Omit on surfaces without an event stream — widgets then render static. */
+  readonly obsEvents?: ReadonlyArray<ObsEvent>
+  /** MCP relay for kind="mcp-app" artifacts. Present only when the server
+   *  advertises the mcpApps capability; absent → mcp-apps render as source.
+   *  `| undefined` is explicit so callers may pass it conditionally under
+   *  exactOptionalPropertyTypes. */
+  readonly mcp?: WebMcpRelay | undefined
 }
 
 export const ArtifactPanel: Component<ArtifactPanelProps> = (props) => {
@@ -79,6 +293,16 @@ export const ArtifactPanel: Component<ArtifactPanelProps> = (props) => {
     if (last) setSelectedId((cur) => cur ?? last)
   })
 
+  // Agent-driven focus: an `open-artifact-widget` frame selects the named
+  // artifact (overriding the user's current pick — it was an explicit request).
+  // `selected()` self-heals if the id isn't in the list yet: a just-pinned
+  // artifact whose artifact-list broadcast lands a tick later resolves once it
+  // arrives, because the memo re-runs over props.pinned.
+  createEffect(() => {
+    const f = props.focusSignal
+    if (f && f.id) setSelectedId(f.id)
+  })
+
   /** Set of ids that are already in the pinned list. */
   const pinnedIds = createMemo(() => new Set((props.pinned ?? []).map((p) => p.id)))
 
@@ -91,19 +315,19 @@ export const ArtifactPanel: Component<ArtifactPanelProps> = (props) => {
     const id = selectedId()
     const inEphemeral = props.artifacts.find((a) => a.id === id)
     if (inEphemeral) {
-      return { id: inEphemeral.id, title: inEphemeral.title, lang: inEphemeral.lang, content: inEphemeral.content, path: inEphemeral.path }
+      return { id: inEphemeral.id, title: inEphemeral.title, lang: inEphemeral.lang, content: inEphemeral.content, path: inEphemeral.path, kind: deriveContentKind(inEphemeral.lang, inEphemeral.path), bridgeCaps: null }
     }
     const inPinned = (props.pinned ?? []).find((p) => p.id === id)
     if (inPinned) {
-      return { id: inPinned.id, title: inPinned.title, lang: inPinned.lang, content: inPinned.content, path: null }
+      return { id: inPinned.id, title: inPinned.title, lang: inPinned.lang, content: inPinned.content, path: null, kind: inPinned.kind, bridgeCaps: inPinned.bridgeCaps ?? null }
     }
     const last = props.artifacts[props.artifacts.length - 1]
     if (last) {
-      return { id: last.id, title: last.title, lang: last.lang, content: last.content, path: last.path }
+      return { id: last.id, title: last.title, lang: last.lang, content: last.content, path: last.path, kind: deriveContentKind(last.lang, last.path), bridgeCaps: null }
     }
     const firstPin = (props.pinned ?? [])[0]
     if (firstPin) {
-      return { id: firstPin.id, title: firstPin.title, lang: firstPin.lang, content: firstPin.content, path: null }
+      return { id: firstPin.id, title: firstPin.title, lang: firstPin.lang, content: firstPin.content, path: null, kind: firstPin.kind, bridgeCaps: firstPin.bridgeCaps ?? null }
     }
     return null
   })
@@ -294,13 +518,55 @@ export const ArtifactPanel: Component<ArtifactPanelProps> = (props) => {
                   ⧉ copy
                 </button>
               </div>
-              <div class="artifact-content">
-                <Show
-                  when={selectedLang()}
-                  fallback={<CodeBlockFallback source={s().content} />}
+              {/* Kind-aware render. Rich kinds (markdown/html/widget) get the
+                  `is-rich` modifier so the code-oriented dark/pre/mono base is
+                  reset. code + mcp-app fall through to the source view (mcp-app
+                  gets a live host in a follow-up); html/widget run sandboxed. */}
+              <div
+                class={`artifact-content${
+                  s().kind === "markdown" ||
+                  s().kind === "html" ||
+                  s().kind === "widget" ||
+                  (s().kind === "mcp-app" && props.mcp !== undefined)
+                    ? " is-rich"
+                    : ""
+                }`}
+              >
+                <Switch
+                  fallback={
+                    <Show
+                      when={selectedLang()}
+                      fallback={<CodeBlockFallback source={s().content} />}
+                    >
+                      {(lang) => <CodeBlock lang={lang()} source={s().content} />}
+                    </Show>
+                  }
                 >
-                  {(lang) => <CodeBlock lang={lang()} source={s().content} />}
-                </Show>
+                  <Match when={s().kind === "markdown"}>
+                    <MarkdownView text={s().content} />
+                  </Match>
+                  <Match when={s().kind === "html"}>
+                    <HtmlPreviewFrame content={s().content} title={s().title} />
+                  </Match>
+                  <Match when={s().kind === "widget"}>
+                    <LiveWidgetFrame
+                      content={s().content}
+                      title={s().title}
+                      bridgeCaps={s().bridgeCaps}
+                      obsEvents={() => props.obsEvents ?? []}
+                    />
+                  </Match>
+                  <Match when={s().kind === "mcp-app" && props.mcp}>
+                    {(mcp) => (
+                      <McpAppFrame
+                        content={s().content}
+                        title={s().title}
+                        artifactId={s().id}
+                        mcp={mcp()}
+                      />
+                    )}
+                  </Match>
+                </Switch>
               </div>
             </div>
           )

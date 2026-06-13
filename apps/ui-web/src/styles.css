@@ -732,6 +732,34 @@ html[data-theme='dark'] .attach-error { color: #e85d5d; }
   color: #c8d3e0;
   white-space: pre;
 }
+
+/* Rich (non-code) kinds — markdown / html preview / live widget. Reset the
+   code-oriented dark/pre/mono base so they render naturally and let an iframe
+   fill the pane. */
+.artifact-content.is-rich {
+  background: var(--bg, #ffffff);
+  color: var(--ink, #14181f);
+  white-space: normal;
+  font-family: var(--font-chat, inherit);
+  font-size: inherit;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.artifact-content.is-rich .markdown {
+  padding: 12px 14px;
+  overflow: auto;
+}
+/* Sandboxed iframe (kind=html / kind=widget): fills the pane, own white base
+   so a transparent doc/widget stays legible. */
+.artifact-iframe {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 320px;
+  border: 0;
+  display: block;
+  background: #fff;
+}
 .artifact-content code {
   background: transparent; border: 0; padding: 0;
 }

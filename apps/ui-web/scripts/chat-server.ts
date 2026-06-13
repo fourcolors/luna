@@ -2721,6 +2721,20 @@ const buildServerLayer = (
           artifactStoreService
             .update(id, content, "user")
             .pipe(Effect.map((a) => (a ? toWireArtifact(a) : null))),
+        // Out-of-band agent edits (widget_write / mcp_app_write / show_artifact
+        // call the store directly, bypassing the inline pin-broadcast) → the
+        // server re-broadcasts a fresh artifact-list so every connected client
+        // (web panel, Moon overlay) learns of the new/changed pin.
+        //
+        // NOTE: a *client-initiated* pin/unpin/edit therefore broadcasts twice —
+        // once inline (server.ts artifact-pin/unpin/edit handlers) and once via
+        // this hook. Deliberate and harmless: both run AFTER the mutation commits
+        // and carry identical state, so the second is an idempotent full-list
+        // replace. We keep the inline broadcasts because `changes` is OPTIONAL on
+        // the server's artifactStore contract — a rig that omits it must still
+        // broadcast user pins. The common automated case (agent-tool pin) has no
+        // inline path and so fires exactly once, here.
+        changes: (notify: () => void) => artifactStoreService.changes(notify),
       }
 
       // PRD Part C/W3: the workflow gallery is a READ-ONLY, wire-safe projection
