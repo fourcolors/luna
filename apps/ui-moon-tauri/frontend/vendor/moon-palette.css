@@ -27,6 +27,15 @@
   --font-display: 'Outfit', sans-serif;            /* hub headings (legacy) */
   --font-body: 'Albert Sans', 'Plus Jakarta Sans', 'Segoe UI', system-ui, sans-serif;
   --font-hand: 'Caveat', 'Bradley Hand', cursive;  /* handwritten accents   */
+  --font-mono: 'SF Mono', Menlo, ui-monospace, SFMono-Regular, monospace;
+  --font-serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Times New Roman', serif;
+
+  /* Chat typeface + size knobs (data-font / data-fontsize, vendor/
+     moon-appearance.js). Defaults = 'sans' family at 'medium' size; the
+     html[data-*] blocks below override them. These touch ONLY the chat
+     reading/writing surfaces (chat.html), never the window chrome. */
+  --font-chat: var(--font-body);
+  --font-scale: 1;
 
   /* ── Shape ───────────────────────────────────────────────────────────── */
   --radius: 12px;
@@ -147,3 +156,16 @@ html[data-palette='tide'][data-theme='dark'] {
   --wash-3: #4f6a82;
   --wash-4: #6e6650;
 }
+
+/* ═══ Chat typography variants (data-font / data-fontsize) ═══════════════
+   vendor/moon-appearance.js stamps data-font + data-fontsize on <html>; these
+   only re-point the --font-chat family + --font-scale multiplier the chat
+   bubbles & composer consume (chat.html). 'sans' / 'medium' are the :root
+   defaults, so they need no rule. */
+html[data-font='serif'] { --font-chat: var(--font-serif); }
+html[data-font='mono']  { --font-chat: var(--font-mono); }
+html[data-font='hand']  { --font-chat: var(--font-hand); }
+
+html[data-fontsize='small']  { --font-scale: 0.9; }
+html[data-fontsize='large']  { --font-scale: 1.15; }
+html[data-fontsize='xlarge'] { --font-scale: 1.35; }

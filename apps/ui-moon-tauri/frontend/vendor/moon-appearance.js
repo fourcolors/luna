@@ -8,10 +8,16 @@
  * Preferences live in localStorage under individual keys (same convention as
  * luna_always_on_top & friends in panels/settings-general.js):
  *
- *   luna_palette — 'dawn' | 'meadow' | 'tide'      (default 'tide')
- *   luna_theme   — 'light' | 'dark'                (default 'dark')
- *   luna_chrome  — 'wash' | 'ink'                  (default 'wash')
- *   luna_grain   — 'true' | 'false'                (default 'false')
+ *   luna_palette  — 'dawn' | 'meadow' | 'tide'              (default 'tide')
+ *   luna_theme    — 'light' | 'dark'                        (default 'dark')
+ *   luna_chrome   — 'wash' | 'ink'                          (default 'wash')
+ *   luna_grain    — 'true' | 'false'                        (default 'false')
+ *   luna_font     — 'sans' | 'serif' | 'mono' | 'hand'      (default 'sans')
+ *   luna_fontsize — 'small'|'medium'|'large'|'xlarge'       (default 'medium')
+ *
+ * font / fontsize only re-skin the CHAT surfaces (bubbles + composer) via the
+ * --font-chat / --font-scale tokens (vendor/moon-palette.css), never the
+ * window chrome — so panel/widget layout never reflows.
  *
  * Cross-window sync: localStorage `storage` events fire in every OTHER
  * window on the same origin — exactly how the hub already learns about
@@ -29,6 +35,8 @@
     theme: 'luna_theme',
     chrome: 'luna_chrome',
     grain: 'luna_grain',
+    font: 'luna_font',
+    fontSize: 'luna_fontsize',
   };
 
   var VALID = {
@@ -36,6 +44,8 @@
     theme: ['light', 'dark'],
     chrome: ['wash', 'ink'],
     grain: ['true', 'false'],
+    font: ['sans', 'serif', 'mono', 'hand'],
+    fontSize: ['small', 'medium', 'large', 'xlarge'],
   };
 
   var DEFAULTS = {
@@ -43,6 +53,8 @@
     theme: 'dark',
     chrome: 'wash',
     grain: 'false',
+    font: 'sans',
+    fontSize: 'medium',
   };
 
   // Unknown/corrupt stored values fall back to the default (never throw —
@@ -60,6 +72,8 @@
     el.setAttribute('data-theme', read('theme'));
     el.setAttribute('data-chrome', read('chrome'));
     el.setAttribute('data-grain', read('grain') === 'true' ? 'on' : 'off');
+    el.setAttribute('data-font', read('font'));
+    el.setAttribute('data-fontsize', read('fontSize'));
   }
 
   function set(name, value) {
@@ -76,6 +90,8 @@
       theme: read('theme'),
       chrome: read('chrome'),
       grain: read('grain') === 'true',
+      font: read('font'),
+      fontSize: read('fontSize'),
     };
   }
 
@@ -84,7 +100,8 @@
   g.addEventListener('storage', function (e) {
     if (e.key === null ||
         e.key === KEYS.palette || e.key === KEYS.theme ||
-        e.key === KEYS.chrome || e.key === KEYS.grain) {
+        e.key === KEYS.chrome || e.key === KEYS.grain ||
+        e.key === KEYS.font || e.key === KEYS.fontSize) {
       apply();
     }
   });

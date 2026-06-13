@@ -311,7 +311,10 @@
       max-width: 82%;
       padding: 9px 13px;
       border-radius: 14px;
-      font-size: 0.84rem;
+      /* Chat typeface + size knobs (data-font / data-fontsize). Code/tables
+         inside keep their own --font-mono / fixed sizes via child rules. */
+      font-family: var(--font-chat);
+      font-size: calc(0.84rem * var(--font-scale));
       line-height: 1.45;
       animation: msgAppear 0.2s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
       transform-origin: bottom left;
@@ -1352,8 +1355,8 @@
       border: 1.4px solid var(--ink-faint);
       border-radius: 12px;
       padding: 9px 14px;       /* vertical padding now matters for multi-line text */
-      font-family: var(--font-body);
-      font-size: 0.84rem;
+      font-family: var(--font-chat);
+      font-size: calc(0.84rem * var(--font-scale));
       line-height: 1.4;
       color: var(--ink);
       outline: none;
