@@ -107,5 +107,11 @@ export type {
   VaultDeleteFrame,
   VaultSyncConfigFrame,
   VaultImportFrame,
+  SuggestedActionWire,
+  SuggestedActionStatus,
+  SuggestedActionType,
+  SuggestedActionSetFrame,
+  SuggestedActionUpdateFrame,
+  SuggestedActionRespondFrame,
 } from "./wire.js"
 export { UI_WS_PROTOCOL_VERSION } from "./wire.js"

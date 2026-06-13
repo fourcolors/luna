@@ -8,7 +8,7 @@
  * frame shape here means Tauri (and any future transport) gets the same
  * stream without depending on ui-ws.
  */
-import type { ChatMessage, SessionSummary } from "@luna/core"
+import type { ChatMessage, SessionSummary, SuggestedActionView } from "@luna/core"
 import type { Artifact } from "./artifacts.js"
 
 /**
@@ -146,6 +146,23 @@ export interface ChatTurnComplete {
 }
 
 /**
+ * Suggested Actions (per-thread). `set` carries the full non-terminal set for a
+ * thread (initial paint on subscribe / replay-on-open); `update` carries a
+ * single action's status/execution delta. ui-ws maps these 1:1 to the
+ * matching ServerFrames. The carried view is wire-safe (no payload).
+ */
+export interface ChatSuggestedActionSet {
+  readonly type: "suggested-action-set"
+  readonly threadId: string
+  readonly actions: ReadonlyArray<SuggestedActionView>
+}
+export interface ChatSuggestedActionUpdate {
+  readonly type: "suggested-action-update"
+  readonly threadId: string
+  readonly action: SuggestedActionView
+}
+
+/**
  * Union of every frame the per-thread subscribe Stream emits. ui-ws maps
  * this 1:1 to its ServerFrame chat variants.
  */
@@ -159,6 +176,8 @@ export type ChatFrame =
   | ChatToolCall
   | ChatToolResult
   | ChatTurnComplete
+  | ChatSuggestedActionSet
+  | ChatSuggestedActionUpdate
 
 /** Options accepted by `createThread`. Mirrors the subset of SessionOptions
  *  a chat caller cares about; ChatService overlays the chat-required fields

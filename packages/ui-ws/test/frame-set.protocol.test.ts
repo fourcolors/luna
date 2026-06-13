@@ -89,6 +89,8 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "artifact-update",
   "workflow-list",
   "workflow-runs",
+  "suggested-action-set",
+  "suggested-action-update",
   "local-shell-request",
   "local-shell-status",
   "register-op-token-status",
@@ -136,6 +138,7 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "artifact-unpin",
   "workflow-runs-request",
   "workflow-refresh",
+  "suggested-action-respond",
   "pty-input",
   "pty-resize",
   "vault-put",
@@ -265,8 +268,11 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // The live Agents view (S4) adds subagent-tree (server, broadcast) +
     // subagent-tree-request (client) → 46 server / 36 client. The Apps-panel
     // ledger-safe edit adds artifact-edit (client) → 46 server / 37 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(46)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(37)
+    // Suggested Actions (per-thread, gated on capabilities.suggestedActions)
+    // adds suggested-action-set + suggested-action-update (server) and
+    // suggested-action-respond (client) → 48 server / 38 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(48)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(38)
   })
 
   // VERSION-SKEW (client half): nothing else pins the ui-shared wire.ts mirror

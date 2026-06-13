@@ -173,6 +173,19 @@ export const JobTickerLayer = (
           }
           claimed++
 
+          // One-shot guard: a job with NO schedule expression at all (empty
+          // `schedule` AND empty `spec`) is a fire-once job — `claim` set its
+          // `next_run_at` to null, and `listDue` returns null-next_run rows, so
+          // without this it would re-fire EVERY tick forever (the documented
+          // "stays due" trap). Disable it after its single claim. A job with a
+          // NON-empty-but-unparseable cron is left alone (the deliberate
+          // pain-signal for a misconfigured schedule).
+          if (((job.schedule ?? job.spec) ?? "").trim() === "") {
+            yield* store
+              .setV2Fields(job.id, { enabled: false })
+              .pipe(Effect.catchAll(() => Effect.void))
+          }
+
           // Record run start.
           const run = yield* store.recordRunStart({
             jobId: job.id,

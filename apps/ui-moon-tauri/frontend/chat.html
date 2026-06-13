@@ -795,6 +795,98 @@
     .user-ask-dismiss-btn:hover { background: color-mix(in oklab, var(--ink) 9%, transparent); border-color: var(--ink-soft); }
     .user-ask-dismiss-btn:active { transform: translateY(1px); }
 
+    /* ── Suggested-actions chip — docked inline banner (mirrors user-ask-panel /
+       secret-prompt-panel chrome). Shown by SuggestedActionsEngine when there is
+       at least one `proposed` action for the active thread and no higher-priority
+       panel (secret > survey > suggestion) is visible. ── */
+    .suggested-action-panel {
+      position: relative;
+      margin: 0 10px 8px 10px;
+      padding: 0;
+      background: color-mix(in oklab, var(--accent) 7%, transparent);
+      border: 1px solid color-mix(in oklab, var(--accent) 24%, transparent);
+      border-radius: 14px;
+      font-size: 0.84rem;
+      color: var(--ink);
+      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.14);
+      animation: msgAppear 0.22s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
+      overflow: hidden;
+    }
+    .suggested-action-panel[hidden] { display: none !important; }
+    .suggested-action-body {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 10px 12px 0 12px;
+    }
+    .suggested-action-type {
+      font-size: 0.62rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--ink-soft);
+    }
+    .suggested-action-title {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--ink);
+      line-height: 1.3;
+    }
+    .suggested-action-rationale {
+      font-size: 0.70rem;
+      color: var(--ink-soft);
+      line-height: 1.3;
+    }
+    .suggested-action-footer {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 12px;
+    }
+    .suggested-action-accept {
+      padding: 5px 12px;
+      background: color-mix(in oklab, var(--accent) 28%, transparent);
+      border: 1px solid color-mix(in oklab, var(--accent) 55%, transparent);
+      color: var(--ink);
+      border-radius: 7px;
+      font-family: var(--font-body);
+      font-weight: 600;
+      font-size: 0.76rem;
+      cursor: pointer;
+      transition: filter 0.15s ease, transform 0.1s ease;
+    }
+    .suggested-action-accept:hover:not(:disabled) { filter: brightness(1.1); }
+    .suggested-action-accept:active:not(:disabled) { transform: translateY(1px); }
+    .suggested-action-accept:disabled { opacity: 0.45; cursor: not-allowed; }
+    .suggested-action-dismiss {
+      padding: 5px 10px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      color: var(--ink-soft);
+      border-radius: 7px;
+      font-family: var(--font-body);
+      font-weight: 600;
+      font-size: 0.76rem;
+      cursor: pointer;
+      transition: background 0.15s ease, transform 0.1s ease;
+    }
+    .suggested-action-dismiss:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); color: var(--ink); }
+    .suggested-action-dismiss:active:not(:disabled) { transform: translateY(1px); }
+    .suggested-action-dismiss:disabled { opacity: 0.45; cursor: not-allowed; }
+    .suggested-action-see-all {
+      margin-left: auto;
+      padding: 5px 10px;
+      background: transparent;
+      border: none;
+      color: var(--ink-soft);
+      font-family: var(--font-body);
+      font-size: 0.72rem;
+      cursor: pointer;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      transition: color 0.15s ease;
+    }
+    .suggested-action-see-all:hover { color: var(--ink); }
+
     /* ── Artifacts panel (PRD Part C W1) — slide-in overlay anchored inside
        #chat-panel. Hidden until ArtifactsEngine.openPanel(). Uses the same
        watercolor palette as user-ask-panel and skill rows. ── */
@@ -1725,6 +1817,29 @@
       </div>
     </div>
 
+    <!-- Suggested-actions chip. Hidden by default; SuggestedActionsEngine
+         reveals it when there is at least one `proposed` action for the active
+         thread and no higher-priority panel (secret > survey > suggestion) is
+         already showing. Accept/Dismiss operate optimistically on the chip;
+         "See all" opens the full actions panel widget. -->
+    <div class="suggested-action-panel" id="suggested-action-panel" role="dialog" aria-labelledby="suggested-action-title" hidden>
+      <div class="user-ask-header">
+        <span class="user-ask-icon" aria-hidden="true">💡</span>
+        <h3 class="user-ask-title" id="suggested-action-title">Luna suggests</h3>
+        <button type="button" class="user-ask-dismiss" id="suggested-action-cancel-x" aria-label="Dismiss suggestion">×</button>
+      </div>
+      <div class="suggested-action-body">
+        <div class="suggested-action-type" id="suggested-action-type"></div>
+        <div class="suggested-action-title" id="suggested-action-text"></div>
+        <div class="suggested-action-rationale" id="suggested-action-rationale" hidden></div>
+      </div>
+      <div class="suggested-action-footer">
+        <button type="button" class="suggested-action-accept" id="suggested-action-accept">Accept</button>
+        <button type="button" class="suggested-action-dismiss" id="suggested-action-dismiss">Dismiss</button>
+        <button type="button" class="suggested-action-see-all" id="suggested-action-see-all">See all</button>
+      </div>
+    </div>
+
     <!-- Artifacts panel (PRD Part C W1). Hidden until toggled open via
          ArtifactsEngine.openPanel(). Position:absolute fills the chat body
          area so it slides over the messages without reflowing the layout. -->
@@ -1920,6 +2035,15 @@
       secretPromptSubmit:  document.getElementById('secret-prompt-submit'),
       secretPromptCancel:  document.getElementById('secret-prompt-cancel'),
       secretPromptCancelX: document.getElementById('secret-prompt-cancel-x'),
+      // Suggested-actions chip handles.
+      suggestedActionPanel:     document.getElementById('suggested-action-panel'),
+      suggestedActionType:      document.getElementById('suggested-action-type'),
+      suggestedActionText:      document.getElementById('suggested-action-text'),
+      suggestedActionRationale: document.getElementById('suggested-action-rationale'),
+      suggestedActionAccept:    document.getElementById('suggested-action-accept'),
+      suggestedActionDismiss:   document.getElementById('suggested-action-dismiss'),
+      suggestedActionSeeAll:    document.getElementById('suggested-action-see-all'),
+      suggestedActionCancelX:   document.getElementById('suggested-action-cancel-x'),
       // Voice (mic button only — the controls live in the settings.voice panel).
       voiceMicBtn: document.getElementById('voice-mic-btn'),
       // local-shell machine-access scope controls.
@@ -2381,6 +2505,127 @@
         if (DOM.userAskSubmit) {
           DOM.userAskSubmit.disabled = (this.answers.likert === null);
         }
+      },
+    };
+
+    /**
+     * SuggestedActionsEngine — inline chip controller.
+     *
+     * Shows the LATEST `proposed` action for the active thread in the docked
+     * suggested-action-panel chip. Stacking precedence: secret > survey >
+     * suggestion — if a higher-priority panel is visible the chip stays hidden.
+     *
+     * Receives data via MoonFrames handlers for `suggested-action-set` and
+     * `suggested-action-update`. The chip is per-thread: it clears whenever
+     * State.activeThreadId changes (handled in the `hello` and thread-switch
+     * flow by calling refresh() which re-evaluates the current proposed set).
+     *
+     * Wire frames:
+     *   server→client  suggested-action-set    { threadId, actions[] }
+     *   server→client  suggested-action-update { threadId, action }
+     *   client→server  suggested-action-respond { threadId, actionId, decision }
+     *
+     * Lifecycle:
+     *   applySet(frame)    — replace per-thread action store; refresh chip.
+     *   applyUpdate(frame) — upsert a single action; refresh chip.
+     *   refresh()          — re-evaluate visibility from current store.
+     *   _show(action)      — paint + reveal chip.
+     *   _hide()            — hide chip.
+     *   _respond(actionId, decision) — send wire frame + optimistic flip.
+     */
+    const SuggestedActionsEngine = {
+      // Map of threadId → SuggestedActionWire[]
+      _store: {},
+      // Whether the server advertises suggestedActions capability.
+      _capable: false,
+
+      applyCapability(hasCapability) {
+        this._capable = !!hasCapability;
+        if (!this._capable) this._hide();
+      },
+
+      applySet(frame) {
+        if (!frame || !frame.threadId) return;
+        this._store[frame.threadId] = Array.isArray(frame.actions) ? frame.actions : [];
+        this.refresh();
+      },
+
+      applyUpdate(frame) {
+        if (!frame || !frame.action || !frame.action.threadId) return;
+        const tid = frame.action.threadId;
+        const current = this._store[tid] || [];
+        const idx = current.findIndex((a) => a.id === frame.action.id);
+        if (idx >= 0) {
+          this._store[tid] = current.slice();
+          this._store[tid][idx] = Object.assign({}, current[idx], frame.action);
+        } else {
+          this._store[tid] = [frame.action].concat(current);
+        }
+        this.refresh();
+      },
+
+      refresh() {
+        if (!this._capable) { this._hide(); return; }
+        // Stacking precedence: secret > survey > suggestion.
+        // If a higher-priority panel is currently visible, keep chip hidden.
+        const secretVisible = DOM.secretPromptPanel && !DOM.secretPromptPanel.hidden;
+        const surveyVisible = DOM.userAskPanel && !DOM.userAskPanel.hidden;
+        if (secretVisible || surveyVisible) { this._hide(); return; }
+
+        const tid = State.activeThreadId;
+        if (!tid) { this._hide(); return; }
+        const actions = this._store[tid] || [];
+        // Find the most-recently-created proposed action.
+        const proposed = actions
+          .filter((a) => a.status === 'proposed')
+          .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
+        if (!proposed) { this._hide(); return; }
+        this._show(proposed);
+      },
+
+      _show(action) {
+        if (!DOM.suggestedActionPanel) return;
+        const typeLabels = {
+          task: 'Task',
+          research: 'Research',
+          create_skill: 'Create Skill',
+          create_workflow: 'Create Workflow',
+          run_workflow: 'Run Workflow',
+        };
+        if (DOM.suggestedActionType) DOM.suggestedActionType.textContent = typeLabels[action.actionType] || (action.actionType || '');
+        if (DOM.suggestedActionText) DOM.suggestedActionText.textContent = action.title || '';
+        if (DOM.suggestedActionRationale) {
+          if (action.rationale) {
+            DOM.suggestedActionRationale.textContent = action.rationale;
+            DOM.suggestedActionRationale.hidden = false;
+          } else {
+            DOM.suggestedActionRationale.textContent = '';
+            DOM.suggestedActionRationale.hidden = true;
+          }
+        }
+        // Store current actionId on panel so buttons always act on the shown action.
+        DOM.suggestedActionPanel.dataset.actionId = action.id;
+        DOM.suggestedActionPanel.hidden = false;
+      },
+
+      _hide() {
+        if (DOM.suggestedActionPanel) DOM.suggestedActionPanel.hidden = true;
+      },
+
+      _respond(actionId, decision) {
+        const tid = State.activeThreadId;
+        if (!tid || !actionId) return;
+        WebSocketEngine.send({ type: 'suggested-action-respond', threadId: tid, actionId: actionId, decision: decision });
+        // Optimistic flip — update the local store immediately so refresh()
+        // picks up the new status without waiting for a server round-trip.
+        const current = this._store[tid] || [];
+        const newStatus = decision === 'accept' ? 'accepted' : 'dismissed';
+        const idx = current.findIndex((a) => a.id === actionId);
+        if (idx >= 0) {
+          this._store[tid] = current.slice();
+          this._store[tid][idx] = Object.assign({}, current[idx], { status: newStatus });
+        }
+        this.refresh();
       },
     };
 
@@ -3930,6 +4175,10 @@
       // list in ComposerConfig; now apply the effort capability gate.
       State.serverSupportsEffort = caps.effortSelection;
       ComposerConfig.applyCapability(State.serverSupportsEffort);
+      // Suggested actions: raw-fallback pattern (flag added after
+      // parseHelloCapabilities was written; do not rely on caps.suggestedActions).
+      const hasSuggestedActions = !!(frame && frame.capabilities && frame.capabilities.suggestedActions);
+      SuggestedActionsEngine.applyCapability(hasSuggestedActions);
       // (skills/connectors/vault capability gating + the widget-directory
       // announce are HUB concerns — the launchers and panels live there.)
     });
@@ -4134,7 +4383,16 @@
       SecretPromptEngine.handleStatus(frame);
     });
 
+    MoonFrames.register('suggested-action-set', (frame) => {
+      // Full replacement set for a thread. SuggestedActionsEngine stores per-
+      // thread and only shows the chip when the active thread has proposed actions.
+      SuggestedActionsEngine.applySet(frame);
+    });
 
+    MoonFrames.register('suggested-action-update', (frame) => {
+      // Single action delta (status change or new action). Upsert into store.
+      SuggestedActionsEngine.applyUpdate(frame);
+    });
 
     // ── WS close hooks ────────────────────────────────────────────────────
     // Secret hygiene on socket drop (was inline in the close handler). The
@@ -4369,6 +4627,37 @@
     if (DOM.secretPromptInput) {
       DOM.secretPromptInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { e.preventDefault(); SecretPromptEngine.submit(); }
+      });
+    }
+
+    // ── Suggested-actions chip click handlers ─────────────────────────────
+    if (DOM.suggestedActionAccept) {
+      DOM.suggestedActionAccept.addEventListener('click', () => {
+        const actionId = DOM.suggestedActionPanel && DOM.suggestedActionPanel.dataset.actionId;
+        if (actionId) SuggestedActionsEngine._respond(actionId, 'accept');
+      });
+    }
+    if (DOM.suggestedActionDismiss) {
+      DOM.suggestedActionDismiss.addEventListener('click', () => {
+        const actionId = DOM.suggestedActionPanel && DOM.suggestedActionPanel.dataset.actionId;
+        if (actionId) SuggestedActionsEngine._respond(actionId, 'dismiss');
+      });
+    }
+    if (DOM.suggestedActionCancelX) {
+      // X button = dismiss the shown action (same as Dismiss).
+      DOM.suggestedActionCancelX.addEventListener('click', () => {
+        const actionId = DOM.suggestedActionPanel && DOM.suggestedActionPanel.dataset.actionId;
+        if (actionId) SuggestedActionsEngine._respond(actionId, 'dismiss');
+        else if (DOM.suggestedActionPanel) DOM.suggestedActionPanel.hidden = true;
+      });
+    }
+    if (DOM.suggestedActionSeeAll) {
+      DOM.suggestedActionSeeAll.addEventListener('click', () => {
+        const thread = State.activeThreadId || '';
+        if (window.__TAURI__) {
+          window.__TAURI__.core.invoke('open_widget', { kind: 'actions', params: { thread } })
+            .catch(() => {});
+        }
       });
     }
 
@@ -6498,6 +6787,7 @@
       window.__MoonInternals.autoGrowMessageInput = () => ChatEngine.autoGrowMessageInput();
       window.__MoonInternals.handleFrame = (frame) => WebSocketEngine.handleFrame(frame);
       window.__MoonInternals.SurveyEngine = SurveyEngine;
+      window.__MoonInternals.SuggestedActionsEngine = SuggestedActionsEngine;
       window.__MoonInternals.ArtifactsEngine = ArtifactsEngine;
       window.__MoonInternals.WorkflowsEngine = WorkflowsEngine;
       window.__MoonInternals.SecretPromptEngine = SecretPromptEngine;

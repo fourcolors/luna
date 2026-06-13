@@ -717,6 +717,7 @@ describe("ChatService (Tier-2 sim)", () => {
         "mcp__secret_tools__*",
         "mcp__skill_tools__*",
         "mcp__widget_tools__*",
+        "mcp__suggested_actions__*",
         "Task",
       ])
       expect(capturedOptions!["strictMcpConfig"]).toBe(true)

@@ -362,6 +362,22 @@ export interface UIWebSocketServerConfig {
     >
   } | null
   /**
+   * Optional Suggested Actions handle. When provided, the server advertises
+   * `capabilities.suggestedActions` and routes `suggested-action-respond` to
+   * `respond` (accept → auto-execute, dismiss). The resulting status/list
+   * frames reach the client over the normal chat subscribe stream (the service
+   * publishes onto the thread's pubsub), so this handle only needs `respond`.
+   * Errors are swallowed by the adapter — `respond` never fails the caller.
+   * Pass `null` in setup-mode. Structural type — mirrors workflowGallery.
+   */
+  readonly suggestedActions?: {
+    readonly respond: (input: {
+      readonly threadId: string
+      readonly actionId: string
+      readonly decision: "accept" | "dismiss"
+    }) => import("effect").Effect.Effect<void>
+  } | null
+  /**
    * Optional local-shell bridge. When provided, clients may advertise
    * terminal execution capability and receive local-shell request frames
    * from MCP tools bound to the same thread.
@@ -678,6 +694,7 @@ export const startUIWebSocketServer = (
     const connectorService = config.connectorService ?? null
     const artifactStore = config.artifactStore ?? null
     const workflowGallery = config.workflowGallery ?? null
+    const suggestedActions = config.suggestedActions ?? null
     const vaultService = config.vaultService ?? null
     const buildSha = config.buildSha
     const availableModels = config.availableModels
@@ -933,6 +950,7 @@ export const startUIWebSocketServer = (
             artifacts: artifactStore !== null,
             // PRD Part C/W3: read-only workflow gallery over the jobs store.
             workflows: workflowGallery !== null,
+            suggestedActions: suggestedActions !== null,
             // Luna Vault (V1): credential registry + put/delete/sync routing.
             // Clients hide the Vault section when absent/false.
             vault: vaultService !== null,
@@ -1428,7 +1446,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || vaultService !== null || mcpAppHost !== null || subagentTree !== null) {
+        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || suggestedActions !== null || vaultService !== null || mcpAppHost !== null || subagentTree !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -1550,6 +1568,22 @@ export const startUIWebSocketServer = (
                     // answer value is never logged or echoed here.
                     if (jobInputBridge !== null) {
                       jobInputBridge.acceptResult(frame, (out) => send(ws, out))
+                    }
+                    return
+                  }
+                  case "suggested-action-respond": {
+                    // Accept (auto-execute) or dismiss a suggested action. The
+                    // resulting status/list update reaches the client over the
+                    // chat subscribe stream (the service publishes onto the
+                    // thread's pubsub), so we only route the decision here.
+                    if (suggestedActions !== null) {
+                      yield* suggestedActions
+                        .respond({
+                          threadId: frame.threadId,
+                          actionId: frame.actionId,
+                          decision: frame.decision,
+                        })
+                        .pipe(Effect.catchAllCause(() => Effect.void))
                     }
                     return
                   }

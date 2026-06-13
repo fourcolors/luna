@@ -54,6 +54,9 @@ import {
   TelemetryService,
   projectChatMessages,
   projectOne,
+  SuggestedActions,
+  toView,
+  ACTIVE_STATUSES,
   type ChatMessage,
   type SessionSummary,
   type SessionOptions,
@@ -233,6 +236,8 @@ const LUNA_ALLOWED_MCP_TOOLS = [
   // them so the agent can load skills + author widgets autonomously.
   "mcp__skill_tools__*",
   "mcp__widget_tools__*",
+  // suggest_action — same pre-approval rationale (mounted by decorate()).
+  "mcp__suggested_actions__*",
 ] as const
 
 /**
@@ -271,9 +276,41 @@ export class ChatService extends Effect.Service<ChatService>()(
       const threadToolsProvider = yield* Effect.serviceOption(
         ThreadToolsProviderTag,
       )
+      // Optional — the shared Suggested Actions service. When wired, propose()
+      // (live tool + Dream) and respond() (ui-ws) mutate it; its `changes`
+      // stream drives the per-thread frames below.
+      const suggestedActions = yield* Effect.serviceOption(SuggestedActions)
       const serviceScope = yield* Effect.scope
 
       const threads = yield* Ref.make<ReadonlyMap<string, ThreadEntry>>(new Map())
+
+      // Bridge the (frame-agnostic) Suggested Actions change-stream onto the
+      // per-thread chat pubsubs: each changed ROW becomes a `suggested-action-
+      // update` ChatFrame on its thread's stream. A row for a thread with no
+      // live entry (e.g. an offline Dream proposal) is skipped — replay-on-
+      // subscribe re-surfaces it when that thread is next opened. Forked into
+      // the service scope so it lives for the ChatService lifetime.
+      yield* Option.match(suggestedActions, {
+        onNone: () => Effect.void,
+        onSome: (sa) =>
+          sa.changes.pipe(
+            Stream.runForEach((row) =>
+              Effect.gen(function* () {
+                const m = yield* Ref.get(threads)
+                const entry = m.get(row.threadId)
+                if (!entry) return
+                yield* PubSub.publish(entry.pubsub, {
+                  type: "suggested-action-update",
+                  threadId: row.threadId,
+                  action: toView(row),
+                })
+              }),
+            ),
+            Effect.catchAllCause(() => Effect.void),
+            Effect.forkIn(serviceScope),
+            Effect.asVoid,
+          ),
+      })
 
       const inc = (
         name: string,
@@ -1400,7 +1437,36 @@ export class ChatService extends Effect.Service<ChatService>()(
               throughSeq,
               messages: projected,
             }
-            return Stream.concat(Stream.make(snapshotFrame), liveStream)
+
+            // Replay-on-open: surface this thread's non-terminal suggested
+            // actions (including any Dream proposed while no client was
+            // attached) as ONE set frame right after the snapshot, before the
+            // live stream. Best-effort — a store error must not break the
+            // subscribe.
+            const replayFrames: ChatFrame[] = []
+            yield* Option.match(suggestedActions, {
+              onNone: () => Effect.void,
+              onSome: (sa) =>
+                sa
+                  .listByThread(threadId, { status: ACTIVE_STATUSES })
+                  .pipe(
+                    Effect.catchAll(() => Effect.succeed([] as const)),
+                    Effect.map((rows) => {
+                      if (rows.length > 0) {
+                        replayFrames.push({
+                          type: "suggested-action-set",
+                          threadId,
+                          actions: rows.map(toView),
+                        })
+                      }
+                    }),
+                  ),
+            })
+
+            return Stream.concat(
+              Stream.make(snapshotFrame, ...replayFrames),
+              liveStream,
+            )
           }),
         )
 

@@ -34,6 +34,7 @@
     "@luna/scheduler-tools": "workspace:*",
     "@luna/secret-tools": "workspace:*",
     "@luna/skill-tools": "workspace:*",
+    "@luna/suggested-actions-tools": "workspace:*",
     "@luna/tools": "workspace:*",
     "@luna/vault": "workspace:*",
     "@luna/widget-tools": "workspace:*",

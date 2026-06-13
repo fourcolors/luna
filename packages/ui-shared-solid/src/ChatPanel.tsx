@@ -36,6 +36,7 @@ import {
   type NewThreadFrame,
   type PendingAttachment,
   type ThreadView,
+  type SuggestedActionWire,
 } from "@luna/ui-shared/core"
 import { MarkdownView } from "./MarkdownView.jsx"
 import { MessageBubble } from "./MessageBubble.jsx"
@@ -128,6 +129,15 @@ export interface ChatPanelProps {
   readonly onModelChange?: (threadId: string, model: string) => void
   /** Called when the user picks a different effort level. */
   readonly onEffortChange?: (threadId: string, effort: EffortLevel) => void
+  // ── Suggested actions inline chip ──────────────────────────────────────
+  /** The active thread's suggested actions (from store.state.suggestedActions). */
+  readonly suggestedActions?: ReadonlyArray<SuggestedActionWire>
+  /** Called when the user accepts the inline suggestion. */
+  readonly onAcceptSuggestion?: (id: string) => void
+  /** Called when the user dismisses the inline suggestion. */
+  readonly onDismissSuggestion?: (id: string) => void
+  /** Called when the user clicks "see all" — opens the actions panel. */
+  readonly onSeeAllSuggestions?: () => void
 }
 
 export const ChatPanel: Component<ChatPanelProps> = (props) => {
@@ -297,6 +307,69 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
             <For each={thread().messages}>
               {(m) => <MessageBubble message={m} />}
             </For>
+            {/* ── Suggested action inline chip ────────────────────────────
+                Shows the LATEST proposed action (first in the array with
+                status==='proposed') when handlers are wired in. Stays
+                purely presentational — all state lives in the parent. */}
+            <Show
+              when={(() => {
+                const actions = props.suggestedActions
+                if (!actions || !props.onAcceptSuggestion || !props.onDismissSuggestion) return null
+                return actions.find((a) => a.status === "proposed") ?? null
+              })()}
+            >
+              {(action) => (
+                <div
+                  class="bubble assistant"
+                  style={{
+                    "border-left": "2px solid var(--color-accent, #60a5fa)",
+                    "padding-left": "0.5rem",
+                    "margin-top": "0.5rem",
+                  }}
+                  role="status"
+                  aria-live="polite"
+                >
+                  <div class="bubble-role muted small">Luna suggested an action</div>
+                  <div style={{ "font-weight": "500", margin: "0.2rem 0" }}>
+                    {action().title}
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: "0.4rem",
+                      "flex-wrap": "wrap",
+                      "margin-top": "0.3rem",
+                    }}
+                  >
+                    <button
+                      type="button"
+                      class="chip small"
+                      style={{ color: "var(--color-success, #4ade80)" }}
+                      onClick={() => props.onAcceptSuggestion!(action().id)}
+                    >
+                      Accept
+                    </button>
+                    <button
+                      type="button"
+                      class="chip small"
+                      style={{ color: "var(--color-muted, #888)" }}
+                      onClick={() => props.onDismissSuggestion!(action().id)}
+                    >
+                      Dismiss
+                    </button>
+                    <Show when={props.onSeeAllSuggestions}>
+                      <button
+                        type="button"
+                        class="chip small"
+                        onClick={() => props.onSeeAllSuggestions!()}
+                      >
+                        see all
+                      </button>
+                    </Show>
+                  </div>
+                </div>
+              )}
+            </Show>
             <Show when={thread().inFlight}>
               {(inFlight) => (
                 <div class="bubble assistant in-flight">
