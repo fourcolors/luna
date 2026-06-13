@@ -1,49 +1,90 @@
 /**
  * Scheduler tools — three SDK MCP tool definitions exposed to the chat agent:
  *
- *   - schedule_create(expr, label?) → { triggerId, expr, registeredAt }
- *   - schedule_list()               → { triggers: TriggerSummary[] }
- *   - schedule_cancel(triggerId)    → { cancelled: boolean }
+ *   - schedule_create(expr, prompt, label?) → { triggerId, expr, registeredAt }
+ *   - schedule_list()                       → { triggers: [...] }
+ *   - schedule_cancel(triggerId)            → { cancelled: boolean }
  *
- * Implementation routes through TriggerAgentApi + a long-lived Scope + a
- * `JobsStoreApi` (persistence ledger). Cron registrations are durable across
- * chat-server restarts: the Layer reloads every `jobs` row at boot before
- * accepting new tool calls.
+ * V2-native: a schedule is a durable RECURRING `kind:"prompt"` row in the
+ * `jobs` table. The V2 JobTicker (on by default) re-fires it on each cron tick
+ * and runs the PromptWorker, which executes the agent-authored `user_prompt`
+ * and delivers the result to the operator as an obs_note. So a schedule
+ * actually DOES something on fire (it used to fire a no-op).
  *
- * Scope note: schedule_create extends each trigger registration into the
- * Layer-owned Scope so cron fibers live for the full session lifetime, not
- * just the instant of the tool call. schedule_cancel explicitly interrupts a
- * fiber early AND deletes the row. When the Layer Scope closes (process exit
- * / session teardown), all live fibers are interrupted but the rows remain
- * for the next boot to re-register.
+ * Persistence is automatic: the row lives in `jobs`, and the ticker reads the
+ * table every tick — there is nothing to re-register at boot. schedule_cancel
+ * deletes the row so it stops firing and does not come back.
  *
- * Stream-kind triggers are intentionally NOT persisted — Streams cannot be
- * serialized. The agent-facing tools here only expose cron, so this is
- * consistent. Future kinds (oneshot, file-watch) will plug into the same
- * JobsStore — same `jobs` table, different `kind` discriminator.
- *
- * Boot-reload + persistence layer wiring lives in `./layer.ts`.
+ * Note: on a LUNA_SCHEDULER_V2_ENABLED=0 deploy (the kill switch) the ticker is
+ * not running, so the row persists but does not fire until V2 is re-enabled —
+ * the schedule is captured durably either way.
  */
-import { Effect } from "effect"
-import * as ScopeImpl from "effect/Scope"
-import type * as Scope from "effect/Scope"
+import { Cron, Effect, Either } from "effect"
 import { z } from "zod"
 import { defineTool, ToolError } from "@luna/tools"
-import type { JobsStoreApi, TriggerAgentApi } from "@luna/core"
+import type { JobsStoreApi } from "@luna/core"
+
+/**
+ * A read-only "system" schedule (e.g. the wake / dream cycles) surfaced by
+ * schedule_list so the operator sees the WHOLE schedule picture, not just the
+ * agent-created crons. These are managed elsewhere and cannot be cancelled via
+ * schedule_cancel.
+ */
+export interface SystemSchedule {
+  readonly label: string
+  readonly expr: string
+}
+
+/** Exactly 5 whitespace-separated fields (minute hour dom month dow). */
+const isFiveFieldCron = (expr: string): boolean =>
+  expr.trim().split(/\s+/).filter(Boolean).length === 5
+
+/**
+ * Next fire time for a 5-field cron, in UTC. Returns null when the expression
+ * is unparseable OR has no upcoming match (so the caller can reject it instead
+ * of persisting a schedule that never fires). Pins to UTC to match the ticker.
+ */
+const nextRunAtUtc = (expr: string): number | null => {
+  const parsed = Cron.parse(expr, "UTC")
+  if (Either.isLeft(parsed)) return null
+  try {
+    return Cron.next(parsed.right, new Date()).getTime()
+  } catch {
+    return null
+  }
+}
+
+// Effectively-unique id: a ms timestamp (monotonic across restarts) + a random
+// suffix, mirroring JobScheduler.genId. A process-local counter would reset on
+// restart and could collide with an already-persisted schedule — record()
+// rejects duplicate ids, so that would make schedule_create fail nondeterministically.
+const nextScheduleId = (): string =>
+  `sched-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 
 const createShape = {
   expr: z
     .string()
     .min(1)
+    .refine(isFiveFieldCron, {
+      message:
+        "cron must have exactly 5 fields (minute hour day-of-month month day-of-week); " +
+        "6-field syntax with a leading seconds field is not supported.",
+    })
     .describe(
-      "Standard 5-field cron expression (e.g. '0 9 * * 1' for every Monday at 9am).",
+      "Standard 5-field cron expression (e.g. '0 9 * * 1' for every Monday at 9am). UTC.",
+    ),
+  prompt: z
+    .string()
+    .min(1)
+    .describe(
+      "What Luna should DO each time the schedule fires, as an instruction to " +
+        "an autonomous agent turn (e.g. 'Remind me to review the deploy checklist'). " +
+        "The result is delivered to the operator as a note.",
     ),
   label: z
     .string()
     .optional()
-    .describe(
-      "Optional human-readable label for this schedule (used as job id prefix).",
-    ),
+    .describe("Optional human-readable label for this schedule."),
 }
 
 const listShape = {}
@@ -62,102 +103,90 @@ const SCHEDULER_TOOL_DISCOVERY = {
 } as const
 
 /**
- * Build the three scheduler tools bound to a resolved TriggerAgentApi, a
- * long-lived Layer Scope, and a JobsStoreApi for persistence.
+ * Build the three scheduler tools bound to a `JobsStoreApi`. The handlers have
+ * no Effect requirements — everything is closed over so the definitions are
+ * self-contained at the SDK Promise boundary.
  *
- * `register()`'s trigger fiber is extended into `layerScope` so cron fibers
- * outlive the tool call. After successful register, the row is recorded in
- * JobsStore. If recording fails, the trigger is cancelled (best-effort) and
- * the error propagates — partial-failure rollback so the next boot doesn't
- * see a phantom fiber-less row.
- *
- * Handlers have no Effect requirements — everything is closed over so the
- * definitions are self-contained at the SDK Promise boundary.
+ * `systemSchedules` are read-only entries (wake/dream) surfaced by
+ * schedule_list alongside the agent-created schedules.
  */
 export const makeSchedulerTools = (
-  trigger: TriggerAgentApi,
-  layerScope: Scope.Scope,
   jobsStore: JobsStoreApi,
+  systemSchedules: ReadonlyArray<SystemSchedule> = [],
 ) => {
   const create = defineTool({
     name: "schedule_create",
     description:
-      "Register a recurring cron schedule. The agent submits a new job on " +
-      "each cron tick. Schedules are durable across chat-server restarts " +
-      "(persisted in luna.db jobs table per DESIGN.md §5.1). Returns a " +
-      "triggerId you pass to schedule_cancel to stop it. Use standard " +
-      "5-field cron syntax: minute hour day-of-month month day-of-week.",
+      "Register a recurring schedule. On each cron tick Luna runs an autonomous " +
+      "agent turn driven by your `prompt` and delivers the result to the operator " +
+      "as a note. Schedules are durable across restarts (persisted in luna.db). " +
+      "Returns a triggerId you pass to schedule_cancel to stop it. Use standard " +
+      "5-field cron syntax interpreted in UTC: minute hour day-of-month month day-of-week.",
     inputSchema: createShape,
     ...SCHEDULER_TOOL_DISCOVERY,
     handler: (args) =>
       Effect.gen(function* () {
-        const label = args.label ?? "scheduled-job"
-        // Extend the trigger registration into the layer-owned Scope so the
-        // cron fiber outlives this tool call. ScopeImpl.extend(layerScope)
-        // provides the scope without closing it when the effect resolves.
-        const triggerId = yield* ScopeImpl.extend(layerScope)(
-          trigger.register({
-            kind: "cron",
-            expr: args.expr,
-            build: () => ({
-              id: `${label}-${Date.now()}`,
-              run: Effect.succeed(`${label} tick`),
-            }),
-          }),
-        ).pipe(
-          Effect.mapError(
-            (cause) =>
-              new ToolError({
-                tool: "schedule_create",
-                op: "register",
-                cause,
-              }),
-          ),
-        )
-
-        // Persist the row. On failure, roll back the registration so the
-        // jobs table stays in sync with what's actually running.
-        const recordResult = yield* Effect.either(
-          jobsStore.record({
-            id: triggerId,
-            kind: "cron",
-            spec: args.expr,
-            payload: { label, source: "scheduler-tools" },
-          }),
-        )
-        if (recordResult._tag === "Left") {
-          // Best-effort: cancel the registered trigger so we don't have a
-          // running fiber that nobody knows about. Don't bubble up cancel
-          // failures — the original record error is the user-visible one.
-          yield* Effect.ignore(trigger.cancel(triggerId))
+        // Defend the handler boundary (tests + non-SDK callers bypass the zod
+        // refine): Effect's Cron.parse silently accepts a 6-field expression,
+        // so "*/5 * * * * *" would mean every 5 SECONDS. Require exactly 5.
+        if (!isFiveFieldCron(args.expr)) {
+          const fieldCount = args.expr.trim().split(/\s+/).filter(Boolean).length
           return yield* Effect.fail(
             new ToolError({
               tool: "schedule_create",
-              op: "persist",
-              cause: recordResult.left,
+              op: "validate",
+              cause:
+                `cron must have exactly 5 fields (minute hour day-of-month month ` +
+                `day-of-week); got ${fieldCount}. 6-field syntax with a seconds ` +
+                `field is not supported.`,
             }),
           )
         }
 
-        // Opt this V1 cron row out of the V2 JobTicker. V1 cron rows
-        // (kind="cron") have no worker in WorkerRegistry, so leaving the
-        // row enabled would cause the ticker to claim it every tick and
-        // write a spurious failed/unknown_kind run into job_runs. V1 cron
-        // continues to fire via the in-process TriggerAgent regardless of
-        // the `enabled` flag, so this is purely a V2-ticker opt-out.
-        // Soft failure: if setV2Fields can't run (e.g. DB error), the V1
-        // cron still works; the V2 ticker will just be noisy. See #58.
-        yield* Effect.ignore(
-          jobsStore.setV2Fields(triggerId, { enabled: false }),
-        )
+        // Reject an unparseable / never-matching cron up front rather than
+        // persisting a schedule that can never fire.
+        const firstRunAt = nextRunAtUtc(args.expr)
+        if (firstRunAt === null) {
+          return yield* Effect.fail(
+            new ToolError({
+              tool: "schedule_create",
+              op: "validate",
+              cause: `cron "${args.expr}" is invalid or has no upcoming match`,
+            }),
+          )
+        }
 
-        // Retrieve the summary to return registeredAt.
-        const summaries = yield* trigger.list
-        const summary = summaries.find((s) => s.id === triggerId)
+        const label = args.label ?? "scheduled-job"
+        const id = nextScheduleId()
+
+        // Durable RECURRING prompt job — the V2 ticker re-fires it each tick
+        // (spec is non-empty, so it is NOT a one-shot) and the PromptWorker
+        // delivers the turn's result to the operator as an obs_note.
+        const job = yield* jobsStore
+          .record({
+            id,
+            kind: "prompt",
+            spec: args.expr,
+            payload: {
+              label,
+              source: "scheduler-tools",
+              user_prompt: args.prompt,
+              deliver_to: { kind: "obs_note", kind_tag: "reminder" },
+            },
+            enabled: true,
+            nextRunAt: firstRunAt,
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ToolError({ tool: "schedule_create", op: "persist", cause }),
+            ),
+          )
+
         return {
-          triggerId,
+          triggerId: id,
           expr: args.expr,
-          registeredAt: summary?.registeredAt ?? new Date().toISOString(),
+          registeredAt: new Date(job.createdAt).toISOString(),
         } as const
       }),
   })
@@ -165,43 +194,99 @@ export const makeSchedulerTools = (
   const list = defineTool({
     name: "schedule_list",
     description:
-      "List all currently active schedules. Returns an array of trigger " +
-      "summaries including their id, cron expression, and registration time.",
+      "List active schedules. Includes the schedules you created with " +
+      "schedule_create (cancellable: true) AND read-only system schedules such " +
+      "as the wake/dream cycles (cancellable: false — managed elsewhere). Each " +
+      "entry reports its id, cron expression (UTC), source ('agent' | 'system'), " +
+      "and whether it is cancellable.",
     inputSchema: listShape,
     ...SCHEDULER_TOOL_DISCOVERY,
     handler: (_args) =>
       Effect.gen(function* () {
-        const triggers = yield* trigger.list
-        return {
-          triggers: triggers.map((t) => ({
-            triggerId: t.id,
-            kind: t.kind,
-            expr: t.expr ?? null,
-            registeredAt: t.registeredAt,
-          })),
-        } as const
+        const rows = yield* jobsStore
+          .listAll()
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ToolError({ tool: "schedule_list", op: "list", cause }),
+            ),
+          )
+        const agentEntries = rows
+          .filter(
+            // kind:"prompt" = current V2 schedules; kind:"cron" = LEGACY rows
+            // persisted by the old V1 scheduler-tools (now no-ops). Surface both
+            // so post-upgrade legacy schedules stay visible + cancellable rather
+            // than stranded invisibly in the jobs table.
+            (r) =>
+              (r.kind === "prompt" || r.kind === "cron") &&
+              r.payload.source === "scheduler-tools",
+          )
+          .map((r) => ({
+            triggerId: r.id,
+            kind: "cron" as const,
+            expr: r.schedule ?? r.spec,
+            registeredAt: new Date(r.createdAt).toISOString(),
+            source: "agent" as const,
+            cancellable: true as const,
+            // `enabled: false` means the ticker quarantined it (e.g. its cron
+            // later proved unschedulable) — it persists but no longer fires.
+            enabled: r.enabled,
+          }))
+        const systemEntries = systemSchedules.map((s) => ({
+          triggerId: `system:${s.label}`,
+          kind: "cron" as const,
+          expr: s.expr,
+          registeredAt: null,
+          source: "system" as const,
+          cancellable: false as const,
+          enabled: true as const,
+        }))
+        return { triggers: [...agentEntries, ...systemEntries] } as const
       }),
   })
 
   const cancel = defineTool({
     name: "schedule_cancel",
     description:
-      "Cancel an active schedule by its triggerId. Removes the persisted " +
-      "row so it does not re-register on the next chat-server boot. Returns " +
-      "{ cancelled: true } if the trigger was found and stopped, " +
-      "{ cancelled: false } if not found.",
+      "Cancel an active schedule by its triggerId. Deletes the persisted row so " +
+      "it stops firing and does not come back. Returns { cancelled: true } if a " +
+      "schedule was removed, { cancelled: false } if not found. System schedules " +
+      "(source 'system') cannot be cancelled here.",
     inputSchema: cancelShape,
     ...SCHEDULER_TOOL_DISCOVERY,
     handler: (args) =>
       Effect.gen(function* () {
-        const cancelled = yield* trigger.cancel(args.triggerId)
-        // Always attempt the row delete even if the fiber was already gone —
-        // covers the case where a previous restart left a row whose fiber
-        // was re-spawned under a different triggerId. Best-effort: surface
-        // store errors but don't override the cancellation outcome we
-        // report to the agent (the trigger cancellation is the primary
-        // signal the user cares about).
-        yield* Effect.ignore(jobsStore.remove(args.triggerId))
+        // Scope the delete to agent-created scheduler rows ONLY. Without this
+        // guard, schedule_cancel would DELETE any jobs row by id — e.g. a saved
+        // kind:"workflow" job or a suggested-action one-shot keyed saj-<id> —
+        // silently destroying durable state it does not own and reporting
+        // {cancelled:true}. System schedules (system:* ids) are read-only here.
+        if (args.triggerId.startsWith("system:")) {
+          return { cancelled: false } as const
+        }
+        const row = yield* jobsStore
+          .getById(args.triggerId)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ToolError({ tool: "schedule_cancel", op: "lookup", cause }),
+            ),
+          )
+        if (
+          !row ||
+          (row.kind !== "prompt" && row.kind !== "cron") ||
+          row.payload.source !== "scheduler-tools"
+        ) {
+          return { cancelled: false } as const
+        }
+        const cancelled = yield* jobsStore
+          .remove(args.triggerId)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ToolError({ tool: "schedule_cancel", op: "delete", cause }),
+            ),
+          )
         return { cancelled } as const
       }),
   })

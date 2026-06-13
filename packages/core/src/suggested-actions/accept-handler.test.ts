@@ -7,6 +7,7 @@ import { SuggestedActionsStore } from "./suggested-actions-store.js"
 import { SuggestedActions } from "./suggested-actions.js"
 import { AcceptHandlerLayer, buildPromptJobSpec, executionIdFor } from "./accept-handler.js"
 import type { ProposeInput, SuggestedActionRow } from "./types.js"
+import type { JobsStoreApi } from "../jobs/jobs-store-types.js"
 
 /* -------------------------------------------------------------------------- */
 /* Pure builder                                                                */
@@ -109,6 +110,47 @@ describe("AcceptHandler accept flow", () => {
     expect(out.job?.enabled).toBe(true)
     expect(out.job?.spec).toBe("") // one-shot
     expect(out.job?.nextRunAt).toBe(1000) // due now (Clock.Test)
+  })
+
+  it("arms the accepted job atomically — no separate re-enabling write (closes the double-fire window)", async () => {
+    let enableWrites = 0
+    const prog = Effect.gen(function* () {
+      const real = yield* JobsStoreService
+      // Spy: count any setV2Fields call that re-enables the row. A separate
+      // enable-after-record is exactly the window where a tick could double-fire.
+      const wrapped: JobsStoreApi = {
+        ...real,
+        setV2Fields: (id, patch) => {
+          if (patch.enabled === true) enableWrites++
+          return real.setV2Fields(id, patch)
+        },
+      }
+      const accLayer = AcceptHandlerLayer({ pollInterval: Duration.millis(10_000) }).pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(
+            SuggestedActions.layer.pipe(Layer.provide(SuggestedActionsStore.Memory)),
+            Layer.succeed(JobsStoreService, wrapped),
+          ),
+        ),
+        Layer.provide(Clock.Test(1000)),
+      )
+      yield* Effect.gen(function* () {
+        const sa = yield* SuggestedActions
+        const row = yield* sa.propose(propose())
+        yield* sa.respond({ threadId: "t1", actionId: row.id, decision: "accept" })
+        const job = yield* real.getById(executionIdFor(row.id))
+        // Created enabled + due now…
+        expect(job?.enabled).toBe(true)
+        expect(job?.nextRunAt).toBe(1000)
+        // …in a SINGLE write — no separate enable that opens a double-fire gap.
+        expect(enableWrites).toBe(0)
+      }).pipe(Effect.scoped, Effect.provide(accLayer))
+    })
+    await Effect.runPromise(
+      Effect.scoped(prog).pipe(
+        Effect.provide(JobsStoreService.Memory.pipe(Layer.provide(Clock.Test(1000)))),
+      ),
+    )
   })
 
   it("completion observer folds a terminal run back onto the action", async () => {
