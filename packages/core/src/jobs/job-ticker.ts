@@ -186,9 +186,18 @@ export const JobTickerLayer = (
           const scheduleEmpty = (job.schedule ?? "").trim() === ""
           const specEmpty = (job.spec ?? "").trim() === ""
           if (scheduleEmpty && specEmpty) {
-            yield* store
-              .setV2Fields(job.id, { enabled: false })
-              .pipe(Effect.catchAll(() => Effect.void))
+            // Retry a couple times so a transient store hiccup doesn't leave the
+            // row enabled (claim already nulled next_run_at, so listDue would
+            // return it again next tick → a duplicate dispatch). If it still
+            // fails, log loudly — the next tick may re-fire it.
+            yield* store.setV2Fields(job.id, { enabled: false }).pipe(
+              Effect.retry(Schedule.recurs(2)),
+              Effect.catchAll((err) =>
+                Effect.logWarning(
+                  `[luna/sched] one-shot disable failed for job=${job.id} after retries: ${err.message} — it may re-fire next tick`,
+                ),
+              ),
+            )
           }
 
           // Record run start.

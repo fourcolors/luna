@@ -2054,7 +2054,12 @@ export const buildBaseLayer = (
     jobTickerL ?? Layer.empty, // Phase 12b V2 ticker: enabled via LUNA_SCHEDULER_V2_ENABLED=1 (DESIGN §5.3)
     surveyL,    // Phase 3 D3: Survey available for buildServerLayer to resolve + pass to the WS server
     suggestedActionsL, // Suggested Actions: buildServerLayer resolves it for the WS respond handle (same instance the chat layer uses)
-    acceptHandlerL, // Suggested Actions: auto-execute + completion observer (forked at boot)
+    // Auto-execute + completion observer — ONLY when the V2 ticker is enabled.
+    // Without the ticker a job can never dispatch, so providing AcceptHandler
+    // would strand accepted actions in `in_progress` forever; gating it here
+    // means accept simply leaves the action at `accepted` on a flag-off deploy
+    // (respond resolves AcceptHandler via serviceOption — absent → no exec).
+    schedulerV2Enabled ? acceptHandlerL : Layer.empty,
     skillRegistryL, // PRD Part B: same instance as threadToolsL (memoized by reference) — buildServerLayer resolves it for the WS skill frames
     connectorServiceL, // PRD Part A: same instance as threadToolsL — M2's WS connector frames resolve it here
     artifactStoreL, // PRD Part C/W1: buildServerLayer resolves it for the WS artifact frames
@@ -2227,7 +2232,9 @@ const buildServerLayer = (
       const jobsStore = yield* JobsStoreService // PRD Part C/W3 (gallery source)
       const telemetry = yield* TelemetryService // Phase 7: pulse-snapshot source
       const suggestedActionsService = yield* SuggestedActions // suggest_action
-      const acceptHandlerService = yield* AcceptHandler // auto-execute on accept
+      // Optional — present only when LUNA_SCHEDULER_V2_ENABLED=1 (see the gated
+      // merge above). Absent → accept leaves the action at `accepted`.
+      const acceptHandlerOption = yield* Effect.serviceOption(AcceptHandler)
 
       // PRD A §08: access tokens live ~1h; refresh AHEAD of expiry so the
       // mount snapshot's bearer never goes stale mid-conversation. The
@@ -2781,16 +2788,23 @@ const buildServerLayer = (
           readonly threadId: string
           readonly actionId: string
           readonly decision: "accept" | "dismiss"
-        }) =>
-          suggestedActionsService.respond(input).pipe(
-            Effect.provideService(AcceptHandler, acceptHandlerService),
+        }) => {
+          // Provide AcceptHandler only when it's wired (scheduler V2 on); when
+          // off, respond still works — accept just transitions to `accepted`
+          // without creating a job (serviceOption in respond resolves None).
+          const base = suggestedActionsService.respond(input)
+          const withHandler = Option.isSome(acceptHandlerOption)
+            ? base.pipe(Effect.provideService(AcceptHandler, acceptHandlerOption.value))
+            : base
+          return withHandler.pipe(
             Effect.asVoid,
             Effect.catchAll((e) =>
               Effect.sync(() => {
                 console.warn("[luna/suggested-actions] respond failed:", String(e))
               }),
             ),
-          ),
+          )
+        },
       }
 
       // Wire-safety adapter (PRD §12): the ui-ws handle receives catalog

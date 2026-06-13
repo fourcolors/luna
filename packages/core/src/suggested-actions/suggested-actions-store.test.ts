@@ -154,4 +154,38 @@ describe("SuggestedActionsStore (Memory)", () => {
     expect(out?.status).toBe("failed")
     expect(out?.error).toBe("boom")
   })
+
+  it("dedup id is canonical — payloads differing only in key order collapse to one row", async () => {
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const s = yield* SuggestedActionsStore
+          const a = yield* s.propose(
+            input({ payload: { prompt: "x", model: "m", allowedTools: ["t"] } }),
+          )
+          const b = yield* s.propose(
+            input({ payload: { allowedTools: ["t"], model: "m", prompt: "x" } }),
+          )
+          return { aId: a.id, bId: b.id, n: (yield* s.listByThread("t1")).length }
+        }),
+      ),
+    )
+    expect(out.aId).toBe(out.bId)
+    expect(out.n).toBe(1)
+  })
+
+  it("a different payload VALUE produces a distinct action (not silently reused)", async () => {
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const s = yield* SuggestedActionsStore
+          const a = yield* s.propose(input({ payload: { prompt: "x" } }))
+          const b = yield* s.propose(input({ payload: { prompt: "DIFFERENT" } }))
+          return { aId: a.id, bId: b.id, n: (yield* s.listByThread("t1")).length }
+        }),
+      ),
+    )
+    expect(out.aId).not.toBe(out.bId)
+    expect(out.n).toBe(2)
+  })
 })

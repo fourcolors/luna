@@ -20,17 +20,21 @@ const suggestActionShape = {
   title: z
     .string()
     .min(1)
+    .max(200)
     .describe("Short label shown on the inline chip and panel row, e.g. 'Research LiveKit pricing'."),
   rationale: z
     .string()
+    .max(500)
     .optional()
     .describe("One sentence on WHY this is worth doing — shown to the user."),
   detail: z
     .string()
+    .max(2000)
     .optional()
     .describe("Optional longer description of the action."),
   prompt: z
     .string()
+    .max(8000)
     .optional()
     .describe(
       "Required for task/research/create_skill/create_workflow: the full " +
@@ -39,9 +43,15 @@ const suggestActionShape = {
     ),
   job_id: z
     .string()
+    .max(200)
     .optional()
     .describe("Required for run_workflow: the id of an existing saved workflow job to run."),
 }
+
+/** The tool's input schema as a Zod object — the MCP SDK validates against this
+ *  (rejecting over-long/malformed input) BEFORE the handler runs. Exported so
+ *  the bounds are unit-testable without spinning up the SDK. */
+export const suggestActionInputSchema = z.object(suggestActionShape)
 
 /**
  * `makeSuggestedActionTools(service, currentThreadId)` — one agent tool,

@@ -89,6 +89,7 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "artifact-update",
   "workflow-list",
   "workflow-runs",
+  // PR #114 (Suggested Actions) — additive behind capabilities.suggestedActions.
   "suggested-action-set",
   "suggested-action-update",
   "local-shell-request",
@@ -138,6 +139,7 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "artifact-unpin",
   "workflow-runs-request",
   "workflow-refresh",
+  // PR #114 (Suggested Actions) — additive behind capabilities.suggestedActions.
   "suggested-action-respond",
   "pty-input",
   "pty-resize",

@@ -94,15 +94,27 @@ const fnv1a = (s: string): string => {
   return (h >>> 0).toString(36)
 }
 
+/** Deterministic, key-order-independent JSON — so two equivalent payloads that
+ *  differ only in object key order produce the SAME dedup hash (plain
+ *  `JSON.stringify` is insertion-order-dependent and not guaranteed stable). */
+const stableStringify = (v: unknown): string => {
+  if (v === null || typeof v !== "object") return JSON.stringify(v) ?? "null"
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(",")}]`
+  const obj = v as Record<string, unknown>
+  const keys = Object.keys(obj).sort()
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`
+}
+
 /** Content-derived action id so re-proposing an IDENTICAL action (same thread,
  *  type, title AND payload) dedups via the state-row PK (no nagging
  *  duplicates) — but a re-proposal with a DIFFERENT payload (prompt / jobId /
  *  tools / model) gets a fresh row, so accepting the newer suggestion can never
- *  silently execute the older payload. Explicit `id` wins. */
+ *  silently execute the older payload. Payload is canonicalized so key order
+ *  doesn't change the id. Explicit `id` wins. */
 const deriveActionId = (i: ProposeInput): string =>
   i.id ??
   `sa-${fnv1a(
-    `${i.threadId}|${i.actionType}|${i.title.trim().toLowerCase()}|${JSON.stringify(i.payload)}`,
+    `${i.threadId}|${i.actionType}|${i.title.trim().toLowerCase()}|${stableStringify(i.payload)}`,
   )}`
 
 /** Audit-log row id — idempotency key on (actionId, event, at). */
@@ -424,8 +436,19 @@ export class SuggestedActionsStore extends Effect.Tag(
                 at,
                 at,
               )
+              // Read-after-insert: surfaces the row WITH its DB-defaulted
+              // columns (status='proposed', null exec fields). Should always be
+              // present immediately after a successful INSERT OR IGNORE; a miss
+              // means the DB is inconsistent (concurrent writer / WAL issue).
+              // Fail with a descriptive SuggestedActionsError (wrap() turns this
+              // throw into op:'propose'), never a raw Error.
               const row = readById(id)
-              if (!row) throw new Error("state row vanished after insert")
+              if (!row) {
+                throw new SuggestedActionsError({
+                  op: "propose",
+                  message: `state row for "${id}" not found immediately after insert (DB may be inconsistent)`,
+                })
+              }
               logEvent(row, "proposed", at)
               return row
             })

@@ -151,3 +151,66 @@ describe("AcceptHandler accept flow", () => {
     expect(out?.error).toBe("boom")
   })
 })
+
+describe("AcceptHandler run_workflow + error paths", () => {
+  it("clones the saved workflow job into a fresh one-shot and links it", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const sa = yield* SuggestedActions
+        const jobs = yield* JobsStoreService
+        // A saved, scheduled workflow job (the WorkflowGallery catalog source).
+        yield* jobs.record({
+          id: "wf-saved",
+          kind: "workflow",
+          spec: "0 0 * * *",
+          payload: { label: "Saved WF", steps: [{ kind: "shell", cmd: "echo hi" }] },
+        })
+        const row = yield* sa.propose(
+          propose({ actionType: "run_workflow", title: "Run it", payload: { jobId: "wf-saved" } }),
+        )
+        const result = yield* sa.respond({ threadId: "t1", actionId: row.id, decision: "accept" })
+        const cloned = yield* jobs.getById(executionIdFor(row.id))
+        return { result, cloned }
+      }),
+    )
+    expect(out.result?.status).toBe("in_progress")
+    expect(out.cloned?.kind).toBe("workflow")
+    expect(out.cloned?.spec).toBe("") // one-shot clone, NOT the saved cron
+    expect(out.cloned?.enabled).toBe(true)
+    expect(out.cloned?.payload.label).toBe("Run it") // overridden label
+    expect((out.cloned?.payload as { steps?: unknown }).steps).toBeDefined() // cloned payload
+    // The saved job is untouched.
+    const saved = out
+    expect(saved).toBeTruthy()
+  })
+
+  it("marks the action failed when the workflow job is missing", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const sa = yield* SuggestedActions
+        const row = yield* sa.propose(
+          propose({ actionType: "run_workflow", title: "Run gone", payload: { jobId: "nope" } }),
+        )
+        return yield* sa.respond({ threadId: "t1", actionId: row.id, decision: "accept" })
+      }),
+    )
+    // handler.accept fails → respond's Effect.either path records a failed terminal.
+    expect(out?.status).toBe("failed")
+    expect(out?.error).toBeTruthy()
+  })
+
+  it("marks the action failed when the referenced job is not a workflow", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const sa = yield* SuggestedActions
+        const jobs = yield* JobsStoreService
+        yield* jobs.record({ id: "wf-prompt", kind: "prompt", spec: "", payload: { label: "nope" } })
+        const row = yield* sa.propose(
+          propose({ actionType: "run_workflow", title: "Run prompt", payload: { jobId: "wf-prompt" } }),
+        )
+        return yield* sa.respond({ threadId: "t1", actionId: row.id, decision: "accept" })
+      }),
+    )
+    expect(out?.status).toBe("failed")
+  })
+})
