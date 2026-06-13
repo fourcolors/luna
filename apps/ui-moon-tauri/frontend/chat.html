@@ -357,6 +357,58 @@
       z-index: -1;
     }
 
+    /* Per-message action row: an always-visible footer under each bubble
+       holding the copy button + the relative send-time. Replaces the old
+       hover-reveal corner button — visible at rest, reachable by Tab. The
+       row is an extensible flex container (future home for undo / branch). */
+    .msg-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 5px;
+    }
+    /* Align the row to the bubble's side (user bubbles sit flush-right). */
+    .msg.user .msg-meta { justify-content: flex-end; }
+    .msg-time {
+      font-size: 0.7rem;
+      color: var(--ink-soft);
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    .msg-copy {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border-radius: 6px;
+      background: color-mix(in oklab, var(--paper) 78%, transparent);
+      border: 1px solid var(--ink-faint);
+      color: var(--ink-soft);
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    .msg-copy:hover {
+      background: color-mix(in oklab, var(--ink) 8%, transparent);
+      border-color: color-mix(in oklab, var(--accent) 45%, transparent);
+      color: var(--ink);
+    }
+    .msg-copy:focus-visible {
+      outline: 1px solid var(--ink-faint);
+      outline-offset: 1px;
+    }
+    /* Brief confirmation state after a successful copy (mint, like the
+       code-block copy's done state). */
+    .msg-copy[data-copied="1"] {
+      color: #6ee7b7;
+      border-color: rgba(110, 231, 183, 0.4);
+      background: rgba(110, 231, 183, 0.1);
+    }
+    .msg-copy svg { width: 14px; height: 14px; display: block; }
+
     /* Markdown tables (GFM). Dark-glass: thin separators, transparent
        background, tight cell padding so the table fits in the 560px-wide
        panel without forcing a horizontal scrollbar on short rows. */
@@ -975,8 +1027,8 @@
     .workflows-header-btn[hidden] { display: none !important; }
 
     /* Markdown rendering inside assistant bubbles (mirrors ui-web's .markdown conventions) */
-    .msg.assistant > :first-child { margin-top: 0; }
-    .msg.assistant > :last-child { margin-bottom: 0; }
+    .msg.assistant .msg-body > :first-child { margin-top: 0; }
+    .msg.assistant .msg-body > :last-child { margin-bottom: 0; }
     .msg.assistant p { margin: 0.5em 0; white-space: pre-wrap; } /* keep single newlines */
     .msg.assistant h1, .msg.assistant h2, .msg.assistant h3 {
       margin: 0.6em 0 0.3em;
@@ -1080,7 +1132,7 @@
 
     /* Bare <pre><code> that escapes the .code-block wrapper (defensive: if a
        future code-path emits plain <pre>, we still want it to look right). */
-    .msg.assistant > pre,
+    .msg.assistant .msg-body > pre,
     .msg.assistant li > pre {
       background: color-mix(in oklab, var(--ink) 7%, transparent);
       border: 1px solid color-mix(in oklab, var(--accent) 16%, transparent);
@@ -1089,7 +1141,7 @@
       overflow-x: auto;
       margin: 0.5em 0;
     }
-    .msg.assistant > pre > code,
+    .msg.assistant .msg-body > pre > code,
     .msg.assistant li > pre > code {
       background: none;
       padding: 0;
@@ -4005,7 +4057,11 @@
       WebSocketEngine.clearTurnTimeout();
       const doneTurnId = frame.turnId || State.activeTurnId;
       State.activeTurnId = null;
-      ChatState.finishTurn(doneTurnId, frame.message ? frame.message.text : null);
+      ChatState.finishTurn(
+        doneTurnId,
+        frame.message ? frame.message.text : null,
+        frame.message ? frame.message.ts : undefined,
+      );
       ChatLoop.flush();
       // Spoken replies: this message ended — flush its sentence
       // remainder (per message, so intermediate agentic steps speak too).
@@ -4103,6 +4159,122 @@
     const enhanceCodeBlocks = LunaMarkdown.enhanceCodeBlocks;
     const StreamRender = LunaMarkdown.StreamRender;
 
+    // Copy-message affordance ─────────────────────────────────────────────
+    // Lucide-style inline SVG glyphs (two overlapping squares = copy; a
+    // checkmark = the brief "copied" confirmation). EXPLICIT width/height are
+    // load-bearing: these are injected via innerHTML at runtime, and WKWebView
+    // (Tauri's webview) computes an SVG's intrinsic size from its attributes —
+    // a viewBox-only SVG sized purely by CSS renders blank/wrong there, unlike
+    // Chromium. Matching the static header icons (chat.html ~1633-1668), which
+    // all carry explicit width/height, is what makes them render. Explicit
+    // close tags keep the HTML parser from treating the foreign elements as
+    // containers.
+    const MSG_COPY_GLYPH =
+      '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"'
+      + ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+      + '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>'
+      + '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+    const MSG_CHECK_GLYPH =
+      '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"'
+      + ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+      + '<path d="M20 6 9 17l-5-5"></path></svg>';
+
+    // How long the copy button shows its "copied" checkmark before reverting.
+    const MSG_COPY_FLASH_MS = 1200;
+
+    // Build the small always-visible "copy this message" button for a bubble.
+    // Copies `text` (the message's RAW source — markdown for assistant turns,
+    // the typed text for user turns) so a paste preserves structure/code,
+    // mirroring both apps/ui-web's MessageBubble and the code-block copy.
+    // Returns a fresh <button>; callers append it on every paint (the
+    // reconciler rebuilds bubble contents, so the button is re-created too).
+    function buildMessageCopyButton(text) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'msg-copy';
+      btn.title = 'Copy message';
+      btn.setAttribute('aria-label', 'Copy message');
+      btn.innerHTML = MSG_COPY_GLYPH;
+
+      const flashDone = () => {
+        btn.innerHTML = MSG_CHECK_GLYPH;
+        btn.dataset.copied = '1';
+        btn.title = 'Copied!';
+        btn.setAttribute('aria-label', 'Copied');
+        setTimeout(() => {
+          btn.innerHTML = MSG_COPY_GLYPH;
+          delete btn.dataset.copied;
+          btn.title = 'Copy message';
+          btn.setAttribute('aria-label', 'Copy message');
+        }, MSG_COPY_FLASH_MS);
+      };
+
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        // Deliberately DON'T stopPropagation: WKWebView doesn't focus a
+        // <button> on click (so no `focusin` fires), so we let the click
+        // bubble to the delegated #chat-messages listener that refreshes this
+        // message's relative time. The bubble-level handlers it reaches are
+        // safe for the copy button (the luna-link handler ignores non-links).
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          // Only confirm on a real success — a rejected write (insecure
+          // context / denied permission) leaves the glyph unchanged.
+          navigator.clipboard.writeText(text).then(flashDone, () => {});
+        } else {
+          // execCommand fallback for older WKWebView contexts (same path the
+          // code-block copy uses).
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          let ok = false;
+          try { ok = document.execCommand('copy'); } catch (_) {}
+          document.body.removeChild(ta);
+          if (ok) flashDone();
+        }
+      });
+      return btn;
+    }
+
+    // Compact relative send-time for the message meta stamp: "just now",
+    // "9m ago", "2h ago", "5d ago". `now` is injectable for deterministic
+    // tests (mirrors humanizeRelTime in ui-shared-solid, but compact — that
+    // one can't be imported into this standalone page). Luna always knows
+    // "now"; each message carries its send-time — we render the difference.
+    function formatRelTime(ts, now) {
+      if (typeof ts !== 'number' || !isFinite(ts)) return '';
+      const ref = typeof now === 'number' ? now : Date.now();
+      const sec = Math.max(0, Math.floor((ref - ts) / 1000));
+      if (sec < 60) return 'just now';
+      const min = Math.floor(sec / 60);
+      if (min < 60) return min + 'm ago';
+      const hr = Math.floor(min / 60);
+      if (hr < 24) return hr + 'h ago';
+      return Math.floor(hr / 24) + 'd ago';
+    }
+
+    // The per-message action row: an always-visible footer holding the copy
+    // button + the relative send-time. Built fresh each paint (like the copy
+    // button) so it survives the reconciler's node rebuild. The row is an
+    // extensible flex container — future actions (undo / branch) slot in here.
+    // `ts` may be undefined (pre-`ts` server, or image-only) — the time span
+    // is then omitted; the refresh handler re-reads data-ts on focus/click.
+    function buildMessageMeta(text, ts) {
+      const row = document.createElement('div');
+      row.className = 'msg-meta';
+      row.appendChild(buildMessageCopyButton(text));
+      if (typeof ts === 'number' && isFinite(ts)) {
+        const time = document.createElement('span');
+        time.className = 'msg-time';
+        time.dataset.ts = String(ts);
+        time.textContent = formatRelTime(ts);
+        row.appendChild(time);
+      }
+      return row;
+    }
+
     // Wire UserAsk panel buttons (Submit / Dismiss). Safe to bind here because
     // the DOM is already parsed by the time this <script> executes (inline at
     // bottom of <body>), and the DOM map captured the handles a few lines up.
@@ -4143,6 +4315,25 @@
             .catch((err) => Logger.warn('luna-link open failed:', err));
         }
       });
+    }
+
+    // Refresh-on-interaction (no timer): clicking or focusing a message
+    // recomputes its relative send-time from the stored epoch, so an idle
+    // "9m ago" updates the moment you touch it. `focusin` bubbles, so tabbing
+    // onto the copy button refreshes that message's time for free. One
+    // delegated listener on the stable container survives bubble rebuilds.
+    if (DOM.chatMessages) {
+      const refreshMsgTime = (e) => {
+        const t = e.target;
+        const msg = t && t.closest ? t.closest('.msg') : null;
+        if (!msg) return;
+        const span = msg.querySelector('.msg-time[data-ts]');
+        if (!span) return;
+        const ts = Number(span.dataset.ts);
+        if (isFinite(ts)) span.textContent = formatRelTime(ts);
+      };
+      DOM.chatMessages.addEventListener('click', refreshMsgTime);
+      DOM.chatMessages.addEventListener('focusin', refreshMsgTime);
     }
 
     // Wire the Artifacts panel close button and header toggle.
@@ -4556,6 +4747,8 @@
       // Turn shape:
       //   { key, role: 'user' | 'assistant', status: 'streaming' | 'done' | 'error' | 'banner',
       //     segments: Segment[], previews?, turnId?, errorText?,
+      //     ts? (ms-epoch send-time: server stamp for history/assistant-done,
+      //          client Date.now() for user — drives the meta-row "9m ago"),
       //     _cumText? (delta-dedup), _timelineCollapsed? (timeline toggle),
       //     _settled? (agentic turn fully ended — set on `turn-complete`) }
       //
@@ -4588,18 +4781,26 @@
             status: 'done',
             segments: [{ kind: 'text', raw: String(msg.text), done: true }],
             previews: null,
+            // Server send-time (ms epoch) — drives the "9m ago" meta stamp.
+            // Undefined for pre-`ts` servers; the renderer omits the time then.
+            ts: Number.isFinite(msg.ts) ? msg.ts : undefined,
           });
         }
       },
 
-      appendUser(text, previews) {
+      appendUser(text, previews, ts) {
         const t = String(text ?? '');
+        // Client send-time — the user turn never round-trips the server, so we
+        // stamp it locally. Optional `ts` keeps tests deterministic; the live
+        // submit path omits it and gets Date.now(). Shared with the key.
+        const stamp = Number.isFinite(ts) ? ts : Date.now();
         this.turns.push({
-          key: 'u-' + Date.now() + '-' + this.turns.length,
+          key: 'u-' + stamp + '-' + this.turns.length,
           role: 'user',
           status: 'done',
           segments: t ? [{ kind: 'text', raw: t, done: true }] : [],
           previews: previews || null,
+          ts: stamp,
         });
       },
 
@@ -4724,7 +4925,7 @@
         }
       },
 
-      finishTurn(turnId, fullText) {
+      finishTurn(turnId, fullText, ts) {
         const turn = this._findTurn(turnId) || this._findPending();
         if (!turn) return;
         // Close all open text segments.
@@ -4737,7 +4938,9 @@
           return;
         }
         turn.status = 'done';
-        // (fullText arg is unused — the renderer reconstructs from segments.)
+        // Stamp the server send-time (from assistant-done's message.ts) for the
+        // meta-row time. (fullText is unused — the renderer rebuilds from segments.)
+        if (Number.isFinite(ts)) turn.ts = ts;
       },
 
       failTurn(turnId, errorText) {
@@ -5062,10 +5265,19 @@
         node.textContent = '';
         let text = '';
         for (const s of w.turn.segments) if (s.kind === 'text') text += s.raw;
-        if (text) node.appendChild(document.createTextNode(text));
+        // Message content lives in .msg-body so the meta footer's time text
+        // doesn't bleed into the bubble's textContent.
+        const body = document.createElement('div');
+        body.className = 'msg-body';
+        if (text) body.appendChild(document.createTextNode(text));
         if (w.turn.previews && w.turn.previews.length) {
-          node.appendChild(this._buildPreviewTray(w.turn.previews, !!text));
+          body.appendChild(this._buildPreviewTray(w.turn.previews, !!text));
         }
+        node.appendChild(body);
+        // Always-visible action row: copy + relative send-time (skip image-only).
+        // NOTE: meta rows attach ONLY here and in _paintText — keep the two in
+        // sync (banners/errors/typing/timelines intentionally have none).
+        if (text) node.appendChild(buildMessageMeta(text, w.turn.ts));
       },
 
       _paintBanner(w, node) {
@@ -5092,7 +5304,13 @@
       _paintText(w, node) {
         const seg = w.seg;
         const fn = seg.done ? renderMarkdown : renderMarkdownStreaming;
-        node.innerHTML = fn(seg.raw);
+        // Rendered markdown lives in .msg-body so the meta footer's time text
+        // stays out of the bubble's textContent.
+        node.textContent = '';
+        const body = document.createElement('div');
+        body.className = 'msg-body';
+        body.innerHTML = fn(seg.raw);
+        node.appendChild(body);
         // Editor-feel: syntax-highlight + wire copy buttons on every code
         // block in the freshly-painted subtree. Cheap, idempotent, and the
         // streaming path is already rAF-coalesced upstream.
@@ -5101,6 +5319,11 @@
         // anything (tests, the old protocol's `data-stream-raw` snoops) can
         // still read it. Authoritative source is ChatState.
         node.dataset.streamRaw = seg.raw;
+        // Settled answers get the action row (copy + send-time). Gated on
+        // `done` so a still-streaming bubble doesn't sprout (and re-sprout,
+        // every coalesced frame) the row — it appears when the text is final.
+        // The other (and only other) meta-row attach point is _paintUser.
+        if (seg.done && seg.raw) node.appendChild(buildMessageMeta(seg.raw, w.turn.ts));
       },
 
       // Build one tool card as a self-contained `.tool-call-card` (a <div>
@@ -6264,6 +6487,9 @@
       window.__MoonInternals.renderMarkdown = renderMarkdown;
       window.__MoonInternals.renderMarkdownStreaming = renderMarkdownStreaming;
       window.__MoonInternals.enhanceCodeBlocks = enhanceCodeBlocks;
+      window.__MoonInternals.buildMessageCopyButton = buildMessageCopyButton;
+      window.__MoonInternals.buildMessageMeta = buildMessageMeta;
+      window.__MoonInternals.formatRelTime = formatRelTime;
       window.__MoonInternals.StreamRender = StreamRender;
       window.__MoonInternals.isVisuallyEmpty = (b) => ChatEngine.isVisuallyEmpty(b);
       window.__MoonInternals.sweepTrailingEmptyAssistantBubbles = () => ChatEngine.sweepTrailingEmptyAssistantBubbles();
