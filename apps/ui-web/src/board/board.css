@@ -47,8 +47,17 @@
     0 2px 4px rgba(0, 0, 0, 0.06),
     0 14px 34px -10px rgba(0, 0, 0, 0.18);
 }
+/* Night paper: panels step UP from the canvas (paper-2, the raised
+   surface) and the head tint pools harder — on dark paper a 26% wash
+   reads as ~nothing, and panel-on-paper melts into the backdrop (the
+   design reference's dark panels are clearly lighter cards). */
 html[data-theme='dark'] .panel-wash {
-  box-shadow: 0 14px 34px -10px rgba(0, 0, 0, 0.5);
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--panel-tint) 38%, transparent) 0%, transparent 86px),
+    var(--paper-2);
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--ink) 7%, transparent),
+    0 14px 34px -10px rgba(0, 0, 0, 0.5);
 }
 /* chrome: ink outline */
 html[data-chrome='ink'] .panel-wash {
@@ -57,6 +66,11 @@ html[data-chrome='ink'] .panel-wash {
     linear-gradient(180deg, color-mix(in oklab, var(--panel-tint) 18%, transparent) 0%, transparent 70px),
     var(--paper);
   box-shadow: 0 10px 26px -12px rgba(0, 0, 0, 0.16);
+}
+html[data-theme='dark'][data-chrome='ink'] .panel-wash {
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--panel-tint) 26%, transparent) 0%, transparent 70px),
+    var(--paper-2);
 }
 .panel.snapped .panel-wash {
   box-shadow:
