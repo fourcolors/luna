@@ -131,6 +131,19 @@
       }
     } catch (_) { /* best-effort */ }
 
+    // Replay-on-subscribe: a window whose dock-group event fired BEFORE this
+    // webview finished loading (a boot-restored cluster races the page load)
+    // pulls its current membership once, now that the listeners are wired — so
+    // the pin button + self-snap skip reflect a restored group immediately
+    // instead of only after the next membership change reaches it.
+    try {
+      if (window.__TAURI__ && window.__TAURI__.core) {
+        window.__TAURI__.core.invoke('dock_group_state').then(function (p) {
+          if (p && p['for'] === label) applyGroupState(p);
+        }).catch(function () {});
+      }
+    } catch (_) { /* best-effort */ }
+
     // Snap candidates: the hub first (it wins distance ties), then every
     // sibling widget — minus anything already in our group (a group never
     // re-snaps against itself; that was round 2's "random movements").

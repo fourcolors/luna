@@ -59,8 +59,10 @@
           btn.textContent = p.label + ' ↗';
           btn.addEventListener('click', function () {
             // Best-effort: off-Tauri (browser dev / jsdom) the invoke rejects
-            // and the launcher simply stays put.
-            ctx.invoke('open_widget', { kind: p.kind }).catch(function () {});
+            // and the launcher simply stays put. opener=this launcher so the
+            // sub-panel docks NEXT TO the launcher the user just clicked,
+            // rather than the nearest cluster to its OS-default spawn point.
+            ctx.invoke('open_widget', { kind: p.kind, opener: ctx.label }).catch(function () {});
           });
           list.appendChild(btn);
         });

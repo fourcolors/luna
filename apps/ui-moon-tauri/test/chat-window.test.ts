@@ -2698,10 +2698,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('(e) pop-out button on a pinned artifact invokes open_artifact_widget when Tauri is present', async () => {
       const m = M()
-      // Seed __TAURI__.core.invoke mock (list_widget_windows feeds the
-      // cascade-position math; empty deck → first slot).
-      const invokeMock = vi.fn(async (cmd: string) =>
-        cmd === 'list_widget_windows' ? [] : undefined)
+      // Snap-on-open (Rust) positions the pop-out; the click just fires the
+      // open with {artifactId, title} — no deck census, no cascade math.
+      const invokeMock = vi.fn(async () => undefined)
       ;(window as any).__TAURI__ = {
         ...(window as any).__TAURI__,
         core: { invoke: invokeMock },
@@ -2719,23 +2718,21 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(popBtn.textContent).toBe('⤢')
 
       popBtn.click()
-      await vi.advanceTimersByTimeAsync(1) // the handler awaits the deck census
 
-      expect(invokeMock).toHaveBeenCalledWith('list_widget_windows')
       expect(invokeMock).toHaveBeenCalledWith('open_artifact_widget', {
         artifactId: 'pin-pop',
         title: 'deploy.sh',
-        x: 180,
-        y: 160,
       })
+      // No deck census, no cascade: exactly one invoke, never list_widget_windows.
+      expect(invokeMock).toHaveBeenCalledTimes(1)
+      expect(invokeMock).not.toHaveBeenCalledWith('list_widget_windows')
     })
 
     it('(f) pop-out button on a session artifact PINS it, then opens the widget; no-ops without Tauri', async () => {
       const m = M()
 
       // Part 1 — with Tauri present.
-      const invokeMock = vi.fn(async (cmd: string) =>
-        cmd === 'list_widget_windows' ? [] : undefined)
+      const invokeMock = vi.fn(async () => undefined)
       ;(window as any).__TAURI__ = {
         ...(window as any).__TAURI__,
         core: { invoke: invokeMock },
@@ -2755,16 +2752,16 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(popBtn).not.toBeNull()
 
       popBtn.click()
-      await vi.advanceTimersByTimeAsync(1)
 
       // Widget windows render PINNED artifacts: popping out a session row
-      // pins it first (artifact-pin rides the WS), then opens cascaded.
+      // pins it first (artifact-pin rides the WS), then opens — snap-on-open
+      // (Rust) tiles it flush against the nearest open panel.
       expect(invokeMock).toHaveBeenCalledWith('open_artifact_widget', {
         artifactId: 'msg-pop:0',
         title: 'snippet.py',
-        x: 180,
-        y: 160,
       })
+      // No deck census IPC — snap-on-open positions it, not cascade math.
+      expect(invokeMock).not.toHaveBeenCalledWith('list_widget_windows')
 
       // Part 2 — without Tauri (browser env): clicking must NOT throw.
       ;(window as any).__TAURI__ = undefined
