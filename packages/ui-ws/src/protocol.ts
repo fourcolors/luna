@@ -17,8 +17,15 @@
  *
  * Tagged-union error kind matches `ChatErrorKind` in @luna/chat-service.
  */
-import type { ObsEvent, ChatMessage, SessionSummary, SurveyItem, SurveyVerdict } from "@luna/core"
+import type { ObsEvent, ChatMessage, SessionSummary, SurveyItem, SurveyVerdict, ArtifactKind } from "@luna/core"
 import type { Artifact } from "@luna/chat-service"
+
+// Re-export the SINGLE source of truth for ArtifactKind (@luna/core) rather
+// than redeclaring an identical union here — so the wire type and the store
+// type can never silently drift (widget-tools' WidgetSummonerPort.openArtifact
+// types `kind` from @luna/core; this re-export keeps the ui-ws bridge's match
+// exact by construction).
+export type { ArtifactKind }
 
 export const UI_WS_PROTOCOL_VERSION = 2 as const
 
@@ -428,8 +435,8 @@ export interface ConnectorStatusFrame {
  * luna.db (artifacts + artifact_versions). Mirrors ui-shared/wire.ts.
  * `mcp-app` (widget-system.md Phase 7): content is a `ui://` resource URI —
  * the host fetches the app HTML via `mcp-resource-read` and renders it as an
- * MCP App (raw JSON-RPC over postMessage), never as inline widget HTML. */
-export type ArtifactKind = "code" | "markdown" | "html" | "widget" | "mcp-app"
+ * MCP App (raw JSON-RPC over postMessage), never as inline widget HTML.
+ * ArtifactKind is re-exported from @luna/core (see the top of this file). */
 
 export interface PinnedArtifactItem {
   readonly id: string
@@ -468,6 +475,14 @@ export interface ArtifactPinFrame {
 export interface ArtifactUnpinFrame {
   readonly type: "artifact-unpin"
   readonly id: string
+}
+/** Client→server: edit an existing artifact's content. Routes through the
+ *  store's `update` (appends a version, PRESERVES the ledger, leaves bridgeCaps
+ *  untouched) — never unpin+re-pin, which would destroy history + reset caps. */
+export interface ArtifactEditFrame {
+  readonly type: "artifact-edit"
+  readonly id: string
+  readonly content: string
 }
 
 /* PRD Part C (W3) — workflow gallery frames. A read-only, wire-safe view over
@@ -893,6 +908,67 @@ export interface WidgetOpenFrame {
   readonly params?: Readonly<Record<string, string | number | boolean>>
 }
 
+/**
+ * Server→client: open (or focus) a CONTENT artifact as its own widget window —
+ * the content-tier sibling of `widget-open`. Sent by the agent's
+ * `open_artifact` tool, auto-fired when `widget_write`/`mcp_app_write` CREATE a
+ * new artifact, and emitted when the user reopens a closed artifact by asking.
+ *
+ * The host resolves `artifactId` against its own pinned-artifact set and renders
+ * it in the sandboxed widget.html cage (kind `widget` = inline HTML, kind
+ * `mcp-app` = MCP Apps relay) — it can NEVER open a system panel this way, so
+ * the system/content trust split is preserved. Distinct from `open_artifact_widget`
+ * the Tauri command: this is the WS-frame path that lets the SERVER initiate the
+ * open. Additive, gated on the `artifacts` capability; a host without artifact
+ * support ignores it.
+ */
+export interface OpenArtifactWidgetFrame {
+  readonly type: "open-artifact-widget"
+  readonly artifactId: string
+  readonly title: string
+  /** The artifact kind, so a host can fail-closed on a kind it can't render. */
+  readonly kind: ArtifactKind
+}
+
+/* ── live subagent tree (S4 "Agents" panel) ─────────────────────────────
+ * When a chat turn delegates to subagents, the server-side SubagentTreeBridge
+ * folds the `parentToolUseId`-tagged tool frames into a per-thread tree and
+ * BROADCASTS it, so the read-only Agents panel renders without subscribing the
+ * thread (subscribing would steal the chat window's secret/interactive
+ * bindings — the one-window-per-thread rule). Additive, gated on the existing
+ * `subagents` hello capability. */
+
+/** One node in the live subagent tree — a spawned Agent/Task and its activity.
+ *  METADATA ONLY (no tool output, no full prompt) — wire-safe + context-cheap. */
+export interface SubagentNode {
+  readonly id: string
+  /** The spawning Agent's tool_use id when nested, else null (top-level). */
+  readonly parentId: string | null
+  /** The subagent type (e.g. "Explore") or "Agent" when untyped. */
+  readonly name: string
+  /** A short human label from the spawn (description, else a prompt prefix). */
+  readonly description: string
+  readonly status: "running" | "done" | "error"
+  /** The subagent's current/last tool, or null before it runs one. */
+  readonly tool: string | null
+  readonly toolCount: number
+}
+
+/** Server→client: the live subagent tree for a thread. Broadcast on change and
+ *  sent in reply to a `subagent-tree-request`. */
+export interface SubagentTreeFrame {
+  readonly type: "subagent-tree"
+  readonly threadId: string
+  readonly agents: ReadonlyArray<SubagentNode>
+}
+
+/** Client→server: the Agents panel asks for a thread's current tree on open,
+ *  so a panel summoned mid-turn paints immediately (not on the next change). */
+export interface SubagentTreeRequestFrame {
+  readonly type: "subagent-tree-request"
+  readonly threadId: string
+}
+
 /* ── MCP Apps host relay (widget-system.md Phase 7, SEP-1865) ───────────
  * The Moon is an MCP Apps HOST; the Luna server owns every MCP session
  * (single session authority). v1 serves an in-process CoreAppRegistry —
@@ -1019,6 +1095,8 @@ export type ServerFrame =
   | VaultListFrame
   | VaultStatusFrame
   | WidgetOpenFrame
+  | OpenArtifactWidgetFrame
+  | SubagentTreeFrame
   | McpResourceResultFrame
   | McpToolResultFrame
   | ThreadConfigFrame
@@ -1276,9 +1354,11 @@ export type ClientFrame =
   | ConnectorSetClientFrame
   | ArtifactPinFrame
   | ArtifactUnpinFrame
+  | ArtifactEditFrame
   | WorkflowRunsRequestFrame
   | WorkflowRefreshFrame
   | WidgetDirectoryFrame
+  | SubagentTreeRequestFrame
   | McpResourceReadFrame
   | McpToolCallFrame
   | PtyInputFrame

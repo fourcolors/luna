@@ -46,7 +46,13 @@
   /**
    * opts:
    *   frameEl   — the sandboxed <iframe> (sandbox attr already set by caller)
-   *   uri       — the ui:// resource to render
+   *   uri       — the ui:// resource to render (used to identify the app +,
+   *               in fetch mode, to read its HTML)
+   *   html      — OPTIONAL inline app HTML. When present (a GENERATED / store-
+   *               backed app), the HTML is mounted directly via the generated-
+   *               app cage (window.mcp helper) and transport.readResource is
+   *               NOT called. When absent (a static / external app), the HTML
+   *               is fetched via transport.readResource(uri) into the bare cage.
    *   transport — { readResource(uri) -> Promise<{ok,mimeType?,text?,message?}>,
    *                 callTool(tool, args) -> Promise<{ok,result?,message?}> }
    *               (the transport is already scoped to ONE app, so callTool
@@ -60,6 +66,7 @@
     opts = opts || {};
     var frameEl = opts.frameEl;
     var uri = opts.uri;
+    var inlineHtml = typeof opts.html === 'string' ? opts.html : null;
     var transport = opts.transport;
     var onError = typeof opts.onError === 'function' ? opts.onError : function () {};
     var disposed = false;
@@ -135,26 +142,40 @@
 
     g.addEventListener('message', onMessage);
 
-    // Fetch + mount the app template.
-    transport.readResource(uri).then(
-      function (res) {
-        if (disposed) return;
-        if (!res || !res.ok || typeof res.text !== 'string') {
-          onError((res && res.message) || ('Could not load MCP app: ' + uri));
-          return;
-        }
-        var sb = g.LunaWidgetSandbox;
-        if (!sb || typeof sb.buildMcpSrcdoc !== 'function') {
-          onError('MCP sandbox builder unavailable in this build.');
-          return;
-        }
-        frameEl.srcdoc = sb.buildMcpSrcdoc(res.text);
-      },
-      function () {
-        if (disposed) return;
-        onError('Could not load MCP app: ' + uri);
+    var sb = g.LunaWidgetSandbox;
+
+    if (inlineHtml !== null) {
+      // GENERATED / store-backed app: HTML is already in hand. Mount it in the
+      // generated-app cage (CSP + the window.mcp client helper) — no network
+      // fetch. The same-server tool rule + curated allowlist are still enforced
+      // server-side on every tools/call (stamped with this app's uri).
+      if (!sb || typeof sb.buildGeneratedAppSrcdoc !== 'function') {
+        onError('MCP sandbox builder unavailable in this build.');
+      } else {
+        frameEl.srcdoc = sb.buildGeneratedAppSrcdoc(inlineHtml);
       }
-    );
+    } else {
+      // STATIC / external app: fetch the template, mount in the bare cage (the
+      // app brings its own protocol client).
+      transport.readResource(uri).then(
+        function (res) {
+          if (disposed) return;
+          if (!res || !res.ok || typeof res.text !== 'string') {
+            onError((res && res.message) || ('Could not load MCP app: ' + uri));
+            return;
+          }
+          if (!sb || typeof sb.buildMcpSrcdoc !== 'function') {
+            onError('MCP sandbox builder unavailable in this build.');
+            return;
+          }
+          frameEl.srcdoc = sb.buildMcpSrcdoc(res.text);
+        },
+        function () {
+          if (disposed) return;
+          onError('Could not load MCP app: ' + uri);
+        }
+      );
+    }
 
     return {
       dispose: function () {

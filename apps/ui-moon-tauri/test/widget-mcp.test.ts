@@ -66,7 +66,9 @@ function fireFrame(frame: object) {
   sock().fire('message', { data: JSON.stringify(frame) })
 }
 
-async function boot(opts: { mcpApps: boolean } = { mcpApps: true }) {
+async function boot(opts: { mcpApps?: boolean; content?: string } = {}) {
+  const mcpApps = opts.mcpApps ?? true
+  const content = opts.content ?? APP_URI
   const bodyMatch = html.match(/<body>([\s\S]*?)<\/body>/)
   document.body.innerHTML = bodyMatch ? bodyMatch[1] : ''
 
@@ -97,13 +99,13 @@ async function boot(opts: { mcpApps: boolean } = { mcpApps: true }) {
     protocolVersion: 2,
     kinds: [],
     capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false,
-      turnComplete: true, artifacts: true, mcpApps: opts.mcpApps },
+      turnComplete: true, artifacts: true, mcpApps },
   })
   fireFrame({
     type: 'artifact-list',
     artifacts: [{
       id: ARTIFACT_ID, kind: 'mcp-app', title: 'Workspace Pulse (MCP)', lang: null,
-      content: APP_URI, origin: null, version: 1, pinnedAt: 0, updatedAt: 0, bridgeCaps: null,
+      content, origin: null, version: 1, pinnedAt: 0, updatedAt: 0, bridgeCaps: null,
     }],
   })
   await flush()
@@ -200,5 +202,34 @@ describe('widget.html — kind=mcp-app renders through LunaMcpHost', () => {
     expect(allSent().some((f) => f.type === 'mcp-resource-read')).toBe(false)
     expect(document.querySelector('.content-area iframe')).toBeNull()
     expect(document.querySelector('.notice')!.textContent).toContain("doesn't support MCP apps")
+  })
+
+  it('an INLINE-html mcp-app (generated) mounts the window.mcp cage with NO resource read', async () => {
+    const INLINE = '<h1 id="gen">generated app</h1>'
+    await boot({ content: INLINE })
+    // The HTML was inline → the host never asks the relay to read a resource.
+    expect(allSent().some((f) => f.type === 'mcp-resource-read')).toBe(false)
+    const iframe = document.querySelector('.content-area iframe') as HTMLIFrameElement
+    expect(iframe).toBeTruthy()
+    expect(iframe.getAttribute('sandbox')).toBe('allow-scripts')
+    // Generated cage: inline body + the window.mcp client helper, NO luna shim.
+    expect(iframe.srcdoc).toContain('generated app')
+    expect(iframe.srcdoc).toContain('window.mcp')
+    expect(iframe.srcdoc).not.toContain('window.luna')
+  })
+
+  it('an inline app stamps tools/call with the DERIVED app uri (ui://luna/app/<id>)', async () => {
+    await boot({ content: '<div>x</div>' })
+    const iframe = document.querySelector('.content-area iframe') as HTMLIFrameElement
+    // The app calls a curated tool; the host stamps the derived appUri.
+    const ev = new MessageEvent('message', {
+      data: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'pulse', arguments: {} } },
+    })
+    Object.defineProperty(ev, 'source', { value: iframe.contentWindow })
+    window.dispatchEvent(ev)
+    const call = allSent().find((f) => f.type === 'mcp-tool-call')
+    expect(call).toBeTruthy()
+    expect(call.appUri).toBe('ui://luna/app/' + encodeURIComponent(ARTIFACT_ID))
+    expect(call.tool).toBe('pulse')
   })
 })

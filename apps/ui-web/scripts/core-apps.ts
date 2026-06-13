@@ -168,3 +168,141 @@ export const createCoreAppRegistry = (
     },
   }
 }
+
+/* ── store-backed (generated / user-authored) MCP apps ─────────────────────
+ * The Apps pillar v1 ("Generate + user-author"): a Luna-authored or user-saved
+ * MCP app is a `kind:'mcp-app'` ArtifactStore row whose `content` is the app's
+ * inline HTML. Its identity uri is DERIVED from the artifact id —
+ * `ui://luna/app/<encodeURIComponent(id)>` — so the host can stamp tools/call
+ * and the server can route + gate them. These apps cannot ship server-side JS,
+ * so their tools are a fixed CURATED, read-only allowlist shared by all of them
+ * (buildCuratedAppTools), NOT per-app handlers. */
+
+/** The uri prefix for a store-backed app. The artifact id is percent-encoded
+ *  into the uri (mirrors widget.html's derivation). */
+export const STORE_APP_URI_PREFIX = "ui://luna/app/"
+
+/** Recover the artifact id from a store-backed app uri, or null when the uri is
+ *  not one (so a composed registry routes it to another provider). */
+export const artifactIdFromAppUri = (uri: string): string | null => {
+  if (typeof uri !== "string" || !uri.startsWith(STORE_APP_URI_PREFIX)) return null
+  const enc = uri.slice(STORE_APP_URI_PREFIX.length)
+  if (enc.length === 0) return null
+  try {
+    const id = decodeURIComponent(enc)
+    return id.length > 0 ? id : null
+  } catch {
+    return null
+  }
+}
+
+/** A metadata-only artifact row exposed by the `list-artifacts` curated tool. */
+export interface CuratedArtifactRow {
+  readonly id: string
+  readonly title: string
+  readonly kind: string
+  readonly version: number
+  readonly updatedAt: number
+}
+
+/**
+ * A store-backed MCP-app registry. `readResource` resolves a store app uri to
+ * its inline HTML (for the rare pointer-mode render — generated apps usually
+ * render inline and never read the resource); `callTool` routes EVERY
+ * store-app tool call to a fixed CURATED allowlist. Generated/user apps share
+ * one allowlist because they carry no server JS — so the spec's same-server
+ * rule degenerates to "is this a curated tool?" for this provider. Unknown
+ * uris/apps/tools fail closed so a composed registry can try the next provider.
+ */
+export const createStoreBackedAppRegistry = (deps: {
+  readonly getAppHtml: (artifactId: string) => Promise<string | null>
+  readonly curatedTools: Readonly<
+    Record<string, (args: unknown) => Promise<unknown> | unknown>
+  >
+}): McpAppHostDeps => ({
+  async readResource(uri) {
+    const id = artifactIdFromAppUri(uri)
+    if (id === null) return { ok: false, message: `unknown app resource: ${uri}` }
+    const html = await deps.getAppHtml(id)
+    if (html === null) return { ok: false, message: `unknown app: ${uri}` }
+    return { ok: true, mimeType: MCP_APP_MIME_TYPE, text: html }
+  },
+  async callTool(appUri, tool, args) {
+    const id = artifactIdFromAppUri(appUri)
+    if (id === null) return { ok: false, message: `unknown app: ${appUri}` }
+    // Object.hasOwn (not a bare index) so prototype names can't resolve into a
+    // tool — same guard as createCoreAppRegistry. The id is recovered above
+    // only to confirm this is a store app; the curated set is shared, not
+    // per-app, so a generated app can call any curated tool but nothing else.
+    if (!Object.hasOwn(deps.curatedTools, tool)) {
+      return { ok: false, message: `tool "${tool}" is not available to apps` }
+    }
+    try {
+      const value = await deps.curatedTools[tool]!(args)
+      return {
+        ok: true,
+        result: {
+          content: [{ type: "text", text: JSON.stringify(value) }],
+          structuredContent: value,
+        },
+      }
+    } catch {
+      return { ok: false, message: `tool "${tool}" failed` }
+    }
+  },
+})
+
+/**
+ * Compose several McpAppHostDeps behind one host: readResource + callTool try
+ * each provider in order and return the FIRST ok result, else the last failure.
+ * Safe because provider uri namespaces are disjoint (core apps =
+ * `ui://luna/<name>`, store apps = `ui://luna/app/<id>`): a cross-namespace
+ * appUri never resolves in the wrong provider, so a store app can never reach a
+ * core app's per-app tools (and vice-versa).
+ */
+export const composeAppRegistries = (
+  ...registries: ReadonlyArray<McpAppHostDeps>
+): McpAppHostDeps => ({
+  async readResource(uri) {
+    let last: Awaited<ReturnType<McpAppHostDeps["readResource"]>> = {
+      ok: false,
+      message: `unknown app resource: ${uri}`,
+    }
+    for (const r of registries) {
+      const res = await r.readResource(uri)
+      if (res.ok) return res
+      last = res
+    }
+    return last
+  },
+  async callTool(appUri, tool, args) {
+    let last: Awaited<ReturnType<McpAppHostDeps["callTool"]>> = {
+      ok: false,
+      message: `unknown app: ${appUri}`,
+    }
+    for (const r of registries) {
+      const res = await r.callTool(appUri, tool, args)
+      if (res.ok) return res
+      last = res
+    }
+    return last
+  },
+})
+
+/**
+ * The curated, READ-ONLY tool allowlist exposed to store-backed apps. Kept
+ * deliberately tiny for v1: workspace `pulse` counters and a metadata-only
+ * `list-artifacts`. No tool here writes state or returns secrets. Note the
+ * exact read surface: `list-artifacts` is a GLOBAL enumeration of artifact
+ * metadata (id/title/kind/version/updatedAt — never content, never origin),
+ * which the caller should scope (e.g. to app/widget kinds) before any
+ * multi-tenant deployment. Safe in single-tenant Luna (the operator owns every
+ * artifact, and the sandboxed app has a strict no-network CSP — display-only).
+ */
+export const buildCuratedAppTools = (deps: {
+  readonly getPulse: () => Promise<PulseCounters>
+  readonly listArtifacts: () => Promise<ReadonlyArray<CuratedArtifactRow>>
+}): Readonly<Record<string, (args: unknown) => Promise<unknown> | unknown>> => ({
+  pulse: () => deps.getPulse(),
+  "list-artifacts": () => deps.listArtifacts(),
+})

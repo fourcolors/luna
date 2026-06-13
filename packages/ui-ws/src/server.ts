@@ -330,6 +330,15 @@ export interface UIWebSocketServerConfig {
     readonly unpin: (
       id: string,
     ) => import("effect").Effect.Effect<boolean, unknown>
+    /** Append a new version to an existing artifact (preserves the ledger +
+     *  leaves bridgeCaps untouched). Returns null when the id isn't pinned. */
+    readonly update?: (
+      id: string,
+      content: string,
+    ) => import("effect").Effect.Effect<
+      import("./protocol.js").PinnedArtifactItem | null,
+      unknown
+    >
     readonly changes?: (notify: () => void) => void
   } | null
   /**
@@ -484,6 +493,15 @@ export interface UIWebSocketServerConfig {
    * back through it. Pass `null`/absent to disable (frames ignored).
    */
   readonly widgetSummoner?: import("./widget-summon-bridge.js").WidgetSummonBridge | null
+  /**
+   * Optional live subagent-tree bridge (S4 "Agents" panel). When provided
+   * alongside `widgetSummoner`, the server folds each thread's
+   * `parentToolUseId`-tagged tool frames into a tree, BROADCASTS `subagent-tree`
+   * frames to every connection (the read-only Agents panel reads them without
+   * subscribing the thread), summons the Agents panel on the first delegation,
+   * and answers `subagent-tree-request`. Pass `null`/absent to disable.
+   */
+  readonly subagentTree?: import("./subagent-tree-bridge.js").SubagentTreeBridge | null
   /**
    * Optional bridge for job-summoned operator input (widget-system.md
    * Phase 5). When provided, the server registers EVERY connection's
@@ -652,6 +670,7 @@ export const startUIWebSocketServer = (
     const setupPty = config.setupPty ?? null
     const registerOpToken = config.registerOpToken ?? null
     const widgetSummoner = config.widgetSummoner ?? null
+    const subagentTree = config.subagentTree ?? null
     const secretBridge = config.secretBridge ?? null
     const jobInputBridge = config.jobInputBridge ?? null
     const mcpAppHost = config.mcpAppHost ?? null
@@ -925,7 +944,12 @@ export const startUIWebSocketServer = (
             // Clients hide effort controls when absent/false.
             effortSelection: chat !== null,
             // Subagents: chat threads can spawn SDK Task subagents; tool
-            // frames may carry the additive parentToolUseId linkage.
+            // frames carry the additive parentToolUseId linkage (this is the
+            // cap's documented meaning, independent of the live Agents panel).
+            // In this server chat is always co-wired with the subagentTree
+            // bridge, so the Agents panel's broadcasts are always available when
+            // this cap is true; a hypothetical chat-without-bridge embedding is
+            // not a code path here.
             subagents: chat !== null,
           },
         })
@@ -1217,6 +1241,19 @@ export const startUIWebSocketServer = (
           )
         }
 
+        // Live subagent tree (S4): EVERY connection registers at setup so it
+        // can receive `subagent-tree` broadcasts for whatever thread its Agents
+        // panel is watching — the panel filters by threadId and NEVER
+        // subscribes the thread (so it can't steal interactive bindings).
+        if (subagentTree !== null) {
+          subagentTree.registerClient(secretConnId, (out) => send(ws, out))
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              subagentTree.unregisterClient(secretConnId)
+            }),
+          )
+        }
+
         // Single-fiber forwarder. The pattern is: take ONE event from the
         // UIService stream, send it to the ws synchronously, repeat. ws.send
         // is fire-and-forget at the protocol level (the underlying socket
@@ -1314,6 +1351,25 @@ export const startUIWebSocketServer = (
                   if (f.type === "turn-complete" && secretBridge !== null) {
                     secretBridge.notifyTurnComplete(f.threadId)
                   }
+                  // Live Agents view (S4): fold this frame into the subagent
+                  // tree (broadcasts to every client on change) and, on the
+                  // FIRST delegation in this thread, summon the Agents panel.
+                  // Server-side + ws-state-independent: the broadcast targets
+                  // OTHER connections (the panel), so it must run even if this
+                  // socket is mid-flush. observe() is idempotent per toolCallId.
+                  if (subagentTree !== null) {
+                    const { autoOpen } = subagentTree.observe(
+                      f.threadId,
+                      f as unknown as import("./subagent-tree-bridge.js").ObservableThreadFrame,
+                    )
+                    if (autoOpen && widgetSummoner !== null) {
+                      // Latch announced ONLY on a successful summon — a failed
+                      // open (hub not yet announced its directory) leaves the
+                      // thread un-announced so the next delegation retries.
+                      const opened = widgetSummoner.open("agents", { thread: f.threadId })
+                      if (opened.ok) subagentTree.markAnnounced(f.threadId)
+                    }
+                  }
                   if (ws.readyState !== ws.OPEN) return
                   send(ws, chatFrameToWire(f))
                 }),
@@ -1372,7 +1428,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || vaultService !== null || mcpAppHost !== null) {
+        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || vaultService !== null || mcpAppHost !== null || subagentTree !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -1422,6 +1478,22 @@ export const startUIWebSocketServer = (
                       console.log(
                         `[ui-ws] widget host announced ${widgetSummoner.directory().length} summonable widget(s)`,
                       )
+                    }
+                    break
+                  }
+                  case "subagent-tree-request": {
+                    // The Agents panel asks for a thread's current tree on open
+                    // (so a panel summoned mid-turn paints at once). Reply to
+                    // THIS connection only — no broadcast, no thread subscribe.
+                    if (subagentTree !== null) {
+                      const tr = frame as import("./protocol.js").SubagentTreeRequestFrame
+                      if (typeof tr.threadId === "string" && tr.threadId.length > 0) {
+                        send(ws, {
+                          type: "subagent-tree",
+                          threadId: tr.threadId,
+                          agents: subagentTree.treeFor(tr.threadId),
+                        })
+                      }
                     }
                     break
                   }
@@ -1978,6 +2050,37 @@ export const startUIWebSocketServer = (
                         ),
                         Effect.catchAllCause(() => Effect.void),
                       )
+                    return
+                  }
+                  case "artifact-edit": {
+                    // PRD C/W1: edit an existing artifact's content. Routes
+                    // through store.update (NOT unpin+re-pin) so the version
+                    // ledger is preserved and bridgeCaps are left untouched —
+                    // the same semantics widget_write/mcp_app_write rely on. On
+                    // success broadcast a fresh artifact-list to ALL clients.
+                    if (artifactStore === null || artifactStore.update === undefined) return
+                    const store = artifactStore
+                    const update = artifactStore.update
+                    const ef = frame as import("./protocol.js").ArtifactEditFrame
+                    if (
+                      typeof ef.id !== "string" ||
+                      ef.id.trim().length === 0 ||
+                      typeof ef.content !== "string"
+                    ) {
+                      return
+                    }
+                    yield* update(ef.id, ef.content).pipe(
+                      Effect.flatMap(() =>
+                        Effect.gen(function* () {
+                          const artifacts = yield* store.list()
+                          const sockets = yield* Ref.get(activeSockets)
+                          for (const sock of sockets) {
+                            send(sock, { type: "artifact-list", artifacts })
+                          }
+                        }),
+                      ),
+                      Effect.catchAllCause(() => Effect.void),
+                    )
                     return
                   }
                   case "workflow-refresh": {

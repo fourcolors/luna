@@ -40,6 +40,7 @@
     "allow-open-external-url",
     "opener:allow-open-url",
     "allow-open-widget",
+    "allow-open-artifact-widget",
     "allow-pointer-button-down"
   ]
 }

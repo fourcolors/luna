@@ -3067,4 +3067,72 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(nameEl.textContent).toBe('Bash')
     })
   })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: S4 Agents-panel jump link (clickable card + luna:// prose links)
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: S4 Agents-panel jump link', () => {
+    const M = () => (window as any).__MoonInternals
+
+    it('a top-level Agent card shows a "view ↗" link that opens the agents panel for the active thread', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      M().State.activeThreadId = 'thr-1'
+      const card = M().appendToolCallCard({
+        type: 'tool-call', threadId: 'thr-1', turnId: 'turn-1', toolCallId: 'ag1',
+        name: 'Agent', input: { description: 'map the repo' },
+      })
+      const link = card.querySelector('.agent-view-link') as HTMLButtonElement
+      expect(link).not.toBeNull()
+      link.click()
+      expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'agents', params: { thread: 'thr-1' } })
+    })
+
+    it('a NESTED Agent step (parentToolUseId set) has NO view link — nested spawns share one panel', () => {
+      const card = M().appendToolCallCard({
+        type: 'tool-call', threadId: 'thr-1', turnId: 'turn-1', toolCallId: 'ag2',
+        name: 'Agent', input: { description: 'sub' }, parentToolUseId: 'ag1',
+      })
+      expect(card.querySelector('.agent-view-link')).toBeNull()
+    })
+
+    it('clicking the view link does not toggle the <details> (stopPropagation)', () => {
+      ;(window as any).__TAURI__.core = { invoke: vi.fn().mockResolvedValue(undefined) }
+      M().State.activeThreadId = 'thr-1'
+      const card = M().appendToolCallCard({
+        type: 'tool-call', threadId: 'thr-1', turnId: 'turn-1', toolCallId: 'ag1',
+        name: 'Agent', input: { description: 'x' },
+      })
+      const details = card.querySelector('details') as HTMLDetailsElement
+      const before = details.open
+      ;(card.querySelector('.agent-view-link') as HTMLButtonElement).click()
+      expect(details.open).toBe(before)
+    })
+
+    it('a luna:// link in an assistant message opens the named widget via open_widget', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      const chat = document.getElementById('chat-messages')!
+      // Render an assistant body with a luna:// markdown link (real renderer).
+      const bubble = document.createElement('div')
+      bubble.innerHTML = M().renderMarkdown('[open the agents panel](luna://widget/agents?thread=thr-1)')
+      chat.appendChild(bubble)
+      const a = chat.querySelector('a[data-luna-link]') as HTMLAnchorElement
+      expect(a).not.toBeNull()
+      a.click()
+      expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'agents', params: { thread: 'thr-1' } })
+    })
+
+    it('a non-luna markdown link is NOT tagged and does not trigger open_widget', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      const chat = document.getElementById('chat-messages')!
+      const bubble = document.createElement('div')
+      bubble.innerHTML = M().renderMarkdown('[docs](https://example.com)')
+      chat.appendChild(bubble)
+      expect(chat.querySelector('a[data-luna-link]')).toBeNull()
+      ;(chat.querySelector('a') as HTMLAnchorElement).click()
+      expect(invoke).not.toHaveBeenCalled()
+    })
+  })
 })

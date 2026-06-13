@@ -248,6 +248,7 @@ import {
   createLocalShellBridge,
   createMcpAppHost,
   createSecretRequestBridge,
+  createSubagentTreeBridge,
   createWidgetSummonBridge,
   startUIWebSocketServer,
 } from "@luna/ui-ws"
@@ -311,8 +312,11 @@ import {
 } from "./register-op-token.js"
 import { resolveUiWsToken } from "./ui-ws-token.js"
 import {
+  buildCuratedAppTools,
   buildWorkspacePulseApp,
+  composeAppRegistries,
   createCoreAppRegistry,
+  createStoreBackedAppRegistry,
   pulseFromSnapshot,
 } from "./core-apps.js"
 import { decideMode, probeCredentialReadiness, probeAuthLoggedIn } from "./credential-readiness.js"
@@ -1287,6 +1291,11 @@ let vaultCaptureHook:
 // frames back through this bridge. Constructed before the tool layers so
 // the open_widget tool and the WS server share the instance.
 const widgetSummonBridge = createWidgetSummonBridge()
+
+// Live Agents view (S4): folds each thread's subagent tool frames into a tree
+// and broadcasts it to every client. Process-wide (shared across connections)
+// so one thread's tree is consistent no matter which window observes it.
+const subagentTreeBridge = createSubagentTreeBridge()
 
 // Job-summoned operator input (widget-system.md Phase 5): a running job's
 // `request_input` tool broadcasts a question to every connected client and
@@ -2591,12 +2600,52 @@ const buildServerLayer = (
       // pulse-snapshot aggregates the TelemetryService counters EventCounter
       // already mirrors from the obs stream (sqlite-backed here, so the tiles
       // show running totals that survive restarts) — no new obs tap needed.
+      // The workspace pulse counters, shared by the static pulse app AND the
+      // curated `pulse` tool offered to store-backed apps.
+      const getPulse = () =>
+        Effect.runPromise(telemetry.snapshot).then(pulseFromSnapshot)
       const mcpAppHost = createMcpAppHost(
-        createCoreAppRegistry([
-          buildWorkspacePulseApp(() =>
-            Effect.runPromise(telemetry.snapshot).then(pulseFromSnapshot),
-          ),
-        ]),
+        composeAppRegistries(
+          // Static, compile-time core apps (the Luna server as first provider).
+          createCoreAppRegistry([buildWorkspacePulseApp(getPulse)]),
+          // Generated / user-authored apps: ui://luna/app/<id> resolves to a
+          // pinned mcp-app artifact's HTML, tools/call gated by the curated set.
+          createStoreBackedAppRegistry({
+            getAppHtml: (artifactId) =>
+              Effect.runPromise(
+                artifactStoreService
+                  .get(artifactId)
+                  .pipe(
+                    Effect.map((a) =>
+                      a && a.kind === "mcp-app" ? a.content : null,
+                    ),
+                  ),
+              ),
+            curatedTools: buildCuratedAppTools({
+              getPulse,
+              // Narrowed to APP/WIDGET kinds only — a curated app sees the
+              // other apps/widgets, NOT the titles of chat-pinned documents
+              // (defense-in-depth: keep the read surface tight even though Luna
+              // is single-tenant and the sandbox has no network).
+              listArtifacts: () =>
+                Effect.runPromise(
+                  artifactStoreService.list().pipe(
+                    Effect.map((xs) =>
+                      xs
+                        .filter((a) => a.kind === "widget" || a.kind === "mcp-app")
+                        .map((a) => ({
+                          id: a.id,
+                          title: a.title,
+                          kind: a.kind,
+                          version: a.version,
+                          updatedAt: a.updatedAt,
+                        })),
+                    ),
+                  ),
+                ),
+            }),
+          }),
+        ),
       )
 
       const artifactsWsHandle = {
@@ -2611,6 +2660,12 @@ const buildServerLayer = (
           readonly origin?: string | null
         }) => artifactStoreService.pin(input).pipe(Effect.map(toWireArtifact)),
         unpin: (id: string) => artifactStoreService.unpin(id),
+        // Edit = append a version via the store's update (NOT unpin+re-pin):
+        // preserves the time-travel ledger and leaves bridgeCaps untouched.
+        update: (id: string, content: string) =>
+          artifactStoreService
+            .update(id, content, "user")
+            .pipe(Effect.map((a) => (a ? toWireArtifact(a) : null))),
       }
 
       // PRD Part C/W3: the workflow gallery is a READ-ONLY, wire-safe projection
@@ -2749,6 +2804,7 @@ const buildServerLayer = (
         },
         secretBridge: secretRequestBridge,
         widgetSummoner: widgetSummonBridge,
+        subagentTree: subagentTreeBridge,
         // Phase 5 (widget-system.md): job-summoned operator input. Every
         // connection registers with the broadcast bridge; the job workers'
         // request_input tool drives it (see jobInputToolsL above).

@@ -1656,8 +1656,8 @@
 
     // ── UI-WS frame handlers ──────────────────────────────────────────────
     // The hub's COMPLETE frame set (shared registry, vendor/moon-ws.js):
-    // hello + the needs-input pip pair + widget-open. Everything else is
-    // deliberately unregistered —
+    // hello + the needs-input pip pair + widget-open + open-artifact-widget.
+    // Everything else is deliberately unregistered —
     //   · skill-*/connector-*/vault-*/register-op-token-status: the settings
     //     PANELS consume them on their own WS connections (Phase 3);
     //   · thread/assistant/tool/survey/secret/local-shell frames: thread-bound
@@ -1724,6 +1724,21 @@
         if (frame.params && typeof frame.params === 'object') args.params = frame.params;
         window.__TAURI__.core.invoke('open_widget', args)
           .catch((e) => Logger.warn('widget-open failed:', e));
+      }
+    });
+
+    MoonFrames.register('open-artifact-widget', (frame) => {
+      // Content-tier sibling of widget-open: the agent built or reopened a
+      // CONTENT artifact (a kind='widget' or kind='mcp-app' pinned artifact).
+      // Pop it via the open_artifact_widget Tauri command, which focuses an
+      // already-open window (idempotent) and renders the artifact in the
+      // sandboxed widget.html cage — it can never open a system panel this way.
+      if (window.__TAURI__ && window.__TAURI__.core &&
+          frame && typeof frame.artifactId === 'string' && frame.artifactId) {
+        window.__TAURI__.core.invoke('open_artifact_widget', {
+          artifactId: frame.artifactId,
+          title: typeof frame.title === 'string' && frame.title ? frame.title : 'Artifact',
+        }).catch((e) => Logger.warn('open-artifact-widget failed:', e));
       }
     });
 

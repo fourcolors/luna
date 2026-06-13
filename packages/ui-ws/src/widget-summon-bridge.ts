@@ -20,10 +20,24 @@
  *   - Fire-and-forget: `open` resolves as soon as the frame is handed to the
  *     socket. Whether the window actually appeared is the host's concern;
  *     the singleton/registry behavior makes the operation idempotent.
+ *
+ * The same bridge also carries `openArtifact` — the content-tier sibling of
+ * `open`. Where `open` summons a SYSTEM panel by registry kind (validated
+ * against the announced directory), `openArtifact` asks the same host to pop a
+ * pinned CONTENT artifact (a widget / mcp-app the agent created) into its own
+ * window via the `open-artifact-widget` frame. It reuses the one send-closure
+ * the host registered, so a single connection serves both summon paths.
  */
-import type { WidgetDirectoryEntry, WidgetOpenFrame } from "./protocol.js"
+import type {
+  ArtifactKind,
+  OpenArtifactWidgetFrame,
+  WidgetDirectoryEntry,
+  WidgetOpenFrame,
+} from "./protocol.js"
 
-export type SendWidgetFrame = (frame: WidgetOpenFrame) => void
+export type SendWidgetFrame = (
+  frame: WidgetOpenFrame | OpenArtifactWidgetFrame,
+) => void
 
 export interface WidgetSummonBridge {
   /** A client announced (or re-announced) its directory. */
@@ -43,6 +57,19 @@ export interface WidgetSummonBridge {
   readonly open: (
     kind: string,
     params?: Readonly<Record<string, string | number | boolean>>,
+  ) => { readonly ok: boolean; readonly message: string }
+  /**
+   * Ask the current host to pop a pinned CONTENT artifact into its own widget
+   * window (the content-tier sibling of `open`). Unlike `open`, there is no
+   * registry directory to validate against — the host renders the artifact in
+   * its sandboxed cage by id, so this can never open a system panel. Returns
+   * ok/message; `ok:false` when no host is connected (degrade gracefully, like
+   * `open`).
+   */
+  readonly openArtifact: (
+    artifactId: string,
+    title: string,
+    kind: ArtifactKind,
   ) => { readonly ok: boolean; readonly message: string }
 }
 
@@ -95,6 +122,26 @@ export const createWidgetSummonBridge = (): WidgetSummonBridge => {
           ...(params && Object.keys(params).length > 0 ? { params } : {}),
         })
         return { ok: true, message: `Asked the app to open ${kind}.` }
+      } catch {
+        return { ok: false, message: "The widget host connection failed mid-send." }
+      }
+    },
+    openArtifact(artifactId, title, kind) {
+      if (!current) {
+        return {
+          ok: false,
+          message:
+            "No widget-capable client is connected (the Luna Moon app opens artifact windows when it connects).",
+        }
+      }
+      try {
+        current.send({
+          type: "open-artifact-widget",
+          artifactId,
+          title,
+          kind,
+        })
+        return { ok: true, message: `Asked the app to open "${title}".` }
       } catch {
         return { ok: false, message: "The widget host connection failed mid-send." }
       }

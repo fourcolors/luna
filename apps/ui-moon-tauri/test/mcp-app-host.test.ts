@@ -126,6 +126,32 @@ describe('LunaMcpHost — mount', () => {
     expect(rig.iframe.srcdoc).toBe('')
     rig.handle.dispose()
   })
+
+  it('inline html mode mounts the GENERATED cage (window.mcp helper) and never reads a resource', async () => {
+    const iframe = document.createElement('iframe')
+    document.body.appendChild(iframe)
+    const transport = {
+      readResource: vi.fn(async () => ({ ok: true, text: '<p>x</p>' })),
+      callTool: vi.fn(async () => ({ ok: true, result: {} })),
+    }
+    const onError = vi.fn()
+    const handle = (window as any).LunaMcpHost.host({
+      frameEl: iframe,
+      uri: 'ui://luna/app/mcp-app%3Adash',
+      html: '<h1 id="gen">GEN APP</h1>',
+      transport,
+      onError,
+    })
+    await flush()
+    // Generated/inline apps render their HTML directly — no resource fetch.
+    expect(transport.readResource).not.toHaveBeenCalled()
+    const doc = iframe.srcdoc
+    expect(doc).toContain('GEN APP')
+    expect(doc).toContain('window.mcp') // the generated-cage client helper
+    expect(doc).not.toContain('window.luna')
+    expect(onError).not.toHaveBeenCalled()
+    handle.dispose()
+  })
 })
 
 describe('LunaMcpHost — handshake', () => {

@@ -25,6 +25,7 @@
     { kind: 'settings.vault',      label: 'Vault' },
     { kind: 'settings.skills',     label: 'Skills' },
     { kind: 'settings.connectors', label: 'Connectors' },
+    { kind: 'settings.apps',       label: 'Apps' },
     { kind: 'settings.updates',    label: 'Updates' },
   ];
 
