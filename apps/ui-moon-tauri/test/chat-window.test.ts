@@ -70,6 +70,25 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     // Clean localStorage so persisted-prefs tests don't leak across cases.
     localStorage.clear()
 
+    // Inert WebSocket stub. The page boots WebSocketEngine.connect(), which with
+    // a real jsdom socket fires onerror→onclose against 127.0.0.1 and schedules a
+    // reconnect timer. Across many cases those leaked reconnect timers fire after
+    // afterEach deletes window.LunaProtocol → a cascade of "LunaProtocol is not
+    // defined" unhandled errors that fail the run (surfaces once the file is big
+    // enough to give the timers a window). The socket-driving tests set State.ws
+    // themselves, so an inert stub that never auto-fires events is sufficient.
+    vi.stubGlobal('WebSocket', class {
+      static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3
+      readyState = 0
+      url: string
+      onopen: any = null; onclose: any = null; onerror: any = null; onmessage: any = null
+      constructor(url: string) { this.url = url }
+      send() {}
+      close() { this.readyState = 3 }
+      addEventListener() {}
+      removeEventListener() {}
+    })
+
     // 4. Select the inline page script by CONTENT, not position (an added
     // config stub must fail loudly here, not silently run the wrong script).
     const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
@@ -91,6 +110,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     delete (window as any).LunaDeckSnap
     delete (window as any).LunaDock
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
     vi.useRealTimers()
   })
 
@@ -2594,10 +2614,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(rows[0]!.textContent).toContain('v2')
       expect(rows[1]!.textContent).toContain('Notes')
 
-      // Badge shows count of pinned artifacts.
-      const badge = document.getElementById('artifacts-badge')!
-      expect(badge.hidden).toBe(false)
-      expect(badge.textContent).toBe('2')
+      // NOTE: the header pinned-count badge + its toggle button were removed in
+      // the top-bar redesign (the free space now hosts Luna's quip/suggestion).
+      // render() still guards on `if (DOM.artifactsBadge)`, so the count update
+      // is a no-op when the badge is absent — the panel list above is the
+      // surviving surface, and it renders both rows.
     })
 
     it('(b) clicking Pin in the session list sends an artifact-pin frame', () => {
@@ -2632,9 +2653,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       })
     })
 
-    it('(c) applyCapability(false) hides the header button and clears pinned/session state', () => {
+    it('(c) applyCapability(false) clears pinned/session state and closes the panel', () => {
       const m = M()
-      // First seed some state and reveal the button.
+      // First seed some state.
       m.ArtifactsEngine.applyCapability(true)
       m.ArtifactsEngine.applyPinned([
         { id: 'x', kind: 'code', title: 'X', lang: null, content: 'a', origin: null, version: 1, pinnedAt: 1, updatedAt: 1 },
@@ -2648,8 +2669,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.State.sessionArtifacts).toHaveLength(1)
       expect(m.State.artifactsPanelOpen).toBe(true)
 
-      const btn = document.getElementById('artifacts-btn')!
-      expect((btn as HTMLElement).hidden).toBe(false)
+      // NOTE: the artifacts header toggle button was removed in the top-bar
+      // redesign; applyCapability still drives the panel + engine state below,
+      // and the null-guarded `if (DOM.artifactsBtn)` makes the removed button a
+      // no-op. So this now asserts the surviving state transitions only.
 
       // Simulate connecting to an old server without artifacts support.
       m.handleFrame({ type: 'hello', protocolVersion: 2, kinds: [],
@@ -2659,7 +2682,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.State.pinnedArtifacts).toHaveLength(0)
       expect(m.State.sessionArtifacts).toHaveLength(0)
       expect(m.State.artifactsPanelOpen).toBe(false)
-      expect((document.getElementById('artifacts-btn')! as HTMLElement).hidden).toBe(true)
     })
 
     it('(d) applySession dedups by messageId prefix — re-delivered turns replace their own artifacts', () => {
@@ -2865,7 +2887,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(sentFrames[0]).toMatchObject({ type: 'workflow-runs-request', jobId: 'job-x' })
     })
 
-    it('(c) applyCapability(false) hides the header button and clears workflows state', () => {
+    it('(c) applyCapability(false) clears workflows state and closes the panel', () => {
       const m = M()
 
       // Seed state: capability on, some workflows, a selection.
@@ -2886,7 +2908,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
       expect(m.State.workflows).toHaveLength(1)
       expect(m.State.workflowsPanelOpen).toBe(true)
-      expect((document.getElementById('workflows-btn') as HTMLElement).hidden).toBe(false)
+      // NOTE: the workflows header toggle button was removed in the top-bar
+      // redesign; applyCapability is null-guarded on `DOM.workflowsBtn`, so the
+      // surviving coverage is the engine/panel state transitions below.
 
       // Drive the capability flag through the REAL path (the hello handler) so
       // the assertion below is not vacuous (applyCapability itself does not set
@@ -2902,7 +2926,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.State.workflows).toHaveLength(0)
       expect(m.State.selectedWorkflowId).toBeNull()
       expect(m.State.workflowsPanelOpen).toBe(false)
-      expect((document.getElementById('workflows-btn') as HTMLElement).hidden).toBe(true)
     })
   })
 
@@ -3361,6 +3384,127 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(chat.querySelector('a[data-luna-link]')).toBeNull()
       ;(chat.querySelector('a') as HTMLAnchorElement).click()
       expect(invoke).not.toHaveBeenCalled()
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: top-bar redesign — animated Luna face + free-space quip/suggestion
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: top-bar — animated Luna face + free-space bar', () => {
+    const M = () => (window as any).__MoonInternals
+    const face = () => document.getElementById('luna-face') as HTMLElement
+    const quip = () => document.getElementById('luna-quip') as HTMLElement
+    const chip = () => document.getElementById('luna-suggestion') as HTMLButtonElement
+    const chipText = () => document.getElementById('luna-suggestion-text') as HTMLElement
+
+    it('MoonFace.setConnection maps status classes to face states', () => {
+      M().MoonFace.setConnection('connecting')
+      expect(face().dataset.state).toBe('connecting')
+      M().MoonFace.setConnection('disconnected')
+      expect(face().dataset.state).toBe('offline')
+      M().MoonFace.setConnection('connected')
+      expect(face().dataset.state).toBe('')              // awake / idle
+      M().MoonFace.setConnection('version-warning')
+      expect(face().dataset.state).toBe('')              // still chatting → awake
+    })
+
+    it('MoonFace resolves by priority: connection > thinking > suggesting', () => {
+      M().MoonFace.setConnection('connected')
+      M().MoonFace.setSuggesting(true)
+      expect(face().dataset.state).toBe('suggesting')
+      M().MoonFace.setBusy(true)
+      expect(face().dataset.state).toBe('busy')          // thinking beats suggesting
+      M().MoonFace.setConnection('disconnected')
+      expect(face().dataset.state).toBe('offline')       // connection beats all
+      M().MoonFace.setBusy(false)
+      M().MoonFace.setSuggesting(false)
+      M().MoonFace.setConnection('connected')
+      expect(face().dataset.state).toBe('')
+    })
+
+    it('updateStatus drives the face: open → awake, drop → offline', () => {
+      M().WebSocketEngine.updateStatus('connected', 'Connected')
+      expect(face().dataset.state).toBe('')
+      M().WebSocketEngine.updateStatus('disconnected', 'Disconnected')
+      expect(face().dataset.state).toBe('offline')
+    })
+
+    it('a turn in flight makes the face think; turn-complete settles it', () => {
+      M().WebSocketEngine.updateStatus('connected', 'Connected')
+      M().MoonFace.setBusy(true)
+      expect(face().dataset.state).toBe('busy')
+      M().handleFrame({ type: 'turn-complete', turnId: 't-1' })
+      expect(face().dataset.state).toBe('')
+    })
+
+    it('MoonBar.showSuggestion swaps the quip for a chip; clearSuggestion restores it', () => {
+      M().MoonBar.showSuggestion({ id: 'a1', title: 'Draft a reply to Sarah' })
+      expect(chip().hidden).toBe(false)
+      expect(quip().hidden).toBe(true)
+      expect(chipText().textContent).toBe('Draft a reply to Sarah')
+      M().MoonBar.clearSuggestion()
+      expect(chip().hidden).toBe(true)
+      expect(quip().hidden).toBe(false)
+    })
+
+    it('a proposed suggested-action surfaces in the bar + happy face; the docked panel opens only on chip click', () => {
+      M().WebSocketEngine.updateStatus('connected', 'Connected')
+      M().State.activeThreadId = 'th-1'
+      M().SuggestedActionsEngine.applyCapability(true)
+      M().SuggestedActionsEngine.applySet({
+        type: 'suggested-action-set', threadId: 'th-1',
+        actions: [{ id: 'act-1', threadId: 'th-1', actionType: 'task', title: 'Book the flight', status: 'proposed', createdAt: 1 }],
+      })
+      expect(chip().hidden).toBe(false)
+      expect(chipText().textContent).toBe('Book the flight')
+      expect(face().dataset.state).toBe('suggesting')
+
+      const panel = document.getElementById('suggested-action-panel') as HTMLElement
+      expect(panel.hidden).toBe(true)                    // bar is the teaser; panel is on-demand
+      chip().click()
+      expect(panel.hidden).toBe(false)                   // chip click reveals the full panel
+      expect(panel.dataset.actionId).toBe('act-1')
+    })
+
+    it('dismissing the only proposed action clears the chip and resets the face', () => {
+      M().WebSocketEngine.updateStatus('connected', 'Connected')
+      M().State.activeThreadId = 'th-2'
+      M().SuggestedActionsEngine.applyCapability(true)
+      M().SuggestedActionsEngine.applySet({
+        type: 'suggested-action-set', threadId: 'th-2',
+        actions: [{ id: 'act-2', threadId: 'th-2', actionType: 'research', title: 'Compare prices', status: 'proposed', createdAt: 1 }],
+      })
+      expect(chip().hidden).toBe(false)
+      M().SuggestedActionsEngine._respond('act-2', 'dismiss')
+      expect(chip().hidden).toBe(true)
+      expect(face().dataset.state).toBe('')
+    })
+
+    it('the suggestion chip exposes the title as its accessible name', () => {
+      M().MoonBar.showSuggestion({ id: 'a9', title: 'Book the flight' })
+      // A static aria-label would mask the visible title from screen readers;
+      // showSuggestion must fold the title into the accessible name.
+      expect(chip().getAttribute('aria-label')).toContain('Book the flight')
+    })
+
+    it('the no-response watchdog settles a stuck "thinking" face', () => {
+      M().WebSocketEngine.updateStatus('connected', 'Connected')
+      M().State.activeTurnId = 't-w'            // lets the watchdog act (no self-suppress)
+      M().MoonFace.setBusy(true)
+      expect(face().dataset.state).toBe('busy')
+      M().WebSocketEngine.startTurnTimeout()
+      vi.advanceTimersByTime(90000)
+      expect(face().dataset.state).toBe('')     // abandoned turn → face stops thinking
+    })
+
+    it('disconnect() clears a stuck "thinking" so it cannot resurface on reconnect', () => {
+      M().WebSocketEngine.updateStatus('connected', 'Connected')
+      M().MoonFace.setBusy(true)
+      expect(face().dataset.state).toBe('busy')
+      // disconnect() does not touch _conn, so without the busy-clear the face
+      // would still resolve to 'busy'; the fix settles it.
+      M().WebSocketEngine.disconnect()
+      expect(face().dataset.state).toBe('')
     })
   })
 })
