@@ -307,10 +307,15 @@
        is added under .chat-messages. */
     .chat-messages > * { flex-shrink: 0; }
 
+    /* .msg is a TRANSPARENT layout column, not the bubble itself: it stacks the
+       painted bubble (.msg-body) and its action row (.msg-meta) so the row sits
+       OUTSIDE the bubble's background/border. align-items puts both flush to the
+       bubble's side (right for user, left for assistant). The bubble chrome
+       (padding, wash, border, radius) lives on .msg-body below. */
     .msg {
       max-width: 82%;
-      padding: 9px 13px;
-      border-radius: 14px;
+      display: flex;
+      flex-direction: column;
       /* Chat typeface + size knobs (data-font / data-fontsize). Code/tables
          inside keep their own --font-mono / fixed sizes via child rules. */
       font-family: var(--font-chat);
@@ -319,25 +324,29 @@
       animation: msgAppear 0.2s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
       transform-origin: bottom left;
     }
-    
+    .msg.user { align-self: flex-end; align-items: flex-end; transform-origin: bottom right; }
+    .msg.assistant { align-self: flex-start; align-items: flex-start; }
+
     @keyframes msgAppear {
       from { opacity: 0; transform: scale(0.92) translateY(8px); }
       to { opacity: 1; transform: scale(1) translateY(0); }
     }
-    
+
+    /* The painted bubble. Every .msg kind (user/assistant/banner/error/typing)
+       wraps its content in .msg-body, so the bubble chrome is uniform and the
+       optional .msg-meta footer always paints on the page, not the bubble. */
+    .msg-body { padding: 9px 13px; border-radius: 14px; max-width: 100%; }
+
     /* Watercolor message bubbles. User = paper envelope with ink border;
        assistant = soft panel-tint wash (hand-painted look). */
-    .msg.user {
-      align-self: flex-end;
+    .msg.user .msg-body {
       background: var(--paper);
       border: 1.3px solid var(--ink-faint);
       border-radius: 14px 4px 14px 14px;
       color: var(--ink);
-      transform-origin: bottom right;
     }
 
-    .msg.assistant {
-      align-self: flex-start;
+    .msg.assistant .msg-body {
       /* Wash painted on the ::before layer below (wc-wobble hand-painted
          edge, design fidelity) — text above stays crisp. */
       background: transparent;
@@ -347,7 +356,7 @@
       position: relative;
       isolation: isolate;
     }
-    .msg.assistant::before {
+    .msg.assistant .msg-body::before {
       content: '';
       position: absolute;
       inset: 0;
@@ -357,57 +366,61 @@
       z-index: -1;
     }
 
-    /* Per-message action row: an always-visible footer under each bubble
-       holding the copy button + the relative send-time. Replaces the old
-       hover-reveal corner button — visible at rest, reachable by Tab. The
-       row is an extensible flex container (future home for undo / branch). */
+    /* Per-message action row: an always-visible footer that sits BELOW and
+       OUTSIDE the bubble (a sibling of .msg-body) holding the copy button +
+       the relative send-time. Side alignment is inherited from .msg's
+       align-items (user flush-right, assistant flush-left). The row is an
+       extensible flex container (future home for undo / branch). */
     .msg-meta {
       display: flex;
       align-items: center;
-      gap: 8px;
-      margin-top: 5px;
+      gap: 6px;
+      margin-top: 3px;
+      padding: 0 2px;
     }
-    /* Align the row to the bubble's side (user bubbles sit flush-right). */
-    .msg.user .msg-meta { justify-content: flex-end; }
     .msg-time {
       font-size: 0.7rem;
       color: var(--ink-soft);
       -webkit-user-select: none;
       user-select: none;
     }
+    /* Light ghost icon button — no chip border/fill now that it lives on the
+       page rather than inside the bubble; subtle at rest, lifts on hover. */
     .msg-copy {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 24px;
-      height: 24px;
+      width: 20px;
+      height: 20px;
       padding: 0;
-      border-radius: 6px;
-      background: color-mix(in oklab, var(--paper) 78%, transparent);
-      border: 1px solid var(--ink-faint);
+      border: none;
+      border-radius: 5px;
+      background: transparent;
       color: var(--ink-soft);
+      opacity: 0.6;
       cursor: pointer;
-      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+      transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
       -webkit-user-select: none;
       user-select: none;
     }
     .msg-copy:hover {
+      opacity: 1;
       background: color-mix(in oklab, var(--ink) 8%, transparent);
-      border-color: color-mix(in oklab, var(--accent) 45%, transparent);
       color: var(--ink);
     }
     .msg-copy:focus-visible {
+      opacity: 1;
       outline: 1px solid var(--ink-faint);
       outline-offset: 1px;
     }
     /* Brief confirmation state after a successful copy (mint, like the
        code-block copy's done state). */
     .msg-copy[data-copied="1"] {
+      opacity: 1;
       color: #6ee7b7;
-      border-color: rgba(110, 231, 183, 0.4);
-      background: rgba(110, 231, 183, 0.1);
+      background: rgba(110, 231, 183, 0.12);
     }
-    .msg-copy svg { width: 14px; height: 14px; display: block; }
+    .msg-copy svg { width: 12px; height: 12px; display: block; }
 
     /* Markdown tables (GFM). Dark-glass: thin separators, transparent
        background, tight cell padding so the table fits in the 560px-wide
@@ -4428,12 +4441,12 @@
     // close tags keep the HTML parser from treating the foreign elements as
     // containers.
     const MSG_COPY_GLYPH =
-      '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"'
+      '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor"'
       + ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
       + '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>'
       + '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
     const MSG_CHECK_GLYPH =
-      '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"'
+      '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor"'
       + ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
       + '<path d="M20 6 9 17l-5-5"></path></svg>';
 
@@ -5571,23 +5584,31 @@
 
       _paintBanner(w, node) {
         // Banner text is plain — no markdown — so the operator can read e.g.
-        // "Connection lost — try again." literally.
+        // "Connection lost — try again." literally. Content wraps in .msg-body
+        // (the painted bubble) like every other .msg kind.
         node.textContent = '';
         let text = '';
         for (const s of w.turn.segments) if (s.kind === 'text') text += s.raw;
-        if (text) node.appendChild(document.createTextNode(text));
+        const body = document.createElement('div');
+        body.className = 'msg-body';
+        if (text) body.appendChild(document.createTextNode(text));
+        node.appendChild(body);
       },
 
       _paintError(w, node) {
-        node.textContent = '⚠️ Error: ' + (w.turn.errorText || '');
+        node.textContent = '';
+        const body = document.createElement('div');
+        body.className = 'msg-body';
+        body.textContent = '⚠️ Error: ' + (w.turn.errorText || '');
+        node.appendChild(body);
       },
 
       _paintTyping(node) {
-        node.innerHTML = '<div class="typing-dots">'
+        node.innerHTML = '<div class="msg-body"><div class="typing-dots">'
           + '<div class="dot"></div>'
           + '<div class="dot"></div>'
           + '<div class="dot"></div>'
-          + '</div>';
+          + '</div></div>';
       },
 
       _paintText(w, node) {

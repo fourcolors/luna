@@ -1334,8 +1334,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'hi' } })
       const svg = chat.querySelector('.msg.assistant .msg-copy svg') as SVGElement
       expect(svg).not.toBeNull()
-      expect(svg.getAttribute('width')).toBe('14')
-      expect(svg.getAttribute('height')).toBe('14')
+      expect(svg.getAttribute('width')).toBe('12')
+      expect(svg.getAttribute('height')).toBe('12')
     })
 
     it('Scenario: settled user + assistant messages each render a meta row with copy + time', () => {
