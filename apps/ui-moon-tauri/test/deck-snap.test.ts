@@ -21,7 +21,18 @@ interface Snap {
   y: number
   edge: "l" | "r" | "t" | "b"
 }
+interface Seam {
+  partner: string
+  edge: "r" | "b"
+  x: number
+  y: number
+}
+interface Member {
+  label: string
+  rect: Rect
+}
 let computeSnap: (a: Rect, w: Rect, t?: number) => Snap | null
+let computeSeams: (self: Rect, others: Member[]) => Seam[]
 
 beforeAll(() => {
   const src = readFileSync(
@@ -32,8 +43,12 @@ beforeAll(() => {
   // The module assigns to globalThis.LunaDeckSnap; run it with `globalThis`
   // bound to our sandbox so we don't pollute the real global.
   new Function("globalThis", src)(sandbox)
-  computeSnap = (sandbox.LunaDeckSnap as { computeSnap: typeof computeSnap })
-    .computeSnap
+  const mod = sandbox.LunaDeckSnap as {
+    computeSnap: typeof computeSnap
+    computeSeams: typeof computeSeams
+  }
+  computeSnap = mod.computeSnap
+  computeSeams = mod.computeSeams
 })
 
 // The chat anchor sits at (500,300), 360x600.
@@ -79,5 +94,80 @@ describe("computeSnap", () => {
     const w = { x: 880, y: 320, w: 300, h: 200 } // right-gap 20
     expect(computeSnap(anchor, w, 10)).toBeNull() // 20 > 10
     expect(computeSnap(anchor, w, 25)?.edge).toBe("r") // 20 ≤ 25
+  })
+})
+
+describe("computeSeams", () => {
+  // `self` is the LEFT window: 200x300 at the origin, right edge at x=200.
+  const self: Rect = { x: 0, y: 0, w: 200, h: 300 }
+
+  it("reports a RIGHT seam when a partner sits flush to self's right edge", () => {
+    // partner left edge at 200 (flush, gap 0), vertically overlapping.
+    const seams = computeSeams(self, [
+      { label: "widget-b", rect: { x: 200, y: 40, w: 250, h: 220 } },
+    ])
+    // Overlap run is [40, 260] → mid 150 (local y). Badge centered on self's
+    // right edge, inset 11px so it stays fully inside the window.
+    expect(seams).toEqual([{ partner: "widget-b", edge: "r", x: 189, y: 150 }])
+  })
+
+  it("reports a BOTTOM seam when a partner sits flush below self", () => {
+    // partner top edge at 300 (self.bottom), horizontally overlapping.
+    const seams = computeSeams(self, [
+      { label: "widget-c", rect: { x: 30, y: 300, w: 140, h: 180 } },
+    ])
+    // Overlap run is [30, 170] → mid 100 (local x); y pinned to self.h - 11.
+    expect(seams).toEqual([{ partner: "widget-c", edge: "b", x: 100, y: 289 }])
+  })
+
+  it("does NOT report the seam from the RIGHT/BOTTOM window (ownership)", () => {
+    // The mirror of test 1: `self` is now the RIGHT window of the same pair.
+    const right: Rect = { x: 200, y: 40, w: 250, h: 220 }
+    const seams = computeSeams(right, [
+      { label: "widget-a", rect: { x: 0, y: 0, w: 200, h: 300 } },
+    ])
+    // The shared seam is on `right`'s LEFT edge, which computeSeams never
+    // inspects — so the left window (test 1) owns it and this one is silent.
+    expect(seams).toEqual([])
+  })
+
+  it("ignores partners that are near but not flush (gap beyond EPS)", () => {
+    // partner left edge at 205 → 5px gap from self.right (200), EPS is 2.
+    const seams = computeSeams(self, [
+      { label: "widget-b", rect: { x: 205, y: 40, w: 250, h: 220 } },
+    ])
+    expect(seams).toEqual([])
+  })
+
+  it("ignores a flush partner with too little perpendicular overlap", () => {
+    // Flush on the right edge, but vertical overlap is only [295,300] = 5px (< 8).
+    const seams = computeSeams(self, [
+      { label: "widget-b", rect: { x: 200, y: 295, w: 250, h: 220 } },
+    ])
+    expect(seams).toEqual([])
+  })
+
+  it("reports one seam per docked partner in a multi-window group", () => {
+    const seams = computeSeams(self, [
+      { label: "right", rect: { x: 200, y: 0, w: 250, h: 300 } }, // right seam
+      { label: "below", rect: { x: 0, y: 300, w: 200, h: 180 } }, // bottom seam
+      { label: "afar", rect: { x: 600, y: 600, w: 100, h: 100 } }, // unrelated
+    ])
+    expect(seams).toHaveLength(2)
+    expect(seams.map((s) => s.partner).sort()).toEqual(["below", "right"])
+  })
+
+  it("clamps the badge toward the overlapping end so it stays on-window", () => {
+    // A tall partner overlaps only self's very top → midpoint would be ~20px
+    // up-edge; the clamp floor keeps the badge fully inside (y ≥ 11).
+    const seams = computeSeams(self, [
+      { label: "tall", rect: { x: 200, y: -260, w: 200, h: 280 } },
+    ])
+    // Overlap [0, 20] → mid 10 → clamped up to the 11px floor.
+    expect(seams[0]).toMatchObject({ edge: "r", y: 11 })
+  })
+
+  it("returns [] for an ungrouped window (no others)", () => {
+    expect(computeSeams(self, [])).toEqual([])
   })
 })
