@@ -305,7 +305,7 @@ export const makeOpenWidgetTool = (summoner: WidgetSummonerPort) => {
             "descriptions come from the connected app's widget directory.",
         ),
       params: z
-        .record(z.union([z.string(), z.number(), z.boolean()]))
+        .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
         .optional()
         .describe(
           "Optional instance params for parameterized widgets — e.g. " +
