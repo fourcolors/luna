@@ -69,6 +69,9 @@ export interface UIState {
     readonly suggestedActions?: boolean
     /** Luna Vault (V1): vault-list pushed after hello; vault mutations routed. */
     readonly vault?: boolean
+    /** MCP Apps: server resolves ui:// resources + routes mcp-resource-read/
+     *  mcp-tool-call, so kind="mcp-app" artifacts can render live. */
+    readonly mcpApps?: boolean
     /**
      * Server accepts `set-thread-config` frames and computes the effort-validity
      * matrix per-model (advertised in `availableModels.efforts`). Clients hide
@@ -488,6 +491,18 @@ export const reduce = (state: UIState, action: Action): UIState => {
       // Ack for set-thread-config. The store has no model/effort state today
       // (that lives in cfg().model/cfg().effort in App.tsx). The UI layer
       // reads applied/deferred/rejected from this frame directly. No-op here.
+      return state
+    case "widget-open":
+    case "open-artifact-widget":
+      // Imperative "open a panel" commands from the agent. They drive the board
+      // (summon a panel / select an artifact) as a SIDE EFFECT, handled in the
+      // App.tsx onFrame interceptor — they carry no persistent store state.
+      return state
+    case "mcp-resource-result":
+    case "mcp-tool-result":
+      // MCP Apps relay replies. Correlated by requestId to a pending promise in
+      // the App.tsx onFrame interceptor (the mcp-app iframe host awaits them);
+      // no persistent store state. Still dispatched for exhaustiveness.
       return state
     default: {
       // Exhaustiveness guard: when every ServerFrame member has a matching

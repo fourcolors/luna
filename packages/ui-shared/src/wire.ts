@@ -132,6 +132,10 @@ export interface HelloFrame {
      *  additive `parentToolUseId` linkage. OPTIONAL/additive. Mirrors
      *  packages/ui-ws/src/protocol.ts — keep in sync. */
     readonly subagents?: boolean
+    /** PRD Part C (Apps): server resolves `ui://` app resources + routes
+     *  mcp-resource-read/mcp-tool-call. Lets a client render kind="mcp-app"
+     *  artifacts live (vs source). OPTIONAL/additive — mirrors protocol.ts. */
+    readonly mcpApps?: boolean
   }
   /**
    * Models the operator can pick for new threads. OPTIONAL and additive —
@@ -399,6 +403,77 @@ export interface ArtifactPinFrame {
 export interface ArtifactUnpinFrame {
   readonly type: "artifact-unpin"
   readonly id: string
+}
+
+/* Widget summon-by-name (mirror packages/ui-ws/src/protocol.ts). A host that
+ * can open panels announces its directory after hello (widget-directory); the
+ * agent's open_widget / open_artifact tools then push widget-open /
+ * open-artifact-widget frames back to it. ui-web is such a host (it summons
+ * board panels), so it carries these too — additive, ignored by older clients. */
+export interface WidgetDirectoryEntry {
+  readonly kind: string
+  readonly title: string
+  readonly description: string
+}
+/** Server→client: open (or focus) the panel registered under `kind`. The host
+ *  resolves the kind through ITS OWN registry — can't conjure an unshipped one. */
+export interface WidgetOpenFrame {
+  readonly type: "widget-open"
+  readonly kind: string
+  readonly params?: Readonly<Record<string, string | number | boolean>>
+}
+/** Server→client: open (or focus) a pinned CONTENT artifact as its own panel —
+ *  the content-tier sibling of widget-open. Fired by open_artifact / the
+ *  widget_write/mcp_app_write/show_artifact auto-open. Gated on `artifacts`. */
+export interface OpenArtifactWidgetFrame {
+  readonly type: "open-artifact-widget"
+  readonly artifactId: string
+  readonly title: string
+  readonly kind: ArtifactKind
+}
+/** Client→server: this connection announces it can host panels (sent once after
+ *  hello). Replaces any directory previously announced for this connection. */
+export interface WidgetDirectoryFrame {
+  readonly type: "widget-directory"
+  readonly widgets: ReadonlyArray<WidgetDirectoryEntry>
+}
+
+/* MCP Apps relay (mirror packages/ui-ws/src/protocol.ts). A kind="mcp-app"
+ * artifact renders live via these: the host fetches a `ui://` template
+ * (resource-read) and routes the app's tools/call over the wire. All four are
+ * additive, gated on the hello `mcpApps` capability. */
+/** Client→server: resolve a `ui://` app resource (the app's HTML template). */
+export interface McpResourceReadFrame {
+  readonly type: "mcp-resource-read"
+  readonly requestId: string
+  readonly uri: string
+}
+/** Server→client: the resource read outcome (`text` = app HTML). */
+export interface McpResourceResultFrame {
+  readonly type: "mcp-resource-result"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly mimeType?: string
+  readonly text?: string
+  readonly message?: string
+}
+/** Client→server: a rendered MCP app called `tools/call`. `appUri` scopes the
+ *  call so the server enforces the same-server rule + curated allowlist. */
+export interface McpToolCallFrame {
+  readonly type: "mcp-tool-call"
+  readonly requestId: string
+  readonly appUri: string
+  readonly tool: string
+  readonly args: unknown
+}
+/** Server→client: the tool call outcome (`result` = the app's data — never
+ *  logged). `ok:false` carries a short non-sensitive reason. */
+export interface McpToolResultFrame {
+  readonly type: "mcp-tool-result"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly result?: unknown
+  readonly message?: string
 }
 
 /* PRD Part C (W3) — workflow gallery frames (mirror ui-ws/protocol.ts). A
@@ -699,6 +774,10 @@ export type ServerFrame =
   | ConnectorStatusFrame
   | ArtifactListFrame
   | ArtifactUpdateFrame
+  | WidgetOpenFrame
+  | OpenArtifactWidgetFrame
+  | McpResourceResultFrame
+  | McpToolResultFrame
   | WorkflowListFrame
   | WorkflowRunsFrame
   | SuggestedActionSetFrame
@@ -794,6 +873,9 @@ export type ClientFrame =
   | ConnectorSetClientFrame
   | ArtifactPinFrame
   | ArtifactUnpinFrame
+  | WidgetDirectoryFrame
+  | McpResourceReadFrame
+  | McpToolCallFrame
   | WorkflowRunsRequestFrame
   | WorkflowRefreshFrame
   | SuggestedActionRespondFrame

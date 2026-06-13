@@ -79,8 +79,23 @@ interface Registrant {
   readonly widgets: ReadonlyArray<WidgetDirectoryEntry>
 }
 
+/**
+ * Most artifact-opens issued while no host is connected to buffer for replay.
+ * Bounded so a host that never reconnects (a headless/cron context) can't grow
+ * the buffer without limit; dedup-by-artifactId keeps it small in practice (an
+ * iterate-then-reopen loop collapses to one entry). Small on purpose: this is a
+ * mid-reconnect bridge, not a durable outbox — the artifact itself is persisted
+ * and reopenable by id regardless.
+ */
+const MAX_PENDING_OPENS = 8
+
 export const createWidgetSummonBridge = (): WidgetSummonBridge => {
   let current: Registrant | null = null
+  // Open-artifact intents issued while current===null, keyed by artifactId
+  // (insertion-ordered; re-opening the same id keeps only the latest frame).
+  // Flushed exactly once to the next host that registers, then cleared — a
+  // second registerClient with no new opens in between replays nothing.
+  const pendingOpens = new Map<string, OpenArtifactWidgetFrame>()
 
   return {
     registerClient(clientId, send, widgets) {
@@ -90,6 +105,22 @@ export const createWidgetSummonBridge = (): WidgetSummonBridge => {
           typeof w.title === "string" && typeof w.description === "string",
       )
       current = { clientId, send, widgets: sane }
+      // Replay any opens that were issued while no host was connected (a Moon
+      // mid-turn reconnect is the common case). Flush in issue order, then
+      // clear so a later reconnect doesn't re-pop the same windows. A throwing
+      // send must not abort registration — the host is still the live one.
+      if (pendingOpens.size > 0) {
+        const queued = Array.from(pendingOpens.values())
+        pendingOpens.clear()
+        for (const frame of queued) {
+          try {
+            send(frame)
+          } catch {
+            // The socket died mid-flush; the artifact remains pinned and
+            // reopenable by id, so drop the replay rather than re-buffering.
+          }
+        }
+      }
     },
     unregisterClient(clientId) {
       if (current && current.clientId === clientId) {
@@ -127,20 +158,33 @@ export const createWidgetSummonBridge = (): WidgetSummonBridge => {
       }
     },
     openArtifact(artifactId, title, kind) {
+      const frame: OpenArtifactWidgetFrame = {
+        type: "open-artifact-widget",
+        artifactId,
+        title,
+        kind,
+      }
       if (!current) {
+        // No host right now (e.g. Moon mid-reconnect during a long turn). Buffer
+        // the intent so the next host to announce pops it, rather than dropping
+        // it silently. Dedup by id (keep the latest frame, move to newest) and
+        // bound the buffer so a host that never returns can't grow it.
+        pendingOpens.delete(artifactId)
+        pendingOpens.set(artifactId, frame)
+        while (pendingOpens.size > MAX_PENDING_OPENS) {
+          const oldest = pendingOpens.keys().next().value
+          if (oldest === undefined) break
+          pendingOpens.delete(oldest)
+        }
         return {
           ok: false,
           message:
-            "No widget-capable client is connected (the Luna Moon app opens artifact windows when it connects).",
+            `No widget-capable client is connected right now — queued "${title}" ` +
+            "to open as soon as the app reconnects.",
         }
       }
       try {
-        current.send({
-          type: "open-artifact-widget",
-          artifactId,
-          title,
-          kind,
-        })
+        current.send(frame)
         return { ok: true, message: `Asked the app to open "${title}".` }
       } catch {
         return { ok: false, message: "The widget host connection failed mid-send." }

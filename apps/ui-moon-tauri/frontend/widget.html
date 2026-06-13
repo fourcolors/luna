@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Luna Widget</title>
   <script src="vendor/highlight.min.js"></script>
+  <script src="vendor/moon-markdown.js"></script>
   <script src="vendor/moon-protocol.js"></script>
   <script src="vendor/moon-ws.js"></script>
   <script src="vendor/deck-snap.js"></script>
@@ -87,6 +88,23 @@
        controls its own background; we give it a white base so a transparent
        widget is legible. */
     .widget-frame { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
+
+    /* kind=markdown: formatted via LunaMarkdown (XSS-safe). Inherits the panel
+       font; just enough rhythm for headings/lists/code/tables to read well. */
+    .markdown-doc { font-size: 0.8rem; line-height: 1.55; color: var(--ink); word-wrap: break-word; }
+    .markdown-doc h1, .markdown-doc h2, .markdown-doc h3 { margin: 0.8em 0 0.4em; line-height: 1.25; }
+    .markdown-doc h1 { font-size: 1.3rem; }
+    .markdown-doc h2 { font-size: 1.1rem; }
+    .markdown-doc h3 { font-size: 0.95rem; }
+    .markdown-doc p, .markdown-doc ul, .markdown-doc ol, .markdown-doc blockquote, .markdown-doc table { margin: 0.5em 0; }
+    .markdown-doc ul, .markdown-doc ol { padding-left: 1.4em; }
+    .markdown-doc blockquote { border-left: 3px solid var(--border); margin-left: 0; padding-left: 0.8em; color: var(--muted); }
+    .markdown-doc code { font-size: 0.72rem; background: color-mix(in oklab, var(--ink) 4%, transparent); padding: 0.1em 0.3em; border-radius: 4px; white-space: pre-wrap; }
+    .markdown-doc pre { margin: 0.5em 0; }
+    .markdown-doc pre code { background: transparent; padding: 0; white-space: pre; }
+    .markdown-doc table { border-collapse: collapse; }
+    .markdown-doc th, .markdown-doc td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+    .markdown-doc a { color: var(--accent, #4a7); }
   </style>
 </head>
 <body>
@@ -307,11 +325,65 @@
     // 'ready' is a no-op in v1; luna.ask() is deferred to v2 (needs consent).
   });
 
+  // kind='html': a plain HTML document PREVIEW, rendered LIVE in the SAME hard
+  // sandbox as widgets — <iframe sandbox="allow-scripts"> (NO allow-same-origin),
+  // strict CSP, no network — but with NO luna.* bridge shim (it is static
+  // content, not an event-wired widget). buildMcpSrcdoc is exactly that no-shim
+  // cage. If the audited sandbox module is somehow absent we FAIL SAFE to escaped
+  // source rather than ever injecting raw HTML.
+  function renderHtmlDoc(artifact) {
+    if (!window.LunaWidgetSandbox) { renderCode(artifact); return; }
+    contentArea.innerHTML = '';
+    var iframe = document.createElement('iframe');
+    iframe.className = 'widget-frame';
+    iframe.setAttribute('sandbox', LunaWidgetSandbox.SANDBOX_ATTR);
+    iframe.setAttribute('referrerpolicy', 'no-referrer');
+    iframe.srcdoc = LunaWidgetSandbox.buildMcpSrcdoc(artifact.content || '');
+    contentArea.appendChild(iframe);
+  }
+
+  // kind='markdown': formatted via the shared, XSS-safe LunaMarkdown pipeline
+  // (escapes ALL input FIRST, then emits only allowlisted tags/attrs — model
+  // output cannot inject raw HTML or handler attributes). Falls back to escaped
+  // source if the module is somehow absent.
+  function renderMarkdownDoc(artifact) {
+    if (!window.LunaMarkdown) { renderCode(artifact); return; }
+    contentArea.innerHTML = '';
+    var doc = document.createElement('div');
+    doc.className = 'markdown-doc';
+    doc.innerHTML = LunaMarkdown.renderMarkdown(artifact.content || '');
+    if (LunaMarkdown.enhanceCodeBlocks) {
+      try { LunaMarkdown.enhanceCodeBlocks(doc); } catch (_) { /* graceful degrade */ }
+    }
+    contentArea.appendChild(doc);
+  }
+
+  // code / plain / unknown → escaped SOURCE via .textContent (NEVER innerHTML)
+  // + highlight.js. The safe default: even raw html source shown here is inert.
+  function renderCode(artifact) {
+    if (!document.getElementById('code-block')) {
+      contentArea.innerHTML = '';
+      var pre = document.createElement('pre');
+      var code = document.createElement('code');
+      code.id = 'code-block';
+      pre.appendChild(code);
+      contentArea.appendChild(pre);
+      codeEl = code;
+    }
+    codeEl.textContent = artifact.content || '';
+    codeEl.className = 'language-' + (artifact.lang || '');
+    if (window.hljs) {
+      try { hljs.highlightElement(codeEl); } catch (_) { /* graceful degrade */ }
+    }
+  }
+
   // ── Render artifact ───────────────────────────────────────────────────────
-  // XSS-CRITICAL: content is agent/user-controlled.
-  // - kind='widget' → the sandboxed iframe above (executes, but caged).
-  // - all other kinds → escaped source via .textContent (NEVER innerHTML),
-  //   so even html/widget-source renders as text and never executes here.
+  // XSS-CRITICAL: content is agent/user-controlled. Every kind has a SAFE path:
+  // - kind='widget'/'mcp-app' → executed in the hard sandbox (allow-scripts, NO
+  //   allow-same-origin, strict CSP, no network) assembled by LunaWidgetSandbox.
+  // - kind='html' → live PREVIEW in that same no-shim sandbox (renderHtmlDoc).
+  // - kind='markdown' → the XSS-safe LunaMarkdown pipeline (escapes first).
+  // - code / plain / anything else → escaped source via .textContent + hljs.
   function render(artifact) {
     if (!artifact) return;
 
@@ -328,25 +400,12 @@
       renderWidget(artifact);
       return;
     }
+    // Non-executable-widget kinds: tear down any widget/mcp state first.
     clearWidgetState();
     disposeMcpApp();
-
-    // Restore the pre>code structure (may have been replaced by a notice/iframe).
-    if (!document.getElementById('code-block')) {
-      contentArea.innerHTML = '';
-      var pre = document.createElement('pre');
-      var code = document.createElement('code');
-      code.id = 'code-block';
-      pre.appendChild(code);
-      contentArea.appendChild(pre);
-      codeEl = code;
-    }
-
-    codeEl.textContent = artifact.content || '';
-    codeEl.className = 'language-' + (artifact.lang || '');
-    if (window.hljs) {
-      try { hljs.highlightElement(codeEl); } catch (_) { /* graceful degrade */ }
-    }
+    if (artifact.kind === 'html') { renderHtmlDoc(artifact); return; }
+    if (artifact.kind === 'markdown') { renderMarkdownDoc(artifact); return; }
+    renderCode(artifact);
   }
 
   // ── WebSocket wiring (vendor/moon-ws.js client + frame registry) ─────────

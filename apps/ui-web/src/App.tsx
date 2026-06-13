@@ -171,6 +171,29 @@ const saveConfig = (cfg: PersistedConfig): void => {
   }
 }
 
+/**
+ * The board panels this web client can summon by `kind` — announced to the
+ * server (widget-directory) so the agent's open_widget tool can land on the
+ * first guess. Mirrors the board panel ids in createBoard's defaults; the
+ * server validates open_widget against this list (open-artifact-widget for
+ * CONTENT artifacts bypasses it). Capability-gated panels (workflows/actions)
+ * are announced too — summoning one the server didn't enable is a harmless
+ * no-op (board.summon ignores an unknown/empty panel).
+ */
+const WEB_WIDGET_DIRECTORY: ReadonlyArray<{
+  kind: string
+  title: string
+  description: string
+}> = [
+  { kind: "artifacts", title: "Artifacts", description: "Pinned artifacts, code, docs and previews" },
+  { kind: "settings", title: "Settings", description: "Connection, appearance and account settings" },
+  { kind: "threads", title: "Threads", description: "The conversation/thread list" },
+  { kind: "events", title: "Events", description: "The live observability event stream" },
+  { kind: "workflows", title: "Workflows", description: "Saved workflows and their run history" },
+  { kind: "actions", title: "Actions", description: "Suggested actions Luna has proposed" },
+  { kind: "favorites", title: "Favorites", description: "Your favorited panels" },
+]
+
 export const App: Component = () => {
   const [cfg, setCfg] = createSignal<PersistedConfig>(loadConfig())
   const [selectedKinds, setSelectedKinds] = createSignal<ReadonlySet<string>>(
@@ -198,6 +221,59 @@ export const App: Component = () => {
   // the login URL). Buffer them and drain on register so nothing is dropped.
   let ptyWriteQueue: Uint8Array[] = []
 
+  // Agent-driven artifact focus: an `open-artifact-widget` frame sets this so
+  // the ArtifactPanel previews that artifact when the board summons it. The
+  // nonce forces re-selection even if the SAME id is opened twice.
+  let focusNonce = 0
+  const [focusArtifact, setFocusArtifact] =
+    createSignal<{ id: string; nonce: number } | null>(null)
+
+  // MCP Apps relay: a kind="mcp-app" artifact iframe asks for resources/tools;
+  // these helpers stamp a requestId, send the WS frame, and resolve when the
+  // matching result frame arrives (routed in onFrame). Bounded so a dropped
+  // result can't leak a pending promise forever.
+  let mcpReqSeq = 0
+  const mcpPending = new Map<
+    string,
+    (r: { ok: boolean; text?: string; result?: unknown; message?: string }) => void
+  >()
+  const mcpRequest = <T,>(
+    requestId: string,
+    frame: ClientFrame,
+    timeoutMs = 30000,
+  ): Promise<T> =>
+    new Promise((resolve) => {
+      const done = (r: unknown) => {
+        if (!mcpPending.has(requestId)) return
+        mcpPending.delete(requestId)
+        clearTimeout(timer)
+        resolve(r as T)
+      }
+      const timer = setTimeout(
+        () => done({ ok: false, message: "MCP request timed out" }),
+        timeoutMs,
+      )
+      mcpPending.set(requestId, done)
+      transport.send(frame)
+    })
+  const mcpReadResource = (uri: string) => {
+    const requestId = `mr${++mcpReqSeq}`
+    return mcpRequest<{ ok: boolean; mimeType?: string; text?: string; message?: string }>(
+      requestId,
+      { type: "mcp-resource-read", requestId, uri },
+    )
+  }
+  const mcpCallTool = (appUri: string, tool: string, args: unknown) => {
+    const requestId = `mt${++mcpReqSeq}`
+    return mcpRequest<{ ok: boolean; result?: unknown; message?: string }>(requestId, {
+      type: "mcp-tool-call",
+      requestId,
+      appUri,
+      tool,
+      args,
+    })
+  }
+
   const transport = createTransport({
     onFrame: (frame) => {
       if (frame.type === "pty-output") {
@@ -217,6 +293,24 @@ export const App: Component = () => {
       if (frame.type === "vault-status") {
         setVaultLastStatus({ requestId: frame.requestId, ok: frame.ok, message: frame.message })
       }
+      // Agent "open a panel" commands (the web client is a widget host — it
+      // announces its directory on connect). open-artifact-widget pops the
+      // artifacts panel and previews the named artifact; widget-open summons a
+      // board panel by id. Side-effect only; still dispatched (the reducer
+      // no-ops them) so the exhaustive default arm stays correct.
+      if (frame.type === "open-artifact-widget") {
+        board.summon("artifacts")
+        setFocusArtifact({ id: frame.artifactId, nonce: ++focusNonce })
+      } else if (frame.type === "widget-open") {
+        board.summon(frame.kind)
+      } else if (
+        frame.type === "mcp-resource-result" ||
+        frame.type === "mcp-tool-result"
+      ) {
+        // Settle the requestId-matched mcp-app relay promise. The reducer
+        // no-ops these (no store state); we still dispatch for exhaustiveness.
+        mcpPending.get(frame.requestId)?.(frame)
+      }
       store.dispatch(frame)
       // Sidebar freshness: any frame that mutates a thread's last-message
       // metadata should refresh the list. Server orders by lastMessageAt,
@@ -234,6 +328,11 @@ export const App: Component = () => {
       // populates without a manual click. (The settings panel stays where
       // the user left it — on the board, closing it is a ✕ away.)
       handle.send({ type: "list-threads" })
+      // Announce this client as a widget host so the agent's open_widget /
+      // open_artifact tools can summon panels here (the server's summon bridge
+      // registers the last announcer as the host). Content artifacts
+      // (open-artifact-widget) bypass this directory; it gates open_widget.
+      handle.send({ type: "widget-directory", widgets: WEB_WIDGET_DIRECTORY })
     },
   })
 
@@ -916,6 +1015,13 @@ export const App: Component = () => {
           artifacts={selectedThread()?.artifacts ?? []}
           pinned={store.state.pinnedArtifacts}
           artifactsCapable={store.state.capabilities.artifacts === true}
+          focusSignal={focusArtifact()}
+          obsEvents={store.state.events}
+          mcp={
+            store.state.capabilities.mcpApps === true
+              ? { readResource: mcpReadResource, callTool: mcpCallTool }
+              : undefined
+          }
           onPin={(a) =>
             send({
               type: "artifact-pin",
