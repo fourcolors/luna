@@ -1059,6 +1059,7 @@ fn spawn_panel(
 ) -> Result<String, String> {
     // Boot restore positions at build time → show immediately (it does not snap).
     spawn_panel_at(app, desc, &panel_label(&desc.kind), &desc.page, x, y, width, height, true)
+        .map(|w| w.label().to_string())
 }
 
 /// spawn_panel with an explicit label + url (non-singleton instances).
@@ -1076,11 +1077,10 @@ fn spawn_panel_at(
     width: Option<f64>,
     height: Option<f64>,
     visible: bool,
-) -> Result<String, String> {
-    let label = label.to_string();
+) -> Result<tauri::WebviewWindow, String> {
     let mut builder = tauri::WebviewWindowBuilder::new(
         app,
-        &label,
+        label,
         tauri::WebviewUrl::App(url.to_string().into()),
     )
     .title(&desc.title)
@@ -1094,8 +1094,9 @@ fn spawn_panel_at(
     if let (Some(px), Some(py)) = (x, y) {
         builder = builder.position(px, py);
     }
-    builder.build().map_err(|e| e.to_string())?;
-    Ok(label)
+    // Return the built window so callers reveal it via the handle they already
+    // hold — no re-fetch that could miss (and strand a hidden window).
+    builder.build().map_err(|e| e.to_string())
 }
 
 /// Allowlisted hub actions a settings panel may request. Panels own their
@@ -1193,10 +1194,8 @@ async fn open_widget(
     // "Positioned" = BOTH coords (exactly what the builder honours); a partial
     // position counts as none, so the window snaps rather than free-floating.
     let will_snap = opener.is_some() || !has_explicit_position(x, y);
-    let win_label = spawn_panel_at(&app, desc, &label, &url, x, y, None, None, !will_snap)?;
-    let Some(win) = app.get_webview_window(&win_label) else {
-        return Ok(win_label);
-    };
+    let win = spawn_panel_at(&app, desc, &label, &url, x, y, None, None, !will_snap)?;
+    let win_label = win.label().to_string();
 
     if will_snap {
         let app2 = app.clone();
@@ -1268,27 +1267,27 @@ async fn open_artifact_widget(
     if let (Some(px), Some(py)) = (x, y) {
         builder = builder.position(px, py);
     }
-    builder.build().map_err(|e| e.to_string())?;
+    // Keep the built window handle so reveal can never miss it (a re-fetch
+    // could return None and strand a hidden window).
+    let win = builder.build().map_err(|e| e.to_string())?;
     // Snap-on-open: with no explicit position, the artifact / MCP-app window
     // accretes onto the nearest open dock cluster and joins its group, exactly
     // like a system panel. An explicit (x, y) — e.g. a restored pop-out — is
     // honoured as-is.
     if will_snap {
-        if let Some(win) = app.get_webview_window(&label) {
-            let app2 = app.clone();
-            let label2 = label.clone();
-            let w = width.unwrap_or(360.0) as i32;
-            let scheduled = win.run_on_main_thread(move || {
-                if let Some((anchor, anchor_rect)) = nearest_dock_anchor(&app2, &label2) {
-                    dock_new_panel(&app2, &label2, &anchor, anchor_rect, w);
-                }
-                if let Some(w2) = app2.get_webview_window(&label2) {
-                    let _ = w2.show();
-                }
-            });
-            if scheduled.is_err() {
-                let _ = win.show();
+        let app2 = app.clone();
+        let label2 = label.clone();
+        let w = width.unwrap_or(360.0) as i32;
+        let scheduled = win.run_on_main_thread(move || {
+            if let Some((anchor, anchor_rect)) = nearest_dock_anchor(&app2, &label2) {
+                dock_new_panel(&app2, &label2, &anchor, anchor_rect, w);
             }
+            if let Some(w2) = app2.get_webview_window(&label2) {
+                let _ = w2.show();
+            }
+        });
+        if scheduled.is_err() {
+            let _ = win.show();
         }
     }
     Ok(label)
