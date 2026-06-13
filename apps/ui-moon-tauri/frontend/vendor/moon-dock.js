@@ -100,11 +100,16 @@
       // Render the owned seam badges Rust placed for us — Rust is the single
       // source of truth for badge geometry (it has every member's rect in one
       // place and re-emits on resize), so the page does NO geometry fan-out and
-      // never goes stale on a partner's resize. Wiring this INTO applyGroupState
-      // means every path that feeds group state paints — live dock-group events
-      // AND the replay-on-subscribe path on boot. Absent/empty (ungroup, or an
-      // older core that doesn't send seams) → clears.
-      paintSeams(grouped && Array.isArray(payload.seams) ? payload.seams : []);
+      // never goes stale on a partner's resize.
+      //
+      // Only (re)paint on real data: an ungroup CLEARS; a seams array SETS. A
+      // grouped payload with NO seams field is the geometry-free replay reply
+      // (dock_group_state, membership only) — leave existing badges UNTOUCHED so
+      // a racing seam-bearing re-emit isn't undone (and an older core that never
+      // sends seams just shows none). Clearing here would let the replay reply
+      // wipe badges the scheduled re-emit had already painted.
+      if (!grouped) paintSeams([]);
+      else if (Array.isArray(payload.seams)) paintSeams(payload.seams);
     }
     pinBtn && pinBtn.addEventListener('animationend', function () {
       pinBtn.classList.remove('pop');

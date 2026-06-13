@@ -378,6 +378,17 @@ describe('widget.html — snap + dock groups', () => {
     expect(document.querySelectorAll('#dock-links .dock-link')).toHaveLength(0)
   })
 
+  it('a seam-less grouped reply (the boot replay) does NOT clear painted badges', () => {
+    // A real seam-bearing event paints a badge...
+    groupWithSeams([{ partner: 'widget-friend', edge: 'r', x: 289, y: 100 }])
+    expect(document.querySelectorAll('#dock-links .dock-link')).toHaveLength(1)
+    // ...then the geometry-free replay reply (grouped, NO seams field) must leave
+    // it ALONE — clearing here would let the replay race-wipe a badge the
+    // scheduled seam-bearing re-emit had already painted.
+    dispatchGroup({ grouped: true, members: [SELF, 'widget-friend'], outlineSides: ['l'] })
+    expect(document.querySelectorAll('#dock-links .dock-link')).toHaveLength(1)
+  })
+
   it('reuses the badge node across re-renders (no re-pop), repositioning in place', () => {
     groupWithSeams([{ partner: 'widget-friend', edge: 'r', x: 289, y: 100 }])
     const first = document.querySelector('#dock-links .dock-link') as HTMLButtonElement

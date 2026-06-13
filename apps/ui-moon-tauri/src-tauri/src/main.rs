@@ -2071,7 +2071,11 @@ fn dock_seams(
         let (l, t, r, b) = (*x, *y, x + w, y + h);
         let mut seams: Vec<DockSeam> = Vec::new();
         for (other, (ox, oy, ow, oh)) in rects {
-            if other == label {
+            // Never self, and never the hub: the moon is alignment-only and is
+            // never truly linked, so it gets no seam badge. Defense-in-depth —
+            // the hub is never a group member (is_dock_label gates every join),
+            // but keep the guard the page-side render used to carry.
+            if other == label || other == "main" {
                 continue;
             }
             let (ol, ot, or_, ob) = (*ox, *oy, ox + ow, oy + oh);
@@ -3726,6 +3730,18 @@ mod dock_tests {
         let mut partners: Vec<&str> = out["a"].iter().map(|s| s.partner.as_str()).collect();
         partners.sort_unstable();
         assert_eq!(partners, vec!["below", "right"]);
+    }
+
+    #[test]
+    fn seam_never_against_the_hub() {
+        // Defense-in-depth: even if the alignment-only hub were ever flush in a
+        // group's rect list, it draws no seam badge.
+        let rects = vec![
+            ("widget-a".to_string(), (0, 0, 200, 300)),
+            ("main".to_string(), (200, 0, 200, 300)), // hub flush on the right
+        ];
+        let out = dock_seams(&rects);
+        assert_eq!(out["widget-a"], Vec::<DockSeam>::new());
     }
 }
 
