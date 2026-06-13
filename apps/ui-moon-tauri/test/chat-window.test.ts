@@ -1426,6 +1426,25 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       S.finishTurn('t1', 'answer', 777)
       expect(S.turns[0].ts).toBe(777)
     })
+
+    it('Scenario: the reducer rejects non-finite ts (NaN/Infinity) instead of storing a junk stamp', () => {
+      const S = M().ChatState
+      // History: a non-finite server ts drops to undefined (no time rendered).
+      S.reset()
+      S.loadHistory([{ role: 'user', text: 'a', ts: NaN }, { role: 'assistant', text: 'b', ts: Infinity }])
+      expect(S.turns[0].ts).toBeUndefined()
+      expect(S.turns[1].ts).toBeUndefined()
+      // appendUser: a non-finite stamp falls back to the real clock (no u-NaN- key).
+      S.reset()
+      S.appendUser('hi', null, NaN)
+      expect(Number.isFinite(S.turns[0].ts)).toBe(true)
+      expect(S.turns[0].key).not.toContain('NaN')
+      // finishTurn: a non-finite ts leaves the turn unstamped (time stays omitted).
+      S.reset()
+      S.applyDelta('t1', 'answer')
+      S.finishTurn('t1', 'answer', Infinity)
+      expect(S.turns[0].ts).toBeUndefined()
+    })
   })
 
   // ───────────────────────────────────────────────────────────────────────────

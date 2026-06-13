@@ -4176,7 +4176,7 @@
       + ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
       + '<path d="M20 6 9 17l-5-5"></path></svg>';
 
-    // Build the small hover-reveal "copy this message" button for a bubble.
+    // Build the small always-visible "copy this message" button for a bubble.
     // Copies `text` (the message's RAW source — markdown for assistant turns,
     // the typed text for user turns) so a paste preserves structure/code,
     // mirroring both apps/ui-web's MessageBubble and the code-block copy.
@@ -4310,7 +4310,7 @@
     // Refresh-on-interaction (no timer): clicking or focusing a message
     // recomputes its relative send-time from the stored epoch, so an idle
     // "9m ago" updates the moment you touch it. `focusin` bubbles, so tabbing
-    // onto the copy button refreshens that message's time for free. One
+    // onto the copy button refreshes that message's time for free. One
     // delegated listener on the stable container survives bubble rebuilds.
     if (DOM.chatMessages) {
       const refreshMsgTime = (e) => {
@@ -4771,7 +4771,7 @@
             previews: null,
             // Server send-time (ms epoch) — drives the "9m ago" meta stamp.
             // Undefined for pre-`ts` servers; the renderer omits the time then.
-            ts: typeof msg.ts === 'number' ? msg.ts : undefined,
+            ts: Number.isFinite(msg.ts) ? msg.ts : undefined,
           });
         }
       },
@@ -4781,7 +4781,7 @@
         // Client send-time — the user turn never round-trips the server, so we
         // stamp it locally. Optional `ts` keeps tests deterministic; the live
         // submit path omits it and gets Date.now(). Shared with the key.
-        const stamp = typeof ts === 'number' ? ts : Date.now();
+        const stamp = Number.isFinite(ts) ? ts : Date.now();
         this.turns.push({
           key: 'u-' + stamp + '-' + this.turns.length,
           role: 'user',
@@ -4928,7 +4928,7 @@
         turn.status = 'done';
         // Stamp the server send-time (from assistant-done's message.ts) for the
         // meta-row time. (fullText is unused — the renderer rebuilds from segments.)
-        if (typeof ts === 'number') turn.ts = ts;
+        if (Number.isFinite(ts)) turn.ts = ts;
       },
 
       failTurn(turnId, errorText) {
