@@ -7,10 +7,16 @@
  * mental model (they run on different origins, so the storage itself is
  * per-client — only the convention is shared).
  *
- *   luna_palette — 'dawn' | 'meadow' | 'tide'      (default 'tide')
- *   luna_theme   — 'light' | 'dark'                (default 'dark')
- *   luna_chrome  — 'wash' | 'ink'                  (default 'wash')
- *   luna_grain   — 'true' | 'false'                (default 'false')
+ *   luna_palette  — 'dawn' | 'meadow' | 'tide'              (default 'tide')
+ *   luna_theme    — 'light' | 'dark'                        (default 'dark')
+ *   luna_chrome   — 'wash' | 'ink'                          (default 'wash')
+ *   luna_grain    — 'true' | 'false'                        (default 'false')
+ *   luna_font     — 'sans' | 'serif' | 'mono' | 'hand'      (default 'sans')
+ *   luna_fontsize — 'small'|'medium'|'large'|'xlarge'       (default 'medium')
+ *
+ * font / fontsize only re-skin the CHAT reading + writing surfaces (bubbles,
+ * markdown, composer) via the --font-chat / --font-scale tokens — NOT the
+ * whole UI chrome, so panel/board layout never reflows.
  *
  * Import for its side effect from main.tsx BEFORE render() so the
  * data-attributes are stamped pre-paint. Cross-tab sync rides the `storage`
@@ -20,17 +26,37 @@
 export type Palette = "dawn" | "meadow" | "tide"
 export type Theme = "light" | "dark"
 export type Chrome = "wash" | "ink"
+export type Font = "sans" | "serif" | "mono" | "hand"
+export type FontSize = "small" | "medium" | "large" | "xlarge"
 
 export interface Appearance {
   readonly palette: Palette
   readonly theme: Theme
   readonly chrome: Chrome
   readonly grain: boolean
+  readonly font: Font
+  readonly fontSize: FontSize
 }
 
 export const PALETTES: ReadonlyArray<Palette> = ["dawn", "meadow", "tide"]
 export const THEMES: ReadonlyArray<Theme> = ["light", "dark"]
 export const CHROMES: ReadonlyArray<Chrome> = ["wash", "ink"]
+export const FONTS: ReadonlyArray<Font> = ["sans", "serif", "mono", "hand"]
+export const FONT_SIZES: ReadonlyArray<FontSize> = ["small", "medium", "large", "xlarge"]
+
+/** Human labels for the font + size chips (chip text ↔ stored value). */
+export const FONT_LABELS: Readonly<Record<Font, string>> = {
+  sans: "sans",
+  serif: "serif",
+  mono: "mono",
+  hand: "hand",
+}
+export const FONT_SIZE_LABELS: Readonly<Record<FontSize, string>> = {
+  small: "small",
+  medium: "medium",
+  large: "large",
+  xlarge: "x-large",
+}
 
 /** Swatch preview colors (the LIGHT washes of each palette, left→right). */
 export const PALETTE_SWATCHES: Readonly<Record<Palette, ReadonlyArray<string>>> = {
@@ -44,6 +70,8 @@ const KEYS = {
   theme: "luna_theme",
   chrome: "luna_chrome",
   grain: "luna_grain",
+  font: "luna_font",
+  fontSize: "luna_fontsize",
 } as const
 
 type PrefName = keyof typeof KEYS
@@ -53,6 +81,8 @@ const VALID: Record<PrefName, ReadonlyArray<string>> = {
   theme: THEMES,
   chrome: CHROMES,
   grain: ["true", "false"],
+  font: FONTS,
+  fontSize: FONT_SIZES,
 }
 
 const DEFAULTS: Record<PrefName, string> = {
@@ -60,6 +90,8 @@ const DEFAULTS: Record<PrefName, string> = {
   theme: "dark",
   chrome: "wash",
   grain: "false",
+  font: "sans",
+  fontSize: "medium",
 }
 
 // Unknown/corrupt stored values fall back to the default; localStorage may
@@ -80,6 +112,8 @@ export const applyAppearance = (): void => {
   el.setAttribute("data-theme", read("theme"))
   el.setAttribute("data-chrome", read("chrome"))
   el.setAttribute("data-grain", read("grain") === "true" ? "on" : "off")
+  el.setAttribute("data-font", read("font"))
+  el.setAttribute("data-fontsize", read("fontSize"))
 }
 
 export const setAppearance = (name: PrefName, value: string): void => {
@@ -97,6 +131,8 @@ export const getAppearance = (): Appearance => ({
   theme: read("theme") as Theme,
   chrome: read("chrome") as Chrome,
   grain: read("grain") === "true",
+  font: read("font") as Font,
+  fontSize: read("fontSize") as FontSize,
 })
 
 /**

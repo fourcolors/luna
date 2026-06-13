@@ -52,6 +52,10 @@ import {
   onAppearanceChange,
   PALETTES,
   PALETTE_SWATCHES,
+  FONTS,
+  FONT_SIZES,
+  FONT_LABELS,
+  FONT_SIZE_LABELS,
 } from "./appearance.js"
 import { createBoard, EDGE_MARGIN, SNAP_GAP, TOP_MIN } from "./board/createBoard.js"
 import { Board, FavoritesGrid, Shelf, type BoardPanelDef } from "./board/Board.jsx"
@@ -653,6 +657,34 @@ export const App: Component = () => {
               />
               <span>Paper grain</span>
             </label>
+            {/* Chat typeface + size — re-skins the chat reading/writing
+                surfaces only (bubbles, markdown, composer) via --font-chat /
+                --font-scale; UI chrome is untouched. */}
+            <span class="muted small">Font</span>
+            <For each={FONTS}>
+              {(f) => (
+                <button
+                  class={`chip${appearance().font === f ? " active" : ""}`}
+                  style={{ "font-family": `var(--font-${f === "sans" ? "body" : f})` }}
+                  title={`Chat font: ${FONT_LABELS[f]}`}
+                  onClick={() => { setAppearance("font", f); setAppearanceState(getAppearance()) }}
+                >
+                  {FONT_LABELS[f]}
+                </button>
+              )}
+            </For>
+            <span class="muted small">Text size</span>
+            <For each={FONT_SIZES}>
+              {(s) => (
+                <button
+                  class={`chip${appearance().fontSize === s ? " active" : ""}`}
+                  title={`Chat text size: ${FONT_SIZE_LABELS[s]}`}
+                  onClick={() => { setAppearance("fontSize", s); setAppearanceState(getAppearance()) }}
+                >
+                  {FONT_SIZE_LABELS[s]}
+                </button>
+              )}
+            </For>
           </div>
           {/* PRD Part B §12 — gated on the additive hello capability: an
               older server never advertises `skills`, so the section simply

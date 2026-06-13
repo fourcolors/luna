@@ -198,6 +198,62 @@ describe('settings.appearance panel', () => {
     expect(document.documentElement.getAttribute('data-grain')).toBe('off')
   })
 
+  // ── Chat font + size chips ───────────────────────────────────────────────
+
+  it('renders 4 font chips with "sans" active by default', () => {
+    bootPanel({ type: 'settings.appearance' })
+    const chips = [...document.querySelectorAll('.chip')] as HTMLElement[]
+    const sans = chips.find((c) => c.textContent === 'sans')
+    expect(['sans', 'serif', 'mono', 'hand'].every((t) => chips.some((c) => c.textContent === t))).toBe(true)
+    expect(sans!.classList.contains('on')).toBe(true)
+  })
+
+  it('renders 4 size chips with "medium" active by default', () => {
+    bootPanel({ type: 'settings.appearance' })
+    const chips = [...document.querySelectorAll('.chip')] as HTMLElement[]
+    const medium = chips.find((c) => c.textContent === 'medium')
+    expect(['small', 'medium', 'large', 'x-large'].every((t) => chips.some((c) => c.textContent === t))).toBe(true)
+    expect(medium!.classList.contains('on')).toBe(true)
+  })
+
+  it('clicking the "serif" font chip writes luna_font=serif and stamps data-font', () => {
+    bootPanel({ type: 'settings.appearance' })
+    const chips = [...document.querySelectorAll('.chip')] as HTMLElement[]
+    const serif = chips.find((c) => c.textContent === 'serif')!
+    serif.click()
+    expect(localStorage.getItem('luna_font')).toBe('serif')
+    expect(document.documentElement.getAttribute('data-font')).toBe('serif')
+    expect(serif.classList.contains('on')).toBe(true)
+  })
+
+  it('clicking the "x-large" size chip writes luna_fontsize=xlarge and stamps data-fontsize', () => {
+    bootPanel({ type: 'settings.appearance' })
+    const chips = [...document.querySelectorAll('.chip')] as HTMLElement[]
+    const xl = chips.find((c) => c.textContent === 'x-large')!
+    xl.click()
+    expect(localStorage.getItem('luna_fontsize')).toBe('xlarge')
+    expect(document.documentElement.getAttribute('data-fontsize')).toBe('xlarge')
+    expect(xl.classList.contains('on')).toBe(true)
+  })
+
+  it('storage event for luna_font moves the active font chip', () => {
+    bootPanel({ type: 'settings.appearance' })
+    localStorage.setItem('luna_font', 'mono')
+    window.dispatchEvent(new StorageEvent('storage', { key: 'luna_font', newValue: 'mono' }))
+    const chips = [...document.querySelectorAll('.chip')] as HTMLElement[]
+    expect(chips.find((c) => c.textContent === 'mono')!.classList.contains('on')).toBe(true)
+    expect(chips.find((c) => c.textContent === 'sans')!.classList.contains('on')).toBe(false)
+  })
+
+  it('reflects stored font=hand / fontsize=small on initial render', () => {
+    localStorage.setItem('luna_font', 'hand')
+    localStorage.setItem('luna_fontsize', 'small')
+    bootPanel({ type: 'settings.appearance' })
+    const chips = [...document.querySelectorAll('.chip')] as HTMLElement[]
+    expect(chips.find((c) => c.textContent === 'hand')!.classList.contains('on')).toBe(true)
+    expect(chips.find((c) => c.textContent === 'small')!.classList.contains('on')).toBe(true)
+  })
+
   // ── Restores stored values on render ─────────────────────────────────────
 
   it('reflects stored values (meadow/light/ink/grain) on initial render', () => {
