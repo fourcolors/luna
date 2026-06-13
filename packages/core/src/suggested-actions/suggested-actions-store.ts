@@ -94,11 +94,16 @@ const fnv1a = (s: string): string => {
   return (h >>> 0).toString(36)
 }
 
-/** Content-derived action id so re-proposing the SAME (thread, type, title)
- *  dedups via the state-row PK (no nagging duplicates). Explicit `id` wins. */
+/** Content-derived action id so re-proposing an IDENTICAL action (same thread,
+ *  type, title AND payload) dedups via the state-row PK (no nagging
+ *  duplicates) — but a re-proposal with a DIFFERENT payload (prompt / jobId /
+ *  tools / model) gets a fresh row, so accepting the newer suggestion can never
+ *  silently execute the older payload. Explicit `id` wins. */
 const deriveActionId = (i: ProposeInput): string =>
   i.id ??
-  `sa-${fnv1a(`${i.threadId}|${i.actionType}|${i.title.trim().toLowerCase()}`)}`
+  `sa-${fnv1a(
+    `${i.threadId}|${i.actionType}|${i.title.trim().toLowerCase()}|${JSON.stringify(i.payload)}`,
+  )}`
 
 /** Audit-log row id — idempotency key on (actionId, event, at). */
 const deriveLogId = (actionId: string, event: string, at: number): string =>

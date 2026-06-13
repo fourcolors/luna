@@ -180,7 +180,12 @@ export const JobTickerLayer = (
           // "stays due" trap). Disable it after its single claim. A job with a
           // NON-empty-but-unparseable cron is left alone (the deliberate
           // pain-signal for a misconfigured schedule).
-          if (((job.schedule ?? job.spec) ?? "").trim() === "") {
+          // `??` only falls through null/undefined, NOT "" — so check BOTH
+          // fields explicitly: an empty-string `schedule` alongside a valid
+          // `spec` must NOT be misread as a one-shot.
+          const scheduleEmpty = (job.schedule ?? "").trim() === ""
+          const specEmpty = (job.spec ?? "").trim() === ""
+          if (scheduleEmpty && specEmpty) {
             yield* store
               .setV2Fields(job.id, { enabled: false })
               .pipe(Effect.catchAll(() => Effect.void))

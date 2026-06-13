@@ -308,14 +308,20 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
               {(m) => <MessageBubble message={m} />}
             </For>
             {/* ── Suggested action inline chip ────────────────────────────
-                Shows the LATEST proposed action (first in the array with
-                status==='proposed') when handlers are wired in. Stays
-                purely presentational — all state lives in the parent. */}
+                Shows the NEWEST proposed action (highest createdAt) when
+                handlers are wired in — matching Moon's chip. The store array is
+                oldest-first, so we pick the max by createdAt rather than the
+                first match. Stays purely presentational. */}
             <Show
               when={(() => {
                 const actions = props.suggestedActions
                 if (!actions || !props.onAcceptSuggestion || !props.onDismissSuggestion) return null
-                return actions.find((a) => a.status === "proposed") ?? null
+                let newest: SuggestedActionWire | null = null
+                for (const a of actions) {
+                  if (a.status !== "proposed") continue
+                  if (newest === null || a.createdAt > newest.createdAt) newest = a
+                }
+                return newest
               })()}
             >
               {(action) => (

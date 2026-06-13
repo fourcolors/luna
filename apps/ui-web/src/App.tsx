@@ -469,13 +469,27 @@ export const App: Component = () => {
     })
   })
 
-  /** Send a suggested-action-respond frame and set an optimistic status. */
+  /** Send a suggested-action-respond frame and set an optimistic status. The
+   *  override is normally cleared by the authoritative update (reconcile effect
+   *  above). But if the server emits NO update — a cross-thread/unknown
+   *  actionId, or a lost-race respond() that returns null — nothing would clear
+   *  it. A timeout rollback reverts the override so the row becomes actionable
+   *  again and the user can retry, rather than the chip sticking forever. */
+  const OPTIMISTIC_ROLLBACK_MS = 8000
   const respondToAction = (actionId: string, decision: "accept" | "dismiss"): void => {
     const threadId = selectedThread()?.summary.id
     if (!threadId) return
     const optimistic: SuggestedActionStatus = decision === "accept" ? "accepted" : "dismissed"
     setOptimisticStatuses((prev) => new Map([...prev, [actionId, optimistic]]))
     send({ type: "suggested-action-respond", threadId, actionId, decision })
+    setTimeout(() => {
+      setOptimisticStatuses((prev) => {
+        if (!prev.has(actionId)) return prev // already reconciled by a server update
+        const next = new Map(prev)
+        next.delete(actionId)
+        return next
+      })
+    }, OPTIMISTIC_ROLLBACK_MS)
   }
 
   /* ── Luna Studio board — floating panels on one canvas ─────────────────
