@@ -25,7 +25,18 @@
     var pinBtn = document.getElementById('pin-btn');
     var seamEl = document.getElementById('seam');
     var outlineEl = document.getElementById('outline');
-    var dockLinksEl = document.getElementById('dock-links'); // seam-badge layer
+    // The seam-badge layer is owned by the dock client, not the page shells —
+    // create it once if absent so every widget/panel/chat page gets badges
+    // without hand-copying the div into each (it's position:fixed, so we mount
+    // it beside #outline to share that stacking context, else on <body>).
+    var dockLinksEl = document.getElementById('dock-links');
+    if (!dockLinksEl && document.body) {
+      dockLinksEl = document.createElement('div');
+      dockLinksEl.id = 'dock-links';
+      var anchor = outlineEl || seamEl;
+      if (anchor && anchor.parentNode) anchor.parentNode.appendChild(dockLinksEl);
+      else document.body.appendChild(dockLinksEl);
+    }
     var groupMembers = []; // my group's labels (incl. me); [] = ungrouped
     var exMembers = [];    // just-left group, ignored as snap targets…
     var exUntil = 0;       // …until this time (no instant re-link after unpin)
@@ -86,13 +97,14 @@
         var sides = grouped && Array.isArray(payload.outlineSides) ? payload.outlineSides : [];
         outlineEl.className = sides.map(function (s) { return 'g' + s; }).join(' ');
       }
-      // Membership/interior geometry changed → redraw the owned seam badges.
-      // Wiring this INTO applyGroupState (not just the live dock-group listener)
-      // means EVERY path that feeds group state paints the badges — including a
-      // replay-on-subscribe path that fetches current state on boot. Otherwise a
-      // cluster restored at launch stays badge-less until the first move/resize.
-      // A tick of slack lets Rust's group translate land first.
-      scheduleSeams(30);
+      // Render the owned seam badges Rust placed for us — Rust is the single
+      // source of truth for badge geometry (it has every member's rect in one
+      // place and re-emits on resize), so the page does NO geometry fan-out and
+      // never goes stale on a partner's resize. Wiring this INTO applyGroupState
+      // means every path that feeds group state paints — live dock-group events
+      // AND the replay-on-subscribe path on boot. Absent/empty (ungroup, or an
+      // older core that doesn't send seams) → clears.
+      paintSeams(grouped && Array.isArray(payload.seams) ? payload.seams : []);
     }
     pinBtn && pinBtn.addEventListener('animationend', function () {
       pinBtn.classList.remove('pop');
@@ -105,25 +117,20 @@
     });
 
     // ── Dock-link seam badges ──────────────────────────────────────────────
-    // Once we're grouped, draw the little chain-link badge on each interior
-    // seam we OWN (see deck-snap.js computeSeams: a window owns only the seams
-    // on its right/bottom edges, so every seam gets exactly one badge). The
-    // badge nests in our 22px transparent card margin flush against the seam —
-    // it cannot straddle into the neighbor window, which clips to its bounds.
-    // Clicking it leaves the group (the same primitive as the pin button).
+    // Once we're grouped, draw the little chain-link badge on each interior seam
+    // we OWN. Rust computes the seams (dock_seams: a window owns only the seams
+    // on its right/bottom edges, so every seam gets exactly one badge) and ships
+    // them in the dock-group payload; we just place them. The badge nests in our
+    // 22px transparent card margin flush against the seam — it cannot straddle
+    // into the neighbor window, which clips to its bounds. Clicking it leaves
+    // the group (the same primitive as the pin button).
     var LINK_SVG =
       '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
       ' stroke-width="2.4" stroke-linecap="round" aria-hidden="true">' +
       '<path d="M9 15l6-6"/>' +
       '<path d="M11 6l1.5-1.5a4 4 0 0 1 5.7 5.7L16.5 12"/>' +
       '<path d="M13 18l-1.5 1.5a4 4 0 0 1-5.7-5.7L7.5 12"/></svg>';
-    var seamGen = 0;   // bump on every render so stale async renders abort
-    var seamTimer = null;
-    var SEAM_BADGE_R = 11; // half the 22px badge — matches deck-snap BADGE_R
-
-    function clearSeams() {
-      if (dockLinksEl) dockLinksEl.textContent = '';
-    }
+    var SEAM_BADGE_R = 11; // half the 22px badge — matches Rust dock_seams BADGE_R
 
     function onSeamClick(e) {
       e.preventDefault();
@@ -194,41 +201,6 @@
       for (var k in existing) {
         if (!keep[k]) dockLinksEl.removeChild(existing[k]);
       }
-    }
-
-    async function renderSeams() {
-      if (!dockLinksEl || !window.LunaDeckSnap || !window.LunaDeckSnap.computeSeams) return;
-      var gen = ++seamGen;
-      if (!groupMembers.length) { clearSeams(); return; } // ungrouped
-      try {
-        var TW = window.__TAURI__ && window.__TAURI__.window;
-        if (!TW || !TW.Window || typeof TW.Window.getByLabel !== 'function') {
-          clearSeams();
-          return;
-        }
-        var selfRect = await logicalRect(W);
-        if (gen !== seamGen) return; // a newer render owns the layer now
-        var others = [];
-        for (var i = 0; i < groupMembers.length; i++) {
-          var m = groupMembers[i];
-          // Never self, and never the hub: 'main' is alignment-only and never
-          // truly linked, so it gets no seam badge (mirrors the snap path's
-          // main exclusion). Defensive — Rust never groups the hub with widgets.
-          if (m === label || m === 'main') continue;
-          try {
-            var w = await TW.Window.getByLabel(m);
-            if (!w) continue;
-            others.push({ label: m, rect: await logicalRect(w) });
-          } catch (_) { /* member vanished mid-enumeration */ }
-        }
-        if (gen !== seamGen) return;
-        paintSeams(window.LunaDeckSnap.computeSeams(selfRect, others));
-      } catch (_) { /* best-effort — never throw into the page */ }
-    }
-
-    function scheduleSeams(delay) {
-      if (seamTimer) { clearTimeout(seamTimer); seamTimer = null; }
-      seamTimer = setTimeout(function () { seamTimer = null; renderSeams(); }, delay || 0);
     }
 
     // Re-root the group at THIS window the instant it is grabbed, so the
@@ -342,17 +314,9 @@
         lastMoveTime = now;
         armSettle(DEBOUNCE_MS);
       }).catch(function () { /* onMoved may not exist in all versions */ });
-
-      // A resize shifts our own edge (and the shared overlap run), so the
-      // owned seam badges must follow. Debounced — onResized streams during
-      // the drag; we only need the settled geometry. KNOWN MINOR: this catches
-      // only OUR resize. If the non-owning PARTNER resizes, the overlap-run
-      // midpoint can drift until the next dock-group event refreshes us — a
-      // frontend-only seam badge can't observe a sibling's resize without Rust
-      // re-emitting dock-group on WindowEvent::Resized (deliberately deferred
-      // to keep this change ship-via-frontend-update, no Rust release).
-      W.onResized(function () { scheduleSeams(80); })
-        .catch(function () { /* onResized may not exist in all versions */ });
+      // No seam re-render on our own resize: Rust re-emits dock-group to the
+      // whole group on WindowEvent::Resized, so an owner refreshes even when the
+      // NON-owning partner is the one resized — the case the page could never see.
 
       async function runSettle() {
           try {

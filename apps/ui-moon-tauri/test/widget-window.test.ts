@@ -49,7 +49,6 @@ describe('widget.html — snap + dock groups', () => {
     label: string
     listen: ReturnType<typeof vi.fn>
     onMoved: ReturnType<typeof vi.fn>
-    onResized: ReturnType<typeof vi.fn>
     isMinimized: ReturnType<typeof vi.fn>
     outerPosition: ReturnType<typeof vi.fn>
     outerSize: ReturnType<typeof vi.fn>
@@ -111,8 +110,6 @@ describe('widget.html — snap + dock groups', () => {
         movedHandler = cb
         return Promise.resolve(() => {})
       }),
-      // moon-dock listens for resize to keep owned seam badges on their edge.
-      onResized: vi.fn(() => Promise.resolve(() => {})),
       isMinimized: vi.fn(async () => false),
       scaleFactor: vi.fn(async () => 1),
       outerPosition: vi.fn(async () => ({ ...WIDGET_POS })),
@@ -349,111 +346,73 @@ describe('widget.html — snap + dock groups', () => {
     expect(outline.className).toBe('')
   })
 
-  it('draws a chain-link badge on each seam it owns, and clears it on ungroup', async () => {
-    // A friend flush against OUR right edge (840 = 540+300) with vertical
-    // overlap → we are the LEFT window, so we own the seam on our right edge.
-    const friend = {
-      outerPosition: vi.fn(async () => ({ x: 840, y: 150 })),
-      outerSize: vi.fn(async () => ({ width: 220, height: 160 })),
-    }
-    getByLabel.mockImplementation(async (l: string) => (l === 'widget-friend' ? friend : null))
+  // Rust now computes seam placement (main.rs dock_seams) and ships it in the
+  // dock-group payload; the page just renders payload.seams. These drive that
+  // render path directly — no client geometry, no async fan-out.
+  type Seam = { partner: string; edge: 'r' | 'b'; x: number; y: number }
+  const groupWithSeams = (seams: Seam[]) =>
+    dispatchGroup({ grouped: true, members: [SELF, 'widget-friend'], outlineSides: ['l', 't', 'b'], seams })
 
+  it('renders the seam badges Rust sends, and clears them on ungroup', () => {
     const layer = document.getElementById('dock-links') as HTMLDivElement
+    expect(layer).not.toBeNull() // moon-dock created it (no longer in the HTML shell)
     expect(layer.querySelectorAll('.dock-link')).toHaveLength(0)
 
-    dispatchGroup({ grouped: true, members: [SELF, 'widget-friend'], outlineSides: ['l', 't', 'b'] })
-    // scheduleSeams(30) + the async member-rect queries.
-    await vi.advanceTimersByTimeAsync(40)
+    groupWithSeams([{ partner: 'widget-friend', edge: 'r', x: 289, y: 100 }])
 
     const badges = layer.querySelectorAll('.dock-link')
     expect(badges).toHaveLength(1)
     const badge = badges[0] as HTMLButtonElement
     expect(badge.classList.contains('e-r')).toBe(true)
-    expect(badge.style.left).toBe('289px') // self.w(300) − 11px badge radius
-    expect(badge.style.top).toBe('100px') // midpoint of the [150,310] overlap, self-local
+    expect(badge.style.left).toBe('289px')
+    expect(badge.style.top).toBe('100px')
     expect(badge.querySelector('svg')).not.toBeNull()
 
-    // Ungrouping clears the whole layer.
+    // Ungrouping clears the layer.
     dispatchGroup({ grouped: false, members: [], outlineSides: [] })
-    await vi.advanceTimersByTimeAsync(40)
     expect(layer.querySelectorAll('.dock-link')).toHaveLength(0)
   })
 
-  it('reuses the badge node across re-renders (no re-pop), repositioning in place', async () => {
-    const friendY = { v: 150 }
-    const friend = {
-      outerPosition: vi.fn(async () => ({ x: 840, y: friendY.v })),
-      outerSize: vi.fn(async () => ({ width: 220, height: 160 })),
-    }
-    getByLabel.mockImplementation(async (l: string) => (l === 'widget-friend' ? friend : null))
-
-    dispatchGroup({ grouped: true, members: [SELF, 'widget-friend'], outlineSides: ['l', 't', 'b'] })
-    await vi.advanceTimersByTimeAsync(40)
-    const first = document.querySelector('#dock-links .dock-link') as HTMLButtonElement
-    expect(first).not.toBeNull()
-    expect(first.style.top).toBe('100px') // overlap [150,310] → mid, self-local
-
-    // Same seam, partner shifted down → the SAME node moves; it is NOT torn down
-    // and recreated, so the scale-in entrance animation cannot replay.
-    friendY.v = 170 // overlap now [170,330] → mid 250 → self-local 120
-    dispatchGroup({ grouped: true, members: [SELF, 'widget-friend'], outlineSides: ['l', 't', 'b'] })
-    await vi.advanceTimersByTimeAsync(40)
-    const after = document.querySelector('#dock-links .dock-link') as HTMLButtonElement
-    expect(after).toBe(first) // node identity preserved
-    expect(after.style.top).toBe('120px') // repositioned in place
+  it('tolerates a grouped payload with no seams (older core) — paints nothing', () => {
+    dispatchGroup({ grouped: true, members: [SELF, 'widget-friend'], outlineSides: ['l'] })
+    expect(document.querySelectorAll('#dock-links .dock-link')).toHaveLength(0)
   })
 
-  it('clicking a seam badge leaves the group (the pin primitive, at the seam)', async () => {
-    const friend = {
-      outerPosition: vi.fn(async () => ({ x: 840, y: 150 })),
-      outerSize: vi.fn(async () => ({ width: 220, height: 160 })),
-    }
-    getByLabel.mockImplementation(async (l: string) => (l === 'widget-friend' ? friend : null))
+  it('reuses the badge node across re-renders (no re-pop), repositioning in place', () => {
+    groupWithSeams([{ partner: 'widget-friend', edge: 'r', x: 289, y: 100 }])
+    const first = document.querySelector('#dock-links .dock-link') as HTMLButtonElement
+    expect(first).not.toBeNull()
+    expect(first.style.top).toBe('100px')
 
-    dispatchGroup({ grouped: true, members: [SELF, 'widget-friend'], outlineSides: ['l', 't', 'b'] })
-    await vi.advanceTimersByTimeAsync(40)
+    // Same partner|edge, moved → the SAME node is repositioned, never torn down
+    // and recreated, so the scale-in entrance animation cannot replay.
+    groupWithSeams([{ partner: 'widget-friend', edge: 'r', x: 289, y: 120 }])
+    const after = document.querySelector('#dock-links .dock-link') as HTMLButtonElement
+    expect(after).toBe(first)
+    expect(after.style.top).toBe('120px')
+  })
 
+  it('clicking a seam badge leaves the group (the pin primitive, at the seam)', () => {
+    groupWithSeams([{ partner: 'widget-friend', edge: 'r', x: 289, y: 150 }])
     const badge = document.querySelector('#dock-links .dock-link') as HTMLButtonElement
     expect(badge).not.toBeNull()
     badge.click()
     expect(dockArgs()).toEqual([{ docked: false, anchor: null, edge: null, dx: 0, dy: 0 }])
   })
 
-  it('keeps a right-edge badge clear of the title-bar drag strip', async () => {
-    // Partner flush on our right but overlapping only our TOP, so the raw
-    // overlap midpoint (self-local y=25) lands inside the title-bar band.
-    const friend = {
-      outerPosition: vi.fn(async () => ({ x: 840, y: 100 })),
-      outerSize: vi.fn(async () => ({ width: 220, height: 80 })),
-    }
-    getByLabel.mockImplementation(async (l: string) => (l === 'widget-friend' ? friend : null))
+  it('keeps a right-edge badge clear of the title-bar drag strip', () => {
     // Give the title bar a real measured bottom (jsdom otherwise reports 0).
     const titleBar = document.querySelector('.title-bar') as HTMLElement
     titleBar.getBoundingClientRect = () =>
       ({ bottom: 56, top: 22, left: 0, right: 0, width: 0, height: 34, x: 0, y: 22, toJSON: () => ({}) }) as DOMRect
 
-    dispatchGroup({ grouped: true, members: [SELF, 'widget-friend'], outlineSides: ['l', 't', 'b'] })
-    await vi.advanceTimersByTimeAsync(40)
-
+    // Rust sends a right-edge seam whose center (y=25) lands in the title-bar band.
+    groupWithSeams([{ partner: 'widget-friend', edge: 'r', x: 289, y: 25 }])
     const badge = document.querySelector('#dock-links .dock-link') as HTMLButtonElement
     expect(badge).not.toBeNull()
     // Nudged from y=25 down to title-bar bottom (56) + badge radius (11) = 67,
     // so the button never sits over the drag strip.
     expect(badge.style.top).toBe('67px')
-  })
-
-  it('never paints a seam badge against the hub (main is alignment-only)', async () => {
-    // 'main' flush on our right — without the hub exclusion this would draw a badge.
-    const mainFlush = {
-      outerPosition: vi.fn(async () => ({ x: 840, y: 150 })),
-      outerSize: vi.fn(async () => ({ width: 220, height: 160 })),
-    }
-    getByLabel.mockImplementation(async (l: string) => (l === 'main' ? mainFlush : null))
-
-    dispatchGroup({ grouped: true, members: [SELF, 'main'], outlineSides: ['l', 't', 'b'] })
-    await vi.advanceTimersByTimeAsync(40)
-
-    expect(document.querySelectorAll('#dock-links .dock-link')).toHaveLength(0)
   })
 
   it('the pin leaves the group — and only the pin (no drag-detach)', async () => {
