@@ -125,7 +125,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // Verification B: User message should be appended to the stream
       const userMessage = chatMessages!.querySelector('.msg.user')
       expect(userMessage).not.toBeNull()
-      expect(userMessage!.textContent).toBe('How does this look?')
+      expect(userMessage!.querySelector('.msg-body')!.textContent).toBe('How does this look?')
 
       // Verification C: Typing indicator dots should be active (turn in flight)
       const typingIndicator = chatMessages!.querySelector('.typing-dots')
@@ -596,7 +596,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // The post-tool bubble shows ONLY "Found 3 lines." — NOT the full
       // canonical text "Looking that up. Found 3 lines." which would be the
       // duplication-bug fingerprint.
-      expect(answer2.textContent?.trim()).toBe('Found 3 lines.')
+      expect(answer2.querySelector('.msg-body')?.textContent?.trim()).toBe('Found 3 lines.')
       expect(answer2.textContent).not.toContain('Looking that up.')
       // The reducer split is the layout-independent dedup fingerprint.
       const segs = (internals() as any).ChatState.turns[0].segments
@@ -1225,6 +1225,206 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(tls.every((t) => t.classList.contains('collapsed'))).toBe(true)
       expect(chat.querySelector('.timeline .typing-dots')).toBeNull()
       expect(chat.querySelector('.timeline-summary-label')!.textContent).toContain('Worked for')
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: Per-message action row — always-visible copy + relative send-time
+  //
+  // Each settled user/assistant bubble carries a `.msg-meta` footer holding the
+  // `.msg-copy` button (writes the message's RAW source to the clipboard) and a
+  // `.msg-time` "9m ago" stamp. Content lives in `.msg-body` so the time text
+  // stays out of the bubble's textContent. The row is rebuilt inside
+  // _paintUser/_paintText each paint (survives the reconciler), and the time
+  // refreshes on focus/click via a delegated listener — no timer.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: per-message action row (copy + time)', () => {
+    const M = () => (window as any).__MoonInternals
+    let chat: HTMLElement
+
+    beforeEach(() => {
+      // Synchronous rAF so each frame's render is observable immediately.
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      ;(window as any).cancelAnimationFrame = () => {}
+      M().ChatState.reset()
+      chat = document.getElementById('chat-messages') as HTMLElement
+      chat.innerHTML = ''
+    })
+
+    it('Scenario: a settled assistant answer copies its RAW markdown (not the rendered text)', async () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Hello **world** and `code`' })
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'Hello **world** and `code`' } })
+
+      const bubble = chat.querySelector('.msg.assistant') as HTMLElement
+      // The bubble shows rendered markdown...
+      expect(bubble.innerHTML).toContain('<strong>world</strong>')
+      // ...but the copy button writes the raw source so a paste keeps structure.
+      const btn = bubble.querySelector('.msg-copy') as HTMLButtonElement
+      expect(btn).not.toBeNull()
+
+      let captured: string | null = null
+      ;(navigator as any).clipboard = {
+        writeText: (t: string) => { captured = t; return Promise.resolve() },
+      }
+      btn.click()
+      await Promise.resolve()           // flush the writeText().then(flashDone)
+      expect(captured).toBe('Hello **world** and `code`')
+
+      // Flips to the mint "copied" confirmation, then reverts after the beat.
+      expect(btn.dataset.copied).toBe('1')
+      vi.advanceTimersByTime(1200)
+      expect(btn.dataset.copied).toBeUndefined()
+    })
+
+    it('Scenario: a user message copies its typed text; .msg-body keeps the visible text clean', async () => {
+      M().handleFrame({ type: 'thread-snapshot', messages: [{ role: 'user', text: 'copy me please' }] })
+
+      const userMsg = chat.querySelector('.msg.user') as HTMLElement
+      // Content lives in .msg-body, so the body reads exactly the typed message
+      // even though the meta footer adds a time stamp alongside it.
+      expect(userMsg.querySelector('.msg-body')!.textContent).toBe('copy me please')
+
+      const btn = userMsg.querySelector('.msg-meta .msg-copy') as HTMLButtonElement
+      expect(btn).not.toBeNull()
+
+      let captured: string | null = null
+      ;(navigator as any).clipboard = {
+        writeText: (t: string) => { captured = t; return Promise.resolve() },
+      }
+      btn.click()
+      await Promise.resolve()
+      expect(captured).toBe('copy me please')
+    })
+
+    it('Scenario: a still-streaming assistant bubble has NO copy button (gated on done)', () => {
+      // A single non-final delta renders a text bubble whose segment is not yet
+      // done — the copy affordance must not appear (or re-appear) mid-stream.
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'partial answer' })
+
+      const bubble = chat.querySelector('.msg.assistant') as HTMLElement
+      expect(bubble).not.toBeNull()
+      expect(bubble.dataset.streamRaw).toBe('partial answer')   // proves it rendered
+      expect(chat.querySelector('.msg-copy')).toBeNull()
+
+      // Once the turn finalizes, the button appears.
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'partial answer' } })
+      expect(chat.querySelector('.msg.assistant .msg-copy')).not.toBeNull()
+    })
+
+    it('Scenario: a rejected clipboard write leaves the glyph unchanged (no false "copied")', async () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'something' })
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'something' } })
+      const btn = chat.querySelector('.msg.assistant .msg-copy') as HTMLButtonElement
+
+      ;(navigator as any).clipboard = {
+        writeText: () => Promise.reject(new Error('insecure context')),
+      }
+      btn.click()
+      await Promise.resolve()
+      // No confirmation state, and the copy glyph (two squares = a <rect>) stays.
+      expect(btn.dataset.copied).toBeUndefined()
+      expect(btn.querySelector('rect')).not.toBeNull()
+    })
+
+    it('Scenario: the copy icon carries explicit width/height so WKWebView renders it (regression)', () => {
+      // The icon is injected via innerHTML at runtime; WKWebView needs explicit
+      // intrinsic dimensions on the <svg> (a viewBox-only SVG sized only by CSS
+      // renders blank there). jsdom doesn't lay out, so we pin the attributes.
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'hi' })
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'hi' } })
+      const svg = chat.querySelector('.msg.assistant .msg-copy svg') as SVGElement
+      expect(svg).not.toBeNull()
+      expect(svg.getAttribute('width')).toBe('14')
+      expect(svg.getAttribute('height')).toBe('14')
+    })
+
+    it('Scenario: settled user + assistant messages each render a meta row with copy + time', () => {
+      const now = Date.now()   // frozen by the suite's fake timers
+      M().handleFrame({
+        type: 'thread-snapshot',
+        messages: [
+          { role: 'user', text: 'hi', ts: now - 9 * 60_000 },
+          { role: 'assistant', text: 'hello', ts: now - 9 * 60_000 },
+        ],
+      })
+      for (const sel of ['.msg.user', '.msg.assistant']) {
+        const meta = chat.querySelector(`${sel} .msg-meta`) as HTMLElement
+        expect(meta).not.toBeNull()
+        expect(meta.querySelector('.msg-copy')).not.toBeNull()
+        const time = meta.querySelector('.msg-time') as HTMLElement
+        expect(time).not.toBeNull()
+        // The diff renders from the stored ts against "now".
+        expect(time.textContent).toBe('9m ago')
+        expect(time.dataset.ts).toBe(String(now - 9 * 60_000))
+      }
+    })
+
+    it('Scenario: a message with no ts (pre-`ts` server) renders the copy button but omits the time', () => {
+      M().handleFrame({ type: 'thread-snapshot', messages: [{ role: 'assistant', text: 'legacy' }] })
+      const meta = chat.querySelector('.msg.assistant .msg-meta') as HTMLElement
+      expect(meta).not.toBeNull()
+      expect(meta.querySelector('.msg-copy')).not.toBeNull()
+      expect(meta.querySelector('.msg-time')).toBeNull()
+    })
+
+    it('Scenario: focusing or clicking a message refreshes its relative time (no timer)', () => {
+      const now = Date.now()
+      M().handleFrame({ type: 'thread-snapshot', messages: [{ role: 'assistant', text: 'hi', ts: now - 60_000 }] })
+      const span = chat.querySelector('.msg-time') as HTMLElement
+      expect(span.textContent).toBe('1m ago')
+
+      // Five minutes pass with no re-render — the stamp goes stale...
+      vi.advanceTimersByTime(5 * 60_000)
+      expect(span.textContent).toBe('1m ago')
+
+      // ...until you tab onto the copy button (focusin bubbles to the delegated
+      // listener on #chat-messages), which recomputes it.
+      const btn = chat.querySelector('.msg-copy') as HTMLButtonElement
+      btn.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+      expect(span.textContent).toBe('6m ago')
+
+      // Clicking the bubble refreshes it too.
+      vi.advanceTimersByTime(60 * 60_000)
+      ;(chat.querySelector('.msg.assistant') as HTMLElement)
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(span.textContent).toBe('1h ago')
+    })
+
+    it('Scenario: formatRelTime renders the compact relative forms', () => {
+      const f = M().formatRelTime
+      const now = 10_000_000_000
+      expect(f(now - 5_000, now)).toBe('just now')
+      expect(f(now - 59_000, now)).toBe('just now')
+      expect(f(now - 60_000, now)).toBe('1m ago')
+      expect(f(now - 9 * 60_000, now)).toBe('9m ago')
+      expect(f(now - 60 * 60_000, now)).toBe('1h ago')
+      expect(f(now - 5 * 3_600_000, now)).toBe('5h ago')
+      expect(f(now - 24 * 3_600_000, now)).toBe('1d ago')
+      expect(f(now - 3 * 86_400_000, now)).toBe('3d ago')
+      expect(f(undefined, now)).toBe('')               // no ts → empty (time span omitted)
+      expect(f(now + 5_000, now)).toBe('just now')      // clock skew clamps to "just now"
+    })
+
+    it('Scenario: the reducer captures send-time ts (history, user, assistant-done)', () => {
+      const S = M().ChatState
+      // History keeps each server stamp.
+      S.reset()
+      S.loadHistory([{ role: 'user', text: 'a', ts: 111 }, { role: 'assistant', text: 'b', ts: 222 }])
+      expect(S.turns[0].ts).toBe(111)
+      expect(S.turns[1].ts).toBe(222)
+      // appendUser honors an explicit stamp...
+      S.reset()
+      S.appendUser('hi', null, 555)
+      expect(S.turns[0].ts).toBe(555)
+      // ...and defaults to a real client clock when omitted.
+      S.reset()
+      S.appendUser('hi', null)
+      expect(typeof S.turns[0].ts).toBe('number')
+      // assistant-done's message.ts lands on the turn via finishTurn.
+      S.reset()
+      S.applyDelta('t1', 'answer')
+      S.finishTurn('t1', 'answer', 777)
+      expect(S.turns[0].ts).toBe(777)
     })
   })
 
@@ -1961,7 +2161,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(input.value).toBe('')
       const userMsgs = document.querySelectorAll('#chat-messages .msg.user')
       expect(userMsgs.length).toBe(1)
-      expect(userMsgs[0].textContent).toBe('what time is it')
+      expect(userMsgs[0].querySelector('.msg-body')!.textContent).toBe('what time is it')
       // The same user-message frame the send button produces, incl. client info.
       expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({
         type: 'user-message',
