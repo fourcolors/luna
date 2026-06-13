@@ -484,4 +484,139 @@ describe('settings.connectors panel', () => {
     const addBtn = document.querySelector('.connector-actions .connector-btn') as HTMLButtonElement
     expect(addBtn.textContent).toBe('Add account')
   })
+
+  // 13. Failure acks with no flow to attribute them to must still SHOW.
+  // Regression: the applyStatus tail used to clear the error banner
+  // unconditionally, so a rejected connector-set-client looked like success.
+  it('a failed connector-set-client ack surfaces its message (no silent discard)', async () => {
+    bootPanel({ type: 'settings.connectors' })
+    await fireFrame({ type: 'hello', capabilities: { connectors: true } })
+    await fireFrame({ type: 'connector-catalog', connectors: [OAUTH_DEF_UNCONFIGURED] })
+
+    const cidInput = document.querySelector('input[placeholder*="googleusercontent"]') as HTMLInputElement
+    cidInput.value = '12345.apps.googleusercontent.com'
+    const saveBtn = document.querySelector('.connector-client-setup .connector-btn') as HTMLButtonElement
+    saveBtn.click()
+
+    const sock = await waitForSocket()
+    await vi.waitFor(() => sock.sentFrames().some((f) => f.type === 'connector-set-client'))
+    const setFrame = sock.sentFrames().find((f) => f.type === 'connector-set-client')!
+
+    sock.fire('message', {
+      data: JSON.stringify({
+        type: 'connector-status',
+        requestId: setFrame.requestId,
+        ok: false,
+        message: 'credentials must not contain line breaks',
+      }),
+    })
+
+    await vi.waitFor(() => {
+      const err = document.getElementById('connectors-error')!
+      if (err.hidden || !err.textContent!.includes('line breaks')) throw new Error('error not shown')
+    })
+  })
+
+  // 14. Same discard path for a failed disconnect (no requestId at all).
+  it('a failed disconnect ack shows its message instead of clearing the banner', async () => {
+    bootPanel({ type: 'settings.connectors' })
+    await fireFrame({ type: 'hello', capabilities: { connectors: true } })
+    await fireFrame({ type: 'connector-catalog', connectors: [OAUTH_DEF] })
+    await fireFrame({
+      type: 'connector-list',
+      instances: [
+        { id: 'inst-1', definitionId: 'gws', label: 'personal', status: 'connected', grantedScopes: [] },
+      ],
+    })
+
+    const disBtn = document.querySelector('.connector-instance-row button') as HTMLButtonElement
+    disBtn.click()
+    const sock = await waitForSocket()
+    await vi.waitFor(() => sock.sentFrames().some((f) => f.type === 'connector-disconnect'))
+
+    sock.fire('message', {
+      data: JSON.stringify({ type: 'connector-status', ok: false, message: 'unknown instance' }),
+    })
+
+    await vi.waitFor(() => {
+      const err = document.getElementById('connectors-error')!
+      if (err.hidden || !err.textContent!.includes('unknown instance')) throw new Error('error not shown')
+    })
+  })
+
+  // 15. Duplicate-label preflight: a second account left on the default
+  // label must be rejected BEFORE a loopback binds or a browser tab opens.
+  it('blocks a duplicate account label before starting the OAuth flow', async () => {
+    const { invoke } = bootPanel({
+      type: 'settings.connectors',
+      invoke: (cmd) => (cmd === 'oauth_loopback_start' ? 54321 : null),
+    })
+    await fireFrame({ type: 'hello', capabilities: { connectors: true } })
+    await fireFrame({ type: 'connector-catalog', connectors: [OAUTH_DEF] })
+    await fireFrame({
+      type: 'connector-list',
+      instances: [
+        // First account was created on the default label (= def.name).
+        { id: 'inst-1', definitionId: 'gws', label: 'Google Workspace', status: 'connected', grantedScopes: [] },
+      ],
+    })
+
+    const addBtn = document.querySelector('.connector-actions .connector-btn') as HTMLButtonElement
+    expect(addBtn.textContent).toBe('Add account')
+    addBtn.click()
+    // Leave the label empty → resolves to def.name → collides with inst-1.
+    const goBtn = document.querySelector('.connector-consent .panel-btn.primary') as HTMLButtonElement
+    goBtn.click()
+
+    const err = document.getElementById('connectors-error')!
+    expect(err.hidden).toBe(false)
+    expect(err.textContent).toContain('already connected')
+    expect(err.textContent).toContain('different label')
+    expect(invoke).not.toHaveBeenCalledWith('oauth_loopback_start')
+    const sock = await waitForSocket()
+    expect(sock.sentFrames().some((f) => f.type === 'connector-oauth-begin')).toBe(false)
+  })
+
+  // 16. A provider error redirect (e.g. Testing-mode access_denied) rejects
+  // oauth_loopback_wait immediately — the panel shows the reason plus the
+  // test-user hint instead of hanging into the 5-minute timeout.
+  it('shows the provider decline reason and test-user hint when consent is denied', async () => {
+    bootPanel({
+      type: 'settings.connectors',
+      invoke: (cmd) => {
+        if (cmd === 'oauth_loopback_start') return 54321
+        if (cmd === 'oauth_loopback_wait') {
+          throw 'consent was declined by the provider: access_denied'
+        }
+        return null
+      },
+    })
+    await fireFrame({ type: 'hello', capabilities: { connectors: true } })
+    await fireFrame({ type: 'connector-catalog', connectors: [OAUTH_DEF] })
+
+    const connectBtn = document.querySelector('.connector-actions .connector-btn') as HTMLButtonElement
+    connectBtn.click()
+    const goBtn = document.querySelector('.connector-consent .panel-btn.primary') as HTMLButtonElement
+    goBtn.click()
+
+    const sock = await waitForSocket()
+    await vi.waitFor(() => sock.sentFrames().some((f) => f.type === 'connector-oauth-begin'))
+    const beginFrame = sock.sentFrames().find((f) => f.type === 'connector-oauth-begin')!
+
+    sock.fire('message', {
+      data: JSON.stringify({
+        type: 'connector-oauth-redirect',
+        requestId: beginFrame.requestId,
+        authUrl: 'https://accounts.google.com/oauth?state=xyz',
+        pendingId: 'pend_abc',
+      }),
+    })
+
+    await vi.waitFor(() => {
+      const err = document.getElementById('connectors-error')!
+      if (err.hidden) throw new Error('error not shown')
+      if (!err.textContent!.includes('access_denied')) throw new Error('missing provider reason')
+      if (!err.textContent!.includes('test user')) throw new Error('missing test-user hint')
+    })
+  })
 })

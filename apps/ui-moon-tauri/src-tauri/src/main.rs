@@ -550,13 +550,46 @@ struct OauthLoopback {
 struct OauthLoopbackActive {
     port: u16,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    result: std::sync::Arc<std::sync::Mutex<Option<OauthRedirectResult>>>,
+    result: std::sync::Arc<std::sync::Mutex<Option<Result<OauthRedirectResult, String>>>>,
 }
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 struct OauthRedirectResult {
     code: String,
     state: String,
+}
+
+/// What one raw HTTP request hitting the loopback listener turned out to be.
+enum CallbackOutcome {
+    /// The provider redirect with `code` + `state` — the flow succeeded.
+    Captured(OauthRedirectResult),
+    /// The provider redirect with `error=…` — consent was denied/blocked
+    /// (e.g. Google `access_denied` for a non-test-user on a Testing-mode
+    /// app). Must surface immediately, NOT time out after 5 minutes.
+    Declined(String),
+    /// Favicon probe or other noise — keep listening.
+    NotRedirect,
+}
+
+fn parse_loopback_request(req: &str) -> CallbackOutcome {
+    let path = req
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .unwrap_or("");
+    let query = path.splitn(2, '?').nth(1).unwrap_or("");
+    if let (Some(code), Some(state)) = (query_param(query, "code"), query_param(query, "state")) {
+        return CallbackOutcome::Captured(OauthRedirectResult { code, state });
+    }
+    if let Some(err) = query_param(query, "error") {
+        let detail = query_param(query, "error_description")
+            .map(|d| format!(" — {d}"))
+            .unwrap_or_default();
+        return CallbackOutcome::Declined(format!(
+            "consent was declined by the provider: {err}{detail}"
+        ));
+    }
+    CallbackOutcome::NotRedirect
 }
 
 /// Tiny query-string field extractor — enough for `?code=…&state=…` from a
@@ -612,8 +645,73 @@ const OAUTH_DONE_HTML: &str = "<!doctype html><html><head><meta charset=\"utf-8\
 background:radial-gradient(900px 600px at 70% 10%,#16203c 0%,#0a0e1c 60%,#05070f 100%);\
 font-family:-apple-system,sans-serif;color:#e7edf8\">\
 <div style=\"text-align:center\"><div style=\"font-size:42px\">\u{1F319}</div>\
-<h2 style=\"font-weight:600;margin:12px 0 6px\">Connected</h2>\
-<p style=\"color:#8ea2c8;font-size:14px\">You can close this tab and return to Luna.</p></div></body></html>";
+<h2 style=\"font-weight:600;margin:12px 0 6px\">Consent received</h2>\
+<p style=\"color:#8ea2c8;font-size:14px\">You can close this tab and return to Luna — finishing up there.</p></div></body></html>";
+
+/// Shown when the provider redirected with `error=…` — the old behavior
+/// served the success page here, telling the operator "Connected" while
+/// Luna hung waiting for a code that would never come.
+const OAUTH_FAIL_HTML: &str = "<!doctype html><html><head><meta charset=\"utf-8\"><title>Luna</title></head>\
+<body style=\"margin:0;display:flex;align-items:center;justify-content:center;height:100vh;\
+background:radial-gradient(900px 600px at 70% 10%,#16203c 0%,#0a0e1c 60%,#05070f 100%);\
+font-family:-apple-system,sans-serif;color:#e7edf8\">\
+<div style=\"text-align:center\"><div style=\"font-size:42px\">\u{1F311}</div>\
+<h2 style=\"font-weight:600;margin:12px 0 6px\">Not connected</h2>\
+<p style=\"color:#8ea2c8;font-size:14px\">The provider declined the request. You can close this tab — details are in Luna.</p></div></body></html>";
+
+/// The single-shot accept loop: parse each request, answer with the right
+/// page, capture the outcome. Shared verbatim by the production command and
+/// the loopback tests (they spawn THIS, not a mirror of it).
+fn run_loopback_accept_loop(
+    listener: std::net::TcpListener,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    result: std::sync::Arc<std::sync::Mutex<Option<Result<OauthRedirectResult, String>>>>,
+) {
+    use std::io::{Read, Write};
+    loop {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                // First line: GET /callback?code=…&state=… HTTP/1.1
+                let outcome = parse_loopback_request(&req);
+                let page = match outcome {
+                    CallbackOutcome::Declined(_) => OAUTH_FAIL_HTML,
+                    _ => OAUTH_DONE_HTML,
+                };
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                        page.len(),
+                        page
+                    )
+                    .as_bytes(),
+                );
+                let _ = stream.flush();
+                match outcome {
+                    CallbackOutcome::Captured(r) => {
+                        *result.lock().unwrap() = Some(Ok(r));
+                        return; // single-shot: captured, listener dies
+                    }
+                    CallbackOutcome::Declined(msg) => {
+                        *result.lock().unwrap() = Some(Err(msg));
+                        return; // single-shot: the flow is dead either way
+                    }
+                    // Not the redirect (favicon probe etc.) — keep listening.
+                    CallbackOutcome::NotRedirect => {}
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(_) => return,
+        }
+    }
+}
 
 /// Bind 127.0.0.1:0 and start the single-shot accept loop. Returns the port
 /// for the client to put in `connector-oauth-begin`.
@@ -631,7 +729,7 @@ fn oauth_loopback_start(state: tauri::State<'_, OauthLoopback>) -> Result<u16, S
         .port();
 
     let cancel = std::sync::Arc::new(AtomicBool::new(false));
-    let result: std::sync::Arc<std::sync::Mutex<Option<OauthRedirectResult>>> =
+    let result: std::sync::Arc<std::sync::Mutex<Option<Result<OauthRedirectResult, String>>>> =
         std::sync::Arc::new(std::sync::Mutex::new(None));
 
     // Replace (and cancel) any previous flow.
@@ -647,48 +745,7 @@ fn oauth_loopback_start(state: tauri::State<'_, OauthLoopback>) -> Result<u16, S
         });
     }
 
-    std::thread::spawn(move || {
-        use std::io::{Read, Write};
-        loop {
-            if cancel.load(Ordering::Relaxed) {
-                return;
-            }
-            match listener.accept() {
-                Ok((mut stream, _)) => {
-                    let mut buf = [0u8; 4096];
-                    let n = stream.read(&mut buf).unwrap_or(0);
-                    let req = String::from_utf8_lossy(&buf[..n]);
-                    // First line: GET /callback?code=…&state=… HTTP/1.1
-                    let path = req
-                        .lines()
-                        .next()
-                        .and_then(|l| l.split_whitespace().nth(1))
-                        .unwrap_or("");
-                    let query = path.splitn(2, '?').nth(1).unwrap_or("");
-                    let code = query_param(query, "code");
-                    let st = query_param(query, "state");
-                    let _ = stream.write_all(
-                        format!(
-                            "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                            OAUTH_DONE_HTML.len(),
-                            OAUTH_DONE_HTML
-                        )
-                        .as_bytes(),
-                    );
-                    let _ = stream.flush();
-                    if let (Some(code), Some(st)) = (code, st) {
-                        *result.lock().unwrap() = Some(OauthRedirectResult { code, state: st });
-                        return; // single-shot: captured, listener dies
-                    }
-                    // Not the redirect (favicon probe etc.) — keep listening.
-                }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                Err(_) => return,
-            }
-        }
-    });
+    std::thread::spawn(move || run_loopback_accept_loop(listener, cancel, result));
 
     Ok(port)
 }
@@ -711,8 +768,11 @@ async fn oauth_loopback_wait(
         }
     };
     loop {
+        // A captured redirect resolves; a provider `error=…` redirect
+        // rejects IMMEDIATELY with the provider's reason (it used to fall
+        // through to the 5-minute timeout below).
         if let Some(r) = result.lock().unwrap().take() {
-            return Ok(r);
+            return r;
         }
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return Err("OAuth flow cancelled".into());
@@ -2954,10 +3014,46 @@ mod tests {
         assert_eq!(query_param("a=1&a=2", "a").as_deref(), Some("1")); // first wins
     }
 
-    /// End-to-end over a REAL socket: bind, hit /callback like a provider
-    /// redirect, assert the captured code/state and the response page.
     #[test]
-    fn loopback_captures_a_provider_redirect() {
+    fn parse_loopback_request_classifies_redirects() {
+        // Success redirect.
+        match parse_loopback_request(
+            "GET /callback?code=4%2Fabc&state=st-1 HTTP/1.1\r\nhost: x\r\n\r\n",
+        ) {
+            CallbackOutcome::Captured(r) => {
+                assert_eq!(r.code, "4/abc");
+                assert_eq!(r.state, "st-1");
+            }
+            _ => panic!("expected Captured"),
+        }
+        // Provider error redirect (the Testing-mode / denied-consent path).
+        match parse_loopback_request(
+            "GET /callback?error=access_denied&error_description=App+not+verified&state=st-1 HTTP/1.1\r\n\r\n",
+        ) {
+            CallbackOutcome::Declined(msg) => {
+                assert!(msg.contains("access_denied"));
+                assert!(msg.contains("App not verified"));
+            }
+            _ => panic!("expected Declined"),
+        }
+        // Error without a description still reports the code.
+        match parse_loopback_request("GET /callback?error=access_denied&state=s HTTP/1.1\r\n\r\n") {
+            CallbackOutcome::Declined(msg) => assert!(msg.ends_with("access_denied")),
+            _ => panic!("expected Declined"),
+        }
+        // Favicon probe / junk keeps the listener alive.
+        assert!(matches!(
+            parse_loopback_request("GET /favicon.ico HTTP/1.1\r\n\r\n"),
+            CallbackOutcome::NotRedirect
+        ));
+        assert!(matches!(parse_loopback_request(""), CallbackOutcome::NotRedirect));
+    }
+
+    /// Spawn the REAL accept loop (not a mirror), play the provider with a
+    /// browser-style redirect, assert the captured outcome + response page.
+    fn run_loopback_against(
+        request: &[u8],
+    ) -> (String, Option<Result<OauthRedirectResult, String>>) {
         use std::io::{Read, Write};
         use std::sync::atomic::AtomicBool;
 
@@ -2965,63 +3061,46 @@ mod tests {
         listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
         let cancel = std::sync::Arc::new(AtomicBool::new(false));
-        let result: std::sync::Arc<std::sync::Mutex<Option<OauthRedirectResult>>> =
+        let result: std::sync::Arc<std::sync::Mutex<Option<Result<OauthRedirectResult, String>>>> =
             std::sync::Arc::new(std::sync::Mutex::new(None));
 
-        // Mirror the accept-loop body from oauth_loopback_start.
         let c2 = cancel.clone();
         let r2 = result.clone();
-        let handle = std::thread::spawn(move || loop {
-            if c2.load(std::sync::atomic::Ordering::Relaxed) {
-                return;
-            }
-            match listener.accept() {
-                Ok((mut stream, _)) => {
-                    let mut buf = [0u8; 4096];
-                    let n = stream.read(&mut buf).unwrap_or(0);
-                    let req = String::from_utf8_lossy(&buf[..n]);
-                    let path = req
-                        .lines()
-                        .next()
-                        .and_then(|l| l.split_whitespace().nth(1))
-                        .unwrap_or("");
-                    let query = path.splitn(2, '?').nth(1).unwrap_or("");
-                    let code = query_param(query, "code");
-                    let st = query_param(query, "state");
-                    let _ = stream.write_all(
-                        format!(
-                            "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                            OAUTH_DONE_HTML.len(),
-                            OAUTH_DONE_HTML
-                        )
-                        .as_bytes(),
-                    );
-                    if let (Some(code), Some(st)) = (code, st) {
-                        *r2.lock().unwrap() = Some(OauthRedirectResult { code, state: st });
-                        return;
-                    }
-                }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(_) => return,
-            }
-        });
+        let handle = std::thread::spawn(move || run_loopback_accept_loop(listener, c2, r2));
 
-        // Play the provider: GET the callback like a browser redirect would.
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        stream
-            .write_all(b"GET /callback?code=the-code&state=the-state HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n")
-            .unwrap();
+        stream.write_all(request).unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).unwrap();
         handle.join().unwrap();
 
+        let outcome = result.lock().unwrap().take();
+        (response, outcome)
+    }
+
+    #[test]
+    fn loopback_captures_a_provider_redirect() {
+        let (response, outcome) = run_loopback_against(
+            b"GET /callback?code=the-code&state=the-state HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n",
+        );
         assert!(response.contains("200 OK"));
         assert!(response.contains("return to Luna"));
-        let captured = result.lock().unwrap().take().unwrap();
+        let captured = outcome.unwrap().unwrap();
         assert_eq!(captured.code, "the-code");
         assert_eq!(captured.state, "the-state");
+    }
+
+    #[test]
+    fn loopback_surfaces_a_provider_error_redirect() {
+        let (response, outcome) = run_loopback_against(
+            b"GET /callback?error=access_denied&state=the-state HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n",
+        );
+        // The browser tab must NOT claim success…
+        assert!(response.contains("Not connected"));
+        assert!(!response.contains("Consent received"));
+        // …and the waiting client gets the provider's reason immediately.
+        let err = outcome.unwrap().unwrap_err();
+        assert!(err.contains("access_denied"));
     }
 }
 

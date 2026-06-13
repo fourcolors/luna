@@ -22,6 +22,8 @@
  * Tauri commands used:
  *   oauth_loopback_start  → port number
  *   oauth_loopback_wait   { timeoutMs } → { code, state }
+ *                         (rejects with the provider's reason on an
+ *                          error=… redirect — e.g. access_denied)
  *   oauth_loopback_cancel
  *   open_external_url     { url }
  */
@@ -71,6 +73,24 @@
         return instances.filter(function (i) { return i.definitionId === defId; });
       }
 
+      // Client-side mirror of the server's labelSlug (lowercase, non-alnum
+      // runs → '_', trimmed) — close enough to preflight the common
+      // collision: a second account left on the default label. The server
+      // check stays authoritative.
+      function labelSlugLite(label) {
+        return String(label || '')
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '_')
+          .replace(/^_+|_+$/g, '');
+      }
+
+      function labelTaken(defId, label) {
+        var slug = labelSlugLite(label);
+        return instances.some(function (i) {
+          return i.definitionId === defId && labelSlugLite(i.label) === slug;
+        });
+      }
+
       function clearBusy(defId) {
         if (defId) delete busy[defId];
       }
@@ -94,6 +114,14 @@
           setError('OAuth connect needs the Moon desktop app (the browser cannot capture the redirect).');
           return;
         }
+        var resolvedLabel = (label && label.trim()) ? label.trim() : def.name;
+        // Preflight the duplicate-label rejection the server would send —
+        // BEFORE binding a loopback and opening a browser tab.
+        if (labelTaken(def.id, resolvedLabel)) {
+          setError('"' + resolvedLabel + '" is already connected — give this account a different label (e.g. personal, work).');
+          render();
+          return;
+        }
         busy[def.id] = 'authorizing';
         consentOpen = null;
         render();
@@ -109,7 +137,6 @@
           beginTimer = setTimeout(function () {
             cancelOauth('Timed out starting the connection — please try again.');
           }, 30000);
-          var resolvedLabel = (label && label.trim()) ? label.trim() : def.name;
           client.send({
             type: 'connector-oauth-begin',
             requestId: requestId,
@@ -142,16 +169,28 @@
             });
           })
           .catch(function (e) {
-            cancelOauth(typeof e === 'string' ? e : 'The consent flow did not complete.');
+            var msg = typeof e === 'string' ? e : 'The consent flow did not complete.';
+            // The classic multi-account trap: a Testing-mode OAuth app only
+            // admits listed test users — every other Google account gets
+            // access_denied. Say so instead of leaving a bare error code.
+            if (/access_denied|not.{0,8}verified/i.test(msg)) {
+              msg += ' — if your OAuth app is in Testing mode, add this Google account as a test user (or publish the app) in the Google Cloud Console.';
+            }
+            cancelOauth(msg);
           });
       }
 
       function connectPlain(def, capabilityIds, secretRef, label) {
+        var resolvedLabel = (label && label.trim()) ? label.trim() : def.name;
+        if (labelTaken(def.id, resolvedLabel)) {
+          setError('"' + resolvedLabel + '" is already connected — give this account a different label (e.g. personal, work).');
+          render();
+          return;
+        }
         busy[def.id] = 'connecting';
         consentOpen = null;
         var requestId = 'conn_' + Math.random().toString(36).slice(2);
         plainRequests[requestId] = def.id;
-        var resolvedLabel = (label && label.trim()) ? label.trim() : def.name;
         var frame = {
           type: 'connector-connect',
           requestId: requestId,
@@ -214,7 +253,11 @@
           clearBusy(frame.instance.definitionId);
           delete consentDraft[frame.instance.definitionId];
         }
-        setError(null);
+        // A failure ack with no flow to attribute it to (set-client,
+        // disconnect, late completeAuth) must still SHOW its message — this
+        // tail used to clear the error banner unconditionally, so those
+        // failures looked like silent success.
+        setError(frame.ok ? null : (frame.message || 'Connector request failed.'));
         render();
       }
 
