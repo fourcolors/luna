@@ -4110,6 +4110,38 @@
       DOM.userAskDismiss.addEventListener('click', () => SurveyEngine.dismiss());
     }
 
+    // S4: luna:// links in assistant prose open a widget. The Rust open_widget
+    // registry is the actual gate (an unknown kind no-ops), so this only
+    // parses kind + scalar params and forwards. Delegated on the persistent
+    // #chat-messages container (cards are rebuilt every paint), so it survives
+    // re-renders without re-binding.
+    if (DOM.chatMessages) {
+      DOM.chatMessages.addEventListener('click', (e) => {
+        const a = e.target && e.target.closest ? e.target.closest('a[data-luna-link]') : null;
+        if (!a) return;
+        e.preventDefault();
+        const href = a.getAttribute('href') || '';
+        const m = /^luna:\/\/widget\/([a-z0-9.]+)(?:\?(.*))?$/i.exec(href);
+        if (!m) return;
+        const args = { kind: m[1] };
+        if (m[2]) {
+          const params = {};
+          m[2].split('&').forEach((kv) => {
+            const i = kv.indexOf('=');
+            if (i <= 0) return;
+            const k = decodeURIComponent(kv.slice(0, i));
+            const v = decodeURIComponent(kv.slice(i + 1));
+            if (/^[a-zA-Z0-9_]+$/.test(k)) params[k] = v;
+          });
+          if (Object.keys(params).length) args.params = params;
+        }
+        if (window.__TAURI__ && window.__TAURI__.core) {
+          window.__TAURI__.core.invoke('open_widget', args)
+            .catch((err) => Logger.warn('luna-link open failed:', err));
+        }
+      });
+    }
+
     // Wire the Artifacts panel close button and header toggle.
     if (DOM.artifactsPanelClose) {
       DOM.artifactsPanelClose.addEventListener('click', () => ArtifactsEngine.closePanel());
@@ -5125,6 +5157,31 @@
           status.textContent = '✗';
         }
         summary.appendChild(status);
+
+        // S4: a TOP-LEVEL delegation gets a "view ↗" link that jumps to the
+        // live Agents panel for this thread. Only the top-level spawn (no
+        // parentToolUseId) — nested Agent steps share the same panel. The
+        // button stops propagation so it never toggles the <details>.
+        if (isAgent && !seg.parentToolUseId) {
+          const view = document.createElement('button');
+          view.type = 'button';
+          view.className = 'agent-view-link';
+          view.textContent = 'view ↗';
+          view.title = 'Open the live agents panel';
+          view.style.cssText =
+            'margin-left:0.5em;font-size:0.82em;background:none;border:none;color:var(--accent,#8ab4f8);cursor:pointer;padding:0;';
+          view.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const thread = State.activeThreadId || PINNED_THREAD || null;
+            if (window.__TAURI__ && window.__TAURI__.core && thread) {
+              window.__TAURI__.core
+                .invoke('open_widget', { kind: 'agents', params: { thread: thread } })
+                .catch((err) => Logger.warn('open agents panel failed:', err));
+            }
+          });
+          summary.appendChild(view);
+        }
 
         details.appendChild(summary);
 

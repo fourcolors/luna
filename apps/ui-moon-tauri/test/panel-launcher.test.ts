@@ -24,6 +24,7 @@ const EXPECTED_KINDS = [
   'settings.vault',
   'settings.skills',
   'settings.connectors',
+  'settings.apps',
   'settings.updates',
 ]
 
@@ -81,7 +82,7 @@ afterEach(() => {
 })
 
 describe('settings-launcher panel (kind "settings")', () => {
-  it('boots with the Settings title and renders the 7 launcher buttons in order', () => {
+  it('boots with the Settings title and renders the settings launcher buttons in order', () => {
     bootLauncher()
     expect((window as any).__PanelInternals.hasModule).toBe(true)
     expect(document.getElementById('bar-title')!.textContent).toBe('Settings')
@@ -113,7 +114,7 @@ describe('settings-launcher panel (kind "settings")', () => {
   it('buttons are real type="button" menu items (no implicit form submits)', () => {
     bootLauncher()
     const buttons = [...document.querySelectorAll('#launcher-list button')] as HTMLButtonElement[]
-    expect(buttons).toHaveLength(8)
+    expect(buttons).toHaveLength(9)
     expect(buttons.every((b) => b.type === 'button')).toBe(true)
     expect(buttons.every((b) => b.getAttribute('role') === 'menuitem')).toBe(true)
     expect(document.getElementById('launcher-list')!.getAttribute('role')).toBe('menu')

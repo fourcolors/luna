@@ -4,7 +4,10 @@
  */
 import { describe, expect, it } from "vitest"
 import { createWidgetSummonBridge } from "../src/widget-summon-bridge.js"
-import type { WidgetOpenFrame } from "../src/protocol.js"
+import type {
+  OpenArtifactWidgetFrame,
+  WidgetOpenFrame,
+} from "../src/protocol.js"
 
 const DIR = [
   { kind: "settings.voice", title: "Voice", description: "Voice settings" },
@@ -71,6 +74,53 @@ describe("widget-summon-bridge", () => {
     const b = createWidgetSummonBridge()
     b.registerClient("c1", () => { throw new Error("socket gone") }, DIR)
     const r = b.open("settings.voice")
+    expect(r.ok).toBe(false)
+    expect(r.message).toContain("connection failed")
+  })
+})
+
+describe("widget-summon-bridge — openArtifact (content tier)", () => {
+  it("no host connected → openArtifact fails gracefully", () => {
+    const b = createWidgetSummonBridge()
+    const r = b.openArtifact("widget:x", "X", "widget")
+    expect(r.ok).toBe(false)
+    expect(r.message).toContain("No widget-capable client")
+  })
+
+  it("sends an open-artifact-widget frame to the registered host (no directory gate)", () => {
+    const sent: Array<WidgetOpenFrame | OpenArtifactWidgetFrame> = []
+    const b = createWidgetSummonBridge()
+    // Register with an EMPTY directory — content artifacts are not registry
+    // kinds, so openArtifact must not consult the directory at all.
+    b.registerClient("c1", (f) => sent.push(f), [])
+    const r = b.openArtifact("widget:pr-99-tracker", "PR #99", "widget")
+    expect(r.ok).toBe(true)
+    expect(r.message).toContain("PR #99")
+    expect(sent).toEqual([
+      {
+        type: "open-artifact-widget",
+        artifactId: "widget:pr-99-tracker",
+        title: "PR #99",
+        kind: "widget",
+      },
+    ])
+  })
+
+  it("rides the same single host slot as open (last-announcer-wins)", () => {
+    const sentA: Array<WidgetOpenFrame | OpenArtifactWidgetFrame> = []
+    const sentB: Array<WidgetOpenFrame | OpenArtifactWidgetFrame> = []
+    const b = createWidgetSummonBridge()
+    b.registerClient("a", (f) => sentA.push(f), DIR)
+    b.registerClient("b", (f) => sentB.push(f), DIR)
+    expect(b.openArtifact("mcp-app:dash", "Dash", "mcp-app").ok).toBe(true)
+    expect(sentB).toHaveLength(1)
+    expect(sentA).toHaveLength(0)
+  })
+
+  it("a throwing send surfaces as a clean failure", () => {
+    const b = createWidgetSummonBridge()
+    b.registerClient("c1", () => { throw new Error("socket gone") }, DIR)
+    const r = b.openArtifact("widget:x", "X", "widget")
     expect(r.ok).toBe(false)
     expect(r.message).toContain("connection failed")
   })

@@ -50,9 +50,17 @@
 
       // 4) Inline transforms — run on already-escaped text, emit only safe tags
       const inline = (s) => {
-        // links [label](url): validate scheme; on failure render as plain text
+        // links [label](url): validate scheme; on failure render as plain text.
+        // `url` is already HTML-escaped (step 3) so it cannot break out of the
+        // attribute (" → &quot;, < → &lt;). luna:// links are TAGGED for the
+        // host's delegated click handler (chat.html) which opens a widget — the
+        // Rust open_widget registry is the real gate, so an unknown kind no-ops.
         s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label, url) =>
-          /^(https?:|mailto:)/i.test(url) ? `<a href="${url}">${label}</a>` : `${label} (${url})`);
+          /^(https?:|mailto:)/i.test(url)
+            ? `<a href="${url}">${label}</a>`
+            : /^luna:\/\//i.test(url)
+              ? `<a href="${url}" class="luna-link" data-luna-link="1">${label}</a>`
+              : `${label} (${url})`);
         s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
         s = s.replace(/__([^_]+)__/g, '<strong>$1</strong>');
         s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');

@@ -103,6 +103,16 @@
       "description": "Connect external services (Google Workspace and others): add accounts, authorize, manage instances"
     },
     {
+      "kind": "settings.apps",
+      "title": "Apps",
+      "page": "panel.html?type=settings.apps",
+      "trust": "system",
+      "singleton": true,
+      "width": 440,
+      "height": 520,
+      "description": "Your widgets and MCP apps: open, create, edit and remove the panels Luna built or you authored"
+    },
+    {
       "kind": "now",
       "title": "Now",
       "page": "panel.html?type=now",
@@ -131,6 +141,16 @@
       "width": 380,
       "height": 460,
       "description": "Run history inspector for one workflow/job (open with params {jobId})"
+    },
+    {
+      "kind": "agents",
+      "title": "Agents",
+      "page": "panel.html?type=agents",
+      "trust": "system",
+      "singleton": false,
+      "width": 360,
+      "height": 460,
+      "description": "Live view of the subagent team working on a chat turn (opens with params {thread})"
     }
   ]
 }

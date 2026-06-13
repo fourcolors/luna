@@ -30,6 +30,10 @@
       workflows: !!c.workflows,
       vault: !!c.vault,
       mcpApps: !!c.mcpApps,
+      // Subagents (chat-subagents): the server tags subagent activity with
+      // parentToolUseId and the Agents panel reads broadcast subagent-tree
+      // frames. Absent on older servers → false.
+      subagents: !!c.subagents,
       // model+effort switcher (§1 wire contract): server advertises effort
       // selection support via this capability; absent on older servers → false.
       effortSelection: !!c.effortSelection,

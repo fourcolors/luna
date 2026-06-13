@@ -103,6 +103,8 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "vault-list",
   "vault-status",
   "widget-open",
+  "open-artifact-widget",
+  "subagent-tree",
   "mcp-resource-result",
   "mcp-tool-result",
   "thread-config",
@@ -141,6 +143,8 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "vault-sync-config",
   "vault-import",
   "widget-directory",
+  "subagent-tree-request",
+  "artifact-edit",
   "mcp-resource-read",
   "mcp-tool-call",
   "set-thread-config",
@@ -255,9 +259,14 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // relay (widget-system.md Phase 7, SEP-1865) adds mcp-resource-result +
     // mcp-tool-result (server) and mcp-resource-read + mcp-tool-call (client)
     // → 43 server / 34 client. The model+effort switcher adds thread-config
-    // (server) and set-thread-config (client) → 44 server / 35 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(44)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(35)
+    // (server) and set-thread-config (client) → 44 server / 35 client. The
+    // artifact-open backbone (widget-system.md S2) adds open-artifact-widget
+    // (server only — the content-tier sibling of widget-open) → 45 server / 35 client.
+    // The live Agents view (S4) adds subagent-tree (server, broadcast) +
+    // subagent-tree-request (client) → 46 server / 36 client. The Apps-panel
+    // ledger-safe edit adds artifact-edit (client) → 46 server / 37 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(46)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(37)
   })
 
   // VERSION-SKEW (client half): nothing else pins the ui-shared wire.ts mirror

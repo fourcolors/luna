@@ -14,8 +14,13 @@
 import { describe, expect, it, vi } from "vitest"
 import {
   MCP_APP_MIME_TYPE,
+  STORE_APP_URI_PREFIX,
+  artifactIdFromAppUri,
+  buildCuratedAppTools,
   buildWorkspacePulseApp,
+  composeAppRegistries,
   createCoreAppRegistry,
+  createStoreBackedAppRegistry,
   pulseFromSnapshot,
   type CoreApp,
 } from "../core-apps.js"
@@ -185,5 +190,119 @@ describe("buildWorkspacePulseApp — the shipped core app", () => {
     // …and must be self-contained (the sandbox CSP forbids network).
     expect(html).not.toMatch(/<script[^>]+src=/)
     expect(html).not.toMatch(/<link[^>]+href=/)
+  })
+})
+
+describe("artifactIdFromAppUri — store-app uri parsing", () => {
+  it("round-trips a percent-encoded artifact id", () => {
+    const id = "mcp-app:budget"
+    const uri = STORE_APP_URI_PREFIX + encodeURIComponent(id)
+    expect(uri).toBe("ui://luna/app/mcp-app%3Abudget")
+    expect(artifactIdFromAppUri(uri)).toBe(id)
+  })
+
+  it("returns null for any uri that is not a store-app uri", () => {
+    for (const uri of [
+      "ui://luna/workspace-pulse",
+      "ui://luna/app/", // empty id
+      "file:///etc/passwd",
+      "https://evil.example",
+      "",
+    ]) {
+      expect(artifactIdFromAppUri(uri)).toBeNull()
+    }
+  })
+})
+
+describe("createStoreBackedAppRegistry — generated/user apps", () => {
+  const curated = {
+    pulse: async () => ({ toolsCalled: 3 }),
+    "list-artifacts": async () => [{ id: "x" }],
+  }
+  const reg = (html: string | null = "<p>app</p>") =>
+    createStoreBackedAppRegistry({
+      getAppHtml: async () => html,
+      curatedTools: curated,
+    })
+
+  it("resolves ui://luna/app/<id> to the artifact HTML", async () => {
+    const res = await reg().readResource("ui://luna/app/mcp-app%3Adash")
+    expect(res).toEqual({ ok: true, mimeType: MCP_APP_MIME_TYPE, text: "<p>app</p>" })
+  })
+
+  it("fails closed for unknown app ids and non-app uris", async () => {
+    expect((await reg(null).readResource("ui://luna/app/mcp-app%3Agone")).ok).toBe(false)
+    expect((await reg().readResource("ui://luna/workspace-pulse")).ok).toBe(false)
+  })
+
+  it("callTool runs a curated tool (spec-shaped) and refuses anything else", async () => {
+    const ok = await reg().callTool("ui://luna/app/mcp-app%3Adash", "pulse", {})
+    expect(ok.ok).toBe(true)
+    expect((ok.result as { structuredContent: unknown }).structuredContent).toEqual({ toolsCalled: 3 })
+
+    const notCurated = await reg().callTool("ui://luna/app/mcp-app%3Adash", "delete-everything", {})
+    expect(notCurated.ok).toBe(false)
+    expect(notCurated.message).toContain("not available")
+
+    // A non-store appUri never resolves here (the composer routes it elsewhere).
+    const notStore = await reg().callTool("ui://luna/workspace-pulse", "pulse", {})
+    expect(notStore.ok).toBe(false)
+  })
+
+  it("prototype-chain tool names never resolve (hasOwn gate)", async () => {
+    for (const name of ["toString", "constructor", "__proto__", "hasOwnProperty"]) {
+      expect((await reg().callTool("ui://luna/app/mcp-app%3Ax", name, {})).ok).toBe(false)
+    }
+  })
+
+  it("a throwing curated tool collapses to ok:false with a generic message", async () => {
+    const r = createStoreBackedAppRegistry({
+      getAppHtml: async () => "<p>x</p>",
+      curatedTools: { boom: () => { throw new Error("ENOENT /home/op/secret") } },
+    })
+    const res = await r.callTool("ui://luna/app/mcp-app%3Ax", "boom", {})
+    expect(res.ok).toBe(false)
+    expect(res.message).not.toContain("secret")
+  })
+})
+
+describe("composeAppRegistries — namespace isolation", () => {
+  const core = createCoreAppRegistry([
+    { uri: "ui://luna/workspace-pulse", html: "<p>core</p>", tools: { "pulse-snapshot": async () => 1 } },
+  ])
+  const store = createStoreBackedAppRegistry({
+    getAppHtml: async () => "<p>store</p>",
+    curatedTools: { pulse: async () => 2 },
+  })
+  const composed = composeAppRegistries(core, store)
+
+  it("routes a core uri to the core registry and a store uri to the store registry", async () => {
+    expect((await composed.readResource("ui://luna/workspace-pulse")).text).toBe("<p>core</p>")
+    expect((await composed.readResource("ui://luna/app/mcp-app%3Ad")).text).toBe("<p>store</p>")
+  })
+
+  it("a STORE app cannot reach a CORE app's per-app tool, and vice-versa", async () => {
+    // store appUri asking for the core 'pulse-snapshot' → not curated → refused.
+    expect((await composed.callTool("ui://luna/app/mcp-app%3Ad", "pulse-snapshot", {})).ok).toBe(false)
+    // core appUri asking for the curated 'pulse' → not its tool → refused.
+    expect((await composed.callTool("ui://luna/workspace-pulse", "pulse", {})).ok).toBe(false)
+    // each reaches ITS OWN tool fine.
+    expect((await composed.callTool("ui://luna/workspace-pulse", "pulse-snapshot", {})).ok).toBe(true)
+    expect((await composed.callTool("ui://luna/app/mcp-app%3Ad", "pulse", {})).ok).toBe(true)
+  })
+})
+
+describe("buildCuratedAppTools — the read-only allowlist", () => {
+  it("exposes exactly pulse + list-artifacts, wired to the injected getters", async () => {
+    const getPulse = vi.fn(async () => ({ toolsCalled: 1, errors: 0, estimatedUsd: 0, activeSessions: 0 }))
+    const listArtifacts = vi.fn(async () => [
+      { id: "widget:a", title: "A", kind: "widget", version: 1, updatedAt: 0 },
+    ])
+    const tools = buildCuratedAppTools({ getPulse, listArtifacts })
+    expect(Object.keys(tools).sort()).toEqual(["list-artifacts", "pulse"])
+    await tools.pulse!({})
+    await tools["list-artifacts"]!({})
+    expect(getPulse).toHaveBeenCalledTimes(1)
+    expect(listArtifacts).toHaveBeenCalledTimes(1)
   })
 })

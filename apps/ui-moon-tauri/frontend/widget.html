@@ -236,26 +236,37 @@
       showNotice("This server doesn't support MCP apps.");
       return;
     }
-    if (!window.LunaMcpHost || !window.LunaWidgetSandbox ||
-        typeof LunaWidgetSandbox.buildMcpSrcdoc !== 'function') {
+    if (!window.LunaMcpHost || !window.LunaWidgetSandbox) {
       showNotice('MCP app host unavailable in this build.');
       return;
     }
-    var uri = (artifact.content || '').trim();
+    var content = artifact.content || '';
+    // A GENERATED / store-backed app stores its HTML inline; a STATIC / external
+    // app stores a `ui://` resource URI. For an inline app the identity uri is
+    // DERIVED from the artifact id so the server can enforce the same-server
+    // tool rule + curated read-only allowlist on its tools/call.
+    var isPointer = /^ui:\/\//i.test(content.trim());
+    var appUri = isPointer
+      ? content.trim()
+      : ('ui://luna/app/' + encodeURIComponent(id || ''));
     contentArea.innerHTML = '';
     var iframe = document.createElement('iframe');
     iframe.className = 'widget-frame';
     // Same trust boundary as kind='widget': allow-scripts WITHOUT
-    // allow-same-origin; srcdoc assembled by buildMcpSrcdoc (CSP, no shim).
+    // allow-same-origin; srcdoc assembled by the (generated|bare) MCP cage.
     iframe.setAttribute('sandbox', LunaWidgetSandbox.SANDBOX_ATTR);
     iframe.setAttribute('referrerpolicy', 'no-referrer');
     contentArea.appendChild(iframe);
-    mcpHostHandle = LunaMcpHost.host({
+    var hostOpts = {
       frameEl: iframe,
-      uri: uri,
-      transport: makeMcpTransport(uri),
+      uri: appUri,
+      transport: makeMcpTransport(appUri),
       onError: function (msg) { showNotice(msg); },
-    });
+    };
+    // Inline app → hand the HTML to the host (generated-app cage, window.mcp
+    // helper); pointer app → host fetches it via mcp-resource-read (bare cage).
+    if (!isPointer) hostOpts.html = content;
+    mcpHostHandle = LunaMcpHost.host(hostOpts);
   }
 
   function renderWidget(artifact) {

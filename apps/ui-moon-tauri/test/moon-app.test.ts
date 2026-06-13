@@ -146,6 +146,45 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   })
 
   // ───────────────────────────────────────────────────────────────────────────
+  // Feature: server-pushed open-artifact-widget pops a content artifact (S2)
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: open-artifact-widget summons a content artifact', () => {
+    const M = () => (window as any).__MoonInternals
+
+    it('Scenario: an open-artifact-widget frame invokes open_artifact_widget', () => {
+      const invoke = vi.fn().mockResolvedValue('widget-abc')
+      ;(window as any).__TAURI__.core = { invoke }
+      M().handleFrame({
+        type: 'open-artifact-widget',
+        artifactId: 'widget:pr-99-tracker',
+        title: 'PR #99',
+        kind: 'widget',
+      })
+      expect(invoke).toHaveBeenCalledWith('open_artifact_widget', {
+        artifactId: 'widget:pr-99-tracker',
+        title: 'PR #99',
+      })
+    })
+
+    it('Scenario: a malformed frame (no artifactId) is ignored, never invoked', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      M().handleFrame({ type: 'open-artifact-widget', title: 'X', kind: 'widget' })
+      expect(invoke).not.toHaveBeenCalled()
+    })
+
+    it('Scenario: an empty title falls back to "Artifact"', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      M().handleFrame({ type: 'open-artifact-widget', artifactId: 'mcp-app:x', title: '', kind: 'mcp-app' })
+      expect(invoke).toHaveBeenCalledWith('open_artifact_widget', {
+        artifactId: 'mcp-app:x',
+        title: 'Artifact',
+      })
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
   // Feature: Visual DOM Structure Snapshots
   // ───────────────────────────────────────────────────────────────────────────
   describe('Feature: Visual DOM Structure Snapshots', () => {

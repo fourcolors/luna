@@ -80,7 +80,8 @@
    * bridge shim — an MCP app brings its own protocol script and speaks raw
    * MCP Apps JSON-RPC over postMessage with the host (vendor/mcp-app-host.js).
    * Injecting the shim here would hand every third-party app a second,
-   * cap-gated door it was never granted.
+   * cap-gated door it was never granted. Used for STATIC / external apps that
+   * ship a spec-compliant protocol client of their own.
    */
   function buildMcpSrcdoc(html) {
     var body = typeof html === "string" ? html : ""
@@ -91,6 +92,58 @@
       CSP +
       '">' +
       "</head><body>" +
+      body +
+      "</body></html>"
+    )
+  }
+
+  // A tiny MCP Apps CLIENT helper, injected into GENERATED app cages so a
+  // Luna-authored app can `await window.mcp.call('tool', args)` instead of
+  // hand-rolling JSON-RPC. It grants NO new capability: a generated app could
+  // already postMessage a tools/call to the host — this just drives the spec
+  // handshake (ui/initialize → initialized) and correlates request ids. The
+  // real enforcement stays server-side (the curated read-only allowlist keyed
+  // on the app's appUri). Talks ONLY to window.parent (the host), same opaque-
+  // origin boundary as the luna.* shim.
+  var MCP_CLIENT_SHIM =
+    "<script>(function(){" +
+    "var seq=0,pending={};" +
+    "function post(m){try{window.parent.postMessage(m,'*');}catch(_){}}" +
+    "window.addEventListener('message',function(e){" +
+    "if(e.source!==window.parent)return;" +
+    "var m=e.data; if(!m||m.jsonrpc!=='2.0')return;" +
+    "if(m.id!=null&&pending[m.id]){var p=pending[m.id];delete pending[m.id];" +
+    "if(m.error){p.reject(new Error((m.error&&m.error.message)||'tool error'));}" +
+    "else{p.resolve(m.result);}}" +
+    "});" +
+    "function call(name,args){return new Promise(function(res,rej){" +
+    "var id='c'+(++seq);pending[id]={resolve:res,reject:rej};" +
+    "post({jsonrpc:'2.0',id:id,method:'tools/call',params:{name:name,arguments:args||{}}});" +
+    "});}" +
+    "var ready=new Promise(function(res){" +
+    "pending['init']={resolve:function(){post({jsonrpc:'2.0',method:'ui/notifications/initialized'});res();},reject:function(){res();}};" +
+    "post({jsonrpc:'2.0',id:'init',method:'ui/initialize',params:{protocolVersion:'2026-01-26',capabilities:{}}});" +
+    "});" +
+    "window.mcp={ready:ready,call:function(n,a){return ready.then(function(){return call(n,a);});}};" +
+    "})();<\/script>"
+
+  /**
+   * Assemble the srcdoc for a GENERATED MCP app (describe-to-spawn / Apps
+   * panel). Same cage as buildMcpSrcdoc PLUS the `window.mcp` client helper, so
+   * the agent/user only writes the visual app and calls `window.mcp.call(...)`.
+   * Distinct from buildMcpSrcdoc on purpose: external apps bring their own
+   * protocol client and must NOT get a second one injected.
+   */
+  function buildGeneratedAppSrcdoc(html) {
+    var body = typeof html === "string" ? html : ""
+    return (
+      "<!doctype html><html><head>" +
+      '<meta charset="utf-8">' +
+      '<meta http-equiv="Content-Security-Policy" content="' +
+      CSP +
+      '">' +
+      "</head><body>" +
+      MCP_CLIENT_SHIM +
       body +
       "</body></html>"
     )
@@ -117,6 +170,7 @@
   g.LunaWidgetSandbox = {
     buildSrcdoc: buildSrcdoc,
     buildMcpSrcdoc: buildMcpSrcdoc,
+    buildGeneratedAppSrcdoc: buildGeneratedAppSrcdoc,
     subscribeAllowed: subscribeAllowed,
     SANDBOX_ATTR: SANDBOX_ATTR,
     CSP: CSP,

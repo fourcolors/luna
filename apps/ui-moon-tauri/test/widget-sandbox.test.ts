@@ -16,6 +16,7 @@ import { describe, expect, it, beforeAll } from "vitest"
 interface Sandbox {
   buildSrcdoc: (html: string) => string
   buildMcpSrcdoc: (html: string) => string
+  buildGeneratedAppSrcdoc: (html: string) => string
   subscribeAllowed: (caps: unknown, kind: unknown) => boolean
   SANDBOX_ATTR: string
   CSP: string
@@ -98,6 +99,43 @@ describe("buildMcpSrcdoc (MCP apps — same cage, NO bridge shim)", () => {
     const hostile =
       "</head><meta http-equiv='Content-Security-Policy' content=\"default-src *\">"
     const doc = SB.buildMcpSrcdoc(hostile)
+    expect(doc.indexOf("default-src 'none'")).toBeLessThan(doc.indexOf("default-src *"))
+  })
+
+  it("the bare MCP cage injects NO client helper (external apps bring their own)", () => {
+    const doc = SB.buildMcpSrcdoc("<h1>X</h1>")
+    expect(doc).not.toContain("window.mcp")
+  })
+})
+
+describe("buildGeneratedAppSrcdoc (generated apps — same cage + window.mcp helper)", () => {
+  it("keeps the strict CSP, injects the window.mcp helper, and NO luna.* shim", () => {
+    const doc = SB.buildGeneratedAppSrcdoc("<h1>GEN APP</h1>")
+    expect(doc).toContain(SB.CSP) // identical no-network policy
+    expect(doc).toContain("window.mcp")
+    expect(doc).toContain("ui/initialize")
+    expect(doc).toContain("tools/call")
+    // It's an MCP helper, NOT the cap-gated obs bridge.
+    expect(doc).not.toContain("window.luna")
+    expect(doc).not.toContain("__luna")
+    // Helper must precede the agent body so window.mcp exists when it runs.
+    expect(doc.indexOf("window.mcp")).toBeLessThan(doc.indexOf("GEN APP"))
+  })
+
+  it("the helper only ever postMessages window.parent (the host) — no network", () => {
+    const doc = SB.buildGeneratedAppSrcdoc("<p>x</p>")
+    expect(doc).toContain("window.parent.postMessage")
+    // No fetch/XHR/WebSocket in the injected helper.
+    expect(doc).not.toMatch(/\bfetch\s*\(/)
+    expect(doc).not.toContain("XMLHttpRequest")
+    expect(doc).not.toContain("new WebSocket")
+  })
+
+  it("tolerates non-string html and never strips the CSP on hostile bodies", () => {
+    expect(() => SB.buildGeneratedAppSrcdoc(undefined as unknown as string)).not.toThrow()
+    const hostile =
+      "</head><meta http-equiv='Content-Security-Policy' content=\"default-src *\">"
+    const doc = SB.buildGeneratedAppSrcdoc(hostile)
     expect(doc.indexOf("default-src 'none'")).toBeLessThan(doc.indexOf("default-src *"))
   })
 })
