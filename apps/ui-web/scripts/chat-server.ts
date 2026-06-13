@@ -201,6 +201,10 @@ import {
   secretProviderFirstOf,
   JobsStoreService,
   validateAccountsTableLabels,
+  SuggestedActions,
+  SuggestedActionsStore,
+  AcceptHandler,
+  AcceptHandlerLayer,
 } from "@luna/core"
 import { createDnaLoader, loadDna } from "./dna-loader.js"
 import { loadSystem } from "./system-loader.js"
@@ -280,6 +284,10 @@ import {
   type SecretDestination,
 } from "@luna/secret-tools"
 import { SkillToolsLayer, SkillToolsService } from "@luna/skill-tools"
+import {
+  SuggestedActionToolsLayer,
+  SuggestedActionToolsService,
+} from "@luna/suggested-actions-tools"
 import { WidgetToolsLayer, WidgetToolsService } from "@luna/widget-tools"
 import { createJobInputToolsProvider } from "@luna/job-input-tools"
 import {
@@ -532,6 +540,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       const secretTools = yield* SecretToolsService
       const skillTools = yield* SkillToolsService
       const widgetTools = yield* WidgetToolsService // PRD Part C/W4: widget_write
+      const suggestedActionTools = yield* SuggestedActionToolsService // suggest_action
       // PRD Part B (Skills): the managed skill catalog. decorate() reads
       // promptSnapshotSync() — synchronous and never stale (the registry
       // rebuilds it inside every mutation), so a settings toggle is
@@ -677,6 +686,8 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
           const secretThreadTools = secretTools.createSessionBinding()
           const skillThreadTools = skillTools.createSessionBinding()
           const widgetThreadTools = widgetTools.createSessionBinding()
+          const suggestedActionThreadTools =
+            suggestedActionTools.createSessionBinding()
           console.log(
             "[luna/thread] wiring MCP servers:",
             [
@@ -709,6 +720,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             obsThreadTools.systemPromptAddendum,
             localShellThreadTools.systemPromptAddendum,
             secretThreadTools.systemPromptAddendum,
+            suggestedActionThreadTools.systemPromptAddendum,
           ]
             .filter((s): s is string => typeof s === "string" && s.length > 0)
             .join("\n\n")
@@ -721,6 +733,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             [secretThreadTools.serverName]: secretThreadTools.server,
             [skillThreadTools.serverName]: skillThreadTools.server, // PRD B §11: skill_load (tier-2 disclosure)
             [widgetThreadTools.serverName]: widgetThreadTools.server, // PRD C §16: widget_write (describe-to-spawn)
+            [suggestedActionThreadTools.serverName]: suggestedActionThreadTools.server, // suggest_action (propose follow-ups)
             ...connectorService.mountSnapshotSync(), // PRD A §07: connected services, hot per-thread
           }
           return {
@@ -730,6 +743,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
               obsThreadTools.bindSession(sessionId)
               localShellThreadTools.bindSession(sessionId)
               secretThreadTools.bindSession(sessionId)
+              suggestedActionThreadTools.bindSession(sessionId)
               if (sandboxLocalShell.enabled) {
                 const reattach = () =>
                   attachSandboxLocalShell({
@@ -1638,6 +1652,27 @@ export const buildBaseLayer = (
     Layer.provide(clockL),
   )
 
+  // Suggested Actions: the durable per-thread store + the shared service the
+  // live `suggest_action` tool, Dream, and the ui-ws respond handle all use.
+  // Define ONCE and reuse by reference (Layer memoization) so the chat
+  // changes-consumer, the thread tool, and the accept handle hit the SAME
+  // instance — otherwise the change-stream never reaches the chat layer.
+  const suggestedActionsStoreL = SuggestedActionsStore.makeLayer(
+    paths.lunaDbPath,
+  ).pipe(Layer.provide(clockL))
+  const suggestedActionsL = SuggestedActions.layer.pipe(
+    Layer.provide(suggestedActionsStoreL),
+  )
+  // AcceptHandler: auto-executes an accepted action as a durable one-shot job
+  // (requires LUNA_SCHEDULER_V2_ENABLED=1 for the ticker to dispatch it) and
+  // forks the completion observer. Resolved via serviceOption inside
+  // SuggestedActions.respond — present here means accept actually runs.
+  const acceptHandlerL = AcceptHandlerLayer().pipe(
+    Layer.provide(suggestedActionsL),
+    Layer.provide(jobsStoreL),
+    Layer.provide(clockL),
+  )
+
   // MemoryRouter for ChatService.searchMemory (the WS-mediated context
   // panel). ChatService.Default `yield*`s MemoryRouterTag, so the router
   // MUST be in its layer graph or the runtime build fails at boot — which
@@ -1819,6 +1854,11 @@ export const buildBaseLayer = (
     // then artifactStoreL satisfies both it and the WS handle (memoized).
     Layer.provide(WidgetToolsLayer(widgetSummonBridge)),
     Layer.provide(artifactStoreL),
+    // Suggested Actions: suggest_action MCP tool. SuggestedActionToolsLayer
+    // requires the shared SuggestedActions service; provide the tool layer then
+    // the service (same memoized instance the chat layer + accept handle use).
+    Layer.provide(SuggestedActionToolsLayer),
+    Layer.provide(suggestedActionsL),
     Layer.provide(connectorServiceL), // PRD Part A: mounts read by decorate()
     Layer.provide(obsL),
     Layer.provide(clockL),
@@ -1990,6 +2030,9 @@ export const buildBaseLayer = (
       telemetryL,
       memoryRouterL,
       threadToolsL,
+      // ChatService resolves SuggestedActions via Effect.serviceOption — wire
+      // it so the change-stream consumer + replay-on-subscribe activate.
+      suggestedActionsL,
     ),
   )
 
@@ -2010,6 +2053,13 @@ export const buildBaseLayer = (
     wakeCronL ?? Layer.empty, // wake cron: workspace-state digest at each tick (disabled if LUNA_WAKE_ENABLED=0)
     jobTickerL ?? Layer.empty, // Phase 12b V2 ticker: enabled via LUNA_SCHEDULER_V2_ENABLED=1 (DESIGN §5.3)
     surveyL,    // Phase 3 D3: Survey available for buildServerLayer to resolve + pass to the WS server
+    suggestedActionsL, // Suggested Actions: buildServerLayer resolves it for the WS respond handle (same instance the chat layer uses)
+    // Auto-execute + completion observer — ONLY when the V2 ticker is enabled.
+    // Without the ticker a job can never dispatch, so providing AcceptHandler
+    // would strand accepted actions in `in_progress` forever; gating it here
+    // means accept simply leaves the action at `accepted` on a flag-off deploy
+    // (respond resolves AcceptHandler via serviceOption — absent → no exec).
+    schedulerV2Enabled ? acceptHandlerL : Layer.empty,
     skillRegistryL, // PRD Part B: same instance as threadToolsL (memoized by reference) — buildServerLayer resolves it for the WS skill frames
     connectorServiceL, // PRD Part A: same instance as threadToolsL — M2's WS connector frames resolve it here
     artifactStoreL, // PRD Part C/W1: buildServerLayer resolves it for the WS artifact frames
@@ -2181,6 +2231,10 @@ const buildServerLayer = (
       const artifactStoreService = yield* ArtifactStore // PRD Part C/W1
       const jobsStore = yield* JobsStoreService // PRD Part C/W3 (gallery source)
       const telemetry = yield* TelemetryService // Phase 7: pulse-snapshot source
+      const suggestedActionsService = yield* SuggestedActions // suggest_action
+      // Optional — present only when LUNA_SCHEDULER_V2_ENABLED=1 (see the gated
+      // merge above). Absent → accept leaves the action at `accepted`.
+      const acceptHandlerOption = yield* Effect.serviceOption(AcceptHandler)
 
       // PRD A §08: access tokens live ~1h; refresh AHEAD of expiry so the
       // mount snapshot's bearer never goes stale mid-conversation. The
@@ -2724,6 +2778,35 @@ const buildServerLayer = (
           ),
       }
 
+      // Suggested Actions: the ui-ws respond handle. `respond` runs in the
+      // ui-ws runtime, so the AcceptHandler (resolved by SuggestedActions.respond
+      // via serviceOption) must be PROVIDED into the returned Effect here —
+      // otherwise accept would silently skip execution. Errors are logged and
+      // swallowed so a bad respond never breaks the connection.
+      const suggestedActionsHandle = {
+        respond: (input: {
+          readonly threadId: string
+          readonly actionId: string
+          readonly decision: "accept" | "dismiss"
+        }) => {
+          // Provide AcceptHandler only when it's wired (scheduler V2 on); when
+          // off, respond still works — accept just transitions to `accepted`
+          // without creating a job (serviceOption in respond resolves None).
+          const base = suggestedActionsService.respond(input)
+          const withHandler = Option.isSome(acceptHandlerOption)
+            ? base.pipe(Effect.provideService(AcceptHandler, acceptHandlerOption.value))
+            : base
+          return withHandler.pipe(
+            Effect.asVoid,
+            Effect.catchAll((e) =>
+              Effect.sync(() => {
+                console.warn("[luna/suggested-actions] respond failed:", String(e))
+              }),
+            ),
+          )
+        },
+      }
+
       // Wire-safety adapter (PRD §12): the ui-ws handle receives catalog
       // entries with the `body` ALREADY stripped. Bodies are prompt content
       // for the agent — they never reach clients, and stripping here (not
@@ -2784,6 +2867,7 @@ const buildServerLayer = (
         connectorService: connectorsWsHandle, // PRD Part A: instances pre-projected
         artifactStore: artifactsWsHandle, // PRD Part C/W1: pinned artifacts (wire-safe)
         workflowGallery: workflowGalleryHandle, // PRD Part C/W3: read-only jobs gallery
+        suggestedActions: suggestedActionsHandle, // Suggested Actions: accept/dismiss routing
         vaultService: vaultWsHandle, // Vault V1: registry CRUD (values never cross down)
         localShellBridge,
         onLocalShellRelease: reattachSandbox,

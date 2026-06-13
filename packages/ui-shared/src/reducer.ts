@@ -21,6 +21,7 @@ import type {
   ServerFrame,
   SessionSummary,
   SkillCatalogItem,
+  SuggestedActionWire,
   VaultSyncWire,
   VaultWireItem,
   WorkflowGalleryItem,
@@ -64,6 +65,8 @@ export interface UIState {
     readonly connectors?: boolean
     readonly artifacts?: boolean
     readonly workflows?: boolean
+    /** Suggested Actions: inline chip + per-thread Actions panel available. */
+    readonly suggestedActions?: boolean
     /** Luna Vault (V1): vault-list pushed after hello; vault mutations routed. */
     readonly vault?: boolean
     /**
@@ -123,6 +126,11 @@ export interface UIState {
    *  + per-job run history fetched on demand. Gated on capabilities.workflows. */
   readonly workflows: ReadonlyArray<WorkflowGalleryItem>
   readonly workflowRuns: ReadonlyMap<string, ReadonlyArray<WorkflowRunItem>>
+  /** Suggested Actions — Luna's proposed actions, keyed by owning threadId
+   *  (per-thread scope). The inline chip reads the active thread's latest
+   *  `proposed` entry; the Actions panel renders the whole thread array.
+   *  Gated on capabilities.suggestedActions. */
+  readonly suggestedActions: ReadonlyMap<string, ReadonlyArray<SuggestedActionWire>>
   /** Luna Vault (V1) — credential registry (metadata + opaque pointers only;
    *  never credential values). Gated on capabilities.vault. */
   readonly vaultItems: ReadonlyArray<VaultWireItem>
@@ -155,6 +163,7 @@ export const initialState: UIState = {
   pinnedArtifacts: [],
   workflows: [],
   workflowRuns: new Map(),
+  suggestedActions: new Map(),
   vaultItems: [],
   vaultSync: null,
 }
@@ -424,6 +433,29 @@ export const reduce = (state: UIState, action: Action): UIState => {
       const next = new Map(state.workflowRuns)
       next.set(frame.jobId, frame.runs)
       return { ...state, workflowRuns: next }
+    }
+    case "suggested-action-set": {
+      // Server-authored full set for one thread (initial paint + replay-on-open
+      // + re-sent wholesale on change) — replace that thread's slice. Other
+      // threads untouched (per-thread scope).
+      const next = new Map(state.suggestedActions)
+      next.set(frame.threadId, frame.actions)
+      return { ...state, suggestedActions: next }
+    }
+    case "suggested-action-update": {
+      // One action changed (status/execution delta). Replace it in the thread's
+      // array by id, or append if not yet seen (a live action arriving before
+      // any set). Server status is authoritative.
+      const next = new Map(state.suggestedActions)
+      const cur = next.get(frame.threadId) ?? []
+      const seen = cur.some((a) => a.id === frame.action.id)
+      next.set(
+        frame.threadId,
+        seen
+          ? cur.map((a) => (a.id === frame.action.id ? frame.action : a))
+          : [...cur, frame.action],
+      )
+      return { ...state, suggestedActions: next }
     }
     case "pty-output":
       // pty output is consumed by the setup terminal directly off the

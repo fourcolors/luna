@@ -246,6 +246,41 @@ describe("JobTicker", () => {
     )
   })
 
+  it("a one-shot row (empty schedule) fires exactly once then disables itself", async () => {
+    let count = 0
+    const counting: Worker = () =>
+      Effect.sync(() => {
+        count++
+        return { outputText: null }
+      })
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const ticker = yield* JobTicker
+      // Empty spec → no schedule expression → one-shot.
+      yield* store.record({
+        id: "oneshot",
+        kind: "wake",
+        spec: "",
+        payload: { label: "oneshot" },
+      })
+      yield* store.setV2Fields("oneshot", { enabled: true, nextRunAt: 0 })
+
+      const s1 = yield* ticker.drain
+      expect(s1.succeeded).toBe(1)
+      expect(count).toBe(1)
+
+      // The one-shot guard disabled it — listDue no longer returns it.
+      const after = yield* store.getById("oneshot")
+      expect(after?.enabled).toBe(false)
+      const s2 = yield* ticker.drain
+      expect(s2.considered).toBe(0)
+      expect(count).toBe(1)
+    })
+    await Effect.runPromise(
+      prog.pipe(Effect.provide(buildStack({ wake: counting }))),
+    )
+  })
+
   it("a row whose schedule fails to parse leaves next_run_at unchanged on claim", async () => {
     const noop: Worker = () => Effect.succeed({ outputText: null })
     const prog = Effect.gen(function* () {

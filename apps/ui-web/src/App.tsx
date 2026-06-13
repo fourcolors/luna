@@ -25,9 +25,11 @@ import {
   filterEvents,
   type ClientFrame,
   type ChatAttachment,
+  type SuggestedActionStatus,
 } from "@luna/ui-shared/core"
 import {
   AccountSwitcher,
+  ActionsPanel,
   ArtifactPanel,
   ChatPanel,
   ConnectionSummary,
@@ -414,6 +416,82 @@ export const App: Component = () => {
       : null,
   )
 
+  // ── Optimistic action status overrides ───────────────────────────────────
+  // When the user clicks Accept/Dismiss the chip/row flips immediately rather
+  // than waiting for the server's suggested-action-update round-trip.
+  // Keyed by actionId → optimistic status. Cleared when the authoritative
+  // update arrives in store.state.suggestedActions.
+  const [optimisticStatuses, setOptimisticStatuses] = createSignal<
+    ReadonlyMap<string, SuggestedActionStatus>
+  >(new Map())
+
+  // Reconcile: when store.state.suggestedActions changes, drop any optimistic
+  // overrides whose actionId is now present in the store with a terminal
+  // (non-proposed) status — the server's answer has arrived.
+  createEffect(() => {
+    const allActions = store.state.suggestedActions
+    const overrides = optimisticStatuses()
+    if (overrides.size === 0) return
+    const next = new Map(overrides)
+    let changed = false
+    for (const [id] of overrides) {
+      // Scan all threads' action arrays for this id.
+      let found = false
+      for (const [, actions] of allActions) {
+        const action = actions.find((a) => a.id === id)
+        if (action && action.status !== "proposed") {
+          next.delete(id)
+          changed = true
+          found = true
+          break
+        }
+        if (action) { found = true; break }
+      }
+      if (!found) { next.delete(id); changed = true }
+    }
+    if (changed) setOptimisticStatuses(next)
+  })
+
+  /**
+   * Return the active thread's suggested actions with optimistic status
+   * overrides applied. The overlay only changes `status` for IDs the user
+   * has clicked — everything else is authoritative from the store.
+   */
+  const activeThreadActions = createMemo(() => {
+    const threadId = selectedThread()?.summary.id
+    if (!threadId) return []
+    const actions = store.state.suggestedActions.get(threadId) ?? []
+    const overrides = optimisticStatuses()
+    if (overrides.size === 0) return actions
+    return actions.map((a) => {
+      const os = overrides.get(a.id)
+      return os !== undefined ? { ...a, status: os } : a
+    })
+  })
+
+  /** Send a suggested-action-respond frame and set an optimistic status. The
+   *  override is normally cleared by the authoritative update (reconcile effect
+   *  above). But if the server emits NO update — a cross-thread/unknown
+   *  actionId, or a lost-race respond() that returns null — nothing would clear
+   *  it. A timeout rollback reverts the override so the row becomes actionable
+   *  again and the user can retry, rather than the chip sticking forever. */
+  const OPTIMISTIC_ROLLBACK_MS = 8000
+  const respondToAction = (actionId: string, decision: "accept" | "dismiss"): void => {
+    const threadId = selectedThread()?.summary.id
+    if (!threadId) return
+    const optimistic: SuggestedActionStatus = decision === "accept" ? "accepted" : "dismissed"
+    setOptimisticStatuses((prev) => new Map([...prev, [actionId, optimistic]]))
+    send({ type: "suggested-action-respond", threadId, actionId, decision })
+    setTimeout(() => {
+      setOptimisticStatuses((prev) => {
+        if (!prev.has(actionId)) return prev // already reconciled by a server update
+        const next = new Map(prev)
+        next.delete(actionId)
+        return next
+      })
+    }, OPTIMISTIC_ROLLBACK_MS)
+  }
+
   /* ── Luna Studio board — floating panels on one canvas ─────────────────
      Engine ported from the design handoff's luna-app.jsx. Default layout:
      threads + settings stacked left, chat filling the rest; events /
@@ -433,6 +511,7 @@ export const App: Component = () => {
         events: { x: chatX + 40, y: TOP_MIN + 40, w: 620, h: 420, closed: true, min: false },
         artifacts: { x: vw - rightW - EDGE_MARGIN, y: TOP_MIN, w: rightW, h: half, closed: true, min: false },
         workflows: { x: vw - rightW - EDGE_MARGIN, y: TOP_MIN + half + SNAP_GAP, w: rightW, h: colH - half - SNAP_GAP, closed: true, min: false },
+        actions: { x: vw - rightW - EDGE_MARGIN, y: TOP_MIN + half + SNAP_GAP, w: rightW, h: colH - half - SNAP_GAP, closed: true, min: false },
         favorites: { x: EDGE_MARGIN + 80, y: TOP_MIN + 70, w: 290, h: 300, closed: true, min: false },
       }
     },
@@ -776,6 +855,14 @@ export const App: Component = () => {
           effort={cfg().effort}
           onModelChange={handleModelChange}
           onEffortChange={handleEffortChange}
+          {...(store.state.capabilities.suggestedActions === true
+            ? {
+                suggestedActions: activeThreadActions(),
+                onAcceptSuggestion: (id: string) => respondToAction(id, "accept"),
+                onDismissSuggestion: (id: string) => respondToAction(id, "dismiss"),
+                onSeeAllSuggestions: () => board.summon("actions"),
+              }
+            : {})}
         />
       ),
     },
@@ -857,6 +944,22 @@ export const App: Component = () => {
           runs={store.state.workflowRuns}
           onSelectRuns={(jobId) => send({ type: "workflow-runs-request", jobId })}
           onRefresh={() => send({ type: "workflow-refresh" })}
+        />
+      ),
+    },
+    {
+      // Suggested Actions panel — gated on capabilities.suggestedActions;
+      // older servers that don't advertise the cap hide this panel entirely.
+      id: "actions",
+      title: "actions",
+      tint: 5,
+      when: () => store.state.capabilities.suggestedActions === true,
+      render: () => (
+        <ActionsPanel
+          actions={activeThreadActions()}
+          disabled={!chatEnabled()}
+          onAccept={(id) => respondToAction(id, "accept")}
+          onDismiss={(id) => respondToAction(id, "dismiss")}
         />
       ),
     },

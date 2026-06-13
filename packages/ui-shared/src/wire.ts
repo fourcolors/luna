@@ -114,6 +114,11 @@ export interface HelloFrame {
     /** PRD Part C (W3): server exposes the read-only workflow gallery over the
      *  jobs store (workflow-list + workflow-runs). OPTIONAL/additive. */
     readonly workflows?: boolean
+    /** Suggested Actions: server routes suggested-action-respond and pushes
+     *  suggested-action-set/update per thread. OPTIONAL/additive — absent on
+     *  older servers; clients hide the inline chip + Actions panel when missing.
+     *  Mirrors packages/ui-ws/src/protocol.ts — keep in sync. */
+    readonly suggestedActions?: boolean
     /** Luna Vault (V1): server routes vault-put/delete/sync-config/import and
      *  pushes vault-list after hello. OPTIONAL/additive. */
     readonly vault?: boolean
@@ -445,6 +450,62 @@ export interface WorkflowRefreshFrame {
   readonly type: "workflow-refresh"
 }
 
+/* Suggested Actions — Luna proposes actions ("do a task", "create a skill", …)
+ * inline in a thread; they collect in a per-thread Actions panel. PER-THREAD
+ * scope: every action carries its owning threadId. `set` is a full per-thread
+ * replace (initial paint + replay-on-open); `update` is a single-action delta
+ * (status/execution transition). Accept auto-executes server-side. Mirror
+ * packages/ui-ws/src/protocol.ts — keep in sync. */
+export type SuggestedActionType =
+  | "task"
+  | "research"
+  | "create_skill"
+  | "create_workflow"
+  | "run_workflow"
+export type SuggestedActionStatus =
+  | "proposed"
+  | "accepted"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "dismissed"
+/** One suggested action, wire-safe (no payloads/secrets cross the wire). */
+export interface SuggestedActionWire {
+  readonly id: string
+  readonly threadId: string
+  readonly actionType: SuggestedActionType
+  readonly title: string
+  readonly detail?: string
+  readonly rationale?: string
+  readonly status: SuggestedActionStatus
+  readonly source: "agent" | "dream"
+  readonly createdAt: number
+  /** Set once accepted — the durable job/workflow id driving execution. */
+  readonly executionId?: string | null
+  /** Short diagnostic when status === "failed". */
+  readonly error?: string | null
+}
+/** Server→client: the full set of a thread's non-terminal actions. Sent on
+ *  subscribe (replay) and re-sent wholesale on change. */
+export interface SuggestedActionSetFrame {
+  readonly type: "suggested-action-set"
+  readonly threadId: string
+  readonly actions: ReadonlyArray<SuggestedActionWire>
+}
+/** Server→client: a single action changed (status/execution delta). */
+export interface SuggestedActionUpdateFrame {
+  readonly type: "suggested-action-update"
+  readonly threadId: string
+  readonly action: SuggestedActionWire
+}
+/** Client→server: accept (auto-execute) or dismiss one suggested action. */
+export interface SuggestedActionRespondFrame {
+  readonly type: "suggested-action-respond"
+  readonly threadId: string
+  readonly actionId: string
+  readonly decision: "accept" | "dismiss"
+}
+
 /** Marks the true end of an agentic turn (SDK `result`). Consumed by clients
  *  that group consecutive assistant turns (the moon timeline); ui-web is
  *  seq-keyed and treats it as a no-op. */
@@ -640,6 +701,8 @@ export type ServerFrame =
   | ArtifactUpdateFrame
   | WorkflowListFrame
   | WorkflowRunsFrame
+  | SuggestedActionSetFrame
+  | SuggestedActionUpdateFrame
   | TurnCompleteFrame
   | PtyOutputFrame
   | VaultListFrame
@@ -733,6 +796,7 @@ export type ClientFrame =
   | ArtifactUnpinFrame
   | WorkflowRunsRequestFrame
   | WorkflowRefreshFrame
+  | SuggestedActionRespondFrame
   | PtyInputFrame
   | PtyResizeFrame
   | VaultPutFrame

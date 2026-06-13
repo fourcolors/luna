@@ -50,3 +50,4 @@ export {
   parseAppleCsv,
   humanizeRelTime,
 } from "./VaultPanel.jsx"
+export { ActionsPanel, type ActionsPanelProps } from "./ActionsPanel.jsx"

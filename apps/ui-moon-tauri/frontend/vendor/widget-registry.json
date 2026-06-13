@@ -151,6 +151,16 @@
       "width": 360,
       "height": 460,
       "description": "Live view of the subagent team working on a chat turn (opens with params {thread})"
+    },
+    {
+      "kind": "actions",
+      "title": "Suggested Actions",
+      "page": "panel.html?type=actions",
+      "trust": "system",
+      "singleton": true,
+      "width": 360,
+      "height": 460,
+      "description": "Suggested actions proposed by Luna for the active conversation (opens with params {thread})"
     }
   ]
 }

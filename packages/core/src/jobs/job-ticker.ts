@@ -173,6 +173,33 @@ export const JobTickerLayer = (
           }
           claimed++
 
+          // One-shot guard: a job with NO schedule expression at all (empty
+          // `schedule` AND empty `spec`) is a fire-once job — `claim` set its
+          // `next_run_at` to null, and `listDue` returns null-next_run rows, so
+          // without this it would re-fire EVERY tick forever (the documented
+          // "stays due" trap). Disable it after its single claim. A job with a
+          // NON-empty-but-unparseable cron is left alone (the deliberate
+          // pain-signal for a misconfigured schedule).
+          // `??` only falls through null/undefined, NOT "" — so check BOTH
+          // fields explicitly: an empty-string `schedule` alongside a valid
+          // `spec` must NOT be misread as a one-shot.
+          const scheduleEmpty = (job.schedule ?? "").trim() === ""
+          const specEmpty = (job.spec ?? "").trim() === ""
+          if (scheduleEmpty && specEmpty) {
+            // Retry a couple times so a transient store hiccup doesn't leave the
+            // row enabled (claim already nulled next_run_at, so listDue would
+            // return it again next tick → a duplicate dispatch). If it still
+            // fails, log loudly — the next tick may re-fire it.
+            yield* store.setV2Fields(job.id, { enabled: false }).pipe(
+              Effect.retry(Schedule.recurs(2)),
+              Effect.catchAll((err) =>
+                Effect.logWarning(
+                  `[luna/sched] one-shot disable failed for job=${job.id} after retries: ${err.message} — it may re-fire next tick`,
+                ),
+              ),
+            )
+          }
+
           // Record run start.
           const run = yield* store.recordRunStart({
             jobId: job.id,

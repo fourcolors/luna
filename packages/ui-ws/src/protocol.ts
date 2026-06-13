@@ -113,6 +113,14 @@ export interface HelloFrame {
      */
     readonly workflows?: boolean
     /**
+     * Suggested Actions: the server has a SuggestedActions service bound — it
+     * pushes `suggested-action-set` per thread (on subscribe + on change),
+     * `suggested-action-update` deltas, and routes `suggested-action-respond`.
+     * OPTIONAL/additive — clients hide the inline chip + Actions panel when
+     * absent/false. Mirrors packages/ui-shared/src/wire.ts — keep in sync.
+     */
+    readonly suggestedActions?: boolean
+    /**
      * Luna Vault (V1): the server has a VaultService bound — it pushes a
      * `vault-list` frame after `hello` and routes `vault-put` /
      * `vault-delete` / `vault-sync-config` / `vault-import`. OPTIONAL/additive
@@ -528,6 +536,59 @@ export interface WorkflowRunsRequestFrame {
 /** Client→server: ask the server to re-send the gallery list. */
 export interface WorkflowRefreshFrame {
   readonly type: "workflow-refresh"
+}
+
+/* Suggested Actions — Luna proposes actions inline in a thread; they collect in
+ * a per-thread Actions panel. PER-THREAD scope: every action carries its owning
+ * threadId. `set` = full per-thread replace (initial paint + replay-on-open +
+ * re-sent on change); `update` = single-action status/execution delta. Accept
+ * auto-executes server-side as a durable job. All additive, gated on the hello
+ * `suggestedActions` capability. Mirrors packages/ui-shared/src/wire.ts. */
+export type SuggestedActionType =
+  | "task"
+  | "research"
+  | "create_skill"
+  | "create_workflow"
+  | "run_workflow"
+export type SuggestedActionStatus =
+  | "proposed"
+  | "accepted"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "dismissed"
+/** One suggested action, wire-safe (no payloads/secrets cross the wire). */
+export interface SuggestedActionWire {
+  readonly id: string
+  readonly threadId: string
+  readonly actionType: SuggestedActionType
+  readonly title: string
+  readonly detail?: string
+  readonly rationale?: string
+  readonly status: SuggestedActionStatus
+  readonly source: "agent" | "dream"
+  readonly createdAt: number
+  readonly executionId?: string | null
+  readonly error?: string | null
+}
+/** Server→client: the full set of a thread's non-terminal actions. */
+export interface SuggestedActionSetFrame {
+  readonly type: "suggested-action-set"
+  readonly threadId: string
+  readonly actions: ReadonlyArray<SuggestedActionWire>
+}
+/** Server→client: a single action changed (status/execution delta). */
+export interface SuggestedActionUpdateFrame {
+  readonly type: "suggested-action-update"
+  readonly threadId: string
+  readonly action: SuggestedActionWire
+}
+/** Client→server: accept (auto-execute) or dismiss one suggested action. */
+export interface SuggestedActionRespondFrame {
+  readonly type: "suggested-action-respond"
+  readonly threadId: string
+  readonly actionId: string
+  readonly decision: "accept" | "dismiss"
 }
 
 /* Luna Vault (V1) — credential registry frames. All additive, gated on the
@@ -1081,6 +1142,8 @@ export type ServerFrame =
   | ArtifactUpdateFrame
   | WorkflowListFrame
   | WorkflowRunsFrame
+  | SuggestedActionSetFrame
+  | SuggestedActionUpdateFrame
   | LocalShellRequestFrame
   | LocalShellStatusFrame
   | RegisterOpTokenStatusFrame
@@ -1357,6 +1420,7 @@ export type ClientFrame =
   | ArtifactEditFrame
   | WorkflowRunsRequestFrame
   | WorkflowRefreshFrame
+  | SuggestedActionRespondFrame
   | WidgetDirectoryFrame
   | SubagentTreeRequestFrame
   | McpResourceReadFrame
