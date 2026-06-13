@@ -195,19 +195,8 @@ html[data-theme='dark'] .row.event.level-error .kind { color: #e85d5d; }
   font-family: var(--font-mono);
 }
 
-/* ── chat layout ────────────────────────────────────────────────────────── */
-/* position: relative + z-index: 1 keeps the chat above .bg-blooms           */
-.chat-layout {
-  position: relative;
-  z-index: 1;
-  flex: 1 1 auto;
-  display: grid;
-  grid-template-columns: 280px 1fr;
-  min-height: 0;
-}
-.chat-layout.with-artifacts {
-  grid-template-columns: 240px 1fr 360px;
-}
+/* (The old .chat-layout grid was replaced by the Luna Studio board —
+   see board/board.css; panels float on one canvas now.) */
 
 /* ── sidebar ────────────────────────────────────────────────────────────── */
 .sidebar {
@@ -878,14 +867,7 @@ html[data-theme='dark'] .dot.bad {
   button { padding: 8px 12px; font-size: 13px; min-height: 36px; }
   .chip { font-size: 11px; padding: 4px 8px; }
 
-  /* layout: stack vertically — sidebar becomes a horizontal strip */
-  .chat-layout,
-  .chat-layout.with-artifacts {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
-  }
-  .chat-layout.with-artifacts { grid-template-rows: auto 1fr auto; }
-
+  /* (board panels stack on mobile via board/board.css) */
   .sidebar {
     border-right: 0;
     border-bottom: 1px solid var(--ink-faint);

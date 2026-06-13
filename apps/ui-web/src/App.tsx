@@ -53,6 +53,8 @@ import {
   PALETTES,
   PALETTE_SWATCHES,
 } from "./appearance.js"
+import { createBoard, EDGE_MARGIN, SNAP_GAP, TOP_MIN } from "./board/createBoard.js"
+import { Board, FavoritesGrid, Shelf, type BoardPanelDef } from "./board/Board.jsx"
 
 const CONTROL_URL = "http://127.0.0.1:4754/trpc"
 
@@ -163,15 +165,11 @@ const saveConfig = (cfg: PersistedConfig): void => {
   }
 }
 
-type Pane = "chat" | "obs"
-
 export const App: Component = () => {
   const [cfg, setCfg] = createSignal<PersistedConfig>(loadConfig())
-  const [pane, setPane] = createSignal<Pane>("chat")
   const [selectedKinds, setSelectedKinds] = createSignal<ReadonlySet<string>>(
     new Set(),
   )
-  const [settingsOpen, setSettingsOpen] = createSignal(false)
   const [restarting, setRestarting] = createSignal(false)
   // vault-status acks: not stored in the reducer (vault-list broadcast that
   // follows a successful mutation already updates the list). We keep the
@@ -226,11 +224,10 @@ export const App: Component = () => {
       }
     },
     onOpen: (handle) => {
-      // On open, request the thread list immediately so the sidebar
-      // populates without a manual click. Also collapse settings if it
-      // was left open from the disconnected state.
+      // On open, request the thread list immediately so the threads panel
+      // populates without a manual click. (The settings panel stays where
+      // the user left it — on the board, closing it is a ✕ away.)
       handle.send({ type: "list-threads" })
-      setSettingsOpen(false)
     },
   })
 
@@ -413,11 +410,46 @@ export const App: Component = () => {
       : null,
   )
 
-  // Show settings panel automatically when not yet connected (so the
-  // first-run experience surfaces URL/Token), or when explicitly toggled.
-  const showSettings = createMemo(
-    () => settingsOpen() || (!isConnected() && !isConnecting()),
-  )
+  /* ── Luna Studio board — floating panels on one canvas ─────────────────
+     Engine ported from the design handoff's luna-app.jsx. Default layout:
+     threads + settings stacked left, chat filling the rest; events /
+     artifacts / workflows / favorites start closed (shelf chips). */
+  const board = createBoard({
+    defaults: (vw, vh) => {
+      const leftW = 280
+      const rightW = Math.min(380, Math.max(300, vw * 0.26))
+      const chatX = EDGE_MARGIN + leftW + SNAP_GAP
+      const chatW = Math.max(420, vw - chatX - EDGE_MARGIN)
+      const colH = vh - TOP_MIN - EDGE_MARGIN
+      const half = Math.max(160, (colH - SNAP_GAP) / 2)
+      return {
+        threads: { x: EDGE_MARGIN, y: TOP_MIN, w: leftW, h: half, closed: false, min: false },
+        settings: { x: EDGE_MARGIN, y: TOP_MIN + half + SNAP_GAP, w: leftW, h: colH - half - SNAP_GAP, closed: false, min: false },
+        chat: { x: chatX, y: TOP_MIN, w: chatW, h: colH, closed: false, min: false },
+        events: { x: chatX + 40, y: TOP_MIN + 40, w: 620, h: 420, closed: true, min: false },
+        artifacts: { x: vw - rightW - EDGE_MARGIN, y: TOP_MIN, w: rightW, h: half, closed: true, min: false },
+        workflows: { x: vw - rightW - EDGE_MARGIN, y: TOP_MIN + half + SNAP_GAP, w: rightW, h: colH - half - SNAP_GAP, closed: true, min: false },
+        favorites: { x: EDGE_MARGIN + 80, y: TOP_MIN + 70, w: 290, h: 300, closed: true, min: false },
+      }
+    },
+  })
+
+  // First-run experience: surface the connect form whenever we're not
+  // connected (the old settings auto-open, board-shaped).
+  createEffect(() => {
+    if (!isConnected() && !isConnecting()) board.summon("settings")
+  })
+
+  // The old grid auto-opened the artifacts column when a thread had
+  // artifacts. Board-shaped: summon the panel when the artifact count
+  // INCREASES (a new artifact arrived) — closing it is respected until
+  // the next one lands.
+  let prevArtifactCount = 0
+  createEffect(() => {
+    const n = selectedThread()?.artifacts.length ?? 0
+    if (n > prevArtifactCount) board.summon("artifacts")
+    prevArtifactCount = n
+  })
 
   /**
    * The active model list for the settings dropdown. When the server sends an
@@ -451,44 +483,13 @@ export const App: Component = () => {
   const [appearance, setAppearanceState] = createSignal(getAppearance())
   onCleanup(onAppearanceChange((a) => setAppearanceState(a)))
 
-  return (
-    <div class="app">
-      <div class="bg-blooms" aria-hidden="true"><div class="bloom b1" /><div class="bloom b2" /><div class="bloom b3" /></div>
-      <header class="topbar">
-        <div class="row">
-          <span class="wordmark"><span class="name">Luna</span><span class="sub">studio</span></span>
-          <ConnectionSummary
-            status={transport.status()}
-            url={cfg().url}
-            model={cfg().model}
-            chatCap={store.state.capabilities.chat}
-          />
-          <span style={{ flex: 1 }} />
-          <Show when={isConnected()}>
-            <button
-              class={`chip ${settingsOpen() ? "active" : ""}`}
-              onClick={() => setSettingsOpen((v) => !v)}
-              title="Connection settings"
-            >
-              ⚙ Settings
-            </button>
-          </Show>
-          <Show when={!setupMode()}>
-            <button
-              class={`chip ${pane() === "chat" ? "active" : ""}`}
-              onClick={() => setPane("chat")}
-            >
-              Chat
-            </button>
-            <button
-              class={`chip ${pane() === "obs" ? "active" : ""}`}
-              onClick={() => setPane("obs")}
-            >
-              Events
-            </button>
-          </Show>
-        </div>
-        <Show when={showSettings()}>
+  /**
+   * Body of the floating settings panel — the former topbar settings rows
+   * (connection, appearance, skills, connectors, vault), unchanged, in a
+   * scrollable column.
+   */
+  const SettingsBody = () => (
+    <div class="settings-scroll">
           <div class="row settings-row">
             <label>
               URL{" "}
@@ -718,7 +719,168 @@ export const App: Component = () => {
               />
             </div>
           </Show>
-        </Show>
+    </div>
+  )
+
+  /* Panel definitions for the board. STABLE objects (module-lifetime) — the
+     reactive bits live inside render closures and `when` gates, so panel
+     bodies never remount on state changes (see BoardPanelDef.when). */
+  const panelDefs: BoardPanelDef[] = [
+    {
+      id: "chat",
+      title: "luna",
+      tint: 0,
+      render: () => (
+        <ChatPanel
+          thread={selectedThread()}
+          onSend={sendUserMessage}
+          onInterrupt={interrupt}
+          onCommand={handleCommand}
+          disabled={!chatEnabled()}
+          enterToSend={cfg().enterToSend}
+          availableModels={store.state.availableModels}
+          effortSelection={store.state.capabilities.effortSelection}
+          model={cfg().model}
+          effort={cfg().effort}
+          onModelChange={handleModelChange}
+          onEffortChange={handleEffortChange}
+        />
+      ),
+    },
+    {
+      id: "threads",
+      title: "threads",
+      tint: 3,
+      render: () => (
+        <Sidebar
+          threads={store.state.threadList}
+          threadViews={store.state.threads}
+          selectedId={store.state.selectedThreadId}
+          onSelect={selectThread}
+          onNew={chatEnabled() ? newThread : null}
+        />
+      ),
+    },
+    {
+      id: "settings",
+      title: "settings",
+      tint: 2,
+      render: () => <SettingsBody />,
+    },
+    {
+      id: "events",
+      title: "events",
+      tint: 4,
+      render: () => (
+        <ObsPanel
+          allKinds={allKinds()}
+          selectedKinds={selectedKinds()}
+          toggleKind={toggleKind}
+          clearKinds={() => setSelectedKinds(new Set())}
+          filtered={filtered()}
+          totalEvents={store.state.events.length}
+          lastDrop={store.state.lastDrop}
+          droppedTotal={store.state.droppedTotal}
+          lastPingAt={store.state.lastPingAt}
+        />
+      ),
+    },
+    {
+      id: "artifacts",
+      title: "artifacts",
+      tint: 1,
+      when: () =>
+        store.state.capabilities.artifacts === true ||
+        (selectedThread()?.artifacts.length ?? 0) > 0,
+      render: () => (
+        <ArtifactPanel
+          artifacts={selectedThread()?.artifacts ?? []}
+          pinned={store.state.pinnedArtifacts}
+          artifactsCapable={store.state.capabilities.artifacts === true}
+          onPin={(a) =>
+            send({
+              type: "artifact-pin",
+              id: a.id,
+              title: a.title,
+              content: a.content,
+              lang: a.lang,
+              origin: a.path ?? selectedThread()?.summary.id ?? null,
+            })
+          }
+          onUnpin={(id) => send({ type: "artifact-unpin", id })}
+        />
+      ),
+    },
+    {
+      // PRD Part C / W3 — gated on the additive hello capability; an older
+      // server never advertises `workflows` so the panel simply isn't on
+      // the board.
+      id: "workflows",
+      title: "workflows",
+      tint: 4,
+      when: () => store.state.capabilities.workflows === true,
+      render: () => (
+        <WorkflowGallery
+          workflows={store.state.workflows}
+          runs={store.state.workflowRuns}
+          onSelectRuns={(jobId) => send({ type: "workflow-runs-request", jobId })}
+          onRefresh={() => send({ type: "workflow-refresh" })}
+        />
+      ),
+    },
+    {
+      id: "favorites",
+      title: "favorites",
+      tint: 2,
+      noStar: true,
+      render: () => <FavoritesGrid board={board} defs={panelDefs} />,
+    },
+  ]
+
+  const dateStr = new Date().toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  })
+
+  return (
+    <div class="app">
+      {/* Watercolor wobble filter — used by .wash-dot and painterly accents. */}
+      <svg width="0" height="0" style={{ position: "absolute" }} aria-hidden="true">
+        <defs>
+          <filter id="wc-wobble">
+            <feTurbulence type="fractalNoise" baseFrequency="0.015" numOctaves="3" result="n" seed="7" />
+            <feDisplacementMap in="SourceGraphic" in2="n" scale="6" xChannelSelector="R" yChannelSelector="G" />
+          </filter>
+        </defs>
+      </svg>
+      <div class="bg-blooms" aria-hidden="true"><div class="bloom b1" /><div class="bloom b2" /><div class="bloom b3" /></div>
+      <header class="topbar">
+        <div class="row">
+          <span class="wordmark"><span class="name">Luna</span><span class="sub">studio</span></span>
+          <ConnectionSummary
+            status={transport.status()}
+            url={cfg().url}
+            model={cfg().model}
+            chatCap={store.state.capabilities.chat}
+          />
+          <span style={{ flex: 1 }} />
+          <Show when={!setupMode()}>
+            <Shelf board={board} defs={panelDefs} />
+            <div class="mode-toggle">
+              <button classList={{ on: board.mode() === "board" }} onClick={() => board.setMode("board")}>
+                board
+              </button>
+              <button classList={{ on: board.mode() === "stickies" }} onClick={() => board.setMode("stickies")}>
+                stickies
+              </button>
+            </div>
+            <span class="muted small">{dateStr}</span>
+            <button class="chip" onClick={() => board.summon("settings")} title="Settings">
+              ⚙
+            </button>
+          </Show>
+        </div>
         <Show when={store.state.closeReason}>
           {(reason) => (
             <div class="banner closed">
@@ -762,94 +924,7 @@ export const App: Component = () => {
         </Show>
       </header>
 
-      <Show
-        when={setupMode()}
-        fallback={
-          <Show
-            when={pane() === "chat"}
-            fallback={
-              <ObsPanel
-                allKinds={allKinds()}
-                selectedKinds={selectedKinds()}
-                toggleKind={toggleKind}
-                clearKinds={() => setSelectedKinds(new Set())}
-                filtered={filtered()}
-                totalEvents={store.state.events.length}
-                lastDrop={store.state.lastDrop}
-                droppedTotal={store.state.droppedTotal}
-                lastPingAt={store.state.lastPingAt}
-              />
-            }
-          >
-            <div
-              class={`chat-layout${
-                selectedThread() && selectedThread()!.artifacts.length > 0
-                  ? " with-artifacts"
-                  : ""
-              }`}
-            >
-              <Sidebar
-                threads={store.state.threadList}
-                threadViews={store.state.threads}
-                selectedId={store.state.selectedThreadId}
-                onSelect={selectThread}
-                onNew={chatEnabled() ? newThread : null}
-              />
-              <ChatPanel
-                thread={selectedThread()}
-                onSend={sendUserMessage}
-                onInterrupt={interrupt}
-                onCommand={handleCommand}
-                disabled={!chatEnabled()}
-                enterToSend={cfg().enterToSend}
-                availableModels={store.state.availableModels}
-                effortSelection={store.state.capabilities.effortSelection}
-                model={cfg().model}
-                effort={cfg().effort}
-                onModelChange={handleModelChange}
-                onEffortChange={handleEffortChange}
-              />
-              <Show
-                when={
-                  selectedThread() &&
-                  (selectedThread()!.artifacts.length > 0 ||
-                    (store.state.capabilities.artifacts === true &&
-                      store.state.pinnedArtifacts.length > 0))
-                }
-              >
-                <ArtifactPanel
-                  artifacts={selectedThread()!.artifacts}
-                  pinned={store.state.pinnedArtifacts}
-                  artifactsCapable={store.state.capabilities.artifacts === true}
-                  onPin={(a) =>
-                    send({
-                      type: "artifact-pin",
-                      id: a.id,
-                      title: a.title,
-                      content: a.content,
-                      lang: a.lang,
-                      origin: a.path ?? selectedThread()?.summary.id ?? null,
-                    })
-                  }
-                  onUnpin={(id) => send({ type: "artifact-unpin", id })}
-                />
-              </Show>
-              {/* PRD Part C / W3 — workflow gallery, gated on the additive
-                  hello capability. Rendered alongside the artifact panel in
-                  the right-column area; an older server never advertises
-                  `workflows` so the section simply doesn't appear. */}
-              <Show when={store.state.capabilities.workflows === true}>
-                <WorkflowGallery
-                  workflows={store.state.workflows}
-                  runs={store.state.workflowRuns}
-                  onSelectRuns={(jobId) => send({ type: "workflow-runs-request", jobId })}
-                  onRefresh={() => send({ type: "workflow-refresh" })}
-                />
-              </Show>
-            </div>
-          </Show>
-        }
-      >
+      <Show when={setupMode()} fallback={<Board board={board} defs={panelDefs} />}>
         <SetupTerminal
           send={send}
           registerWrite={(fn) => {
