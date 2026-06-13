@@ -28,17 +28,17 @@
       overflow: hidden;
       font-family: var(--font-body);
       font-size: 13px;
-      background: var(--bg);
+      /* background/border/border-radius removed: html/body is transparent
+         (OS window transparency + moon-theme.css rule). The card shell
+         lives on .widget-shell::before (vendor/moon-theme.css). */
       color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
     }
 
+    /* width/height managed by moon-theme.css (.widget-shell card shell).
+       Only flex layout properties live here. */
     .widget-shell {
       display: flex;
       flex-direction: column;
-      width: 100%;
-      height: 100%;
     }
 
     .content-area {

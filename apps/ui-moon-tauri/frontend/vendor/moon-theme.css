@@ -18,11 +18,96 @@
  * Load this BEFORE the page's own <style> so page-specific rules win ties.
  */
 
-/* ── Window envelope ─────────────────────────────────────────────────────
-   Pages set `background: var(--bg); border: 1px solid var(--border)` on
-   html/body themselves; the chrome variants refine that edge here. */
-html[data-chrome='ink'] body {
+/* ── Transparent window envelope ─────────────────────────────────────────
+   Widget windows use OS transparency (.transparent(true) in Rust) so the
+   wobble filter on .widget-shell::before can bleed past the card edge into
+   the transparent margin. html/body must be fully transparent — the CARD
+   itself (the ::before pseudo-layer) is the visual background.
+
+   Pages previously set `background: var(--bg); border: 1px solid
+   var(--border); border-radius: var(--radius)` on html/body — those lines
+   are removed from widget.html / panel.html / chat.html so they don't
+   override this rule. */
+html, body {
+  background: transparent !important;
+  border: none !important;
+}
+
+/* ── Paper card shell ────────────────────────────────────────────────────
+   .widget-shell (the outer flex column in all three widget pages) becomes
+   the CARD: it is inset 7px per side from the OS window frame, giving the
+   wc-wobble filter room to roughen the edge and the box-shadow room to
+   cast a soft drop-shadow without clipping.
+
+   TRADEOFF: visible content area shrinks by 14px in each dimension vs the
+   registered window size. Two flush-docked windows show a 14px paper gap
+   at the seam — this matches the web board's 16px panel-gap aesthetic and
+   is intentional. Do NOT change window sizes in the registry to compensate.
+*/
+.widget-shell {
+  position: relative;
+  margin: 7px;
+  height: calc(100% - 14px);
+  width: calc(100% - 14px);
+  border-radius: 14px;
+  isolation: isolate;
+}
+
+/* Paper-wash layer — sits behind all content via z-index:-1.
+   The wc-wobble filter roughens its outline so the card reads hand-painted.
+   The head-tint gradient pools the panel's watercolor wash at the top. */
+.widget-shell::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  z-index: -1;
+  filter: url(#wc-wobble);
+  background:
+    linear-gradient(180deg,
+      color-mix(in oklab, var(--panel-tint) 26%, transparent) 0%,
+      transparent 86px),
+    var(--paper);
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.1),
+    0 5px 14px -6px rgba(0, 0, 0, 0.35);
+}
+
+/* Dark theme: deeper shadow, slightly stronger tint pool. */
+html[data-theme='dark'] .widget-shell::before {
+  background:
+    linear-gradient(180deg,
+      color-mix(in oklab, var(--panel-tint) 38%, transparent) 0%,
+      transparent 86px),
+    var(--paper-2);
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--ink) 7%, transparent),
+    0 5px 14px -6px rgba(0, 0, 0, 0.6);
+}
+
+/* Ink chrome: draw a visible edge, tighten the tint pool. */
+html[data-chrome='ink'] .widget-shell::before {
   border: 1.5px solid color-mix(in oklab, var(--ink) 55%, transparent);
+  background:
+    linear-gradient(180deg,
+      color-mix(in oklab, var(--panel-tint) 18%, transparent) 0%,
+      transparent 70px),
+    var(--paper);
+}
+
+/* Ink + dark: drawn edge on the night paper base. */
+html[data-chrome='ink'][data-theme='dark'] .widget-shell::before {
+  background:
+    linear-gradient(180deg,
+      color-mix(in oklab, var(--panel-tint) 18%, transparent) 0%,
+      transparent 70px),
+    var(--paper-2);
+}
+
+/* Title bar top corners must round to match the card so the wash gradient
+   never pokes square corners past the wobble-roughened card edge. */
+.title-bar {
+  border-radius: 14px 14px 0 0;
 }
 
 /* ── Paper grain (optional, data-grain="on") ─────────────────────────────
@@ -31,12 +116,14 @@ html[data-chrome='ink'] body {
 html[data-grain='on'] body::after {
   content: '';
   position: fixed;
-  inset: 0;
+  /* Match the card geometry: 7px inset + 14px radius so grain stays inside
+     the paper card and doesn't paint into the transparent window margin. */
+  inset: 7px;
+  border-radius: 14px;
   pointer-events: none;
   opacity: 0.5;
   mix-blend-mode: multiply;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 0.45 0 0 0 0 0.40 0 0 0 0 0.35 0 0 0 0.06 0'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E");
-  border-radius: var(--radius);
   z-index: 4000;
 }
 html[data-grain='on'][data-theme='dark'] body::after {
@@ -149,19 +236,21 @@ html[data-chrome='ink'] .title-bar {
 }
 
 /* ── Seam glow: the link animation when two windows click together ───── */
+/* Offset bars by 7px from each OS-window edge so they hug the card face
+   (the 7px transparent margin sits outside the painted card). */
 #seam {
   position: fixed;
   pointer-events: none;
   opacity: 0;
   z-index: 50;
 }
-#seam.flash-l { left: 0; top: 0; bottom: 0; width: 7px;
+#seam.flash-l { left: 7px; top: 7px; bottom: 7px; width: 7px;
   background: linear-gradient(to right, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
-#seam.flash-r { right: 0; top: 0; bottom: 0; width: 7px;
+#seam.flash-r { right: 7px; top: 7px; bottom: 7px; width: 7px;
   background: linear-gradient(to left, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
-#seam.flash-t { top: 0; left: 0; right: 0; height: 7px;
+#seam.flash-t { top: 7px; left: 7px; right: 7px; height: 7px;
   background: linear-gradient(to bottom, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
-#seam.flash-b { bottom: 0; left: 0; right: 0; height: 7px;
+#seam.flash-b { bottom: 7px; left: 7px; right: 7px; height: 7px;
   background: linear-gradient(to top, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
 #seam.on { animation: seam-flash 0.7s ease-out; }
 @keyframes seam-flash {
@@ -171,12 +260,13 @@ html[data-chrome='ink'] .title-bar {
 }
 
 /* ── Group perimeter: a very low highlight on OUTER sides only ───────── */
+/* inset: 7px + border-radius: 14px hugs the card edge exactly. */
 #outline {
   position: fixed;
-  inset: 0;
+  inset: 7px;
   pointer-events: none;
   z-index: 49;
-  border-radius: var(--radius);
+  border-radius: 14px;
   border: 0 solid transparent;
 }
 #outline.gl { border-left: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
