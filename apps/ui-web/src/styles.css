@@ -359,11 +359,11 @@ html[data-theme='dark'] .row.event.level-error .kind { color: #e85d5d; }
   margin-bottom: 4px;
 }
 .bubble-text {
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   white-space: pre-wrap;
   word-wrap: break-word;
   color: var(--ink);
-  font-family: var(--font-body);
+  font-family: var(--font-chat);
   line-height: 1.5;
 }
 
@@ -524,8 +524,8 @@ html[data-theme='dark'] .attach-error { color: #e85d5d; }
   border: 1.4px solid var(--ink-faint);
   border-radius: 12px;
   padding: 8px;
-  font-family: inherit;
-  font-size: 13px;
+  font-family: var(--font-chat);
+  font-size: calc(13px * var(--font-scale));
   resize: vertical;
   min-height: 60px;
   max-height: 240px;
@@ -588,10 +588,10 @@ html[data-theme='dark'] .attach-error { color: #e85d5d; }
 
 /* ── markdown rendering ─────────────────────────────────────────────────── */
 .markdown {
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   line-height: 1.55;
   color: var(--ink);
-  font-family: var(--font-body);
+  font-family: var(--font-chat);
 }
 .markdown > :first-child { margin-top: 0; }
 .markdown > :last-child { margin-bottom: 0; }

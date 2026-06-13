@@ -181,7 +181,78 @@
         appearance.set('grain', String(grainToggle.checked));
       });
 
-      // ── e. Instant-apply note ──────────────────────────────────────────
+      // ── e. Chat font family ────────────────────────────────────────────
+      // Re-skins the chat reading/writing surfaces only (bubbles + composer)
+      // via --font-chat; each chip previews in its own typeface.
+      var FONT_OPTIONS = [
+        { value: 'sans',  label: 'sans',  token: 'var(--font-body)' },
+        { value: 'serif', label: 'serif', token: 'var(--font-serif)' },
+        { value: 'mono',  label: 'mono',  token: 'var(--font-mono)' },
+        { value: 'hand',  label: 'hand',  token: 'var(--font-hand)' },
+      ];
+
+      var fontLabel = document.createElement('div');
+      fontLabel.className = 'section-label';
+      fontLabel.textContent = 'Chat font';
+      el.appendChild(fontLabel);
+
+      var fontChipRow = document.createElement('div');
+      fontChipRow.className = 'chip-row';
+
+      var fontChips = {};
+      FONT_OPTIONS.forEach(function (opt) {
+        var chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'chip' + (current().font === opt.value ? ' on' : '');
+        chip.textContent = opt.label;
+        chip.style.fontFamily = opt.token;
+        chip.addEventListener('click', function () {
+          appearance.set('font', opt.value);
+          FONT_OPTIONS.forEach(function (o) {
+            fontChips[o.value].classList.toggle('on', o.value === opt.value);
+          });
+        });
+        fontChips[opt.value] = chip;
+        fontChipRow.appendChild(chip);
+      });
+
+      el.appendChild(fontChipRow);
+
+      // ── f. Chat text size ──────────────────────────────────────────────
+      var SIZE_OPTIONS = [
+        { value: 'small',  label: 'small' },
+        { value: 'medium', label: 'medium' },
+        { value: 'large',  label: 'large' },
+        { value: 'xlarge', label: 'x-large' },
+      ];
+
+      var sizeLabel = document.createElement('div');
+      sizeLabel.className = 'section-label';
+      sizeLabel.textContent = 'Chat text size';
+      el.appendChild(sizeLabel);
+
+      var sizeChipRow = document.createElement('div');
+      sizeChipRow.className = 'chip-row';
+
+      var sizeChips = {};
+      SIZE_OPTIONS.forEach(function (opt) {
+        var chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'chip' + (current().fontSize === opt.value ? ' on' : '');
+        chip.textContent = opt.label;
+        chip.addEventListener('click', function () {
+          appearance.set('fontSize', opt.value);
+          SIZE_OPTIONS.forEach(function (o) {
+            sizeChips[o.value].classList.toggle('on', o.value === opt.value);
+          });
+        });
+        sizeChips[opt.value] = chip;
+        sizeChipRow.appendChild(chip);
+      });
+
+      el.appendChild(sizeChipRow);
+
+      // ── g. Instant-apply note ──────────────────────────────────────────
       var note = document.createElement('div');
       note.className = 'setting-desc';
       note.style.marginTop = '10px';
@@ -199,7 +270,8 @@
         var keys = appearance.KEYS;
         if (e.key === null ||
             e.key === keys.palette || e.key === keys.theme ||
-            e.key === keys.chrome  || e.key === keys.grain) {
+            e.key === keys.chrome  || e.key === keys.grain ||
+            e.key === keys.font    || e.key === keys.fontSize) {
           var now = appearance.get();
           PALETTES.forEach(function (p) {
             swatchBtns[p].classList.toggle('active', p === now.palette);
@@ -211,6 +283,12 @@
             chromeChips[o.value].classList.toggle('on', o.value === now.chrome);
           });
           grainToggle.checked = now.grain;
+          FONT_OPTIONS.forEach(function (o) {
+            fontChips[o.value].classList.toggle('on', o.value === now.font);
+          });
+          SIZE_OPTIONS.forEach(function (o) {
+            sizeChips[o.value].classList.toggle('on', o.value === now.fontSize);
+          });
         }
       }
 

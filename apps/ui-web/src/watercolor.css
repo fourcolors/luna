@@ -19,6 +19,14 @@
   --font-body: 'Albert Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-hand: 'Caveat', 'Bradley Hand', cursive;
   --font-mono: 'SF Mono', Menlo, ui-monospace, monospace;
+  --font-serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Times New Roman', serif;
+
+  /* Chat typeface + size knobs (data-font / data-fontsize, src/appearance.ts).
+     Defaults below = the 'sans' family at 'medium' size; the html[data-*]
+     blocks at the bottom of this file override them. These touch ONLY the
+     chat reading/writing surfaces, never the UI chrome. */
+  --font-chat: var(--font-body);
+  --font-scale: 1;
 
   /* ── Shape ───────────────────────────────────────────────────────────── */
   --radius: 12px;
@@ -123,6 +131,19 @@ html[data-palette='tide'][data-theme='dark'] {
   --wash-3: #4f6a82;
   --wash-4: #6e6650;
 }
+
+/* ═══ Chat typography variants (data-font / data-fontsize) ═══════════════
+   src/appearance.ts stamps data-font + data-fontsize on <html>; these only
+   re-point the --font-chat family + --font-scale multiplier that the chat
+   bubbles, markdown, and composer consume (see styles.css). 'sans' / 'medium'
+   are the :root defaults, so no rule is needed for them. */
+html[data-font='serif'] { --font-chat: var(--font-serif); }
+html[data-font='mono']  { --font-chat: var(--font-mono); }
+html[data-font='hand']  { --font-chat: var(--font-hand); }
+
+html[data-fontsize='small']  { --font-scale: 0.9; }
+html[data-fontsize='large']  { --font-scale: 1.15; }
+html[data-fontsize='xlarge'] { --font-scale: 1.35; }
 
 /* ═══ Studio canvas atmosphere ═══════════════════════════════════════════ */
 

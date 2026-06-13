@@ -65,7 +65,15 @@ describe('fresh load (no stored keys)', () => {
       theme: 'dark',
       chrome: 'wash',
       grain: false,
+      font: 'sans',
+      fontSize: 'medium',
     })
+  })
+
+  it('stamps default data-font="sans" and data-fontsize="medium"', () => {
+    loadVendorInto(window, 'moon-appearance.js')
+    expect(el().getAttribute('data-font')).toBe('sans')
+    expect(el().getAttribute('data-fontsize')).toBe('medium')
   })
 })
 
@@ -306,6 +314,71 @@ describe('storage event — key null (clear)', () => {
 })
 
 // ---------------------------------------------------------------------------
+// 6b. font + fontSize — the chat typeface/size dimensions
+// ---------------------------------------------------------------------------
+describe('font + fontSize', () => {
+  it('reads stored font=serif and fontsize=large', () => {
+    window.localStorage.setItem('luna_font', 'serif')
+    window.localStorage.setItem('luna_fontsize', 'large')
+    loadVendorInto(window, 'moon-appearance.js')
+    expect(el().getAttribute('data-font')).toBe('serif')
+    expect(el().getAttribute('data-fontsize')).toBe('large')
+    expect(A().get().font).toBe('serif')
+    expect(A().get().fontSize).toBe('large')
+  })
+
+  it('unknown font / fontsize values fall back to defaults', () => {
+    window.localStorage.setItem('luna_font', 'comic-sans')
+    window.localStorage.setItem('luna_fontsize', 'gigantic')
+    loadVendorInto(window, 'moon-appearance.js')
+    expect(el().getAttribute('data-font')).toBe('sans')
+    expect(el().getAttribute('data-fontsize')).toBe('medium')
+  })
+
+  it('set("font","hand") persists + stamps data-font', () => {
+    loadVendorInto(window, 'moon-appearance.js')
+    A().set('font', 'hand')
+    expect(window.localStorage.getItem('luna_font')).toBe('hand')
+    expect(el().getAttribute('data-font')).toBe('hand')
+  })
+
+  it('set("fontSize","xlarge") persists + stamps data-fontsize', () => {
+    loadVendorInto(window, 'moon-appearance.js')
+    A().set('fontSize', 'xlarge')
+    expect(window.localStorage.getItem('luna_fontsize')).toBe('xlarge')
+    expect(el().getAttribute('data-fontsize')).toBe('xlarge')
+  })
+
+  it('set with an invalid font is a no-op', () => {
+    loadVendorInto(window, 'moon-appearance.js')
+    A().set('font', 'wingdings')
+    expect(el().getAttribute('data-font')).toBe('sans')
+  })
+
+  it('storage event for luna_font re-applies the new value', () => {
+    loadVendorInto(window, 'moon-appearance.js')
+    window.localStorage.setItem('luna_font', 'mono')
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: 'luna_font',
+      newValue: 'mono',
+      storageArea: window.localStorage,
+    }))
+    expect(el().getAttribute('data-font')).toBe('mono')
+  })
+
+  it('storage event for luna_fontsize re-applies the new value', () => {
+    loadVendorInto(window, 'moon-appearance.js')
+    window.localStorage.setItem('luna_fontsize', 'small')
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: 'luna_fontsize',
+      newValue: 'small',
+      storageArea: window.localStorage,
+    }))
+    expect(el().getAttribute('data-fontsize')).toBe('small')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // 7. API surface — get().grain is boolean; KEYS/DEFAULTS exposed
 // ---------------------------------------------------------------------------
 describe('API surface', () => {
@@ -317,20 +390,24 @@ describe('API surface', () => {
     expect(typeof A().get().grain).toBe('boolean')
   })
 
-  it('KEYS maps the four preference names', () => {
+  it('KEYS maps the six preference names', () => {
     const keys = A().KEYS
     expect(keys.palette).toBe('luna_palette')
     expect(keys.theme).toBe('luna_theme')
     expect(keys.chrome).toBe('luna_chrome')
     expect(keys.grain).toBe('luna_grain')
+    expect(keys.font).toBe('luna_font')
+    expect(keys.fontSize).toBe('luna_fontsize')
   })
 
-  it('DEFAULTS maps the four preference names', () => {
+  it('DEFAULTS maps the six preference names', () => {
     const defaults = A().DEFAULTS
     expect(defaults.palette).toBe('tide')
     expect(defaults.theme).toBe('dark')
     expect(defaults.chrome).toBe('wash')
     expect(defaults.grain).toBe('false')
+    expect(defaults.font).toBe('sans')
+    expect(defaults.fontSize).toBe('medium')
   })
 
   it('DEFAULTS.grain is the string "false" (as stored in localStorage)', () => {
