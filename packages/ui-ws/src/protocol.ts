@@ -120,6 +120,14 @@ export interface HelloFrame {
      * notice for kind `mcp-app` artifacts when absent/false.
      */
     readonly mcpApps?: boolean
+    /**
+     * Subagents: chat threads expose the SDK Task tool (wire tool name
+     * "Agent"), and tool-call / tool-result frames may carry the additive
+     * `parentToolUseId` linkage for activity that ran inside a subagent.
+     * OPTIONAL/additive — older servers omit it; older clients ignore both
+     * the flag and the field and render subagent steps flat.
+     */
+    readonly subagents?: boolean
   }
 }
 
@@ -216,6 +224,10 @@ export interface ToolCallFrame {
   readonly toolCallId: string
   readonly name: string
   readonly input: unknown
+  /** Present when the call ran INSIDE a subagent: the tool_use id of the
+   *  spawning Agent/Task call. OPTIONAL/additive — old clients ignore it
+   *  and render the step flat. */
+  readonly parentToolUseId?: string
 }
 
 export interface ToolResultFrame {
@@ -225,6 +237,9 @@ export interface ToolResultFrame {
   readonly status: "ok" | "error"
   readonly output: string
   readonly truncated: boolean
+  /** Mirror of ToolCallFrame.parentToolUseId for subagent-internal results.
+   *  OPTIONAL/additive. */
+  readonly parentToolUseId?: string
 }
 
 /** Marks the true end of an agentic turn (SDK `result`), after every

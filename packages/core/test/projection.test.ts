@@ -151,6 +151,22 @@ describe("projectOne", () => {
     expect(projectOne(stored("u-bad", 0, "user", { wrong: true }))).toBeNull()
   })
 
+  it("returns null for subagent-internal (parented) messages", () => {
+    // Messages mirrored from inside a Task/Agent subagent carry parentId =
+    // the spawning call's tool_use id. They must not replay as top-level
+    // history turns after restart/resubscribe.
+    const parented: StoredMessage = {
+      ...stored("sub-a", 5, "assistant", assistantTextPayload("inner")),
+      parentId: "agent_call_1",
+    }
+    expect(projectOne(parented)).toBeNull()
+    const parentedUser: StoredMessage = {
+      ...stored("sub-u", 6, "user", userPayload("seed prompt")),
+      parentId: "agent_call_1",
+    }
+    expect(projectOne(parentedUser)).toBeNull()
+  })
+
   it("drops empty user turns but keeps tool-only assistant turns", () => {
     expect(projectOne(stored("u-empty", 0, "user", userPayload("")))).toBeNull()
     const toolOnly = {

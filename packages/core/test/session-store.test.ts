@@ -205,6 +205,42 @@ describe("SessionStore (in-memory)", () => {
     expect(summary.lastMessagePreview).toBe("ask")
   })
 
+  it("sidebar metadata: parented (subagent-internal) messages bump ts but never the preview", async () => {
+    // A Task spawn forwards the subagent's seed prompt as a parented user
+    // message — without the parentId gate it would overwrite the sidebar
+    // with internal prompt text.
+    const summary = await program(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        yield* store.create({
+          id: "side3",
+          options: { model: "m" },
+          createdAt: 0,
+        })
+        yield* store.appendMessage({
+          sessionId: "side3",
+          messageId: "u1",
+          ts: 1000,
+          parentId: null,
+          kind: "user" as const,
+          payload: makeMsg("side3", "real user text"),
+        })
+        yield* store.appendMessage({
+          sessionId: "side3",
+          messageId: "seed1",
+          ts: 2000,
+          parentId: "agent_call_1",
+          kind: "user" as const,
+          payload: makeMsg("side3", "You are a subagent. Do the thing."),
+        })
+        const got = yield* store.get("side3")
+        return got!
+      }),
+    )
+    expect(summary.lastMessageAt).toBe(2000)
+    expect(summary.lastMessagePreview).toBe("real user text")
+  })
+
   it("orderBy: lastMessageAt sorts active threads ahead of older-but-fresh-created", async () => {
     const ids = await program(
       Effect.gen(function* () {

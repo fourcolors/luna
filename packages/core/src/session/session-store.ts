@@ -206,8 +206,12 @@ export class SessionStore extends Effect.Service<SessionStore>()(
           // so the sidebar shows real conversation excerpts, not "tool ran".
           const sessionRow = state.sessions.get(input.sessionId)!
           const sessions = new Map(state.sessions)
+          // Parented (subagent-internal) messages never refresh the preview —
+          // same gate as the sqlite store: the subagent's forwarded seed
+          // prompt must not become the sidebar excerpt.
           const newPreview =
-            input.kind === "user" || input.kind === "assistant"
+            input.parentId == null &&
+            (input.kind === "user" || input.kind === "assistant")
               ? extractTextPreview(input.payload) ?? sessionRow.lastMessagePreview
               : sessionRow.lastMessagePreview
           sessions.set(input.sessionId, {

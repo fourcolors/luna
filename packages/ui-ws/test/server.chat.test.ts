@@ -348,6 +348,9 @@ describe("UIWebSocketServer (chat routing)", () => {
       // turn-complete is emitted whenever chat is bound (gates the moon's
       // grouped activity timeline on older-server fallback).
       expect(frames[0].capabilities.turnComplete).toBe(true)
+      // subagents: chat threads expose the SDK Task tool and tool frames may
+      // carry the additive parentToolUseId linkage.
+      expect(frames[0].capabilities.subagents).toBe(true)
     }
   })
 

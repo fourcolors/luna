@@ -4021,7 +4021,8 @@
     MoonFrames.register('tool-call', (frame) => {
       // Tool the assistant is invoking. Reducer appends a tool segment
       // to the active turn (closing any open text segment first).
-      ChatState.applyToolCall(frame.turnId, frame.toolCallId, frame.name, frame.input);
+      // parentToolUseId is present when the activity occurred inside a subagent.
+      ChatState.applyToolCall(frame.turnId, frame.toolCallId, frame.name, frame.input, frame.parentToolUseId);
       ChatLoop.schedule();
     });
 
@@ -4642,17 +4643,20 @@
         }
       },
 
-      applyToolCall(turnId, toolCallId, name, input) {
+      applyToolCall(turnId, toolCallId, name, input, parentToolUseId) {
         const turn = this.beginAssistantTurn(turnId);
         // Close any open text segment so subsequent deltas start a fresh one.
         for (const s of turn.segments) if (s.kind === 'text') s.done = true;
-        turn.segments.push({
+        const seg = {
           kind: 'tool',
           id: String(toolCallId || ''),
           name: String(name || 'tool'),
           input: input,
           result: null,
-        });
+        };
+        // Preserve parentToolUseId (present when activity is inside a subagent).
+        if (parentToolUseId) seg.parentToolUseId = String(parentToolUseId);
+        turn.segments.push(seg);
       },
 
       applyToolResult(toolCallId, ok, output, truncated) {
@@ -5071,10 +5075,29 @@
         chev.textContent = '▸';
         summary.appendChild(chev);
 
-        const name = document.createElement('span');
-        name.className = 'tool-card-name';
-        name.textContent = seg.name;
-        summary.appendChild(name);
+        const nameEl = document.createElement('span');
+        nameEl.className = 'tool-card-name';
+        // Agent/Task tool: show "↳ Agent — <description>" with optional subagent_type.
+        const isAgent = (seg.name === 'Agent' || seg.name === 'Task');
+        const agentDesc = isAgent && seg.input && typeof seg.input.description === 'string'
+          ? seg.input.description : null;
+        const nestPrefix = seg.parentToolUseId ? '↳ ' : '';
+        if (agentDesc) {
+          nameEl.textContent = nestPrefix + 'Agent — ' + agentDesc;
+          summary.appendChild(nameEl);
+          const subtype = seg.input && typeof seg.input.subagent_type === 'string'
+            ? seg.input.subagent_type : null;
+          if (subtype) {
+            const sub = document.createElement('span');
+            sub.className = 'tool-card-subtype';
+            sub.style.cssText = 'opacity:0.55;font-size:0.85em;margin-left:0.4em';
+            sub.textContent = subtype;
+            summary.appendChild(sub);
+          }
+        } else {
+          nameEl.textContent = nestPrefix + seg.name;
+          summary.appendChild(nameEl);
+        }
 
         const status = document.createElement('span');
         status.className = 'tool-card-status';
@@ -5102,8 +5125,20 @@
 
         const input = document.createElement('pre');
         input.className = 'tool-card-input';
-        try { input.textContent = JSON.stringify(seg.input, null, 2); }
-        catch (_) { input.textContent = String(seg.input); }
+        try {
+          // Elide long string values so a huge subagent prompt doesn't bloat
+          // the collapsed details. Threshold: 400 chars per string field.
+          const CLAMP = 400;
+          const clampedInput = seg.input && typeof seg.input === 'object'
+            ? Object.fromEntries(Object.entries(seg.input).map(([k, v]) => {
+                if (typeof v === 'string' && v.length > CLAMP) {
+                  return [k, v.slice(0, CLAMP) + '… (+' + (v.length - CLAMP) + ' chars)'];
+                }
+                return [k, v];
+              }))
+            : seg.input;
+          input.textContent = JSON.stringify(clampedInput, null, 2);
+        } catch (_) { input.textContent = String(seg.input); }
         body.appendChild(input);
 
         if (seg.result) {
@@ -5296,7 +5331,7 @@
       // Route a frame's tool-call into ChatState. Returns the newly-rendered
       // card element (test ergonomics).
       appendToolCallCard(frame) {
-        ChatState.applyToolCall(frame.turnId, frame.toolCallId, frame.name, frame.input);
+        ChatState.applyToolCall(frame.turnId, frame.toolCallId, frame.name, frame.input, frame.parentToolUseId);
         ChatLoop.flush();
         return DOM.chatMessages.querySelector(
           '.tool-call-card[data-tool-call-id="' + CSS_escape(String(frame.toolCallId || '')) + '"]'

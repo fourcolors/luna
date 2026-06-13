@@ -578,3 +578,203 @@ describe("SDKAdapter inactivity watchdog (chat threads)", () => {
     { timeout: 10_000 },
   )
 })
+
+/* -------------------------------------------------------------------------- */
+/* Subagent-aware window. While a Task/Agent tool_use is outstanding the      */
+/* parent stream is legitimately silent for the subagent's whole model call,  */
+/* so the watchdog widens to LUNA_TASK_INACTIVITY_TIMEOUT_MS (clamped to      */
+/* never be tighter than the turn window) — and narrows back once the         */
+/* settling tool_result lands. Still bounded: a wedge during a subagent trips */
+/* after the task window.                                                     */
+/* -------------------------------------------------------------------------- */
+
+const makeAgentSpawnMessage = (
+  sessionId: string,
+  toolUseId: string,
+  uuid: string,
+): SDKMessage =>
+  ({
+    type: "assistant",
+    session_id: sessionId,
+    uuid,
+    parent_tool_use_id: null,
+    message: {
+      id: uuid,
+      role: "assistant",
+      model: "claude-test",
+      content: [
+        {
+          type: "tool_use",
+          id: toolUseId,
+          name: "Agent",
+          input: { description: "sub work", prompt: "do it" },
+        },
+      ],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    },
+  }) as unknown as SDKMessage
+
+const makeAgentResultMessage = (
+  sessionId: string,
+  toolUseId: string,
+  uuid: string,
+): SDKMessage =>
+  ({
+    type: "user",
+    session_id: sessionId,
+    uuid,
+    parent_tool_use_id: null,
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: toolUseId,
+          is_error: false,
+          content: [{ type: "text", text: "sub report" }],
+        },
+      ],
+    },
+  }) as unknown as SDKMessage
+
+describe("SDKAdapter inactivity watchdog — subagent-aware window", () => {
+  it(
+    "(e) does NOT trip during a subagent silence longer than the turn window (but within the task window)",
+    async () => {
+      process.env.LUNA_TASK_INACTIVITY_TIMEOUT_MS = "2000"
+      try {
+        const spy: BrokerSpy = { reports: [] }
+        // Fake: Agent spawn → 500ms silence (≫ 150ms turn window) →
+        // settling tool_result → result. Without the task-aware window the
+        // watchdog would trip during the silence.
+        const build = (params: {
+          prompt: AsyncIterable<SDKUserMessage>
+          signal?: AbortSignal
+        }): Query => {
+          async function* gen(): AsyncGenerator<SDKMessage, void> {
+            for await (const _u of params.prompt) {
+              yield makeAgentSpawnMessage("s-sub-ok", "agent_tu_1", "a-spawn")
+              await new Promise((r) => setTimeout(r, 500))
+              yield makeAgentResultMessage("s-sub-ok", "agent_tu_1", "u-settle")
+              yield makeResultMessage("s-sub-ok", "r-done")
+              return
+            }
+          }
+          return Object.assign(gen(), controlMethods) as Query
+        }
+        const layer = buildBrokeredLayer(build as never, spy, twoAccounts)
+
+        const exit = await Effect.runPromiseExit(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const store = yield* SessionStore
+              yield* store.create({
+                id: "s-sub-ok",
+                options: { model: "m" },
+                createdAt: 0,
+              })
+              const inbox = yield* Queue.unbounded<SDKUserMessage>()
+              const adapter = yield* SDKAdapter
+              const out = yield* adapter.query({
+                sessionId: "s-sub-ok",
+                prompt: Stream.fromQueue(inbox),
+                sessionOptions: {
+                  model: "m",
+                  disableIdleTimeout: true,
+                  turnInactivityTimeoutMs: 150,
+                  sdkOptions: { model: "m" },
+                },
+              })
+              yield* Queue.offer(inbox, userMsg("spawn a subagent"))
+              // Take frames until the result lands, then stop draining (the
+              // fake's iterator returns after the result).
+              yield* Stream.runDrain(out)
+            }),
+          ).pipe(Effect.provide(layer)),
+        )
+
+        // The turn survives the subagent silence: clean end, no cooldown.
+        expect(Exit.isSuccess(exit)).toBe(true)
+        expect(spy.reports.filter((r) => r.kind === "rate_limit").length).toBe(0)
+      } finally {
+        delete process.env.LUNA_TASK_INACTIVITY_TIMEOUT_MS
+      }
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "(f) still trips — bounded — when the silence exceeds the task window with a subagent outstanding",
+    async () => {
+      process.env.LUNA_TASK_INACTIVITY_TIMEOUT_MS = "300"
+      try {
+        const spy: BrokerSpy = { reports: [] }
+        // Fake: Agent spawn → wedge forever (abort-aware).
+        const build = (params: {
+          prompt: AsyncIterable<SDKUserMessage>
+          signal?: AbortSignal
+        }): Query => {
+          async function* gen(): AsyncGenerator<SDKMessage, void> {
+            for await (const _u of params.prompt) {
+              yield makeAgentSpawnMessage("s-sub-wedge", "agent_tu_2", "a-spawn2")
+              await new Promise<void>((resolve) => {
+                if (params.signal) {
+                  if (params.signal.aborted) return resolve()
+                  params.signal.addEventListener("abort", () => resolve(), {
+                    once: true,
+                  })
+                }
+              })
+              return
+            }
+          }
+          return Object.assign(gen(), controlMethods) as Query
+        }
+        const layer = buildBrokeredLayer(build as never, spy, twoAccounts)
+
+        const exit = await Effect.runPromiseExit(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const store = yield* SessionStore
+              yield* store.create({
+                id: "s-sub-wedge",
+                options: { model: "m" },
+                createdAt: 0,
+              })
+              const inbox = yield* Queue.unbounded<SDKUserMessage>()
+              const adapter = yield* SDKAdapter
+              const out = yield* adapter.query({
+                sessionId: "s-sub-wedge",
+                prompt: Stream.fromQueue(inbox),
+                sessionOptions: {
+                  model: "m",
+                  disableIdleTimeout: true,
+                  turnInactivityTimeoutMs: 150,
+                  sdkOptions: { model: "m" },
+                },
+              })
+              yield* Queue.offer(inbox, userMsg("spawn and wedge"))
+              yield* Stream.runDrain(out)
+            }),
+          ).pipe(Effect.provide(layer)),
+        )
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) {
+          const j = JSON.stringify(exit.cause)
+          expect(j).toContain("SDKError")
+          expect(j).toContain("subagent")
+        }
+        // Account still cooled on a real trip.
+        expect(
+          spy.reports.filter((r) => r.kind === "rate_limit").length,
+        ).toBeGreaterThan(0)
+      } finally {
+        delete process.env.LUNA_TASK_INACTIVITY_TIMEOUT_MS
+      }
+    },
+    { timeout: 10_000 },
+  )
+})
