@@ -35,20 +35,23 @@ html, body {
 
 /* ── Paper card shell ────────────────────────────────────────────────────
    .widget-shell (the outer flex column in all three widget pages) becomes
-   the CARD: it is inset 7px per side from the OS window frame, giving the
+   the CARD: it is inset 14px per side from the OS window frame, giving the
    wc-wobble filter room to roughen the edge and the box-shadow room to
    cast a soft drop-shadow without clipping.
 
-   TRADEOFF: visible content area shrinks by 14px in each dimension vs the
-   registered window size. Two flush-docked windows show a 14px paper gap
-   at the seam — this matches the web board's 16px panel-gap aesthetic and
-   is intentional. Do NOT change window sizes in the registry to compensate.
-*/
+   TRADEOFF: visible content area shrinks by 28px in each dimension vs the
+   registered window size. Two flush-docked windows show a 28px paper gap
+   at the seam — generous, like the design's board spacing. Do NOT change
+   window sizes in the registry to compensate.
+
+   The 14px inset is LOAD-BEARING: the wobble displaces the edge up to
+   ~7px and the halo shadow needs ~12px of air — at 7px both sheared off
+   square at the window bounds, which read as "clipped corners". */
 .widget-shell {
   position: relative;
-  margin: 7px;
-  height: calc(100% - 14px);
-  width: calc(100% - 14px);
+  margin: 14px;
+  height: calc(100% - 28px);
+  width: calc(100% - 28px);
   border-radius: 14px;
   isolation: isolate;
 }
@@ -68,9 +71,13 @@ html, body {
       color-mix(in oklab, var(--panel-tint) 26%, transparent) 0%,
       transparent 86px),
     var(--paper);
+  /* Design-reference shadow: WARM (brownish paper, never pure black), a
+     faint ambient halo on every side + a soft drop. Tuned so the outermost
+     tail fits inside the 14px window margin — no square clipping. */
   box-shadow:
-    0 2px 4px rgba(0, 0, 0, 0.1),
-    0 5px 14px -6px rgba(0, 0, 0, 0.35);
+    0 1px 3px rgba(60, 45, 35, 0.10),
+    0 0 18px -6px rgba(60, 45, 35, 0.12),
+    0 8px 26px -10px rgba(60, 45, 35, 0.28);
 }
 
 /* Dark theme: deeper shadow, slightly stronger tint pool. */
@@ -82,7 +89,8 @@ html[data-theme='dark'] .widget-shell::before {
     var(--paper-2);
   box-shadow:
     0 0 0 1px color-mix(in oklab, var(--ink) 7%, transparent),
-    0 5px 14px -6px rgba(0, 0, 0, 0.6);
+    0 0 18px -6px rgba(0, 0, 0, 0.35),
+    0 8px 26px -10px rgba(0, 0, 0, 0.6);
 }
 
 /* Ink chrome: draw a visible edge, tighten the tint pool. */
@@ -116,9 +124,9 @@ html[data-chrome='ink'][data-theme='dark'] .widget-shell::before {
 html[data-grain='on'] body::after {
   content: '';
   position: fixed;
-  /* Match the card geometry: 7px inset + 14px radius so grain stays inside
+  /* Match the card geometry: 14px inset + 14px radius so grain stays inside
      the paper card and doesn't paint into the transparent window margin. */
-  inset: 7px;
+  inset: 14px;
   border-radius: 14px;
   pointer-events: none;
   opacity: 0.5;
@@ -236,21 +244,21 @@ html[data-chrome='ink'] .title-bar {
 }
 
 /* ── Seam glow: the link animation when two windows click together ───── */
-/* Offset bars by 7px from each OS-window edge so they hug the card face
-   (the 7px transparent margin sits outside the painted card). */
+/* Offset bars by 14px from each OS-window edge so they hug the card face
+   (the 14px transparent margin sits outside the painted card). */
 #seam {
   position: fixed;
   pointer-events: none;
   opacity: 0;
   z-index: 50;
 }
-#seam.flash-l { left: 7px; top: 7px; bottom: 7px; width: 7px;
+#seam.flash-l { left: 14px; top: 14px; bottom: 14px; width: 7px;
   background: linear-gradient(to right, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
-#seam.flash-r { right: 7px; top: 7px; bottom: 7px; width: 7px;
+#seam.flash-r { right: 14px; top: 14px; bottom: 14px; width: 7px;
   background: linear-gradient(to left, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
-#seam.flash-t { top: 7px; left: 7px; right: 7px; height: 7px;
+#seam.flash-t { top: 14px; left: 14px; right: 14px; height: 7px;
   background: linear-gradient(to bottom, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
-#seam.flash-b { bottom: 7px; left: 7px; right: 7px; height: 7px;
+#seam.flash-b { bottom: 14px; left: 14px; right: 14px; height: 7px;
   background: linear-gradient(to top, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
 #seam.on { animation: seam-flash 0.7s ease-out; }
 @keyframes seam-flash {
@@ -260,10 +268,10 @@ html[data-chrome='ink'] .title-bar {
 }
 
 /* ── Group perimeter: a very low highlight on OUTER sides only ───────── */
-/* inset: 7px + border-radius: 14px hugs the card edge exactly. */
+/* inset: 14px + border-radius: 14px hugs the card edge exactly. */
 #outline {
   position: fixed;
-  inset: 7px;
+  inset: 14px;
   pointer-events: none;
   z-index: 49;
   border-radius: 14px;

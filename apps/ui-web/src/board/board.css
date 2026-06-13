@@ -43,9 +43,10 @@
   background:
     linear-gradient(180deg, color-mix(in oklab, var(--panel-tint) 26%, transparent) 0%, transparent 86px),
     var(--paper);
+  /* Warm paper shadow (design values) — never pure black. */
   box-shadow:
-    0 2px 4px rgba(0, 0, 0, 0.06),
-    0 14px 34px -10px rgba(0, 0, 0, 0.18);
+    0 2px 4px rgba(60, 45, 35, 0.06),
+    0 14px 34px -10px rgba(60, 45, 35, 0.18);
 }
 /* Night paper: panels step UP from the canvas (paper-2, the raised
    surface) and the head tint pools harder — on dark paper a 26% wash
