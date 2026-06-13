@@ -2,7 +2,7 @@
  * Pure rotation-policy function. Lives in its own file so it can be
  * Tier-1 unit tested without spinning up Effect / Refs / Layers.
  *
- * Policy (per Phase 9 brief, derived from §0.2 and the sol-agent spec):
+ * Policy (per Phase 9 brief, derived from §0.2):
  *   1. Filter accounts to those matching `kind`.
  *   2. Filter out accounts whose `cooldownUntilMs` is in the future.
  *   3. If `boundId` is provided, return ONLY that account if it survives

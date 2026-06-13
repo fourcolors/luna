@@ -67,7 +67,7 @@ findAnomalies(threshold?: { errorRate?, duration? }): Promise<SessionTelemetryJo
 
 ### Why DuckDB?
 
-1. **Compatibility** — DESIGN.md line 921 explicitly calls for "DuckDB refresher (parity with sol-agent telemetry)"
+1. **Compatibility** — DESIGN.md calls for a DuckDB telemetry refresher
 2. **Query Power** — JOINs across session + telemetry in a single query
 3. **Analytics Ready** — built for cross-domain analysis (vs. SQLite's schema limitations)
 4. **Real-time** — eventual OTLP sink (DESIGN.md §2.2.8)
