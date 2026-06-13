@@ -1388,6 +1388,15 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       ;(chat.querySelector('.msg.assistant') as HTMLElement)
         .dispatchEvent(new MouseEvent('click', { bubbles: true }))
       expect(span.textContent).toBe('1h ago')
+
+      // And clicking the COPY BUTTON itself refreshes — WKWebView doesn't focus
+      // a <button> on click, so the click must be allowed to bubble to the
+      // delegated listener (regression guard: a stopPropagation on the copy
+      // handler would silently break refresh-on-copy in the real app).
+      ;(navigator as any).clipboard = { writeText: () => Promise.resolve() }
+      vi.advanceTimersByTime(60 * 60_000)
+      btn.click()
+      expect(span.textContent).toBe('2h ago')
     })
 
     it('Scenario: formatRelTime renders the compact relative forms', () => {

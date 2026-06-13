@@ -4176,6 +4176,9 @@
       + ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
       + '<path d="M20 6 9 17l-5-5"></path></svg>';
 
+    // How long the copy button shows its "copied" checkmark before reverting.
+    const MSG_COPY_FLASH_MS = 1200;
+
     // Build the small always-visible "copy this message" button for a bubble.
     // Copies `text` (the message's RAW source — markdown for assistant turns,
     // the typed text for user turns) so a paste preserves structure/code,
@@ -4200,12 +4203,16 @@
           delete btn.dataset.copied;
           btn.title = 'Copy message';
           btn.setAttribute('aria-label', 'Copy message');
-        }, 1200);
+        }, MSG_COPY_FLASH_MS);
       };
 
       btn.addEventListener('click', (ev) => {
         ev.preventDefault();
-        ev.stopPropagation();
+        // Deliberately DON'T stopPropagation: WKWebView doesn't focus a
+        // <button> on click (so no `focusin` fires), so we let the click
+        // bubble to the delegated #chat-messages listener that refreshes this
+        // message's relative time. The bubble-level handlers it reaches are
+        // safe for the copy button (the luna-link handler ignores non-links).
         if (navigator.clipboard && navigator.clipboard.writeText) {
           // Only confirm on a real success — a rejected write (insecure
           // context / denied permission) leaves the glyph unchanged.
@@ -4737,6 +4744,8 @@
       // Turn shape:
       //   { key, role: 'user' | 'assistant', status: 'streaming' | 'done' | 'error' | 'banner',
       //     segments: Segment[], previews?, turnId?, errorText?,
+      //     ts? (ms-epoch send-time: server stamp for history/assistant-done,
+      //          client Date.now() for user — drives the meta-row "9m ago"),
       //     _cumText? (delta-dedup), _timelineCollapsed? (timeline toggle),
       //     _settled? (agentic turn fully ended — set on `turn-complete`) }
       //
