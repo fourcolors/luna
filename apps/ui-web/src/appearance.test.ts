@@ -10,6 +10,7 @@ import {
   applyAppearance,
   setAppearance,
   getAppearance,
+  onAppearanceChange,
   FONTS,
   FONT_SIZES,
   FONT_LABELS,
@@ -87,5 +88,26 @@ describe("exported option lists", () => {
     expect(FONT_SIZES.every((s) => typeof FONT_SIZE_LABELS[s] === "string")).toBe(true)
     // x-large is the only label that diverges from its stored value.
     expect(FONT_SIZE_LABELS.xlarge).toBe("x-large")
+  })
+})
+
+describe("cross-tab sync (storage event)", () => {
+  // Mirrors the moon-appearance suite so both clients have a regression net
+  // for the new keys flowing through the shared storage-listener path.
+  it("module storage listener re-applies data-font on a luna_font event", () => {
+    window.localStorage.setItem("luna_font", "serif")
+    // Listeners only read e.key; storageArea omitted to dodge jsdom's Storage IDL check.
+    window.dispatchEvent(new StorageEvent("storage", { key: "luna_font", newValue: "serif" }))
+    expect(el().getAttribute("data-font")).toBe("serif")
+  })
+
+  it("onAppearanceChange fires with the updated fontSize on a luna_fontsize event", () => {
+    let seen: ReturnType<typeof getAppearance> | null = null
+    const off = onAppearanceChange((a) => { seen = a })
+    window.localStorage.setItem("luna_fontsize", "xlarge")
+    window.dispatchEvent(new StorageEvent("storage", { key: "luna_fontsize", newValue: "xlarge" }))
+    off()
+    expect(seen).not.toBeNull()
+    expect(seen!.fontSize).toBe("xlarge")
   })
 })

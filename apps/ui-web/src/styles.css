@@ -895,7 +895,9 @@ html[data-theme='dark'] .dot.bad {
   .transcript { padding: 10px; gap: 10px; }
 
   .bubble { max-width: 92%; padding: 8px 10px; }
-  .bubble-text, .markdown { font-size: 14px; line-height: 1.5; }
+  /* Honor the chat Text-size pref on mobile too (these rules win the cascade
+     over the base calc() by source order, so they must scale as well). */
+  .bubble-text, .markdown { font-size: calc(14px * var(--font-scale)); line-height: 1.5; }
 
   /* composer: bigger tap target, safe-area inset */
   .composer {
@@ -903,7 +905,9 @@ html[data-theme='dark'] .dot.bad {
     padding-bottom: calc(8px + env(safe-area-inset-bottom));
   }
   .composer textarea {
-    font-size: 16px; /* prevent iOS zoom */
+    /* 16px floor prevents iOS auto-zoom on focus; still scales up past it for
+       the larger Text-size prefs. */
+    font-size: max(16px, calc(13px * var(--font-scale)));
     min-height: 56px;
     max-height: 40vh;
   }
