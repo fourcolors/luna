@@ -21,13 +21,25 @@
 /* ── Transparent window envelope ─────────────────────────────────────────
    Widget windows use OS transparency (.transparent(true) in Rust) so the
    wobble filter on .widget-shell::before can bleed past the card edge into
-   the transparent margin. html/body must be fully transparent — the CARD
-   itself (the ::before pseudo-layer) is the visual background.
+   the transparent margin AND the soft halo shadow can cast freely. html/body
+   must be fully transparent — the CARD (the ::before pseudo-layer) is the
+   visual background.
+
+   --card-inset is the single source of truth for the transparent margin: it
+   must be ≥ the shadow's visible reach, or body's overflow:hidden + the OS
+   window bounds shear the halo off SQUARE at the corners (the "clipped
+   corner" bug). The card shell, grain, seam-flash, and group outline all
+   derive their geometry from it.
 
    Pages previously set `background: var(--bg); border: 1px solid
    var(--border); border-radius: var(--radius)` on html/body — those lines
    are removed from widget.html / panel.html / chat.html so they don't
    override this rule. */
+:root {
+  --card-inset: 22px;
+  --card-radius: 16px;
+}
+
 html, body {
   background: transparent !important;
   border: none !important;
@@ -35,24 +47,17 @@ html, body {
 
 /* ── Paper card shell ────────────────────────────────────────────────────
    .widget-shell (the outer flex column in all three widget pages) becomes
-   the CARD: it is inset 14px per side from the OS window frame, giving the
-   wc-wobble filter room to roughen the edge and the box-shadow room to
-   cast a soft drop-shadow without clipping.
-
-   TRADEOFF: visible content area shrinks by 28px in each dimension vs the
-   registered window size. Two flush-docked windows show a 28px paper gap
-   at the seam — generous, like the design's board spacing. Do NOT change
-   window sizes in the registry to compensate.
-
-   The 14px inset is LOAD-BEARING: the wobble displaces the edge up to
-   ~7px and the halo shadow needs ~12px of air — at 7px both sheared off
-   square at the window bounds, which read as "clipped corners". */
+   the CARD: inset --card-inset per side from the OS window frame, giving the
+   wc-wobble filter room to roughen the edge and the box-shadow room to cast
+   a soft halo without clipping. Visible content shrinks by 2×inset in each
+   dimension vs the registered window size; flush-docked windows show a
+   2×inset paper gap at the seam (intentional, board-like spacing). */
 .widget-shell {
   position: relative;
-  margin: 14px;
-  height: calc(100% - 28px);
-  width: calc(100% - 28px);
-  border-radius: 14px;
+  margin: var(--card-inset);
+  height: calc(100% - var(--card-inset) * 2);
+  width: calc(100% - var(--card-inset) * 2);
+  border-radius: var(--card-radius);
   isolation: isolate;
 }
 
@@ -71,13 +76,13 @@ html, body {
       color-mix(in oklab, var(--panel-tint) 26%, transparent) 0%,
       transparent 86px),
     var(--paper);
-  /* Design-reference shadow: WARM (brownish paper, never pure black), a
-     faint ambient halo on every side + a soft drop. Tuned so the outermost
-     tail fits inside the 14px window margin — no square clipping. */
+  /* WARM paper halo (design reference) — never pure black. A faint ambient
+     ring on every side + a soft directional drop. Reach (~18px) stays inside
+     --card-inset (22px) so nothing shears at the window bounds. */
   box-shadow:
-    0 1px 3px rgba(60, 45, 35, 0.10),
-    0 0 18px -6px rgba(60, 45, 35, 0.12),
-    0 8px 26px -10px rgba(60, 45, 35, 0.28);
+    0 1px 2px rgba(60, 45, 35, 0.10),
+    0 0 16px -2px rgba(60, 45, 35, 0.13),
+    0 6px 20px -6px rgba(60, 45, 35, 0.26);
 }
 
 /* Dark theme: deeper shadow, slightly stronger tint pool. */
@@ -89,8 +94,8 @@ html[data-theme='dark'] .widget-shell::before {
     var(--paper-2);
   box-shadow:
     0 0 0 1px color-mix(in oklab, var(--ink) 7%, transparent),
-    0 0 18px -6px rgba(0, 0, 0, 0.35),
-    0 8px 26px -10px rgba(0, 0, 0, 0.6);
+    0 0 16px -2px rgba(0, 0, 0, 0.4),
+    0 6px 20px -6px rgba(0, 0, 0, 0.62);
 }
 
 /* Ink chrome: draw a visible edge, tighten the tint pool. */
@@ -115,7 +120,7 @@ html[data-chrome='ink'][data-theme='dark'] .widget-shell::before {
 /* Title bar top corners must round to match the card so the wash gradient
    never pokes square corners past the wobble-roughened card edge. */
 .title-bar {
-  border-radius: 14px 14px 0 0;
+  border-radius: var(--card-radius) var(--card-radius) 0 0;
 }
 
 /* ── Paper grain (optional, data-grain="on") ─────────────────────────────
@@ -124,10 +129,10 @@ html[data-chrome='ink'][data-theme='dark'] .widget-shell::before {
 html[data-grain='on'] body::after {
   content: '';
   position: fixed;
-  /* Match the card geometry: 14px inset + 14px radius so grain stays inside
-     the paper card and doesn't paint into the transparent window margin. */
-  inset: 14px;
-  border-radius: 14px;
+  /* Match the card geometry so grain stays inside the paper card and
+     doesn't paint into the transparent window margin. */
+  inset: var(--card-inset);
+  border-radius: var(--card-radius);
   pointer-events: none;
   opacity: 0.5;
   mix-blend-mode: multiply;
@@ -244,21 +249,21 @@ html[data-chrome='ink'] .title-bar {
 }
 
 /* ── Seam glow: the link animation when two windows click together ───── */
-/* Offset bars by 14px from each OS-window edge so they hug the card face
-   (the 14px transparent margin sits outside the painted card). */
+/* Offset bars by --card-inset from each OS-window edge so they hug the card
+   face (the transparent margin sits outside the painted card). */
 #seam {
   position: fixed;
   pointer-events: none;
   opacity: 0;
   z-index: 50;
 }
-#seam.flash-l { left: 14px; top: 14px; bottom: 14px; width: 7px;
+#seam.flash-l { left: var(--card-inset); top: var(--card-inset); bottom: var(--card-inset); width: 7px;
   background: linear-gradient(to right, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
-#seam.flash-r { right: 14px; top: 14px; bottom: 14px; width: 7px;
+#seam.flash-r { right: var(--card-inset); top: var(--card-inset); bottom: var(--card-inset); width: 7px;
   background: linear-gradient(to left, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
-#seam.flash-t { top: 14px; left: 14px; right: 14px; height: 7px;
+#seam.flash-t { top: var(--card-inset); left: var(--card-inset); right: var(--card-inset); height: 7px;
   background: linear-gradient(to bottom, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
-#seam.flash-b { bottom: 14px; left: 14px; right: 14px; height: 7px;
+#seam.flash-b { bottom: var(--card-inset); left: var(--card-inset); right: var(--card-inset); height: 7px;
   background: linear-gradient(to top, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
 #seam.on { animation: seam-flash 0.7s ease-out; }
 @keyframes seam-flash {
@@ -268,13 +273,13 @@ html[data-chrome='ink'] .title-bar {
 }
 
 /* ── Group perimeter: a very low highlight on OUTER sides only ───────── */
-/* inset: 14px + border-radius: 14px hugs the card edge exactly. */
+/* Hugs the card edge exactly via the shared inset + radius. */
 #outline {
   position: fixed;
-  inset: 14px;
+  inset: var(--card-inset);
   pointer-events: none;
   z-index: 49;
-  border-radius: 14px;
+  border-radius: var(--card-radius);
   border: 0 solid transparent;
 }
 #outline.gl { border-left: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
