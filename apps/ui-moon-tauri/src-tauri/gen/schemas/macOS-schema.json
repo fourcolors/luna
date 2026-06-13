@@ -357,6 +357,12 @@
           "markdownDescription": "Allows the close_widget command"
         },
         {
+          "description": "Allows a panel/widget window to read its own current dock-group membership (replay-on-subscribe), so a webview that loaded after its dock-group event fired can still learn it is grouped",
+          "type": "string",
+          "const": "allow-dock-group-state",
+          "markdownDescription": "Allows a panel/widget window to read its own current dock-group membership (replay-on-subscribe), so a webview that loaded after its dock-group event fired can still learn it is grouped"
+        },
+        {
           "description": "Allows reading the CLI thread file",
           "type": "string",
           "const": "allow-get-last-thread-id",

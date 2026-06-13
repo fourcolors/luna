@@ -961,6 +961,42 @@ fn panel_spawn_pos(
     }
 }
 
+/// Bounding box (logical px) over a set of rects — the cluster perimeter a
+/// freshly-opened panel appends against, so it lands flush with the WHOLE
+/// stack and never overlaps a mid-cluster member. Pure for tests; None when
+/// the set is empty.
+fn cluster_bbox(rects: &[(i32, i32, i32, i32)]) -> Option<(i32, i32, i32, i32)> {
+    let mut it = rects.iter();
+    let &(fx, fy, fw, fh) = it.next()?;
+    let (mut x0, mut y0, mut x1, mut y1) = (fx, fy, fx + fw, fy + fh);
+    for &(x, y, w, h) in it {
+        x0 = x0.min(x);
+        y0 = y0.min(y);
+        x1 = x1.max(x + w);
+        y1 = y1.max(y + h);
+    }
+    Some((x0, y0, x1 - x0, y1 - y0))
+}
+
+/// Pure: the candidate whose centre is nearest `from`'s centre, with a
+/// deterministic label tie-break so the snap target is stable regardless of
+/// HashMap iteration order (a flickering anchor would dock the new panel to a
+/// different neighbour on each open). None when there are no candidates.
+fn pick_nearest_label(
+    from: (i32, i32, i32, i32),
+    cands: &[(String, (i32, i32, i32, i32))],
+) -> Option<String> {
+    let fc = (from.0 + from.2 / 2, from.1 + from.3 / 2);
+    let dist2 = |r: (i32, i32, i32, i32)| -> i64 {
+        let c = (r.0 + r.2 / 2, r.1 + r.3 / 2);
+        i64::from(c.0 - fc.0).pow(2) + i64::from(c.1 - fc.1).pow(2)
+    };
+    cands
+        .iter()
+        .min_by(|a, b| dist2(a.1).cmp(&dist2(b.1)).then_with(|| a.0.cmp(&b.0)))
+        .map(|(l, _)| l.clone())
+}
+
 /// ~/.luna/layout.json — positions of OPEN system panels (and nothing else:
 /// pin state for content widgets stays server-side; design doc Persistence).
 fn layout_path() -> Option<std::path::PathBuf> {
@@ -1012,10 +1048,14 @@ fn spawn_panel(
     width: Option<f64>,
     height: Option<f64>,
 ) -> Result<String, String> {
-    spawn_panel_at(app, desc, &panel_label(&desc.kind), &desc.page, x, y, width, height)
+    // Boot restore positions at build time → show immediately (it does not snap).
+    spawn_panel_at(app, desc, &panel_label(&desc.kind), &desc.page, x, y, width, height, true)
 }
 
 /// spawn_panel with an explicit label + url (non-singleton instances).
+/// `visible: false` defers the first paint until a snap-on-open caller has
+/// positioned the window (so it never flashes from the OS-default spot to the
+/// cluster seam); that caller MUST then show() it.
 #[allow(clippy::too_many_arguments)]
 fn spawn_panel_at(
     app: &tauri::AppHandle,
@@ -1026,6 +1066,7 @@ fn spawn_panel_at(
     y: Option<f64>,
     width: Option<f64>,
     height: Option<f64>,
+    visible: bool,
 ) -> Result<String, String> {
     let label = label.to_string();
     let mut builder = tauri::WebviewWindowBuilder::new(
@@ -1038,6 +1079,7 @@ fn spawn_panel_at(
     .transparent(true)
     .always_on_top(true)
     .skip_taskbar(true)
+    .visible(visible)
     .inner_size(width.unwrap_or(desc.width), height.unwrap_or(desc.height))
     .min_inner_size(220.0, 120.0);
     if let (Some(px), Some(py)) = (x, y) {
@@ -1126,55 +1168,47 @@ async fn open_widget(
         let _ = win.set_focus();
         return Ok(label);
     }
-    // The opener must be a dock-namespace window that actually exists; the
-    // hub ("main") deliberately does NOT qualify — panels opened from the
-    // gear spawn free-floating (the moon is never a group member).
+    // An explicit opener must be a dock-namespace window that actually exists;
+    // the hub ("main") deliberately does NOT qualify (the moon is never a group
+    // member). A gear-opened panel passes no opener and instead snaps to the
+    // nearest existing cluster below — so it still never docks TO the moon.
     let opener = opener.filter(|o| is_dock_label(o) && app.get_webview_window(o).is_some());
 
-    let win_label = spawn_panel_at(&app, desc, &label, &url, x, y, None, None)?;
+    // Snap-on-open: an explicit opener wins (the "stacks" mechanic — a panel
+    // launched from another panel docks to it); otherwise, unless the caller
+    // pinned an explicit position, the panel accretes onto the NEAREST open
+    // dock cluster — "panels open stuck together", default-on. The moon/hub is
+    // never a dock member, so the first panel (opened from the gear with no
+    // neighbours) still free-floats. When it WILL snap, build hidden and reveal
+    // after positioning so it never flashes at the OS-default spot.
+    let pinned = x.is_some() || y.is_some();
+    let will_snap = opener.is_some() || !pinned;
+    let win_label = spawn_panel_at(&app, desc, &label, &url, x, y, None, None, !will_snap)?;
     let Some(win) = app.get_webview_window(&win_label) else {
         return Ok(win_label);
     };
 
-    if let Some(anchor) = opener {
+    if will_snap {
         let app2 = app.clone();
         let label2 = win_label.clone();
         let width = desc.width as i32;
-        let _ = win.run_on_main_thread(move || {
-            let Some(aw) = app2.get_webview_window(&anchor) else {
-                return;
+        let scheduled = win.run_on_main_thread(move || {
+            let target = match opener {
+                Some(anchor) => group_bbox_of(&app2, &anchor).map(|r| (anchor, r)),
+                None => nearest_dock_anchor(&app2, &label2),
             };
-            let Some(arect) = dock_logical_rect(&aw) else {
-                return;
-            };
-            let monitor_right = aw
-                .current_monitor()
-                .ok()
-                .flatten()
-                .map(|m| {
-                    let sf = m.scale_factor();
-                    ((f64::from(m.position().x) + m.size().width as f64) / sf) as i32
-                })
-                .unwrap_or(i32::MAX);
-            let (px, py, edge) = panel_spawn_pos(arect, width, monitor_right);
-            if let Some(w) = app2.get_webview_window(&label2) {
-                let _ =
-                    w.set_position(tauri::LogicalPosition::new(f64::from(px), f64::from(py)));
+            if let Some((anchor, anchor_rect)) = target {
+                dock_new_panel(&app2, &label2, &anchor, anchor_rect, width);
             }
-            // Join the opener's group exactly as a settle-snap would.
-            let (diff, notify) = {
-                let state = app2.state::<DockState>();
-                let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
-                let diff = s.join(&label2, &anchor);
-                (diff, s.members_of(&label2))
-            };
-            dock_apply_and_notify(&app2, diff, notify);
-            let _ = app2.emit_to(
-                tauri::EventTarget::labeled(&anchor),
-                "dock-link",
-                serde_json::json!({ "for": anchor, "from": label2, "edge": edge }),
-            );
+            // First paint, flush (or at the default spot when there is no cluster).
+            if let Some(w) = app2.get_webview_window(&label2) {
+                let _ = w.show();
+            }
         });
+        // Never leave the window stuck hidden if the main-thread hop can't queue.
+        if scheduled.is_err() {
+            let _ = win.show();
+        }
     }
     // A new panel is layout-relevant immediately (a crash before the first
     // Moved event must not lose it).
@@ -1216,10 +1250,36 @@ async fn open_artifact_widget(
     .skip_taskbar(true)
     .inner_size(width.unwrap_or(360.0), height.unwrap_or(440.0))
     .min_inner_size(220.0, 160.0);
+    // When it will snap (no explicit position), build hidden and reveal flush
+    // after positioning so the window never flashes at the OS-default spot.
+    let will_snap = x.is_none() && y.is_none();
+    builder = builder.visible(!will_snap);
     if let (Some(px), Some(py)) = (x, y) {
         builder = builder.position(px, py);
     }
     builder.build().map_err(|e| e.to_string())?;
+    // Snap-on-open: with no explicit position, the artifact / MCP-app window
+    // accretes onto the nearest open dock cluster and joins its group, exactly
+    // like a system panel. An explicit (x, y) — e.g. a restored pop-out — is
+    // honoured as-is.
+    if will_snap {
+        if let Some(win) = app.get_webview_window(&label) {
+            let app2 = app.clone();
+            let label2 = label.clone();
+            let w = width.unwrap_or(360.0) as i32;
+            let scheduled = win.run_on_main_thread(move || {
+                if let Some((anchor, anchor_rect)) = nearest_dock_anchor(&app2, &label2) {
+                    dock_new_panel(&app2, &label2, &anchor, anchor_rect, w);
+                }
+                if let Some(w2) = app2.get_webview_window(&label2) {
+                    let _ = w2.show();
+                }
+            });
+            if scheduled.is_err() {
+                let _ = win.show();
+            }
+        }
+    }
     Ok(label)
 }
 
@@ -1721,6 +1781,46 @@ impl DockGroups {
         }
         (diff, touched)
     }
+
+    /// Form fresh groups from geometry among CURRENTLY-UNGROUPED labels — the
+    /// boot-restore re-link. Each connected component of ≥2 touching rects
+    /// becomes a star over the SAME MEMBERS it had before the restart, rooted at
+    /// the min label (the rooting `regroup_by_geometry` uses). The root is only
+    /// the native parent, so a different root than the original runtime group
+    /// (which roots at whichever member was snapped to) is behaviourally
+    /// identical: same members, same drag-as-a-unit. A component touching any
+    /// already-grouped label is skipped, keeping this idempotent and safe over a
+    /// partially grouped state. Returns the attach diff + every label whose
+    /// membership changed (to notify).
+    fn form_groups_by_geometry(
+        &mut self,
+        rects: &[(String, (i32, i32, i32, i32))],
+    ) -> (DockDiff, Vec<String>) {
+        let mut diff: DockDiff = Vec::new();
+        let mut touched: Vec<String> = Vec::new();
+        for comp in dock_components(rects) {
+            if comp.len() < 2 {
+                continue; // a lone panel stays free — no group of one
+            }
+            if comp.iter().any(|m| self.by_label.contains_key(m)) {
+                continue; // never disturb a label that is already grouped
+            }
+            let root = comp.iter().min().cloned().expect("non-empty component");
+            let gid = self.next_id;
+            self.next_id += 1;
+            let mut members = std::collections::HashSet::new();
+            for m in &comp {
+                members.insert(m.clone());
+                self.by_label.insert(m.clone(), gid);
+                touched.push(m.clone());
+                if *m != root {
+                    diff.push((root.clone(), m.clone(), true));
+                }
+            }
+            self.groups.insert(gid, DockGroup { root, members });
+        }
+        (diff, touched)
+    }
 }
 
 /// A window's outer rect in LOGICAL px (its own monitor's scale) — all dock
@@ -2006,6 +2106,96 @@ fn dock_apply_and_notify(
     }
 }
 
+/// Group bounding box for `label` (logical px): the union of every member's
+/// rect, or `label`'s own rect when it is ungrouped. None when no member has a
+/// readable rect (e.g. minimized). Main thread (reads window geometry).
+fn group_bbox_of(app: &tauri::AppHandle, label: &str) -> Option<(i32, i32, i32, i32)> {
+    let members = {
+        let state = app.state::<DockState>();
+        let s = state.0.lock().unwrap_or_else(|e| e.into_inner());
+        let m = s.members_of(label);
+        if m.is_empty() {
+            vec![label.to_string()]
+        } else {
+            m
+        }
+    };
+    let rects: Vec<(i32, i32, i32, i32)> = members
+        .iter()
+        .filter_map(|m| app.get_webview_window(m).and_then(|w| dock_logical_rect(&w)))
+        .collect();
+    cluster_bbox(&rects)
+}
+
+/// The open dock cluster nearest `new_label` (excluding the hub and the new
+/// window itself), as `(a member label to join, the cluster's bounding box)`.
+/// This is the snap-on-open target: a freshly-spawned panel accretes onto the
+/// existing stack instead of free-floating. None when nothing dockable is
+/// open (the first panel free-floats — there is no stack yet). Main thread.
+fn nearest_dock_anchor(
+    app: &tauri::AppHandle,
+    new_label: &str,
+) -> Option<(String, (i32, i32, i32, i32))> {
+    let new_rect = app
+        .get_webview_window(new_label)
+        .and_then(|w| dock_logical_rect(&w))?;
+    let cands: Vec<(String, (i32, i32, i32, i32))> = app
+        .webview_windows()
+        .into_iter()
+        .filter(|(label, _)| label.as_str() != new_label && is_dock_label(label))
+        // Never snap to a window the user can't see: a minimized panel keeps
+        // stale pre-minimize coordinates, so snapping to it would tile the new
+        // panel onto empty space and join it to an invisible group. (A window
+        // built hidden mid-snap is likewise skipped until it reveals.)
+        .filter(|(_, win)| {
+            win.is_minimized().map(|m| !m).unwrap_or(true) && win.is_visible().unwrap_or(true)
+        })
+        .filter_map(|(label, win)| dock_logical_rect(&win).map(|r| (label, r)))
+        .collect();
+    let anchor = pick_nearest_label(new_rect, &cands)?;
+    let bbox = group_bbox_of(app, &anchor)?;
+    Some((anchor, bbox))
+}
+
+/// Place a freshly-spawned panel flush against an existing dock cluster and
+/// join its group — the open-time twin of a settle-snap. `anchor_rect` is the
+/// cluster bounding box; `anchor_label` is any member (join re-parents under
+/// the group root). Mirrors the settle path: glide flush, join, flash the
+/// seam. Best-effort; main thread.
+fn dock_new_panel(
+    app: &tauri::AppHandle,
+    new_label: &str,
+    anchor_label: &str,
+    anchor_rect: (i32, i32, i32, i32),
+    width: i32,
+) {
+    let monitor_right = app
+        .get_webview_window(anchor_label)
+        .and_then(|aw| aw.current_monitor().ok().flatten())
+        .map(|m| {
+            let sf = m.scale_factor();
+            ((f64::from(m.position().x) + m.size().width as f64) / sf) as i32
+        })
+        .unwrap_or(i32::MAX);
+    let (px, py, edge) = panel_spawn_pos(anchor_rect, width, monitor_right);
+    if let Some(w) = app.get_webview_window(new_label) {
+        let _ = w.set_position(tauri::LogicalPosition::new(f64::from(px), f64::from(py)));
+    }
+    // Join exactly as a settle-snap would, then notify the cluster.
+    let (diff, notify) = {
+        let state = app.state::<DockState>();
+        let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
+        let diff = s.join(new_label, anchor_label);
+        (diff, s.members_of(new_label))
+    };
+    dock_apply_and_notify(app, diff, notify);
+    let _ = app.emit_to(
+        tauri::EventTarget::labeled(anchor_label),
+        "dock-link",
+        serde_json::json!({ "for": anchor_label, "from": new_label, "edge": edge }),
+    );
+}
+
 /// After a member departs, re-partition its old group by geometry and apply
 /// the native changes. Survivors that no longer touch split into separate
 /// groups; singletons dissolve. Returns every label whose state changed.
@@ -2222,6 +2412,31 @@ fn grab_dock(
         .map_err(|e| e.to_string())
 }
 
+/// Replay-on-subscribe for dock membership. A panel/widget webview calls this
+/// once right after wiring its dock listeners, so a window whose `dock-group`
+/// event fired BEFORE its webview finished loading (e.g. a boot-restored
+/// cluster — the setup() emit races the page load) still learns it is grouped.
+/// Returns the membership half of the `dock-group` payload; the perimeter
+/// outline is omitted (cosmetic, and it refreshes on the next real event) so
+/// this stays a pure DockState read with no off-thread window geometry.
+#[tauri::command]
+fn dock_group_state(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, DockState>,
+) -> serde_json::Value {
+    let label = window.label().to_string();
+    let members = {
+        let s = state.0.lock().unwrap_or_else(|e| e.into_inner());
+        s.members_of(&label)
+    };
+    serde_json::json!({
+        "for": label,
+        "grouped": !members.is_empty(),
+        "members": members,
+        "outlineSides": [],
+    })
+}
+
 fn main() {
     let builder = tauri::Builder::default()
         // Hub-owns-exit lifecycle (widget-system.md Phase 0): the moon hub is
@@ -2364,6 +2579,7 @@ fn main() {
         list_widget_windows,
         set_dock,
         grab_dock,
+        dock_group_state,
         pointer_button_down,
         voice_status,
         voice_set_mode,
@@ -2401,6 +2617,7 @@ fn main() {
         list_widget_windows,
         set_dock,
         grab_dock,
+        dock_group_state,
         pointer_button_down
     ]);
 
@@ -2444,6 +2661,10 @@ fn main() {
                 if let Some(path) = layout_path() {
                     if let Ok(raw) = std::fs::read_to_string(&path) {
                         if let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) {
+                            // Restore each panel, remembering its label + final
+                            // (clamped) logical rect so docked neighbours can be
+                            // re-linked once every panel is spawned.
+                            let mut restored: Vec<(String, (i32, i32, i32, i32))> = Vec::new();
                             for p in doc["panels"].as_array().unwrap_or(&Vec::new()) {
                                 let Some(kind) = p["kind"].as_str() else { continue };
                                 let Some(desc) = registry_lookup(kind) else { continue };
@@ -2453,8 +2674,35 @@ fn main() {
                                 );
                                 let w = p["w"].as_f64().filter(|v| *v >= 220.0);
                                 let h = p["h"].as_f64().filter(|v| *v >= 120.0);
-                                let _ = spawn_panel(&handle, desc, Some(x), Some(y), w, h);
+                                if spawn_panel(&handle, desc, Some(x), Some(y), w, h).is_ok() {
+                                    restored.push((
+                                        panel_label(kind),
+                                        (
+                                            x as i32,
+                                            y as i32,
+                                            w.unwrap_or(desc.width) as i32,
+                                            h.unwrap_or(desc.height) as i32,
+                                        ),
+                                    ));
+                                }
                             }
+                            // Re-link docked clusters by geometry: panels saved
+                            // flush rejoin a star over the same members, so a
+                            // restored layout drags as a unit — not just visually
+                            // adjacent. The GROUPING decision uses the SAVED rects
+                            // (no live geometry read needed at setup, which the OS
+                            // may not have realized yet). The dock-group event
+                            // emitted below races the panels' webview load; each
+                            // panel re-pulls its membership via dock_group_state
+                            // once it wires its dock listeners (replay-on-
+                            // subscribe), so a missed boot-time event is recovered.
+                            let (diff, notify) = {
+                                let state = handle.state::<DockState>();
+                                let mut s =
+                                    state.0.lock().unwrap_or_else(|e| e.into_inner());
+                                s.form_groups_by_geometry(&restored)
+                            };
+                            dock_apply_and_notify(&handle, diff, notify);
                         }
                     }
                 }
@@ -2727,6 +2975,47 @@ mod panel_registry_tests {
         assert_eq!(panel_spawn_pos((1300, 50, 360, 440), 360, 1600), (940, 50, "l"));
         // Exactly fits → still right.
         assert_eq!(panel_spawn_pos((880, 50, 360, 440), 360, 1600), (1240, 50, "r"));
+    }
+
+    #[test]
+    fn cluster_bbox_unions_member_rects() {
+        assert_eq!(cluster_bbox(&[]), None);
+        // One member → itself.
+        assert_eq!(cluster_bbox(&[(100, 50, 360, 440)]), Some((100, 50, 360, 440)));
+        // Two flush-right panels → the perimeter spans BOTH, so a new panel
+        // appends past the right of the whole stack (never over member #1).
+        assert_eq!(
+            cluster_bbox(&[(100, 50, 360, 440), (460, 50, 360, 440)]),
+            Some((100, 50, 720, 440))
+        );
+        // Vertically offset members widen + heighten the box.
+        assert_eq!(
+            cluster_bbox(&[(100, 50, 200, 200), (250, 300, 200, 200)]),
+            Some((100, 50, 350, 450))
+        );
+    }
+
+    #[test]
+    fn pick_nearest_label_is_closest_with_stable_tie_break() {
+        let from = (1000, 100, 360, 440); // centre (1180, 320)
+        let cands = vec![
+            ("panel-far".to_string(), (0, 0, 100, 100)),
+            ("panel-near".to_string(), (980, 90, 360, 440)),
+        ];
+        assert_eq!(
+            pick_nearest_label(from, &cands).as_deref(),
+            Some("panel-near")
+        );
+        // No candidates → no anchor (the first panel free-floats).
+        assert_eq!(pick_nearest_label(from, &[]), None);
+        // Equidistant centres resolve by label, deterministically, so the snap
+        // target never flickers with HashMap iteration order.
+        let a = (100, 100, 100, 100); // centre (150, 150)
+        let tie = vec![
+            ("widget-b".to_string(), (0, 100, 100, 100)), // centre (50, 150)
+            ("widget-a".to_string(), (200, 100, 100, 100)), // centre (250, 150)
+        ];
+        assert_eq!(pick_nearest_label(a, &tie).as_deref(), Some("widget-a"));
     }
 }
 
@@ -3314,6 +3603,62 @@ mod dock_geometry_tests {
         assert_eq!(comps.len(), 2);
         let big = comps.iter().find(|c| c.len() == 3).expect("L-component");
         assert!(big.contains(&"a".to_string()) && big.contains(&"c".to_string()));
+    }
+
+    #[test]
+    fn form_groups_relinks_flush_clusters_and_leaves_singletons_free() {
+        let mut g = DockGroups::default();
+        // A saved layout after a restart: two flush panels + one detached.
+        let rects = vec![
+            ("panel-now".to_string(), (100, 100, 280, 220)),
+            ("panel-flow".to_string(), (380, 100, 280, 220)), // flush right of now
+            ("panel-settings".to_string(), (900, 100, 280, 220)), // alone
+        ];
+        let (diff, touched) = g.form_groups_by_geometry(&rects);
+        // now|flow rejoin one star rooted at the MIN label ("panel-flow"); the
+        // lone panel stays free (no group of one).
+        let mut members = g.members_of("panel-now");
+        members.sort();
+        assert_eq!(
+            members,
+            vec!["panel-flow".to_string(), "panel-now".to_string()]
+        );
+        assert!(g.members_of("panel-settings").is_empty());
+        // Exactly one attach (the non-root member parents under the root); both
+        // grouped labels are reported as touched.
+        assert_eq!(diff.iter().filter(|(_, _, attach)| *attach).count(), 1);
+        let mut t = touched;
+        t.sort();
+        assert_eq!(t, vec!["panel-flow".to_string(), "panel-now".to_string()]);
+
+        // Idempotent: a second pass over the SAME layout disturbs nothing — the
+        // labels are already grouped, so boot re-link never double-attaches.
+        let (diff2, touched2) = g.form_groups_by_geometry(&rects);
+        assert!(diff2.is_empty());
+        assert!(touched2.is_empty());
+    }
+
+    #[test]
+    fn form_groups_skips_a_component_touching_an_already_grouped_label() {
+        let mut g = DockGroups::default();
+        // Pre-existing runtime group: x|y already linked.
+        let _ = g.join("panel-y", "panel-x");
+        // A flush chain where a THIRD panel touches the existing pair.
+        let rects = vec![
+            ("panel-x".to_string(), (100, 100, 280, 220)),
+            ("panel-y".to_string(), (380, 100, 280, 220)),
+            ("panel-z".to_string(), (660, 100, 280, 220)), // flush right of y
+        ];
+        let (diff, touched) = g.form_groups_by_geometry(&rects);
+        // The whole component touches an already-grouped label → skipped
+        // wholesale (the guard): z is NOT yanked in, the existing group is
+        // untouched, no native ops emitted.
+        assert!(diff.is_empty());
+        assert!(touched.is_empty());
+        assert!(g.members_of("panel-z").is_empty());
+        let mut xy = g.members_of("panel-x");
+        xy.sort();
+        assert_eq!(xy, vec!["panel-x".to_string(), "panel-y".to_string()]);
     }
 }
 

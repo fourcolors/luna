@@ -25,6 +25,7 @@
     "allow-list-widget-windows",
     "allow-set-dock",
     "allow-grab-dock",
+    "allow-dock-group-state",
     "allow-pointer-button-down"
   ]
 }

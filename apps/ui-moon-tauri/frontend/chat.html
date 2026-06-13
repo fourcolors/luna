@@ -2978,16 +2978,14 @@
             popOutBtnP.textContent = '⤢';
             popOutBtnP.title = 'Open in widget window';
             popOutBtnP.setAttribute('data-action', 'pop-out');
-            popOutBtnP.addEventListener('click', async (e) => {
+            popOutBtnP.addEventListener('click', (e) => {
               e.stopPropagation();
               if (window.__TAURI__ && window.__TAURI__.core) {
-                // Cascade new windows — N pop-outs at the same default frame
-                // look like one window (perfectly stacked).
-                const open = await window.__TAURI__.core.invoke('list_widget_windows').catch(() => []);
-                const n = Array.isArray(open) ? open.length : 0;
+                // Snap-on-open (Rust) tiles the pop-out flush against the
+                // nearest open panel and links it in, so N pop-outs accrete
+                // into the stack instead of overlapping — no manual cascade.
                 window.__TAURI__.core.invoke('open_artifact_widget', {
                   artifactId: a.id, title: a.title || '',
-                  x: 180 + n * 44, y: 160 + n * 44,
                 }).catch(() => {/* best-effort */});
               }
             });
@@ -3039,19 +3037,17 @@
             popOutBtnS.textContent = '⤢';
             popOutBtnS.title = 'Open in widget window';
             popOutBtnS.setAttribute('data-action', 'pop-out');
-            popOutBtnS.addEventListener('click', async (e) => {
+            popOutBtnS.addEventListener('click', (e) => {
               e.stopPropagation();
               if (window.__TAURI__ && window.__TAURI__.core) {
                 // Widget windows render PINNED artifacts — pin this session
-                // artifact first (popping out IS pinning it as a widget),
-                // then spawn cascaded. The widget self-heals via the
-                // artifact-list broadcast once the pin lands.
+                // artifact first (popping out IS pinning it as a widget), then
+                // spawn. Snap-on-open (Rust) tiles it flush against the nearest
+                // open panel; the widget self-heals via the artifact-list
+                // broadcast once the pin lands.
                 if (!this._isPinned(a.id)) this.pin(a);
-                const open = await window.__TAURI__.core.invoke('list_widget_windows').catch(() => []);
-                const n = Array.isArray(open) ? open.length : 0;
                 window.__TAURI__.core.invoke('open_artifact_widget', {
                   artifactId: a.id, title: a.title || a.path || '',
-                  x: 180 + n * 44, y: 160 + n * 44,
                 }).catch(() => {/* best-effort */});
               }
             });
