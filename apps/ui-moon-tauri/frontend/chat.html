@@ -335,10 +335,23 @@
 
     .msg.assistant {
       align-self: flex-start;
-      background: color-mix(in oklab, var(--panel-tint) 22%, transparent);
+      /* Wash painted on the ::before layer below (wc-wobble hand-painted
+         edge, design fidelity) — text above stays crisp. */
+      background: transparent;
       border: none;
       border-radius: 4px 14px 14px 14px;
       color: var(--ink);
+      position: relative;
+      isolation: isolate;
+    }
+    .msg.assistant::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      background: color-mix(in oklab, var(--panel-tint) 22%, transparent);
+      filter: url(#wc-wobble);
+      z-index: -1;
     }
 
     /* Markdown tables (GFM). Dark-glass: thin separators, transparent

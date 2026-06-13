@@ -26,12 +26,16 @@
 .panel.dragging,
 .panel.dragging .panel-head { cursor: grabbing; }
 
-/* paper layer behind the content */
+/* paper layer behind the content — carries the hand-painted edge. The
+   wobble filter lives HERE (a dedicated empty layer), never on .panel
+   itself, so the panel's text/controls stay crisp while the paper edge
+   waves like real paint (the design's own trick). */
 .panel-wash {
   position: absolute;
   inset: 0;
   border-radius: inherit;
   background: var(--paper);
+  filter: url(#wc-wobble);
   transition: background 0.5s ease;
 }
 /* chrome: soft wash (default) — the tint pools at the head and feathers out */

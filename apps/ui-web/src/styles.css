@@ -327,12 +327,25 @@ html[data-theme='dark'] .row.event.level-error .kind { color: #e85d5d; }
   border: 1.3px solid var(--ink-faint);
   border-radius: 14px 4px 14px 14px;
 }
-/* Assistant bubble: soft wash, left-aligned */
+/* Assistant bubble: soft wash, left-aligned. The wash is painted on a
+   ::before layer carrying the wc-wobble filter — hand-painted edge like
+   the design, while the text above stays crisp. isolation:isolate keeps
+   the z-index:-1 layer inside the bubble's own stacking context. */
 .bubble.assistant {
   align-self: flex-start;
-  background: color-mix(in oklab, var(--panel-tint) 22%, transparent);
+  background: transparent;
   border: none;
   border-radius: 4px 14px 14px 14px;
+  isolation: isolate;
+}
+.bubble.assistant::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: color-mix(in oklab, var(--panel-tint) 22%, transparent);
+  filter: url(#wc-wobble);
+  z-index: -1;
 }
 .bubble.in-flight { opacity: 0.85; }
 
