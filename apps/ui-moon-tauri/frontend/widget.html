@@ -336,6 +336,8 @@
     contentArea.innerHTML = '';
     var iframe = document.createElement('iframe');
     iframe.className = 'widget-frame';
+    // Accessible name for screen readers (the frame is otherwise anonymous).
+    iframe.setAttribute('title', (artifact.title || 'Artifact') + ' (HTML preview)');
     iframe.setAttribute('sandbox', LunaWidgetSandbox.SANDBOX_ATTR);
     iframe.setAttribute('referrerpolicy', 'no-referrer');
     iframe.srcdoc = LunaWidgetSandbox.buildMcpSrcdoc(artifact.content || '');

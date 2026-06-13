@@ -84,6 +84,8 @@ describe("ArtifactPanel — kind-aware render", () => {
     expect(f).toBeTruthy()
     expect(f!.getAttribute("sandbox")).toBe("allow-scripts")
     expect(f!.getAttribute("sandbox")).not.toContain("allow-same-origin")
+    // a11y: the sandboxed frame has an accessible name (screen readers).
+    expect(f!.getAttribute("title")).toContain("Preview")
     const srcdoc = f!.getAttribute("srcdoc") || ""
     expect(srcdoc).toContain("<h1>live</h1>")
     expect(srcdoc).toContain("default-src 'none'")

@@ -90,9 +90,10 @@ const deriveContentKind = (
  * luna.* bridge (a preview has no live-data door). Solid updates `srcdoc`
  * reactively when the content changes.
  */
-const HtmlPreviewFrame: Component<{ content: string }> = (props) => (
+const HtmlPreviewFrame: Component<{ content: string; title: string }> = (props) => (
   <iframe
     class="artifact-iframe"
+    title={`${props.title} (HTML preview)`}
     sandbox={SANDBOX_ATTR}
     referrerpolicy="no-referrer"
     srcdoc={buildMcpSrcdoc(props.content)}
@@ -135,6 +136,7 @@ export const widgetEventsToForward = (
  */
 const LiveWidgetFrame: Component<{
   content: string
+  title: string
   bridgeCaps: ReadonlyArray<string> | null
   obsEvents: () => ReadonlyArray<ObsEvent>
 }> = (props) => {
@@ -175,6 +177,7 @@ const LiveWidgetFrame: Component<{
     <iframe
       ref={frame}
       class="artifact-iframe"
+      title={`${props.title} (widget)`}
       sandbox={SANDBOX_ATTR}
       referrerpolicy="no-referrer"
       srcdoc={buildSrcdoc(props.content)}
@@ -191,6 +194,7 @@ const LiveWidgetFrame: Component<{
  */
 const McpAppFrame: Component<{
   content: string
+  title: string
   artifactId: string
   mcp: WebMcpRelay
 }> = (props) => {
@@ -224,6 +228,7 @@ const McpAppFrame: Component<{
     <iframe
       ref={frame}
       class="artifact-iframe"
+      title={`${props.title} (app)`}
       sandbox={SANDBOX_ATTR}
       referrerpolicy="no-referrer"
     />
@@ -541,18 +546,24 @@ export const ArtifactPanel: Component<ArtifactPanelProps> = (props) => {
                     <MarkdownView text={s().content} />
                   </Match>
                   <Match when={s().kind === "html"}>
-                    <HtmlPreviewFrame content={s().content} />
+                    <HtmlPreviewFrame content={s().content} title={s().title} />
                   </Match>
                   <Match when={s().kind === "widget"}>
                     <LiveWidgetFrame
                       content={s().content}
+                      title={s().title}
                       bridgeCaps={s().bridgeCaps}
                       obsEvents={() => props.obsEvents ?? []}
                     />
                   </Match>
                   <Match when={s().kind === "mcp-app" && props.mcp}>
                     {(mcp) => (
-                      <McpAppFrame content={s().content} artifactId={s().id} mcp={mcp()} />
+                      <McpAppFrame
+                        content={s().content}
+                        title={s().title}
+                        artifactId={s().id}
+                        mcp={mcp()}
+                      />
                     )}
                   </Match>
                 </Switch>
