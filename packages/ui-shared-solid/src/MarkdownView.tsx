@@ -55,6 +55,34 @@ export const MarkdownView: Component<Props> = (props) => {
             // Fenced block with disallowed/unknown lang → plain <pre>.
             return <CodeBlockFallback source={source} />
           },
+          a: (aProps) => {
+            // Assistant-prose links must open in a NEW tab — a bare <a> would
+            // navigate this single-page app away from itself (the whole chat UI
+            // would vanish / reload). rel="noopener noreferrer" severs the opened
+            // page's access to window.opener and strips the referrer.
+            const href = aProps.href ?? ""
+            // Security gate: agent-authored text could smuggle a dangerous href
+            // into a one-click link, so only https: and mailto: render as real
+            // links. http:, javascript:, data:, file:, and relative/garbage
+            // hrefs are all blocked. `new URL()` throws on a malformed or
+            // relative href, which the catch treats as blocked.
+            const isAllowedHref = (h: string): boolean => {
+              try {
+                const proto = new URL(h).protocol
+                return proto === "https:" || proto === "mailto:"
+              } catch {
+                return false
+              }
+            }
+            // Blocked scheme → render the label as inert text: it stays readable,
+            // but the untrusted href is dropped so there's nothing to click.
+            if (!isAllowedHref(href)) return <span>{aProps.children}</span>
+            return (
+              <a href={href} target="_blank" rel="noopener noreferrer">
+                {aProps.children}
+              </a>
+            )
+          },
         }}
       >
         {props.text}
