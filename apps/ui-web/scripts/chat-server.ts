@@ -239,6 +239,7 @@ import {
   PromptWorkerLayer,
   WorkflowWorkerLayer,
   JobRunToolsProviderTag,
+  ChatThreadPosterTag,
 } from "@luna/adapter-sdk"
 import {
   ChatService,
@@ -2005,6 +2006,60 @@ export const buildBaseLayer = (
     }),
   ).pipe(Layer.provide(jobsStoreL))
 
+  // ChatService — hoisted above the worker registry so the chat_thread
+  // delivery poster (#124) can be provided ChatService. Effect layers are
+  // memoized by reference, so reusing this same `chatL` variable in both
+  // `chatThreadPosterL` below and the final mergeAll instantiates ChatService
+  // exactly once.
+  const chatL = Layer.provideMerge(
+    ChatService.Default,
+    Layer.mergeAll(
+      sdkAdapterL,
+      storeL,
+      clockL,
+      obsL,
+      telemetryL,
+      memoryRouterL,
+      threadToolsL,
+      // ChatService resolves SuggestedActions via Effect.serviceOption — wire
+      // it so the change-stream consumer + replay-on-subscribe activate.
+      suggestedActionsL,
+    ),
+  )
+
+  // #124: the chat_thread delivery sink. PromptWorker resolves
+  // ChatThreadPosterTag via Effect.serviceOption; this layer provides it,
+  // bridging the worker's finished result back into ChatService.deliverResult
+  // (which persists it + pushes a frame to live subscribers + emits a global
+  // toast notification). Same Effect.runtime/runPromise escape hatch as
+  // jobInputToolsL above. Provided `chatL` so it can resolve ChatService.
+  const chatThreadPosterL = Layer.effect(
+    ChatThreadPosterTag,
+    Effect.gen(function* () {
+      const chat = yield* ChatService
+      const runtime = yield* Effect.runtime<never>()
+      const runPromise = Runtime.runPromise(runtime)
+      return {
+        post: (delivery) =>
+          // Best-effort: deliverResult never fails (returns Option.none on a
+          // missing thread), and we swallow anything else so a delivery hiccup
+          // can never fail the job's run.
+          Effect.promise(() =>
+            runPromise(
+              chat
+                .deliverResult({
+                  threadId: delivery.threadId,
+                  text: delivery.text,
+                  source: delivery.source ?? "background-job",
+                  ...(delivery.label ? { label: delivery.label } : {}),
+                })
+                .pipe(Effect.asVoid, Effect.catchAllCause(() => Effect.void)),
+            ),
+          ),
+      }
+    }),
+  ).pipe(Layer.provide(chatL))
+
   // V2 registry: empty by default + PromptWorkerLayer registers the
   // 'prompt' worker at boot. Layer.provideMerge so the registry remains
   // visible to JobTickerLayer above it.
@@ -2018,6 +2073,7 @@ export const buildBaseLayer = (
         makeWorkerRegistry({}),
         agentNotesL,
         jobInputToolsL,
+        chatThreadPosterL,
       ),
     ),
   )
@@ -2037,22 +2093,6 @@ export const buildBaseLayer = (
   const alignmentStoreL = AlignmentStore.makeLayer(paths.lunaDbPath).pipe(Layer.provide(clockL))
   const beliefWriterL = BeliefWriter.Default.pipe(Layer.provide(memoryRouterL), Layer.provide(clockL))
   const surveyL = buildSurveyLayer({ alignmentStoreL, beliefWriterL, memoryRouterL, clockL })
-
-  const chatL = Layer.provideMerge(
-    ChatService.Default,
-    Layer.mergeAll(
-      sdkAdapterL,
-      storeL,
-      clockL,
-      obsL,
-      telemetryL,
-      memoryRouterL,
-      threadToolsL,
-      // ChatService resolves SuggestedActions via Effect.serviceOption — wire
-      // it so the change-stream consumer + replay-on-subscribe activate.
-      suggestedActionsL,
-    ),
-  )
 
   return Layer.mergeAll(
     uiL,

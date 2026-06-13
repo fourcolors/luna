@@ -21,13 +21,17 @@
  *     deliver_to?:    DeliverySink
  *   }
  *
- * V1 delivery sinks:
+ * Delivery sinks:
  *
  *   { kind: "obs_note", kind_tag?, session_id? }   — write to agent_notes
  *   { kind: "log" }                                — log only (default behaviour)
+ *   { kind: "chat_thread", thread_id }             — post the result back INTO
+ *                                                    a chat thread as an
+ *                                                    assistant message (issue
+ *                                                    #124, via ChatThreadPoster)
  *
- * `chat_thread` + `file` sinks are explicitly deferred to P5+; their dispatch
- * shape is reserved in DeliverySink so they can land without API churn.
+ * The `file` sink remains deferred; its dispatch shape can land later without
+ * API churn.
  *
  * Failure modes:
  *   - bad payload                 → WorkerError(reason:"bad_payload")
@@ -56,12 +60,17 @@ import {
   JobRunToolsProviderTag,
   type JobRunToolsProvider,
 } from "./job-run-tools.js"
+import {
+  ChatThreadPosterTag,
+  type ChatThreadPoster,
+} from "./chat-thread-poster.js"
 
 // ── Public payload types ────────────────────────────────────────────────────
 
 export type DeliverySink =
   | { readonly kind: "obs_note"; readonly kind_tag?: string; readonly session_id?: string }
   | { readonly kind: "log" }
+  | { readonly kind: "chat_thread"; readonly thread_id: string }
 
 export interface PromptPayload {
   readonly user_prompt: string
@@ -136,8 +145,14 @@ export function parsePromptPayload(raw: unknown): PromptPayload | string {
       }
     } else if (d["kind"] === "log") {
       out.deliver_to = { kind: "log" }
+    } else if (d["kind"] === "chat_thread") {
+      const threadId = d["thread_id"]
+      if (typeof threadId !== "string" || threadId.length === 0) {
+        return "deliver_to.chat_thread requires a non-empty thread_id"
+      }
+      out.deliver_to = { kind: "chat_thread", thread_id: threadId }
     } else {
-      return `deliver_to.kind must be "obs_note" or "log" (got ${JSON.stringify(d["kind"])})`
+      return `deliver_to.kind must be "obs_note", "log", or "chat_thread" (got ${JSON.stringify(d["kind"])})`
     }
   }
 
@@ -205,6 +220,17 @@ const jobNameFrom = (rawPayload: unknown, jobId: string): string => {
   return jobId
 }
 
+/** The job payload's `source` (e.g. "suggested-action"), or null when unset.
+ *  Used to mark a chat_thread delivery so the UI can render it "from a
+ *  background task" rather than as a live reply. */
+const sourceOf = (rawPayload: unknown): string | null => {
+  if (typeof rawPayload === "object" && rawPayload !== null) {
+    const source = (rawPayload as { source?: unknown }).source
+    if (typeof source === "string" && source.length > 0) return source
+  }
+  return null
+}
+
 /**
  * Build a `Worker<never>` from a resolved SDKClient + optional AgentNotesService.
  * Tests use this directly with a faked SDK and an in-memory AgentNotesService;
@@ -215,11 +241,18 @@ const jobNameFrom = (rawPayload: unknown, jobId: string): string => {
  * own runId (the `request_input` tool), spliced into the query's
  * `mcpServers`/`allowedTools` plus a system-prompt addendum. Absent →
  * byte-identical query options to the tool-free worker.
+ *
+ * `chatPoster` (optional, issue #124) is the chat-thread delivery capability.
+ * When present and the payload carries `deliver_to.chat_thread`, the finished
+ * result is posted back into the target thread as an assistant message. Absent
+ * → a `chat_thread` sink logs-and-drops (the result still lands in
+ * `job_runs.output_text`).
  */
 export const buildPromptWorker = (
   sdk: SDKClientService,
   notes: AgentNotesApi | null,
   jobTools: JobRunToolsProvider | null = null,
+  chatPoster: ChatThreadPoster | null = null,
 ): Worker<never> => {
   return (rawPayload, ctx) =>
     Effect.gen(function* () {
@@ -302,6 +335,23 @@ export const buildPromptWorker = (
               ),
             )
         }
+      } else if (parsed.deliver_to?.kind === "chat_thread") {
+        // Post the finished result back INTO a chat thread as an assistant
+        // message (issue #124). Best-effort: a missing/closed thread is
+        // logged-and-dropped inside the poster, and the result text still
+        // lands in job_runs.output_text below.
+        if (!chatPoster) {
+          yield* Effect.logWarning(
+            `[luna/prompt-worker] deliver_to=chat_thread requested but ChatThreadPoster not available; dropping delivery for job=${ctx.jobId}`,
+          )
+        } else {
+          yield* chatPoster.post({
+            threadId: parsed.deliver_to.thread_id,
+            text: resultText,
+            source: sourceOf(rawPayload) ?? "background-job",
+            label: jobNameFrom(rawPayload, ctx.jobId),
+          })
+        }
       }
 
       return { outputText: resultText } satisfies WorkerResult
@@ -339,7 +389,17 @@ export const PromptWorkerLayer = (
       // R does not grow and compositions without the provider (tests, boot
       // smokes) keep working unchanged.
       const jobTools = yield* Effect.serviceOption(JobRunToolsProviderTag)
-      const worker = buildPromptWorker(sdk, notes, Option.getOrNull(jobTools))
+      // Optional chat-thread delivery capability (issue #124). Read via
+      // serviceOption — same pattern as jobTools — so the layer's R does not
+      // grow and compositions without the poster (tests, boot smokes) keep
+      // working unchanged.
+      const chatPoster = yield* Effect.serviceOption(ChatThreadPosterTag)
+      const worker = buildPromptWorker(
+        sdk,
+        notes,
+        Option.getOrNull(jobTools),
+        Option.getOrNull(chatPoster),
+      )
       yield* reg.register(kind, worker)
     }),
   )

@@ -179,6 +179,27 @@ export type ChatFrame =
   | ChatSuggestedActionSet
   | ChatSuggestedActionUpdate
 
+/**
+ * A background/job/scheduled result that was delivered into a thread (issue
+ * #124). ChatService emits one of these on its `deliveries` stream every time
+ * `deliverResult` posts a result; the WS layer broadcasts it to ALL connected
+ * clients as a "Luna finished X" toast — so the user is notified even when the
+ * target thread is not the one on screen. Distinct from the per-thread
+ * ChatFrame stream (which only reaches subscribers of that one thread).
+ */
+export interface DeliveryNotification {
+  /** The thread the result landed in. Clicking the toast can open it. */
+  readonly threadId: string
+  /** Where the result came from, e.g. "suggested-action", "background-job". */
+  readonly source: string
+  /** Human label for what finished, e.g. the job/action title. */
+  readonly label: string
+  /** Short excerpt of the result text for the toast body. */
+  readonly preview: string
+  /** Wall-clock ms when delivered. */
+  readonly ts: number
+}
+
 /** Options accepted by `createThread`. Mirrors the subset of SessionOptions
  *  a chat caller cares about; ChatService overlays the chat-required fields
  *  (disableIdleTimeout: true, sdkOptions.includePartialMessages: true). */
