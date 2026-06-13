@@ -1326,16 +1326,29 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(btn.querySelector('rect')).not.toBeNull()
     })
 
-    it('Scenario: the copy icon carries explicit width/height so WKWebView renders it (regression)', () => {
-      // The icon is injected via innerHTML at runtime; WKWebView needs explicit
+    it('Scenario: both the copy AND the checkmark glyph carry explicit width/height so WKWebView renders them (regression)', async () => {
+      // The glyphs are injected via innerHTML at runtime; WKWebView needs explicit
       // intrinsic dimensions on the <svg> (a viewBox-only SVG sized only by CSS
       // renders blank there). jsdom doesn't lay out, so we pin the attributes.
       M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'hi' })
       M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'hi' } })
-      const svg = chat.querySelector('.msg.assistant .msg-copy svg') as SVGElement
+      const btn = chat.querySelector('.msg.assistant .msg-copy') as HTMLButtonElement
+      const svg = btn.querySelector('svg') as SVGElement
       expect(svg).not.toBeNull()
       expect(svg.getAttribute('width')).toBe('12')
       expect(svg.getAttribute('height')).toBe('12')
+
+      // After a successful copy the glyph swaps to the checkmark — which is also
+      // injected via innerHTML, so it must carry explicit dims too or it renders
+      // blank in WKWebView once the icon flips.
+      ;(navigator as any).clipboard = { writeText: () => Promise.resolve() }
+      btn.click()
+      await Promise.resolve()           // flush writeText().then(flashDone)
+      const check = btn.querySelector('svg') as SVGElement
+      expect(check).not.toBeNull()
+      expect(check.querySelector('path')).not.toBeNull()  // the checkmark glyph
+      expect(check.getAttribute('width')).toBe('12')
+      expect(check.getAttribute('height')).toBe('12')
     })
 
     it('Scenario: settled user + assistant messages each render a meta row with copy + time', () => {

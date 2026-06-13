@@ -1782,7 +1782,7 @@
     
     <div class="chat-messages" id="chat-messages">
       <div class="msg assistant">
-        Hey there! I am your native macOS Luna companion. Drag me anywhere on your screens, or click me to toggle this chat widget!
+        <div class="msg-body">Hey there! I am your native macOS Luna companion. Drag me anywhere on your screens, or click me to toggle this chat widget!</div>
       </div>
     </div>
     
@@ -3541,10 +3541,16 @@
         const banner = document.createElement('div');
         banner.id = bannerId;
         banner.className = 'msg assistant';
-        banner.textContent =
+        // Content wraps in .msg-body (the painted bubble) like every .msg kind —
+        // the bubble chrome lives on .msg-body, not .msg, so an unwrapped banner
+        // would render with no padding/wash.
+        const body = document.createElement('div');
+        body.className = 'msg-body';
+        body.textContent =
           `⚠️ Version mismatch: this app expects protocol v${MOON_EXPECTED_PROTOCOL_VERSION} ` +
           `but the server speaks v${serverVersion}. Update Luna Moon (or the server). ` +
           `Some features may not work.`;
+        banner.appendChild(body);
         DOM.chatMessages.appendChild(banner);
         DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
       },
