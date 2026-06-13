@@ -961,6 +961,15 @@ fn panel_spawn_pos(
     }
 }
 
+/// A caller-supplied window position is honoured only when BOTH coordinates are
+/// present — the window builders apply `.position()` solely on `(Some, Some)`.
+/// A partial position is therefore treated as "no position": the window snaps
+/// to the cluster instead of free-floating at the OS default. Keeps the
+/// snap-on-open gate in lockstep with the builder. Pure for tests.
+fn has_explicit_position(x: Option<f64>, y: Option<f64>) -> bool {
+    x.is_some() && y.is_some()
+}
+
 /// Bounding box (logical px) over a set of rects — the cluster perimeter a
 /// freshly-opened panel appends against, so it lands flush with the WHOLE
 /// stack and never overlaps a mid-cluster member. Pure for tests; None when
@@ -1181,8 +1190,9 @@ async fn open_widget(
     // never a dock member, so the first panel (opened from the gear with no
     // neighbours) still free-floats. When it WILL snap, build hidden and reveal
     // after positioning so it never flashes at the OS-default spot.
-    let pinned = x.is_some() || y.is_some();
-    let will_snap = opener.is_some() || !pinned;
+    // "Positioned" = BOTH coords (exactly what the builder honours); a partial
+    // position counts as none, so the window snaps rather than free-floating.
+    let will_snap = opener.is_some() || !has_explicit_position(x, y);
     let win_label = spawn_panel_at(&app, desc, &label, &url, x, y, None, None, !will_snap)?;
     let Some(win) = app.get_webview_window(&win_label) else {
         return Ok(win_label);
@@ -1251,8 +1261,9 @@ async fn open_artifact_widget(
     .inner_size(width.unwrap_or(360.0), height.unwrap_or(440.0))
     .min_inner_size(220.0, 160.0);
     // When it will snap (no explicit position), build hidden and reveal flush
-    // after positioning so the window never flashes at the OS-default spot.
-    let will_snap = x.is_none() && y.is_none();
+    // after positioning so the window never flashes at the OS-default spot. A
+    // partial position counts as none (the builder honours only both coords).
+    let will_snap = !has_explicit_position(x, y);
     builder = builder.visible(!will_snap);
     if let (Some(px), Some(py)) = (x, y) {
         builder = builder.position(px, py);
@@ -3016,6 +3027,16 @@ mod panel_registry_tests {
             ("widget-a".to_string(), (200, 100, 100, 100)), // centre (250, 150)
         ];
         assert_eq!(pick_nearest_label(a, &tie).as_deref(), Some("widget-a"));
+    }
+
+    #[test]
+    fn explicit_position_requires_both_coordinates() {
+        assert!(has_explicit_position(Some(10.0), Some(20.0)));
+        // A partial position is NOT honoured by the builder → counts as none,
+        // so the window snaps instead of free-floating at the OS default.
+        assert!(!has_explicit_position(Some(10.0), None));
+        assert!(!has_explicit_position(None, Some(20.0)));
+        assert!(!has_explicit_position(None, None));
     }
 }
 
