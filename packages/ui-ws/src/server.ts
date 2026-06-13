@@ -45,7 +45,11 @@ import { randomUUID } from "node:crypto"
 import { WebSocketServer, type WebSocket } from "ws"
 import { UIService } from "@luna/core"
 import type { ObsEvent } from "@luna/core"
-import type { ChatService, ChatFrame } from "@luna/chat-service"
+import type {
+  ChatService,
+  ChatFrame,
+  DeliveryNotification,
+} from "@luna/chat-service"
 import type { LocalShellBridge } from "./local-shell-bridge.js"
 import type { SecretRequestBridge } from "./secret-request-bridge.js"
 import {
@@ -887,6 +891,40 @@ export const startUIWebSocketServer = (
           }).pipe(Effect.catchAllCause(() => Effect.void)),
         )
       })
+    }
+
+    // #124: background-delivery notifications → broadcast a "Luna finished X"
+    // toast to EVERY connected client. Unlike the per-thread chat frames
+    // (which reach only that thread's subscribers via subscribe), this rides
+    // ChatService.deliveries so the result surfaces even when its thread is not
+    // the one on screen. The result message itself still lands in the thread
+    // via the normal assistant-done path (carrying ChatMessage.delivery).
+    // Forked into the SERVER SCOPE (not detached) so the consumer is
+    // interrupted deterministically on server teardown — mirroring the
+    // connector-refresh loop's `Effect.forkScoped`. (The nearby `.changes`
+    // hooks use Runtime.runFork because they run inside synchronous notify
+    // callbacks; this one is a long-lived runForEach in the gen body.)
+    if (chat !== null) {
+      yield* Effect.forkScoped(
+        chat.deliveries.pipe(
+          Stream.runForEach((n: DeliveryNotification) =>
+            Effect.gen(function* () {
+              const sockets = yield* Ref.get(activeSockets)
+              for (const sock of sockets) {
+                send(sock, {
+                  type: "result-delivered",
+                  threadId: n.threadId,
+                  source: n.source,
+                  label: n.label,
+                  preview: n.preview,
+                  ts: n.ts,
+                })
+              }
+            }),
+          ),
+          Effect.catchAllCause(() => Effect.void),
+        ),
+      )
     }
 
     // The connection-handler effect: it OWNS its own scope (so we can use

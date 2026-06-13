@@ -78,6 +78,7 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "tool-call",
   "tool-result",
   "turn-complete",
+  "result-delivered",
   "account-list",
   "skill-catalog",
   "skill-status",
@@ -272,8 +273,10 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // ledger-safe edit adds artifact-edit (client) → 46 server / 37 client.
     // Suggested Actions (per-thread, gated on capabilities.suggestedActions)
     // adds suggested-action-set + suggested-action-update (server) and
-    // suggested-action-respond (client) → 48 server / 38 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(48)
+    // suggested-action-respond (client) → 48 server / 38 client. The
+    // background-result delivery sink (#124) adds result-delivered (server,
+    // broadcast — the "Luna finished X" toast) → 49 server / 38 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(49)
     expect(literalsForUnion(src, "ClientFrame")).toHaveLength(38)
   })
 

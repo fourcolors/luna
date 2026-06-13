@@ -57,6 +57,12 @@ export interface ChatAttachment {
   readonly data: string
 }
 
+/** Provenance for an assistant turn delivered by a background job (#124). */
+export interface ChatMessageDelivery {
+  readonly source: string
+  readonly label?: string
+}
+
 export interface ChatMessage {
   readonly id: string
   readonly seq: number
@@ -66,6 +72,9 @@ export interface ChatMessage {
   readonly toolUses: ReadonlyArray<ChatToolUse>
   /** Image attachments. Non-empty only on user turns. */
   readonly attachments: ReadonlyArray<ChatAttachment>
+  /** Present only when this turn was delivered by a background job (#124).
+   *  The UI renders it "from a background task" rather than a live reply. */
+  readonly delivery?: ChatMessageDelivery
 }
 
 export interface SessionSummary {
@@ -589,6 +598,20 @@ export interface TurnCompleteFrame {
   readonly threadId: string
 }
 
+/**
+ * Server→client: a background/job result was delivered into a thread (#124).
+ * Broadcast to every client as a "Luna finished X" toast (surfaces even when
+ * that thread is not on screen). The message itself arrives via assistant-done.
+ */
+export interface ResultDeliveredFrame {
+  readonly type: "result-delivered"
+  readonly threadId: string
+  readonly source: string
+  readonly label: string
+  readonly preview: string
+  readonly ts: number
+}
+
 /** Server→client: a chunk of pty stdout, base64-encoded (raw bytes, may include control codes). */
 export interface PtyOutputFrame {
   readonly type: "pty-output"
@@ -783,6 +806,7 @@ export type ServerFrame =
   | SuggestedActionSetFrame
   | SuggestedActionUpdateFrame
   | TurnCompleteFrame
+  | ResultDeliveredFrame
   | PtyOutputFrame
   | VaultListFrame
   | VaultStatusFrame

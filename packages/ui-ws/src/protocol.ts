@@ -265,6 +265,28 @@ export interface TurnCompleteFrame {
   readonly threadId: string
 }
 
+/**
+ * A background/job/scheduled result was delivered into a thread (issue #124).
+ * BROADCAST to every connected client (not scoped to one thread's subscribers)
+ * so a "Luna finished X" toast surfaces even when that thread is not the one on
+ * screen. The result message itself also lands in the thread via the normal
+ * assistant-done frame (carrying ChatMessage.delivery); this frame is purely
+ * the cross-thread notification.
+ */
+export interface ResultDeliveredFrame {
+  readonly type: "result-delivered"
+  /** Thread the result landed in (clicking the toast can open it). */
+  readonly threadId: string
+  /** Where the result came from, e.g. "suggested-action", "background-job". */
+  readonly source: string
+  /** Human label for what finished, e.g. the job/action title. */
+  readonly label: string
+  /** Short excerpt of the result for the toast body. */
+  readonly preview: string
+  /** Wall-clock ms when delivered. */
+  readonly ts: number
+}
+
 export interface AccountListFrame {
   readonly type: "account-list"
   readonly accounts: ReadonlyArray<{
@@ -1131,6 +1153,7 @@ export type ServerFrame =
   | ToolCallFrame
   | ToolResultFrame
   | TurnCompleteFrame
+  | ResultDeliveredFrame
   | AccountListFrame
   | SkillCatalogFrame
   | SkillStatusFrame
