@@ -217,4 +217,66 @@ describe("scheduler tools — V2", () => {
     )
     expect(parseTextResult<{ cancelled: boolean }>(result as ToolCallResult).cancelled).toBe(false)
   })
+
+  it("schedule_cancel refuses to delete a non-scheduler jobs row (scoped) or a system id", async () => {
+    const result = await Effect.runPromise(
+      withScheduler(
+        Effect.gen(function* () {
+          const jobsStore = yield* JobsStoreService
+          const [, , cancelTool] = makeSchedulerTools(jobsStore)
+          // A durable job owned by something else (e.g. a suggested-action clone).
+          yield* jobsStore.record({
+            id: "saj-someaction",
+            kind: "workflow",
+            spec: "",
+            payload: { label: "x", source: "suggested-action" },
+          })
+          const foreign = parseTextResult<{ cancelled: boolean }>(
+            (yield* Effect.promise(() =>
+              cancelTool.handler({ triggerId: "saj-someaction" }, undefined),
+            )) as ToolCallResult,
+          )
+          const survived = yield* jobsStore.getById("saj-someaction")
+          const sys = parseTextResult<{ cancelled: boolean }>(
+            (yield* Effect.promise(() =>
+              cancelTool.handler({ triggerId: "system:wake" }, undefined),
+            )) as ToolCallResult,
+          )
+          return { foreign, survived, sys }
+        }),
+      ),
+    )
+    // The foreign row is NOT deleted, and the tool reports cancelled:false.
+    expect(result.foreign.cancelled).toBe(false)
+    expect(result.survived).not.toBeNull()
+    expect(result.sys.cancelled).toBe(false)
+  })
+
+  it("schedule_list reports each agent schedule's enabled flag (quarantined → enabled:false)", async () => {
+    const result = await Effect.runPromise(
+      withScheduler(
+        Effect.gen(function* () {
+          const jobsStore = yield* JobsStoreService
+          const [createTool, listTool] = makeSchedulerTools(jobsStore)
+          const created = parseTextResult<{ triggerId: string }>(
+            (yield* Effect.promise(() =>
+              createTool.handler({ expr: "0 9 * * 1", prompt: "standup", label: "s" }, undefined),
+            )) as ToolCallResult,
+          )
+          const beforeList = parseTextResult<{ triggers: Array<{ enabled: boolean }> }>(
+            (yield* Effect.promise(() => listTool.handler({}, undefined))) as ToolCallResult,
+          )
+          // Simulate the ticker quarantining it.
+          yield* jobsStore.setV2Fields(created.triggerId, { enabled: false })
+          const afterList = parseTextResult<{ triggers: Array<{ triggerId: string; enabled: boolean }> }>(
+            (yield* Effect.promise(() => listTool.handler({}, undefined))) as ToolCallResult,
+          )
+          return { beforeList, afterList, id: created.triggerId }
+        }),
+      ),
+    )
+    expect(result.beforeList.triggers[0]!.enabled).toBe(true)
+    const after = result.afterList.triggers.find((t) => t.triggerId === result.id)
+    expect(after?.enabled).toBe(false)
+  })
 })

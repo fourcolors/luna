@@ -54,9 +54,12 @@ const nextRunAtUtc = (expr: string): number | null => {
   }
 }
 
-let scheduleCounter = 0
+// Effectively-unique id: a ms timestamp (monotonic across restarts) + a random
+// suffix, mirroring JobScheduler.genId. A process-local counter would reset on
+// restart and could collide with an already-persisted schedule — record()
+// rejects duplicate ids, so that would make schedule_create fail nondeterministically.
 const nextScheduleId = (): string =>
-  `sched-${++scheduleCounter}-${Math.random().toString(36).slice(2, 8)}`
+  `sched-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 
 const createShape = {
   expr: z
@@ -219,6 +222,9 @@ export const makeSchedulerTools = (
             registeredAt: new Date(r.createdAt).toISOString(),
             source: "agent" as const,
             cancellable: true as const,
+            // `enabled: false` means the ticker quarantined it (e.g. its cron
+            // later proved unschedulable) — it persists but no longer fires.
+            enabled: r.enabled,
           }))
         const systemEntries = systemSchedules.map((s) => ({
           triggerId: `system:${s.label}`,
@@ -227,6 +233,7 @@ export const makeSchedulerTools = (
           registeredAt: null,
           source: "system" as const,
           cancellable: false as const,
+          enabled: true as const,
         }))
         return { triggers: [...agentEntries, ...systemEntries] } as const
       }),
@@ -243,6 +250,29 @@ export const makeSchedulerTools = (
     ...SCHEDULER_TOOL_DISCOVERY,
     handler: (args) =>
       Effect.gen(function* () {
+        // Scope the delete to agent-created scheduler rows ONLY. Without this
+        // guard, schedule_cancel would DELETE any jobs row by id — e.g. a saved
+        // kind:"workflow" job or a suggested-action one-shot keyed saj-<id> —
+        // silently destroying durable state it does not own and reporting
+        // {cancelled:true}. System schedules (system:* ids) are read-only here.
+        if (args.triggerId.startsWith("system:")) {
+          return { cancelled: false } as const
+        }
+        const row = yield* jobsStore
+          .getById(args.triggerId)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ToolError({ tool: "schedule_cancel", op: "lookup", cause }),
+            ),
+          )
+        if (
+          !row ||
+          row.kind !== "prompt" ||
+          row.payload.source !== "scheduler-tools"
+        ) {
+          return { cancelled: false } as const
+        }
         const cancelled = yield* jobsStore
           .remove(args.triggerId)
           .pipe(

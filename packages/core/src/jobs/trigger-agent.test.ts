@@ -36,24 +36,6 @@ describe("TriggerAgent cron validation", () => {
     await Effect.runPromise(Effect.scoped(prog).pipe(Effect.provide(stack)))
   })
 
-  it("honors an id hint so a triggerId is stable across boot-reloads", async () => {
-    const prog = Effect.gen(function* () {
-      const trigger = yield* TriggerAgent
-      const id = yield* trigger.register(
-        {
-          kind: "cron",
-          expr: "*/30 * * * *",
-          build: () => ({ run: Effect.succeed("noop") }),
-        },
-        "stable-trigger-id",
-      )
-      expect(id).toBe("stable-trigger-id")
-      const list = yield* trigger.list
-      expect(list[0]?.id).toBe("stable-trigger-id")
-    })
-    await Effect.runPromise(Effect.scoped(prog).pipe(Effect.provide(stack)))
-  })
-
   it("accepts a normal schedulable cron", async () => {
     const prog = Effect.gen(function* () {
       const trigger = yield* TriggerAgent

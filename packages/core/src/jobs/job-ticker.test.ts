@@ -330,6 +330,49 @@ describe("JobTicker", () => {
     )
   })
 
+  it("a failed retention prune does NOT advance lastPruneAt (retries on the next drain)", async () => {
+    let pruneCalls = 0
+    const prog = Effect.gen(function* () {
+      const real = yield* JobsStoreService
+      const wrapped: JobsStoreApi = {
+        ...real,
+        pruneRuns: () => {
+          pruneCalls++
+          return Effect.fail(new JobsStoreError({ op: "delete", message: "db down" }))
+        },
+      }
+      yield* Effect.gen(function* () {
+        const ticker = yield* JobTicker
+        yield* ticker.drain
+        yield* ticker.drain
+      }).pipe(
+        Effect.provide(
+          JobTickerLayer({ autoStart: false }).pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeed(JobsStoreService, wrapped),
+                makeWorkerRegistry({}),
+                Clock.Default,
+              ),
+            ),
+          ),
+        ),
+      )
+      // Failure didn't advance lastPruneAt, so BOTH drains attempted the prune.
+      expect(pruneCalls).toBe(2)
+    })
+    await Effect.runPromise(
+      prog.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            JobsStoreService.Memory.pipe(Layer.provide(Clock.Default)),
+            Clock.Default,
+          ),
+        ),
+      ),
+    )
+  })
+
   it("a drain runs the retention sweep, pruning finished runs older than retentionMaxAge", async () => {
     const noop: Worker = () => Effect.succeed({ outputText: null })
     const prog = Effect.gen(function* () {

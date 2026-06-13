@@ -431,22 +431,22 @@ export const JobTickerLayer = (
         }
 
         // Retention sweep (throttled): prune closed runs older than the
-        // retention window. Best-effort — a failing prune logs and the loop
-        // continues (the next eligible tick retries).
+        // retention window. On failure we log and DO NOT advance lastPruneAt,
+        // so the next drain retries instead of skipping a full sweep interval.
         let pruned = 0
         const lastPrune = yield* Ref.get(lastPruneAt)
         if (tickAt - lastPrune >= retentionSweepIntervalMs) {
-          pruned = yield* store.pruneRuns(tickAt - retentionMaxAgeMs).pipe(
-            Effect.catchAll((err) =>
-              Effect.as(
-                Effect.logWarning(
-                  `[luna/sched] retention prune failed: ${err.message}`,
-                ),
-                0,
-              ),
-            ),
-          )
-          yield* Ref.set(lastPruneAt, tickAt)
+          const pruneResult = yield* store
+            .pruneRuns(tickAt - retentionMaxAgeMs)
+            .pipe(Effect.either)
+          if (pruneResult._tag === "Right") {
+            pruned = pruneResult.right
+            yield* Ref.set(lastPruneAt, tickAt)
+          } else {
+            yield* Effect.logWarning(
+              `[luna/sched] retention prune failed: ${pruneResult.left.message} — will retry next tick`,
+            )
+          }
         }
 
         return {

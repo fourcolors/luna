@@ -63,15 +63,9 @@ export interface TriggerSummary {
 }
 
 export interface TriggerAgentApi {
-  /**
-   * Register a trigger. Pass `idHint` to force a specific TriggerId (used by
-   * boot-reload to keep a persisted schedule's id stable across restarts, so a
-   * `triggerId` the agent returned earlier still cancels after a reboot).
-   * When omitted, a fresh runtime id is generated.
-   */
+  /** Register a trigger; a fresh runtime id is generated and returned. */
   readonly register: (
     spec: TriggerSpec,
-    idHint?: TriggerId,
   ) => Effect.Effect<TriggerId, TriggerError, Scope.Scope>
 
   /**
@@ -144,9 +138,9 @@ const make = (
       )
     })
 
-  const register: TriggerAgentApi["register"] = (spec, idHint) =>
+  const register: TriggerAgentApi["register"] = (spec) =>
     Effect.gen(function* () {
-      const id = idHint ?? nextTriggerId()
+      const id = nextTriggerId()
 
       if (spec.kind === "cron") {
         // Use Either-based parser for typed errors. Pin to UTC so the cron
