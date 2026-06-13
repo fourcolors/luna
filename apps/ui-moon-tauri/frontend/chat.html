@@ -115,38 +115,184 @@
     }
     .mic-btn[data-voice-state="error"] { color: #f87171; }
 
-    /* Header (window dragging lives on the widget title bar, not here) */
+    /* Header (window dragging lives on the widget title bar, not here).
+       Three zones: identity cluster (fixed) | Luna bar (flex, free space) |
+       actions (fixed). The flex bar in the middle is what the old space-between
+       layout left empty; it now hosts Luna's idle quip / suggestion teaser. */
     .chat-header {
-      padding: 14px 18px;
+      padding: 11px 14px 11px 16px;
       border-bottom: 1px solid var(--ink-faint);
       display: flex;
       align-items: center;
-      justify-content: space-between;
+      gap: 12px;
     }
-    
+
     .chat-title-group {
       display: flex;
       align-items: center;
       gap: 10px;
       pointer-events: none;
+      flex: 0 0 auto;
     }
-    
-    .chat-avatar {
-      width: 28px;
-      height: 28px;
-      background: radial-gradient(circle, var(--moon-bright) 0%, var(--accent) 100%);
+
+    .chat-meta { display: flex; flex-direction: column; gap: 1px; }
+    /* Status + build share one compact row beneath the name. */
+    .chat-status-row { display: flex; align-items: center; gap: 7px; }
+
+    /* ── Animated Luna face (replaces the old plain .chat-avatar orb).
+       A cute full-moon companion: glowing watercolor body (the same
+       --moon-bright→--accent blend the old orb used, so it re-themes across
+       every palette), faint craters, blinking eyes, a soft smile. Reacts to
+       connection / thinking / voice / suggesting via [data-state], set by the
+       MoonFace controller. Continuous motion is transform/opacity ONLY; the
+       soft drop-shadow "glow" is a static rest filter that TRANSITIONS (not
+       loops) between states, and the listening breath is an opacity/scale glow
+       layer (::before) — so nothing re-rasters a filter every frame (which is
+       costly in WKWebView). ── */
+    .luna-face {
+      width: 38px;
+      height: 38px;
+      flex: 0 0 auto;
+      position: relative;
+      pointer-events: none;
+      filter: drop-shadow(0 2px 7px color-mix(in oklab, var(--accent) 45%, transparent));
+      transition: filter 0.5s ease, opacity 0.5s ease;
+    }
+    .luna-face-svg { width: 100%; height: 100%; display: block; overflow: visible; }
+
+    /* Listening "breath" glow — a cheap radial gradient (no filter) painted
+       BEHIND the moon (::before is the first pseudo-child, so it sits under the
+       in-flow <svg>) that pulses via opacity/scale. Compositor-only, so it
+       replaces the old animated drop-shadow which re-rastered each frame. */
+    .luna-face::before {
+      content: '';
+      position: absolute;
+      inset: -30%;
       border-radius: 50%;
-      box-shadow: 0 0 8px color-mix(in oklab, var(--accent) 40%, transparent);
+      background: radial-gradient(circle, color-mix(in oklab, var(--accent) 45%, transparent) 0%, transparent 72%);
+      opacity: 0;
+      pointer-events: none;
     }
-    
+
+    .luna-bob {
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: luna-bob 5.4s ease-in-out infinite;
+    }
+    @keyframes luna-bob {
+      0%, 100% { transform: translateY(0) rotate(-1.5deg); }
+      50%      { transform: translateY(-1.6px) rotate(1.5deg); }
+    }
+
+    .luna-body-shade { mix-blend-mode: multiply; opacity: 0.5; }
+    .luna-crater { fill: var(--moon-shadow); opacity: 0.14; }
+    .luna-cheek  { fill: color-mix(in oklab, var(--wash-2, #e0a0a8) 80%, #ff9aa2); opacity: 0.4; }
+
+    /* Gradient stop colors set HERE (CSS declarations), not on the SVG
+       stop-color attribute, so var()/color-mix() actually resolve in WebKit/
+       WKWebView. The hardcoded hex fallbacks live in the markup. */
+    #lunaBody .luna-body-stop0  { stop-color: var(--moon-bright); }
+    #lunaBody .luna-body-stop1  { stop-color: color-mix(in oklab, var(--moon-bright) 52%, var(--accent)); }
+    #lunaBody .luna-body-stop2  { stop-color: color-mix(in oklab, var(--accent) 82%, var(--moon-bright)); }
+    #lunaShade .luna-shade-stop0 { stop-color: var(--moon-shadow); }
+
+    .luna-eye {
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: luna-blink 5.1s ease-in-out infinite;
+    }
+    .luna-eye-r { animation-delay: 40ms; }
+    @keyframes luna-blink {
+      0%, 90%, 100% { transform: scaleY(1); }
+      94%           { transform: scaleY(0.1); }
+    }
+    .luna-eyeball { fill: #222a44; }
+    .luna-spark   { fill: var(--moon-bright); opacity: 0.95; }
+
+    .luna-eyes-happy { opacity: 0; }
+    .luna-eye-arc { fill: none; stroke: #222a44; stroke-width: 3.4; stroke-linecap: round; }
+
+    .luna-mouth {
+      fill: none;
+      stroke: #222a44;
+      stroke-width: 3.2;
+      stroke-linecap: round;
+      transform-box: fill-box;
+      transform-origin: center;
+    }
+    .luna-mouth-o { fill: #222a44; opacity: 0; transform-box: fill-box; transform-origin: center; }
+    .luna-mouth-frown { fill: none; stroke: #222a44; stroke-width: 3.2; stroke-linecap: round; opacity: 0; }
+    .luna-sparkle { fill: var(--moon-bright); opacity: 0; transform-box: fill-box; transform-origin: 60px 60px; }
+
+    /* thinking / busy (a turn is in flight) — eyes drift up, a little "hmm". */
+    .luna-face[data-state="busy"] .luna-eyes    { transform: translate(-2px, -3px); }
+    .luna-face[data-state="busy"] .luna-mouth   { opacity: 0; }
+    .luna-face[data-state="busy"] .luna-mouth-o { opacity: 1; animation: luna-hmm 1.6s ease-in-out infinite; }
+    .luna-face[data-state="busy"] .luna-sparkle { opacity: 1; animation: luna-twinkle-orbit 3.2s linear infinite; }
+    .luna-face[data-state="busy"]               { filter: drop-shadow(0 0 9px color-mix(in oklab, var(--accent) 65%, transparent)); }
+    @keyframes luna-hmm { 0%,100% { transform: scaleY(0.7) translateY(1px); } 50% { transform: scaleY(1) translateY(0); } }
+    @keyframes luna-twinkle-orbit {
+      0%   { opacity: 0;   transform: rotate(0deg) scale(0.7); }
+      30%  { opacity: 0.9; }
+      70%  { opacity: 0.9; }
+      100% { opacity: 0;   transform: rotate(120deg) scale(1); }
+    }
+
+    /* listening (voice) — wide eyes + a breathing glow on the ::before layer
+       (opacity/scale, NOT an animated filter). */
+    .luna-face[data-state="listening"] .luna-eye { animation: none; transform: scale(1.18); }
+    .luna-face[data-state="listening"]::before   { animation: luna-listen-pulse 2.2s ease-in-out infinite; }
+    @keyframes luna-listen-pulse {
+      0%, 100% { opacity: 0.4; transform: scale(0.9); }
+      50%      { opacity: 0.8; transform: scale(1.12); }
+    }
+
+    /* speaking — mouth chatters. */
+    .luna-face[data-state="speaking"] .luna-mouth   { opacity: 0; }
+    .luna-face[data-state="speaking"] .luna-mouth-o { opacity: 1; animation: luna-talk 0.42s ease-in-out infinite; }
+    @keyframes luna-talk { 0%,100% { transform: scaleY(0.35); } 50% { transform: scaleY(1.05); } }
+
+    /* suggesting — happy closed-eye arcs, a little bounce, a sparkle. (The
+       smile stays as-is; the eyes + bounce carry the delight.) */
+    .luna-face[data-state="suggesting"] .luna-eyes       { opacity: 0; }
+    .luna-face[data-state="suggesting"] .luna-eyes-happy { opacity: 1; }
+    .luna-face[data-state="suggesting"] .luna-bob        { animation: luna-bounce 1.5s ease-in-out infinite; }
+    .luna-face[data-state="suggesting"] .luna-sparkle    { opacity: 1; animation: luna-pop 1.5s ease-in-out infinite; }
+    .luna-face[data-state="suggesting"]                  { filter: drop-shadow(0 0 11px color-mix(in oklab, var(--accent) 70%, transparent)); }
+    @keyframes luna-bounce { 0%,100% { transform: translateY(0) rotate(0); } 35% { transform: translateY(-3px) rotate(3deg); } 70% { transform: translateY(0) rotate(-2deg); } }
+    @keyframes luna-pop { 0%,100% { transform: scale(0.6); opacity: 0; } 45% { transform: scale(1.1); opacity: 1; } }
+
+    /* connecting — sleepy half-lids, slow drift. */
+    .luna-face[data-state="connecting"] .luna-eye { animation: none; transform: scaleY(0.42); }
+    .luna-face[data-state="connecting"] .luna-bob { animation-duration: 7.5s; }
+    .luna-face[data-state="connecting"]           { opacity: 0.85; filter: drop-shadow(0 0 5px color-mix(in oklab, var(--accent) 30%, transparent)); }
+
+    /* offline — eyes shut, desaturated, gentle frown (smile→frown via opacity,
+       not the CSS `d` property which WKWebView doesn't support). */
+    .luna-face[data-state="offline"] .luna-eye        { animation: none; transform: scaleY(0.08); }
+    .luna-face[data-state="offline"] .luna-mouth      { opacity: 0; }
+    .luna-face[data-state="offline"] .luna-mouth-frown { opacity: 1; }
+    .luna-face[data-state="offline"] .luna-bob        { animation-duration: 8s; }
+    .luna-face[data-state="offline"]             { filter: grayscale(0.55) drop-shadow(0 1px 4px rgba(0,0,0,0.35)); opacity: 0.7; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .luna-bob, .luna-eye, .luna-mouth-o, .luna-sparkle,
+      .luna-face[data-state="listening"]::before,   /* listening breath glow */
+      .luna-face[data-state] .luna-bob,
+      .luna-face[data-state] .luna-mouth-o,
+      .luna-face[data-state] .luna-sparkle { animation: none !important; }
+    }
+
     /* Watercolor: handwritten style title. */
     .chat-meta h2 {
       font-family: var(--font-hand);
-      font-size: 17px;
+      font-size: 18px;
       font-weight: 600;
+      line-height: 1.05;
+      margin: 0;
       color: var(--ink);
     }
-    
+
     .chat-meta span {
       font-size: 0.65rem;
       display: flex;
@@ -207,7 +353,79 @@
       color: var(--ink-soft);
       font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
       letter-spacing: 0.02em;
+      line-height: 1;
     }
+    /* Dim middot separating the status from the build sha (only when shown). */
+    .chat-meta small#build-sha:not([hidden])::before {
+      content: '·';
+      margin-right: 6px;
+      color: var(--ink-faint);
+    }
+
+    /* ── Free-space "Luna bar": an idle quip XOR a suggestion teaser ───────
+       Fills the gap the old space-between layout left empty. The container is
+       drag-through (pointer-events:none) so the empty/quip bar still drags the
+       native window; only the suggestion chip re-enables pointer events so it
+       stays clickable. Quip = a playful comment; suggestion = a teaser for a
+       `suggest_action` proposal that, on click, opens the full docked panel. ── */
+    .luna-bar {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+      overflow: hidden;
+    }
+    .luna-quip {
+      font-family: var(--font-hand);
+      font-size: 15px;
+      /* --ink-soft (≈3:1 on light paper) fails WCAG AA for this 15px text; a
+         baked ink/paper mix clears 4.5:1 in all six palettes while keeping the
+         soft, hand-written feel. */
+      color: color-mix(in oklab, var(--ink) 78%, var(--paper));
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+      opacity: 1;
+      transition: opacity 0.6s ease;
+      text-align: center;
+    }
+    .luna-quip.fading { opacity: 0; }
+    .luna-quip[hidden] { display: none; }
+
+    .luna-suggestion {
+      pointer-events: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      max-width: 100%;
+      padding: 5px 11px 5px 9px;
+      border-radius: 999px;
+      border: 1px solid color-mix(in oklab, var(--accent) 38%, transparent);
+      background: color-mix(in oklab, var(--accent) 14%, transparent);
+      color: var(--ink);
+      font-family: var(--font-body);
+      font-size: 12px;
+      cursor: pointer;
+      line-height: 1.1;
+      transition: background 0.2s, border-color 0.2s, transform 0.12s;
+      animation: luna-chip-in 0.4s ease;
+    }
+    .luna-suggestion:hover { background: color-mix(in oklab, var(--accent) 22%, transparent); border-color: color-mix(in oklab, var(--accent) 55%, transparent); }
+    .luna-suggestion:active { transform: translateY(1px); }
+    .luna-suggestion[hidden] { display: none; }
+    @keyframes luna-chip-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
+    .luna-suggestion-spark { font-size: 12px; line-height: 1; }
+    .luna-suggestion-text {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+      font-weight: 500;
+    }
+    .luna-suggestion-go { color: var(--ink-soft); font-size: 13px; line-height: 1; flex: 0 0 auto; }
 
 
     @keyframes pulseConnecting {
@@ -1709,16 +1927,91 @@
     <!-- Chat Header supports dragging the native window too! -->
     <div class="chat-header" data-tauri-drag-region>
       <div class="chat-title-group">
-        <div class="chat-avatar"></div>
+        <!-- Animated Luna face. Decorative (aria-hidden) + non-interactive so
+             it keeps dragging the native window like the old orb did. The
+             MoonFace controller sets data-state for connection / thinking /
+             voice / suggesting reactions. -->
+        <div class="luna-face" id="luna-face" data-state="" aria-hidden="true">
+          <svg class="luna-face-svg" viewBox="0 0 120 120">
+            <defs>
+              <!-- Stop colors are themed via CSS (see #lunaBody/.luna-*-stop
+                   rules) NOT the stop-color presentation attribute: var()/
+                   color-mix() are only substituted in CSS declarations, so in
+                   WebKit/WKWebView an attribute-level var() drops to black. The
+                   hardcoded hexes below are the safety-net fallback. -->
+              <radialGradient id="lunaBody" cx="38%" cy="33%" r="75%">
+                <stop class="luna-body-stop0" offset="0%"   stop-color="#f0f6ff"/>
+                <stop class="luna-body-stop1" offset="58%"  stop-color="#bfcce8"/>
+                <stop class="luna-body-stop2" offset="100%" stop-color="#9bb5d6"/>
+              </radialGradient>
+              <radialGradient id="lunaShade" cx="74%" cy="78%" r="62%">
+                <stop class="luna-shade-stop0" offset="0%" stop-color="#0f1225" stop-opacity="0.55"/>
+                <stop offset="100%" stop-color="#0f1225" stop-opacity="0"/>
+              </radialGradient>
+            </defs>
+            <g class="luna-bob">
+              <circle cx="60" cy="60" r="47" fill="url(#lunaBody)"/>
+              <circle class="luna-body-shade" cx="60" cy="60" r="47" fill="url(#lunaShade)"/>
+              <!-- craters on the periphery, clear of the face -->
+              <circle class="luna-crater" cx="90" cy="44" r="5.5"/>
+              <circle class="luna-crater" cx="30" cy="32" r="4"/>
+              <circle class="luna-crater" cx="86" cy="84" r="3.4"/>
+              <!-- cheeks -->
+              <ellipse class="luna-cheek" cx="39" cy="71" rx="7" ry="4.3"/>
+              <ellipse class="luna-cheek" cx="81" cy="71" rx="7" ry="4.3"/>
+              <!-- open eyes (blink) -->
+              <g class="luna-eyes">
+                <g class="luna-eye luna-eye-l">
+                  <ellipse class="luna-eyeball" cx="45" cy="58" rx="5.4" ry="7.6"/>
+                  <circle class="luna-spark" cx="43" cy="55" r="1.8"/>
+                </g>
+                <g class="luna-eye luna-eye-r">
+                  <ellipse class="luna-eyeball" cx="75" cy="58" rx="5.4" ry="7.6"/>
+                  <circle class="luna-spark" cx="73" cy="55" r="1.8"/>
+                </g>
+              </g>
+              <!-- happy closed-eye arcs (suggesting) -->
+              <g class="luna-eyes-happy">
+                <path class="luna-eye-arc" d="M38 60 Q45 52 52 60"/>
+                <path class="luna-eye-arc" d="M68 60 Q75 52 82 60"/>
+              </g>
+              <!-- mouth shapes, cross-faded by opacity (NOT the CSS `d`
+                   property, which WKWebView/WebKit doesn't support): smile
+                   (default) · 'o' (thinking/speaking) · frown (offline). -->
+              <path class="luna-mouth" d="M49 73 Q60 81 71 73"/>
+              <ellipse class="luna-mouth-o" cx="60" cy="76" rx="5" ry="5.5"/>
+              <path class="luna-mouth-frown" d="M50 79 Q60 72 70 79"/>
+              <!-- sparkle (thinking / suggesting); fill themed via CSS (.luna-sparkle),
+                   hex below is the WebKit fallback for the same reason as the stops. -->
+              <path class="luna-sparkle" d="M96 26 l2.4 5.6 5.6 2.4 -5.6 2.4 -2.4 5.6 -2.4 -5.6 -5.6 -2.4 5.6 -2.4 Z" fill="#f0f6ff"/>
+            </g>
+          </svg>
+        </div>
         <div class="chat-meta">
           <h2>Luna Companion</h2>
-          <span id="connection-status" class="disconnected">Disconnected</span>
-          <!-- Build identity from the server's hello frame (additive). Kept as a
-               <small>, NOT a <span>, so the `.chat-meta span::before` dot rule
-               doesn't draw a status dot next to it. Hidden until populated. -->
-          <small id="build-sha" hidden></small>
+          <div class="chat-status-row">
+            <span id="connection-status" class="disconnected">Disconnected</span>
+            <!-- Build identity from the server's hello frame (additive). Kept as a
+                 <small>, NOT a <span>, so the `.chat-meta span::before` dot rule
+                 doesn't draw a status dot next to it. Hidden until populated. -->
+            <small id="build-sha" hidden></small>
+          </div>
         </div>
       </div>
+
+      <!-- Free space: Luna's idle quip XOR a suggestion teaser. Populated by
+           the MoonBar controller; the suggestion chip mirrors the active
+           `suggest_action` proposal and opens the full docked panel on click. -->
+      <div class="luna-bar" id="luna-bar">
+        <div class="luna-quip" id="luna-quip" aria-live="off"></div>
+        <button class="luna-suggestion" id="luna-suggestion" type="button" hidden
+                aria-label="Open Luna's suggestion">
+          <span class="luna-suggestion-spark" aria-hidden="true">💡</span>
+          <span class="luna-suggestion-text" id="luna-suggestion-text"></span>
+          <span class="luna-suggestion-go" aria-hidden="true">→</span>
+        </button>
+      </div>
+
       <div class="header-actions">
         <!-- Voice mic. Hidden until VoiceEngine confirms this build's Rust
              core has the voice pipeline (voice_status probe). Click toggles
@@ -1731,29 +2024,11 @@
             <line x1="12" y1="18" x2="12" y2="22"></line>
           </svg>
         </button>
-        <!-- Artifacts toggle — hidden until the server advertises the
-             `artifacts` capability. Shows a count badge of pinned artifacts.
-             PRD Part C W1. -->
-        <div class="artifacts-header-btn" id="artifacts-btn" hidden>
-          <button class="close-btn" id="artifacts-btn-inner" aria-label="Artifacts" title="Artifacts" type="button">
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
-            </svg>
-          </button>
-          <span class="artifacts-badge" id="artifacts-badge" hidden></span>
-        </div>
-        <!-- Workflows toggle — hidden until the server advertises the
-             `workflows` capability. PRD Part C W3. -->
-        <div class="workflows-header-btn" id="workflows-btn" hidden>
-          <button class="close-btn" id="workflows-btn-inner" aria-label="Workflows" title="Workflows" type="button">
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <rect x="3" y="3" width="7" height="7" rx="1"></rect>
-              <rect x="14" y="3" width="7" height="7" rx="1"></rect>
-              <rect x="3" y="14" width="7" height="7" rx="1"></rect>
-              <path d="M17.5 14v3m0 3v.01M14 17.5h3m3 0h.01"></path>
-            </svg>
-          </button>
-        </div>
+        <!-- Artifacts & Workflows header toggles were removed in the top-bar
+             redesign to keep the bar minimal (the free space now hosts Luna's
+             quip / suggestion). Their engines + docked panels remain wired
+             (DOM refs are null-guarded), so re-adding a trigger is a markup-
+             only change if those capabilities need a home again. -->
         <!-- Settings gear. The hub's tabbed modal is gone from this page:
              the gear summons the settings LAUNCHER panel window
              (open_widget kind 'settings'). -->
@@ -2044,6 +2319,12 @@
       suggestedActionDismiss:   document.getElementById('suggested-action-dismiss'),
       suggestedActionSeeAll:    document.getElementById('suggested-action-see-all'),
       suggestedActionCancelX:   document.getElementById('suggested-action-cancel-x'),
+      // Top-bar redesign: animated Luna face + free-space quip/suggestion bar.
+      lunaFace:           document.getElementById('luna-face'),
+      lunaBar:            document.getElementById('luna-bar'),
+      lunaQuip:           document.getElementById('luna-quip'),
+      lunaSuggestion:     document.getElementById('luna-suggestion'),
+      lunaSuggestionText: document.getElementById('luna-suggestion-text'),
       // Voice (mic button only — the controls live in the settings.voice panel).
       voiceMicBtn: document.getElementById('voice-mic-btn'),
       // local-shell machine-access scope controls.
@@ -2605,11 +2886,19 @@
         }
         // Store current actionId on panel so buttons always act on the shown action.
         DOM.suggestedActionPanel.dataset.actionId = action.id;
-        DOM.suggestedActionPanel.hidden = false;
+        // Top-bar redesign: the suggestion now surfaces as a compact teaser
+        // chip in the header's free space (MoonBar). The full docked panel
+        // (rationale + accept/dismiss/see-all) stays painted but hidden until
+        // the user clicks the chip — so the bar is the glance and the panel is
+        // the detail, instead of two suggestion surfaces showing at once.
+        MoonBar.showSuggestion(action);
+        MoonFace.setSuggesting(true);
       },
 
       _hide() {
         if (DOM.suggestedActionPanel) DOM.suggestedActionPanel.hidden = true;
+        MoonBar.clearSuggestion();
+        MoonFace.setSuggesting(false);
       },
 
       _respond(actionId, decision) {
@@ -2626,6 +2915,153 @@
           this._store[tid][idx] = Object.assign({}, current[idx], { status: newStatus });
         }
         this.refresh();
+      },
+    };
+
+    /**
+     * MoonFace — drives the animated header avatar's expression.
+     *
+     * The face reacts to four orthogonal signals, resolved by a fixed
+     * priority so conflicting signals never fight over [data-state]:
+     *   connection (connecting/offline) > thinking (a turn in flight) >
+     *   voice (listening/speaking) > suggesting > idle.
+     * All the actual motion lives in CSS keyframes keyed off [data-state];
+     * this controller only flips that one attribute.
+     */
+    const MoonFace = {
+      _conn: 'connecting',   // 'connecting' | 'connected' | 'disconnected'
+      _busy: false,          // a turn is in flight
+      _voice: '',            // '' | 'listening' | 'speaking'
+      _suggesting: false,
+      _el: null,
+
+      init() { this._el = DOM.lunaFace; this._apply(); },
+
+      // statusClass comes straight from WebSocketEngine.updateStatus:
+      // 'connected' | 'connecting' | 'disconnected' | 'version-warning'.
+      // A version-warning still chats, so it reads as connected (awake).
+      setConnection(statusClass) {
+        this._conn = statusClass === 'connecting' ? 'connecting'
+                   : statusClass === 'disconnected' ? 'disconnected'
+                   : 'connected';
+        this._apply();
+      },
+      setBusy(b)       { this._busy = !!b; this._apply(); },
+      setVoice(state)  { this._voice = (state === 'listening' || state === 'speaking') ? state : ''; this._apply(); },
+      setSuggesting(b) { this._suggesting = !!b; this._apply(); },
+
+      _resolve() {
+        if (this._conn === 'connecting')   return 'connecting';
+        if (this._conn === 'disconnected') return 'offline';
+        if (this._busy)                    return 'busy';
+        if (this._voice === 'listening')   return 'listening';
+        if (this._voice === 'speaking')    return 'speaking';
+        if (this._suggesting)              return 'suggesting';
+        return '';   // awake / idle
+      },
+      _apply() {
+        const el = this._el || (this._el = DOM.lunaFace);
+        if (el) el.dataset.state = this._resolve();
+      },
+    };
+
+    /**
+     * MoonBar — the header's free-space message zone.
+     *
+     * Shows EITHER a rotating idle quip (a playful comment, handwritten) OR a
+     * compact suggestion teaser chip mirroring the active `suggest_action`
+     * proposal. Clicking the chip opens the full docked panel (wired in boot).
+     * The quip line doubles as a connection mood line ("waking up…",
+     * "reconnecting…") so the bar always says something honest.
+     */
+    const MoonBar = {
+      _quips: [
+        'just vibing ✨',
+        'ready when you are 🌙',
+        'the night is quiet… I’m here',
+        'thinking up something clever…',
+        'your friendly moon, reporting in',
+        'drifting through some stardust',
+        'tap me anytime',
+        'all systems calm',
+      ],
+      _qi: 0,
+      _timer: null,
+      _conn: 'connecting',   // 'connecting' | 'connected' | 'disconnected'
+      _hasSuggestion: false,
+
+      init() {
+        if (!DOM.lunaQuip) return;
+        this._renderQuip(false);
+        this._scheduleRotate();
+      },
+
+      // Self-rescheduling (not setInterval) so it stops cleanly the moment the
+      // bar leaves the document — e.g. jsdom test teardown — instead of leaking
+      // a timer that fires forever on a detached node. The real chat window
+      // keeps #luna-quip mounted for its whole life, so quips keep rotating.
+      _scheduleRotate() {
+        if (this._timer) return;
+        this._timer = setTimeout(() => {
+          this._timer = null;
+          try {
+            if (!DOM.lunaQuip || !DOM.lunaQuip.isConnected) return;   // torn down → stop
+            if (!this._hasSuggestion && this._connQuip() == null) {
+              this._qi = (this._qi + 1) % this._quips.length;
+              this._renderQuip(true);
+            }
+            this._scheduleRotate();
+          } catch (_) { /* never let a stray tick surface an unhandled error */ }
+        }, 14000);
+        // Hygiene: under Node (the jsdom test harness) a long pending timer
+        // would keep the event loop alive; unref() lets the loop exit. It's
+        // undefined in the browser, where the timer behaves normally.
+        if (this._timer && typeof this._timer.unref === 'function') this._timer.unref();
+      },
+
+      setConnection(statusClass) {
+        this._conn = (statusClass === 'connected' || statusClass === 'version-warning') ? 'connected'
+                   : statusClass === 'connecting' ? 'connecting'
+                   : 'disconnected';
+        if (!this._hasSuggestion) this._renderQuip(false);
+      },
+
+      showSuggestion(action) {
+        if (!DOM.lunaSuggestion || !DOM.lunaSuggestionText) return;
+        this._hasSuggestion = true;
+        const title = (action && action.title) ? action.title : 'Luna has an idea';
+        DOM.lunaSuggestionText.textContent = title;
+        DOM.lunaSuggestion.title = title;
+        // Dynamic accessible name — a static aria-label would override the
+        // visible title and hide the actual suggestion from screen readers.
+        DOM.lunaSuggestion.setAttribute('aria-label', 'Open Luna’s suggestion: ' + title);
+        if (DOM.lunaQuip) DOM.lunaQuip.hidden = true;
+        DOM.lunaSuggestion.hidden = false;
+      },
+
+      clearSuggestion() {
+        this._hasSuggestion = false;
+        if (DOM.lunaSuggestion) DOM.lunaSuggestion.hidden = true;
+        if (DOM.lunaQuip) { DOM.lunaQuip.hidden = false; this._renderQuip(false); }
+      },
+
+      // A non-connected state replaces the playful quip with an honest mood line.
+      _connQuip() {
+        if (this._conn === 'connecting')   return 'waking up…';
+        if (this._conn === 'disconnected') return 'lost the thread… reconnecting';
+        return null;
+      },
+      _renderQuip(fade) {
+        const el = DOM.lunaQuip;
+        if (!el) return;
+        const conn = this._connQuip();
+        const text = conn != null ? conn : this._quips[this._qi % this._quips.length];
+        if (fade) {
+          el.classList.add('fading');
+          setTimeout(() => { el.textContent = text; el.classList.remove('fading'); }, 600);
+        } else {
+          el.textContent = text;
+        }
       },
     };
 
@@ -3347,6 +3783,10 @@
         if (State.ws) {
           this.disconnect();
         }
+        // A (re)connect means no turn from a prior socket is in flight; settle
+        // the face so a turn abandoned by a drop can't resurface as "thinking"
+        // when the new socket opens (covers paths where State.ws was nulled).
+        MoonFace.setBusy(false);
 
         // fix-6: each connect() bumps the generation. Handlers attached below
         // capture this gen; a superseded socket's late async events (which
@@ -3436,6 +3876,9 @@
         // new server. Any caller of disconnect() now cancels the timer.
         this.clearTurnTimeout();
         this.clearSubscribeTimeout();
+        // A turn abandoned by a drop/teardown never gets a turn-complete frame;
+        // settle the face here so it doesn't resurface as "thinking" on reconnect.
+        MoonFace.setBusy(false);
         if (State.reconnectTimer) { clearTimeout(State.reconnectTimer); State.reconnectTimer = null; }
         if (State.ws) {
           Logger.info("Disconnecting WebSocket client manually");
@@ -3465,6 +3908,9 @@
       updateStatus(statusClass, text) {
         DOM.connectionStatus.className = statusClass;
         DOM.connectionStatus.textContent = text;
+        // Mirror connection into the animated face + free-space bar mood.
+        MoonFace.setConnection(statusClass);
+        MoonBar.setConnection(statusClass);
       },
 
       /**
@@ -3654,6 +4100,7 @@
           ChatState.dropPendingAssistant();
           ChatState.appendBanner('⚠️ No response from the server — try again.');
           ChatLoop.flush();
+          MoonFace.setBusy(false);   // abandoned turn → face stops thinking
         }, 90000);
       },
 
@@ -4319,6 +4766,7 @@
       State.activeTurnId = null;
       ChatState.failTurn(errTurnId, frame.error && frame.error.message);
       ChatLoop.flush();
+      MoonFace.setBusy(false);   // turn ended (error) → face stops thinking
     });
 
     MoonFrames.register('turn-complete', (frame) => {
@@ -4330,6 +4778,7 @@
       WebSocketEngine.clearTurnTimeout();
       ChatState.markRunSettled();
       ChatLoop.flush();
+      MoonFace.setBusy(false);   // whole turn ended → face stops thinking
       // Spoken replies: safety flush — anything still buffered for any
       // message in this turn gets spoken now.
       VoiceEngine.onTurnComplete();
@@ -4676,6 +5125,22 @@
         }
       });
     }
+
+    // Top-bar redesign: the header suggestion chip is a teaser; clicking it
+    // reveals the full docked panel (rationale + accept/dismiss/see-all),
+    // which _show() has already painted with the active action.
+    if (DOM.lunaSuggestion) {
+      DOM.lunaSuggestion.addEventListener('click', () => {
+        if (DOM.suggestedActionPanel) {
+          DOM.suggestedActionPanel.hidden = false;
+          try { DOM.suggestedActionPanel.scrollIntoView({ block: 'nearest' }); } catch (_) { /* jsdom */ }
+        }
+      });
+    }
+
+    // Boot the animated face + free-space bar (idempotent; safe under jsdom).
+    MoonFace.init();
+    MoonBar.init();
 
     /**
      * File / image attachment composer state.
@@ -6048,6 +6513,7 @@
 
         // Show typing indicator
         this.showTypingIndicator();
+        MoonFace.setBusy(true);   // a turn is in flight → face goes "thinking"
         WebSocketEngine.startTurnTimeout();
 
         // Send user message over the real WebSocket!
@@ -6504,6 +6970,7 @@
           }
         }
         if (DOM.voiceMicBtn) DOM.voiceMicBtn.dataset.voiceState = visual;
+        MoonFace.setVoice(visual);   // wide eyes when listening, chatter when speaking
       },
 
       onVoiceError(p) {
@@ -6816,6 +7283,8 @@
       window.__MoonInternals.handleFrame = (frame) => WebSocketEngine.handleFrame(frame);
       window.__MoonInternals.SurveyEngine = SurveyEngine;
       window.__MoonInternals.SuggestedActionsEngine = SuggestedActionsEngine;
+      window.__MoonInternals.MoonFace = MoonFace;
+      window.__MoonInternals.MoonBar = MoonBar;
       window.__MoonInternals.ArtifactsEngine = ArtifactsEngine;
       window.__MoonInternals.WorkflowsEngine = WorkflowsEngine;
       window.__MoonInternals.SecretPromptEngine = SecretPromptEngine;
