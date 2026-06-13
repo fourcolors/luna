@@ -693,6 +693,85 @@
     }
     .msg-copy svg { width: 12px; height: 12px; display: block; }
 
+    /* #124 "from a background task" chip — marks an assistant turn that was
+       DELIVERED by a finished background/scheduled job (not a live reply). Lives
+       in the always-visible meta row, before the copy button. A faint accent
+       pill so it reads as a quiet provenance note, not a loud badge. */
+    .msg-delivery {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 0.68rem;
+      line-height: 1;
+      padding: 2px 7px 2px 6px;
+      border-radius: 999px;
+      color: color-mix(in oklab, var(--accent) 72%, var(--ink));
+      background: color-mix(in oklab, var(--accent) 12%, transparent);
+      border: 1px solid color-mix(in oklab, var(--accent) 26%, transparent);
+      -webkit-user-select: none;
+      user-select: none;
+      max-width: 220px;
+    }
+    .msg-delivery .glyph { font-size: 0.72rem; opacity: 0.85; }
+    .msg-delivery .label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-style: italic;
+    }
+
+    /* #124 background-result toast — a transient "Luna finished X" notification
+       broadcast to every window, so a result surfaces even when its thread is
+       not the one on screen. Bottom-left, above the composer; auto-dismisses. */
+    #result-toasts {
+      position: fixed;
+      left: 12px;
+      bottom: 84px;
+      z-index: 1200;
+      display: flex;
+      flex-direction: column-reverse;
+      gap: 8px;
+      max-width: min(340px, 78vw);
+      pointer-events: none;
+    }
+    .result-toast {
+      pointer-events: auto;
+      cursor: pointer;
+      border-radius: 13px;
+      padding: 9px 12px;
+      color: var(--ink);
+      background: color-mix(in oklab, var(--paper, #fffdf7) 92%, var(--accent) 8%);
+      border: 1px solid color-mix(in oklab, var(--accent) 34%, transparent);
+      box-shadow: 0 6px 18px color-mix(in oklab, var(--ink) 18%, transparent);
+      animation: result-toast-in 0.28s ease both;
+    }
+    .result-toast .rt-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: color-mix(in oklab, var(--accent) 72%, var(--ink));
+    }
+    .result-toast .rt-preview {
+      font-size: 0.74rem;
+      color: var(--ink-soft);
+      margin-top: 3px;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .result-toast.leaving { animation: result-toast-out 0.22s ease both; }
+    @keyframes result-toast-in {
+      from { opacity: 0; transform: translateY(8px) scale(0.98); }
+      to   { opacity: 1; transform: none; }
+    }
+    @keyframes result-toast-out {
+      from { opacity: 1; transform: none; }
+      to   { opacity: 0; transform: translateY(8px) scale(0.98); }
+    }
+
     /* Markdown tables (GFM). Dark-glass: thin separators, transparent
        background, tight cell padding so the table fits in the 560px-wide
        panel without forcing a horizontal scrollbar on short rows. */
@@ -4847,6 +4926,15 @@
       // Finalize the active turn. flush() forces an immediate render so
       // a still-pending rAF frame can't overwrite the closed state.
       WebSocketEngine.clearTurnTimeout();
+      // #124: a background-delivered result arrives as a complete assistant-done
+      // with NO preceding deltas (so there is no in-flight turn to finish).
+      // Detect it by the delivery marker and push a complete turn directly.
+      if (frame.message && frame.message.delivery) {
+        State.activeTurnId = null;
+        ChatState.appendDelivered(frame.message);
+        ChatLoop.flush();
+        return;
+      }
       const doneTurnId = frame.turnId || State.activeTurnId;
       State.activeTurnId = null;
       ChatState.finishTurn(
@@ -4937,6 +5025,72 @@
     MoonFrames.register('suggested-action-update', (frame) => {
       // Single action delta (status change or new action). Upsert into store.
       SuggestedActionsEngine.applyUpdate(frame);
+    });
+
+    // #124: background-result toast. A "Luna finished X" notification BROADCAST
+    // to every window (not scoped to one thread's subscribers), so a finished
+    // background/job result surfaces even when its thread is not on screen.
+    // Self-contained: lazily mounts its own #result-toasts container, auto-
+    // dismisses after ~6.5s, and click-to-dismiss. Exposed on __MoonInternals
+    // for screenshot/agent-browser harnesses.
+    const ResultToasts = {
+      _host: null,
+      _timers: new Map(),
+      _seq: 0,
+      _container() {
+        if (this._host && document.body.contains(this._host)) return this._host;
+        let el = document.getElementById('result-toasts');
+        if (!el) {
+          el = document.createElement('div');
+          el.id = 'result-toasts';
+          document.body.appendChild(el);
+        }
+        this._host = el;
+        return el;
+      },
+      show(notification) {
+        const n = notification || {};
+        const host = this._container();
+        const id = 'rt-' + (++this._seq);
+        const toast = document.createElement('div');
+        toast.className = 'result-toast';
+        toast.dataset.id = id;
+        const title = document.createElement('div');
+        title.className = 'rt-title';
+        const star = document.createElement('span');
+        star.textContent = '✓';
+        const titleText = document.createElement('span');
+        titleText.textContent = 'Luna finished'
+          + (n.label ? ': ' + n.label : '');
+        title.appendChild(star);
+        title.appendChild(titleText);
+        toast.appendChild(title);
+        if (n.preview) {
+          const preview = document.createElement('div');
+          preview.className = 'rt-preview';
+          preview.textContent = String(n.preview);
+          toast.appendChild(preview);
+        }
+        const dismiss = () => this.dismiss(id);
+        toast.addEventListener('click', dismiss);
+        host.appendChild(toast);
+        this._timers.set(id, setTimeout(dismiss, 6500));
+        return id;
+      },
+      dismiss(id) {
+        const host = this._host;
+        if (!host) return;
+        const toast = host.querySelector('.result-toast[data-id="' + id + '"]');
+        const timer = this._timers.get(id);
+        if (timer) { clearTimeout(timer); this._timers.delete(id); }
+        if (!toast) return;
+        toast.classList.add('leaving');
+        setTimeout(() => { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 220);
+      },
+    };
+
+    MoonFrames.register('result-delivered', (frame) => {
+      ResultToasts.show(frame);
     });
 
     // ── WS close hooks ────────────────────────────────────────────────────
@@ -5064,9 +5218,28 @@
     // extensible flex container — future actions (undo / branch) slot in here.
     // `ts` may be undefined (pre-`ts` server, or image-only) — the time span
     // is then omitted; the refresh handler re-reads data-ts on focus/click.
-    function buildMessageMeta(text, ts) {
+    function buildMessageMeta(text, ts, delivery) {
       const row = document.createElement('div');
       row.className = 'msg-meta';
+      // #124: provenance chip for a delivered background-job result. Sits
+      // first in the row so "from a background task" reads before the actions.
+      if (delivery && typeof delivery === 'object') {
+        const chip = document.createElement('span');
+        chip.className = 'msg-delivery';
+        chip.title = 'Delivered by a background task'
+          + (delivery.label ? ': ' + delivery.label : '');
+        const glyph = document.createElement('span');
+        glyph.className = 'glyph';
+        glyph.textContent = '↩';
+        const label = document.createElement('span');
+        label.className = 'label';
+        label.textContent = delivery.label
+          ? 'from ' + delivery.label
+          : 'from a background task';
+        chip.appendChild(glyph);
+        chip.appendChild(label);
+        row.appendChild(chip);
+      }
       row.appendChild(buildMessageCopyButton(text));
       if (typeof ts === 'number' && isFinite(ts)) {
         const time = document.createElement('span');
@@ -5654,6 +5827,9 @@
             // Server send-time (ms epoch) — drives the "9m ago" meta stamp.
             // Undefined for pre-`ts` servers; the renderer omits the time then.
             ts: Number.isFinite(msg.ts) ? msg.ts : undefined,
+            // #124: provenance for a background-delivered result so the chip
+            // re-renders on replay/reopen. Absent for ordinary turns.
+            delivery: (msg.delivery && typeof msg.delivery === 'object') ? msg.delivery : null,
           });
         }
       },
@@ -5682,6 +5858,28 @@
           status: 'banner',
           segments: t ? [{ kind: 'text', raw: t, done: true }] : [],
           previews: null,
+        });
+      },
+
+      // #124: a finished background/job result, delivered into this thread as a
+      // complete (non-streaming) assistant turn. Unlike the live reply path it
+      // has no deltas — so it can't ride finishTurn (which needs an in-flight
+      // turn). Pushed as a done assistant turn carrying the delivery marker so
+      // the renderer paints the "from a background task" chip. Rendered through
+      // the normal text path (status 'done', a single done text segment).
+      appendDelivered(message) {
+        const t = String((message && message.text) || '');
+        if (!t.trim()) return;
+        this.turns.push({
+          key: 'd-' + Date.now() + '-' + this.turns.length,
+          role: 'assistant',
+          status: 'done',
+          segments: [{ kind: 'text', raw: t, done: true }],
+          previews: null,
+          ts: Number.isFinite(message && message.ts) ? message.ts : Date.now(),
+          delivery: (message && message.delivery && typeof message.delivery === 'object')
+            ? message.delivery : { source: 'background-job' },
+          _settled: true,
         });
       },
 
@@ -5965,6 +6163,16 @@
             out.push({ key: turn.key + '|e', kind: 'error', turn: turn, seg: null });
             i++; continue;
           }
+          // #124: a background-DELIVERED result is a standalone answer, never
+          // part of an agentic run. If it were merged into a run that later
+          // gains a tool, its text would be absorbed into the collapsed
+          // timeline "work" section and its "from a background task" chip
+          // lost. Render it as its own single-turn run so the answer bubble
+          // (with the chip) always shows.
+          if (turn.delivery) {
+            this._planRun([turn], out, false);
+            i++; continue;
+          }
           // Collect the run. With a turn-complete-capable server, group the
           // maximal run of consecutive assistant turns into one timeline. With
           // an OLDER server (no turn-complete capability), DON'T group — each
@@ -5973,10 +6181,13 @@
           const grouped = State.serverSupportsTurnComplete !== false;
           const run = [];
           if (grouped) {
+            // Stop at a delivered turn too — it's handled standalone above, so
+            // a normal run must not swallow a following delivery.
             while (i < turns.length
                 && turns[i].role === 'assistant'
                 && turns[i].status !== 'banner'
-                && turns[i].status !== 'error') {
+                && turns[i].status !== 'error'
+                && !turns[i].delivery) {
               run.push(turns[i]);
               i++;
             }
@@ -6201,7 +6412,9 @@
         // `done` so a still-streaming bubble doesn't sprout (and re-sprout,
         // every coalesced frame) the row — it appears when the text is final.
         // The other (and only other) meta-row attach point is _paintUser.
-        if (seg.done && seg.raw) node.appendChild(buildMessageMeta(seg.raw, w.turn.ts));
+        // #124: pass the turn's delivery marker so a background-delivered
+        // result shows the "from a background task" chip.
+        if (seg.done && seg.raw) node.appendChild(buildMessageMeta(seg.raw, w.turn.ts, w.turn.delivery));
       },
 
       // Build one tool card as a self-contained `.tool-call-card` (a <div>
@@ -7416,6 +7629,7 @@
       window.__MoonInternals.attachToolResult = (f) => ChatEngine.attachToolResult(f);
       window.__MoonInternals.autoGrowMessageInput = () => ChatEngine.autoGrowMessageInput();
       window.__MoonInternals.handleFrame = (frame) => WebSocketEngine.handleFrame(frame);
+      window.__MoonInternals.ResultToasts = ResultToasts;   // #124 toast harness
       window.__MoonInternals.SurveyEngine = SurveyEngine;
       window.__MoonInternals.SuggestedActionsEngine = SuggestedActionsEngine;
       window.__MoonInternals.MoonFace = MoonFace;
