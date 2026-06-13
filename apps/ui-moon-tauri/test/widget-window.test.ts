@@ -419,6 +419,43 @@ describe('widget.html — snap + dock groups', () => {
     expect(dockArgs()).toEqual([{ docked: false, anchor: null, edge: null, dx: 0, dy: 0 }])
   })
 
+  it('keeps a right-edge badge clear of the title-bar drag strip', async () => {
+    // Partner flush on our right but overlapping only our TOP, so the raw
+    // overlap midpoint (self-local y=25) lands inside the title-bar band.
+    const friend = {
+      outerPosition: vi.fn(async () => ({ x: 840, y: 100 })),
+      outerSize: vi.fn(async () => ({ width: 220, height: 80 })),
+    }
+    getByLabel.mockImplementation(async (l: string) => (l === 'widget-friend' ? friend : null))
+    // Give the title bar a real measured bottom (jsdom otherwise reports 0).
+    const titleBar = document.querySelector('.title-bar') as HTMLElement
+    titleBar.getBoundingClientRect = () =>
+      ({ bottom: 56, top: 22, left: 0, right: 0, width: 0, height: 34, x: 0, y: 22, toJSON: () => ({}) }) as DOMRect
+
+    dispatchGroup({ grouped: true, members: [SELF, 'widget-friend'], outlineSides: ['l', 't', 'b'] })
+    await vi.advanceTimersByTimeAsync(40)
+
+    const badge = document.querySelector('#dock-links .dock-link') as HTMLButtonElement
+    expect(badge).not.toBeNull()
+    // Nudged from y=25 down to title-bar bottom (56) + badge radius (11) = 67,
+    // so the button never sits over the drag strip.
+    expect(badge.style.top).toBe('67px')
+  })
+
+  it('never paints a seam badge against the hub (main is alignment-only)', async () => {
+    // 'main' flush on our right — without the hub exclusion this would draw a badge.
+    const mainFlush = {
+      outerPosition: vi.fn(async () => ({ x: 840, y: 150 })),
+      outerSize: vi.fn(async () => ({ width: 220, height: 160 })),
+    }
+    getByLabel.mockImplementation(async (l: string) => (l === 'main' ? mainFlush : null))
+
+    dispatchGroup({ grouped: true, members: [SELF, 'main'], outlineSides: ['l', 't', 'b'] })
+    await vi.advanceTimersByTimeAsync(40)
+
+    expect(document.querySelectorAll('#dock-links .dock-link')).toHaveLength(0)
+  })
+
   it('the pin leaves the group — and only the pin (no drag-detach)', async () => {
     dispatchGroup({ grouped: true, members: ['main', SELF], outlineSides: ['r'] })
 

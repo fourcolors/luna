@@ -86,6 +86,13 @@
         var sides = grouped && Array.isArray(payload.outlineSides) ? payload.outlineSides : [];
         outlineEl.className = sides.map(function (s) { return 'g' + s; }).join(' ');
       }
+      // Membership/interior geometry changed → redraw the owned seam badges.
+      // Wiring this INTO applyGroupState (not just the live dock-group listener)
+      // means EVERY path that feeds group state paints the badges — including a
+      // replay-on-subscribe path that fetches current state on boot. Otherwise a
+      // cluster restored at launch stays badge-less until the first move/resize.
+      // A tick of slack lets Rust's group translate land first.
+      scheduleSeams(30);
     }
     pinBtn && pinBtn.addEventListener('animationend', function () {
       pinBtn.classList.remove('pop');
@@ -112,6 +119,7 @@
       '<path d="M13 18l-1.5 1.5a4 4 0 0 1-5.7-5.7L7.5 12"/></svg>';
     var seamGen = 0;   // bump on every render so stale async renders abort
     var seamTimer = null;
+    var SEAM_BADGE_R = 11; // half the 22px badge — matches deck-snap BADGE_R
 
     function clearSeams() {
       if (dockLinksEl) dockLinksEl.textContent = '';
@@ -143,6 +151,13 @@
 
     function paintSeams(seams) {
       if (!dockLinksEl) return;
+      // Lowest a right-edge badge may sit without overlapping the title-bar
+      // drag strip = title-bar bottom + badge radius (window-local px). 0 under
+      // headless layout (jsdom getBoundingClientRect) → no-op, matching the
+      // bare deck-snap clamp; only the real webview triggers the nudge.
+      var tb = document.querySelector('.title-bar');
+      var titleClear = tb ? Math.round(tb.getBoundingClientRect().bottom) + SEAM_BADGE_R : 0;
+      var maxBadgeY = (window.innerHeight || 0) - SEAM_BADGE_R;
       // Diff by partner|edge: a badge that merely MOVES (a regroup or a resize
       // shifts the shared overlap-run midpoint) is repositioned in place, so
       // only a genuinely NEW seam plays the scale-in. Rebuilding wholesale
@@ -163,13 +178,18 @@
           el = makeSeamBadge(s, key);
           dockLinksEl.appendChild(el);
         }
-        // Owner-side flush against the seam, centered on the overlap run. NOTE:
-        // a seam whose midpoint falls in the title-bar band can sit a badge
-        // over the drag strip (a ~22px dead-zone near the seam-side corner) —
-        // the primary grip is far left, so dragging still works; left as a
-        // known minor on unusual top-corner docks.
+        // Owner-side flush against the seam, centered on the overlap run — but
+        // push a right-edge badge below the title bar if the overlap midpoint
+        // lands in it. A 22px button over [data-tauri-drag-region] both
+        // dead-zones the native grab AND unlinks on a stray click there; the
+        // seam owns the whole right edge, so nudging down keeps it on the seam.
+        var by = s.y;
+        if (s.edge === 'r' && titleClear) {
+          by = Math.max(by, titleClear);
+          if (maxBadgeY > SEAM_BADGE_R) by = Math.min(by, maxBadgeY);
+        }
         el.style.left = s.x + 'px';
-        el.style.top = s.y + 'px';
+        el.style.top = by + 'px';
       }
       for (var k in existing) {
         if (!keep[k]) dockLinksEl.removeChild(existing[k]);
@@ -191,7 +211,10 @@
         var others = [];
         for (var i = 0; i < groupMembers.length; i++) {
           var m = groupMembers[i];
-          if (m === label) continue;
+          // Never self, and never the hub: 'main' is alignment-only and never
+          // truly linked, so it gets no seam badge (mirrors the snap path's
+          // main exclusion). Defensive — Rust never groups the hub with widgets.
+          if (m === label || m === 'main') continue;
           try {
             var w = await TW.Window.getByLabel(m);
             if (!w) continue;
@@ -238,10 +261,7 @@
         W.listen('dock-group', function (e) {
           var p = e && e.payload;
           if (!p || p['for'] !== label) return;
-          applyGroupState(p);
-          // Group membership or interior geometry changed → redraw the seam
-          // badges. A tick of slack lets Rust's group translate land first.
-          scheduleSeams(30);
+          applyGroupState(p); // also schedules the seam-badge repaint
         }).catch(function () {});
       }
     } catch (_) { /* best-effort */ }
