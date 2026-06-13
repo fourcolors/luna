@@ -461,6 +461,59 @@
       gap: 8px;
     }
 
+    /* ── Title-bar rearrange: parallel-thread panels ───────────────────────
+       Close moves OFF the bar to a hover-revealed disk at the top-LEFT corner
+       (macOS-notification pattern); the drag grip grows + insets so that corner
+       is free; the new-thread + owns the right. All scoped to #title-bar so the
+       shared moon-theme.css .close-btn (other panels) and the .chat-panel
+       header-action buttons stay exactly as they were. */
+    #title-bar { position: relative; }
+
+    /* Bigger, inset drag handle — pulled off the true-left edge to clear the
+       corner where the hover-× appears. */
+    #title-bar .grip {
+      font-size: 13px;
+      margin-left: 20px;
+    }
+
+    /* Hover-reveal close: keeps the shared .close-btn chrome, but parked just
+       inside the top-left corner and invisible (+ click-through) until the bar
+       is hovered or the button is keyboard-focused. */
+    #title-bar #close-btn {
+      position: absolute;
+      top: 5px;
+      left: 6px;
+      z-index: 6;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.15s ease, background 0.1s, color 0.1s;
+    }
+    #title-bar:hover #close-btn,
+    #title-bar #close-btn:focus-visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    /* New-thread button — the promoted action, accent-tinted to invite. Sits at
+       the right (the flex:1 bar-title pushes it there). */
+    #title-bar .newthread-btn {
+      flex-shrink: 0;
+      background: none;
+      border: none;
+      color: var(--accent);
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.12s, color 0.12s;
+    }
+    #title-bar .newthread-btn:hover {
+      background: color-mix(in oklab, var(--accent) 16%, transparent);
+    }
+
     /* Watercolor scrollbar styling — applied to every scrolling container in
        the moon. `width` covers vertical, `height` covers horizontal (assistant
        `<pre>` blocks scroll horizontally). Thumbs use the ink-faint token so
@@ -1921,6 +1974,11 @@
   <!-- TITLE BAR — data-tauri-drag-region on the outer container enables
        native window drag. The close button is intentionally NOT drag-region. -->
   <div class="title-bar" data-tauri-drag-region id="title-bar">
+    <!-- Close lives at the top-LEFT corner, hidden until the title bar is
+         hovered (macOS-notification pattern); positioned absolutely (see the
+         #title-bar #close-btn rule in the page <style>) so it's out of the flex
+         flow. NOT a drag region, so the click lands instead of dragging. -->
+    <button class="close-btn" id="close-btn" title="Close" aria-label="Close chat">✕</button>
     <span class="grip" data-tauri-drag-region>⋮⋮</span>
     <span class="wash-dot" aria-hidden="true"></span>
     <span class="bar-title" data-tauri-drag-region id="bar-title">Luna</span>
@@ -1932,7 +1990,15 @@
         <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>
       </svg>
     </button>
-    <button class="close-btn" id="close-btn" title="Close" aria-label="Close chat">✕</button>
+    <!-- New thread — the promoted action, alone on the right. Spawns a fresh
+         Luna panel docked to the right of this one (open_widget chat?thread=new). -->
+    <button class="newthread-btn" id="new-thread-btn" title="New thread" aria-label="New parallel thread">
+      <!-- Lucide "plus" (ISC). -->
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 5v14"/><path d="M5 12h14"/>
+      </svg>
+    </button>
   </div>
   <div id="seam" aria-hidden="true"></div>
   <div id="outline" aria-hidden="true"></div>
@@ -4184,6 +4250,17 @@
           this.startSubscribeTimeout();
           return;
         }
+        // Fresh-spawn panel (opened via the title-bar + as ?thread=new): on the
+        // FIRST connect it owns no thread yet, so mint a brand-new one — the
+        // thread-created handler then adopts it (activeThreadId is null). On a
+        // later RECONNECT activeThreadId is already set, so this is skipped and
+        // we fall through to the normal resubscribe-to-current path below.
+        if (SPAWN_FRESH && !State.activeThreadId) {
+          Logger.info('Fresh-spawn panel: minting its own new thread');
+          this.sendNewThread();
+          this.startSubscribeTimeout();
+          return;
+        }
         // The last-thread file (~/.luna/.last-thread-default) is NOT scoped per
         // server. After switching servers its thread belongs to the old server's
         // DB ("unknown thread" here), so skip it once and list fresh instead.
@@ -4737,7 +4814,11 @@
       // the app re-tethers to it. The snapshot proves this thread is valid
       // on the CURRENT server, so it's always safe to remember. Fire-and-
       // forget; never blocks or throws into the UI.
-      if (window.__TAURI__ && State.activeThreadId) {
+      // Only the MAIN line owns the restart-resume memory. A fresh-spawn side
+      // panel (?thread=new) or a Phase 8 direct line (?thread=<id>) must NOT
+      // overwrite it — otherwise reopening the app would resume the side/pinned
+      // thread instead of the main conversation.
+      if (window.__TAURI__ && State.activeThreadId && !SPAWN_FRESH && !PINNED_THREAD) {
         window.__TAURI__.core.invoke('set_last_thread_id', { threadId: State.activeThreadId })
           .catch((e) => Logger.warn('set_last_thread_id failed (non-fatal):', e));
       }
@@ -7189,7 +7270,13 @@
     // thread (its own open_widget instance label). Null = the main line.
     // Declared here, consumed at runtime by syncThread / the snapshot
     // persist (same IIFE scope; TDZ is safe — both run after evaluation).
-    const PINNED_THREAD = new URLSearchParams(location.search).get('thread') || null;
+    // A spawned "new thread" panel arrives as ?thread=new — a SENTINEL, not a
+    // real id: it mints its OWN fresh thread on its own socket (see syncThread)
+    // rather than subscribing. Any other value is a Phase 8 direct line pinned
+    // to that thread; null = the main line.
+    const _threadParam = new URLSearchParams(location.search).get('thread') || null;
+    const SPAWN_FRESH = _threadParam === 'new';
+    const PINNED_THREAD = SPAWN_FRESH ? null : _threadParam;
 
     // ── Widget-window chrome (panel.html conventions) ──────────────────────
     let W = null;
@@ -7207,6 +7294,27 @@
         try {
           if (window.__TAURI__ && window.__TAURI__.core && winLabel) {
             window.__TAURI__.core.invoke('close_widget', { label: winLabel }).catch(() => {});
+          }
+        } catch (_) { /* best-effort */ }
+      });
+    }
+
+    // New-thread button → spawn a FRESH Luna panel docked to the right of this
+    // one. open_widget focuses an existing window when its params match, so a
+    // unique nonce makes every click a new sibling; ?thread=new tells the new
+    // window to mint its own thread (syncThread); opener=this panel positions it
+    // flush-right and joins this panel's dock group.
+    let _newThreadSeq = 0;
+    const winNewThreadBtn = document.getElementById('new-thread-btn');
+    if (winNewThreadBtn) {
+      winNewThreadBtn.addEventListener('click', () => {
+        try {
+          if (window.__TAURI__ && window.__TAURI__.core) {
+            const nonce = `${Date.now().toString(36)}-${++_newThreadSeq}`;
+            const args = { kind: 'chat', params: { thread: 'new', n: nonce } };
+            if (winLabel) args.opener = winLabel;
+            window.__TAURI__.core.invoke('open_widget', args)
+              .catch((err) => Logger.warn('new-thread spawn failed:', err));
           }
         } catch (_) { /* best-effort */ }
       });
