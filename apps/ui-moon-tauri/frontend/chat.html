@@ -4560,7 +4560,11 @@
         // an empty/unknown title and renders by id, so an uncached id still opens.
         const artMatch = /^luna:\/\/artifact\/([^?\s]+)$/i.exec(href);
         if (artMatch) {
-          const id = decodeURIComponent(artMatch[1]);
+          // decodeURIComponent throws on malformed percent-encoding (e.g. "%E0%").
+          // Bail out rather than letting the exception abort the whole handler.
+          let id;
+          try { id = decodeURIComponent(artMatch[1]); }
+          catch (_) { Logger.warn('luna-link artifact: malformed id, ignoring'); return; }
           const known = State.pinnedArtifacts.find((p) => p.id === id);
           if (window.__TAURI__ && window.__TAURI__.core) {
             window.__TAURI__.core.invoke('open_artifact_widget', {
@@ -6594,7 +6598,7 @@
         window.__TAURI__.core.invoke('open_external_url', { url })
           .catch((err) => Logger.warn('open link failed:', err));
       } else {
-        try { window.open(url, '_blank', 'noopener'); } catch (_) { /* inert link; UI preserved */ }
+        try { window.open(url, '_blank', 'noopener,noreferrer'); } catch (_) { /* inert link; UI preserved */ }
       }
     });
 

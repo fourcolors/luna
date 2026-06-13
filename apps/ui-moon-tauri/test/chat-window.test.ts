@@ -3409,5 +3409,19 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
         title: '',
       })
     })
+
+    it('a luna://artifact link with a malformed id is ignored (no throw, no open)', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      const chat = document.getElementById('chat-messages')!
+      const bubble = document.createElement('div')
+      // "%E0%" is malformed percent-encoding — decodeURIComponent throws on it.
+      bubble.innerHTML = M().renderMarkdown('[broken](luna://artifact/%E0%)')
+      chat.appendChild(bubble)
+      const a = chat.querySelector('a[data-luna-link]') as HTMLAnchorElement
+      expect(a).not.toBeNull()
+      expect(() => a.click()).not.toThrow()
+      expect(invoke).not.toHaveBeenCalledWith('open_artifact_widget', expect.anything())
+    })
   })
 })

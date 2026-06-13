@@ -802,7 +802,14 @@ fn oauth_loopback_cancel(state: tauri::State<'_, OauthLoopback>) {
 /// become a general shell-open primitive.
 #[tauri::command]
 fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    if !(url.starts_with("https://") || url.starts_with("mailto:")) {
+    // Scheme allowlist, checked case-insensitively (a URL scheme is
+    // case-insensitive per RFC 3986). `get(..n)` is char-boundary-safe — it
+    // returns None rather than panicking if a multi-byte char straddles the
+    // boundary. We match on the prefix but open the ORIGINAL `url`, since
+    // lowercasing the whole string would corrupt the path/query/address.
+    let is_https = url.get(..8).map_or(false, |p| p.eq_ignore_ascii_case("https://"));
+    let is_mailto = url.get(..7).map_or(false, |p| p.eq_ignore_ascii_case("mailto:"));
+    if !(is_https || is_mailto) {
         return Err("only https:// or mailto: URLs can be opened".into());
     }
     use tauri_plugin_opener::OpenerExt;
