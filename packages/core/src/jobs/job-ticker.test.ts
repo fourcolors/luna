@@ -127,6 +127,11 @@ describe("JobTicker", () => {
       expect(runs.length).toBe(1)
       expect(runs[0]?.status).toBe("success")
       expect(runs[0]?.outputText).toBe("ran:wake-test")
+
+      // jobs.last_status reset from claim()'s 'running' to the run outcome —
+      // a recurring schedule must not read as perpetually 'running' between fires.
+      const jobAfter = yield* store.getById("wake-test")
+      expect(jobAfter?.lastStatus).toBe("fired")
     })
     await Effect.runPromise(
       prog.pipe(Effect.provide(buildStack({ wake: probeWorker }))),

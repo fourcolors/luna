@@ -354,17 +354,22 @@ const program = Effect.gen(function* () {
     throw new Error(`[push-through-install] failed to parse cron "${CRON_EXPR}"`)
   }
 
+  // Arm the row ATOMICALLY (enabled + next_run_at in the INSERT). Otherwise a
+  // bare record() defaults enabled=true / next_run_at=NULL = immediately due,
+  // and with the V2 ticker now default-on and sharing luna.db, a tick landing
+  // before a follow-up disable could claim+dispatch the autonomous push/PR
+  // workflow the operator installed DISABLED (ENABLE=false).
   yield* store.record({
     id: JOB_ID,
     kind: "workflow",
     spec: CRON_EXPR,
     payload: buildPayload(),
-  })
-  yield* store.setV2Fields(JOB_ID, {
-    schedule: CRON_EXPR,
     enabled: ENABLE,
     nextRunAt,
   })
+  // `schedule` is metadata only (the ticker uses schedule ?? spec, and spec
+  // already carries CRON_EXPR) — safe to set after arming, no due-window.
+  yield* store.setV2Fields(JOB_ID, { schedule: CRON_EXPR })
 
   const row = yield* store.getById(JOB_ID)
   console.log(`[push-through-install] installed '${JOB_ID}':`, {

@@ -200,17 +200,19 @@ const program = Effect.gen(function* () {
     )
   }
 
+  // Arm atomically (enabled + next_run_at in the INSERT) so there is no
+  // transient window where the row is enabled+next_run_at-null = immediately
+  // due to the now default-on V2 ticker before a follow-up write arms it.
   yield* store.record({
     id: JOB_ID,
     kind: "prompt",
     spec: CRON_EXPR,
     payload: buildPayload(),
-  })
-  yield* store.setV2Fields(JOB_ID, {
-    schedule: CRON_EXPR,
     enabled: true,
     nextRunAt,
   })
+  // `schedule` is metadata only (ticker uses schedule ?? spec) — safe after arming.
+  yield* store.setV2Fields(JOB_ID, { schedule: CRON_EXPR })
 
   const row = yield* store.getById(JOB_ID)
   console.log(`[daily-brief-install] installed '${JOB_ID}':`, {

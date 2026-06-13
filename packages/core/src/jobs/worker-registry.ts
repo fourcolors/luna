@@ -16,9 +16,11 @@
  *
  * Lifetime:
  *   - The registry itself is a single Ref<Map<string, Worker>> per Layer scope.
- *   - Workers' own scope is inherited from the caller (the JobTicker forks each
- *     dispatch into its own sub-Scope so a panicking worker can't kill the
- *     ticker fiber).
+ *   - The JobTicker dispatches each worker INLINE on its single fiber, bounded
+ *     by `Effect.timeoutFail(workerDeadline)` and wrapped in `Effect.catchAllDefect`
+ *     so an overrun or a panicking worker is converted to a typed WorkerError
+ *     and closed into job_runs — it cannot kill the ticker fiber. (Dispatch is
+ *     NOT forked, so workers within a tick run sequentially, not concurrently.)
  *
  * Why not Tag-per-kind? The kind set is data-driven (new rows can introduce
  * new kinds at runtime, especially once `workflow` payloads embed `prompt`

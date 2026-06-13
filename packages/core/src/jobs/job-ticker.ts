@@ -82,9 +82,9 @@ export interface JobTickerOptions {
   readonly tickInterval?: Duration.DurationInput
 
   /**
-   * Soft per-worker deadline used to fill `WorkerContext.deadline`. Advisory
-   * only — V1 does not interrupt overrun workers (DESIGN.md §5.3.6).
-   * Default 5 minutes.
+   * Per-worker deadline. ENFORCED: a dispatch that overruns is interrupted via
+   * `Effect.timeoutFail` and closed as a `deadline_passed` failure (also fills
+   * `WorkerContext.deadline`). Default 5 minutes.
    */
   readonly workerDeadline?: Duration.DurationInput
 
@@ -298,6 +298,11 @@ export const JobTickerLayer = (
                   `[luna/sched] one-shot disable still failing for job=${job.id}; in-memory guard is suppressing re-dispatch`,
                 )
               }
+              // This one-shot already fired in a prior tick; the re-claim set
+              // last_status='running' again. Reset it so it isn't stuck 'running'.
+              yield* store
+                .touch(job.id, { lastStatus: "fired" })
+                .pipe(Effect.catchAll(() => Effect.void))
               continue
             }
 
@@ -392,11 +397,16 @@ export const JobTickerLayer = (
 
           // Dispatch the worker. Errors caught into Either so the ticker keeps
           // draining; the result is closed into job_runs regardless of outcome.
+          // ctx.deadline is computed from a fresh clock read (NOT tickAt) so it
+          // matches the relative `timeoutFail(workerDeadlineMs)` below — jobs
+          // dispatch sequentially, so a tickAt-based deadline would be wrong for
+          // the 2nd+ job (advertising less time than the worker actually gets).
+          const dispatchAt = yield* clock.nowMs()
           const ctx = {
             jobId: job.id,
             runId: run.id,
             attempt: 1,
-            deadline: tickAt + workerDeadlineMs,
+            deadline: dispatchAt + workerDeadlineMs,
           }
           const result = yield* registry
             .dispatch(job.kind, job.payload, ctx)
@@ -454,6 +464,14 @@ export const JobTickerLayer = (
               stepsJson: err.stepsJson ?? null,
             }).pipe(Effect.catchAll(() => Effect.void))
           }
+          // recordRunEnd closes the job_runs row but does NOT touch jobs.last_status,
+          // which claim() set to 'running'. Reset it to the run's outcome so a
+          // recurring schedule isn't shown as perpetually 'running' between fires.
+          yield* store
+            .touch(job.id, {
+              lastStatus: result._tag === "Right" ? "fired" : "errored",
+            })
+            .pipe(Effect.catchAll(() => Effect.void))
         }
 
         // Retention sweep (throttled): prune closed runs older than the
@@ -516,10 +534,12 @@ export const JobTickerLayer = (
         if (
           summary.considered > 0 ||
           summary.failed > 0 ||
-          summary.skippedUnknownKind > 0
+          summary.skippedUnknownKind > 0 ||
+          summary.skippedV1Cron > 0 ||
+          summary.pruned > 0
         ) {
           yield* Effect.logInfo(
-            `[luna/sched] tick considered=${summary.considered} claimed=${summary.claimed} succeeded=${summary.succeeded} failed=${summary.failed} skipped_unknown=${summary.skippedUnknownKind} skipped_claim_lost=${summary.skippedClaimLost}`,
+            `[luna/sched] tick considered=${summary.considered} claimed=${summary.claimed} succeeded=${summary.succeeded} failed=${summary.failed} skipped_unknown=${summary.skippedUnknownKind} skipped_claim_lost=${summary.skippedClaimLost} skipped_v1_cron=${summary.skippedV1Cron} pruned=${summary.pruned}`,
           )
         }
       })
