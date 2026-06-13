@@ -42,7 +42,7 @@
  *               lock.
  *
  * PREREQUISITES (all true on luna-dev as of 2026-06-08):
- *   - V2 scheduler enabled (LUNA_SCHEDULER_V2_ENABLED=1) so the ticker fires it.
+ *   - V2 scheduler running (on by default; not LUNA_SCHEDULER_V2_ENABLED=0) so the ticker fires it.
  *   - `Environment=HOME=/root` on the unit so gh/git find creds in the worker's
  *     process env (proven via worker-path diagnostics).
  *   - A git worktree at LUNA_PUSH_THROUGH_WORKTREE. Step 0 self-heals it with an
@@ -299,20 +299,16 @@ const assertTimeoutBudget = (): void => {
 }
 
 /**
- * Compute next fire time AS IF the host were UTC (the chat-server runs UTC; the
- * install may run elsewhere). Mirrors daily-brief-install.ts.
+ * Compute next fire time in UTC. Passing the explicit "UTC" tz to Cron.parse
+ * pins matching to UTC regardless of the install host's process.env.TZ — and
+ * exactly matches what the JobTicker's computeNextRunAt does at runtime, so the
+ * install-time and runtime next_run_at can never diverge. Mirrors
+ * daily-brief-install.ts.
  */
 const computeNextRunAtUtc = (now: number): number | null => {
-  const prevTz = process.env.TZ
-  process.env.TZ = "UTC"
-  try {
-    const parsed = Cron.parse(CRON_EXPR)
-    if (parsed._tag === "Left") return null
-    return Cron.next(parsed.right, new Date(now)).getTime()
-  } finally {
-    if (prevTz === undefined) delete process.env.TZ
-    else process.env.TZ = prevTz
-  }
+  const parsed = Cron.parse(CRON_EXPR, "UTC")
+  if (parsed._tag === "Left") return null
+  return Cron.next(parsed.right, new Date(now)).getTime()
 }
 
 const jobsStoreL = JobsStoreService.makeLayer(paths.lunaDbPath).pipe(

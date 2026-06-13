@@ -3,7 +3,7 @@
  * background job (the auto-execute path, locked decision #4 + #2).
  *
  * Every action type lands on the SAME durable substrate — a `jobs` row picked
- * up by the V2 JobTicker (requires LUNA_SCHEDULER_V2_ENABLED=1). The four
+ * up by the V2 JobTicker (on by default; LUNA_SCHEDULER_V2_ENABLED=0 disables). The four
  * "subagent" types (task / research / create_skill / create_workflow) become a
  * `kind:'prompt'` job that spawns a subagent driven by the agent-authored
  * prompt; `run_workflow` clones an EXISTING saved `kind:'workflow'` job into a
@@ -138,7 +138,9 @@ export const AcceptHandlerLayer = (
               )
             }
             // Clone the saved workflow's payload into a fresh one-shot — never
-            // mutate the saved job.
+            // mutate the saved job. Armed (enabled + due now) ATOMICALLY at
+            // insert so there is no window where the row is transiently due
+            // before a second write arms it (which a ticker could double-fire).
             yield* jobs
               .record({
                 id: jobId,
@@ -149,19 +151,23 @@ export const AcceptHandlerLayer = (
                   label: row.title,
                   source: "suggested-action",
                 },
+                enabled: true,
+                nextRunAt: now,
               })
               .pipe(Effect.mapError(toErr("record")))
           } else {
             const spec = buildPromptJobSpec(row)
             yield* jobs
-              .record({ id: jobId, kind: spec.kind, spec: spec.spec, payload: spec.payload })
+              .record({
+                id: jobId,
+                kind: spec.kind,
+                spec: spec.spec,
+                payload: spec.payload,
+                enabled: true,
+                nextRunAt: now,
+              })
               .pipe(Effect.mapError(toErr("record")))
           }
-
-          // Enable + make due now → the ticker dispatches it once.
-          yield* jobs
-            .setV2Fields(jobId, { enabled: true, nextRunAt: now })
-            .pipe(Effect.mapError(toErr("enable")))
 
           // Link the execution; moves the action proposed→...→in_progress.
           yield* sa.recordExecution(row.id, { kind: "job", id: jobId })

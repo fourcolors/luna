@@ -19,17 +19,19 @@
  *
  * Why a single fiber and not per-row? Per-row would explode fiber count on a
  * thousand-row jobs table and re-create the per-trigger cost we're replacing.
- * The supervised JobScheduler pool still gives us bounded parallelism for
- * the workers themselves.
+ * Within a tick, due jobs are dispatched sequentially; each worker dispatch is
+ * bounded by `workerDeadline` (Effect.timeoutFail) so a stuck worker is
+ * interrupted rather than blocking the loop indefinitely. (The JobScheduler
+ * pool is V1's mechanism — the V2 ticker does NOT route through it.)
  *
- * Cutover note: the chat-server wires this layer behind
- * `LUNA_SCHEDULER_V2_ENABLED=1` so it runs side-by-side with the legacy
- * TriggerAgent loops until migration is complete. The two systems don't
- * touch the same rows: V2 reads `enabled=1 AND next_run_at <= now`, V1
- * reads via its in-memory TriggerAgent registry. A given row should belong
- * to exactly one regime at a time.
+ * Cutover note: V2 is the DEFAULT scheduler — the chat-server wires this layer
+ * unless `LUNA_SCHEDULER_V2_ENABLED=0` (the kill switch). The agent-facing
+ * scheduler tools are fully V2 (a schedule is a `kind:"prompt"` row). The
+ * wake / dream cycles still run on their own TriggerAgent loops, separate from
+ * this ticker; the two don't touch the same rows (V2 reads `enabled=1 AND
+ * next_run_at <= now` and skips `kind="cron"` rows entirely).
  */
-import { Cron, Duration, Effect, Either, Layer, Schedule } from "effect"
+import { Cron, Duration, Effect, Either, Layer, Ref, Schedule } from "effect"
 import * as EffectClock from "effect/Clock"
 import { Clock } from "../clock.js"
 import { JobsStoreService } from "./jobs-store.js"
@@ -57,6 +59,12 @@ export interface TickSummary {
   readonly failed: number
   readonly skippedUnknownKind: number
   readonly skippedClaimLost: number
+  /** V1 cron rows (`kind="cron"`) skipped — they belong to TriggerAgent, not
+   *  the V2 ticker, so they are never claimed or dispatched here. */
+  readonly skippedV1Cron: number
+  /** Closed `job_runs` rows deleted by this tick's retention sweep (0 if the
+   *  sweep interval has not elapsed since the last prune). */
+  readonly pruned: number
 }
 
 export class JobTicker extends Effect.Tag("luna/JobTicker")<
@@ -79,6 +87,26 @@ export interface JobTickerOptions {
    * Default 5 minutes.
    */
   readonly workerDeadline?: Duration.DurationInput
+
+  /**
+   * Retention: closed `job_runs` rows older than this are pruned so the audit
+   * ledger does not grow without bound. Default 30 days.
+   */
+  readonly retentionMaxAge?: Duration.DurationInput
+
+  /**
+   * How often the retention sweep actually runs. The ticker checks on every
+   * drain but only prunes once this interval has elapsed since the last sweep,
+   * so a 60s tick does not issue a DELETE every minute. Default 6 hours.
+   */
+  readonly retentionSweepInterval?: Duration.DurationInput
+
+  /**
+   * Whether to fork the supervised auto-tick loop. Default true (production).
+   * Tests set this false to drive `drain` deterministically without a
+   * background fiber racing the explicit drain on the shared store.
+   */
+  readonly autoStart?: boolean
 }
 
 // ── Internal helpers ────────────────────────────────────────────────────────
@@ -96,7 +124,11 @@ const computeNextRunAt = (
 ): number | null => {
   const expr = job.schedule ?? job.spec
   if (!expr) return null
-  const parsed = Cron.parse(expr)
+  // Pin matching to UTC (not the host's TZ). Without the explicit "UTC" arg,
+  // Effect's Cron interprets the expression in `process.env.TZ`, so the same
+  // schedule would fire at a different wall-clock time depending on where the
+  // server runs. UTC keeps install-time and runtime computations identical.
+  const parsed = Cron.parse(expr, "UTC")
   if (Either.isLeft(parsed)) return null
   try {
     const nextDate = Cron.next(parsed.right, new Date(fromMs))
@@ -131,6 +163,12 @@ export const JobTickerLayer = (
   const workerDeadlineMs = Duration.toMillis(
     options?.workerDeadline ?? Duration.minutes(5),
   )
+  const retentionMaxAgeMs = Duration.toMillis(
+    options?.retentionMaxAge ?? Duration.days(30),
+  )
+  const retentionSweepIntervalMs = Duration.toMillis(
+    options?.retentionSweepInterval ?? Duration.hours(6),
+  )
 
   return Layer.scoped(
     JobTicker,
@@ -138,6 +176,51 @@ export const JobTickerLayer = (
       const store = yield* JobsStoreService
       const registry = yield* WorkerRegistry
       const clock = yield* Clock
+
+      // Throttle the retention sweep: the ticker drains every minute but we
+      // only issue a DELETE once `retentionSweepIntervalMs` has elapsed. Init
+      // to 0 so the first drain on a long-lived clock prunes immediately; on a
+      // TestClock pinned at 0 the interval has not elapsed, so unit tests that
+      // don't care about retention see `pruned: 0`.
+      const lastPruneAt = yield* Ref.make(0)
+
+      // Boot reconcile (runs ONCE, before the loop forks): a hard crash
+      // between recordRunStart and recordRunEnd leaves job_runs rows stuck
+      // `running`/`waiting` forever. Close them as cancelled so listRuns and
+      // the suggested-actions completion observer don't see phantom in-flight
+      // work. Best-effort — a failure logs and boot continues.
+      const bootNow = yield* clock.nowMs()
+      const orphansClosed = yield* store
+        .closeOrphanedRuns({
+          finishedAt: bootNow,
+          error: "orphaned: process restarted before completion",
+        })
+        .pipe(
+          Effect.catchAll((err) =>
+            Effect.as(
+              Effect.logWarning(
+                `[luna/sched] boot orphan reconcile failed: ${err.message}`,
+              ),
+              0,
+            ),
+          ),
+        )
+      if (orphansClosed > 0) {
+        yield* Effect.logInfo(
+          `[luna/sched] boot reconcile: closed ${orphansClosed} orphaned run(s)`,
+        )
+      }
+
+      // In-memory at-most-once guard for one-shot jobs. The durable disable
+      // (setV2Fields enabled=false) can fail under a storage outage, which
+      // would otherwise leave the row enabled+next_run_at NULL and re-fire it
+      // every tick. We remember which one-shots THIS process already dispatched
+      // and refuse to dispatch them again, even if the disable never lands.
+      // Entries are removed the moment the disable durably succeeds, so the set
+      // only ever holds one-shots whose disable is currently failing (≈always
+      // empty). A process restart clears it — a one-shot that was never marked
+      // done will then retry once, which is the correct at-least-once fallback.
+      const dispatchedOneShots = new Set<string>()
 
       /** One tick. Idempotent on the read-side; the claim() guards writes. */
       const drainOnce: Effect.Effect<TickSummary> = Effect.gen(function* () {
@@ -151,8 +234,18 @@ export const JobTickerLayer = (
         let failed = 0
         let skippedUnknownKind = 0
         let skippedClaimLost = 0
+        let skippedV1Cron = 0
 
         for (const job of due) {
+          // V1 cron rows (kind="cron") belong to the in-process TriggerAgent,
+          // not the V2 ticker — there is no "cron" worker, so claiming one would
+          // write a spurious unknown_kind failure every tick. Skip them
+          // structurally so a missed enabled=false opt-out (the V1→V2 disable is
+          // best-effort) can NEVER leak a V1 row into V2 dispatch.
+          if (job.kind === "cron") {
+            skippedV1Cron++
+            continue
+          }
           // Pre-screen: do we have a worker for this kind? If not, we still
           // claim (so we don't hot-loop on it) but immediately mark failed
           // with an `unknown_kind` error. The operator's next session will
@@ -186,18 +279,72 @@ export const JobTickerLayer = (
           const scheduleEmpty = (job.schedule ?? "").trim() === ""
           const specEmpty = (job.spec ?? "").trim() === ""
           if (scheduleEmpty && specEmpty) {
-            // Retry a couple times so a transient store hiccup doesn't leave the
-            // row enabled (claim already nulled next_run_at, so listDue would
-            // return it again next tick → a duplicate dispatch). If it still
-            // fails, log loudly — the next tick may re-fire it.
-            yield* store.setV2Fields(job.id, { enabled: false }).pipe(
-              Effect.retry(Schedule.recurs(2)),
-              Effect.catchAll((err) =>
-                Effect.logWarning(
-                  `[luna/sched] one-shot disable failed for job=${job.id} after retries: ${err.message} — it may re-fire next tick`,
+            // Re-encounter: we already dispatched this one-shot but its disable
+            // hasn't durably landed (storage outage). Retry the disable and
+            // SKIP a second dispatch — the in-memory guard is what actually
+            // bounds it to once-per-process; the durable disable is just the
+            // cross-restart marker.
+            if (dispatchedOneShots.has(job.id)) {
+              const disabledNow = yield* store
+                .setV2Fields(job.id, { enabled: false })
+                .pipe(
+                  Effect.as(true),
+                  Effect.catchAll(() => Effect.succeed(false)),
+                )
+              if (disabledNow) {
+                dispatchedOneShots.delete(job.id)
+              } else {
+                yield* Effect.logWarning(
+                  `[luna/sched] one-shot disable still failing for job=${job.id}; in-memory guard is suppressing re-dispatch`,
+                )
+              }
+              continue
+            }
+
+            // First dispatch of this one-shot. Mark it BEFORE dispatching so a
+            // disable failure can never produce a second run this process.
+            dispatchedOneShots.add(job.id)
+            const disabled = yield* store
+              .setV2Fields(job.id, { enabled: false })
+              .pipe(
+                Effect.retry(Schedule.recurs(2)),
+                Effect.as(true),
+                Effect.catchAll((err) =>
+                  Effect.as(
+                    Effect.logWarning(
+                      `[luna/sched] one-shot disable failed for job=${job.id} after retries: ${err.message} — in-memory guard will prevent a re-fire this process`,
+                    ),
+                    false,
+                  ),
                 ),
-              ),
+              )
+            // Disable landed durably — no need to keep tracking it in memory.
+            if (disabled) dispatchedOneShots.delete(job.id)
+          } else if (nextRunAt === null) {
+            // The schedule/spec is NON-empty (not a one-shot) but
+            // computeNextRunAt could not produce a next fire — the cron is
+            // unparseable OR has no upcoming match (e.g. "0 0 30 2 *"). The
+            // claim left next_run_at=null, so the row would stay due and run a
+            // worker on its broken schedule EVERY tick. Quarantine it (disable)
+            // and log loudly so the operator can fix or remove the expression.
+            yield* store
+              .setV2Fields(job.id, { enabled: false })
+              .pipe(
+                Effect.retry(Schedule.recurs(2)),
+                Effect.catchAll((err) =>
+                  Effect.logWarning(
+                    `[luna/sched] quarantine of malformed-cron job=${job.id} failed: ${err.message} — it may re-fire next tick`,
+                  ),
+                ),
+              )
+            yield* Effect.logWarning(
+              `[luna/sched] job=${job.id} has an unschedulable cron (schedule=${JSON.stringify(
+                job.schedule,
+              )} spec=${JSON.stringify(
+                job.spec,
+              )}); disabled it to stop the every-tick re-fire`,
             )
+            continue
           }
 
           // Record run start.
@@ -239,8 +386,25 @@ export const JobTickerLayer = (
             attempt: 1,
             deadline: tickAt + workerDeadlineMs,
           }
-          const result = yield* registry.dispatch(job.kind, job.payload, ctx)
-            .pipe(Effect.either)
+          const result = yield* registry
+            .dispatch(job.kind, job.payload, ctx)
+            .pipe(
+              // ENFORCE the deadline: a worker that overruns is interrupted
+              // rather than left to block the single ticker fiber indefinitely
+              // (the old behaviour — the deadline was advisory only). The
+              // timeout surfaces as a deadline_passed WorkerError and is closed
+              // into job_runs like any other failure.
+              Effect.timeoutFail({
+                onTimeout: () =>
+                  new WorkerError({
+                    reason: "deadline_passed",
+                    kind: job.kind,
+                    message: `worker for kind "${job.kind}" exceeded the ${workerDeadlineMs}ms deadline and was interrupted`,
+                  }),
+                duration: Duration.millis(workerDeadlineMs),
+              }),
+              Effect.either,
+            )
 
           const finishedAt = yield* clock.nowMs()
           if (result._tag === "Right") {
@@ -266,6 +430,25 @@ export const JobTickerLayer = (
           }
         }
 
+        // Retention sweep (throttled): prune closed runs older than the
+        // retention window. Best-effort — a failing prune logs and the loop
+        // continues (the next eligible tick retries).
+        let pruned = 0
+        const lastPrune = yield* Ref.get(lastPruneAt)
+        if (tickAt - lastPrune >= retentionSweepIntervalMs) {
+          pruned = yield* store.pruneRuns(tickAt - retentionMaxAgeMs).pipe(
+            Effect.catchAll((err) =>
+              Effect.as(
+                Effect.logWarning(
+                  `[luna/sched] retention prune failed: ${err.message}`,
+                ),
+                0,
+              ),
+            ),
+          )
+          yield* Ref.set(lastPruneAt, tickAt)
+        }
+
         return {
           tickAt,
           considered: due.length,
@@ -274,12 +457,16 @@ export const JobTickerLayer = (
           failed,
           skippedUnknownKind,
           skippedClaimLost,
+          skippedV1Cron,
+          pruned,
         } satisfies TickSummary
       })
 
       // Supervised loop. forkScoped ties the loop to the layer Scope so a
-      // Layer.close() during teardown interrupts the loop cleanly.
-      yield* Effect.gen(function* () {
+      // Layer.close() during teardown interrupts the loop cleanly. Skipped when
+      // autoStart=false (tests drive `drain` directly without a background
+      // fiber racing the explicit drain on the shared store).
+      const supervisedLoop = Effect.gen(function* () {
         const summary = yield* drainOnce.pipe(
           Effect.catchAllDefect((defect) =>
             Effect.gen(function* () {
@@ -294,6 +481,8 @@ export const JobTickerLayer = (
                 failed: 0,
                 skippedUnknownKind: 0,
                 skippedClaimLost: 0,
+                skippedV1Cron: 0,
+                pruned: 0,
               } satisfies TickSummary
             }),
           ),
@@ -307,10 +496,14 @@ export const JobTickerLayer = (
             `[luna/sched] tick considered=${summary.considered} claimed=${summary.claimed} succeeded=${summary.succeeded} failed=${summary.failed} skipped_unknown=${summary.skippedUnknownKind} skipped_claim_lost=${summary.skippedClaimLost}`,
           )
         }
-      }).pipe(
-        Effect.repeat(Schedule.fixed(tickInterval)),
-        Effect.forkScoped,
-      )
+      })
+
+      if (options?.autoStart !== false) {
+        yield* supervisedLoop.pipe(
+          Effect.repeat(Schedule.fixed(tickInterval)),
+          Effect.forkScoped,
+        )
+      }
 
       return {
         drain: drainOnce,

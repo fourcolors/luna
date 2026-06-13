@@ -30,14 +30,15 @@ import { Data, Effect, Layer, Ref } from "effect"
 
 /**
  * Per-dispatch metadata: id correlation, attempt counter, deadline guard.
- * Workers SHOULD respect `deadline` — the ticker will not interrupt a worker
- * that overruns; the deadline is advisory + observability-only in V1.
+ * Workers SHOULD honour `deadline` for graceful cleanup, but the JobTicker now
+ * ENFORCES it: a dispatch that overruns `deadline` is interrupted and closed as
+ * a `deadline_passed` failure, so a stuck worker can't block the ticker.
  */
 export interface WorkerContext {
   readonly jobId: string
   readonly runId: number
   readonly attempt: number
-  /** Soft deadline in epoch-ms. Worker chooses how to honour. */
+  /** Hard deadline in epoch-ms — the ticker interrupts the worker past it. */
   readonly deadline: number
 }
 

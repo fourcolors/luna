@@ -769,7 +769,24 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
     }),
   ).pipe(
     Layer.provide(MemoryToolsLayer()),
-    Layer.provide(SchedulerToolsLayer()),
+    Layer.provide(
+      // Surface the system-managed cycles (wake/dream) as read-only entries in
+      // schedule_list so the operator sees the whole schedule picture, not just
+      // agent-created crons. Exprs mirror the wake/dream cron wiring below.
+      SchedulerToolsLayer({
+        systemSchedules: [
+          ...(process.env["LUNA_WAKE_ENABLED"]?.trim() !== "0"
+            ? [
+                {
+                  label: "wake (workspace digest)",
+                  expr: process.env["LUNA_WAKE_CRON_EXPR"]?.trim() || "*/30 * * * *",
+                },
+              ]
+            : []),
+          { label: "dream (nightly consolidation)", expr: "0 3 * * *" },
+        ],
+      }),
+    ),
     Layer.provide(LocalShellToolsLayer({ bridge: localShellBridge })),
     Layer.provide(SecretToolsLayer({ bridge: secretRequestBridge })),
     Layer.provide(ObsToolsLayer({ runtimeProbe: buildChatServerRuntimeProbe })),
@@ -1664,9 +1681,9 @@ export const buildBaseLayer = (
     Layer.provide(suggestedActionsStoreL),
   )
   // AcceptHandler: auto-executes an accepted action as a durable one-shot job
-  // (requires LUNA_SCHEDULER_V2_ENABLED=1 for the ticker to dispatch it) and
-  // forks the completion observer. Resolved via serviceOption inside
-  // SuggestedActions.respond — present here means accept actually runs.
+  // (the V2 ticker dispatches it — on by default; LUNA_SCHEDULER_V2_ENABLED=0
+  // disables) and forks the completion observer. Resolved via serviceOption
+  // inside SuggestedActions.respond — present here means accept actually runs.
   const acceptHandlerL = AcceptHandlerLayer().pipe(
     Layer.provide(suggestedActionsL),
     Layer.provide(jobsStoreL),
@@ -1941,26 +1958,27 @@ export const buildBaseLayer = (
     : null
 
 
-  // Phase 12b (scheduler-rebuild) — DESIGN.md §5.3. Behind the
-  // `LUNA_SCHEDULER_V2_ENABLED` flag so we can ship the wiring without
-  // changing runtime behaviour. With the flag OFF (default), the V2 ticker
-  // layer is omitted from the layer graph — no fiber forked, no DB queries
-  // per minute. With the flag ON, a single supervised JobTicker fiber
-  // drains the `jobs` table every 60 s, claims due rows, and dispatches
-  // them through the WorkerRegistry.
+  // Phase 12b (scheduler-rebuild) — DESIGN.md §5.3. V2 is now the DEFAULT
+  // scheduler. A single supervised JobTicker fiber drains the `jobs` table
+  // every 60 s, claims due rows, and dispatches them through the
+  // WorkerRegistry (the `prompt` + `workflow` workers, registered below). This
+  // powers agent-created schedules (schedule_create), accepted suggested
+  // actions (AcceptHandler), and any persisted `jobs` row.
   //
-  // The WorkerRegistry is intentionally EMPTY in this PR. P4 (the `prompt`
-  // worker) and P5 (the `workflow` worker) ship the actual workers behind
-  // the same flag. While the flag is on with an empty registry, due rows
-  // get claimed + their `job_runs` row closes as failed with
-  // `unknown_kind` — visible in the workspace's per-fire ledger but
-  // otherwise harmless. The existing TriggerAgent + wake / dream Layers
-  // continue to fire alongside this; cutover (P6) migrates them to V2 rows
-  // one at a time, then we flip the disable.
+  // `LUNA_SCHEDULER_V2_ENABLED=0` is the KILL SWITCH — set it to fall back to
+  // the no-ticker behaviour (e.g. while debugging). Any other value (or unset)
+  // leaves V2 on. The wake / dream cycles run on their own TriggerAgent loops
+  // and are unaffected by this flag.
   const schedulerV2Enabled =
-    process.env["LUNA_SCHEDULER_V2_ENABLED"]?.trim() === "1"
+    process.env["LUNA_SCHEDULER_V2_ENABLED"]?.trim() !== "0"
   if (schedulerV2Enabled) {
-    console.log("[luna/sched] V2 ticker ENABLED (LUNA_SCHEDULER_V2_ENABLED=1) — kinds=prompt,workflow registered")
+    console.log(
+      "[luna/sched] V2 ticker ENABLED (default; set LUNA_SCHEDULER_V2_ENABLED=0 to disable) — kinds=prompt,workflow registered",
+    )
+  } else {
+    console.log(
+      "[luna/sched] V2 ticker DISABLED via LUNA_SCHEDULER_V2_ENABLED=0 — schedules persist but do not fire",
+    )
   }
   // Phase 5 (widget-system.md): per-run request_input tool for the job
   // workers. The provider closes over the jobs store (to flip the run
@@ -2051,14 +2069,14 @@ export const buildBaseLayer = (
     jobsStoreL,  // Phase 12a: persisted cron schedules (DESIGN §5.1 jobs table)
     dreamCronL, // Phase 3 D1: forces the cron to register at boot
     wakeCronL ?? Layer.empty, // wake cron: workspace-state digest at each tick (disabled if LUNA_WAKE_ENABLED=0)
-    jobTickerL ?? Layer.empty, // Phase 12b V2 ticker: enabled via LUNA_SCHEDULER_V2_ENABLED=1 (DESIGN §5.3)
+    jobTickerL ?? Layer.empty, // Phase 12b V2 ticker: ON by default (DESIGN §5.3); LUNA_SCHEDULER_V2_ENABLED=0 disables
     surveyL,    // Phase 3 D3: Survey available for buildServerLayer to resolve + pass to the WS server
     suggestedActionsL, // Suggested Actions: buildServerLayer resolves it for the WS respond handle (same instance the chat layer uses)
-    // Auto-execute + completion observer — ONLY when the V2 ticker is enabled.
-    // Without the ticker a job can never dispatch, so providing AcceptHandler
-    // would strand accepted actions in `in_progress` forever; gating it here
-    // means accept simply leaves the action at `accepted` on a flag-off deploy
-    // (respond resolves AcceptHandler via serviceOption — absent → no exec).
+    // Auto-execute + completion observer — wired whenever the V2 ticker is on
+    // (the default). Without the ticker a job can never dispatch, so on a
+    // LUNA_SCHEDULER_V2_ENABLED=0 deploy we omit AcceptHandler and accept simply
+    // leaves the action at `accepted` (respond resolves it via serviceOption —
+    // absent → no exec) rather than stranding it in `in_progress` forever.
     schedulerV2Enabled ? acceptHandlerL : Layer.empty,
     skillRegistryL, // PRD Part B: same instance as threadToolsL (memoized by reference) — buildServerLayer resolves it for the WS skill frames
     connectorServiceL, // PRD Part A: same instance as threadToolsL — M2's WS connector frames resolve it here
@@ -2232,8 +2250,9 @@ const buildServerLayer = (
       const jobsStore = yield* JobsStoreService // PRD Part C/W3 (gallery source)
       const telemetry = yield* TelemetryService // Phase 7: pulse-snapshot source
       const suggestedActionsService = yield* SuggestedActions // suggest_action
-      // Optional — present only when LUNA_SCHEDULER_V2_ENABLED=1 (see the gated
-      // merge above). Absent → accept leaves the action at `accepted`.
+      // Optional — present whenever the V2 ticker is on (the default; absent
+      // only on a LUNA_SCHEDULER_V2_ENABLED=0 deploy, see the gated merge
+      // above). Absent → accept leaves the action at `accepted`.
       const acceptHandlerOption = yield* Effect.serviceOption(AcceptHandler)
 
       // PRD A §08: access tokens live ~1h; refresh AHEAD of expiry so the

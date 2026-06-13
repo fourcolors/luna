@@ -1,31 +1,15 @@
 /**
- * Scheduler tools Tier-1 tests.
+ * Scheduler tools tests (V2-native).
  *
- *   1. schedule_create with valid cron returns triggerId
- *   2. schedule_create with invalid cron returns tool error
- *   3. schedule_list returns empty array initially
- *   4. schedule_list after schedule_create returns 1 entry
- *   5. schedule_cancel on known id returns { cancelled: true }
- *   6. schedule_cancel on unknown id returns { cancelled: false }
- *
- * Tests invoke the SDK tool handlers directly — same boundary the agent
- * crosses — and exercise the full Effect → SDK promise translation.
- *
- * The TriggerAgent + JobScheduler + Clock stack is provided via a shared
- * Effect.scoped program helper so all handlers in a single test share the
- * same live service instances.
+ * A schedule is a durable RECURRING `kind:"prompt"` row in the `jobs` table;
+ * the V2 JobTicker re-fires it (firing is covered by job-ticker.test.ts). These
+ * tests cover the agent-facing create / list / cancel surface against an
+ * in-memory JobsStore — the same boundary the agent crosses.
  */
 import { describe, expect, it } from "vitest"
-import { Effect, Fiber, Layer, Ref } from "effect"
-import {
-  Clock,
-  JobSchedulerLayer,
-  JobsStoreService,
-  TriggerAgent,
-  TriggerAgentLayer,
-} from "@luna/core"
+import { Effect, Layer } from "effect"
+import { Clock, JobsStoreService } from "@luna/core"
 import { makeSchedulerTools } from "../src/tools.js"
-import type * as Scope from "effect/Scope"
 
 interface ToolCallResult {
   readonly content?: ReadonlyArray<{ type: string; text: string }>
@@ -44,92 +28,94 @@ function parseErrorResult(r: ToolCallResult): string {
   return r.content?.[0]?.text ?? ""
 }
 
-/** Run a program with TriggerAgent + JobScheduler + Clock + JobsStore in scope. */
+/** Run a program with a JobsStore (Memory) in scope. */
 const withScheduler = <A>(
-  prog: Effect.Effect<A, unknown, TriggerAgent | Clock | JobsStoreService | Scope.Scope>,
-) =>
-  Effect.scoped(
-    prog.pipe(
-      Effect.provide(TriggerAgentLayer.Default),
-      Effect.provide(JobSchedulerLayer.make({ capacity: 16, offerPolicy: "drop-newest" })),
-      Effect.provide(JobsStoreService.Memory),
-      Effect.provide(Clock.Default),
-    ),
-  )
+  prog: Effect.Effect<A, unknown, JobsStoreService>,
+) => prog.pipe(Effect.provide(JobsStoreService.Memory.pipe(Layer.provide(Clock.Default))))
 
-describe("scheduler tools — Tier 1", () => {
-  it("schedule_create with valid cron returns triggerId and expr", async () => {
+describe("scheduler tools — V2", () => {
+  it("schedule_create persists a recurring prompt job and returns a triggerId", async () => {
     const result = await Effect.runPromise(
       withScheduler(
         Effect.gen(function* () {
-          const trigger = yield* TriggerAgent
           const jobsStore = yield* JobsStoreService
-          const layerScope = yield* Effect.scope
-          const [createTool] = makeSchedulerTools(trigger, layerScope, jobsStore)
-          return yield* Effect.promise(() =>
+          const [createTool] = makeSchedulerTools(jobsStore)
+          const out = yield* Effect.promise(() =>
             createTool.handler(
-              { expr: "0 9 * * 1", label: "weekly-standup" },
+              { expr: "0 9 * * 1", prompt: "remind me about standup", label: "weekly-standup" },
               undefined,
             ),
           )
+          const parsed = parseTextResult<{
+            triggerId: string
+            expr: string
+            registeredAt: string
+          }>(out as ToolCallResult)
+          const job = yield* jobsStore.getById(parsed.triggerId)
+          return { parsed, job }
         }),
       ),
     )
-    const parsed = parseTextResult<{
-      triggerId: string
-      expr: string
-      registeredAt: string
-    }>(result)
-    expect(typeof parsed.triggerId).toBe("string")
-    expect(parsed.triggerId).toMatch(/^trigger-/)
-    expect(parsed.expr).toBe("0 9 * * 1")
-    expect(typeof parsed.registeredAt).toBe("string")
+    expect(result.parsed.triggerId).toMatch(/^sched-/)
+    expect(result.parsed.expr).toBe("0 9 * * 1")
+    expect(typeof result.parsed.registeredAt).toBe("string")
+    // A durable RECURRING prompt job was persisted (spec non-empty → not a
+    // one-shot), enabled and due at the next cron match.
+    expect(result.job?.kind).toBe("prompt")
+    expect(result.job?.spec).toBe("0 9 * * 1")
+    expect(result.job?.enabled).toBe(true)
+    expect((result.job?.nextRunAt ?? 0) > 0).toBe(true)
+    expect(result.job?.payload.user_prompt).toBe("remind me about standup")
+    expect(result.job?.payload.source).toBe("scheduler-tools")
+    expect((result.job?.payload as { deliver_to?: { kind?: string } }).deliver_to?.kind).toBe(
+      "obs_note",
+    )
   })
 
-  it("schedule_create with invalid cron returns tool error", async () => {
+  it("schedule_create with an invalid cron returns a tool error", async () => {
     const result = await Effect.runPromise(
       withScheduler(
         Effect.gen(function* () {
-          const trigger = yield* TriggerAgent
           const jobsStore = yield* JobsStoreService
-          const layerScope = yield* Effect.scope
-          const [createTool] = makeSchedulerTools(trigger, layerScope, jobsStore)
+          const [createTool] = makeSchedulerTools(jobsStore)
           return yield* Effect.promise(() =>
-            createTool.handler({ expr: "not-a-cron-expr" }, undefined),
+            createTool.handler({ expr: "not a cron", prompt: "x" }, undefined),
           )
         }),
       ),
     )
-    const msg = parseErrorResult(result)
-    expect(msg).toContain("schedule_create")
+    expect(parseErrorResult(result as ToolCallResult)).toContain("schedule_create")
   })
 
-  it("schedule_list returns empty array when no schedules registered", async () => {
+  it("schedule_create rejects an ambiguous 6-field cron (seconds field)", async () => {
     const result = await Effect.runPromise(
       withScheduler(
         Effect.gen(function* () {
-          const trigger = yield* TriggerAgent
           const jobsStore = yield* JobsStoreService
-          const layerScope = yield* Effect.scope
-          const [, listTool] = makeSchedulerTools(trigger, layerScope, jobsStore)
-          return yield* Effect.promise(() => listTool.handler({}, undefined))
+          const [createTool, listTool] = makeSchedulerTools(jobsStore)
+          const created = yield* Effect.promise(() =>
+            createTool.handler({ expr: "*/5 * * * * *", prompt: "x", label: "oops" }, undefined),
+          )
+          const afterList = yield* Effect.promise(() => listTool.handler({}, undefined))
+          return { created, afterList }
         }),
       ),
     )
-    const parsed = parseTextResult<{ triggers: unknown[] }>(result)
-    expect(parsed.triggers).toHaveLength(0)
+    expect(parseErrorResult(result.created as ToolCallResult)).toContain("schedule_create")
+    const list = parseTextResult<{ triggers: unknown[] }>(result.afterList as ToolCallResult)
+    expect(list.triggers).toHaveLength(0)
   })
 
-  it("schedule_list after schedule_create returns 1 entry with correct fields", async () => {
+  it("schedule_list surfaces read-only system schedules alongside agent schedules", async () => {
     const result = await Effect.runPromise(
       withScheduler(
         Effect.gen(function* () {
-          const trigger = yield* TriggerAgent
           const jobsStore = yield* JobsStoreService
-          const layerScope = yield* Effect.scope
-          const [createTool, listTool] = makeSchedulerTools(trigger, layerScope, jobsStore)
+          const [createTool, listTool] = makeSchedulerTools(jobsStore, [
+            { label: "wake (workspace digest)", expr: "*/30 * * * *" },
+          ])
           yield* Effect.promise(() =>
-            createTool.handler({ expr: "*/5 * * * *", label: "poll" }, undefined),
+            createTool.handler({ expr: "0 9 * * 1", prompt: "standup", label: "standup" }, undefined),
           )
           return yield* Effect.promise(() => listTool.handler({}, undefined))
         }),
@@ -138,68 +124,97 @@ describe("scheduler tools — Tier 1", () => {
     const parsed = parseTextResult<{
       triggers: Array<{
         triggerId: string
-        kind: string
         expr: string | null
-        registeredAt: string
+        cancellable: boolean
+        source: string
       }>
-    }>(result)
-    expect(parsed.triggers).toHaveLength(1)
-    expect(parsed.triggers[0]!.kind).toBe("cron")
-    expect(parsed.triggers[0]!.expr).toBe("*/5 * * * *")
-    expect(typeof parsed.triggers[0]!.registeredAt).toBe("string")
+    }>(result as ToolCallResult)
+    const agent = parsed.triggers.find((t) => t.expr === "0 9 * * 1")
+    const system = parsed.triggers.find((t) => t.expr === "*/30 * * * *")
+    expect(agent?.cancellable).toBe(true)
+    expect(agent?.source).toBe("agent")
+    expect(system).toBeDefined()
+    expect(system?.cancellable).toBe(false)
+    expect(system?.source).toBe("system")
   })
 
-  it("schedule_cancel on known id returns { cancelled: true } and removes from list", async () => {
+  it("schedule_list returns empty when nothing is registered", async () => {
     const result = await Effect.runPromise(
       withScheduler(
         Effect.gen(function* () {
-          const trigger = yield* TriggerAgent
           const jobsStore = yield* JobsStoreService
-          const layerScope = yield* Effect.scope
-          const [createTool, listTool, cancelTool] = makeSchedulerTools(trigger, layerScope, jobsStore)
+          const [, listTool] = makeSchedulerTools(jobsStore)
+          return yield* Effect.promise(() => listTool.handler({}, undefined))
+        }),
+      ),
+    )
+    expect(parseTextResult<{ triggers: unknown[] }>(result as ToolCallResult).triggers).toHaveLength(0)
+  })
+
+  it("schedule_list after schedule_create returns one cancellable agent entry", async () => {
+    const result = await Effect.runPromise(
+      withScheduler(
+        Effect.gen(function* () {
+          const jobsStore = yield* JobsStoreService
+          const [createTool, listTool] = makeSchedulerTools(jobsStore)
+          yield* Effect.promise(() =>
+            createTool.handler({ expr: "*/5 * * * *", prompt: "poll", label: "poll" }, undefined),
+          )
+          return yield* Effect.promise(() => listTool.handler({}, undefined))
+        }),
+      ),
+    )
+    const parsed = parseTextResult<{
+      triggers: Array<{ triggerId: string; expr: string | null; source: string; cancellable: boolean }>
+    }>(result as ToolCallResult)
+    expect(parsed.triggers).toHaveLength(1)
+    expect(parsed.triggers[0]!.expr).toBe("*/5 * * * *")
+    expect(parsed.triggers[0]!.source).toBe("agent")
+    expect(parsed.triggers[0]!.cancellable).toBe(true)
+    expect(parsed.triggers[0]!.triggerId).toMatch(/^sched-/)
+  })
+
+  it("schedule_cancel on a known id removes the row and returns cancelled:true", async () => {
+    const result = await Effect.runPromise(
+      withScheduler(
+        Effect.gen(function* () {
+          const jobsStore = yield* JobsStoreService
+          const [createTool, listTool, cancelTool] = makeSchedulerTools(jobsStore)
           const created = parseTextResult<{ triggerId: string }>(
-            yield* Effect.promise(() =>
-              createTool.handler({ expr: "0 * * * *" }, undefined),
-            ),
+            (yield* Effect.promise(() =>
+              createTool.handler({ expr: "0 * * * *", prompt: "hourly" }, undefined),
+            )) as ToolCallResult,
           )
           const cancelResult = parseTextResult<{ cancelled: boolean }>(
-            yield* Effect.promise(() =>
+            (yield* Effect.promise(() =>
               cancelTool.handler({ triggerId: created.triggerId }, undefined),
-            ),
+            )) as ToolCallResult,
           )
           const afterList = parseTextResult<{ triggers: unknown[] }>(
-            yield* Effect.promise(() => listTool.handler({}, undefined)),
+            (yield* Effect.promise(() => listTool.handler({}, undefined))) as ToolCallResult,
           )
-          return { cancelResult, afterCount: afterList.triggers.length }
+          const row = yield* jobsStore.getById(created.triggerId)
+          return { cancelResult, afterCount: afterList.triggers.length, row }
         }),
       ),
     )
     expect(result.cancelResult.cancelled).toBe(true)
     expect(result.afterCount).toBe(0)
+    expect(result.row).toBeNull()
   })
 
-  it("schedule_cancel on unknown id returns { cancelled: false }", async () => {
+  it("schedule_cancel on an unknown id returns cancelled:false", async () => {
     const result = await Effect.runPromise(
       withScheduler(
         Effect.gen(function* () {
-          const trigger = yield* TriggerAgent
           const jobsStore = yield* JobsStoreService
-          const layerScope = yield* Effect.scope
-          const [, , cancelTool] = makeSchedulerTools(trigger, layerScope, jobsStore)
+          const [, , cancelTool] = makeSchedulerTools(jobsStore)
           return yield* Effect.promise(() =>
-            cancelTool.handler(
-              { triggerId: "trigger-does-not-exist" },
-              undefined,
-            ),
+            cancelTool.handler({ triggerId: "sched-does-not-exist" }, undefined),
           )
         }),
       ),
     )
-    const parsed = parseTextResult<{ cancelled: boolean }>(result)
-    expect(parsed.cancelled).toBe(false)
+    expect(parseTextResult<{ cancelled: boolean }>(result as ToolCallResult).cancelled).toBe(false)
   })
 })
-
-// Suppress unused-import warnings from type-only imports used in generics.
-const _: [typeof Fiber, typeof Layer, typeof Ref] | null = null
-void _
