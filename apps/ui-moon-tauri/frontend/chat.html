@@ -278,7 +278,7 @@
 
     /* New-thread button — the promoted action, accent-tinted to invite. Sits at
        the right (the flex:1 bar-title pushes it there). */
-    .newthread-btn {
+    #title-bar .newthread-btn {
       flex-shrink: 0;
       background: none;
       border: none;
@@ -292,7 +292,7 @@
       justify-content: center;
       transition: background 0.12s, color 0.12s;
     }
-    .newthread-btn:hover {
+    #title-bar .newthread-btn:hover {
       background: color-mix(in oklab, var(--accent) 16%, transparent);
     }
 
@@ -4103,9 +4103,11 @@
       // the app re-tethers to it. The snapshot proves this thread is valid
       // on the CURRENT server, so it's always safe to remember. Fire-and-
       // forget; never blocks or throws into the UI.
-      // A fresh-spawn side panel must NOT overwrite the main line's restart
-      // memory — otherwise reopening the app would resume the side thread.
-      if (window.__TAURI__ && State.activeThreadId && !SPAWN_FRESH) {
+      // Only the MAIN line owns the restart-resume memory. A fresh-spawn side
+      // panel (?thread=new) or a Phase 8 direct line (?thread=<id>) must NOT
+      // overwrite it — otherwise reopening the app would resume the side/pinned
+      // thread instead of the main conversation.
+      if (window.__TAURI__ && State.activeThreadId && !SPAWN_FRESH && !PINNED_THREAD) {
         window.__TAURI__.core.invoke('set_last_thread_id', { threadId: State.activeThreadId })
           .catch((e) => Logger.warn('set_last_thread_id failed (non-fatal):', e));
       }
