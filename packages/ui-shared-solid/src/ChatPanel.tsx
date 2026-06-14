@@ -44,12 +44,22 @@ import { MessageBubble } from "./MessageBubble.jsx"
 /** Commands recognised in the composer (slash-prefixed). */
 export type SlashCommand = "restart"
 
+/** The five real SDK effort levels. */
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max"
+
+/**
+ * What a client may pick in the effort dropdown / carry on the wire: a real
+ * effort level OR the "ultracode" token. ultracode is NOT a real SDK effort —
+ * the server demuxes it into the SDK's ultracode mode (xhigh + standing
+ * workflow orchestration). The web only renders + echoes the token; it never
+ * feeds it to an SDK. Mirrors the server's effort.ts `EffortOption`.
+ */
+export type EffortOption = EffortLevel | "ultracode"
 
 export interface AvailableModel {
   readonly id: string
   readonly label: string
-  readonly efforts?: ReadonlyArray<EffortLevel>
+  readonly efforts?: ReadonlyArray<EffortOption>
 }
 
 /**
@@ -66,8 +76,8 @@ export interface AvailableModel {
 export const clampEffortToModel = (
   availableModels: ReadonlyArray<AvailableModel> | null | undefined,
   modelId: string,
-  effort: EffortLevel | undefined,
-): EffortLevel | undefined => {
+  effort: EffortOption | undefined,
+): EffortOption | undefined => {
   if (effort === undefined || availableModels == null) return undefined
   const model = availableModels.find((m) => m.id === modelId)
   return model?.efforts?.includes(effort) ? effort : undefined
@@ -84,7 +94,7 @@ export const clampEffortToModel = (
  */
 export const buildNewThreadFrame = (params: {
   readonly model: string
-  readonly effort?: EffortLevel | undefined
+  readonly effort?: EffortOption | undefined
   readonly accountId?: string | null | undefined
   readonly availableModels?: ReadonlyArray<AvailableModel> | null | undefined
 }): NewThreadFrame => {
@@ -124,11 +134,11 @@ export interface ChatPanelProps {
   /** Currently selected model id for this thread. */
   readonly model?: string
   /** Currently selected effort level for this thread. */
-  readonly effort?: EffortLevel | undefined
+  readonly effort?: EffortOption | undefined
   /** Called when the user picks a different model. */
   readonly onModelChange?: (threadId: string, model: string) => void
   /** Called when the user picks a different effort level. */
-  readonly onEffortChange?: (threadId: string, effort: EffortLevel) => void
+  readonly onEffortChange?: (threadId: string, effort: EffortOption) => void
   // ── Suggested actions inline chip ──────────────────────────────────────
   /** The active thread's suggested actions (from store.state.suggestedActions). */
   readonly suggestedActions?: ReadonlyArray<SuggestedActionWire>
@@ -551,6 +561,17 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
                   const modelEfforts = () => selectedModel().efforts ?? []
                   const showEffort = () =>
                     props.effortSelection === true && modelEfforts().length > 0
+                  // Display order only: surface "ultracode" (the headline mode)
+                  // at the TOP, while the DATA order (modelEfforts) keeps it
+                  // LAST so the select's no-effort default stays a real level
+                  // and never auto-selects ultracode.
+                  const effortOptions = () => {
+                    const e = modelEfforts()
+                    return [
+                      ...e.filter((x) => x === "ultracode"),
+                      ...e.filter((x) => x !== "ultracode"),
+                    ]
+                  }
                   return (
                     <div class="composer-config" role="group" aria-label="Model and effort">
                       <label class="composer-config-label">
@@ -578,14 +599,18 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
                             onChange={(e) => {
                               props.onEffortChange?.(
                                 thread().summary.id,
-                                e.currentTarget.value as EffortLevel,
+                                e.currentTarget.value as EffortOption,
                               )
                             }}
                             disabled={props.disabled}
                             aria-label="Effort"
                           >
-                            <For each={modelEfforts()}>
-                              {(lv) => <option value={lv}>{lv}</option>}
+                            <For each={effortOptions()}>
+                              {(lv) => (
+                                <option value={lv}>
+                                  {lv === "ultracode" ? "⚡ Ultracode" : lv}
+                                </option>
+                              )}
                             </For>
                           </select>
                         </label>

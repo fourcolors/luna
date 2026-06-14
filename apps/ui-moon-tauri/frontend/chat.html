@@ -4529,7 +4529,13 @@
         if (!menu) return;
         while (menu.children.length > 1) menu.removeChild(menu.lastChild);
         const entry = this._currentModelEntry();
-        const efforts = (entry && entry.efforts) || [];
+        const rawEfforts = (entry && entry.efforts) || [];
+        // Display order: surface "ultracode" at the TOP of the menu (the
+        // headline mode), then the real effort levels in server order.
+        const efforts = [
+          ...rawEfforts.filter((e) => e === 'ultracode'),
+          ...rawEfforts.filter((e) => e !== 'ultracode'),
+        ];
         const current = localStorage.getItem('luna_effort') || '';
         // "Server default" item (empty effort = omit from frame)
         const defItem = document.createElement('div');
@@ -4556,8 +4562,11 @@
           item.setAttribute('role', 'menuitemradio');
           item.setAttribute('aria-checked', ef === current ? 'true' : 'false');
           const itemLabel = document.createElement('span');
-          // Capitalize the effort label (low → Low, xhigh → Xhigh, max → Max)
-          itemLabel.textContent = ef.charAt(0).toUpperCase() + ef.slice(1);
+          // Capitalize the effort label (low → Low, xhigh → Xhigh, max → Max);
+          // ultracode gets a headline label with a ⚡ glyph.
+          itemLabel.textContent = ef === 'ultracode'
+            ? '⚡ Ultracode'
+            : ef.charAt(0).toUpperCase() + ef.slice(1);
           const check = document.createElement('span');
           check.className = 'cfg-menu-check';
           check.setAttribute('aria-hidden', 'true');

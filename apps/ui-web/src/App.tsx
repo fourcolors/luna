@@ -43,7 +43,7 @@ import {
   clampEffortToModel,
   createTransport,
   createUiStore,
-  type EffortLevel,
+  type EffortOption,
   type SlashCommand,
   type VaultStatusAck,
 } from "@luna/ui-shared-solid"
@@ -115,19 +115,24 @@ interface PersistedConfig {
    * in one assignment (review F11); JSON.stringify drops undefined keys, so
    * the persisted localStorage form never carries an explicit null/undefined.
    */
-  effort?: EffortLevel | undefined
+  effort?: EffortOption | undefined
   /** When true, plain Enter sends; Shift+Enter newline. Default false. */
   enterToSend: boolean
   /** Last-selected account id. null = use default broker rotation. */
   selectedAccountId: string | null
 }
 
+// Includes the "ultracode" wire token so a persisted ultracode selection
+// survives a reload. This is only a sanity filter on the raw localStorage
+// value — the per-model validity check happens later via clampEffortToModel
+// against the server-advertised matrix.
 const VALID_EFFORTS: ReadonlySet<string> = new Set([
   "low",
   "medium",
   "high",
   "xhigh",
   "max",
+  "ultracode",
 ])
 
 const loadConfig = (): PersistedConfig => {
@@ -139,7 +144,7 @@ const loadConfig = (): PersistedConfig => {
       const parsed = JSON.parse(raw) as Partial<PersistedConfig>
       const parsedEffort =
         typeof parsed.effort === "string" && VALID_EFFORTS.has(parsed.effort)
-          ? (parsed.effort as EffortLevel)
+          ? (parsed.effort as EffortOption)
           : undefined
       return {
         url: parsed.url ?? DEFAULT_URL,
@@ -522,7 +527,7 @@ export const App: Component = () => {
    * fire set-thread-config for server-side application to the live session.
    * The `thread-config` ack is a no-op in the shared reducer today.
    */
-  const handleEffortChange = (threadId: string, effort: EffortLevel): void => {
+  const handleEffortChange = (threadId: string, effort: EffortOption): void => {
     setCfg({ ...cfg(), effort })
     send({ type: "set-thread-config", threadId, effort })
   }

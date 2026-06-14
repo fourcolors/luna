@@ -214,8 +214,14 @@ export interface CreateThreadOptions {
    * the model applies. Only valid for models that support effort (e.g.
    * Sonnet 4.6, Fable 5, Opus 4.8) — ignored silently on models that do not.
    * Persisted in thread-session-map.json for cross-restart recovery.
+   *
+   * `"ultracode"` is a pseudo-level: not a real SDK effort, but the dropdown
+   * token for the SDK's ultracode mode (xhigh + standing workflow
+   * orchestration). chat-service demuxes it into SDK `Settings` + the Workflow
+   * tool (see effort.ts `ultracodeFlagSettings`); it never reaches
+   * `Options.effort`.
    */
-  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
   readonly title?: string
   readonly tags?: ReadonlyArray<string>
   readonly parentSessionId?: string
