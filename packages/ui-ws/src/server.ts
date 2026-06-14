@@ -1911,6 +1911,16 @@ export const startUIWebSocketServer = (
                   }
                   case "user-message": {
                     if (chat === null) return
+                    // Re-assert this connection as the secret-entry target for
+                    // the thread on EVERY message — not just on `subscribe`/
+                    // `new-thread`. A long-lived session whose WebSocket dropped
+                    // and reconnected may keep chatting (user-messages route
+                    // fine) WITHOUT re-subscribing; the old connection's teardown
+                    // cleared the secret registration, so `request_secret` would
+                    // report "no connected Moon client" even though chat works.
+                    // Registering here makes any actively-chatting thread a valid
+                    // secret target. Idempotent (last writer wins); cheap.
+                    registerSecretClient(frame.threadId)
                     // TS types are erased at runtime — clients can send
                     // arbitrary mediaType strings or oversized data. Validate
                     // before forwarding to the SDK so a clean error surfaces
