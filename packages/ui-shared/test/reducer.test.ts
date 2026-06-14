@@ -344,4 +344,65 @@ describe("reducer — pinned artifacts (PRD C/W1)", () => {
     expect(ids).toEqual(["a", "b"]) // both prior "a" rows collapsed into the update
     expect(s1.pinnedArtifacts.filter((p) => p.id === "a")).toHaveLength(1)
   })
+
+  // ── smart-bar reducer arm ─────────────────────────────────────────────────
+  // The ui-shared reducer union is EXHAUSTIVE (const _exhaustive: never arm).
+  // This test proves the `smart-bar` case compiles (no TS error) AND behaves
+  // correctly at runtime — both are mandatory per the v1 spec.
+
+  it("smart-bar replaces items and records threadId", () => {
+    const frame: ServerFrame = {
+      type: "smart-bar",
+      threadId: "thr_abc",
+      version: 1,
+      items: [
+        { id: "git.worktree", kind: "info", label: "worktree", value: "jax/smart-bar", group: "git", priority: 0 },
+        { id: "model", kind: "info", label: "model", value: "sonnet-4-5", group: "context", priority: 1 },
+      ],
+    }
+    const s1 = reduce(initialState, frame)
+    expect(s1.smartBarItems).toHaveLength(2)
+    expect(s1.smartBarItems[0]?.id).toBe("git.worktree")
+    expect(s1.smartBarItems[1]?.id).toBe("model")
+    expect(s1.smartBarThreadId).toBe("thr_abc")
+  })
+
+  it("smart-bar clears items when the server pushes an empty list", () => {
+    const withItems = reduce(initialState, {
+      type: "smart-bar",
+      threadId: "thr_abc",
+      version: 1,
+      items: [{ id: "git.worktree", kind: "info", value: "feat/x" }],
+    } as ServerFrame)
+    expect(withItems.smartBarItems).toHaveLength(1)
+
+    const cleared = reduce(withItems, {
+      type: "smart-bar",
+      threadId: "thr_abc",
+      version: 1,
+      items: [],
+    } as ServerFrame)
+    expect(cleared.smartBarItems).toHaveLength(0)
+    expect(cleared.smartBarThreadId).toBe("thr_abc")
+  })
+
+  it("smart-bar preserves the rest of state unchanged", () => {
+    const withThread = reduce(initialState, {
+      type: "hello",
+      protocolVersion: 2,
+      kinds: [],
+      capabilities: { chat: true, streamingDeltas: true, setup: false },
+    } as ServerFrame)
+    const s1 = reduce(withThread, {
+      type: "smart-bar",
+      threadId: "thr_x",
+      version: 1,
+      items: [{ id: "git.branch", kind: "info", value: "main" }],
+    } as ServerFrame)
+    // Smart bar state updated.
+    expect(s1.smartBarItems).toHaveLength(1)
+    // Unrelated state untouched.
+    expect(s1.capabilities).toEqual(withThread.capabilities)
+    expect(s1.advertisedKinds).toEqual(withThread.advertisedKinds)
+  })
 })

@@ -108,6 +108,7 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "mcp-resource-result",
   "mcp-tool-result",
   "thread-config",
+  "smart-bar",
 ].sort()
 
 const EXPECTED_CLIENT_FRAME_TYPES = [
@@ -265,7 +266,8 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // The live Agents view (S4) adds subagent-tree (server, broadcast) +
     // subagent-tree-request (client) → 46 server / 36 client. The Apps-panel
     // ledger-safe edit adds artifact-edit (client) → 46 server / 37 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(46)
+    // Smart Bar v1 adds smart-bar (server) → 47 server / 37 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(47)
     expect(literalsForUnion(src, "ClientFrame")).toHaveLength(37)
   })
 
