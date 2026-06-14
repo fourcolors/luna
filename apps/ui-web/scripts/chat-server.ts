@@ -174,8 +174,10 @@ import {
   DEFAULT_UI_KINDS,
   DreamCronLayer,
   DreamStore,
+  DreamWorkerLayer,
   WakeCronLayer,
   WakeLogStore,
+  WakeWorkerLayer,
   EnvSecretProvider,
   NoopTracerLayer,
   ObservabilityService,
@@ -1496,6 +1498,81 @@ export const buildWakeCronLayer = (opts: BuildWakeCronLayerOpts) => {
   )
 }
 
+// ── V2 worker registry factory (M3 boot wiring) ────────────────────────
+//
+// Compose the V2 JobTicker's WorkerRegistry, seeded with ALL worker kinds the
+// chat-server ships: the generic `prompt` + `workflow` workers (adapter-sdk)
+// AND the dedicated `dream` + `wake` workers (scheduler-v2 dream/wake
+// migration, M1 + M2). A JobTicker draining the `jobs` table dispatches a
+// claimed row to the worker registered under its `kind`, so dream/wake rows are
+// runnable iff their kinds are registered here.
+//
+// Exported (and used BY buildBaseLayer) so the live boot and the M3 integration
+// test share ONE code path: the test builds this with fake/in-memory leaf
+// layers and asserts listKinds superset {prompt, workflow, dream, wake}.
+//
+// Leaf deps are passed in (already built by the caller) so this stays a pure
+// composition with no SDKClient / SQLite / workspace.db assumptions of its own.
+// Optional deps (calibrationStoreL — dream's ECE serviceOption sink;
+// jobInputToolsL — the prompt/workflow request_input serviceOption provider) are
+// folded in only when supplied, exactly mirroring the prior inline wiring +
+// buildDreamCronLayer's optional-calibration handling.
+export interface BuildWorkerRegistryLayerOpts {
+  readonly clockL: Layer.Layer<Clock>
+  readonly sdkClientL: Layer.Layer<SDKClient>
+  readonly agentNotesL: Layer.Layer<AgentNotesService>
+  /** Optional per-run request_input provider (prompt/workflow serviceOption). */
+  readonly jobInputToolsL?: Layer.Layer<import("@luna/adapter-sdk").JobRunToolsProvider>
+  // dream leaf deps (DreamWorkerLayer R = DreamStore|DreamReasoner|SessionStore|MemoryRouter|Clock)
+  readonly dreamStoreL: Layer.Layer<DreamStore, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
+  readonly dreamReasonerL: Layer.Layer<import("@luna/core").DreamReasoner>
+  readonly sessionStoreL: Layer.Layer<SessionStore>
+  readonly memoryRouterL: Layer.Layer<import("@luna/memory").MemoryRouter, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
+  /** Optional ECE calibration sink (dream serviceOption). */
+  readonly calibrationStoreL?: Layer.Layer<CalibrationStore, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
+  // wake leaf deps (WakeWorkerLayer R = WakeReasoner|WakeLogStore|AgentNotesService|Clock)
+  readonly wakeReasonerL: Layer.Layer<import("@luna/core").WakeReasoner>
+  readonly wakeLogStoreL: Layer.Layer<WakeLogStore, import("effect").ConfigError>
+}
+
+export const buildWorkerRegistryLayer = (
+  opts: BuildWorkerRegistryLayerOpts,
+) => {
+  // The four worker-registration layers. Each yields WorkerRegistry + its own
+  // service deps and registers a closed-over Worker<never> at build time.
+  const workers = Layer.mergeAll(
+    PromptWorkerLayer(),
+    WorkflowWorkerLayer(),
+    DreamWorkerLayer(),
+    WakeWorkerLayer(),
+  )
+  // Shared base: ONE empty registry + every leaf dep the four workers reach.
+  // Optional deps are merged only when provided (serviceOption keeps the
+  // workers' R from growing, so omitting them is safe).
+  const base = Layer.mergeAll(
+    makeWorkerRegistry({}),
+    opts.sdkClientL,
+    opts.agentNotesL,
+    opts.dreamStoreL,
+    opts.dreamReasonerL,
+    opts.sessionStoreL,
+    opts.memoryRouterL,
+    opts.wakeReasonerL,
+    opts.wakeLogStoreL,
+    opts.clockL,
+  )
+  const withJobTools =
+    opts.jobInputToolsL === undefined
+      ? base
+      : Layer.merge(base, opts.jobInputToolsL)
+  const withCalibration =
+    opts.calibrationStoreL === undefined
+      ? withJobTools
+      : Layer.merge(withJobTools, opts.calibrationStoreL)
+  // provideMerge so the registry stays VISIBLE above this layer (JobTickerLayer
+  // + the integration test both yield* WorkerRegistry from the result).
+  return workers.pipe(Layer.provideMerge(withCalibration))
+}
 
 // ── Layer wiring ────────────────────────────────────────────────────────
 //
@@ -1947,22 +2024,46 @@ export const buildBaseLayer = (
     }),
   ).pipe(Layer.provide(jobsStoreL))
 
-  // V2 registry: empty by default + PromptWorkerLayer registers the
-  // 'prompt' worker at boot. Layer.provideMerge so the registry remains
+  // V2 registry: ONE empty registry seeded with the prompt + workflow workers
+  // (adapter-sdk) AND the dream + wake workers (scheduler-v2 dream/wake
+  // migration, M1 + M2). buildWorkerRegistryLayer is the SAME factory the M3
+  // integration test exercises with fakes, so the live boot and the test agree
+  // on the kind set. provideMerge (inside the factory) keeps the registry
   // visible to JobTickerLayer above it.
-  const workerRegistryL = Layer.merge(
-    PromptWorkerLayer(),
-    WorkflowWorkerLayer(),
-  ).pipe(
-    Layer.provideMerge(
-      Layer.mergeAll(
-        sdkClientL,
-        makeWorkerRegistry({}),
-        agentNotesL,
-        jobInputToolsL,
-      ),
-    ),
+  //
+  // dreamReasonerL / wakeReasonerL mirror what buildDreamCronLayer /
+  // buildWakeCronLayer build internally (DreamReasonerDefault needs SDKClient +
+  // MemoryRouter + AccountBroker; WakeReasonerDefault needs SDKClient +
+  // AccountBroker), closing over the SAME boot identities (sdkClientL,
+  // memoryRouterL, brokerL). wakeLogStoreL opens the wake workspace's
+  // workspace.db at the same path the wake cron uses. These are built here (not
+  // reused from the cron-layer factories, which keep them local) so the dream /
+  // wake workers reach real services at dispatch time.
+  const dreamWorkerReasonerL = DreamReasonerDefault.pipe(
+    Layer.provide(sdkClientL),
+    Layer.provide(memoryRouterL),
+    Layer.provide(brokerL),
   )
+  const wakeWorkerReasonerL = WakeReasonerDefault.pipe(
+    Layer.provide(sdkClientL),
+    Layer.provide(brokerL),
+  )
+  const wakeWorkerLogStoreL = WakeLogStore.makeLayer(
+    `${wakeWorkspacePath}/.workspace/workspace.db`,
+  )
+  const workerRegistryL = buildWorkerRegistryLayer({
+    clockL,
+    sdkClientL,
+    agentNotesL,
+    jobInputToolsL,
+    dreamStoreL,
+    dreamReasonerL: dreamWorkerReasonerL,
+    sessionStoreL: storeL,
+    memoryRouterL,
+    calibrationStoreL,
+    wakeReasonerL: wakeWorkerReasonerL,
+    wakeLogStoreL: wakeWorkerLogStoreL,
+  })
   const jobTickerL = schedulerV2Enabled
     ? JobTickerLayer().pipe(
         Layer.provide(
