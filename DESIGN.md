@@ -623,16 +623,38 @@ propagates to the `job_runs` row.
 #### 5.3.5 Cutover plan
 
 V2 ships behind `LUNA_SCHEDULER_V2_ENABLED=1` so it can run **side by side**
-with the existing TriggerAgent. The order of operations:
+with the existing TriggerAgent.
+
+**Worker kinds.** Dream and wake are NOT migrated onto the generic `prompt` /
+`workflow` workers — those are typed `Worker<never>` and close over only
+`SDKClient` + `AgentNotesService`, which cannot carry the dream cycle
+(`DreamStore | DreamReasoner | SessionStore | MemoryRouter | Clock`, + an
+optional `CalibrationStore`) or the per-workspace wake cycle (`WakeReasoner |
+WakeLogStore | AgentNotesService`). So each gets its OWN worker kind:
+
+- **`dream`** (`DREAM_WORKER_KIND`, `packages/core/src/dream/dream-worker.ts`)
+  — runs one `runDream(now)` cycle; ignores its payload (the window comes from
+  the watermark). ONE nightly row.
+- **`wake`** (`WAKE_WORKER_KIND`, `packages/core/src/wake/wake-worker.ts`) —
+  runs one `runWake(now, opts)` cycle; its payload MUST carry
+  `{ workspaceSlug, workspacePath }` (parsed up front), so there is ONE row PER
+  wake-enabled workspace.
+
+Both kinds are registered into the boot `WorkerRegistry` alongside `prompt` +
+`workflow` (`buildWorkerRegistryLayer` in `chat-server.ts`), so a JobTicker
+draining the `jobs` table dispatches `kind='dream'` / `kind='wake'` rows to
+them.
+
+The order of operations:
 
 | Step | Effect |
 |---|---|
 | 1 | Schema migration ships in a release; `jobs` rows get new columns; `job_runs` empty. |
-| 2 | `LUNA_SCHEDULER_V2_ENABLED=1` flips on JobTicker; old TriggerAgent still up. |
-| 3 | Migrate wake → workflow row; dream → prompt row; drop legacy `luna-self-dev` row. |
-| 4 | Disable wake's hardcoded `buildWakeCronLayer` call. Wake now runs through V2. |
-| 5 | Same for dream. |
-| 6 | After ≥24 h clean on dev, remove TriggerAgent + the old per-cron Layers. |
+| 2 | `LUNA_SCHEDULER_V2_ENABLED=1` flips on JobTicker (which now registers the `dream` + `wake` worker kinds too); old TriggerAgent still up. |
+| 3 | Run `dream-wake-install.ts` to seed ONE `kind='dream'` row + ONE `kind='wake'` row per wake-enabled workspace (idempotent, `enabled=1`, UTC `next_run_at`). The dream row reuses dream's existing nightly schedule (`0 3 * * *`); each wake row reuses the wake schedule (`*/30 * * * *`). No generic `prompt`/`workflow` row is involved. |
+| 4 | The SAME `LUNA_SCHEDULER_V2_ENABLED=1` flag gates BOTH `buildDreamCronLayer` and `buildWakeCronLayer` to register NOTHING (each returns an empty Layer), so dream + wake run EXCLUSIVELY through their V2 job rows — the boot graph holds EITHER the legacy crons OR the V2 ticker for dream/wake, never both. Reversible: flip the flag off and the legacy crons re-register. |
+| 5 | Verify on dev: V2 `dream` + `wake` rows present in `jobs`; legacy cron layers register nothing; `job_runs` rows close `success` and the dream watermark / wake_log advance. |
+| 6 | After ≥24 h clean on dev, remove TriggerAgent + the old per-cron Layers (`buildDreamCronLayer` / `buildWakeCronLayer`) and the flag gate entirely. |
 
 §5.1 jobs columns from V1 (`spec`, `next_run`, `last_run`, `last_status`)
 are kept indefinitely as deprecated synonyms; new code never writes them.

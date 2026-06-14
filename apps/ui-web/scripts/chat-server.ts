@@ -1379,9 +1379,28 @@ export interface BuildDreamCronLayerOpts {
     import("effect").ConfigError,
     import("@luna/memory").LunaSqliteBootstrap
   >
+  /**
+   * M5 cutover (scheduler-v2 dream/wake migration, DESIGN.md §5.3.5). When
+   * TRUE, this factory registers NO legacy dream cron — it returns an empty
+   * Layer so `registerDreamCron` is never called and no fiber-per-cron trigger
+   * is installed. The nightly dream then runs EXCLUSIVELY through the V2 path
+   * (the `dream` job row drained by the JobTicker into the dream worker), so
+   * the cycle can never double-run. The live boot passes the SAME
+   * `LUNA_SCHEDULER_V2_ENABLED=1` flag that turns the V2 ticker on, so the boot
+   * graph contains EITHER the legacy cron OR the V2 ticker, never both.
+   * Reversible: flip the flag off and the legacy cron re-registers unchanged.
+   */
+  readonly schedulerV2Enabled?: boolean
 }
 
 export const buildDreamCronLayer = (opts: BuildDreamCronLayerOpts) => {
+  // M5 cutover gate: under V2, the dream job row drives the cycle — register
+  // no legacy cron trigger here (return early, BEFORE building the sub-graph,
+  // so registerDreamCron is never reached). Layer.empty contributes nothing to
+  // the boot mergeAll. See BuildDreamCronLayerOpts.schedulerV2Enabled.
+  if (opts.schedulerV2Enabled === true) {
+    return Layer.empty
+  }
   const { expr, sdkClientL, memoryRouterL, storeL, clockL, dreamStoreL, brokerL } =
     opts
   // DreamReasonerDefault requires SDKClient, MemoryRouter AND AccountBroker
@@ -1477,9 +1496,28 @@ export interface BuildWakeCronLayerOpts {
    * passes a seeded fake broker (fromAccounts) so the graph still composes.
    */
   readonly brokerL: Layer.Layer<AccountBroker>
+  /**
+   * M5 cutover (scheduler-v2 dream/wake migration, DESIGN.md §5.3.5). When
+   * TRUE, this factory registers NO legacy wake cron — it returns an empty
+   * Layer so `registerWakeCron` is never called and no fiber-per-cron trigger
+   * is installed. The wake cycle then runs EXCLUSIVELY through the V2 path (the
+   * per-workspace `wake` job rows drained by the JobTicker into the wake
+   * worker), so it can never double-run. The live boot passes the SAME
+   * `LUNA_SCHEDULER_V2_ENABLED=1` flag that turns the V2 ticker on, so the boot
+   * graph contains EITHER the legacy cron OR the V2 ticker, never both.
+   * Reversible: flip the flag off and the legacy cron re-registers unchanged.
+   */
+  readonly schedulerV2Enabled?: boolean
 }
 
 export const buildWakeCronLayer = (opts: BuildWakeCronLayerOpts) => {
+  // M5 cutover gate: under V2, the per-workspace wake job rows drive the cycle
+  // — register no legacy cron trigger here (return early, BEFORE building the
+  // sub-graph, so registerWakeCron is never reached). Layer.empty contributes
+  // nothing to the boot mergeAll. See BuildWakeCronLayerOpts.schedulerV2Enabled.
+  if (opts.schedulerV2Enabled === true) {
+    return Layer.empty
+  }
   const wakeReasonerL = WakeReasonerDefault.pipe(
     Layer.provide(opts.sdkClientL),
     Layer.provide(opts.brokerL),
@@ -1930,6 +1968,18 @@ export const buildBaseLayer = (
   const calibrationStoreL = CalibrationStore.makeLayer(paths.lunaDbPath).pipe(
     Layer.provide(clockL),
   )
+
+  // Scheduler V2 cutover flag (DESIGN.md §5.3 / §5.3.5). Computed HERE — before
+  // the dream / wake cron layers — because the M5 cutover gates BOTH legacy
+  // cron factories on it: when V2 is enabled the dream + wake cycles run
+  // EXCLUSIVELY through their V2 job rows (the JobTicker dispatches them to the
+  // dedicated dream / wake worker kinds), so the legacy fiber-per-cron layers
+  // must register nothing or the cycles would double-run. The boot graph thus
+  // contains EITHER the legacy crons OR the V2 ticker for dream/wake, never
+  // both. Reversible: flip the flag off and the legacy crons re-register.
+  const schedulerV2Enabled =
+    process.env["LUNA_SCHEDULER_V2_ENABLED"]?.trim() === "1"
+
   const dreamCronL = buildDreamCronLayer({
     expr: "0 3 * * *",
     sdkClientL,
@@ -1941,6 +1991,9 @@ export const buildBaseLayer = (
     // A5: same broker the chat adapter uses — DreamReasonerDefault acquires a
     // credential per reason() through the provider seam (LUNA_DREAM_MODEL).
     brokerL,
+    // M5 cutover: under V2 the dream job row drives the cycle — register no
+    // legacy cron (buildDreamCronLayer returns Layer.empty when this is true).
+    schedulerV2Enabled,
   })
 
   // Wake cron (Path A): WakeReasoner inspects the workspace state at each
@@ -1974,30 +2027,30 @@ export const buildBaseLayer = (
         // A5: same broker the chat adapter uses — WakeReasonerDefault acquires a
         // credential per reason() through the provider seam (LUNA_WAKE_MODEL).
         brokerL,
+        // M5 cutover: under V2 the per-workspace wake job rows drive the cycle —
+        // register no legacy cron (buildWakeCronLayer returns Layer.empty when
+        // this is true).
+        schedulerV2Enabled,
       })
     : null
 
 
-  // Phase 12b (scheduler-rebuild) — DESIGN.md §5.3. Behind the
-  // `LUNA_SCHEDULER_V2_ENABLED` flag so we can ship the wiring without
-  // changing runtime behaviour. With the flag OFF (default), the V2 ticker
-  // layer is omitted from the layer graph — no fiber forked, no DB queries
-  // per minute. With the flag ON, a single supervised JobTicker fiber
-  // drains the `jobs` table every 60 s, claims due rows, and dispatches
-  // them through the WorkerRegistry.
-  //
-  // The WorkerRegistry is intentionally EMPTY in this PR. P4 (the `prompt`
-  // worker) and P5 (the `workflow` worker) ship the actual workers behind
-  // the same flag. While the flag is on with an empty registry, due rows
-  // get claimed + their `job_runs` row closes as failed with
-  // `unknown_kind` — visible in the workspace's per-fire ledger but
-  // otherwise harmless. The existing TriggerAgent + wake / dream Layers
-  // continue to fire alongside this; cutover (P6) migrates them to V2 rows
-  // one at a time, then we flip the disable.
-  const schedulerV2Enabled =
-    process.env["LUNA_SCHEDULER_V2_ENABLED"]?.trim() === "1"
+  // Phase 12b (scheduler-rebuild) — DESIGN.md §5.3 / §5.3.5. Behind the
+  // `LUNA_SCHEDULER_V2_ENABLED` flag (computed above). With the flag OFF
+  // (default), the V2 ticker layer is omitted from the layer graph — no fiber
+  // forked, no DB queries per minute — and the legacy dream / wake cron layers
+  // register as before. With the flag ON, a single supervised JobTicker fiber
+  // drains the `jobs` table every 60 s, claims due rows, and dispatches them
+  // through the WorkerRegistry — which registers the prompt + workflow workers
+  // AND the dedicated dream + wake workers (M1-M3). The M5 cutover (above) makes
+  // buildDreamCronLayer / buildWakeCronLayer register NOTHING under the same
+  // flag, so dream/wake run EXCLUSIVELY via their V2 job rows and never
+  // double-fire. EITHER legacy crons OR the V2 ticker drive dream/wake — never
+  // both.
   if (schedulerV2Enabled) {
-    console.log("[luna/sched] V2 ticker ENABLED (LUNA_SCHEDULER_V2_ENABLED=1) — kinds=prompt,workflow registered")
+    console.log(
+      "[luna/sched] V2 ticker ENABLED (LUNA_SCHEDULER_V2_ENABLED=1) — kinds=prompt,workflow,dream,wake registered; legacy dream/wake cron layers DISABLED (run via V2 job rows)",
+    )
   }
   // Phase 5 (widget-system.md): per-run request_input tool for the job
   // workers. The provider closes over the jobs store (to flip the run
@@ -2107,9 +2160,9 @@ export const buildBaseLayer = (
     agentNotesL,
     workspacesL,
     jobsStoreL,  // Phase 12a: persisted cron schedules (DESIGN §5.1 jobs table)
-    dreamCronL, // Phase 3 D1: forces the cron to register at boot
-    wakeCronL ?? Layer.empty, // wake cron: workspace-state digest at each tick (disabled if LUNA_WAKE_ENABLED=0)
-    jobTickerL ?? Layer.empty, // Phase 12b V2 ticker: enabled via LUNA_SCHEDULER_V2_ENABLED=1 (DESIGN §5.3)
+    dreamCronL, // Phase 3 D1: nightly dream cron (Layer.empty under V2 — M5 cutover; the dream job row drives the cycle instead)
+    wakeCronL ?? Layer.empty, // wake cron: workspace digest each tick (Layer.empty under V2 — M5 cutover; disabled if LUNA_WAKE_ENABLED=0)
+    jobTickerL ?? Layer.empty, // Phase 12b V2 ticker: enabled via LUNA_SCHEDULER_V2_ENABLED=1 — drives dream/wake via job rows (DESIGN §5.3.5)
     surveyL,    // Phase 3 D3: Survey available for buildServerLayer to resolve + pass to the WS server
     skillRegistryL, // PRD Part B: same instance as threadToolsL (memoized by reference) — buildServerLayer resolves it for the WS skill frames
     connectorServiceL, // PRD Part A: same instance as threadToolsL — M2's WS connector frames resolve it here
