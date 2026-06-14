@@ -32,8 +32,7 @@ beforeAll(() => {
   // The module assigns to globalThis.LunaDeckSnap; run it with `globalThis`
   // bound to our sandbox so we don't pollute the real global.
   new Function("globalThis", src)(sandbox)
-  computeSnap = (sandbox.LunaDeckSnap as { computeSnap: typeof computeSnap })
-    .computeSnap
+  computeSnap = (sandbox.LunaDeckSnap as { computeSnap: typeof computeSnap }).computeSnap
 })
 
 // The chat anchor sits at (500,300), 360x600.

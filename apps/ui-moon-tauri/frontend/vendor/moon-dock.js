@@ -25,6 +25,18 @@
     var pinBtn = document.getElementById('pin-btn');
     var seamEl = document.getElementById('seam');
     var outlineEl = document.getElementById('outline');
+    // The seam-badge layer is owned by the dock client, not the page shells —
+    // create it once if absent so every widget/panel/chat page gets badges
+    // without hand-copying the div into each (it's position:fixed, so we mount
+    // it beside #outline to share that stacking context, else on <body>).
+    var dockLinksEl = document.getElementById('dock-links');
+    if (!dockLinksEl && document.body) {
+      dockLinksEl = document.createElement('div');
+      dockLinksEl.id = 'dock-links';
+      var anchor = outlineEl || seamEl;
+      if (anchor && anchor.parentNode) anchor.parentNode.appendChild(dockLinksEl);
+      else document.body.appendChild(dockLinksEl);
+    }
     var groupMembers = []; // my group's labels (incl. me); [] = ungrouped
     var exMembers = [];    // just-left group, ignored as snap targets…
     var exUntil = 0;       // …until this time (no instant re-link after unpin)
@@ -85,6 +97,19 @@
         var sides = grouped && Array.isArray(payload.outlineSides) ? payload.outlineSides : [];
         outlineEl.className = sides.map(function (s) { return 'g' + s; }).join(' ');
       }
+      // Render the owned seam badges Rust placed for us — Rust is the single
+      // source of truth for badge geometry (it has every member's rect in one
+      // place and re-emits on resize), so the page does NO geometry fan-out and
+      // never goes stale on a partner's resize.
+      //
+      // Only (re)paint on real data: an ungroup CLEARS; a seams array SETS. A
+      // grouped payload with NO seams field is the geometry-free replay reply
+      // (dock_group_state, membership only) — leave existing badges UNTOUCHED so
+      // a racing seam-bearing re-emit isn't undone (and an older core that never
+      // sends seams just shows none). Clearing here would let the replay reply
+      // wipe badges the scheduled re-emit had already painted.
+      if (!grouped) paintSeams([]);
+      else if (Array.isArray(payload.seams)) paintSeams(payload.seams);
     }
     pinBtn && pinBtn.addEventListener('animationend', function () {
       pinBtn.classList.remove('pop');
@@ -95,6 +120,93 @@
     pinBtn && pinBtn.addEventListener('click', function () {
       setDock(false);
     });
+
+    // ── Dock-link seam badges ──────────────────────────────────────────────
+    // Once we're grouped, draw the little chain-link badge on each interior seam
+    // we OWN. Rust computes the seams (dock_seams: a window owns only the seams
+    // on its right/bottom edges, so every seam gets exactly one badge) and ships
+    // them in the dock-group payload; we just place them. The badge nests in our
+    // 22px transparent card margin flush against the seam — it cannot straddle
+    // into the neighbor window, which clips to its bounds. Clicking it leaves
+    // the group (the same primitive as the pin button).
+    var LINK_SVG =
+      '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
+      ' stroke-width="2.4" stroke-linecap="round" aria-hidden="true">' +
+      '<path d="M9 15l6-6"/>' +
+      '<path d="M11 6l1.5-1.5a4 4 0 0 1 5.7 5.7L16.5 12"/>' +
+      '<path d="M13 18l-1.5 1.5a4 4 0 0 1-5.7-5.7L7.5 12"/></svg>';
+    var SEAM_BADGE_R = 11; // half the 22px badge — matches Rust dock_seams BADGE_R
+
+    function onSeamClick(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      // Snip = THIS window leaves its whole group (the only unlink primitive —
+      // same as the pin button). Rust ejects us clear and re-pushes dock-group
+      // state to everyone, which clears our seams. For a 3+ window line this
+      // ejects the clicker rather than cutting just one seam; the aria/title
+      // copy ("Unlink these panels") stays honest for the common 2-window dock.
+      setDock(false);
+    }
+
+    function makeSeamBadge(s, key) {
+      var btn = document.createElement('button');
+      btn.className = 'dock-link e-' + s.edge;
+      btn.type = 'button';
+      // Copy kept in lockstep with the ui-web board's .pin-badge (parity).
+      btn.title = 'Unlink';
+      btn.setAttribute('aria-label', 'Unlink these panels');
+      btn.setAttribute('data-seam-key', key);
+      btn.innerHTML = LINK_SVG;
+      btn.addEventListener('click', onSeamClick);
+      return btn;
+    }
+
+    function paintSeams(seams) {
+      if (!dockLinksEl) return;
+      // Lowest a right-edge badge may sit without overlapping the title-bar
+      // drag strip = title-bar bottom + badge radius (window-local px). 0 under
+      // headless layout (jsdom getBoundingClientRect) → no-op, matching the
+      // bare deck-snap clamp; only the real webview triggers the nudge.
+      var tb = document.querySelector('.title-bar');
+      var titleClear = tb ? Math.round(tb.getBoundingClientRect().bottom) + SEAM_BADGE_R : 0;
+      var maxBadgeY = (window.innerHeight || 0) - SEAM_BADGE_R;
+      // Diff by partner|edge: a badge that merely MOVES (a regroup or a resize
+      // shifts the shared overlap-run midpoint) is repositioned in place, so
+      // only a genuinely NEW seam plays the scale-in. Rebuilding wholesale
+      // re-popped every badge on each repaint — this mirrors the board, where
+      // Solid's keyed <For> reuses nodes and only animates fresh pins.
+      var existing = {};
+      var kids = dockLinksEl.children;
+      for (var i = 0; i < kids.length; i++) {
+        existing[kids[i].getAttribute('data-seam-key')] = kids[i];
+      }
+      var keep = {};
+      for (var j = 0; j < seams.length; j++) {
+        var s = seams[j];
+        var key = s.partner + '|' + s.edge;
+        keep[key] = true;
+        var el = existing[key];
+        if (!el) {
+          el = makeSeamBadge(s, key);
+          dockLinksEl.appendChild(el);
+        }
+        // Owner-side flush against the seam, centered on the overlap run — but
+        // push a right-edge badge below the title bar if the overlap midpoint
+        // lands in it. A 22px button over [data-tauri-drag-region] both
+        // dead-zones the native grab AND unlinks on a stray click there; the
+        // seam owns the whole right edge, so nudging down keeps it on the seam.
+        var by = s.y;
+        if (s.edge === 'r' && titleClear) {
+          by = Math.max(by, titleClear);
+          if (maxBadgeY > SEAM_BADGE_R) by = Math.min(by, maxBadgeY);
+        }
+        el.style.left = s.x + 'px';
+        el.style.top = by + 'px';
+      }
+      for (var k in existing) {
+        if (!keep[k]) dockLinksEl.removeChild(existing[k]);
+      }
+    }
 
     // Re-root the group at THIS window the instant it is grabbed, so the
     // native drag carries the whole cluster regardless of which member the
@@ -126,7 +238,7 @@
         W.listen('dock-group', function (e) {
           var p = e && e.payload;
           if (!p || p['for'] !== label) return;
-          applyGroupState(p);
+          applyGroupState(p); // also schedules the seam-badge repaint
         }).catch(function () {});
       }
     } catch (_) { /* best-effort */ }
@@ -207,6 +319,9 @@
         lastMoveTime = now;
         armSettle(DEBOUNCE_MS);
       }).catch(function () { /* onMoved may not exist in all versions */ });
+      // No seam re-render on our own resize: Rust re-emits dock-group to the
+      // whole group on WindowEvent::Resized, so an owner refreshes even when the
+      // NON-owning partner is the one resized — the case the page could never see.
 
       async function runSettle() {
           try {

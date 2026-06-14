@@ -287,6 +287,53 @@ html[data-chrome='ink'] .title-bar {
 #outline.gt { border-top: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
 #outline.gb { border-bottom: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
 
+/* ── Dock-link seam badges: the little chain-link chips that sit on the seam
+   between two docked windows (vendor/moon-dock.js renders them). The layer is
+   click-through; only the badges catch the pointer. moon-dock.js positions
+   each badge by its CENTER (left/top), nested in the 22px transparent card
+   margin flush against the owned (right/bottom) seam — it can't straddle into
+   the neighbor window, which clips to its own bounds. Visual spec is the same
+   22px circle as the ui-web board's .pin-badge, for cross-surface parity.
+   Because the badge sits flush to the OS window edge on the seam side, the
+   sliver of its drop-shadow past that edge is clipped (html/body overflow) —
+   a known, minor seam-side flatten; the shadow that matters faces the card. */
+#dock-links {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 60; /* above #seam (50) and #outline (49) */
+}
+.dock-link {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  transform: translate(-50%, -50%); /* (left,top) is the badge center */
+  border-radius: 50%;
+  border: 1.3px solid color-mix(in oklab, var(--ink) 30%, transparent);
+  background: var(--paper);
+  color: var(--accent);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  pointer-events: auto;
+  box-shadow: 0 3px 10px -3px color-mix(in oklab, var(--ink) 30%, transparent);
+  animation: dock-link-in 0.3s ease;
+}
+@keyframes dock-link-in {
+  from { transform: translate(-50%, -50%) scale(0); }
+}
+.dock-link:hover {
+  color: var(--ink);
+  transform: translate(-50%, -50%) scale(1.18);
+}
+.dock-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* .e-r / .e-b mark which seam edge a badge owns — hooks for inspection and any
+   future per-edge nudge; positioning itself is fully handled by left/top. */
+
 /* ── Scrollbar base ──────────────────────────────────────────────────── */
 .content-area::-webkit-scrollbar { width: 5px; }
 .content-area::-webkit-scrollbar-thumb {

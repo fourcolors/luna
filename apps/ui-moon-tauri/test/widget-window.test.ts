@@ -346,6 +346,86 @@ describe('widget.html — snap + dock groups', () => {
     expect(outline.className).toBe('')
   })
 
+  // Rust now computes seam placement (main.rs dock_seams) and ships it in the
+  // dock-group payload; the page just renders payload.seams. These drive that
+  // render path directly — no client geometry, no async fan-out.
+  type Seam = { partner: string; edge: 'r' | 'b'; x: number; y: number }
+  const groupWithSeams = (seams: Seam[]) =>
+    dispatchGroup({ grouped: true, members: [SELF, 'widget-friend'], outlineSides: ['l', 't', 'b'], seams })
+
+  it('renders the seam badges Rust sends, and clears them on ungroup', () => {
+    const layer = document.getElementById('dock-links') as HTMLDivElement
+    expect(layer).not.toBeNull() // moon-dock created it (no longer in the HTML shell)
+    expect(layer.querySelectorAll('.dock-link')).toHaveLength(0)
+
+    groupWithSeams([{ partner: 'widget-friend', edge: 'r', x: 289, y: 100 }])
+
+    const badges = layer.querySelectorAll('.dock-link')
+    expect(badges).toHaveLength(1)
+    const badge = badges[0] as HTMLButtonElement
+    expect(badge.classList.contains('e-r')).toBe(true)
+    expect(badge.style.left).toBe('289px')
+    expect(badge.style.top).toBe('100px')
+    expect(badge.querySelector('svg')).not.toBeNull()
+
+    // Ungrouping clears the layer.
+    dispatchGroup({ grouped: false, members: [], outlineSides: [] })
+    expect(layer.querySelectorAll('.dock-link')).toHaveLength(0)
+  })
+
+  it('tolerates a grouped payload with no seams (older core) — paints nothing', () => {
+    dispatchGroup({ grouped: true, members: [SELF, 'widget-friend'], outlineSides: ['l'] })
+    expect(document.querySelectorAll('#dock-links .dock-link')).toHaveLength(0)
+  })
+
+  it('a seam-less grouped reply (the boot replay) does NOT clear painted badges', () => {
+    // A real seam-bearing event paints a badge...
+    groupWithSeams([{ partner: 'widget-friend', edge: 'r', x: 289, y: 100 }])
+    expect(document.querySelectorAll('#dock-links .dock-link')).toHaveLength(1)
+    // ...then the geometry-free replay reply (grouped, NO seams field) must leave
+    // it ALONE — clearing here would let the replay race-wipe a badge the
+    // scheduled seam-bearing re-emit had already painted.
+    dispatchGroup({ grouped: true, members: [SELF, 'widget-friend'], outlineSides: ['l'] })
+    expect(document.querySelectorAll('#dock-links .dock-link')).toHaveLength(1)
+  })
+
+  it('reuses the badge node across re-renders (no re-pop), repositioning in place', () => {
+    groupWithSeams([{ partner: 'widget-friend', edge: 'r', x: 289, y: 100 }])
+    const first = document.querySelector('#dock-links .dock-link') as HTMLButtonElement
+    expect(first).not.toBeNull()
+    expect(first.style.top).toBe('100px')
+
+    // Same partner|edge, moved → the SAME node is repositioned, never torn down
+    // and recreated, so the scale-in entrance animation cannot replay.
+    groupWithSeams([{ partner: 'widget-friend', edge: 'r', x: 289, y: 120 }])
+    const after = document.querySelector('#dock-links .dock-link') as HTMLButtonElement
+    expect(after).toBe(first)
+    expect(after.style.top).toBe('120px')
+  })
+
+  it('clicking a seam badge leaves the group (the pin primitive, at the seam)', () => {
+    groupWithSeams([{ partner: 'widget-friend', edge: 'r', x: 289, y: 150 }])
+    const badge = document.querySelector('#dock-links .dock-link') as HTMLButtonElement
+    expect(badge).not.toBeNull()
+    badge.click()
+    expect(dockArgs()).toEqual([{ docked: false, anchor: null, edge: null, dx: 0, dy: 0 }])
+  })
+
+  it('keeps a right-edge badge clear of the title-bar drag strip', () => {
+    // Give the title bar a real measured bottom (jsdom otherwise reports 0).
+    const titleBar = document.querySelector('.title-bar') as HTMLElement
+    titleBar.getBoundingClientRect = () =>
+      ({ bottom: 56, top: 22, left: 0, right: 0, width: 0, height: 34, x: 0, y: 22, toJSON: () => ({}) }) as DOMRect
+
+    // Rust sends a right-edge seam whose center (y=25) lands in the title-bar band.
+    groupWithSeams([{ partner: 'widget-friend', edge: 'r', x: 289, y: 25 }])
+    const badge = document.querySelector('#dock-links .dock-link') as HTMLButtonElement
+    expect(badge).not.toBeNull()
+    // Nudged from y=25 down to title-bar bottom (56) + badge radius (11) = 67,
+    // so the button never sits over the drag strip.
+    expect(badge.style.top).toBe('67px')
+  })
+
   it('the pin leaves the group — and only the pin (no drag-detach)', async () => {
     dispatchGroup({ grouped: true, members: ['main', SELF], outlineSides: ['r'] })
 

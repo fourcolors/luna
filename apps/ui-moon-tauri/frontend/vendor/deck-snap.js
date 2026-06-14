@@ -54,5 +54,14 @@
     return { x: Math.round(best.x), y: Math.round(best.y), edge: best.edge }
   }
 
-  g.LunaDeckSnap = { computeSnap: computeSnap, DEFAULT_THRESHOLD: DEFAULT_THRESHOLD }
+  // NOTE: dock-link SEAM placement (the chain-link badge between two docked
+  // windows) used to live here as computeSeams, but it now lives in Rust
+  // (main.rs dock_seams), which already holds every member's rect when it
+  // builds the dock-group payload — one source of truth, no client geometry
+  // fan-out. This module keeps only the pure SNAP math.
+
+  g.LunaDeckSnap = {
+    computeSnap: computeSnap,
+    DEFAULT_THRESHOLD: DEFAULT_THRESHOLD,
+  }
 })(typeof globalThis !== "undefined" ? globalThis : this)

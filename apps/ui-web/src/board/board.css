@@ -305,6 +305,10 @@ html[data-theme='dark'][data-chrome='ink'] .panel-wash {
   background: var(--paper);
   transform: scale(1.18);
 }
+.board .pin-badge:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
 .mode-hint {
   position: absolute;

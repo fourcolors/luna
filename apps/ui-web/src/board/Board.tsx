@@ -168,10 +168,11 @@ export const Board: Component<BoardProps> = (props) => {
           <button
             class="pin-badge"
             style={{ left: `${b.x}px`, top: `${b.y}px`, "z-index": b.z }}
-            title="unpin"
+            title="Unlink"
+            aria-label="Unlink these panels"
             onClick={() => props.board.unpin(b.pin)}
           >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
               <path d="M9 15l6-6" />
               <path d="M11 6l1.5-1.5a4 4 0 0 1 5.7 5.7L16.5 12" />
               <path d="M13 18l-1.5 1.5a4 4 0 0 1-5.7-5.7L7.5 12" />

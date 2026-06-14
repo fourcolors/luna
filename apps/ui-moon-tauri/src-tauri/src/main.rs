@@ -2036,6 +2036,78 @@ fn dock_outline_sides(
     out
 }
 
+/// One interior dock seam, from the OWNING window's point of view: the badge
+/// sits on this window's `edge` ("r"|"b"), centered at (`x`, `y`) in the
+/// window's LOCAL logical px. Serialized into the `dock-group` payload; the
+/// page just renders it (no client-side geometry fan-out).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+struct DockSeam {
+    partner: String,
+    edge: &'static str,
+    x: i32,
+    y: i32,
+}
+
+/// Per member, the dock seams it OWNS — the interior edges on its RIGHT/BOTTOM
+/// where a flush, overlapping neighbor sits. Checking ONLY right/bottom means
+/// every seam is reported by exactly one member (the left/top window), so the
+/// page draws one chain-link badge per seam with no cross-window dedup. (x, y)
+/// is the badge CENTER in the owner's LOCAL logical px, clamped 11px (badge
+/// radius) inside so the 22px badge stays on-window. Same EPS / MIN_OVERLAP as
+/// dock_rects_touch / dock_outline_sides → the badge appears for exactly the
+/// seams Rust counts as touching. The single source of truth for badge
+/// placement (the page-side computeSeams port is retired).
+fn dock_seams(
+    rects: &[(String, (i32, i32, i32, i32))], // (label, (x, y, w, h))
+) -> std::collections::HashMap<String, Vec<DockSeam>> {
+    const EPS: i32 = 2;
+    const MIN_OVERLAP: i32 = 8;
+    const BADGE_R: i32 = 11;
+    // Safe clamp: i32::clamp panics when min > max (degenerate/minimized rects),
+    // so floor the upper bound at BADGE_R.
+    let clamp = |v: i32, hi: i32| v.clamp(BADGE_R, hi.max(BADGE_R));
+    let mut out = std::collections::HashMap::new();
+    for (label, (x, y, w, h)) in rects {
+        let (l, t, r, b) = (*x, *y, x + w, y + h);
+        let mut seams: Vec<DockSeam> = Vec::new();
+        for (other, (ox, oy, ow, oh)) in rects {
+            // Never self, and never the hub: the moon is alignment-only and is
+            // never truly linked, so it gets no seam badge. Defense-in-depth —
+            // the hub is never a group member (is_dock_label gates every join),
+            // but keep the guard the page-side render used to carry.
+            if other == label || other == "main" {
+                continue;
+            }
+            let (ol, ot, or_, ob) = (*ox, *oy, ox + ow, oy + oh);
+            // RIGHT seam: we are the LEFT window (our right edge flush to other's left).
+            let v_overlap = b.min(ob) - t.max(ot);
+            if (r - ol).abs() <= EPS && v_overlap >= MIN_OVERLAP {
+                let mid_y = (t.max(ot) + b.min(ob)) / 2 - t;
+                seams.push(DockSeam {
+                    partner: other.clone(),
+                    edge: "r",
+                    x: w - BADGE_R,
+                    y: clamp(mid_y, h - BADGE_R),
+                });
+                continue; // a non-overlapping partner can be flush on only one side
+            }
+            // BOTTOM seam: we are the TOP window (our bottom edge flush to other's top).
+            let h_overlap = r.min(or_) - l.max(ol);
+            if (b - ot).abs() <= EPS && h_overlap >= MIN_OVERLAP {
+                let mid_x = (l.max(ol) + r.min(or_)) / 2 - l;
+                seams.push(DockSeam {
+                    partner: other.clone(),
+                    edge: "b",
+                    x: clamp(mid_x, w - BADGE_R),
+                    y: h - BADGE_R,
+                });
+            }
+        }
+        out.insert(label.clone(), seams);
+    }
+    out
+}
+
 /// Native half: parent/unparent via AppKit. MUST run on the main thread.
 /// NSWindowAbove = 1 — the child orders above its parent, which matches the
 /// accepted always-on-top stacking (PRD §23).
@@ -2115,11 +2187,15 @@ fn dock_apply_and_notify(
                 })
                 .collect();
             let outline = dock_outline_sides(&rects);
+            let seams = dock_seams(&rects);
             serde_json::json!({
                 "for": label,
                 "grouped": true,
                 "members": members,
                 "outlineSides": outline.get(&label).cloned().unwrap_or_default(),
+                // The owned seam badges, placed by Rust (single source of truth);
+                // the page renders them directly, no geometry fan-out.
+                "seams": seams.get(&label).cloned().unwrap_or_default(),
             })
         };
         let _ = app.emit_to(tauri::EventTarget::labeled(&label), "dock-group", payload);
@@ -2449,6 +2525,19 @@ fn dock_group_state(
         let s = state.0.lock().unwrap_or_else(|e| e.into_inner());
         s.members_of(&label)
     };
+    // The sync reply is geometry-free (membership only) — enough for pin state.
+    // Seams + perimeter outline need window rects, so for a grouped window we
+    // schedule a full `dock-group` re-emit on the main thread; the page then
+    // paints its badges on boot instead of staying badge-less until the first
+    // move. Best-effort: a failed schedule just leaves the next real event to
+    // refresh us.
+    if !members.is_empty() {
+        let app = window.app_handle().clone();
+        let l = label.clone();
+        let _ = window.run_on_main_thread(move || {
+            dock_apply_and_notify(&app, Vec::new(), vec![l]);
+        });
+    }
     serde_json::json!({
         "for": label,
         "grouped": !members.is_empty(),
@@ -2477,6 +2566,28 @@ fn main() {
                 && window.app_handle().get_webview_window("main").is_some()
             {
                 write_panel_layout(&window.app_handle());
+            }
+            // A docked window's RESIZE changes the shared overlap span (so the
+            // seam-badge midpoints move, and a seam can fall below MIN_OVERLAP),
+            // but a Move carries the rigid cluster so relative geometry is
+            // unchanged. Re-notify the whole group on Resized so every member
+            // repaints its seams with fresh geometry — the ONLY path that
+            // catches a NON-owner partner's resize (the owner's own onResized
+            // never fires for it). Main-thread handler, so the geometry read +
+            // emit inside dock_apply_and_notify are safe.
+            if matches!(event, tauri::WindowEvent::Resized(_))
+                && is_dock_label(window.label())
+                && window.app_handle().get_webview_window("main").is_some()
+            {
+                let app = window.app_handle();
+                let members = {
+                    let state = app.state::<DockState>();
+                    let s = state.0.lock().unwrap_or_else(|e| e.into_inner());
+                    s.members_of(window.label())
+                };
+                if !members.is_empty() {
+                    dock_apply_and_notify(app, Vec::new(), members);
+                }
             }
             // Detach dock edges the moment a close is REQUESTED — before the
             // window dies. Closing a native parent takes its attached
@@ -3427,7 +3538,7 @@ mod tests {
 
 #[cfg(test)]
 mod dock_tests {
-    use super::{dock_outline_sides, DockGroups};
+    use super::{dock_outline_sides, dock_seams, DockGroups, DockSeam};
 
     fn attaches(diff: &[(String, String, bool)]) -> Vec<(String, String)> {
         diff.iter()
@@ -3549,6 +3660,88 @@ mod dock_tests {
         ];
         let out = dock_outline_sides(&rects);
         assert_eq!(out["a"], vec!["l", "r", "t", "b"]);
+    }
+
+    // dock_seams is the Rust source of truth for badge placement; these mirror
+    // the deck-snap.test.ts computeSeams cases so the two stay in lockstep.
+    fn seam(partner: &str, edge: &'static str, x: i32, y: i32) -> DockSeam {
+        DockSeam { partner: partner.to_string(), edge, x, y }
+    }
+
+    #[test]
+    fn seam_owned_by_the_left_window_on_its_right_edge() {
+        // a (left, 200x300) | b (250x220, flush right, vertically overlapping)
+        let rects = vec![
+            ("a".to_string(), (0, 0, 200, 300)),
+            ("b".to_string(), (200, 40, 250, 220)),
+        ];
+        let out = dock_seams(&rects);
+        // Overlap run [40,260] → mid 150 (a-local). Badge centered on a's right
+        // edge, inset 11px (badge radius) so it stays on-window.
+        assert_eq!(out["a"], vec![seam("b", "r", 189, 150)]);
+        // b's matching edge is its LEFT, which dock_seams never inspects → silent.
+        assert_eq!(out["b"], Vec::<DockSeam>::new());
+    }
+
+    #[test]
+    fn seam_owned_by_the_top_window_on_its_bottom_edge() {
+        let rects = vec![
+            ("a".to_string(), (0, 0, 200, 300)),
+            ("below".to_string(), (30, 300, 140, 180)),
+        ];
+        let out = dock_seams(&rects);
+        // Overlap run [30,170] → mid 100 (a-local x); y pinned to h - 11.
+        assert_eq!(out["a"], vec![seam("below", "b", 100, 289)]);
+    }
+
+    #[test]
+    fn seam_ignores_near_misses_and_thin_overlap() {
+        let rects = vec![
+            ("a".to_string(), (0, 0, 200, 300)),
+            ("gap".to_string(), (205, 40, 250, 220)),   // 5px gap (> EPS 2)
+            ("thin".to_string(), (200, 295, 250, 220)), // flush but 5px overlap (< 8)
+        ];
+        let out = dock_seams(&rects);
+        assert_eq!(out["a"], Vec::<DockSeam>::new());
+    }
+
+    #[test]
+    fn seam_clamps_toward_the_overlapping_end() {
+        // A tall partner overlaps only a's very top → midpoint ~10px up-edge;
+        // the clamp floor keeps the badge fully inside (y ≥ 11).
+        let rects = vec![
+            ("a".to_string(), (0, 0, 200, 300)),
+            ("tall".to_string(), (200, -260, 200, 280)),
+        ];
+        let out = dock_seams(&rects);
+        assert_eq!(out["a"][0].edge, "r");
+        assert_eq!(out["a"][0].y, 11);
+    }
+
+    #[test]
+    fn seam_one_per_partner_in_a_multi_window_group() {
+        let rects = vec![
+            ("a".to_string(), (0, 0, 200, 300)),
+            ("right".to_string(), (200, 0, 250, 300)),
+            ("below".to_string(), (0, 300, 200, 180)),
+            ("afar".to_string(), (600, 600, 100, 100)),
+        ];
+        let out = dock_seams(&rects);
+        let mut partners: Vec<&str> = out["a"].iter().map(|s| s.partner.as_str()).collect();
+        partners.sort_unstable();
+        assert_eq!(partners, vec!["below", "right"]);
+    }
+
+    #[test]
+    fn seam_never_against_the_hub() {
+        // Defense-in-depth: even if the alignment-only hub were ever flush in a
+        // group's rect list, it draws no seam badge.
+        let rects = vec![
+            ("widget-a".to_string(), (0, 0, 200, 300)),
+            ("main".to_string(), (200, 0, 200, 300)), // hub flush on the right
+        ];
+        let out = dock_seams(&rects);
+        assert_eq!(out["widget-a"], Vec::<DockSeam>::new());
     }
 }
 
