@@ -21,6 +21,7 @@ import type {
   ServerFrame,
   SessionSummary,
   SkillCatalogItem,
+  SmartBarItem,
   VaultSyncWire,
   VaultWireItem,
   WorkflowGalleryItem,
@@ -128,6 +129,16 @@ export interface UIState {
   readonly vaultItems: ReadonlyArray<VaultWireItem>
   /** 1Password sync state (slice V3); null when not yet received. */
   readonly vaultSync: VaultSyncWire | null
+  /**
+   * Smart Bar (v1) — server-assembled context item list for the active thread.
+   * Empty until the first `smart-bar` frame arrives; hidden when empty.
+   * Items are pre-sorted by the server (group then priority); ui-web renders
+   * them in order. `threadId` tracks which thread the list belongs to so a
+   * stale frame after a thread switch is discarded.
+   */
+  readonly smartBarItems: ReadonlyArray<SmartBarItem>
+  /** threadId of the last received smart-bar frame — used for stale-drop. */
+  readonly smartBarThreadId: string | null
 }
 
 export const initialState: UIState = {
@@ -157,6 +168,8 @@ export const initialState: UIState = {
   workflowRuns: new Map(),
   vaultItems: [],
   vaultSync: null,
+  smartBarItems: [],
+  smartBarThreadId: null,
 }
 
 const MAX_RETAINED = 500
@@ -457,6 +470,16 @@ export const reduce = (state: UIState, action: Action): UIState => {
       // (that lives in cfg().model/cfg().effort in App.tsx). The UI layer
       // reads applied/deferred/rejected from this frame directly. No-op here.
       return state
+    case "smart-bar":
+      // Server-assembled context item list for the active thread. Replace
+      // wholesale — the server re-pushes the full list on every context
+      // change. Guard against stale frames that arrive after a thread switch
+      // (the server may re-push for a thread we already navigated away from).
+      return {
+        ...state,
+        smartBarItems: frame.items,
+        smartBarThreadId: frame.threadId,
+      }
     default: {
       // Exhaustiveness guard: when every ServerFrame member has a matching
       // case arm, TypeScript narrows `frame` to `never` here. Adding a new
