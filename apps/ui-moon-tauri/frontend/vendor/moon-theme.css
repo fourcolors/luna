@@ -98,9 +98,19 @@ html[data-theme='dark'] .widget-shell::before {
     0 6px 20px -6px rgba(0, 0, 0, 0.62);
 }
 
-/* Ink chrome: draw a visible edge, tighten the tint pool. */
+/* Ink chrome: draw a SINGLE visible edge, tighten the tint pool.
+   The whole ::before is displaced by the wc-wobble filter as one unit, so the
+   inked edge must be ONE stroke. Carry it as a ring box-shadow — NOT a `border`.
+   A `border` (inside the box) plus the box-shadow halo ring (outside the box)
+   displace into two offset wavy lines with a transparent sliver of window
+   between them: the "doubled / 3rd transparent border" bug. The ring spreads
+   the edge outward so it reads as the card's own painted outline. */
 html[data-chrome='ink'] .widget-shell::before {
-  border: 1.5px solid color-mix(in oklab, var(--ink) 55%, transparent);
+  box-shadow:
+    0 0 0 1.5px color-mix(in oklab, var(--ink) 55%, transparent),
+    0 1px 2px rgba(60, 45, 35, 0.10),
+    0 0 16px -2px rgba(60, 45, 35, 0.13),
+    0 6px 20px -6px rgba(60, 45, 35, 0.26);
   background:
     linear-gradient(180deg,
       color-mix(in oklab, var(--panel-tint) 18%, transparent) 0%,
@@ -108,8 +118,12 @@ html[data-chrome='ink'] .widget-shell::before {
     var(--paper);
 }
 
-/* Ink + dark: drawn edge on the night paper base. */
+/* Ink + dark: same single inked ring on the night paper base + deeper halo. */
 html[data-chrome='ink'][data-theme='dark'] .widget-shell::before {
+  box-shadow:
+    0 0 0 1.5px color-mix(in oklab, var(--ink) 55%, transparent),
+    0 0 16px -2px rgba(0, 0, 0, 0.4),
+    0 6px 20px -6px rgba(0, 0, 0, 0.62);
   background:
     linear-gradient(180deg,
       color-mix(in oklab, var(--panel-tint) 18%, transparent) 0%,
