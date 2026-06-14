@@ -1093,6 +1093,11 @@ export const App: Component = () => {
             <feTurbulence type="fractalNoise" baseFrequency="0.015" numOctaves="3" result="n" seed="7" />
             <feDisplacementMap in="SourceGraphic" in2="n" scale="6" xChannelSelector="R" yChannelSelector="G" />
           </filter>
+          {/* Gentler wobble for thin strokes (e.g. the composer's ↵ enter glyph). */}
+          <filter id="wc-wobble-soft">
+            <feTurbulence type="fractalNoise" baseFrequency="0.02" numOctaves="2" result="n" seed="4" />
+            <feDisplacementMap in="SourceGraphic" in2="n" scale="2" xChannelSelector="R" yChannelSelector="G" />
+          </filter>
         </defs>
       </svg>
       <div class="bg-blooms" aria-hidden="true"><div class="bloom b1" /><div class="bloom b2" /><div class="bloom b3" /></div>

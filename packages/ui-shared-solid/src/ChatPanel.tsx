@@ -448,124 +448,151 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
                 </For>
               </div>
             </Show>
-            {/*
-              Model + effort cluster (§3C). Shown only when the server
-              advertises `availableModels` AND the thread is active.
-              Effort control is additionally gated on `effortSelection` +
-              the selected model having a non-empty `efforts` array.
-              Options come from props only — no client-side matrix.
-            */}
-            <Show when={props.availableModels != null && props.availableModels.length > 0 && props.thread}>
-              {(thread) => {
-                const selectedModel = () =>
-                  props.availableModels!.find((m) => m.id === props.model) ??
-                  props.availableModels![0]!
-                const modelEfforts = () => selectedModel().efforts ?? []
-                const showEffort = () =>
-                  props.effortSelection === true && modelEfforts().length > 0
-                return (
-                  <div class="composer-config" role="group" aria-label="Model and effort">
-                    <label class="composer-config-label">
-                      <span class="muted small">Model</span>
-                      <select
-                        class="composer-config-select"
-                        value={props.model ?? selectedModel().id}
-                        onChange={(e) => {
-                          props.onModelChange?.(thread().summary.id, e.currentTarget.value)
-                        }}
-                        disabled={props.disabled}
-                        aria-label="Model"
-                      >
-                        <For each={props.availableModels}>
-                          {(m) => <option value={m.id}>{m.label}</option>}
-                        </For>
-                      </select>
-                    </label>
-                    <Show when={showEffort()}>
-                      <label class="composer-config-label">
-                        <span class="muted small">Effort</span>
-                        <select
-                          class="composer-config-select"
-                          value={props.effort ?? modelEfforts()[0]}
-                          onChange={(e) => {
-                            props.onEffortChange?.(
-                              thread().summary.id,
-                              e.currentTarget.value as EffortLevel,
-                            )
-                          }}
-                          disabled={props.disabled}
-                          aria-label="Effort"
-                        >
-                          <For each={modelEfforts()}>
-                            {(lv) => <option value={lv}>{lv}</option>}
-                          </For>
-                        </select>
-                      </label>
-                    </Show>
-                  </div>
-                )
-              }}
-            </Show>
-            <textarea
-              value={draft()}
-              onInput={(e) => setDraft(e.currentTarget.value)}
-              placeholder={placeholder()}
-              disabled={props.disabled}
-              onPaste={handlePaste}
-              onKeyDown={(e) => {
-                // ⌘/Ctrl+Enter always submits.
-                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                  e.preventDefault()
-                  submit()
-                  return
-                }
-                // Plain Enter submits ONLY when enterToSend is on AND
-                // no modifier is held. Shift+Enter falls through.
-                if (
-                  props.enterToSend &&
-                  e.key === "Enter" &&
-                  !e.shiftKey &&
-                  !e.metaKey &&
-                  !e.ctrlKey &&
-                  !e.altKey
-                ) {
-                  e.preventDefault()
-                  submit()
-                }
-              }}
-            />
-            <div class="composer-actions">
-              <input
-                ref={fileInputEl}
-                type="file"
-                accept="image/jpeg,image/png,image/gif,image/webp"
-                multiple
-                style={{ display: "none" }}
-                onChange={(e) => {
-                  const target = e.currentTarget
-                  if (target.files) void addFiles(target.files)
-                  target.value = ""
+            {/* Tier 1 — the input shell: a full-width textarea with the small
+                watercolor send button nested inline at its bottom-right corner.
+                While a turn is in flight that same inline slot becomes Stop. */}
+            <div class="composer-input-wrap">
+              <textarea
+                value={draft()}
+                onInput={(e) => setDraft(e.currentTarget.value)}
+                placeholder={placeholder()}
+                disabled={props.disabled}
+                onPaste={handlePaste}
+                onKeyDown={(e) => {
+                  // ⌘/Ctrl+Enter always submits.
+                  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                    e.preventDefault()
+                    submit()
+                    return
+                  }
+                  // Plain Enter submits ONLY when enterToSend is on AND
+                  // no modifier is held. Shift+Enter falls through.
+                  if (
+                    props.enterToSend &&
+                    e.key === "Enter" &&
+                    !e.shiftKey &&
+                    !e.metaKey &&
+                    !e.ctrlKey &&
+                    !e.altKey
+                  ) {
+                    e.preventDefault()
+                    submit()
+                  }
                 }}
               />
-              <button
-                class="attach-btn"
-                onClick={() => fileInputEl?.click()}
-                disabled={props.disabled}
-                title="Attach image"
-              >
-                📎
-              </button>
               <Show
                 when={thread().inFlight}
                 fallback={
-                  <button onClick={submit} disabled={!canSend()}>
-                    Send
+                  <button
+                    type="button"
+                    class="send-btn"
+                    onClick={submit}
+                    disabled={!canSend()}
+                    aria-label="Send message"
+                    title="Send (Enter)"
+                  >
+                    {/* ↵ return/enter glyph — down-then-left + a left arrowhead. */}
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M19 7v4a2 2 0 0 1-2 2H6" />
+                      <path d="M9 9l-4 4 4 4" />
+                    </svg>
                   </button>
                 }
               >
-                <button onClick={() => props.onInterrupt(thread().summary.id)}>
-                  Stop
+                <button
+                  type="button"
+                  class="send-btn stop"
+                  onClick={() => props.onInterrupt(thread().summary.id)}
+                  aria-label="Stop"
+                  title="Stop"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="6" y="6" width="12" height="12" rx="2.5" />
+                  </svg>
                 </button>
+              </Show>
+            </div>
+
+            {/* Tier 2 — the control bar: attach on the left, the model/effort
+                cluster on the right. The cluster shows only when the server
+                advertises `availableModels` AND the thread is active; effort is
+                additionally gated on `effortSelection` + a non-empty efforts
+                array. Options come from props only — no client-side matrix. */}
+            <div class="composer-bar">
+              <div class="composer-bar-left">
+                <input
+                  ref={fileInputEl}
+                  type="file"
+                  accept="image/jpeg,image/png,image/gif,image/webp"
+                  multiple
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const target = e.currentTarget
+                    if (target.files) void addFiles(target.files)
+                    target.value = ""
+                  }}
+                />
+                <button
+                  type="button"
+                  class="attach-btn"
+                  onClick={() => fileInputEl?.click()}
+                  disabled={props.disabled}
+                  title="Attach image"
+                  aria-label="Attach image"
+                >
+                  📎
+                </button>
+              </div>
+              <Show when={props.availableModels != null && props.availableModels.length > 0 && props.thread}>
+                {(thread) => {
+                  const selectedModel = () =>
+                    props.availableModels!.find((m) => m.id === props.model) ??
+                    props.availableModels![0]!
+                  const modelEfforts = () => selectedModel().efforts ?? []
+                  const showEffort = () =>
+                    props.effortSelection === true && modelEfforts().length > 0
+                  return (
+                    <div class="composer-config" role="group" aria-label="Model and effort">
+                      <label class="composer-config-label">
+                        <span class="muted small">Model</span>
+                        <select
+                          class="composer-config-select"
+                          value={props.model ?? selectedModel().id}
+                          onChange={(e) => {
+                            props.onModelChange?.(thread().summary.id, e.currentTarget.value)
+                          }}
+                          disabled={props.disabled}
+                          aria-label="Model"
+                        >
+                          <For each={props.availableModels}>
+                            {(m) => <option value={m.id}>{m.label}</option>}
+                          </For>
+                        </select>
+                      </label>
+                      <Show when={showEffort()}>
+                        <label class="composer-config-label">
+                          <span class="muted small">Effort</span>
+                          <select
+                            class="composer-config-select"
+                            value={props.effort ?? modelEfforts()[0]}
+                            onChange={(e) => {
+                              props.onEffortChange?.(
+                                thread().summary.id,
+                                e.currentTarget.value as EffortLevel,
+                              )
+                            }}
+                            disabled={props.disabled}
+                            aria-label="Effort"
+                          >
+                            <For each={modelEfforts()}>
+                              {(lv) => <option value={lv}>{lv}</option>}
+                            </For>
+                          </select>
+                        </label>
+                      </Show>
+                    </div>
+                  )
+                }}
               </Show>
             </div>
           </div>
