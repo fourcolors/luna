@@ -606,15 +606,27 @@ const send = (ws: WebSocket, frame: ServerFrame): void => {
 
 const GIT_TIMEOUT_MS = 3000
 
-/** Run a git command in <cwd>. Returns stdout trimmed, or null on failure. */
-const gitOut = (cwd: string, args: ReadonlyArray<string>): string | null => {
+/**
+ * Run a git command in <cwd>.
+ *
+ * Returns stdout trimmed on success, null on failure (non-zero exit / timeout).
+ * When `preserveEmpty` is true, empty stdout is returned as `""` rather than
+ * collapsed to null — necessary for `git status --porcelain` where empty
+ * stdout means "clean repo" (a meaningful, distinct result from a git error).
+ */
+const gitOut = (
+  cwd: string,
+  args: ReadonlyArray<string>,
+  opts: { readonly preserveEmpty?: boolean } = {},
+): string | null => {
   try {
-    return execFileSync("git", ["-C", cwd, ...args], {
+    const out = execFileSync("git", ["-C", cwd, ...args], {
       stdio: ["ignore", "pipe", "ignore"],
       timeout: GIT_TIMEOUT_MS,
     })
       .toString()
-      .trim() || null
+      .trim()
+    return out || (opts.preserveEmpty ? out : null)
   } catch {
     return null
   }
@@ -645,14 +657,41 @@ interface SmartBarContext {
   readonly localShellBridge: LocalShellBridge | null
 }
 
-const buildSmartBarItems = (ctx: SmartBarContext): ReadonlyArray<SmartBarItem> => {
+/**
+ * Injectable git runner for testability.
+ * Each call receives the cwd and git args; returns trimmed stdout or null on
+ * failure. The status call preserves empty-string output (clean repo signal).
+ */
+export interface GitRunner {
+  readonly toplevel: (cwd: string) => string | null
+  readonly branch: (cwd: string) => string | null
+  /** Returns `""` for a clean repo, a non-empty string when dirty, null on error. */
+  readonly status: (cwd: string) => string | null
+}
+
+/** Default git runner using execFileSync. */
+const defaultGitRunner: GitRunner = {
+  toplevel: (cwd) => gitOut(cwd, ["rev-parse", "--show-toplevel"]),
+  branch: (cwd) => gitOut(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]),
+  status: (cwd) => gitOut(cwd, ["status", "--porcelain"], { preserveEmpty: true }),
+}
+
+/**
+ * Build the SmartBar item list for the given context.
+ * Exported for unit testing; `gitRunner` defaults to the real execFileSync
+ * runner and should only be overridden in tests.
+ */
+export const buildSmartBarItems = (
+  ctx: SmartBarContext,
+  gitRunner: GitRunner = defaultGitRunner,
+): ReadonlyArray<SmartBarItem> => {
   const items: SmartBarItem[] = []
 
   // ── git context (flagship items) ──────────────────────────────────────────
   const cwd = resolveGitCwd(ctx.threadId, ctx.localShellBridge)
-  const toplevel = gitOut(cwd, ["rev-parse", "--show-toplevel"])
-  const branch = gitOut(cwd, ["rev-parse", "--abbrev-ref", "HEAD"])
-  const statusOut = gitOut(cwd, ["status", "--porcelain"])
+  const toplevel = gitRunner.toplevel(cwd)
+  const branch = gitRunner.branch(cwd)
+  const statusOut = gitRunner.status(cwd)
 
   if (toplevel !== null) {
     items.push({
@@ -678,10 +717,12 @@ const buildSmartBarItems = (ctx: SmartBarContext): ReadonlyArray<SmartBarItem> =
     })
   }
   if (toplevel !== null || branch !== null) {
-    // Only emit git.status when we successfully read the repo — statusOut
-    // being an empty string (clean) is distinguishable from null (git error).
-    if (statusOut !== null || statusOut === "") {
-      const isClean = (statusOut ?? "").length === 0
+    // Emit git.status only when we successfully read the repo.
+    // statusOut === null means git error / non-repo — omit the chip.
+    // statusOut === "" means clean repo (git status --porcelain produced no output).
+    // statusOut is non-empty when there are staged/unstaged changes (dirty).
+    if (statusOut !== null) {
+      const isClean = statusOut.length === 0
       items.push({
         id: "git.status",
         kind: "info",
