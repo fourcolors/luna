@@ -244,8 +244,8 @@ import {
 import {
   ChatService,
   ThreadToolsProviderTag,
-  effortsForModel,
-  type EffortLevel,
+  effortOptionsForModel,
+  type EffortOption,
   type ThreadToolsProvider,
 } from "@luna/chat-service"
 import { composeInterceptors, defaultSafetyInterceptors } from "@luna/tools"
@@ -403,8 +403,9 @@ export type { EffortLevel as Effort } from "@luna/chat-service"
 export interface UiModelEntry {
   readonly id: string
   readonly label: string
-  /** Effort levels valid for this model — server-computed. See effortsForModel(). */
-  readonly efforts?: readonly EffortLevel[]
+  /** Effort options for this model — server-computed. See effortOptionsForModel().
+   *  Includes the "ultracode" token for xhigh-capable models. */
+  readonly efforts?: readonly EffortOption[]
 }
 
 /**
@@ -473,11 +474,11 @@ export const buildAvailableModels = (env: NodeJS.ProcessEnv = process.env): Arra
   const seenIds = new Set(extras.map((e) => e.id))
   const deduped: Array<UiModelEntry> = extras.map((e) => ({
     ...e,
-    efforts: effortsForModel(e.id),
+    efforts: effortOptionsForModel(e.id),
   }))
   for (const base of BASE_MODELS) {
     if (!seenIds.has(base.id)) {
-      deduped.push({ ...base, efforts: effortsForModel(base.id) })
+      deduped.push({ ...base, efforts: effortOptionsForModel(base.id) })
     }
   }
   return deduped

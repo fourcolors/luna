@@ -15,6 +15,7 @@ export {
   type AvailableModel,
   type ChatPanelProps,
   type EffortLevel,
+  type EffortOption,
   type SlashCommand,
 } from "./ChatPanel.jsx"
 export {

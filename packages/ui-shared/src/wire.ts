@@ -156,10 +156,12 @@ export interface HelloFrame {
     readonly id: string
     readonly label: string
     /**
-     * Effort levels valid for THIS model, server-computed. Absent on older
-     * servers; empty array = model takes no effort param (e.g. Haiku).
+     * Effort OPTIONS valid for THIS model, server-computed. Absent on older
+     * servers; empty array = model takes no effort param (e.g. Haiku). Not every
+     * entry is a real SDK effort level — "ultracode" is a pseudo-token the
+     * server demuxes into SDK settings (display/wire list).
      */
-    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max">
+    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max" | "ultracode">
   }>
 }
 export interface EventFrame {
@@ -756,7 +758,7 @@ export interface ThreadConfigFrame {
   readonly type: "thread-config"
   readonly threadId: string
   readonly model?: string
-  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
   readonly applied: ReadonlyArray<"model" | "effort">
   readonly deferred: ReadonlyArray<"model" | "effort">
   readonly rejected?: ReadonlyArray<{ readonly field: "model" | "effort"; readonly reason: string }>
@@ -771,7 +773,7 @@ export interface SetThreadConfigFrame {
   readonly type: "set-thread-config"
   readonly threadId: string
   readonly model?: string
-  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
 }
 
 export type ServerFrame =
@@ -838,7 +840,7 @@ export interface NewThreadFrame {
   readonly tags?: ReadonlyArray<string>
   readonly systemPrompt?: string
   /** Additive effort level for this thread. Older servers ignore it. */
-  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
 }
 /**
  * Small identity blob clients attach to each user-message so the server (and

@@ -88,8 +88,9 @@ export interface UIState {
   readonly availableModels: ReadonlyArray<{
     readonly id: string
     readonly label: string
-    /** Effort levels valid for this model, server-computed. Absent = no effort param. */
-    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max">
+    /** Effort options valid for this model, server-computed. Absent = no effort
+     *  param. Includes the "ultracode" pseudo-token (not a real SDK effort). */
+    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max" | "ultracode">
   }> | null
   /** Sidebar projection — most-recently-active first (server orders). */
   readonly threadList: ReadonlyArray<SessionSummary>

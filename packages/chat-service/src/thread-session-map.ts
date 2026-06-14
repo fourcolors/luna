@@ -34,7 +34,7 @@ import {
   writeFileSync,
 } from "node:fs"
 import { dirname, join } from "node:path"
-import { isEffort } from "./effort.js"
+import { isEffortOption } from "./effort.js"
 
 const LUNA_THREAD_ID = /^thr_[A-Za-z0-9_]{1,64}$/
 const SDK_SESSION_ID = /^[A-Za-z0-9_-]{4,128}$/
@@ -78,7 +78,9 @@ const normalizeEntry = (v: unknown): ThreadConfig | undefined => {
     if (typeof obj["model"] === "string" && MODEL_ID.test(obj["model"])) {
       Object.assign(entry, { model: obj["model"] })
     }
-    if (isEffort(obj["effort"])) {
+    // isEffortOption (not isEffort): also admits the "ultracode" token so the
+    // mode survives a chat-server restart instead of being dropped on load.
+    if (isEffortOption(obj["effort"])) {
       Object.assign(entry, { effort: obj["effort"] })
     }
     // An object carrying neither a sid nor any config is meaningless.
@@ -173,7 +175,7 @@ export const appendThreadConfigEntry = (
     ...(config.model !== undefined && MODEL_ID.test(config.model)
       ? { model: config.model }
       : {}),
-    ...(config.effort !== undefined && isEffort(config.effort)
+    ...(config.effort !== undefined && isEffortOption(config.effort)
       ? { effort: config.effort }
       : {}),
   }

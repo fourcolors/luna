@@ -58,11 +58,16 @@ export interface HelloFrame {
     readonly id: string
     readonly label: string
     /**
-     * Effort levels valid for THIS model, server-computed. Absent on older
+     * Effort OPTIONS valid for THIS model, server-computed. Absent on older
      * servers; empty array = model takes no effort param (e.g. Haiku). Clients
      * never compute the matrix — always defer to this field when present.
+     *
+     * NOTE: not every entry is a real SDK effort level — "ultracode" is a
+     * pseudo-token (xhigh + standing workflow orchestration) that the server
+     * demuxes into SDK settings. Treat this as a display/wire list, not a list
+     * of SDK effort levels.
      */
-    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max">
+    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max" | "ultracode">
   }>
   /** Capability flags so older clients can negotiate down. */
   readonly capabilities: {
@@ -1130,7 +1135,7 @@ export interface ThreadConfigFrame {
   readonly type: "thread-config"
   readonly threadId: string
   readonly model?: string
-  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
   readonly applied: ReadonlyArray<"model" | "effort">
   readonly deferred: ReadonlyArray<"model" | "effort">
   readonly rejected?: ReadonlyArray<{ readonly field: "model" | "effort"; readonly reason: string }>
@@ -1219,7 +1224,7 @@ export interface NewThreadFrame {
   readonly tags?: ReadonlyArray<string>
   readonly systemPrompt?: string
   /** Additive effort level for this thread. Older servers ignore it. */
-  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
 }
 
 /**
@@ -1413,7 +1418,7 @@ export interface SetThreadConfigFrame {
   readonly type: "set-thread-config"
   readonly threadId: string
   readonly model?: string
-  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
 }
 
 export type ClientFrame =

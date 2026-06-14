@@ -78,7 +78,17 @@ import {
   appendThreadConfigEntry,
   loadThreadSessionMap,
 } from "./thread-session-map.js"
-import { clampEffort, isEffort, type EffortLevel } from "./effort.js"
+import {
+  clampEffort,
+  isEffort,
+  isEffortOption,
+  isUltracode,
+  modelSupportsUltracode,
+  ultracodeFlagSettings,
+  ULTRACODE,
+  type EffortLevel,
+  type EffortOption,
+} from "./effort.js"
 import {
   resolveKind,
   readProviderEnv,
@@ -366,7 +376,19 @@ export class ChatService extends Effect.Service<ChatService>()(
         // direct API): an invalid combo from a stale or hand-rolled client
         // (e.g. haiku+max) never reaches the SDK options. createThread logs
         // when the clamp drops or adjusts the level.
-        const effortClamp = clampEffort(opts.model, opts.effort)
+        //
+        // Ultracode demux: "ultracode" is a menu/wire token, NOT an SDK effort.
+        // When the thread requests it AND the model can run it (xhigh-capable),
+        // the mode is enabled below (sdkOptions.settings + the Workflow tool)
+        // instead of being routed through the effort clamp — the token must
+        // never reach clampEffort or Options.effort. A token on a non-capable
+        // model is only reachable from a stale client (the menu hides it); it
+        // falls through as "no effort" and createThread logs it.
+        const ultracodeOn =
+          isUltracode(opts.effort) && modelSupportsUltracode(opts.model ?? "")
+        const effortClamp = isUltracode(opts.effort)
+          ? { effort: undefined as EffortLevel | undefined, dropped: false }
+          : clampEffort(opts.model, opts.effort)
         const sdkOptions: Record<string, unknown> = {
           includePartialMessages: true,
           // GAP#3: the SDK adapter routes by `sdkOptions.model` (the broker reads
@@ -428,6 +450,12 @@ export class ChatService extends Effect.Service<ChatService>()(
             "Write",
             "Grep",
             "Glob",
+            // Ultracode only: the Workflow built-in (multi-agent orchestration).
+            // settings.enableWorkflows gates the FEATURE; this `tools` list gates
+            // AVAILABILITY — without it the model cannot call Workflow even with
+            // the mode on. The tool set is fixed at query construction, so a
+            // mid-thread ultracode toggle gets the tool only on the next rebuild.
+            ...(ultracodeOn ? ["Workflow"] : []),
           ],
           // Luna's MCP tools are pre-approved (availability already granted via
           // mcpServers): their own handlers enforce safety, so the SDK layer
@@ -435,7 +463,13 @@ export class ChatService extends Effect.Service<ChatService>()(
           // pre-approved belt-and-braces: live probes show the SDK executes it
           // under permissionMode "default" without canUseTool, but pre-approval
           // keeps that working if a future CLI tightens it.
-          allowedTools: [...LUNA_ALLOWED_MCP_TOOLS, "Task"],
+          allowedTools: [
+            ...LUNA_ALLOWED_MCP_TOOLS,
+            "Task",
+            // Pre-approve Workflow so ultracode orchestration isn't gated by a
+            // canUseTool round-trip (parity with "Task" above).
+            ...(ultracodeOn ? ["Workflow"] : []),
+          ],
           strictMcpConfig: true,
           env: sdkEnv,
           // SDK subprocess stderr → parent process stderr → journalctl.
@@ -469,6 +503,12 @@ export class ChatService extends Effect.Service<ChatService>()(
           ...(opts.mcpServers !== undefined
             ? { mcpServers: opts.mcpServers }
             : {}),
+          // Ultracode: enable the SDK Workflows feature + the mode for this
+          // session via Options.settings (sdk.d.ts: `string | Settings`). WHICH
+          // Settings keys is decided by effort.ts ultracodeFlagSettings. Set
+          // only when the model supports ultracode — never on an incapable
+          // model, and never as a plain Options.effort.
+          ...(ultracodeOn ? { settings: ultracodeFlagSettings() } : {}),
         }
         return {
           // Top-level model is consumed by merge-policy / fork / display only
@@ -527,8 +567,22 @@ export class ChatService extends Effect.Service<ChatService>()(
           // Per-model clamp result for logging + eager persistence below.
           // The same pure clamp already ran inside buildSessionOptions —
           // recomputing it here avoids widening that function's return type.
-          const createClamp = clampEffort(opts.model, opts.effort)
-          if (opts.effort !== undefined && createClamp.dropped) {
+          // Mirror the ultracode demux: keep the token out of the clamp.
+          const createClamp = isUltracode(opts.effort)
+            ? { effort: undefined as EffortLevel | undefined, dropped: false }
+            : clampEffort(opts.model, opts.effort)
+          if (isUltracode(opts.effort)) {
+            if (!modelSupportsUltracode(opts.model ?? "")) {
+              // Distinguish "no model selected (default lane)" from a model
+              // that is definitively not xhigh-capable — same `opts.model ?? ""`
+              // but very different root causes for an operator.
+              yield* Effect.logWarning(
+                opts.model === undefined
+                  ? `[chat] createThread: ultracode requested but no model was selected (default lane) — ignored; ultracode needs an xhigh-capable model (Opus 4.7/4.8, Fable)`
+                  : `[chat] createThread: ultracode requested but model '${opts.model}' is not xhigh-capable — ignored`,
+              )
+            }
+          } else if (opts.effort !== undefined && createClamp.dropped) {
             yield* Effect.logWarning(
               `[chat] createThread: effort '${opts.effort}' dropped — model '${opts.model ?? "(default)"}' takes no effort parameter`,
             )
@@ -608,15 +662,22 @@ export class ChatService extends Effect.Service<ChatService>()(
           // SDK session id only arrives asynchronously via onSdkSessionId,
           // and the later sid write merges into this entry rather than
           // replacing it (appendThreadSessionEntry preserves model/effort).
+          // Persist the ultracode TOKEN when the mode is on (so a restart
+          // replays it via buildSessionOptions's ultracode branch); else the
+          // clamped real effort.
+          const persistEffort: EffortOption | undefined =
+            isUltracode(opts.effort) && modelSupportsUltracode(opts.model ?? "")
+              ? ULTRACODE
+              : createClamp.effort
           if (
             lunaHome !== undefined &&
-            (opts.model !== undefined || createClamp.effort !== undefined)
+            (opts.model !== undefined || persistEffort !== undefined)
           ) {
             try {
               appendThreadConfigEntry(lunaHome, id, {
                 ...(opts.model !== undefined ? { model: opts.model } : {}),
-                ...(createClamp.effort !== undefined
-                  ? { effort: createClamp.effort }
+                ...(persistEffort !== undefined
+                  ? { effort: persistEffort }
                   : {}),
               })
             } catch {
@@ -1294,11 +1355,11 @@ export class ChatService extends Effect.Service<ChatService>()(
       const setThreadConfig = (opts: {
         readonly threadId: string
         readonly model?: string
-        readonly effort?: EffortLevel
+        readonly effort?: EffortOption
       }): Effect.Effect<{
         readonly threadId: string
         readonly model?: string
-        readonly effort?: EffortLevel
+        readonly effort?: EffortOption
         readonly applied: ReadonlyArray<"model" | "effort">
         readonly deferred: ReadonlyArray<"model" | "effort">
         readonly rejected?: ReadonlyArray<{ readonly field: "model" | "effort"; readonly reason: string }>
@@ -1333,7 +1394,65 @@ export class ChatService extends Effect.Service<ChatService>()(
           let ackEffort = effort
 
           // ── Effort ──────────────────────────────────────────────────────────
-          if (effort !== undefined) {
+          if (isUltracode(effort)) {
+            // ── Ultracode ── a dropdown token, not an SDK effort. Enable the
+            // mode on the SAME live control rail as effort (applyFlagSettings).
+            // The Workflow TOOL is fixed at query construction, so the live
+            // toggle turns the mode on now but full orchestration tooling lands
+            // on the next thread rebuild (which reads the persisted token) — the
+            // "live now, full effect on rebuild" contract Luna already uses for
+            // cross-lane model switches.
+            const referenceModel =
+              typeof model === "string" && model.trim() !== ""
+                ? model
+                : currentModel
+            if (!modelSupportsUltracode(referenceModel ?? "")) {
+              // referenceModel undefined ⇒ the thread's current model is unknown
+              // (default lane), NOT a model we know to be non-capable. Report
+              // that explicitly so an operator doesn't chase a capability red
+              // herring.
+              const reason =
+                referenceModel === undefined
+                  ? "current model unknown — switch to an xhigh-capable model (Opus 4.7/4.8, Fable) to use ultracode"
+                  : `model ${referenceModel} does not support ultracode`
+              rejected.push({ field: "effort", reason })
+              yield* Effect.logWarning(
+                `[chat] set-thread-config: ultracode rejected — ${reason}`,
+              )
+            } else {
+              let liveOk = true
+              if (handle !== null) {
+                liveOk = yield* Effect.tryPromise(() =>
+                  handle.applyFlagSettings(ultracodeFlagSettings()),
+                ).pipe(Effect.as(true), Effect.catchAll(() => Effect.succeed(false)))
+              }
+              if (liveOk) {
+                applied.push("effort")
+                ackEffort = ULTRACODE
+                // Persist token (thread-session-map → recovery) + SDK settings
+                // (store snapshot), dropping any stale real effort so a rebuild
+                // never feeds "ultracode" to Options.effort.
+                const existingOpts = yield* store.getOptions(threadId)
+                const mergedSdk: Record<string, unknown> = {
+                  ...(existingOpts?.sdkOptions ?? {}),
+                  settings: ultracodeFlagSettings(),
+                }
+                delete mergedSdk["effort"]
+                yield* store
+                  .setOptions(threadId, { sdkOptions: mergedSdk })
+                  .pipe(Effect.catchAll(() => Effect.void))
+                const lunaHome = process.env["LUNA_HOME"]
+                if (lunaHome !== undefined) {
+                  appendThreadConfigEntry(lunaHome, threadId, { effort: ULTRACODE })
+                }
+              } else {
+                rejected.push({ field: "effort", reason: "live ultracode switch failed" })
+                yield* Effect.logWarning(
+                  "[chat] set-thread-config: applyFlagSettings failed — ultracode not applied",
+                )
+              }
+            }
+          } else if (effort !== undefined) {
             // Per-model clamp (the same matrix the hello advertises). The
             // reference is the model this call switches to when provided,
             // else the thread's current model — so an effort-only change on
@@ -1523,7 +1642,7 @@ export class ChatService extends Effect.Service<ChatService>()(
                     ? persistedEntry.effort
                     : undefined
                 const validEffort =
-                  savedEffort !== undefined && isEffort(savedEffort)
+                  savedEffort !== undefined && isEffortOption(savedEffort)
                     ? savedEffort
                     : undefined
                 yield* createThread({

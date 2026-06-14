@@ -558,4 +558,167 @@ describe("ChatService.setThreadConfig", () => {
     },
     { timeout: 10_000 },
   )
+
+  it(
+    "ultracode (xhigh-capable model): applyFlagSettings enables the mode (NOT an effortLevel), persisted as settings",
+    async () => {
+      // The headline path: picking "ultracode" on an Opus thread must demux
+      // into the SDK ultracode Settings on the live control rail — NOT an
+      // effortLevel — and persist as `settings` (never an illegal
+      // Options.effort = "ultracode").
+      const flagCalls: Array<Record<string, unknown>> = []
+      const fakeLayer = SDKClient.fake((p) =>
+        makeRecordingQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "s?",
+          flagSettingsCalls: flagCalls,
+          modelCalls: [],
+        }),
+      )
+
+      await runScoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const store = yield* SessionStore
+          const t = yield* chat.createThread({ model: "claude-opus-4-8", title: "ultracode" })
+
+          const sub = chat.subscribe(t.id)
+          const fiber = yield* Effect.fork(sub.pipe(Stream.take(3), Stream.runCollect))
+          yield* Effect.sleep("20 millis")
+          yield* chat.send(t.id, "hi")
+          yield* fiber
+
+          const result = yield* chat.setThreadConfig({ threadId: t.id, effort: "ultracode" })
+
+          expect(result.applied).toContain("effort")
+          expect(result.effort).toBe("ultracode")
+          // The live SDK call enabled the mode — workflows + ultracode, no effortLevel.
+          expect(flagCalls).toHaveLength(1)
+          expect(flagCalls[0]).toMatchObject({ enableWorkflows: true, ultracode: true })
+          expect(flagCalls[0]).not.toHaveProperty("effortLevel")
+          // Persisted as `settings`, and NO illegal Options.effort token.
+          const opts = yield* store.getOptions(t.id)
+          const sdk = opts?.sdkOptions as Record<string, unknown> | undefined
+          expect(sdk?.["effort"]).toBeUndefined()
+          expect(sdk?.["settings"]).toMatchObject({ ultracode: true })
+        }),
+        fakeLayer,
+      )
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "ultracode on a non-xhigh model: rejected, applyFlagSettings NOT called",
+    async () => {
+      // The menu hides ultracode on non-capable models; a stale/hand-rolled
+      // client pushing it at a sonnet thread must be rejected, and the live
+      // SDK call must never fire.
+      const flagCalls: Array<Record<string, unknown>> = []
+      const fakeLayer = SDKClient.fake((p) =>
+        makeRecordingQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "s?",
+          flagSettingsCalls: flagCalls,
+          modelCalls: [],
+        }),
+      )
+
+      await runScoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const t = yield* chat.createThread({ model: "claude-sonnet-4-6", title: "ultracode-reject" })
+
+          const sub = chat.subscribe(t.id)
+          const fiber = yield* Effect.fork(sub.pipe(Stream.take(3), Stream.runCollect))
+          yield* Effect.sleep("20 millis")
+          yield* chat.send(t.id, "hi")
+          yield* fiber
+
+          const result = yield* chat.setThreadConfig({ threadId: t.id, effort: "ultracode" })
+
+          expect(result.applied).not.toContain("effort")
+          expect(result.rejected).toBeDefined()
+          expect(result.rejected!.map((r) => r.field)).toContain("effort")
+          expect(flagCalls).toHaveLength(0)
+        }),
+        fakeLayer,
+      )
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "createThread with ultracode (xhigh-capable): sdkOptions gets the Workflow tool + ultracode settings, no Options.effort",
+    async () => {
+      // The PRIMARY path: a new thread that requests ultracode is built with
+      // the Workflow built-in (availability) AND settings (the mode), and never
+      // an illegal Options.effort = "ultracode".
+      const fakeLayer = SDKClient.fake((p) =>
+        makeRecordingQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "s?",
+          flagSettingsCalls: [],
+          modelCalls: [],
+        }),
+      )
+
+      await runScoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const store = yield* SessionStore
+          const t = yield* chat.createThread({
+            model: "claude-opus-4-8",
+            effort: "ultracode",
+            title: "uc-create",
+          })
+
+          const opts = yield* store.getOptions(t.id)
+          const sdk = opts?.sdkOptions as Record<string, unknown> | undefined
+          expect(sdk?.["settings"]).toMatchObject({ enableWorkflows: true, ultracode: true })
+          expect(sdk?.["tools"] as string[]).toContain("Workflow")
+          expect(sdk?.["allowedTools"] as string[]).toContain("Workflow")
+          // ultracode never leaks into Options.effort.
+          expect(sdk?.["effort"]).toBeUndefined()
+        }),
+        fakeLayer,
+      )
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "createThread with ultracode on a non-xhigh model: dropped — no Workflow tool, no settings, no effort",
+    async () => {
+      const fakeLayer = SDKClient.fake((p) =>
+        makeRecordingQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: (p as { sessionId?: string }).sessionId ?? "s?",
+          flagSettingsCalls: [],
+          modelCalls: [],
+        }),
+      )
+
+      await runScoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const store = yield* SessionStore
+          const t = yield* chat.createThread({
+            model: "claude-sonnet-4-6",
+            effort: "ultracode",
+            title: "uc-create-drop",
+          })
+
+          const opts = yield* store.getOptions(t.id)
+          const sdk = opts?.sdkOptions as Record<string, unknown> | undefined
+          expect(sdk?.["settings"]).toBeUndefined()
+          expect(sdk?.["tools"] as string[]).not.toContain("Workflow")
+          // The token is dropped, NOT clamped to a real effort.
+          expect(sdk?.["effort"]).toBeUndefined()
+        }),
+        fakeLayer,
+      )
+    },
+    { timeout: 10_000 },
+  )
 })
