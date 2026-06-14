@@ -97,7 +97,11 @@ const makeStreamEvent = (
       delta: { type: "text_delta", text },
     },
   }) as unknown as SDKMessage
-import { ChatService, type ChatFrame } from "../src/index.js"
+import {
+  ChatService,
+  type ChatFrame,
+  type DeliveryNotification,
+} from "../src/index.js"
 
 // No-op MemoryRouter: sim tests never call searchMemory; they just need
 // the tag to be present in the layer graph after MemoryRouterTag was added
@@ -1623,6 +1627,193 @@ describe("ChatService (Tier-2 sim)", () => {
         expect(end.sessionId).toMatch(/^thr_/)
         expect(end.level).toBe("info") // is_error: false
       }
+    },
+    { timeout: 10_000 },
+  )
+})
+
+// ── deliverResult: the chat_thread delivery sink (#124) ─────────────────────
+
+describe("ChatService.deliverResult (#124)", () => {
+  // A fake that never produces traffic on its own — deliverResult does not
+  // drive the SDK, so the loop query is fine (no user turns are sent).
+  const idleFake = SDKClient.fake((p) =>
+    makeChatLoopQuery({
+      prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+      sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+      responseFor: (t) => `echo:${t}`,
+    }),
+  )
+
+  it(
+    "posts assistant-done with the delivery marker into a LIVE thread + emits a DeliveryNotification",
+    async () => {
+      const { frames, notes } = await runScoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const t1 = yield* chat.createThread({ model: "claude-test", title: "T1" })
+
+          const sub = chat.subscribe(t1.id)
+          // Collect: snapshot + assistant-done = 2 frames. (A delivery does NOT
+          // emit turn-complete — it must not settle a concurrent live run.)
+          const framesFiber = yield* Effect.fork(
+            sub.pipe(Stream.take(2), Stream.runCollect),
+          )
+          // Capture the cross-thread notification stream too.
+          const notesFiber = yield* Effect.fork(
+            chat.deliveries.pipe(Stream.take(1), Stream.runCollect),
+          )
+          yield* Effect.sleep("30 millis")
+
+          const posted = yield* chat.deliverResult({
+            threadId: t1.id,
+            text: "Found 3 flights under $400.",
+            source: "suggested-action",
+            label: "Research flights",
+          })
+          expect(Option.isSome(posted)).toBe(true)
+
+          const framesChunk = yield* Fiber.join(framesFiber)
+          const notesChunk = yield* Fiber.join(notesFiber)
+          return {
+            frames: Array.from(Chunk.toReadonlyArray(framesChunk)),
+            notes: Array.from(Chunk.toReadonlyArray(notesChunk)),
+          }
+        }),
+        idleFake,
+      )
+
+      expect(frames.map((f) => f.type)).toEqual([
+        "snapshot",
+        "assistant-done",
+      ])
+      const done = frames[1]!
+      expect(done.type).toBe("assistant-done")
+      if (done.type === "assistant-done") {
+        expect(done.message.role).toBe("assistant")
+        expect(done.message.text).toBe("Found 3 flights under $400.")
+        // The persisted provenance marker rides the projected ChatMessage.
+        expect(done.message.delivery).toEqual({
+          source: "suggested-action",
+          label: "Research flights",
+        })
+      }
+
+      // The global toast notification carries thread + label + preview.
+      expect(notes).toHaveLength(1)
+      const n: DeliveryNotification = notes[0]!
+      expect(n.source).toBe("suggested-action")
+      expect(n.label).toBe("Research flights")
+      expect(n.preview).toBe("Found 3 flights under $400.")
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "persists the delivered message: a NEW subscriber replays it (with marker) from the snapshot",
+    async () => {
+      const snapshot = await runScoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const t1 = yield* chat.createThread({ model: "claude-test", title: "T1" })
+
+          yield* chat.deliverResult({
+            threadId: t1.id,
+            text: "Background brief ready.",
+            source: "background-job",
+            label: "Daily brief",
+          })
+
+          // A subscriber that attaches AFTER delivery must still see it — this
+          // is the not-live / replay-on-subscribe path the issue requires.
+          const sub = chat.subscribe(t1.id)
+          const chunk = yield* sub.pipe(Stream.take(1), Stream.runCollect)
+          return Array.from(Chunk.toReadonlyArray(chunk))[0]!
+        }),
+        idleFake,
+      )
+
+      expect(snapshot.type).toBe("snapshot")
+      if (snapshot.type === "snapshot") {
+        expect(snapshot.messages).toHaveLength(1)
+        const msg = snapshot.messages[0]!
+        expect(msg.role).toBe("assistant")
+        expect(msg.text).toBe("Background brief ready.")
+        expect(msg.delivery).toEqual({
+          source: "background-job",
+          label: "Daily brief",
+        })
+      }
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "drops (returns none) an empty/whitespace result — no bubble, no toast",
+    async () => {
+      const out = await runScoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const t1 = yield* chat.createThread({ model: "claude-test", title: "T1" })
+          // Watch the toast stream — it must NOT fire for an empty result.
+          const notesFiber = yield* Effect.fork(
+            chat.deliveries.pipe(Stream.take(1), Stream.runCollect),
+          )
+          yield* Effect.sleep("20 millis")
+          const posted = yield* chat.deliverResult({
+            threadId: t1.id,
+            text: "   \n  ",
+            source: "background-job",
+          })
+          // Then deliver a REAL result so the take(1) fiber resolves on it
+          // (proving the empty one produced no notification before it).
+          yield* chat.deliverResult({
+            threadId: t1.id,
+            text: "real one",
+            source: "background-job",
+            label: "Real",
+          })
+          const notesChunk = yield* Fiber.join(notesFiber)
+          // The new subscriber's snapshot should contain ONLY the real message.
+          const snap = yield* chat
+            .subscribe(t1.id)
+            .pipe(Stream.take(1), Stream.runCollect)
+          return {
+            emptyPosted: posted,
+            notes: Array.from(Chunk.toReadonlyArray(notesChunk)),
+            snapshot: Array.from(Chunk.toReadonlyArray(snap))[0]!,
+          }
+        }),
+        idleFake,
+      )
+      expect(Option.isNone(out.emptyPosted)).toBe(true)
+      // Exactly one notification — the real one (the empty one fired none).
+      expect(out.notes).toHaveLength(1)
+      expect(out.notes[0]!.label).toBe("Real")
+      // Exactly one persisted message — the real one.
+      if (out.snapshot.type === "snapshot") {
+        expect(out.snapshot.messages).toHaveLength(1)
+        expect(out.snapshot.messages[0]!.text).toBe("real one")
+      }
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "drops (returns none) when the target thread has no session row",
+    async () => {
+      const result = await runScoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          return yield* chat.deliverResult({
+            threadId: "thr_never_created",
+            text: "nowhere to land",
+            source: "background-job",
+          })
+        }),
+        idleFake,
+      )
+      expect(Option.isNone(result)).toBe(true)
     },
     { timeout: 10_000 },
   )

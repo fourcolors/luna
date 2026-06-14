@@ -64,6 +64,13 @@ export const executionIdFor = (actionId: string): string => `saj-${actionId}`
  * is set, so the spawned subagent uses the prompt-worker's default posture
  * (destructive sub-tools still hit `canUseTool`); the payload cannot grant
  * bypass.
+ *
+ * `deliver_to: chat_thread` stamps the originating thread (#124): when the
+ * background job finishes, the PromptWorker's chat_thread sink posts the result
+ * back INTO the thread the user accepted the action from, so "Luna, go do X
+ * while I keep working" lands the answer in the conversation instead of
+ * dead-ending in a job row. `row.threadId` is the originating thread bound at
+ * propose() time.
  */
 export const buildPromptJobSpec = (row: SuggestedActionRow): JobRecordSpec => {
   const payload = row.payload as PromptActionPayload
@@ -76,6 +83,7 @@ export const buildPromptJobSpec = (row: SuggestedActionRow): JobRecordSpec => {
       label: row.title,
       source: "suggested-action",
       user_prompt: userPrompt,
+      deliver_to: { kind: "chat_thread", thread_id: row.threadId },
       ...(payload.allowedTools && payload.allowedTools.length > 0
         ? { allowed_tools: [...payload.allowedTools] }
         : {}),

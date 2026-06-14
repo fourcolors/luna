@@ -27,6 +27,12 @@ export {
 } from "./job-run-tools.js"
 
 export {
+  ChatThreadPosterTag,
+  type ChatThreadDelivery,
+  type ChatThreadPoster,
+} from "./chat-thread-poster.js"
+
+export {
   PromptWorkerLayer,
   buildPromptWorker,
   parsePromptPayload,

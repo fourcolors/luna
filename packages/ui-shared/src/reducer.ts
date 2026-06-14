@@ -504,6 +504,12 @@ export const reduce = (state: UIState, action: Action): UIState => {
       // the App.tsx onFrame interceptor (the mcp-app iframe host awaits them);
       // no persistent store state. Still dispatched for exhaustiveness.
       return state
+    case "result-delivered":
+      // #124: a background/job result landed in a thread. Transient toast —
+      // surfaced as a side effect in the App.tsx onFrame interceptor (like
+      // widget-open), not persistent store state. The result message itself
+      // arrives via assistant-done and IS folded into the thread's messages.
+      return state
     default: {
       // Exhaustiveness guard: when every ServerFrame member has a matching
       // case arm, TypeScript narrows `frame` to `never` here. Adding a new

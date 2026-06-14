@@ -126,6 +126,37 @@ describe("projectOne", () => {
     expect(out?.toolUses).toEqual([])
   })
 
+  it("surfaces a luna_delivery marker onto ChatMessage.delivery (#124)", () => {
+    const out = projectOne(
+      stored("d1", 3, "assistant", {
+        ...assistantTextPayload("done"),
+        luna_delivery: { source: "suggested-action", label: "Research flights" },
+      }),
+    )
+    expect(out?.text).toBe("done")
+    expect(out?.delivery).toEqual({
+      source: "suggested-action",
+      label: "Research flights",
+    })
+  })
+
+  it("leaves delivery undefined for an ordinary assistant turn (#124)", () => {
+    const out = projectOne(
+      stored("d2", 4, "assistant", assistantTextPayload("plain reply")),
+    )
+    expect(out?.delivery).toBeUndefined()
+  })
+
+  it("ignores a malformed luna_delivery marker (no source) (#124)", () => {
+    const out = projectOne(
+      stored("d3", 5, "assistant", {
+        ...assistantTextPayload("x"),
+        luna_delivery: { label: "no source" },
+      }),
+    )
+    expect(out?.delivery).toBeUndefined()
+  })
+
   it("flattens tool_use blocks alongside text", () => {
     const out = projectOne(
       stored("a2", 2, "assistant", assistantToolPayload("running", "Bash")),

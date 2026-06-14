@@ -205,6 +205,30 @@ export const App: Component = () => {
   // last ack as a signal so VaultPanel can correlate its pending requestId.
   const [vaultLastStatus, setVaultLastStatus] = createSignal<VaultStatusAck | null>(null)
 
+  // ── result-delivered toasts (#124) ───────────────────────────────────────
+  // A background/job result was posted into a thread → show a transient
+  // "Luna finished X" toast. This is a SIDE EFFECT in the app layer (like
+  // widget-open / open-artifact-widget): the shared reducer intentionally
+  // no-ops `result-delivered`, so toast state never lives in the store. Each
+  // toast auto-dismisses after ~6s and is hand-dismissible. Keyed by an
+  // increasing id so duplicate labels don't collide.
+  interface ResultToast {
+    readonly id: number
+    readonly label: string
+    readonly preview: string
+  }
+  const [toasts, setToasts] = createSignal<ReadonlyArray<ResultToast>>([])
+  let toastSeq = 0
+  const TOAST_TTL_MS = 6000
+  const dismissToast = (id: number): void => {
+    setToasts((prev) => prev.filter((t) => t.id !== id))
+  }
+  const pushResultToast = (label: string, preview: string): void => {
+    const id = ++toastSeq
+    setToasts((prev) => [...prev, { id, label, preview }])
+    setTimeout(() => dismissToast(id), TOAST_TTL_MS)
+  }
+
   const store = createUiStore()
 
   // Restore persisted selectedAccountId into the reducer so the dropdown
@@ -310,6 +334,13 @@ export const App: Component = () => {
         // Settle the requestId-matched mcp-app relay promise. The reducer
         // no-ops these (no store state); we still dispatch for exhaustiveness.
         mcpPending.get(frame.requestId)?.(frame)
+      } else if (frame.type === "result-delivered") {
+        // A background job posted its result into a thread (#124). Surface a
+        // global toast — visible even when that thread isn't on screen. The
+        // message itself rides in via assistant-done/thread-snapshot (and
+        // carries `message.delivery` for the inline chip). Side-effect only;
+        // still dispatched below (the reducer no-ops it) for exhaustiveness.
+        pushResultToast(frame.label, frame.preview)
       }
       store.dispatch(frame)
       // Sidebar freshness: any frame that mutates a thread's last-message
@@ -1181,6 +1212,32 @@ export const App: Component = () => {
             }
           }}
         />
+      </Show>
+
+      {/* result-delivered toasts (#124) — fixed bottom-right stack, above the
+          board. Auto-dismissed by pushResultToast's timer; the × dismisses
+          early. aria-live=polite announces them to assistive tech. */}
+      <Show when={toasts().length > 0}>
+        <div class="toast-stack" role="status" aria-live="polite">
+          <For each={toasts()}>
+            {(t) => (
+              <div class="toast">
+                <button
+                  class="toast-close"
+                  title="Dismiss"
+                  aria-label="Dismiss notification"
+                  onClick={() => dismissToast(t.id)}
+                >
+                  ×
+                </button>
+                <div class="toast-title">Luna finished: {t.label}</div>
+                <Show when={t.preview}>
+                  <div class="toast-preview">{t.preview}</div>
+                </Show>
+              </div>
+            )}
+          </For>
+        </div>
       </Show>
     </div>
   )

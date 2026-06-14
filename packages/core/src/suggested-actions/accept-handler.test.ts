@@ -41,6 +41,16 @@ describe("buildPromptJobSpec", () => {
     expect(String(spec.payload.user_prompt)).toContain("go research X")
   })
 
+  it("stamps deliver_to=chat_thread with the originating thread (#124)", () => {
+    const spec = buildPromptJobSpec(
+      fakeRow({ actionType: "research", threadId: "thr_origin" }),
+    )
+    expect(spec.payload.deliver_to).toEqual({
+      kind: "chat_thread",
+      thread_id: "thr_origin",
+    })
+  })
+
   it("does not set permission_mode (cannot grant bypass)", () => {
     const spec = buildPromptJobSpec(fakeRow({ actionType: "task" }))
     expect("permission_mode" in spec.payload).toBe(false)

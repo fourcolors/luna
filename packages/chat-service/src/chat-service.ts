@@ -69,6 +69,7 @@ import {
   type ChatFrame,
   type ChatErrorKind,
   type CreateThreadOptions,
+  type DeliveryNotification,
   type ThreadToolsProvider,
 } from "./types.js"
 import { extractArtifacts } from "./artifacts.js"
@@ -283,6 +284,13 @@ export class ChatService extends Effect.Service<ChatService>()(
       const serviceScope = yield* Effect.scope
 
       const threads = yield* Ref.make<ReadonlyMap<string, ThreadEntry>>(new Map())
+
+      // Background-delivery notifications (#124). `deliverResult` publishes one
+      // per delivered result; the WS layer runs `deliveries` once at boot and
+      // broadcasts each to ALL connected clients as a "Luna finished X" toast —
+      // surfacing the result even when its thread is not the one on screen.
+      // Sliding so a burst of completions can never block the producer.
+      const deliveriesHub = yield* PubSub.sliding<DeliveryNotification>(64)
 
       // Bridge the (frame-agnostic) Suggested Actions change-stream onto the
       // per-thread chat pubsubs: each changed ROW becomes a `suggested-action-
@@ -1111,6 +1119,122 @@ export class ChatService extends Effect.Service<ChatService>()(
             : Option.none<ChatMessage>()
         })
 
+      /**
+       * Deliver a FINISHED result into a thread as an assistant message (issue
+       * #124's `chat_thread` delivery sink). Unlike `send`, this does NOT spin
+       * an SDK turn — the text is already final. It:
+       *   1. persists the message to the SessionStore (so a non-live thread
+       *      replays it on next subscribe — the not-live case is handled for
+       *      free by `subscribe`'s snapshot path),
+       *   2. if the thread is live, publishes `assistant-done` + `turn-complete`
+       *      so current subscribers render it immediately and Moon's grouped
+       *      activity timeline settles, and
+       *   3. publishes a cross-thread `DeliveryNotification` on `deliveries`
+       *      (the WS layer turns it into a global toast).
+       *
+       * The message carries a persisted `luna_delivery` marker so the UI can
+       * render it "from a background task" even after a reload. Best-effort:
+       * if the thread has no session row (never created / deleted) the message
+       * is dropped with a warning — the result still lives in
+       * `job_runs.output_text`, matching the obs_note sink's drop-on-missing.
+       */
+      const deliverResult = (input: {
+        readonly threadId: string
+        readonly text: string
+        readonly source: string
+        readonly label?: string
+      }): Effect.Effect<Option.Option<ChatMessage>, never> =>
+        Effect.gen(function* () {
+          // Empty/whitespace result → nothing to show. A successful turn can
+          // still yield empty prose (the model emitted only tool calls, or just
+          // whitespace); persisting an empty bubble + firing a "Luna finished"
+          // toast that points at nothing is worse than silence. Drop both here,
+          // at the single source of truth, so the message, the per-thread frame,
+          // and the global toast stay consistent. The text is still preserved in
+          // job_runs.output_text.
+          if (!input.text || input.text.trim().length === 0) {
+            yield* inc("luna.chat.deliveries.dropped", { reason: "empty" })
+            return Option.none<ChatMessage>()
+          }
+          const ts = yield* clock.nowMs()
+          const messageId = `ast_${ts.toString(36)}_${Math.random().toString(36).slice(2, 6)}`
+          const deliveryMarker = {
+            source: input.source,
+            ...(input.label ? { label: input.label } : {}),
+          }
+          const payload = {
+            type: "assistant",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: input.text }],
+            },
+            // Stamp the provenance marker; projectOne surfaces it onto
+            // ChatMessage.delivery, and it survives restart/replay.
+            luna_delivery: deliveryMarker,
+          }
+
+          const stored = yield* store
+            .appendMessage({
+              sessionId: input.threadId,
+              messageId,
+              ts,
+              parentId: null,
+              kind: "assistant",
+              payload,
+            })
+            .pipe(Effect.catchAll(() => Effect.succeed(null as StoredMessage | null)))
+          if (stored === null) {
+            yield* inc("luna.chat.deliveries.dropped", { reason: "no_session" })
+            yield* obs.emit({
+              kind: "Error",
+              ts: new Date().toISOString(),
+              level: "warn",
+              errorTag: "ChatDeliveryNoThread",
+              message: `deliverResult: no session row for thread ${input.threadId}; dropping`,
+              context: { threadId: input.threadId },
+            })
+            return Option.none<ChatMessage>()
+          }
+
+          const projected = projectOne(stored)
+          if (projected === null) return Option.none<ChatMessage>()
+
+          // Live thread → push to subscribers now. Non-live → the store write
+          // above is enough; subscribe()'s snapshot replays it on next open.
+          //
+          // NOTE: we publish ONLY assistant-done, NOT turn-complete. A delivery
+          // can land while the user has a live streaming turn in flight on this
+          // same thread ("accept an action, keep chatting"). turn-complete
+          // settles the trailing RUN of assistant turns in Moon's grouped
+          // timeline — emitting it here would prematurely collapse that live
+          // turn. The delivered bubble settles itself client-side (it arrives
+          // complete, with no in-flight state to close).
+          const m = yield* Ref.get(threads)
+          const entry = m.get(input.threadId)
+          if (entry) {
+            yield* PubSub.publish(entry.pubsub, {
+              type: "assistant-done",
+              threadId: input.threadId,
+              turnId: messageId,
+              seq: stored.seq,
+              message: projected,
+            })
+          }
+
+          // Cross-thread notification (global toast) — best-effort.
+          const preview = input.text.replace(/\s+/g, " ").trim().slice(0, 140)
+          yield* PubSub.publish(deliveriesHub, {
+            threadId: input.threadId,
+            source: input.source,
+            label: input.label ?? "a background task",
+            preview,
+            ts,
+          }).pipe(Effect.asVoid)
+
+          yield* inc("luna.chat.deliveries.posted", { source: input.source })
+          return Option.some(projected)
+        })
+
       /** Interrupt the thread's in-flight assistant turn (Stop button).
        *  Calls Query.interrupt() via the adapter; emits an `assistant-error`
        *  frame tagged `interrupted`. */
@@ -1542,12 +1666,16 @@ export class ChatService extends Effect.Service<ChatService>()(
       return {
         createThread,
         send,
+        deliverResult,
         interrupt,
         setThreadConfig,
         subscribe,
         listThreads,
         searchMemory,
         closeThread,
+        /** Cross-thread background-delivery notifications (#124). The WS layer
+         *  runs this once at boot and broadcasts each item to all clients. */
+        deliveries: Stream.fromPubSub(deliveriesHub),
       } as const
     }),
   },
