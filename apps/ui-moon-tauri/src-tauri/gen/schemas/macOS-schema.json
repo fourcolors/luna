@@ -477,12 +477,6 @@
           "markdownDescription": "Allows a widget window to report its dock state (snapped flush to the hub or not) so the Rust dock graph can group-drag it with the hub"
         },
         {
-          "description": "Allows the frontend to publish the clickable region (moon + rope) that drives the click-through cursor poll while the re-tether string is out",
-          "type": "string",
-          "const": "allow-set-interactive-region",
-          "markdownDescription": "Allows the frontend to publish the clickable region (moon + rope) that drives the click-through cursor poll while the re-tether string is out"
-        },
-        {
           "description": "Allows writing the last active thread id so a restart re-tethers to the same thread",
           "type": "string",
           "const": "allow-set-last-thread-id",
