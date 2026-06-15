@@ -20,4 +20,5 @@ incus-nftables           | covered | probes/040-incus-nftables-guard.sh         
 amdgpu-dmub-panic        | covered | probes/050-amdgpu-dmub-panic-guard.sh        | reading amdgpu DMUB debugfs nodes NULL-derefs and panics the host; no tracked script may recursively read into /sys, and a deployed bind-mount guard must stay active
 thread-resume-restart    | covered | probes/055-thread-resume-survives-restart.sh | thread→SDK-session mapping was in-memory only; after restart threads returned "unknown thread" (task #15); ThreadRegistry (luna.db) makes resume durable
 session-snapshot-fidelity | covered | probes/056-session-snapshot-fidelity.sh      | SessionStore was in-memory only; after restart subscribe() replayed an empty snapshot — full transcript lost. Phase 2 SQLite SessionStore: N frames in → N frames out across restart.
+archive-never-deletes    | covered | probes/057-archive-never-deletes.sh          | Cardinal invariant: archive() is a reversible status flip, never a deletion. Row and SDK jsonl stay present; thread stays resumable. 14-day auto-archive boundary: 13d idle NOT archived, 15d idle IS archived.
 ```

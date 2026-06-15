@@ -1236,6 +1236,14 @@ export class ChatService extends Effect.Service<ChatService>()(
             Effect.catchAllCause(() => Effect.void),
           )
 
+          // Phase 3: bump last_active_at on every turn (best-effort, off hot path).
+          // A DB failure here must never break live chat.
+          if (Option.isSome(threadRegistry)) {
+            yield* threadRegistry.value
+              .touch(threadId)
+              .pipe(Effect.catchAllCause(() => Effect.void))
+          }
+
           return projected !== null
             ? Option.some(projected)
             : Option.none<ChatMessage>()
@@ -1896,14 +1904,43 @@ export class ChatService extends Effect.Service<ChatService>()(
           }),
         )
 
-      /** Read-only sidebar projection. Returns most-recently-active first. */
-      const listThreads = (limit = 50): Effect.Effect<
-        ReadonlyArray<SessionSummary>,
-        never
-      > =>
-        store
+      /**
+       * Read-only sidebar projection. Returns most-recently-active first.
+       *
+       * Phase 3: when status='archived' and ThreadRegistry is wired,
+       * returns archived threads from the registry (they may not have
+       * SessionStore rows if archived before Phase 2, so the registry
+       * is the authoritative list). For the default 'active' case the
+       * SessionStore list is used (same as pre-Phase-3 behaviour).
+       */
+      const listThreads = (
+        limit = 50,
+        status?: "active" | "archived",
+      ): Effect.Effect<ReadonlyArray<SessionSummary>, never> => {
+        // For archived threads, pull from ThreadRegistry (it owns status).
+        if (status === "archived" && Option.isSome(threadRegistry)) {
+          return threadRegistry.value.listByStatus("archived").pipe(
+            Effect.map((rows) =>
+              rows.slice(0, limit).map((r) => ({
+                id: r.id,
+                parentId: null,
+                title: r.title,
+                tags: [],
+                createdAt: r.createdAt,
+                endedAt: r.archivedAt,
+                model: r.model ?? "unknown",
+                status: "closed" as const,
+                lastMessageAt: r.lastActiveAt,
+                lastMessagePreview: null,
+              })),
+            ),
+          )
+        }
+        // Default: active threads from SessionStore (pre-Phase-3 path).
+        return store
           .list({ orderBy: "lastMessageAt", limit })
           .pipe(Stream.runCollect, Effect.map(Chunk.toReadonlyArray))
+      }
 
       /** Close a thread permanently (stop button + delete from sidebar).
        *  Closes the per-thread Scope which interrupts the SDK subprocess
@@ -1965,6 +2002,30 @@ export class ChatService extends Effect.Service<ChatService>()(
           return { hits }
         })
 
+      /**
+       * Phase 3: Archive a thread (active->archived). NEVER deletes the row or
+       * SDK jsonl — archive is a reversible status flip.
+       * Returns true if the thread exists in the ThreadRegistry; false otherwise.
+       * Best-effort: if ThreadRegistry is not wired, returns false.
+       */
+      const archiveThread = (threadId: string): Effect.Effect<boolean, never> =>
+        Option.match(threadRegistry, {
+          onNone: () => Effect.succeed(false),
+          onSome: (reg) =>
+            reg.archive(threadId).pipe(Effect.catchAllCause(() => Effect.succeed(false))),
+        })
+
+      /**
+       * Phase 3: Unarchive a thread (archived->active). Clears archived_at.
+       * Returns true if the thread exists; false otherwise.
+       */
+      const unarchiveThread = (threadId: string): Effect.Effect<boolean, never> =>
+        Option.match(threadRegistry, {
+          onNone: () => Effect.succeed(false),
+          onSome: (reg) =>
+            reg.unarchive(threadId).pipe(Effect.catchAllCause(() => Effect.succeed(false))),
+        })
+
       return {
         createThread,
         send,
@@ -1975,6 +2036,8 @@ export class ChatService extends Effect.Service<ChatService>()(
         listThreads,
         searchMemory,
         closeThread,
+        archiveThread,
+        unarchiveThread,
         /** Cross-thread background-delivery notifications (#124). The WS layer
          *  runs this once at boot and broadcasts each item to all clients. */
         deliveries: Stream.fromPubSub(deliveriesHub),
