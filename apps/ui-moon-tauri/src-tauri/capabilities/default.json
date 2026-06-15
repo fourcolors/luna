@@ -17,7 +17,6 @@
     "core:window:allow-scale-factor",
     "allow-get-last-thread-id",
     "allow-set-last-thread-id",
-    "allow-set-interactive-region",
     "allow-save-connection",
     "allow-load-connection",
     "allow-load-profiles",

@@ -8,10 +8,9 @@
 //! thread") which owns the cpal stream (cpal Streams are !Send), the VAD
 //! endpointer, and the whisper engine. The controller feeds it control
 //! messages over std::sync::mpsc and shares a lean snapshot through
-//! `Arc<Mutex<Shared>>` — the same shape as the InteractiveRegion state in
-//! src/main.rs. Events reach the webview through an [`EventSink`] which the
-//! app implements with `emit_to(EventTarget::labeled("main"), …)`, exactly
-//! like the luna-config seed emit in main.rs.
+//! `Arc<Mutex<Shared>>`. Events reach the webview through an [`EventSink`]
+//! which the app implements with `emit_to(EventTarget::labeled("main"), …)`,
+//! exactly like the luna-config seed emit in main.rs.
 //!
 //! Half-duplex rule (auto mode, no AEC in v1): while TTS is speaking, mic
 //! chunks are READ but DISCARDED; listening re-arms ~300ms after speech ends.
@@ -48,8 +47,7 @@ const LEVEL_INTERVAL: Duration = Duration::from_millis(100);
 const SOURCE_TIMEOUT: Duration = Duration::from_millis(50);
 
 /// Recover a poisoned lock instead of erroring: all shared voice state is
-/// plain data with no invariant a panic could break mid-update (mirrors
-/// set_interactive_region in main.rs).
+/// plain data with no invariant a panic could break mid-update.
 pub(crate) fn lock_unpoisoned<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
