@@ -95,7 +95,13 @@ export const ChannelServiceLayer: Layer.Layer<
 
     const handleMessage: ChannelServiceApi["handleMessage"] = (msg: ChannelMessage) =>
       Effect.gen(function* () {
-        // 1. Dedup — drop at-least-once redeliveries
+        // 1. Dedup — drop at-least-once redeliveries.
+        // NOTE: at-most-once hole — we mark the message seen BEFORE attempting
+        // to send it to chat. If send() or the fiber fork below fails, the
+        // message is already suppressed on the next retry. This is intentional
+        // for the current design: error channels are `never`/orDie so a send
+        // failure crashes the fiber and the adapter's retry loop re-delivers.
+        // Revisit if send() gains a recoverable error channel.
         const isDup = yield* dedupStore.seenBefore(msg.transport, msg.platformMessageId)
         if (isDup) return false
         const nowMs = yield* clock.nowMs()
@@ -132,11 +138,13 @@ export const ChannelServiceLayer: Layer.Layer<
               },
             }
 
-            // Spawn delivery fiber in the service scope so it survives the
-            // inbound message handler's scope but tears down with the service.
-            const fiber = yield* subscribeAndDeliver(threadId, adapter, target).pipe(
+            // Spawn delivery fiber into the service scope so it survives the
+            // inbound handler's transient runFork root fiber. Without forkIn
+            // (serviceScope), auto-supervision would interrupt the delivery
+            // fiber as soon as the root fiber of Effect.runFork completes —
+            // before any ChatFrame is consumed and no reply ever delivered.
+            const fiber = yield* subscribeAndDeliver(threadId, adapter, target, serviceScope).pipe(
               Effect.provide(Layer.succeed(ChatService, chat)),
-              Scope.extend(serviceScope),
               Effect.orDie,
             )
 

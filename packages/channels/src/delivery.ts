@@ -27,7 +27,7 @@
  * This module does NOT create threads or modify ChatService — it is a
  * PURE DOWNSTREAM CONSUMER of chat.subscribe(), exactly as ui-ws is.
  */
-import { Effect, Fiber, Ref, Schedule, Stream } from "effect"
+import { Effect, Fiber, Ref, Schedule, Scope, Stream } from "effect"
 import { ChatService } from "@luna/chat-service"
 import type { ChannelAdapter, DeliveryTarget } from "./types.js"
 
@@ -98,7 +98,8 @@ export const splitToChunks = (text: string, maxLength: number): string[] => {
     remaining = remaining.slice(maxLength)
   }
 
-  return chunks.filter((c) => c.length > 0) || [""]
+  const filtered = chunks.filter((c) => c.length > 0)
+  return filtered.length > 0 ? filtered : [""]
 }
 
 /* -------------------------------------------------------------------------- */
@@ -140,9 +141,12 @@ const deliverChunks = (
  * Subscribe to chat.subscribe(threadId) and forward assistant output to the
  * adapter according to its capability.
  *
- * Returns a Fiber that runs until the subscription stream ends (which happens
- * when the thread's Scope closes). Callers should interrupt the Fiber when
- * they no longer need delivery for this thread+adapter pair.
+ * The delivery fiber is forked INTO `serviceScope` so it is supervised by
+ * the long-lived service scope rather than the transient caller scope.
+ * This is critical for production adapters that fire the inbound handler
+ * via Effect.runFork (fire-and-forget): without forkIn(serviceScope) the
+ * delivery fiber would be auto-interrupted when the transient runFork root
+ * fiber completes — before any ChatFrame is consumed.
  *
  * Mirror of ui-ws's `subscribeChatThread` fiber — same subscription/teardown
  * discipline (Stream.unwrapScoped via chat.subscribe handles PubSub release).
@@ -151,6 +155,7 @@ export const subscribeAndDeliver = (
   threadId: string,
   adapter: ChannelAdapter,
   target: DeliveryTarget,
+  serviceScope: Scope.Scope,
 ): Effect.Effect<Fiber.RuntimeFiber<void, never>, never, ChatService> =>
   Effect.gen(function* () {
     const chat = yield* ChatService
@@ -295,7 +300,7 @@ export const subscribeAndDeliver = (
           }),
         ),
         Effect.catchAllCause(() => Effect.void),
-        Effect.fork,
+        Effect.forkIn(serviceScope),
       )
 
     return fiber as Fiber.RuntimeFiber<void, never>

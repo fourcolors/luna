@@ -428,11 +428,15 @@ describe("delivery — final-only", () => {
 
     const fakeCtx = makeFakeAdapterClean("final-1", "final-only", 100)
 
+    // IMPORTANT: use Effect.provide(wholeEffect, layer) so the service scope
+    // (captured by Layer.scoped via yield* Effect.scope) stays alive for the
+    // entire test. yield* Effect.provide(ChannelService, layer) would close the
+    // layer scope immediately after tag resolution, interrupting delivery fibers
+    // that were forked into serviceScope.
     await Effect.runPromise(
-      Effect.scoped(
+      Effect.provide(
         Effect.gen(function* () {
-          const layer = baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"])
-          const svc = yield* Effect.provide(ChannelService, layer)
+          const svc = yield* ChannelService
 
           yield* svc.registerAdapter(fakeCtx.adapter)
 
@@ -454,6 +458,7 @@ describe("delivery — final-only", () => {
           // Wait for delivery to process
           yield* Effect.sleep("100 millis")
         }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
       ) as Effect.Effect<void, never>,
     )
 
@@ -468,10 +473,9 @@ describe("delivery — final-only", () => {
     const fakeCtx = makeFakeAdapterClean("final-chunk", "final-only", 20) // very short limit
 
     await Effect.runPromise(
-      Effect.scoped(
+      Effect.provide(
         Effect.gen(function* () {
-          const layer = baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"])
-          const svc = yield* Effect.provide(ChannelService, layer)
+          const svc = yield* ChannelService
           yield* svc.registerAdapter(fakeCtx.adapter)
 
           const msg = makeMessage({ platformMessageId: "fo-long-1" })
@@ -489,6 +493,7 @@ describe("delivery — final-only", () => {
           yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
           yield* Effect.sleep("100 millis")
         }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
       ) as Effect.Effect<void, never>,
     )
 
@@ -517,10 +522,9 @@ describe("delivery — discrete-chunks", () => {
     const fakeCtx = makeFakeAdapterClean("dc-1", "discrete-chunks", 200)
 
     await Effect.runPromise(
-      Effect.scoped(
+      Effect.provide(
         Effect.gen(function* () {
-          const layer = baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"])
-          const svc = yield* Effect.provide(ChannelService, layer)
+          const svc = yield* ChannelService
           yield* svc.registerAdapter(fakeCtx.adapter)
 
           const msg = makeMessage({ platformMessageId: "dc-pm-1" })
@@ -540,6 +544,7 @@ describe("delivery — discrete-chunks", () => {
           yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
           yield* Effect.sleep("100 millis")
         }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
       ) as Effect.Effect<void, never>,
     )
 
@@ -582,52 +587,47 @@ describe("adapter lifecycle", () => {
     expect(handlerInstalled).toBe(true)
   })
 
-  it("stop() is called on adapter when service scope closes", async () => {
+  it("adapter finalizer fires when service scope closes (not via stopAdapters)", async () => {
+    // This test closes the scope WITHOUT calling stopAdapters() explicitly.
+    // The scope-finalizer wired in ChannelServiceLayer (Effect.addFinalizer)
+    // must trigger adapter.stop() and the adapter's own start() finalizer.
+    //
+    // Pattern: Effect.provide(wholeEffect, layer) — the layer scope stays open
+    // for the entire inner effect and only closes when the inner effect returns.
     const { service: chatService } = makeStubChatService(new Map())
     const fakeCtx = makeFakeAdapterClean("life-2", "final-only")
 
-    // stopAdapters() is the canonical shutdown path; the scope-finalizer
-    // in ChannelServiceLayer calls it. We test the API directly here to
-    // confirm the contract works — scope-close integration is tested by the
-    // Effect.addFinalizer wiring which is visible in service.ts.
     await Effect.runPromise(
-      Effect.gen(function* () {
-        const layer = baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"])
-        const svc = yield* ChannelService.pipe(Effect.provide(layer))
-        yield* svc.registerAdapter(fakeCtx.adapter)
-        // Explicitly call stop — mirrors what the finalizer does
-        yield* svc.stopAdapters()
-      }) as Effect.Effect<void, never>,
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+          yield* svc.startAdapters()
+          // Effect ends here → layer scope closes → finalizer runs stop()
+          // WITHOUT any explicit stopAdapters() call from the test.
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
     )
 
+    // The adapter's stop() flag is set by both the service finalizer (stopAdapters)
+    // AND the adapter's own start() finalizer (Effect.addFinalizer in start()).
     expect(fakeCtx.stopped).toBe(true)
   })
 
-  it("FakeAdapter documents reconnection ownership via start() Scope", async () => {
-    // The ChannelAdapter contract requires that start() OWNS reconnection.
-    // This test verifies the FakeAdapter correctly takes a Scope parameter
-    // (the Effect type signature enforces this — a compile-time guarantee).
-    //
-    // For a real adapter (e.g. Telegram long-poll), start() would look like:
-    //   start() {
-    //     return Effect.gen(function* () {
-    //       yield* Effect.addFinalizer(() => Effect.sync(() => abortController.abort()))
-    //       yield* Effect.fork(longPollLoop().pipe(
-    //         Effect.retry(Schedule.exponential("1 second"))
-    //       ))
-    //     })
-    //   }
-    //
-    // The Scope requirement (Effect.Effect<void, never, Scope.Scope>) is the
-    // compile-time proof that reconnection teardown is the adapter's responsibility.
+  it("start() requires Scope: Effect.scoped satisfies the constraint at runtime", async () => {
+    // The ChannelAdapter contract requires start() to accept a Scope.
+    // This test verifies the FakeAdapter's start() finalizer actually fires
+    // (sets stopped=true) when the scope closes — proving the Scope discipline
+    // is not just a type annotation but has real runtime effect.
     const fakeCtx = makeFakeAdapterClean("scope-test", "final-only")
-    // Verify the adapter's start() type is satisfied (TypeScript enforces at compile time)
-    // This runtime check just verifies start() resolves without error.
+
     await Effect.runPromise(
       Effect.scoped(fakeCtx.adapter.start()) as Effect.Effect<void, never>,
     )
-    // If we got here, the Scope discipline is correct
-    expect(true).toBe(true)
+
+    // The finalizer in FakeAdapter.start() sets stopped=true on scope close.
+    expect(fakeCtx.stopped).toBe(true)
   })
 })
 
@@ -642,10 +642,9 @@ describe("delivery — stream-edit", () => {
     const fakeCtx = makeFakeAdapterClean("se-1", "stream-edit", 4096)
 
     await Effect.runPromise(
-      Effect.scoped(
+      Effect.provide(
         Effect.gen(function* () {
-          const layer = baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"])
-          const svc = yield* Effect.provide(ChannelService, layer)
+          const svc = yield* ChannelService
           yield* svc.registerAdapter(fakeCtx.adapter)
 
           const msg = makeMessage({ platformMessageId: "se-pm-1" })
@@ -668,6 +667,7 @@ describe("delivery — stream-edit", () => {
           // Wait long enough for the final edit (turn-complete triggers immediate delivery)
           yield* Effect.sleep("200 millis")
         }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
       ) as Effect.Effect<void, never>,
     )
 
@@ -712,5 +712,102 @@ describe("delivery fiber management", () => {
 
     // One thread was created (session map reuse)
     expect(createCount).toBe(1)
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* Production path: handler called via Effect.runFork (fire-and-forget)       */
+/* -------------------------------------------------------------------------- */
+
+describe("delivery via Effect.runFork (production adapter path)", () => {
+  it("reply is delivered even when the inbound handler is fired via Effect.runFork", async () => {
+    // This test proves MUST-FIX 1 (forkIn serviceScope).
+    //
+    // Real adapters call the installed handler fire-and-forget:
+    //   adapter.setMessageHandler((msg) => handleMessage(msg).pipe(Effect.asVoid))
+    //   ...later inside the polling loop...
+    //   Effect.runFork(installedHandler(msg))
+    //
+    // handleMessage is a closure over the service's captured values (chat,
+    // sessionStore, dedupStore, clock, serviceScope). When runFork fires it,
+    // the effect runs in a fresh root fiber. That root fiber completes as soon
+    // as handleMessage returns — BEFORE the delivery fiber finishes consuming
+    // frames from the PubSub.
+    //
+    // Without forkIn(serviceScope): the delivery fiber is a child of the
+    // runFork root, which auto-interrupts it on completion → no reply delivered.
+    //
+    // With forkIn(serviceScope): the delivery fiber is attached to the long-lived
+    // service scope and survives the transient root fiber.
+    //
+    // Test structure: the service is kept alive via Effect.provide(wholeEffect, layer).
+    // We capture the installed handler callback (exactly as a real adapter would),
+    // then fire it via Effect.runFork from OUTSIDE the main fiber, wait for the
+    // root to finish, then assert the delivery fiber is still alive and processes
+    // frames published after the root is done.
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("runfork-1", "final-only", 4096)
+
+    // Capture the installed handler so we can fire it like a real adapter does.
+    let installedHandler: ((msg: ChannelMessage) => Effect.Effect<void>) | null = null
+    const capturingAdapter: ChannelAdapter = {
+      ...fakeCtx.adapter,
+      setMessageHandler(cb) {
+        installedHandler = cb
+        fakeCtx.adapter.setMessageHandler(cb)
+      },
+    }
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(capturingAdapter)
+
+          // Give the service a moment to be ready.
+          yield* Effect.sleep("5 millis")
+
+          if (installedHandler === null) throw new Error("handler not installed")
+
+          // Simulate the production adapter path: fire-and-forget via runFork.
+          // The installed handler is a pure Effect<void> closure that captures
+          // all service dependencies. It needs no layer — just runFork.
+          const msg = makeMessage({ platformMessageId: "runfork-pm-1" })
+          const rootFiber = Effect.runFork(installedHandler(msg))
+
+          // Wait for the root fiber to complete. handleMessage returns as soon
+          // as the delivery fiber is forked (it does NOT await delivery). So the
+          // root fiber finishes almost immediately.
+          yield* Fiber.await(rootFiber)
+
+          // At this point the transient runFork root fiber is DONE. If the fix
+          // is not applied (Effect.fork instead of forkIn(serviceScope)), the
+          // delivery fiber was auto-interrupted when the root completed.
+          // Give the system a moment to reflect that interruption if it happened.
+          yield* Effect.sleep("50 millis")
+
+          // Now emit frames. A non-fixed delivery fiber is already gone; a fixed
+          // one is still alive in serviceScope and will consume these frames.
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread created")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub for thread")
+
+          yield* PubSub.publish(pub, makeAssistantDoneFrame(threadId, "Reply via runFork!"))
+          yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
+
+          // Wait for the delivery fiber to consume and forward the frames.
+          yield* Effect.sleep("150 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    // If MUST-FIX 1 is NOT applied, fakeCtx.deliveries is empty because the
+    // delivery fiber was interrupted before frames arrived.
+    // With the fix, the fiber survived and delivered the reply.
+    expect(fakeCtx.deliveries.length).toBeGreaterThanOrEqual(1)
+    expect(fakeCtx.deliveries[0]?.content).toBe("Reply via runFork!")
+    expect(fakeCtx.deliveries[0]?.opts.isFinal).toBe(true)
   })
 })
