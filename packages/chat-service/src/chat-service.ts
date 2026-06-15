@@ -1730,6 +1730,7 @@ export class ChatService extends Effect.Service<ChatService>()(
               let persistedSdkId: string | undefined
               let savedModel: string | undefined
               let savedEffort: string | undefined
+              let savedCwd: string | undefined   // persisted working dir (load-bearing for SDK resume)
               let knownButNoSid = false
 
               if (Option.isSome(threadRegistry)) {
@@ -1737,6 +1738,7 @@ export class ChatService extends Effect.Service<ChatService>()(
                   .get(threadId)
                   .pipe(Effect.catchAllCause(() => Effect.succeed(null)))
                 if (row !== null) {
+                  savedCwd = row.cwd ?? undefined
                   if (row.sdkSessionId !== null) {
                     persistedSdkId = row.sdkSessionId
                     savedModel = row.model ?? undefined
@@ -1784,6 +1786,8 @@ export class ChatService extends Effect.Service<ChatService>()(
                         : undefined
                   }
                 }
+                // Legacy JSON map has no cwd — savedCwd remains undefined;
+                // buildSessionOptions falls back to LUNA_REPO_ROOT ?? process.cwd().
               }
 
               // ── Case B: known thread, no sid → re-create live (empty history) ──
@@ -1799,23 +1803,36 @@ export class ChatService extends Effect.Service<ChatService>()(
                   threadIdOverride: threadId,
                   ...(savedModel !== undefined ? { model: savedModel } : {}),
                   ...(validEffort !== undefined ? { effort: validEffort } : {}),
+                  // Pass saved cwd if available — even on live re-create, the
+                  // cwd governs which SDK project dir is used (affects tool roots).
+                  ...(savedCwd !== undefined ? { cwd: savedCwd } : {}),
                 })
                 const m2 = yield* Ref.get(threads)
                 entry = m2.get(threadId)
               } else if (persistedSdkId !== undefined) {
                 // ── Case A: known + has sid → resume via SDK ───────────────
-                // Rebuild createThread with the persisted model and effort so
-                // a recovered thread routes to the same provider and applies
-                // the same effort level the user originally selected.
+                // Rebuild createThread with the persisted model and effort AND
+                // the persisted cwd so the SDK resumes the correct encoded
+                // project dir. If cwd is NULL (deliverable #7 degradation: cwd
+                // was never stored, or the JSON-map fallback path), log a
+                // warning and fall back to LUNA_REPO_ROOT / process.cwd().
                 const validEffort =
                   savedEffort !== undefined && isEffortOption(savedEffort)
                     ? savedEffort
                     : undefined
+                if (savedCwd === undefined) {
+                  yield* Effect.logWarning(
+                    `[chat] subscribe: thread ${threadId} has no persisted cwd — resuming with default cwd (LUNA_REPO_ROOT ?? process.cwd()); encoded project dir may differ from original session`,
+                  )
+                }
                 yield* createThread({
                   threadIdOverride: threadId,
                   resumeFromSessionId: persistedSdkId,
                   ...(savedModel !== undefined ? { model: savedModel } : {}),
                   ...(validEffort !== undefined ? { effort: validEffort } : {}),
+                  // Forward the persisted cwd. When null/undefined, buildSessionOptions
+                  // already falls back to LUNA_REPO_ROOT ?? process.cwd().
+                  ...(savedCwd !== undefined ? { cwd: savedCwd } : {}),
                 })
                 const m2 = yield* Ref.get(threads)
                 entry = m2.get(threadId)

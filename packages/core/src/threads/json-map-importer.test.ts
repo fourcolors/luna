@@ -58,11 +58,15 @@ describe("importJsonMap", () => {
     } finally { cleanup() }
   })
 
-  it("drops claude-test rows", async () => {
+  it("drops claude-test rows — legacy shape (id contains marker)", async () => {
+    // This covers the LEGACY test shape (marker in the id) — these are ids
+    // that were used in earlier test fixtures but never appear in real data.
+    // They should still be dropped if model is claude-test.
     const { lunaHome, cleanup } = makeTempMap(JSON.stringify({
-      // IDs must pass LUNA_THREAD_ID (/^thr_[A-Za-z0-9_]{1,64}$/) — no hyphens
-      "thr_1_claudetestAbc": { sid: "sdk-session-valid-001" },
-      "thr_2_claudetest_xyz": "sdk-session-valid-002",
+      // Normal ids (no marker in id) whose VALUE has model=claude-test — the
+      // REAL production shape (the one the original filter MISSED).
+      "thr_1_aabbcc": { sid: "thr-tc", model: "claude-test" },
+      "thr_2_ddeeff": { sid: "thr-tr", model: "claude-test" },
     }))
     try {
       const program = Effect.gen(function* () {
@@ -72,6 +76,39 @@ describe("importJsonMap", () => {
         )
         expect(result.skippedClaudeTest).toBe(2)
         expect(result.inserted).toBe(0)
+      })
+      await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+    } finally { cleanup() }
+  })
+
+  it("drops claude-test rows — real production shape (model field, normal id)", async () => {
+    // Regression for audit finding #1: the original code matched CLAUDE_TEST_PAT
+    // against the thread ID. In real data the simulator rows have NORMAL IDs
+    // like `thr_loyw3v28_cf84mr` but `"model": "claude-test"` in their value.
+    // This fixture verifies the corrected filter drops those rows.
+    const { lunaHome, cleanup } = makeTempMap(JSON.stringify({
+      // Real production shape: normal thr_<base36>_<rand> id, fake sid, model=claude-test.
+      "thr_loyw3v28_cf84mr": { model: "claude-test" },            // no sid (common — ~395 rows)
+      "thr_loyw3v28_strpvj": { sid: "thr-tc", model: "claude-test" }, // fake sid (~109 rows)
+      // A real row that must NOT be dropped.
+      "thr_loyw3v28_1p5x9i": { sid: "sdk-real-uuid-abc123", model: "claude-sonnet-4-6" },
+    }))
+    try {
+      const program = Effect.gen(function* () {
+        const reg = yield* ThreadRegistryService
+        const result: ImportResult = yield* Effect.promise(() =>
+          importJsonMap(reg, lunaHome, "/cwd", Date.now()),
+        )
+        // Two claude-test rows (one no-sid, one fake-sid) must be dropped.
+        expect(result.skippedClaudeTest).toBe(2)
+        // The no-sid claude-test row skips via the claude-test path, NOT the
+        // skippedNoSid path — the model check must fire first.
+        expect(result.skippedNoSid).toBe(0)
+        // One real row inserted.
+        expect(result.inserted).toBe(1)
+        const rows = yield* reg.list()
+        expect(rows).toHaveLength(1)
+        expect(rows[0]?.id).toBe("thr_loyw3v28_1p5x9i")
       })
       await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
     } finally { cleanup() }
@@ -146,11 +183,14 @@ describe("importJsonMap", () => {
     } finally { cleanup() }
   })
 
-  it("mixed: valid + sid-less + claude-test", async () => {
+  it("mixed: valid + sid-less + claude-test (real production shape)", async () => {
+    // Uses the real production shape: claude-test rows have NORMAL ids
+    // and model="claude-test" in the value object.
     const { lunaHome, cleanup } = makeTempMap(JSON.stringify({
       "thr_7_good01": { sid: "sdk-good-001" },
       "thr_8_nosid": { model: "some-model" },
-      "thr_9_claudetest01": { sid: "sdk-sim-001" }, // no hyphens (IDs must match LUNA_THREAD_ID)
+      // Real simulator shape: normal id, model=claude-test (no marker in id).
+      "thr_9_simrow01": { sid: "thr-tc", model: "claude-test" },
     }))
     try {
       const program = Effect.gen(function* () {

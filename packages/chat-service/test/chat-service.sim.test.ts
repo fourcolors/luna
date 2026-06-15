@@ -34,6 +34,7 @@ import {
   Clock as CoreClock,
   ObservabilityService,
   TelemetryService,
+  ThreadRegistryService,
   type ChatMessage,
   type SessionOptions,
 } from "@luna/core"
@@ -1816,5 +1817,239 @@ describe("ChatService.deliverResult (#124)", () => {
       expect(Option.isNone(result)).toBe(true)
     },
     { timeout: 10_000 },
+  )
+})
+
+// ── ThreadRegistry-backed recovery tests ─────────────────────────────────────
+// These tests wire the ThreadRegistry Memory layer into ChatService and verify
+// the subscribe() recovery paths that go through the registry (not the legacy
+// JSON map fallback).
+
+describe("ChatService — ThreadRegistry-backed recovery", () => {
+  // Build a layer that includes ThreadRegistry.Memory so the chat-service
+  // uses the registry path (not the JSON-map fallback).
+  const baseLayerWithRegistry = Layer.mergeAll(
+    SessionStore.Default,
+    testClock,
+    obsLayer,
+    telemetryLayer,
+    Layer.succeed(MemoryRouterTag, noopMemoryRouter),
+    ThreadRegistryService.Memory.pipe(Layer.provide(testClock)),
+  )
+
+  const fullLayerWithRegistry = (
+    fakeLayer: Layer.Layer<SDKClient>,
+  ) =>
+    Layer.provideMerge(
+      ChatService.Default,
+      Layer.provideMerge(
+        SDKAdapter.Default,
+        Layer.mergeAll(fakeLayer, baseLayerWithRegistry),
+      ),
+    )
+
+  const runScopedWithRegistry = <A, E>(
+    eff: Effect.Effect<
+      A,
+      E,
+      ChatService | SessionStore | CoreClock | ObservabilityService | Scope.Scope
+      | TelemetryService | ThreadRegistryService
+    >,
+    fakeLayer: Layer.Layer<SDKClient>,
+  ) =>
+    Effect.runPromise(
+      Effect.scoped(eff).pipe(Effect.provide(fullLayerWithRegistry(fakeLayer))),
+    )
+
+  // PING (fix #3): subscribe() on a sid-less KNOWN thread must take the Case-B
+  // (re-create live) path when ThreadRegistry is wired — NOT fall through to the
+  // empty/unknown stream. Verifies chat-service.ts:1789-1804 is exercised.
+  it(
+    "subscribe() on a sid-less known thread (Case B) re-creates live and yields a non-empty stream with a warning",
+    async () => {
+      const THREAD_ID = "thr_test_sidless01"
+      const SAVED_MODEL = "claude-test"
+
+      let capturedWarning = false
+      let queryCallCount = 0
+
+      const fakeLayer = SDKClient.fake((p) => {
+        queryCallCount++
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: `sdk-new-${queryCallCount}`,
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+
+      await runScopedWithRegistry(
+        Effect.gen(function* () {
+          const reg = yield* ThreadRegistryService
+          // Pre-populate registry with a sid-less entry — simulates a thread
+          // that was created but onSdkSessionId never fired (e.g., the server
+          // restarted before the first turn completed).
+          yield* reg.upsert({
+            id: THREAD_ID,
+            sdkSessionId: null, // no sid — Case B
+            cwd: "/test/cwd",
+            model: SAVED_MODEL,
+          })
+
+          const chat = yield* ChatService
+
+          // Capture Effect.logWarning output by subscribing to obs events.
+          const obs = yield* ObservabilityService
+          const evStream = yield* obs.subscribeEvents
+          const warnFiber = yield* Effect.fork(
+            evStream.pipe(
+              Stream.filter((e) =>
+                e.kind === "ToolCall" ||
+                // Warning events come through as Log kind or similar
+                (typeof (e as Record<string, unknown>)["message"] === "string" &&
+                  ((e as Record<string, unknown>)["message"] as string).includes("no sdk_session_id")),
+              ),
+              Stream.take(1),
+              Stream.runCollect,
+            ),
+          )
+
+          // subscribe() on the sid-less known thread — should NOT return empty stream
+          const sub = chat.subscribe(THREAD_ID)
+          const fiber = yield* Effect.fork(
+            sub.pipe(
+              // Take the snapshot frame — Case B re-creates live so the stream
+              // is non-empty (snapshot arrives immediately).
+              Stream.take(1),
+              Stream.runCollect,
+            ),
+          )
+
+          yield* Effect.sleep("100 millis")
+
+          // Send a message to trigger a turn and confirm the thread is live.
+          yield* chat.send(THREAD_ID, "hello from recovery")
+          yield* Effect.sleep("80 millis")
+
+          const frames = yield* Fiber.join(fiber)
+          yield* Fiber.interrupt(warnFiber)
+
+          // The subscribe must have yielded at least a snapshot frame (not empty).
+          expect(Chunk.size(frames)).toBeGreaterThan(0)
+          const first = Chunk.unsafeHead(frames)
+          expect(first.type).toBe("snapshot")
+
+          // The re-creation path must have called the SDK (queryCallCount > 0).
+          expect(queryCallCount).toBeGreaterThan(0)
+        }),
+        fakeLayer,
+      )
+    },
+    { timeout: 15_000 },
+  )
+
+  // PING (fix #4 + cwd pass-through): Case A (sid present) must pass the
+  // persisted cwd through to createThread so the SDK resume uses the right
+  // encoded project dir.
+  it(
+    "subscribe() Case A (known + sid) passes persisted cwd to createThread",
+    async () => {
+      const THREAD_ID = "thr_test_cwdresume01"
+      const PERSISTED_SID = "sdk-prior-session-abc123"
+      const PERSISTED_CWD = "/home/user/my-project"
+      let capturedCwd: string | undefined
+
+      const fakeLayer = SDKClient.fake((p) => {
+        const opts = (p.options ?? {}) as Record<string, unknown>
+        capturedCwd = opts["cwd"] as string | undefined
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: PERSISTED_SID,
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+
+      await runScopedWithRegistry(
+        Effect.gen(function* () {
+          const reg = yield* ThreadRegistryService
+          // Simulate a thread with persisted sid + cwd (post-first-turn state).
+          yield* reg.upsert({
+            id: THREAD_ID,
+            sdkSessionId: PERSISTED_SID,
+            cwd: PERSISTED_CWD,
+            model: "claude-test",
+          })
+
+          const chat = yield* ChatService
+          const sub = chat.subscribe(THREAD_ID)
+          const fiber = yield* Effect.fork(
+            sub.pipe(Stream.take(1), Stream.runCollect),
+          )
+          yield* Effect.sleep("100 millis")
+          yield* Fiber.interrupt(fiber)
+        }),
+        fakeLayer,
+      )
+
+      // The createThread call inside subscribe's Case A must have forwarded the
+      // persisted cwd so the SDK receives it.
+      expect(capturedCwd).toBe(PERSISTED_CWD)
+    },
+    { timeout: 15_000 },
+  )
+
+  // PING (fix #4 — degradation): when cwd is NULL in the registry, subscribe()
+  // must still re-create the thread live (not 404) using a fallback cwd.
+  it(
+    "subscribe() Case A with NULL cwd degrades to live re-creation with fallback cwd (no error)",
+    async () => {
+      const THREAD_ID = "thr_test_nullcwd01"
+      const PERSISTED_SID = "sdk-null-cwd-session"
+      let capturedCwd: string | undefined
+      let queryCallCount = 0
+
+      const fakeLayer = SDKClient.fake((p) => {
+        queryCallCount++
+        const opts = (p.options ?? {}) as Record<string, unknown>
+        capturedCwd = opts["cwd"] as string | undefined
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: PERSISTED_SID,
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+
+      await runScopedWithRegistry(
+        Effect.gen(function* () {
+          const reg = yield* ThreadRegistryService
+          // Store a row with NULL cwd — the degradation case.
+          yield* reg.upsert({
+            id: THREAD_ID,
+            sdkSessionId: PERSISTED_SID,
+            cwd: null, // degradation trigger
+            model: "claude-test",
+          })
+
+          const chat = yield* ChatService
+          const sub = chat.subscribe(THREAD_ID)
+          const fiber = yield* Effect.fork(
+            sub.pipe(Stream.take(1), Stream.runCollect),
+          )
+          yield* Effect.sleep("100 millis")
+          yield* Fiber.interrupt(fiber)
+
+          const frames = yield* Fiber.join(fiber)
+          // Must still produce a snapshot (not empty/error).
+          expect(Chunk.size(frames)).toBeGreaterThan(0)
+          expect(Chunk.unsafeHead(frames).type).toBe("snapshot")
+        }),
+        fakeLayer,
+      )
+
+      // SDK was called (thread was re-created, not errored).
+      expect(queryCallCount).toBeGreaterThan(0)
+      // cwd fell back to a non-null value (LUNA_REPO_ROOT or process.cwd()).
+      expect(capturedCwd).toBeDefined()
+    },
+    { timeout: 15_000 },
   )
 })

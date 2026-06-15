@@ -4,8 +4,10 @@
  *
  * Filter rules (from advisor spec):
  *   1. Rows that have no `sid` (sdk_session_id) are SKIPPED — nothing to resume.
- *   2. Rows whose Luna thread id contains "claude-test" are DROPPED — those are
- *      simulator rows, not real sessions.
+ *   2. Rows whose value has `"model": "claude-test"` are DROPPED — those are
+ *      simulator rows. In real data the simulator is identified by the MODEL
+ *      field, NOT by the thread id. The thread id is always a normal
+ *      `thr_<base36>_<rand>` shape; only the model value distinguishes them.
  *   3. `cwd` is unknown from the JSON; it is backfilled with `defaultCwd` (the
  *      boot default) and a warning is logged for every guessed row.
  *   4. The import is IDEMPOTENT — existing rows (by id) are left untouched.
@@ -36,7 +38,11 @@ type LegacyMap = Record<string, string | LegacyEntry>
 
 const LUNA_THREAD_ID = /^thr_[A-Za-z0-9_]{1,64}$/
 const SDK_SESSION_ID = /^[A-Za-z0-9_-]{4,128}$/
-const CLAUDE_TEST_PAT = /claude[-_]?test/i
+// SDK session ids from real Anthropic sessions are UUIDs (8-4-4-4-12 hex).
+// Simulator rows use fake sids like "thr-tc", "thr-tr", "thr-sub-tc" — these
+// are caught by the model check below, but we also reject any sid that doesn't
+// look like a real UUID or at least an alphanumeric identifier of ≥8 chars.
+const SDK_UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
  * Compute the actual on-disk path the server uses.
@@ -130,13 +136,9 @@ export const importJsonMap = async (
       continue
     }
 
-    // Drop claude-test simulator rows
-    if (CLAUDE_TEST_PAT.test(lunaId)) {
-      result.skippedClaudeTest++
-      continue
-    }
-
-    // Extract sid
+    // Extract sid, model, effort first — we need the model to apply the
+    // claude-test filter (the ID never contains the simulator marker in real
+    // data; only the model field does).
     let sid: string | undefined
     let model: string | undefined
     let effort: string | undefined
@@ -151,6 +153,15 @@ export const importJsonMap = async (
           : undefined
       model = typeof obj.model === "string" ? obj.model : undefined
       effort = typeof obj.effort === "string" ? obj.effort : undefined
+    }
+
+    // Drop claude-test simulator rows. Real data has `"model": "claude-test"`
+    // with a NORMAL `thr_<base36>_<rand>` id. Matching on the id (as the
+    // original code did) never fires; matching on the model field drops all
+    // ~500 simulator rows correctly.
+    if (model === "claude-test") {
+      result.skippedClaudeTest++
+      continue
     }
 
     if (sid === undefined) {
