@@ -64,8 +64,11 @@
  *
  * ## Token
  *
- * The token is read from the environment variable `TELEGRAM_BOT_TOKEN` at
- * adapter start time (inside start(), not at construction). It is never logged.
+ * The token must be supplied as a `Redacted<string>` via `config.token`, or the
+ * adapter will read `TELEGRAM_BOT_TOKEN` from the environment (via EnvSecretProvider
+ * convention) and wrap it in `Redacted.make()` at start() time. The plain-text
+ * value is only unwrapped with `Redacted.value(token)` at the single URL-building
+ * call site inside `makeRealTransport`, so it never appears in logs or traces.
  *
  * ## Reconnection
  *
@@ -73,7 +76,7 @@
  * at 30 s, so transient errors (network blips, Telegram 429/503) cause a brief
  * back-off rather than killing the adapter.
  */
-import { Effect, Ref, Schedule } from "effect"
+import { Effect, Redacted, Ref, Schedule } from "effect"
 import type { ChannelAdapter, ChannelMessage, DeliverOptions, DeliveryTarget } from "../types.js"
 
 /* -------------------------------------------------------------------------- */
@@ -129,13 +132,16 @@ export type TelegramHttpTransport = (
 
 /**
  * Build the real fetch-based transport for a given bot token.
- * The token is embedded once at construction — never re-read per call.
+ *
+ * Accepts a `Redacted<string>` — the plain-text value is unwrapped ONLY at
+ * URL construction time via `Redacted.value(token)`. It is never stored as a
+ * plain string after this point, so it cannot leak through logs or traces.
  */
-export const makeRealTransport = (token: string): TelegramHttpTransport =>
+export const makeRealTransport = (token: Redacted.Redacted<string>): TelegramHttpTransport =>
   (method, params) =>
     Effect.tryPromise({
       try: async () => {
-        const url = `https://api.telegram.org/bot${token}/${method}`
+        const url = `https://api.telegram.org/bot${Redacted.value(token)}/${method}`
         const res = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -160,9 +166,18 @@ export interface TelegramAdapterConfig {
   /** Unique id for this adapter instance (e.g. "telegram-main"). */
   readonly id: string
   /**
-   * Override the HTTP transport for testing. When omitted the adapter reads
-   * TELEGRAM_BOT_TOKEN from the environment inside start() and constructs
-   * the real fetch transport.
+   * Pre-resolved bot token as a Redacted value. When provided the adapter uses
+   * this directly and never reads process.env. Callers should resolve the token
+   * via SecretProvider (e.g. EnvSecretProvider with ref "env:TELEGRAM_BOT_TOKEN")
+   * before constructing the adapter so the token is never a bare string in
+   * application code. When omitted, start() reads TELEGRAM_BOT_TOKEN from the
+   * environment and wraps it in Redacted.make() — this is the production fallback.
+   */
+  readonly token?: Redacted.Redacted<string>
+  /**
+   * Override the HTTP transport for testing. When omitted the adapter constructs
+   * the real fetch transport using the resolved token (from config.token or env).
+   * Injecting a fake transport takes priority over both config.token and env.
    */
   readonly httpTransport?: TelegramHttpTransport
 }
@@ -186,13 +201,17 @@ const pollRetrySchedule = Schedule.exponential("1 second").pipe(
 /**
  * Create a TelegramAdapter.
  *
- * @param config - Adapter identity + optional HTTP transport override.
+ * @param config - Adapter identity + token + optional HTTP transport override.
  *
- * Usage (production):
+ * Usage (production — preferred, token pre-resolved via SecretProvider):
+ *   const token = yield* secretProvider.get("env:TELEGRAM_BOT_TOKEN")
+ *   const adapter = makeTelegramAdapter({ id: "telegram-main", token })
+ *
+ * Usage (production — fallback, token read from env inside start()):
  *   const adapter = makeTelegramAdapter({ id: "telegram-main" })
- *   // TELEGRAM_BOT_TOKEN must be in process.env when start() is called.
+ *   // process.env.TELEGRAM_BOT_TOKEN must be set when start() is called.
  *
- * Usage (tests):
+ * Usage (tests — inject fake transport, no env var needed):
  *   const adapter = makeTelegramAdapter({ id: "tg-test", httpTransport: fakeTransport })
  */
 export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapter => {
@@ -342,19 +361,33 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
       // via Fiber.interrupt(fiber) after assertions are collected.
       return Effect.gen(function* () {
         // Resolve the HTTP transport.
+        // Priority: injected httpTransport (tests) > config.token (production)
+        // > env var fallback (production legacy).
         if (config.httpTransport !== undefined) {
           resolvedTransport = config.httpTransport
         } else if (resolvedTransport === null) {
-          const token = process.env["TELEGRAM_BOT_TOKEN"]
-          if (!token || token.trim().length === 0) {
+          // Prefer the pre-resolved Redacted token from config; fall back to env.
+          const redactedToken: Redacted.Redacted<string> | null =
+            config.token !== undefined
+              ? config.token
+              : (() => {
+                  const raw = process.env["TELEGRAM_BOT_TOKEN"]
+                  if (!raw || raw.trim().length === 0) return null
+                  return Redacted.make(raw)
+                })()
+
+          if (redactedToken === null) {
             return yield* Effect.die(
               new Error(
-                "TelegramAdapter: TELEGRAM_BOT_TOKEN environment variable is not set. " +
-                "Set it to your Telegram bot token (from @BotFather).",
+                "TelegramAdapter: bot token is not set. " +
+                "Provide config.token (Redacted<string> via SecretProvider) or " +
+                "set the TELEGRAM_BOT_TOKEN environment variable.",
               ),
             )
           }
-          resolvedTransport = makeRealTransport(token)
+          // Redacted.value() is the ONLY site that unwraps the token — inside
+          // makeRealTransport at URL construction time.
+          resolvedTransport = makeRealTransport(redactedToken)
         }
 
         const transport = resolvedTransport
@@ -413,6 +446,10 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
           const existingMsgId = sentMessageIds.get(turnKey)
           if (existingMsgId === undefined) {
             // Recovery: sendMessage failed earlier. Try again.
+            // We do NOT return early here: fall through to the isFinal cleanup
+            // below so a recovery send on a final delivery never leaks the
+            // turn-key entry (which would cause unbounded map growth because
+            // the same update_id is never reused).
             const result = yield* transport("sendMessage", {
               chat_id: chatId,
               text: content.length > 0 ? content : "…",
@@ -421,20 +458,21 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
               const sent = result.result as TelegramMessage
               sentMessageIds.set(turnKey, sent.message_id)
             }
-            return
+          } else {
+            // Edit the existing message.
+            yield* transport("editMessageText", {
+              chat_id: chatId,
+              message_id: existingMsgId,
+              text: content.length > 0 ? content : "…",
+            })
+            // Telegram 400 "message is not modified" is silently ignored.
+            // delivery.ts wraps all deliver calls in catchAllCause anyway.
           }
-
-          // Edit the existing message.
-          yield* transport("editMessageText", {
-            chat_id: chatId,
-            message_id: existingMsgId,
-            text: content.length > 0 ? content : "…",
-          })
-          // Telegram 400 "message is not modified" is silently ignored.
-          // delivery.ts wraps all deliver calls in catchAllCause anyway.
         }
 
         // Remove turn state after the final delivery.
+        // This runs for ALL branches (first partial, edit, and recovery send)
+        // so no turn-key entry is ever leaked.
         if (opts.isFinal) {
           sentMessageIds.delete(turnKey)
         }

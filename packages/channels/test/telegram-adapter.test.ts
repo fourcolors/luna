@@ -17,6 +17,7 @@ import {
   Layer,
   Option,
   PubSub,
+  Redacted,
   Ref,
   Stream,
 } from "effect"
@@ -407,6 +408,49 @@ describe("deliver: stream-edit (sendMessage → editMessageText)", () => {
     expect(calls[2]?.method).toBe("sendMessage")
   })
 
+  it("recovery send on isFinal does NOT leave a residual turn-key entry (no map leak)", async () => {
+    // Scenario: the first-partial sendMessage succeeded (so sentMessageIds has
+    // the turnKey), but then we simulate the case where existingMsgId is absent
+    // (recovery path) on the isFinal call. After isFinal, the turn-key must be
+    // gone so that a subsequent fresh turn starts with sendMessage, not editMessageText.
+    //
+    // We force the recovery path by: (1) NOT calling the first partial (so
+    // sentMessageIds has no entry) and (2) calling deliver with isFinal=true.
+    // After that call, a new first-partial for the same turnKey must again call
+    // sendMessage (not editMessageText), proving the map is clean.
+
+    // Script: recovery sendMessage, then a fresh sendMessage for the new turn.
+    const { transport, calls } = makeFakeTransport([
+      // Recovery sendMessage (isFinal call with no prior entry)
+      { ok: true, result: { message_id: 300, chat: { id: 1, type: "private" }, date: 0, from: { id: 1 } } },
+      // Fresh sendMessage for the next turn's first partial
+      { ok: true, result: { message_id: 301, chat: { id: 1, type: "private" }, date: 0, from: { id: 1 } } },
+    ])
+
+    const adapter = makeTelegramAdapter({ id: "tg-leak", httpTransport: transport })
+    const target = makeDeliveryTarget("1", "turn-leak")
+
+    // Directly call with isFinal=true, no prior setup → recovery branch.
+    await Effect.runPromise(
+      adapter.deliver(target, "final content", makeDeliverOpts({ isPartial: false, isFinal: true, chunkIndex: 0, totalChunks: 1 })),
+    )
+
+    // Recovery branch should call sendMessage.
+    expect(calls[0]?.method).toBe("sendMessage")
+
+    // Now start a fresh turn with the SAME turnKey.
+    // If the map were leaked, this would try editMessageText (wrong).
+    // If the map is clean, this is treated as a first partial → sendMessage.
+    await Effect.runPromise(
+      adapter.deliver(target, "…", makeDeliverOpts({ isPartial: true, isFinal: false, chunkIndex: 0, totalChunks: 1 })),
+    )
+
+    // The second call must also be sendMessage (fresh turn, clean map).
+    expect(calls[1]?.method).toBe("sendMessage")
+    // No editMessageText calls at all — the map was not leaked.
+    expect(calls.every((c) => c.method !== "editMessageText")).toBe(true)
+  })
+
   it("ignores 'message is not modified' errors (400) silently", async () => {
     const { transport, calls } = makeFakeTransport([
       // sendMessage
@@ -435,18 +479,35 @@ describe("deliver: stream-edit (sendMessage → editMessageText)", () => {
 /* -------------------------------------------------------------------------- */
 
 describe("reconnection: transient poll errors are retried", () => {
-  it("a transport error on getUpdates is retried (loop survives)", async () => {
+  it("a transport error on getUpdates is retried with the SAME offset, and at least 2 polls occur before success", async () => {
     const receivedMessages: ChannelMessage[] = []
     const textUpdate = makeTextUpdate({ updateId: 500, text: "after error" })
 
-    // First response: error (will cause retry with exponential backoff)
-    // Then: successful update
-    const { transport } = makeFakeTransport([
-      { ok: false, description: "503: Service Unavailable" },
-      { ok: true, result: [textUpdate] },
-    ])
+    // Record the offset parameter from every getUpdates call so we can assert
+    // that the retry re-ran pollOnce with the SAME offset (not advanced).
+    const getUpdatesOffsets: number[] = []
 
-    const adapter = makeTelegramAdapter({ id: "tg-retry", httpTransport: transport })
+    // Script: first getUpdates fails, second succeeds with the update.
+    // All other methods (sendMessage etc.) use the default fallback.
+    const perMethodQueues: Partial<Record<string, Array<{ ok: boolean; result?: unknown; description?: string }>>> = {
+      getUpdates: [
+        { ok: false, description: "503: Service Unavailable" },
+        { ok: true, result: [textUpdate] },
+      ],
+    }
+
+    // Wrap the fake transport so we can intercept getUpdates offset values.
+    const { transport: baseTransport } = makeFakeTransport([], perMethodQueues)
+    const recordingTransport: TelegramHttpTransport = (method, params) =>
+      Effect.sync(() => {
+        if (method === "getUpdates") {
+          getUpdatesOffsets.push(params["offset"] as number)
+        }
+      }).pipe(
+        Effect.flatMap(() => baseTransport(method, params)),
+      )
+
+    const adapter = makeTelegramAdapter({ id: "tg-retry", httpTransport: recordingTransport })
     adapter.setMessageHandler((msg) =>
       Effect.sync(() => { receivedMessages.push(msg) }),
     )
@@ -460,9 +521,21 @@ describe("reconnection: transient poll errors are retried", () => {
       }),
     )
 
-    // The loop should have survived the error and delivered the message after retry
+    // (a) The loop survived the error and delivered the message after retry.
     expect(receivedMessages).toHaveLength(1)
     expect(receivedMessages[0]?.text).toBe("after error")
+
+    // (b) At least 2 getUpdates calls occurred (failing poll + at least one retry).
+    // A single lucky poll cannot satisfy this.
+    expect(getUpdatesOffsets.length).toBeGreaterThanOrEqual(2)
+
+    // (c) The RETRY call used the SAME offset as the failing call (offset was NOT
+    // advanced after the error — the adapter correctly preserves the offset via
+    // the catchAllCause fallback in the loop).
+    // First call: offset 0 (no prior successful polls).
+    expect(getUpdatesOffsets[0]).toBe(0)
+    // Second call (the retry): same offset 0 — not advanced past the failed poll.
+    expect(getUpdatesOffsets[1]).toBe(0)
   }, 10_000)
 })
 
@@ -743,8 +816,10 @@ describe("adapter identity", () => {
 /* -------------------------------------------------------------------------- */
 
 describe("makeRealTransport", () => {
-  it("is exported and returns a function", () => {
-    const transport = makeRealTransport("fake_token_12345")
+  it("is exported and returns a function (accepts Redacted token)", () => {
+    // makeRealTransport now requires a Redacted<string> so the plain-text token
+    // is never stored as a bare string. The transport itself is still a function.
+    const transport = makeRealTransport(Redacted.make("fake_token_12345"))
     expect(typeof transport).toBe("function")
   })
 })
