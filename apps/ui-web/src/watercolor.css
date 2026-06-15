@@ -1,0 +1,223 @@
+/**
+ * watercolor.css — Luna Studio palette TOKENS + canvas atmosphere for the
+ * web client, ported from the "Luna Workspace" Claude Design handoff.
+ *
+ * CANONICAL TOKEN SOURCE: apps/ui-moon-tauri/frontend/vendor/moon-palette.css
+ * (the moon's static frontend can't import from packages, so the values are
+ * duplicated here BY COPY — if you change a palette, change both files).
+ *
+ * src/appearance.ts stamps data-palette / data-theme / data-chrome /
+ * data-grain on <html> before render and keeps them live on cross-tab
+ * `storage` events. :root carries tide-dark so the first paint is sensible
+ * even before the module runs.
+ *
+ * Import BEFORE styles.css from main.tsx.
+ */
+
+:root {
+  /* ── Typography ──────────────────────────────────────────────────────── */
+  --font-body: 'Albert Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-hand: 'Caveat', 'Bradley Hand', cursive;
+  --font-mono: 'SF Mono', Menlo, ui-monospace, monospace;
+  --font-serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Times New Roman', serif;
+
+  /* Chat typeface + size knobs (data-font / data-fontsize, src/appearance.ts).
+     Defaults below = the 'sans' family at 'medium' size; the html[data-*]
+     blocks at the bottom of this file override them. These touch ONLY the
+     chat reading/writing surfaces, never the UI chrome. */
+  --font-chat: var(--font-body);
+  --font-scale: 1;
+
+  /* ── Shape ───────────────────────────────────────────────────────────── */
+  --radius: 12px;
+
+  /* ── Default palette: tide · dark ────────────────────────────────────── */
+  --paper: #1f242b;
+  --paper-2: #2a313b;
+  --ink: #e2e8ee;
+  --ink-soft: rgba(226, 232, 238, 0.6);
+  --ink-faint: rgba(226, 232, 238, 0.22);
+  --accent: #8fb0d4;
+  --wash-0: #4d5d85;
+  --wash-1: #44696b;
+  --wash-2: #7a5862;
+  --wash-3: #4f6a82;
+  --wash-4: #6e6650;
+
+  /* Per-surface watercolor tint (headers, bubbles, washes). */
+  --panel-tint: var(--wash-0);
+}
+
+/* ═══ dawn ═══════════════════════════════════════════════════════════════ */
+html[data-palette='dawn'] {
+  --paper: #faf6f0;
+  --paper-2: #f3ece2;
+  --ink: #43352f;
+  --ink-soft: rgba(67, 53, 47, 0.55);
+  --ink-faint: rgba(67, 53, 47, 0.22);
+  --accent: #c2596b;
+  --wash-0: #e8a7b0;
+  --wash-1: #f2c29a;
+  --wash-2: #ecd29a;
+  --wash-3: #c9b6d9;
+  --wash-4: #a8c5c0;
+}
+html[data-palette='dawn'][data-theme='dark'] {
+  --paper: #2a2226;
+  --paper-2: #362b31;
+  --ink: #f0e3dd;
+  --ink-soft: rgba(240, 227, 221, 0.6);
+  --ink-faint: rgba(240, 227, 221, 0.22);
+  --accent: #e08a99;
+  --wash-0: #8a5560;
+  --wash-1: #96714f;
+  --wash-2: #8d7a4d;
+  --wash-3: #6f5e85;
+  --wash-4: #4f6e69;
+}
+
+/* ═══ meadow ═════════════════════════════════════════════════════════════ */
+html[data-palette='meadow'] {
+  --paper: #f8f7ef;
+  --paper-2: #efeee0;
+  --ink: #3a4032;
+  --ink-soft: rgba(58, 64, 50, 0.55);
+  --ink-faint: rgba(58, 64, 50, 0.22);
+  --accent: #5f7d4f;
+  --wash-0: #b5c9a3;
+  --wash-1: #ecd9a0;
+  --wash-2: #aac9cf;
+  --wash-3: #d9c3a8;
+  --wash-4: #c2b4d6;
+}
+html[data-palette='meadow'][data-theme='dark'] {
+  --paper: #232820;
+  --paper-2: #2e342a;
+  --ink: #e8ead9;
+  --ink-soft: rgba(232, 234, 217, 0.6);
+  --ink-faint: rgba(232, 234, 217, 0.22);
+  --accent: #9dbb84;
+  --wash-0: #5d7350;
+  --wash-1: #8a7a4a;
+  --wash-2: #4f6b70;
+  --wash-3: #75634c;
+  --wash-4: #695e7e;
+}
+
+/* ═══ tide ═══════════════════════════════════════════════════════════════ */
+html[data-palette='tide'] {
+  --paper: #f5f7f8;
+  --paper-2: #eaeff1;
+  --ink: #2f3a47;
+  --ink-soft: rgba(47, 58, 71, 0.55);
+  --ink-faint: rgba(47, 58, 71, 0.22);
+  --accent: #46698f;
+  --wash-0: #a9b8dc;
+  --wash-1: #93c2c4;
+  --wash-2: #d9b3bd;
+  --wash-3: #b8cde0;
+  --wash-4: #cfc3a4;
+}
+html[data-palette='tide'][data-theme='dark'] {
+  --paper: #1f242b;
+  --paper-2: #2a313b;
+  --ink: #e2e8ee;
+  --ink-soft: rgba(226, 232, 238, 0.6);
+  --ink-faint: rgba(226, 232, 238, 0.22);
+  --accent: #8fb0d4;
+  --wash-0: #4d5d85;
+  --wash-1: #44696b;
+  --wash-2: #7a5862;
+  --wash-3: #4f6a82;
+  --wash-4: #6e6650;
+}
+
+/* ═══ Chat typography variants (data-font / data-fontsize) ═══════════════
+   src/appearance.ts stamps data-font + data-fontsize on <html>; these only
+   re-point the --font-chat family + --font-scale multiplier that the chat
+   bubbles, markdown, and composer consume (see styles.css). 'sans' / 'medium'
+   are the :root defaults, so no rule is needed for them. */
+html[data-font='serif'] { --font-chat: var(--font-serif); }
+html[data-font='mono']  { --font-chat: var(--font-mono); }
+html[data-font='hand']  { --font-chat: var(--font-hand); }
+
+html[data-fontsize='small']  { --font-scale: 0.9; }
+html[data-fontsize='large']  { --font-scale: 1.15; }
+html[data-fontsize='xlarge'] { --font-scale: 1.35; }
+
+/* ═══ Studio canvas atmosphere ═══════════════════════════════════════════ */
+
+/* Background blooms — three blurred washes drifting behind the UI, exactly
+   the design's .bg-blooms. Render <div class="bg-blooms"><div class="bloom
+   b1"/>…</div> as the first child of .app. */
+.bg-blooms {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+.bloom {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(70px);
+  opacity: 0.35;
+  transition: background 0.6s ease;
+}
+.bloom.b1 { width: 560px; height: 460px; left: -160px; top: -140px; background: var(--wash-1); }
+.bloom.b2 { width: 640px; height: 520px; right: -180px; bottom: -200px; background: var(--wash-0); }
+.bloom.b3 { width: 420px; height: 380px; right: 18%; top: -160px; background: var(--wash-2); opacity: 0.25; }
+html[data-theme='dark'] .bloom { opacity: 0.28; }
+html[data-theme='dark'] .bloom.b3 { opacity: 0.2; }
+
+/* Paper grain (data-grain="on") — multiply on paper, screen on night paper. */
+html[data-grain='on'] body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 0.45 0 0 0 0 0.40 0 0 0 0 0.35 0 0 0 0.06 0'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E");
+  z-index: 4000;
+}
+html[data-grain='on'][data-theme='dark'] body::after {
+  mix-blend-mode: screen;
+  opacity: 0.3;
+}
+
+/* ═══ Studio wordmark (topbar) ═══════════════════════════════════════════ */
+.wordmark {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin-right: 4px;
+}
+.wordmark .name {
+  font-family: var(--font-hand);
+  font-size: 26px;
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1;
+}
+.wordmark .sub {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+/* ═══ Appearance controls (settings row) ═════════════════════════════════ */
+.swatch-row { display: flex; gap: 8px; align-items: center; }
+.swatch {
+  width: 40px;
+  height: 28px;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  display: flex;
+  overflow: hidden;
+  padding: 0;
+  background: none;
+}
+.swatch.active { border-color: var(--ink); }
+.swatch span { flex: 1; }

@@ -3,6 +3,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
+// jsdom never fetches external <script src> tags, so required vendor files
+// are loaded by hand, in the same order the page declares them (same
+// mechanism as widget-window.test.ts).
+function loadVendorInto(target: any, file: string) {
+  const src = fs.readFileSync(path.resolve(__dirname, '../frontend/vendor', file), 'utf8')
+  new Function('globalThis', src)(target)
+}
+
 describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   let mockStartDragging: any
   let mockGetCurrentWindow: any
@@ -44,7 +52,11 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
     ;(window as any).__TAURI__.mockSetSize = mockSetSize
     ;(window as any).__TAURI__.mockSetAlwaysOnTop = mockSetAlwaysOnTop
 
-    // 4. Extract and execute the frontend script to bind event listeners
+    // 4. Load the vendor modules the app script uses at definition time
+    // (LunaProtocol.PROTOCOL_VERSION, LunaWS.createFrameRegistry), then
+    // extract and execute the frontend script to bind event listeners.
+    loadVendorInto(window, 'moon-protocol.js')
+    loadVendorInto(window, 'moon-ws.js')
     const scriptMatch = htmlContent.match(/<script>([\s\S]*?)<\/script>/)
     const jsCode = scriptMatch ? scriptMatch[1] : ''
     
@@ -61,6 +73,8 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
 
   afterEach(() => {
     document.body.innerHTML = ''
+    delete (window as any).LunaProtocol
+    delete (window as any).LunaWS
     vi.restoreAllMocks()
     vi.useRealTimers()
   })
@@ -89,182 +103,84 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Behavioral Feature: Chat Panel Toggling
+  // Behavioral Feature: Moon click → chat widget (Phase 4/6). The moon is the
+  // chat's LAUNCHER now: a quick click summons the chat widget window via the
+  // Rust open_widget command. Press/click discrimination still gates it — a
+  // long press or a drag must never spawn a window.
   // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Chat Panel Toggling', () => {
-    it('Scenario: Chat panel is hidden initially, clicking the moon opens it and expands window', async () => {
-      const chatPanel = document.getElementById('chat-panel')
-      const moon = document.getElementById('moon')
-      const mockSetSize = (window as any).__TAURI__.mockSetSize
-      
-      expect(chatPanel).not.toBeNull()
-      expect(chatPanel!.classList.contains('active')).toBe(false)
+  describe('Feature: Moon click summons the chat widget', () => {
+    const click = (down: [number, number], up: [number, number], holdMs = 50) => {
+      const moon = document.getElementById('moon')!
+      moon.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: down[0], clientY: down[1] }))
+      vi.advanceTimersByTime(holdMs)
+      moon.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: up[0], clientY: up[1] }))
+    }
 
-      // Simulate a quick pointer down & pointer up (single click click-toggle)
-      const pointerDown = new MouseEvent('pointerdown', { bubbles: true, clientX: 100, clientY: 100 })
-      const pointerUp = new MouseEvent('pointerup', { bubbles: true, clientX: 100, clientY: 100 })
-      
-      moon!.dispatchEvent(pointerDown)
-      
-      // Fast-forward slightly and release in the same coordinates
-      vi.advanceTimersByTime(50)
-      moon!.dispatchEvent(pointerUp)
-
-      // Flush DOM microtasks to let the await inside toggleChat resolve
-      await Promise.resolve()
-      await Promise.resolve()
-
-      // Verification: Chat panel should now be toggled active (open)
-      expect(chatPanel!.classList.contains('active')).toBe(true)
-      
-      // Verification: Window should be expanded programmatically to 560x520
-      expect(mockSetSize).toHaveBeenCalledWith({ type: 'Logical', width: 560, height: 520 })
+    it('Scenario: a quick click invokes open_widget({kind: "chat"})', async () => {
+      const invoke = vi.fn(async () => 'panel-chat')
+      ;(window as any).__TAURI__.core = { invoke }
+      click([100, 100], [100, 100])
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'chat' }))
     })
 
-    it('Scenario: Clicking the Close (X) button closes the open chat panel and shrinks window', async () => {
-      const chatPanel = document.getElementById('chat-panel')
-      const closeBtn = document.getElementById('close-chat')
-      const mockSetSize = (window as any).__TAURI__.mockSetSize
-      
-      // Pre-condition: Open the chat panel
-      chatPanel!.classList.add('active')
-      expect(chatPanel!.classList.contains('active')).toBe(true)
-
-      // Simulate clicking the close button
-      const clickEvent = new MouseEvent('click', { bubbles: true })
-      closeBtn!.dispatchEvent(clickEvent)
-
-      // Verification: Chat panel should be closed
-      expect(chatPanel!.classList.contains('active')).toBe(false)
-      
-      // Fast forward past the 300ms transition timeout for window shrinking
-      vi.advanceTimersByTime(350)
-      
-      // Flush microtasks for the async setSize call inside timeout
-      await Promise.resolve()
-      await Promise.resolve()
-      
-      // Verification: Window should shrink back to the 140x185 minimized size
-      expect(mockSetSize).toHaveBeenCalledWith({ type: 'Logical', width: 140, height: 185 })
+    it('Scenario: a long press (≥280ms) is a grab, not a click — no widget spawn', () => {
+      const invoke = vi.fn(async () => 'panel-chat')
+      ;(window as any).__TAURI__.core = { invoke }
+      click([100, 100], [100, 100], 400)
+      expect(invoke).not.toHaveBeenCalled()
     })
 
-    it('Scenario: Reopens to the previously persisted chat size instead of the 560x520 default', async () => {
-      const chatPanel = document.getElementById('chat-panel')
-      const moon = document.getElementById('moon')
-      const mockSetSize = (window as any).__TAURI__.mockSetSize
-
-      // Seed the persisted size BEFORE the user opens the panel.
-      // (PanelSize.load() runs inside toggleChat's expand branch, so seeding
-      //  after script execution still works — it's read on each open.)
-      localStorage.setItem('luna.moon.chatSize', JSON.stringify({ w: 720, h: 640 }))
-
-      // Quick click on the moon -> toggleChat() opens the panel.
-      moon!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 100, clientY: 100 }))
-      vi.advanceTimersByTime(50)
-      moon!.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: 100, clientY: 100 }))
-
-      // Flush the awaited setSize inside toggleChat.
-      await Promise.resolve()
-      await Promise.resolve()
-
-      expect(chatPanel!.classList.contains('active')).toBe(true)
-      // Opens at the persisted size, NOT 560x520.
-      expect(mockSetSize).toHaveBeenCalledWith({ type: 'Logical', width: 720, height: 640 })
+    it('Scenario: a press that moved ≥5px is a drag, not a click — no widget spawn', () => {
+      const invoke = vi.fn(async () => 'panel-chat')
+      ;(window as any).__TAURI__.core = { invoke }
+      click([100, 100], [140, 130])
+      expect(invoke).not.toHaveBeenCalled()
     })
 
-    it('Scenario: Reopens at MIN bounds when localStorage holds a sub-minimum size (clamp on load)', async () => {
-      const moon = document.getElementById('moon')
-      const mockSetSize = (window as any).__TAURI__.mockSetSize
-
-      // Hostile / stale value: smaller than MIN. PanelSize.clamp() should floor it
-      // to (360, 360) on load so the panel can never open below its minimum bounds.
-      localStorage.setItem('luna.moon.chatSize', JSON.stringify({ w: 100, h: 100 }))
-
-      moon!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 100, clientY: 100 }))
-      vi.advanceTimersByTime(50)
-      moon!.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: 100, clientY: 100 }))
-      await Promise.resolve()
-      await Promise.resolve()
-
-      expect(mockSetSize).toHaveBeenCalledWith({ type: 'Logical', width: 360, height: 360 })
-    })
-
-    it('Scenario: Releasing the resize grip persists the final dragged size to localStorage', () => {
-      const grip = document.getElementById('resize-grip')
-      expect(grip).not.toBeNull()
-
-      // pointerdown captures startW/startH = TauriService.lastSize (140x185 on boot)
-      //   and startX/startY = the pointer's screen coords.
-      grip!.dispatchEvent(new MouseEvent('pointerdown', {
-        bubbles: true, clientX: 0, clientY: 0, screenX: 100, screenY: 100,
-      }))
-      // pointermove computes pendingW = max(MIN_W=360, round(140 + dx)),
-      //   pendingH = max(MIN_H=360, round(185 + dy)). With dx=dy=400 -> 540, 585.
-      grip!.dispatchEvent(new MouseEvent('pointermove', {
-        bubbles: true, clientX: 0, clientY: 0, screenX: 500, screenY: 500,
-      }))
-      // pointerup -> endResize -> PanelSize.save(pendingW, pendingH).
-      grip!.dispatchEvent(new MouseEvent('pointerup', {
-        bubbles: true, clientX: 0, clientY: 0, screenX: 500, screenY: 500,
-      }))
-
-      const stored = localStorage.getItem('luna.moon.chatSize')
-      expect(stored).not.toBeNull()
-      expect(JSON.parse(stored!)).toEqual({ w: 540, h: 585 })
+    it('Scenario: off-Tauri (no core) a click logs and no-ops instead of throwing', () => {
+      // The shared beforeEach mocks __TAURI__.window only — no core, exactly
+      // the frontend-dev/jsdom case. The old in-envelope toggleChat fallback
+      // died in Phase 6.
+      expect(() => click([100, 100], [100, 100])).not.toThrow()
     })
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Behavioral Feature: Messaging & Responses
+  // Feature: server-pushed open-artifact-widget pops a content artifact (S2)
   // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Chat Input & Turn Watchdog', () => {
-    // The old mock that faked an assistant reply via setTimeout is gone — the
-    // real app sends the message over a WebSocket and waits for server frames.
-    // In jsdom there is no server and the internal frame handler isn't exposed,
-    // so this exercises the REAL fallback: submit behavior + the 90s turn
-    // watchdog (WebSocketEngine.startTurnTimeout) that clears a stuck spinner
-    // and surfaces a visible "no response" error instead of hanging forever.
-    it('Scenario: User submits a text message -> message appended, input cleared, typing indicator shown; then the turn watchdog surfaces a no-response error', () => {
-      const chatPanel = document.getElementById('chat-panel')
-      const chatForm = document.getElementById('chat-form')
-      const messageInput = document.getElementById('message-input') as HTMLInputElement
-      const chatMessages = document.getElementById('chat-messages')
+  describe('Feature: open-artifact-widget summons a content artifact', () => {
+    const M = () => (window as any).__MoonInternals
 
-      // Pre-condition: Open the chat and focus input
-      chatPanel!.classList.add('active')
-      expect(chatMessages).not.toBeNull()
+    it('Scenario: an open-artifact-widget frame invokes open_artifact_widget', () => {
+      const invoke = vi.fn().mockResolvedValue('widget-abc')
+      ;(window as any).__TAURI__.core = { invoke }
+      M().handleFrame({
+        type: 'open-artifact-widget',
+        artifactId: 'widget:pr-99-tracker',
+        title: 'PR #99',
+        kind: 'widget',
+      })
+      expect(invoke).toHaveBeenCalledWith('open_artifact_widget', {
+        artifactId: 'widget:pr-99-tracker',
+        title: 'PR #99',
+      })
+    })
 
-      // 1. User types "How does this look?" and submits
-      messageInput.value = 'How does this look?'
-      const submitEvent = new Event('submit', { bubbles: true, cancelable: true })
-      chatForm!.dispatchEvent(submitEvent)
+    it('Scenario: a malformed frame (no artifactId) is ignored, never invoked', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      M().handleFrame({ type: 'open-artifact-widget', title: 'X', kind: 'widget' })
+      expect(invoke).not.toHaveBeenCalled()
+    })
 
-      // Verification A: Message input should be cleared
-      expect(messageInput.value).toBe('')
-
-      // Verification B: User message should be appended to the stream
-      const userMessage = chatMessages!.querySelector('.msg.user')
-      expect(userMessage).not.toBeNull()
-      expect(userMessage!.textContent).toBe('How does this look?')
-
-      // Verification C: Typing indicator dots should be active (turn in flight)
-      const typingIndicator = chatMessages!.querySelector('.typing-dots')
-      expect(typingIndicator).not.toBeNull()
-
-      // 2. No server reply arrives (no WS in jsdom). Fast-forward past the 90s
-      //    turn watchdog so it fires.
-      vi.advanceTimersByTime(90000)
-
-      // Verification D: the watchdog clears the stuck typing indicator (no
-      //    endless spinner — the resume/robustness fix).
-      const postTypingIndicator = chatMessages!.querySelector('.typing-dots')
-      expect(postTypingIndicator).toBeNull()
-
-      // Verification E: and surfaces a visible "no response" error as the last
-      //    assistant message (real timeout behavior, not a mock reply).
-      const lastMsg = chatMessages!.lastElementChild
-      expect(lastMsg!.classList.contains('assistant')).toBe(true)
-      expect(lastMsg!.textContent).toContain('No response from the server')
+    it('Scenario: an empty title falls back to "Artifact"', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      M().handleFrame({ type: 'open-artifact-widget', artifactId: 'mcp-app:x', title: '', kind: 'mcp-app' })
+      expect(invoke).toHaveBeenCalledWith('open_artifact_widget', {
+        artifactId: 'mcp-app:x',
+        title: 'Artifact',
+      })
     })
   })
 
@@ -274,132 +190,15 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   describe('Feature: Visual DOM Structure Snapshots', () => {
     // Snapshot the structural DOM only — elide the inline <script> body. These
     // assert "visual structure", but document.body.innerHTML also contains the
-    // entire app script, so any JS edit (resume fix, version-skew banner, async
-    // load_connection) spuriously breaks them. Stripping the script source keeps
-    // them a real structure check, not a "source unchanged" tripwire.
+    // entire app script, so any JS edit would spuriously break them. Stripping
+    // the script source keeps them a real structure check, not a "source
+    // unchanged" tripwire. (Phase 6: the hub has ONE state now — moon + wizard
+    // markup; the old open-chat snapshot died with the in-envelope chat.)
     const structuralDom = (html: string) =>
       html.replace(/(<script\b[^>]*>)[\s\S]*?(<\/script>)/gi, '$1/* elided for snapshot */$2')
 
-    it('Scenario: Closed State Snapshot matches the exact design pattern', () => {
+    it('Scenario: Hub structure (moon + string + wizard) matches the design pattern', () => {
       expect(structuralDom(document.body.innerHTML)).toMatchSnapshot()
-    })
-
-    it('Scenario: Open State Snapshot matches the exact design pattern', async () => {
-      const moon = document.getElementById('moon')
-      const pointerDown = new MouseEvent('pointerdown', { bubbles: true, clientX: 100, clientY: 100 })
-      const pointerUp = new MouseEvent('pointerup', { bubbles: true, clientX: 100, clientY: 100 })
-
-      moon!.dispatchEvent(pointerDown)
-      vi.advanceTimersByTime(50)
-      moon!.dispatchEvent(pointerUp)
-
-      await Promise.resolve()
-      await Promise.resolve()
-
-      expect(structuralDom(document.body.innerHTML)).toMatchSnapshot()
-    })
-  })
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Feature: Companion Settings Panel
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Companion Settings Panel', () => {
-    it('Scenario: Toggling Settings Panel slides it in and out', () => {
-      const toggleSettings = document.getElementById('toggle-settings')
-      const settingsPanel = document.getElementById('settings-panel')
-      const closeSettingsBtn = document.getElementById('close-settings-btn')
-
-      expect(settingsPanel!.classList.contains('active')).toBe(false)
-
-      // Open settings
-      toggleSettings!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      expect(settingsPanel!.classList.contains('active')).toBe(true)
-
-      // Close settings
-      closeSettingsBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      expect(settingsPanel!.classList.contains('active')).toBe(false)
-    })
-
-    it('Scenario: Toggling Always on Top saves state and calls Tauri API', () => {
-      const alwaysOnTopToggle = document.getElementById('always-on-top-toggle') as HTMLInputElement
-      const mockSetAlwaysOnTop = (window as any).__TAURI__.mockSetAlwaysOnTop
-
-      // Mock localStorage setItem
-      const setItemSpy = vi.spyOn(Storage.prototype, 'setItem')
-
-      // Switch Always on Top off
-      alwaysOnTopToggle.checked = false
-      alwaysOnTopToggle.dispatchEvent(new Event('change', { bubbles: true }))
-
-      expect(setItemSpy).toHaveBeenCalledWith('luna_always_on_top', 'false')
-      expect(mockSetAlwaysOnTop).toHaveBeenCalledWith(false)
-
-      // Switch Always on Top on
-      alwaysOnTopToggle.checked = true
-      alwaysOnTopToggle.dispatchEvent(new Event('change', { bubbles: true }))
-
-      expect(setItemSpy).toHaveBeenCalledWith('luna_always_on_top', 'true')
-      expect(mockSetAlwaysOnTop).toHaveBeenCalledWith(true)
-    })
-
-    it('Scenario: Close on Blur collapses the chat panel on click away', async () => {
-      const closeOnBlurToggle = document.getElementById('close-on-blur-toggle') as HTMLInputElement
-      const chatPanel = document.getElementById('chat-panel')
-      const mockSetSize = (window as any).__TAURI__.mockSetSize
-
-      // Set chat panel active/open
-      chatPanel!.classList.add('active')
-      expect(chatPanel!.classList.contains('active')).toBe(true)
-
-      // 1. When Close on Blur is disabled -> click away (blur) does NOT collapse chat
-      closeOnBlurToggle.checked = false
-      closeOnBlurToggle.dispatchEvent(new Event('change', { bubbles: true }))
-
-      window.dispatchEvent(new Event('blur'))
-      expect(chatPanel!.classList.contains('active')).toBe(true)
-
-      // 2. When Close on Blur is enabled -> click away (blur) collapses chat
-      closeOnBlurToggle.checked = true
-      closeOnBlurToggle.dispatchEvent(new Event('change', { bubbles: true }))
-
-      window.dispatchEvent(new Event('blur'))
-      expect(chatPanel!.classList.contains('active')).toBe(false)
-
-      // Wait for shrink window resize timeout
-      vi.advanceTimersByTime(350)
-      await Promise.resolve()
-      await Promise.resolve()
-
-      expect(mockSetSize).toHaveBeenCalledWith({ type: 'Logical', width: 140, height: 185 })
-    })
-
-    it('Scenario: Global Shortcut recorder captures key combinations', () => {
-      const recordBtn = document.getElementById('record-shortcut-btn')
-      const shortcutInput = document.getElementById('shortcut-input') as HTMLInputElement
-      const setItemSpy = vi.spyOn(Storage.prototype, 'setItem')
-
-      // Start recording
-      recordBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      expect(recordBtn!.textContent).toBe('Cancel')
-      expect(shortcutInput.classList.contains('recording')).toBe(true)
-      expect(shortcutInput.value).toBe('Press keys...')
-
-      // Press Option (Alt) + Shift + S
-      const keydownEvent = new KeyboardEvent('keydown', {
-        bubbles: true,
-        cancelable: true,
-        key: 's',
-        altKey: true,
-        shiftKey: true,
-      })
-      window.dispatchEvent(keydownEvent)
-
-      // Verifications:
-      // Option + Shift symbols should be combined: ⌥⇧S
-      expect(shortcutInput.value).toBe('⌥⇧S')
-      expect(setItemSpy).toHaveBeenCalledWith('luna_global_shortcut', '⌥⇧S')
-      expect(recordBtn!.textContent).toBe('Record')
-      expect(shortcutInput.classList.contains('recording')).toBe(false)
     })
   })
 
@@ -432,1586 +231,9 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Feature: Live-streaming markdown render
+  // Feature: single-thread controls — the "+ new chat" satellite stays gone and
+  // the fresh-thread reset moved to the General panel: test/panel-general.test.ts.
   // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Streaming markdown formatting', () => {
-    // The pure helpers + StreamRender are exposed via window.__MoonInternals
-    // (test-only hook) — production code never reads it.
-    const internals = (): {
-      closeOpenFences: (s: string) => string
-      renderMarkdown: (s: string) => string
-      renderMarkdownStreaming: (s: string) => string
-      StreamRender: {
-        schedule: (b: HTMLElement) => void
-        cancel: (b: HTMLElement) => void
-        append: (b: HTMLElement, delta: string) => void
-        reset: (b: HTMLElement, text: string) => void
-        finalize: (b: HTMLElement, finalText: string) => void
-      }
-    } => (window as any).__MoonInternals
-
-    beforeEach(() => {
-      // Stub requestAnimationFrame to run synchronously so the test can
-      // observe the render without waiting for an actual frame. The real
-      // runtime uses rAF for coalescing; here we want determinism.
-      vi.useRealTimers()
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => {
-        cb(0)
-        return 1
-      }
-      ;(window as any).cancelAnimationFrame = () => {}
-    })
-
-    it('Scenario: closeOpenFences auto-closes a dangling ``` so partial code renders as code', () => {
-      const { closeOpenFences } = internals()
-      const partial = 'before\n\`\`\`ts\nconst x = 1'
-      expect(closeOpenFences(partial)).toBe(
-        'before\n\`\`\`ts\nconst x = 1\n\`\`\`',
-      )
-    })
-
-    it('Scenario: balanced fences pass through unchanged', () => {
-      const { closeOpenFences } = internals()
-      const balanced = '\`\`\`js\nfoo\n\`\`\`'
-      expect(closeOpenFences(balanced)).toBe(balanced)
-    })
-
-    it('Scenario: renderMarkdownStreaming emits <pre><code> for in-progress fences', () => {
-      const { renderMarkdownStreaming } = internals()
-      const partial = 'see:\n\`\`\`ts\nconst x = 1'
-      const html = renderMarkdownStreaming(partial)
-      expect(html).toContain('<pre><code')
-      expect(html).toContain('class="language-ts"')
-      expect(html).toContain('const x = 1')
-    })
-
-    it('Scenario: assistant-delta path renders <strong> live, not raw asterisks', () => {
-      const { StreamRender } = internals()
-      const bubble = document.createElement('div')
-      bubble.className = 'msg assistant'
-      document.body.appendChild(bubble)
-
-      // First delta: seed the bubble (mirrors the typing-dots → first-delta branch).
-      StreamRender.reset(bubble, 'Hello, **wor')
-      // Mid-stream: partial bold marker still open — raw text is acceptable here.
-      expect(bubble.dataset.streamRaw).toBe('Hello, **wor')
-
-      // Next delta: completes the bold marker. Bold should render live.
-      StreamRender.append(bubble, 'ld**!')
-      expect(bubble.dataset.streamRaw).toBe('Hello, **world**!')
-      expect(bubble.innerHTML).toContain('<strong>world</strong>')
-      // The original raw markers must not appear in the rendered HTML.
-      expect(bubble.innerHTML).not.toContain('**world**')
-    })
-
-    it('Scenario: assistant-delta path keeps an in-progress code block as <pre><code>', () => {
-      const { StreamRender } = internals()
-      const bubble = document.createElement('div')
-      bubble.className = 'msg assistant'
-      document.body.appendChild(bubble)
-
-      // Stream a fence opener and partial body — no closer yet.
-      StreamRender.reset(bubble, 'Here is code:\n\`\`\`ts\nconst x = 1')
-      expect(bubble.innerHTML).toContain('<pre><code')
-      expect(bubble.innerHTML).toContain('const x = 1')
-
-      // Append more code; still no closer; still rendered as code.
-      StreamRender.append(bubble, '\nconst y = 2')
-      expect(bubble.innerHTML).toContain('const y = 2')
-      // Should NOT have rendered the body as a paragraph.
-      expect(bubble.innerHTML).not.toMatch(/<p>const y = 2<\/p>/)
-    })
-
-    it('Scenario: finalize cancels pending frames and writes the canonical text', () => {
-      const { StreamRender } = internals()
-      const bubble = document.createElement('div')
-      bubble.className = 'msg assistant'
-      document.body.appendChild(bubble)
-
-      StreamRender.reset(bubble, 'partial **bold')
-      // Finalize with the canonical text the server sent on assistant-done.
-      StreamRender.finalize(bubble, 'final **bold** text')
-      expect(bubble.innerHTML).toContain('<strong>bold</strong>')
-      // Raw-text dataset should be cleared after finalize.
-      expect(bubble.dataset.streamRaw).toBeUndefined()
-    })
-
-    // ── GFM Tables ────────────────────────────────────────────────────────
-    it('Scenario: renderMarkdown emits a <table> with <thead> for a GFM table', () => {
-      const { renderMarkdown } = internals()
-      const src = '| Name | Value |\n|------|-------|\n| foo  | 1     |\n| bar  | 2     |'
-      const html = renderMarkdown(src)
-      expect(html).toContain('<table>')
-      expect(html).toContain('<thead>')
-      expect(html).toContain('<th>Name</th>')
-      expect(html).toContain('<th>Value</th>')
-      expect(html).toContain('<tbody>')
-      expect(html).toContain('<td>foo</td>')
-      expect(html).toContain('<td>2</td>')
-    })
-
-    it('Scenario: renderMarkdown emits a <table> WITHOUT <thead> when the header row is empty', () => {
-      const { renderMarkdown } = internals()
-      // This is the exact pattern that rendered as raw pipes in 0.0.4 —
-      // operator wrote a header-less two-column key/value table.
-      const src = '| | |\n|---|---|\n| latest.json version | 0.0.4 |\n| Build time | ~6 min |'
-      const html = renderMarkdown(src)
-      expect(html).toContain('<table>')
-      expect(html).not.toContain('<thead>')
-      expect(html).toContain('<tbody>')
-      expect(html).toContain('<td>latest.json version</td>')
-      expect(html).toContain('<td>0.0.4</td>')
-      expect(html).toContain('<td>Build time</td>')
-      expect(html).toContain('<td>~6 min</td>')
-    })
-
-    it('Scenario: renderMarkdown honours :--- / ---: / :---: alignment in the separator row', () => {
-      const { renderMarkdown } = internals()
-      const src = '| L | R | C |\n|:---|---:|:---:|\n| a | b | c |'
-      const html = renderMarkdown(src)
-      expect(html).toContain('style="text-align:left"')
-      expect(html).toContain('style="text-align:right"')
-      expect(html).toContain('style="text-align:center"')
-    })
-
-    it('Scenario: renderMarkdown applies inline formatting (bold/code) inside table cells', () => {
-      const { renderMarkdown } = internals()
-      const src = '| col |\n|-----|\n| **bold** and `code` |'
-      const html = renderMarkdown(src)
-      expect(html).toContain('<strong>bold</strong>')
-      expect(html).toContain('<code>code</code>')
-    })
-
-    // ── Editor-feel code blocks ───────────────────────────────────────────
-    it('Scenario: fenced ```lang block renders inside a .code-block wrapper with a language chip + copy button', () => {
-      const { renderMarkdown } = internals()
-      const html = renderMarkdown('```json\n{ "ok": true }\n```')
-      // Wrapper + header chrome present.
-      expect(html).toContain('<div class="code-block" data-lang="json">')
-      expect(html).toContain('<div class="code-block-header">')
-      expect(html).toContain('<span class="code-block-lang">json</span>')
-      expect(html).toContain('class="code-block-copy"')
-      // Underlying <pre><code> shape preserved for downstream tests/snapshots.
-      expect(html).toContain('<pre><code class="language-json">')
-    })
-
-    it('Scenario: fenced block with no language emits a wrapper but an empty chip (display:none via CSS)', () => {
-      const { renderMarkdown } = internals()
-      const html = renderMarkdown('```\nplain text body\n```')
-      expect(html).toContain('<div class="code-block">')           // no data-lang
-      expect(html).toContain('<span class="code-block-lang"></span>')
-      expect(html).toContain('<pre><code>plain text body</code></pre>')
-    })
-
-    it('Scenario: --- on its own line renders as <hr>', () => {
-      const { renderMarkdown } = internals()
-      const html = renderMarkdown('before\n\n---\n\nafter')
-      expect(html).toContain('<hr>')
-      expect(html).not.toMatch(/<p>-+<\/p>/)
-    })
-
-    it('Scenario: *** and ___ also render as <hr>', () => {
-      const { renderMarkdown } = internals()
-      expect(renderMarkdown('***')).toContain('<hr>')
-      expect(renderMarkdown('___')).toContain('<hr>')
-    })
-
-    it('Scenario: a GFM table separator row is NOT mistaken for a horizontal rule', () => {
-      const { renderMarkdown } = internals()
-      // The --- here is the table separator, not a horizontal rule.
-      // Use a 2-column table — the existing GFM regex requires the
-      // separator row to have ≥2 dash groups (`---|---`), single-col is
-      // intentionally treated as a paragraph.
-      const html = renderMarkdown('| col | other |\n|------|-------|\n| val | x |')
-      expect(html).toContain('<table>')
-      expect(html).not.toContain('<hr>')
-    })
-
-    it('Scenario: enhanceCodeBlocks wires the copy button so a click writes the raw source to navigator.clipboard', async () => {
-      const { renderMarkdown, enhanceCodeBlocks } = internals() as any
-      const host = document.createElement('div')
-      host.innerHTML = renderMarkdown('```bash\necho hi\n```')
-
-      let captured: string | null = null
-      ;(navigator as any).clipboard = {
-        writeText: (t: string) => { captured = t; return Promise.resolve() },
-      }
-
-      enhanceCodeBlocks(host)
-      const btn = host.querySelector('.code-block-copy') as HTMLButtonElement
-      expect(btn).not.toBeNull()
-      btn.click()
-      // Microtask flush so the writeText promise settles.
-      await Promise.resolve()
-      expect(captured).toBe('echo hi')
-    })
-
-    it('Scenario: enhanceCodeBlocks degrades gracefully when window.hljs is undefined (no throw, button still works)', () => {
-      const { renderMarkdown, enhanceCodeBlocks } = internals() as any
-      const prevHljs = (window as any).hljs
-      ;(window as any).hljs = undefined
-      try {
-        const host = document.createElement('div')
-        host.innerHTML = renderMarkdown('```ts\nconst x = 1\n```')
-        expect(() => enhanceCodeBlocks(host)).not.toThrow()
-        // Copy button still gets wired even without highlighter.
-        const btn = host.querySelector('.code-block-copy') as HTMLButtonElement
-        expect(btn.dataset.copyWired).toBe('1')
-      } finally {
-        ;(window as any).hljs = prevHljs
-      }
-    })
-
-    // ── Empty-bubble cleanup ──────────────────────────────────────────────
-    // ── sweepTrailingEmptyAssistantBubbles ────────────────────────────────
-    // ── Tool-call card rendering ──────────────────────────────────────────
-    it('Scenario: appendToolCallCard renders a collapsible card with the tool name + JSON input + pending status', () => {
-      const { appendToolCallCard } = internals() as any
-      const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
-      const card = appendToolCallCard({
-        type: 'tool-call',
-        threadId: 't1', turnId: 'turn-1', toolCallId: 'call-1',
-        name: 'Read', input: { file_path: '/etc/hosts' },
-      })
-      expect(card).not.toBeNull()
-      // A single tool call renders as ONE activity-timeline window with the
-      // card nested as a step inside it (expanded while streaming).
-      expect(chat.children.length).toBe(1)
-      const timeline = chat.children[0] as HTMLElement
-      expect(timeline.classList.contains('timeline')).toBe(true)
-      expect(timeline.contains(card)).toBe(true)
-      expect(card.classList.contains('tool-call-card')).toBe(true)
-      expect(card.dataset.toolCallId).toBe('call-1')
-      expect(card.dataset.turnId).toBe('turn-1')
-      // Tool name is shown in the summary.
-      expect(card.querySelector('.tool-card-name')!.textContent).toBe('Read')
-      // Status starts in pending state.
-      const status = card.querySelector('.tool-card-status')!
-      expect(status.classList.contains('tool-card-status-pending')).toBe(true)
-      // Input is rendered as pretty JSON inside a <pre>.
-      const input = card.querySelector('.tool-card-input')!
-      expect(input.textContent).toContain('"file_path"')
-      expect(input.textContent).toContain('/etc/hosts')
-      // No result panel yet.
-      expect(card.querySelector('.tool-card-output')).toBeNull()
-    })
-
-    it('Scenario: appendToolCallCard escapes the tool name + input (no XSS via name/input)', () => {
-      const { appendToolCallCard } = internals() as any
-      const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
-      const card = appendToolCallCard({
-        type: 'tool-call',
-        threadId: 't', turnId: 't', toolCallId: 'c',
-        name: '<script>alert(1)</script>',
-        input: { sneaky: '<img src=x onerror=alert(1)>' },
-      })
-      // The script tag should be rendered as text, not actually injected.
-      expect(card.querySelector('script')).toBeNull()
-      expect(card.querySelector('img')).toBeNull()
-      expect(card.querySelector('.tool-card-name')!.textContent).toBe('<script>alert(1)</script>')
-    })
-
-    it('Scenario: attachToolResult flips the matching cards status pill to OK and appends the output', () => {
-      const { appendToolCallCard, attachToolResult } = internals() as any
-      const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
-      appendToolCallCard({
-        type: 'tool-call',
-        threadId: 't', turnId: 't', toolCallId: 'call-A',
-        name: 'Bash', input: { command: 'pwd' },
-      })
-      const card = attachToolResult({
-        type: 'tool-result',
-        threadId: 't', toolCallId: 'call-A',
-        status: 'ok', output: '/home/op', truncated: false,
-      })
-      expect(card).not.toBeNull()
-      const status = card.querySelector('.tool-card-status')!
-      expect(status.classList.contains('tool-card-status-ok')).toBe(true)
-      expect(status.classList.contains('tool-card-status-pending')).toBe(false)
-      const output = card.querySelector('.tool-card-output')!
-      expect(output.textContent).toBe('/home/op')
-      expect(card.querySelector('.tool-card-truncated')).toBeNull()
-    })
-
-    it('Scenario: attachToolResult with status=error flips the pill to error', () => {
-      const { appendToolCallCard, attachToolResult } = internals() as any
-      const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
-      appendToolCallCard({
-        type: 'tool-call', threadId: 't', turnId: 't', toolCallId: 'call-X',
-        name: 'Bash', input: { command: 'false' },
-      })
-      const card = attachToolResult({
-        type: 'tool-result', threadId: 't', toolCallId: 'call-X',
-        status: 'error', output: 'exit 1', truncated: false,
-      })
-      const status = card.querySelector('.tool-card-status')!
-      expect(status.classList.contains('tool-card-status-error')).toBe(true)
-      expect(status.textContent).toBe('✗')
-    })
-
-    it('Scenario: attachToolResult shows a truncated-output hint when frame.truncated is true', () => {
-      const { appendToolCallCard, attachToolResult } = internals() as any
-      const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
-      appendToolCallCard({ type: 'tool-call', threadId: 't', turnId: 't', toolCallId: 'big', name: 'Read', input: {} })
-      const card = attachToolResult({
-        type: 'tool-result', threadId: 't', toolCallId: 'big',
-        status: 'ok', output: 'lots...', truncated: true,
-      })
-      const trunc = card.querySelector('.tool-card-truncated')!
-      expect(trunc).not.toBeNull()
-      expect(trunc.textContent).toMatch(/truncated/i)
-    })
-
-    it('Scenario: attachToolResult is a no-op when no matching tool-call card exists', () => {
-      const { attachToolResult } = internals() as any
-      const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
-      const ret = attachToolResult({
-        type: 'tool-result', threadId: 't', toolCallId: 'missing',
-        status: 'ok', output: 'x', truncated: false,
-      })
-      expect(ret).toBeNull()
-      expect(chat.children.length).toBe(0)
-    })
-
-    // ── Regression: text after tool round-trip (moon-009 fix) ─────────────
-    //
-    // Bug summary: tool-call cards carry className "msg assistant tool-call-card".
-    // Pre-fix, assistant-delta and assistant-done saw the card at the tail,
-    // matched .contains('assistant'), and routed StreamRender at it — which
-    // OVERWROTE the card's <details>/<summary> structure with rendered
-    // markdown text. Visually the card kept its faint chrome but its inner
-    // content was replaced; combined with the card's subtle styling it
-    // looked like "response disappeared" to the operator.
-    //
-    // Canonical fix (commit cf7deed, originally 44a51a9 on jax-box):
-    //   1. assistant-delta only reuses a TEXT bubble (excludes tool-call-card).
-    //      Text bubbles get tagged with data-turn-id at creation.
-    //   2. assistant-done detects whether the turn has any tool-call-cards
-    //      via data-turn-id match. If yes, finalize with the bubble's own
-    //      streamRaw (NOT frame.message.text — that's the FULL multi-segment
-    //      canonical text and using it would duplicate earlier segments).
-    //   3. assistant-done refuses to finalize into a tool-call-card.
-    //
-    // These tests pin all three guarantees.
-    it('Scenario: assistant-delta after a tool-call-card opens a fresh text bubble (does NOT overwrite the card)', () => {
-      const { handleFrame, appendToolCallCard } = internals() as any
-      const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
-
-      // Tool round-trip already happened.
-      appendToolCallCard({
-        type: 'tool-call', threadId: 't', turnId: 'turn-1', toolCallId: 'c1',
-        name: 'Read', input: { path: '/etc/hosts' },
-      })
-      expect(chat.children.length).toBe(1)
-      const timeline = chat.children[0] as HTMLElement
-      expect(timeline.classList.contains('timeline')).toBe(true)
-      // The tool card lives as a step inside the timeline; the <details><summary>
-      // structure is the bug's tripwire (must NOT be overwritten by text).
-      expect(timeline.querySelector('.tool-call-card details > summary')).not.toBeNull()
-
-      handleFrame({
-        type: 'assistant-delta', threadId: 't', turnId: 'turn-1',
-        text: 'Here is what I found.',
-      })
-
-      // The timeline (with its card) is intact AND a fresh answer bubble appears
-      // AFTER it for the post-tool text (the work never gets overwritten).
-      expect(chat.children.length).toBe(2)
-      expect((chat.children[0] as HTMLElement).classList.contains('timeline')).toBe(true)
-      expect((chat.children[0] as HTMLElement).querySelector('.tool-call-card details > summary')).not.toBeNull()
-      const fresh = chat.children[1] as HTMLElement
-      expect(fresh.classList.contains('assistant')).toBe(true)
-      expect(fresh.classList.contains('tool-call-card')).toBe(false)
-      expect(fresh.dataset.streamRaw).toBe('Here is what I found.')
-      // The answer bubble carries the turn id so it pairs with its turn.
-      expect(fresh.dataset.turnId).toBe('turn-1')
-    })
-
-    it('Scenario: assistant-done after tool-call+text-stream finalizes with streamRaw (does NOT duplicate via frame.message.text)', () => {
-      const { handleFrame, appendToolCallCard } = internals() as any
-      const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
-
-      // Multi-segment turn: text-before-tool, then tool, then text-after-tool.
-      // Pre-fix bug: assistant-done would write frame.message.text (= the
-      // CONCATENATION of both text segments) into the post-tool bubble,
-      // duplicating the pre-tool text on screen.
-      handleFrame({ type: 'assistant-delta', threadId: 't', turnId: 'turn-1', text: 'Looking that up. ' })
-      appendToolCallCard({
-        type: 'tool-call', threadId: 't', turnId: 'turn-1', toolCallId: 'c1',
-        name: 'Read', input: {},
-      })
-      handleFrame({ type: 'assistant-delta', threadId: 't', turnId: 'turn-1', text: 'Found 3 lines.' })
-
-      // [timeline(pre-tool text + card), answer bubble] — 2 children.
-      expect(chat.children.length).toBe(2)
-      const answer = chat.children[1] as HTMLElement
-      expect(answer.dataset.streamRaw).toBe('Found 3 lines.')
-
-      // Server sends canonical FULL message text on assistant-done.
-      handleFrame({
-        type: 'assistant-done', threadId: 't', turnId: 'turn-1', seq: 1,
-        message: {
-          id: 'm1', role: 'assistant', seq: 1, createdAt: 0,
-          text: 'Looking that up. Found 3 lines.',
-          content: [
-            { type: 'text', text: 'Looking that up. ' },
-            { type: 'text', text: 'Found 3 lines.' },
-          ],
-        },
-      })
-      // The agentic turn fully ends (SDK `result`) → settles the run.
-      handleFrame({ type: 'turn-complete', threadId: 't' })
-
-      // Auto-collapses to the summary pill; the answer bubble stays below.
-      expect(chat.children.length).toBe(2)
-      const tl = chat.children[0] as HTMLElement
-      expect(tl.classList.contains('timeline')).toBe(true)
-      expect(tl.classList.contains('collapsed')).toBe(true)
-      const answer2 = chat.children[1] as HTMLElement
-      // The post-tool bubble shows ONLY "Found 3 lines." — NOT the full
-      // canonical text "Looking that up. Found 3 lines." which would be the
-      // duplication-bug fingerprint.
-      expect(answer2.textContent?.trim()).toBe('Found 3 lines.')
-      expect(answer2.textContent).not.toContain('Looking that up.')
-      // The reducer split is the layout-independent dedup fingerprint.
-      const segs = (internals() as any).ChatState.turns[0].segments
-      expect(segs[0]).toMatchObject({ kind: 'text', raw: 'Looking that up. ' })
-      expect(segs[1].kind).toBe('tool')
-      expect(segs[2]).toMatchObject({ kind: 'text', raw: 'Found 3 lines.' })
-    })
-
-    it('Scenario: a turn that ends on a tool settles to the pill on turn-complete (no finalize-into-card)', () => {
-      const { handleFrame, appendToolCallCard } = internals() as any
-      const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
-
-      // Turn that ended on a tool with no trailing assistant text. doneMsg
-      // would be the tool-call-card itself. Pre-fix, finalize would write
-      // frame.message.text into the card, clobbering its structure.
-      appendToolCallCard({
-        type: 'tool-call', threadId: 't', turnId: 'turn-1', toolCallId: 'c1',
-        name: 'Bash', input: { command: 'ls' },
-      })
-      expect(chat.children.length).toBe(1)
-      const timeline = chat.children[0] as HTMLElement
-      expect(timeline.classList.contains('timeline')).toBe(true)
-      expect(timeline.querySelector('.tool-call-card details > summary')).not.toBeNull()
-
-      handleFrame({
-        type: 'assistant-done', threadId: 't', turnId: 'turn-1', seq: 1,
-        message: {
-          id: 'm1', role: 'assistant', seq: 1, createdAt: 0,
-          text: 'Files: a, b, c.',
-          content: [{ type: 'text', text: 'Files: a, b, c.' }],
-        },
-      })
-      // Per-message done does NOT settle a tool-terminal turn — it's
-      // indistinguishable from an intermediate step until `turn-complete`.
-      expect((chat.children[0] as HTMLElement).classList.contains('collapsed')).toBe(false)
-
-      // The SDK `result` lands → the run settles even though it ends on a tool.
-      handleFrame({ type: 'turn-complete', threadId: 't' })
-
-      // Settled: collapses to the pill (real "Worked for N steps", no spinner),
-      // and the done message.text is written NOWHERE (no finalize-into-card,
-      // no ghost answer bubble).
-      expect(chat.children.length).toBe(1)
-      const tl = chat.children[0] as HTMLElement
-      expect(tl.classList.contains('timeline')).toBe(true)
-      expect(tl.classList.contains('collapsed')).toBe(true)
-      expect(tl.querySelector('.timeline-summary-label')!.textContent).toBe('Worked for 1 step')
-      expect(tl.querySelector('.typing-dots')).toBeNull() // no perpetual spinner
-      expect(chat.textContent).not.toContain('Files: a, b, c.')
-      // Reducer kept just the tool segment (no spurious text segment).
-      const segs = (internals() as any).ChatState.turns[0].segments
-      expect(segs.length).toBe(1)
-      expect(segs[0].kind).toBe('tool')
-    })
-
-    it('Scenario: pre-tool-call typing-dots/delta path still works (regression guard for the simple case)', () => {
-      const { handleFrame } = internals() as any
-      const chat = document.getElementById('chat-messages')!
-      chat.innerHTML = ''
-      const dots = document.createElement('div')
-      dots.className = 'msg assistant'
-      dots.innerHTML = '<div class="typing-dots"><div class="dot"></div></div>'
-      chat.appendChild(dots)
-
-      handleFrame({ type: 'assistant-delta', threadId: 't', turnId: 'x', text: 'Hello.' })
-      handleFrame({
-        type: 'assistant-done', threadId: 't', turnId: 'x', seq: 1,
-        message: {
-          id: 'm', role: 'assistant', seq: 1, createdAt: 0,
-          text: 'Hello.',
-          content: [{ type: 'text', text: 'Hello.' }],
-        },
-      })
-
-      // Same single bubble; no tool-call-card so finalize uses
-      // frame.message.text and the rendered text appears.
-      expect(chat.children.length).toBe(1)
-      const bubble = chat.children[0] as HTMLElement
-      expect(bubble.querySelector('.typing-dots')).toBeNull()
-      expect(bubble.classList.contains('tool-call-card')).toBe(false)
-      expect(bubble.textContent).toContain('Hello.')
-    })
-
-    // ── Textarea auto-grow ────────────────────────────────────────────────
-    it('Scenario: autoGrowMessageInput grows the textarea to fit multi-line content (jsdom-driven scrollHeight)', () => {
-      const { autoGrowMessageInput } = internals() as any
-      const ta = document.getElementById('message-input') as HTMLTextAreaElement
-      expect(ta).not.toBeNull()
-      // jsdom's scrollHeight is read-only and reflects the textarea's intrinsic
-      // content size; we don't get real layout, so we monkey-patch a stable
-      // scrollHeight to drive the helper. This exercises the clamp logic.
-      Object.defineProperty(ta, 'scrollHeight', { configurable: true, get: () => 120 })
-      autoGrowMessageInput()
-      expect(ta.style.height).toBe('120px')
-    })
-
-    it('Scenario: autoGrowMessageInput clamps to the 320px max (long content scrolls inside)', () => {
-      const { autoGrowMessageInput } = internals() as any
-      const ta = document.getElementById('message-input') as HTMLTextAreaElement
-      Object.defineProperty(ta, 'scrollHeight', { configurable: true, get: () => 999 })
-      autoGrowMessageInput()
-      expect(ta.style.height).toBe('320px')
-    })
-
-    it('Scenario: autoGrowMessageInput snaps to the 38px floor when content is short / empty', () => {
-      const { autoGrowMessageInput } = internals() as any
-      const ta = document.getElementById('message-input') as HTMLTextAreaElement
-      Object.defineProperty(ta, 'scrollHeight', { configurable: true, get: () => 10 })
-      autoGrowMessageInput()
-      expect(ta.style.height).toBe('38px')
-    })
-
-    it('Scenario: typing into the textarea (input event) triggers auto-grow', () => {
-      const ta = document.getElementById('message-input') as HTMLTextAreaElement
-      // Drive autoGrow via the bound input event (proves the listener is wired).
-      Object.defineProperty(ta, 'scrollHeight', { configurable: true, get: () => 85 })
-      ta.value = 'line1\nline2\nline3'
-      ta.dispatchEvent(new Event('input', { bubbles: true }))
-      expect(ta.style.height).toBe('85px')
-    })
-  })
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Feature: ChatState reducer (post-refactor data model)
-  //
-  // ChatState is the source-of-truth for the chat transcript. The renderer is
-  // a pure function of state, so any bug-class involving "DOM and the streaming
-  // buffer disagree" is captured here at the reducer level.
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: ChatState reducer', () => {
-    const state = () => (window as any).__MoonInternals.ChatState
-
-    beforeEach(() => {
-      state().reset()
-    })
-
-    it('reset() empties the transcript', () => {
-      state().appendUser('hi', null)
-      state().reset()
-      expect(state().turns).toEqual([])
-    })
-
-    it('appendUser pushes a user turn with a done text segment', () => {
-      state().appendUser('hello', null)
-      const t = state().turns[0]
-      expect(t.role).toBe('user')
-      expect(t.status).toBe('done')
-      expect(t.segments).toHaveLength(1)
-      expect(t.segments[0]).toMatchObject({ kind: 'text', raw: 'hello', done: true })
-    })
-
-    it('appendBanner pushes an assistant banner turn (no streaming)', () => {
-      state().appendBanner('New conversation')
-      const t = state().turns[0]
-      expect(t.role).toBe('assistant')
-      expect(t.status).toBe('banner')
-      expect(t.segments[0].raw).toBe('New conversation')
-    })
-
-    it('beginPendingAssistant followed by applyDelta upgrades the placeholder in place', () => {
-      state().beginPendingAssistant()
-      expect(state().turns[0].key).toBe('pending-assistant')
-      state().applyDelta('turn-42', 'Hi')
-      expect(state().turns).toHaveLength(1)
-      expect(state().turns[0].key).toBe('t-turn-42')
-      expect(state().turns[0].segments[0].raw).toBe('Hi')
-    })
-
-    it('applyDelta accumulates into a single text segment when nothing else has happened', () => {
-      state().applyDelta('t1', 'Hello, ')
-      state().applyDelta('t1', '**wor')
-      state().applyDelta('t1', 'ld**!')
-      const segs = state().turns[0].segments
-      expect(segs).toHaveLength(1)
-      expect(segs[0].raw).toBe('Hello, **world**!')
-      expect(segs[0].done).toBe(false)
-    })
-
-    it('applyToolCall closes the open text segment so the next delta starts a fresh one', () => {
-      state().applyDelta('t1', 'Looking up ')
-      state().applyToolCall('t1', 'tc-1', 'bash', { cmd: 'ls' })
-      state().applyDelta('t1', 'Found 3 lines.')
-      const segs = state().turns[0].segments
-      expect(segs.map((s: any) => s.kind)).toEqual(['text', 'tool', 'text'])
-      expect(segs[0].raw).toBe('Looking up ')
-      expect(segs[0].done).toBe(true)
-      expect(segs[1]).toMatchObject({ kind: 'tool', id: 'tc-1', name: 'bash' })
-      expect(segs[2].raw).toBe('Found 3 lines.')
-    })
-
-    it('applyToolResult pairs by toolCallId regardless of position', () => {
-      state().applyToolCall('t1', 'tc-A', 'lsroot', {})
-      state().applyToolCall('t1', 'tc-B', 'cat', {})
-      state().applyToolResult('tc-B', true, 'second body', false)
-      const segs = state().turns[0].segments
-      expect(segs[0].result).toBeNull()
-      expect(segs[1].result).toEqual({ ok: true, output: 'second body', truncated: false })
-    })
-
-    it('finishTurn marks the turn done and closes any open text segment', () => {
-      state().applyDelta('t1', 'partial')
-      state().finishTurn('t1', null)
-      const t = state().turns[0]
-      expect(t.status).toBe('done')
-      expect(t.segments[0].done).toBe(true)
-    })
-
-    it('finishTurn drops a turn that produced no visible content (replaces sweep)', () => {
-      state().beginPendingAssistant()
-      state().finishTurn('t-missing', null)
-      // pending placeholder gets finished and dropped (zero segments).
-      expect(state().turns).toHaveLength(0)
-    })
-
-    it('failTurn surfaces an error turn even when no active turn was in flight', () => {
-      state().failTurn(null, 'connection reset')
-      const t = state().turns[0]
-      expect(t.status).toBe('error')
-      expect(t.errorText).toBe('connection reset')
-    })
-
-    it('dropPendingAssistant removes the watchdog placeholder', () => {
-      state().beginPendingAssistant()
-      const dropped = state().dropPendingAssistant()
-      expect(dropped).toBe(true)
-      expect(state().turns).toHaveLength(0)
-    })
-  })
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Feature: ChatRenderer + ChatLoop (end-to-end via __MoonInternals.handleFrame)
-  //
-  // These tests exercise the wire-frame -> reducer -> renderer pipeline that
-  // production uses. They replace the older DOM-poke tests for the removed
-  // sweepTrailingEmptyAssistantBubbles / isVisuallyEmpty helpers.
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: end-to-end frame pipeline', () => {
-    const M = () => (window as any).__MoonInternals
-    let chat: HTMLElement
-
-    beforeEach(() => {
-      // Synchronous rAF so we observe each frame's effect immediately.
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
-      M().ChatState.reset()
-      chat = document.getElementById('chat-messages') as HTMLElement
-      chat.innerHTML = ''
-    })
-
-    it('thread-snapshot with messages renders one bubble per non-empty message', () => {
-      M().handleFrame({
-        type: 'thread-snapshot',
-        messages: [
-          { role: 'user', text: 'hi there' },
-          { role: 'assistant', text: 'hello back' },
-          { role: 'assistant', text: '   ' },                  // whitespace-only — skipped
-        ],
-      })
-      expect(chat.children.length).toBe(2)
-      expect(chat.children[0].className).toBe('msg user')
-      expect(chat.children[1].className).toBe('msg assistant')
-    })
-
-    it('assistant-delta after a tool-call opens a fresh text bubble; the card is preserved', () => {
-      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Looking up ' })
-      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'tc-1', name: 'bash', input: { cmd: 'ls' } })
-      M().handleFrame({ type: 'tool-result', toolCallId: 'tc-1', status: 'ok', output: 'a\nb\n' })
-      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Found 2 lines.' })
-
-      // Tool-using turn → ONE expanded timeline (the work) + the answer bubble.
-      expect(chat.children.length).toBe(2)
-      const timeline = chat.children[0] as HTMLElement
-      expect(timeline.classList.contains('timeline')).toBe(true)
-      expect(chat.children[1].className).toBe('msg assistant')
-
-      // The tool card is a real <details><summary> step inside the timeline.
-      const card = timeline.querySelector('.tool-call-card') as HTMLElement
-      expect(card).not.toBeNull()
-      expect(card.querySelector('details > summary')).not.toBeNull()
-      expect(card.querySelector('.tool-card-status-ok')).not.toBeNull()
-      expect(card.querySelector('.tool-card-output')!.textContent).toBe('a\nb\n')
-      // The pre-tool interim text is a step in the timeline.
-      expect(timeline.textContent).toContain('Looking up')
-
-      // The trailing answer bubble has the right body.
-      expect(chat.children[1].textContent).toContain('Found 2 lines.')
-    })
-
-    it('assistant-done with no preceding delta drops the empty placeholder (no ghost bubble)', () => {
-      M().ChatState.beginPendingAssistant()
-      M().ChatLoop.flush()
-      expect(chat.querySelector('.typing-dots')).not.toBeNull()
-
-      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: '' } })
-      expect(chat.children.length).toBe(0)
-    })
-
-    it('assistant-done after streaming finalizes the text (markdown rendered) and clears typing dots', () => {
-      M().ChatState.beginPendingAssistant()
-      M().ChatLoop.flush()
-      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Hello **world**' })
-      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'Hello **world**' } })
-
-      expect(chat.querySelector('.typing-dots')).toBeNull()
-      expect(chat.children.length).toBe(1)
-      expect(chat.children[0].innerHTML).toContain('<strong>world</strong>')
-    })
-
-    it('assistant-error surfaces a visible error turn, clears typing dots', () => {
-      M().ChatState.beginPendingAssistant()
-      M().ChatLoop.flush()
-      M().handleFrame({ type: 'assistant-error', turnId: 't1', error: { message: 'rate limited' } })
-      expect(chat.querySelector('.typing-dots')).toBeNull()
-      expect(chat.children.length).toBe(1)
-      expect(chat.children[0].textContent).toContain('rate limited')
-      expect(chat.children[0].className).toContain('error')
-    })
-
-    it('a delta that arrives empty does NOT pollute the transcript', () => {
-      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: '' })
-      expect(M().ChatState.turns).toHaveLength(0)
-      expect(chat.children.length).toBe(0)
-    })
-
-    // Regression: chat-service publishes the CUMULATIVE assistant text on
-    // every `assistant-delta` (chat-service.ts:604 — `text: cumulative`).
-    // ui-shared/reducer.ts mirrors that by REPLACING inFlight.text. The
-    // pre-fix Moon reducer instead APPENDED frame.text to last.raw, which
-    // duplicates the prefix on every delta after the first. Sterling
-    // reported the visible artifact ("HeyHey Sterling — what's on the
-    // agenda?") in luna-moon 0.0.10 on 2026-06-07; this scenario pins it.
-    it('assistant-delta with cumulative text does NOT duplicate the prefix (HeyHey bug)', () => {
-      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Hey' })
-      M().handleFrame({
-        type: 'assistant-delta', turnId: 't1',
-        text: "Hey Sterling — what's on the agenda?",
-      })
-      M().handleFrame({
-        type: 'assistant-done', turnId: 't1',
-        message: { text: "Hey Sterling — what's on the agenda?" },
-      })
-
-      expect(chat.children.length).toBe(1)
-      const bubble = chat.children[0] as HTMLElement
-      expect(bubble.dataset.streamRaw).toBe("Hey Sterling — what's on the agenda?")
-      // The rendered text must NOT contain the duplicated prefix.
-      expect(bubble.textContent).not.toContain('HeyHey')
-      expect(bubble.textContent).toContain("Hey Sterling — what's on the agenda?")
-    })
-
-    it('many small cumulative deltas accumulate to the correct final text', () => {
-      // 5 deltas, each cumulative-up-to-N. Pre-fix this exploded to
-      // "HHeHelHellHello world" — cascading duplication.
-      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'H' })
-      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'He' })
-      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Hel' })
-      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Hell' })
-      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Hello world' })
-      expect(chat.children.length).toBe(1)
-      expect((chat.children[0] as HTMLElement).dataset.streamRaw).toBe('Hello world')
-    })
-
-    it('cumulative deltas spanning a tool call do NOT replay the pre-tool text in the post-tool bubble', () => {
-      // Server cumulative continues to grow across tool calls — chat-service
-      // only resets inFlightText when the final `assistant` SDK message
-      // lands. So the post-tool delta's cumulative includes the pre-tool
-      // prefix. We must subtract that prefix before opening the fresh text
-      // segment, otherwise the user sees "Looking that up. Found 3 lines."
-      // in the post-tool bubble (duplicating the pre-tool text bubble).
-      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Looking that up. ' })
-      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'tc-1', name: 'bash', input: { cmd: 'ls' } })
-      M().handleFrame({ type: 'tool-result', toolCallId: 'tc-1', status: 'ok', output: 'a\n' })
-      M().handleFrame({
-        type: 'assistant-delta', turnId: 't1',
-        // CUMULATIVE: pre-tool + post-tool text.
-        text: 'Looking that up. Found 3 lines.',
-      })
-
-      // [timeline(pre-tool text step + card), answer bubble] — 2 children.
-      expect(chat.children.length).toBe(2)
-      const timeline = chat.children[0] as HTMLElement
-      expect(timeline.classList.contains('timeline')).toBe(true)
-      const post = chat.children[1] as HTMLElement
-      // The pre-tool interim text step keeps ONLY its own segment...
-      const preStep = timeline.querySelector('.timeline-step-text') as HTMLElement
-      expect(preStep.dataset.streamRaw).toBe('Looking that up. ')
-      expect(timeline.querySelector('.tool-call-card')).not.toBeNull()
-      // ...and the post-tool answer bubble shows the INCREMENTAL suffix only.
-      expect(post.dataset.streamRaw).toBe('Found 3 lines.')
-      // The reducer split is the layout-independent dedup fingerprint.
-      const segs = M().ChatState.turns[0].segments
-      expect(segs[0].raw).toBe('Looking that up. ')
-      expect(segs[2].raw).toBe('Found 3 lines.')
-    })
-
-    it('finishTurn with an empty server message text does NOT wipe streamed content', () => {
-      // Regression for the "??" foot-gun. Server sometimes sends
-      // `message.text === ""` on assistant-done; the renderer must still show
-      // the segments accumulated from the delta stream.
-      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'streamed answer' })
-      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: '' } })
-      expect(chat.children.length).toBe(1)
-      expect(chat.children[0].textContent).toContain('streamed answer')
-    })
-
-    // ── Activity timeline (Gemini-style collapsible progress) ─────────────────
-
-    it('timeline: a pure-text turn (no tool) renders a plain bubble, no timeline', () => {
-      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Just a plain answer.' })
-      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'Just a plain answer.' } })
-      expect(chat.children.length).toBe(1)
-      expect(chat.querySelector('.timeline')).toBeNull();
-      expect(chat.children[0].className).toBe('msg assistant')
-      expect(chat.children[0].textContent).toContain('Just a plain answer.')
-    })
-
-    it('timeline: interim text + a tool become steps in ONE expanded timeline while streaming', () => {
-      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Looking that up. ' })
-      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'tc-1', name: 'Google Search', input: { q: 'x' } })
-      M().handleFrame({ type: 'tool-result', toolCallId: 'tc-1', status: 'ok', output: 'done' })
-
-      expect(chat.children.length).toBe(1)
-      const tl = chat.children[0] as HTMLElement
-      expect(tl.classList.contains('timeline')).toBe(true)
-      expect(tl.classList.contains('collapsed')).toBe(false) // expanded while streaming
-      expect((tl.querySelector('.timeline-step-text') as HTMLElement).textContent).toContain('Looking that up.')
-      expect(tl.querySelector('.tool-call-card .tool-card-name')!.textContent).toBe('Google Search')
-      expect(tl.querySelector('.timeline-summary-label')!.textContent).toContain('Working on it')
-    })
-
-    it('timeline: on turn-complete, collapses to a summary pill with the answer bubble below', () => {
-      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Checking. ' })
-      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'tc-1', name: 'Read', input: {} })
-      M().handleFrame({ type: 'tool-result', toolCallId: 'tc-1', status: 'ok', output: 'x' })
-      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Found 2 lines.' })
-      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'Checking. Found 2 lines.' } })
-      M().handleFrame({ type: 'turn-complete', threadId: 't1' })
-
-      expect(chat.children.length).toBe(2)
-      const tl = chat.children[0] as HTMLElement
-      expect(tl.classList.contains('timeline')).toBe(true)
-      expect(tl.classList.contains('collapsed')).toBe(true)
-      expect(tl.querySelector('.timeline-body')).toBeNull() // collapsed = body hidden
-      const answer = chat.children[1] as HTMLElement
-      expect(answer.className).toBe('msg assistant')
-      expect(answer.textContent).toContain('Found 2 lines.')
-    })
-
-    it('timeline: auto-collapses only on turn-complete (per-message done does NOT); shows the work-step count', () => {
-      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'one ' })
-      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'a', name: 'Read', input: {} })
-      M().handleFrame({ type: 'tool-result', toolCallId: 'a', status: 'ok', output: 'r' })
-      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(false)
-
-      // Per-message `assistant-done` must NOT collapse — in a multi-step turn it
-      // fires once per step and can't tell an intermediate step from the final
-      // answer. Collapsing here would hide running work between steps.
-      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'one' } })
-      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(false)
-      expect((chat.querySelector('.timeline-summary-label') as HTMLElement).textContent).toContain('Working on it')
-
-      // Only the whole-turn `turn-complete` settles it.
-      M().handleFrame({ type: 'turn-complete', threadId: 't1' })
-      const tl = chat.querySelector('.timeline') as HTMLElement
-      expect(tl.classList.contains('collapsed')).toBe(true)
-      // Work = [text 'one ', tool] = 2 steps.
-      expect(tl.querySelector('.timeline-summary-label')!.textContent).toBe('Worked for 2 steps')
-    })
-
-    it('timeline: clicking the summary toggles collapse', () => {
-      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'go ' })
-      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'a', name: 'Read', input: {} })
-      M().handleFrame({ type: 'tool-result', toolCallId: 'a', status: 'ok', output: 'r' })
-      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'go' } })
-      M().handleFrame({ type: 'turn-complete', threadId: 't1' }) // settle → starts collapsed
-
-      const click = () => (chat.querySelector('.timeline-summary') as HTMLElement)
-        .dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(true)
-      click()
-      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(false)
-      expect(chat.querySelector('.timeline-body')).not.toBeNull()
-      click()
-      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(true)
-    })
-
-    it('timeline: a user-set collapse survives a later streaming re-render (state lives on the turn)', () => {
-      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'start ' })
-      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'a', name: 'Read', input: {} })
-      // Streaming + expanded; the user collapses it.
-      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(false)
-      ;(chat.querySelector('.timeline-summary') as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(true)
-
-      // A later frame re-renders the timeline — it MUST stay collapsed because
-      // the flag lives on the turn, not the rebuilt DOM. (The core gotcha.)
-      M().handleFrame({ type: 'tool-result', toolCallId: 'a', status: 'ok', output: 'r' })
-      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'b', name: 'Bash', input: {} })
-      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(true)
-    })
-
-    it('timeline: an error mid-work surfaces the error turn (v1 replaces the timeline)', () => {
-      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'trying ' })
-      M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'a', name: 'Read', input: {} })
-      M().handleFrame({ type: 'assistant-error', turnId: 't1', error: { message: 'boom' } })
-      expect(chat.children.length).toBe(1)
-      expect(chat.children[0].className).toContain('error')
-      expect(chat.children[0].textContent).toContain('boom')
-      expect(chat.querySelector('.timeline')).toBeNull()
-    })
-
-    // ── Multi-step agentic-turn GROUPING (the user-reported bug) ──────────────
-    // An agentic turn is N SDK assistant messages, each with its OWN wire
-    // turnId (the server resets the in-flight turn id per assistant message).
-    // They MUST render as ONE collapsible timeline, not N stacked timelines.
-
-    it('timeline: a multi-step turn with DISTINCT turnIds renders exactly ONE timeline', () => {
-      // Frame order mirrors the reordered server: tool-call BEFORE done.
-      // Step 1 (turnId A): think → tool → done → result.
-      M().handleFrame({ type: 'assistant-delta', turnId: 'A', text: 'Step one. ' })
-      M().handleFrame({ type: 'tool-call', turnId: 'A', toolCallId: 'a', name: 'Read', input: {} })
-      M().handleFrame({ type: 'assistant-done', turnId: 'A', message: { text: 'Step one.' } })
-      M().handleFrame({ type: 'tool-result', toolCallId: 'a', status: 'ok', output: 'ra' })
-      // Step 2 (turnId B): a DIFFERENT turn id.
-      M().handleFrame({ type: 'assistant-delta', turnId: 'B', text: 'Step two. ' })
-      M().handleFrame({ type: 'tool-call', turnId: 'B', toolCallId: 'b', name: 'Bash', input: {} })
-      M().handleFrame({ type: 'assistant-done', turnId: 'B', message: { text: 'Step two.' } })
-      M().handleFrame({ type: 'tool-result', toolCallId: 'b', status: 'ok', output: 'rb' })
-      // Final answer (turnId C): pure text, no tool.
-      M().handleFrame({ type: 'assistant-delta', turnId: 'C', text: 'All done.' })
-      M().handleFrame({ type: 'assistant-done', turnId: 'C', message: { text: 'All done.' } })
-
-      // THE fix: ONE timeline grouping all three turns' work, not three.
-      // (Asserted while still expanded — a collapsed timeline hides its body.)
-      expect(chat.querySelectorAll('.timeline').length).toBe(1)
-      let tl = chat.querySelector('.timeline') as HTMLElement
-      expect(tl.classList.contains('collapsed')).toBe(false)
-      // Both tools are steps inside the single timeline.
-      expect(tl.querySelectorAll('.tool-call-card').length).toBe(2)
-
-      // The whole turn ends → settle → collapse.
-      M().handleFrame({ type: 'turn-complete', threadId: 't1' })
-      expect(chat.querySelectorAll('.timeline').length).toBe(1)
-      tl = chat.querySelector('.timeline') as HTMLElement
-      expect(tl.classList.contains('collapsed')).toBe(true)
-      // Work = [textA, toolA, textB, toolB] = 4 steps.
-      expect(tl.querySelector('.timeline-summary-label')!.textContent).toBe('Worked for 4 steps')
-      // The final answer is the bubble below the pill.
-      const answer = chat.children[chat.children.length - 1] as HTMLElement
-      expect(answer.className).toBe('msg assistant')
-      expect(answer.textContent).toContain('All done.')
-    })
-
-    it('timeline: an intermediate per-message done across turnIds stays EXPANDED (no flicker)', () => {
-      // Step 1 ends (turnId A, ends on a tool) — but the agentic turn is NOT
-      // over (no turn-complete yet). The single timeline must stay expanded so
-      // running work between steps is never hidden.
-      M().handleFrame({ type: 'assistant-delta', turnId: 'A', text: 'Looking. ' })
-      M().handleFrame({ type: 'tool-call', turnId: 'A', toolCallId: 'a', name: 'Read', input: {} })
-      M().handleFrame({ type: 'assistant-done', turnId: 'A', message: { text: 'Looking.' } })
-      M().handleFrame({ type: 'tool-result', toolCallId: 'a', status: 'ok', output: 'ra' })
-
-      expect(chat.querySelectorAll('.timeline').length).toBe(1)
-      const tl = chat.querySelector('.timeline') as HTMLElement
-      expect(tl.classList.contains('collapsed')).toBe(false)
-      expect(tl.querySelector('.timeline-summary-label')!.textContent).toContain('Working on it')
-      expect(tl.querySelector('.typing-dots')).not.toBeNull() // still in flight
-
-      // Step 2 begins under a new turnId — still ONE timeline, still expanded.
-      M().handleFrame({ type: 'assistant-delta', turnId: 'B', text: 'More. ' })
-      M().handleFrame({ type: 'tool-call', turnId: 'B', toolCallId: 'b', name: 'Bash', input: {} })
-      expect(chat.querySelectorAll('.timeline').length).toBe(1)
-      expect((chat.querySelector('.timeline') as HTMLElement).classList.contains('collapsed')).toBe(false)
-    })
-
-    it('timeline: a new user message starts a fresh run (does NOT merge into the prior turn)', () => {
-      // First agentic turn (tool + settle).
-      M().handleFrame({ type: 'assistant-delta', turnId: 'A', text: 'First. ' })
-      M().handleFrame({ type: 'tool-call', turnId: 'A', toolCallId: 'a', name: 'Read', input: {} })
-      M().handleFrame({ type: 'assistant-done', turnId: 'A', message: { text: 'First.' } })
-      M().handleFrame({ type: 'turn-complete', threadId: 't1' })
-      // A user turn is the run boundary.
-      M().ChatState.appendUser('next question')
-      M().ChatLoop.flush()
-      // Second agentic turn (tool, still in flight).
-      M().handleFrame({ type: 'assistant-delta', turnId: 'B', text: 'Second. ' })
-      M().handleFrame({ type: 'tool-call', turnId: 'B', toolCallId: 'b', name: 'Bash', input: {} })
-
-      // TWO separate timelines — the user turn breaks the run.
-      const tls = Array.from(chat.querySelectorAll('.timeline')) as HTMLElement[]
-      expect(tls.length).toBe(2)
-      expect(tls[0].classList.contains('collapsed')).toBe(true)  // first settled
-      expect(tls[1].classList.contains('collapsed')).toBe(false) // second in flight
-    })
-
-    // ── Version-skew: grouping is gated on the server's `turn-complete` capability ──
-    // A NEW moon against an OLD server (no turn-complete) must NOT group and must
-    // settle each timeline on its own `assistant-done` — otherwise the grouped
-    // timeline, which only settles on turn-complete, would hang on "Working on it…".
-
-    it('timeline: hello capability turnComplete drives State.serverSupportsTurnComplete', () => {
-      // New server advertises it.
-      M().handleFrame({ type: 'hello', protocolVersion: 2, kinds: [],
-        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false, turnComplete: true } })
-      expect(M().State.serverSupportsTurnComplete).toBe(true)
-      // Old server omits it → falsy.
-      M().handleFrame({ type: 'hello', protocolVersion: 2, kinds: [],
-        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false } })
-      expect(M().State.serverSupportsTurnComplete).toBe(false)
-    })
-
-    it('timeline (old server, no turn-complete): per-turn timelines settle on assistant-done — no hang', () => {
-      // Server advertises NO turn-complete capability.
-      M().handleFrame({ type: 'hello', protocolVersion: 2, kinds: [],
-        capabilities: { chat: true, streamingDeltas: true, localShell: false, setup: false } })
-      expect(M().State.serverSupportsTurnComplete).toBe(false)
-
-      // Two tool-using assistant turns, distinct turnIds. NO turn-complete is
-      // ever sent (the old server can't emit it).
-      M().handleFrame({ type: 'assistant-delta', turnId: 'A', text: 'one ' })
-      M().handleFrame({ type: 'tool-call', turnId: 'A', toolCallId: 'a', name: 'Read', input: {} })
-      M().handleFrame({ type: 'assistant-done', turnId: 'A', message: { text: 'one' } })
-      M().handleFrame({ type: 'tool-result', toolCallId: 'a', status: 'ok', output: 'r' })
-      M().handleFrame({ type: 'assistant-delta', turnId: 'B', text: 'two ' })
-      M().handleFrame({ type: 'tool-call', turnId: 'B', toolCallId: 'b', name: 'Bash', input: {} })
-      M().handleFrame({ type: 'assistant-done', turnId: 'B', message: { text: 'two' } })
-
-      // NOT grouped → two separate timelines (the pre-grouping behavior), and
-      // BOTH settle (collapse) on their own done despite no turn-complete — so
-      // the UI never hangs on a perpetual "Working on it…" spinner.
-      const tls = Array.from(chat.querySelectorAll('.timeline')) as HTMLElement[]
-      expect(tls.length).toBe(2)
-      expect(tls.every((t) => t.classList.contains('collapsed'))).toBe(true)
-      expect(chat.querySelector('.timeline .typing-dots')).toBeNull()
-      expect(chat.querySelector('.timeline-summary-label')!.textContent).toContain('Worked for')
-    })
-  // ───────────────────────────────────────────────────────────────────────────
-  // Feature: UserAsk / alignment-survey (Phase 3 D3, Moon-side wiring)
-  //
-  // The TUI already paints a survey modal when the server pushes a
-  // `survey-request` frame; this suite is the Moon-UI parity. We drive the
-  // pipeline at the same seam the production WS handler uses
-  // (__MoonInternals.handleFrame), then poke buttons in the panel and assert
-  // the resulting `survey-response` frame.
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: UserAsk / alignment-survey panel', () => {
-    const M = () => (window as any).__MoonInternals
-
-    const sampleFrame = () => ({
-      type: 'survey-request',
-      surveyId: 'survey-1700',
-      issuedAt: 1700,
-      items: [
-        { id: 'tq-1', kind: 'task_quality', prompt: 'How did Luna do on the last task?', ref: 'task-99' },
-        { id: 'bv-1', kind: 'belief_validation', prompt: 'Sterling prefers concise replies.',
-          ref: 'belief-7', beliefId: 'belief-7' },
-        { id: 'bv-2', kind: 'belief_validation', prompt: 'Sterling works mostly on macOS.',
-          ref: 'belief-8', beliefId: 'belief-8' },
-      ],
-    })
-
-    beforeEach(() => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
-      const m = M()
-      if (m && m.ChatState && typeof m.ChatState.reset === 'function') m.ChatState.reset()
-      const panel = document.getElementById('user-ask-panel')
-      if (panel) { panel.hidden = true; }
-      const body = document.getElementById('user-ask-body')
-      if (body) body.innerHTML = ''
-      if (m && m.SurveyEngine) {
-        m.SurveyEngine.pending = null
-        m.SurveyEngine.answers = { likert: null, beliefAnswers: {} }
-      }
-    })
-
-    it('buildSurveyVerdicts maps task_quality (n=4) to score=0.75 and stamps at=issuedAt', () => {
-      const items = sampleFrame().items
-      const verdicts = M().buildSurveyVerdicts(items, { likert: 4, beliefAnswers: {} }, 1700)
-      expect(verdicts).toHaveLength(1)
-      expect(verdicts[0]).toMatchObject({
-        itemId: 'tq-1',
-        kind: 'task_quality',
-        ref: 'task-99',
-        score: 0.75,
-        via: 'survey',
-        at: 1700,
-      })
-    })
-
-    it('buildSurveyVerdicts maps belief answers to verdict + omits unanswered beliefs', () => {
-      const items = sampleFrame().items
-      const verdicts = M().buildSurveyVerdicts(items, {
-        likert: 1,                                                       // → score 0
-        beliefAnswers: { 'belief-7': 'corrected' },                       // belief-8 unanswered
-      }, 1700)
-      expect(verdicts).toHaveLength(2)
-      const tq = verdicts.find((v: any) => v.kind === 'task_quality')
-      const bv = verdicts.find((v: any) => v.kind === 'belief_validation')
-      expect(tq.score).toBe(0)
-      expect(bv).toMatchObject({
-        itemId: 'bv-1', beliefId: 'belief-7', verdict: 'corrected', via: 'survey', at: 1700,
-      })
-    })
-
-    it('Scenario: a survey-request frame reveals the docked user-ask panel with the prompt + 5 Likert buttons + 3 belief buttons', () => {
-      M().handleFrame(sampleFrame())
-
-      const panel = document.getElementById('user-ask-panel') as HTMLElement
-      expect(panel.hidden).toBe(false)
-
-      const body = document.getElementById('user-ask-body') as HTMLElement
-      const items = body.querySelectorAll('.user-ask-item')
-      expect(items.length).toBe(3)
-
-      // Task-quality row exposes 5 Likert buttons.
-      const tqRow = items[0] as HTMLElement
-      expect(tqRow.dataset.kind).toBe('task_quality')
-      expect(tqRow.querySelectorAll('.user-ask-choice[data-likert]').length).toBe(5)
-
-      // Each belief row exposes 3 verdict buttons keyed by beliefId.
-      const bvRow = items[1] as HTMLElement
-      expect(bvRow.dataset.kind).toBe('belief_validation')
-      expect(bvRow.dataset.beliefId).toBe('belief-7')
-      const verdictBtns = bvRow.querySelectorAll('.user-ask-choice[data-verdict]')
-      expect(verdictBtns.length).toBe(3)
-
-      // Submit is disabled until task_quality is answered.
-      const submit = document.getElementById('user-ask-submit') as HTMLButtonElement
-      expect(submit.disabled).toBe(true)
-    })
-
-    it('Scenario: clicking a Likert button selects it visually + enables Submit', () => {
-      M().handleFrame(sampleFrame())
-      const submit = document.getElementById('user-ask-submit') as HTMLButtonElement
-      expect(submit.disabled).toBe(true)
-
-      const tqRow = document.querySelectorAll('.user-ask-item')[0] as HTMLElement
-      const btn3 = tqRow.querySelector('.user-ask-choice[data-likert="3"]') as HTMLButtonElement
-      btn3.click()
-
-      expect(btn3.classList.contains('selected')).toBe(true)
-      expect(submit.disabled).toBe(false)
-      // Other Likert buttons should NOT be selected.
-      const btn1 = tqRow.querySelector('.user-ask-choice[data-likert="1"]') as HTMLButtonElement
-      expect(btn1.classList.contains('selected')).toBe(false)
-    })
-
-    it('Scenario: clicking belief verdict buttons toggles single selection per belief row', () => {
-      M().handleFrame(sampleFrame())
-      const bv1 = document.querySelectorAll('.user-ask-item')[1] as HTMLElement
-      const confirmBtn = bv1.querySelector('.user-ask-choice[data-verdict="confirmed"]') as HTMLButtonElement
-      const rejectBtn  = bv1.querySelector('.user-ask-choice[data-verdict="rejected"]')  as HTMLButtonElement
-
-      confirmBtn.click()
-      expect(confirmBtn.classList.contains('selected')).toBe(true)
-
-      rejectBtn.click()
-      expect(rejectBtn.classList.contains('selected')).toBe(true)
-      expect(confirmBtn.classList.contains('selected')).toBe(false)
-    })
-
-    it('Scenario: Submit sends one survey-response frame and hides the panel', () => {
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
-      M().handleFrame(sampleFrame())
-
-      // Answer task_quality + one belief.
-      const items = document.querySelectorAll('.user-ask-item')
-      ;(items[0].querySelector('.user-ask-choice[data-likert="5"]') as HTMLButtonElement).click()
-      ;(items[1].querySelector('.user-ask-choice[data-verdict="confirmed"]') as HTMLButtonElement).click()
-
-      const submit = document.getElementById('user-ask-submit') as HTMLButtonElement
-      submit.click()
-
-      expect(sendSpy).toHaveBeenCalledTimes(1)
-      const frame = sendSpy.mock.calls[0][0] as any
-      expect(frame.type).toBe('survey-response')
-      expect(frame.surveyId).toBe('survey-1700')
-      expect(frame.issuedAt).toBe(1700)
-      expect(frame.verdicts).toHaveLength(2)
-      const tq = frame.verdicts.find((v: any) => v.kind === 'task_quality')
-      const bv = frame.verdicts.find((v: any) => v.kind === 'belief_validation')
-      expect(tq).toMatchObject({ score: 1, ref: 'task-99', at: 1700 })
-      expect(bv).toMatchObject({ verdict: 'confirmed', beliefId: 'belief-7', at: 1700 })
-
-      // Panel collapses.
-      const panel = document.getElementById('user-ask-panel') as HTMLElement
-      expect(panel.hidden).toBe(true)
-    })
-
-    it('Scenario: Dismiss closes the panel WITHOUT sending any wire frame', () => {
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
-      M().handleFrame(sampleFrame())
-
-      const dismiss = document.getElementById('user-ask-dismiss') as HTMLButtonElement
-      dismiss.click()
-
-      expect(sendSpy).not.toHaveBeenCalled()
-      const panel = document.getElementById('user-ask-panel') as HTMLElement
-      expect(panel.hidden).toBe(true)
-    })
-
-    it('Scenario: Submit is a no-op when task_quality is unanswered (defence in depth past disabled button)', () => {
-      const sendSpy = vi.spyOn(M().WebSocketEngine, 'send').mockImplementation(() => {})
-      M().handleFrame(sampleFrame())
-      // Only answer a belief — leave Likert null.
-      const items = document.querySelectorAll('.user-ask-item')
-      ;(items[1].querySelector('.user-ask-choice[data-verdict="rejected"]') as HTMLButtonElement).click()
-
-      // Call submit() directly (bypassing the disabled button).
-      M().SurveyEngine.submit()
-      expect(sendSpy).not.toHaveBeenCalled()
-
-      // Hint flips to error state.
-      const hint = document.getElementById('user-ask-hint') as HTMLElement
-      expect(hint.classList.contains('error')).toBe(true)
-    })
-
-    it('Scenario: a second survey-request replaces the first cleanly (fresh items, fresh answers)', () => {
-      M().handleFrame(sampleFrame())
-      // Answer the first one.
-      ;(document.querySelector('.user-ask-choice[data-likert="2"]') as HTMLButtonElement).click()
-
-      // Server pushes a NEW survey with a different issuedAt + different items.
-      M().handleFrame({
-        type: 'survey-request',
-        surveyId: 'survey-2200',
-        issuedAt: 2200,
-        items: [
-          { id: 'tq-9', kind: 'task_quality', prompt: 'Fresh check-in', ref: 'task-200' },
-        ],
-      })
-
-      const items = document.querySelectorAll('.user-ask-item')
-      expect(items.length).toBe(1)
-      expect((items[0] as HTMLElement).dataset.itemId).toBe('tq-9')
-
-      // No Likert button should be selected — answers were reset.
-      const selected = document.querySelectorAll('.user-ask-choice.selected')
-      expect(selected.length).toBe(0)
-
-      // Submit is disabled again.
-      const submit = document.getElementById('user-ask-submit') as HTMLButtonElement
-      expect(submit.disabled).toBe(true)
-    })
-  })
-
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Feature: handleSubmit single-fire guard (no double-send)
-  //
-  // The user observed in production that messages from the Moon were being
-  // processed multiple times. The most likely client-side amplifier is a
-  // double-fire of handleSubmit (WKWebView quirks, button double-tap, or
-  // future re-wiring). These tests pin a microtask-scoped single-fire guard
-  // in place: no matter how many times handleSubmit is invoked synchronously
-  // for the same user action, exactly ONE user-message frame goes on the wire.
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: handleSubmit single-fire guard', () => {
-    const M = () => (window as any).__MoonInternals
-
-    const setActiveThread = (id: string) => {
-      // thread-created sets activeThreadId without needing a live ws.
-      M().handleFrame({ type: 'thread-created', thread: { id } })
-    }
-
-    const userMessageSends = (spy: any) =>
-      spy.mock.calls.filter((c: any[]) => (c[0] as any).type === 'user-message')
-
-    beforeEach(() => {
-      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
-      ;(window as any).cancelAnimationFrame = () => {}
-      // Reset chat state + textarea so the suite is independent.
-      const m = M()
-      if (m?.ChatState?.reset) m.ChatState.reset()
-      const ta = document.getElementById('message-input') as HTMLTextAreaElement
-      if (ta) ta.value = ''
-    })
-
-    it('Scenario: a single Enter keypress in the textarea fires exactly ONE user-message frame', () => {
-      const m = M()
-      setActiveThread('thread-A')
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-
-      const ta = document.getElementById('message-input') as HTMLTextAreaElement
-      ta.value = 'hi luna'
-      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-
-      expect(userMessageSends(sendSpy).length).toBe(1)
-    })
-
-    it('Scenario: a single form-submit fires exactly ONE user-message frame', () => {
-      const m = M()
-      setActiveThread('thread-A')
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-
-      const ta = document.getElementById('message-input') as HTMLTextAreaElement
-      ta.value = 'hi luna'
-      document.getElementById('chat-form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-
-      expect(userMessageSends(sendSpy).length).toBe(1)
-    })
-
-    it('Scenario: keydown Enter IMMEDIATELY followed by a synthetic form-submit fires exactly ONE user-message frame (WKWebView implicit-submission defence)', () => {
-      const m = M()
-      setActiveThread('thread-A')
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-
-      const ta = document.getElementById('message-input') as HTMLTextAreaElement
-      ta.value = 'hi luna'
-      // Simulate the worst case: both event paths fire from a single key press.
-      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-      document.getElementById('chat-form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-
-      expect(userMessageSends(sendSpy).length).toBe(1)
-    })
-
-    it('Scenario: calling ChatEngine.handleSubmit() synchronously twice fires exactly ONE user-message frame', () => {
-      const m = M()
-      setActiveThread('thread-A')
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-
-      const ta = document.getElementById('message-input') as HTMLTextAreaElement
-      ta.value = 'hi luna'
-      const evtA = new Event('submit', { bubbles: true, cancelable: true })
-      const evtB = new Event('submit', { bubbles: true, cancelable: true })
-      // Direct synchronous double-call (the failure mode the microtask guard
-      // covers — fires that the empty-textarea downstream check could miss
-      // for e.g. attachment-only sends or the no-active-thread branch).
-      m.ChatEngine.handleSubmit(evtA)
-      m.ChatEngine.handleSubmit(evtB)
-
-      expect(userMessageSends(sendSpy).length).toBe(1)
-    })
-
-    it('Scenario: two intentional submits separated by a microtask DO both fire (guard self-clears)', async () => {
-      const m = M()
-      setActiveThread('thread-A')
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-
-      const ta = document.getElementById('message-input') as HTMLTextAreaElement
-      ta.value = 'first'
-      document.getElementById('chat-form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-      // queueMicrotask in handleSubmit clears the flag; wait one microtask.
-      await Promise.resolve()
-      ta.value = 'second'
-      document.getElementById('chat-form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-
-      const sends = userMessageSends(sendSpy)
-      expect(sends.length).toBe(2)
-      expect((sends[0][0] as any).text).toBe('first')
-      expect((sends[1][0] as any).text).toBe('second')
-    })
-  })
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Feature: Long-running turn timeline stays scrollable
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Long-running turn timeline stays scrollable (regression)', () => {
-    // Layout regression guard. jsdom does NO layout, so we can't measure
-    // scrollHeight/clientHeight here — this pins the CSS rule that fixes the bug.
-    //
-    // Bug: `.chat-messages` is `flex:1` AND a column flex container. Its children
-    // default to flex-shrink:1, and a `.timeline` sets `overflow:hidden` (which
-    // gives it an automatic minimum size of 0 per CSS Flexbox §4.5). So on a long
-    // agentic turn, flexbox COMPRESSED the streaming timeline down to its one-line
-    // "Working on it…" summary — clipping every tool step inside it and making
-    // scrollHeight == clientHeight, so .chat-messages could not scroll at all.
-    // The content was rendered but unreachable. Fix: pin the direct children to
-    // flex-shrink:0 so each keeps its natural height and the overflow scrolls.
-    // (Reproduced + fix verified in both WebKit and Blink via a Playwright layout
-    // probe driving the real handleFrame pipeline; see the PR description.)
-    //
-    // We can't measure layout in jsdom, but jsdom DOES resolve getComputedStyle
-    // through the `> *` combinator, so we assert the EFFECTIVE flex-shrink a real
-    // direct child of `.chat-messages` would compute. This is cascade-aware (a
-    // later rule that reset flex-shrink fails this), formatting-agnostic, and
-    // robust to the stylesheet being split across multiple <style> blocks —
-    // unlike a text/regex match.
-    it('Scenario: a direct child of .chat-messages computes flex-shrink:0 (cannot be compressed away)', () => {
-      // Pull EVERY <style> block out of the source and apply them all.
-      const css = [...htmlContent.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)]
-        .map((m) => m[1])
-        .join('\n')
-      const styleEl = document.createElement('style')
-      styleEl.textContent = css
-      document.head.appendChild(styleEl)
-      const probe = document.createElement('div')
-      probe.innerHTML =
-        '<div class="chat-messages"><div class="msg assistant" id="__flexshrink_probe__">x</div></div>'
-      document.body.appendChild(probe)
-      try {
-        const child = document.getElementById('__flexshrink_probe__')!
-        expect(getComputedStyle(child).flexShrink).toBe('0')
-      } finally {
-        styleEl.remove()
-        probe.remove()
-      }
-    })
-  })
-
-  })
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Feature: re-tether reattach correctness (the network behavior the moon's
-  // "string" drives). Subscribe watchdog, in-memory thread preference over the
-  // on-disk file, and restart-survival persistence. No physics here (jsdom).
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: re-tether reattach correctness', () => {
-    const M = () => (window as any).__MoonInternals
-
-    // The shared beforeEach Tauri mock has no `core.invoke`; give each test one.
-    const stubInvoke = (impl?: (cmd: string, args?: any) => any) => {
-      const invoke = vi.fn(impl ?? (() => Promise.resolve(null)))
-      ;(window as any).__TAURI__.core = { invoke }
-      return invoke
-    }
-    const fakeOpenSocket = () => ({ readyState: WebSocket.OPEN, send: vi.fn() })
-
-    it('Scenario: syncThread prefers the in-memory thread over the Tauri last-thread file', async () => {
-      const m = M()
-      const invoke = stubInvoke(() => Promise.resolve('file-thread'))
-      m.State.activeThreadId = 'live-thread'
-      m.State.skipLastThreadFile = false
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-
-      await m.WebSocketEngine.syncThread()
-
-      expect(invoke).not.toHaveBeenCalled() // never touched the disk file
-      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'live-thread' })
-    })
-
-    it('Scenario: syncThread falls back to the Tauri last-thread file on a cold start', async () => {
-      const m = M()
-      const invoke = stubInvoke((cmd) =>
-        Promise.resolve(cmd === 'get_last_thread_id' ? 'file-thread' : null),
-      )
-      m.State.activeThreadId = null
-      m.State.skipLastThreadFile = false
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-
-      await m.WebSocketEngine.syncThread()
-
-      expect(invoke).toHaveBeenCalledWith('get_last_thread_id')
-      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'file-thread' })
-    })
-
-    it('Scenario: a server switch ignores BOTH the stale in-memory id and the file, listing fresh', async () => {
-      const m = M()
-      const invoke = stubInvoke(() => Promise.resolve('file-thread'))
-      m.State.activeThreadId = 'stale-old-server-thread'
-      m.State.skipLastThreadFile = true
-      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-
-      await m.WebSocketEngine.syncThread()
-
-      expect(invoke).not.toHaveBeenCalled()
-      expect(sendSpy).toHaveBeenCalledWith({ type: 'list-threads' })
-      expect(m.State.skipLastThreadFile).toBe(false) // one-shot guard consumed
-    })
-
-    it('Scenario: the subscribe watchdog fires onReattachStalled when no snapshot arrives', () => {
-      const m = M()
-      stubInvoke()
-      // Neutralize any pending auto-reconnect so connGen cannot shift under us.
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.State.ws = fakeOpenSocket() // socket is fine; only the thread is missing
-      const stalled = vi.spyOn(m.WebSocketEngine, 'onReattachStalled').mockImplementation(() => {})
-
-      m.WebSocketEngine.startSubscribeTimeout()
-      expect(m.State.subscribeTimeout).not.toBeNull()
-
-      vi.advanceTimersByTime(7000)
-
-      expect(stalled).toHaveBeenCalledTimes(1)
-      expect(m.State.subscribeTimeout).toBeNull()
-    })
-
-    it('Scenario: a thread-snapshot cancels the watchdog (success is not treated as stalled)', () => {
-      const m = M()
-      stubInvoke()
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
-      m.State.ws = fakeOpenSocket()
-      m.State.activeThreadId = 'thread-xyz'
-      const stalled = vi.spyOn(m.WebSocketEngine, 'onReattachStalled').mockImplementation(() => {})
-
-      m.WebSocketEngine.startSubscribeTimeout()
-      m.handleFrame({ type: 'thread-snapshot', messages: [] })
-      expect(m.State.subscribeTimeout).toBeNull()
-
-      vi.advanceTimersByTime(7000)
-      expect(stalled).not.toHaveBeenCalled()
-    })
-
-    it('Scenario: a thread-snapshot persists the thread id for restart-survival', () => {
-      const m = M()
-      const invoke = stubInvoke()
-      m.State.ws = fakeOpenSocket()
-      m.State.activeThreadId = 'thread-xyz'
-
-      m.handleFrame({ type: 'thread-snapshot', messages: [] })
-
-      expect(invoke).toHaveBeenCalledWith('set_last_thread_id', { threadId: 'thread-xyz' })
-    })
-  })
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Feature: single-thread controls. The "+ new chat" satellite is gone (Luna is
-  // single-thread); the rare reset moves into Settings → General.
-  // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: single-thread controls (removed "+", Settings reset)', () => {
-    const M = () => (window as any).__MoonInternals
-
-    it('Scenario: the "+ new chat" satellite is gone; Settings has the reset instead', () => {
-      expect(document.getElementById('new-chat')).toBeNull()
-      expect(document.getElementById('fresh-thread-btn')).not.toBeNull()
-    })
-
-    it('Scenario: "Start a fresh thread" clears the active thread and closes Settings', () => {
-      const m = M()
-      document.getElementById('chat-panel')!.classList.add('active') // skip the async open branch
-      document.getElementById('toggle-settings')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      expect(document.getElementById('settings-panel')!.classList.contains('active')).toBe(true)
-
-      m.State.activeThreadId = 'old-thread'
-      document.getElementById('fresh-thread-btn')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-
-      expect(m.State.activeThreadId).toBeNull() // newConversation() ran
-      expect(document.getElementById('settings-panel')!.classList.contains('active')).toBe(false) // close() ran
-    })
-  })
 
   // ───────────────────────────────────────────────────────────────────────────
   // Feature: re-tether swing envelope. The window grows + re-origins so the moon
@@ -2086,8 +308,9 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
 
   // ───────────────────────────────────────────────────────────────────────────
   // Feature: re-tether state machine. Drives the string from the connection
-  // lifecycle: pull → reconnect to the SAME thread; detached-past-grace / stalled
-  // → drop the string (collapsed-only); thread-snapshot → retract + restore.
+  // lifecycle: pull → reconnect NOW (the hub is hello-only since Phase 4 — no
+  // thread to re-subscribe); detached-past-grace → drop the string; hello on
+  // the new socket → retract + restore.
   // ───────────────────────────────────────────────────────────────────────────
   describe('Feature: re-tether state machine', () => {
     const M = () => (window as any).__MoonInternals
@@ -2104,21 +327,18 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(m.State.reconnectTimer).toBeNull() // no orphaned second socket
     })
 
-    it('Scenario: pull with the socket OPEN re-subscribes to the SAME thread (never new-thread)', () => {
+    it('Scenario: pull with the socket OPEN reconnects too — the hub never re-subscribes a thread', () => {
       const m = M()
       m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      m.State.activeThreadId = 'thread-keep'
       const send = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
-      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
+      const connect = vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
       m.WebSocketEngine.reTether()
-      expect(send).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'thread-keep' })
-      expect(send).not.toHaveBeenCalledWith({ type: 'new-thread' })
-      expect(m.State.subscribeTimeout).not.toBeNull() // watchdog re-armed
+      expect(connect).toHaveBeenCalledTimes(1)
+      expect(send).not.toHaveBeenCalled() // no subscribe / list-threads / new-thread
     })
 
-    it('Scenario: showTether drops the string when collapsed (grow envelope → show)', async () => {
+    it('Scenario: showTether drops the string (grow envelope → show)', async () => {
       const m = M()
-      document.getElementById('chat-panel')!.classList.remove('active')
       vi.spyOn(m.MoonString, 'isLive').mockReturnValue(false)
       const grow = vi.spyOn(m.TauriService, 'growToEnvelope').mockResolvedValue(undefined)
       const show = vi.spyOn(m.MoonString, 'show').mockImplementation(() => {})
@@ -2129,18 +349,8 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(m.State.tetherPendingOnCollapse).toBe(false)
     })
 
-    it('Scenario: showTether DEFERS while the chat is open (string is collapsed-only)', () => {
-      const m = M()
-      document.getElementById('chat-panel')!.classList.add('active')
-      const grow = vi.spyOn(m.TauriService, 'growToEnvelope').mockResolvedValue(undefined)
-      m.WebSocketEngine.showTether()
-      expect(grow).not.toHaveBeenCalled()
-      expect(m.State.tetherPendingOnCollapse).toBe(true)
-    })
-
     it('Scenario: a reconnect landing mid-grow abandons the string AND restores the window (tetherGen epoch)', async () => {
       const m = M()
-      document.getElementById('chat-panel')!.classList.remove('active')
       vi.spyOn(m.MoonString, 'isLive').mockReturnValue(false)
       // growToEnvelope() resolves only when WE say so — this models the several-IPC
       // round-trip gap during which a background reconnect can succeed.
@@ -2166,7 +376,6 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
 
     it('Scenario: a NEW tether episode during cleanup is not clobbered (epoch guards the restore)', async () => {
       const m = M()
-      document.getElementById('chat-panel')!.classList.remove('active')
       vi.spyOn(m.MoonString, 'isLive').mockReturnValue(false)
       vi.spyOn(m.MoonString, 'show').mockImplementation(() => {})
       let resolveGrow1: () => void = () => {}
@@ -2183,95 +392,26 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(restore).not.toHaveBeenCalled()   // episode 1's restore stood down; episode 2 owns the window
     })
 
-    it('Scenario: opening the chat ENDS the tether episode — a later reconnect cannot shrink the OPEN chat (regression)', async () => {
-      const m = M()
-      document.getElementById('chat-panel')!.classList.remove('active')
-      // Live-state tracked through the real show/hideImmediate call order, so the
-      // chat-open teardown path is exercised exactly as production wires it.
-      let live = false
-      vi.spyOn(m.MoonString, 'isLive').mockImplementation(() => live)
-      const show = vi.spyOn(m.MoonString, 'show').mockImplementation(() => { live = true })
-      vi.spyOn(m.MoonString, 'hideImmediate').mockImplementation(() => { live = false })
-      vi.spyOn(m.TauriService, 'growToEnvelope').mockResolvedValue(undefined)
-      const restore = vi.spyOn(m.TauriService, 'restoreCollapsed').mockResolvedValue(undefined)
-
-      m.WebSocketEngine.showTether()           // string drops while collapsed
-      await Promise.resolve(); await Promise.resolve()
-      expect(show).toHaveBeenCalledTimes(1)    // grow settled → string is out
-
-      // User opens the chat while the string is out (quick moon click).
-      const moon = document.getElementById('moon')!
-      moon.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 100, clientY: 100 }))
-      vi.advanceTimersByTime(50)
-      moon.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: 100, clientY: 100 }))
-      for (let i = 0; i < 10; i++) await Promise.resolve() // flush toggleChat's await chain
-      expect(document.getElementById('chat-panel')!.classList.contains('active')).toBe(true)
-      expect(restore).toHaveBeenCalledTimes(1) // teardown restored the envelope as part of the open
-      expect(m.State.growPromise).toBeNull()   // episode bookkeeping fully cleared
-
-      // The background reconnect lands AFTER the chat is open. Before the fix, the
-      // dangling growPromise made this replay restoreCollapsed() — shrinking the
-      // user's open chat window to 140x185 mid-use.
-      restore.mockClear()
-      await m.WebSocketEngine.onReattached()
-      expect(restore).not.toHaveBeenCalled()
-    })
-
-    it('Scenario: opening the chat MID-GROW abandons the deferred string (no string pop over the open chat)', async () => {
-      const m = M()
-      document.getElementById('chat-panel')!.classList.remove('active')
-      let live = false
-      vi.spyOn(m.MoonString, 'isLive').mockImplementation(() => live)
-      const show = vi.spyOn(m.MoonString, 'show').mockImplementation(() => { live = true })
-      vi.spyOn(m.MoonString, 'hideImmediate').mockImplementation(() => { live = false })
-      let resolveGrow: () => void = () => {}
-      vi.spyOn(m.TauriService, 'growToEnvelope')
-        .mockReturnValue(new Promise<void>((r) => { resolveGrow = r }))
-      vi.spyOn(m.TauriService, 'restoreCollapsed').mockResolvedValue(undefined)
-
-      m.WebSocketEngine.showTether()           // grow in flight; string NOT yet shown
-
-      // User opens the chat before the grow settles. The open path must bump the
-      // epoch so the deferred MoonString.show() stands down — before the fix the
-      // teardown branch was skipped entirely (isLive() still false) and the string
-      // popped out OVER the open chat once the grow resolved.
-      const moon = document.getElementById('moon')!
-      moon.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 100, clientY: 100 }))
-      vi.advanceTimersByTime(50)
-      moon.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: 100, clientY: 100 }))
-      for (let i = 0; i < 10; i++) await Promise.resolve()
-
-      resolveGrow()                            // grow finally settles, a beat too late
-      for (let i = 0; i < 10; i++) await Promise.resolve()
-      expect(document.getElementById('chat-panel')!.classList.contains('active')).toBe(true)
-      expect(show).not.toHaveBeenCalled()       // deferred show abandoned (epoch bumped)
-      expect(m.State.growPromise).toBeNull()
-      expect(m.State.tetherPendingOnCollapse).toBe(true) // string returns on the next collapse
-    })
-
-    it('Scenario: a thread-snapshot retracts a live string (with pulse) and clears the grace timer', () => {
+    it('Scenario: a hello on the reconnected socket retracts a live string (with pulse) and clears the grace timer', () => {
       const m = M()
       ;(window as any).__TAURI__.core = { invoke: vi.fn().mockResolvedValue(undefined) }
       m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      m.State.activeThreadId = 'abc'
       m.State.tetherGraceTimer = 999
       vi.spyOn(m.MoonString, 'isLive').mockReturnValue(true)
       const retract = vi.spyOn(m.MoonString, 'retract').mockImplementation(() => {})
-      m.handleFrame({ type: 'thread-snapshot', messages: [] })
+      m.handleFrame({ type: 'hello', protocolVersion: 2 })
       expect(retract).toHaveBeenCalledWith(true)
       expect(m.State.tetherGraceTimer).toBeNull()
-      expect(document.getElementById('connection-status')!.className).toBe('connected')
+      expect(m.State.connStatus).toBe('connected')
     })
 
-    it('Scenario: a PULL wraps the string into the moon IMMEDIATELY — retract fires before any thread-snapshot (string-demo behavior)', () => {
+    it('Scenario: a PULL wraps the string into the moon IMMEDIATELY — retract fires before any hello', () => {
       const m = M()
-      m.State.ws = { readyState: WebSocket.OPEN, send: vi.fn() }
-      m.State.activeThreadId = 'thread-keep'
       m.State.growPromise = Promise.resolve()  // the showTether grow that put the string out
-      vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
       vi.spyOn(m.MoonString, 'isLive').mockReturnValue(true)
       const retract = vi.spyOn(m.MoonString, 'retract').mockImplementation(() => {})
-      m.WebSocketEngine.reTether()             // the pull gesture — NO snapshot has arrived
+      m.WebSocketEngine.reTether()             // the pull gesture — NO hello has arrived
       expect(retract).toHaveBeenCalledWith(true)
       // The retract's onRetracted hook owns the window restore now; the stashed
       // grow promise must be dropped or onReattached would restore a second time.
@@ -2287,7 +427,7 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       await m.WebSocketEngine.onReattached()
       expect(retract).not.toHaveBeenCalled()
       expect(restore).not.toHaveBeenCalled()   // onRetracted already collapsed the window
-      expect(document.getElementById('connection-status')!.className).toBe('connected')
+      expect(m.State.connStatus).toBe('connected')
     })
   })
 
@@ -2298,6 +438,10 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   // so the Rust cursor poll can make the empty envelope click-through.
   // jsdom can't run the rAF loop or the Rust poll — these test the contracts:
   // the velocity-injection math and the region-publish lifecycle.
+  // ⏸️ The three rope-physics scenarios are SKIPPED while the tether bead is
+  // disabled (#110: show() early-returns until it is properly gated on actual
+  // disconnection). The machinery they cover is intact but dormant — un-skip
+  // them in the same commit that removes the early return from show().
   describe('Feature: window-drag rope physics + click-through region', () => {
     const M = () => (window as any).__MoonInternals
 
@@ -2316,7 +460,7 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       return invoke
     }
 
-    it('Scenario: a window move shifts FREE points as velocity (positions move, prev-positions stay, anchor pinned)', () => {
+    it.skip('Scenario: a window move shifts FREE points as velocity (positions move, prev-positions stay, anchor pinned)', () => {
       const m = M()
       stubInvoke()
       m.MoonString.show()
@@ -2340,7 +484,7 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       }
     })
 
-    it('Scenario: per-event delta is clamped (a coalesced full-screen jump injects a swing, not an explosion)', () => {
+    it.skip('Scenario: per-event delta is clamped (a coalesced full-screen jump injects a swing, not an explosion)', () => {
       const m = M()
       stubInvoke()
       m.MoonString.show()
@@ -2361,7 +505,7 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(m.MoonString.getPoints()).toEqual(before)
     })
 
-    it('Scenario: show() publishes the interactive region; hideImmediate() clears it', () => {
+    it.skip('Scenario: show() publishes the interactive region; hideImmediate() clears it', () => {
       const m = M()
       const invoke = stubInvoke()
       m.MoonString.show()
@@ -2429,7 +573,6 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       // native-click-through. If the wizard opens without tearing it down,
       // every wizard button paints fine and is dead to real clicks.
       stubCore(() => undefined)
-      document.getElementById('chat-panel')!.classList.remove('active')
       let live = false
       vi.spyOn(M().MoonString, 'isLive').mockImplementation(() => live)
       const show = vi.spyOn(M().MoonString, 'show').mockImplementation(() => { live = true })
@@ -2451,7 +594,6 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
 
     it('Scenario: a disconnect while the wizard is open DEFERS the string drop (no click-through under the wizard)', async () => {
       stubCore(() => undefined)
-      document.getElementById('chat-panel')!.classList.remove('active')
       const show = vi.spyOn(M().MoonString, 'show').mockImplementation(() => {})
       const grow = vi.spyOn(M().TauriService, 'growToEnvelope').mockResolvedValue(undefined)
       await W().open()
@@ -2464,7 +606,6 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
 
     it('Scenario: closing the wizard hands the window to a deferred string instead of a plain collapse', async () => {
       stubCore(() => undefined)
-      document.getElementById('chat-panel')!.classList.remove('active')
       const showTether = vi.spyOn(M().WebSocketEngine, 'showTether').mockImplementation(() => {})
       await W().open()                          // collapsed → _openedMinimized = true
       M().State.tetherPendingOnCollapse = true  // a drop was deferred meanwhile
@@ -2601,8 +742,6 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(localStorage.getItem('luna_ws_url')).toBe('ws://moonbase:4753/ui')
       expect(localStorage.getItem('luna.moon.setupComplete')).toBe('1')
       expect(activeStep()).toBe('done')
-      // Cross-server thread state was reset, same as a Settings server switch.
-      expect(M().State.skipLastThreadFile).toBe(true)
     })
 
     it('Scenario: a setup-mode server surfaces the Claude-login note on the done step', async () => {
@@ -2929,13 +1068,168 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(W()._remoteWsGuess).toBe('')                    // no bogus prefill either
     })
 
-    it('Scenario: Settings → Connection has a re-entry point for the wizard', () => {
-      stubCore(() => undefined)
-      const settingsPanel = document.getElementById('settings-panel')!
-      settingsPanel.classList.add('active')
-      document.getElementById('open-wizard-btn')!.click()
-      expect(settingsPanel.classList.contains('active')).toBe(false)
-      expect(panel().classList.contains('active')).toBe(true)
+    // The wizard re-entry button (#open-wizard-btn) moved to the standalone
+    // Connection panel — its wiring is covered in test/panel-connection.test.ts.
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Behavioral Feature: Voice — the hub's two remaining voice jobs (Phase 6):
+  // boot-arming the Rust pipeline from persisted settings (hands-free must work
+  // with no widgets open) and the moon's data-voice-state watercolor visuals.
+  // The mic button, transcript routing and spoken-reply pipeline live in the
+  // chat window (test/chat-window.test.ts); the controls live in the voice
+  // panel (test/panel-voice.test.ts).
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Voice state -> moon visuals (data-voice-state)', () => {
+    const V = () => (window as any).__MoonInternals.VoiceEngine
+
+    it('Scenario: listening sets dataset.voiceState and the --voice-level CSS var (clamped)', () => {
+      const wrapper = document.getElementById('moon-wrapper')!
+      V().onStateEvent({ state: 'listening', mode: 'auto', level: 0.5 })
+      expect(wrapper.dataset.voiceState).toBe('listening')
+      expect(wrapper.style.getPropertyValue('--voice-level')).toBe('0.5')
+      V().onStateEvent({ state: 'listening', mode: 'auto', level: 3 })
+      expect(wrapper.style.getPropertyValue('--voice-level')).toBe('1')
+    })
+
+    it('Scenario: transcribing and speaking map through; off clears to ""', () => {
+      const wrapper = document.getElementById('moon-wrapper')!
+      V().onStateEvent({ state: 'transcribing', mode: 'auto' })
+      expect(wrapper.dataset.voiceState).toBe('transcribing')
+      V().onStateEvent({ state: 'speaking', mode: 'auto' })
+      expect(wrapper.dataset.voiceState).toBe('speaking')
+      V().onStateEvent({ state: 'off', mode: 'off' })
+      expect(wrapper.dataset.voiceState).toBe('')
+    })
+  })
+
+  describe('Feature: Voice availability + boot wiring (hub pipeline arming)', () => {
+    const M = () => (window as any).__MoonInternals
+
+    it('Scenario: without a Tauri voice backend the hub degrades (engine unavailable)', () => {
+      // The shared beforeEach has no __TAURI__.core: VoiceEngine.init() lands
+      // in "unavailable" synchronously at boot.
+      expect(M().VoiceEngine.available).toBe(false)
+    })
+
+    it('Scenario: a Rust core whose voice_status REJECTS (older build) degrades silently, no throw', async () => {
+      const invoke = vi.fn().mockRejectedValue(new Error('unknown command voice_status'))
+      ;(window as any).__TAURI__.core = { invoke }
+      await M().VoiceEngine.init()
+      expect(M().VoiceEngine.available).toBe(false)
+      // Only the probe was attempted — no follow-up voice commands to spam.
+      expect(invoke.mock.calls.map((c) => c[0])).toEqual(['voice_status'])
+    })
+
+    it('Scenario: with a voice backend, boot re-applies persisted settings and subscribes ONLY voice-state', async () => {
+      localStorage.setItem('luna_voice_mode', 'auto')
+      localStorage.setItem('luna_voice_silence_hang_ms', '800')
+      const handlers: Record<string, (e: any) => void> = {}
+      const invoke = vi.fn(async (cmd: string) => {
+        if (cmd === 'voice_status') return { state: 'idle', mode: 'off', modelPresent: true }
+        return null
+      })
+      const listen = vi.fn(async (name: string, cb: any) => { handlers[name] = cb; return () => {} })
+      ;(window as any).__TAURI__.core = { invoke }
+      ;(window as any).__TAURI__.event = { listen }
+
+      await M().VoiceEngine.init()
+
+      expect(invoke).toHaveBeenCalledWith('voice_status')
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })
+      expect(invoke).toHaveBeenCalledWith('voice_set_config', { silenceHangMs: 800 })
+      // Phase 6: the hub paints the moon only — transcripts / errors / model
+      // progress are the chat window's and voice panel's listeners.
+      expect(Object.keys(handlers)).toEqual(['voice-state'])
+
+      // A captured voice-state event drives the moon visual.
+      handlers['voice-state']({ payload: { state: 'listening', mode: 'auto', level: 0.4 } })
+      expect(document.getElementById('moon-wrapper')!.dataset.voiceState).toBe('listening')
+    })
+
+    it('Scenario: a stored out-of-range silence hang is clamped before reaching the Rust core', async () => {
+      localStorage.setItem('luna_voice_silence_hang_ms', '99999')
+      const invoke = vi.fn().mockResolvedValue(null)
+      ;(window as any).__TAURI__.core = { invoke }
+      await M().VoiceEngine.applyPersisted()
+      expect(invoke).toHaveBeenCalledWith('voice_set_config', { silenceHangMs: 1200 })
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Behavioral Feature: ambient ladder + summon-by-name (hub-scope, Phase 5)
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: needs-input pip (ambient ladder rung 1)', () => {
+    const M = () => (window as any).__MoonInternals
+
+    it('job-input-request lights the pip and summons the NOW rail; status clears it', async () => {
+      const m = M()
+      const invoke = vi.fn(async () => 'panel-now')
+      ;(window as any).__TAURI__.core = { invoke }
+      const pip = document.getElementById('needs-input-pip') as HTMLElement
+      expect(pip.hidden).toBe(true)
+
+      m.WebSocketEngine.handleFrame({
+        type: 'job-input-request', requestId: 'jin_1', runId: 7,
+        jobId: 'job-x', jobName: 'Nightly sweep', prompt: 'Continue?', timeoutMs: 300000,
+      })
+      expect(pip.hidden).toBe(false)
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'now' }))
+
+      // A second request keeps it lit; settling ONE leaves the other.
+      m.WebSocketEngine.handleFrame({
+        type: 'job-input-request', requestId: 'jin_2', runId: 8,
+        jobId: 'job-y', jobName: 'Other', prompt: 'Go?', timeoutMs: 300000,
+      })
+      m.WebSocketEngine.handleFrame({ type: 'job-input-status', requestId: 'jin_1', ok: true, message: 'Answered.' })
+      expect(pip.hidden).toBe(false)
+      m.WebSocketEngine.handleFrame({ type: 'job-input-status', requestId: 'jin_2', ok: false, message: 'Timed out.' })
+      expect(pip.hidden).toBe(true)
+    })
+
+    it('malformed frames never light the pip', () => {
+      const m = M()
+      const pip = document.getElementById('needs-input-pip') as HTMLElement
+      m.WebSocketEngine.handleFrame({ type: 'job-input-request' })
+      expect(pip.hidden).toBe(true)
+    })
+  })
+
+  describe('Feature: Summon-by-name (widget directory + widget-open)', () => {
+    const M = () => (window as any).__MoonInternals
+
+    it('hello announces the widget directory from the shipped registry', async () => {
+      const m = M()
+      const sent: any[] = []
+      m.WebSocketEngine.send = (f: any) => { sent.push(f) }
+      m.State.ws = { readyState: WebSocket.OPEN }
+      // The harness has no network: serve the real registry file via a fetch mock.
+      const registry = JSON.parse(
+        fs.readFileSync(path.resolve(__dirname, '../frontend/vendor/widget-registry.json'), 'utf8'))
+      ;(window as any).fetch = vi.fn(async () => ({ json: async () => registry }))
+
+      m.WebSocketEngine.handleFrame({
+        type: 'hello', protocolVersion: 2, kinds: [],
+        capabilities: { chat: true, streamingDeltas: true },
+      })
+      await vi.waitFor(() => expect(sent.some((f) => f.type === 'widget-directory')).toBe(true))
+      const dir = sent.find((f) => f.type === 'widget-directory')
+      expect(dir.widgets.map((w: any) => w.kind)).toContain('settings.voice')
+      expect(dir.widgets.every((w: any) => typeof w.description === 'string')).toBe(true)
+      delete (window as any).fetch
+    })
+
+    it('widget-open dispatches to the Rust open_widget command (registry-validated there)', async () => {
+      const m = M()
+      const invoke = vi.fn(async () => 'panel-settings-voice')
+      ;(window as any).__TAURI__.core = { invoke }
+      m.WebSocketEngine.handleFrame({ type: 'widget-open', kind: 'settings.voice' })
+      await vi.waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'settings.voice' }))
+      // Malformed frames never reach invoke.
+      invoke.mockClear()
+      m.WebSocketEngine.handleFrame({ type: 'widget-open' })
+      expect(invoke).not.toHaveBeenCalled()
     })
   })
 })

@@ -100,7 +100,7 @@ const program = Effect.gen(function* () {
         yield* b.put(
           makeRecord({
             id: doc.id,
-            namespace: "sol-agent",
+            namespace: "reference-agent",
             kind: "note",
             content: { text: doc.text, path: doc.path },
           }),
@@ -120,7 +120,7 @@ const program = Effect.gen(function* () {
         console.log(`   intent: ${intent}`)
         const t0 = performance.now()
         const results = yield* Stream.runCollect(
-          b.search({ queryText: q, namespace: "sol-agent", topK: TOP_K }),
+          b.search({ queryText: q, namespace: "reference-agent", topK: TOP_K }),
         )
         const dt = performance.now() - t0
         latencies.push(dt)

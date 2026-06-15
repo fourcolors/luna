@@ -135,6 +135,174 @@
           "type": "object",
           "allOf": [
             {
+              "if": {
+                "properties": {
+                  "identifier": {
+                    "anyOf": [
+                      {
+                        "description": "This permission set allows opening `mailto:`, `tel:`, `https://` and `http://` urls using their default application\nas well as reveal file in directories using default file explorer\n#### This default permission set includes:\n\n- `allow-open-url`\n- `allow-reveal-item-in-dir`\n- `allow-default-urls`",
+                        "type": "string",
+                        "const": "opener:default",
+                        "markdownDescription": "This permission set allows opening `mailto:`, `tel:`, `https://` and `http://` urls using their default application\nas well as reveal file in directories using default file explorer\n#### This default permission set includes:\n\n- `allow-open-url`\n- `allow-reveal-item-in-dir`\n- `allow-default-urls`"
+                      },
+                      {
+                        "description": "This enables opening `mailto:`, `tel:`, `https://` and `http://` urls using their default application.",
+                        "type": "string",
+                        "const": "opener:allow-default-urls",
+                        "markdownDescription": "This enables opening `mailto:`, `tel:`, `https://` and `http://` urls using their default application."
+                      },
+                      {
+                        "description": "Enables the open_path command without any pre-configured scope.",
+                        "type": "string",
+                        "const": "opener:allow-open-path",
+                        "markdownDescription": "Enables the open_path command without any pre-configured scope."
+                      },
+                      {
+                        "description": "Enables the open_url command without any pre-configured scope.",
+                        "type": "string",
+                        "const": "opener:allow-open-url",
+                        "markdownDescription": "Enables the open_url command without any pre-configured scope."
+                      },
+                      {
+                        "description": "Enables the reveal_item_in_dir command without any pre-configured scope.",
+                        "type": "string",
+                        "const": "opener:allow-reveal-item-in-dir",
+                        "markdownDescription": "Enables the reveal_item_in_dir command without any pre-configured scope."
+                      },
+                      {
+                        "description": "Denies the open_path command without any pre-configured scope.",
+                        "type": "string",
+                        "const": "opener:deny-open-path",
+                        "markdownDescription": "Denies the open_path command without any pre-configured scope."
+                      },
+                      {
+                        "description": "Denies the open_url command without any pre-configured scope.",
+                        "type": "string",
+                        "const": "opener:deny-open-url",
+                        "markdownDescription": "Denies the open_url command without any pre-configured scope."
+                      },
+                      {
+                        "description": "Denies the reveal_item_in_dir command without any pre-configured scope.",
+                        "type": "string",
+                        "const": "opener:deny-reveal-item-in-dir",
+                        "markdownDescription": "Denies the reveal_item_in_dir command without any pre-configured scope."
+                      }
+                    ]
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "allow": {
+                    "items": {
+                      "title": "OpenerScopeEntry",
+                      "description": "Opener scope entry.",
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "required": [
+                            "url"
+                          ],
+                          "properties": {
+                            "app": {
+                              "description": "An application to open this url with, for example: firefox.",
+                              "allOf": [
+                                {
+                                  "$ref": "#/definitions/Application"
+                                }
+                              ]
+                            },
+                            "url": {
+                              "description": "A URL that can be opened by the webview when using the Opener APIs.\n\nWildcards can be used following the UNIX glob pattern.\n\nExamples:\n\n- \"https://*\" : allows all HTTPS origin\n\n- \"https://*.github.com/tauri-apps/tauri\": allows any subdomain of \"github.com\" with the \"tauri-apps/api\" path\n\n- \"https://myapi.service.com/users/*\": allows access to any URLs that begins with \"https://myapi.service.com/users/\"",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "path"
+                          ],
+                          "properties": {
+                            "app": {
+                              "description": "An application to open this path with, for example: xdg-open.",
+                              "allOf": [
+                                {
+                                  "$ref": "#/definitions/Application"
+                                }
+                              ]
+                            },
+                            "path": {
+                              "description": "A path that can be opened by the webview when using the Opener APIs.\n\nThe pattern can start with a variable that resolves to a system base directory. The variables are: `$AUDIO`, `$CACHE`, `$CONFIG`, `$DATA`, `$LOCALDATA`, `$DESKTOP`, `$DOCUMENT`, `$DOWNLOAD`, `$EXE`, `$FONT`, `$HOME`, `$PICTURE`, `$PUBLIC`, `$RUNTIME`, `$TEMPLATE`, `$VIDEO`, `$RESOURCE`, `$APP`, `$LOG`, `$TEMP`, `$APPCONFIG`, `$APPDATA`, `$APPLOCALDATA`, `$APPCACHE`, `$APPLOG`.",
+                              "type": "string"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  "deny": {
+                    "items": {
+                      "title": "OpenerScopeEntry",
+                      "description": "Opener scope entry.",
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "required": [
+                            "url"
+                          ],
+                          "properties": {
+                            "app": {
+                              "description": "An application to open this url with, for example: firefox.",
+                              "allOf": [
+                                {
+                                  "$ref": "#/definitions/Application"
+                                }
+                              ]
+                            },
+                            "url": {
+                              "description": "A URL that can be opened by the webview when using the Opener APIs.\n\nWildcards can be used following the UNIX glob pattern.\n\nExamples:\n\n- \"https://*\" : allows all HTTPS origin\n\n- \"https://*.github.com/tauri-apps/tauri\": allows any subdomain of \"github.com\" with the \"tauri-apps/api\" path\n\n- \"https://myapi.service.com/users/*\": allows access to any URLs that begins with \"https://myapi.service.com/users/\"",
+                              "type": "string"
+                            }
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "path"
+                          ],
+                          "properties": {
+                            "app": {
+                              "description": "An application to open this path with, for example: xdg-open.",
+                              "allOf": [
+                                {
+                                  "$ref": "#/definitions/Application"
+                                }
+                              ]
+                            },
+                            "path": {
+                              "description": "A path that can be opened by the webview when using the Opener APIs.\n\nThe pattern can start with a variable that resolves to a system base directory. The variables are: `$AUDIO`, `$CACHE`, `$CONFIG`, `$DATA`, `$LOCALDATA`, `$DESKTOP`, `$DOCUMENT`, `$DOWNLOAD`, `$EXE`, `$FONT`, `$HOME`, `$PICTURE`, `$PUBLIC`, `$RUNTIME`, `$TEMPLATE`, `$VIDEO`, `$RESOURCE`, `$APP`, `$LOG`, `$TEMP`, `$APPCONFIG`, `$APPDATA`, `$APPLOCALDATA`, `$APPCACHE`, `$APPLOG`.",
+                              "type": "string"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              },
+              "properties": {
+                "identifier": {
+                  "description": "Identifier of the permission or permission set.",
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/Identifier"
+                    }
+                  ]
+                }
+              }
+            },
+            {
               "properties": {
                 "identifier": {
                   "description": "Identifier of the permission or permission set.",
@@ -183,6 +351,12 @@
           "markdownDescription": "Allows querying GitHub Releases for an available app update"
         },
         {
+          "description": "Allows the close_widget command",
+          "type": "string",
+          "const": "allow-close-widget",
+          "markdownDescription": "Allows the close_widget command"
+        },
+        {
           "description": "Allows reading the CLI thread file",
           "type": "string",
           "const": "allow-get-last-thread-id",
@@ -195,10 +369,28 @@
           "markdownDescription": "Allows reading the client OS identifier (macos/linux/windows)"
         },
         {
+          "description": "Allows a window to re-root its dock group at itself on grab, so dragging any grouped window carries the whole cluster",
+          "type": "string",
+          "const": "allow-grab-dock",
+          "markdownDescription": "Allows a window to re-root its dock group at itself on grab, so dragging any grouped window carries the whole cluster"
+        },
+        {
+          "description": "Allows a settings panel to request an ALLOWLISTED hub action (fresh-thread, profile-changed, connection-changed, open-wizard) — named events only, never arbitrary payloads.",
+          "type": "string",
+          "const": "allow-hub-event",
+          "markdownDescription": "Allows a settings panel to request an ALLOWLISTED hub action (fresh-thread, profile-changed, connection-changed, open-wizard) — named events only, never arbitrary payloads."
+        },
+        {
           "description": "Allows downloading + installing an available update, then relaunching",
           "type": "string",
           "const": "allow-install-update",
           "markdownDescription": "Allows downloading + installing an available update, then relaunching"
+        },
+        {
+          "description": "Allows the list_widget_windows command",
+          "type": "string",
+          "const": "allow-list-widget-windows",
+          "markdownDescription": "Allows the list_widget_windows command"
         },
         {
           "description": "Allows reading the mode-600 WS connection file",
@@ -219,6 +411,48 @@
           "markdownDescription": "Allows running a shell command on the client machine via the local-shell bridge"
         },
         {
+          "description": "Allows the oauth_loopback_cancel command",
+          "type": "string",
+          "const": "allow-oauth-loopback-cancel",
+          "markdownDescription": "Allows the oauth_loopback_cancel command"
+        },
+        {
+          "description": "Allows the oauth_loopback_start command",
+          "type": "string",
+          "const": "allow-oauth-loopback-start",
+          "markdownDescription": "Allows the oauth_loopback_start command"
+        },
+        {
+          "description": "Allows the oauth_loopback_wait command",
+          "type": "string",
+          "const": "allow-oauth-loopback-wait",
+          "markdownDescription": "Allows the oauth_loopback_wait command"
+        },
+        {
+          "description": "Allows the open_artifact_widget command",
+          "type": "string",
+          "const": "allow-open-artifact-widget",
+          "markdownDescription": "Allows the open_artifact_widget command"
+        },
+        {
+          "description": "Allows the open_external_url command",
+          "type": "string",
+          "const": "allow-open-external-url",
+          "markdownDescription": "Allows the open_external_url command"
+        },
+        {
+          "description": "Allows opening a SYSTEM widget by registry kind (panel-* windows). The registry maps kinds only to shipped pages, so no content input can become a system panel.",
+          "type": "string",
+          "const": "allow-open-widget",
+          "markdownDescription": "Allows opening a SYSTEM widget by registry kind (panel-* windows). The registry maps kinds only to shipped pages, so no content input can become a system panel."
+        },
+        {
+          "description": "Allows a widget-family window to ask whether the primary mouse button is held — the dock settle defers snapping/linking until the user actually releases the drag.",
+          "type": "string",
+          "const": "allow-pointer-button-down",
+          "markdownDescription": "Allows a widget-family window to ask whether the primary mouse button is held — the dock settle defers snapping/linking until the user actually releases the drag."
+        },
+        {
           "description": "Allows writing the mode-600 WS connection file",
           "type": "string",
           "const": "allow-save-connection",
@@ -231,6 +465,12 @@
           "markdownDescription": "Allows switching the active channel profile in the mode-600 WS connection file"
         },
         {
+          "description": "Allows a widget window to report its dock state (snapped flush to the hub or not) so the Rust dock graph can group-drag it with the hub",
+          "type": "string",
+          "const": "allow-set-dock",
+          "markdownDescription": "Allows a widget window to report its dock state (snapped flush to the hub or not) so the Rust dock graph can group-drag it with the hub"
+        },
+        {
           "description": "Allows the frontend to publish the clickable region (moon + rope) that drives the click-through cursor poll while the re-tether string is out",
           "type": "string",
           "const": "allow-set-interactive-region",
@@ -241,6 +481,72 @@
           "type": "string",
           "const": "allow-set-last-thread-id",
           "markdownDescription": "Allows writing the last active thread id so a restart re-tethers to the same thread"
+        },
+        {
+          "description": "Allows enqueueing one sentence for client-side TTS playback",
+          "type": "string",
+          "const": "allow-speak-text",
+          "markdownDescription": "Allows enqueueing one sentence for client-side TTS playback"
+        },
+        {
+          "description": "Allows discarding in-flight voice capture/transcription",
+          "type": "string",
+          "const": "allow-voice-cancel",
+          "markdownDescription": "Allows discarding in-flight voice capture/transcription"
+        },
+        {
+          "description": "Allows downloading the whisper model to ~/.luna/models (idempotent)",
+          "type": "string",
+          "const": "allow-voice-ensure-model",
+          "markdownDescription": "Allows downloading the whisper model to ~/.luna/models (idempotent)"
+        },
+        {
+          "description": "Allows listing the available TTS voices",
+          "type": "string",
+          "const": "allow-voice-list-voices",
+          "markdownDescription": "Allows listing the available TTS voices"
+        },
+        {
+          "description": "Allows beginning a push-to-talk capture window",
+          "type": "string",
+          "const": "allow-voice-ptt-down",
+          "markdownDescription": "Allows beginning a push-to-talk capture window"
+        },
+        {
+          "description": "Allows ending a push-to-talk capture window (endpoint + transcribe)",
+          "type": "string",
+          "const": "allow-voice-ptt-up",
+          "markdownDescription": "Allows ending a push-to-talk capture window (endpoint + transcribe)"
+        },
+        {
+          "description": "Allows tuning voice endpointing config (silence hang, clamped 200-2000ms)",
+          "type": "string",
+          "const": "allow-voice-set-config",
+          "markdownDescription": "Allows tuning voice endpointing config (silence hang, clamped 200-2000ms)"
+        },
+        {
+          "description": "Allows switching the voice mode (off/ptt/auto), starting/stopping the pipeline",
+          "type": "string",
+          "const": "allow-voice-set-mode",
+          "markdownDescription": "Allows switching the voice mode (off/ptt/auto), starting/stopping the pipeline"
+        },
+        {
+          "description": "Allows selecting the TTS voice by identifier",
+          "type": "string",
+          "const": "allow-voice-set-voice",
+          "markdownDescription": "Allows selecting the TTS voice by identifier"
+        },
+        {
+          "description": "Allows reading the voice pipeline status snapshot",
+          "type": "string",
+          "const": "allow-voice-status",
+          "markdownDescription": "Allows reading the voice pipeline status snapshot"
+        },
+        {
+          "description": "Allows stopping TTS playback and clearing the sentence queue",
+          "type": "string",
+          "const": "allow-voice-stop-speaking",
+          "markdownDescription": "Allows stopping TTS playback and clearing the sentence queue"
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
@@ -2391,6 +2697,54 @@
           "markdownDescription": "Denies the unregister_all command without any pre-configured scope."
         },
         {
+          "description": "This permission set allows opening `mailto:`, `tel:`, `https://` and `http://` urls using their default application\nas well as reveal file in directories using default file explorer\n#### This default permission set includes:\n\n- `allow-open-url`\n- `allow-reveal-item-in-dir`\n- `allow-default-urls`",
+          "type": "string",
+          "const": "opener:default",
+          "markdownDescription": "This permission set allows opening `mailto:`, `tel:`, `https://` and `http://` urls using their default application\nas well as reveal file in directories using default file explorer\n#### This default permission set includes:\n\n- `allow-open-url`\n- `allow-reveal-item-in-dir`\n- `allow-default-urls`"
+        },
+        {
+          "description": "This enables opening `mailto:`, `tel:`, `https://` and `http://` urls using their default application.",
+          "type": "string",
+          "const": "opener:allow-default-urls",
+          "markdownDescription": "This enables opening `mailto:`, `tel:`, `https://` and `http://` urls using their default application."
+        },
+        {
+          "description": "Enables the open_path command without any pre-configured scope.",
+          "type": "string",
+          "const": "opener:allow-open-path",
+          "markdownDescription": "Enables the open_path command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_url command without any pre-configured scope.",
+          "type": "string",
+          "const": "opener:allow-open-url",
+          "markdownDescription": "Enables the open_url command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the reveal_item_in_dir command without any pre-configured scope.",
+          "type": "string",
+          "const": "opener:allow-reveal-item-in-dir",
+          "markdownDescription": "Enables the reveal_item_in_dir command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_path command without any pre-configured scope.",
+          "type": "string",
+          "const": "opener:deny-open-path",
+          "markdownDescription": "Denies the open_path command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_url command without any pre-configured scope.",
+          "type": "string",
+          "const": "opener:deny-open-url",
+          "markdownDescription": "Denies the open_url command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the reveal_item_in_dir command without any pre-configured scope.",
+          "type": "string",
+          "const": "opener:deny-reveal-item-in-dir",
+          "markdownDescription": "Denies the reveal_item_in_dir command without any pre-configured scope."
+        },
+        {
           "description": "This permission set configures which kind of\nupdater functions are exposed to the frontend.\n\n#### Granted Permissions\n\nThe full workflow from checking for updates to installing them\nis enabled.\n\n\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-download`\n- `allow-install`\n- `allow-download-and-install`",
           "type": "string",
           "const": "updater:default",
@@ -2537,6 +2891,23 @@
           "enum": [
             "iOS"
           ]
+        }
+      ]
+    },
+    "Application": {
+      "description": "Opener scope application.",
+      "anyOf": [
+        {
+          "description": "Open in default application.",
+          "type": "null"
+        },
+        {
+          "description": "If true, allow open with any application.",
+          "type": "boolean"
+        },
+        {
+          "description": "Allow specific application to open with.",
+          "type": "string"
         }
       ]
     }

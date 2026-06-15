@@ -252,7 +252,7 @@ Do NOT touch anything else. If you think you need to, STOP.
 - With current keychain (only `luna.op.primary` populated):
   boot log should read `[op] 1 providers active: primary` (env
   not set, ops & flow absent).
-- With Sol-agent's `OP_SERVICE_ACCOUNT_TOKEN` env set: log should
+- With `OP_SERVICE_ACCOUNT_TOKEN` env set: log should
   read `[op] 2 providers active: env, primary` (env first).
 - After Operator adds `luna.op.ops` + `luna.op.flow`: log should
   read `[op] 4 providers active: env, primary, ops, flow` (or

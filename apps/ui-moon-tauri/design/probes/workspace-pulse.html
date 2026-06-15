@@ -1,0 +1,499 @@
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 100%; height: 100%;
+    background: #0a0e1c;
+    color: #e2ecfd;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 13px;
+    overflow: hidden;
+  }
+
+  #root {
+    display: flex;
+    flex-direction: column;
+    width: 100%; height: 100%;
+    min-width: 220px; min-height: 160px;
+    overflow: hidden;
+  }
+
+  /* ── Header ─────────────────────────────────────────── */
+  #header {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 10px 14px 8px;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    flex-shrink: 0;
+  }
+
+  #header-title {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: #8ab4f8;
+    text-transform: uppercase;
+    flex: 1;
+  }
+
+  #status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #4b5563;
+    flex-shrink: 0;
+    transition: background 0.4s ease;
+  }
+  #status-dot.live   { background: #34d399; box-shadow: 0 0 5px #34d39966; }
+  #status-dot.quiet  { background: #fbbf24; box-shadow: 0 0 4px #fbbf2455; }
+
+  #status-label {
+    font-size: 10px;
+    color: #64748b;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Stat tiles ─────────────────────────────────────── */
+  #tiles {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    padding: 8px 14px;
+    flex-shrink: 0;
+  }
+
+  .tile {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 8px;
+    padding: 7px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .tile-label {
+    font-size: 10px;
+    color: #64748b;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+
+  .tile-value {
+    font-family: ui-monospace, "SFMono-Regular", "Cascadia Code", Menlo, monospace;
+    font-size: 18px;
+    font-weight: 700;
+    color: #e2ecfd;
+    line-height: 1.1;
+    transition: color 0.3s ease;
+  }
+
+  .tile-value.flash-green { color: #34d399; }
+  .tile-value.flash-red   { color: #f87171; }
+
+  /* ── Feed ───────────────────────────────────────────── */
+  #feed-wrap {
+    flex: 1 1 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 4px 0 6px;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.1) transparent;
+    position: relative;
+  }
+
+  #feed {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .feed-row {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 4px 14px;
+    border-radius: 4px;
+    transition: background 0.15s;
+    min-height: 22px;
+  }
+  .feed-row:hover { background: rgba(255,255,255,0.04); }
+
+  .feed-glyph {
+    font-size: 11px;
+    flex-shrink: 0;
+    width: 14px;
+    text-align: center;
+  }
+
+  .feed-body {
+    flex: 1;
+    font-size: 11.5px;
+    color: #c7d8f5;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  }
+
+  .feed-ts {
+    font-size: 10px;
+    color: #3d4d65;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Kind colors */
+  .kind-tool-ok     { color: #34d399; }
+  .kind-tool-err    { color: #f87171; }
+  .kind-tool-deny   { color: #fbbf24; }
+  .kind-session     { color: #8ab4f8; }
+  .kind-workflow    { color: #a78bfa; }
+  .kind-cost        { color: #fbbf24; }
+  .kind-error       { color: #f87171; }
+  .kind-generic     { color: #3d4d65; }
+
+  /* ── Empty state ────────────────────────────────────── */
+  #empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    flex: 1 1 0;
+    padding: 20px;
+    text-align: center;
+  }
+
+  #empty-moon {
+    width: 68px; height: 68px;
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  #empty-moon svg {
+    width: 100%; height: 100%;
+    overflow: visible;
+  }
+
+  #empty-label {
+    font-size: 12px;
+    color: #3d4d65;
+    letter-spacing: 0.02em;
+  }
+
+  /* soft radial glow behind tiles */
+  #tiles-glow {
+    position: absolute;
+    top: 0; left: 50%;
+    transform: translateX(-50%);
+    width: 220px; height: 120px;
+    background: radial-gradient(ellipse at center, rgba(138,180,248,0.06) 0%, transparent 70%);
+    pointer-events: none;
+    flex-shrink: 0;
+  }
+</style>
+
+<div id="root">
+  <div id="header">
+    <span id="header-title">Workspace Pulse</span>
+    <span id="status-dot"></span>
+    <span id="status-label">waiting</span>
+  </div>
+
+  <div style="position:relative; flex-shrink:0;">
+    <div id="tiles-glow"></div>
+    <div id="tiles">
+      <div class="tile">
+        <span class="tile-label">Tools Called</span>
+        <span class="tile-value" id="stat-tools">0</span>
+      </div>
+      <div class="tile">
+        <span class="tile-label">Errors</span>
+        <span class="tile-value" id="stat-errors">0</span>
+      </div>
+      <div class="tile">
+        <span class="tile-label">Est. Cost</span>
+        <span class="tile-value" id="stat-cost">$0.00</span>
+      </div>
+      <div class="tile">
+        <span class="tile-label">Active Sessions</span>
+        <span class="tile-value" id="stat-sessions">0</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="feed-wrap">
+    <div id="empty">
+      <div id="empty-moon">
+        <svg viewBox="0 0 68 68" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <radialGradient id="moonGlow" cx="40%" cy="40%" r="60%">
+              <stop offset="0%" stop-color="#8ab4f8" stop-opacity="0.18"/>
+              <stop offset="100%" stop-color="#0a0e1c" stop-opacity="0"/>
+            </radialGradient>
+            <radialGradient id="moonFill" cx="38%" cy="35%" r="55%">
+              <stop offset="0%" stop-color="#1e2a42"/>
+              <stop offset="100%" stop-color="#0d1424"/>
+            </radialGradient>
+            <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+              <feGaussianBlur stdDeviation="2.5"/>
+            </filter>
+          </defs>
+          <!-- glow halo -->
+          <circle cx="34" cy="34" r="28" fill="url(#moonGlow)" filter="url(#soft)"/>
+          <!-- crescent body -->
+          <path d="M34 10 C20 10 11 21 11 34 C11 47 20 58 34 58 C28 52 25 43 25 34 C25 25 28 16 34 10 Z"
+                fill="url(#moonFill)" opacity="0.85"/>
+          <path d="M34 10 C20 10 11 21 11 34 C11 47 20 58 34 58 C28 52 25 43 25 34 C25 25 28 16 34 10 Z"
+                fill="none" stroke="rgba(138,180,248,0.22)" stroke-width="0.8"/>
+          <!-- soft watercolor wash -->
+          <ellipse cx="20" cy="30" rx="6" ry="9" fill="#8ab4f8" opacity="0.04"/>
+          <ellipse cx="18" cy="42" rx="4" ry="5" fill="#a78bfa" opacity="0.05"/>
+        </svg>
+      </div>
+      <span id="empty-label">Listening for activity…</span>
+    </div>
+    <div id="feed" style="display:none;"></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ── State ────────────────────────────────────────────
+  var stats = { tools: 0, errors: 0, cost: 0, sessions: 0 };
+  var feedEvents = []; // array of { ts: Date, kind, text, colorClass }
+  var lastEventTime = null;
+  var hasEvents = false;
+
+  // ── DOM refs ─────────────────────────────────────────
+  var dotEl        = document.getElementById('status-dot');
+  var labelEl      = document.getElementById('status-label');
+  var statTools    = document.getElementById('stat-tools');
+  var statErrors   = document.getElementById('stat-errors');
+  var statCost     = document.getElementById('stat-cost');
+  var statSessions = document.getElementById('stat-sessions');
+  var feedEl       = document.getElementById('feed');
+  var emptyEl      = document.getElementById('empty');
+
+  var MAX_ROWS = 50;
+
+  // ── Helpers ───────────────────────────────────────────
+  function safeText(val) {
+    return (val === null || val === undefined) ? '' : String(val);
+  }
+
+  function fmtDuration(ms) {
+    if (ms == null) return '';
+    var n = Number(ms);
+    if (n >= 1000) return (n / 1000).toFixed(1) + 's';
+    return n + 'ms';
+  }
+
+  function fmtUsd(usd) {
+    var n = Number(usd) || 0;
+    if (n === 0) return '$0.00';
+    if (n < 0.01) return '$' + n.toFixed(4);
+    if (n < 1)    return '$' + n.toFixed(4);
+    return '$' + n.toFixed(2);
+  }
+
+  function fmtCostStat(usd) {
+    var n = Number(usd) || 0;
+    if (n === 0) return '$0.00';
+    if (n < 0.001) return '<$0.001';
+    if (n < 0.01) return '$' + n.toFixed(4);
+    if (n < 1)    return '$' + n.toFixed(4);
+    return '$' + n.toFixed(2);
+  }
+
+  function relTime(date) {
+    var now = Date.now();
+    var diff = Math.floor((now - date.getTime()) / 1000);
+    if (diff < 10) return 'just now';
+    if (diff < 60) return diff + 's ago';
+    var mins = Math.floor(diff / 60);
+    if (mins < 60) return mins + 'm ago';
+    var hrs = Math.floor(mins / 60);
+    return hrs + 'h ago';
+  }
+
+  function flashTile(el, cls) {
+    el.classList.add(cls);
+    setTimeout(function () { el.classList.remove(cls); }, 600);
+  }
+
+  // ── Status dot ───────────────────────────────────────
+  function updateDot() {
+    if (!hasEvents) {
+      dotEl.className = '';
+      labelEl.textContent = 'waiting';
+      return;
+    }
+    var age = lastEventTime ? (Date.now() - lastEventTime) : Infinity;
+    if (age < 60000) {
+      dotEl.className = 'live';
+      labelEl.textContent = 'live';
+    } else {
+      dotEl.className = 'quiet';
+      labelEl.textContent = 'quiet';
+    }
+  }
+
+  // ── Feed rendering ───────────────────────────────────
+  function buildRow(entry) {
+    var row = document.createElement('div');
+    row.className = 'feed-row';
+
+    var glyph = document.createElement('span');
+    glyph.className = 'feed-glyph ' + entry.colorClass;
+    glyph.textContent = entry.glyph;
+
+    var body = document.createElement('span');
+    body.className = 'feed-body ' + entry.colorClass;
+    body.textContent = entry.text; // always textContent — never innerHTML
+
+    var ts = document.createElement('span');
+    ts.className = 'feed-ts';
+    ts.dataset.ts = entry.ts.getTime();
+    ts.textContent = relTime(entry.ts);
+
+    row.appendChild(glyph);
+    row.appendChild(body);
+    row.appendChild(ts);
+    return row;
+  }
+
+  function prependFeedEntry(entry) {
+    if (!hasEvents) {
+      emptyEl.style.display = 'none';
+      feedEl.style.display = 'flex';
+    }
+    hasEvents = true;
+
+    feedEvents.unshift(entry);
+    if (feedEvents.length > MAX_ROWS) feedEvents.pop();
+
+    // DOM: prepend row
+    var row = buildRow(entry);
+    if (feedEl.firstChild) {
+      feedEl.insertBefore(row, feedEl.firstChild);
+    } else {
+      feedEl.appendChild(row);
+    }
+
+    // trim excess DOM nodes
+    while (feedEl.childNodes.length > MAX_ROWS) {
+      feedEl.removeChild(feedEl.lastChild);
+    }
+  }
+
+  // ── Stats update ─────────────────────────────────────
+  function updateStats() {
+    statTools.textContent    = stats.tools;
+    statErrors.textContent   = stats.errors;
+    statCost.textContent     = fmtCostStat(stats.cost);
+    statSessions.textContent = Math.max(0, stats.sessions);
+  }
+
+  // ── Event dispatch ───────────────────────────────────
+  function handleEvent(ev) {
+    lastEventTime = Date.now();
+    var ts = ev.ts ? new Date(ev.ts) : new Date();
+    // Untrusted ts from whatever server speaks the protocol: an unparseable
+    // string yields Invalid Date and a permanent "NaNh ago" row — degrade to
+    // arrival time instead.
+    if (isNaN(ts.getTime())) ts = new Date();
+    var kind = safeText(ev.kind);
+    var level = safeText(ev.level);
+
+    var entry = { ts: ts, glyph: '·', colorClass: 'kind-generic', text: kind };
+
+    if (kind === 'ToolCall') {
+      stats.tools++;
+      flashTile(statTools, 'flash-green');
+      var status = safeText(ev.status);
+      var colorClass = status === 'success' ? 'kind-tool-ok'
+                     : status === 'permission_denied' ? 'kind-tool-deny'
+                     : 'kind-tool-err';
+      var glyph = status === 'success' ? '⚙' : status === 'permission_denied' ? '⊘' : '✕';
+      var dur = ev.durationMs != null ? ' ' + fmtDuration(ev.durationMs) : '';
+      var text = safeText(ev.toolName) + dur + (status !== 'success' ? ' [' + status + ']' : '');
+      entry = { ts: ts, glyph: glyph, colorClass: colorClass, text: text };
+
+    } else if (kind === 'SessionStart') {
+      stats.sessions++;
+      flashTile(statSessions, 'flash-green');
+      var title = ev.title ? ' "' + safeText(ev.title) + '"' : '';
+      entry = { ts: ts, glyph: '▶', colorClass: 'kind-session',
+                text: 'session start' + title + (ev.model ? ' (' + safeText(ev.model) + ')' : '') };
+
+    } else if (kind === 'SessionEnd') {
+      stats.sessions = Math.max(0, stats.sessions - 1);
+      var dur2 = ev.durationMs != null ? ' ' + fmtDuration(ev.durationMs) : '';
+      entry = { ts: ts, glyph: '■', colorClass: 'kind-session',
+                text: 'session end' + dur2 };
+
+    } else if (kind === 'WorkflowTransition') {
+      var from = safeText(ev.from);
+      var to   = safeText(ev.to);
+      var wfId = ev.workflowId ? safeText(ev.workflowId).slice(-8) : '?';
+      entry = { ts: ts, glyph: '→', colorClass: 'kind-workflow',
+                text: wfId + ' ' + from + ' → ' + to };
+
+    } else if (kind === 'CostAccrued') {
+      stats.cost += Number(ev.estimatedUsd) || 0;
+      flashTile(statCost, 'flash-green');
+      var inTok  = ev.tokensIn  != null ? safeText(ev.tokensIn)  : '?';
+      var outTok = ev.tokensOut != null ? safeText(ev.tokensOut) : '?';
+      entry = { ts: ts, glyph: '◈', colorClass: 'kind-cost',
+                text: 'in:' + inTok + ' out:' + outTok + ' ' + fmtUsd(ev.estimatedUsd) };
+
+    } else if (kind === 'Error' || level === 'error') {
+      stats.errors++;
+      flashTile(statErrors, 'flash-red');
+      var tag  = ev.errorTag ? '[' + safeText(ev.errorTag) + '] ' : '';
+      var msg  = ev.message  ? safeText(ev.message).slice(0, 80) : safeText(kind);
+      entry = { ts: ts, glyph: '!', colorClass: 'kind-error',
+                text: tag + msg };
+
+    } else {
+      // Generic / unknown kind — render dim with kind name only
+      entry = { ts: ts, glyph: '·', colorClass: 'kind-generic',
+                text: kind };
+    }
+
+    prependFeedEntry(entry);
+    updateStats();
+    updateDot();
+  }
+
+  // ── Timestamp refresh (30s) ───────────────────────────
+  function refreshTimestamps() {
+    var nodes = feedEl.querySelectorAll('.feed-ts[data-ts]');
+    for (var i = 0; i < nodes.length; i++) {
+      var t = parseInt(nodes[i].dataset.ts, 10);
+      if (!isNaN(t)) {
+        nodes[i].textContent = relTime(new Date(t));
+      }
+    }
+    updateDot();
+  }
+
+  setInterval(refreshTimestamps, 30000);
+
+  // ── Boot ─────────────────────────────────────────────
+  updateStats();
+  updateDot();
+
+  if (window.luna && typeof window.luna.subscribe === 'function') {
+    window.luna.subscribe(handleEvent);
+  }
+
+  if (window.luna && typeof window.luna.ready === 'function') {
+    window.luna.ready();
+  }
+
+})();
+</script>

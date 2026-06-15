@@ -29,3 +29,9 @@ pnpm-lock.yaml
 
 # Local-only scratch for things like issue bodies waiting to be filed
 /.local/
+
+# Worktree-local bun package cache (sandboxed installs use BUN_INSTALL_CACHE_DIR)
+/.bun-cache/
+
+# ping-pong cycle cache (ephemeral)
+.claude/ping-pong/

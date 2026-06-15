@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-voice-set-mode"
+description = "Allows switching the voice mode (off/ptt/auto), starting/stopping the pipeline"
+
+[permission.commands]
+allow = [
+  "voice_set_mode"
+]

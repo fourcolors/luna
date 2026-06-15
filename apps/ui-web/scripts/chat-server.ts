@@ -114,12 +114,13 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
   writeSync,
 } from "node:fs"
 import { hostname, userInfo } from "node:os"
 import { execFileSync, spawn } from "node:child_process"
-import { dirname } from "node:path"
+import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
   applyRuntimePathEnvDefaults,
@@ -129,6 +130,13 @@ import {
 // Load Luna's runtime .env before anything else so CLAUDE_CONFIG_DIR (and any
 // other Luna env vars) are in process.env when the SDK initialises. LUNA_HOME
 // makes the runtime portable; the default remains ~/.luna.
+//
+// `bootShadowedEnvKeys` records .env keys that were ALREADY set in process.env
+// (supervisor/unit-defined) — those definitions win over ~/.luna/.env, so a
+// Vault edit to the file is silently ineffective for them. The Vault list
+// surfaces this as a `shadowed` badge instead of showing a value that isn't
+// the effective one.
+const bootShadowedEnvKeys = new Set<string>()
 {
   const lunaEnv = resolveRuntimePaths().envFilePath
   if (existsSync(lunaEnv)) {
@@ -140,15 +148,17 @@ import {
       const key = trimmed.slice(0, eq).trim()
       const value = trimmed.slice(eq + 1).trim()
       if (key && !(key in process.env)) process.env[key] = value
+      else if (key) bootShadowedEnvKeys.add(key)
     }
   }
   applyRuntimePathEnvDefaults(resolveRuntimePaths())
 }
-import { Effect, Layer, ManagedRuntime, Option, Stream } from "effect"
+import { Context, Effect, Layer, ManagedRuntime, Option, Runtime, Stream } from "effect"
 import {
   AccountBroker,
   AccountBrokerLayer,
   AgentNotesService,
+  ArtifactStore,
   JobsStoreService,
   JobTickerLayer,
   WorkerRegistry,
@@ -158,19 +168,26 @@ import {
   BELIEF_KIND,
   BELIEF_NAMESPACE,
   BeliefWriter,
+  BUILTIN_SKILLS,
   CalibrationStore,
   Clock,
   DEFAULT_UI_KINDS,
   DreamCronLayer,
   DreamStore,
+  DreamWorkerLayer,
   WakeCronLayer,
   WakeLogStore,
+  WakeWorkerLayer,
   EnvSecretProvider,
   NoopTracerLayer,
   ObservabilityService,
   OnePasswordSecretProvider,
   RoutedOpSecretProvider,
+  scanUserSkills,
   SessionStore,
+  SkillPrefsStore,
+  SkillRegistry,
+  syncUserSkills,
   Survey,
   TelemetryPlatform,
   TelemetryService,
@@ -179,6 +196,10 @@ import {
   makeDuckDbLayer,
   makeTelemetrySqlite,
   readKeychainToken,
+  writeKeychainSecret,
+  deleteKeychainSecret,
+  keychainVaultQueryForEnvName,
+  KeychainEnvSecretProvider,
   secretProviderFirstOf,
   JobsStoreService,
   validateAccountsTableLabels,
@@ -196,6 +217,10 @@ import {
   attachSandboxLocalShell,
   resolveSandboxLocalShell,
 } from "./sandbox-local-shell.js"
+import {
+  makeVaultSecretStore,
+  normalizeVaultStorageMode,
+} from "./vault-secret-store.js"
 export { createDnaLoader, loadDna } from "./dna-loader.js"
 export { loadSystem } from "./system-loader.js"
 export { loadWorkspaces } from "./workspaces-loader.js"
@@ -211,15 +236,23 @@ import {
   WakeReasonerDefault,
   PromptWorkerLayer,
   WorkflowWorkerLayer,
+  JobRunToolsProviderTag,
 } from "@luna/adapter-sdk"
 import {
   ChatService,
   ThreadToolsProviderTag,
+  effortsForModel,
+  type EffortLevel,
   type ThreadToolsProvider,
 } from "@luna/chat-service"
+import { composeInterceptors, defaultSafetyInterceptors } from "@luna/tools"
 import {
+  createJobInputBridge,
   createLocalShellBridge,
+  createMcpAppHost,
   createSecretRequestBridge,
+  createSubagentTreeBridge,
+  createWidgetSummonBridge,
   startUIWebSocketServer,
 } from "@luna/ui-ws"
 import { LunaSqliteBootstrapLive, MemoryRouterTag } from "@luna/memory"
@@ -253,6 +286,27 @@ import {
   PlaidToolsService,
   PLAID_TOOLS_SYSTEM_PROMPT,
 } from "@luna/plaid-tools"
+import { SkillToolsLayer, SkillToolsService } from "@luna/skill-tools"
+import { WidgetToolsLayer, WidgetToolsService } from "@luna/widget-tools"
+import { createJobInputToolsProvider } from "@luna/job-input-tools"
+import {
+  BUILTIN_CONNECTORS,
+  ConnectorError,
+  ConnectorInstanceStore,
+  ConnectorService,
+  ConnectorServiceLayer,
+} from "@luna/connectors"
+import { makeOAuthClient } from "@luna/oauth"
+import {
+  VaultStore,
+  makeVaultMutations,
+  makeVaultOpSync,
+  reconcileVaultItems,
+  shouldAttemptSync,
+  toWireVaultItem,
+  type VaultItem,
+  type VaultSyncConfig,
+} from "@luna/vault"
 import { startControlServer } from "@luna/control-server"
 import {
   resolveOpAccounts,
@@ -265,6 +319,14 @@ import {
   type TokenCheck,
 } from "./register-op-token.js"
 import { resolveUiWsToken } from "./ui-ws-token.js"
+import {
+  buildCuratedAppTools,
+  buildWorkspacePulseApp,
+  composeAppRegistries,
+  createCoreAppRegistry,
+  createStoreBackedAppRegistry,
+  pulseFromSnapshot,
+} from "./core-apps.js"
 import { decideMode, probeCredentialReadiness, probeAuthLoggedIn } from "./credential-readiness.js"
 import { spawnSetupPty } from "./setup-pty.js"
 import { onLoginAttemptComplete } from "./setup-login.js"
@@ -320,10 +382,27 @@ const BUILD_SHA = resolveBuildSha()
  * without running bootstrap() (the import.meta.main guard).
  */
 
-/** A single selectable model entry. */
+/**
+ * Effort matrix — the definitions live in @luna/chat-service (effort.ts),
+ * the single source of truth shared by this hello-frame builder AND the
+ * chat-service enforcement points (createThread + setThreadConfig clamp the
+ * same matrix, so the advertised efforts and the accepted efforts can never
+ * drift). Re-exported here so the dev-rig tests and any script-level callers
+ * keep one import site.
+ */
+export {
+  clampEffort,
+  effortsForModel,
+  EFFORT_LEVELS as ALL_EFFORTS,
+} from "@luna/chat-service"
+export type { EffortLevel as Effort } from "@luna/chat-service"
+
+/** A single selectable model entry (with server-computed effort matrix). */
 export interface UiModelEntry {
   readonly id: string
   readonly label: string
+  /** Effort levels valid for this model — server-computed. See effortsForModel(). */
+  readonly efforts?: readonly EffortLevel[]
 }
 
 /**
@@ -365,11 +444,14 @@ export const parseUiModels = (raw: string | undefined): ReadonlyArray<UiModelEnt
  * The built-in base list of selectable models shown when the operator has
  * not overridden via LUNA_UI_MODELS. This list is the recommended default
  * capability spread; entries are deduped (extras-first) in buildAvailableModels.
+ * The first entry is the recommended default (highest capability or operator-
+ * preferred). Efforts are attached server-side via effortsForModel().
  */
-const BASE_MODELS: ReadonlyArray<UiModelEntry> = [
-  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 — balanced" },
-  { id: "claude-opus-4-7",   label: "Claude Opus 4.7 — most capable" },
-  { id: "claude-haiku-4-5",  label: "Claude Haiku 4.5 — fastest" },
+const BASE_MODELS: ReadonlyArray<{ readonly id: string; readonly label: string }> = [
+  { id: "claude-sonnet-4-6",   label: "Claude Sonnet 4.6 — balanced" },
+  { id: "claude-fable-5",       label: "Fable 5 (1M context)" },
+  { id: "claude-opus-4-8",      label: "Claude Opus 4.8 — most capable" },
+  { id: "claude-haiku-4-5",     label: "Claude Haiku 4.5 — fastest" },
 ]
 
 /**
@@ -378,7 +460,8 @@ const BASE_MODELS: ReadonlyArray<UiModelEntry> = [
  * Operator-configured extras (from LUNA_UI_MODELS) come FIRST in the
  * output, making them the UI's recommended default.  The built-in base
  * models follow, deduped by id (an extra that overrides a base model id
- * keeps the extra's label and position).
+ * keeps the extra's label and position). Efforts are attached to every entry
+ * via effortsForModel() so clients never compute the matrix themselves.
  *
  * Accepts an optional `env` parameter (defaults to `process.env`) so unit
  * tests can inject a synthetic environment without touching process.env.
@@ -386,10 +469,13 @@ const BASE_MODELS: ReadonlyArray<UiModelEntry> = [
 export const buildAvailableModels = (env: NodeJS.ProcessEnv = process.env): Array<UiModelEntry> => {
   const extras = parseUiModels(env["LUNA_UI_MODELS"])
   const seenIds = new Set(extras.map((e) => e.id))
-  const deduped: Array<UiModelEntry> = [...extras]
+  const deduped: Array<UiModelEntry> = extras.map((e) => ({
+    ...e,
+    efforts: effortsForModel(e.id),
+  }))
   for (const base of BASE_MODELS) {
     if (!seenIds.has(base.id)) {
-      deduped.push(base)
+      deduped.push({ ...base, efforts: effortsForModel(base.id) })
     }
   }
   return deduped
@@ -404,6 +490,19 @@ const localShellBridge = createLocalShellBridge()
 // attached CLI with --local-shell takes over (`replaceable: true`); when it
 // releases, we re-run the original attach so the agent keeps local_shell.
 const sandboxReattachers = new Map<string, () => void>()
+
+// PRD Part B: bridge between skillRegistryL's hot-load fiber (buildBaseLayer)
+// and the ui-ws broadcast hook (buildServerLayer wires it via
+// skillsWsHandle.changes). Module-level holder because the two live in
+// different layer scopes of this same boot script. Null until a WS server
+// registers; the fiber null-guards every call.
+let notifySkillCatalogChanged: (() => void) | null = null
+
+// Luna Vault V3: same late-binding bridge for out-of-band vault-list
+// broadcasts — the 1Password sync poll loop (buildServerLayer) calls it after
+// a pass that changed registry rows, and ui-ws re-broadcasts the (wire-safe)
+// list to every client. Null until a WS server registers.
+let notifyVaultListChanged: (() => void) | null = null
 const reattachSandbox = (threadId: string): void => {
   const reattach = sandboxReattachers.get(threadId)
   if (reattach !== undefined) reattach()
@@ -439,6 +538,31 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       const localShellTools = yield* LocalShellToolsService
       const secretTools = yield* SecretToolsService
       const plaidTools = process.env.PLAID_CLIENT_ID ? yield* PlaidToolsService : null
+      const skillTools = yield* SkillToolsService
+      const widgetTools = yield* WidgetToolsService // PRD Part C/W4: widget_write
+      // PRD Part B (Skills): the managed skill catalog. decorate() reads
+      // promptSnapshotSync() — synchronous and never stale (the registry
+      // rebuilds it inside every mutation), so a settings toggle is
+      // reflected in the very next thread without a restart or a tick.
+      // (The ~/.luna/skills hot-load fiber lives in skillRegistryL, where
+      // the prefs store is in scope for the new-skill quarantine.)
+      const skillRegistry = yield* SkillRegistry
+      // PRD Part A (Connectors): connected services' MCP servers. Same
+      // sync-snapshot discipline — refreshMounts() rebuilds on connect/
+      // disconnect (and on M2 token rotation); decorate() just spreads it.
+      const connectorService = yield* ConnectorService
+      const bootMounts = Object.keys(connectorService.mountSnapshotSync())
+      if (bootMounts.length > 0) {
+        console.log("[luna/boot] connector mounts:", bootMounts.join(", "))
+      }
+
+      const bootSkills = yield* skillRegistry.catalog()
+      console.log(
+        "[luna/boot] skills registered:",
+        bootSkills.length,
+        `(${bootSkills.filter((s) => s.enabled).length} enabled,`,
+        `${bootSkills.filter((s) => s.source === "user").length} user)`,
+      )
 
       console.log("[luna/boot] MCP servers registered:", [
         memTools.serverName,
@@ -560,6 +684,8 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
           const obsThreadTools = obsTools.createSessionBinding()
           const localShellThreadTools = localShellTools.createSessionBinding()
           const secretThreadTools = secretTools.createSessionBinding()
+          const skillThreadTools = skillTools.createSessionBinding()
+          const widgetThreadTools = widgetTools.createSessionBinding()
           console.log(
             "[luna/thread] wiring MCP servers:",
             [
@@ -568,6 +694,8 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
               obsThreadTools.serverName,
               localShellThreadTools.serverName,
               secretThreadTools.serverName,
+              skillThreadTools.serverName,
+              widgetThreadTools.serverName,
             ].join(", "),
           )
           // Sync read of the live-refresh holder — refreshed every
@@ -583,6 +711,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             mainMemoryContent, // Luna main thread observational memory
             sessionMetadata,
             beliefsContent, // Phase 3 D5: ranked active beliefs section
+            skillRegistry.promptSnapshotSync(), // PRD Part B: enabled skills ("" when none — filtered below)
             opts.systemPrompt,
             memoryThreadTools.systemPromptAddendum,
             schedulerThreadTools.systemPromptAddendum,
@@ -601,6 +730,9 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             [localShellThreadTools.serverName]: localShellThreadTools.server,
             [secretThreadTools.serverName]: secretThreadTools.server,
             ...(plaidTools ? { [plaidTools.serverName]: plaidTools.server } : {}),
+            [skillThreadTools.serverName]: skillThreadTools.server, // PRD B §11: skill_load (tier-2 disclosure)
+            [widgetThreadTools.serverName]: widgetThreadTools.server, // PRD C §16: widget_write (describe-to-spawn)
+            ...connectorService.mountSnapshotSync(), // PRD A §07: connected services, hot per-thread
           }
           return {
             mcpServers,
@@ -788,6 +920,134 @@ const persistOpToken = (label: string, token: string): Promise<void> =>
     }
   })
 
+/**
+ * Delete a stored op token (Vault remove). Mirrors `persistOpToken`'s platform
+ * split: darwin keychain entry, linux/other the 0600 runtime file. Idempotent —
+ * a missing entry/file is success (`security` exits 44 for item-not-found;
+ * unlink swallows ENOENT). NOTE: a token defined via `LUNA_OP_TOKEN_<LABEL>`
+ * cannot be deleted here (the supervisor owns that env) — discovery re-finds it
+ * after restart and the Vault reconciler re-adopts the row, which is honest.
+ */
+const deleteOpToken = (label: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    if (process.platform === "darwin") {
+      const child = spawn(
+        "security",
+        ["delete-generic-password", "-s", `luna.op.${label}`, "-a", label],
+        { stdio: ["ignore", "ignore", "ignore"] },
+      )
+      child.on("error", reject)
+      child.on("close", (code) =>
+        code === 0 || code === 44
+          ? resolve()
+          : reject(new Error(`security delete-generic-password exited ${code}`)),
+      )
+      return
+    }
+    try {
+      unlinkSync(tokenFilePathFor(label))
+      resolve()
+    } catch (e) {
+      const err = e as NodeJS.ErrnoException
+      if (err.code === "ENOENT") resolve()
+      else reject(err instanceof Error ? err : new Error(String(err)))
+    }
+  })
+
+/**
+ * Real `op` runner for makeVaultOpSync (Vault V3 — 1Password sync). Mirrors
+ * opWhoami's spawn style: the service-account token rides ONLY in the child
+ * env (`input.env` merged over process.env), outbound item values ride ONLY
+ * on stdin (the `op item create -` JSON template). NOTHING here is logged —
+ * stdin/stdout/stderr can all carry secrets; op-sync sanitizes before any
+ * string escapes (lastError = operation + exit code only).
+ */
+const runOpForVaultSync = (input: {
+  readonly args: ReadonlyArray<string>
+  readonly env?: Readonly<Record<string, string>>
+  readonly stdin?: string
+}): Promise<{ code: number; stdout: string; stderr: string }> =>
+  new Promise((resolve, reject) => {
+    let settled = false
+    const done = (r: { code: number; stdout: string; stderr: string }): void => {
+      if (!settled) {
+        settled = true
+        clearTimeout(killTimer)
+        resolve(r)
+      }
+    }
+    const fail = (err: Error): void => {
+      if (!settled) {
+        settled = true
+        clearTimeout(killTimer)
+        reject(err)
+      }
+    }
+    let stdout = ""
+    let stderr = ""
+    // B3: 60s hard kill-timer — a hung `op` invocation must not wedge the sync
+    // loop forever. On timeout we SIGKILL the child and resolve {code:-1} so
+    // the engine's exit-code check sanitizes the result to a non-throws failure.
+    // First-settle-wins: close/error handlers call done/fail first if the child
+    // exits before the timer fires.
+    // eslint-disable-next-line prefer-const
+    let killTimer: ReturnType<typeof setTimeout>
+    try {
+      const child = spawn("op", [...input.args], {
+        env: { ...process.env, ...(input.env ?? {}) },
+        stdio: [input.stdin !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
+      })
+      killTimer = setTimeout(() => {
+        try { child.kill("SIGKILL") } catch { /* already exited */ }
+        done({ code: -1, stdout: "", stderr: "" })
+      }, 60_000)
+      killTimer.unref()
+      child.stdout?.on("data", (d: Buffer) => {
+        stdout += d.toString("utf8")
+      })
+      child.stderr?.on("data", (d: Buffer) => {
+        stderr += d.toString("utf8")
+      })
+      // Reject on spawn errors (e.g. ENOENT when `op` is not installed).
+      // The engine's catch branch sanitizes to "op item list failed (spawn error)",
+      // so no raw error message or path reaches lastError.
+      child.on("error", (err: Error) => fail(err))
+      child.on("close", (code) => done({ code: code ?? -1, stdout, stderr }))
+      if (input.stdin !== undefined && child.stdin !== null) {
+        child.stdin.on("error", () => undefined) // EPIPE on a fast exit must not crash
+        child.stdin.write(input.stdin)
+        child.stdin.end()
+      }
+    } catch (e) {
+      fail(e instanceof Error ? e : new Error(String(e)))
+    }
+  })
+
+/**
+ * Var NAMES currently present in ~/.luna/.env — for the Vault reconciler
+ * (adopting pre-Vault secrets into the registry). Names only; values are
+ * never read into the result.
+ */
+const readEnvFileVarNames = (): ReadonlyArray<string> => {
+  const envPath = resolveRuntimePaths().envFilePath
+  let lines: ReadonlyArray<string>
+  try {
+    lines = readFileSync(envPath, "utf8").split("\n")
+  } catch {
+    return []
+  }
+  const names: string[] = []
+  for (const line of lines) {
+    const t = line.trim()
+    if (t === "" || t.startsWith("#")) continue
+    const eq = t.indexOf("=")
+    if (eq === -1) continue
+    const key = t.slice(0, eq).trim()
+    if (key) names.push(key)
+  }
+  return names
+}
+
 const CHAT_SERVICE_LABEL = "com.user.luna-chat-server"
 
 /**
@@ -843,11 +1103,47 @@ const registerOpTokenHandler = makeRegisterOpToken({
  * (0600), mirroring the boot loader's parsing (first `=`, trimmed key), then set
  * `process.env[NAME]` live (EnvSecretProvider reads process.env per-resolve).
  * The deferred restart covers account-broker hydration. The value is never
- * logged. Name/value are pre-validated by makeRegisterSecret (no `=`/newline).
+ * logged. Callers pre-validate (makeRegisterSecret, setClientCredentials), but
+ * the no-newline invariant is ALSO enforced here so every writer — present and
+ * future — is covered (review M2.6: an interior \n in a value would inject an
+ * extra line into ~/.luna/.env).
  */
-const persistEnvSecret = (varName: string, value: string): Promise<void> =>
+/**
+ * Defense-in-depth reserved-name predicate (mirrors isEnvDenied in
+ * @luna/vault/src/internal.ts). Inlined so persistEnvSecret stays
+ * self-contained. Check is CASE-INSENSITIVE (audit finding).
+ *
+ * CONNECTOR BYPASS: the connector OAuth path (storeSecret) writes
+ * LUNA_CONNECTOR_* vars intentionally — those are legitimate internal
+ * machinery (the agent has zero control over their names; they are
+ * synthesised from the connector definition id). The guard is therefore
+ * applied ONLY to registerSecret-reachable paths (operator/agent input).
+ * The connector's storeSecret passes allowReserved=true to opt out.
+ */
+const _isEnvReservedLocal = (varName: string): boolean => {
+  const upper = varName.toUpperCase()
+  return upper === "UI_WS_TOKEN" || upper.startsWith("LUNA_")
+}
+
+const persistEnvSecret = (varName: string, value: string, allowReserved = false): Promise<void> =>
   new Promise((resolve, reject) => {
     try {
+      if (/[=\r\n]/.test(varName)) {
+        reject(new Error("env var name must not contain '=' or line breaks"))
+        return
+      }
+      if (/[\r\n]/.test(value)) {
+        reject(new Error("env secret value must not contain line breaks"))
+        return
+      }
+      // SECURITY (audit finding, defense-in-depth): a second reserved-name
+      // gate so any future writer that calls persistEnvSecret directly
+      // (bypassing makeRegisterSecret) cannot overwrite Luna internals.
+      // The connector OAuth path passes allowReserved=true — see comment above.
+      if (!allowReserved && _isEnvReservedLocal(varName)) {
+        reject(new Error(`env var name "${varName}" is reserved for Luna internals`))
+        return
+      }
       const envPath = resolveRuntimePaths().envFilePath
       let lines: ReadonlyArray<string> = []
       try {
@@ -884,6 +1180,81 @@ const persistEnvSecret = (varName: string, value: string): Promise<void> =>
     }
   })
 
+/**
+ * Remove a var from ~/.luna/.env + process.env (connector disconnect drops
+ * its revoked refresh token — review G2). Atomic rewrite, 0600, best-effort
+ * (a missing file/var is a no-op). Mirrors persistEnvSecret's IO posture.
+ */
+const removeEnvSecret = (varName: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    try {
+      delete process.env[varName]
+      const envPath = resolveRuntimePaths().envFilePath
+      let lines: ReadonlyArray<string>
+      try {
+        lines = readFileSync(envPath, "utf8").split("\n")
+      } catch {
+        resolve() // no file → nothing to remove
+        return
+      }
+      const kept = lines.filter((line) => {
+        const t = line.trim()
+        if (t === "" || t.startsWith("#")) return true
+        const eq = t.indexOf("=")
+        return !(eq !== -1 && t.slice(0, eq).trim() === varName)
+      })
+      while (kept.length > 0 && kept[kept.length - 1]!.trim() === "") kept.pop()
+      const content = kept.length > 0 ? `${kept.join("\n")}\n` : ""
+      const tmp = `${envPath}.tmp-${process.pid}`
+      writeFileSync(tmp, content, { mode: 0o600 })
+      renameSync(tmp, envPath)
+      chmodSync(envPath, 0o600)
+      resolve()
+    } catch (e) {
+      reject(e instanceof Error ? e : new Error(String(e)))
+    }
+  })
+
+// ── Vault keychain storage (Darwin opt-in) ──────────────────────────────
+//
+// Keychain write/delete adapters for env-secret values. They map an env var
+// NAME to its `luna.vault.<NAME>` keychain entry. Only ever invoked when the
+// facade's effective mode is a keychain mode (Darwin) — on Linux/non-Darwin the
+// facade short-circuits to `.env` and these are never called.
+const writeKeychainEnvSecret = (varName: string, value: string): Promise<void> =>
+  Effect.runPromise(
+    writeKeychainSecret(keychainVaultQueryForEnvName(varName), value),
+  )
+
+const deleteKeychainEnvSecret = (varName: string): Promise<void> =>
+  Effect.runPromise(
+    deleteKeychainSecret(keychainVaultQueryForEnvName(varName)),
+  )
+
+// LUNA_VAULT_STORAGE selects where env-secret VALUES land: `.env` (default),
+// or — on Darwin only — the macOS keychain. Resolved once at boot. The same
+// mode also drives the read-side provider chain in buildBaseLayer below, so
+// write target and read source stay in lockstep.
+const vaultStorageMode = normalizeVaultStorageMode(
+  process.env["LUNA_VAULT_STORAGE"],
+  process.platform,
+)
+
+// Single write/delete facade the Vault env-secret paths funnel through
+// (registerSecret + vault mutations). `writeEnv`/`removeEnv` retain the
+// reserved-name gate + atomic .env IO; `writeKeychain`/`deleteKeychain` hit
+// the keychain. process.env is mirrored either way so live resolution needs
+// no restart.
+const vaultSecretStore = makeVaultSecretStore({
+  platform: process.platform,
+  mode: vaultStorageMode,
+  env: process.env,
+  writeEnv: persistEnvSecret,
+  removeEnv: removeEnvSecret,
+  writeKeychain: writeKeychainEnvSecret,
+  deleteKeychain: deleteKeychainEnvSecret,
+})
+
 // ── Moon agent-summoned secure secret entry ─────────────────────────────
 //
 // The `request_secret` tool (in @luna/secret-tools) calls
@@ -905,13 +1276,63 @@ const registerSecret = makeRegisterSecret({
     return c.ok ? { ok: true, message: "" } : { ok: false, message: c.message }
   },
   persistOpToken,
-  persistEnvSecret,
+  // Vault env-secrets funnel through the storage-mode facade so a keychain
+  // mode (Darwin) writes the value to luna.vault.<NAME> instead of plaintext
+  // .env. Default `env` mode is byte-identical to the prior direct call.
+  persistEnvSecret: vaultSecretStore.persistEnvSecret,
+  log: (msg) => writeSync(1, `${msg}\n`),
+})
+
+// Vault registry hook — assigned inside buildServerLayer once the VaultStore
+// resolves (same late-binding pattern as `notifySkillCatalogChanged`). Both
+// secret WRITE paths that bypass the Vault UI (the agent's request_secret and
+// the Settings register-op-token form) call it after a successful store so
+// every captured credential appears in the Vault registry. Fire-and-forget:
+// a hook failure must never fail the store that already succeeded.
+//
+// V3 outbound sync: the hook ALSO receives the captured VALUE so env-secret
+// captures can be pushed to 1Password when sync is enabled (op-token captures
+// never push). The value stays inside the hook's closure — it is never
+// logged, never stored in the registry, and only ever handed to
+// opSync.createItem (which moves it to `op` via a stdin JSON template).
+let vaultCaptureHook:
+  | ((destination: SecretDestination, source: "agent" | "manual", value: string) => void)
+  | null = null
+
+// Summon-by-name (widget-system.md): the Moon announces its widget
+// directory after hello; the agent's open_widget tool sends widget-open
+// frames back through this bridge. Constructed before the tool layers so
+// the open_widget tool and the WS server share the instance.
+const widgetSummonBridge = createWidgetSummonBridge()
+
+// Live Agents view (S4): folds each thread's subagent tool frames into a tree
+// and broadcasts it to every client. Process-wide (shared across connections)
+// so one thread's tree is consistent no matter which window observes it.
+const subagentTreeBridge = createSubagentTreeBridge()
+
+// Job-summoned operator input (widget-system.md Phase 5): a running job's
+// `request_input` tool broadcasts a question to every connected client and
+// awaits the first answer (the run parks in job_runs.status='waiting'
+// meanwhile). Constructed before the worker layers so the request_input
+// provider and the WS server share the instance — same shape as the
+// widget-summon bridge above. The answer is operator input, not a secret,
+// but the log dep still only ever sees request metadata, never the text.
+const jobInputBridge = createJobInputBridge({
   log: (msg) => writeSync(1, `${msg}\n`),
 })
 
 const secretRequestBridge = createSecretRequestBridge({
-  persistSecret: (destination, secret) =>
-    registerSecret(destination as SecretDestination, secret),
+  persistSecret: async (destination, secret) => {
+    const result = await registerSecret(destination as SecretDestination, secret)
+    if (result.ok) {
+      try {
+        vaultCaptureHook?.(destination as SecretDestination, "agent", secret)
+      } catch {
+        // Registry bookkeeping must never fail a store that succeeded.
+      }
+    }
+    return result
+  },
   // Activation = the same supervised restart the Settings path uses, so token
   // discovery + account-broker hydration re-run with the stored secret. Fired
   // by the bridge at turn-complete (or its long fallback), never mid-turn.
@@ -968,9 +1389,28 @@ export interface BuildDreamCronLayerOpts {
     import("effect").ConfigError,
     import("@luna/memory").LunaSqliteBootstrap
   >
+  /**
+   * M5 cutover (scheduler-v2 dream/wake migration, DESIGN.md §5.3.5). When
+   * TRUE, this factory registers NO legacy dream cron — it returns an empty
+   * Layer so `registerDreamCron` is never called and no fiber-per-cron trigger
+   * is installed. The nightly dream then runs EXCLUSIVELY through the V2 path
+   * (the `dream` job row drained by the JobTicker into the dream worker), so
+   * the cycle can never double-run. The live boot passes the SAME
+   * `LUNA_SCHEDULER_V2_ENABLED=1` flag that turns the V2 ticker on, so the boot
+   * graph contains EITHER the legacy cron OR the V2 ticker, never both.
+   * Reversible: flip the flag off and the legacy cron re-registers unchanged.
+   */
+  readonly schedulerV2Enabled?: boolean
 }
 
 export const buildDreamCronLayer = (opts: BuildDreamCronLayerOpts) => {
+  // M5 cutover gate: under V2, the dream job row drives the cycle — register
+  // no legacy cron trigger here (return early, BEFORE building the sub-graph,
+  // so registerDreamCron is never reached). Layer.empty contributes nothing to
+  // the boot mergeAll. See BuildDreamCronLayerOpts.schedulerV2Enabled.
+  if (opts.schedulerV2Enabled === true) {
+    return Layer.empty
+  }
   const { expr, sdkClientL, memoryRouterL, storeL, clockL, dreamStoreL, brokerL } =
     opts
   // DreamReasonerDefault requires SDKClient, MemoryRouter AND AccountBroker
@@ -1066,9 +1506,28 @@ export interface BuildWakeCronLayerOpts {
    * passes a seeded fake broker (fromAccounts) so the graph still composes.
    */
   readonly brokerL: Layer.Layer<AccountBroker>
+  /**
+   * M5 cutover (scheduler-v2 dream/wake migration, DESIGN.md §5.3.5). When
+   * TRUE, this factory registers NO legacy wake cron — it returns an empty
+   * Layer so `registerWakeCron` is never called and no fiber-per-cron trigger
+   * is installed. The wake cycle then runs EXCLUSIVELY through the V2 path (the
+   * per-workspace `wake` job rows drained by the JobTicker into the wake
+   * worker), so it can never double-run. The live boot passes the SAME
+   * `LUNA_SCHEDULER_V2_ENABLED=1` flag that turns the V2 ticker on, so the boot
+   * graph contains EITHER the legacy cron OR the V2 ticker, never both.
+   * Reversible: flip the flag off and the legacy cron re-registers unchanged.
+   */
+  readonly schedulerV2Enabled?: boolean
 }
 
 export const buildWakeCronLayer = (opts: BuildWakeCronLayerOpts) => {
+  // M5 cutover gate: under V2, the per-workspace wake job rows drive the cycle
+  // — register no legacy cron trigger here (return early, BEFORE building the
+  // sub-graph, so registerWakeCron is never reached). Layer.empty contributes
+  // nothing to the boot mergeAll. See BuildWakeCronLayerOpts.schedulerV2Enabled.
+  if (opts.schedulerV2Enabled === true) {
+    return Layer.empty
+  }
   const wakeReasonerL = WakeReasonerDefault.pipe(
     Layer.provide(opts.sdkClientL),
     Layer.provide(opts.brokerL),
@@ -1087,6 +1546,81 @@ export const buildWakeCronLayer = (opts: BuildWakeCronLayerOpts) => {
   )
 }
 
+// ── V2 worker registry factory (M3 boot wiring) ────────────────────────
+//
+// Compose the V2 JobTicker's WorkerRegistry, seeded with ALL worker kinds the
+// chat-server ships: the generic `prompt` + `workflow` workers (adapter-sdk)
+// AND the dedicated `dream` + `wake` workers (scheduler-v2 dream/wake
+// migration, M1 + M2). A JobTicker draining the `jobs` table dispatches a
+// claimed row to the worker registered under its `kind`, so dream/wake rows are
+// runnable iff their kinds are registered here.
+//
+// Exported (and used BY buildBaseLayer) so the live boot and the M3 integration
+// test share ONE code path: the test builds this with fake/in-memory leaf
+// layers and asserts listKinds superset {prompt, workflow, dream, wake}.
+//
+// Leaf deps are passed in (already built by the caller) so this stays a pure
+// composition with no SDKClient / SQLite / workspace.db assumptions of its own.
+// Optional deps (calibrationStoreL — dream's ECE serviceOption sink;
+// jobInputToolsL — the prompt/workflow request_input serviceOption provider) are
+// folded in only when supplied, exactly mirroring the prior inline wiring +
+// buildDreamCronLayer's optional-calibration handling.
+export interface BuildWorkerRegistryLayerOpts {
+  readonly clockL: Layer.Layer<Clock>
+  readonly sdkClientL: Layer.Layer<SDKClient>
+  readonly agentNotesL: Layer.Layer<AgentNotesService>
+  /** Optional per-run request_input provider (prompt/workflow serviceOption). */
+  readonly jobInputToolsL?: Layer.Layer<import("@luna/adapter-sdk").JobRunToolsProvider>
+  // dream leaf deps (DreamWorkerLayer R = DreamStore|DreamReasoner|SessionStore|MemoryRouter|Clock)
+  readonly dreamStoreL: Layer.Layer<DreamStore, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
+  readonly dreamReasonerL: Layer.Layer<import("@luna/core").DreamReasoner>
+  readonly sessionStoreL: Layer.Layer<SessionStore>
+  readonly memoryRouterL: Layer.Layer<import("@luna/memory").MemoryRouter, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
+  /** Optional ECE calibration sink (dream serviceOption). */
+  readonly calibrationStoreL?: Layer.Layer<CalibrationStore, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
+  // wake leaf deps (WakeWorkerLayer R = WakeReasoner|WakeLogStore|AgentNotesService|Clock)
+  readonly wakeReasonerL: Layer.Layer<import("@luna/core").WakeReasoner>
+  readonly wakeLogStoreL: Layer.Layer<WakeLogStore, import("effect").ConfigError>
+}
+
+export const buildWorkerRegistryLayer = (
+  opts: BuildWorkerRegistryLayerOpts,
+) => {
+  // The four worker-registration layers. Each yields WorkerRegistry + its own
+  // service deps and registers a closed-over Worker<never> at build time.
+  const workers = Layer.mergeAll(
+    PromptWorkerLayer(),
+    WorkflowWorkerLayer(),
+    DreamWorkerLayer(),
+    WakeWorkerLayer(),
+  )
+  // Shared base: ONE empty registry + every leaf dep the four workers reach.
+  // Optional deps are merged only when provided (serviceOption keeps the
+  // workers' R from growing, so omitting them is safe).
+  const base = Layer.mergeAll(
+    makeWorkerRegistry({}),
+    opts.sdkClientL,
+    opts.agentNotesL,
+    opts.dreamStoreL,
+    opts.dreamReasonerL,
+    opts.sessionStoreL,
+    opts.memoryRouterL,
+    opts.wakeReasonerL,
+    opts.wakeLogStoreL,
+    opts.clockL,
+  )
+  const withJobTools =
+    opts.jobInputToolsL === undefined
+      ? base
+      : Layer.merge(base, opts.jobInputToolsL)
+  const withCalibration =
+    opts.calibrationStoreL === undefined
+      ? withJobTools
+      : Layer.merge(withJobTools, opts.calibrationStoreL)
+  // provideMerge so the registry stays VISIBLE above this layer (JobTickerLayer
+  // + the integration test both yield* WorkerRegistry from the result).
+  return workers.pipe(Layer.provideMerge(withCalibration))
+}
 
 // ── Layer wiring ────────────────────────────────────────────────────────
 //
@@ -1134,7 +1668,29 @@ export const buildBaseLayer = (
   }))
   const routedOpL = RoutedOpSecretProvider.make({ accounts: routedAccounts })
   const envProviderL = EnvSecretProvider.Default
-  const secretL = secretProviderFirstOf([routedOpL, envProviderL])
+  // Vault keychain migration: on a Darwin keychain mode, resolve `env:*` from
+  // luna.vault.<NAME> keychain entries FIRST, then fall through to `.env`.
+  // Both keychain modes keep the `.env` reader as the final fallback — it is
+  // load-bearing for names that are NEVER migrated to the keychain: reserved
+  // refs (connector OAuth `env:LUNA_CONNECTOR_*`, `UI_WS_TOKEN`) live only in
+  // `.env` (the migration planner skips reserved names). Dropping the env
+  // reader would strand every connector (review finding).
+  //
+  // The difference between the two keychain modes is OPERATIONAL, not in the
+  // read chain: `keychain-preferred` is the pre-prune dual-read state where
+  // `.env` still holds the migrated values (so `LUNA_VAULT_STORAGE=env`
+  // rollback works); `keychain-only` is the post-prune state where the prune
+  // step has removed the MIGRATED (non-reserved) values from `.env`, so they
+  // resolve from the keychain only — the env tail then serves reserved refs
+  // alone and can never resurrect a migrated secret. Linux/non-Darwin never reaches a
+  // keychain mode (normalizeVaultStorageMode forces env), so the chain is
+  // unchanged there.
+  const keychainEnvProviderL = KeychainEnvSecretProvider.make()
+  const secretL =
+    vaultStorageMode === "keychain-preferred" ||
+    vaultStorageMode === "keychain-only"
+      ? secretProviderFirstOf([routedOpL, keychainEnvProviderL, envProviderL])
+      : secretProviderFirstOf([routedOpL, envProviderL])
 
   // AccountBroker hydrates the §5.1 `accounts` table from the default
   // ~/.luna/luna.db. Failures here surface as ConfigError at boot —
@@ -1221,12 +1777,174 @@ export const buildBaseLayer = (
     Layer.provide(clockL),
   )
 
+  // PRD Part B: the skill catalog, seeded with the in-repo built-ins and
+  // hydrated from the skill_preferences table (delta-only: absent row =
+  // enabled). Toggles write through to the store BEFORE the in-memory
+  // flip, so memory and disk can never disagree. Defined once and reused
+  // by reference (Layer memoization) so the thread-tools wiring and the
+  // ui-ws skill frames see the SAME registry instance.
+  //
+  // This layer also OWNS the ~/.luna/skills hot-load fiber (boot scan +
+  // 30s refresh, the beliefs-holder pattern) because the quarantine needs
+  // the prefs store: a NEVER-DECIDED user skill registers DISABLED until
+  // the operator enables it in the Skills tab (review finding: the agent
+  // can write ~/.luna/skills via local-shell, so auto-enabling new files
+  // would be a persistent prompt-injection channel). Catalog deltas ping
+  // notifySkillCatalogChanged so ui-ws broadcasts a fresh catalog to
+  // long-lived clients.
+  // LunaSqliteBootstrap flows up from the prefs store and is satisfied at
+  // the bottom of buildServerLayer, same as every other SQLite layer here.
+  const skillPrefsL = SkillPrefsStore.makeLayer(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
+  const skillRegistryL = Layer.scoped(
+    SkillRegistry,
+    Effect.gen(function* () {
+      const prefs = yield* SkillPrefsStore
+      const disabled = yield* prefs.disabledIds()
+      if (disabled.length > 0) {
+        console.log(
+          "[luna/boot] skill_preferences hydrated:",
+          disabled.length,
+          "disabled —",
+          disabled.join(", "),
+        )
+      }
+      const ctx = yield* Layer.build(
+        SkillRegistry.layer({
+          seeds: BUILTIN_SKILLS,
+          initialDisabled: disabled,
+          onToggle: (id, enabled) => prefs.setEnabled(id, enabled),
+          // PRD B §11 (S4): index disclosure — the system prompt carries a
+          // one-line index of enabled skills; bodies load on demand via the
+          // skill_tools.skill_load MCP tool. Keeps 100+ enabled skills from
+          // bloating every turn's context.
+          disclosure: "index",
+        }),
+      )
+      const registry = Context.get(ctx, SkillRegistry)
+
+      const userSkillsDir = join(resolveRuntimePaths().lunaHome, "skills")
+      const refreshUserSkills = Effect.gen(function* () {
+        const scan = scanUserSkills(userSkillsDir)
+        const approvedIds = new Set(yield* prefs.knownIds())
+        const summary = yield* syncUserSkills(registry, scan, { approvedIds })
+        if (summary.added + summary.updated + summary.removed > 0) {
+          console.log(
+            `[luna/skills] user skills synced: +${summary.added} ~${summary.updated} -${summary.removed}`,
+          )
+          // Long-lived clients (the Moon) must see hot-load deltas without
+          // a reconnect — ui-ws registered this via skillsWsHandle.changes.
+          notifySkillCatalogChanged?.()
+        }
+        if (summary.quarantined.length > 0) {
+          console.warn(
+            "[luna/skills] NEW user skill(s) found and DISABLED pending your approval " +
+              "(enable in Settings → Skills):",
+            summary.quarantined.join(", "),
+          )
+        }
+        if (summary.conflicts.length > 0) {
+          console.warn(
+            "[luna/skills] user skills shadowing built-ins were SKIPPED:",
+            summary.conflicts.join(", "),
+          )
+        }
+        for (const w of scan.warnings) console.warn("[luna/skills]", w)
+      }).pipe(
+        // Never take the boot/loop down — but never swallow silently either
+        // (review finding): squashed causes get an operator-visible line.
+        Effect.catchAllCause((cause) =>
+          Effect.sync(() =>
+            console.warn("[luna/skills] user-skill sync failed:", String(cause)),
+          ),
+        ),
+      )
+      yield* refreshUserSkills
+      yield* Effect.forkScoped(
+        Effect.forever(
+          Effect.sleep(30_000).pipe(Effect.zipRight(refreshUserSkills)),
+        ),
+      )
+
+      return registry
+    }),
+  ).pipe(Layer.provide(skillPrefsL))
+
   // Per-thread tool wiring, provided INTO ChatService so both new and
   // resumed threads get tools (the resume path bypasses any outer wrapper).
   // LunaSqliteBootstrap flows up and is satisfied at the bottom of
   // buildServerLayer, same as every other SQLite-backed layer here.
+  // PRD Part A: connector instances (luna.db) + the service whose sync
+  // mount snapshot decorate() spreads into every thread's mcpServers.
+  // Defined once and merged into the base layer too (memoized by
+  // reference) so the WS frames talk to the SAME instance.
+  const connectorStoreL = ConnectorInstanceStore.makeLayer(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
+  // PRD Part C/W1: durable pinned-artifact store (artifacts + artifact_versions
+  // in luna.db). Resolved by buildServerLayer for the ui-ws artifact frames.
+  const artifactStoreL = ArtifactStore.makeLayer(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
+  // Vault V1: credential REGISTRY (vault_items + vault_sync_config in luna.db).
+  // Pointers/metadata only — values stay in the existing backends (~/.luna/.env,
+  // keychain luna.op.*, op-token files). Resolved by buildServerLayer for the
+  // ui-ws vault frames; LunaSqliteBootstrap bubbles up like every store here.
+  const vaultStoreL = VaultStore.makeLayer(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
+  const connectorServiceL = ConnectorServiceLayer({
+    definitions: BUILTIN_CONNECTORS,
+    // PRD A §09: the OAuth half. storeSecret persists the refresh token
+    // to ~/.luna/.env (0600, atomic) AND sets process.env so the
+    // EnvSecretProvider resolves it immediately — no restart. The
+    // per-operator client id/secret resolve from process.env (operator
+    // setup step, PRD §23).
+    oauth: {
+      client: makeOAuthClient(),
+      storeSecret: (varName, value) =>
+        Effect.tryPromise({
+          try: async () => {
+            process.env[varName] = value
+            // allowReserved=true: connector var names (LUNA_CONNECTOR_*) are
+            // legitimate internal machinery — their names are synthesised from
+            // the connector definition id, not controlled by operator/agent.
+            await persistEnvSecret(varName, value, true)
+            return `env:${varName}`
+          },
+          catch: (e) =>
+            new ConnectorError({
+              op: "storeSecret",
+              message: `failed to persist the token: ${String(e)}`,
+            }),
+        }),
+      // Disconnect drops the revoked refresh token from ~/.luna/.env +
+      // process.env (review G2). Best-effort — never fails disconnect.
+      clearSecret: (varName) =>
+        Effect.promise(() => removeEnvSecret(varName).catch(() => undefined)),
+      env: process.env,
+    },
+  }).pipe(
+    Layer.provide(connectorStoreL),
+    Layer.provide(secretL),
+    Layer.provide(clockL),
+  )
+
   const threadToolsL = ThreadToolsProviderLayer().pipe(
     Layer.provide(memoryRouterL), // REQUIRED: satisfies MemoryRouterTag inside the layer (siblings don't cross-wire)
+    // PRD Part B: skill_tools (skill_load) + the registry snapshot read by
+    // decorate(). SkillToolsLayer requires SkillRegistry, so order matters:
+    // provide the tools layer first, then the registry satisfies both it
+    // and the provider (Layer.provide composes bottom-up).
+    Layer.provide(SkillToolsLayer()),
+    Layer.provide(skillRegistryL),
+    // PRD Part C/W4: widget_tools (widget_write) — describe-to-spawn authoring.
+    // WidgetToolsLayer requires ArtifactStore; provide the tools layer first,
+    // then artifactStoreL satisfies both it and the WS handle (memoized).
+    Layer.provide(WidgetToolsLayer(widgetSummonBridge)),
+    Layer.provide(artifactStoreL),
+    Layer.provide(connectorServiceL), // PRD Part A: mounts read by decorate()
     Layer.provide(obsL),
     Layer.provide(clockL),
     // JobsStore required by SchedulerToolsLayer for durable cron persistence
@@ -1260,6 +1978,18 @@ export const buildBaseLayer = (
   const calibrationStoreL = CalibrationStore.makeLayer(paths.lunaDbPath).pipe(
     Layer.provide(clockL),
   )
+
+  // Scheduler V2 cutover flag (DESIGN.md §5.3 / §5.3.5). Computed HERE — before
+  // the dream / wake cron layers — because the M5 cutover gates BOTH legacy
+  // cron factories on it: when V2 is enabled the dream + wake cycles run
+  // EXCLUSIVELY through their V2 job rows (the JobTicker dispatches them to the
+  // dedicated dream / wake worker kinds), so the legacy fiber-per-cron layers
+  // must register nothing or the cycles would double-run. The boot graph thus
+  // contains EITHER the legacy crons OR the V2 ticker for dream/wake, never
+  // both. Reversible: flip the flag off and the legacy crons re-register.
+  const schedulerV2Enabled =
+    process.env["LUNA_SCHEDULER_V2_ENABLED"]?.trim() === "1"
+
   const dreamCronL = buildDreamCronLayer({
     expr: "0 3 * * *",
     sdkClientL,
@@ -1271,6 +2001,9 @@ export const buildBaseLayer = (
     // A5: same broker the chat adapter uses — DreamReasonerDefault acquires a
     // credential per reason() through the provider seam (LUNA_DREAM_MODEL).
     brokerL,
+    // M5 cutover: under V2 the dream job row drives the cycle — register no
+    // legacy cron (buildDreamCronLayer returns Layer.empty when this is true).
+    schedulerV2Enabled,
   })
 
   // Wake cron (Path A): WakeReasoner inspects the workspace state at each
@@ -1304,46 +2037,96 @@ export const buildBaseLayer = (
         // A5: same broker the chat adapter uses — WakeReasonerDefault acquires a
         // credential per reason() through the provider seam (LUNA_WAKE_MODEL).
         brokerL,
+        // M5 cutover: under V2 the per-workspace wake job rows drive the cycle —
+        // register no legacy cron (buildWakeCronLayer returns Layer.empty when
+        // this is true).
+        schedulerV2Enabled,
       })
     : null
 
 
-  // Phase 12b (scheduler-rebuild) — DESIGN.md §5.3. Behind the
-  // `LUNA_SCHEDULER_V2_ENABLED` flag so we can ship the wiring without
-  // changing runtime behaviour. With the flag OFF (default), the V2 ticker
-  // layer is omitted from the layer graph — no fiber forked, no DB queries
-  // per minute. With the flag ON, a single supervised JobTicker fiber
-  // drains the `jobs` table every 60 s, claims due rows, and dispatches
-  // them through the WorkerRegistry.
-  //
-  // The WorkerRegistry is intentionally EMPTY in this PR. P4 (the `prompt`
-  // worker) and P5 (the `workflow` worker) ship the actual workers behind
-  // the same flag. While the flag is on with an empty registry, due rows
-  // get claimed + their `job_runs` row closes as failed with
-  // `unknown_kind` — visible in the workspace's per-fire ledger but
-  // otherwise harmless. The existing TriggerAgent + wake / dream Layers
-  // continue to fire alongside this; cutover (P6) migrates them to V2 rows
-  // one at a time, then we flip the disable.
-  const schedulerV2Enabled =
-    process.env["LUNA_SCHEDULER_V2_ENABLED"]?.trim() === "1"
+  // Phase 12b (scheduler-rebuild) — DESIGN.md §5.3 / §5.3.5. Behind the
+  // `LUNA_SCHEDULER_V2_ENABLED` flag (computed above). With the flag OFF
+  // (default), the V2 ticker layer is omitted from the layer graph — no fiber
+  // forked, no DB queries per minute — and the legacy dream / wake cron layers
+  // register as before. With the flag ON, a single supervised JobTicker fiber
+  // drains the `jobs` table every 60 s, claims due rows, and dispatches them
+  // through the WorkerRegistry — which registers the prompt + workflow workers
+  // AND the dedicated dream + wake workers (M1-M3). The M5 cutover (above) makes
+  // buildDreamCronLayer / buildWakeCronLayer register NOTHING under the same
+  // flag, so dream/wake run EXCLUSIVELY via their V2 job rows and never
+  // double-fire. EITHER legacy crons OR the V2 ticker drive dream/wake — never
+  // both.
   if (schedulerV2Enabled) {
-    console.log("[luna/sched] V2 ticker ENABLED (LUNA_SCHEDULER_V2_ENABLED=1) — kinds=prompt,workflow registered")
+    console.log(
+      "[luna/sched] V2 ticker ENABLED (LUNA_SCHEDULER_V2_ENABLED=1) — kinds=prompt,workflow,dream,wake registered; legacy dream/wake cron layers DISABLED (run via V2 job rows)",
+    )
   }
-  // V2 registry: empty by default + PromptWorkerLayer registers the
-  // 'prompt' worker at boot. Layer.provideMerge so the registry remains
+  // Phase 5 (widget-system.md): per-run request_input tool for the job
+  // workers. The provider closes over the jobs store (to flip the run
+  // running↔waiting) and the broadcast jobInputBridge (to reach connected
+  // clients). The workers read the Tag via Effect.serviceOption, so this
+  // layer is purely additive — omit it and they run tool-free as before.
+  const jobInputToolsL = Layer.effect(
+    JobRunToolsProviderTag,
+    Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const runtime = yield* Effect.runtime<never>()
+      const runPromise = Runtime.runPromise(runtime)
+      return createJobInputToolsProvider({
+        bridge: jobInputBridge,
+        // Best-effort flip: a store failure resolves false (the tool treats
+        // it as a no-op) — it must never fail the job's model turn.
+        setRunStatus: (runId, status) =>
+          runPromise(
+            store
+              .updateRunStatus(runId, status)
+              .pipe(Effect.catchAll(() => Effect.succeed(false))),
+          ),
+      })
+    }),
+  ).pipe(Layer.provide(jobsStoreL))
+
+  // V2 registry: ONE empty registry seeded with the prompt + workflow workers
+  // (adapter-sdk) AND the dream + wake workers (scheduler-v2 dream/wake
+  // migration, M1 + M2). buildWorkerRegistryLayer is the SAME factory the M3
+  // integration test exercises with fakes, so the live boot and the test agree
+  // on the kind set. provideMerge (inside the factory) keeps the registry
   // visible to JobTickerLayer above it.
-  const workerRegistryL = Layer.merge(
-    PromptWorkerLayer(),
-    WorkflowWorkerLayer(),
-  ).pipe(
-    Layer.provideMerge(
-      Layer.mergeAll(
-        sdkClientL,
-        makeWorkerRegistry({}),
-        agentNotesL,
-      ),
-    ),
+  //
+  // dreamReasonerL / wakeReasonerL mirror what buildDreamCronLayer /
+  // buildWakeCronLayer build internally (DreamReasonerDefault needs SDKClient +
+  // MemoryRouter + AccountBroker; WakeReasonerDefault needs SDKClient +
+  // AccountBroker), closing over the SAME boot identities (sdkClientL,
+  // memoryRouterL, brokerL). wakeLogStoreL opens the wake workspace's
+  // workspace.db at the same path the wake cron uses. These are built here (not
+  // reused from the cron-layer factories, which keep them local) so the dream /
+  // wake workers reach real services at dispatch time.
+  const dreamWorkerReasonerL = DreamReasonerDefault.pipe(
+    Layer.provide(sdkClientL),
+    Layer.provide(memoryRouterL),
+    Layer.provide(brokerL),
   )
+  const wakeWorkerReasonerL = WakeReasonerDefault.pipe(
+    Layer.provide(sdkClientL),
+    Layer.provide(brokerL),
+  )
+  const wakeWorkerLogStoreL = WakeLogStore.makeLayer(
+    `${wakeWorkspacePath}/.workspace/workspace.db`,
+  )
+  const workerRegistryL = buildWorkerRegistryLayer({
+    clockL,
+    sdkClientL,
+    agentNotesL,
+    jobInputToolsL,
+    dreamStoreL,
+    dreamReasonerL: dreamWorkerReasonerL,
+    sessionStoreL: storeL,
+    memoryRouterL,
+    calibrationStoreL,
+    wakeReasonerL: wakeWorkerReasonerL,
+    wakeLogStoreL: wakeWorkerLogStoreL,
+  })
   const jobTickerL = schedulerV2Enabled
     ? JobTickerLayer().pipe(
         Layer.provide(
@@ -1387,10 +2170,14 @@ export const buildBaseLayer = (
     agentNotesL,
     workspacesL,
     jobsStoreL,  // Phase 12a: persisted cron schedules (DESIGN §5.1 jobs table)
-    dreamCronL, // Phase 3 D1: forces the cron to register at boot
-    wakeCronL ?? Layer.empty, // wake cron: workspace-state digest at each tick (disabled if LUNA_WAKE_ENABLED=0)
-    jobTickerL ?? Layer.empty, // Phase 12b V2 ticker: enabled via LUNA_SCHEDULER_V2_ENABLED=1 (DESIGN §5.3)
+    dreamCronL, // Phase 3 D1: nightly dream cron (Layer.empty under V2 — M5 cutover; the dream job row drives the cycle instead)
+    wakeCronL ?? Layer.empty, // wake cron: workspace digest each tick (Layer.empty under V2 — M5 cutover; disabled if LUNA_WAKE_ENABLED=0)
+    jobTickerL ?? Layer.empty, // Phase 12b V2 ticker: enabled via LUNA_SCHEDULER_V2_ENABLED=1 — drives dream/wake via job rows (DESIGN §5.3.5)
     surveyL,    // Phase 3 D3: Survey available for buildServerLayer to resolve + pass to the WS server
+    skillRegistryL, // PRD Part B: same instance as threadToolsL (memoized by reference) — buildServerLayer resolves it for the WS skill frames
+    connectorServiceL, // PRD Part A: same instance as threadToolsL — M2's WS connector frames resolve it here
+    artifactStoreL, // PRD Part C/W1: buildServerLayer resolves it for the WS artifact frames
+    vaultStoreL, // Vault V1: buildServerLayer resolves it for the WS vault frames
   )
 }
 
@@ -1504,10 +2291,21 @@ export const buildSetupServerLayer = (
         chatService: null,
         accountBroker: null,
         survey: null,
+        skillRegistry: null,
+        connectorService: null,
+        artifactStore: null,
+        workflowGallery: null,
+        // No vault in setup-mode: the registry layer isn't built here, and a
+        // fresh server has nothing to list until real boot.
+        vaultService: null,
         localShellBridge: null,
         // No chat in setup-mode → the request_secret tool is never bound, so the
         // secret bridge has nothing to drive. Disabled here.
         secretBridge: null,
+        // No job workers in setup-mode → request_input is never bound either.
+        jobInputBridge: null,
+        // No MCP-app provider in setup-mode (no telemetry/registry layers).
+        mcpAppHost: null,
         setupPty: resolvedSetupPty,
         // Allow OP-token entry in setup-mode too — useful when LUNA_OP_ACCOUNTS
         // is configured but the account still needs its token. The handler
@@ -1542,6 +2340,573 @@ const buildServerLayer = (
       const chat = yield* ChatService
       const broker = yield* AccountBroker
       const surveyService = yield* Survey // Phase 3 D3
+      const skillRegistryService = yield* SkillRegistry // PRD Part B
+      const connectorServiceHandle = yield* ConnectorService // PRD Part A
+      const artifactStoreService = yield* ArtifactStore // PRD Part C/W1
+      const jobsStore = yield* JobsStoreService // PRD Part C/W3 (gallery source)
+      const telemetry = yield* TelemetryService // Phase 7: pulse-snapshot source
+
+      // PRD A §08: access tokens live ~1h; refresh AHEAD of expiry so the
+      // mount snapshot's bearer never goes stale mid-conversation. The
+      // service refreshes only tokens within their margin, under its
+      // single-flight gate — this tick is cheap when nothing is expiring.
+      yield* Effect.forkScoped(
+        Effect.forever(
+          Effect.sleep(10 * 60 * 1000).pipe(
+            Effect.zipRight(
+              connectorServiceHandle.refreshMounts().pipe(
+                Effect.catchAllCause((cause) =>
+                  Effect.sync(() =>
+                    console.warn("[luna/connectors] mount refresh failed:", String(cause)),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      )
+
+      // Wire-safety adapter (PRD §18): instances are projected to status +
+      // metadata — no secretRef (pointer or not, clients don't need it),
+      // no accountKind. Tokens never exist on instances at all.
+      const toWireInstance = (i: {
+        readonly id: string
+        readonly definitionId: string
+        readonly label: string
+        readonly status: "connected" | "needs-reauth" | "error" | "disconnected"
+        readonly grantedScopes: ReadonlyArray<string>
+        readonly createdAt: number
+        readonly lastHealthyAt: number | null
+      }) => ({
+        id: i.id,
+        definitionId: i.definitionId,
+        label: i.label,
+        status: i.status,
+        grantedScopes: i.grantedScopes,
+        createdAt: i.createdAt,
+        lastHealthyAt: i.lastHealthyAt,
+      })
+      const connectorsWsHandle = {
+        catalog: () => connectorServiceHandle.catalog(),
+        list: () =>
+          connectorServiceHandle.list().pipe(
+            Effect.map((xs) => xs.map(toWireInstance)),
+          ),
+        beginAuth: (input: {
+          readonly definitionId: string
+          readonly label: string
+          readonly capabilityIds?: ReadonlyArray<string>
+          readonly loopbackPort: number
+        }) => connectorServiceHandle.beginAuth(input),
+        completeAuth: (input: {
+          readonly pendingId: string
+          readonly code: string
+          readonly state: string
+        }) =>
+          connectorServiceHandle.completeAuth(input).pipe(Effect.map(toWireInstance)),
+        connect: (input: {
+          readonly definitionId: string
+          readonly label: string
+          readonly secretRef?: string
+          readonly capabilityIds?: ReadonlyArray<string>
+        }) => connectorServiceHandle.connect(input).pipe(Effect.map(toWireInstance)),
+        disconnect: (instanceId: string) =>
+          connectorServiceHandle.disconnect(instanceId),
+        setClientCredentials: (input: {
+          readonly definitionId: string
+          readonly clientId: string
+          readonly clientSecret?: string
+        }) => connectorServiceHandle.setClientCredentials(input),
+      }
+
+      // ── Vault V1 ─────────────────────────────────────────────────────
+      // Registry over the EXISTING secret backends. The store holds pointers
+      // (name/kind/ref/source) — values stay in ~/.luna/.env, the keychain,
+      // and op-token files, written/removed by the same primitives the
+      // request_secret + register-op-token paths already use.
+      const vaultStoreService = yield* VaultStore
+
+      // makeVaultMutations is plain-async (unit-tested in @luna/vault, like
+      // makeRegisterSecret) — adapt the Effect store to its Promise facade.
+      // The resolved handle's effects carry no remaining requirements.
+      const vaultStoreFacade = {
+        list: () => Effect.runPromise(vaultStoreService.list()),
+        upsertByName: (item: VaultItem) =>
+          Effect.runPromise(vaultStoreService.upsertByName(item)),
+        getById: (id: string) => Effect.runPromise(vaultStoreService.getById(id)),
+        remove: (id: string) => Effect.runPromise(vaultStoreService.remove(id)),
+      }
+
+      // V3 sync facade: the op-sync engine needs the sync-config row too.
+      const vaultSyncStoreFacade = {
+        ...vaultStoreFacade,
+        getSyncConfig: () => Effect.runPromise(vaultStoreService.getSyncConfig()),
+        setSyncConfig: (cfg: VaultSyncConfig) =>
+          Effect.runPromise(vaultStoreService.setSyncConfig(cfg)),
+      }
+
+      const vaultMutations = makeVaultMutations({
+        registerSecret,
+        // Vault delete routes through the facade so a keychain-mode delete
+        // scrubs the value from BOTH luna.vault.<NAME> and the .env line — an
+        // explicit delete must stay deleted across restarts (the .env rollback
+        // copy is for copy-only migration, not for deletes). Default `env`
+        // mode deletes from .env as before.
+        removeEnvSecret: vaultSecretStore.removeEnvSecret,
+        deleteOpToken,
+        store: vaultStoreFacade,
+        now: () => Date.now(),
+        log: (msg) => writeSync(1, `${msg}\n`),
+      })
+
+      // Boot-discovered op tokens, shared by the reconciler below and the
+      // V3 sync engine's tokenForLabel. The map living until restart is
+      // correct: every op-token change schedules a supervised restart, so
+      // discovery re-runs with the fresh token.
+      const discoveredOpTokens = yield* discoverOpTokens
+      const opTokenByLabel = new Map(discoveredOpTokens.map((t) => [t.label, t.token]))
+
+      // Boot reconcile: adopt pre-Vault secrets (env var NAMES from
+      // ~/.luna/.env, op-token labels with a discoverable token) into the
+      // registry so the Vault shows the truth on first run. Best-effort —
+      // an adoption failure must never block server start.
+      yield* Effect.gen(function* () {
+        const existing = yield* vaultStoreService.list()
+        const { toAdopt } = reconcileVaultItems({
+          envVarNames: readEnvFileVarNames(),
+          opTokenLabels: discoveredOpTokens.map((t) => t.label),
+          existing,
+          now: Date.now(),
+        })
+        for (const item of toAdopt) {
+          yield* vaultStoreService.upsertByName(item)
+        }
+        if (toAdopt.length > 0) {
+          console.log(`[luna/vault] adopted ${toAdopt.length} pre-existing credential(s) into the registry`)
+        }
+      }).pipe(
+        Effect.catchAllCause((cause) =>
+          Effect.sync(() =>
+            console.warn("[luna/vault] boot reconcile failed:", String(cause)),
+          ),
+        ),
+      )
+
+      // ── Vault V3: 1Password two-way sync engine ──────────────────────
+      // All decision logic lives unit-tested in @luna/vault's makeVaultOpSync;
+      // here we inject the real spawn runner + the boot-discovered token map.
+      // Token → child env only; values → stdin template only; lastError is
+      // sanitized to operation + exit code inside the engine.
+      const opSync = makeVaultOpSync({
+        runOp: runOpForVaultSync,
+        tokenForLabel: (label) => opTokenByLabel.get(label),
+        store: vaultSyncStoreFacade,
+        now: () => Date.now(),
+        log: (msg) => writeSync(1, `${msg}\n`),
+      })
+
+      /**
+       * Outbound push of a freshly stored env-secret to 1Password (when sync
+       * is enabled). The VALUE lives only in this call chain — it goes to
+       * opSync.createItem (stdin template) and nowhere else. Failures degrade
+       * gracefully: the item stays local-only and a sanitized line is logged.
+       * Rows already pushed (opItemId set) are skipped — op item create would
+       * duplicate them (op item edit is a future slice).
+       */
+      const pushEnvSecretTo1P = async (varName: string, value: string): Promise<void> => {
+        const cfg = await vaultSyncStoreFacade.getSyncConfig()
+        if (cfg === null || !cfg.enabled) return
+        const ref = `env:${varName.trim()}`
+        const item = (await vaultStoreFacade.list()).find((i) => i.ref === ref)
+        if (item === undefined || item.opItemId !== null) return
+        const res = await opSync.createItem({
+          title: item.name,
+          value,
+          category: "API_CREDENTIAL",
+        })
+        if (res.ok && res.itemId !== undefined) {
+          await vaultStoreFacade.upsertByName({
+            ...item,
+            opItemId: res.itemId,
+            updatedAt: Date.now(),
+          })
+        } else {
+          // res.message is sanitized by the engine (op + exit code only).
+          writeSync(1, `[luna/vault] outbound 1Password push failed: ${res.message}\n`)
+        }
+      }
+
+      // Late-bind the capture hook (module scope, same pattern as
+      // notifySkillCatalogChanged): agent request_secret captures and the
+      // Settings register-op-token form now land in the registry too.
+      // Fire-and-forget — registry bookkeeping never fails a finished store.
+      // V3: env-secret captures (NOT op-tokens) also push outbound to
+      // 1Password when sync is enabled; the value stays in this closure.
+      vaultCaptureHook = (destination, source, value) => {
+        const args =
+          destination.kind === "op-token"
+            ? { kind: "op-token" as const, label: destination.label, source }
+            : { kind: "env-secret" as const, varName: destination.varName, source }
+        void vaultMutations
+          .recordCapture(args)
+          .then(async () => {
+            if (destination.kind !== "env-secret") return
+            await pushEnvSecretTo1P(destination.varName, value)
+            // Out-of-band registry change (no client request to ack) — let
+            // ui-ws broadcast the refreshed list/synced badges.
+            notifyVaultListChanged?.()
+          })
+          .catch(() => undefined)
+      }
+
+      // ── Vault V3: inbound poll loop ──────────────────────────────────
+      // Effect.forkScoped like the connector refreshMounts loop: a cheap 30s
+      // tick; an actual `op item list` runs only when the configured poll
+      // interval (floor 60s, default 300s ≈ 288 reads/day against the
+      // personal-plan ~1000/day budget) has elapsed since the last SUCCESSFUL
+      // sync — and, after failures, only when the exponential backoff window
+      // (doubling per consecutive failure, cap 1h) has elapsed since the last
+      // ATTEMPT. setSyncConfig (enable) resets both gates for an immediate
+      // first pass.
+      let vaultSyncConsecutiveFailures = 0
+      let vaultSyncLastAttemptAt = 0
+      yield* Effect.forkScoped(
+        Effect.forever(
+          Effect.sleep(30 * 1000).pipe(
+            Effect.zipRight(
+              Effect.promise(async () => {
+                const cfg = await vaultSyncStoreFacade.getSyncConfig()
+                if (cfg === null || !cfg.enabled) return
+                const nowMs = Date.now()
+                if (
+                  !shouldAttemptSync({
+                    nowMs,
+                    lastSyncedAt: cfg.lastSyncedAt ?? null,
+                    lastAttemptAt: vaultSyncLastAttemptAt === 0 ? null : vaultSyncLastAttemptAt,
+                    consecutiveFailures: vaultSyncConsecutiveFailures,
+                    pollSeconds: cfg.pollSeconds,
+                  })
+                ) return
+                vaultSyncLastAttemptAt = nowMs
+                const r = await opSync.syncOnce()
+                if (r.ok) {
+                  vaultSyncConsecutiveFailures = 0
+                  // Mutation-driven vault-list pushes come from ui-ws; a poll
+                  // pass has no requesting client, so nudge the broadcast hook.
+                  if (r.changed > 0) notifyVaultListChanged?.()
+                } else {
+                  vaultSyncConsecutiveFailures += 1
+                  // r.message is sanitized by the engine — safe to log.
+                  writeSync(
+                    1,
+                    `[luna/vault] sync failed (${vaultSyncConsecutiveFailures} consecutive): ${r.message}\n`,
+                  )
+                }
+              }).pipe(Effect.catchAllCause(() => Effect.void)),
+            ),
+          ),
+        ),
+      )
+
+      // Wire-safety projection: pointers + metadata only — `synced` and
+      // `shadowed` are derived flags, never values. (Refs ARE names — e.g.
+      // `env:NOTION_API_KEY` — disclosing them is the Vault's purpose.)
+      // toWireVaultItem is imported from @luna/vault (wire-projection.ts),
+      // bound to bootShadowedEnvKeys here so the list() closure stays simple.
+      const wireItem = (i: VaultItem) => toWireVaultItem(i, bootShadowedEnvKeys)
+
+      const vaultWsHandle = {
+        list: () =>
+          vaultStoreFacade.list().then((items) => items.map(wireItem)),
+        syncState: async () => {
+          const cfg = await Effect.runPromise(vaultStoreService.getSyncConfig())
+          return cfg === null
+            ? null
+            : {
+                enabled: cfg.enabled,
+                opLabel: cfg.opLabel,
+                opVault: cfg.opVault,
+                lastSyncedAt: cfg.lastSyncedAt,
+                lastError: cfg.lastError,
+                pollSeconds: Math.max(60, cfg.pollSeconds ?? 300),
+              }
+        },
+        put: async (f: {
+          readonly name: string
+          readonly kind: "env-secret" | "op-token"
+          readonly varName?: string
+          readonly label?: string
+          readonly value: string
+          readonly description?: string
+        }) => {
+          const r = await vaultMutations.put({
+            name: f.name,
+            kind: f.kind,
+            ...(f.varName !== undefined ? { varName: f.varName } : {}),
+            ...(f.label !== undefined ? { label: f.label } : {}),
+            value: f.value,
+            ...(f.description !== undefined ? { description: f.description } : {}),
+          })
+          // op-token activation needs token discovery + broker hydration to
+          // re-run — same immediate supervised restart as register-op-token
+          // (its 300ms delay lets the status/list frames flush first).
+          if (r.restartNeeded) scheduleServerRestart()
+          // V3 outbound: a freshly stored env-secret also lands in 1Password
+          // when sync is enabled. Awaited inline so the vault-list ui-ws
+          // pushes right after this carries the `synced` badge; a push
+          // failure degrades gracefully (item stays local, message unchanged).
+          if (r.ok && f.kind === "env-secret" && f.varName !== undefined) {
+            try {
+              await pushEnvSecretTo1P(f.varName, f.value)
+            } catch {
+              // Push problems must never fail a put that already succeeded.
+            }
+          }
+          return { ok: r.ok, message: r.message }
+        },
+        remove: async (f: { readonly id: string }) => {
+          const r = await vaultMutations.remove(f.id)
+          if (r.restartNeeded) scheduleServerRestart()
+          return { ok: r.ok, message: r.message }
+        },
+        setSyncConfig: async (f: {
+          readonly enabled: boolean
+          readonly opLabel?: string
+          readonly opVault?: string
+          readonly pollSeconds?: number
+        }) => {
+          // Enabling requires a registered label so "enabled" is never a lie
+          // the sync engine later trips over.
+          if (f.enabled) {
+            const label = (f.opLabel ?? "").trim()
+            if (label === "" || !OP_ACCOUNTS.some((a) => a.label === label)) {
+              return {
+                ok: false,
+                message: `"${label || "(none)"}" isn't a registered 1Password account label — add it to LUNA_OP_ACCOUNTS and store its token first.`,
+              }
+            }
+          }
+          const prev = await Effect.runPromise(vaultStoreService.getSyncConfig())
+          await Effect.runPromise(
+            vaultStoreService.setSyncConfig({
+              enabled: f.enabled,
+              opLabel: f.opLabel?.trim() || prev?.opLabel || "",
+              opVault: f.opVault?.trim() || prev?.opVault || "Luna",
+              pollSeconds: Math.max(60, f.pollSeconds ?? prev?.pollSeconds ?? 300),
+              // Enable nudge: a null lastSyncedAt (plus reset backoff gates)
+              // makes the next 30s poll tick sync immediately instead of
+              // waiting out a stale interval.
+              lastSyncedAt: f.enabled ? null : (prev?.lastSyncedAt ?? null),
+              lastError: f.enabled ? null : (prev?.lastError ?? null),
+            }),
+          )
+          if (f.enabled) {
+            vaultSyncConsecutiveFailures = 0
+            vaultSyncLastAttemptAt = 0
+          }
+          return {
+            ok: true,
+            message: f.enabled
+              ? "1Password sync enabled."
+              : "1Password sync disabled.",
+          }
+        },
+        importItems: async (f: {
+          readonly items: ReadonlyArray<{
+            readonly title: string
+            readonly url?: string
+            readonly username?: string
+            readonly password: string
+            readonly notes?: string
+          }>
+        }) => {
+          // Guard here too (the engine re-checks): with sync off, the honest
+          // failure message explains WHY import is unavailable.
+          const cfg = await vaultSyncStoreFacade.getSyncConfig()
+          if (cfg === null || !cfg.enabled) {
+            return {
+              ok: false,
+              message:
+                "Importing passwords requires 1Password sync, which isn't active yet on this server.",
+            }
+          }
+          const r = await opSync.importLogins(f.items)
+          // ui-ws pushes vault-list only on ok — a PARTIAL import (rows
+          // created, then a hard failure) still changed the registry, so
+          // nudge the out-of-band broadcast.
+          if (!r.ok && r.created > 0) notifyVaultListChanged?.()
+          return { ok: r.ok, message: r.message }
+        },
+        // Out-of-band registry changes (sync poll loop, capture-hook pushes)
+        // → ui-ws broadcasts a fresh vault-list to every connected client
+        // (same pattern as notifySkillCatalogChanged).
+        changes: (notify: () => void) => {
+          notifyVaultListChanged = notify
+        },
+      }
+
+      // PRD Part C/W1: the artifact store's PinnedArtifact is already wire-safe
+      // (metadata + content, no secrets) — project to the wire PinnedArtifactItem
+      // shape explicitly so a future store-internal field can't silently leak.
+      const toWireArtifact = (a: import("@luna/core").PinnedArtifact) => ({
+        id: a.id,
+        kind: a.kind,
+        title: a.title,
+        lang: a.lang,
+        content: a.content,
+        origin: a.origin,
+        version: a.version,
+        pinnedAt: a.pinnedAt,
+        updatedAt: a.updatedAt,
+        bridgeCaps: a.bridgeCaps,
+      })
+      // Phase 7 (widget-system.md "Widgets are MCP Apps" v1): the in-process
+      // CoreAppRegistry makes the Luna server the FIRST MCP-app provider.
+      // pulse-snapshot aggregates the TelemetryService counters EventCounter
+      // already mirrors from the obs stream (sqlite-backed here, so the tiles
+      // show running totals that survive restarts) — no new obs tap needed.
+      // The workspace pulse counters, shared by the static pulse app AND the
+      // curated `pulse` tool offered to store-backed apps.
+      const getPulse = () =>
+        Effect.runPromise(telemetry.snapshot).then(pulseFromSnapshot)
+      const mcpAppHost = createMcpAppHost(
+        composeAppRegistries(
+          // Static, compile-time core apps (the Luna server as first provider).
+          createCoreAppRegistry([buildWorkspacePulseApp(getPulse)]),
+          // Generated / user-authored apps: ui://luna/app/<id> resolves to a
+          // pinned mcp-app artifact's HTML, tools/call gated by the curated set.
+          createStoreBackedAppRegistry({
+            getAppHtml: (artifactId) =>
+              Effect.runPromise(
+                artifactStoreService
+                  .get(artifactId)
+                  .pipe(
+                    Effect.map((a) =>
+                      a && a.kind === "mcp-app" ? a.content : null,
+                    ),
+                  ),
+              ),
+            curatedTools: buildCuratedAppTools({
+              getPulse,
+              // Narrowed to APP/WIDGET kinds only — a curated app sees the
+              // other apps/widgets, NOT the titles of chat-pinned documents
+              // (defense-in-depth: keep the read surface tight even though Luna
+              // is single-tenant and the sandbox has no network).
+              listArtifacts: () =>
+                Effect.runPromise(
+                  artifactStoreService.list().pipe(
+                    Effect.map((xs) =>
+                      xs
+                        .filter((a) => a.kind === "widget" || a.kind === "mcp-app")
+                        .map((a) => ({
+                          id: a.id,
+                          title: a.title,
+                          kind: a.kind,
+                          version: a.version,
+                          updatedAt: a.updatedAt,
+                        })),
+                    ),
+                  ),
+                ),
+            }),
+          }),
+        ),
+      )
+
+      const artifactsWsHandle = {
+        list: () =>
+          artifactStoreService.list().pipe(Effect.map((xs) => xs.map(toWireArtifact))),
+        pin: (input: {
+          readonly id: string
+          readonly title: string
+          readonly content: string
+          readonly lang?: string | null
+          readonly kind?: import("@luna/core").ArtifactKind
+          readonly origin?: string | null
+        }) => artifactStoreService.pin(input).pipe(Effect.map(toWireArtifact)),
+        unpin: (id: string) => artifactStoreService.unpin(id),
+        // Edit = append a version via the store's update (NOT unpin+re-pin):
+        // preserves the time-travel ledger and leaves bridgeCaps untouched.
+        update: (id: string, content: string) =>
+          artifactStoreService
+            .update(id, content, "user")
+            .pipe(Effect.map((a) => (a ? toWireArtifact(a) : null))),
+      }
+
+      // PRD Part C/W3: the workflow gallery is a READ-ONLY, wire-safe projection
+      // of the persisted jobs store. A job is "on-demand" when it has no
+      // schedule; the run-error is truncated and the (potentially large /
+      // sensitive) outputText + stepsJson never cross the wire. A failed fetch
+      // degrades to an empty list — it must not break the connection.
+      const toGalleryItem = (j: import("@luna/core").PersistedJob) => ({
+        id: j.id,
+        kind: j.kind,
+        label: j.payload.label,
+        source: j.payload.source ?? null,
+        // Legacy rows have schedule=null and carry the cron in `spec` (review
+        // G3) — fall back so a scheduled job shows its cron, not a blank.
+        schedule: j.schedule ?? j.spec,
+        // Badge by KIND, not the nullable schedule column: a `oneshot` is
+        // on-demand; cron/prompt/workflow/file-watch are scheduled/triggered.
+        onDemand: j.kind === "oneshot",
+        enabled: j.enabled,
+        nextRunAt: j.nextRunAt ?? j.nextRun,
+        lastRun: j.lastRun,
+        lastStatus: j.lastStatus,
+        createdAt: j.createdAt,
+      })
+      const toRunItem = (r: import("@luna/core").JobRun) => ({
+        id: r.id,
+        startedAt: r.startedAt,
+        finishedAt: r.finishedAt,
+        status: r.status,
+        attempt: r.attempt,
+        error: r.error ? r.error.slice(0, 200) : null,
+      })
+      const workflowGalleryHandle = {
+        list: () =>
+          jobsStore.listAll().pipe(
+            Effect.map((jobs) => jobs.map(toGalleryItem)),
+            // Degrade to empty so the connection survives, but LOG first — a
+            // chronically-failing jobs DB must be observable (review G3).
+            Effect.catchAll((e) =>
+              Effect.sync(() => {
+                console.warn("[luna/workflows] gallery list failed:", String(e))
+                return [] as ReturnType<typeof toGalleryItem>[]
+              }),
+            ),
+          ),
+        runs: (jobId: string, limit?: number) =>
+          jobsStore.listRuns(jobId, limit ?? 25).pipe(
+            Effect.map((runs) => runs.map(toRunItem)),
+            Effect.catchAll((e) =>
+              Effect.sync(() => {
+                console.warn("[luna/workflows] gallery runs failed:", String(e))
+                return [] as ReturnType<typeof toRunItem>[]
+              }),
+            ),
+          ),
+      }
+
+      // Wire-safety adapter (PRD §12): the ui-ws handle receives catalog
+      // entries with the `body` ALREADY stripped. Bodies are prompt content
+      // for the agent — they never reach clients, and stripping here (not
+      // in ui-ws) means a ui-ws logging/serialization bug cannot leak them.
+      const skillsWsHandle = {
+        catalog: () =>
+          skillRegistryService.catalog().pipe(
+            Effect.map((entries) =>
+              entries.map(({ body: _body, ...meta }) => meta),
+            ),
+          ),
+        setEnabled: (id: string, enabled: boolean) =>
+          skillRegistryService.setEnabled(id, enabled),
+        // Out-of-band catalog changes (the ~/.luna/skills hot-load fiber)
+        // → ui-ws broadcasts a fresh catalog to every connected client.
+        changes: (notify: () => void) => {
+          notifySkillCatalogChanged = notify
+        },
+      }
 
       // Phase 3 D3: build the SurveyWsHandle adapter. SurveyApi has
       // pendingSurvey + processVerdict; SurveyWsHandle needs pendingSurvey +
@@ -1579,10 +2944,39 @@ const buildServerLayer = (
         chatService: chat,
         accountBroker: broker,
         survey: surveyHandle, // Phase 3 D3: resolved handle
+        skillRegistry: skillsWsHandle, // PRD Part B: bodies pre-stripped
+        connectorService: connectorsWsHandle, // PRD Part A: instances pre-projected
+        artifactStore: artifactsWsHandle, // PRD Part C/W1: pinned artifacts (wire-safe)
+        workflowGallery: workflowGalleryHandle, // PRD Part C/W3: read-only jobs gallery
+        vaultService: vaultWsHandle, // Vault V1: registry CRUD (values never cross down)
         localShellBridge,
         onLocalShellRelease: reattachSandbox,
-        registerOpToken: registerOpTokenHandler,
+        // Wrapped so a Settings-form token ALSO lands in the Vault registry
+        // (source 'manual'). The wrap never changes the handler's result.
+        registerOpToken: async (input) => {
+          const result = await registerOpTokenHandler(input)
+          if (result.ok) {
+            try {
+              // The hook receives the token for signature consistency, but
+              // op-token captures NEVER push to 1Password (only env-secret
+              // captures do) — it stays inside the hook's closure.
+              vaultCaptureHook?.({ kind: "op-token", label: input.label }, "manual", input.token)
+            } catch {
+              // Registry bookkeeping must never fail a store that succeeded.
+            }
+          }
+          return result
+        },
         secretBridge: secretRequestBridge,
+        widgetSummoner: widgetSummonBridge,
+        subagentTree: subagentTreeBridge,
+        // Phase 5 (widget-system.md): job-summoned operator input. Every
+        // connection registers with the broadcast bridge; the job workers'
+        // request_input tool drives it (see jobInputToolsL above).
+        jobInputBridge,
+        // Phase 7 (widget-system.md): MCP Apps relay — ui:// resource reads +
+        // same-app tool calls against the in-process CoreAppRegistry.
+        mcpAppHost,
       })
     }),
   ).pipe(
@@ -1705,6 +3099,44 @@ const bootstrap = async (): Promise<void> => {
   // The guard makes a second signal (or SIGINT-then-SIGTERM) a no-op so
   // dispose() can't run twice.
   installShutdown(runtime)
+
+  // Install Luna's default agent permission policy on the shared SDKAdapter
+  // BEFORE the WS server accepts connections, so every thread's queries use it.
+  // Default-ALLOW (agents never stall on a permission prompt in this headless
+  // server); the canUseTool rail DENIES reads/writes of secret paths (.env,
+  // secrets/, key files) for the file built-ins, plus a defense-in-depth
+  // destructive-command rail (agents run shell through the sandboxed
+  // mcp__local_shell__*, not raw Bash). It only fires under permissionMode
+  // "default"; LUNA_TRUSTED_LOCAL=1 (bypassPermissions) skips canUseTool
+  // entirely — the explicit full-trust opt-in (no rails).
+  //
+  // This is now the FIRST runPromise on the runtime, so it forces the layer
+  // graph to build — a boot-time layer failure surfaces HERE, ahead of
+  // buildMain's catch. Mirror that diagnostic so a fail-fast boot stays loud
+  // instead of becoming a silent unhandled rejection.
+  await runtime
+    .runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* SDKAdapter
+        yield* adapter.setPermissionCallback(
+          composeInterceptors(defaultSafetyInterceptors()),
+        )
+      }),
+    )
+    .catch((err) => {
+      console.error(
+        "❌ chat server failed to boot (permission policy install):",
+        err,
+      )
+      const msg = String(err)
+      if (msg.includes("OnePasswordSecretProvider") || msg.includes("'op'")) {
+        console.error(
+          "   hint: 1Password CLI not authenticated. Add a " +
+            "luna.op.<label> keychain entry or set LUNA_OP_TOKEN_<LABEL>, then restart.",
+        )
+      }
+      process.exit(1)
+    })
 
   // runPromise keeps the event loop alive until the effect resolves (which
   // it never does because of Effect.never). runFork returns immediately,

@@ -79,15 +79,36 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "tool-result",
   "turn-complete",
   "account-list",
+  "skill-catalog",
+  "skill-status",
+  "connector-catalog",
+  "connector-list",
+  "connector-oauth-redirect",
+  "connector-status",
+  "artifact-list",
+  "artifact-update",
+  "workflow-list",
+  "workflow-runs",
   "local-shell-request",
   "local-shell-status",
   "register-op-token-status",
   "secret-request",
   "secret-status",
+  "job-input-request",
+  "job-input-status",
   "memory-search-result",
   "memory-search-error",
   "survey-request",
   "pty-output",
+  "vault-list",
+  "vault-status",
+  "widget-open",
+  "open-artifact-widget",
+  "subagent-tree",
+  "mcp-resource-result",
+  "mcp-tool-result",
+  "thread-config",
+  "smart-bar",
 ].sort()
 
 const EXPECTED_CLIENT_FRAME_TYPES = [
@@ -104,9 +125,30 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "memory-search-request",
   "register-op-token",
   "secret-result",
+  "job-input-result",
   "survey-response",
+  "skill-toggle",
+  "connector-oauth-begin",
+  "connector-oauth-code",
+  "connector-connect",
+  "connector-disconnect",
+  "connector-set-client",
+  "artifact-pin",
+  "artifact-unpin",
+  "workflow-runs-request",
+  "workflow-refresh",
   "pty-input",
   "pty-resize",
+  "vault-put",
+  "vault-delete",
+  "vault-sync-config",
+  "vault-import",
+  "widget-directory",
+  "subagent-tree-request",
+  "artifact-edit",
+  "mcp-resource-read",
+  "mcp-tool-call",
+  "set-thread-config",
 ].sort()
 
 const EXPECTED_PROTOCOL_VERSION = 2
@@ -118,6 +160,14 @@ const EXPECTED_PROTOCOL_VERSION = 2
 /** Read the live protocol source (cwd-independent — resolved relative to here). */
 function readProtocolSource(): string {
   return readFileSync(new URL("../src/protocol.ts", import.meta.url), "utf8")
+}
+
+/** Read the ui-shared wire mirror (the standalone copy non-Node clients use). */
+function readWireSource(): string {
+  return readFileSync(
+    new URL("../../ui-shared/src/wire.ts", import.meta.url),
+    "utf8",
+  )
 }
 
 /**
@@ -184,13 +234,71 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     expect(UI_WS_PROTOCOL_VERSION).toBe(EXPECTED_PROTOCOL_VERSION)
   })
 
-  it("parser self-check: derived counts are sane (26 server, 16 client) — guards the regex itself", () => {
+  it("parser self-check: derived counts are sane (44 server, 35 client) — guards the regex itself", () => {
     // If the regex silently mis-parses, the toEqual above could pass for the
     // wrong reason. Pin the counts so a broken parser is caught here.
     // Prior base = 24 server / 15 client; the agent-summoned secure-secret-entry
     // feature adds secret-request + secret-status (server) and secret-result
-    // (client) → 26 server / 16 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(26)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(16)
+    // (client) → 26 server / 16 client. The PRD Part B skills feature adds
+    // skill-catalog + skill-status (server) and skill-toggle (client)
+    // → 28 server / 17 client. The PRD Part A connectors feature adds
+    // connector-catalog/-list/-oauth-redirect/-status (server) and
+    // connector-oauth-begin/-oauth-code/-connect/-disconnect (client)
+    // → 32 server / 21 client. The PRD Part C/W1 artifacts feature adds
+    // artifact-list + artifact-update (server) and artifact-pin + artifact-unpin
+    // (client) → 34 server / 23 client. The PRD Part C/W3 workflow gallery adds
+    // workflow-list + workflow-runs (server) and workflow-runs-request +
+    // workflow-refresh (client) → 36 server / 25 client. M2.6 adds
+    // connector-set-client (client) for the inline OAuth-client setup form
+    // → 36 server / 26 client. Luna Vault V1 adds vault-list + vault-status
+    // (server) and vault-put + vault-delete + vault-sync-config + vault-import
+    // (client) → 38 server / 30 client. Summon-by-name (widget-system.md)
+    // adds widget-open (server) and widget-directory (client)
+    // → 39 server / 31 client. Job-summoned operator input (widget-system.md
+    // Phase 5) adds job-input-request + job-input-status (server) and
+    // job-input-result (client) → 41 server / 32 client. The MCP Apps host
+    // relay (widget-system.md Phase 7, SEP-1865) adds mcp-resource-result +
+    // mcp-tool-result (server) and mcp-resource-read + mcp-tool-call (client)
+    // → 43 server / 34 client. The model+effort switcher adds thread-config
+    // (server) and set-thread-config (client) → 44 server / 35 client. The
+    // artifact-open backbone (widget-system.md S2) adds open-artifact-widget
+    // (server only — the content-tier sibling of widget-open) → 45 server / 35 client.
+    // The live Agents view (S4) adds subagent-tree (server, broadcast) +
+    // subagent-tree-request (client) → 46 server / 36 client. The Apps-panel
+    // ledger-safe edit adds artifact-edit (client) → 46 server / 37 client.
+    // Smart Bar v1 adds smart-bar (server) → 47 server / 37 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(47)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(37)
+  })
+
+  // VERSION-SKEW (client half): nothing else pins the ui-shared wire.ts mirror
+  // to protocol.ts. A frame added/renamed in wire.ts but not protocol.ts (or
+  // misspelled) would silently break the non-Node clients (Moon/web) without
+  // any test going red (review W1/wire). wire.ts is a STRICT SUBSET of
+  // protocol.ts (it omits server-internal frames like tool-call), so assert
+  // containment with matching spellings.
+  const wireSrc = readWireSource()
+  for (const union of ["ServerFrame", "ClientFrame"] as const) {
+    it(`wire.ts ${union} literals are a spelling-exact subset of protocol.ts (mirror stays in sync)`, () => {
+      const wire = new Set(literalsForUnion(wireSrc, union))
+      const proto = new Set(literalsForUnion(src, union))
+      const orphans = [...wire].filter((t) => !proto.has(t))
+      expect(orphans).toEqual([]) // every wire frame must exist in protocol.ts
+    })
+  }
+
+  it("the artifact frames (W1) are present in BOTH wire.ts and protocol.ts", () => {
+    const serverProto = new Set(literalsForUnion(src, "ServerFrame"))
+    const serverWire = new Set(literalsForUnion(wireSrc, "ServerFrame"))
+    const clientProto = new Set(literalsForUnion(src, "ClientFrame"))
+    const clientWire = new Set(literalsForUnion(wireSrc, "ClientFrame"))
+    for (const t of ["artifact-list", "artifact-update"]) {
+      expect(serverProto.has(t)).toBe(true)
+      expect(serverWire.has(t)).toBe(true)
+    }
+    for (const t of ["artifact-pin", "artifact-unpin"]) {
+      expect(clientProto.has(t)).toBe(true)
+      expect(clientWire.has(t)).toBe(true)
+    }
   })
 })

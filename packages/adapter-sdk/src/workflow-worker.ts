@@ -39,7 +39,7 @@
  * controlled paths.
  */
 import { spawn } from "node:child_process"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option } from "effect"
 import {
   AgentNotesService,
   WorkerRegistry,
@@ -50,6 +50,11 @@ import {
 } from "@luna/core"
 import { SDKClient, type SDKClientService } from "./sdk-client.js"
 import { runBoundedQuery, DEFAULT_QUERY_TIMEOUT_MS } from "./bounded-query.js"
+import {
+  JobRunToolsProviderTag,
+  type JobRunToolsBinding,
+  type JobRunToolsProvider,
+} from "./job-run-tools.js"
 
 // ── Step types ──────────────────────────────────────────────────────────────
 
@@ -298,12 +303,23 @@ function runShellStep(step: ShellStep): Promise<ShellStepResult> {
 function runPromptStep(
   step: PromptStep,
   sdk: SDKClientService,
+  binding: JobRunToolsBinding | null = null,
 ): Effect.Effect<PromptStepResult, never> {
   return Effect.gen(function* () {
     const startMs = Date.now()
-    const prompt = step.system_prompt
-      ? `${step.system_prompt}\n\n${step.user_prompt}`
+    // Per-run tool wiring (request_input): the addendum joins the step's
+    // own system text; tools/server are spliced into the options below.
+    const systemText = [
+      ...(step.system_prompt ? [step.system_prompt] : []),
+      ...(binding ? [binding.systemPromptAddendum] : []),
+    ].join("\n\n")
+    const prompt = systemText
+      ? `${systemText}\n\n${step.user_prompt}`
       : step.user_prompt
+    const allowedTools = [
+      ...(step.allowed_tools ?? []),
+      ...(binding ? binding.allowedTools : []),
+    ]
 
     // INVARIANT: the effective timeout MUST stay well under push-through's
     // worktree-lock staleness (`LOCK_STALE_S`, 3600s). A timed-out prompt step
@@ -319,8 +335,9 @@ function runPromptStep(
         prompt,
         options: {
           maxTurns: step.max_turns ?? 1,
-          ...(step.allowed_tools
-            ? { allowedTools: [...step.allowed_tools] }
+          ...(allowedTools.length > 0 ? { allowedTools } : {}),
+          ...(binding
+            ? { mcpServers: { [binding.serverName]: binding.server } }
             : {}),
           ...(step.model ? { model: step.model } : {}),
         },
@@ -369,8 +386,9 @@ function runPromptStep(
 export const buildWorkflowWorker = (
   sdk: SDKClientService,
   _notes: AgentNotesApi | null,
+  jobTools: JobRunToolsProvider | null = null,
 ): Worker<never> => {
-  return (rawPayload, _ctx) =>
+  return (rawPayload, ctx) =>
     Effect.gen(function* () {
       const parsed = parseWorkflowPayload(rawPayload)
       if (typeof parsed === "string") {
@@ -383,6 +401,22 @@ export const buildWorkflowWorker = (
         )
       }
 
+      // Per-run tool wiring (request_input, widget-system.md Phase 5). One
+      // binding per dispatch — the steps run sequentially, so every prompt
+      // step shares the run-scoped server (the bridge enforces one pending
+      // input request per run anyway).
+      const label = (rawPayload as { label?: unknown } | null)?.label
+      const binding = jobTools
+        ? jobTools.forRun({
+            jobId: ctx.jobId,
+            runId: ctx.runId,
+            jobName:
+              typeof label === "string" && label.length > 0
+                ? label
+                : ctx.jobId,
+          })
+        : null
+
       const stepResults: StepResult[] = []
       let haltedAt: number | null = null
 
@@ -392,7 +426,7 @@ export const buildWorkflowWorker = (
         if (step.kind === "shell") {
           result = yield* Effect.promise(() => runShellStep(step))
         } else {
-          result = yield* runPromptStep(step, sdk)
+          result = yield* runPromptStep(step, sdk, binding)
         }
         stepResults.push(result)
         if (result.status !== "success" && parsed.halt_on_failure) {
@@ -456,7 +490,10 @@ export const WorkflowWorkerLayer = (
       const sdk = yield* SDKClient
       const reg = yield* WorkerRegistry
       const notes = yield* AgentNotesService
-      const worker = buildWorkflowWorker(sdk, notes)
+      // Optional per-run tool wiring (request_input) — serviceOption keeps
+      // the layer's R unchanged; absent provider = tool-free worker.
+      const jobTools = yield* Effect.serviceOption(JobRunToolsProviderTag)
+      const worker = buildWorkflowWorker(sdk, notes, Option.getOrNull(jobTools))
       yield* reg.register(kind, worker)
     }),
   )

@@ -1,0 +1,393 @@
+/**
+ * board.css — Luna Studio board: floating watercolor panels on one canvas.
+ * Ported from the design handoff's luna-theme.css panel/guide/shelf/mode
+ * sections (~/Downloads/Brainstorm/project/luna-theme.css) onto the token
+ * system in ../watercolor.css. Engine: ./createBoard.ts, render: ./Board.tsx.
+ */
+
+.board {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  z-index: 1;
+}
+
+/* ── panel ─────────────────────────────────────────────────────────────── */
+.panel {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  min-width: 190px;
+  min-height: 130px;
+  transition: box-shadow 0.2s ease, opacity 0.45s ease;
+}
+.panel.dragging,
+.panel.dragging .panel-head { cursor: grabbing; }
+
+/* paper layer behind the content — carries the hand-painted edge. The
+   wobble filter lives HERE (a dedicated empty layer), never on .panel
+   itself, so the panel's text/controls stay crisp while the paper edge
+   waves like real paint (the design's own trick). */
+.panel-wash {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--paper);
+  filter: url(#wc-wobble);
+  transition: background 0.5s ease;
+}
+/* chrome: soft wash (default) — the tint pools at the head and feathers out */
+.panel-wash {
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--panel-tint) 26%, transparent) 0%, transparent 86px),
+    var(--paper);
+  /* Warm paper shadow (design values) — never pure black. */
+  box-shadow:
+    0 2px 4px rgba(60, 45, 35, 0.06),
+    0 14px 34px -10px rgba(60, 45, 35, 0.18);
+}
+/* Night paper: panels step UP from the canvas (paper-2, the raised
+   surface) and the head tint pools harder — on dark paper a 26% wash
+   reads as ~nothing, and panel-on-paper melts into the backdrop (the
+   design reference's dark panels are clearly lighter cards). */
+html[data-theme='dark'] .panel-wash {
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--panel-tint) 38%, transparent) 0%, transparent 86px),
+    var(--paper-2);
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--ink) 7%, transparent),
+    0 14px 34px -10px rgba(0, 0, 0, 0.5);
+}
+/* chrome: ink outline */
+html[data-chrome='ink'] .panel-wash {
+  border: 1.5px solid color-mix(in oklab, var(--ink) 55%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--panel-tint) 18%, transparent) 0%, transparent 70px),
+    var(--paper);
+  box-shadow: 0 10px 26px -12px rgba(0, 0, 0, 0.16);
+}
+html[data-theme='dark'][data-chrome='ink'] .panel-wash {
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--panel-tint) 26%, transparent) 0%, transparent 70px),
+    var(--paper-2);
+}
+.panel.snapped .panel-wash {
+  box-shadow:
+    0 0 0 2px color-mix(in oklab, var(--accent) 38%, transparent),
+    0 14px 34px -10px rgba(0, 0, 0, 0.2);
+}
+
+.panel-head {
+  position: relative;
+  height: 36px;
+  flex: 0 0 36px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 10px 0 14px;
+  cursor: grab;
+  user-select: none;
+  z-index: 2;
+}
+.wash-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50% 46% 52% 48%;
+  background: var(--panel-tint);
+  filter: url(#wc-wobble);
+  flex: 0 0 auto;
+  pointer-events: none;
+}
+.panel-title {
+  font-family: var(--font-hand);
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  color: var(--ink);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.panel-star,
+.panel-min,
+.panel-close {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  border-radius: 50%;
+  color: var(--ink-soft);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  font-family: inherit;
+  padding: 0;
+  flex: 0 0 auto;
+}
+.panel-star { color: var(--ink-faint); }
+/* .panel-head prefix lifts these to 0,3,0 — styles.css's generic
+   `button:hover:not(:disabled)` (0,2,1) must never repaint board chrome. */
+.panel-head .panel-star:hover,
+.panel-head .panel-min:hover,
+.panel-head .panel-close:hover {
+  background: color-mix(in oklab, var(--ink) 9%, transparent);
+  color: var(--ink);
+  transform: none;
+}
+.panel-head .panel-star:hover { color: var(--accent); }
+.panel-star.on { color: var(--accent); }
+
+/* minimized: roll up to just the title bar */
+.panel.minimized { min-height: 0; }
+.panel.minimized .panel-body { display: none; }
+
+.panel-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 0 0 14px 14px;
+}
+
+.resize-handle {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 20px;
+  height: 20px;
+  cursor: nwse-resize;
+  z-index: 3;
+  /* Hidden at rest. The design draws it always-on, but the wobbled+rounded
+     paper corner curves away from a crisp bracket pinned at the geometric
+     corner, so at rest it reads as a stray mark floating off the edge.
+     Reveal it only on hover, tucked further in (right/bottom 7px) so it
+     lands on solid paper inside the rounding. */
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.resize-handle::after {
+  content: '';
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid var(--ink-soft);
+  border-bottom: 2px solid var(--ink-soft);
+  border-radius: 0 0 3px 0;
+}
+.panel:hover .resize-handle { opacity: 0.55; }
+.resize-handle:hover { opacity: 0.85; }
+
+/* bloom-in entrance */
+@keyframes panelBloom {
+  0% { opacity: 0; transform: scale(0.72); filter: blur(10px); }
+  60% { opacity: 1; filter: blur(2px); }
+  100% { opacity: 1; transform: scale(1); filter: blur(0); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .panel.entering { animation: panelBloom 0.65s cubic-bezier(0.22, 1, 0.36, 1) both; }
+}
+
+/* ── snap guides ───────────────────────────────────────────────────────── */
+.guide-v,
+.guide-h {
+  position: absolute;
+  z-index: 2500;
+  pointer-events: none;
+}
+.guide-v { top: 0; bottom: 0; width: 0; border-left: 1.5px dashed color-mix(in oklab, var(--accent) 70%, transparent); }
+.guide-h { left: 0; right: 0; height: 0; border-top: 1.5px dashed color-mix(in oklab, var(--accent) 70%, transparent); }
+
+/* ── shelf (closed panels, in the topbar) ──────────────────────────────── */
+.shelf { position: relative; display: flex; gap: 6px; align-items: center; }
+.shelf-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 12px 4px 9px;
+  border: 1.3px solid var(--ink-faint);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-hand);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+.shelf .shelf-chip:hover {
+  transform: translateY(-1px);
+  border-color: var(--accent);
+  background: var(--paper);
+  color: var(--ink);
+}
+.shelf-chip .wash-dot { width: 9px; height: 9px; }
+.shelf-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  background: var(--paper);
+  border: 1.3px solid var(--ink-faint);
+  border-radius: 14px;
+  padding: 8px;
+  box-shadow: 0 10px 26px -10px rgba(0, 0, 0, 0.3);
+  z-index: 3200;
+}
+
+/* ── workspace mode toggle ─────────────────────────────────────────────── */
+.mode-toggle {
+  display: flex;
+  border: 1.3px solid var(--ink-faint);
+  border-radius: 999px;
+  padding: 2px;
+  background: var(--paper);
+}
+.mode-toggle button {
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  padding: 3px 13px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.mode-toggle button:hover {
+  background: color-mix(in oklab, var(--ink) 7%, transparent);
+  color: var(--ink);
+  transform: none;
+}
+.mode-toggle button.on,
+.mode-toggle button.on:hover {
+  background: color-mix(in oklab, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+
+/* stickies mode: hand-placed tilt, straightens when pinned or dragged */
+.board[data-mode='stickies'] .panel { transform: rotate(var(--tilt, 0deg)); }
+.board[data-mode='stickies'] .panel.pinned,
+.board[data-mode='stickies'] .panel.dragging { transform: rotate(0deg); }
+
+.pin-badge {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  margin: -11px 0 0 -11px;
+  border-radius: 50%;
+  border: 1.3px solid color-mix(in oklab, var(--ink) 30%, transparent);
+  background: var(--paper);
+  color: var(--accent);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  box-shadow: 0 3px 10px -3px rgba(0, 0, 0, 0.3);
+  animation: pinIn 0.3s ease;
+}
+@keyframes pinIn { from { transform: scale(0); } }
+.board .pin-badge:hover {
+  color: var(--ink);
+  background: var(--paper);
+  transform: scale(1.18);
+}
+
+.mode-hint {
+  position: absolute;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--paper);
+  color: var(--ink-soft);
+  font-family: var(--font-hand);
+  font-size: 18px;
+  font-weight: 600;
+  padding: 8px 18px;
+  border-radius: 999px;
+  box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.28);
+  z-index: 3100;
+  white-space: nowrap;
+}
+
+/* ── favorites panel ───────────────────────────────────────────────────── */
+.fav-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  overflow-y: auto;
+  min-height: 0;
+  align-content: start;
+  flex: 1;
+  padding: 4px 14px;
+}
+.fav-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 11px 12px;
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--paper-2) 70%, transparent);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.fav-card:hover { transform: translateY(-2px); box-shadow: 0 8px 18px -8px rgba(0, 0, 0, 0.2); }
+.fav-card .name { font-weight: 600; font-size: 12.5px; line-height: 1.3; color: var(--ink); }
+.fav-card .hint { font-size: 10.5px; color: var(--ink-soft); line-height: 1.3; }
+.fav-note {
+  font-size: 11px;
+  color: var(--ink-soft);
+  line-height: 1.45;
+  padding: 10px 14px;
+  flex: 0 0 auto;
+}
+
+/* ── panel-hosted component shims ──────────────────────────────────────────
+   Existing components were built for the old fixed grid; inside a floating
+   panel they should fill the body and lose their own outer borders. */
+.panel-body > .chat-panel,
+.panel-body > .sidebar,
+.panel-body > .artifact-panel {
+  flex: 1;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+}
+.panel-body .settings-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 14px 14px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-faint) transparent;
+}
+
+/* ── small screens: the board degrades to a stacked column ─────────────── */
+@media (max-width: 768px) {
+  .board { overflow-y: auto; }
+  .panel {
+    position: static !important;
+    width: auto !important;
+    height: auto !important;
+    min-height: 0;
+    margin: 10px;
+    transform: none !important;
+  }
+  .panel-body { max-height: 60vh; }
+  .resize-handle, .guide-v, .guide-h, .pin-badge, .mode-hint { display: none; }
+}

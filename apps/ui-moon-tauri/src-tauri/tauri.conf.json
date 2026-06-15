@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Luna Moon",
-  "version": "0.0.21",
+  "version": "0.0.30",
   "identifier": "com.luna.moon",
   "build": {
     "beforeDevCommand": "",
@@ -28,7 +28,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; font-src 'self' data: https://fonts.gstatic.com; style-src-elem 'self' 'unsafe-inline' https://fonts.googleapis.com"
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; font-src 'self' data: https://fonts.gstatic.com; style-src-elem 'self' 'unsafe-inline' https://fonts.googleapis.com; frame-src 'self'",
+      "dangerousDisableAssetCspModification": ["script-src"]
     }
   },
   "bundle": {
@@ -38,7 +39,8 @@
     "macOS": {
       "signingIdentity": "Apple Development: Sterling Cobb (2LLA7M2CD6)",
       "hardenedRuntime": true,
-      "entitlements": "entitlements.plist"
+      "entitlements": "entitlements.plist",
+      "minimumSystemVersion": "13.0"
     },
     "icon": [
       "icons/32x32.png",

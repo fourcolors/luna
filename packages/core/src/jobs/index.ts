@@ -41,6 +41,10 @@ export {
 export {
   JobsStoreError,
   type JobKind,
+  type JobRun,
+  type JobRunStatus,
+  type JobRunLiveStatus,
+  type JobRunTerminalStatus,
   type JobsStoreApi,
   type PersistedJob,
 } from "./jobs-store-types.js"

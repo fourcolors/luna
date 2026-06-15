@@ -230,6 +230,12 @@ export const makeSessionStoreSqlite = (
       const sessionSetStatus = db.query(
         `UPDATE sessions SET status = ?, ended_at = ? WHERE id = ?`,
       )
+      const sessionSetOptions = db.query(
+        `UPDATE sessions SET options_json = ? WHERE id = ?`,
+      )
+      const sessionGetOptions = db.query(
+        `SELECT options_json FROM sessions WHERE id = ?`,
+      )
       const sessionSetMeta = db.query(
         `UPDATE sessions SET meta_json = ? WHERE id = ?`,
       )
@@ -345,6 +351,34 @@ export const makeSessionStoreSqlite = (
           return Effect.void
         })
 
+      /**
+       * Patch the stored options blob for an existing session.
+       * Silently no-ops on unknown session ids (best-effort — the caller
+       * may race a session close). Mirrors the in-memory setOptions semantics.
+       */
+      const setOptions = (
+        id: string,
+        patch: Partial<SessionOptions>,
+      ): Effect.Effect<void, never> =>
+        Effect.sync(() => {
+          const row = sessionGetOptions.get(id) as
+            | { options_json: string }
+            | undefined
+          if (!row) return
+          let existing: SessionOptions
+          try {
+            existing = JSON.parse(row.options_json) as SessionOptions
+          } catch {
+            return // corrupted — skip silently
+          }
+          const merged = { ...existing, ...patch }
+          try {
+            sessionSetOptions.run(JSON.stringify(merged), id)
+          } catch {
+            // best-effort: a failed options patch is not a hard error
+          }
+        })
+
       const appendMessage = (input: {
         readonly sessionId: string
         readonly messageId: string
@@ -397,8 +431,13 @@ export const makeSessionStoreSqlite = (
             lastMessageAt: null,
             lastMessagePreview: null,
           }
+          // Parented (subagent-internal) messages never refresh the preview:
+          // the SDK forwards a subagent's seed prompt as a parented user
+          // message, and without this gate every Task spawn would overwrite
+          // the sidebar with internal prompt text. lastMessageAt still bumps.
           const nextPreview =
-            input.kind === "user" || input.kind === "assistant"
+            input.parentId == null &&
+            (input.kind === "user" || input.kind === "assistant")
               ? extractTextPreview(input.payload) ?? meta.lastMessagePreview
               : meta.lastMessagePreview
           const nextMeta: SessionMeta = {
@@ -485,6 +524,7 @@ export const makeSessionStoreSqlite = (
         create,
         get,
         getOptions,
+        setOptions,
         setStatus,
         appendMessage,
         readMessages,

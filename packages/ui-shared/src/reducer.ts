@@ -13,10 +13,19 @@ import type {
   Artifact,
   ChatErrorKind,
   ChatMessage,
+  ConnectorCatalogItem,
+  ConnectorInstanceItem,
   ObsEvent,
   ObsEventKind,
+  PinnedArtifactItem,
   ServerFrame,
   SessionSummary,
+  SkillCatalogItem,
+  SmartBarItem,
+  VaultSyncWire,
+  VaultWireItem,
+  WorkflowGalleryItem,
+  WorkflowRunItem,
 } from "./wire.js"
 
 export interface InFlightTurn {
@@ -46,15 +55,37 @@ export interface UIState {
   readonly lastDrop: { readonly n: number; readonly since: string } | null
   readonly lastPingAt: string | null
   readonly closeReason: string | null
-  /** Server-advertised capabilities. */
-  readonly capabilities: { readonly chat: boolean; readonly streamingDeltas: boolean; readonly setup: boolean }
+  /** Server-advertised capabilities. `skills` is additive/optional —
+   *  absent against older servers (the Skills section hides). */
+  readonly capabilities: {
+    readonly chat: boolean
+    readonly streamingDeltas: boolean
+    readonly setup: boolean
+    readonly skills?: boolean
+    readonly connectors?: boolean
+    readonly artifacts?: boolean
+    readonly workflows?: boolean
+    /** Luna Vault (V1): vault-list pushed after hello; vault mutations routed. */
+    readonly vault?: boolean
+    /**
+     * Server accepts `set-thread-config` frames and computes the effort-validity
+     * matrix per-model (advertised in `availableModels.efforts`). Clients hide
+     * effort controls when absent/false. OPTIONAL/additive.
+     */
+    readonly effortSelection?: boolean
+  }
   /**
    * Server-advertised model list (from the `hello` frame's `availableModels`
    * field). When null the server is older and did not send the field; the UI
    * falls back to its own hardcoded MODEL_OPTIONS list. When non-null (even
    * if empty) the server has explicitly taken ownership of the list.
    */
-  readonly availableModels: ReadonlyArray<{ readonly id: string; readonly label: string }> | null
+  readonly availableModels: ReadonlyArray<{
+    readonly id: string
+    readonly label: string
+    /** Effort levels valid for this model, server-computed. Absent = no effort param. */
+    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max">
+  }> | null
   /** Sidebar projection — most-recently-active first (server orders). */
   readonly threadList: ReadonlyArray<SessionSummary>
   /** Per-thread state, keyed by threadId. */
@@ -70,6 +101,44 @@ export interface UIState {
   }>
   /** Currently-selected account id. null = use default broker rotation. */
   readonly selectedAccountId: string | null
+  /**
+   * Skill catalog from the server (PRD Part B) — metadata only, no bodies
+   * by wire construction. Empty until a `skill-catalog` frame arrives;
+   * the Skills settings section is additionally gated on
+   * `capabilities.skills` so an old server shows nothing.
+   */
+  readonly skills: ReadonlyArray<SkillCatalogItem>
+  /** Last skill-toggle failure (skill-status ok:false). Cleared by the
+   *  next successful toggle or catalog refresh. */
+  readonly skillError: string | null
+  /** PRD Part A connector catalog + current instances (wire-safe — no
+   *  tokens, no secret refs). Gated on capabilities.connectors. */
+  readonly connectorCatalog: ReadonlyArray<ConnectorCatalogItem>
+  readonly connectorInstances: ReadonlyArray<ConnectorInstanceItem>
+  /** Last connector-status failure. Cleared on the next ok / list. */
+  readonly connectorError: string | null
+  /** PRD Part C (W1) — durable pinned artifacts (metadata + content,
+   *  wire-safe). Most-recently-updated first. Gated on capabilities.artifacts. */
+  readonly pinnedArtifacts: ReadonlyArray<PinnedArtifactItem>
+  /** PRD Part C (W3) — the workflow gallery (read-only over the jobs store),
+   *  + per-job run history fetched on demand. Gated on capabilities.workflows. */
+  readonly workflows: ReadonlyArray<WorkflowGalleryItem>
+  readonly workflowRuns: ReadonlyMap<string, ReadonlyArray<WorkflowRunItem>>
+  /** Luna Vault (V1) — credential registry (metadata + opaque pointers only;
+   *  never credential values). Gated on capabilities.vault. */
+  readonly vaultItems: ReadonlyArray<VaultWireItem>
+  /** 1Password sync state (slice V3); null when not yet received. */
+  readonly vaultSync: VaultSyncWire | null
+  /**
+   * Smart Bar (v1) — server-assembled context item list for the active thread.
+   * Empty until the first `smart-bar` frame arrives; hidden when empty.
+   * Items are pre-sorted by the server (group then priority); ui-web renders
+   * them in order. `threadId` tracks which thread the list belongs to so a
+   * stale frame after a thread switch is discarded.
+   */
+  readonly smartBarItems: ReadonlyArray<SmartBarItem>
+  /** threadId of the last received smart-bar frame — used for stale-drop. */
+  readonly smartBarThreadId: string | null
 }
 
 export const initialState: UIState = {
@@ -89,6 +158,18 @@ export const initialState: UIState = {
   selectedThreadId: null,
   accounts: [],
   selectedAccountId: null,
+  skills: [],
+  skillError: null,
+  connectorCatalog: [],
+  connectorInstances: [],
+  connectorError: null,
+  pinnedArtifacts: [],
+  workflows: [],
+  workflowRuns: new Map(),
+  vaultItems: [],
+  vaultSync: null,
+  smartBarItems: [],
+  smartBarThreadId: null,
 }
 
 const MAX_RETAINED = 500
@@ -305,6 +386,58 @@ export const reduce = (state: UIState, action: Action): UIState => {
         // On reconnect, user's prior selection is preserved as-is.
       }
     }
+    case "skill-catalog":
+      // Server-authored catalog replaces wholesale (sent after hello and
+      // re-sent after each successful toggle) — same idiom as account-list.
+      return { ...state, skills: frame.skills, skillError: null }
+    case "skill-status": {
+      // ok:true → reflect the confirmed state on the matching row (the
+      // refreshed catalog usually follows, but this keeps the UI correct
+      // even if that frame is dropped) and clear any stale error.
+      // ok:false → keep rows untouched (no optimistic flip to revert) and
+      // surface the short server-provided reason.
+      if (!frame.ok) {
+        return { ...state, skillError: frame.message ?? "skill toggle failed" }
+      }
+      return {
+        ...state,
+        skillError: null,
+        skills: state.skills.map((s) =>
+          s.id === frame.id ? { ...s, enabled: frame.enabled } : s,
+        ),
+      }
+    }
+    case "connector-catalog":
+      return { ...state, connectorCatalog: frame.connectors }
+    case "connector-list":
+      // Server-authored, broadcast on every change — replace wholesale and
+      // clear any stale error (a successful op produced this list).
+      return { ...state, connectorInstances: frame.instances, connectorError: null }
+    case "connector-status":
+      return frame.ok
+        ? { ...state, connectorError: null }
+        : { ...state, connectorError: frame.message ?? "connector request failed" }
+    case "artifact-list":
+      // Server-authored, broadcast on every pin/unpin/update — replace
+      // wholesale (most-recently-updated first, ordered server-side).
+      return { ...state, pinnedArtifacts: frame.artifacts }
+    case "artifact-update": {
+      // A single artifact gained a new version. Replace it in place if
+      // present, else prepend (a pin we hadn't yet seen). Keep newest first.
+      const others = state.pinnedArtifacts.filter(
+        (a) => a.id !== frame.artifact.id,
+      )
+      return { ...state, pinnedArtifacts: [frame.artifact, ...others] }
+    }
+    case "workflow-list":
+      // Server-authored, read-only gallery — replace wholesale.
+      return { ...state, workflows: frame.workflows }
+    case "workflow-runs": {
+      // Run history for one job — keyed by jobId, replaced on each fetch.
+      const next = new Map(state.workflowRuns)
+      next.set(frame.jobId, frame.runs)
+      return { ...state, workflowRuns: next }
+    }
     case "pty-output":
       // pty output is consumed by the setup terminal directly off the
       // transport (streamy frame), not folded into store state.
@@ -314,6 +447,50 @@ export const reduce = (state: UIState, action: Action): UIState => {
       // messages, so the "whole turn is over" signal carries no new state for
       // it — only the moon's grouped activity timeline needs it. No-op here.
       return state
+    case "connector-oauth-redirect":
+      // The consent URL is consumed by the Moon directly off the transport
+      // (it opens the browser + binds the loopback); the web client can't
+      // bind a loopback, so this frame carries no store state here.
+      return state
+    case "vault-list":
+      // Server-authoritative registry (metadata + pointers only; no values).
+      // Sent after hello + after every successful mutation — replace wholesale.
+      return {
+        ...state,
+        vaultItems: frame.items,
+        vaultSync: frame.sync ?? null,
+      }
+    case "vault-status":
+      // Mutation ack — consumed by the UI's pending-request tracker, not
+      // folded into persistent store state (the fresh vault-list that follows
+      // a successful mutation already updates the list).
+      return state
+    case "thread-config":
+      // Ack for set-thread-config. The store has no model/effort state today
+      // (that lives in cfg().model/cfg().effort in App.tsx). The UI layer
+      // reads applied/deferred/rejected from this frame directly. No-op here.
+      return state
+    case "smart-bar":
+      // Server-assembled context item list for the active thread. Replace
+      // wholesale — the server re-pushes the full list on every context
+      // change. Guard against stale frames that arrive after a thread switch
+      // (the server may re-push for a thread we already navigated away from).
+      return {
+        ...state,
+        smartBarItems: frame.items,
+        smartBarThreadId: frame.threadId,
+      }
+    default: {
+      // Exhaustiveness guard: when every ServerFrame member has a matching
+      // case arm, TypeScript narrows `frame` to `never` here. Adding a new
+      // ServerFrame member WITHOUT a matching case becomes a compile-time
+      // error on the assignment below. The `return state` keeps runtime
+      // forward-compat: a newer server CAN send unknown frame types and the
+      // store stays intact. The `void` suppresses "variable unused" lints.
+      const _exhaustive: never = frame satisfies never
+      void _exhaustive
+      return state
+    }
   }
 }
 

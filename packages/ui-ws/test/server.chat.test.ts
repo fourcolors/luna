@@ -116,6 +116,7 @@ const makeChatLoopQuery = (params: {
     interrupt: async () => {},
     setPermissionMode: async () => {},
     setModel: async () => {},
+    applyFlagSettings: async () => {},
     setMaxThinkingTokens: async () => {},
     supplyToolPermissionResponse: async () => {},
     mcpServerStatus: async () => ({}),
@@ -347,6 +348,9 @@ describe("UIWebSocketServer (chat routing)", () => {
       // turn-complete is emitted whenever chat is bound (gates the moon's
       // grouped activity timeline on older-server fallback).
       expect(frames[0].capabilities.turnComplete).toBe(true)
+      // subagents: chat threads expose the SDK Task tool and tool frames may
+      // carry the additive parentToolUseId linkage.
+      expect(frames[0].capabilities.subagents).toBe(true)
     }
   })
 
@@ -599,6 +603,150 @@ describe("UIWebSocketServer (chat routing)", () => {
     )
 
     expect(capturedOptions?.systemPrompt).toBe("Z-IDENTITY-Z")
+  })
+
+  it("new-thread with effort field: effortSelection capability is true", async () => {
+    // When ChatService is bound, effortSelection must be advertised as true
+    // so clients know they can send set-thread-config frames.
+    rig = await startChatRig()
+    const frames = await collectFrames(rig.url, 1)
+    expect(frames[0]?.type).toBe("hello")
+    if (frames[0]?.type === "hello") {
+      expect(frames[0].capabilities?.effortSelection).toBe(true)
+    }
+  })
+
+  it("new-thread with effort field: thread-created frame reflects the thread id", async () => {
+    // new-thread carries effort — the server must not drop the thread if
+    // effort is present. Verify thread-created arrives cleanly.
+    rig = await startChatRig()
+    const allFrames = await driveSequence(
+      rig.url,
+      [
+        {
+          waitFor: (f) => f.type === "hello",
+          thenSend: () => [
+            {
+              type: "new-thread",
+              model: "claude-sonnet-4-6",
+              effort: "high",
+              title: "effort-thread",
+            },
+          ],
+        },
+      ],
+      // hello + thread-created + thread-snapshot + possible obs event frames
+      4,
+    )
+    const created = allFrames.find((f) => f.type === "thread-created")
+    expect(created).toBeDefined()
+    if (created?.type === "thread-created") {
+      expect(typeof created.thread.id).toBe("string")
+      expect(created.thread.id.length).toBeGreaterThan(0)
+    }
+  })
+
+  it("new-thread haiku+max: the per-model clamp drops effort before it reaches SDK options", async () => {
+    // Full-path proof of the defensive server clamp (plan §5): a stale or
+    // hand-rolled client sends new-thread with model=haiku + effort=max.
+    // haiku takes no effort parameter — chat-service's createThread clamp
+    // must drop it, so the SDK options never carry an `effort` key.
+    let capturedOptions: Record<string, unknown> | undefined
+    const fakeLayer = SDKClient.fake((p) => {
+      capturedOptions = p.options as Record<string, unknown> | undefined
+      return makeChatLoopQuery({
+        prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+        sessionId: (p as { sessionId?: string }).sessionId ?? "thr-?",
+        responseFor: (t) => `echo:${t}`,
+      })
+    })
+    const baseChatLayer = fullLayer(fakeLayer)
+    const serverLayer = Layer.scoped(
+      ServerHandle,
+      Effect.gen(function* () {
+        const chat = yield* ChatService
+        return yield* startUIWebSocketServer({
+          port: 0,
+          token: TOKEN,
+          pingIntervalMs: 0,
+          chatService: chat,
+        })
+      }),
+    ).pipe(Layer.provide(baseChatLayer))
+    const runtime = ManagedRuntime.make(Layer.mergeAll(serverLayer, baseChatLayer))
+    const handle = await runtime.runPromise(ServerHandle)
+    rig = {
+      url: `ws://127.0.0.1:${handle.port}/ui`,
+      shutdown: async () => { await runtime.dispose() },
+    }
+
+    await driveSequence(
+      rig.url,
+      [
+        {
+          waitFor: (f) => f.type === "hello",
+          thenSend: () => [
+            {
+              type: "new-thread",
+              model: "claude-haiku-4-5",
+              effort: "max",
+            },
+          ],
+        },
+        {
+          waitFor: (f) => f.type === "thread-created",
+          thenSend: () => [],
+        },
+      ],
+      // hello + thread-created + thread-snapshot (minimum guaranteed set)
+      3,
+    )
+
+    expect(capturedOptions).toBeDefined()
+    // The model went through …
+    expect(capturedOptions?.["model"]).toBe("claude-haiku-4-5")
+    // … but the invalid effort was clamped out — the key must be ABSENT.
+    expect(Object.prototype.hasOwnProperty.call(capturedOptions!, "effort")).toBe(false)
+  })
+
+  it("set-thread-config → thread-config ack is emitted", async () => {
+    // Full round-trip: create a thread, then send set-thread-config with
+    // effort=high. The server must respond with a thread-config frame
+    // listing "effort" in applied.
+    rig = await startChatRig()
+    const allFrames = await driveSequence(
+      rig.url,
+      [
+        {
+          waitFor: (f) => f.type === "hello",
+          thenSend: () => [
+            { type: "new-thread", model: "claude-sonnet-4-6", title: "config-test" },
+          ],
+        },
+        {
+          // Wait for thread-snapshot (confirms auto-subscribe is ready).
+          waitFor: (f) => f.type === "thread-snapshot",
+          thenSend: (snap) => {
+            if (snap.type !== "thread-snapshot") return []
+            return [
+              {
+                type: "set-thread-config",
+                threadId: snap.threadId,
+                effort: "medium",
+              },
+            ]
+          },
+        },
+      ],
+      // hello + thread-created + thread-snapshot + thread-config + possible obs event
+      5,
+    )
+    const configFrame = allFrames.find((f) => f.type === "thread-config")
+    expect(configFrame).toBeDefined()
+    if (configFrame?.type === "thread-config") {
+      expect(configFrame.applied).toContain("effort")
+      expect(configFrame.effort).toBe("medium")
+    }
   })
 
   it("malformed JSON inbound frame does not crash the connection", async () => {

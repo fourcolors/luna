@@ -1,0 +1,20 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "chat",
+  "description": "ADDITIVE permission set for the chat widget window (label panel-chat, registry kind 'chat' — widget-system.md Phase 4). The panel-* glob in panels.json already grants the dock/snap surface; this capability adds what the conversation needs beyond a settings panel: attachments (file dialog), machine access (local shell), thread persistence, the voice surface (PTT + speech), launching other widgets (gear → settings launcher; artifact pop-outs).",
+  "windows": ["panel-chat"],
+  "permissions": [
+    "dialog:allow-open",
+    "allow-local-shell-exec",
+    "allow-get-last-thread-id",
+    "allow-set-last-thread-id",
+    "allow-open-widget",
+    "allow-open-artifact-widget",
+    "allow-voice-status",
+    "allow-voice-ptt-down",
+    "allow-voice-ptt-up",
+    "allow-voice-cancel",
+    "allow-speak-text",
+    "allow-voice-stop-speaking"
+  ]
+}

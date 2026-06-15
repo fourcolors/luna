@@ -143,7 +143,8 @@ Luna runs autonomous background work via a job scheduler backed by
 
 > **SDK:** `@anthropic-ai/claude-agent-sdk ^0.3.167`
 > **Source:** `packages/adapter-sdk/src/` (`prompt-worker.ts`,
-> `workflow-worker.ts`) + `packages/core/src/jobs/` (ticker, store)
+> `workflow-worker.ts`) + `packages/core/src/` (`dream/dream-worker.ts`,
+> `wake/wake-worker.ts`) + `packages/core/src/jobs/` (ticker, store)
 
 The scheduler runs **only when `LUNA_SCHEDULER_V2_ENABLED=1`** is set on
 the chat-server (boot log: `[luna/sched] V2 ticker ENABLED`). Without the
@@ -210,6 +211,32 @@ Right tool for shell work + intelligent analysis in one atomic unit.
 
 `halt_on_failure: true` (default) stops at first non-success step.
 `halt_on_failure: false` records all step outcomes even on failure.
+
+#### `dream` — nightly self-model cycle
+
+A dedicated worker kind (`DREAM_WORKER_KIND`,
+`packages/core/src/dream/dream-worker.ts`), NOT a `prompt` row: the dream
+cycle needs `DreamStore | DreamReasoner | SessionStore | MemoryRouter | Clock`
+(+ an optional `CalibrationStore`), which the generic `prompt` worker cannot
+carry. It runs one `runDream(now)` and **ignores its payload** — the window
+comes from the dream watermark, not the row. There is **ONE** nightly `dream`
+row (default schedule `0 3 * * *`).
+
+#### `wake` — per-workspace digest cycle
+
+A dedicated worker kind (`WAKE_WORKER_KIND`,
+`packages/core/src/wake/wake-worker.ts`). It runs one `runWake(now, opts)` and
+its payload **MUST** carry `{ "workspaceSlug": "...", "workspacePath": "..." }`
+(parsed up front; a missing field is a clean `bad_payload` failure). Because
+wake is per-workspace there is **ONE `wake` row per wake-enabled workspace**
+(default schedule `*/30 * * * *`).
+
+The `dream` + `wake` rows are seeded by
+`apps/ui-web/scripts/dream-wake-install.ts` (idempotent). When
+`LUNA_SCHEDULER_V2_ENABLED=1`, these rows are the ONLY driver of the dream /
+wake cycles — the legacy `buildDreamCronLayer` / `buildWakeCronLayer` cron
+layers register nothing under the flag, so the cycles never double-run
+(DESIGN.md §5.3.5).
 
 ### Submitting jobs
 
@@ -354,6 +381,43 @@ automatically:
 - **`advisor`** — consult *before* substantive work. Pressure-tests plans.
 - **`auditor`** — consult *after* work is done. Verifies the deliverable.
 - **`dev-agent`** — coding and implementation tasks.
+
+### Spawning subagents from chat
+
+Chat threads expose the SDK's built-in **Task tool** (wire name `Agent`;
+`Task` is the options-layer alias). You can spawn a subagent with:
+
+```
+{ description, prompt, subagent_type?, model? }
+```
+
+`model` accepts `"sonnet"` | `"opus"` | `"haiku"` | `"fable"` per call.
+
+**Built-in subagent types** are always available, even with an empty
+`~/.luna/agents/`: `general-purpose`, `Explore`, `Plan`. Agent definitions
+loaded from `~/.luna/agents/*.md` appear as *additional* `subagent_type`
+values, merged with the built-ins. Definitions are loaded when a thread's
+SDK query starts — a newly added file is picked up by **new** threads; an
+already-open thread keeps the definitions it started with.
+
+The subagent runs to completion; you receive its full report as the tool
+result (the chat UI's copy is display-truncated to 40 lines / 2048 chars).
+Subagent text does **not** stream into chat; on subagent-aware clients its
+tool calls surface as `↳`-tagged steps in the Moon timeline (older clients
+show them as ordinary flat steps). Subagents inherit the parent's tools
+unless the agent definition restricts them.
+
+**Background jobs and `~/.luna/agents` definitions:** prompt-worker and
+workflow-worker bypass the agent-loading path, so jobs never see
+`~/.luna/agents` definitions (they run the SDK default toolset, where only
+the built-in subagent types could be reachable — and the default
+`max_turns: 1` leaves no room for a spawn round-trip). The curated,
+supported subagent path is interactive chat.
+
+**Inactivity watchdog:** while a Task call is outstanding, the window is
+governed by `LUNA_TASK_INACTIVITY_TIMEOUT_MS` (default 30 minutes,
+clamped to never be shorter than the turn window) instead of
+`LUNA_TURN_INACTIVITY_TIMEOUT_MS`.
 
 ### Agent definition format
 

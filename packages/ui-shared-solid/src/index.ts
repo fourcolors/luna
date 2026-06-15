@@ -10,7 +10,11 @@ export { MessageBubble } from "./MessageBubble.jsx"
 export { ToolCallGroup } from "./ToolCallGroup.jsx"
 export {
   ChatPanel,
+  buildNewThreadFrame,
+  clampEffortToModel,
+  type AvailableModel,
   type ChatPanelProps,
+  type EffortLevel,
   type SlashCommand,
 } from "./ChatPanel.jsx"
 export {
@@ -35,3 +39,14 @@ export {
   type AccountSwitcherProps,
   type AccountSummary,
 } from "./AccountSwitcher.jsx"
+export { SkillsPanel, type SkillsPanelProps } from "./SkillsPanel.jsx"
+export { ConnectorsPanel, type ConnectorsPanelProps } from "./ConnectorsPanel.jsx"
+export { WorkflowGallery, type WorkflowGalleryProps } from "./WorkflowGallery.jsx"
+export {
+  VaultPanel,
+  type VaultPanelProps,
+  type VaultStatusAck,
+  type AppleCsvRow,
+  parseAppleCsv,
+  humanizeRelTime,
+} from "./VaultPanel.jsx"

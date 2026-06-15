@@ -27,6 +27,7 @@
  *   - Anything else → HTTP 404.
  */
 import {
+  Cause,
   Deferred,
   Duration,
   Effect,
@@ -41,6 +42,8 @@ import {
 import type * as Scope from "effect/Scope"
 import * as http from "node:http"
 import { randomUUID } from "node:crypto"
+import { execFileSync } from "node:child_process"
+import * as path from "node:path"
 import { WebSocketServer, type WebSocket } from "ws"
 import { UIService } from "@luna/core"
 import type { ObsEvent } from "@luna/core"
@@ -52,6 +55,7 @@ import {
   type ClientFrame,
   type ServerFrame,
   type PtyOutputFrame,
+  type SmartBarItem,
 } from "./protocol.js"
 import type { SurveyItem, SurveyVerdict } from "@luna/core"
 
@@ -172,7 +176,16 @@ export interface UIWebSocketServerConfig {
    * `buildAvailableModels()` in chat-server.ts, which merges
    * `LUNA_UI_MODELS` overrides with the built-in base list.
    */
-  readonly availableModels?: ReadonlyArray<{ readonly id: string; readonly label: string }>
+  readonly availableModels?: ReadonlyArray<{
+    readonly id: string
+    readonly label: string
+    /**
+     * Effort levels valid for THIS model, server-computed via effortsForModel().
+     * Absent on older servers; empty array = model takes no effort param.
+     * Clients never compute this matrix — always defer to this field.
+     */
+    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max">
+  }>
   /**
    * Optional ChatService binding. When provided, the server:
    *   - flips `capabilities.chat` and `capabilities.streamingDeltas` to
@@ -204,6 +217,152 @@ export interface UIWebSocketServerConfig {
       readonly kind: string
       readonly health: string
     }>>
+  } | null
+  /**
+   * Optional skill-catalog handle (PRD Part B). When provided, the server:
+   *   - advertises `capabilities.skills: true`
+   *   - sends a `skill-catalog` frame after `hello` (fire-and-forget, like
+   *     account-list) so the Skills settings tab renders on connect
+   *   - routes inbound `skill-toggle` frames → setEnabled, acking with
+   *     `skill-status` + a refreshed `skill-catalog` to the toggling client
+   *
+   * The handle's catalog() MUST already be wire-safe (metadata only, no
+   * skill bodies) — the chat-server adapter strips bodies BEFORE this
+   * package ever sees them, so a logging or serialization bug here cannot
+   * leak prompt content. Structural type (not the core Tag) keeps this
+   * package's dependency surface narrow — mirrors accountBroker exactly.
+   * Pass `null` explicitly in setup-mode (same as absent).
+   */
+  readonly skillRegistry?: {
+    readonly catalog: () => import("effect").Effect.Effect<
+      ReadonlyArray<import("./protocol.js").SkillCatalogItem>
+    >
+    readonly setEnabled: (
+      id: string,
+      enabled: boolean,
+    ) => import("effect").Effect.Effect<void, unknown>
+    /**
+     * Optional change-notification registration: the server passes a
+     * `notify` callback; the provider calls it whenever the catalog
+     * changes OUTSIDE a client toggle (the ~30s user-skills hot-load).
+     * On notify, the server broadcasts a fresh `skill-catalog` to every
+     * connected client — without it, a hot-loaded/removed user skill is
+     * invisible to long-lived clients (the Moon) until reconnect.
+     */
+    readonly changes?: (notify: () => void) => void
+  } | null
+  /**
+   * Optional connector handle (PRD Part A §18). When provided, the server
+   * advertises `capabilities.connectors`, sends `connector-catalog` +
+   * `connector-list` after hello, and routes the client-brokered OAuth
+   * handshake + connect/disconnect. The handle's outputs MUST already be
+   * wire-safe (the chat-server adapter projects instances to status +
+   * metadata; no secretRef, no tokens). Structural type — mirrors
+   * accountBroker/skillRegistry. Pass `null` explicitly in setup-mode.
+   */
+  readonly connectorService?: {
+    readonly catalog: () => import("effect").Effect.Effect<
+      ReadonlyArray<import("./protocol.js").ConnectorCatalogItem>
+    >
+    readonly list: () => import("effect").Effect.Effect<
+      ReadonlyArray<import("./protocol.js").ConnectorInstanceItem>
+    >
+    readonly beginAuth: (input: {
+      readonly definitionId: string
+      readonly label: string
+      readonly capabilityIds?: ReadonlyArray<string>
+      readonly loopbackPort: number
+    }) => import("effect").Effect.Effect<
+      { readonly pendingId: string; readonly authUrl: string },
+      unknown
+    >
+    readonly completeAuth: (input: {
+      readonly pendingId: string
+      readonly code: string
+      readonly state: string
+    }) => import("effect").Effect.Effect<
+      import("./protocol.js").ConnectorInstanceItem,
+      unknown
+    >
+    readonly connect: (input: {
+      readonly definitionId: string
+      readonly label: string
+      readonly secretRef?: string
+      readonly capabilityIds?: ReadonlyArray<string>
+    }) => import("effect").Effect.Effect<
+      import("./protocol.js").ConnectorInstanceItem,
+      unknown
+    >
+    readonly disconnect: (
+      instanceId: string,
+    ) => import("effect").Effect.Effect<boolean, unknown>
+    /** PRD §23 (M2.6): persist the operator's per-operator OAuth client
+     *  credentials so the consent flow runs without hand-editing ~/.luna/.env.
+     *  Values are written server-side and never echoed. */
+    readonly setClientCredentials: (input: {
+      readonly definitionId: string
+      readonly clientId: string
+      readonly clientSecret?: string
+    }) => import("effect").Effect.Effect<void, unknown>
+  } | null
+  /**
+   * Optional pinned-artifact store handle (PRD Part C/W1 §18). When provided,
+   * the server advertises `capabilities.artifacts`, sends an `artifact-list`
+   * after hello, routes `artifact-pin`/`artifact-unpin`, and broadcasts a
+   * fresh `artifact-list` to every client on any change. The handle's outputs
+   * are already wire-safe (PinnedArtifactItem — metadata + content, no
+   * secrets). Structural type — mirrors connectorService. `changes` lets
+   * out-of-band edits (an agent patching an artifact, W4) re-broadcast.
+   * Pass `null` explicitly in setup-mode.
+   */
+  readonly artifactStore?: {
+    readonly list: () => import("effect").Effect.Effect<
+      ReadonlyArray<import("./protocol.js").PinnedArtifactItem>
+    >
+    readonly pin: (input: {
+      readonly id: string
+      readonly title: string
+      readonly content: string
+      readonly lang?: string | null
+      readonly kind?: import("./protocol.js").ArtifactKind
+      readonly origin?: string | null
+    }) => import("effect").Effect.Effect<
+      import("./protocol.js").PinnedArtifactItem,
+      unknown
+    >
+    readonly unpin: (
+      id: string,
+    ) => import("effect").Effect.Effect<boolean, unknown>
+    /** Append a new version to an existing artifact (preserves the ledger +
+     *  leaves bridgeCaps untouched). Returns null when the id isn't pinned. */
+    readonly update?: (
+      id: string,
+      content: string,
+    ) => import("effect").Effect.Effect<
+      import("./protocol.js").PinnedArtifactItem | null,
+      unknown
+    >
+    readonly changes?: (notify: () => void) => void
+  } | null
+  /**
+   * Optional workflow-gallery handle (PRD Part C / W3). A READ-ONLY, wire-safe
+   * view over the persisted jobs store: `list` returns every job projected to a
+   * gallery tile (no secrets, no large output), `runs` returns one job's run
+   * history. When provided, the server advertises `capabilities.workflows`,
+   * sends `workflow-list` after hello, and routes `workflow-runs-request` +
+   * `workflow-refresh`. Structural type — mirrors artifactStore. Pass `null`
+   * in setup-mode.
+   */
+  readonly workflowGallery?: {
+    readonly list: () => import("effect").Effect.Effect<
+      ReadonlyArray<import("./protocol.js").WorkflowGalleryItem>
+    >
+    readonly runs: (
+      jobId: string,
+      limit?: number,
+    ) => import("effect").Effect.Effect<
+      ReadonlyArray<import("./protocol.js").WorkflowRunItem>
+    >
   } | null
   /**
    * Optional local-shell bridge. When provided, clients may advertise
@@ -255,6 +414,49 @@ export interface UIWebSocketServerConfig {
     }
   } | null
   /**
+   * Optional Vault service handle (Luna Vault V1). When provided, the server:
+   *   - advertises `capabilities.vault: true`
+   *   - pushes a `vault-list` frame after `hello` (same fire-and-forget pattern
+   *     as `connector-catalog`) so the Vault settings section renders on connect
+   *   - routes inbound `vault-put` / `vault-delete` / `vault-sync-config` /
+   *     `vault-import` frames; after each mutation sends a `vault-status`
+   *     (requestId-correlated) THEN a fresh `vault-list` to the requesting client
+   *
+   * The handle's `list()` output MUST be wire-safe (VaultWireItem — metadata +
+   * opaque pointer refs, never credential values). Structural type — mirrors
+   * connectorService / artifactStore. Pass `null` explicitly in setup-mode.
+   *
+   * SENSITIVE FRAME CONTRACT: `vault-put` and `vault-import` carry credential
+   * values. This package NEVER logs the frame payload for those types — only
+   * `frame.type` + `frame.requestId` are safe to log. The handle methods receive
+   * the full frame for dispatch but are responsible for not leaking values into
+   * their returned `message` strings.
+   */
+  readonly vaultService?: {
+    readonly list: () => Promise<ReadonlyArray<import("./protocol.js").VaultWireItem>>
+    readonly syncState: () => Promise<import("./protocol.js").VaultSyncWire | null>
+    readonly put: (
+      f: import("./protocol.js").VaultPutFrame,
+    ) => Promise<{ readonly ok: boolean; readonly message: string }>
+    readonly remove: (
+      f: import("./protocol.js").VaultDeleteFrame,
+    ) => Promise<{ readonly ok: boolean; readonly message: string }>
+    readonly setSyncConfig: (
+      f: import("./protocol.js").VaultSyncConfigFrame,
+    ) => Promise<{ readonly ok: boolean; readonly message: string }>
+    readonly importItems: (
+      f: import("./protocol.js").VaultImportFrame,
+    ) => Promise<{ readonly ok: boolean; readonly message: string }>
+    /**
+     * Optional out-of-band change subscription (same contract as
+     * skillRegistry.changes): the server registers a `notify` callback and,
+     * on each notify, broadcasts a fresh `vault-list` to every connected
+     * client. Covers registry changes no client initiated — e.g. the
+     * 1Password sync poll loop adopting/removing rows.
+     */
+    readonly changes?: (notify: () => void) => void
+  } | null
+  /**
    * Optional handler for the Moon secure-entry `register-op-token` frame.
    * When provided, an inbound `register-op-token` is routed here; the handler
    * validates + persists the 1Password service-account token and resolves to a
@@ -287,6 +489,45 @@ export interface UIWebSocketServerConfig {
    * is handed straight to the bridge. Pass `null`/absent to disable.
    */
   readonly secretBridge?: SecretRequestBridge | null
+  /**
+   * Optional summon-by-name bridge (widget-system.md). When provided, an
+   * inbound `widget-directory` frame announces this connection as the
+   * widget host; the agent's open_widget tool sends `widget-open` frames
+   * back through it. Pass `null`/absent to disable (frames ignored).
+   */
+  readonly widgetSummoner?: import("./widget-summon-bridge.js").WidgetSummonBridge | null
+  /**
+   * Optional live subagent-tree bridge (S4 "Agents" panel). When provided
+   * alongside `widgetSummoner`, the server folds each thread's
+   * `parentToolUseId`-tagged tool frames into a tree, BROADCASTS `subagent-tree`
+   * frames to every connection (the read-only Agents panel reads them without
+   * subscribing the thread), summons the Agents panel on the first delegation,
+   * and answers `subagent-tree-request`. Pass `null`/absent to disable.
+   */
+  readonly subagentTree?: import("./subagent-tree-bridge.js").SubagentTreeBridge | null
+  /**
+   * Optional bridge for job-summoned operator input (widget-system.md
+   * Phase 5). When provided, the server registers EVERY connection's
+   * send-handle with the bridge (broadcast model — a job has no owning
+   * thread, so any connected surface may answer) and routes inbound
+   * `job-input-result` frames to `acceptResult` with that connection's
+   * send-handle as the reply target. The answer value is operator input,
+   * not a secret, but it is still never logged by this package — the frame
+   * is handed straight to the bridge. Pass `null`/absent to disable.
+   */
+  readonly jobInputBridge?: import("./job-input-bridge.js").JobInputBridge | null
+  /**
+   * Optional MCP Apps host (widget-system.md Phase 7, SEP-1865 v1). When
+   * provided, the server advertises `capabilities.mcpApps` and routes the two
+   * inbound relay frames through it, replying on the SAME connection:
+   *   - `mcp-resource-read` → handleResourceRead → `mcp-resource-result`
+   *   - `mcp-tool-call`     → handleToolCall     → `mcp-tool-result`
+   * Pure request/response (requestId-correlated) — no per-connection
+   * registration. The host contract: NEVER rejects; every failure is an
+   * `ok:false` reply frame. Tool results are app data and are never logged
+   * by this package. Pass `null`/absent to disable (frames ignored).
+   */
+  readonly mcpAppHost?: import("./mcp-app-host.js").McpAppHost | null
 }
 
 export interface UIWebSocketServerHandle {
@@ -296,12 +537,263 @@ export interface UIWebSocketServerHandle {
   readonly host: string
 }
 
+/**
+ * Defence-in-depth for the skill catalog: pick EXACTLY the wire fields.
+ * The chat-server adapter already strips `body`, but the config slot's
+ * structural type cannot prevent a future caller wiring the raw core
+ * registry (extra fields are structurally assignable) — so this package
+ * re-projects every entry before serialization. A skill body can only
+ * reach a client if BOTH layers regress.
+ */
+const toWireSkill = (
+  s: import("./protocol.js").SkillCatalogItem,
+): import("./protocol.js").SkillCatalogItem => ({
+  id: s.id,
+  name: s.name,
+  description: s.description,
+  whenToUse: s.whenToUse,
+  category: s.category,
+  tags: s.tags,
+  source: s.source,
+  enabled: s.enabled,
+})
+
+/**
+ * Short, non-sensitive failure text for status acks. Prefers the typed
+ * failure's `.message`; defects collapse to a generic line (a stack trace
+ * is not a UI message, and must never leak internals to clients).
+ */
+const failureMessage = (cause: Cause.Cause<unknown>): string => {
+  const failure = Cause.failureOption(cause)
+  if (Option.isSome(failure)) {
+    const f = failure.value
+    if (typeof f === "object" && f !== null && "message" in f) {
+      const m = (f as { message?: unknown }).message
+      if (typeof m === "string" && m.length > 0) return m
+    }
+    if (typeof f === "string") return f
+  }
+  return "request failed"
+}
+
 const send = (ws: WebSocket, frame: ServerFrame): void => {
   if (ws.readyState !== ws.OPEN) return
   try {
     ws.send(JSON.stringify(frame))
   } catch {
     // Best-effort send — connection will close via the error/close handler.
+  }
+}
+
+/* ── Smart Bar item assembly ─────────────────────────────────────────────────
+ *
+ * Assembles a `SmartBarFrame` from current server-side context. Called on:
+ *   - thread subscribe/snapshot (connection subscribes)
+ *   - turn-complete (a turn just finished)
+ *   - local-shell-capability change (cwd may have changed)
+ *   - low-frequency interval (~20s)
+ *
+ * Git context: resolved server-side via child_process (this deployment runs
+ * chat-server and local-shell in the same container where the worktrees live).
+ * Fallback order for <cwd>:
+ *   1. Active local-shell client's first root for this thread (most accurate).
+ *   2. LUNA_REPO_ROOT env var.
+ *   3. process.cwd().
+ * If git commands fail for any reason the git items are omitted — the bar
+ * must never show a wrong branch. All git calls are wrapped in try/catch with
+ * a short timeout.
+ */
+
+const GIT_TIMEOUT_MS = 3000
+
+/**
+ * Run a git command in <cwd>.
+ *
+ * Returns stdout trimmed on success, null on failure (non-zero exit / timeout).
+ * When `preserveEmpty` is true, empty stdout is returned as `""` rather than
+ * collapsed to null — necessary for `git status --porcelain` where empty
+ * stdout means "clean repo" (a meaningful, distinct result from a git error).
+ */
+const gitOut = (
+  cwd: string,
+  args: ReadonlyArray<string>,
+  opts: { readonly preserveEmpty?: boolean } = {},
+): string | null => {
+  try {
+    const out = execFileSync("git", ["-C", cwd, ...args], {
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: GIT_TIMEOUT_MS,
+    })
+      .toString()
+      .trim()
+    return out || (opts.preserveEmpty ? out : null)
+  } catch {
+    return null
+  }
+}
+
+/** Resolve the cwd to use for git queries.
+ *  Uses the local-shell capability for the thread when available; otherwise
+ *  falls back to LUNA_REPO_ROOT / process.cwd(). */
+const resolveGitCwd = (
+  threadId: string,
+  localShellBridge: LocalShellBridge | null,
+): string => {
+  if (localShellBridge !== null) {
+    const cap = localShellBridge.getCapability(threadId)
+    if (cap !== null) {
+      const roots = cap.roots ?? [cap.cwd]
+      if (roots.length > 0 && roots[0]) return roots[0]
+    }
+  }
+  return process.env["LUNA_REPO_ROOT"]?.trim() || process.cwd()
+}
+
+interface SmartBarContext {
+  readonly threadId: string
+  readonly model: string | undefined
+  readonly accountLabel: string | undefined
+  readonly workspaceSlug: string | undefined
+  readonly localShellBridge: LocalShellBridge | null
+}
+
+/**
+ * Injectable git runner for testability.
+ * Each call receives the cwd and git args; returns trimmed stdout or null on
+ * failure. The status call preserves empty-string output (clean repo signal).
+ */
+export interface GitRunner {
+  readonly toplevel: (cwd: string) => string | null
+  readonly branch: (cwd: string) => string | null
+  /** Returns `""` for a clean repo, a non-empty string when dirty, null on error. */
+  readonly status: (cwd: string) => string | null
+}
+
+/** Default git runner using execFileSync. */
+const defaultGitRunner: GitRunner = {
+  toplevel: (cwd) => gitOut(cwd, ["rev-parse", "--show-toplevel"]),
+  branch: (cwd) => gitOut(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]),
+  status: (cwd) => gitOut(cwd, ["status", "--porcelain"], { preserveEmpty: true }),
+}
+
+/**
+ * Build the SmartBar item list for the given context.
+ * Exported for unit testing; `gitRunner` defaults to the real execFileSync
+ * runner and should only be overridden in tests.
+ */
+export const buildSmartBarItems = (
+  ctx: SmartBarContext,
+  gitRunner: GitRunner = defaultGitRunner,
+): ReadonlyArray<SmartBarItem> => {
+  const items: SmartBarItem[] = []
+
+  // ── git context (flagship items) ──────────────────────────────────────────
+  const cwd = resolveGitCwd(ctx.threadId, ctx.localShellBridge)
+  const toplevel = gitRunner.toplevel(cwd)
+  const branch = gitRunner.branch(cwd)
+  const statusOut = gitRunner.status(cwd)
+
+  if (toplevel !== null) {
+    items.push({
+      id: "git.worktree",
+      kind: "info",
+      label: "worktree",
+      value: path.basename(toplevel),
+      icon: "⎇",  // ⎇ branch symbol
+      group: "git",
+      priority: 0,
+      tooltip: toplevel,
+    })
+  }
+  if (branch !== null && branch !== "HEAD") {
+    items.push({
+      id: "git.branch",
+      kind: "info",
+      label: "branch",
+      value: branch,
+      icon: "⎇",
+      group: "git",
+      priority: 1,
+    })
+  }
+  if (toplevel !== null || branch !== null) {
+    // Emit git.status only when we successfully read the repo.
+    // statusOut === null means git error / non-repo — omit the chip.
+    // statusOut === "" means clean repo (git status --porcelain produced no output).
+    // statusOut is non-empty when there are staged/unstaged changes (dirty).
+    if (statusOut !== null) {
+      const isClean = statusOut.length === 0
+      items.push({
+        id: "git.status",
+        kind: "info",
+        label: "git",
+        value: isClean ? "clean" : "dirty",
+        icon: "●",  // ●
+        tone: isClean ? "good" : "warn",
+        group: "git",
+        priority: 2,
+      })
+    }
+  }
+
+  // ── workspace ─────────────────────────────────────────────────────────────
+  if (ctx.workspaceSlug) {
+    items.push({
+      id: "workspace",
+      kind: "info",
+      label: "workspace",
+      value: ctx.workspaceSlug,
+      icon: "▫",  // ◫ (approximation)
+      group: "context",
+      priority: 0,
+    })
+  }
+
+  // ── model ─────────────────────────────────────────────────────────────────
+  if (ctx.model) {
+    items.push({
+      id: "model",
+      kind: "info",
+      label: "model",
+      value: ctx.model,
+      icon: "✶",  // ✦
+      group: "context",
+      priority: 1,
+    })
+  }
+
+  // ── account ───────────────────────────────────────────────────────────────
+  if (ctx.accountLabel) {
+    items.push({
+      id: "account",
+      kind: "info",
+      label: "account",
+      value: ctx.accountLabel,
+      icon: "◴",  // ◴
+      group: "context",
+      priority: 2,
+    })
+  }
+
+  return items
+}
+
+/** Push a SmartBarFrame to `ws` for the given thread. Fire-and-forget. */
+const pushSmartBar = (
+  ws: WebSocket,
+  ctx: SmartBarContext,
+): void => {
+  if (ws.readyState !== ws.OPEN) return
+  try {
+    const items = buildSmartBarItems(ctx)
+    send(ws, {
+      type: "smart-bar",
+      threadId: ctx.threadId,
+      version: 1,
+      items,
+    })
+  } catch {
+    // Non-fatal — smart bar is best-effort.
   }
 }
 
@@ -392,7 +884,16 @@ export const startUIWebSocketServer = (
     const survey = config.survey ?? null
     const setupPty = config.setupPty ?? null
     const registerOpToken = config.registerOpToken ?? null
+    const widgetSummoner = config.widgetSummoner ?? null
+    const subagentTree = config.subagentTree ?? null
     const secretBridge = config.secretBridge ?? null
+    const jobInputBridge = config.jobInputBridge ?? null
+    const mcpAppHost = config.mcpAppHost ?? null
+    const skillRegistry = config.skillRegistry ?? null
+    const connectorService = config.connectorService ?? null
+    const artifactStore = config.artifactStore ?? null
+    const workflowGallery = config.workflowGallery ?? null
+    const vaultService = config.vaultService ?? null
     const buildSha = config.buildSha
     const availableModels = config.availableModels
 
@@ -461,6 +962,13 @@ export const startUIWebSocketServer = (
     // Browsers can't set custom headers on WebSocket upgrades, so we accept
     // EITHER `Authorization: Bearer <token>` (Node clients) OR a `?token=`
     // query-string parameter (browser clients). Same token, both forms.
+    //
+    // Audit hardening: log failed auth attempts (source IP + no token material)
+    // so ops can detect brute-force or misconfigured clients. Also emit a
+    // one-time-per-source console.log on the FIRST successful connect from each
+    // unique IP (de-duplication avoids log spam from long-lived Moon reconnects).
+    const _firstConnectSeen = new Set<string>()
+
     httpServer.on("upgrade", (req, socket, head) => {
       const rawUrl = req.url ?? ""
       // Strip query string for path match.
@@ -488,9 +996,18 @@ export const startUIWebSocketServer = (
         }
       }
       if (!ok) {
+        // Audit finding: log failed auth — IP only, no token material.
+        const srcIp = (socket as { remoteAddress?: string }).remoteAddress ?? "unknown"
+        console.warn(`[ui-ws] auth failed — 401 sent to ${srcIp}`)
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n")
         socket.destroy()
         return
+      }
+      // First-successful-connect notice per source IP (one-time, de-duped).
+      const connIp = (socket as { remoteAddress?: string }).remoteAddress ?? "unknown"
+      if (!_firstConnectSeen.has(connIp)) {
+        _firstConnectSeen.add(connIp)
+        console.log(`[ui-ws] first connect from ${connIp}`)
       }
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit("connection", ws, req)
@@ -504,6 +1021,71 @@ export const startUIWebSocketServer = (
     // Capture the surrounding runtime — connection handlers run via this
     // runtime so they share the UIService PubSub etc.
     const runtime = yield* Effect.runtime<UIService>()
+
+    // PRD Part B: out-of-band catalog changes (user-skills hot-load) →
+    // broadcast a fresh skill-catalog to every connected client. The toggle
+    // path broadcasts inline; this hook covers changes no client initiated.
+    if (skillRegistry !== null && skillRegistry.changes !== undefined) {
+      const reg = skillRegistry
+      const registerChanges = skillRegistry.changes
+      registerChanges(() => {
+        Runtime.runFork(runtime)(
+          Effect.gen(function* () {
+            const skills = yield* reg.catalog()
+            const wire = skills.map(toWireSkill)
+            const sockets = yield* Ref.get(activeSockets)
+            for (const sock of sockets) {
+              send(sock, { type: "skill-catalog", skills: wire })
+            }
+          }).pipe(Effect.catchAllCause(() => Effect.void)),
+        )
+      })
+    }
+
+    // PRD Part C/W1: out-of-band artifact changes (an agent edits a pinned
+    // artifact — W4) → broadcast a fresh artifact-list to every client. The
+    // pin/unpin paths broadcast inline; this hook covers agent-side edits.
+    if (artifactStore !== null && artifactStore.changes !== undefined) {
+      const store = artifactStore
+      const registerArtifactChanges = artifactStore.changes
+      registerArtifactChanges(() => {
+        Runtime.runFork(runtime)(
+          Effect.gen(function* () {
+            const artifacts = yield* store.list()
+            const sockets = yield* Ref.get(activeSockets)
+            for (const sock of sockets) {
+              send(sock, { type: "artifact-list", artifacts })
+            }
+          }).pipe(Effect.catchAllCause(() => Effect.void)),
+        )
+      })
+    }
+
+    // Luna Vault V3: out-of-band registry changes (the 1Password sync poll
+    // loop adopting/refreshing/removing rows) → broadcast a fresh vault-list
+    // to every client. The mutation paths broadcast inline; this hook covers
+    // changes no client initiated. Wire-safe by construction — `list()` is
+    // the same metadata/pointer projection the inline path uses.
+    if (vaultService !== null && vaultService.changes !== undefined) {
+      const vsvc = vaultService
+      const registerVaultChanges = vaultService.changes
+      registerVaultChanges(() => {
+        Runtime.runFork(runtime)(
+          Effect.gen(function* () {
+            const items = yield* Effect.promise(() => vsvc.list())
+            const sync = yield* Effect.promise(() => vsvc.syncState())
+            const sockets = yield* Ref.get(activeSockets)
+            for (const sock of sockets) {
+              send(sock, {
+                type: "vault-list",
+                items,
+                ...(sync !== null ? { sync } : {}),
+              })
+            }
+          }).pipe(Effect.catchAllCause(() => Effect.void)),
+        )
+      })
+    }
 
     // The connection-handler effect: it OWNS its own scope (so we can use
     // addFinalizer for queue cleanup) but lives until the ws closes —
@@ -554,6 +1136,36 @@ export const startUIWebSocketServer = (
             // Lets grouping clients (the moon timeline) detect this server can
             // signal end-of-agentic-turn and enable the grouped/settling view.
             turnComplete: chat !== null,
+            // PRD Part B: skill catalog + toggle routing available. Clients
+            // gate the Skills settings tab on this flag (absent on older
+            // servers → tab hidden, no errors).
+            skills: skillRegistry !== null,
+            // PRD Part A: connector catalog + the client-brokered OAuth
+            // handshake available. Same additive gating as skills.
+            connectors: connectorService !== null,
+            // PRD Part C/W1: pinned-artifact persistence + pin/unpin routing.
+            // Clients gate the panel's "Pinned" section on this flag.
+            artifacts: artifactStore !== null,
+            // PRD Part C/W3: read-only workflow gallery over the jobs store.
+            workflows: workflowGallery !== null,
+            // Luna Vault (V1): credential registry + put/delete/sync routing.
+            // Clients hide the Vault section when absent/false.
+            vault: vaultService !== null,
+            // MCP Apps host relay (widget-system.md Phase 7): ui:// resource
+            // reads + same-app tool calls route through the bound McpAppHost.
+            mcpApps: mcpAppHost !== null,
+            // Model+effort switcher: server accepts set-thread-config and has
+            // pre-computed the effort-validity matrix in availableModels.efforts.
+            // Clients hide effort controls when absent/false.
+            effortSelection: chat !== null,
+            // Subagents: chat threads can spawn SDK Task subagents; tool
+            // frames carry the additive parentToolUseId linkage (this is the
+            // cap's documented meaning, independent of the live Agents panel).
+            // In this server chat is always co-wired with the subagentTree
+            // bridge, so the Agents panel's broadcasts are always available when
+            // this cap is true; a hypothetical chat-without-bridge embedding is
+            // not a code path here.
+            subagents: chat !== null,
           },
         })
 
@@ -569,6 +1181,77 @@ export const startUIWebSocketServer = (
                 send(ws, { type: "account-list", accounts })
               }),
             ),
+          )
+        }
+
+        // Send skill-catalog immediately after hello so the Skills settings
+        // tab can render on connect. Same fire-and-forget pattern as
+        // account-list; a catalog failure must not block connection setup.
+        if (skillRegistry !== null) {
+          const reg = skillRegistry
+          Effect.runFork(
+            Effect.flatMap(reg.catalog(), (skills) =>
+              Effect.sync(() => {
+                send(ws, { type: "skill-catalog", skills: skills.map(toWireSkill) })
+              }),
+            ),
+          )
+        }
+
+        // Connector catalog + current instances, same pattern (PRD A §18).
+        if (connectorService !== null) {
+          const svc = connectorService
+          Effect.runFork(
+            Effect.gen(function* () {
+              const connectors = yield* svc.catalog()
+              const instances = yield* svc.list()
+              send(ws, { type: "connector-catalog", connectors })
+              send(ws, { type: "connector-list", instances })
+            }).pipe(Effect.catchAllCause(() => Effect.void)),
+          )
+        }
+
+        // Pinned artifacts, same fire-and-forget pattern (PRD C/W1 §18) — the
+        // artifact panel's "Pinned" section renders from this on connect.
+        if (artifactStore !== null) {
+          const store = artifactStore
+          Effect.runFork(
+            Effect.flatMap(store.list(), (artifacts) =>
+              Effect.sync(() => {
+                send(ws, { type: "artifact-list", artifacts })
+              }),
+            ).pipe(Effect.catchAllCause(() => Effect.void)),
+          )
+        }
+
+        // Workflow gallery, same fire-and-forget pattern (PRD C/W3) — the
+        // "Workflows" view renders from this on connect.
+        if (workflowGallery !== null) {
+          const gallery = workflowGallery
+          Effect.runFork(
+            Effect.flatMap(gallery.list(), (workflows) =>
+              Effect.sync(() => {
+                send(ws, { type: "workflow-list", workflows })
+              }),
+            ).pipe(Effect.catchAllCause(() => Effect.void)),
+          )
+        }
+
+        // Vault registry, same fire-and-forget pattern (Luna Vault V1) — the
+        // Vault settings section renders from this on connect. Contains
+        // metadata + opaque pointers only; no credential values cross the wire.
+        if (vaultService !== null) {
+          const vsvc = vaultService
+          Effect.runFork(
+            Effect.promise(async () => {
+              const items = await vsvc.list()
+              const sync = await vsvc.syncState()
+              send(ws, {
+                type: "vault-list",
+                items,
+                ...(sync !== null ? { sync } : {}),
+              })
+            }).pipe(Effect.catchAllCause(() => Effect.void)),
           )
         }
 
@@ -699,6 +1382,53 @@ export const startUIWebSocketServer = (
           )
         }
 
+        // Per-connection thread model cache. Populated when we see thread-created
+        // or thread-list so the smart bar can show the current model.
+        const threadModelCache = new Map<string, string>()
+
+        // Build a SmartBarContext for the given thread using per-connection state.
+        const makeSmartBarCtx = (threadId: string): SmartBarContext => ({
+          threadId,
+          model: threadModelCache.get(threadId) ?? undefined,
+          accountLabel: undefined,
+          workspaceSlug: undefined,
+          localShellBridge,
+        })
+
+        // Push a fresh SmartBarFrame for `threadId` to this connection.
+        // Uses a 250ms delay so smart-bar frames arrive well after the
+        // synchronous chat frame burst they're triggered by (snapshot,
+        // turn-complete, etc.). This keeps tests that check exact frame
+        // sequences from seeing unexpected smart-bar frames mid-sequence.
+        // In production the delay is imperceptible.
+        // Fire-and-forget: errors must never tear down the connection.
+        const sendSmartBarFor = (threadId: string): void => {
+          setTimeout(() => {
+            try {
+              pushSmartBar(ws, makeSmartBarCtx(threadId))
+            } catch {
+              // Non-fatal.
+            }
+          }, 250)
+        }
+
+        // Smart-bar interval: re-push for all subscribed threads every ~20s so
+        // branch / dirty status stays fresh between natural triggers. Interval is
+        // kept low-frequency (20s) to avoid hammering git. Forked into the
+        // connection scope so it stops when the socket closes.
+        const smartBarIntervalMs = 20_000
+        yield* Effect.fork(
+          Effect.forever(
+            Effect.gen(function* () {
+              yield* Effect.sleep(`${smartBarIntervalMs} millis`)
+              const m = yield* Ref.get(chatFibers)
+              for (const threadId of m.keys()) {
+                sendSmartBarFor(threadId)
+              }
+            }),
+          ),
+        )
+
         const localShellClients = yield* Ref.make<ReadonlyMap<string, string>>(
           new Map(),
         )
@@ -744,6 +1474,44 @@ export const startUIWebSocketServer = (
               for (const threadId of secretThreads) {
                 secretBridge.unregisterClient(threadId, secretConnId)
               }
+            }),
+          )
+        }
+
+        // Summon-by-name: this connection may announce a widget directory.
+        // Reuses the secret connection id for identity; the finalizer only
+        // clears the bridge when THIS connection is still the active host.
+        if (widgetSummoner !== null) {
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              widgetSummoner.unregisterClient(secretConnId)
+            }),
+          )
+        }
+
+        // Job-summoned operator input (widget-system.md Phase 5): EVERY
+        // connection registers with the broadcast bridge at setup (no
+        // subscribe step — a job has no owning thread, so any surface may
+        // answer a job-input-request). Reuses the secret connection id for
+        // identity; the finalizer drops exactly this handle on teardown.
+        if (jobInputBridge !== null) {
+          jobInputBridge.registerClient(secretConnId, (out) => send(ws, out))
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              jobInputBridge.unregisterClient(secretConnId)
+            }),
+          )
+        }
+
+        // Live subagent tree (S4): EVERY connection registers at setup so it
+        // can receive `subagent-tree` broadcasts for whatever thread its Agents
+        // panel is watching — the panel filters by threadId and NEVER
+        // subscribes the thread (so it can't steal interactive bindings).
+        if (subagentTree !== null) {
+          subagentTree.registerClient(secretConnId, (out) => send(ws, out))
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              subagentTree.unregisterClient(secretConnId)
             }),
           )
         }
@@ -845,6 +1613,36 @@ export const startUIWebSocketServer = (
                   if (f.type === "turn-complete" && secretBridge !== null) {
                     secretBridge.notifyTurnComplete(f.threadId)
                   }
+                  // Smart bar: re-push on turn-complete (branch/dirty may have
+                  // changed during the turn). Fire regardless of ws state —
+                  // pushSmartBar checks readyState internally.
+                  if (f.type === "turn-complete") {
+                    sendSmartBarFor(f.threadId)
+                  }
+                  // Live Agents view (S4): fold this frame into the subagent
+                  // tree (broadcasts to every client on change) and, on the
+                  // FIRST delegation in this thread, summon the Agents panel.
+                  // Server-side + ws-state-independent: the broadcast targets
+                  // OTHER connections (the panel), so it must run even if this
+                  // socket is mid-flush. observe() is idempotent per toolCallId.
+                  if (subagentTree !== null) {
+                    const { autoOpen } = subagentTree.observe(
+                      f.threadId,
+                      f as unknown as import("./subagent-tree-bridge.js").ObservableThreadFrame,
+                    )
+                    if (autoOpen && widgetSummoner !== null) {
+                      // Latch announced ONLY on a successful summon — a failed
+                      // open (hub not yet announced its directory) leaves the
+                      // thread un-announced so the next delegation retries.
+                      const opened = widgetSummoner.open("agents", { thread: f.threadId })
+                      if (opened.ok) subagentTree.markAnnounced(f.threadId)
+                    }
+                  }
+                  // Smart bar: push when a snapshot arrives — context just
+                  // (re)established for this thread.
+                  if (f.type === "snapshot") {
+                    sendSmartBarFor(f.threadId)
+                  }
                   if (ws.readyState !== ws.OPEN) return
                   send(ws, chatFrameToWire(f))
                 }),
@@ -903,7 +1701,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null) {
+        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || vaultService !== null || mcpAppHost !== null || subagentTree !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -920,9 +1718,58 @@ export const startUIWebSocketServer = (
               return
             }
 
+            // pushVaultList: broadcast a fresh vault-list to a set of
+            // target sockets (all active sockets on mutation; only the
+            // new connection on hello). Extracted so every vault mutation
+            // case can broadcast without duplicating the list/syncState
+            // fetch. Refresh errors are silently swallowed (isolated
+            // catchAllCause) so they cannot produce a second vault-status
+            // for the same requestId (finding 6).
+            const pushVaultList = (
+              vsvc: NonNullable<typeof vaultService>,
+              targets: ReadonlyArray<WebSocket>,
+            ): Effect.Effect<void, never> =>
+              Effect.promise(async () => {
+                const items = await vsvc.list()
+                const sync = await vsvc.syncState()
+                for (const sock of targets) {
+                  send(sock, {
+                    type: "vault-list",
+                    items,
+                    ...(sync !== null ? { sync } : {}),
+                  })
+                }
+              }).pipe(Effect.catchAllCause(() => Effect.void))
+
             const handle = (): Effect.Effect<void, never> =>
               Effect.gen(function* () {
                 switch (frame.type) {
+                  case "widget-directory": {
+                    if (widgetSummoner !== null) {
+                      const widgets = (frame as import("./protocol.js").WidgetDirectoryFrame).widgets
+                      widgetSummoner.registerClient(secretConnId, (out) => send(ws, out), widgets)
+                      console.log(
+                        `[ui-ws] widget host announced ${widgetSummoner.directory().length} summonable widget(s)`,
+                      )
+                    }
+                    break
+                  }
+                  case "subagent-tree-request": {
+                    // The Agents panel asks for a thread's current tree on open
+                    // (so a panel summoned mid-turn paints at once). Reply to
+                    // THIS connection only — no broadcast, no thread subscribe.
+                    if (subagentTree !== null) {
+                      const tr = frame as import("./protocol.js").SubagentTreeRequestFrame
+                      if (typeof tr.threadId === "string" && tr.threadId.length > 0) {
+                        send(ws, {
+                          type: "subagent-tree",
+                          threadId: tr.threadId,
+                          agents: subagentTree.treeFor(tr.threadId),
+                        })
+                      }
+                    }
+                    break
+                  }
                   case "pong":
                   case "bye":
                     return
@@ -952,6 +1799,8 @@ export const startUIWebSocketServer = (
                           // Callback failures must not poison message handling.
                         }
                       }
+                      // Smart bar: re-push since the cwd/roots just changed.
+                      sendSmartBarFor(frame.threadId)
                     }
                     return
                   }
@@ -969,12 +1818,26 @@ export const startUIWebSocketServer = (
                     }
                     return
                   }
+                  case "job-input-result": {
+                    // Operator's answer to a job-input-request. Hand the frame
+                    // straight to the bridge with THIS connection's send-handle
+                    // as the reply target (win / already-answered ack). The
+                    // answer value is never logged or echoed here.
+                    if (jobInputBridge !== null) {
+                      jobInputBridge.acceptResult(frame, (out) => send(ws, out))
+                    }
+                    return
+                  }
                   case "subscribe": {
                     if (chat === null) return
                     yield* subscribeChatThread(frame.threadId)
                     // Make this connection the secret-entry target for the
                     // thread, so the agent's `request_secret` tool can reach it.
                     registerSecretClient(frame.threadId)
+                    // Smart bar: the snapshot frame (sent by the forwarder fiber
+                    // after subscribe completes) triggers a push — no need to
+                    // push here too, as it would add an extra frame before the
+                    // snapshot and break tests that expect exact frame counts.
                     return
                   }
                   case "unsubscribe": {
@@ -986,6 +1849,10 @@ export const startUIWebSocketServer = (
                     if (chat === null) return
                     const threads = yield* chat.listThreads(frame.limit ?? 50)
                     send(ws, { type: "thread-list", threads })
+                    // Cache model for each thread so smart bar can show the model.
+                    for (const t of threads) {
+                      if (t.model) threadModelCache.set(t.id, t.model)
+                    }
                     return
                   }
                   case "memory-search-request": {
@@ -1014,6 +1881,10 @@ export const startUIWebSocketServer = (
                     if (chat === null) return
                     const summary = yield* chat.createThread({
                       model: frame.model,
+                      // effort is forwarded verbatim — chat-service clamps it
+                      // per-model inside createThread (buildSessionOptions),
+                      // so an invalid combo never reaches the SDK options.
+                      ...(frame.effort !== undefined ? { effort: frame.effort } : {}),
                       ...(frame.title !== undefined ? { title: frame.title } : {}),
                       ...(frame.tags !== undefined ? { tags: frame.tags } : {}),
                       ...(frame.systemPrompt !== undefined
@@ -1024,6 +1895,8 @@ export const startUIWebSocketServer = (
                         : {}),
                     })
                     send(ws, { type: "thread-created", thread: summary })
+                    // Cache the model so the smart bar can show it.
+                    if (summary.model) threadModelCache.set(summary.id, summary.model)
                     // Auto-subscribe so the client doesn't need a
                     // subscribe round-trip before sending the first
                     // user-message — a common ChatGPT-style pattern. Register
@@ -1032,10 +1905,22 @@ export const startUIWebSocketServer = (
                     // still receive a `request_secret` prompt on this thread.
                     yield* subscribeChatThread(summary.id)
                     registerSecretClient(summary.id)
+                    // Smart bar will be pushed when the snapshot frame arrives
+                    // in the forwarder fiber — no extra push needed here.
                     return
                   }
                   case "user-message": {
                     if (chat === null) return
+                    // Re-assert this connection as the secret-entry target for
+                    // the thread on EVERY message — not just on `subscribe`/
+                    // `new-thread`. A long-lived session whose WebSocket dropped
+                    // and reconnected may keep chatting (user-messages route
+                    // fine) WITHOUT re-subscribing; the old connection's teardown
+                    // cleared the secret registration, so `request_secret` would
+                    // report "no connected Moon client" even though chat works.
+                    // Registering here makes any actively-chatting thread a valid
+                    // secret target. Idempotent (last writer wins); cheap.
+                    registerSecretClient(frame.threadId)
                     // TS types are erased at runtime — clients can send
                     // arbitrary mediaType strings or oversized data. Validate
                     // before forwarding to the SDK so a clean error surfaces
@@ -1077,6 +1962,26 @@ export const startUIWebSocketServer = (
                     yield* chat.interrupt(frame.threadId)
                     return
                   }
+                  case "set-thread-config": {
+                    // Model + effort switcher. Gated on chat being bound (which
+                    // implies effortSelection: true in capabilities). The ack
+                    // is sent only to the requesting connection — broadcast is
+                    // optional per §1.D (comment left intentionally). Both
+                    // fields are forwarded verbatim — chat-service clamps the
+                    // effort against the thread's reference model and reports
+                    // invalid combos in the ack's `rejected` list.
+                    if (chat === null) return
+                    const threadId = typeof frame.threadId === "string"
+                      ? frame.threadId : ""
+                    if (!threadId) return
+                    const result = yield* chat.setThreadConfig({
+                      threadId,
+                      ...(frame.model !== undefined ? { model: frame.model } : {}),
+                      ...(frame.effort !== undefined ? { effort: frame.effort } : {}),
+                    })
+                    send(ws, { type: "thread-config", ...result })
+                    return
+                  }
                   case "survey-response": {
                     if (survey === null) return
                     // Phase 3 D3 — D-LOCK-5 idempotency: pin EVERY verdict's `at`
@@ -1092,6 +1997,482 @@ export const startUIWebSocketServer = (
                     yield* survey.submitVerdicts(frame.surveyId, frame.issuedAt, pinnedVerdicts).pipe(
                       Effect.catchAllCause(() => Effect.void),
                     )
+                    return
+                  }
+                  case "skill-toggle": {
+                    // PRD Part B §12. Persist + flip via the injected handle;
+                    // ack the toggling client with skill-status, then
+                    // BROADCAST the refreshed catalog to every connected
+                    // client (review finding: unicast left a second open
+                    // client — Moon + web is a normal setup — rendering
+                    // stale enabled bits, and its stale-state toggle could
+                    // re-flip the skill back). Failures (unknown id,
+                    // registry defect) ack ok:false with a non-sensitive
+                    // message and must never tear down the connection.
+                    if (skillRegistry === null) return
+                    // Malformed-frame guard: id/enabled types are attacker-
+                    // controlled JSON — reject junk before touching state.
+                    if (
+                      typeof frame.id !== "string" ||
+                      frame.id.length === 0 ||
+                      typeof frame.enabled !== "boolean"
+                    ) {
+                      send(ws, {
+                        type: "skill-status",
+                        id: String((frame as { id?: unknown }).id ?? ""),
+                        enabled: false,
+                        ok: false,
+                        message: "malformed skill-toggle frame",
+                      })
+                      return
+                    }
+                    const reg = skillRegistry
+                    yield* reg.setEnabled(frame.id, frame.enabled).pipe(
+                      Effect.flatMap(() => reg.catalog()),
+                      Effect.flatMap((skills) =>
+                        Effect.gen(function* () {
+                          send(ws, {
+                            type: "skill-status",
+                            id: frame.id,
+                            enabled: frame.enabled,
+                            ok: true,
+                          })
+                          const wire = skills.map(toWireSkill)
+                          const sockets = yield* Ref.get(activeSockets)
+                          for (const sock of sockets) {
+                            send(sock, { type: "skill-catalog", skills: wire })
+                          }
+                        }),
+                      ),
+                      Effect.catchAllCause((cause) =>
+                        Effect.sync(() => {
+                          send(ws, {
+                            type: "skill-status",
+                            id: frame.id,
+                            enabled: frame.enabled,
+                            ok: false,
+                            message: failureMessage(cause),
+                          })
+                        }),
+                      ),
+                    )
+                    return
+                  }
+                  case "connector-oauth-begin": {
+                    // PRD A §09 step 3: the client bound its loopback and
+                    // asks for a consent URL. Failures (missing per-operator
+                    // client env var, already connected) ack ok:false with
+                    // the operator-actionable message.
+                    if (connectorService === null) return
+                    const svc = connectorService
+                    // Coerce requestId ONCE so success + failure echo the
+                    // same value (review G2: the success path used to echo
+                    // it un-coerced while the error path coerced it).
+                    const beginReqId = String(
+                      (frame as { requestId?: unknown }).requestId ?? "",
+                    )
+                    if (
+                      typeof frame.definitionId !== "string" ||
+                      typeof frame.loopbackPort !== "number" ||
+                      typeof frame.label !== "string"
+                    ) {
+                      send(ws, {
+                        type: "connector-status",
+                        requestId: beginReqId,
+                        ok: false,
+                        message: "malformed connector-oauth-begin frame",
+                      })
+                      return
+                    }
+                    yield* svc
+                      .beginAuth({
+                        definitionId: frame.definitionId,
+                        label: frame.label,
+                        ...(frame.capabilityIds !== undefined
+                          ? { capabilityIds: frame.capabilityIds }
+                          : {}),
+                        loopbackPort: frame.loopbackPort,
+                      })
+                      .pipe(
+                        Effect.map((begun) => {
+                          send(ws, {
+                            type: "connector-oauth-redirect",
+                            requestId: beginReqId,
+                            pendingId: begun.pendingId,
+                            authUrl: begun.authUrl,
+                          })
+                        }),
+                        Effect.catchAllCause((cause) =>
+                          Effect.sync(() => {
+                            send(ws, {
+                              type: "connector-status",
+                              requestId: beginReqId,
+                              ok: false,
+                              message: failureMessage(cause),
+                            })
+                          }),
+                        ),
+                      )
+                    return
+                  }
+                  case "connector-oauth-code": {
+                    // PRD A §09 step 9: redeem the captured code. On success
+                    // broadcast the refreshed instance list to ALL clients.
+                    if (connectorService === null) return
+                    const svc = connectorService
+                    yield* svc
+                      .completeAuth({
+                        pendingId: String(frame.pendingId),
+                        code: String(frame.code),
+                        state: String(frame.state),
+                      })
+                      .pipe(
+                        Effect.flatMap((instance) =>
+                          Effect.gen(function* () {
+                            send(ws, { type: "connector-status", ok: true, instance })
+                            const instances = yield* svc.list()
+                            const sockets = yield* Ref.get(activeSockets)
+                            for (const sock of sockets) {
+                              send(sock, { type: "connector-list", instances })
+                            }
+                          }),
+                        ),
+                        Effect.catchAllCause((cause) =>
+                          Effect.sync(() => {
+                            send(ws, {
+                              type: "connector-status",
+                              ok: false,
+                              message: failureMessage(cause),
+                            })
+                          }),
+                        ),
+                      )
+                    return
+                  }
+                  case "connector-connect": {
+                    if (connectorService === null) return
+                    const svc = connectorService
+                    yield* svc
+                      .connect({
+                        definitionId: String(frame.definitionId),
+                        label: String(frame.label ?? ""),
+                        ...(frame.secretRef !== undefined
+                          ? { secretRef: frame.secretRef }
+                          : {}),
+                        ...(frame.capabilityIds !== undefined
+                          ? { capabilityIds: frame.capabilityIds }
+                          : {}),
+                      })
+                      .pipe(
+                        Effect.flatMap((instance) =>
+                          Effect.gen(function* () {
+                            send(ws, {
+                              type: "connector-status",
+                              requestId: frame.requestId,
+                              ok: true,
+                              instance,
+                            })
+                            const instances = yield* svc.list()
+                            const sockets = yield* Ref.get(activeSockets)
+                            for (const sock of sockets) {
+                              send(sock, { type: "connector-list", instances })
+                            }
+                          }),
+                        ),
+                        Effect.catchAllCause((cause) =>
+                          Effect.sync(() => {
+                            send(ws, {
+                              type: "connector-status",
+                              requestId: frame.requestId,
+                              ok: false,
+                              message: failureMessage(cause),
+                            })
+                          }),
+                        ),
+                      )
+                    return
+                  }
+                  case "connector-disconnect": {
+                    if (connectorService === null) return
+                    const svc = connectorService
+                    yield* svc
+                      .disconnect(String(frame.instanceId))
+                      .pipe(
+                        Effect.flatMap((removed) =>
+                          Effect.gen(function* () {
+                            send(ws, {
+                              type: "connector-status",
+                              ok: removed,
+                              ...(removed ? {} : { message: "unknown instance" }),
+                            })
+                            const instances = yield* svc.list()
+                            const sockets = yield* Ref.get(activeSockets)
+                            for (const sock of sockets) {
+                              send(sock, { type: "connector-list", instances })
+                            }
+                          }),
+                        ),
+                        Effect.catchAllCause((cause) =>
+                          Effect.sync(() => {
+                            send(ws, {
+                              type: "connector-status",
+                              ok: false,
+                              message: failureMessage(cause),
+                            })
+                          }),
+                        ),
+                      )
+                    return
+                  }
+                  case "connector-set-client": {
+                    // PRD §23 (M2.6): store the operator's OAuth client creds,
+                    // then re-broadcast the catalog so `clientSetup.configured`
+                    // flips true in every connected client's UI. The values are
+                    // never echoed back.
+                    if (connectorService === null) return
+                    const svc = connectorService
+                    if (
+                      typeof frame.definitionId !== "string" ||
+                      typeof frame.clientId !== "string" ||
+                      frame.clientId.trim().length === 0
+                    ) {
+                      send(ws, {
+                        type: "connector-status",
+                        requestId: frame.requestId,
+                        ok: false,
+                        message: "malformed connector-set-client frame",
+                      })
+                      return
+                    }
+                    yield* svc
+                      .setClientCredentials({
+                        definitionId: frame.definitionId,
+                        clientId: frame.clientId,
+                        ...(typeof frame.clientSecret === "string" &&
+                        frame.clientSecret.length > 0
+                          ? { clientSecret: frame.clientSecret }
+                          : {}),
+                      })
+                      .pipe(
+                        Effect.flatMap(() =>
+                          Effect.gen(function* () {
+                            send(ws, {
+                              type: "connector-status",
+                              requestId: frame.requestId,
+                              ok: true,
+                            })
+                            const connectors = yield* svc.catalog()
+                            const sockets = yield* Ref.get(activeSockets)
+                            for (const sock of sockets) {
+                              send(sock, { type: "connector-catalog", connectors })
+                            }
+                          }),
+                        ),
+                        Effect.catchAllCause((cause) =>
+                          Effect.sync(() => {
+                            send(ws, {
+                              type: "connector-status",
+                              requestId: frame.requestId,
+                              ok: false,
+                              message: failureMessage(cause),
+                            })
+                          }),
+                        ),
+                      )
+                    return
+                  }
+                  case "artifact-pin": {
+                    // PRD C/W1: persist an artifact by value. On success
+                    // broadcast a fresh artifact-list to ALL clients (pins are
+                    // global, like connector-list). Idempotent on id server-side.
+                    if (artifactStore === null) return
+                    const store = artifactStore
+                    // Validate the inbound frame (review W1/uiws): reject
+                    // malformed pins rather than coercing undefined → junk rows
+                    // ("undefined" id, empty content). Same discipline as
+                    // skill-toggle's id guard.
+                    if (
+                      typeof frame.id !== "string" ||
+                      frame.id.trim().length === 0 ||
+                      typeof frame.title !== "string" ||
+                      typeof frame.content !== "string"
+                    ) {
+                      return
+                    }
+                    yield* store
+                      .pin({
+                        id: frame.id,
+                        title: frame.title,
+                        content: frame.content,
+                        ...(frame.lang !== undefined ? { lang: frame.lang } : {}),
+                        ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
+                        ...(frame.origin !== undefined
+                          ? { origin: frame.origin }
+                          : {}),
+                      })
+                      .pipe(
+                        Effect.flatMap(() =>
+                          Effect.gen(function* () {
+                            const artifacts = yield* store.list()
+                            const sockets = yield* Ref.get(activeSockets)
+                            for (const sock of sockets) {
+                              send(sock, { type: "artifact-list", artifacts })
+                            }
+                          }),
+                        ),
+                        Effect.catchAllCause(() => Effect.void),
+                      )
+                    return
+                  }
+                  case "artifact-unpin": {
+                    if (artifactStore === null) return
+                    const store = artifactStore
+                    if (
+                      typeof frame.id !== "string" ||
+                      frame.id.trim().length === 0
+                    ) {
+                      return
+                    }
+                    yield* store
+                      .unpin(frame.id)
+                      .pipe(
+                        Effect.flatMap(() =>
+                          Effect.gen(function* () {
+                            const artifacts = yield* store.list()
+                            const sockets = yield* Ref.get(activeSockets)
+                            for (const sock of sockets) {
+                              send(sock, { type: "artifact-list", artifacts })
+                            }
+                          }),
+                        ),
+                        Effect.catchAllCause(() => Effect.void),
+                      )
+                    return
+                  }
+                  case "artifact-edit": {
+                    // PRD C/W1: edit an existing artifact's content. Routes
+                    // through store.update (NOT unpin+re-pin) so the version
+                    // ledger is preserved and bridgeCaps are left untouched —
+                    // the same semantics widget_write/mcp_app_write rely on. On
+                    // success broadcast a fresh artifact-list to ALL clients.
+                    if (artifactStore === null || artifactStore.update === undefined) return
+                    const store = artifactStore
+                    const update = artifactStore.update
+                    const ef = frame as import("./protocol.js").ArtifactEditFrame
+                    if (
+                      typeof ef.id !== "string" ||
+                      ef.id.trim().length === 0 ||
+                      typeof ef.content !== "string"
+                    ) {
+                      return
+                    }
+                    yield* update(ef.id, ef.content).pipe(
+                      Effect.flatMap(() =>
+                        Effect.gen(function* () {
+                          const artifacts = yield* store.list()
+                          const sockets = yield* Ref.get(activeSockets)
+                          for (const sock of sockets) {
+                            send(sock, { type: "artifact-list", artifacts })
+                          }
+                        }),
+                      ),
+                      Effect.catchAllCause(() => Effect.void),
+                    )
+                    return
+                  }
+                  case "workflow-refresh": {
+                    // PRD C/W3: re-send the gallery to the requesting client.
+                    if (workflowGallery === null) return
+                    const gallery = workflowGallery
+                    yield* gallery
+                      .list()
+                      .pipe(
+                        Effect.flatMap((workflows) =>
+                          Effect.sync(() => {
+                            send(ws, { type: "workflow-list", workflows })
+                          }),
+                        ),
+                        Effect.catchAllCause(() => Effect.void),
+                      )
+                    return
+                  }
+                  case "workflow-runs-request": {
+                    // PRD C/W3: one job's run history (to the requester only).
+                    if (workflowGallery === null) return
+                    const gallery = workflowGallery
+                    if (
+                      typeof frame.jobId !== "string" ||
+                      frame.jobId.trim().length === 0
+                    ) {
+                      return
+                    }
+                    const jobId = frame.jobId
+                    // Clamp to a sane positive bound — a negative/huge/non-int
+                    // limit from a malformed client must not bypass the default
+                    // or hammer the DB (review G3).
+                    const limit =
+                      typeof frame.limit === "number" &&
+                      Number.isInteger(frame.limit) &&
+                      frame.limit > 0
+                        ? Math.min(frame.limit, 200)
+                        : undefined
+                    yield* gallery
+                      .runs(jobId, limit)
+                      .pipe(
+                        Effect.flatMap((runs) =>
+                          Effect.sync(() => {
+                            send(ws, { type: "workflow-runs", jobId, runs })
+                          }),
+                        ),
+                        Effect.catchAllCause(() => Effect.void),
+                      )
+                    return
+                  }
+                  case "mcp-resource-read": {
+                    // MCP Apps relay (Phase 7): resolve a ui:// app resource.
+                    // The host NEVER rejects by contract; the catchAllCause is
+                    // belt-and-suspenders so a defect can't kill the socket
+                    // loop — it collapses to a generic ok:false reply.
+                    if (mcpAppHost === null) return
+                    const host = mcpAppHost
+                    const out = yield* Effect.promise(() =>
+                      host.handleResourceRead(frame),
+                    ).pipe(
+                      Effect.catchAllCause(() =>
+                        Effect.succeed<ServerFrame>({
+                          type: "mcp-resource-result",
+                          requestId: String(
+                            (frame as { requestId?: unknown }).requestId ?? "",
+                          ),
+                          ok: false,
+                          message: "resource read failed",
+                        }),
+                      ),
+                    )
+                    send(ws, out)
+                    return
+                  }
+                  case "mcp-tool-call": {
+                    // MCP Apps relay (Phase 7): a rendered app called
+                    // tools/call. Same-app enforcement lives in the provider;
+                    // the result is app data and is never logged here.
+                    if (mcpAppHost === null) return
+                    const host = mcpAppHost
+                    const out = yield* Effect.promise(() =>
+                      host.handleToolCall(frame),
+                    ).pipe(
+                      Effect.catchAllCause(() =>
+                        Effect.succeed<ServerFrame>({
+                          type: "mcp-tool-result",
+                          requestId: String(
+                            (frame as { requestId?: unknown }).requestId ?? "",
+                          ),
+                          ok: false,
+                          message: "tool call failed",
+                        }),
+                      ),
+                    )
+                    send(ws, out)
                     return
                   }
                   case "pty-input": {
@@ -1116,6 +2497,232 @@ export const startUIWebSocketServer = (
                       ok: result.ok,
                       message: result.message,
                     })
+                    return
+                  }
+                  case "vault-put": {
+                    // Luna Vault V1: register/update a credential. The frame
+                    // carries a sensitive `value` — we log ONLY the type and
+                    // requestId, never the payload. The handle receives the
+                    // full frame but its returned `message` MUST NOT echo the
+                    // value (enforced by handle contract, not this package).
+                    if (vaultService === null) return
+                    const vsvc = vaultService
+                    const putReqId = String(
+                      (frame as { requestId?: unknown }).requestId ?? "",
+                    )
+                    if (
+                      typeof frame.name !== "string" ||
+                      frame.name.trim().length === 0 ||
+                      typeof frame.kind !== "string" ||
+                      (frame.kind !== "env-secret" && frame.kind !== "op-token") ||
+                      typeof frame.value !== "string" ||
+                      frame.value.length === 0 ||
+                      // B4: optional fields present-but-non-string → malformed
+                      (frame.varName !== undefined && typeof frame.varName !== "string") ||
+                      (frame.label !== undefined && typeof frame.label !== "string") ||
+                      (frame.description !== undefined && typeof frame.description !== "string")
+                    ) {
+                      send(ws, {
+                        type: "vault-status",
+                        requestId: putReqId,
+                        ok: false,
+                        message: "malformed vault-put frame",
+                      })
+                      return
+                    }
+                    yield* Effect.promise(async () => {
+                      const res = await vsvc.put(frame)
+                      send(ws, {
+                        type: "vault-status",
+                        requestId: putReqId,
+                        ok: res.ok,
+                        message: res.message,
+                      })
+                      return res.ok
+                    }).pipe(
+                      Effect.catchAllCause((cause) =>
+                        Effect.sync(() => {
+                          send(ws, {
+                            type: "vault-status",
+                            requestId: putReqId,
+                            ok: false,
+                            message: failureMessage(cause),
+                          })
+                          return false
+                        }),
+                      ),
+                      Effect.flatMap((ok) =>
+                        ok
+                          ? Effect.gen(function* () {
+                              const sockets = yield* Ref.get(activeSockets)
+                              yield* pushVaultList(vsvc, sockets)
+                            })
+                          : Effect.void,
+                      ),
+                    )
+                    return
+                  }
+                  case "vault-delete": {
+                    // Remove a registry row (and optionally the underlying
+                    // credential). No sensitive values in this frame.
+                    if (vaultService === null) return
+                    const vsvc = vaultService
+                    const delReqId = String(
+                      (frame as { requestId?: unknown }).requestId ?? "",
+                    )
+                    if (
+                      typeof frame.id !== "string" ||
+                      frame.id.trim().length === 0
+                    ) {
+                      send(ws, {
+                        type: "vault-status",
+                        requestId: delReqId,
+                        ok: false,
+                        message: "malformed vault-delete frame",
+                      })
+                      return
+                    }
+                    yield* Effect.promise(async () => {
+                      const res = await vsvc.remove(frame)
+                      send(ws, {
+                        type: "vault-status",
+                        requestId: delReqId,
+                        ok: res.ok,
+                        message: res.message,
+                      })
+                      return res.ok
+                    }).pipe(
+                      Effect.catchAllCause((cause) =>
+                        Effect.sync(() => {
+                          send(ws, {
+                            type: "vault-status",
+                            requestId: delReqId,
+                            ok: false,
+                            message: failureMessage(cause),
+                          })
+                          return false
+                        }),
+                      ),
+                      Effect.flatMap((ok) =>
+                        ok
+                          ? Effect.gen(function* () {
+                              const sockets = yield* Ref.get(activeSockets)
+                              yield* pushVaultList(vsvc, sockets)
+                            })
+                          : Effect.void,
+                      ),
+                    )
+                    return
+                  }
+                  case "vault-sync-config": {
+                    // Configure 1Password two-way sync (slice V3). No secret
+                    // values in this frame (tokens live in their own storage).
+                    if (vaultService === null) return
+                    const vsvc = vaultService
+                    const syncReqId = String(
+                      (frame as { requestId?: unknown }).requestId ?? "",
+                    )
+                    if (typeof frame.enabled !== "boolean") {
+                      send(ws, {
+                        type: "vault-status",
+                        requestId: syncReqId,
+                        ok: false,
+                        message: "malformed vault-sync-config frame",
+                      })
+                      return
+                    }
+                    yield* Effect.promise(async () => {
+                      const res = await vsvc.setSyncConfig(frame)
+                      send(ws, {
+                        type: "vault-status",
+                        requestId: syncReqId,
+                        ok: res.ok,
+                        message: res.message,
+                      })
+                      return res.ok
+                    }).pipe(
+                      Effect.catchAllCause((cause) =>
+                        Effect.sync(() => {
+                          send(ws, {
+                            type: "vault-status",
+                            requestId: syncReqId,
+                            ok: false,
+                            message: failureMessage(cause),
+                          })
+                          return false
+                        }),
+                      ),
+                      Effect.flatMap((ok) =>
+                        ok
+                          ? Effect.gen(function* () {
+                              const sockets = yield* Ref.get(activeSockets)
+                              yield* pushVaultList(vsvc, sockets)
+                            })
+                          : Effect.void,
+                      ),
+                    )
+                    return
+                  }
+                  case "vault-import": {
+                    // Bulk Apple Passwords CSV import (slice V3). The frame
+                    // carries sensitive `password` values in each item — log
+                    // ONLY type + requestId. Server enforces ≤20 items/frame.
+                    if (vaultService === null) return
+                    const vsvc = vaultService
+                    const importReqId = String(
+                      (frame as { requestId?: unknown }).requestId ?? "",
+                    )
+                    // Read items ONCE via the unknown accessor; Array.isArray
+                    // narrows without the ReadonlyArray→mutable cast (TS2352).
+                    const importItems = (frame as { readonly items?: unknown }).items
+                    if (!Array.isArray(importItems)) {
+                      send(ws, {
+                        type: "vault-status",
+                        requestId: importReqId,
+                        ok: false,
+                        message: "malformed vault-import frame",
+                      })
+                      return
+                    }
+                    if (importItems.length > 20) {
+                      send(ws, {
+                        type: "vault-status",
+                        requestId: importReqId,
+                        ok: false,
+                        message: "vault-import: too many items (max 20 per frame)",
+                      })
+                      return
+                    }
+                    yield* Effect.promise(async () => {
+                      const res = await vsvc.importItems(frame)
+                      send(ws, {
+                        type: "vault-status",
+                        requestId: importReqId,
+                        ok: res.ok,
+                        message: res.message,
+                      })
+                      return res.ok
+                    }).pipe(
+                      Effect.catchAllCause((cause) =>
+                        Effect.sync(() => {
+                          send(ws, {
+                            type: "vault-status",
+                            requestId: importReqId,
+                            ok: false,
+                            message: failureMessage(cause),
+                          })
+                          return false
+                        }),
+                      ),
+                      Effect.flatMap((ok) =>
+                        ok
+                          ? Effect.gen(function* () {
+                              const sockets = yield* Ref.get(activeSockets)
+                              yield* pushVaultList(vsvc, sockets)
+                            })
+                          : Effect.void,
+                      ),
+                    )
                     return
                   }
                   default: {

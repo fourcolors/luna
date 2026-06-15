@@ -20,7 +20,7 @@
  *   - useRef<TransportHandle> → composable owns the live handle internally
  *   - useEffect cleanup on unmount is implicit via composable.onCleanup
  */
-import { type Component, For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js"
+import { type Component, For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import {
   filterEvents,
   type ClientFrame,
@@ -31,13 +31,34 @@ import {
   ArtifactPanel,
   ChatPanel,
   ConnectionSummary,
+  ConnectorsPanel,
   ObsPanel,
   Sidebar,
+  SkillsPanel,
+  VaultPanel,
+  WorkflowGallery,
+  buildNewThreadFrame,
+  clampEffortToModel,
   createTransport,
   createUiStore,
+  type EffortLevel,
   type SlashCommand,
+  type VaultStatusAck,
 } from "@luna/ui-shared-solid"
 import { SetupTerminal, b64ToBytes } from "./SetupTerminal"
+import {
+  getAppearance,
+  setAppearance,
+  onAppearanceChange,
+  PALETTES,
+  PALETTE_SWATCHES,
+  FONTS,
+  FONT_SIZES,
+  FONT_LABELS,
+  FONT_SIZE_LABELS,
+} from "./appearance.js"
+import { createBoard, EDGE_MARGIN, SNAP_GAP, TOP_MIN } from "./board/createBoard.js"
+import { Board, FavoritesGrid, Shelf, type BoardPanelDef } from "./board/Board.jsx"
 
 const CONTROL_URL = "http://127.0.0.1:4754/trpc"
 
@@ -71,11 +92,12 @@ async function fetchServerStatus(token: string): Promise<{ uptime: number; start
 
 const STORAGE_KEY = "ui-ws.config"
 const DEFAULT_URL = "ws://127.0.0.1:4753/ui"
-const DEFAULT_MODEL = "claude-sonnet-4-6"
+const DEFAULT_MODEL = "claude-opus-4-8"
 
 const MODEL_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
-  { value: "claude-opus-4-7", label: "Opus 4.7 — most capable" },
-  { value: "claude-sonnet-4-6", label: "Sonnet 4.6 — balanced (default)" },
+  { value: "claude-opus-4-8", label: "Opus 4.8 — most capable (default)" },
+  { value: "claude-opus-4-7", label: "Opus 4.7 — prior gen" },
+  { value: "claude-sonnet-4-6", label: "Sonnet 4.6 — balanced" },
   { value: "claude-haiku-4-5", label: "Haiku 4.5 — fastest" },
   { value: "claude-opus-4-6", label: "Opus 4.6 — prior gen" },
   { value: "claude-sonnet-4-5", label: "Sonnet 4.5 — prior gen" },
@@ -85,11 +107,26 @@ interface PersistedConfig {
   url: string
   token: string
   model: string
+  /**
+   * Persisted effort level for new threads. Optional — absent on older
+   * configs. `| undefined` so a model switch can clear a now-invalid value
+   * in one assignment (review F11); JSON.stringify drops undefined keys, so
+   * the persisted localStorage form never carries an explicit null/undefined.
+   */
+  effort?: EffortLevel | undefined
   /** When true, plain Enter sends; Shift+Enter newline. Default false. */
   enterToSend: boolean
   /** Last-selected account id. null = use default broker rotation. */
   selectedAccountId: string | null
 }
+
+const VALID_EFFORTS: ReadonlySet<string> = new Set([
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+])
 
 const loadConfig = (): PersistedConfig => {
   const envToken =
@@ -98,11 +135,16 @@ const loadConfig = (): PersistedConfig => {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<PersistedConfig>
+      const parsedEffort =
+        typeof parsed.effort === "string" && VALID_EFFORTS.has(parsed.effort)
+          ? (parsed.effort as EffortLevel)
+          : undefined
       return {
         url: parsed.url ?? DEFAULT_URL,
         token:
           parsed.token && parsed.token.length >= 16 ? parsed.token : envToken,
         model: parsed.model ?? DEFAULT_MODEL,
+        ...(parsedEffort !== undefined ? { effort: parsedEffort } : {}),
         enterToSend: parsed.enterToSend ?? false,
         selectedAccountId: parsed.selectedAccountId ?? null,
       }
@@ -127,16 +169,16 @@ const saveConfig = (cfg: PersistedConfig): void => {
   }
 }
 
-type Pane = "chat" | "obs"
-
 export const App: Component = () => {
   const [cfg, setCfg] = createSignal<PersistedConfig>(loadConfig())
-  const [pane, setPane] = createSignal<Pane>("chat")
   const [selectedKinds, setSelectedKinds] = createSignal<ReadonlySet<string>>(
     new Set(),
   )
-  const [settingsOpen, setSettingsOpen] = createSignal(false)
   const [restarting, setRestarting] = createSignal(false)
+  // vault-status acks: not stored in the reducer (vault-list broadcast that
+  // follows a successful mutation already updates the list). We keep the
+  // last ack as a signal so VaultPanel can correlate its pending requestId.
+  const [vaultLastStatus, setVaultLastStatus] = createSignal<VaultStatusAck | null>(null)
 
   const store = createUiStore()
 
@@ -165,6 +207,14 @@ export const App: Component = () => {
         else ptyWriteQueue.push(bytes)
         return
       }
+      // vault-status: intercepted BEFORE the reducer so VaultPanel can
+      // correlate by requestId. The reducer is a no-op for this frame type
+      // (the vault-list broadcast that follows a successful mutation is the
+      // authoritative list update). We still dispatch it so the exhaustive
+      // default arm in the reducer stays correct.
+      if (frame.type === "vault-status") {
+        setVaultLastStatus({ requestId: frame.requestId, ok: frame.ok, message: frame.message })
+      }
       store.dispatch(frame)
       // Sidebar freshness: any frame that mutates a thread's last-message
       // metadata should refresh the list. Server orders by lastMessageAt,
@@ -178,11 +228,10 @@ export const App: Component = () => {
       }
     },
     onOpen: (handle) => {
-      // On open, request the thread list immediately so the sidebar
-      // populates without a manual click. Also collapse settings if it
-      // was left open from the disconnected state.
+      // On open, request the thread list immediately so the threads panel
+      // populates without a manual click. (The settings panel stays where
+      // the user left it — on the board, closing it is a ✕ away.)
       handle.send({ type: "list-threads" })
-      setSettingsOpen(false)
     },
   })
 
@@ -235,14 +284,22 @@ export const App: Component = () => {
     send({ type: "subscribe", threadId: id })
   }
 
+  /**
+   * Open a fresh thread on the persisted model + effort (review F5: effort
+   * was previously dropped here, so new threads silently reverted to the
+   * server default). buildNewThreadFrame includes `effort` only when the
+   * server-advertised matrix lists it for the chosen model — never computed
+   * client-side, and safely omitted against old servers (availableModels null).
+   */
   const newThread = (): void => {
-    send({
-      type: "new-thread",
-      model: cfg().model,
-      ...(store.state.selectedAccountId !== null
-        ? { accountId: store.state.selectedAccountId }
-        : {}),
-    })
+    send(
+      buildNewThreadFrame({
+        model: cfg().model,
+        effort: cfg().effort,
+        accountId: store.state.selectedAccountId,
+        availableModels: store.state.availableModels,
+      }),
+    )
   }
 
   // Client-identity stamp so Luna can see which surface the operator is
@@ -285,19 +342,57 @@ export const App: Component = () => {
       case "restart": {
         // Best-effort interrupt — safe to fire even if no turn is in-flight.
         send({ type: "interrupt", threadId })
-        // Open a new thread on the same model. The `thread-created` server
-        // frame triggers auto-subscribe; the reducer selects the new thread
-        // once `thread-created` arrives (handled in onFrame above).
-        send({
-          type: "new-thread",
-          model: cfg().model,
-          ...(store.state.selectedAccountId !== null
-            ? { accountId: store.state.selectedAccountId }
-            : {}),
-        })
+        // Open a new thread on the same model + effort (review F5 — this
+        // site must match newThread(), clamped to the server matrix). The
+        // `thread-created` server frame triggers auto-subscribe; the reducer
+        // selects the new thread once `thread-created` arrives (handled in
+        // onFrame above).
+        send(
+          buildNewThreadFrame({
+            model: cfg().model,
+            effort: cfg().effort,
+            accountId: store.state.selectedAccountId,
+            availableModels: store.state.availableModels,
+          }),
+        )
         break
       }
     }
+  }
+
+  /**
+   * Handle a model change from the ChatPanel composer cluster.
+   *
+   * Persists to cfg() so the setting survives navigation, and sends
+   * `set-thread-config` to the server when a thread is active.
+   * The `thread-config` ack is a no-op in the shared reducer today —
+   * the optimistic UI update (cfg persisted immediately) is sufficient.
+   *
+   * Review F11: a model switch can invalidate the persisted effort (e.g.
+   * effort=max → a model whose server-computed `efforts` is empty). Clamp
+   * against the server matrix and clear the stale value — undefined is
+   * dropped by JSON.stringify on save, so the persisted config forgets it
+   * (mirrors moon's `_selectModel` localStorage.removeItem('luna_effort')).
+   */
+  const handleModelChange = (threadId: string, model: string): void => {
+    setCfg({
+      ...cfg(),
+      model,
+      effort: clampEffortToModel(store.state.availableModels, model, cfg().effort),
+    })
+    send({ type: "set-thread-config", threadId, model })
+  }
+
+  /**
+   * Handle an effort change from the ChatPanel composer cluster.
+   *
+   * Same optimistic pattern as handleModelChange — persist immediately,
+   * fire set-thread-config for server-side application to the live session.
+   * The `thread-config` ack is a no-op in the shared reducer today.
+   */
+  const handleEffortChange = (threadId: string, effort: EffortLevel): void => {
+    setCfg({ ...cfg(), effort })
+    send({ type: "set-thread-config", threadId, effort })
   }
 
   const isConnected = createMemo(() => transport.status().kind === "open")
@@ -310,17 +405,55 @@ export const App: Component = () => {
   const setupMode = createMemo(
     () => isConnected() && store.state.capabilities.setup,
   )
+  const vaultEnabled = createMemo(
+    () => store.state.capabilities.vault === true,
+  )
   const selectedThread = createMemo(() =>
     store.state.selectedThreadId !== null
       ? (store.state.threads.get(store.state.selectedThreadId) ?? null)
       : null,
   )
 
-  // Show settings panel automatically when not yet connected (so the
-  // first-run experience surfaces URL/Token), or when explicitly toggled.
-  const showSettings = createMemo(
-    () => settingsOpen() || (!isConnected() && !isConnecting()),
-  )
+  /* ── Luna Studio board — floating panels on one canvas ─────────────────
+     Engine ported from the design handoff's luna-app.jsx. Default layout:
+     threads + settings stacked left, chat filling the rest; events /
+     artifacts / workflows / favorites start closed (shelf chips). */
+  const board = createBoard({
+    defaults: (vw, vh) => {
+      const leftW = 280
+      const rightW = Math.min(380, Math.max(300, vw * 0.26))
+      const chatX = EDGE_MARGIN + leftW + SNAP_GAP
+      const chatW = Math.max(420, vw - chatX - EDGE_MARGIN)
+      const colH = vh - TOP_MIN - EDGE_MARGIN
+      const half = Math.max(160, (colH - SNAP_GAP) / 2)
+      return {
+        threads: { x: EDGE_MARGIN, y: TOP_MIN, w: leftW, h: half, closed: false, min: false },
+        settings: { x: EDGE_MARGIN, y: TOP_MIN + half + SNAP_GAP, w: leftW, h: colH - half - SNAP_GAP, closed: false, min: false },
+        chat: { x: chatX, y: TOP_MIN, w: chatW, h: colH, closed: false, min: false },
+        events: { x: chatX + 40, y: TOP_MIN + 40, w: 620, h: 420, closed: true, min: false },
+        artifacts: { x: vw - rightW - EDGE_MARGIN, y: TOP_MIN, w: rightW, h: half, closed: true, min: false },
+        workflows: { x: vw - rightW - EDGE_MARGIN, y: TOP_MIN + half + SNAP_GAP, w: rightW, h: colH - half - SNAP_GAP, closed: true, min: false },
+        favorites: { x: EDGE_MARGIN + 80, y: TOP_MIN + 70, w: 290, h: 300, closed: true, min: false },
+      }
+    },
+  })
+
+  // First-run experience: surface the connect form whenever we're not
+  // connected (the old settings auto-open, board-shaped).
+  createEffect(() => {
+    if (!isConnected() && !isConnecting()) board.summon("settings")
+  })
+
+  // The old grid auto-opened the artifacts column when a thread had
+  // artifacts. Board-shaped: summon the panel when the artifact count
+  // INCREASES (a new artifact arrived) — closing it is respected until
+  // the next one lands.
+  let prevArtifactCount = 0
+  createEffect(() => {
+    const n = selectedThread()?.artifacts.length ?? 0
+    if (n > prevArtifactCount) board.summon("artifacts")
+    prevArtifactCount = n
+  })
 
   /**
    * The active model list for the settings dropdown. When the server sends an
@@ -351,43 +484,16 @@ export const App: Component = () => {
     () => !activeModelOptions().some((o) => o.value === cfg().model),
   )
 
-  return (
-    <div class="app">
-      <header class="topbar">
-        <div class="row">
-          <strong class="brand">⚡ Agent Chat</strong>
-          <ConnectionSummary
-            status={transport.status()}
-            url={cfg().url}
-            model={cfg().model}
-            chatCap={store.state.capabilities.chat}
-          />
-          <span style={{ flex: 1 }} />
-          <Show when={isConnected()}>
-            <button
-              class={`chip ${settingsOpen() ? "active" : ""}`}
-              onClick={() => setSettingsOpen((v) => !v)}
-              title="Connection settings"
-            >
-              ⚙ Settings
-            </button>
-          </Show>
-          <Show when={!setupMode()}>
-            <button
-              class={`chip ${pane() === "chat" ? "active" : ""}`}
-              onClick={() => setPane("chat")}
-            >
-              Chat
-            </button>
-            <button
-              class={`chip ${pane() === "obs" ? "active" : ""}`}
-              onClick={() => setPane("obs")}
-            >
-              Events
-            </button>
-          </Show>
-        </div>
-        <Show when={showSettings()}>
+  const [appearance, setAppearanceState] = createSignal(getAppearance())
+  onCleanup(onAppearanceChange((a) => setAppearanceState(a)))
+
+  /**
+   * Body of the floating settings panel — the former topbar settings rows
+   * (connection, appearance, skills, connectors, vault), unchanged, in a
+   * scrollable column.
+   */
+  const SettingsBody = () => (
+    <div class="settings-scroll">
           <div class="row settings-row">
             <label>
               URL{" "}
@@ -499,7 +605,314 @@ export const App: Component = () => {
               {restarting() ? "⟳ Restarting…" : "↺ Restart Server"}
             </button>
           </div>
-        </Show>
+          {/* Appearance controls — palette, theme, chrome, grain. Purely
+              client-side: NOT gated on isConnected. The settings panel
+              auto-shows when disconnected, so appearance must work then too. */}
+          <div class="row settings-row">
+            <label>Appearance</label>
+            <div class="swatch-row">
+              <For each={PALETTES}>
+                {(p) => (
+                  <button
+                    class={`swatch${appearance().palette === p ? " active" : ""}`}
+                    title={p}
+                    aria-label={p}
+                    onClick={() => { setAppearance("palette", p); setAppearanceState(getAppearance()) }}
+                  >
+                    <For each={PALETTE_SWATCHES[p]}>
+                      {(hex) => <span style={{ background: hex }} />}
+                    </For>
+                  </button>
+                )}
+              </For>
+            </div>
+            <For each={["light", "dark"] as const}>
+              {(t) => (
+                <button
+                  class={`chip${appearance().theme === t ? " active" : ""}`}
+                  onClick={() => { setAppearance("theme", t); setAppearanceState(getAppearance()) }}
+                >
+                  {t}
+                </button>
+              )}
+            </For>
+            <For each={[{ label: "soft wash", value: "wash" }, { label: "ink outline", value: "ink" }] as const}>
+              {(c) => (
+                <button
+                  class={`chip${appearance().chrome === c.value ? " active" : ""}`}
+                  onClick={() => { setAppearance("chrome", c.value); setAppearanceState(getAppearance()) }}
+                >
+                  {c.label}
+                </button>
+              )}
+            </For>
+            <label
+              class="toggle"
+              title="Add a subtle paper texture to the canvas"
+            >
+              <input
+                type="checkbox"
+                checked={appearance().grain}
+                onChange={(e) => { setAppearance("grain", String(e.currentTarget.checked)); setAppearanceState(getAppearance()) }}
+              />
+              <span>Paper grain</span>
+            </label>
+            {/* Chat typeface + size — re-skins the chat reading/writing
+                surfaces only (bubbles, markdown, composer) via --font-chat /
+                --font-scale; UI chrome is untouched. */}
+            <span class="muted small">Font</span>
+            <For each={FONTS}>
+              {(f) => (
+                <button
+                  class={`chip${appearance().font === f ? " active" : ""}`}
+                  style={{ "font-family": `var(--font-${f === "sans" ? "body" : f})` }}
+                  title={`Chat font: ${FONT_LABELS[f]}`}
+                  onClick={() => { setAppearance("font", f); setAppearanceState(getAppearance()) }}
+                >
+                  {FONT_LABELS[f]}
+                </button>
+              )}
+            </For>
+            <span class="muted small">Text size</span>
+            <For each={FONT_SIZES}>
+              {(s) => (
+                <button
+                  class={`chip${appearance().fontSize === s ? " active" : ""}`}
+                  title={`Chat text size: ${FONT_SIZE_LABELS[s]}`}
+                  onClick={() => { setAppearance("fontSize", s); setAppearanceState(getAppearance()) }}
+                >
+                  {FONT_SIZE_LABELS[s]}
+                </button>
+              )}
+            </For>
+          </div>
+          {/* PRD Part B §12 — gated on the additive hello capability: an
+              older server never advertises `skills`, so the section simply
+              doesn't exist against it. Gate on the capability ONLY (not
+              isConnected): a transient disconnect must dim the toggles via
+              `disabled`, not unmount the panel and discard the user's
+              search/filter state (review finding). */}
+          <Show when={store.state.capabilities.skills === true}>
+            <div class="row settings-row">
+              <SkillsPanel
+                skills={store.state.skills}
+                lastError={store.state.skillError}
+                onToggle={(id, enabled) => send({ type: "skill-toggle", id, enabled })}
+                disabled={!isConnected()}
+              />
+            </div>
+          </Show>
+          {/* PRD Part A §17 — gated on the additive connectors capability.
+              The web client does the view + api-key connect + disconnect;
+              the OAuth browser hop lives in the Moon app (a page can't bind
+              a loopback). */}
+          <Show when={store.state.capabilities.connectors === true}>
+            <div class="row settings-row">
+              <ConnectorsPanel
+                catalog={store.state.connectorCatalog}
+                instances={store.state.connectorInstances}
+                lastError={store.state.connectorError}
+                disabled={!isConnected()}
+                onConnectApiKey={(definitionId, secretRef, capabilityIds, label) =>
+                  send({
+                    type: "connector-connect",
+                    requestId: `conn_${Date.now()}`,
+                    definitionId,
+                    label: label ?? definitionId,
+                    secretRef,
+                    capabilityIds,
+                  })
+                }
+                onDisconnect={(instanceId) =>
+                  send({ type: "connector-disconnect", instanceId })
+                }
+                onSetClient={(definitionId, clientId, clientSecret) =>
+                  send({ type: "connector-set-client", requestId: `setclient_${Date.now()}`, definitionId, clientId, ...(clientSecret ? { clientSecret } : {}) })
+                }
+              />
+            </div>
+          </Show>
+          {/* Luna Vault (V1) — gated on the additive hello capability.
+              An older server never advertises `vault`, so the section simply
+              doesn't appear. Gate on the capability ONLY (not isConnected):
+              a transient disconnect dims actions via `disabled` without
+              unmounting the panel and losing the user's in-progress form. */}
+          <Show when={vaultEnabled()}>
+            <div class="row settings-row">
+              <VaultPanel
+                items={store.state.vaultItems}
+                sync={store.state.vaultSync}
+                disabled={!isConnected()}
+                lastStatus={vaultLastStatus()}
+                onPut={(params) => send({ type: "vault-put", ...params })}
+                onDelete={(params) => send({ type: "vault-delete", ...params })}
+                onSyncConfig={(params) => send({ type: "vault-sync-config", ...params })}
+                onImport={(params) => send({ type: "vault-import", ...params })}
+              />
+            </div>
+          </Show>
+    </div>
+  )
+
+  /* Panel definitions for the board. STABLE objects (module-lifetime) — the
+     reactive bits live inside render closures and `when` gates, so panel
+     bodies never remount on state changes (see BoardPanelDef.when). */
+  const panelDefs: BoardPanelDef[] = [
+    {
+      id: "chat",
+      title: "luna",
+      tint: 0,
+      render: () => (
+        <ChatPanel
+          thread={selectedThread()}
+          onSend={sendUserMessage}
+          onInterrupt={interrupt}
+          onCommand={handleCommand}
+          disabled={!chatEnabled()}
+          enterToSend={cfg().enterToSend}
+          availableModels={store.state.availableModels}
+          effortSelection={store.state.capabilities.effortSelection}
+          model={cfg().model}
+          effort={cfg().effort}
+          onModelChange={handleModelChange}
+          onEffortChange={handleEffortChange}
+        />
+      ),
+    },
+    {
+      id: "threads",
+      title: "threads",
+      tint: 3,
+      render: () => (
+        <Sidebar
+          threads={store.state.threadList}
+          threadViews={store.state.threads}
+          selectedId={store.state.selectedThreadId}
+          onSelect={selectThread}
+          onNew={chatEnabled() ? newThread : null}
+        />
+      ),
+    },
+    {
+      id: "settings",
+      title: "settings",
+      tint: 2,
+      render: () => <SettingsBody />,
+    },
+    {
+      id: "events",
+      title: "events",
+      tint: 4,
+      render: () => (
+        <ObsPanel
+          allKinds={allKinds()}
+          selectedKinds={selectedKinds()}
+          toggleKind={toggleKind}
+          clearKinds={() => setSelectedKinds(new Set())}
+          filtered={filtered()}
+          totalEvents={store.state.events.length}
+          lastDrop={store.state.lastDrop}
+          droppedTotal={store.state.droppedTotal}
+          lastPingAt={store.state.lastPingAt}
+        />
+      ),
+    },
+    {
+      id: "artifacts",
+      title: "artifacts",
+      tint: 1,
+      when: () =>
+        store.state.capabilities.artifacts === true ||
+        (selectedThread()?.artifacts.length ?? 0) > 0,
+      render: () => (
+        <ArtifactPanel
+          artifacts={selectedThread()?.artifacts ?? []}
+          pinned={store.state.pinnedArtifacts}
+          artifactsCapable={store.state.capabilities.artifacts === true}
+          onPin={(a) =>
+            send({
+              type: "artifact-pin",
+              id: a.id,
+              title: a.title,
+              content: a.content,
+              lang: a.lang,
+              origin: a.path ?? selectedThread()?.summary.id ?? null,
+            })
+          }
+          onUnpin={(id) => send({ type: "artifact-unpin", id })}
+        />
+      ),
+    },
+    {
+      // PRD Part C / W3 — gated on the additive hello capability; an older
+      // server never advertises `workflows` so the panel simply isn't on
+      // the board.
+      id: "workflows",
+      title: "workflows",
+      tint: 4,
+      when: () => store.state.capabilities.workflows === true,
+      render: () => (
+        <WorkflowGallery
+          workflows={store.state.workflows}
+          runs={store.state.workflowRuns}
+          onSelectRuns={(jobId) => send({ type: "workflow-runs-request", jobId })}
+          onRefresh={() => send({ type: "workflow-refresh" })}
+        />
+      ),
+    },
+    {
+      id: "favorites",
+      title: "favorites",
+      tint: 2,
+      noStar: true,
+      render: () => <FavoritesGrid board={board} defs={panelDefs} />,
+    },
+  ]
+
+  const dateStr = new Date().toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  })
+
+  return (
+    <div class="app">
+      {/* Watercolor wobble filter — used by .wash-dot and painterly accents. */}
+      <svg width="0" height="0" style={{ position: "absolute" }} aria-hidden="true">
+        <defs>
+          <filter id="wc-wobble">
+            <feTurbulence type="fractalNoise" baseFrequency="0.015" numOctaves="3" result="n" seed="7" />
+            <feDisplacementMap in="SourceGraphic" in2="n" scale="6" xChannelSelector="R" yChannelSelector="G" />
+          </filter>
+        </defs>
+      </svg>
+      <div class="bg-blooms" aria-hidden="true"><div class="bloom b1" /><div class="bloom b2" /><div class="bloom b3" /></div>
+      <header class="topbar">
+        <div class="row">
+          <span class="wordmark"><span class="name">Luna</span><span class="sub">studio</span></span>
+          <ConnectionSummary
+            status={transport.status()}
+            url={cfg().url}
+            model={cfg().model}
+            chatCap={store.state.capabilities.chat}
+          />
+          <span style={{ flex: 1 }} />
+          <Show when={!setupMode()}>
+            <Shelf board={board} defs={panelDefs} />
+            <div class="mode-toggle">
+              <button classList={{ on: board.mode() === "board" }} onClick={() => board.setMode("board")}>
+                board
+              </button>
+              <button classList={{ on: board.mode() === "stickies" }} onClick={() => board.setMode("stickies")}>
+                stickies
+              </button>
+            </div>
+            <span class="muted small">{dateStr}</span>
+            <button class="chip" onClick={() => board.summon("settings")} title="Settings">
+              ⚙
+            </button>
+          </Show>
+        </div>
         <Show when={store.state.closeReason}>
           {(reason) => (
             <div class="banner closed">
@@ -543,58 +956,7 @@ export const App: Component = () => {
         </Show>
       </header>
 
-      <Show
-        when={setupMode()}
-        fallback={
-          <Show
-            when={pane() === "chat"}
-            fallback={
-              <ObsPanel
-                allKinds={allKinds()}
-                selectedKinds={selectedKinds()}
-                toggleKind={toggleKind}
-                clearKinds={() => setSelectedKinds(new Set())}
-                filtered={filtered()}
-                totalEvents={store.state.events.length}
-                lastDrop={store.state.lastDrop}
-                droppedTotal={store.state.droppedTotal}
-                lastPingAt={store.state.lastPingAt}
-              />
-            }
-          >
-            <div
-              class={`chat-layout${
-                selectedThread() && selectedThread()!.artifacts.length > 0
-                  ? " with-artifacts"
-                  : ""
-              }`}
-            >
-              <Sidebar
-                threads={store.state.threadList}
-                threadViews={store.state.threads}
-                selectedId={store.state.selectedThreadId}
-                onSelect={selectThread}
-                onNew={chatEnabled() ? newThread : null}
-              />
-              <ChatPanel
-                thread={selectedThread()}
-                onSend={sendUserMessage}
-                onInterrupt={interrupt}
-                onCommand={handleCommand}
-                disabled={!chatEnabled()}
-                enterToSend={cfg().enterToSend}
-              />
-              <Show
-                when={
-                  selectedThread() && selectedThread()!.artifacts.length > 0
-                }
-              >
-                <ArtifactPanel artifacts={selectedThread()!.artifacts} />
-              </Show>
-            </div>
-          </Show>
-        }
-      >
+      <Show when={setupMode()} fallback={<Board board={board} defs={panelDefs} />}>
         <SetupTerminal
           send={send}
           registerWrite={(fn) => {

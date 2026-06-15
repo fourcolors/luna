@@ -19,6 +19,7 @@
  *      handle dropped from Ref.
  */
 import {
+  Duration,
   Effect,
   Layer,
   Option,
@@ -60,12 +61,70 @@ import {
   sdkMessageId,
   sdkMessageParentId,
   sdkMessageSessionId,
+  sdkAgentSpawnIds,
+  sdkToolResultIds,
 } from "./message-kind.js"
 import { mergeOptionsLogged } from "./merge-options.js"
 import { mergeEnvOverlayLogged } from "./merge-env.js"
 import { loadAgents } from "./agent-loader.js"
 
 const DEFAULT_IDLE_TIMEOUT_MS = 120_000
+
+/**
+ * Turn-aware inactivity watchdog (chat threads). When a chat turn streams no
+ * SDK message for this long, the subprocess is presumed wedged (the live bug:
+ * a usage-limited subscription account makes the `claude` CLI hang internally
+ * retrying the throttle instead of returning a 429). 300s, not tighter: while
+ * an in-process MCP tool executes (e.g. a multi-minute local-shell command)
+ * the subprocess legitimately streams NOTHING between the tool_use frame and
+ * its tool_result, so the window must clear real tool latencies — a wedge is
+ * still converted from "hangs forever" into a bounded trip + failover.
+ * (Follow-up refinement: suspend the watchdog between tool_use and
+ * tool_result — in-process tool execution can't wedge on the model API.)
+ * Env override: `LUNA_TURN_INACTIVITY_TIMEOUT_MS`; `0` disables.
+ */
+const DEFAULT_TURN_INACTIVITY_TIMEOUT_MS = 300_000
+
+/**
+ * Inactivity window used INSTEAD of the turn window while ≥1 Task/Agent
+ * subagent call is outstanding. While the parent waits on a subagent, the
+ * stream legitimately goes silent for the subagent's whole model call
+ * (live-probed: nothing flows between `task_started` and the settling
+ * tool_result unless the subagent itself uses tools) — a long-thinking
+ * subagent would trip the 300s window and cost a 15-min account cooldown.
+ * Still bounded: a genuinely wedged subprocess trips after this window.
+ * Never shorter than the turn window. Env override:
+ * `LUNA_TASK_INACTIVITY_TIMEOUT_MS`.
+ */
+const DEFAULT_TASK_INACTIVITY_TIMEOUT_MS = 1_800_000
+
+/**
+ * Cooldown parked on the acquired account when the inactivity watchdog trips,
+ * so the next message fails over to a healthy account instead of re-wedging on
+ * the same usage-limited one. 15 min ≫ a transient 429's retry-after — a hang
+ * is not transient (observed 200-700s, SIGKILL-only). Env override:
+ * `LUNA_HANG_COOLDOWN_MS`.
+ */
+const DEFAULT_HANG_COOLDOWN_MS = 900_000
+
+/**
+ * Parse a non-negative-ms env var (watchdog window: `0` is a meaningful
+ * "disable", so an explicit 0 is honored; absent/non-numeric ⇒ fallback).
+ */
+const readNonNegativeMsEnv = (name: string, fallback: number): number => {
+  const raw = process.env[name]?.trim()
+  if (!raw) return fallback
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : fallback
+}
+
+/** Parse a strictly-positive-ms env var (cooldown; 0/negative ⇒ fallback). */
+const readPositiveMsEnv = (name: string, fallback: number): number => {
+  const raw = process.env[name]?.trim()
+  if (!raw) return fallback
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : fallback
+}
 
 export interface QueryRequest {
   readonly sessionId: string
@@ -164,6 +223,21 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
       // Provider env (gateway URLs + LUNA_MODEL_PROVIDER_MAP) is immutable for
       // the process — parse once at layer build instead of per turn.
       const providerEnv = readProviderEnv()
+
+      // Turn-inactivity watchdog process defaults (immutable for the process —
+      // read once here; a per-query sessionOptions value overrides them).
+      const envTurnInactivityMs = readNonNegativeMsEnv(
+        "LUNA_TURN_INACTIVITY_TIMEOUT_MS",
+        DEFAULT_TURN_INACTIVITY_TIMEOUT_MS,
+      )
+      const envHangCooldownMs = readPositiveMsEnv(
+        "LUNA_HANG_COOLDOWN_MS",
+        DEFAULT_HANG_COOLDOWN_MS,
+      )
+      const envTaskInactivityMs = readPositiveMsEnv(
+        "LUNA_TASK_INACTIVITY_TIMEOUT_MS",
+        DEFAULT_TASK_INACTIVITY_TIMEOUT_MS,
+      )
 
       const hooksRef = yield* Ref.make<ReadonlyArray<HookRegistration>>([])
       const permissionCbRef = yield* Ref.make<
@@ -405,8 +479,41 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             delete (mergedOpts as { model?: unknown }).model
           }
 
-          // Stream → AsyncIterable for the SDK to consume.
-          const promptIterable = yield* Stream.toAsyncIterableEffect(req.prompt)
+          /**
+           * Turn-aware inactivity watchdog state (chat threads only — see the
+           * consumer below). `turnInFlight` is the ARM bit: true while we are
+           * mid-turn (a user prompt was offered and no `result` frame has
+           * closed it), false between turns. The prompt-tap arms it; the
+           * consumer disarms it on a `result` frame. JS is single-threaded and
+           * the producer/consumer/prompt-tap all run inside this query Scope,
+           * so a plain mutable object is race-free (same convention as the
+           * `acquiredAccountId` / `reportedSdkSessionId` locals above).
+           */
+          const watchdog = {
+            turnInFlight: false,
+            /**
+             * tool_use ids of Task/Agent subagent calls that have NOT yet
+             * received their tool_result. While non-empty, the consumer's
+             * inactivity window widens to `taskInactivityMs` (a subagent's
+             * model call legitimately streams nothing on the parent stream).
+             * Same single-threaded-Scope convention as `turnInFlight`.
+             */
+            pendingTaskIds: new Set<string>(),
+          }
+
+          // Stream → AsyncIterable for the SDK to consume. Tap each outbound
+          // user prompt to ARM the watchdog: a freshly-submitted turn is now
+          // expecting a response. The tap is a pass-through — it never alters
+          // or drops the message handed to the SDK.
+          const promptIterable = yield* Stream.toAsyncIterableEffect(
+            req.prompt.pipe(
+              Stream.tap(() =>
+                Effect.sync(() => {
+                  watchdog.turnInFlight = true
+                }),
+              ),
+            ),
+          )
 
           const params: QueryParams = {
             prompt: promptIterable,
@@ -437,6 +544,26 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
           const idleTimeoutDisabled =
             req.sessionOptions.disableIdleTimeout === true
           const sessionIdForErr = req.sessionId
+
+          /**
+           * Turn-inactivity watchdog config. ONLY engaged on the
+           * `disableIdleTimeout` path (chat threads) — the always-on idle
+           * timeout already covers every other caller (reasoner lanes use
+           * runBoundedQuery, not this adapter, so they are untouched either
+           * way). sessionOptions wins over the process-env default; `0`
+           * disables (legacy behavior — a hang is not converted). Active only
+           * when both the chat opt-out is set AND the window is positive.
+           */
+          const turnInactivityMs =
+            req.sessionOptions.turnInactivityTimeoutMs ?? envTurnInactivityMs
+          const hangCooldownMs =
+            req.sessionOptions.hangCooldownMs ?? envHangCooldownMs
+          const watchdogActive = idleTimeoutDisabled && turnInactivityMs > 0
+          // Subagent-aware window: while a Task/Agent call is outstanding the
+          // window is this instead of turnInactivityMs. Clamped to never be
+          // shorter than the turn window (an operator who widened the turn
+          // window must not get a TIGHTER one during subagents).
+          const taskInactivityMs = Math.max(turnInactivityMs, envTaskInactivityMs)
 
           /**
            * Producer pattern: a detached async function pushes from the SDK's
@@ -508,11 +635,40 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             const id = acquiredAccountId
             // Price against the model that ACTUALLY served the turn when the
             // result frame's modelUsage reports exactly one (alias lanes like
-            // "default"/"opus" otherwise price at a tier default). Multi-model
-            // turns (subagents) fall back to the broker-picked lane model.
-            const mu = (msg as { modelUsage?: Record<string, unknown> })
-              .modelUsage
+            // "default"/"opus" otherwise price at a tier default).
+            // Multi-model turns (a Task subagent on a different model):
+            // report ONE usage per modelUsage entry, each priced at its own
+            // model, instead of collapsing the aggregate onto the lane model
+            // — a haiku-lane thread spawning an opus subagent must not bill
+            // opus tokens at haiku rates against the account budget. The
+            // entries partition the turn's tokens, so the spend-meter's
+            // accumulated total matches the old aggregate count.
+            const mu = (msg as { modelUsage?: Record<string, {
+              inputTokens?: number
+              outputTokens?: number
+              cacheReadInputTokens?: number
+              cacheCreationInputTokens?: number
+            }> }).modelUsage
             const muKeys = mu ? Object.keys(mu) : []
+            if (mu && muKeys.length > 1) {
+              for (const [model, pm] of Object.entries(mu)) {
+                Effect.runPromise(
+                  broker.report({
+                    accountId: id,
+                    kind: "usage",
+                    model,
+                    tokensIn: pm.inputTokens ?? 0,
+                    tokensOut: pm.outputTokens ?? 0,
+                    cacheRead: pm.cacheReadInputTokens ?? 0,
+                    cacheWrite: pm.cacheCreationInputTokens ?? 0,
+                    ...(acquiredBudgetUsd !== null
+                      ? { budgetUsd: acquiredBudgetUsd }
+                      : {}),
+                  }),
+                ).catch(() => {})
+              }
+              return
+            }
             const model =
               muKeys.length === 1 ? muKeys[0]! : acquiredModel
             Effect.runPromise(
@@ -560,11 +716,60 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             ).catch(() => {})
           }
 
+          /**
+           * Inactivity-watchdog trip: cool the acquired account so the NEXT
+           * message fails over to a healthy one. Fire-and-forget (a metering
+           * failure must not poison the already-dead turn).
+           *
+           * UNLIKE the B9 throttle path, this does NOT gate on
+           * `throttleFailoverPossible`. A hang is categorically different from
+           * a transient 429: the turn is already dead (no retry is in flight),
+           * so cooling a sole account cannot make things worse — it only stops
+           * the next turn from re-picking the same wedged account. With no
+           * failover target the next acquire surfaces AllAccountsExhausted (a
+           * clean error), which is strictly better than another silent hang.
+           */
+          const reportHangCooldown = () => {
+            if (broker === null || acquiredAccountId === null) return
+            const id = acquiredAccountId
+            Effect.runPromise(
+              broker.report({
+                accountId: id,
+                kind: "rate_limit",
+                retryAfterMs: hangCooldownMs,
+              }),
+            ).catch(() => {})
+          }
+
           const runProducer = async () => {
             try {
               for await (const msg of handle as AsyncIterable<SDKMessage>) {
                 // B4: meter the turn at the result frame (fire-and-forget).
                 reportUsage(msg)
+                // Subagent tracking for the watchdog window: an assistant
+                // message opens a pending Task per Agent/Task tool_use; a
+                // user message's tool_result blocks settle them. Parented
+                // (subagent-internal) spawns count too — a nested Task keeps
+                // the turn legitimately silent the same way.
+                for (const id of sdkAgentSpawnIds(msg)) {
+                  watchdog.pendingTaskIds.add(id)
+                }
+                for (const id of sdkToolResultIds(msg)) {
+                  watchdog.pendingTaskIds.delete(id)
+                }
+                // Watchdog DISARM: a `result` frame closes the turn. After it,
+                // the stream waits for the NEXT user prompt (inter-turn
+                // think-time), which must NOT trip the inactivity watchdog. The
+                // prompt-tap re-arms on the next submitted turn. Pending Task
+                // ids are cleared too: an aborted turn must not leak a wide
+                // window into the next one. (Interrupt is covered: live-probed
+                // on SDK 0.3.175, Query.interrupt() mid-Task emits a synthetic
+                // settling tool_result AND a result/error_during_execution
+                // frame, so both clear paths fire.)
+                if (sdkMessageKind(msg) === "result") {
+                  watchdog.turnInFlight = false
+                  watchdog.pendingTaskIds.clear()
+                }
                 await Effect.runPromise(
                   Queue.offer(queue, { _tag: "value", value: msg }),
                 )
@@ -595,13 +800,47 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
           // isolated and will be GC'd once the Scope's Ref releases it.
           void runProducer()
 
-          // Consumer stream: repeatEffectOption to signal `done` via None.
-          // When `disableIdleTimeout` is true (chat threads), we omit the
-          // timeoutFail wrapper so user think-time between turns does not
-          // trip §12.2 #5 — Queue.take just blocks until the next message.
-          const takeFrame = idleTimeoutDisabled
-            ? Queue.take(queue)
-            : Queue.take(queue).pipe(
+          // Decode one Queue frame into the repeatEffectOption shape: a value,
+          // `None` for clean end, or `Some(err)` for a terminal error.
+          const decodeFrame = (
+            frame: Frame,
+          ): Effect.Effect<SDKMessage, Option.Option<SDKError>> => {
+            switch (frame._tag) {
+              case "value":
+                return Effect.succeed(frame.value)
+              case "end":
+                return Effect.fail(Option.none<SDKError>())
+              case "error":
+                return Effect.fail(Option.some(frame.err))
+            }
+          }
+
+          /**
+           * Consumer take, three modes:
+           *
+           *  1. NON-chat (idle timeout on): the original §12.2 #5 idle race —
+           *     every Queue.take is bounded by `idleMs`, resets on each
+           *     message. Byte-identical to before.
+           *
+           *  2. Chat + watchdog OFF (`turnInactivityTimeoutMs`/env = 0): a
+           *     plain blocking take — legacy `disableIdleTimeout` behavior, a
+           *     hang is NOT converted.
+           *
+           *  3. Chat + watchdog ON: the TURN-AWARE inactivity watchdog. Each
+           *     take is raced against `turnInactivityMs`. On expiry we re-read
+           *     the arm bit: if a turn is STILL in flight (no `result` closed
+           *     it), the subprocess is presumed wedged → abort it, cool the
+           *     account, and fail the turn with a clean SDKError. If the turn
+           *     already ended (disarmed — we are between turns waiting on the
+           *     next prompt), the expiry is benign: loop and block again, so
+           *     hours-long think-time never trips. Activity (any frame) lands
+           *     in the Queue and satisfies the take, resetting the window.
+           */
+          const pullOne: Effect.Effect<
+            SDKMessage,
+            Option.Option<SDKError>
+          > = !idleTimeoutDisabled
+            ? Queue.take(queue).pipe(
                 Effect.timeoutFail({
                   onTimeout: (): Option.Option<SDKError> =>
                     Option.some(
@@ -613,20 +852,71 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
                     ),
                   duration: idleMs,
                 }),
+                Effect.flatMap(decodeFrame),
               )
-          const pullOne: Effect.Effect<SDKMessage, Option.Option<SDKError>> =
-            takeFrame.pipe(
-              Effect.flatMap((frame) => {
-                switch (frame._tag) {
-                  case "value":
-                    return Effect.succeed(frame.value)
-                  case "end":
-                    return Effect.fail(Option.none<SDKError>())
-                  case "error":
-                    return Effect.fail(Option.some(frame.err))
-                }
-              }),
-            )
+            : !watchdogActive
+              ? Queue.take(queue).pipe(Effect.flatMap(decodeFrame))
+              : Effect.gen(function* () {
+                  // Loop so a benign (disarmed) expiry re-blocks instead of
+                  // tripping — only an expiry WHILE a turn is in flight is a
+                  // hang.
+                  while (true) {
+                    // Window picked per take: while ≥1 subagent (Task/Agent
+                    // call) is outstanding the parent stream is legitimately
+                    // silent for the subagent's whole model call, so the
+                    // wider task window applies. Re-evaluated every loop —
+                    // the set shrinks as results land, restoring the tight
+                    // window for the rest of the turn.
+                    const windowMs =
+                      watchdog.pendingTaskIds.size > 0
+                        ? taskInactivityMs
+                        : turnInactivityMs
+                    const taken = yield* Queue.take(queue).pipe(
+                      Effect.timeoutOption(Duration.millis(windowMs)),
+                    )
+                    if (Option.isSome(taken)) {
+                      return yield* decodeFrame(taken.value)
+                    }
+                    if (!watchdog.turnInFlight) {
+                      // Between turns — not a hang. Block again.
+                      continue
+                    }
+                    if (
+                      watchdog.pendingTaskIds.size > 0 &&
+                      windowMs < taskInactivityMs
+                    ) {
+                      // A Task started DURING this take's tight window — the
+                      // silence may be the subagent working, not a wedge.
+                      // Re-take under the wide window before declaring a hang.
+                      continue
+                    }
+                    // TRIP: a turn streamed nothing for the whole window.
+                    // Kill the wedged subprocess so it stops burning the
+                    // usage-limited account (the Scope finalizer also aborts,
+                    // but we do it eagerly at trip time).
+                    abortController.abort()
+                    // Cool the account so the NEXT message fails over.
+                    reportHangCooldown()
+                    return yield* Effect.fail(
+                      Option.some(
+                        new SDKError({
+                          op: "inactivity-watchdog",
+                          sessionId: sessionIdForErr,
+                          cause:
+                            `model call stalled (no response for ` +
+                            `${windowMs}ms` +
+                            (watchdog.pendingTaskIds.size > 0
+                              ? ` with ${watchdog.pendingTaskIds.size} subagent(s) outstanding`
+                              : "") +
+                            `; suspected usage limit on ` +
+                            `account ${acquiredAccountId ?? "unknown"}). The ` +
+                            `account was cooled — your next message will use ` +
+                            `another account. Please resend.`,
+                        }),
+                      ),
+                    )
+                  }
+                })
 
           const consumer: Stream.Stream<SDKMessage, SDKError> =
             Stream.repeatEffectOption(pullOne)

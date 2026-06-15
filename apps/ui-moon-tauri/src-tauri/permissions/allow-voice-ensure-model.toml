@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-voice-ensure-model"
+description = "Allows downloading the whisper model to ~/.luna/models (idempotent)"
+
+[permission.commands]
+allow = [
+  "voice_ensure_model"
+]

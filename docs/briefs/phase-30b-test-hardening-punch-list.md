@@ -93,7 +93,7 @@ back → assert the system prompt sent to the model contains the literal string
 **Why:** the symptom Operator actually cares about. Tier 1 tests prove
 plumbing; this proves Luna identity reaches the model. Pin the canonical
 sentence in DNA.md so the test fails loudly if someone rewrites DNA.md to
-say "You are Sol" or similar.
+say "You are [another agent]" or similar.
 
 ### 3.2 HNSW path actually used at scale (not just enabled)
 

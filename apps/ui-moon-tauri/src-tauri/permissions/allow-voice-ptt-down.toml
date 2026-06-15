@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-voice-ptt-down"
+description = "Allows beginning a push-to-talk capture window"
+
+[permission.commands]
+allow = [
+  "voice_ptt_down"
+]

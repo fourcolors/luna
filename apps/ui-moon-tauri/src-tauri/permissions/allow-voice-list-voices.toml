@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-voice-list-voices"
+description = "Allows listing the available TTS voices"
+
+[permission.commands]
+allow = [
+  "voice_list_voices"
+]

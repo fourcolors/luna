@@ -58,10 +58,14 @@ jobs:
       # committed config keeps the real cert for local builds. Updater trust is
       # minisign (independent of Apple signing), so the ad-hoc bundle still
       # auto-updates over a real-signed install.
+      # The rewrite must PRESERVE minimumSystemVersion: tauri exports it as
+      # MACOSX_DEPLOYMENT_TARGET (default 10.13), and whisper.cpp's C++
+      # (std::filesystem) needs >= 10.15 — dropping the field broke the first
+      # moon-v0.0.22 release run with "'path' is unavailable" compile errors.
       - name: Ad-hoc sign for CI (keep the real cert in the committed config)
         working-directory: apps/ui-moon-tauri/src-tauri
         run: |
-          node -e 'const fs=require("fs");const f="tauri.conf.json";const c=JSON.parse(fs.readFileSync(f,"utf8"));c.bundle.macOS={signingIdentity:"-"};fs.writeFileSync(f,JSON.stringify(c,null,2)+"\n");console.log("CI macOS signing -> ad-hoc (-)")'
+          node -e 'const fs=require("fs");const f="tauri.conf.json";const c=JSON.parse(fs.readFileSync(f,"utf8"));c.bundle.macOS={signingIdentity:"-",minimumSystemVersion:c.bundle.macOS.minimumSystemVersion};fs.writeFileSync(f,JSON.stringify(c,null,2)+"\n");console.log("CI macOS signing -> ad-hoc (-), minSystemVersion kept:",c.bundle.macOS.minimumSystemVersion)'
 
       - name: Build, sign, and publish release
         uses: tauri-apps/tauri-action@v0

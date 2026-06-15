@@ -1,6 +1,6 @@
 [package]
 name = "luna-moon-ui"
-version = "0.0.21"
+version = "0.0.30"
 description = "Native transparent floating Moon companion for Luna"
 edition = "2021"
 
@@ -16,6 +16,9 @@ tauri-plugin-dialog = "2"
 # Self-update from GitHub Releases (minisign-verified). Drives the
 # check_for_update / install_update commands in main.rs.
 tauri-plugin-updater = "2"
+# Open the system browser for the connector OAuth consent hop (PRD A §09).
+# The Moon previously had NO programmatic browser-open path.
+tauri-plugin-opener = "2"
 # Local-shell executor: async spawn with a bounded timeout + piped output.
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "process", "time", "io-util"] }
 
@@ -23,6 +26,83 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "process
 # kill(2) the child's process group on timeout (mirrors the CLI's detached spawn).
 libc = "0.2"
 
+# ── Voice pipeline ──────────────────────────────────────────────────────
+# All optional + gated behind the `voice` feature (ON by default for the
+# app). An audio-free build is still possible with:
+#   cargo build --no-default-features --features custom-protocol
+[dependencies.cpal]
+version = "0.17"
+optional = true
+
+[dependencies.voice_activity_detector]
+version = "0.2"
+optional = true
+
+[dependencies.whisper-rs]
+version = "0.16"
+features = ["metal"]
+optional = true
+
+[dependencies.hound]
+version = "3"
+optional = true
+
+# macOS TTS engine: AVSpeechSynthesizer via objc2 (src/voice/tts_avspeech.rs).
+# Versions + feature sets verified by the compiled probe in
+# .scratch/avspeech-probe (see its FINDINGS.md). `default-features = false`
+# on objc2-avf-audio matters: the default set pulls the whole AVAudioEngine +
+# audio-toolbox surface this engine never touches.
+[target.'cfg(target_os = "macos")'.dependencies.objc2]
+version = "0.6.4"
+
+[target.'cfg(target_os = "macos")'.dependencies.objc2-foundation]
+version = "0.3.2"
+optional = true
+default-features = false
+features = ["std", "NSString", "NSArray", "NSEnumerator", "NSObject"]
+
+[target.'cfg(target_os = "macos")'.dependencies.objc2-avf-audio]
+version = "0.3.2"
+optional = true
+default-features = false
+features = ["std", "AVSpeechSynthesis"]
+
 [features]
-default = ["custom-protocol"]
+default = ["custom-protocol", "voice"]
 custom-protocol = ["tauri/custom-protocol"]
+# Local voice pipeline (cpal mic capture → Silero VAD → whisper STT → TTS).
+# Lives in src/voice/ behind this feature; src/lib.rs exposes it to both bins.
+# The objc2 deps are target-gated to macOS above — enabling them here is a
+# no-op on every other platform (cargo activates a `dep:` only where the
+# dependency is declared).
+voice = [
+  "dep:cpal",
+  "dep:voice_activity_detector",
+  "dep:whisper-rs",
+  "dep:hound",
+  "dep:objc2-foundation",
+  "dep:objc2-avf-audio",
+]
+# Enables the voice_spike e2e harness (which reuses the lib's voice
+# modules — the feature now just gates the example target).
+voice-spike = ["voice"]
+
+# Shared library target: the voice pipeline is one implementation consumed by
+# both the app bin and the voice_spike bin. Named *_lib to avoid any clash
+# with the luna-moon-ui bin target.
+[lib]
+name = "luna_moon_ui_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "luna-moon-ui"
+path = "src/main.rs"
+
+# The voice_spike e2e harness is an EXAMPLE, not a [[bin]]: the Tauri bundler
+# copies every [[bin]] target into the .app and fails on one that wasn't
+# built (required-features doesn't exempt it). Examples are never bundled.
+# Run: cargo run --example voice_spike --features voice-spike --release -- --mic 8
+[[example]]
+name = "voice_spike"
+path = "examples/voice_spike.rs"
+required-features = ["voice-spike"]

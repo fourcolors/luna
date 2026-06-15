@@ -17,8 +17,15 @@
  *
  * Tagged-union error kind matches `ChatErrorKind` in @luna/chat-service.
  */
-import type { ObsEvent, ChatMessage, SessionSummary, SurveyItem, SurveyVerdict } from "@luna/core"
+import type { ObsEvent, ChatMessage, SessionSummary, SurveyItem, SurveyVerdict, ArtifactKind } from "@luna/core"
 import type { Artifact } from "@luna/chat-service"
+
+// Re-export the SINGLE source of truth for ArtifactKind (@luna/core) rather
+// than redeclaring an identical union here — so the wire type and the store
+// type can never silently drift (widget-tools' WidgetSummonerPort.openArtifact
+// types `kind` from @luna/core; this re-export keeps the ui-ws bridge's match
+// exact by construction).
+export type { ArtifactKind }
 
 export const UI_WS_PROTOCOL_VERSION = 2 as const
 
@@ -47,7 +54,16 @@ export interface HelloFrame {
    * The server includes it when `availableModels` is threaded into
    * `startUIWebSocketServer`; older/setup-mode servers omit it entirely.
    */
-  readonly availableModels?: ReadonlyArray<{ readonly id: string; readonly label: string }>
+  readonly availableModels?: ReadonlyArray<{
+    readonly id: string
+    readonly label: string
+    /**
+     * Effort levels valid for THIS model, server-computed. Absent on older
+     * servers; empty array = model takes no effort param (e.g. Haiku). Clients
+     * never compute the matrix — always defer to this field when present.
+     */
+    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max">
+  }>
   /** Capability flags so older clients can negotiate down. */
   readonly capabilities: {
     readonly chat: boolean
@@ -62,6 +78,63 @@ export interface HelloFrame {
      * per-turn timeline instead of waiting on a turn-complete that never comes.
      */
     readonly turnComplete: boolean
+    /**
+     * Server accepts `set-thread-config` frames and computes the effort-validity
+     * matrix per-model (advertised in the `availableModels.efforts` array).
+     * Clients hide effort controls when this flag is absent or false.
+     * OPTIONAL/additive — no protocol bump.
+     */
+    readonly effortSelection?: boolean
+    /**
+     * PRD Part B (Skills): the server has a SkillRegistry bound — it sends a
+     * `skill-catalog` frame after `hello` and routes `skill-toggle`. OPTIONAL
+     * and additive (no protocol bump): older servers omit it, and clients
+     * hide the Skills settings tab when the flag is absent/false.
+     */
+    readonly skills?: boolean
+    /**
+     * PRD Part A (Connectors): connector catalog/instances + the
+     * client-brokered OAuth handshake are available. OPTIONAL/additive —
+     * clients hide the Connectors settings tab when absent/false.
+     */
+    readonly connectors?: boolean
+    /**
+     * PRD Part C (Widgets/W1): the server has an ArtifactStore bound — it
+     * sends an `artifact-list` after `hello`, routes `artifact-pin`/`-unpin`,
+     * and broadcasts `artifact-update`. OPTIONAL/additive: older servers omit
+     * it and clients hide the artifact panel's "Pinned" section.
+     */
+    readonly artifacts?: boolean
+    /**
+     * PRD Part C (W3): the server exposes a read-only workflow gallery over the
+     * jobs store (workflow-list after hello, routes workflow-runs-request and
+     * workflow-refresh). OPTIONAL/additive — clients hide the Workflows view
+     * when absent/false.
+     */
+    readonly workflows?: boolean
+    /**
+     * Luna Vault (V1): the server has a VaultService bound — it pushes a
+     * `vault-list` frame after `hello` and routes `vault-put` /
+     * `vault-delete` / `vault-sync-config` / `vault-import`. OPTIONAL/additive
+     * — clients hide the Vault settings section when absent/false.
+     */
+    readonly vault?: boolean
+    /**
+     * MCP Apps host relay (widget-system.md Phase 7): the server has an
+     * McpAppHost bound — it routes `mcp-resource-read` / `mcp-tool-call`
+     * and replies `mcp-resource-result` / `mcp-tool-result` on the same
+     * connection. OPTIONAL/additive: clients show an honest "not supported"
+     * notice for kind `mcp-app` artifacts when absent/false.
+     */
+    readonly mcpApps?: boolean
+    /**
+     * Subagents: chat threads expose the SDK Task tool (wire tool name
+     * "Agent"), and tool-call / tool-result frames may carry the additive
+     * `parentToolUseId` linkage for activity that ran inside a subagent.
+     * OPTIONAL/additive — older servers omit it; older clients ignore both
+     * the flag and the field and render subagent steps flat.
+     */
+    readonly subagents?: boolean
   }
 }
 
@@ -158,6 +231,10 @@ export interface ToolCallFrame {
   readonly toolCallId: string
   readonly name: string
   readonly input: unknown
+  /** Present when the call ran INSIDE a subagent: the tool_use id of the
+   *  spawning Agent/Task call. OPTIONAL/additive — old clients ignore it
+   *  and render the step flat. */
+  readonly parentToolUseId?: string
 }
 
 export interface ToolResultFrame {
@@ -167,6 +244,9 @@ export interface ToolResultFrame {
   readonly status: "ok" | "error"
   readonly output: string
   readonly truncated: boolean
+  /** Mirror of ToolCallFrame.parentToolUseId for subagent-internal results.
+   *  OPTIONAL/additive. */
+  readonly parentToolUseId?: string
 }
 
 /** Marks the true end of an agentic turn (SDK `result`), after every
@@ -184,6 +264,424 @@ export interface AccountListFrame {
     readonly label: string
     readonly kind: string
     readonly health: string
+  }>
+}
+
+/**
+ * One skill row for the settings catalog — METADATA ONLY, by construction.
+ *
+ * There is deliberately no `body` field on this type: skill bodies are
+ * prompt content for the agent, not the UI, and they never cross the wire
+ * to clients (PRD §12 "metadata-only on the wire"). `category`/`source`
+ * are plain strings on the wire (forward-compatible with new categories).
+ */
+export interface SkillCatalogItem {
+  readonly id: string
+  readonly name: string
+  readonly description: string
+  readonly whenToUse: string
+  readonly category: string
+  readonly tags: ReadonlyArray<string>
+  readonly source: string
+  readonly enabled: boolean
+}
+
+/**
+ * Server→client: the full skill catalog. Sent once after `hello` (same
+ * fire-and-forget pattern as `account-list`) so the Skills settings tab can
+ * render on connect, and re-sent to the toggling client after a successful
+ * `skill-toggle` so its list state confirms. Additive — no protocol bump.
+ */
+export interface SkillCatalogFrame {
+  readonly type: "skill-catalog"
+  readonly skills: ReadonlyArray<SkillCatalogItem>
+}
+
+/**
+ * Server→client ack for a `skill-toggle`. `ok:false` carries a
+ * non-sensitive reason (unknown id, registry failure). On `ok:true`,
+ * `enabled` is the now-live state — effective for the NEXT thread (the
+ * registry snapshot is rebuilt synchronously on toggle).
+ */
+export interface SkillStatusFrame {
+  readonly type: "skill-status"
+  readonly id: string
+  readonly enabled: boolean
+  readonly ok: boolean
+  readonly message?: string
+}
+
+/* PRD Part A — connector frames (§18). All additive, gated on the hello
+ * `connectors` capability. NO frame in either direction ever carries a
+ * token or credential: the catalog is definition metadata, instances
+ * carry status + a secret POINTER, and the OAuth handshake moves only the
+ * authorization CODE (worthless without the server-held PKCE verifier). */
+
+/** One catalog card for the settings UI — definition metadata only. */
+export interface ConnectorCatalogItem {
+  readonly id: string
+  readonly name: string
+  readonly blurb: string
+  readonly category: string
+  readonly authKind: "oauth2" | "api-key" | "none"
+  readonly capabilities: ReadonlyArray<{
+    readonly id: string
+    readonly label: string
+    readonly scopes: ReadonlyArray<string>
+    readonly defaultGranted: boolean
+  }>
+  /** PRD §23 — present only for oauth2 per-operator-client connectors;
+   *  `configured` flips true once the operator's client id is stored. No
+   *  secret values cross the wire. */
+  readonly clientSetup?: {
+    readonly configured: boolean
+  }
+}
+
+/** One connection row — status + pointer, never credential material. */
+export interface ConnectorInstanceItem {
+  readonly id: string
+  readonly definitionId: string
+  readonly label: string
+  readonly status: "connected" | "needs-reauth" | "error" | "disconnected"
+  readonly grantedScopes: ReadonlyArray<string>
+  readonly createdAt: number
+  readonly lastHealthyAt: number | null
+}
+
+/** Server→client: the connector catalog (sent after hello, like account-list). */
+export interface ConnectorCatalogFrame {
+  readonly type: "connector-catalog"
+  readonly connectors: ReadonlyArray<ConnectorCatalogItem>
+}
+
+/** Server→client: current connections (after hello + broadcast on change). */
+export interface ConnectorListFrame {
+  readonly type: "connector-list"
+  readonly instances: ReadonlyArray<ConnectorInstanceItem>
+}
+
+/**
+ * Client→server: start the client-brokered OAuth flow (PRD §09). The
+ * client has ALREADY bound 127.0.0.1:<loopbackPort> and will capture the
+ * provider's redirect there (RFC 8252 — the browser runs client-side).
+ */
+export interface ConnectorOauthBeginFrame {
+  readonly type: "connector-oauth-begin"
+  readonly requestId: string
+  readonly definitionId: string
+  readonly label: string
+  readonly capabilityIds?: ReadonlyArray<string>
+  readonly loopbackPort: number
+}
+
+/** Server→client: the consent URL for the client to open in the real browser. */
+export interface ConnectorOauthRedirectFrame {
+  readonly type: "connector-oauth-redirect"
+  readonly requestId: string
+  readonly pendingId: string
+  readonly authUrl: string
+}
+
+/** Client→server: the captured authorization code + echoed state. */
+export interface ConnectorOauthCodeFrame {
+  readonly type: "connector-oauth-code"
+  readonly pendingId: string
+  readonly code: string
+  readonly state: string
+}
+
+/** Client→server: non-OAuth connect (api-key already stored, or auth none). */
+export interface ConnectorConnectFrame {
+  readonly type: "connector-connect"
+  readonly requestId: string
+  readonly definitionId: string
+  readonly label: string
+  readonly secretRef?: string
+  readonly capabilityIds?: ReadonlyArray<string>
+}
+
+/** Client→server: remove a connection (server revokes best-effort). */
+export interface ConnectorDisconnectFrame {
+  readonly type: "connector-disconnect"
+  readonly instanceId: string
+}
+/** Client→server: persist the operator's per-operator OAuth client creds
+ *  (PRD §23). Values go UP only — never echoed back; the server writes them via
+ *  the same secret sink the refresh token uses. */
+export interface ConnectorSetClientFrame {
+  readonly type: "connector-set-client"
+  readonly requestId: string
+  readonly definitionId: string
+  readonly clientId: string
+  readonly clientSecret?: string
+}
+
+/**
+ * Server→client: outcome of begin/code/connect/disconnect. `ok:false`
+ * carries a short, non-sensitive reason (e.g. which env var is missing
+ * for the per-operator OAuth client).
+ */
+export interface ConnectorStatusFrame {
+  readonly type: "connector-status"
+  readonly requestId?: string
+  readonly ok: boolean
+  readonly message?: string
+  readonly instance?: ConnectorInstanceItem
+}
+
+/* PRD Part C (W1) — artifact frames. The ephemeral `Artifact` (above) is
+ * recomputed per session; a PINNED artifact is the durable form persisted in
+ * luna.db (artifacts + artifact_versions). Mirrors ui-shared/wire.ts.
+ * `mcp-app` (widget-system.md Phase 7): content is a `ui://` resource URI —
+ * the host fetches the app HTML via `mcp-resource-read` and renders it as an
+ * MCP App (raw JSON-RPC over postMessage), never as inline widget HTML.
+ * ArtifactKind is re-exported from @luna/core (see the top of this file). */
+
+export interface PinnedArtifactItem {
+  readonly id: string
+  readonly kind: ArtifactKind
+  readonly title: string
+  readonly lang: string | null
+  readonly content: string
+  readonly origin: string | null
+  readonly version: number
+  readonly pinnedAt: number
+  readonly updatedAt: number
+  readonly bridgeCaps?: ReadonlyArray<string> | null
+}
+
+/** Server→client: all pinned artifacts (sent after hello, re-sent on change). */
+export interface ArtifactListFrame {
+  readonly type: "artifact-list"
+  readonly artifacts: ReadonlyArray<PinnedArtifactItem>
+}
+/** Server→client: a pinned artifact gained a new version → live re-render. */
+export interface ArtifactUpdateFrame {
+  readonly type: "artifact-update"
+  readonly artifact: PinnedArtifactItem
+}
+/** Client→server: pin an artifact by value (idempotent on `id`). */
+export interface ArtifactPinFrame {
+  readonly type: "artifact-pin"
+  readonly id: string
+  readonly title: string
+  readonly content: string
+  readonly lang?: string | null
+  readonly kind?: ArtifactKind
+  readonly origin?: string | null
+}
+/** Client→server: drop a pinned artifact and its version ledger. */
+export interface ArtifactUnpinFrame {
+  readonly type: "artifact-unpin"
+  readonly id: string
+}
+/** Client→server: edit an existing artifact's content. Routes through the
+ *  store's `update` (appends a version, PRESERVES the ledger, leaves bridgeCaps
+ *  untouched) — never unpin+re-pin, which would destroy history + reset caps. */
+export interface ArtifactEditFrame {
+  readonly type: "artifact-edit"
+  readonly id: string
+  readonly content: string
+}
+
+/* PRD Part C (W3) — workflow gallery frames. A read-only, wire-safe view over
+ * the persisted jobs store. Mirrors ui-shared/wire.ts. */
+export interface WorkflowGalleryItem {
+  readonly id: string
+  readonly kind: string
+  readonly label: string
+  readonly source: string | null
+  readonly schedule: string | null
+  readonly onDemand: boolean
+  readonly enabled: boolean
+  readonly nextRunAt: number | null
+  readonly lastRun: number | null
+  readonly lastStatus: string | null
+  readonly createdAt: number
+}
+export interface WorkflowRunItem {
+  readonly id: number
+  readonly startedAt: number
+  readonly finishedAt: number | null
+  readonly status: string
+  readonly attempt: number
+  readonly error: string | null
+}
+/** Server→client: the unified gallery (sent after hello, re-sent on refresh). */
+export interface WorkflowListFrame {
+  readonly type: "workflow-list"
+  readonly workflows: ReadonlyArray<WorkflowGalleryItem>
+}
+/** Server→client: run history for one job. */
+export interface WorkflowRunsFrame {
+  readonly type: "workflow-runs"
+  readonly jobId: string
+  readonly runs: ReadonlyArray<WorkflowRunItem>
+}
+/** Client→server: ask for one job's run history. */
+export interface WorkflowRunsRequestFrame {
+  readonly type: "workflow-runs-request"
+  readonly jobId: string
+  readonly limit?: number
+}
+/** Client→server: ask the server to re-send the gallery list. */
+export interface WorkflowRefreshFrame {
+  readonly type: "workflow-refresh"
+}
+
+/* Luna Vault (V1) — credential registry frames. All additive, gated on the
+ * hello `vault` capability. The registry is METADATA + POINTERS ONLY — no
+ * frame in either direction ever carries a secret VALUE. `vault-list` and
+ * `vault-status` are explicitly designed to be wire-safe:
+ *   - `vault-list` carries identifiers, labels, kind badges, and opaque `ref`
+ *     pointers (e.g. "env:OPENAI_API_KEY", "luna-op://my-label") but never
+ *     the credential material they point at.
+ *   - `vault-status` carries a boolean outcome and a short human-readable
+ *     `message` — never echoes the value from a `vault-put` or `vault-import`.
+ *   - `vault-put` and `vault-import` carry values UPWARD ONLY (client→server),
+ *     matching the connector-set-client contract; they are never stored in
+ *     transcripts or logs. */
+
+/**
+ * One vault registry row projected for the wire — METADATA + POINTER ONLY.
+ * `ref` is an opaque pointer to where the credential lives (e.g.
+ * "env:OPENAI_API_KEY", "luna-op://my-label"), never the credential value.
+ * `synced` = the row was confirmed in the configured 1Password vault.
+ * `shadowed` = the env var was present in `.env` at boot (before the vault
+ * registry was wired) and was skipped by the env loader to avoid overwriting
+ * a live value — the UI should badge it "shadowed".
+ */
+export interface VaultWireItem {
+  readonly id: string
+  readonly name: string
+  readonly kind: "env-secret" | "op-token" | "op-item"
+  /** Opaque back-pointer — pointer to storage location, never a secret value. */
+  readonly ref: string
+  readonly source: "manual" | "agent" | "1password" | "apple-import"
+  readonly description: string | null
+  readonly createdAt: number
+  readonly updatedAt: number
+  /** true = row was confirmed present in the configured 1Password vault. */
+  readonly synced: boolean
+  /** true = a pre-existing .env value shadowed this entry at boot. */
+  readonly shadowed: boolean
+}
+
+/** Sync configuration and health for the 1Password integration (slice V3). */
+export interface VaultSyncWire {
+  readonly enabled: boolean
+  readonly opLabel: string | null
+  readonly opVault: string | null
+  /** Unix ms of the last successful inbound sync, or null if never synced. */
+  readonly lastSyncedAt: number | null
+  /** Short diagnostic from the last sync failure, or null if last sync was ok. */
+  readonly lastError: string | null
+  /** How often to poll 1Password, in seconds (minimum 60). Mirrors the
+   *  `pollSeconds` stored in the sync config so the UI can reflect the live
+   *  value without a separate round-trip. */
+  readonly pollSeconds: number
+}
+
+/**
+ * Server→client: the current vault registry. Sent after `hello` (like
+ * `connector-catalog`) and after every successful mutation. Contains METADATA
+ * AND POINTERS ONLY — never secret values. `sync` is omitted when no sync
+ * config exists (slice V3 not yet configured).
+ */
+export interface VaultListFrame {
+  readonly type: "vault-list"
+  readonly items: ReadonlyArray<VaultWireItem>
+  /** 1Password sync state, when configured (slice V3). Absent on V1 servers. */
+  readonly sync?: VaultSyncWire
+}
+
+/**
+ * Server→client: outcome of a `vault-put`, `vault-delete`, `vault-sync-config`,
+ * or `vault-import`. `ok:false` carries a short, non-sensitive reason in
+ * `message` (e.g. "label not in LUNA_OP_ACCOUNTS", "env var name invalid").
+ *
+ * NEVER echoes the value from a `vault-put` or `vault-import` frame — the
+ * message is operator-actionable diagnostic text only.
+ */
+export interface VaultStatusFrame {
+  readonly type: "vault-status"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly message: string
+}
+
+/**
+ * Client→server: register or update a credential in the vault. `value` is the
+ * SENSITIVE credential — it travels UP ONLY and is never echoed back in any
+ * server frame or logged. Mirrors the connector-set-client value-up-only contract.
+ *
+ * For `kind:'env-secret'`, `varName` is required (the env var name, e.g.
+ * "OPENAI_API_KEY"). For `kind:'op-token'`, `label` is required (must match an
+ * entry in LUNA_OP_ACCOUNTS). `requestId` correlates the `vault-status` reply.
+ */
+export interface VaultPutFrame {
+  readonly type: "vault-put"
+  readonly requestId: string
+  readonly name: string
+  readonly kind: "env-secret" | "op-token"
+  /** Required when kind='env-secret': the env var name to store. */
+  readonly varName?: string
+  /** Required when kind='op-token': the 1Password account label. */
+  readonly label?: string
+  /** The credential value — sensitive, NEVER echoed back or logged. */
+  readonly value: string
+  readonly description?: string
+}
+
+/**
+ * Client→server: remove a vault registry row (and, for env-secret/op-token,
+ * the underlying stored credential). `id` is the registry row id from
+ * `vault-list`. For `op-item` rows the registry row is removed but the item
+ * inside 1Password is intentionally NOT deleted. `requestId` correlates the
+ * `vault-status` reply.
+ */
+export interface VaultDeleteFrame {
+  readonly type: "vault-delete"
+  readonly requestId: string
+  readonly id: string
+}
+
+/**
+ * Client→server: configure the 1Password two-way sync (slice V3). Enables or
+ * disables the sync, and optionally sets the account label + vault name and
+ * poll interval. `requestId` correlates the `vault-status` reply.
+ */
+export interface VaultSyncConfigFrame {
+  readonly type: "vault-sync-config"
+  readonly requestId: string
+  readonly enabled: boolean
+  readonly opLabel?: string
+  readonly opVault?: string
+  readonly pollSeconds?: number
+}
+
+/**
+ * Client→server: import Apple Passwords CSV export items into the 1Password
+ * sync vault (slice V3). The server creates LOGIN items in the configured vault
+ * + inserts registry rows (source='apple-import'). Requires sync to be enabled
+ * with a configured vault. `items` is limited to ≤20 per frame (server enforces
+ * this; the client should chunk larger imports). `requestId` correlates the
+ * `vault-status` reply.
+ *
+ * `password` in each item is SENSITIVE — travels UP ONLY and is never echoed
+ * back or included in any server→client frame or log.
+ */
+export interface VaultImportFrame {
+  readonly type: "vault-import"
+  readonly requestId: string
+  readonly items: ReadonlyArray<{
+    readonly title: string
+    readonly url?: string
+    readonly username?: string
+    /** The credential to import — sensitive, NEVER echoed back or logged. */
+    readonly password: string
+    readonly notes?: string
   }>
 }
 
@@ -248,6 +746,61 @@ export interface SecretRequestFrame {
  */
 export interface SecretStatusFrame {
   readonly type: "secret-status"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly message: string
+}
+
+/* ── job-summoned operator input (widget-system.md Phase 5) ─────────── */
+
+/**
+ * Server→client: a RUNNING JOB (via the `request_input` tool) is asking the
+ * operator for a piece of input — e.g. "Which of these drafts should I
+ * send?". Additive and optional; older clients ignore it.
+ *
+ * BROADCAST: unlike `secret-request` (which targets the thread's registered
+ * client), this frame goes to EVERY connected client — a job has no owning
+ * thread, so any surface may answer. First `job-input-result` wins.
+ *
+ * `runId`/`jobId`/`jobName` identify the waiting run (the run's
+ * `job_runs.status` is `waiting` while this is pending — the workflow
+ * gallery shows the same state). `timeoutMs` is the wall-clock the operator
+ * has before the request resolves failed; clients should dismiss the prompt
+ * when it elapses. The answer is OPERATOR INPUT, not a secret — but the
+ * server still never logs it.
+ */
+export interface JobInputRequestFrame {
+  readonly type: "job-input-request"
+  readonly requestId: string
+  readonly runId: number
+  readonly jobId: string
+  readonly jobName: string
+  /** What the job is asking — shown above the input field. */
+  readonly prompt: string
+  readonly timeoutMs: number
+}
+
+/**
+ * Client→server: the operator's answer to a `job-input-request`. `answer` is
+ * the typed reply (delivered verbatim to the waiting job's model turn; never
+ * logged). When `cancelled` is true the operator dismissed the prompt and
+ * `answer` is absent. `requestId` correlates back to the request.
+ */
+export interface JobInputResultFrame {
+  readonly type: "job-input-result"
+  readonly requestId: string
+  readonly answer?: string
+  readonly cancelled?: boolean
+}
+
+/**
+ * Server→client ack for a `job-input-result` (and the broadcast dismissal on
+ * timeout). The winning sender gets `ok:true`; a late/duplicate answer gets
+ * `ok:false, "already answered"` so its UI can settle. The answer value is
+ * NEVER echoed back here.
+ */
+export interface JobInputStatusFrame {
+  readonly type: "job-input-status"
   readonly requestId: string
   readonly ok: boolean
   readonly message: string
@@ -323,6 +876,228 @@ export interface PtyResizeFrame {
   readonly rows: number
 }
 
+/**
+ * One entry of a client's widget directory (widget-system.md
+ * "Summon-by-name"). `kind` is the addressable name (e.g. "settings.voice");
+ * `description` is written for the agent to pick the right widget from a
+ * user request. The DIRECTORY comes from the client — the server never
+ * hardcodes a host's widget list, so a different host can offer a different
+ * directory and a different server can ignore it entirely.
+ */
+export interface WidgetDirectoryEntry {
+  readonly kind: string
+  readonly title: string
+  readonly description: string
+}
+
+/**
+ * Server→client: open (or focus) the widget registered under `kind`. Sent in
+ * response to the agent's open_widget tool; the host resolves the kind
+ * through ITS OWN registry and ignores unknown kinds — the frame can never
+ * conjure a window the host didn't already ship.
+ */
+export interface WidgetOpenFrame {
+  readonly type: "widget-open"
+  readonly kind: string
+  /**
+   * Optional instance params (Phase 8 direct lines / parameterized panels):
+   * scalar key→value pairs the host appends to the page URL — e.g.
+   * {thread: "thr_…"} opens a chat window PINNED to that thread, its own
+   * window per distinct params. The host validates keys fail-closed.
+   */
+  readonly params?: Readonly<Record<string, string | number | boolean>>
+}
+
+/**
+ * Server→client: open (or focus) a CONTENT artifact as its own widget window —
+ * the content-tier sibling of `widget-open`. Sent by the agent's
+ * `open_artifact` tool, auto-fired when `widget_write`/`mcp_app_write` CREATE a
+ * new artifact, and emitted when the user reopens a closed artifact by asking.
+ *
+ * The host resolves `artifactId` against its own pinned-artifact set and renders
+ * it in the sandboxed widget.html cage (kind `widget` = inline HTML, kind
+ * `mcp-app` = MCP Apps relay) — it can NEVER open a system panel this way, so
+ * the system/content trust split is preserved. Distinct from `open_artifact_widget`
+ * the Tauri command: this is the WS-frame path that lets the SERVER initiate the
+ * open. Additive, gated on the `artifacts` capability; a host without artifact
+ * support ignores it.
+ */
+export interface OpenArtifactWidgetFrame {
+  readonly type: "open-artifact-widget"
+  readonly artifactId: string
+  readonly title: string
+  /** The artifact kind, so a host can fail-closed on a kind it can't render. */
+  readonly kind: ArtifactKind
+}
+
+/* ── live subagent tree (S4 "Agents" panel) ─────────────────────────────
+ * When a chat turn delegates to subagents, the server-side SubagentTreeBridge
+ * folds the `parentToolUseId`-tagged tool frames into a per-thread tree and
+ * BROADCASTS it, so the read-only Agents panel renders without subscribing the
+ * thread (subscribing would steal the chat window's secret/interactive
+ * bindings — the one-window-per-thread rule). Additive, gated on the existing
+ * `subagents` hello capability. */
+
+/** One node in the live subagent tree — a spawned Agent/Task and its activity.
+ *  METADATA ONLY (no tool output, no full prompt) — wire-safe + context-cheap. */
+export interface SubagentNode {
+  readonly id: string
+  /** The spawning Agent's tool_use id when nested, else null (top-level). */
+  readonly parentId: string | null
+  /** The subagent type (e.g. "Explore") or "Agent" when untyped. */
+  readonly name: string
+  /** A short human label from the spawn (description, else a prompt prefix). */
+  readonly description: string
+  readonly status: "running" | "done" | "error"
+  /** The subagent's current/last tool, or null before it runs one. */
+  readonly tool: string | null
+  readonly toolCount: number
+}
+
+/** Server→client: the live subagent tree for a thread. Broadcast on change and
+ *  sent in reply to a `subagent-tree-request`. */
+export interface SubagentTreeFrame {
+  readonly type: "subagent-tree"
+  readonly threadId: string
+  readonly agents: ReadonlyArray<SubagentNode>
+}
+
+/** Client→server: the Agents panel asks for a thread's current tree on open,
+ *  so a panel summoned mid-turn paints immediately (not on the next change). */
+export interface SubagentTreeRequestFrame {
+  readonly type: "subagent-tree-request"
+  readonly threadId: string
+}
+
+/* ── MCP Apps host relay (widget-system.md Phase 7, SEP-1865) ───────────
+ * The Moon is an MCP Apps HOST; the Luna server owns every MCP session
+ * (single session authority). v1 serves an in-process CoreAppRegistry —
+ * the server is the first app provider — but the frames are deliberately
+ * provider-agnostic so an external-MCP-server relay rides the same seam.
+ * All four are additive, gated on the hello `mcpApps` capability. */
+
+/** Client→server: resolve a `ui://` app resource (the app's HTML template). */
+export interface McpResourceReadFrame {
+  readonly type: "mcp-resource-read"
+  readonly requestId: string
+  readonly uri: string
+}
+
+/**
+ * Server→client: the resource read outcome. `text` is the app HTML
+ * (mimeType `text/html;profile=mcp-app`); `ok:false` carries a short,
+ * non-sensitive reason (unknown uri, provider failure).
+ */
+export interface McpResourceResultFrame {
+  readonly type: "mcp-resource-result"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly mimeType?: string
+  readonly text?: string
+  readonly message?: string
+}
+
+/**
+ * Client→server: a rendered MCP app called `tools/call`. `appUri` is the
+ * `ui://` resource the calling app was rendered from — the server enforces
+ * the spec's same-server rule (an app may ONLY call its own app's tools).
+ * `args` is the tool's arguments object (any JSON value).
+ */
+export interface McpToolCallFrame {
+  readonly type: "mcp-tool-call"
+  readonly requestId: string
+  readonly appUri: string
+  readonly tool: string
+  readonly args: unknown
+}
+
+/**
+ * Server→client: the tool call outcome. `result` is the tool's content
+ * (any JSON value — spec-shaped CallToolResult for core apps). It is the
+ * app's data: this package NEVER logs it. `ok:false` carries a short,
+ * non-sensitive reason (unknown app, tool not on that app, handler failure).
+ */
+export interface McpToolResultFrame {
+  readonly type: "mcp-tool-result"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly result?: unknown
+  readonly message?: string
+}
+
+/* ── Smart Bar (v1 info-only, dynamically server-assembled) ────────────────
+ * Server resolves context and PUSHES a ready-made ordered list of typed
+ * items; the client is a dumb renderer. v1 emits/renders `kind:"info"` only;
+ * all other kinds are reserved in the union for forward-compat (unknown kinds
+ * are silently skipped client-side). Additive — no protocol bump.
+ *
+ * Re-pushed on: thread subscribe/snapshot, turn-complete, local-shell-
+ * capability change, and a low-frequency background interval. */
+
+export type SmartBarItemKind =
+  | "info"       // v1: read-only label + value chip
+  // ── Phase 2+ (schema reserved; renderer added incrementally) ──
+  | "button"     // value=caption; emits smart-bar-interaction on click
+  | "toggle"     // boolean; emits smart-bar-interaction on flip
+  | "slider"     // + min/max/step; emits smart-bar-interaction on change
+  | "select"     // + options[]; dropdown; emits smart-bar-interaction on change
+  | "sparkline"  // + points[]; small inline graph
+
+export interface SmartBarItem {
+  readonly id: string
+  readonly kind: SmartBarItemKind
+  readonly label?: string
+  readonly value?: string
+  readonly icon?: string
+  readonly tone?: "default" | "muted" | "good" | "warn"
+  readonly group?: string
+  readonly priority?: number
+  readonly tooltip?: string
+}
+
+/**
+ * Server→client: the current smart bar item list for a thread. Re-pushed
+ * whenever context changes (see re-push triggers above). `version` is always
+ * 1; it is present so a future schema revision can introduce `version:2`
+ * items without a protocol bump. An empty `items` array means hide the bar.
+ * Additive — no hello capability gate; unknown frame types are tolerated by
+ * old clients and are a no-op in the ui-shared reducer.
+ */
+export interface SmartBarFrame {
+  readonly type: "smart-bar"
+  readonly threadId: string
+  readonly version: 1
+  readonly items: ReadonlyArray<SmartBarItem>
+}
+
+/**
+ * Server→client: ack for a `set-thread-config` request. Sent only to the
+ * requesting connection (not broadcast — the change is per-thread not
+ * per-session, and other connections can detect the diff on next message).
+ *
+ * `applied` lists the fields that were accepted and are effective NOW for the
+ * in-flight SDK session. `deferred` lists fields accepted but queued for the
+ * NEXT thread creation (e.g. cross-lane model switch — cannot hot-swap mid-
+ * conversation). `rejected` lists fields that were invalid or unsupported,
+ * with a short non-sensitive reason.
+ *
+ * Effort semantic for `"max"`: the ack reports the accepted THREAD-LEVEL
+ * preference, and `effort` echoes the value the server actually accepted
+ * (clamping may adjust it). A mid-thread switch to "max" runs the current
+ * thread's live query at the closest live level ("xhigh" — the SDK's
+ * Settings.effortLevel has no "max") and applies exactly as "max" on the
+ * next rebuild (recovery or new thread, which use Options.effort).
+ */
+export interface ThreadConfigFrame {
+  readonly type: "thread-config"
+  readonly threadId: string
+  readonly model?: string
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
+  readonly applied: ReadonlyArray<"model" | "effort">
+  readonly deferred: ReadonlyArray<"model" | "effort">
+  readonly rejected?: ReadonlyArray<{ readonly field: "model" | "effort"; readonly reason: string }>
+}
+
 export type ServerFrame =
   | HelloFrame
   | EventFrame
@@ -341,15 +1116,36 @@ export type ServerFrame =
   | ToolResultFrame
   | TurnCompleteFrame
   | AccountListFrame
+  | SkillCatalogFrame
+  | SkillStatusFrame
+  | ConnectorCatalogFrame
+  | ConnectorListFrame
+  | ConnectorOauthRedirectFrame
+  | ConnectorStatusFrame
+  | ArtifactListFrame
+  | ArtifactUpdateFrame
+  | WorkflowListFrame
+  | WorkflowRunsFrame
   | LocalShellRequestFrame
   | LocalShellStatusFrame
   | RegisterOpTokenStatusFrame
   | SecretRequestFrame
   | SecretStatusFrame
+  | JobInputRequestFrame
+  | JobInputStatusFrame
   | MemorySearchResultFrame
   | MemorySearchErrorFrame
   | SurveyRequestFrame
   | PtyOutputFrame
+  | VaultListFrame
+  | VaultStatusFrame
+  | WidgetOpenFrame
+  | OpenArtifactWidgetFrame
+  | SubagentTreeFrame
+  | McpResourceResultFrame
+  | McpToolResultFrame
+  | ThreadConfigFrame
+  | SmartBarFrame
 
 /* -------------------------------------------------------------------------- */
 /* Client → server                                                            */
@@ -382,6 +1178,8 @@ export interface NewThreadFrame {
   readonly title?: string
   readonly tags?: ReadonlyArray<string>
   readonly systemPrompt?: string
+  /** Additive effort level for this thread. Older servers ignore it. */
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
 }
 
 /**
@@ -543,6 +1341,41 @@ export interface SurveyResponseFrame {
   readonly verdicts: ReadonlyArray<SurveyVerdict>
 }
 
+/**
+ * Client→server: flip one skill on/off from the Skills settings tab
+ * (PRD Part B §12). Server persists the delta (skill_preferences), flips
+ * the live registry, and acks with `skill-status` + a fresh `skill-catalog`.
+ * Idempotent: re-sending the current state is a no-op server-side.
+ */
+/**
+ * Client→server: the host's widget directory (sent once after hello by hosts
+ * that can open widgets). Replaces any previously announced directory for
+ * this connection.
+ */
+export interface WidgetDirectoryFrame {
+  readonly type: "widget-directory"
+  readonly widgets: ReadonlyArray<WidgetDirectoryEntry>
+}
+
+export interface SkillToggleFrame {
+  readonly type: "skill-toggle"
+  readonly id: string
+  readonly enabled: boolean
+}
+
+/**
+ * Client→server: update the model and/or effort for an existing thread.
+ * Additive — gated on the `effortSelection` capability; older servers route
+ * this to the unknown-frame log and ignore it. At most one of model/effort
+ * is required; omitting both is a no-op (server replies with empty applied[]).
+ */
+export interface SetThreadConfigFrame {
+  readonly type: "set-thread-config"
+  readonly threadId: string
+  readonly model?: string
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
+}
+
 export type ClientFrame =
   | PongFrame
   | ByeFrame
@@ -557,6 +1390,27 @@ export type ClientFrame =
   | MemorySearchRequestFrame
   | RegisterOpTokenFrame
   | SecretResultFrame
+  | JobInputResultFrame
   | SurveyResponseFrame
+  | SkillToggleFrame
+  | ConnectorOauthBeginFrame
+  | ConnectorOauthCodeFrame
+  | ConnectorConnectFrame
+  | ConnectorDisconnectFrame
+  | ConnectorSetClientFrame
+  | ArtifactPinFrame
+  | ArtifactUnpinFrame
+  | ArtifactEditFrame
+  | WorkflowRunsRequestFrame
+  | WorkflowRefreshFrame
+  | WidgetDirectoryFrame
+  | SubagentTreeRequestFrame
+  | McpResourceReadFrame
+  | McpToolCallFrame
   | PtyInputFrame
   | PtyResizeFrame
+  | VaultPutFrame
+  | VaultDeleteFrame
+  | VaultSyncConfigFrame
+  | VaultImportFrame
+  | SetThreadConfigFrame

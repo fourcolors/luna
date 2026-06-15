@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Luna Widget</title>
+  <script src="vendor/highlight.min.js"></script>
+  <script src="vendor/moon-protocol.js"></script>
+  <script src="vendor/moon-ws.js"></script>
+  <script src="vendor/deck-snap.js"></script>
+  <script src="vendor/moon-dock.js"></script>
+  <script src="vendor/widget-sandbox.js"></script>
+  <script src="vendor/mcp-app-host.js"></script>
+  <!-- Google Fonts: Albert Sans (body) + Caveat (handwritten accent) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Albert+Sans:wght@400;500;600;700&family=Caveat:wght@500;600;700&display=swap" rel="stylesheet">
+  <!-- Watercolor palette tokens (must precede moon-theme.css so theme overrides win) -->
+  <link rel="stylesheet" href="vendor/moon-palette.css">
+  <!-- Shared theme (tokens + widget-window chrome) loads BEFORE the page
+       style so page-specific rules win ties. -->
+  <link rel="stylesheet" href="vendor/moon-theme.css">
+  <!-- Stamps data-palette/data-theme/data-chrome/data-grain on <html> pre-paint -->
+  <script src="vendor/moon-appearance.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: var(--font-body);
+      font-size: 13px;
+      /* background/border/border-radius removed: html/body is transparent
+         (OS window transparency + moon-theme.css rule). The card shell
+         lives on .widget-shell::before (vendor/moon-theme.css). */
+      color: var(--text);
+    }
+
+    /* Title bar, grip, close/pin buttons, #seam, #outline: vendor/moon-theme.css */
+
+    /* ── Outer layout ────────────────────────────────────────────────────── */
+    /* width/height managed by moon-theme.css (.widget-shell card shell).
+       Only flex layout properties live here. */
+    .widget-shell {
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Content area ────────────────────────────────────────────────────── */
+    .content-area {
+      flex: 1;
+      overflow: auto;
+      padding: 10px 12px;
+    }
+    /* Scrollbar base: vendor/moon-theme.css */
+
+    /* ── Status / notices ────────────────────────────────────────────────── */
+    .notice {
+      padding: 12px;
+      color: var(--muted);
+      font-size: 0.75rem;
+      font-style: italic;
+    }
+
+    /* ── Code block ──────────────────────────────────────────────────────── */
+    pre {
+      margin: 0;
+      background: color-mix(in oklab, var(--ink) 4%, transparent);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: auto;
+      padding: 10px 12px;
+    }
+
+    code {
+      font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+      font-size: 0.72rem;
+      line-height: 1.55;
+      white-space: pre;
+      color: var(--ink);
+      background: transparent;
+    }
+
+    /* highlight.js tokens: vendor/moon-theme.css */
+    /* kind=widget: the sandboxed iframe fills the content area. The widget
+       controls its own background; we give it a white base so a transparent
+       widget is legible. */
+    .widget-frame { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
+  </style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <filter id="wc-wobble">
+      <feTurbulence type="fractalNoise" baseFrequency="0.015" numOctaves="3" result="n" seed="7"></feTurbulence>
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="6" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap>
+    </filter>
+  </defs>
+</svg>
+<div class="widget-shell">
+  <!-- TITLE BAR — data-tauri-drag-region on the outer container enables
+       native window drag. The close button is intentionally NOT drag-region. -->
+  <div class="title-bar" data-tauri-drag-region id="title-bar">
+    <span class="grip" data-tauri-drag-region>⋮⋮</span>
+    <span class="wash-dot" aria-hidden="true"></span>
+    <span class="bar-title" data-tauri-drag-region id="bar-title">Loading…</span>
+    <button class="pin-btn" id="pin-btn" title="Unpin from group" aria-label="Unpin widget from its group" hidden>
+      <!-- Lucide "pin" (ISC) — standard icon, not hand-drawn. -->
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 17v5"/>
+        <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>
+      </svg>
+    </button>
+    <button class="close-btn" id="close-btn" title="Close" aria-label="Close widget">✕</button>
+  </div>
+  <div id="seam" aria-hidden="true"></div>
+  <div id="outline" aria-hidden="true"></div>
+  <!-- CONTENT AREA — pre/code populated by JS -->
+  <div class="content-area" id="content-area">
+    <pre><code id="code-block"></code></pre>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ── Read artifact id from query string (already decoded by URLSearchParams) ──
+  var id = new URLSearchParams(location.search).get('id');
+
+  // ── Tauri window handle ───────────────────────────────────────────────────
+  var W = null;
+  var label = null;
+  try {
+    if (window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.getCurrentWindow) {
+      W = window.__TAURI__.window.getCurrentWindow();
+      label = W.label;
+    }
+  } catch (_) { /* non-Tauri env — best-effort */ }
+
+  // ── DOM refs ──────────────────────────────────────────────────────────────
+  var barTitle = document.getElementById('bar-title');
+  var codeEl = document.getElementById('code-block');
+  var closeBtn = document.getElementById('close-btn');
+  var contentArea = document.getElementById('content-area');
+
+  // ── Close button ──────────────────────────────────────────────────────────
+  closeBtn.addEventListener('click', function () {
+    if (window.__TAURI__ && window.__TAURI__.core && label) {
+      window.__TAURI__.core.invoke('close_widget', { label: label }).catch(function () {});
+    } else {
+      window.close();
+    }
+  });
+
+  // ── Utility: show a text notice in the content area ───────────────────────
+  function showNotice(msg) {
+    contentArea.innerHTML = '';
+    var p = document.createElement('p');
+    p.className = 'notice';
+    p.textContent = msg;
+    contentArea.appendChild(p);
+  }
+
+  // ── Widget sandbox bridge state (PRD §16) ─────────────────────────────────
+  // A kind='widget' artifact is AGENT-AUTHORED CODE. It renders in a hard
+  // sandbox (allow-scripts, NO allow-same-origin, strict CSP, no network) and
+  // can only reach out through the cap-gated luna.* postMessage bridge.
+  var widgetFrame = null;        // the current sandboxed <iframe>
+  var widgetBridgeCaps = [];     // this widget's bridge_caps allowlist
+  var widgetSubscribed = false;  // the widget called luna.subscribe()
+  var lastArtifact = null;       // for luna.refresh() re-render
+
+  function clearWidgetState() {
+    widgetFrame = null;
+    widgetBridgeCaps = [];
+    widgetSubscribed = false;
+  }
+
+  // ── MCP app state (widget-system.md Phase 7) ──────────────────────────────
+  // kind='mcp-app': content is a ui:// resource URI. The app renders via
+  // LunaMcpHost (raw MCP Apps JSON-RPC over postMessage) in the SAME sandbox
+  // cage but WITHOUT the luna.* shim; its resource read + tools/call relay
+  // over this window's WebSocket as mcp-resource-read / mcp-tool-call frames,
+  // requestId-correlated through mcpPending.
+  var mcpHostHandle = null;      // LunaMcpHost handle for the mounted app
+  var mcpAppsSupported = false;  // hello `mcpApps` capability (fail closed)
+  var mcpSeq = 0;
+  var mcpPending = {};           // requestId → resolve(resultFrame)
+
+  function disposeMcpApp() {
+    if (mcpHostHandle) {
+      try { mcpHostHandle.dispose(); } catch (_) { /* already gone */ }
+      mcpHostHandle = null;
+    }
+  }
+
+  // Send a relay frame and resolve with its requestId-matched result frame.
+  // Resolves ok:false immediately when the socket is down (never hangs).
+  function mcpRequest(frame) {
+    return new Promise(function (resolve) {
+      mcpPending[frame.requestId] = resolve;
+      if (!client.send(frame)) {
+        delete mcpPending[frame.requestId];
+        resolve({ ok: false, message: 'Not connected.' });
+      }
+    });
+  }
+
+  // Transport scoped to ONE app: every tools/call is stamped with the app's
+  // own uri, so the server can enforce the spec's same-app tool rule.
+  function makeMcpTransport(appUri) {
+    return {
+      readResource: function (uri) {
+        return mcpRequest({ type: 'mcp-resource-read', requestId: 'mcp-r' + (++mcpSeq), uri: uri });
+      },
+      callTool: function (tool, args) {
+        return mcpRequest({
+          type: 'mcp-tool-call',
+          requestId: 'mcp-t' + (++mcpSeq),
+          appUri: appUri,
+          tool: tool,
+          args: args === undefined ? {} : args,
+        });
+      },
+    };
+  }
+
+  function renderMcpApp(artifact) {
+    lastArtifact = artifact;
+    clearWidgetState();
+    disposeMcpApp();
+    if (!mcpAppsSupported) {
+      showNotice("This server doesn't support MCP apps.");
+      return;
+    }
+    if (!window.LunaMcpHost || !window.LunaWidgetSandbox) {
+      showNotice('MCP app host unavailable in this build.');
+      return;
+    }
+    var content = artifact.content || '';
+    // A GENERATED / store-backed app stores its HTML inline; a STATIC / external
+    // app stores a `ui://` resource URI. For an inline app the identity uri is
+    // DERIVED from the artifact id so the server can enforce the same-server
+    // tool rule + curated read-only allowlist on its tools/call.
+    var isPointer = /^ui:\/\//i.test(content.trim());
+    var appUri = isPointer
+      ? content.trim()
+      : ('ui://luna/app/' + encodeURIComponent(id || ''));
+    contentArea.innerHTML = '';
+    var iframe = document.createElement('iframe');
+    iframe.className = 'widget-frame';
+    // Same trust boundary as kind='widget': allow-scripts WITHOUT
+    // allow-same-origin; srcdoc assembled by the (generated|bare) MCP cage.
+    iframe.setAttribute('sandbox', LunaWidgetSandbox.SANDBOX_ATTR);
+    iframe.setAttribute('referrerpolicy', 'no-referrer');
+    contentArea.appendChild(iframe);
+    var hostOpts = {
+      frameEl: iframe,
+      uri: appUri,
+      transport: makeMcpTransport(appUri),
+      onError: function (msg) { showNotice(msg); },
+    };
+    // Inline app → hand the HTML to the host (generated-app cage, window.mcp
+    // helper); pointer app → host fetches it via mcp-resource-read (bare cage).
+    if (!isPointer) hostOpts.html = content;
+    mcpHostHandle = LunaMcpHost.host(hostOpts);
+  }
+
+  function renderWidget(artifact) {
+    lastArtifact = artifact;
+    widgetBridgeCaps = Array.isArray(artifact.bridgeCaps) ? artifact.bridgeCaps : [];
+    widgetSubscribed = false;
+    contentArea.innerHTML = '';
+    var iframe = document.createElement('iframe');
+    iframe.className = 'widget-frame';
+    // SECURITY (the trust boundary): allow-scripts WITHOUT allow-same-origin →
+    // unique opaque origin: no parent-DOM access, no cookies/storage, no
+    // window.__TAURI__. srcdoc (not src) → inline, no network load. The CSP +
+    // bridge shim are assembled by the audited LunaWidgetSandbox.
+    iframe.setAttribute(
+      'sandbox',
+      window.LunaWidgetSandbox ? LunaWidgetSandbox.SANDBOX_ATTR : 'allow-scripts'
+    );
+    iframe.setAttribute('referrerpolicy', 'no-referrer');
+    if (window.LunaWidgetSandbox) {
+      iframe.srcdoc = LunaWidgetSandbox.buildSrcdoc(artifact.content || '');
+    }
+    widgetFrame = iframe;
+    contentArea.appendChild(iframe);
+  }
+
+  // The host half of the luna.* bridge: accept messages ONLY from the current
+  // widget iframe, and forward obs events ONLY for kinds the widget's
+  // bridge_caps allow (fails closed). Set up once; the iframe reference gates it.
+  window.addEventListener('message', function (e) {
+    if (!widgetFrame || e.source !== widgetFrame.contentWindow) return;
+    var m = e.data;
+    if (!m || typeof m !== 'object') return;
+    if (m.__luna === 'subscribe') {
+      widgetSubscribed = true; // the per-kind gate is applied on each forward
+    } else if (m.__luna === 'refresh') {
+      if (lastArtifact) renderWidget(lastArtifact);
+    }
+    // 'ready' is a no-op in v1; luna.ask() is deferred to v2 (needs consent).
+  });
+
+  // ── Render artifact ───────────────────────────────────────────────────────
+  // XSS-CRITICAL: content is agent/user-controlled.
+  // - kind='widget' → the sandboxed iframe above (executes, but caged).
+  // - all other kinds → escaped source via .textContent (NEVER innerHTML),
+  //   so even html/widget-source renders as text and never executes here.
+  function render(artifact) {
+    if (!artifact) return;
+
+    // Title bar: "filename.sh · v2"
+    var titleText = (artifact.title || 'Artifact') + ' · v' + (artifact.version || 1);
+    barTitle.textContent = titleText;
+
+    if (artifact.kind === 'mcp-app') {
+      renderMcpApp(artifact);
+      return;
+    }
+    if (artifact.kind === 'widget') {
+      disposeMcpApp();
+      renderWidget(artifact);
+      return;
+    }
+    clearWidgetState();
+    disposeMcpApp();
+
+    // Restore the pre>code structure (may have been replaced by a notice/iframe).
+    if (!document.getElementById('code-block')) {
+      contentArea.innerHTML = '';
+      var pre = document.createElement('pre');
+      var code = document.createElement('code');
+      code.id = 'code-block';
+      pre.appendChild(code);
+      contentArea.appendChild(pre);
+      codeEl = code;
+    }
+
+    codeEl.textContent = artifact.content || '';
+    codeEl.className = 'language-' + (artifact.lang || '');
+    if (window.hljs) {
+      try { hljs.highlightElement(codeEl); } catch (_) { /* graceful degrade */ }
+    }
+  }
+
+  // ── WebSocket wiring (vendor/moon-ws.js client + frame registry) ─────────
+  var reconnectTimer = null;
+  var didReconnect = false; // only attempt one reconnect
+
+  var frames = LunaWS.createFrameRegistry()
+    .register('hello', function (frame) {
+      var caps = LunaProtocol.parseHelloCapabilities(frame);
+      mcpAppsSupported = !!caps.mcpApps;
+      if (!caps.artifacts) {
+        showNotice("This server doesn't support pinned artifacts.");
+      }
+    })
+    .register('artifact-list', function (frame) {
+      var list = frame.artifacts;
+      if (!Array.isArray(list)) return;
+      var found = null;
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].id === id) { found = list[i]; break; }
+      }
+      if (found) {
+        render(found);
+      } else {
+        showNotice('This artifact is no longer pinned.');
+      }
+    })
+    .register('artifact-update', function (frame) {
+      if (frame.artifact && frame.artifact.id === id) {
+        render(frame.artifact);
+      }
+    })
+    // MCP relay results (Phase 7): settle the requestId-matched promise.
+    // Late/unknown requestIds are dropped (a disposed app's stragglers).
+    .register('mcp-resource-result', function (frame) {
+      var resolve = mcpPending[frame.requestId];
+      if (resolve) { delete mcpPending[frame.requestId]; resolve(frame); }
+    })
+    .register('mcp-tool-result', function (frame) {
+      var resolve = mcpPending[frame.requestId];
+      if (resolve) { delete mcpPending[frame.requestId]; resolve(frame); }
+    })
+    .register('event', function (frame) {
+      // Obs-event stream → forward to a SUBSCRIBED widget, but ONLY for the
+      // kinds its bridge_caps allow (cap-gated; fails closed). This is the
+      // single read-only door out of the sandbox (luna.subscribe).
+      if (
+        widgetFrame &&
+        widgetSubscribed &&
+        frame.event &&
+        window.LunaWidgetSandbox &&
+        LunaWidgetSandbox.subscribeAllowed(widgetBridgeCaps, frame.event.kind)
+      ) {
+        try {
+          widgetFrame.contentWindow.postMessage(
+            { __luna: 'event', event: frame.event },
+            '*'
+          );
+        } catch (_) { /* iframe gone */ }
+      }
+    });
+
+  var client = LunaWS.createClient({
+    registry: frames,
+    autoPong: true, // ping → {type:'pong', ts}, same as the old inline case
+    onOpen: function () {
+      // A fresh socket is up → re-arm the single-retry budget so each DISTINCT
+      // disconnect gets its own one delayed reconnect (review G3 — without this
+      // the window gives up forever after the first drop+retry).
+      didReconnect = false;
+    },
+    onClose: function () {
+      showNotice('Disconnected');
+      // One reconnect attempt after 2 s — don't hammer.
+      if (!didReconnect) {
+        didReconnect = true;
+        reconnectTimer = setTimeout(function () {
+          reconnectTimer = null;
+          init(); // re-read creds and reconnect
+        }, 2000);
+      }
+    },
+    // 'error' intentionally unhandled: the 'close' event fires next and owns
+    // the reconnect logic (same as the old inline listener).
+  });
+
+  // Settle in-flight MCP relay requests on disconnect so a mounted app's
+  // tools/call resolves to a JSON-RPC error instead of hanging forever.
+  client.registerCloseHook(function () {
+    var pendingNow = mcpPending;
+    mcpPending = {};
+    for (var k in pendingNow) {
+      try { pendingNow[k]({ ok: false, message: 'disconnected' }); } catch (_) { /* settled */ }
+    }
+  });
+
+  function connect(wsUrl, wsToken) {
+    try {
+      client.connect(wsUrl, wsToken);
+    } catch (e) {
+      showNotice('WebSocket error: ' + (e && e.message ? e.message : String(e)));
+    }
+  }
+
+  // ── Boot ──────────────────────────────────────────────────────────────────
+  async function init() {
+    var creds = null;
+    try {
+      if (window.__TAURI__ && window.__TAURI__.core) {
+        creds = await window.__TAURI__.core.invoke('load_connection');
+      }
+    } catch (_) { /* not in Tauri */ }
+
+    if (!creds || !creds.wsUrl) {
+      showNotice('Not connected — no connection profile found.');
+      return;
+    }
+
+    connect(creds.wsUrl, creds.wsToken || null);
+  }
+
+  init();
+
+  // ── Self-snap + dock groups: shared wiring in vendor/moon-dock.js
+  //    (snap-on-release, flat symmetric groups from Rust dock-group events,
+  //    pin-to-detach, seam flash, perimeter outline). Best-effort in non-Tauri
+  //    environments. OPERATOR-VERIFY: real snap APIs need a real build.
+  if (window.LunaDock) LunaDock.wire({ win: W, label: label });
+})();
+</script>
+</body>
+</html>

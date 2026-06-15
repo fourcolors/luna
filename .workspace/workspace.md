@@ -27,8 +27,11 @@ notes — not to anything in Luna's runtime state (that's `~/.luna/`).
 - **DNA / SYSTEM** — `DNA.md` (identity) and `SYSTEM.md` (mechanics),
   both loaded into every thread's system prompt. Source of truth for
   who Luna is and how her runtime is organized.
-- **Subagent** — a `.md` file under `~/.luna/agents/` (global) or
-  `.workspace/agents/` (scoped) that Luna can consult.
+- **Subagent** — a `.md` file under `~/.luna/agents/` that Luna can
+  invoke via the Task tool in chat threads. No restart needed: new
+  threads pick up newly added definitions (an already-open thread keeps
+  the set it started with). Workspace-scoped agents are not yet
+  supported — only the global `~/.luna/agents/` directory is read.
 
 ## Entities
 

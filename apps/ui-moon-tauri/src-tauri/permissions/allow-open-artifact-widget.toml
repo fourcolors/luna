@@ -1,0 +1,5 @@
+# Generated for the deck — artifact widget windows (PRD Part C / W2). See main.rs.
+[[permission]]
+identifier = "allow-open-artifact-widget"
+description = "Allows the open_artifact_widget command"
+commands.allow = ["open_artifact_widget"]

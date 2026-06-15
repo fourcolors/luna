@@ -1,15 +1,33 @@
 {
   "permissions": {
     "allow": [
-      "Write(/path/to/luna/**)",
-      "Edit(/path/to/luna/**)",
-      "Bash(git -C /path/to/luna *)",
-      "Bash(bun run *)",
-      "Bash(bun test *)",
-      "Bash(bun install)",
-      "Bash(bun add *)",
-      "Bash(mkdir -p ~/.luna/**)",
-      "Bash(mkdir -p /path/to/luna/.claude/**)"
+      "Read",
+      "Edit",
+      "Write",
+      "Grep",
+      "Glob",
+      "Bash",
+      "WebFetch",
+      "WebSearch",
+      "Skill",
+      "Task",
+      "Agent",
+      "mcp__memory"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(rm -fr *)",
+      "Bash(rm * -rf *)",
+      "Bash(rm * -fr *)",
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(secrets/**)",
+      "Read(**/secrets/**)",
+      "Edit(.env)",
+      "Edit(.env.*)",
+      "Edit(**/.env*)"
     ]
   },
   "mcpServers": {

@@ -24,13 +24,19 @@
     "@luna/adapter-sdk": "workspace:*",
     "@luna/control-server": "workspace:*",
     "@luna/chat-service": "workspace:*",
+    "@luna/connectors": "workspace:*",
     "@luna/core": "workspace:*",
+    "@luna/job-input-tools": "workspace:*",
     "@luna/local-shell-tools": "workspace:*",
     "@luna/memory": "workspace:*",
     "@luna/memory-tools": "workspace:*",
     "@luna/observability-tools": "workspace:*",
     "@luna/scheduler-tools": "workspace:*",
     "@luna/secret-tools": "workspace:*",
+    "@luna/skill-tools": "workspace:*",
+    "@luna/tools": "workspace:*",
+    "@luna/vault": "workspace:*",
+    "@luna/widget-tools": "workspace:*",
     "@luna/ui-shared": "workspace:*",
     "@luna/ui-shared-solid": "workspace:*",
     "@luna/ui-ws": "workspace:*",
@@ -40,6 +46,7 @@
     "typescript": "^5.6.3",
     "vite": "^5.4.10",
     "vite-plugin-solid": "^2.11.12",
-    "vitest": "^2.1.5"
+    "vitest": "^2.1.5",
+    "@luna/oauth": "workspace:*"
   }
 }

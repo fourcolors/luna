@@ -282,6 +282,20 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
           return true
         })
 
+      const updateRunStatus: JobsStoreApi["updateRunStatus"] = (
+        runId,
+        status,
+      ) =>
+        Effect.sync(() => {
+          const existing = runs.get(runId)
+          // Live rows only: a closed run (finishedAt set) must not be
+          // resurrected by a late flip-back — mirror the SQLite layer's
+          // `AND finished_at IS NULL` guard.
+          if (!existing || existing.finishedAt !== null) return false
+          runs.set(runId, { ...existing, status })
+          return true
+        })
+
       const listRuns: JobsStoreApi["listRuns"] = (jobId, limit = 25) =>
         Effect.sync(() =>
           Array.from(runs.values())
@@ -301,6 +315,7 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
         claim,
         recordRunStart,
         recordRunEnd,
+        updateRunStatus,
         listRuns,
       } satisfies JobsStoreApi
     }),
@@ -425,6 +440,14 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
                   error       = ?,
                   steps_json  = ?
             WHERE id = ?`,
+        )
+        // Live-status flip (running↔waiting). `finished_at IS NULL` guards
+        // against a late flip-back resurrecting a row recordRunEnd already
+        // closed (e.g. the SDK turn timed out while the run was waiting).
+        const runStatusStmt = db.query(
+          `UPDATE job_runs
+              SET status = ?
+            WHERE id = ? AND finished_at IS NULL`,
         )
         const listRunsStmt = db.query(
           `SELECT id, job_id, started_at, finished_at, status, attempt,
@@ -677,6 +700,20 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
               new JobsStoreError({ op: "run_end", message: String(cause), cause }),
           })
 
+        const updateRunStatus: JobsStoreApi["updateRunStatus"] = (
+          runId,
+          status,
+        ) =>
+          Effect.try({
+            try: () => runStatusStmt.run(status, runId).changes > 0,
+            catch: (cause) =>
+              new JobsStoreError({
+                op: "run_status",
+                message: String(cause),
+                cause,
+              }),
+          })
+
         const listRuns: JobsStoreApi["listRuns"] = (jobId, limit = 25) =>
           Effect.try({
             try: () => (listRunsStmt.all(jobId, limit) as RawRunRow[]).map(rowToRun),
@@ -695,6 +732,7 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
           claim,
           recordRunStart,
           recordRunEnd,
+          updateRunStatus,
           listRuns,
         } satisfies JobsStoreApi
       }),

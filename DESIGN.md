@@ -58,8 +58,8 @@ Three decisions that drive everything downstream. Dated, with rationale.
 - **Chosen**: Dual-mode `AccountBroker`:
   - `acquireSession()` — rotates the Anthropic OAuth subscription token per `query()` call via SDK's `options.env.CLAUDE_CODE_OAUTH_TOKEN`. Per-query granularity, no subprocess respawn needed.
   - `acquireTool(name)` — rotates credentials for MCP servers + custom tools we own. Per-invocation, transparent wrap.
-- **Verified evidence**: sol-agent production uses this pattern at `~/sol-agent/lib/agent.ts:306-316`. The Claude Agent SDK respects `options.env` overlays per-query; the subprocess honors the injected token without restart. Our earlier concern ("subprocess owns HTTP, can't rotate without respawn") was wrong in practice.
-- **Consequence**: `AccountBroker` is truly transparent. Rotation strategies (round-robin, LRU, least-used-with-429-awareness) ported from sol-agent as a spec (not as code — see §9.3). Sticky-pin on session resume (`boundAccountId`) preserves prompt-cache warmth.
+- **Observed behaviour**: the Claude Agent SDK respects `options.env` overlays per-query; the subprocess honors the injected token without restart. Our earlier concern ("subprocess owns HTTP, can't rotate without respawn") was wrong in practice.
+- **Consequence**: `AccountBroker` is truly transparent. Rotation strategies (round-robin, LRU, least-used-with-429-awareness) specified in §9.3. Sticky-pin on session resume (`boundAccountId`) preserves prompt-cache warmth.
 - **Token type**: OAuth subscription tokens (1-year TTL, from `claude setup-token`), not API keys. Pool stored at `~/.luna/accounts.db` (SQLite per §5.1) via `SecretProvider`, never as plaintext env vars.
 
 ### 0.3 "One-shot" reinterpretation — **Frozen architecture + revisable implementation + named checkpoints**
@@ -623,16 +623,38 @@ propagates to the `job_runs` row.
 #### 5.3.5 Cutover plan
 
 V2 ships behind `LUNA_SCHEDULER_V2_ENABLED=1` so it can run **side by side**
-with the existing TriggerAgent. The order of operations:
+with the existing TriggerAgent.
+
+**Worker kinds.** Dream and wake are NOT migrated onto the generic `prompt` /
+`workflow` workers — those are typed `Worker<never>` and close over only
+`SDKClient` + `AgentNotesService`, which cannot carry the dream cycle
+(`DreamStore | DreamReasoner | SessionStore | MemoryRouter | Clock`, + an
+optional `CalibrationStore`) or the per-workspace wake cycle (`WakeReasoner |
+WakeLogStore | AgentNotesService`). So each gets its OWN worker kind:
+
+- **`dream`** (`DREAM_WORKER_KIND`, `packages/core/src/dream/dream-worker.ts`)
+  — runs one `runDream(now)` cycle; ignores its payload (the window comes from
+  the watermark). ONE nightly row.
+- **`wake`** (`WAKE_WORKER_KIND`, `packages/core/src/wake/wake-worker.ts`) —
+  runs one `runWake(now, opts)` cycle; its payload MUST carry
+  `{ workspaceSlug, workspacePath }` (parsed up front), so there is ONE row PER
+  wake-enabled workspace.
+
+Both kinds are registered into the boot `WorkerRegistry` alongside `prompt` +
+`workflow` (`buildWorkerRegistryLayer` in `chat-server.ts`), so a JobTicker
+draining the `jobs` table dispatches `kind='dream'` / `kind='wake'` rows to
+them.
+
+The order of operations:
 
 | Step | Effect |
 |---|---|
 | 1 | Schema migration ships in a release; `jobs` rows get new columns; `job_runs` empty. |
-| 2 | `LUNA_SCHEDULER_V2_ENABLED=1` flips on JobTicker; old TriggerAgent still up. |
-| 3 | Migrate wake → workflow row; dream → prompt row; drop legacy `luna-self-dev` row. |
-| 4 | Disable wake's hardcoded `buildWakeCronLayer` call. Wake now runs through V2. |
-| 5 | Same for dream. |
-| 6 | After ≥24 h clean on dev, remove TriggerAgent + the old per-cron Layers. |
+| 2 | `LUNA_SCHEDULER_V2_ENABLED=1` flips on JobTicker (which now registers the `dream` + `wake` worker kinds too); old TriggerAgent still up. |
+| 3 | Run `dream-wake-install.ts` to seed ONE `kind='dream'` row + ONE `kind='wake'` row per wake-enabled workspace (idempotent, `enabled=1`, UTC `next_run_at`). The dream row reuses dream's existing nightly schedule (`0 3 * * *`); each wake row reuses the wake schedule (`*/30 * * * *`). No generic `prompt`/`workflow` row is involved. |
+| 4 | The SAME `LUNA_SCHEDULER_V2_ENABLED=1` flag gates BOTH `buildDreamCronLayer` and `buildWakeCronLayer` to register NOTHING (each returns an empty Layer), so dream + wake run EXCLUSIVELY through their V2 job rows — the boot graph holds EITHER the legacy crons OR the V2 ticker for dream/wake, never both. Reversible: flip the flag off and the legacy crons re-register. |
+| 5 | Verify on dev: V2 `dream` + `wake` rows present in `jobs`; legacy cron layers register nothing; `job_runs` rows close `success` and the dream watermark / wake_log advance. |
+| 6 | After ≥24 h clean on dev, remove TriggerAgent + the old per-cron Layers (`buildDreamCronLayer` / `buildWakeCronLayer`) and the flag gate entirely. |
 
 §5.1 jobs columns from V1 (`spec`, `next_run`, `last_run`, `last_status`)
 are kept indefinitely as deprecated synonyms; new code never writes them.
@@ -843,7 +865,7 @@ Tier │ Name             │ Scope                     │ Framework       │ 
 - "Byte-equivalent" = structural equality on `{kind, role, content}` per message, ignoring timestamps and UUIDs.
 
 ### 8.2 Simulation pattern (Tier 2)
-Matches sol-agent's `simulateTick()` pattern. Every stateful module (Accounts health, Task lifecycle, Workflow state, Session status) gets N-tick simulations asserting invariants at intermediate steps + final state.
+Uses a `simulateTick()` pattern. Every stateful module (Accounts health, Task lifecycle, Workflow state, Session status) gets N-tick simulations asserting invariants at intermediate steps + final state.
 
 ### 8.3 Layer-swap test doubles (Tier 3)
 Every Service has a `Default` Layer (real) and a `Test` Layer (in-memory/fake). Integration tests compose: `Layer.mergeAll(realA, testB, realC)` to isolate one component under realistic dependencies.
@@ -1055,7 +1077,7 @@ interface SDKAdapter {
 2. **Every SDK message is mirrored to our SessionStore** before returning to caller — we never trust the SDK's transcript view alone.
 3. **All SDK hook events are exposed** via re-export of `HOOK_EVENTS` from `@anthropic-ai/claude-agent-sdk`. The hook surface is `typeof HOOK_EVENTS[number]` — count is an SDK property, not an architectural decision. Whatever ships upstream, we expose.
 4. **Permission evaluation order matches SDK exactly**: `Hooks → Deny rules → Permission mode → Allow rules → canUseTool`.
-5. **Timeouts on every SDK call.** Default 30s; configurable. Plus an **idle timeout** (default 120s, configurable via `SessionOptions.idleTimeoutMs`) that aborts the query if no message has been yielded for the idle window — per sol-agent's hard-won mitigation for SDK subprocess hangs.
+5. **Timeouts on every SDK call.** Default 30s; configurable. Plus an **idle timeout** (default 120s, configurable via `SessionOptions.idleTimeoutMs`) that aborts the query if no message has been yielded for the idle window — a hard-won mitigation for SDK subprocess hangs.
 6. **Persisted messages use a versioned envelope.** `StoredMessage.payload` is typed `unknown` and carries a `schemaVersion` field. The SDK's `SDKMessage` union is re-exported by the adapter package only; core never imports SDK types at runtime. Readers validate with `effect/Schema` at read time, decoupling at-rest data from SDK shape drift.
 7. **The adapter owns reserved `Options` keys.** When merging caller-supplied `sdkOptions` into the outgoing SDK `Options`, the adapter ALWAYS overwrites `hooks`, `canUseTool`, `abortController`, `resume`, `forkSession` with adapter-owned values. If any of these keys are present in caller input, the adapter logs a warning and drops them. Tested.
 8. **The `Query` handle is retained.** `query()` returns a `Query` object that is both an async iterable AND a handle with control methods (`interrupt`, `supplyToolPermissionResponse`, etc.). The adapter stores the handle in a session-scoped `Ref` so callbacks (notably `canUseTool` "ask" flows) can reach it.
@@ -1151,7 +1173,7 @@ Every module emits structured events via `@effect/opentelemetry` Tracer + a loca
 Sinks:
 - Local JSONL at `~/.luna/events.jsonl`.
 - OTLP exporter (configurable).
-- DuckDB refresher (parity with sol-agent telemetry).
+- DuckDB refresher (telemetry parity).
 
 ---
 
@@ -1262,4 +1284,3 @@ Trigger Agent       │ Agent bound to an event Stream
 - SDK issue #9705 (iterable closure): https://github.com/anthropics/claude-code/issues/9705
 - SDK issue #67 (transcript visibility): https://github.com/anthropics/claude-agent-sdk-typescript/issues/67
 - Team lifecycle trap: https://github.com/anthropics/claude-code-action/issues/1124
-- Sol-agent (migration source): `~/sol-agent/`

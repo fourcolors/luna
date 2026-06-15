@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default permission set for the main window",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "core:window:default",
@@ -24,6 +26,26 @@
     "allow-get-platform",
     "allow-check-for-update",
     "allow-install-update",
-    "dialog:allow-open"
+    "allow-voice-status",
+    "allow-voice-set-mode",
+    "allow-voice-ptt-down",
+    "allow-voice-ptt-up",
+    "allow-voice-cancel",
+    "allow-speak-text",
+    "allow-voice-stop-speaking",
+    "allow-voice-list-voices",
+    "allow-voice-set-voice",
+    "allow-voice-set-config",
+    "allow-voice-ensure-model",
+    "dialog:allow-open",
+    "allow-oauth-loopback-start",
+    "allow-oauth-loopback-wait",
+    "allow-oauth-loopback-cancel",
+    "allow-open-external-url",
+    "opener:allow-open-url",
+    "allow-open-artifact-widget",
+    "allow-open-widget",
+    "allow-close-widget",
+    "allow-list-widget-windows"
   ]
 }

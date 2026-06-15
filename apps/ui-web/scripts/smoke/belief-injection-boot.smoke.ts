@@ -28,18 +28,22 @@
  * Exit 0 = PASS, non-zero = FAIL
  */
 import {
+  BUILTIN_SKILLS,
   Clock,
   JobsStoreService,
   makeBeliefRecord,
   makeDuckDbLayer,
   makeTelemetrySqlite,
   ObservabilityService,
+  SkillRegistry,
   TelemetryPlatform,
 } from "@luna/core"
 import { MemoryRouterTag } from "@luna/memory"
 import type { MemoryRecord } from "@luna/memory"
 import { LunaSqliteBootstrapLive } from "@luna/memory"
 import { ThreadToolsProviderTag } from "@luna/chat-service"
+import { SkillToolsLayer } from "@luna/skill-tools"
+import { ConnectorService } from "@luna/connectors"
 import { Effect, Layer, ManagedRuntime, Ref, Stream } from "effect"
 import { rmSync } from "node:fs"
 import { ThreadToolsProviderLayer } from "../chat-server.js"
@@ -72,6 +76,11 @@ const SMOKE_TEL_ANALYTICS_DB = `/tmp/luna-smoke-belief-tel-analytics-${RUN_ID}.d
 const SMOKE_OBS_JSONL = `/tmp/luna-smoke-belief-obs-${RUN_ID}.jsonl`
 process.env["LUNA_DB_PATH"] = SMOKE_LUNA_DB
 process.env["LUNA_ANALYTICS_DB_PATH"] = SMOKE_OBS_ANALYTICS_DB
+// PRD B S4: the thread-tools layer scans $LUNA_HOME/skills for user skills
+// at boot. Point LUNA_HOME at an empty temp dir so the smoke never reads
+// the operator's real ~/.luna (the explicit DB overrides above still win
+// for every path that has one).
+process.env["LUNA_HOME"] = `/tmp/luna-smoke-belief-home-${RUN_ID}`
 
 /** Best-effort removal of this run's temp DB files + their sidecars/locks. */
 const cleanupSmokeArtifacts = (): void => {
@@ -141,6 +150,31 @@ const buildLayer = (
     // file. Without it the real layer build crashes with
     // "Service not found: luna/JobsStoreService".
     Layer.provide(JobsStoreService.Memory),
+    // PRD Part B: ThreadToolsProviderLayer yields SkillToolsService (the
+    // skill_load MCP server) AND SkillRegistry (the prompt snapshot).
+    // Mirror production exactly — built-in seeds + INDEX disclosure — so
+    // CHECK 3 asserts what a real boot renders, and a future
+    // missing-provide in the production wiring fails THIS smoke the same
+    // way it would fail boot. provideMerge (not provide): CHECK 3 also
+    // needs the registry handle from the runtime context to drive toggles.
+    Layer.provide(SkillToolsLayer()),
+    Layer.provideMerge(
+      SkillRegistry.layer({ seeds: BUILTIN_SKILLS, disclosure: "index" }),
+    ),
+    // PRD Part A: decorate() spreads the connector mount snapshot. The
+    // smoke stubs an empty service — connector mounting has its own tests;
+    // here we only need the layer graph to build like production.
+    Layer.provide(
+      Layer.succeed(ConnectorService, {
+        catalog: () => Effect.succeed([]),
+        list: () => Effect.succeed([]),
+        connect: () =>
+          Effect.die("smoke stub — connect not exercised here"),
+        disconnect: () => Effect.succeed(false),
+        refreshMounts: () => Effect.void,
+        mountSnapshotSync: () => ({}),
+      } as never),
+    ),
     Layer.provide(obsL),
     Layer.provide(clockL),
     Layer.provide(LunaSqliteBootstrapLive),
@@ -305,7 +339,64 @@ async function check2(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Run both checks sequentially, then report
+// CHECK 3 (PRD Part B): skills section renders at boot; a toggle is
+// reflected on the NEXT decorate() with NO tick (sync snapshot, unlike the
+// interval-refreshed beliefs holder). Regression guards: removing the
+// skillRegistryL provide from production wiring fails the layer build here;
+// breaking the snapshot rebuild-on-mutation makes the post-toggle assert fail.
+// ---------------------------------------------------------------------------
+
+async function check3(): Promise<void> {
+  console.log("\n[smoke] --- CHECK 3: skills snapshot (boot render + sync toggle) ---")
+  const rt = ManagedRuntime.make(buildLayer(seededMem, 30_000))
+  try {
+    await rt.runPromise(
+      Effect.gen(function* () {
+        const provider = yield* ThreadToolsProviderTag
+        const reg = yield* SkillRegistry
+
+        const spBoot = provider.decorate({} as never).systemPrompt ?? ""
+        if (!spBoot.includes("## Skills")) {
+          throw new Error(
+            `[check 3] '## Skills' section missing from decorate() output.\n` +
+              `systemPrompt (first 500 chars): ${spBoot.slice(0, 500)}`,
+          )
+        }
+        const firstSeed = BUILTIN_SKILLS[0]!
+        // INDEX disclosure (production mode): one line per enabled skill,
+        // keyed by id; the body must NOT be inlined (that's skill_load's job).
+        if (!spBoot.includes(`- ${firstSeed.id} —`)) {
+          throw new Error(
+            `[check 3] index line for "${firstSeed.id}" missing from boot prompt`,
+          )
+        }
+        if (spBoot.includes(firstSeed.body.slice(0, 40))) {
+          throw new Error(
+            "[check 3] skill BODY found inlined in the prompt — index disclosure broken",
+          )
+        }
+        console.log("[check 3] boot decorate() carries the skills INDEX (no bodies) ✓")
+
+        // Toggle a seed off → the very NEXT decorate must not contain it.
+        yield* reg.setEnabled(firstSeed.id, false)
+        const spToggled = provider.decorate({} as never).systemPrompt ?? ""
+        if (spToggled.includes(`- ${firstSeed.id} —`)) {
+          throw new Error(
+            `[check 3] disabled skill "${firstSeed.id}" still present in the ` +
+              "next decorate() — snapshot is stale (rebuild-on-mutation broken)",
+          )
+        }
+        console.log("[check 3] toggle off → gone from the NEXT decorate, no tick ✓")
+      }),
+    )
+  } finally {
+    await rt.dispose()
+  }
+  console.log("[smoke] CHECK 3 PASS ✓")
+}
+
+// ---------------------------------------------------------------------------
+// Run all checks sequentially, then report
 // ---------------------------------------------------------------------------
 
 async function main() {
@@ -313,9 +404,10 @@ async function main() {
   try {
     await check1()
     await check2()
+    await check3()
     console.log(
       "\n[smoke] PASS — real ThreadToolsProviderLayer builds (MemoryRouterTag satisfied); " +
-        "initial render ✓ + live belief-refresh ✓",
+        "initial render ✓ + live belief-refresh ✓ + skills snapshot ✓",
     )
   } catch (err: unknown) {
     console.error("\n[smoke] FAIL:", err)

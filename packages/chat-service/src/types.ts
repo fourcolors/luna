@@ -111,6 +111,10 @@ export interface ChatToolCall {
   readonly toolCallId: string
   readonly name: string
   readonly input: unknown
+  /** Set when this call happened INSIDE a subagent: the `tool_use.id` of the
+   *  parent Agent/Task call it nests under. Absent for top-level calls —
+   *  additive, so pre-subagent clients render these as ordinary steps. */
+  readonly parentToolUseId?: string
 }
 
 /** The result of a previously-announced tool call. `toolCallId` equals the
@@ -122,6 +126,9 @@ export interface ChatToolResult {
   readonly status: "ok" | "error"
   readonly output: string
   readonly truncated: boolean
+  /** Mirror of ChatToolCall.parentToolUseId for results produced inside a
+   *  subagent. Absent for top-level results. */
+  readonly parentToolUseId?: string
 }
 
 /**
@@ -162,6 +169,13 @@ export interface CreateThreadOptions {
    *  original model is unknown — a hardcoded one would silently switch the
    *  resumed conversation's model/provider). */
   readonly model?: string
+  /**
+   * Effort level for this thread's SDK session. Controls how much reasoning
+   * the model applies. Only valid for models that support effort (e.g.
+   * Sonnet 4.6, Fable 5, Opus 4.8) — ignored silently on models that do not.
+   * Persisted in thread-session-map.json for cross-restart recovery.
+   */
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
   readonly title?: string
   readonly tags?: ReadonlyArray<string>
   readonly parentSessionId?: string

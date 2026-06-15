@@ -10,11 +10,15 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p apps/agent-cli/tsconfig.json && tsc --noEmit -p apps/ui-web/tsconfig.json && tsc --noEmit -p packages/ui-shared-solid/tsconfig.json",
+    "vault:migrate-keychain:dry-run": "bun apps/ui-web/scripts/vault-migrate-keychain.ts --dry-run",
+    "vault:migrate-keychain:apply": "bun apps/ui-web/scripts/vault-migrate-keychain.ts --apply --keep-env",
     "install:safe": "BUN_INSTALL_CACHE_DIR=/tmp/bun-cache bun install"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
+    "solid-js": "^1.9.12",
     "typescript": "^5.6.3",
+    "vite-plugin-solid": "^2.11.12",
     "vitest": "^2.1.5"
   },
   "engines": {

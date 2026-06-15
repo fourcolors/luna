@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-voice-cancel"
+description = "Allows discarding in-flight voice capture/transcription"
+
+[permission.commands]
+allow = [
+  "voice_cancel"
+]

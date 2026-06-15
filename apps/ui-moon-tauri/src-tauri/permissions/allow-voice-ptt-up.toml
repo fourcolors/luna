@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-voice-ptt-up"
+description = "Allows ending a push-to-talk capture window (endpoint + transcribe)"
+
+[permission.commands]
+allow = [
+  "voice_ptt_up"
+]

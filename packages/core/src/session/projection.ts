@@ -183,6 +183,14 @@ function extractAttachments(payload: unknown): ReadonlyArray<ChatAttachment> {
  */
 export function projectOne(stored: StoredMessage): ChatMessage | null {
   if (stored.kind !== "user" && stored.kind !== "assistant") return null
+  // Subagent-internal messages: the adapter mirrors every SDK message,
+  // including those forwarded from INSIDE a Task/Agent subagent (marked by
+  // parentId = the spawning call's tool_use id). They are not top-level
+  // conversation turns — projecting them would replay a subagent's seed
+  // prompt and tool traffic as phantom history after restart/resubscribe.
+  // The parent's own messages (the Agent tool_use + its final tool_result)
+  // are unparented and still project normally.
+  if (stored.parentId != null) return null
   const text = extractText(stored.payload)
   if (text === null) return null
   const toolUses = extractToolUses(stored.payload)

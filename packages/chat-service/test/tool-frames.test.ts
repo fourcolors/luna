@@ -120,6 +120,7 @@ const queryYielding = (
     interrupt: async () => {},
     setPermissionMode: async () => {},
     setModel: async () => {},
+    applyFlagSettings: async () => {},
     setMaxThinkingTokens: async () => {},
     supplyToolPermissionResponse: async () => {},
     mcpServerStatus: async () => ({}),
@@ -269,6 +270,214 @@ describe("ChatService tool-result frames", () => {
         expect(toolResult.toolCallId).toBe("tu_2")
         expect(toolResult.status).toBe("error")
         expect(toolResult.output).toBe("boom")
+      }
+    },
+    { timeout: 10_000 },
+  )
+})
+
+/* -------------------------------------------------------------------------- */
+/* Subagent (parent_tool_use_id) handling. The SDK forwards a subagent's      */
+/* tool_use / tool_result blocks and seed prompt onto the parent stream with  */
+/* parent_tool_use_id set. They must surface as TAGGED tool frames and never  */
+/* drive top-level turn state (assistant-done / in-flight streaming text).    */
+/* -------------------------------------------------------------------------- */
+
+/** Assistant message emitted from INSIDE a subagent (its own tool_use). */
+const makeParentedAssistantToolUse = (sessionId: string): SDKMessage =>
+  ({
+    type: "assistant",
+    session_id: sessionId,
+    uuid: "sub_assistant",
+    parent_tool_use_id: "agent_call_1",
+    message: {
+      id: "sub_assistant",
+      role: "assistant",
+      model: "claude-test",
+      content: [
+        {
+          type: "tool_use",
+          id: "sub_tu_1",
+          name: "Read",
+          input: { file_path: "/tmp/x" },
+        },
+      ],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    },
+  }) as unknown as SDKMessage
+
+/** The subagent's SEED PROMPT — a parented user message with text only. */
+const makeParentedSeedPrompt = (sessionId: string): SDKMessage =>
+  ({
+    type: "user",
+    session_id: sessionId,
+    uuid: "sub_seed",
+    parent_tool_use_id: "agent_call_1",
+    message: {
+      role: "user",
+      content: [{ type: "text", text: "You are a subagent. Do the thing." }],
+    },
+  }) as unknown as SDKMessage
+
+/** A tool_result produced INSIDE the subagent. */
+const makeParentedToolResult = (sessionId: string): SDKMessage =>
+  ({
+    type: "user",
+    session_id: sessionId,
+    uuid: "sub_result",
+    parent_tool_use_id: "agent_call_1",
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "sub_tu_1",
+          is_error: false,
+          content: [{ type: "text", text: "file contents" }],
+        },
+      ],
+    },
+  }) as unknown as SDKMessage
+
+/** A parented stream_event (future forwardSubagentText) — must be dropped. */
+const makeParentedStreamEvent = (sessionId: string): SDKMessage =>
+  ({
+    type: "stream_event",
+    session_id: sessionId,
+    uuid: "sub_se",
+    parent_tool_use_id: "agent_call_1",
+    event: { type: "content_block_delta", delta: { type: "text_delta", text: "LEAK" } },
+  }) as unknown as SDKMessage
+
+/** A top-level (unparented) stream_event for the parent's own streaming. */
+const makeStreamEvent = (sessionId: string, uuid: string, text: string): SDKMessage =>
+  ({
+    type: "stream_event",
+    session_id: sessionId,
+    uuid,
+    parent_tool_use_id: null,
+    event: { type: "content_block_delta", delta: { type: "text_delta", text } },
+  }) as unknown as SDKMessage
+
+describe("ChatService subagent (parented) frames", () => {
+  it(
+    "tags a subagent-internal tool_use as a parented tool-call and emits no assistant-done",
+    async () => {
+      const frames = await collectFrames([
+        makeParentedAssistantToolUse("thr-sub-tc"),
+      ])
+      const toolCall = frames.find((f) => f.type === "tool-call")
+      expect(toolCall).toBeDefined()
+      if (toolCall && toolCall.type === "tool-call") {
+        expect(toolCall.toolCallId).toBe("sub_tu_1")
+        expect(toolCall.name).toBe("Read")
+        expect(toolCall.parentToolUseId).toBe("agent_call_1")
+      }
+      // A parented assistant message is NOT a top-level turn.
+      expect(frames.find((f) => f.type === "assistant-done")).toBeUndefined()
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "tags a subagent-internal tool_result as a parented tool-result",
+    async () => {
+      const frames = await collectFrames([makeParentedToolResult("thr-sub-tr")])
+      const toolResult = frames.find((f) => f.type === "tool-result")
+      expect(toolResult).toBeDefined()
+      if (toolResult && toolResult.type === "tool-result") {
+        expect(toolResult.toolCallId).toBe("sub_tu_1")
+        expect(toolResult.parentToolUseId).toBe("agent_call_1")
+        expect(toolResult.status).toBe("ok")
+      }
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "leaves top-level tool frames untagged (no parentToolUseId key)",
+    async () => {
+      const frames = await collectFrames([
+        makeAssistantWithToolUse("thr-untagged"),
+        makeUserWithToolResult("thr-untagged"),
+      ])
+      const toolCall = frames.find((f) => f.type === "tool-call")
+      const toolResult = frames.find((f) => f.type === "tool-result")
+      expect(toolCall).toBeDefined()
+      expect(toolResult).toBeDefined()
+      if (toolCall && toolCall.type === "tool-call") {
+        expect(toolCall.parentToolUseId).toBeUndefined()
+      }
+      if (toolResult && toolResult.type === "tool-result") {
+        expect("parentToolUseId" in toolResult).toBe(false)
+      }
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "drops the subagent seed prompt (parented user text) entirely",
+    async () => {
+      const frames = await collectFrames([makeParentedSeedPrompt("thr-seed")])
+      // No user-visible frame for the seed prompt. (The harness's own
+      // `send("go")` echoes a `user-accepted` frame — that one is expected.)
+      expect(
+        frames.filter(
+          (f) => f.type !== "snapshot" && f.type !== "user-accepted",
+        ).length,
+      ).toBe(0)
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "drops parented stream_events instead of appending them to the parent's streaming text",
+    async () => {
+      const frames = await collectFrames([
+        makeStreamEvent("thr-leak", "se_1", "parent says "),
+        makeParentedStreamEvent("thr-leak"),
+        makeStreamEvent("thr-leak", "se_2", "hello"),
+      ])
+      const deltas = frames.filter((f) => f.type === "assistant-delta")
+      expect(deltas.length).toBe(2)
+      const last = deltas[deltas.length - 1]
+      if (last && last.type === "assistant-delta") {
+        // Cumulative text must NOT contain the subagent's leaked delta.
+        expect(last.text).toBe("parent says hello")
+      }
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "preserves the parent's in-flight streaming state across subagent traffic (corruption regression)",
+    async () => {
+      // Parent streams a delta (establishing the in-flight turn), then the
+      // whole subagent lifecycle plays out, then the parent streams MORE.
+      // Before the parented guards, the parented assistant message wiped
+      // inFlightTurnId/inFlightText — the second delta would restart under a
+      // new turn id with reset text.
+      const frames = await collectFrames([
+        makeStreamEvent("thr-corrupt", "se_a", "thinking… "),
+        makeParentedSeedPrompt("thr-corrupt"),
+        makeParentedAssistantToolUse("thr-corrupt"),
+        makeParentedToolResult("thr-corrupt"),
+        makeStreamEvent("thr-corrupt", "se_b", "done"),
+      ])
+      const deltas = frames.filter((f) => f.type === "assistant-delta")
+      expect(deltas.length).toBe(2)
+      const [first, second] = deltas
+      if (
+        first &&
+        second &&
+        first.type === "assistant-delta" &&
+        second.type === "assistant-delta"
+      ) {
+        // Same wire turn id (state survived) and cumulative text intact.
+        expect(second.turnId).toBe(first.turnId)
+        expect(second.text).toBe("thinking… done")
       }
     },
     { timeout: 10_000 },

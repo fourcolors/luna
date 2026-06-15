@@ -13,6 +13,17 @@ cp seeds/agents/*.md ~/.luna/agents/
 # Restart not required — agents are hot-loaded on every query.
 ```
 
+## Invoking from chat
+
+Once copied to `~/.luna/agents/`, these definitions become available as
+`subagent_type` values in chat threads. Luna spawns them via the SDK's
+built-in Task tool — pass the agent's `name` frontmatter value as
+`subagent_type`, along with a `description` and `prompt`. The subagent
+runs to completion and its report returns as the tool result. No restart
+is needed beyond the `cp` above, but definitions load when a thread
+starts: new chat threads see the new agent; already-open threads keep the
+set they started with.
+
 ## What's here
 
 - `dev-agent.md` — senior delivery engineer persona; ships PRs to `dev`

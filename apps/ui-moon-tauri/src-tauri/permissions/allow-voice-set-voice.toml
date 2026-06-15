@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-voice-set-voice"
+description = "Allows selecting the TTS voice by identifier"
+
+[permission.commands]
+allow = [
+  "voice_set_voice"
+]

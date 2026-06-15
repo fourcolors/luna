@@ -83,10 +83,10 @@ describe("deriveTitle", () => {
     const s = summary({ title: null })
     const v = view([
       msg("assistant", "I'll help"),
-      msg("user", "Hello sol, can you help me?"),
+      msg("user", "Hello luna, can you help me?"),
       msg("assistant", "Yes"),
     ])
-    expect(deriveTitle(s, v)).toBe("Hello sol, can you help me?")
+    expect(deriveTitle(s, v)).toBe("Hello luna, can you help me?")
   })
 
   it("collapses internal whitespace in the user message", () => {

@@ -30,7 +30,18 @@ import { Data } from "effect"
 
 // Phase 12b adds "prompt" + "workflow" alongside the V1 kinds. WorkerRegistry
 // dispatches by string, so adding kinds here is the type-system catch-up.
-export type JobKind = "cron" | "oneshot" | "file-watch" | "prompt" | "workflow"
+// The scheduler-v2 dream/wake migration (M1-M4) adds the dedicated "dream" +
+// "wake" worker kinds: the install script (sched-v2 install) writes rows with
+// these kinds and the JobTicker dispatches them through the WorkerRegistry
+// under the matching DREAM_WORKER_KIND / WAKE_WORKER_KIND discriminant.
+export type JobKind =
+  | "cron"
+  | "oneshot"
+  | "file-watch"
+  | "prompt"
+  | "workflow"
+  | "dream"
+  | "wake"
 
 export interface PersistedJob {
   readonly id: string
@@ -54,13 +65,28 @@ export interface PersistedJob {
 /**
  * JobRun — one row per cron fire (or per oneshot dispatch). Written by the
  * JobTicker (Phase 12b). Used for audit + the daily-brief acceptance test.
+ *
+ * `waiting` (widget-system.md Phase 5) is NOT a terminal status: a running
+ * job that summons operator input (the `request_input` tool) flips
+ * running→waiting→running via `updateRunStatus` while `finished_at` stays
+ * NULL. Only `recordRunEnd` writes a terminal status.
  */
 export type JobRunStatus =
   | "queued"
   | "running"
+  | "waiting"
   | "success"
   | "failed"
   | "cancelled"
+
+/** The non-terminal statuses `updateRunStatus` may write (running↔waiting). */
+export type JobRunLiveStatus = Extract<JobRunStatus, "running" | "waiting">
+
+/** The terminal statuses only `recordRunEnd` may write. */
+export type JobRunTerminalStatus = Exclude<
+  JobRunStatus,
+  "queued" | "running" | "waiting"
+>
 
 export interface JobRun {
   readonly id: number
@@ -75,7 +101,16 @@ export interface JobRun {
 }
 
 export class JobsStoreError extends Data.TaggedError("JobsStoreError")<{
-  readonly op: "record" | "list" | "delete" | "update" | "boot" | "claim" | "run_start" | "run_end"
+  readonly op:
+    | "record"
+    | "list"
+    | "delete"
+    | "update"
+    | "boot"
+    | "claim"
+    | "run_start"
+    | "run_end"
+    | "run_status"
   readonly message: string
   readonly cause?: unknown
 }> {}
@@ -178,11 +213,27 @@ export interface JobsStoreApi {
     runId: number,
     end: {
       readonly finishedAt: number
-      readonly status: Exclude<JobRunStatus, "queued" | "running">
+      readonly status: JobRunTerminalStatus
       readonly outputText?: string | null
       readonly error?: string | null
       readonly stepsJson?: string | null
     },
+  ) => Effect.Effect<boolean, JobsStoreError>
+
+  /**
+   * Flip a LIVE run between `running` and `waiting` (widget-system.md
+   * Phase 5: a running job summons operator input and parks in `waiting`
+   * until the answer/timeout, then flips back). `finished_at` stays NULL —
+   * `waiting` is not an end state; only `recordRunEnd` closes a row.
+   *
+   * Guarded against zombie writes: a row whose `finished_at` is already set
+   * (the ticker closed the run while the tool's flip-back was still in
+   * flight — e.g. the SDK turn timed out mid-wait) is left untouched and the
+   * call returns `false`.
+   */
+  readonly updateRunStatus: (
+    runId: number,
+    status: JobRunLiveStatus,
   ) => Effect.Effect<boolean, JobsStoreError>
 
   /**

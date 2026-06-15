@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- TCC purpose strings. Without NSMicrophoneUsageDescription macOS
+         terminates the app on first mic access instead of showing the
+         permission prompt (the audio-input entitlement alone is not
+         enough — it only *permits* the prompt under hardened runtime). -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Luna listens through the microphone so you can talk to her instead of typing.</string>
+</dict>
+</plist>

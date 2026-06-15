@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-speak-text"
+description = "Allows enqueueing one sentence for client-side TTS playback"
+
+[permission.commands]
+allow = [
+  "speak_text"
+]

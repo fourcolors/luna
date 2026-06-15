@@ -18,14 +18,14 @@ describe("composeBasePrompt", () => {
     const out = composeBasePrompt({
       identity: "You are Atlas.",
       skillSegments: ["You have git-ops."],
-      projectContext: "Project: sol-agent",
+      projectContext: "Project: reference-agent",
       hookAppend: "Session: daytime",
     })
     expect(Array.isArray(out)).toBe(true)
     expect(out as string[]).toEqual([
       "You are Atlas.",
       "You have git-ops.",
-      "Project: sol-agent",
+      "Project: reference-agent",
       "Session: daytime",
     ])
   })

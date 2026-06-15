@@ -16,7 +16,7 @@
  * left as a follow-up because reliably stalling a localhost ws send
  * buffer in a unit test is flaky.
  */
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, afterAll, describe, expect, it, vi } from "vitest"
 import {
   Effect,
   Layer,
@@ -211,6 +211,30 @@ describe("UIWebSocketServer", () => {
     await expect(
       collectFrames(rig.url, { authorization: "Bearer wrongtoken1234567" }, 1, 1000),
     ).rejects.toThrow(/401|unexpected|Connection ended/i)
+  })
+
+  // Audit finding: auth failures must produce a console.warn (IP only — no
+  // token material). Good-token connects must NOT trigger a warn.
+  it("emits console.warn on failed-auth upgrade, not on good-token upgrade", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+    try {
+      rig = await startRig()
+      // Bad-token attempt: expect a warn to fire.
+      await collectFrames(rig.url, { authorization: "Bearer bad-token-value" }, 1, 1000).catch(
+        () => {},
+      )
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/\[ui-ws\].*auth failed/),
+      )
+      // Good-token connect: warn must NOT fire again; log fires (first-connect).
+      const warnCallsBefore = warnSpy.mock.calls.length
+      await collectFrames(rig.url, { authorization: `Bearer ${TOKEN}` }, 1)
+      expect(warnSpy.mock.calls.length).toBe(warnCallsBefore)
+    } finally {
+      warnSpy.mockRestore()
+      logSpy.mockRestore()
+    }
   })
 
   it("sends hello frame on connect with correct bearer", async () => {
@@ -635,6 +659,55 @@ describe("UIWebSocketServer", () => {
     )
     if (frames[0]?.type === "hello") {
       expect(Object.prototype.hasOwnProperty.call(frames[0], "availableModels")).toBe(false)
+    } else {
+      throw new Error("expected hello frame")
+    }
+  })
+
+  // ── efforts in hello frame ────────────────────────────────────────────────
+  // The server populates the `efforts` field per model entry so clients never
+  // compute the matrix themselves. Haiku → [], Fable/Opus-4.8 → all 5 levels.
+
+  it("hello frame: haiku model entry has empty efforts array", async () => {
+    const models = [
+      { id: "claude-haiku-4-5", label: "Haiku 4.5", efforts: [] as readonly string[] },
+    ]
+    rig = await startRig(undefined, { availableModels: models })
+    const frames = await collectFrames(rig.url, { authorization: `Bearer ${TOKEN}` }, 1)
+    if (frames[0]?.type === "hello") {
+      const haiku = frames[0].availableModels?.find((m) => m.id === "claude-haiku-4-5")
+      expect(haiku?.efforts).toEqual([])
+    } else {
+      throw new Error("expected hello frame")
+    }
+  })
+
+  it("hello frame: fable model entry has all 5 effort levels", async () => {
+    const allEfforts = ["low", "medium", "high", "xhigh", "max"] as const
+    const models = [
+      { id: "claude-fable-5", label: "Fable 5", efforts: allEfforts as readonly string[] },
+    ]
+    rig = await startRig(undefined, { availableModels: models })
+    const frames = await collectFrames(rig.url, { authorization: `Bearer ${TOKEN}` }, 1)
+    if (frames[0]?.type === "hello") {
+      const fable = frames[0].availableModels?.find((m) => m.id === "claude-fable-5")
+      expect(fable?.efforts).toEqual(["low", "medium", "high", "xhigh", "max"])
+    } else {
+      throw new Error("expected hello frame")
+    }
+  })
+
+  it("hello frame: effortSelection capability is present when chat is wired in", async () => {
+    // The effortSelection capability is set to `chat !== null` in server.ts — it's
+    // only absent when no chat service is attached (the non-chat rig used here).
+    // In the basic server.test.ts rig, chat IS null → effortSelection must be false.
+    rig = await startRig()
+    const frames = await collectFrames(rig.url, { authorization: `Bearer ${TOKEN}` }, 1)
+    if (frames[0]?.type === "hello") {
+      // Capability is present (even if false for no-chat rig).
+      expect(Object.prototype.hasOwnProperty.call(frames[0].capabilities, "effortSelection")).toBe(true)
+      // No chat attached → false.
+      expect(frames[0].capabilities?.effortSelection).toBe(false)
     } else {
       throw new Error("expected hello frame")
     }

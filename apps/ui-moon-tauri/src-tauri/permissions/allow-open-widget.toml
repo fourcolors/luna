@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-open-widget"
+description = "Allows opening a SYSTEM widget by registry kind (panel-* windows). The registry maps kinds only to shipped pages, so no content input can become a system panel."
+
+[permission.commands]
+allow = [
+  "open_widget"
+]

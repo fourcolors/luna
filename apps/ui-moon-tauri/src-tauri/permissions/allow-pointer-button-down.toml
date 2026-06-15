@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-pointer-button-down"
+description = "Allows a widget-family window to ask whether the primary mouse button is held — the dock settle defers snapping/linking until the user actually releases the drag."
+
+[permission.commands]
+allow = [
+  "pointer_button_down"
+]
