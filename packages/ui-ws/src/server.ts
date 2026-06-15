@@ -1610,11 +1610,46 @@ export const startUIWebSocketServer = (
           ),
         )
 
+        // Protocol-level heartbeat (RFC 6455 ping/pong) to reap HALF-OPEN
+        // connections. A laptop that sleeps or a network that drops without a
+        // TCP FIN leaves the socket open server-side; its per-connection
+        // forwarder + thread subscriptions then linger indefinitely holding
+        // memory (a primary source of the chat-server's slow growth → OOM).
+        // Browsers and WKWebView answer protocol pings AUTOMATICALLY, so this
+        // is a universal liveness check — unlike the app-level {type:"ping"}
+        // JSON frame below, which only the moon client auto-pongs (the web
+        // client merely displays lastPingAt). If a full ping interval passes
+        // with no pong, the socket is dead: terminate it so 'close' fires and
+        // the connection scope tears down its subscriber queues + buffers.
+        let isAlive = true
+        ws.on("pong", () => {
+          isAlive = true
+        })
         const pinger =
           pingMs > 0
             ? Effect.forever(
                 Effect.gen(function* () {
                   yield* Effect.sleep(`${pingMs} millis`)
+                  if (!isAlive) {
+                    try {
+                      ws.terminate()
+                    } catch {
+                      // already gone
+                    }
+                    // 'close' will fire and resolve the `closed` deferred,
+                    // closing the connection scope. Park until this fiber is
+                    // interrupted by that teardown rather than pinging a dead
+                    // socket on the next tick.
+                    yield* Effect.never
+                  }
+                  isAlive = false
+                  try {
+                    ws.ping()
+                  } catch {
+                    // socket already closing — let the close path tear down
+                  }
+                  // App-level ping too: the moon client uses {type:"ping"} for
+                  // its lastPingAt indicator (separate from protocol liveness).
                   send(ws, { type: "ping", ts: new Date().toISOString() })
                 }),
               )

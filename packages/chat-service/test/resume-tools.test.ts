@@ -188,4 +188,54 @@ describe("ChatService resume tool-wiring", () => {
     // onBound fired with the new session id.
     expect(bound).toContain(created.id)
   })
+
+  it("fires onUnbound with the session id when the thread scope closes", async () => {
+    const fakeLayer = SDKClient.fake((p) =>
+      makeParkedQuery((p as { sessionId?: string }).sessionId ?? "thr-?"),
+    )
+
+    const bound: string[] = []
+    const unbound: string[] = []
+    const provider: ThreadToolsProvider = {
+      decorate: () => ({
+        mcpServers: {},
+        onBound: (id) => bound.push(id),
+        onUnbound: (id) => unbound.push(id),
+      }),
+    }
+
+    const baseLayer = Layer.mergeAll(
+      SessionStore.Default,
+      testClock,
+      ObservabilityService.makeLayer({
+        logToConsole: false,
+        jsonlPath: join(home, "events.jsonl"),
+      }).pipe(Layer.provide(testClock)),
+      TelemetryService.makeLayer().pipe(Layer.provide(testClock)),
+      Layer.succeed(ThreadToolsProviderTag, provider),
+      Layer.succeed(MemoryRouterTag, noopMemoryRouter),
+    )
+    const fullLayer = Layer.provideMerge(
+      ChatService.Default,
+      Layer.provideMerge(SDKAdapter.Default, Layer.mergeAll(fakeLayer, baseLayer)),
+    )
+
+    const created = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const summary = yield* chat.createThread({ model: "claude-test" })
+          yield* Effect.sleep("50 millis")
+          return summary
+        }),
+      ).pipe(Effect.provide(fullLayer)),
+    )
+
+    // The scope has now closed → the thread finalizer ran → onUnbound fired
+    // with the same session id onBound saw. This is the leak fix: per-session
+    // provider state (e.g. the module-scope sandbox re-attach closures) is
+    // released on teardown instead of accumulating for the process lifetime.
+    expect(bound).toContain(created.id)
+    expect(unbound).toContain(created.id)
+  })
 })

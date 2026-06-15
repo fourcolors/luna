@@ -67,6 +67,12 @@ export interface SubagentTreeBridge {
 /** The SDK's subagent spawn tool surfaces under these wire names. */
 const AGENT_TOOL_NAMES = new Set(["Agent", "Task"])
 
+/** Cap on tracked threads. One (small) ThreadState was retained per thread for
+ *  the process lifetime — a slow unbounded leak on a long-lived server. We
+ *  evict the oldest-inserted thread past this bound. Far above any realistic
+ *  concurrent-thread count, so active threads are never evicted in practice. */
+const MAX_TRACKED_THREADS = 512
+
 interface MutableNode {
   id: string
   parentId: string | null
@@ -116,6 +122,14 @@ export const createSubagentTreeBridge = (): SubagentTreeBridge => {
     if (!t) {
       t = { nodes: new Map(), order: [], seenCalls: new Set(), announced: false }
       threads.set(threadId, t)
+      // Bound the map: evict the oldest-inserted thread past the cap (Map
+      // iterates in insertion order). The only persistent per-thread state is
+      // `announced`; evicting a long-idle thread at worst re-pops its Agents
+      // panel once on a brand-new delegation, which is acceptable.
+      if (threads.size > MAX_TRACKED_THREADS) {
+        const oldest = threads.keys().next().value
+        if (oldest !== undefined && oldest !== threadId) threads.delete(oldest)
+      }
     }
     return t
   }

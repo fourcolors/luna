@@ -766,6 +766,15 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
                 "— obs/local-shell tools active",
               )
             },
+            onUnbound: (sessionId: string) => {
+              // Symmetric teardown for onBound (thread scope close). Without
+              // this, `sandboxReattachers` — a module-scope Map — grows one
+              // retained closure per historical thread for the process
+              // lifetime, an unbounded leak on a long-lived server.
+              // delete() on an absent key (sandbox disabled) is a safe no-op.
+              sandboxReattachers.delete(sessionId)
+              localShellThreadTools.clearSession(sessionId)
+            },
           }
         },
       }
