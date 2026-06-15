@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# EXAMPLE — copy to your live instance as probes/020-push-auth.sh and fill in your
+# own values. Do NOT commit a filled-in version to a public repo (it names your
+# private repo + credential location). This is an install-specific probe.
+#
+# PROBE:    git auth to <your repo> works via HTTPS + a 1Password-stored token
+# LESSON:   (describe the auth drift this guards — e.g. an SSH key that was denied
+#           push, so the token path is the one that must keep working)
+# SEVERITY: high
+set -uo pipefail
+
+REPO_HOST="github.com/<your-org>/<your-repo>.git"
+OP_TOKEN_FILE="$HOME/.luna/op-tokens/<account>"     # 1Password service-account token
+OP_ITEM="<your-1password-item-id>"
+OP_VAULT="<your-vault>"
+
+command -v git  >/dev/null 2>&1 || { echo "SKIP: git absent";  exit 77; }
+command -v op   >/dev/null 2>&1 || { echo "SKIP: op cli absent"; exit 77; }
+command -v curl >/dev/null 2>&1 || { echo "SKIP: curl absent";  exit 77; }
+[[ -r "$OP_TOKEN_FILE" ]] || { echo "SKIP: op service-account token file absent"; exit 77; }
+
+# reachability gate — public endpoint so a network blip yields SKIP, not a false red
+code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' https://github.com 2>/dev/null || echo 000)"
+[[ "$code" =~ ^[0-9]{3}$ && "$code" != "000" ]] || { echo "SKIP: github.com unreachable (network)"; exit 77; }
+
+# resolve the token (never printed)
+export OP_SERVICE_ACCOUNT_TOKEN="$(cat "$OP_TOKEN_FILE")"
+TOKEN="$(op item get "$OP_ITEM" --vault "$OP_VAULT" --fields label=token --reveal 2>/dev/null || true)"
+[[ -n "$TOKEN" ]] || { echo "SKIP: could not resolve token from 1Password"; exit 77; }
+
+if out="$(git ls-remote "https://x-access-token:${TOKEN}@${REPO_HOST}" HEAD 2>&1)"; then
+  out="${out//$TOKEN/***}"
+  sha="$(printf '%s' "$out" | awk 'NR==1{print $1}')"
+  if [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "OK: token authenticated to $REPO_HOST (HEAD ${sha:0:12})"; exit 0
+  fi
+  echo "DRIFT: authed ls-remote returned no sha — $out"; exit 1
+else
+  out="${out//$TOKEN/***}"
+  echo "DRIFT: token auth to $REPO_HOST FAILED (github reachable) — $out"; exit 1
+fi
