@@ -5,8 +5,7 @@
  *
  *  - createFrameRegistry(): a frame-type → handler map replacing hard-wired
  *    switch statements. The hub (index.html) adopts this while keeping its
- *    bespoke transport (turn watchdogs / tether choreography stay put until
- *    the chat extraction).
+ *    bespoke transport (turn watchdogs stay put until the chat extraction).
  *
  *  - createClient(): a minimal generation-gated WebSocket client for the
  *    widget-page family (widget.html today; panel.html / chat.html later).
