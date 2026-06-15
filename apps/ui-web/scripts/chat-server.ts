@@ -281,6 +281,11 @@ import {
   makeRegisterSecret,
   type SecretDestination,
 } from "@luna/secret-tools"
+import {
+  PlaidToolsLive,
+  PlaidToolsService,
+  PLAID_TOOLS_SYSTEM_PROMPT,
+} from "@luna/plaid-tools"
 import { SkillToolsLayer, SkillToolsService } from "@luna/skill-tools"
 import { WidgetToolsLayer, WidgetToolsService } from "@luna/widget-tools"
 import { createJobInputToolsProvider } from "@luna/job-input-tools"
@@ -532,6 +537,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       const obsTools = yield* ObsToolsService
       const localShellTools = yield* LocalShellToolsService
       const secretTools = yield* SecretToolsService
+      const plaidTools = process.env.PLAID_CLIENT_ID ? yield* PlaidToolsService : null
       const skillTools = yield* SkillToolsService
       const widgetTools = yield* WidgetToolsService // PRD Part C/W4: widget_write
       // PRD Part B (Skills): the managed skill catalog. decorate() reads
@@ -564,6 +570,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
         obsTools.serverName,
         localShellTools.serverName,
         secretTools.serverName,
+        ...(plaidTools ? [plaidTools.serverName] : []),
       ].join(", "))
 
       // Luna identity: resolve script dir once at boot (immutable — import.meta.url
@@ -711,6 +718,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             obsThreadTools.systemPromptAddendum,
             localShellThreadTools.systemPromptAddendum,
             secretThreadTools.systemPromptAddendum,
+            ...(plaidTools ? [plaidTools.systemPromptAddendum] : []),
           ]
             .filter((s): s is string => typeof s === "string" && s.length > 0)
             .join("\n\n")
@@ -721,6 +729,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             [obsThreadTools.serverName]: obsThreadTools.server,
             [localShellThreadTools.serverName]: localShellThreadTools.server,
             [secretThreadTools.serverName]: secretThreadTools.server,
+            ...(plaidTools ? { [plaidTools.serverName]: plaidTools.server } : {}),
             [skillThreadTools.serverName]: skillThreadTools.server, // PRD B §11: skill_load (tier-2 disclosure)
             [widgetThreadTools.serverName]: widgetThreadTools.server, // PRD C §16: widget_write (describe-to-spawn)
             ...connectorService.mountSnapshotSync(), // PRD A §07: connected services, hot per-thread
@@ -761,6 +770,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
     Layer.provide(LocalShellToolsLayer({ bridge: localShellBridge })),
     Layer.provide(SecretToolsLayer({ bridge: secretRequestBridge })),
     Layer.provide(ObsToolsLayer({ runtimeProbe: buildChatServerRuntimeProbe })),
+    ...(process.env.PLAID_CLIENT_ID ? [Layer.provide(PlaidToolsLive)] : []),
   )
 
 // Build a fresh RuntimeSnapshot per `obs_runtime` call (issue #12). Reads
