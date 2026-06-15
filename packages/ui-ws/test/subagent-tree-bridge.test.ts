@@ -189,4 +189,30 @@ describe("subagent-tree-bridge", () => {
         .autoOpen,
     ).toBe(true)
   })
+
+  it("is TRUE LRU: an actively-touched thread survives churn past the cap", () => {
+    const b = createSubagentTreeBridge()
+    const hot = "thr_hot"
+    b.markAnnounced(hot)
+    // Churn well past the cap, but keep touching `hot` every iteration so it
+    // stays most-recently-used. A FIFO cap would evict it (created first);
+    // true LRU must not.
+    for (let i = 0; i < 600; i++) {
+      b.observe(`thr_${i}`, {
+        type: "tool-call",
+        toolCallId: `n${i}`,
+        name: "Agent",
+        input: {},
+      })
+      // A top-level non-Agent tool is ignored for the tree but still routes
+      // through ensureThread(hot), refreshing its recency.
+      b.observe(hot, { type: "tool-call", toolCallId: `h${i}`, name: "Bash" })
+    }
+    // `hot` was never the LRU → still tracked → `announced` survived, so a
+    // fresh delegation does NOT re-pop the panel.
+    expect(
+      b.observe(hot, { type: "tool-call", toolCallId: "final", name: "Agent", input: {} })
+        .autoOpen,
+    ).toBe(false)
+  })
 })
