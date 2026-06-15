@@ -14,8 +14,9 @@ This seed registers only the generic, publicly-shippable probes. Add a row here
 for each install-specific probe you create in your instance.
 
 ```
-id                | status  | probe                               | note
-widget-tools-list | covered | probes/010-widget-tools-list.sh     | a malformed tool schema can make an MCP server's tools/list throw, silently hiding all of its tools
-incus-nftables    | covered | probes/040-incus-nftables-guard.sh  | incus create-ops hang without nf_tables; enabling nftables.service flushes the ruleset and wipes incus NAT
-amdgpu-dmub-panic | covered | probes/050-amdgpu-dmub-panic-guard.sh | reading amdgpu DMUB debugfs nodes NULL-derefs and panics the host; no tracked script may recursively read into /sys, and a deployed bind-mount guard must stay active
+id                       | status  | probe                                        | note
+widget-tools-list        | covered | probes/010-widget-tools-list.sh              | a malformed tool schema can make an MCP server's tools/list throw, silently hiding all of its tools
+incus-nftables           | covered | probes/040-incus-nftables-guard.sh           | incus create-ops hang without nf_tables; enabling nftables.service flushes the ruleset and wipes incus NAT
+amdgpu-dmub-panic        | covered | probes/050-amdgpu-dmub-panic-guard.sh        | reading amdgpu DMUB debugfs nodes NULL-derefs and panics the host; no tracked script may recursively read into /sys, and a deployed bind-mount guard must stay active
+thread-resume-restart    | covered | probes/055-thread-resume-survives-restart.sh | thread→SDK-session mapping was in-memory only; after restart threads returned "unknown thread" (task #15); ThreadRegistry (luna.db) makes resume durable
 ```

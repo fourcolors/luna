@@ -207,6 +207,8 @@ import {
   SuggestedActionsStore,
   AcceptHandler,
   AcceptHandlerLayer,
+  ThreadRegistryService,
+  importJsonMap,
 } from "@luna/core"
 import { createDnaLoader, loadDna } from "./dna-loader.js"
 import { loadSystem } from "./system-loader.js"
@@ -2155,6 +2157,58 @@ export const buildBaseLayer = (
     }),
   ).pipe(Layer.provide(jobsStoreL))
 
+  // ThreadRegistry: durable `threads` table in luna.db (Phase 1).
+  // Replaces thread-session-map.json as the source of truth for
+  // thread→SDK-session mapping across restarts. ChatService resolves this
+  // via Effect.serviceOption — absent falls back to the legacy JSON map
+  // path for backward compat.
+  // LunaSqliteBootstrap is satisfied at the bottom of buildServerLayer,
+  // same as every other SQLite-backed layer here.
+  const threadRegistryL = ThreadRegistryService.makeLayer(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
+
+  // Boot migration: one-shot import from the legacy JSON map into the
+  // ThreadRegistry. Runs once at server boot (inside the ThreadRegistry's
+  // Layer.scoped, so it's part of the boot sequence). Idempotent — existing
+  // rows are skipped.
+  const threadRegistryWithMigrationL = Layer.scoped(
+    ThreadRegistryService,
+    Effect.gen(function* () {
+      // Build the SQLite-backed registry (which runs the migration DDL).
+      // We acquire it via Context.get from the inner layer build.
+      const ctx = yield* Layer.build(threadRegistryL)
+      const reg = Context.get(ctx, ThreadRegistryService)
+
+      // Run the JSON map import best-effort (don't fail boot on import error).
+      const lunaHome = process.env["LUNA_HOME"]
+      if (lunaHome !== undefined) {
+        const defaultCwd =
+          process.env["LUNA_REPO_ROOT"] ?? process.cwd()
+        const nowMs = Date.now()
+        try {
+          const result = await importJsonMap(reg, lunaHome, defaultCwd, nowMs, {
+            log: (level, msg) => {
+              if (level === "warn") console.warn(msg)
+              else console.log(msg)
+            },
+          })
+          if (result.inserted > 0) {
+            console.log(
+              `[luna/thread-registry] boot import: inserted=${result.inserted} skippedNoSid=${result.skippedNoSid} skippedClaudeTest=${result.skippedClaudeTest} skippedAlreadyPresent=${result.skippedAlreadyPresent}`,
+            )
+          }
+        } catch (e) {
+          console.warn(
+            `[luna/thread-registry] boot import failed (best-effort): ${String(e)}`,
+          )
+        }
+      }
+
+      return reg
+    }),
+  )
+
   // ChatService — hoisted above the worker registry so the chat_thread
   // delivery poster (#124) can be provided ChatService. Effect layers are
   // memoized by reference, so reusing this same `chatL` variable in both
@@ -2173,6 +2227,9 @@ export const buildBaseLayer = (
       // ChatService resolves SuggestedActions via Effect.serviceOption — wire
       // it so the change-stream consumer + replay-on-subscribe activate.
       suggestedActionsL,
+      // ThreadRegistry: durable thread index. ChatService resolves via
+      // Effect.serviceOption — absent falls back to legacy JSON map.
+      threadRegistryWithMigrationL,
     ),
   )
 
@@ -2297,6 +2354,7 @@ export const buildBaseLayer = (
     connectorServiceL, // PRD Part A: same instance as threadToolsL — M2's WS connector frames resolve it here
     artifactStoreL, // PRD Part C/W1: buildServerLayer resolves it for the WS artifact frames
     vaultStoreL, // Vault V1: buildServerLayer resolves it for the WS vault frames
+    threadRegistryWithMigrationL, // Phase 1: durable thread index (luna.db threads table)
   )
 }
 
