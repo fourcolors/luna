@@ -210,6 +210,8 @@ import {
   AcceptHandlerLayer,
   ThreadRegistryService,
   importJsonMap,
+  runAutoArchive,
+  AUTO_ARCHIVE_IDLE_MS,
 } from "@luna/core"
 import { createDnaLoader, loadDna } from "./dna-loader.js"
 import { loadSystem } from "./system-loader.js"
@@ -2547,6 +2549,66 @@ const buildServerLayer = (
       // only on a LUNA_SCHEDULER_V2_ENABLED=0 deploy, see the gated merge
       // above). Absent → accept leaves the action at `accepted`.
       const acceptHandlerOption = yield* Effect.serviceOption(AcceptHandler)
+
+      // ── Phase 3: auto-archive wiring ────────────────────────────────────────
+      //
+      // runAutoArchive has NO production caller without this block — threads
+      // would never auto-archive. This is the interim home; it can migrate to
+      // the wake cycle later once wake redesign is complete.
+      //
+      // Strategy: run once at boot (best-effort, fire-and-forget so a DB hiccup
+      // never blocks server start), then again every 24 hours in-process.
+      //
+      // Liveness predicate: ChatService's in-flight turn state is private (the
+      // `threads` Ref is internal). Rather than coupling the registry to
+      // ChatService's internals, we omit the predicate here and let the
+      // 14-day `last_active_at` proxy serve as the guard. A thread that had a
+      // live turn within the last 14 days will have its `last_active_at` updated
+      // and will not appear in listStale(). This is conservative and safe.
+      // (The `isLive` predicate in runAutoArchive's signature exists for callers
+      // that DO have access to a live-thread set — e.g. integration tests.)
+      const threadRegistryOption = yield* Effect.serviceOption(ThreadRegistryService)
+      const runAutoArchiveBestEffort = (): void => {
+        // NOTE: this is called from outside an Effect.gen generator (from a
+        // setTimeout-like position), so plain Promise is fine here.
+        if (Option.isNone(threadRegistryOption)) return
+        const reg = threadRegistryOption.value
+        const nowMs = Date.now()
+        // Effect.either wraps errors so a failure in runAutoArchive can never
+        // propagate out — this is the canonical best-effort escape hatch.
+        Effect.runPromise(
+          Effect.either(
+            runAutoArchive(reg, nowMs).pipe(
+              Effect.flatMap((archived) =>
+                archived.length > 0
+                  ? Effect.sync(() =>
+                      console.log(
+                        `[luna/thread-registry] auto-archived ${archived.length} idle thread(s): ${archived.join(", ")}`,
+                      ),
+                    )
+                  : Effect.void,
+              ),
+            ),
+          ),
+        ).catch(() => {
+          // Effect.either means errors appear as Left, not as Promise rejection.
+          // This catch is a belt-and-suspenders guard; it should never fire.
+        })
+      }
+
+      // Boot run: fire-and-forget, best-effort.
+      runAutoArchiveBestEffort()
+
+      // Daily interval: 24 h in-process. forkScoped ties the interval to the
+      // server scope so it is cancelled cleanly on graceful shutdown.
+      const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000
+      yield* Effect.forkScoped(
+        Effect.forever(
+          Effect.sleep(TWENTY_FOUR_HOURS_MS).pipe(
+            Effect.zipRight(Effect.sync(runAutoArchiveBestEffort)),
+          ),
+        ),
+      )
 
       // PRD A §08: access tokens live ~1h; refresh AHEAD of expiry so the
       // mount snapshot's bearer never goes stale mid-conversation. The

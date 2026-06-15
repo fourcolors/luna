@@ -534,6 +534,12 @@ export const reduce = (state: UIState, action: Action): UIState => {
         smartBarItems: frame.items,
         smartBarThreadId: frame.threadId,
       }
+    case "thread-archived":
+    case "thread-unarchived":
+      // Phase 3 archive/unarchive ack frames. The thread list is refreshed
+      // by the UI re-querying list-threads after these acks — no persistent
+      // store state to fold here (same pattern as vault-status).
+      return state
     default: {
       // Exhaustiveness guard: when every ServerFrame member has a matching
       // case arm, TypeScript narrows `frame` to `never` here. Adding a new
