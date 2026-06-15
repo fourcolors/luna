@@ -46,5 +46,10 @@ con.commit()
 con.close()
 print("nightly: wrote red agent_note for %d failing probe(s)" % len(fails))
 PY
+note_rc=$?
+if [[ $note_rc -ne 0 ]]; then
+  echo "nightly: WARNING — recording step failed (rc=$note_rc); result may not be in agent_notes" >&2
+  [[ $rc -eq 0 ]] && rc=$note_rc   # don't report green if we couldn't record
+fi
 
 exit "$rc"

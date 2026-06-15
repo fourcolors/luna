@@ -38,6 +38,18 @@ done
 
 [[ -d "$PROBE_DIR" ]] || { echo "run-corpus: no probes/ dir at $PROBE_DIR" >&2; exit 2; }
 
+# Pick a timeout command portably: GNU `timeout` (Linux) or `gtimeout` (macOS via
+# coreutils). If neither exists, run probes without a timeout rather than marking
+# every probe FAIL with rc=127.
+if command -v timeout >/dev/null 2>&1; then TIMEOUT_CMD="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_CMD="gtimeout"
+else TIMEOUT_CMD=""; fi
+
+# --json needs python3 for safe escaping; fail early rather than mid-run.
+if [[ $JSON -eq 1 ]] && ! command -v python3 >/dev/null 2>&1; then
+  echo "run-corpus: --json requires python3" >&2; exit 2
+fi
+
 # --- discover probes -------------------------------------------------------
 shopt -s nullglob
 probes=()
@@ -64,7 +76,11 @@ for p in "${probes[@]}"; do
   name="$(basename "$p" .sh)"
   title="$(probe_field "$p" PROBE)"; title="${title:-$name}"
   t0=$(date +%s%N 2>/dev/null || echo 0)
-  out="$(timeout "$PROBE_TIMEOUT" "$p" 2>&1)"; rc=$?
+  if [[ -n "$TIMEOUT_CMD" ]]; then
+    out="$("$TIMEOUT_CMD" "$PROBE_TIMEOUT" "$p" 2>&1)"; rc=$?
+  else
+    out="$("$p" 2>&1)"; rc=$?
+  fi
   t1=$(date +%s%N 2>/dev/null || echo 0)
   dur=$(( (t1 - t0) / 1000000 )); [[ $dur -lt 0 ]] && dur=0
 
@@ -80,8 +96,11 @@ for p in "${probes[@]}"; do
 
   rows+=("$(printf '%-6s %-32s %s' "$status" "$name" "$summary")")
 
-  esc() { printf '%s' "$1" | python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
-  jrows+=("{\"name\":$(esc "$name"),\"title\":$(esc "$title"),\"status\":\"$status\",\"exit\":$rc,\"duration_ms\":$dur,\"summary\":$(esc "$summary")}")
+  # JSON rows (and the python3 they need) only when --json was asked for.
+  if [[ $JSON -eq 1 ]]; then
+    esc() { printf '%s' "$1" | python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+    jrows+=("{\"name\":$(esc "$name"),\"title\":$(esc "$title"),\"status\":\"$status\",\"exit\":$rc,\"duration_ms\":$dur,\"summary\":$(esc "$summary")}")
+  fi
 done
 
 total=${#probes[@]}

@@ -22,7 +22,10 @@ else
      "$SEED_DIR"/README.md "$SEED_DIR"/lessons.md "$SEED_DIR"/DESIGN-P3b-soft-beliefs.md "$DEST/"
   cp "$SEED_DIR"/probes/*.sh "$DEST/probes/"
   chmod +x "$DEST"/*.sh "$DEST"/probes/*.sh
-  ( cd "$DEST" && git init -q && git add -A && git commit -q -m "seed harness regression corpus" )
+  # Explicit identity so the seed commit works even when git user.name/email are
+  # unset on a fresh machine (otherwise `git commit` aborts under `set -e`).
+  ( cd "$DEST" && git init -q && git add -A \
+      && git -c user.email="luna@localhost" -c user.name="Luna" commit -q -m "seed harness regression corpus" )
   echo "seeded harness-corpus -> $DEST"
 fi
 
@@ -30,14 +33,14 @@ fi
 #    (LUNA_SCHEDULER_V2_ENABLED=1) on the chat-server to actually fire.
 if command -v python3 >/dev/null 2>&1 && [[ -f "$LUNA_DB" ]]; then
   python3 - "$LUNA_DB" "$DEST" <<'PY'
-import sqlite3, json, time, datetime, sys
+import sqlite3, json, time, datetime, sys, shlex
 db, dest = sys.argv[1], sys.argv[2]
 now = datetime.datetime.now(datetime.timezone.utc)
 nr = now.replace(hour=9, minute=0, second=0, microsecond=0)
 if nr <= now:
     nr += datetime.timedelta(days=1)
 nrms = int(nr.timestamp() * 1000); nowms = int(time.time() * 1000)
-payload = {"steps": [{"kind": "shell", "cmd": "bash %s/nightly.sh" % dest, "timeout_ms": 300000}],
+payload = {"steps": [{"kind": "shell", "cmd": "bash " + shlex.quote(dest + "/nightly.sh"), "timeout_ms": 300000}],
            "halt_on_failure": False}
 con = sqlite3.connect(db, timeout=15)
 try:

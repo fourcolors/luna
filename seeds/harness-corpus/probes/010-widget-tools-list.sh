@@ -25,9 +25,13 @@ MCP_BASE="$(ls -d "$LUNA_REPO"/node_modules/.bun/@modelcontextprotocol+sdk@*/nod
 # the temp script lives in (and runs from) packages/widget-tools.
 tmp="$WT_DIR/.harness-widget-probe.$$.mjs"
 trap 'rm -f "$tmp"' EXIT
-cat > "$tmp" <<'EOF'
-import { Client } from "__MCP_BASE__/dist/esm/client/index.js";
-import { InMemoryTransport } from "__MCP_BASE__/dist/esm/inMemory.js";
+# Write the resolved SDK path directly (no `sed -i` — that flag is GNU-specific
+# and breaks on BSD/macOS). The two import lines carry $MCP_BASE; the rest is
+# static and stays in a quoted heredoc.
+{
+  printf 'import { Client } from "%s/dist/esm/client/index.js";\n' "$MCP_BASE"
+  printf 'import { InMemoryTransport } from "%s/dist/esm/inMemory.js";\n' "$MCP_BASE"
+  cat <<'EOF'
 import {
   makeWidgetTools, makeMcpAppTools, makeSearchArtifactsTool,
   makeOpenWidgetTool, makeOpenArtifactTool, buildWidgetToolsMcpServer,
@@ -73,7 +77,7 @@ try {
   process.exit(1);
 }
 EOF
-sed -i "s#__MCP_BASE__#$MCP_BASE#g" "$tmp"
+} > "$tmp"
 
 out="$(cd "$WT_DIR" && bun "$tmp" 2>&1)"; rc=$?
 last="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -n1)"
