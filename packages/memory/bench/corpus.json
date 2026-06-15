@@ -106,39 +106,39 @@
     {
       "id": "pref_001_dark_mode",
       "kind": "preference",
-      "text": "Mr. Cobb prefers dark mode in his editor and terminal",
+      "text": "Jordan Avery prefers dark mode in their editor and terminal",
       "paraphrases": [
         "what editor theme does the user like",
-        "does Mr. Cobb use light or dark UI",
-        "what color scheme does Mr. Cobb prefer when coding"
+        "does Jordan Avery use light or dark UI",
+        "what color scheme does Jordan Avery prefer when coding"
       ]
     },
     {
       "id": "pref_002_terse",
       "kind": "preference",
-      "text": "Mr. Cobb prefers terse responses with no trailing summaries — answer the question and stop",
+      "text": "Jordan Avery prefers terse responses with no trailing summaries — answer the question and stop",
       "paraphrases": [
-        "how detailed should responses to Mr. Cobb be",
-        "does Mr. Cobb want long explanations",
+        "how detailed should responses to Jordan Avery be",
+        "does Jordan Avery want long explanations",
         "what's the preferred response length"
       ]
     },
     {
       "id": "pref_003_verify",
       "kind": "preference",
-      "text": "Mr. Cobb wants verification before claims — run a grep, read the file, execute the test, don't say 'I think' or 'probably'",
+      "text": "Jordan Avery wants verification before claims — run a grep, read the file, execute the test, don't say 'I think' or 'probably'",
       "paraphrases": [
         "should I assume or check before answering",
-        "is hedged language acceptable for Mr. Cobb",
+        "is hedged language acceptable for Jordan Avery",
         "how should I validate technical statements"
       ]
     },
     {
       "id": "pref_004_1password",
       "kind": "preference",
-      "text": "Mr. Cobb stores credentials in 1Password and uses macOS Keychain as a fallback",
+      "text": "Jordan Avery stores credentials in 1Password and uses macOS Keychain as a fallback",
       "paraphrases": [
-        "where does Mr. Cobb keep his secrets",
+        "where does Jordan Avery keep their secrets",
         "what password manager does the user use",
         "how are API keys managed on this machine"
       ]
@@ -146,60 +146,60 @@
     {
       "id": "pref_005_zsh",
       "kind": "preference",
-      "text": "Mr. Cobb defaults to Zsh syntax for shell examples, only using Bash for cross-platform skills or scripts",
+      "text": "Jordan Avery defaults to Zsh syntax for shell examples, only using Bash for cross-platform skills or scripts",
       "paraphrases": [
         "which shell syntax should I use in examples",
-        "is Mr. Cobb a Bash or Zsh user",
+        "is Jordan Avery a Bash or Zsh user",
         "what's the default shell for terminal snippets"
       ]
     },
     {
       "id": "pref_006_new_commits",
       "kind": "preference",
-      "text": "Mr. Cobb prefers creating new git commits rather than amending existing ones, unless he explicitly asks for an amend",
+      "text": "Jordan Avery prefers creating new git commits rather than amending existing ones, unless they explicitly ask for an amend",
       "paraphrases": [
         "should I amend or make a fresh commit",
-        "does Mr. Cobb like git history rewrites",
+        "does Jordan Avery like git history rewrites",
         "how should commits be structured"
       ]
     },
     {
       "id": "pref_007_obsidian",
       "kind": "preference",
-      "text": "Mr. Cobb keeps his daily notes and second-brain content in Obsidian using a flat-note metadata-based system",
+      "text": "Jordan Avery keeps their daily notes and second-brain content in Obsidian using a flat-note metadata-based system",
       "paraphrases": [
-        "where does Mr. Cobb take notes",
+        "where does Jordan Avery take notes",
         "what app holds the user's knowledge base",
-        "how does Mr. Cobb organize his personal docs"
+        "how does Jordan Avery organize their personal docs"
       ]
     },
     {
       "id": "pref_008_bang_prefix",
       "kind": "preference",
-      "text": "Mr. Cobb wants interactive commands suggested with a ! prefix so he can run them himself in the prompt",
+      "text": "Jordan Avery wants interactive commands suggested with a ! prefix so they can run them in the prompt",
       "paraphrases": [
         "how should I suggest commands the user needs to run interactively",
-        "what's the convention for shell commands Mr. Cobb should execute",
+        "what's the convention for shell commands Jordan Avery should execute",
         "how do I hand off a CLI invocation to the user"
       ]
     },
     {
       "id": "pref_009_email",
       "kind": "preference",
-      "text": "Mr. Cobb's email address is sterling@flowstay.ai for work and personal contact",
+      "text": "Jordan Avery's email address is jordan@example.com for work and personal contact",
       "paraphrases": [
-        "what is Mr. Cobb's email",
-        "how do I reach Sterling Cobb electronically",
+        "what is Jordan Avery's email",
+        "how do I reach Jordan Avery electronically",
         "what address should I use for the user"
       ]
     },
     {
       "id": "pref_010_address",
       "kind": "preference",
-      "text": "Mr. Cobb prefers being addressed as 'Mr. Cobb' in conversation, not Sterling or by first name",
+      "text": "Jordan Avery prefers being addressed by full name in conversation, not just by first name",
       "paraphrases": [
         "how should I address the user",
-        "what's the right way to refer to Mr. Cobb",
+        "what's the right way to refer to Jordan Avery",
         "does the user prefer first or last name"
       ]
     },
@@ -211,9 +211,9 @@
       "paraphrases": []
     },
     {
-      "id": "dist_002_cobb_salad",
+      "id": "dist_002_chef_salad",
       "kind": "distractor",
-      "text": "Cobb salads are a popular American dish named after Robert Cobb of the Brown Derby restaurant in Hollywood",
+      "text": "Chef salads are a popular American dish layered with deli meats, cheeses, and hard-boiled eggs on a bed of greens",
       "paraphrases": []
     },
     {
@@ -255,13 +255,13 @@
     {
       "id": "dist_009_dark_coffee",
       "kind": "distractor",
-      "text": "Mr. Cobb prefers dark roast coffee brewed in a French press first thing in the morning",
+      "text": "Jordan Avery prefers dark roast coffee brewed in a French press first thing in the morning",
       "paraphrases": []
     },
     {
-      "id": "dist_010_sterling_silver",
+      "id": "dist_010_silver_flatware",
       "kind": "distractor",
-      "text": "Sterling silver flatware should be polished with a microfiber cloth to avoid tarnish and scratches",
+      "text": "Fine silver flatware should be polished with a microfiber cloth to avoid tarnish and scratches",
       "paraphrases": []
     }
   ]

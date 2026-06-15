@@ -14,7 +14,7 @@ Phase 2 wired the Memories tab to a Solid `createEffect` that calls `runMemorySe
 
 The real backend is the chat-service's `SqliteVectorBackend` (`packages/memory/src/backends/sqlite-vector.ts`) running on whichever host the server is on (jax-box in dev). It owns `~/.luna/memory.db` and has Vectorlite HNSW + FTS5 hybrid search wired and ready. The TUI can't reach this directly — they're on different machines.
 
-Mr. Cobb's framing: the panel is informational, not load-bearing. Stability and minimalism beat features. The protocol must mirror existing infrastructure (the `list-threads` request/response pattern) rather than introduce new conventions.
+The operator's framing: the panel is informational, not load-bearing. Stability and minimalism beat features. The protocol must mirror existing infrastructure (the `list-threads` request/response pattern) rather than introduce new conventions.
 
 ## Goals
 

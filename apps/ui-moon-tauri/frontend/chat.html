@@ -4639,7 +4639,7 @@
     /**
      * Render an attached text/code file into the outgoing message text.
      *
-     * ── DESIGN DECISION (yours, Mr. Cobb) ─────────────────────────────────
+     * ── DESIGN DECISION ────────────────────────────────────────────────────
      * When a user attaches `report.csv` or `main.py`, its contents get folded
      * into the prompt text we send to Claude. HOW we wrap it materially
      * changes how reliably the model treats it as a discrete file vs. blurs it
@@ -4817,7 +4817,7 @@
         // chunk. ui-shared/reducer.ts mirrors this by replacing inFlight.text
         // on every delta. Naive `last.raw += text` produces classic
         // exponential duplication: e.g. delta 1 = "Hey", delta 2 = "Hey
-        // Sterling — what's up?", appended yields "HeyHey Sterling — what's
+        // Alex — what's up?", appended yields "HeyHey Alex — what's
         // up?". To stay segment-aware AND avoid duplication, we keep the
         // last-seen cumulative on the turn and append only the incremental
         // suffix to the live text segment. Post-tool fresh segments get
