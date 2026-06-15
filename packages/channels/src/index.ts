@@ -41,3 +41,6 @@ export { splitToChunks, subscribeAndDeliver, streamEditThrottleMs } from "./deli
 
 export type { ChannelServiceApi } from "./service.js"
 export { ChannelService, ChannelServiceLayer } from "./service.js"
+
+export type { TelegramAdapterConfig, TelegramHttpTransport } from "./adapters/telegram.js"
+export { makeTelegramAdapter, makeRealTransport } from "./adapters/telegram.js"
