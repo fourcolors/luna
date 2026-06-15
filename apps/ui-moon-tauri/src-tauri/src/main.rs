@@ -1348,65 +1348,14 @@ fn list_widget_windows(app: tauri::AppHandle) -> Vec<String> {
         .collect()
 }
 
-// ── click-through over the re-tether envelope ───────────────────────────────
-//
-// A transparent window is still an opaque RECTANGLE to the OS hit-tester: it
-// swallows every click inside its bounds even where nothing is painted. That
-// is tolerable at the collapsed 140x185, but the re-tether swing envelope
-// grows the window to ~460x470 of mostly-empty space — a large invisible
-// dead zone over the desktop.
-//
-// While the string is live the webview publishes the truly-interactive region
-// (padded rects for the moon + rope/bead, in LOGICAL window-local px) via
-// `set_interactive_region`. The poll loop in setup() watches the global
-// cursor and flips set_ignore_cursor_events:
-//   cursor inside any rect   -> interactive (immediately, so clicks land)
-//   cursor outside all rects -> click-through (after a short hysteresis)
-// The webview cannot do this itself: once the window ignores cursor events it
-// receives NO mouse input, so it could never observe the cursor returning.
-// The poll runs in pure Rust (Window::cursor_position / set_ignore_cursor_
-// events), which bypasses the webview ACL — only this rect-push command needs
-// a capability. With enabled=false (the default) the loop idles and the
-// window behaves exactly as before this feature.
-
-#[derive(Default)]
-struct InteractiveRegion(std::sync::Mutex<RegionState>);
-
-#[derive(Default)]
-struct RegionState {
-    enabled: bool,
-    /// (x, y, w, h) in logical window-local px, already padded by the sender.
-    rects: Vec<(f64, f64, f64, f64)>,
-}
-
-#[tauri::command]
-fn set_interactive_region(
-    state: tauri::State<'_, InteractiveRegion>,
-    enabled: bool,
-    rects: Vec<Vec<f64>>,
-) -> Result<(), String> {
-    // Recover from a poisoned lock instead of erroring: the state is plain data
-    // (no invariant a panic could break mid-update), and the JS caller fire-and-
-    // forgets this command — a failed DISABLE would silently leave the poll
-    // managing click-through forever after the string is gone.
-    let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
-    s.enabled = enabled;
-    s.rects = rects
-        .into_iter()
-        .filter(|r| r.len() == 4)
-        .map(|r| (r[0], r[1], r[2], r[3]))
-        .collect();
-    Ok(())
-}
-
 // ── voice pipeline commands (feature "voice") ───────────────────────────────
 //
 // Thin wrappers over luna_moon_ui_lib::voice::VoiceController (managed as
-// Tauri State, mirroring InteractiveRegion above). Command names, args and
-// payloads follow VOICE.md exactly. All are async so a slow operation (mode
-// teardown joins through an in-flight whisper inference; ~/.luna model
-// download) never runs on the main thread — and async commands taking State
-// must return Result (Tauri 2 constraint), hence the uniform signatures.
+// Tauri State). Command names, args and payloads follow VOICE.md exactly.
+// All are async so a slow operation (mode teardown joins through an in-flight
+// whisper inference; ~/.luna model download) never runs on the main thread —
+// and async commands taking State must return Result (Tauri 2 constraint),
+// hence the uniform signatures.
 
 #[cfg(feature = "voice")]
 use luna_moon_ui_lib::voice::{self, VoiceController};
@@ -2684,7 +2633,6 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         // PRD A §09: open the system browser for the connector OAuth hop.
         .plugin(tauri_plugin_opener::init())
-        .manage(InteractiveRegion::default())
         // Widget dock graph for group-drag (set_dock + native child windows).
         .manage(DockState::default())
         // PRD A §09: the client-brokered OAuth loopback state.
@@ -2702,7 +2650,6 @@ fn main() {
         load_connection,
         load_profiles,
         set_active_profile,
-        set_interactive_region,
         local_shell_exec,
         get_platform,
         check_for_update,
@@ -2740,7 +2687,6 @@ fn main() {
         load_connection,
         load_profiles,
         set_active_profile,
-        set_interactive_region,
         local_shell_exec,
         get_platform,
         check_for_update,
@@ -2855,68 +2801,6 @@ fn main() {
                     std::sync::Arc::new(app.handle().clone());
                 app.manage(VoiceController::production(sink));
             }
-            // Click-through cursor poll (~30Hz; see the InteractiveRegion docs).
-            // Idles on a bool while no region is enabled, so the everyday widget
-            // pays one mutex read per tick and nothing else. Window methods are
-            // safe from this thread (they proxy to the main thread internally).
-            let poll_handle = app.handle().clone();
-            std::thread::spawn(move || {
-                let mut ignoring = false;
-                let mut outside_ticks: u8 = 0;
-                loop {
-                    std::thread::sleep(std::time::Duration::from_millis(33));
-                    let Some(win) = poll_handle.get_webview_window("main") else {
-                        continue;
-                    };
-                    let (enabled, rects) = {
-                        let region = poll_handle.state::<InteractiveRegion>();
-                        let guard = region.0.lock().unwrap_or_else(|e| e.into_inner());
-                        (guard.enabled, guard.rects.clone())
-                    };
-                    if !enabled {
-                        // Region off (string retracted / app normal): make sure we
-                        // are NOT ignoring, then idle.
-                        if ignoring && win.set_ignore_cursor_events(false).is_ok() {
-                            ignoring = false;
-                        }
-                        outside_ticks = 0;
-                        continue;
-                    }
-                    let (cursor, origin, sf) = match (
-                        win.cursor_position(),
-                        win.outer_position(),
-                        win.scale_factor(),
-                    ) {
-                        (Ok(c), Ok(o), Ok(s)) if s > 0.0 => (c, o, s),
-                        _ => continue, // transient read failure: keep last state
-                    };
-                    // Global physical cursor -> logical window-local (the rects'
-                    // coordinate space).
-                    let lx = (cursor.x - origin.x as f64) / sf;
-                    let ly = (cursor.y - origin.y as f64) / sf;
-                    let inside = rects
-                        .iter()
-                        .any(|&(x, y, w, h)| lx >= x && lx <= x + w && ly >= y && ly <= y + h);
-                    if inside {
-                        outside_ticks = 0;
-                        // Flip interactive IMMEDIATELY so an incoming click lands.
-                        if ignoring && win.set_ignore_cursor_events(false).is_ok() {
-                            ignoring = false;
-                        }
-                    } else {
-                        // Hysteresis (~130ms) before going click-through so edge
-                        // skims don't flicker; the rects are pre-padded as well.
-                        outside_ticks = outside_ticks.saturating_add(1);
-                        if !ignoring
-                            && outside_ticks >= 4
-                            && win.set_ignore_cursor_events(true).is_ok()
-                        {
-                            ignoring = true;
-                        }
-                    }
-                }
-            });
-
             // Register a universal system-wide global shortcut to toggle Luna window.
             // Attempts a self-healing fallback chain to avoid macOS key collisions.
             let shortcuts = vec![
