@@ -185,6 +185,7 @@ import {
   RoutedOpSecretProvider,
   scanUserSkills,
   SessionStore,
+  makeSessionStoreSqlite,
   SkillPrefsStore,
   SkillRegistry,
   syncUserSkills,
@@ -1610,7 +1611,7 @@ export interface BuildWorkerRegistryLayerOpts {
   // dream leaf deps (DreamWorkerLayer R = DreamStore|DreamReasoner|SessionStore|MemoryRouter|Clock)
   readonly dreamStoreL: Layer.Layer<DreamStore, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
   readonly dreamReasonerL: Layer.Layer<import("@luna/core").DreamReasoner>
-  readonly sessionStoreL: Layer.Layer<SessionStore>
+  readonly sessionStoreL: Layer.Layer<SessionStore, never, import("@luna/memory").LunaSqliteBootstrap>
   readonly memoryRouterL: Layer.Layer<import("@luna/memory").MemoryRouter, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
   /** Optional ECE calibration sink (dream serviceOption). */
   readonly calibrationStoreL?: Layer.Layer<CalibrationStore, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
@@ -1698,7 +1699,15 @@ export const buildBaseLayer = (
     Layer.provide(obsL),
     Layer.provide(clockL),
   )
-  const storeL = SessionStore.Default
+  // Phase 2 — durable SessionStore: SQLite-backed so a restart replays
+  // the full transcript, not just the model's SDK context.
+  // LunaSqliteBootstrap is satisfied at the bottom of buildServerLayer,
+  // same as every other SQLite-backed layer here. Best-effort contract:
+  // a disk failure at Layer init will propagate (per the jobs-store /
+  // thread-registry precedent — the server does not start without its
+  // stores). A failure on a per-append write is caught by the adapter's
+  // onMirrorError hook and does NOT kill the live session.
+  const storeL = makeSessionStoreSqlite(paths.lunaDbPath)
 
   // Build one inner OP layer per discovered token, then wrap in the
   // routed dispatcher. The routed wrapper owns the op://-vs-luna-op://
