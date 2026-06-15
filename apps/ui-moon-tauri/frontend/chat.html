@@ -2479,7 +2479,7 @@
     // chat.html — the chat WIDGET WINDOW (widget-system.md Phase 4,
     // "extraction-as-new-page"). The chat half of index.html, copied: this
     // window OWNS the conversation thread now (one-window-per-thread). The
-    // moon/tether/wizard/settings-modal choreography stays in the hub; window
+    // moon/wizard/settings-modal choreography stays in the hub; window
     // chrome (title bar, dock/snap, close) follows panel.html's conventions.
     //
     // Everything below boots cleanly when __TAURI__ is absent (jsdom /
@@ -2621,9 +2621,7 @@
     /**
      * Shared state manager — the CHAT-SCOPED subset of the hub's State.
      * Dropped here: the moon press/drag fields, shortcut recording, the
-     * settings-modal/channel fields, the re-tether episode state
-     * (tetherGraceTimer/tetherGen/growPromise/tetherPendingOnCollapse — the
-     * string lives on the hub), close-on-blur suppression, and the
+     * settings-modal/channel fields, close-on-blur suppression, and the
      * skills/connectors/vault projections (settings PANELS own those).
      */
     const State = {
@@ -4109,8 +4107,8 @@
             }
           }
           if (!State.isManuallyClosing) {
-            // No tether choreography in the chat WINDOW (the re-tether string
-            // lives on the moon hub): on a drop, status + scheduled retry.
+            // The chat window does not own reconnect choreography beyond
+            // scheduling the next retry (the hub handles any visual recovery).
             this.scheduleReconnect();
           }
         });
@@ -4388,9 +4386,8 @@
         }, 7000);
       },
 
-      // Reattach stalled (open socket but no thread-snapshot). The moon hub
-      // surfaces its re-tether string for this; the chat WINDOW only reports
-      // status — the close path / scheduleReconnect own actual recovery.
+      // Reattach stalled (open socket but no thread-snapshot). The chat WINDOW
+      // reports status only — the close path / scheduleReconnect own recovery.
       onReattachStalled() {
         this.updateStatus('disconnected', 'Reattach stalled');
       },
@@ -5090,7 +5087,7 @@
       ChatLoop.flush();
       LocalShell.sendCapability();
       // Restart-survival: persist the thread we just landed on so reopening
-      // the app re-tethers to it. The snapshot proves this thread is valid
+      // the app resumes it. The snapshot proves this thread is valid
       // on the CURRENT server, so it's always safe to remember. Fire-and-
       // forget; never blocks or throws into the UI.
       // Only the MAIN line owns the restart-resume memory. A fresh-spawn side

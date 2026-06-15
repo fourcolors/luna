@@ -123,7 +123,6 @@ always-on-top Tauri window hosting a small dedicated host page.
 ```
 moon hub window (140×185, label "main")
   ├─ moon render + parallax + drag
-  ├─ re-tether string episode (unchanged)
   ├─ ambient ladder: pip / orbit motes / toast   ← deck design language
   ├─ settings modal — shrinks tab-by-tab into settings.* panels [phases 2-3]
   ├─ setup wizard, updater, boot/token plumbing
@@ -655,8 +654,7 @@ carve-up. No build step: shared code lands as plain files in `frontend/vendor/`.
 ChatRenderer / ChatLoop / ChatEngine + Attachments + SurveyEngine +
 SecretPromptEngine + ArtifactsEngine + WorkflowsEngine + LocalShell.
 
-**Stays in the hub:** moon render/parallax, MoonString + tether (+ its
-`set_interactive_region` click-through, unchanged), settings modal + Vault tab,
+**Stays in the hub:** moon render/parallax, settings modal + Vault tab,
 SetupWizard, updater (its "Update & Restart" banner needs a hub-side home —
 today it injects into `#chat-messages`), boot/token plumbing.
 
@@ -678,9 +676,8 @@ window registry.
 - The 282-test jsdom suite keys off `window.__MoonInternals` — exports must be
   preserved per page; `chat.html` needs its own harness mirroring
   `test/moon-app.test.ts`.
-- `toggleChat`'s resize/tether choreography (`index.html:10011-10072`) is
-  replaced by spawn/focus of the chat window; the "string only when collapsed"
-  invariant restates as "string whenever the hub socket is detached".
+- `toggleChat`'s resize choreography (`index.html:10011-10072`) is
+  replaced by spawn/focus of the chat window.
 
 ---
 
@@ -709,8 +706,8 @@ green, zero behavior change. Scope note: `moon-markdown` extraction can slide
 to Phase 4 (chat) — panel.html doesn't need it; the first three modules are
 exactly what panel.html consumes.
 _As-built decisions (2026-06-11):_ the hub adopts the **registry + close-hook
-seam + protocol constants** but keeps its bespoke transport (turn watchdogs /
-tether choreography are too entangled to move before the chat extraction);
+seam + protocol constants** but keeps its bespoke transport (turn watchdogs
+are too entangled to move before the chat extraction);
 `LunaWS.createClient` is the shared transport for the widget-page family —
 widget.html converged now, panel.html consumes it in Phase 2. And
 `moon-theme.css` is linked by the widget-page family ONLY: index.html has its
