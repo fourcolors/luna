@@ -59,11 +59,27 @@ html, body {
   width: calc(100% - var(--card-inset) * 2);
   border-radius: var(--card-radius);
   isolation: isolate;
+  /* The SOFT paper halo lives HERE, on the unfiltered shell — NOT on the
+     wobbled ::before. The wc-wobble filter displaces everything it's applied
+     to; when the box-shadow rode on ::before, the turbulence split it into a
+     doubled, jagged dark edge (the "second border"). Keeping the shadow on
+     the clean shell layer gives ONE smooth halo that follows the rounded
+     card, while ::before keeps only the hand-painted FILL edge.
+     WARM paper halo (design reference) — never pure black. Reach (~18px)
+     stays inside --card-inset (22px) so nothing shears at the window bounds.
+     This is the card's ONLY depth cue: the OS window shadow is disabled
+     (shadow:false in tauri.conf.json) so it can't stack a second, square-
+     cornered, focus-reactive shadow on top of this rounded one. */
+  box-shadow:
+    0 1px 2px rgba(60, 45, 35, 0.10),
+    0 0 16px -2px rgba(60, 45, 35, 0.13),
+    0 6px 20px -6px rgba(60, 45, 35, 0.26);
 }
 
 /* Paper-wash layer — sits behind all content via z-index:-1.
    The wc-wobble filter roughens its outline so the card reads hand-painted.
-   The head-tint gradient pools the panel's watercolor wash at the top. */
+   The head-tint gradient pools the panel's watercolor wash at the top.
+   NO box-shadow here — see .widget-shell above for why the halo moved. */
 .widget-shell::before {
   content: '';
   position: absolute;
@@ -76,41 +92,34 @@ html, body {
       color-mix(in oklab, var(--panel-tint) 26%, transparent) 0%,
       transparent 86px),
     var(--paper);
-  /* WARM paper halo (design reference) — never pure black. A faint ambient
-     ring on every side + a soft directional drop. Reach (~18px) stays inside
-     --card-inset (22px) so nothing shears at the window bounds. */
-  box-shadow:
-    0 1px 2px rgba(60, 45, 35, 0.10),
-    0 0 16px -2px rgba(60, 45, 35, 0.13),
-    0 6px 20px -6px rgba(60, 45, 35, 0.26);
 }
 
-/* Dark theme: deeper shadow, slightly stronger tint pool. */
+/* Dark theme: deeper halo + a faint smooth edge ring for definition on the
+   night paper (on the shell, so it stays a single crisp line, not wobbled),
+   slightly stronger tint pool. */
+html[data-theme='dark'] .widget-shell {
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--ink) 7%, transparent),
+    0 0 16px -2px rgba(0, 0, 0, 0.4),
+    0 6px 20px -6px rgba(0, 0, 0, 0.62);
+}
 html[data-theme='dark'] .widget-shell::before {
   background:
     linear-gradient(180deg,
       color-mix(in oklab, var(--panel-tint) 38%, transparent) 0%,
       transparent 86px),
     var(--paper-2);
-  box-shadow:
-    0 0 0 1px color-mix(in oklab, var(--ink) 7%, transparent),
-    0 0 16px -2px rgba(0, 0, 0, 0.4),
-    0 6px 20px -6px rgba(0, 0, 0, 0.62);
 }
 
-/* Ink chrome: draw a SINGLE visible edge, tighten the tint pool.
-   The whole ::before is displaced by the wc-wobble filter as one unit, so the
-   inked edge must be ONE stroke. Carry it as a ring box-shadow — NOT a `border`.
-   A `border` (inside the box) plus the box-shadow halo ring (outside the box)
-   displace into two offset wavy lines with a transparent sliver of window
-   between them: the "doubled / 3rd transparent border" bug. The ring spreads
-   the edge outward so it reads as the card's own painted outline. */
+/* Ink chrome: a single visible inked edge (preserves PR #131's fix). It rides
+   on the wobbled ::before so the wc-wobble gives the inked stroke the same
+   hand-painted waver as the fill — carried as a ring box-shadow, NOT a `border`
+   (a border sits inside the box while the halo ring sits outside; the filter
+   displaces the two concentric edges into offset wavy lines with a transparent
+   sliver between = the doubled "3rd border"). The soft halo stays on the
+   unfiltered .widget-shell; ::before carries ONLY the single inked ring. */
 html[data-chrome='ink'] .widget-shell::before {
-  box-shadow:
-    0 0 0 1.5px color-mix(in oklab, var(--ink) 55%, transparent),
-    0 1px 2px rgba(60, 45, 35, 0.10),
-    0 0 16px -2px rgba(60, 45, 35, 0.13),
-    0 6px 20px -6px rgba(60, 45, 35, 0.26);
+  box-shadow: 0 0 0 1.5px color-mix(in oklab, var(--ink) 55%, transparent);
   background:
     linear-gradient(180deg,
       color-mix(in oklab, var(--panel-tint) 18%, transparent) 0%,
@@ -118,12 +127,16 @@ html[data-chrome='ink'] .widget-shell::before {
     var(--paper);
 }
 
-/* Ink + dark: same single inked ring on the night paper base + deeper halo. */
-html[data-chrome='ink'][data-theme='dark'] .widget-shell::before {
+/* Ink + dark: drop the faint 7% shell ring (the inked ring IS the edge) and
+   keep only the soft dark halos on the shell; ::before carries the single
+   inked ring on the night paper base. */
+html[data-chrome='ink'][data-theme='dark'] .widget-shell {
   box-shadow:
-    0 0 0 1.5px color-mix(in oklab, var(--ink) 55%, transparent),
     0 0 16px -2px rgba(0, 0, 0, 0.4),
     0 6px 20px -6px rgba(0, 0, 0, 0.62);
+}
+html[data-chrome='ink'][data-theme='dark'] .widget-shell::before {
+  box-shadow: 0 0 0 1.5px color-mix(in oklab, var(--ink) 55%, transparent);
   background:
     linear-gradient(180deg,
       color-mix(in oklab, var(--panel-tint) 18%, transparent) 0%,
@@ -347,6 +360,19 @@ html[data-chrome='ink'] .title-bar {
 }
 /* .e-r / .e-b mark which seam edge a badge owns — hooks for inspection and any
    future per-edge nudge; positioning itself is fully handled by left/top. */
+
+/* ── Scroll-container focus ring suppression ─────────────────────────────
+   WebKit makes any overflow:auto/scroll element natively focusable WITHOUT a
+   tabindex, then paints a UA focus ring along its layout bounds when it takes
+   click/scroll focus. Inside a card that ring traces the interior edge and
+   reads as a spurious extra border that blinks in on focus. These containers
+   are passive scroll regions (never keyboard-tab targets), so suppressing the
+   ring costs no a11y — real controls (.dock-link, buttons, inputs, menu
+   items) keep their own :focus-visible outlines. */
+.content-area:focus,
+.content-area:focus-visible,
+.content-area pre:focus,
+.content-area pre:focus-visible { outline: none; }
 
 /* ── Scrollbar base ──────────────────────────────────────────────────── */
 .content-area::-webkit-scrollbar { width: 5px; }
