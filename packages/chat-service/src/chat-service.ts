@@ -784,6 +784,20 @@ export class ChatService extends Effect.Service<ChatService>()(
               return next
             }),
           )
+          // Symmetric teardown for the provider's onBound binding: release any
+          // per-session state it registered (sandbox re-attach closures, tool
+          // session cells). Without this, a module-scope map in the provider
+          // grows one entry per historical thread for the process lifetime —
+          // an unbounded leak on a long-lived server.
+          yield* Scope.addFinalizer(
+            threadScope,
+            Effect.sync(() =>
+              Option.match(binding, {
+                onNone: () => {},
+                onSome: (b) => b.onUnbound?.(id),
+              }),
+            ),
+          )
 
           return summary
         })

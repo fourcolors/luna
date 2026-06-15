@@ -23,6 +23,8 @@ import {
   ManagedRuntime,
 } from "effect"
 import { WebSocket } from "ws"
+import net from "node:net"
+import { randomBytes } from "node:crypto"
 import { Clock } from "@luna/core"
 import {
   DEFAULT_UI_KINDS,
@@ -211,6 +213,69 @@ describe("UIWebSocketServer", () => {
     await expect(
       collectFrames(rig.url, { authorization: "Bearer wrongtoken1234567" }, 1, 1000),
     ).rejects.toThrow(/401|unexpected|Connection ended/i)
+  })
+
+  it("reaps a half-open connection (no pong) but spares a live one", async () => {
+    // Small ping interval so the liveness check runs fast in-test.
+    rig = await startRig(undefined, { pingIntervalMs: 40 })
+    const headers = { authorization: `Bearer ${TOKEN}` }
+
+    // Live client: a normal ws client auto-pongs (browser-like), so the
+    // heartbeat must NOT reap it — guards against false-positive disconnects.
+    const live = new WebSocket(rig.url, { headers })
+    let liveClosed = false
+    live.on("close", () => {
+      liveClosed = true
+    })
+    await new Promise<void>((resolve, reject) => {
+      live.on("open", () => resolve())
+      live.on("error", reject)
+    })
+
+    // Half-open connection: a raw TCP socket that completes the WS upgrade then
+    // goes SILENT — it never answers protocol pings (simulating a slept laptop
+    // / dropped link with no TCP FIN). Without the heartbeat its subscriber
+    // queues + buffers would linger indefinitely — a primary source of the
+    // chat-server's slow growth toward OOM. (A `ws` client can't simulate this
+    // under Bun, which auto-answers pings natively regardless of autoPong.)
+    const target = new URL(rig.url)
+    const host = target.hostname
+    const port = Number(target.port)
+    const reaped = await new Promise<boolean>((resolve) => {
+      let upgraded = false
+      const sock = net.connect(port, host, () => {
+        const key = randomBytes(16).toString("base64")
+        sock.write(
+          `GET /ui?token=${TOKEN} HTTP/1.1\r\n` +
+            `Host: ${host}:${port}\r\n` +
+            `Upgrade: websocket\r\n` +
+            `Connection: Upgrade\r\n` +
+            `Sec-WebSocket-Key: ${key}\r\n` +
+            `Sec-WebSocket-Version: 13\r\n\r\n`,
+        )
+      })
+      sock.on("data", (buf) => {
+        // Note the 101 handshake; ignore all frames (pings) — never pong.
+        if (!upgraded && buf.toString("latin1").includes(" 101 ")) upgraded = true
+      })
+      const timer = setTimeout(() => {
+        sock.destroy()
+        resolve(false)
+      }, 1500)
+      sock.on("close", () => {
+        clearTimeout(timer)
+        resolve(upgraded) // upgraded then closed by the server = reaped
+      })
+      sock.on("error", () => {
+        clearTimeout(timer)
+        resolve(false)
+      })
+    })
+
+    expect(reaped).toBe(true) // server terminated the silent half-open socket
+    expect(liveClosed).toBe(false) // live (ponging) client untouched
+    expect(live.readyState).toBe(WebSocket.OPEN)
+    live.close()
   })
 
   // Audit finding: auth failures must produce a console.warn (IP only — no

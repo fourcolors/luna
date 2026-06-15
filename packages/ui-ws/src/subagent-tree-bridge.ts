@@ -67,6 +67,12 @@ export interface SubagentTreeBridge {
 /** The SDK's subagent spawn tool surfaces under these wire names. */
 const AGENT_TOOL_NAMES = new Set(["Agent", "Task"])
 
+/** Cap on tracked threads. One (small) ThreadState was retained per thread for
+ *  the process lifetime — a slow unbounded leak on a long-lived server. We
+ *  evict the oldest-inserted thread past this bound. Far above any realistic
+ *  concurrent-thread count, so active threads are never evicted in practice. */
+const MAX_TRACKED_THREADS = 512
+
 interface MutableNode {
   id: string
   parentId: string | null
@@ -112,10 +118,31 @@ export const createSubagentTreeBridge = (): SubagentTreeBridge => {
   const threads = new Map<string, ThreadState>()
 
   const ensureThread = (threadId: string): ThreadState => {
-    let t = threads.get(threadId)
-    if (!t) {
-      t = { nodes: new Map(), order: [], seenCalls: new Set(), announced: false }
-      threads.set(threadId, t)
+    const existing = threads.get(threadId)
+    if (existing) {
+      // Refresh recency for TRUE LRU: Map#get does NOT reorder, so re-insert
+      // (delete+set) to move this thread to the most-recently-used end. Without
+      // this the cap would be FIFO — an actively-updating thread created early
+      // could be evicted by newer ones, unexpectedly resetting its `announced`
+      // / in-turn tree state.
+      threads.delete(threadId)
+      threads.set(threadId, existing)
+      return existing
+    }
+    const t: ThreadState = {
+      nodes: new Map(),
+      order: [],
+      seenCalls: new Set(),
+      announced: false,
+    }
+    threads.set(threadId, t)
+    // Bound the map: evict the least-recently-used thread (oldest in iteration
+    // order, since active threads are bumped to the end above). The only
+    // persistent per-thread state is `announced`; evicting a genuinely idle
+    // thread at worst re-pops its Agents panel once on a brand-new delegation.
+    if (threads.size > MAX_TRACKED_THREADS) {
+      const lru = threads.keys().next().value
+      if (lru !== undefined && lru !== threadId) threads.delete(lru)
     }
     return t
   }

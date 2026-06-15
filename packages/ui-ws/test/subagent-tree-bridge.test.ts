@@ -160,4 +160,59 @@ describe("subagent-tree-bridge", () => {
     b.observe("t1", { type: "tool-call", toolCallId: "ag2", name: "Agent", input: {} })
     expect(a.frames).toHaveLength(1) // only the pre-unregister broadcast
   })
+
+  it("bounds the tracked-thread map: evicts the oldest thread past the cap", () => {
+    const b = createSubagentTreeBridge()
+    const old = "thr_oldest"
+    // Announce it, then a delegation: while the entry is RETAINED, a repeat
+    // delegation must NOT auto-open (announced state is remembered).
+    b.markAnnounced(old)
+    expect(
+      b.observe(old, { type: "tool-call", toolCallId: "c0", name: "Agent", input: {} })
+        .autoOpen,
+    ).toBe(false)
+    // Touch enough fresh threads to push `old` past the LRU cap (512) so its
+    // entry is evicted instead of lingering for the whole process lifetime.
+    for (let i = 0; i < 520; i++) {
+      b.observe(`thr_${i}`, {
+        type: "tool-call",
+        toolCallId: `n${i}`,
+        name: "Agent",
+        input: {},
+      })
+    }
+    // `old` was evicted → its `announced` flag is gone → a brand-new
+    // delegation auto-opens again. Proves the entry was dropped (the leak
+    // fix), not silently retained forever.
+    expect(
+      b.observe(old, { type: "tool-call", toolCallId: "c1", name: "Agent", input: {} })
+        .autoOpen,
+    ).toBe(true)
+  })
+
+  it("is TRUE LRU: an actively-touched thread survives churn past the cap", () => {
+    const b = createSubagentTreeBridge()
+    const hot = "thr_hot"
+    b.markAnnounced(hot)
+    // Churn well past the cap, but keep touching `hot` every iteration so it
+    // stays most-recently-used. A FIFO cap would evict it (created first);
+    // true LRU must not.
+    for (let i = 0; i < 600; i++) {
+      b.observe(`thr_${i}`, {
+        type: "tool-call",
+        toolCallId: `n${i}`,
+        name: "Agent",
+        input: {},
+      })
+      // A top-level non-Agent tool is ignored for the tree but still routes
+      // through ensureThread(hot), refreshing its recency.
+      b.observe(hot, { type: "tool-call", toolCallId: `h${i}`, name: "Bash" })
+    }
+    // `hot` was never the LRU → still tracked → `announced` survived, so a
+    // fresh delegation does NOT re-pop the panel.
+    expect(
+      b.observe(hot, { type: "tool-call", toolCallId: "final", name: "Agent", input: {} })
+        .autoOpen,
+    ).toBe(false)
+  })
 })

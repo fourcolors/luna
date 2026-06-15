@@ -293,6 +293,13 @@ export interface ThreadToolsBinding {
   /** Run after the session row exists, with its id — for per-session
    *  bindings (obs tagging, local-shell attach, sandbox re-attach). */
   readonly onBound: (sessionId: string) => void
+  /** Run when the thread's scope closes, with its id — the symmetric
+   *  teardown for `onBound`. Releases any per-session state the provider
+   *  registered at bind time (e.g. sandbox re-attach closures, tool
+   *  session cells) so a long-lived server doesn't accumulate one entry
+   *  per historical thread. Optional for back-compat: providers that hold
+   *  no per-session state omit it. */
+  readonly onUnbound?: (sessionId: string) => void
 }
 
 /**
