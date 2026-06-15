@@ -86,7 +86,7 @@ Use this systemd override, replacing the IP with `$INCUS_GW` if different:
 
 ```ini
 [Service]
-Environment="OLLAMA_HOST=10.77.0.1:11434"
+Environment="OLLAMA_HOST=<ollama-host>:11434"
 ```
 
 Then restart and verify from inside the container:
@@ -94,7 +94,7 @@ Then restart and verify from inside the container:
 ```bash
 systemctl daemon-reload
 systemctl restart ollama
-incus exec luna-dev -- curl -fsS http://10.77.0.1:11434/api/tags
+incus exec luna-dev -- curl -fsS http://<ollama-host>:11434/api/tags
 ```
 
 Existing containers can opt into the real embedder by writing these values to
@@ -109,7 +109,7 @@ incus exec luna-dev -- bash -lc '
     --luna-home /root/.luna \
     --skip-deps \
     --embedder ollama \
-    --ollama-base-url http://10.77.0.1:11434 \
+    --ollama-base-url http://<ollama-host>:11434 \
     --ollama-embed-model embeddinggemma
 '
 ```
@@ -130,7 +130,7 @@ scripts/luna-container-create \
   --host-ws-port 5753 \
   --host-control-port 5754 \
   --embedder ollama \
-  --ollama-base-url http://10.77.0.1:11434 \
+  --ollama-base-url http://<ollama-host>:11434 \
   --ollama-embed-model embeddinggemma \
   --token '<dev-ui-ws-token>'
 ```

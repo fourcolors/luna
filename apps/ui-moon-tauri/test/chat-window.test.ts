@@ -918,26 +918,26 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     // every `assistant-delta` (chat-service.ts:604 — `text: cumulative`).
     // ui-shared/reducer.ts mirrors that by REPLACING inFlight.text. The
     // pre-fix Moon reducer instead APPENDED frame.text to last.raw, which
-    // duplicates the prefix on every delta after the first. Sterling
-    // reported the visible artifact ("HeyHey Sterling — what's on the
-    // agenda?") in luna-moon 0.0.10 on 2026-06-07; this scenario pins it.
+    // duplicates the prefix on every delta after the first. This scenario
+    // pins the visible artifact ("HeyHey Alex — what's on the agenda?")
+    // observed in luna-moon 0.0.10 on 2026-06-07.
     it('assistant-delta with cumulative text does NOT duplicate the prefix (HeyHey bug)', () => {
       M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Hey' })
       M().handleFrame({
         type: 'assistant-delta', turnId: 't1',
-        text: "Hey Sterling — what's on the agenda?",
+        text: "Hey Alex — what's on the agenda?",
       })
       M().handleFrame({
         type: 'assistant-done', turnId: 't1',
-        message: { text: "Hey Sterling — what's on the agenda?" },
+        message: { text: "Hey Alex — what's on the agenda?" },
       })
 
       expect(chat.children.length).toBe(1)
       const bubble = chat.children[0] as HTMLElement
-      expect(bubble.dataset.streamRaw).toBe("Hey Sterling — what's on the agenda?")
+      expect(bubble.dataset.streamRaw).toBe("Hey Alex — what's on the agenda?")
       // The rendered text must NOT contain the duplicated prefix.
       expect(bubble.textContent).not.toContain('HeyHey')
-      expect(bubble.textContent).toContain("Hey Sterling — what's on the agenda?")
+      expect(bubble.textContent).toContain("Hey Alex — what's on the agenda?")
     })
 
     it('many small cumulative deltas accumulate to the correct final text', () => {
@@ -1240,9 +1240,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       issuedAt: 1700,
       items: [
         { id: 'tq-1', kind: 'task_quality', prompt: 'How did Luna do on the last task?', ref: 'task-99' },
-        { id: 'bv-1', kind: 'belief_validation', prompt: 'Sterling prefers concise replies.',
+        { id: 'bv-1', kind: 'belief_validation', prompt: 'Alex prefers concise replies.',
           ref: 'belief-7', beliefId: 'belief-7' },
-        { id: 'bv-2', kind: 'belief_validation', prompt: 'Sterling works mostly on macOS.',
+        { id: 'bv-2', kind: 'belief_validation', prompt: 'Alex works mostly on macOS.',
           ref: 'belief-8', beliefId: 'belief-8' },
       ],
     })

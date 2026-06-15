@@ -394,7 +394,7 @@ the hub; as a panel setting it should mean *all* Luna windows).
 ## Widgets are MCP Apps (v3.1)
 
 _Researched 2026-06-11 (spec, ecosystem, host-implementation tracks; citations
-inline). Direction set by Mr. Cobb: "the core MCP app which is Luna's tools…
+inline). Direction set by the operator: "the core MCP app which is Luna's tools…
 building a widget is effectively creating your own MCP app… that works with
 the full system."_
 

@@ -23,11 +23,11 @@ From the luna repo (`apps/agent-cli`). Use an **unambiguous tailnet address** �
 the host's Tailscale IP (`100.x`) or full `host.<tailnet>.ts.net` MagicDNS name —
 for a fully-green run:
 ```
-bun run src/luna.ts doctor --url ws://100.93.215.30:4753/ui --token <master-token>
+bun run src/luna.ts doctor --url ws://<your-tailscale-ip>:4753/ui --token <master-token>
 ```
 Expected (healthy server):
 ```
-luna doctor — profile=stable url=ws://100.93.215.30:4753/ui
+luna doctor — profile=stable url=ws://<your-tailscale-ip>:4753/ui
 [ OK ] L1 REACH  server reachable (/healthz 200)
 [ OK ] L2 TOKEN  token accepted (WS upgrade 101)
 [ OK ] L3 MODE   chat ready (protocol v2)

@@ -1289,7 +1289,7 @@ exit 0
     it("treats the real Tailscale IPNExtension as foreign — never killable", () => {
       const result = runGuard(verdict, {
         env: {
-          // The actual command holding :4753 on Mr. Cobb's Mac (captured via ps).
+          // The actual command holding :4753 on a dev Mac (captured via ps).
           CMD: '/Applications/Tailscale.app/Contents/PlugIns/IPNExtension.appex/Contents/MacOS/IPNExtension -AppleLanguages ("en-US")',
           DIR: "/Users/me/luna",
         },
@@ -1421,8 +1421,8 @@ exit 0
     })
 
     it("port_guard_conflicting_pid: a tailnet-only listener does NOT conflict (empty)", () => {
-      expect(conflictPid("100.79.223.97:4753")).toBe("") //               Tailscale v4
-      expect(conflictPid("[fd7a:115c:a1e0::5c01:df9a]:4753")).toBe("") // Tailscale v6
+      expect(conflictPid("100.x.y.z:4753")).toBe("") //                   Tailscale v4
+      expect(conflictPid("[fd7a:115c::1]:4753")).toBe("") //              Tailscale v6
     })
 
     it("port_guard_conflicting_pid: scans PAST leading tailnet rows to a later loopback row", () => {
@@ -1433,8 +1433,8 @@ exit 0
       const result = runGuard(
         `lsof() { printf '%s\\n' `
         + `"COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME" `
-        + `"IPNExtens 28274 me 28u IPv4 0x0 0t0 TCP 100.79.223.97:4753 (LISTEN)" `
-        + `"IPNExtens 28274 me 30u IPv6 0x0 0t0 TCP [fd7a:115c:a1e0::5c01:df9a]:4753 (LISTEN)" `
+        + `"IPNExtens 28274 me 28u IPv4 0x0 0t0 TCP 100.x.y.z:4753 (LISTEN)" `
+        + `"IPNExtens 28274 me 30u IPv6 0x0 0t0 TCP [fd7a:115c::1]:4753 (LISTEN)" `
         + `"bun 41589 me 7u IPv4 0x0 0t0 TCP 127.0.0.1:4753 (LISTEN)"; }\n`
         + `port_guard_conflicting_pid 4753`,
       )

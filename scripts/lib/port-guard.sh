@@ -57,7 +57,7 @@ port_guard_info() { printf 'port-guard: %s\n' "$*" >&2; }
 # misses a `*:port` (vite) bind; `@0.0.0.0` matches ANY address (re-catching
 # Tailscale). So we read the bind address out of the listing ($9, NAME=addr:port)
 # and decide per row. macOS lsof NAME examples: `*:5174` and `127.0.0.1:4753`
-# conflict; `100.79.223.97:4753` / `[fd7a:115c:a1e0::5c01:df9a]:4753` (Tailscale)
+# conflict; `100.x.y.z:4753` / `[fd7a:115c:...]:4753` (Tailscale)
 # do not. Scans every row — a leading tailnet row must not hide a later loopback.
 port_guard_conflicting_pid() {
   lsof -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null | awk '
