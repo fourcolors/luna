@@ -17,4 +17,5 @@ for each install-specific probe you create in your instance.
 id                | status  | probe                               | note
 widget-tools-list | covered | probes/010-widget-tools-list.sh     | a malformed tool schema can make an MCP server's tools/list throw, silently hiding all of its tools
 incus-nftables    | covered | probes/040-incus-nftables-guard.sh  | incus create-ops hang without nf_tables; enabling nftables.service flushes the ruleset and wipes incus NAT
+amdgpu-dmub-panic | covered | probes/050-amdgpu-dmub-panic-guard.sh | reading amdgpu DMUB debugfs nodes NULL-derefs and panics the host; no tracked script may recursively read into /sys, and a deployed bind-mount guard must stay active
 ```
