@@ -2186,21 +2186,32 @@ export const buildBaseLayer = (
         const defaultCwd =
           process.env["LUNA_REPO_ROOT"] ?? process.cwd()
         const nowMs = Date.now()
-        try {
-          const result = await importJsonMap(reg, lunaHome, defaultCwd, nowMs, {
-            log: (level, msg) => {
-              if (level === "warn") console.warn(msg)
-              else console.log(msg)
-            },
-          })
+        // NOTE: this runs inside an Effect.gen generator (function*), so the
+        // async importJsonMap must be awaited via Effect.tryPromise + yield*,
+        // NOT a bare `await` (which is a syntax error in a non-async generator
+        // and only slips past tsc's top-level-await handling).
+        const importResult = yield* Effect.either(
+          Effect.tryPromise({
+            try: () =>
+              importJsonMap(reg, lunaHome, defaultCwd, nowMs, {
+                log: (level, msg) => {
+                  if (level === "warn") console.warn(msg)
+                  else console.log(msg)
+                },
+              }),
+            catch: (e) => e as Error,
+          }),
+        )
+        if (importResult._tag === "Right") {
+          const result = importResult.right
           if (result.inserted > 0) {
             console.log(
               `[luna/thread-registry] boot import: inserted=${result.inserted} skippedNoSid=${result.skippedNoSid} skippedClaudeTest=${result.skippedClaudeTest} skippedAlreadyPresent=${result.skippedAlreadyPresent}`,
             )
           }
-        } catch (e) {
+        } else {
           console.warn(
-            `[luna/thread-registry] boot import failed (best-effort): ${String(e)}`,
+            `[luna/thread-registry] boot import failed (best-effort): ${String(importResult.left)}`,
           )
         }
       }
