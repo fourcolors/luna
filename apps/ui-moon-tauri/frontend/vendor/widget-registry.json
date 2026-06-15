@@ -73,6 +73,16 @@
       "description": "Voice settings: voice mode (off, push-to-talk, hands-free), spoken replies, TTS voice, silence timing, speech model"
     },
     {
+      "kind": "settings.models",
+      "title": "Models",
+      "page": "panel.html?type=settings.models",
+      "trust": "system",
+      "singleton": true,
+      "width": 480,
+      "height": 540,
+      "description": "Model routing: configure providers, API key references, and per-role model preference lists"
+    },
+    {
       "kind": "settings.vault",
       "title": "Vault",
       "page": "panel.html?type=settings.vault",

@@ -7,8 +7,8 @@
  * Engine code stays untouched — we feed it via the same readProviderEnv /
  * readOverflowConfig shapes.
  *
- * Validation: before any write we call validateOverflowConfig /
- * auditOverflowEnv. Never persist a chain that audits dirty.
+ * Validation: before any write we call validateOverflowConfig to audit the
+ * effective overflow config. Never persist a chain that audits dirty.
  */
 
 import {

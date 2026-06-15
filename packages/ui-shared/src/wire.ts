@@ -127,6 +127,10 @@ export interface HelloFrame {
      *  additive `parentToolUseId` linkage. OPTIONAL/additive. Mirrors
      *  packages/ui-ws/src/protocol.ts — keep in sync. */
     readonly subagents?: boolean
+    /** Model-routing settings (PR 1): server sends `model-routing-list` after
+     *  hello and routes `model-routing-save`. OPTIONAL/additive — absent on
+     *  older servers. Mirrors packages/ui-ws/src/protocol.ts — keep in sync. */
+    readonly modelRouting?: boolean
   }
   /**
    * Models the operator can pick for new threads. OPTIONAL and additive —
@@ -580,6 +584,64 @@ export interface VaultImportFrame {
   }>
 }
 
+/* ── Model routing settings (PR 1) — mirrors packages/ui-ws/src/protocol.ts.
+ * Wire-safe: no secret values cross the wire; credentialRef is an opaque
+ * pointer only. Keep in sync with packages/ui-ws/src/protocol.ts. */
+
+/** One configured provider for the model-routing settings UI. */
+export interface ProviderSettingsItem {
+  readonly kind: string
+  readonly enabled: boolean
+  /** Opaque credential pointer — never the raw secret value. */
+  readonly credentialRef?: string
+  /** Monthly spend ceiling in USD. Stored; NOT enforced in PR 1. */
+  readonly monthlyCapUsd?: number
+}
+
+/** One role-binding row for the model-routing settings UI. */
+export interface RoleBindingItem {
+  readonly role: string
+  readonly preferenceList: ReadonlyArray<{ readonly provider: string; readonly model: string }>
+}
+
+/**
+ * Server→client: current model-routing settings. Sent after `hello` and after
+ * each successful `model-routing-save`. Wire-safe — metadata + opaque refs only.
+ * Mirrors packages/ui-ws/src/protocol.ts — keep in sync.
+ */
+export interface ModelRoutingListFrame {
+  readonly type: "model-routing-list"
+  readonly providers: ReadonlyArray<ProviderSettingsItem>
+  readonly roleBindings: ReadonlyArray<RoleBindingItem>
+}
+
+/**
+ * Server→client: ack for a `model-routing-save`. `ok:false` carries a short,
+ * non-sensitive reason. Never echoes credential values.
+ * Mirrors packages/ui-ws/src/protocol.ts — keep in sync.
+ */
+export interface ModelRoutingStatusFrame {
+  readonly type: "model-routing-status"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly message: string
+}
+
+/**
+ * Client→server: save the complete model-routing settings payload. The server
+ * validates, persists, acks with `model-routing-status`, then re-broadcasts
+ * a fresh `model-routing-list` on success.
+ *
+ * `credentialRef` is an OPAQUE POINTER — never the raw credential value.
+ * Mirrors packages/ui-ws/src/protocol.ts — keep in sync.
+ */
+export interface ModelRoutingSaveFrame {
+  readonly type: "model-routing-save"
+  readonly requestId: string
+  readonly providers: ReadonlyArray<ProviderSettingsItem>
+  readonly roleBindings: ReadonlyArray<RoleBindingItem>
+}
+
 /**
  * Server→client: ack for a `set-thread-config` request. `applied` = effective
  * NOW; `deferred` = queued for next thread creation (e.g. cross-lane model
@@ -673,6 +735,8 @@ export type ServerFrame =
   | PtyOutputFrame
   | VaultListFrame
   | VaultStatusFrame
+  | ModelRoutingListFrame
+  | ModelRoutingStatusFrame
   | ThreadConfigFrame
   | SmartBarFrame
 
@@ -769,4 +833,5 @@ export type ClientFrame =
   | VaultDeleteFrame
   | VaultSyncConfigFrame
   | VaultImportFrame
+  | ModelRoutingSaveFrame
   | SetThreadConfigFrame
