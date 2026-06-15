@@ -135,6 +135,13 @@ export interface HelloFrame {
      * the flag and the field and render subagent steps flat.
      */
     readonly subagents?: boolean
+    /**
+     * Model routing settings (PR 1): the server has a ProviderSettingsStore
+     * bound — it sends `model-routing-list` after `hello` and routes
+     * `model-routing-save`. OPTIONAL/additive — older servers omit it; clients
+     * hide the Models settings tab when absent/false.
+     */
+    readonly modelRouting?: boolean
   }
 }
 
@@ -1098,6 +1105,67 @@ export interface ThreadConfigFrame {
   readonly rejected?: ReadonlyArray<{ readonly field: "model" | "effort"; readonly reason: string }>
 }
 
+/* ── Provider / model routing settings (PR 1: config surface) ───────────────
+ * Additive, gated on hello capability `modelRouting`. No protocol bump.
+ * SECURITY: no secret values ever cross the wire — only metadata + opaque
+ * credentialRef pointers (same contract as connectors/vault). */
+
+/** One configured provider for the settings UI. */
+export interface ProviderSettingsItem {
+  readonly kind: string
+  readonly enabled: boolean
+  /** Opaque credential pointer — never the raw secret. */
+  readonly credentialRef?: string
+  /** Monthly spend ceiling in USD. Stored; NOT enforced in PR 1.
+   *  The UI MUST label this "not yet enforced (coming in next update)". */
+  readonly monthlyCapUsd?: number
+}
+
+/** One role-binding row for the settings UI. */
+export interface RoleBindingItem {
+  readonly role: string
+  readonly preferenceList: ReadonlyArray<{ readonly provider: string; readonly model: string }>
+}
+
+/**
+ * Server→client: current model-routing settings. Sent after `hello` and after
+ * each successful mutation. Wire-safe — no secret values, only metadata +
+ * opaque refs.
+ */
+export interface ModelRoutingListFrame {
+  readonly type: "model-routing-list"
+  readonly providers: ReadonlyArray<ProviderSettingsItem>
+  readonly roleBindings: ReadonlyArray<RoleBindingItem>
+}
+
+/**
+ * Server→client: ack for a `model-routing-save`. `ok:false` carries a
+ * short, non-sensitive reason (validation failure message). Never echoes
+ * credential values.
+ */
+export interface ModelRoutingStatusFrame {
+  readonly type: "model-routing-status"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly message: string
+}
+
+/**
+ * Client→server: save the complete model-routing settings payload.
+ * The server validates then persists; responds with `model-routing-status`
+ * followed by a fresh `model-routing-list` on success.
+ *
+ * `providers[].credentialRef` is an OPAQUE POINTER (e.g. "env:ANTHROPIC_API_KEY")
+ * — never the raw credential value. Credential entry uses the existing
+ * `request_secret` flow (SecretRequestBridge).
+ */
+export interface ModelRoutingSaveFrame {
+  readonly type: "model-routing-save"
+  readonly requestId: string
+  readonly providers: ReadonlyArray<ProviderSettingsItem>
+  readonly roleBindings: ReadonlyArray<RoleBindingItem>
+}
+
 export type ServerFrame =
   | HelloFrame
   | EventFrame
@@ -1146,6 +1214,8 @@ export type ServerFrame =
   | McpToolResultFrame
   | ThreadConfigFrame
   | SmartBarFrame
+  | ModelRoutingListFrame
+  | ModelRoutingStatusFrame
 
 /* -------------------------------------------------------------------------- */
 /* Client → server                                                            */
@@ -1414,3 +1484,4 @@ export type ClientFrame =
   | VaultSyncConfigFrame
   | VaultImportFrame
   | SetThreadConfigFrame
+  | ModelRoutingSaveFrame

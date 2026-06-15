@@ -109,6 +109,8 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "mcp-tool-result",
   "thread-config",
   "smart-bar",
+  "model-routing-list",
+  "model-routing-status",
 ].sort()
 
 const EXPECTED_CLIENT_FRAME_TYPES = [
@@ -149,6 +151,7 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "mcp-resource-read",
   "mcp-tool-call",
   "set-thread-config",
+  "model-routing-save",
 ].sort()
 
 const EXPECTED_PROTOCOL_VERSION = 2
@@ -267,8 +270,10 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // subagent-tree-request (client) → 46 server / 36 client. The Apps-panel
     // ledger-safe edit adds artifact-edit (client) → 46 server / 37 client.
     // Smart Bar v1 adds smart-bar (server) → 47 server / 37 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(47)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(37)
+    // Model-routing settings (PR 1) adds model-routing-list + model-routing-status
+    // (server) and model-routing-save (client) → 49 server / 38 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(49)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(38)
   })
 
   // VERSION-SKEW (client half): nothing else pins the ui-shared wire.ts mirror

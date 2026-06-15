@@ -528,6 +528,28 @@ export interface UIWebSocketServerConfig {
    * by this package. Pass `null`/absent to disable (frames ignored).
    */
   readonly mcpAppHost?: import("./mcp-app-host.js").McpAppHost | null
+  /**
+   * Optional model-routing settings service (PR 1). When provided, the server:
+   *   - advertises `capabilities.modelRouting: true`
+   *   - sends `model-routing-list` after `hello` with current settings
+   *   - routes inbound `model-routing-save`, validates via the store's
+   *     validateAndPrepare, persists on success, acks with `model-routing-status`,
+   *     and re-broadcasts a fresh `model-routing-list` to all clients.
+   *
+   * Credential values NEVER cross the wire — only opaque refs. The same
+   * scheduleRestart hook is called on save (activation requires restart so
+   * the resolver feeds the broker). Structural type — mirrors vaultService.
+   * Pass `null`/absent to disable (frames ignored).
+   */
+  readonly modelRoutingService?: {
+    readonly list: () => import("./protocol.js").ModelRoutingListFrame
+    readonly save: (input: {
+      readonly providers: ReadonlyArray<import("./protocol.js").ProviderSettingsItem>
+      readonly roleBindings: ReadonlyArray<import("./protocol.js").RoleBindingItem>
+    }) => { readonly ok: boolean; readonly message: string }
+    /** Called after a successful save so activation (restart) is scheduled. */
+    readonly scheduleRestart?: () => void
+  } | null
 }
 
 export interface UIWebSocketServerHandle {
@@ -894,6 +916,7 @@ export const startUIWebSocketServer = (
     const artifactStore = config.artifactStore ?? null
     const workflowGallery = config.workflowGallery ?? null
     const vaultService = config.vaultService ?? null
+    const modelRoutingService = config.modelRoutingService ?? null
     const buildSha = config.buildSha
     const availableModels = config.availableModels
 
@@ -1166,6 +1189,9 @@ export const startUIWebSocketServer = (
             // this cap is true; a hypothetical chat-without-bridge embedding is
             // not a code path here.
             subagents: chat !== null,
+            // Model-routing settings (PR 1): operator-configured provider/model
+            // preferences. Clients gate the Models settings tab on this flag.
+            modelRouting: modelRoutingService !== null,
           },
         })
 
@@ -1234,6 +1260,19 @@ export const startUIWebSocketServer = (
                 send(ws, { type: "workflow-list", workflows })
               }),
             ).pipe(Effect.catchAllCause(() => Effect.void)),
+          )
+        }
+
+        // Model-routing settings, same fire-and-forget pattern (PR 1) — the
+        // Models settings tab renders from this on connect. Contains metadata +
+        // opaque refs only; no credential values cross the wire.
+        if (modelRoutingService !== null) {
+          const mrSvc = modelRoutingService
+          Effect.runFork(
+            Effect.sync(() => {
+              const listFrame = mrSvc.list()
+              send(ws, listFrame)
+            }).pipe(Effect.catchAllCause(() => Effect.void)),
           )
         }
 
@@ -1701,7 +1740,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || vaultService !== null || mcpAppHost !== null || subagentTree !== null) {
+        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || vaultService !== null || mcpAppHost !== null || subagentTree !== null || modelRoutingService !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -2723,6 +2762,36 @@ export const startUIWebSocketServer = (
                           : Effect.void,
                       ),
                     )
+                    return
+                  }
+                  case "model-routing-save": {
+                    // Model-routing settings save (PR 1). No credential values
+                    // in the frame — only opaque refs and metadata. Log type +
+                    // requestId only; never log providers/roleBindings content.
+                    if (modelRoutingService === null) return
+                    const mrSvc = modelRoutingService
+                    const mrFrame = frame as import("./protocol.js").ModelRoutingSaveFrame
+                    const mrReqId = mrFrame.requestId ?? ""
+                    const saveResult = mrSvc.save({
+                      providers: mrFrame.providers ?? [],
+                      roleBindings: mrFrame.roleBindings ?? [],
+                    })
+                    send(ws, {
+                      type: "model-routing-status",
+                      requestId: mrReqId,
+                      ok: saveResult.ok,
+                      message: saveResult.message,
+                    })
+                    if (saveResult.ok) {
+                      // Re-broadcast fresh list to ALL clients.
+                      const freshList = mrSvc.list()
+                      const sockets = yield* Ref.get(activeSockets)
+                      for (const sock of sockets) {
+                        send(sock, freshList)
+                      }
+                      // Schedule restart so the resolver feeds the engine.
+                      mrSvc.scheduleRestart?.()
+                    }
                     return
                   }
                   default: {
