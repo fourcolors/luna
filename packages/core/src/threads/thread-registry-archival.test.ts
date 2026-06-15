@@ -450,7 +450,13 @@ describe("ThreadRegistry Phase 3 — runAutoArchive liveness guard (isLive predi
         yield* reg.upsert({ id: "thr_guard_mix_live" })
         yield* reg.upsert({ id: "thr_guard_mix_idle" })
 
-        const ts = (yield* reg.get("thr_guard_mix_live"))!.lastActiveAt
+        // Derive the cutoff from the IDLE thread (the one we expect archived),
+        // NOT the live one. The idle thread is upserted later, so under a slow or
+        // parallel full-suite run its lastActiveAt lands a few ms after the live
+        // thread's — past a cutoff derived from the earlier live timestamp — which
+        // would spuriously leave it un-archived. (runAutoArchive is correct; this
+        // keeps the test deterministic regardless of inter-upsert timing.)
+        const ts = (yield* reg.get("thr_guard_mix_idle"))!.lastActiveAt
         const futureNow = ts + AUTO_ARCHIVE_IDLE_MS + 1
 
         // Only thr_guard_mix_live is marked as live
