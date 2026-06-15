@@ -9,6 +9,8 @@
     "build": "bun run --filter '*' build",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:bun": "bun test packages/core packages/observability-tools packages/memory packages/vault",
+    "test:all": "bun run test && bun run test:bun",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p apps/agent-cli/tsconfig.json && tsc --noEmit -p apps/ui-web/tsconfig.json && tsc --noEmit -p packages/ui-shared-solid/tsconfig.json",
     "vault:migrate-keychain:dry-run": "bun apps/ui-web/scripts/vault-migrate-keychain.ts --dry-run",
     "vault:migrate-keychain:apply": "bun apps/ui-web/scripts/vault-migrate-keychain.ts --apply --keep-env",
