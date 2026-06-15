@@ -1096,6 +1096,11 @@ fn spawn_panel_at(
     .title(&desc.title)
     .decorations(false)
     .transparent(true)
+    // No native OS shadow: the CSS card-shell halo (.widget-shell box-shadow)
+    // is the single, rounded-correct, focus-independent depth cue. The OS
+    // shadow follows the SQUARE window bounds and intensifies on focus, which
+    // stacked a second, misaligned, focus-reactive edge on the rounded card.
+    .shadow(false)
     .always_on_top(true)
     .skip_taskbar(true)
     .visible(visible)
@@ -1265,6 +1270,9 @@ async fn open_artifact_widget(
     .title(if title.is_empty() { "Artifact" } else { &title })
     .decorations(false)
     .transparent(true)
+    // No native OS shadow — the CSS card-shell halo is the single depth cue
+    // (see spawn_panel_at above for the full rationale).
+    .shadow(false)
     .always_on_top(true)
     .skip_taskbar(true)
     .inner_size(width.unwrap_or(360.0), height.unwrap_or(440.0))
