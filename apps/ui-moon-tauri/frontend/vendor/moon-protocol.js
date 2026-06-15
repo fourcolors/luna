@@ -37,6 +37,9 @@
       // model+effort switcher (§1 wire contract): server advertises effort
       // selection support via this capability; absent on older servers → false.
       effortSelection: !!c.effortSelection,
+      // model-routing settings (PR 1): server sends model-routing-list after
+      // hello and routes model-routing-save. Absent on older servers → false.
+      modelRouting: !!c.modelRouting,
     };
   }
 
