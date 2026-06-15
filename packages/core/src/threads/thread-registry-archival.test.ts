@@ -385,3 +385,100 @@ describe("ThreadRegistry Phase 3 — listByStatus + listStale", () => {
     )
   })
 })
+
+// ── Liveness guard: no-open-work predicate ─────────────────────────────────
+
+describe("ThreadRegistry Phase 3 — runAutoArchive liveness guard (isLive predicate)", () => {
+  /**
+   * The isLive predicate lets callers that have access to a live-thread set
+   * (e.g. ChatService's in-flight turn Ref) skip archiving threads that are
+   * currently active, even if they pass the 14-day time cutoff.
+   *
+   * Decision (audit fix #2): coupling the registry to ChatService internals is
+   * impractical from the registry layer — the predicate is injected by the caller
+   * that owns both. Absent: the 14-day `last_active_at` proxy suffices.
+   */
+  it("a stale thread IS archived when isLive returns false for it", async () => {
+    await run(
+      Effect.gen(function* () {
+        const reg = yield* ThreadRegistryService
+        yield* reg.upsert({ id: "thr_guard_not_live" })
+
+        const ts = (yield* reg.get("thr_guard_not_live"))!.lastActiveAt
+        const futureNow = ts + AUTO_ARCHIVE_IDLE_MS + 1
+
+        // isLive returns false => thread is idle => should be archived
+        const isLive = (_id: string) => false
+        const archived = yield* runAutoArchive(reg, futureNow, isLive)
+        expect(archived).toContain("thr_guard_not_live")
+
+        const row = yield* reg.get("thr_guard_not_live")
+        expect(row?.status).toBe("archived")
+      }),
+    )
+  })
+
+  it("a stale >14d thread is SKIPPED by runAutoArchive when isLive returns true for it", async () => {
+    await run(
+      Effect.gen(function* () {
+        const reg = yield* ThreadRegistryService
+        yield* reg.upsert({ id: "thr_guard_live" })
+
+        const ts = (yield* reg.get("thr_guard_live"))!.lastActiveAt
+        // Advance time past the 14-day cutoff so the thread IS stale by timestamp
+        const futureNow = ts + AUTO_ARCHIVE_IDLE_MS + 1
+
+        // isLive returns true for this thread => it has an in-flight turn =>
+        // auto-archive must NOT archive it, even though it passed the time cutoff.
+        const isLive = (id: string) => id === "thr_guard_live"
+        const archived = yield* runAutoArchive(reg, futureNow, isLive)
+
+        // Must not be in the archived list
+        expect(archived).not.toContain("thr_guard_live")
+
+        // Status must remain active (guard protected it)
+        const row = yield* reg.get("thr_guard_live")
+        expect(row?.status).toBe("active")
+      }),
+    )
+  })
+
+  it("runAutoArchive selectively archives non-live threads when some are live", async () => {
+    await run(
+      Effect.gen(function* () {
+        const reg = yield* ThreadRegistryService
+        yield* reg.upsert({ id: "thr_guard_mix_live" })
+        yield* reg.upsert({ id: "thr_guard_mix_idle" })
+
+        const ts = (yield* reg.get("thr_guard_mix_live"))!.lastActiveAt
+        const futureNow = ts + AUTO_ARCHIVE_IDLE_MS + 1
+
+        // Only thr_guard_mix_live is marked as live
+        const isLive = (id: string) => id === "thr_guard_mix_live"
+        const archived = yield* runAutoArchive(reg, futureNow, isLive)
+
+        expect(archived).not.toContain("thr_guard_mix_live")
+        expect(archived).toContain("thr_guard_mix_idle")
+
+        expect((yield* reg.get("thr_guard_mix_live"))?.status).toBe("active")
+        expect((yield* reg.get("thr_guard_mix_idle"))?.status).toBe("archived")
+      }),
+    )
+  })
+
+  it("runAutoArchive with no isLive predicate archives stale threads (backward compat)", async () => {
+    await run(
+      Effect.gen(function* () {
+        const reg = yield* ThreadRegistryService
+        yield* reg.upsert({ id: "thr_guard_no_pred" })
+
+        const ts = (yield* reg.get("thr_guard_no_pred"))!.lastActiveAt
+        const futureNow = ts + AUTO_ARCHIVE_IDLE_MS + 1
+
+        // No predicate: falls back to timestamp-only guard
+        const archived = yield* runAutoArchive(reg, futureNow)
+        expect(archived).toContain("thr_guard_no_pred")
+      }),
+    )
+  })
+})

@@ -209,9 +209,26 @@ export const AUTO_ARCHIVE_IDLE_MS = 14 * 24 * 60 * 60 * 1000
 
 /**
  * Run the auto-archive policy against the registry:
- *   archive all ACTIVE threads with last_active_at < (nowMs - AUTO_ARCHIVE_IDLE_MS).
+ *   archive ACTIVE threads with last_active_at < (nowMs - AUTO_ARCHIVE_IDLE_MS)
+ *   AND that are not currently live (no in-flight turn).
  *
  * NEVER deletes any row or SDK jsonl. Only flips status -> 'archived'.
+ *
+ * @param registry  - the ThreadRegistryApi to query and mutate
+ * @param nowMs     - current timestamp (ms); caller passes Date.now() in production
+ * @param isLive    - optional liveness predicate: return true for threads that
+ *                    have an in-flight turn or are otherwise considered active in
+ *                    the chat-service. When the predicate returns true the thread
+ *                    is SKIPPED even if it passes the 14-day idle cutoff.
+ *
+ *                    Decision: wiring true in-process liveness from the registry
+ *                    layer is impractical (ChatService is a separate Effect.Tag);
+ *                    the caller passes the predicate as a closure over the live
+ *                    thread set instead of coupling the registry to ChatService.
+ *                    When absent (e.g. in scheduled jobs that run without a live
+ *                    ChatService), the `last_active_at` timestamp alone serves as
+ *                    the proxy — 14-day idle is conservative enough that a truly
+ *                    live thread is never stale.
  *
  * Returns the ids of threads that were archived by this run.
  * Can be called from a scheduled job or the wake cycle.
@@ -219,12 +236,17 @@ export const AUTO_ARCHIVE_IDLE_MS = 14 * 24 * 60 * 60 * 1000
 export const runAutoArchive = (
   registry: ThreadRegistryApi,
   nowMs: number,
+  isLive?: (threadId: string) => boolean,
 ): Effect.Effect<ReadonlyArray<string>, never> =>
   Effect.gen(function* () {
     const cutoff = nowMs - AUTO_ARCHIVE_IDLE_MS
     const stale = yield* registry.listStale(cutoff)
     const archived: string[] = []
     for (const thread of stale) {
+      // Guard: skip threads that are currently live / have an in-flight turn.
+      // The predicate is the caller's view of liveness; absent means "not wired"
+      // (treated as not-live, i.e. safe to archive).
+      if (isLive?.(thread.id)) continue
       const ok = yield* registry.archive(thread.id).pipe(
         Effect.catchAllCause(() => Effect.succeed(false)),
       )

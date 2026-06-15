@@ -178,6 +178,22 @@ export const truncateOutput = (
   return { output: out, truncated }
 }
 
+/**
+ * Derive a cheap, no-model-call title from the first user message text.
+ * Takes the first line (up to the first newline), then trims whitespace and
+ * truncates to 60 characters. Returns null when the result would be empty.
+ *
+ * Phase 3 — Claude-Code-style naming without a model call.
+ * The title is set once on the first turn via ThreadRegistry.upsert; if the
+ * thread already has a title this path is skipped.
+ */
+export const deriveTitleFromMessage = (text: string): string | null => {
+  const firstLine = text.split("\n")[0] ?? ""
+  const trimmed = firstLine.trim()
+  if (trimmed.length === 0) return null
+  return trimmed.length <= 60 ? trimmed : trimmed.slice(0, 60)
+}
+
 /** Synthesize an SDKUserMessage envelope from text + optional file attachments.
  *
  * When attachments are present, we build a content-block array per the
@@ -1242,6 +1258,19 @@ export class ChatService extends Effect.Service<ChatService>()(
             yield* threadRegistry.value
               .touch(threadId)
               .pipe(Effect.catchAllCause(() => Effect.void))
+
+            // Phase 3 title heuristic: on the first turn, if the thread has no
+            // title yet, derive one from the user message text — first line,
+            // trimmed, max 60 chars. No model call; cheap and always available.
+            yield* Effect.gen(function* () {
+              const existing = yield* threadRegistry.value.get(threadId)
+              if (existing !== null && existing.title === null) {
+                const derived = deriveTitleFromMessage(text)
+                if (derived !== null) {
+                  yield* threadRegistry.value.upsert({ id: threadId, title: derived })
+                }
+              }
+            }).pipe(Effect.catchAllCause(() => Effect.void))
           }
 
           return projected !== null
