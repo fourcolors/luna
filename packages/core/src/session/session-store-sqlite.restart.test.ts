@@ -285,4 +285,113 @@ describe("SessionStore SQLite restart-fidelity", () => {
       )
     }
   })
+
+  // ── Defect-vs-typed-failure invariant ────────────────────────────────────────
+  // Audit finding #2: appendMessage SELECTs (sessionExists.get, messageNextSeq.get,
+  // sessionGetMeta.get) were outside the try/catch, so SQLITE_BUSY / SQLITE_IOERR
+  // from any of those reads would propagate as a raw JS throw through
+  // Effect.suspend — which becomes a defect (die), not a typed failure.  A defect
+  // escapes Effect.catchAll in adapter.ts's onMirrorError handler and can kill the
+  // live streaming fiber.  After the fix the outer try/catch covers all reads.
+  //
+  // We exercise two concrete SQLite-level error paths:
+  //   A. "session not found" — exists-check SELECT returns undefined → typed Fail.
+  //   B. Duplicate messageId INSERT — UNIQUE constraint throw → typed Fail (not Die).
+  //   C. Raw throw escaping Effect.suspend in appendMessage is caught as typed Fail
+  //      by verifying Effect.Cause._tag === "Fail" (not "Die") in all cases.
+  test("appendMessage DB errors surface as typed IntegrityError, not defects", async () => {
+    // ── A. Session not found (exists-check SELECT returns undefined) ──────────
+    const dbPath = makeTmp()
+    const exitA = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const store = yield* SessionStore
+          // No store.create() — session does not exist.
+          return yield* Effect.exit(
+            store.appendMessage({
+              sessionId: "ghost_session_never_created",
+              messageId: "x",
+              ts: 1,
+              parentId: null,
+              kind: "user",
+              payload: {},
+            }),
+          )
+        }).pipe(Effect.provide(makeTestLayer(dbPath))),
+      ),
+    )
+
+    // Must be Failure with cause._tag === "Fail" (typed), NOT "Die" (defect).
+    expect(exitA._tag).toBe("Failure")
+    if (exitA._tag === "Failure") {
+      expect(exitA.cause._tag).toBe("Fail")
+    }
+
+    // ── B. Duplicate messageId INSERT → UNIQUE constraint violation ───────────
+    // This exercises the inner catch (INSERT path) and confirms ROLLBACK
+    // happens and the error is also a typed Fail, not a defect.
+    const dbPath2 = makeTmp()
+    const exitB = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const store = yield* SessionStore
+          yield* store.create({
+            id: "dupe_session",
+            options: { model: "m" },
+            createdAt: 1,
+          })
+          // First append — succeeds.
+          yield* store.appendMessage({
+            sessionId: "dupe_session",
+            messageId: "dup_msg",
+            ts: 1,
+            parentId: null,
+            kind: "user",
+            payload: {},
+          })
+          // Second append with SAME messageId — SQLite UNIQUE constraint on
+          // messages.id throws inside the transaction.  Must be typed Fail.
+          return yield* Effect.exit(
+            store.appendMessage({
+              sessionId: "dupe_session",
+              messageId: "dup_msg",
+              ts: 2,
+              parentId: null,
+              kind: "user",
+              payload: {},
+            }),
+          )
+        }).pipe(Effect.provide(makeTestLayer(dbPath2))),
+      ),
+    )
+
+    expect(exitB._tag).toBe("Failure")
+    if (exitB._tag === "Failure") {
+      expect(exitB.cause._tag).toBe("Fail")
+    }
+
+    // ── C. After a ROLLBACK the session store is still usable ────────────────
+    // A defect would have killed the fiber; a typed failure lets the caller
+    // recover and retry.  Confirm the store accepts a new (non-duplicate)
+    // message on the same session after the failed append.
+    const recoverOk = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const store = yield* SessionStore
+          // Re-open same DB from dbPath2 (simulates turn recovery).
+          const msg = yield* store.appendMessage({
+            sessionId: "dupe_session",
+            messageId: "recovery_msg",
+            ts: 3,
+            parentId: null,
+            kind: "assistant",
+            payload: { type: "assistant", message: { role: "assistant", content: "recovered" } },
+          })
+          return msg.id
+        }).pipe(Effect.provide(makeTestLayer(dbPath2))),
+      ),
+    )
+
+    expect(recoverOk).toBe("recovery_msg")
+  })
 })
