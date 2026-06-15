@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# EXAMPLE — copy to your live instance as probes/030-email-smoke.sh and fill in
+# your own values. Do NOT commit a filled-in version to a public repo (it names
+# your account + session file). This is an install-specific probe.
+#
+# PROBE:    a stored API session still authenticates (smoke test)
+# LESSON:   (describe the auth route this guards — e.g. a dead IMAP bridge that
+#           forced you onto a REST API session; a 401 means the session expired)
+# SEVERITY: high
+set -uo pipefail
+
+# A workspace project that holds a thin API client + a saved session token.
+PROJ_DIR="$HOME/.luna/workspace/<workspace>/.workspace/<project>"
+CLIENT="$PROJ_DIR/<client>.ts"        # exports a class with a .load() + a read call
+SESSION="$PROJ_DIR/session.json"
+API="https://<your-api-host>"
+
+command -v bun  >/dev/null 2>&1 || { echo "SKIP: bun absent"; exit 77; }
+command -v curl >/dev/null 2>&1 || { echo "SKIP: curl absent"; exit 77; }
+[[ -f "$CLIENT"  ]] || { echo "SKIP: client absent"; exit 77; }
+[[ -f "$SESSION" ]] || { echo "SKIP: session.json absent"; exit 77; }
+
+# reachability gate — any HTTP status means reachable; 000 = network down
+code="$(curl -s -m 12 -o /dev/null -w '%{http_code}' "$API" 2>/dev/null || echo 000)"
+[[ "$code" =~ ^[0-9]{3}$ && "$code" != "000" ]] || { echo "SKIP: $API unreachable (network)"; exit 77; }
+
+tmp="$(mktemp /tmp/harness-smoke.XXXXXX.mjs)"
+trap 'rm -f "$tmp"' EXIT
+cat > "$tmp" <<EOF
+import { YourClient } from "$CLIENT";
+try {
+  const out = await YourClient.load().someAuthenticatedRead();
+  console.log("OK: API authenticated (" + (Array.isArray(out) ? out.length + " items" : "ok") + ")");
+  process.exit(0);
+} catch (e) {
+  const m = String((e && e.message) || e);
+  if (/401|expired|revoked|invalid/i.test(m)) {
+    console.log("DRIFT: session expired/revoked — refresh session.json (" + m + ")");
+    process.exit(1);
+  }
+  console.log("NETERR: " + m);
+  process.exit(3);
+}
+EOF
+
+out="$(bun "$tmp" 2>&1)"; rc=$?
+last="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -n1)"
+case $rc in
+  0) echo "$last"; exit 0 ;;
+  1) echo "$last"; exit 1 ;;
+  *) echo "SKIP: smoke inconclusive (reachable but call did not complete) — $last"; exit 77 ;;
+esac
