@@ -30,7 +30,18 @@ import { Data } from "effect"
 
 // Phase 12b adds "prompt" + "workflow" alongside the V1 kinds. WorkerRegistry
 // dispatches by string, so adding kinds here is the type-system catch-up.
-export type JobKind = "cron" | "oneshot" | "file-watch" | "prompt" | "workflow"
+// The scheduler-v2 dream/wake migration (M1-M4) adds the dedicated "dream" +
+// "wake" worker kinds: the install script (sched-v2 install) writes rows with
+// these kinds and the JobTicker dispatches them through the WorkerRegistry
+// under the matching DREAM_WORKER_KIND / WAKE_WORKER_KIND discriminant.
+export type JobKind =
+  | "cron"
+  | "oneshot"
+  | "file-watch"
+  | "prompt"
+  | "workflow"
+  | "dream"
+  | "wake"
 
 export interface PersistedJob {
   readonly id: string

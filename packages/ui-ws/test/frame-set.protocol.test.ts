@@ -112,6 +112,7 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "mcp-resource-result",
   "mcp-tool-result",
   "thread-config",
+  "smart-bar",
 ].sort()
 
 const EXPECTED_CLIENT_FRAME_TYPES = [
@@ -276,7 +277,8 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // suggested-action-respond (client) → 48 server / 38 client. The
     // background-result delivery sink (#124) adds result-delivered (server,
     // broadcast — the "Luna finished X" toast) → 49 server / 38 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(49)
+    // Smart Bar v1 adds smart-bar (server) → 50 server / 38 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(50)
     expect(literalsForUnion(src, "ClientFrame")).toHaveLength(38)
   })
 

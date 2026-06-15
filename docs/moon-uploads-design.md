@@ -1,7 +1,7 @@
 # Moon Uploads — Design & Phased Plan
 
 Status: **Design / discussion** (branch `feat/moon-uploads`)
-Author: Sterling Cobb + Claude
+Author: fourcolors/luna contributors
 Date: 2026-06-03
 
 ## Goal
@@ -91,7 +91,7 @@ downloads the right software and figures it out" lives.
 
 ## The one fact that most changes Phase 3 difficulty: tenancy
 
-- **Single-tenant** (Luna runs on Mr. Cobb's own jax-box, agent executes code
+- **Single-tenant** (Luna runs on the operator's own jax-box, agent executes code
   on *his* box against files *he* uploaded): roughly "the user ran a command
   on his own machine" — a tractable sandbox-hardening problem (incus container
   already provides a boundary; harden egress, limits, cleanup).
@@ -102,7 +102,7 @@ downloads the right software and figures it out" lives.
 Current read from the code: multi-account but OAuth-token-centric, **single
 user in practice**.
 
-**CONFIRMED (2026-06-03): Luna is single-tenant** — runs on Mr. Cobb's own
+**CONFIRMED (2026-06-03): Luna is single-tenant** — runs on the operator's own
 jax-box, agent executes against his own files. Phase 3 is therefore the
 tractable "harden a container the user already controls" problem, not the
 multi-tenant-RCE problem. Phase 1 greenlit to start now.
@@ -144,7 +144,7 @@ enabling Anthropic's `code_execution` tool is an explicit config change.
 Files API (`file_id`, 500 MB) = the store; `container_upload` + `code_execution`
 = a **sandboxed, no-network** environment where the model runs code against the
 file. This *is* Phase 2 + much of Phase 3, official and secure-by-default.
-**Tradeoff vs Mr. Cobb's vision:** the managed container has **no network and
+**Tradeoff vs the operator's vision:** the managed container has **no network and
 can't install arbitrary software** — so "download the right software" needs our
 OWN incus sandbox (reopens the security problem). Likely hybrid: managed
 container for analysis (covers most cases), self-hosted only for install/network.
@@ -231,4 +231,4 @@ round-trip for both image and PDF.
 when those clients want PDF.
 
 **Next: live-run the moon app.** Phases 2-3 (store/exec engine) deferred by
-Mr. Cobb until P1 is live.
+the operator until P1 is live.

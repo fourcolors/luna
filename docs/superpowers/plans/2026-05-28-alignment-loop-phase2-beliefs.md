@@ -841,7 +841,7 @@ git commit -m "feat(dream): promote belief_candidate ops into staged proposed be
 
 ## Task 7: Inject active beliefs into the thread system prompt
 
-> **⚠️ DEFERRED TO PHASE 3 (decision: Mr. Cobb, 2026-05-28).** During Phase 2 execution
+> **⚠️ DEFERRED TO PHASE 3 (decision: the operator, 2026-05-28).** During Phase 2 execution
 > this task was found to rest on a wrong assumption and to carry disproportionate risk:
 >
 > 1. **The plan's bare `yield* MemoryRouterTag` (Step 2 below) does NOT work as written.**

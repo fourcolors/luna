@@ -113,7 +113,7 @@ describe("local shell bridge", () => {
         enabled: true,
         clientId: "cli_1",
         platform: "darwin",
-        cwd: "/Users/sterling/Projects/luna",
+        cwd: "/home/user/luna",
         approvalMode: "prompt",
       },
       () => undefined,

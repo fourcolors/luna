@@ -32,3 +32,6 @@ pnpm-lock.yaml
 
 # Worktree-local bun package cache (sandboxed installs use BUN_INSTALL_CACHE_DIR)
 /.bun-cache/
+
+# ping-pong cycle cache (ephemeral)
+.claude/ping-pong/

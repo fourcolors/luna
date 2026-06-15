@@ -764,6 +764,35 @@ export interface ThreadConfigFrame {
   readonly rejected?: ReadonlyArray<{ readonly field: "model" | "effort"; readonly reason: string }>
 }
 
+/* ── Smart Bar (v1 info-only) ── mirrors packages/ui-ws/src/protocol.ts ─── */
+
+export type SmartBarItemKind =
+  | "info"
+  | "button"
+  | "toggle"
+  | "slider"
+  | "select"
+  | "sparkline"
+
+export interface SmartBarItem {
+  readonly id: string
+  readonly kind: SmartBarItemKind
+  readonly label?: string
+  readonly value?: string
+  readonly icon?: string
+  readonly tone?: "default" | "muted" | "good" | "warn"
+  readonly group?: string
+  readonly priority?: number
+  readonly tooltip?: string
+}
+
+export interface SmartBarFrame {
+  readonly type: "smart-bar"
+  readonly threadId: string
+  readonly version: 1
+  readonly items: ReadonlyArray<SmartBarItem>
+}
+
 /**
  * Client→server: update model and/or effort for an existing thread.
  * Gated on the `effortSelection` capability. Older servers ignore it.
@@ -813,6 +842,7 @@ export type ServerFrame =
   | VaultListFrame
   | VaultStatusFrame
   | ThreadConfigFrame
+  | SmartBarFrame
 
 /* Client → server frames */
 

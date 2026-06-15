@@ -1113,6 +1113,51 @@ export interface McpToolResultFrame {
   readonly message?: string
 }
 
+/* ── Smart Bar (v1 info-only, dynamically server-assembled) ────────────────
+ * Server resolves context and PUSHES a ready-made ordered list of typed
+ * items; the client is a dumb renderer. v1 emits/renders `kind:"info"` only;
+ * all other kinds are reserved in the union for forward-compat (unknown kinds
+ * are silently skipped client-side). Additive — no protocol bump.
+ *
+ * Re-pushed on: thread subscribe/snapshot, turn-complete, local-shell-
+ * capability change, and a low-frequency background interval. */
+
+export type SmartBarItemKind =
+  | "info"       // v1: read-only label + value chip
+  // ── Phase 2+ (schema reserved; renderer added incrementally) ──
+  | "button"     // value=caption; emits smart-bar-interaction on click
+  | "toggle"     // boolean; emits smart-bar-interaction on flip
+  | "slider"     // + min/max/step; emits smart-bar-interaction on change
+  | "select"     // + options[]; dropdown; emits smart-bar-interaction on change
+  | "sparkline"  // + points[]; small inline graph
+
+export interface SmartBarItem {
+  readonly id: string
+  readonly kind: SmartBarItemKind
+  readonly label?: string
+  readonly value?: string
+  readonly icon?: string
+  readonly tone?: "default" | "muted" | "good" | "warn"
+  readonly group?: string
+  readonly priority?: number
+  readonly tooltip?: string
+}
+
+/**
+ * Server→client: the current smart bar item list for a thread. Re-pushed
+ * whenever context changes (see re-push triggers above). `version` is always
+ * 1; it is present so a future schema revision can introduce `version:2`
+ * items without a protocol bump. An empty `items` array means hide the bar.
+ * Additive — no hello capability gate; unknown frame types are tolerated by
+ * old clients and are a no-op in the ui-shared reducer.
+ */
+export interface SmartBarFrame {
+  readonly type: "smart-bar"
+  readonly threadId: string
+  readonly version: 1
+  readonly items: ReadonlyArray<SmartBarItem>
+}
+
 /**
  * Server→client: ack for a `set-thread-config` request. Sent only to the
  * requesting connection (not broadcast — the change is per-thread not
@@ -1191,6 +1236,7 @@ export type ServerFrame =
   | McpResourceResultFrame
   | McpToolResultFrame
   | ThreadConfigFrame
+  | SmartBarFrame
 
 /* -------------------------------------------------------------------------- */
 /* Client → server                                                            */

@@ -1,6 +1,6 @@
 # Luna Alignment Loop — Design
 
-> Status: **Approved design (pre-implementation)** · Date: 2026-05-28 · Author: Sterling Cobb + Luna
+> Status: **Approved design (pre-implementation)** · Date: 2026-05-28 · Author: fourcolors/luna contributors
 >
 > A closed, human-in-the-loop alignment system for Luna: it reflects over past
 > sessions ("Dream"), maintains a small bounded model of Operator ("Beliefs"),

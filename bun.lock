@@ -100,6 +100,19 @@
         "@anthropic-ai/claude-agent-sdk": ">=0.3.0 <1",
       },
     },
+    "packages/channels": {
+      "name": "@luna/channels",
+      "version": "0.0.1",
+      "dependencies": {
+        "@luna/chat-service": "workspace:*",
+        "@luna/core": "workspace:*",
+        "effect": "^3.21.0",
+      },
+      "devDependencies": {
+        "typescript": "^5.6.3",
+        "vitest": "^2.1.5",
+      },
+    },
     "packages/chat-service": {
       "name": "@luna/chat-service",
       "version": "0.0.1",
@@ -588,6 +601,8 @@
     "@luna/adapter-sdk": ["@luna/adapter-sdk@workspace:packages/adapter-sdk"],
 
     "@luna/agent-cli": ["@luna/agent-cli@workspace:apps/agent-cli"],
+
+    "@luna/channels": ["@luna/channels@workspace:packages/channels"],
 
     "@luna/chat-service": ["@luna/chat-service@workspace:packages/chat-service"],
 

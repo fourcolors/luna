@@ -5,7 +5,7 @@
 > and a maintainable UPDATE mechanism for BOTH halves — the **client** (Luna Moon Tauri app)
 > and the **backend server/container** — across two models:
 > - **Model A:** local all-in-one on a Mac (one download → it works).
-> - **Model B (Mr. Cobb's actual workflow):** server on a separate Linux box + Mac client over Tailscale.
+> - **Model B (the operator's actual workflow):** server on a separate Linux box + Mac client over Tailscale.
 
 ## Current state (honest)
 Install today = a 4-option interactive `install-mac.command` + two Linux scripts (`luna-server-install`,
@@ -40,7 +40,7 @@ Precondition; nothing works until a fresh install ships the hardened Moon.
 - Verify `load_connection` populates State.wsToken BEFORE the luna-config listener fires (race check).
 
 ### Tier 1 — Model-B install + update story (~2–3 days after Tier 0, pure bash/JS, ZERO Rust recompile) [B + both-model update plumbing]
-Biggest bang for Mr. Cobb's actual workflow. The "zero Rust/signing" scope is what keeps it a one-week job.
+Biggest bang for the operator's actual workflow. The "zero Rust/signing" scope is what keeps it a one-week job.
 - **`luna pair`** (bash): reuse option-2's URL+token prompts → write `~/.luna/moon-connection.json` `{"wsUrl","wsToken"}` (camelCase must match main.rs:47-50 / index.html:1350) chmod 600. load() reads file FIRST → Moon connects remote, localhost seed auto-skipped. Re-pair on rotation = re-run + relaunch.
 - Wire install-mac.command option 2 to also call `luna pair`; server installer auto-generates a token when none passed.
 - **`luna doctor`** (Mac-side bun preflight — biggest debugging win): L1 `curl /healthz` (down/unreachable), L2 bun WS upgrade reads status — 401=bad/rotated token→re-pair, 101=good (the discriminator the browser can't read), L3 Claude-OAuth/setup-mode.
@@ -67,17 +67,17 @@ Biggest bang for Mr. Cobb's actual workflow. The "zero Rust/signing" scope is wh
 - **Server:** `luna-update-server` — pull ref → install-if-lockfile-changed → re-pin claude exe → restart → readiness probe → roll back on failed boot. Both incus + bare-host shapes.
 - **Version skew (load-bearing):** wire already has UI_WS_PROTOCOL_VERSION=2. Three defenses together (client hello check + server unknown-frame reply + a literal-set snapshot test that forces a version bump). A version-equality check ALONE is blind to a same-version frame-name typo (the bug we hit). Rule: additive frames gated by `capabilities{}` don't need a bump; renames/removals/re-semantics DO.
 
-## Big decisions for Mr. Cobb
+## Big decisions for the operator
 1. **Apple Developer Program ($99/yr)?** Only needed for Tier 3 (no-warning .dmg). Few trusted Macs → Tier 2 unsigned + Open-Anyway is enough and free. Auto-update (minisign) is free + separate.
 2. **Promote dev → master** (real merge, not ff) vs keep shipping off dev + pin `install.sh --branch dev`/tag? Either way master must stop being the fresh-install source until it carries the hardened Moon.
 3. **Remote pairing UX:** connection-string / direct file write NOW (Tier 1, bash) vs `luna://` deep-link or QR later (needs Rust URL handler + prebuilt app). Recommend file-write now. No Tailscale auto-discovery (over-engineering).
 4. **GitHub Releases as the update channel** for both client (latest.json+minisign) and server (the ref to check out)? Path of least resistance (gh already used).
-5. **Who builds releases:** local on Mr. Cobb's Mac (Tier 2, $0, human-in-loop) vs GitHub Actions CI (Tier 3, greenfield). Local for Tier 2, CI for Tier 3.
+5. **Who builds releases:** local on the operator's Mac (Tier 2, $0, human-in-loop) vs GitHub Actions CI (Tier 3, greenfield). Local for Tier 2, CI for Tier 3.
 6. **Minisign key custody** (1Password / repo secret / offline) — decide BEFORE the first auto-updating build; loss bricks all clients.
 
 ## Open questions
 - Does `load_connection` populate State.wsToken before the luna-config listener fires on the converged branch? (race; verify empirically post-Tier-0)
-- Tier 1 assumes the Mac can already launch Moon (Rust present — true for Mr. Cobb, false for fresh users). Acceptable as "works for Mr. Cobb this week", Tier 2 = "works for anyone"?
+- Tier 1 assumes the Mac can already launch Moon (Rust present — true for the operator, false for fresh users). Acceptable as "works for the operator this week", Tier 2 = "works for anyone"?
 - Server installer auto-generate a token when none passed, or keep explicit `--token` as a safety choice?
 - Idle Claude-OAuth-401: keep-warm heartbeat vs surface-via-doctor + manual re-`claude setup-token`?
 - ~~Transport: server binds 0.0.0.0 + plaintext ws:// + token auth (safe behind Tailscale, exposed off-tailnet). Add bind-to-tailnet/firewall, or rely on Tailscale + a doctor warning?~~ **RESOLVED (BLOCKER #25):** Tailscale is now a STATED requirement, not an assumption. The deploy scripts auto-resolve the bind to the host's **Tailscale IP** when a tailnet is present (so the primary remote deployment Just Works without exposing a public interface), else fall back to loopback with a warning; a public `0.0.0.0` bind requires a conscious `--i-understand-public` opt-in (loud transport-confidentiality warning). `luna doctor` additionally WARNs when the server host is neither loopback, `*.ts.net`, nor a Tailscale CGNAT (100.64.0.0/10) address.

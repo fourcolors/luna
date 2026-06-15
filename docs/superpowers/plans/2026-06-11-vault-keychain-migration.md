@@ -1123,7 +1123,7 @@ If no source changes occurred, do not create an empty commit.
 
 > ⏸️ **OPERATOR-GATED — not executed by the agent.** This canary mutates the
 > real `~/.luna/.env` (blocked by the secret-guard), writes real login-Keychain
-> entries, and runs a foreground server. Mr. Cobb drives it using the runbook
+> entries, and runs a foreground server. the operator drives it using the runbook
 > (`docs/audits/luna-vault-keychain-migration.md`). Steps left unchecked until
 > run live.
 
@@ -1225,7 +1225,7 @@ Expected: old `.env` values still resolve. This must pass before any prune work.
 > (personal infra; standing rule = never touch autonomously). The code path is
 > already covered automatically: `normalizeVaultStorageMode` forces `env` on
 > non-Darwin (unit-tested), and the Keychain helpers fail closed without
-> shelling out. Mr. Cobb runs the live service restart + smoke. Note the
+> shelling out. the operator runs the live service restart + smoke. Note the
 > known fresh-DB wake-store crash (`LUNA_WAKE_ENABLED=0` workaround).
 
 **Files:**

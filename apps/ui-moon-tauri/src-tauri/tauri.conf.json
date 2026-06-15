@@ -37,7 +37,7 @@
     "targets": "all",
     "createUpdaterArtifacts": true,
     "macOS": {
-      "signingIdentity": "Apple Development: Sterling Cobb (2LLA7M2CD6)",
+      "signingIdentity": null,
       "hardenedRuntime": true,
       "entitlements": "entitlements.plist",
       "minimumSystemVersion": "13.0"
