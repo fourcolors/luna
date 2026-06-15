@@ -203,6 +203,10 @@ import {
   secretProviderFirstOf,
   JobsStoreService,
   validateAccountsTableLabels,
+  openProviderSettingsStore,
+  resolveAll,
+  validateAndPrepare,
+  type ProviderSettingsPayload,
 } from "@luna/core"
 import { createDnaLoader, loadDna } from "./dna-loader.js"
 import { loadSystem } from "./system-loader.js"
@@ -1087,6 +1091,64 @@ const registerOpTokenHandler = makeRegisterOpToken({
   scheduleRestart: scheduleServerRestart,
   log: (msg) => writeSync(1, `${msg}\n`),
 })
+
+/**
+ * Read the ProviderSettingsStore (if the DB exists and has config) and apply
+ * the resolved ProviderEnv + OverflowConfig back into process.env so the
+ * existing `readProviderEnv()` / `readOverflowConfig()` calls inside
+ * AccountBrokerLayer.fromSql pick them up at layer-build time.
+ *
+ * STORE OVERRIDES ENV: the resolver merges env as the base and store config
+ * wins on overlap. A store that is null (no saved config) is a no-op, leaving
+ * env-derived defaults unchanged. Call BEFORE buildBaseLayer / ManagedRuntime.
+ *
+ * Uses bun:sqlite synchronously (chat-server runs under bun only). Any DB
+ * error is caught and logged; boot continues with env defaults.
+ */
+const applyProviderSettingsToEnv = (dbPath: string): void => {
+  try {
+    // Synchronous bun:sqlite open — safe at module level under bun.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Database } = require("bun:sqlite") as {
+      Database: new (p: string) => {
+        query(sql: string): { get(...args: unknown[]): unknown; run(...args: unknown[]): void }
+        close(): void
+      }
+    }
+    const db = new Database(dbPath)
+    try {
+      const store = openProviderSettingsStore(db)
+      const storeConfig = store.read()
+      if (storeConfig === null) return // no saved config — env defaults apply as-is
+
+      const { providerEnv, overflowConfig } = resolveAll(storeConfig)
+
+      // Write merged modelKindMap back as LUNA_MODEL_PROVIDER_MAP (model=kind,...)
+      const mapEntries = Object.entries(providerEnv.modelKindMap)
+      if (mapEntries.length > 0) {
+        process.env["LUNA_MODEL_PROVIDER_MAP"] = mapEntries
+          .map(([m, k]) => `${m}=${k}`)
+          .join(",")
+      }
+
+      // Write merged overflow chains back as LUNA_OVERFLOW_CHAINS (JSON)
+      const hasChains = Object.keys(overflowConfig.chains).length > 0
+      if (hasChains) {
+        process.env["LUNA_OVERFLOW_CHAINS"] = JSON.stringify(overflowConfig)
+      }
+
+      writeSync(
+        1,
+        `[luna/provider-settings] applied store config: ${mapEntries.length} model overrides, ${Object.keys(overflowConfig.chains).length} overflow chains\n`,
+      )
+    } finally {
+      db.close()
+    }
+  } catch (err) {
+    // Non-fatal: env defaults stay in place; warn so the operator can investigate.
+    writeSync(1, `[luna/provider-settings] store read failed (env defaults apply): ${String(err)}\n`)
+  }
+}
 
 /**
  * Persist an env-var secret: atomic upsert of `NAME=value` into `~/.luna/.env`
@@ -2296,6 +2358,10 @@ export const buildSetupServerLayer = (
         jobInputBridge: null,
         // No MCP-app provider in setup-mode (no telemetry/registry layers).
         mcpAppHost: null,
+        // No model-routing settings in setup-mode: the settings panel needs
+        // an authenticated session to be useful anyway, and setup-mode has
+        // no chat. Clients degrade gracefully when the capability is absent.
+        modelRoutingService: null,
         setupPty: resolvedSetupPty,
         // Allow OP-token entry in setup-mode too — useful when LUNA_OP_ACCOUNTS
         // is configured but the account still needs its token. The handler
@@ -2914,6 +2980,86 @@ const buildServerLayer = (
           }),
       }
 
+      // ── Model Routing Settings (PR 1) ───────────────────────────────────
+      // Wire the ProviderSettingsStore to a modelRoutingService handle so the
+      // WS server advertises capabilities.modelRouting, pushes model-routing-list
+      // after hello, and routes model-routing-save to validate→persist→ack.
+      // Activation requires restart (applyProviderSettingsToEnv runs at next
+      // boot, feeding the broker with the new config). No secret values cross
+      // the wire — credentialRef is an opaque pointer only.
+      const modelRoutingService = (() => {
+        try {
+          const mrPaths = resolveRuntimePaths()
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { Database } = require("bun:sqlite") as {
+            Database: new (p: string) => {
+              query(sql: string): { get(...args: unknown[]): unknown; run(...args: unknown[]): void }
+              close(): void
+            }
+          }
+          const mrDb = new Database(mrPaths.lunaDbPath)
+          const mrStore = openProviderSettingsStore(mrDb)
+          return {
+            list: (): import("@luna/ui-ws").ModelRoutingListFrame => {
+              const cfg = mrStore.read()
+              return {
+                type: "model-routing-list" as const,
+                providers: (cfg?.providers ?? []).map((p) => ({
+                  kind: p.kind,
+                  enabled: p.enabled,
+                  ...(p.credentialRef !== undefined ? { credentialRef: p.credentialRef } : {}),
+                  ...(p.monthlyCapUsd !== undefined ? { monthlyCapUsd: p.monthlyCapUsd } : {}),
+                })),
+                roleBindings: (cfg?.roleBindings ?? []).map((b) => ({
+                  role: b.role,
+                  preferenceList: b.preferenceList.map((pref) => ({
+                    provider: pref.provider,
+                    model: pref.model,
+                  })),
+                })),
+              }
+            },
+            save: (input: {
+              readonly providers: ReadonlyArray<import("@luna/ui-ws").ProviderSettingsItem>
+              readonly roleBindings: ReadonlyArray<import("@luna/ui-ws").RoleBindingItem>
+            }): { readonly ok: boolean; readonly message: string } => {
+              try {
+                const candidate: ProviderSettingsPayload = {
+                  version: 1,
+                  providers: input.providers.map((p) => ({
+                    kind: p.kind as import("@luna/core").ProviderKind,
+                    enabled: p.enabled,
+                    ...(p.credentialRef !== undefined ? { credentialRef: p.credentialRef } : {}),
+                    ...(p.monthlyCapUsd !== undefined ? { monthlyCapUsd: p.monthlyCapUsd } : {}),
+                  })),
+                  roleBindings: input.roleBindings.map((b) => ({
+                    role: b.role as import("@luna/core").RoleName,
+                    preferenceList: b.preferenceList.map((pref) => ({
+                      provider: pref.provider as import("@luna/core").ProviderKind,
+                      model: pref.model,
+                    })),
+                  })),
+                }
+                validateAndPrepare(candidate)
+                mrStore.write(candidate)
+                return { ok: true, message: "Model routing settings saved. Restart to apply." }
+              } catch (err) {
+                const msg =
+                  err instanceof Error ? err.message : String(err)
+                return { ok: false, message: msg }
+              }
+            },
+            scheduleRestart: scheduleServerRestart,
+          }
+        } catch (err) {
+          writeSync(
+            1,
+            `[luna/model-routing] failed to open settings store (model-routing disabled): ${String(err)}\n`,
+          )
+          return null
+        }
+      })()
+
       // tRPC control server — port 4754, alongside the WebSocket server.
       // Exposes control.restart / control.status / control.version. Bound to
       // loopback + gated by the same bearer token as the WS server (TOKEN).
@@ -2967,6 +3113,8 @@ const buildServerLayer = (
         // Phase 7 (widget-system.md): MCP Apps relay — ui:// resource reads +
         // same-app tool calls against the in-process CoreAppRegistry.
         mcpAppHost,
+        // PR 1: model-routing settings (config surface only; cap enforcement PR 2).
+        modelRoutingService,
       })
     }),
   ).pipe(
@@ -3075,6 +3223,11 @@ const bootstrap = async (): Promise<void> => {
   }
 
   // ── Normal mode ──────────────────────────────────────────────────────────
+  // Apply any persisted ProviderSettings to process.env BEFORE the broker
+  // layer is built, so readProviderEnv() / readOverflowConfig() inside
+  // AccountBrokerLayer.fromSql pick up the store-resolved values.
+  applyProviderSettingsToEnv(paths.lunaDbPath)
+
   const baseLayer = buildBaseLayer(opTokens)
   const serverLayer = buildServerLayer(baseLayer)
   const runtime = ManagedRuntime.make(Layer.mergeAll(serverLayer, baseLayer))
