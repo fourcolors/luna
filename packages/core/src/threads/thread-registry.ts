@@ -10,7 +10,14 @@
  * Phase 1 columns: id, sdk_session_id, cwd, title, model, effort,
  *   created_at, last_active_at.
  *
- * status/archived_at are DEFERRED to Phase 3 (additive ALTER — do NOT add now).
+ * Phase 3 (additive ALTER via migration v2):
+ *   status TEXT NOT NULL DEFAULT 'active'  (values: active | archived)
+ *   archived_at INTEGER                    (NULL when active; unix ms when archived)
+ *
+ * CARDINAL INVARIANT (Chairman's explicit decision):
+ *   archive() NEVER deletes the thread row or the SDK jsonl.
+ *   Archive is a reversible status flip; archived threads remain SDK-resumable.
+ *   There is NO purge/delete path in any phase.
  *
  * The registry supersedes thread-session-map.json as the source of truth.
  * One-shot boot migration imports rows from the legacy JSON file; after that
@@ -39,6 +46,21 @@ const SCHEMA_V1 = `
     ON threads(last_active_at DESC);
 `
 
+/**
+ * Phase 3 migration — additive ALTER TABLE only. Never recreates the table.
+ * SQLite ALTER TABLE ADD COLUMN is safe under our applyMigration ledger:
+ * this block runs exactly once per database file.
+ *
+ * DEFAULT 'active' means all pre-existing rows get treated as active
+ * after migration — correct by definition.
+ */
+const SCHEMA_V2 = `
+  ALTER TABLE threads ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+  ALTER TABLE threads ADD COLUMN archived_at INTEGER;
+  CREATE INDEX IF NOT EXISTS idx_threads_status
+    ON threads(status, last_active_at DESC);
+`
+
 // ── bun:sqlite minimal shape ─────────────────────────────────────────────────
 
 interface BunDb {
@@ -53,6 +75,9 @@ interface BunStmt {
 }
 
 // ── Public types ─────────────────────────────────────────────────────────────
+
+/** Thread lifecycle status. Only two states — no purge/delete state exists. */
+export type ThreadStatus = "active" | "archived"
 
 /** A thread row as returned by the registry. */
 export interface ThreadRow {
@@ -75,6 +100,17 @@ export interface ThreadRow {
    * per-turn bumping is wired by chat-service calling touch() at turn start).
    */
   readonly lastActiveAt: number
+  /**
+   * Phase 3: lifecycle status. Defaults to 'active'.
+   * Archived threads are hidden from the default list but NEVER deleted.
+   * The row and its SDK jsonl remain present and resumable indefinitely.
+   */
+  readonly status: ThreadStatus
+  /**
+   * Phase 3: unix ms when this thread was archived, or null when active.
+   * Cleared (set to null) when unarchived.
+   */
+  readonly archivedAt: number | null
 }
 
 /** Input for upsert() — all optional except id. */
@@ -98,7 +134,7 @@ export interface ThreadUpsertInput {
 export interface ThreadRegistryApi {
   /**
    * Insert a new thread row, or update an existing one.
-   * On insert: created_at and last_active_at are set to now.
+   * On insert: created_at and last_active_at are set to now; status = 'active'.
    * On update (id already present): merges supplied non-undefined fields.
    */
   upsert: (input: ThreadUpsertInput) => Effect.Effect<ThreadRow, never>
@@ -118,8 +154,36 @@ export interface ThreadRegistryApi {
   /** Bump last_active_at to now. Best-effort — off the hot path. */
   touch: (id: string) => Effect.Effect<boolean, never>
 
-  /** List all threads, most-recently-active first. */
+  /** List all threads (all statuses), most-recently-active first. */
   list: () => Effect.Effect<ReadonlyArray<ThreadRow>, never>
+
+  // ── Phase 3: Archival state machine ────────────────────────────────────────
+
+  /**
+   * Archive a thread: flip active->archived and record archived_at.
+   * NEVER deletes the row or the SDK jsonl — archive is reversible.
+   * Returns true if the thread existed (already-archived = idempotent true).
+   */
+  archive: (id: string) => Effect.Effect<boolean, never>
+
+  /**
+   * Unarchive a thread: flip archived->active and clear archived_at.
+   * Returns true if the thread existed (already-active = idempotent true).
+   */
+  unarchive: (id: string) => Effect.Effect<boolean, never>
+
+  /**
+   * List threads filtered by status, most-recently-active first.
+   * status='active' is the default sidebar view; 'archived' is the archive panel.
+   */
+  listByStatus: (status: ThreadStatus) => Effect.Effect<ReadonlyArray<ThreadRow>, never>
+
+  /**
+   * Return ACTIVE threads whose last_active_at is strictly less than cutoffMs.
+   * Used by the auto-archive policy to find stale threads.
+   * cutoffMs = Date.now() - 14 * 24 * 60 * 60 * 1000  (14-day idle)
+   */
+  listStale: (cutoffMs: number) => Effect.Effect<ReadonlyArray<ThreadRow>, never>
 }
 
 // ── ThreadRegistryError ──────────────────────────────────────────────────────
@@ -137,6 +201,37 @@ export class ThreadRegistryError extends Error {
     this.name = "ThreadRegistryError"
   }
 }
+
+// ── Auto-archive policy ──────────────────────────────────────────────────────
+
+/** 14 days in milliseconds — the idle cutoff for auto-archive. */
+export const AUTO_ARCHIVE_IDLE_MS = 14 * 24 * 60 * 60 * 1000
+
+/**
+ * Run the auto-archive policy against the registry:
+ *   archive all ACTIVE threads with last_active_at < (nowMs - AUTO_ARCHIVE_IDLE_MS).
+ *
+ * NEVER deletes any row or SDK jsonl. Only flips status -> 'archived'.
+ *
+ * Returns the ids of threads that were archived by this run.
+ * Can be called from a scheduled job or the wake cycle.
+ */
+export const runAutoArchive = (
+  registry: ThreadRegistryApi,
+  nowMs: number,
+): Effect.Effect<ReadonlyArray<string>, never> =>
+  Effect.gen(function* () {
+    const cutoff = nowMs - AUTO_ARCHIVE_IDLE_MS
+    const stale = yield* registry.listStale(cutoff)
+    const archived: string[] = []
+    for (const thread of stale) {
+      const ok = yield* registry.archive(thread.id).pipe(
+        Effect.catchAllCause(() => Effect.succeed(false)),
+      )
+      if (ok) archived.push(thread.id)
+    }
+    return archived
+  })
 
 // ── Service Tag ──────────────────────────────────────────────────────────────
 
@@ -187,6 +282,8 @@ export class ThreadRegistryService extends Effect.Tag(
             effort: input.effort ?? null,
             createdAt: ts,
             lastActiveAt: ts,
+            status: "active",
+            archivedAt: null,
           }
           yield* Ref.update(store, (m) => {
             const n = new Map(m)
@@ -242,7 +339,61 @@ export class ThreadRegistryService extends Effect.Tag(
           ),
         )
 
-      return { upsert, get, setSid, setConfig, touch, list } satisfies ThreadRegistryApi
+      const archive: ThreadRegistryApi["archive"] = (id) =>
+        Effect.gen(function* () {
+          const ts = yield* nowMs()
+          return yield* Ref.modify(store, (m) => {
+            const existing = m.get(id)
+            if (!existing) return [false, m] as [boolean, typeof m]
+            // Already archived => idempotent (row exists => true)
+            if (existing.status === "archived") return [true, m] as [boolean, typeof m]
+            const n = new Map(m)
+            n.set(id, { ...existing, status: "archived", archivedAt: ts })
+            return [true, n] as [boolean, typeof m]
+          })
+        })
+
+      const unarchive: ThreadRegistryApi["unarchive"] = (id) =>
+        Ref.modify(store, (m) => {
+          const existing = m.get(id)
+          if (!existing) return [false, m] as [boolean, typeof m]
+          // Already active => idempotent (row exists => true)
+          if (existing.status === "active") return [true, m] as [boolean, typeof m]
+          const n = new Map(m)
+          n.set(id, { ...existing, status: "active", archivedAt: null })
+          return [true, n] as [boolean, typeof m]
+        })
+
+      const listByStatus: ThreadRegistryApi["listByStatus"] = (status) =>
+        Ref.get(store).pipe(
+          Effect.map((m) =>
+            Array.from(m.values())
+              .filter((r) => r.status === status)
+              .sort((a, b) => b.lastActiveAt - a.lastActiveAt),
+          ),
+        )
+
+      const listStale: ThreadRegistryApi["listStale"] = (cutoffMs) =>
+        Ref.get(store).pipe(
+          Effect.map((m) =>
+            Array.from(m.values())
+              .filter((r) => r.status === "active" && r.lastActiveAt < cutoffMs)
+              .sort((a, b) => a.lastActiveAt - b.lastActiveAt),
+          ),
+        )
+
+      return {
+        upsert,
+        get,
+        setSid,
+        setConfig,
+        touch,
+        list,
+        archive,
+        unarchive,
+        listByStatus,
+        listStale,
+      } satisfies ThreadRegistryApi
     }),
   )
 
@@ -250,7 +401,7 @@ export class ThreadRegistryService extends Effect.Tag(
 
   /**
    * Build a SQLite-backed ThreadRegistryService Layer.
-   * `dbPath` accepts `":memory:"` for ephemeral tests.
+   * dbPath accepts ":memory:" for ephemeral tests.
    */
   static makeLayer(
     dbPath: string,
@@ -293,13 +444,16 @@ export class ThreadRegistryService extends Effect.Tag(
         const nowMs = yield* clock.nowMs()
         ensureSchemaVersions(db)
         applyMigration(db, "threads", 1, SCHEMA_V1, nowMs)
+        // Phase 3: additive ALTER TABLE — runs once via migration ledger.
+        applyMigration(db, "threads", 2, SCHEMA_V2, nowMs)
 
         yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
 
         // ── Prepared statements ─────────────────────────────────────────────
 
         const SELECT_COLS =
-          "id, sdk_session_id, cwd, title, model, effort, created_at, last_active_at"
+          "id, sdk_session_id, cwd, title, model, effort, created_at, last_active_at, " +
+          "COALESCE(status, 'active') AS status, archived_at"
 
         const insertStmt = db.query(
           `INSERT INTO threads
@@ -337,6 +491,25 @@ export class ThreadRegistryService extends Effect.Tag(
         const existsStmt = db.query(
           `SELECT 1 FROM threads WHERE id = ? LIMIT 1`,
         )
+        // Phase 3 statements
+        const archiveStmt = db.query(
+          `UPDATE threads SET status = 'archived', archived_at = ?
+            WHERE id = ? AND status != 'archived'`,
+        )
+        const unarchiveStmt = db.query(
+          `UPDATE threads SET status = 'active', archived_at = NULL
+            WHERE id = ? AND status = 'archived'`,
+        )
+        const listByStatusStmt = db.query(
+          `SELECT ${SELECT_COLS} FROM threads
+            WHERE COALESCE(status, 'active') = ?
+            ORDER BY last_active_at DESC`,
+        )
+        const listStaleStmt = db.query(
+          `SELECT ${SELECT_COLS} FROM threads
+            WHERE COALESCE(status, 'active') = 'active' AND last_active_at < ?
+            ORDER BY last_active_at ASC`,
+        )
 
         type RawRow = {
           id: string
@@ -347,6 +520,8 @@ export class ThreadRegistryService extends Effect.Tag(
           effort: string | null
           created_at: number
           last_active_at: number
+          status: string | null
+          archived_at: number | null
         }
 
         const rowToThread = (row: RawRow): ThreadRow => ({
@@ -358,6 +533,8 @@ export class ThreadRegistryService extends Effect.Tag(
           effort: row.effort,
           createdAt: row.created_at,
           lastActiveAt: row.last_active_at,
+          status: (row.status === "archived" ? "archived" : "active") as ThreadStatus,
+          archivedAt: row.archived_at ?? null,
         })
 
         const upsert: ThreadRegistryApi["upsert"] = (input) =>
@@ -394,7 +571,6 @@ export class ThreadRegistryService extends Effect.Tag(
             }
             const row = getStmt.get(input.id) as RawRow | undefined
             if (!row) {
-              // Should never happen — we just wrote it.
               return {
                 id: input.id,
                 sdkSessionId: input.sdkSessionId ?? null,
@@ -404,6 +580,8 @@ export class ThreadRegistryService extends Effect.Tag(
                 effort: input.effort ?? null,
                 createdAt: insertTs,
                 lastActiveAt: insertTs,
+                status: "active" as ThreadStatus,
+                archivedAt: null,
               } satisfies ThreadRow
             }
             return rowToThread(row)
@@ -443,7 +621,47 @@ export class ThreadRegistryService extends Effect.Tag(
             (listStmt.all() as RawRow[]).map(rowToThread),
           )
 
-        return { upsert, get, setSid, setConfig, touch, list } satisfies ThreadRegistryApi
+        const archive: ThreadRegistryApi["archive"] = (id) =>
+          Effect.gen(function* () {
+            const ts = yield* clock.nowMs()
+            const result = archiveStmt.run(ts, id)
+            if (result.changes > 0) return true
+            // No change: already archived or doesn't exist
+            const exists = existsStmt.get(id)
+            return exists != null
+          })
+
+        const unarchive: ThreadRegistryApi["unarchive"] = (id) =>
+          Effect.sync(() => {
+            const result = unarchiveStmt.run(id)
+            if (result.changes > 0) return true
+            // No change: already active or doesn't exist
+            const exists = existsStmt.get(id)
+            return exists != null
+          })
+
+        const listByStatus: ThreadRegistryApi["listByStatus"] = (status) =>
+          Effect.sync(() =>
+            (listByStatusStmt.all(status) as RawRow[]).map(rowToThread),
+          )
+
+        const listStale: ThreadRegistryApi["listStale"] = (cutoffMs) =>
+          Effect.sync(() =>
+            (listStaleStmt.all(cutoffMs) as RawRow[]).map(rowToThread),
+          )
+
+        return {
+          upsert,
+          get,
+          setSid,
+          setConfig,
+          touch,
+          list,
+          archive,
+          unarchive,
+          listByStatus,
+          listStale,
+        } satisfies ThreadRegistryApi
       }),
     )
   }

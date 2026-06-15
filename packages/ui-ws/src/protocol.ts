@@ -1237,6 +1237,8 @@ export type ServerFrame =
   | McpToolResultFrame
   | ThreadConfigFrame
   | SmartBarFrame
+  | ThreadArchivedFrame
+  | ThreadUnarchivedFrame
 
 /* -------------------------------------------------------------------------- */
 /* Client → server                                                            */
@@ -1260,6 +1262,34 @@ export interface UnsubscribeThreadFrame {
 export interface ListThreadsFrame {
   readonly type: "list-threads"
   readonly limit?: number
+  /**
+   * Phase 3: filter by status. Omit for default (active-only) list.
+   * Pass 'archived' to get the archive panel contents.
+   */
+  readonly status?: "active" | "archived"
+}
+
+/** Phase 3: Archive a thread (active->archived). NEVER deletes row or jsonl. */
+export interface ArchiveThreadFrame {
+  readonly type: "archive-thread"
+  readonly threadId: string
+}
+
+/** Phase 3: Unarchive a thread (archived->active). Clears archived_at. */
+export interface UnarchiveThreadFrame {
+  readonly type: "unarchive-thread"
+  readonly threadId: string
+}
+
+/** Phase 3: Server confirmation of an archive/unarchive operation. */
+export interface ThreadArchivedFrame {
+  readonly type: "thread-archived"
+  readonly threadId: string
+}
+
+export interface ThreadUnarchivedFrame {
+  readonly type: "thread-unarchived"
+  readonly threadId: string
 }
 
 export interface NewThreadFrame {
@@ -1506,3 +1536,5 @@ export type ClientFrame =
   | VaultSyncConfigFrame
   | VaultImportFrame
   | SetThreadConfigFrame
+  | ArchiveThreadFrame
+  | UnarchiveThreadFrame
