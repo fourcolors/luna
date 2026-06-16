@@ -185,6 +185,7 @@ import {
   RoutedOpSecretProvider,
   scanUserSkills,
   SessionStore,
+  makeSessionStoreSqlite,
   SkillPrefsStore,
   SkillRegistry,
   syncUserSkills,
@@ -207,6 +208,14 @@ import {
   resolveAll,
   validateAndPrepare,
   type ProviderSettingsPayload,
+  SuggestedActions,
+  SuggestedActionsStore,
+  AcceptHandler,
+  AcceptHandlerLayer,
+  ThreadRegistryService,
+  importJsonMap,
+  runAutoArchive,
+  AUTO_ARCHIVE_IDLE_MS,
 } from "@luna/core"
 import { createDnaLoader, loadDna } from "./dna-loader.js"
 import { loadSystem } from "./system-loader.js"
@@ -241,12 +250,13 @@ import {
   PromptWorkerLayer,
   WorkflowWorkerLayer,
   JobRunToolsProviderTag,
+  ChatThreadPosterTag,
 } from "@luna/adapter-sdk"
 import {
   ChatService,
   ThreadToolsProviderTag,
-  effortsForModel,
-  type EffortLevel,
+  effortOptionsForModel,
+  type EffortOption,
   type ThreadToolsProvider,
 } from "@luna/chat-service"
 import { composeInterceptors, defaultSafetyInterceptors } from "@luna/tools"
@@ -286,6 +296,10 @@ import {
   type SecretDestination,
 } from "@luna/secret-tools"
 import { SkillToolsLayer, SkillToolsService } from "@luna/skill-tools"
+import {
+  SuggestedActionToolsLayer,
+  SuggestedActionToolsService,
+} from "@luna/suggested-actions-tools"
 import { WidgetToolsLayer, WidgetToolsService } from "@luna/widget-tools"
 import { createJobInputToolsProvider } from "@luna/job-input-tools"
 import {
@@ -400,8 +414,9 @@ export type { EffortLevel as Effort } from "@luna/chat-service"
 export interface UiModelEntry {
   readonly id: string
   readonly label: string
-  /** Effort levels valid for this model — server-computed. See effortsForModel(). */
-  readonly efforts?: readonly EffortLevel[]
+  /** Effort options for this model — server-computed. See effortOptionsForModel().
+   *  Includes the "ultracode" token for xhigh-capable models. */
+  readonly efforts?: readonly EffortOption[]
 }
 
 /**
@@ -470,11 +485,11 @@ export const buildAvailableModels = (env: NodeJS.ProcessEnv = process.env): Arra
   const seenIds = new Set(extras.map((e) => e.id))
   const deduped: Array<UiModelEntry> = extras.map((e) => ({
     ...e,
-    efforts: effortsForModel(e.id),
+    efforts: effortOptionsForModel(e.id),
   }))
   for (const base of BASE_MODELS) {
     if (!seenIds.has(base.id)) {
-      deduped.push({ ...base, efforts: effortsForModel(base.id) })
+      deduped.push({ ...base, efforts: effortOptionsForModel(base.id) })
     }
   }
   return deduped
@@ -538,6 +553,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
       const secretTools = yield* SecretToolsService
       const skillTools = yield* SkillToolsService
       const widgetTools = yield* WidgetToolsService // PRD Part C/W4: widget_write
+      const suggestedActionTools = yield* SuggestedActionToolsService // suggest_action
       // PRD Part B (Skills): the managed skill catalog. decorate() reads
       // promptSnapshotSync() — synchronous and never stale (the registry
       // rebuilds it inside every mutation), so a settings toggle is
@@ -683,6 +699,8 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
           const secretThreadTools = secretTools.createSessionBinding()
           const skillThreadTools = skillTools.createSessionBinding()
           const widgetThreadTools = widgetTools.createSessionBinding()
+          const suggestedActionThreadTools =
+            suggestedActionTools.createSessionBinding()
           console.log(
             "[luna/thread] wiring MCP servers:",
             [
@@ -715,6 +733,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             obsThreadTools.systemPromptAddendum,
             localShellThreadTools.systemPromptAddendum,
             secretThreadTools.systemPromptAddendum,
+            suggestedActionThreadTools.systemPromptAddendum,
           ]
             .filter((s): s is string => typeof s === "string" && s.length > 0)
             .join("\n\n")
@@ -727,6 +746,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
             [secretThreadTools.serverName]: secretThreadTools.server,
             [skillThreadTools.serverName]: skillThreadTools.server, // PRD B §11: skill_load (tier-2 disclosure)
             [widgetThreadTools.serverName]: widgetThreadTools.server, // PRD C §16: widget_write (describe-to-spawn)
+            [suggestedActionThreadTools.serverName]: suggestedActionThreadTools.server, // suggest_action (propose follow-ups)
             ...connectorService.mountSnapshotSync(), // PRD A §07: connected services, hot per-thread
           }
           return {
@@ -736,6 +756,7 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
               obsThreadTools.bindSession(sessionId)
               localShellThreadTools.bindSession(sessionId)
               secretThreadTools.bindSession(sessionId)
+              suggestedActionThreadTools.bindSession(sessionId)
               if (sandboxLocalShell.enabled) {
                 const reattach = () =>
                   attachSandboxLocalShell({
@@ -754,6 +775,15 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
                 "— obs/local-shell tools active",
               )
             },
+            onUnbound: (sessionId: string) => {
+              // Symmetric teardown for onBound (thread scope close). Without
+              // this, `sandboxReattachers` — a module-scope Map — grows one
+              // retained closure per historical thread for the process
+              // lifetime, an unbounded leak on a long-lived server.
+              // delete() on an absent key (sandbox disabled) is a safe no-op.
+              sandboxReattachers.delete(sessionId)
+              localShellThreadTools.clearSession(sessionId)
+            },
           }
         },
       }
@@ -761,7 +791,24 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
     }),
   ).pipe(
     Layer.provide(MemoryToolsLayer()),
-    Layer.provide(SchedulerToolsLayer()),
+    Layer.provide(
+      // Surface the system-managed cycles (wake/dream) as read-only entries in
+      // schedule_list so the operator sees the whole schedule picture, not just
+      // agent-created crons. Exprs mirror the wake/dream cron wiring below.
+      SchedulerToolsLayer({
+        systemSchedules: [
+          ...(process.env["LUNA_WAKE_ENABLED"]?.trim() !== "0"
+            ? [
+                {
+                  label: "wake (workspace digest)",
+                  expr: process.env["LUNA_WAKE_CRON_EXPR"]?.trim() || "*/30 * * * *",
+                },
+              ]
+            : []),
+          { label: "dream (nightly consolidation)", expr: "0 3 * * *" },
+        ],
+      }),
+    ),
     Layer.provide(LocalShellToolsLayer({ bridge: localShellBridge })),
     Layer.provide(SecretToolsLayer({ bridge: secretRequestBridge })),
     Layer.provide(ObsToolsLayer({ runtimeProbe: buildChatServerRuntimeProbe })),
@@ -1623,10 +1670,12 @@ export interface BuildWorkerRegistryLayerOpts {
   readonly agentNotesL: Layer.Layer<AgentNotesService>
   /** Optional per-run request_input provider (prompt/workflow serviceOption). */
   readonly jobInputToolsL?: Layer.Layer<import("@luna/adapter-sdk").JobRunToolsProvider>
+  /** Optional chat_thread delivery sink (#124) — prompt worker serviceOption. */
+  readonly chatThreadPosterL?: Layer.Layer<import("@luna/adapter-sdk").ChatThreadPoster>
   // dream leaf deps (DreamWorkerLayer R = DreamStore|DreamReasoner|SessionStore|MemoryRouter|Clock)
   readonly dreamStoreL: Layer.Layer<DreamStore, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
   readonly dreamReasonerL: Layer.Layer<import("@luna/core").DreamReasoner>
-  readonly sessionStoreL: Layer.Layer<SessionStore>
+  readonly sessionStoreL: Layer.Layer<SessionStore, never, import("@luna/memory").LunaSqliteBootstrap>
   readonly memoryRouterL: Layer.Layer<import("@luna/memory").MemoryRouter, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
   /** Optional ECE calibration sink (dream serviceOption). */
   readonly calibrationStoreL?: Layer.Layer<CalibrationStore, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
@@ -1669,9 +1718,17 @@ export const buildWorkerRegistryLayer = (
     opts.calibrationStoreL === undefined
       ? withJobTools
       : Layer.merge(withJobTools, opts.calibrationStoreL)
+  // #124 chat_thread delivery sink — folded in only when supplied, exactly like
+  // jobInputToolsL above. PromptWorker resolves ChatThreadPosterTag via
+  // serviceOption, so omitting it keeps the workers' R clean (no chat_thread
+  // delivery, the pre-#124 behaviour).
+  const withChatPoster =
+    opts.chatThreadPosterL === undefined
+      ? withCalibration
+      : Layer.merge(withCalibration, opts.chatThreadPosterL)
   // provideMerge so the registry stays VISIBLE above this layer (JobTickerLayer
   // + the integration test both yield* WorkerRegistry from the result).
-  return workers.pipe(Layer.provideMerge(withCalibration))
+  return workers.pipe(Layer.provideMerge(withChatPoster))
 }
 
 // ── Layer wiring ────────────────────────────────────────────────────────
@@ -1706,7 +1763,15 @@ export const buildBaseLayer = (
     Layer.provide(obsL),
     Layer.provide(clockL),
   )
-  const storeL = SessionStore.Default
+  // Phase 2 — durable SessionStore: SQLite-backed so a restart replays
+  // the full transcript, not just the model's SDK context.
+  // LunaSqliteBootstrap is satisfied at the bottom of buildServerLayer,
+  // same as every other SQLite-backed layer here. Best-effort contract:
+  // a disk failure at Layer init will propagate (per the jobs-store /
+  // thread-registry precedent — the server does not start without its
+  // stores). A failure on a per-append write is caught by the adapter's
+  // onMirrorError hook and does NOT kill the live session.
+  const storeL = makeSessionStoreSqlite(paths.lunaDbPath)
 
   // Build one inner OP layer per discovered token, then wrap in the
   // routed dispatcher. The routed wrapper owns the op://-vs-luna-op://
@@ -1806,12 +1871,33 @@ export const buildBaseLayer = (
   )
 
   // JobsStoreService: SQLite-backed `jobs` table (DESIGN.md §5.1) in luna.db.
-  // Required by SchedulerToolsLayer so cron schedules registered via
-  // mcp__scheduler__schedule_create survive chat-server restarts — at next
-  // boot the layer reads every row and re-registers the trigger into a
-  // fresh TriggerAgent. LunaSqliteBootstrap satisfied at the bottom of
-  // buildServerLayer, same pattern as agent-notes / workspaces.
+  // Required by SchedulerToolsLayer: a schedule created via
+  // mcp__scheduler__schedule_create is a durable `jobs` row, and the V2
+  // JobTicker reads it via listDue every tick — so a chat-server restart is a
+  // zero-tick gap with nothing to re-register. LunaSqliteBootstrap satisfied at
+  // the bottom of buildServerLayer, same pattern as agent-notes / workspaces.
   const jobsStoreL = JobsStoreService.makeLayer(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
+
+  // Suggested Actions: the durable per-thread store + the shared service the
+  // live `suggest_action` tool, Dream, and the ui-ws respond handle all use.
+  // Define ONCE and reuse by reference (Layer memoization) so the chat
+  // changes-consumer, the thread tool, and the accept handle hit the SAME
+  // instance — otherwise the change-stream never reaches the chat layer.
+  const suggestedActionsStoreL = SuggestedActionsStore.makeLayer(
+    paths.lunaDbPath,
+  ).pipe(Layer.provide(clockL))
+  const suggestedActionsL = SuggestedActions.layer.pipe(
+    Layer.provide(suggestedActionsStoreL),
+  )
+  // AcceptHandler: auto-executes an accepted action as a durable one-shot job
+  // (the V2 ticker dispatches it — on by default; LUNA_SCHEDULER_V2_ENABLED=0
+  // disables) and forks the completion observer. Resolved via serviceOption
+  // inside SuggestedActions.respond — present here means accept actually runs.
+  const acceptHandlerL = AcceptHandlerLayer().pipe(
+    Layer.provide(suggestedActionsL),
+    Layer.provide(jobsStoreL),
     Layer.provide(clockL),
   )
 
@@ -1996,6 +2082,11 @@ export const buildBaseLayer = (
     // then artifactStoreL satisfies both it and the WS handle (memoized).
     Layer.provide(WidgetToolsLayer(widgetSummonBridge)),
     Layer.provide(artifactStoreL),
+    // Suggested Actions: suggest_action MCP tool. SuggestedActionToolsLayer
+    // requires the shared SuggestedActions service; provide the tool layer then
+    // the service (same memoized instance the chat layer + accept handle use).
+    Layer.provide(SuggestedActionToolsLayer),
+    Layer.provide(suggestedActionsL),
     Layer.provide(connectorServiceL), // PRD Part A: mounts read by decorate()
     Layer.provide(obsL),
     Layer.provide(clockL),
@@ -2139,12 +2230,134 @@ export const buildBaseLayer = (
     }),
   ).pipe(Layer.provide(jobsStoreL))
 
+  // ThreadRegistry: durable `threads` table in luna.db (Phase 1).
+  // Replaces thread-session-map.json as the source of truth for
+  // thread→SDK-session mapping across restarts. ChatService resolves this
+  // via Effect.serviceOption — absent falls back to the legacy JSON map
+  // path for backward compat.
+  // LunaSqliteBootstrap is satisfied at the bottom of buildServerLayer,
+  // same as every other SQLite-backed layer here.
+  const threadRegistryL = ThreadRegistryService.makeLayer(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
+
+  // Boot migration: one-shot import from the legacy JSON map into the
+  // ThreadRegistry. Runs once at server boot (inside the ThreadRegistry's
+  // Layer.scoped, so it's part of the boot sequence). Idempotent — existing
+  // rows are skipped.
+  const threadRegistryWithMigrationL = Layer.scoped(
+    ThreadRegistryService,
+    Effect.gen(function* () {
+      // Build the SQLite-backed registry (which runs the migration DDL).
+      // We acquire it via Context.get from the inner layer build.
+      const ctx = yield* Layer.build(threadRegistryL)
+      const reg = Context.get(ctx, ThreadRegistryService)
+
+      // Run the JSON map import best-effort (don't fail boot on import error).
+      const lunaHome = process.env["LUNA_HOME"]
+      if (lunaHome !== undefined) {
+        const defaultCwd =
+          process.env["LUNA_REPO_ROOT"] ?? process.cwd()
+        const nowMs = Date.now()
+        // NOTE: this runs inside an Effect.gen generator (function*), so the
+        // async importJsonMap must be awaited via Effect.tryPromise + yield*,
+        // NOT a bare `await` (which is a syntax error in a non-async generator
+        // and only slips past tsc's top-level-await handling).
+        const importResult = yield* Effect.either(
+          Effect.tryPromise({
+            try: () =>
+              importJsonMap(reg, lunaHome, defaultCwd, nowMs, {
+                log: (level, msg) => {
+                  if (level === "warn") console.warn(msg)
+                  else console.log(msg)
+                },
+              }),
+            catch: (e) => e as Error,
+          }),
+        )
+        if (importResult._tag === "Right") {
+          const result = importResult.right
+          if (result.inserted > 0) {
+            console.log(
+              `[luna/thread-registry] boot import: inserted=${result.inserted} skippedNoSid=${result.skippedNoSid} skippedClaudeTest=${result.skippedClaudeTest} skippedAlreadyPresent=${result.skippedAlreadyPresent}`,
+            )
+          }
+        } else {
+          console.warn(
+            `[luna/thread-registry] boot import failed (best-effort): ${String(importResult.left)}`,
+          )
+        }
+      }
+
+      return reg
+    }),
+  )
+
+  // ChatService — hoisted above the worker registry so the chat_thread
+  // delivery poster (#124) can be provided ChatService. Effect layers are
+  // memoized by reference, so reusing this same `chatL` variable in both
+  // `chatThreadPosterL` below and the final mergeAll instantiates ChatService
+  // exactly once.
+  const chatL = Layer.provideMerge(
+    ChatService.Default,
+    Layer.mergeAll(
+      sdkAdapterL,
+      storeL,
+      clockL,
+      obsL,
+      telemetryL,
+      memoryRouterL,
+      threadToolsL,
+      // ChatService resolves SuggestedActions via Effect.serviceOption — wire
+      // it so the change-stream consumer + replay-on-subscribe activate.
+      suggestedActionsL,
+      // ThreadRegistry: durable thread index. ChatService resolves via
+      // Effect.serviceOption — absent falls back to legacy JSON map.
+      threadRegistryWithMigrationL,
+    ),
+  )
+
+  // #124: the chat_thread delivery sink. PromptWorker resolves
+  // ChatThreadPosterTag via Effect.serviceOption; this layer provides it,
+  // bridging the worker's finished result back into ChatService.deliverResult
+  // (which persists it + pushes a frame to live subscribers + emits a global
+  // toast notification). Same Effect.runtime/runPromise escape hatch as
+  // jobInputToolsL above. Provided `chatL` so it can resolve ChatService.
+  const chatThreadPosterL = Layer.effect(
+    ChatThreadPosterTag,
+    Effect.gen(function* () {
+      const chat = yield* ChatService
+      const runtime = yield* Effect.runtime<never>()
+      const runPromise = Runtime.runPromise(runtime)
+      return {
+        post: (delivery) =>
+          // Best-effort: deliverResult never fails (returns Option.none on a
+          // missing thread), and we swallow anything else so a delivery hiccup
+          // can never fail the job's run.
+          Effect.promise(() =>
+            runPromise(
+              chat
+                .deliverResult({
+                  threadId: delivery.threadId,
+                  text: delivery.text,
+                  source: delivery.source ?? "background-job",
+                  ...(delivery.label ? { label: delivery.label } : {}),
+                })
+                .pipe(Effect.asVoid, Effect.catchAllCause(() => Effect.void)),
+            ),
+          ),
+      }
+    }),
+  ).pipe(Layer.provide(chatL))
+
   // V2 registry: ONE empty registry seeded with the prompt + workflow workers
   // (adapter-sdk) AND the dream + wake workers (scheduler-v2 dream/wake
   // migration, M1 + M2). buildWorkerRegistryLayer is the SAME factory the M3
   // integration test exercises with fakes, so the live boot and the test agree
   // on the kind set. provideMerge (inside the factory) keeps the registry
-  // visible to JobTickerLayer above it.
+  // visible to JobTickerLayer above it. The #124 chat_thread delivery sink
+  // (chatThreadPosterL) is threaded through so the prompt worker's
+  // serviceOption resolves it at dispatch time — preserving deliver_to=chat_thread.
   //
   // dreamReasonerL / wakeReasonerL mirror what buildDreamCronLayer /
   // buildWakeCronLayer build internally (DreamReasonerDefault needs SDKClient +
@@ -2171,6 +2384,7 @@ export const buildBaseLayer = (
     sdkClientL,
     agentNotesL,
     jobInputToolsL,
+    chatThreadPosterL,
     dreamStoreL,
     dreamReasonerL: dreamWorkerReasonerL,
     sessionStoreL: storeL,
@@ -2196,19 +2410,6 @@ export const buildBaseLayer = (
   const beliefWriterL = BeliefWriter.Default.pipe(Layer.provide(memoryRouterL), Layer.provide(clockL))
   const surveyL = buildSurveyLayer({ alignmentStoreL, beliefWriterL, memoryRouterL, clockL })
 
-  const chatL = Layer.provideMerge(
-    ChatService.Default,
-    Layer.mergeAll(
-      sdkAdapterL,
-      storeL,
-      clockL,
-      obsL,
-      telemetryL,
-      memoryRouterL,
-      threadToolsL,
-    ),
-  )
-
   return Layer.mergeAll(
     uiL,
     obsL,
@@ -2226,10 +2427,18 @@ export const buildBaseLayer = (
     wakeCronL ?? Layer.empty, // wake cron: workspace digest each tick (Layer.empty under V2 — M5 cutover; disabled if LUNA_WAKE_ENABLED=0)
     jobTickerL ?? Layer.empty, // Phase 12b V2 ticker: enabled via LUNA_SCHEDULER_V2_ENABLED=1 — drives dream/wake via job rows (DESIGN §5.3.5)
     surveyL,    // Phase 3 D3: Survey available for buildServerLayer to resolve + pass to the WS server
+    suggestedActionsL, // Suggested Actions: buildServerLayer resolves it for the WS respond handle (same instance the chat layer uses)
+    // Auto-execute + completion observer — wired whenever the V2 ticker is on
+    // (the default). Without the ticker a job can never dispatch, so on a
+    // LUNA_SCHEDULER_V2_ENABLED=0 deploy we omit AcceptHandler and accept simply
+    // leaves the action at `accepted` (respond resolves it via serviceOption —
+    // absent → no exec) rather than stranding it in `in_progress` forever.
+    schedulerV2Enabled ? acceptHandlerL : Layer.empty,
     skillRegistryL, // PRD Part B: same instance as threadToolsL (memoized by reference) — buildServerLayer resolves it for the WS skill frames
     connectorServiceL, // PRD Part A: same instance as threadToolsL — M2's WS connector frames resolve it here
     artifactStoreL, // PRD Part C/W1: buildServerLayer resolves it for the WS artifact frames
     vaultStoreL, // Vault V1: buildServerLayer resolves it for the WS vault frames
+    threadRegistryWithMigrationL, // Phase 1: durable thread index (luna.db threads table)
   )
 }
 
@@ -2401,6 +2610,71 @@ const buildServerLayer = (
       const artifactStoreService = yield* ArtifactStore // PRD Part C/W1
       const jobsStore = yield* JobsStoreService // PRD Part C/W3 (gallery source)
       const telemetry = yield* TelemetryService // Phase 7: pulse-snapshot source
+      const suggestedActionsService = yield* SuggestedActions // suggest_action
+      // Optional — present whenever the V2 ticker is on (the default; absent
+      // only on a LUNA_SCHEDULER_V2_ENABLED=0 deploy, see the gated merge
+      // above). Absent → accept leaves the action at `accepted`.
+      const acceptHandlerOption = yield* Effect.serviceOption(AcceptHandler)
+
+      // ── Phase 3: auto-archive wiring ────────────────────────────────────────
+      //
+      // runAutoArchive has NO production caller without this block — threads
+      // would never auto-archive. This is the interim home; it can migrate to
+      // the wake cycle later once wake redesign is complete.
+      //
+      // Strategy: run once at boot (best-effort, fire-and-forget so a DB hiccup
+      // never blocks server start), then again every 24 hours in-process.
+      //
+      // Liveness predicate: ChatService's in-flight turn state is private (the
+      // `threads` Ref is internal). Rather than coupling the registry to
+      // ChatService's internals, we omit the predicate here and let the
+      // 14-day `last_active_at` proxy serve as the guard. A thread that had a
+      // live turn within the last 14 days will have its `last_active_at` updated
+      // and will not appear in listStale(). This is conservative and safe.
+      // (The `isLive` predicate in runAutoArchive's signature exists for callers
+      // that DO have access to a live-thread set — e.g. integration tests.)
+      const threadRegistryOption = yield* Effect.serviceOption(ThreadRegistryService)
+      const runAutoArchiveBestEffort = (): void => {
+        // NOTE: this is called from outside an Effect.gen generator (from a
+        // setTimeout-like position), so plain Promise is fine here.
+        if (Option.isNone(threadRegistryOption)) return
+        const reg = threadRegistryOption.value
+        const nowMs = Date.now()
+        // Effect.either wraps errors so a failure in runAutoArchive can never
+        // propagate out — this is the canonical best-effort escape hatch.
+        Effect.runPromise(
+          Effect.either(
+            runAutoArchive(reg, nowMs).pipe(
+              Effect.flatMap((archived) =>
+                archived.length > 0
+                  ? Effect.sync(() =>
+                      console.log(
+                        `[luna/thread-registry] auto-archived ${archived.length} idle thread(s): ${archived.join(", ")}`,
+                      ),
+                    )
+                  : Effect.void,
+              ),
+            ),
+          ),
+        ).catch(() => {
+          // Effect.either means errors appear as Left, not as Promise rejection.
+          // This catch is a belt-and-suspenders guard; it should never fire.
+        })
+      }
+
+      // Boot run: fire-and-forget, best-effort.
+      runAutoArchiveBestEffort()
+
+      // Daily interval: 24 h in-process. forkScoped ties the interval to the
+      // server scope so it is cancelled cleanly on graceful shutdown.
+      const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000
+      yield* Effect.forkScoped(
+        Effect.forever(
+          Effect.sleep(TWENTY_FOUR_HOURS_MS).pipe(
+            Effect.zipRight(Effect.sync(runAutoArchiveBestEffort)),
+          ),
+        ),
+      )
 
       // PRD A §08: access tokens live ~1h; refresh AHEAD of expiry so the
       // mount snapshot's bearer never goes stale mid-conversation. The
@@ -2887,6 +3161,20 @@ const buildServerLayer = (
           artifactStoreService
             .update(id, content, "user")
             .pipe(Effect.map((a) => (a ? toWireArtifact(a) : null))),
+        // Out-of-band agent edits (widget_write / mcp_app_write / show_artifact
+        // call the store directly, bypassing the inline pin-broadcast) → the
+        // server re-broadcasts a fresh artifact-list so every connected client
+        // (web panel, Moon overlay) learns of the new/changed pin.
+        //
+        // NOTE: a *client-initiated* pin/unpin/edit therefore broadcasts twice —
+        // once inline (server.ts artifact-pin/unpin/edit handlers) and once via
+        // this hook. Deliberate and harmless: both run AFTER the mutation commits
+        // and carry identical state, so the second is an idempotent full-list
+        // replace. We keep the inline broadcasts because `changes` is OPTIONAL on
+        // the server's artifactStore contract — a rig that omits it must still
+        // broadcast user pins. The common automated case (agent-tool pin) has no
+        // inline path and so fires exactly once, here.
+        changes: (notify: () => void) => artifactStoreService.changes(notify),
       }
 
       // PRD Part C/W3: the workflow gallery is a READ-ONLY, wire-safe projection
@@ -2942,6 +3230,35 @@ const buildServerLayer = (
               }),
             ),
           ),
+      }
+
+      // Suggested Actions: the ui-ws respond handle. `respond` runs in the
+      // ui-ws runtime, so the AcceptHandler (resolved by SuggestedActions.respond
+      // via serviceOption) must be PROVIDED into the returned Effect here —
+      // otherwise accept would silently skip execution. Errors are logged and
+      // swallowed so a bad respond never breaks the connection.
+      const suggestedActionsHandle = {
+        respond: (input: {
+          readonly threadId: string
+          readonly actionId: string
+          readonly decision: "accept" | "dismiss"
+        }) => {
+          // Provide AcceptHandler only when it's wired (scheduler V2 on); when
+          // off, respond still works — accept just transitions to `accepted`
+          // without creating a job (serviceOption in respond resolves None).
+          const base = suggestedActionsService.respond(input)
+          const withHandler = Option.isSome(acceptHandlerOption)
+            ? base.pipe(Effect.provideService(AcceptHandler, acceptHandlerOption.value))
+            : base
+          return withHandler.pipe(
+            Effect.asVoid,
+            Effect.catchAll((e) =>
+              Effect.sync(() => {
+                console.warn("[luna/suggested-actions] respond failed:", String(e))
+              }),
+            ),
+          )
+        },
       }
 
       // Wire-safety adapter (PRD §12): the ui-ws handle receives catalog
@@ -3084,6 +3401,7 @@ const buildServerLayer = (
         connectorService: connectorsWsHandle, // PRD Part A: instances pre-projected
         artifactStore: artifactsWsHandle, // PRD Part C/W1: pinned artifacts (wire-safe)
         workflowGallery: workflowGalleryHandle, // PRD Part C/W3: read-only jobs gallery
+        suggestedActions: suggestedActionsHandle, // Suggested Actions: accept/dismiss routing
         vaultService: vaultWsHandle, // Vault V1: registry CRUD (values never cross down)
         localShellBridge,
         onLocalShellRelease: reattachSandbox,

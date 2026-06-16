@@ -70,6 +70,25 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     // Clean localStorage so persisted-prefs tests don't leak across cases.
     localStorage.clear()
 
+    // Inert WebSocket stub. The page boots WebSocketEngine.connect(), which with
+    // a real jsdom socket fires onerror→onclose against 127.0.0.1 and schedules a
+    // reconnect timer. Across many cases those leaked reconnect timers fire after
+    // afterEach deletes window.LunaProtocol → a cascade of "LunaProtocol is not
+    // defined" unhandled errors that fail the run (surfaces once the file is big
+    // enough to give the timers a window). The socket-driving tests set State.ws
+    // themselves, so an inert stub that never auto-fires events is sufficient.
+    vi.stubGlobal('WebSocket', class {
+      static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3
+      readyState = 0
+      url: string
+      onopen: any = null; onclose: any = null; onerror: any = null; onmessage: any = null
+      constructor(url: string) { this.url = url }
+      send() {}
+      close() { this.readyState = 3 }
+      addEventListener() {}
+      removeEventListener() {}
+    })
+
     // 4. Select the inline page script by CONTENT, not position (an added
     // config stub must fail loudly here, not silently run the wrong script).
     const inlineScripts = [...htmlContent.matchAll(/<script>([\s\S]*?)<\/script>/g)]
@@ -91,6 +110,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     delete (window as any).LunaDeckSnap
     delete (window as any).LunaDock
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
     vi.useRealTimers()
   })
 
@@ -125,7 +145,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // Verification B: User message should be appended to the stream
       const userMessage = chatMessages!.querySelector('.msg.user')
       expect(userMessage).not.toBeNull()
-      expect(userMessage!.textContent).toBe('How does this look?')
+      expect(userMessage!.querySelector('.msg-body')!.textContent).toBe('How does this look?')
 
       // Verification C: Typing indicator dots should be active (turn in flight)
       const typingIndicator = chatMessages!.querySelector('.typing-dots')
@@ -596,7 +616,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       // The post-tool bubble shows ONLY "Found 3 lines." — NOT the full
       // canonical text "Looking that up. Found 3 lines." which would be the
       // duplication-bug fingerprint.
-      expect(answer2.textContent?.trim()).toBe('Found 3 lines.')
+      expect(answer2.querySelector('.msg-body')?.textContent?.trim()).toBe('Found 3 lines.')
       expect(answer2.textContent).not.toContain('Looking that up.')
       // The reducer split is the layout-independent dedup fingerprint.
       const segs = (internals() as any).ChatState.turns[0].segments
@@ -1225,6 +1245,247 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(tls.every((t) => t.classList.contains('collapsed'))).toBe(true)
       expect(chat.querySelector('.timeline .typing-dots')).toBeNull()
       expect(chat.querySelector('.timeline-summary-label')!.textContent).toContain('Worked for')
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: Per-message action row — always-visible copy + relative send-time
+  //
+  // Each settled user/assistant bubble carries a `.msg-meta` footer holding the
+  // `.msg-copy` button (writes the message's RAW source to the clipboard) and a
+  // `.msg-time` "9m ago" stamp. Content lives in `.msg-body` so the time text
+  // stays out of the bubble's textContent. The row is rebuilt inside
+  // _paintUser/_paintText each paint (survives the reconciler), and the time
+  // refreshes on focus/click via a delegated listener — no timer.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: per-message action row (copy + time)', () => {
+    const M = () => (window as any).__MoonInternals
+    let chat: HTMLElement
+
+    beforeEach(() => {
+      // Synchronous rAF so each frame's render is observable immediately.
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      ;(window as any).cancelAnimationFrame = () => {}
+      M().ChatState.reset()
+      chat = document.getElementById('chat-messages') as HTMLElement
+      chat.innerHTML = ''
+    })
+
+    it('Scenario: a settled assistant answer copies its RAW markdown (not the rendered text)', async () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Hello **world** and `code`' })
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'Hello **world** and `code`' } })
+
+      const bubble = chat.querySelector('.msg.assistant') as HTMLElement
+      // The bubble shows rendered markdown...
+      expect(bubble.innerHTML).toContain('<strong>world</strong>')
+      // ...but the copy button writes the raw source so a paste keeps structure.
+      const btn = bubble.querySelector('.msg-copy') as HTMLButtonElement
+      expect(btn).not.toBeNull()
+
+      let captured: string | null = null
+      ;(navigator as any).clipboard = {
+        writeText: (t: string) => { captured = t; return Promise.resolve() },
+      }
+      btn.click()
+      await Promise.resolve()           // flush the writeText().then(flashDone)
+      expect(captured).toBe('Hello **world** and `code`')
+
+      // Flips to the mint "copied" confirmation, then reverts after the beat.
+      expect(btn.dataset.copied).toBe('1')
+      vi.advanceTimersByTime(1200)
+      expect(btn.dataset.copied).toBeUndefined()
+    })
+
+    it('Scenario: a user message copies its typed text; .msg-body keeps the visible text clean', async () => {
+      M().handleFrame({ type: 'thread-snapshot', messages: [{ role: 'user', text: 'copy me please' }] })
+
+      const userMsg = chat.querySelector('.msg.user') as HTMLElement
+      // Content lives in .msg-body, so the body reads exactly the typed message
+      // even though the meta footer adds a time stamp alongside it.
+      expect(userMsg.querySelector('.msg-body')!.textContent).toBe('copy me please')
+
+      const btn = userMsg.querySelector('.msg-meta .msg-copy') as HTMLButtonElement
+      expect(btn).not.toBeNull()
+
+      let captured: string | null = null
+      ;(navigator as any).clipboard = {
+        writeText: (t: string) => { captured = t; return Promise.resolve() },
+      }
+      btn.click()
+      await Promise.resolve()
+      expect(captured).toBe('copy me please')
+    })
+
+    it('Scenario: a still-streaming assistant bubble has NO copy button (gated on done)', () => {
+      // A single non-final delta renders a text bubble whose segment is not yet
+      // done — the copy affordance must not appear (or re-appear) mid-stream.
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'partial answer' })
+
+      const bubble = chat.querySelector('.msg.assistant') as HTMLElement
+      expect(bubble).not.toBeNull()
+      expect(bubble.dataset.streamRaw).toBe('partial answer')   // proves it rendered
+      expect(chat.querySelector('.msg-copy')).toBeNull()
+
+      // Once the turn finalizes, the button appears.
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'partial answer' } })
+      expect(chat.querySelector('.msg.assistant .msg-copy')).not.toBeNull()
+    })
+
+    it('Scenario: a rejected clipboard write leaves the glyph unchanged (no false "copied")', async () => {
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'something' })
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'something' } })
+      const btn = chat.querySelector('.msg.assistant .msg-copy') as HTMLButtonElement
+
+      ;(navigator as any).clipboard = {
+        writeText: () => Promise.reject(new Error('insecure context')),
+      }
+      btn.click()
+      await Promise.resolve()
+      // No confirmation state, and the copy glyph (two squares = a <rect>) stays.
+      expect(btn.dataset.copied).toBeUndefined()
+      expect(btn.querySelector('rect')).not.toBeNull()
+    })
+
+    it('Scenario: both the copy AND the checkmark glyph carry explicit width/height so WKWebView renders them (regression)', async () => {
+      // The glyphs are injected via innerHTML at runtime; WKWebView needs explicit
+      // intrinsic dimensions on the <svg> (a viewBox-only SVG sized only by CSS
+      // renders blank there). jsdom doesn't lay out, so we pin the attributes.
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'hi' })
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'hi' } })
+      const btn = chat.querySelector('.msg.assistant .msg-copy') as HTMLButtonElement
+      const svg = btn.querySelector('svg') as SVGElement
+      expect(svg).not.toBeNull()
+      expect(svg.getAttribute('width')).toBe('12')
+      expect(svg.getAttribute('height')).toBe('12')
+
+      // After a successful copy the glyph swaps to the checkmark — which is also
+      // injected via innerHTML, so it must carry explicit dims too or it renders
+      // blank in WKWebView once the icon flips.
+      ;(navigator as any).clipboard = { writeText: () => Promise.resolve() }
+      btn.click()
+      await Promise.resolve()           // flush writeText().then(flashDone)
+      const check = btn.querySelector('svg') as SVGElement
+      expect(check).not.toBeNull()
+      expect(check.querySelector('path')).not.toBeNull()  // the checkmark glyph
+      expect(check.getAttribute('width')).toBe('12')
+      expect(check.getAttribute('height')).toBe('12')
+    })
+
+    it('Scenario: settled user + assistant messages each render a meta row with copy + time', () => {
+      const now = Date.now()   // frozen by the suite's fake timers
+      M().handleFrame({
+        type: 'thread-snapshot',
+        messages: [
+          { role: 'user', text: 'hi', ts: now - 9 * 60_000 },
+          { role: 'assistant', text: 'hello', ts: now - 9 * 60_000 },
+        ],
+      })
+      for (const sel of ['.msg.user', '.msg.assistant']) {
+        const meta = chat.querySelector(`${sel} .msg-meta`) as HTMLElement
+        expect(meta).not.toBeNull()
+        expect(meta.querySelector('.msg-copy')).not.toBeNull()
+        const time = meta.querySelector('.msg-time') as HTMLElement
+        expect(time).not.toBeNull()
+        // The diff renders from the stored ts against "now".
+        expect(time.textContent).toBe('9m ago')
+        expect(time.dataset.ts).toBe(String(now - 9 * 60_000))
+      }
+    })
+
+    it('Scenario: a message with no ts (pre-`ts` server) renders the copy button but omits the time', () => {
+      M().handleFrame({ type: 'thread-snapshot', messages: [{ role: 'assistant', text: 'legacy' }] })
+      const meta = chat.querySelector('.msg.assistant .msg-meta') as HTMLElement
+      expect(meta).not.toBeNull()
+      expect(meta.querySelector('.msg-copy')).not.toBeNull()
+      expect(meta.querySelector('.msg-time')).toBeNull()
+    })
+
+    it('Scenario: focusing or clicking a message refreshes its relative time (no timer)', () => {
+      const now = Date.now()
+      M().handleFrame({ type: 'thread-snapshot', messages: [{ role: 'assistant', text: 'hi', ts: now - 60_000 }] })
+      const span = chat.querySelector('.msg-time') as HTMLElement
+      expect(span.textContent).toBe('1m ago')
+
+      // Five minutes pass with no re-render — the stamp goes stale...
+      vi.advanceTimersByTime(5 * 60_000)
+      expect(span.textContent).toBe('1m ago')
+
+      // ...until you tab onto the copy button (focusin bubbles to the delegated
+      // listener on #chat-messages), which recomputes it.
+      const btn = chat.querySelector('.msg-copy') as HTMLButtonElement
+      btn.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+      expect(span.textContent).toBe('6m ago')
+
+      // Clicking the bubble refreshes it too.
+      vi.advanceTimersByTime(60 * 60_000)
+      ;(chat.querySelector('.msg.assistant') as HTMLElement)
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(span.textContent).toBe('1h ago')
+
+      // And clicking the COPY BUTTON itself refreshes — WKWebView doesn't focus
+      // a <button> on click, so the click must be allowed to bubble to the
+      // delegated listener (regression guard: a stopPropagation on the copy
+      // handler would silently break refresh-on-copy in the real app).
+      ;(navigator as any).clipboard = { writeText: () => Promise.resolve() }
+      vi.advanceTimersByTime(60 * 60_000)
+      btn.click()
+      expect(span.textContent).toBe('2h ago')
+    })
+
+    it('Scenario: formatRelTime renders the compact relative forms', () => {
+      const f = M().formatRelTime
+      const now = 10_000_000_000
+      expect(f(now - 5_000, now)).toBe('just now')
+      expect(f(now - 59_000, now)).toBe('just now')
+      expect(f(now - 60_000, now)).toBe('1m ago')
+      expect(f(now - 9 * 60_000, now)).toBe('9m ago')
+      expect(f(now - 60 * 60_000, now)).toBe('1h ago')
+      expect(f(now - 5 * 3_600_000, now)).toBe('5h ago')
+      expect(f(now - 24 * 3_600_000, now)).toBe('1d ago')
+      expect(f(now - 3 * 86_400_000, now)).toBe('3d ago')
+      expect(f(undefined, now)).toBe('')               // no ts → empty (time span omitted)
+      expect(f(now + 5_000, now)).toBe('just now')      // clock skew clamps to "just now"
+    })
+
+    it('Scenario: the reducer captures send-time ts (history, user, assistant-done)', () => {
+      const S = M().ChatState
+      // History keeps each server stamp.
+      S.reset()
+      S.loadHistory([{ role: 'user', text: 'a', ts: 111 }, { role: 'assistant', text: 'b', ts: 222 }])
+      expect(S.turns[0].ts).toBe(111)
+      expect(S.turns[1].ts).toBe(222)
+      // appendUser honors an explicit stamp...
+      S.reset()
+      S.appendUser('hi', null, 555)
+      expect(S.turns[0].ts).toBe(555)
+      // ...and defaults to a real client clock when omitted.
+      S.reset()
+      S.appendUser('hi', null)
+      expect(typeof S.turns[0].ts).toBe('number')
+      // assistant-done's message.ts lands on the turn via finishTurn.
+      S.reset()
+      S.applyDelta('t1', 'answer')
+      S.finishTurn('t1', 'answer', 777)
+      expect(S.turns[0].ts).toBe(777)
+    })
+
+    it('Scenario: the reducer rejects non-finite ts (NaN/Infinity) instead of storing a junk stamp', () => {
+      const S = M().ChatState
+      // History: a non-finite server ts drops to undefined (no time rendered).
+      S.reset()
+      S.loadHistory([{ role: 'user', text: 'a', ts: NaN }, { role: 'assistant', text: 'b', ts: Infinity }])
+      expect(S.turns[0].ts).toBeUndefined()
+      expect(S.turns[1].ts).toBeUndefined()
+      // appendUser: a non-finite stamp falls back to the real clock (no u-NaN- key).
+      S.reset()
+      S.appendUser('hi', null, NaN)
+      expect(Number.isFinite(S.turns[0].ts)).toBe(true)
+      expect(S.turns[0].key).not.toContain('NaN')
+      // finishTurn: a non-finite ts leaves the turn unstamped (time stays omitted).
+      S.reset()
+      S.applyDelta('t1', 'answer')
+      S.finishTurn('t1', 'answer', Infinity)
+      expect(S.turns[0].ts).toBeUndefined()
     })
   })
 
@@ -1961,7 +2222,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(input.value).toBe('')
       const userMsgs = document.querySelectorAll('#chat-messages .msg.user')
       expect(userMsgs.length).toBe(1)
-      expect(userMsgs[0].textContent).toBe('what time is it')
+      expect(userMsgs[0].querySelector('.msg-body')!.textContent).toBe('what time is it')
       // The same user-message frame the send button produces, incl. client info.
       expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({
         type: 'user-message',
@@ -2366,10 +2627,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(rows[0]!.textContent).toContain('v2')
       expect(rows[1]!.textContent).toContain('Notes')
 
-      // Badge shows count of pinned artifacts.
-      const badge = document.getElementById('artifacts-badge')!
-      expect(badge.hidden).toBe(false)
-      expect(badge.textContent).toBe('2')
+      // NOTE: the header pinned-count badge + its toggle button were removed in
+      // the top-bar redesign (the free space now hosts Luna's quip/suggestion).
+      // render() still guards on `if (DOM.artifactsBadge)`, so the count update
+      // is a no-op when the badge is absent — the panel list above is the
+      // surviving surface, and it renders both rows.
     })
 
     it('(b) clicking Pin in the session list sends an artifact-pin frame', () => {
@@ -2404,9 +2666,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       })
     })
 
-    it('(c) applyCapability(false) hides the header button and clears pinned/session state', () => {
+    it('(c) applyCapability(false) clears pinned/session state and closes the panel', () => {
       const m = M()
-      // First seed some state and reveal the button.
+      // First seed some state.
       m.ArtifactsEngine.applyCapability(true)
       m.ArtifactsEngine.applyPinned([
         { id: 'x', kind: 'code', title: 'X', lang: null, content: 'a', origin: null, version: 1, pinnedAt: 1, updatedAt: 1 },
@@ -2420,8 +2682,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.State.sessionArtifacts).toHaveLength(1)
       expect(m.State.artifactsPanelOpen).toBe(true)
 
-      const btn = document.getElementById('artifacts-btn')!
-      expect((btn as HTMLElement).hidden).toBe(false)
+      // NOTE: the artifacts header toggle button was removed in the top-bar
+      // redesign; applyCapability still drives the panel + engine state below,
+      // and the null-guarded `if (DOM.artifactsBtn)` makes the removed button a
+      // no-op. So this now asserts the surviving state transitions only.
 
       // Simulate connecting to an old server without artifacts support.
       m.handleFrame({ type: 'hello', protocolVersion: 2, kinds: [],
@@ -2431,7 +2695,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.State.pinnedArtifacts).toHaveLength(0)
       expect(m.State.sessionArtifacts).toHaveLength(0)
       expect(m.State.artifactsPanelOpen).toBe(false)
-      expect((document.getElementById('artifacts-btn')! as HTMLElement).hidden).toBe(true)
     })
 
     it('(d) applySession dedups by messageId prefix — re-delivered turns replace their own artifacts', () => {
@@ -2470,10 +2733,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('(e) pop-out button on a pinned artifact invokes open_artifact_widget when Tauri is present', async () => {
       const m = M()
-      // Seed __TAURI__.core.invoke mock (list_widget_windows feeds the
-      // cascade-position math; empty deck → first slot).
-      const invokeMock = vi.fn(async (cmd: string) =>
-        cmd === 'list_widget_windows' ? [] : undefined)
+      // Snap-on-open (Rust) positions the pop-out; the click just fires the
+      // open with {artifactId, title} — no deck census, no cascade math.
+      const invokeMock = vi.fn(async () => undefined)
       ;(window as any).__TAURI__ = {
         ...(window as any).__TAURI__,
         core: { invoke: invokeMock },
@@ -2491,23 +2753,21 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(popBtn.textContent).toBe('⤢')
 
       popBtn.click()
-      await vi.advanceTimersByTimeAsync(1) // the handler awaits the deck census
 
-      expect(invokeMock).toHaveBeenCalledWith('list_widget_windows')
       expect(invokeMock).toHaveBeenCalledWith('open_artifact_widget', {
         artifactId: 'pin-pop',
         title: 'deploy.sh',
-        x: 180,
-        y: 160,
       })
+      // No deck census, no cascade: exactly one invoke, never list_widget_windows.
+      expect(invokeMock).toHaveBeenCalledTimes(1)
+      expect(invokeMock).not.toHaveBeenCalledWith('list_widget_windows')
     })
 
     it('(f) pop-out button on a session artifact PINS it, then opens the widget; no-ops without Tauri', async () => {
       const m = M()
 
       // Part 1 — with Tauri present.
-      const invokeMock = vi.fn(async (cmd: string) =>
-        cmd === 'list_widget_windows' ? [] : undefined)
+      const invokeMock = vi.fn(async () => undefined)
       ;(window as any).__TAURI__ = {
         ...(window as any).__TAURI__,
         core: { invoke: invokeMock },
@@ -2527,16 +2787,16 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(popBtn).not.toBeNull()
 
       popBtn.click()
-      await vi.advanceTimersByTimeAsync(1)
 
       // Widget windows render PINNED artifacts: popping out a session row
-      // pins it first (artifact-pin rides the WS), then opens cascaded.
+      // pins it first (artifact-pin rides the WS), then opens — snap-on-open
+      // (Rust) tiles it flush against the nearest open panel.
       expect(invokeMock).toHaveBeenCalledWith('open_artifact_widget', {
         artifactId: 'msg-pop:0',
         title: 'snippet.py',
-        x: 180,
-        y: 160,
       })
+      // No deck census IPC — snap-on-open positions it, not cascade math.
+      expect(invokeMock).not.toHaveBeenCalledWith('list_widget_windows')
 
       // Part 2 — without Tauri (browser env): clicking must NOT throw.
       ;(window as any).__TAURI__ = undefined
@@ -2637,7 +2897,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(sentFrames[0]).toMatchObject({ type: 'workflow-runs-request', jobId: 'job-x' })
     })
 
-    it('(c) applyCapability(false) hides the header button and clears workflows state', () => {
+    it('(c) applyCapability(false) clears workflows state and closes the panel', () => {
       const m = M()
 
       // Seed state: capability on, some workflows, a selection.
@@ -2658,7 +2918,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
       expect(m.State.workflows).toHaveLength(1)
       expect(m.State.workflowsPanelOpen).toBe(true)
-      expect((document.getElementById('workflows-btn') as HTMLElement).hidden).toBe(false)
+      // NOTE: the workflows header toggle button was removed in the top-bar
+      // redesign; applyCapability is null-guarded on `DOM.workflowsBtn`, so the
+      // surviving coverage is the engine/panel state transitions below.
 
       // Drive the capability flag through the REAL path (the hello handler) so
       // the assertion below is not vacuous (applyCapability itself does not set
@@ -2674,7 +2936,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(m.State.workflows).toHaveLength(0)
       expect(m.State.selectedWorkflowId).toBeNull()
       expect(m.State.workflowsPanelOpen).toBe(false)
-      expect((document.getElementById('workflows-btn') as HTMLElement).hidden).toBe(true)
     })
   })
 
@@ -2738,8 +2999,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       await Promise.resolve()
     })
 
-    it('dock wiring is live: LunaDock.wire hooked this window (onMoved + dock-group listener)', () => {
-      expect(mockMe.onMoved).toHaveBeenCalled()
+    it('dock wiring is live: LunaDock.wire hooked this window (dock-group listener)', () => {
+      // The live-drag model drives dragging from a pointerdown handler (no
+      // onMoved/settle); the observable wire() signal is the dock-group listener.
       expect(windowEventHandlers['dock-group']).toBeTypeOf('function')
     })
   })
@@ -3123,7 +3385,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'agents', params: { thread: 'thr-1' } })
     })
 
-    it('a non-luna markdown link is NOT tagged and does not trigger open_widget', () => {
+    it('a non-luna markdown link is NOT tagged and routes to open_external_url (not open_widget)', () => {
       const invoke = vi.fn().mockResolvedValue(undefined)
       ;(window as any).__TAURI__.core = { invoke }
       const chat = document.getElementById('chat-messages')!
@@ -3131,8 +3393,190 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       bubble.innerHTML = M().renderMarkdown('[docs](https://example.com)')
       chat.appendChild(bubble)
       expect(chat.querySelector('a[data-luna-link]')).toBeNull()
-      ;(chat.querySelector('a') as HTMLAnchorElement).click()
-      expect(invoke).not.toHaveBeenCalled()
+      const a = chat.querySelector('a') as HTMLAnchorElement
+      a.click()
+      expect(invoke).not.toHaveBeenCalledWith('open_widget', expect.anything())
+      expect(invoke).toHaveBeenCalledWith('open_external_url', { url: a.href })
+    })
+
+    it('an external https link opens the system browser via open_external_url', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      const chat = document.getElementById('chat-messages')!
+      const bubble = document.createElement('div')
+      bubble.innerHTML = M().renderMarkdown('[PR #123](https://github.com/fourcolors/luna/pull/123)')
+      chat.appendChild(bubble)
+      const a = chat.querySelector('a[href]') as HTMLAnchorElement
+      expect(a).not.toBeNull()
+      a.click()
+      expect(invoke).toHaveBeenCalledWith('open_external_url', { url: a.href })
+    })
+
+    it('a luna://artifact/<id> link reopens the pinned artifact via open_artifact_widget (title from cache)', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      M().State.pinnedArtifacts = [{ id: 'widget:pr-tracker', title: 'PR Tracker', kind: 'widget' }]
+      const chat = document.getElementById('chat-messages')!
+      const bubble = document.createElement('div')
+      bubble.innerHTML = M().renderMarkdown('[reopen the tracker](luna://artifact/widget:pr-tracker)')
+      chat.appendChild(bubble)
+      const a = chat.querySelector('a[data-luna-link]') as HTMLAnchorElement
+      expect(a).not.toBeNull()
+      a.click()
+      expect(invoke).toHaveBeenCalledWith('open_artifact_widget', {
+        artifactId: 'widget:pr-tracker',
+        title: 'PR Tracker',
+      })
+    })
+
+    it('a luna://artifact/<id> link still opens (empty title) when the id is not in the pinned cache', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      M().State.pinnedArtifacts = []
+      const chat = document.getElementById('chat-messages')!
+      const bubble = document.createElement('div')
+      bubble.innerHTML = M().renderMarkdown('[reopen](luna://artifact/widget:unknown)')
+      chat.appendChild(bubble)
+      ;(chat.querySelector('a[data-luna-link]') as HTMLAnchorElement).click()
+      expect(invoke).toHaveBeenCalledWith('open_artifact_widget', {
+        artifactId: 'widget:unknown',
+        title: '',
+      })
+    })
+
+    it('a luna://artifact link with a malformed id is ignored (no throw, no open)', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      const chat = document.getElementById('chat-messages')!
+      const bubble = document.createElement('div')
+      // "%E0%" is malformed percent-encoding — decodeURIComponent throws on it.
+      bubble.innerHTML = M().renderMarkdown('[broken](luna://artifact/%E0%)')
+      chat.appendChild(bubble)
+      const a = chat.querySelector('a[data-luna-link]') as HTMLAnchorElement
+      expect(a).not.toBeNull()
+      expect(() => a.click()).not.toThrow()
+      expect(invoke).not.toHaveBeenCalledWith('open_artifact_widget', expect.anything())
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: top-bar redesign — animated Luna face + free-space quip/suggestion
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: top-bar — animated Luna face + free-space bar', () => {
+    const M = () => (window as any).__MoonInternals
+    const face = () => document.getElementById('luna-face') as HTMLElement
+    const quip = () => document.getElementById('luna-quip') as HTMLElement
+    const chip = () => document.getElementById('luna-suggestion') as HTMLButtonElement
+    const chipText = () => document.getElementById('luna-suggestion-text') as HTMLElement
+
+    it('MoonFace.setConnection maps status classes to face states', () => {
+      M().MoonFace.setConnection('connecting')
+      expect(face().dataset.state).toBe('connecting')
+      M().MoonFace.setConnection('disconnected')
+      expect(face().dataset.state).toBe('offline')
+      M().MoonFace.setConnection('connected')
+      expect(face().dataset.state).toBe('')              // awake / idle
+      M().MoonFace.setConnection('version-warning')
+      expect(face().dataset.state).toBe('')              // still chatting → awake
+    })
+
+    it('MoonFace resolves by priority: connection > thinking > suggesting', () => {
+      M().MoonFace.setConnection('connected')
+      M().MoonFace.setSuggesting(true)
+      expect(face().dataset.state).toBe('suggesting')
+      M().MoonFace.setBusy(true)
+      expect(face().dataset.state).toBe('busy')          // thinking beats suggesting
+      M().MoonFace.setConnection('disconnected')
+      expect(face().dataset.state).toBe('offline')       // connection beats all
+      M().MoonFace.setBusy(false)
+      M().MoonFace.setSuggesting(false)
+      M().MoonFace.setConnection('connected')
+      expect(face().dataset.state).toBe('')
+    })
+
+    it('updateStatus drives the face: open → awake, drop → offline', () => {
+      M().WebSocketEngine.updateStatus('connected', 'Connected')
+      expect(face().dataset.state).toBe('')
+      M().WebSocketEngine.updateStatus('disconnected', 'Disconnected')
+      expect(face().dataset.state).toBe('offline')
+    })
+
+    it('a turn in flight makes the face think; turn-complete settles it', () => {
+      M().WebSocketEngine.updateStatus('connected', 'Connected')
+      M().MoonFace.setBusy(true)
+      expect(face().dataset.state).toBe('busy')
+      M().handleFrame({ type: 'turn-complete', turnId: 't-1' })
+      expect(face().dataset.state).toBe('')
+    })
+
+    it('MoonBar.showSuggestion swaps the quip for a chip; clearSuggestion restores it', () => {
+      M().MoonBar.showSuggestion({ id: 'a1', title: 'Draft a reply to Sarah' })
+      expect(chip().hidden).toBe(false)
+      expect(quip().hidden).toBe(true)
+      expect(chipText().textContent).toBe('Draft a reply to Sarah')
+      M().MoonBar.clearSuggestion()
+      expect(chip().hidden).toBe(true)
+      expect(quip().hidden).toBe(false)
+    })
+
+    it('a proposed suggested-action surfaces in the bar + happy face; the docked panel opens only on chip click', () => {
+      M().WebSocketEngine.updateStatus('connected', 'Connected')
+      M().State.activeThreadId = 'th-1'
+      M().SuggestedActionsEngine.applyCapability(true)
+      M().SuggestedActionsEngine.applySet({
+        type: 'suggested-action-set', threadId: 'th-1',
+        actions: [{ id: 'act-1', threadId: 'th-1', actionType: 'task', title: 'Book the flight', status: 'proposed', createdAt: 1 }],
+      })
+      expect(chip().hidden).toBe(false)
+      expect(chipText().textContent).toBe('Book the flight')
+      expect(face().dataset.state).toBe('suggesting')
+
+      const panel = document.getElementById('suggested-action-panel') as HTMLElement
+      expect(panel.hidden).toBe(true)                    // bar is the teaser; panel is on-demand
+      chip().click()
+      expect(panel.hidden).toBe(false)                   // chip click reveals the full panel
+      expect(panel.dataset.actionId).toBe('act-1')
+    })
+
+    it('dismissing the only proposed action clears the chip and resets the face', () => {
+      M().WebSocketEngine.updateStatus('connected', 'Connected')
+      M().State.activeThreadId = 'th-2'
+      M().SuggestedActionsEngine.applyCapability(true)
+      M().SuggestedActionsEngine.applySet({
+        type: 'suggested-action-set', threadId: 'th-2',
+        actions: [{ id: 'act-2', threadId: 'th-2', actionType: 'research', title: 'Compare prices', status: 'proposed', createdAt: 1 }],
+      })
+      expect(chip().hidden).toBe(false)
+      M().SuggestedActionsEngine._respond('act-2', 'dismiss')
+      expect(chip().hidden).toBe(true)
+      expect(face().dataset.state).toBe('')
+    })
+
+    it('the suggestion chip exposes the title as its accessible name', () => {
+      M().MoonBar.showSuggestion({ id: 'a9', title: 'Book the flight' })
+      // A static aria-label would mask the visible title from screen readers;
+      // showSuggestion must fold the title into the accessible name.
+      expect(chip().getAttribute('aria-label')).toContain('Book the flight')
+    })
+
+    it('the no-response watchdog settles a stuck "thinking" face', () => {
+      M().WebSocketEngine.updateStatus('connected', 'Connected')
+      M().State.activeTurnId = 't-w'            // lets the watchdog act (no self-suppress)
+      M().MoonFace.setBusy(true)
+      expect(face().dataset.state).toBe('busy')
+      M().WebSocketEngine.startTurnTimeout()
+      vi.advanceTimersByTime(90000)
+      expect(face().dataset.state).toBe('')     // abandoned turn → face stops thinking
+    })
+
+    it('disconnect() clears a stuck "thinking" so it cannot resurface on reconnect', () => {
+      M().WebSocketEngine.updateStatus('connected', 'Connected')
+      M().MoonFace.setBusy(true)
+      expect(face().dataset.state).toBe('busy')
+      // disconnect() does not touch _conn, so without the busy-clear the face
+      // would still resolve to 'busy'; the fix settles it.
+      M().WebSocketEngine.disconnect()
+      expect(face().dataset.state).toBe('')
     })
   })
 })

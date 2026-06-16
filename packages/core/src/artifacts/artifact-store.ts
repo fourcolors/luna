@@ -25,11 +25,21 @@ import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
 import { ConfigError } from "../errors.js"
 import type {
   ArtifactEditor,
+  ArtifactKind,
   ArtifactVersion,
   PinInput,
   PinnedArtifact,
 } from "./types.js"
 import { deriveArtifactKind } from "./types.js"
+
+/** Head fields an {@link ArtifactStoreApi.update} may re-set alongside content.
+ *  Lets an agent re-authoring an artifact (show_artifact) refresh its title /
+ *  format on iterate; omitted fields are left untouched. */
+export interface ArtifactHeadPatch {
+  readonly title?: string
+  readonly lang?: string | null
+  readonly kind?: ArtifactKind
+}
 
 const SCHEMA_V1 = `
   CREATE TABLE IF NOT EXISTS artifacts (
@@ -79,12 +89,16 @@ export interface ArtifactStoreApi {
   /** Append a new version and advance the head. Returns null when the id is
    *  not pinned. `bridgeCaps`, when given, also re-sets the widget's bridge
    *  allowlist on the head (so iterating a widget can widen/narrow/revoke its
-   *  caps — review G3); omit it to leave the existing caps untouched. */
+   *  caps — review G3); omit it to leave the existing caps untouched. `meta`,
+   *  when given, re-sets head title/lang/kind (so an agent re-authoring a
+   *  content artifact via show_artifact can change its title or format on
+   *  iterate); omitted fields are left untouched. */
   readonly update: (
     id: string,
     content: string,
     editedBy: ArtifactEditor,
     bridgeCaps?: ReadonlyArray<string> | null,
+    meta?: ArtifactHeadPatch,
   ) => Effect.Effect<PinnedArtifact | null>
   /** The append-only version ledger for an artifact, oldest first. */
   readonly versions: (
@@ -97,6 +111,15 @@ export interface ArtifactStoreApi {
     id: string,
     version: number,
   ) => Effect.Effect<PinnedArtifact | null>
+  /**
+   * Register a listener fired (synchronously, best-effort) after any mutation
+   * that actually changed the store — pin (new id), update, unpin (existing
+   * id) or revert. Lets the WS server re-broadcast a fresh `artifact-list` for
+   * OUT-OF-BAND edits (an agent tool — widget_write / mcp_app_write /
+   * show_artifact — calls the store directly, bypassing the server's inline
+   * pin-broadcast). Process-lifetime registration; listeners are never removed.
+   */
+  readonly changes: (notify: () => void) => void
 }
 
 const resolveKind = (input: PinInput) =>
@@ -118,6 +141,19 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
           Map<string, ReadonlyArray<ArtifactVersion>>
         >(new Map())
 
+        // Change listeners (see ArtifactStoreApi.changes). A throwing listener
+        // must not corrupt the mutation that fired it, so each is swallowed.
+        const listeners = new Set<() => void>()
+        const fire = (): void => {
+          for (const l of listeners) {
+            try {
+              l()
+            } catch {
+              /* a broken listener must not break the write */
+            }
+          }
+        }
+
         const headList = () =>
           Ref.get(heads).pipe(
             Effect.map((m) =>
@@ -130,6 +166,7 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
           content: string,
           editedBy: ArtifactEditor,
           bridgeCaps?: ReadonlyArray<string> | null,
+          meta?: ArtifactHeadPatch,
         ): Effect.Effect<PinnedArtifact | null> =>
           Effect.gen(function* () {
             const head = (yield* Ref.get(heads)).get(id)
@@ -142,6 +179,9 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
               version: nextVersion,
               updatedAt: now,
               ...(bridgeCaps !== undefined ? { bridgeCaps } : {}),
+              ...(meta?.title !== undefined ? { title: meta.title } : {}),
+              ...(meta?.lang !== undefined ? { lang: meta.lang } : {}),
+              ...(meta?.kind !== undefined ? { kind: meta.kind } : {}),
             }
             const row: ArtifactVersion = {
               artifactId: id,
@@ -156,6 +196,7 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
               n.set(id, [...(n.get(id) ?? []), row])
               return n
             })
+            fire()
             return next
           })
 
@@ -188,6 +229,7 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
               yield* Ref.update(ledger, (m) =>
                 new Map(m).set(input.id, [v1]),
               )
+              fire()
               return head
             }),
           unpin: (id) =>
@@ -203,13 +245,14 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
                 n.delete(id)
                 return n
               })
+              if (had) fire()
               return had
             }),
           list: () => headList(),
           get: (id) =>
             Ref.get(heads).pipe(Effect.map((m) => m.get(id) ?? null)),
-          update: (id, content, editedBy, bridgeCaps) =>
-            doUpdate(id, content, editedBy, bridgeCaps),
+          update: (id, content, editedBy, bridgeCaps, meta) =>
+            doUpdate(id, content, editedBy, bridgeCaps, meta),
           versions: (id) =>
             Ref.get(ledger).pipe(Effect.map((m) => m.get(id) ?? [])),
           revert: (id, version) =>
@@ -218,9 +261,12 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
               const target = rows?.find((r) => r.version === version)
               if (!target) return null
               // Revert is an edit: copy the old content forward as a new
-              // user-authored head version.
+              // user-authored head version (doUpdate fires the change listeners).
               return yield* doUpdate(id, target.content, "user")
             }),
+          changes: (notify) => {
+            listeners.add(notify)
+          },
         } satisfies ArtifactStoreApi
       }),
     )
@@ -283,6 +329,17 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
         )
         const updateBridgeCaps = db.query(
           "UPDATE artifacts SET bridge_caps = ? WHERE id = ?",
+        )
+        // Head metadata re-set on iterate (show_artifact changing title/format).
+        // Per-field so a partial ArtifactHeadPatch leaves omitted fields intact.
+        const updateHeadTitle = db.query(
+          "UPDATE artifacts SET title = ? WHERE id = ?",
+        )
+        const updateHeadLang = db.query(
+          "UPDATE artifacts SET lang = ? WHERE id = ?",
+        )
+        const updateHeadKind = db.query(
+          "UPDATE artifacts SET kind = ? WHERE id = ?",
         )
         const selectHead = db.query(
           `SELECT a.*,
@@ -382,6 +439,19 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
           })
         }
 
+        // Change listeners (see ArtifactStoreApi.changes). Fired after a write
+        // commits; a throwing listener is swallowed so it can't poison the tx.
+        const listeners = new Set<() => void>()
+        const fire = (): void => {
+          for (const l of listeners) {
+            try {
+              l()
+            } catch {
+              /* a broken listener must not break the write */
+            }
+          }
+        }
+
         return {
           pin: (input) =>
             clock.nowMs().pipe(
@@ -415,6 +485,7 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
                     now,
                   )
                 })
+                fire()
                 return readHead(input.id) as PinnedArtifact
               }),
             ),
@@ -422,14 +493,16 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
             Effect.sync(() => {
               const res = deleteArtifact.run(id)
               deleteVersions.run(id)
-              return res.changes > 0
+              const had = res.changes > 0
+              if (had) fire()
+              return had
             }),
           list: () =>
             Effect.sync(() =>
               (selectAll.all() as ArtifactRow[]).map(rowToArtifact),
             ),
           get: (id) => Effect.sync(() => readHead(id)),
-          update: (id, content, editedBy, bridgeCaps) =>
+          update: (id, content, editedBy, bridgeCaps, meta) =>
             clock.nowMs().pipe(
               Effect.map((now) => {
                 if (!readHead(id)) return null
@@ -442,6 +515,14 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
                     id,
                   )
                 }
+                // Re-set head title/lang/kind on iterate (show_artifact changing
+                // a doc's title or format); omitted fields stay untouched.
+                if (meta) {
+                  if (meta.title !== undefined) updateHeadTitle.run(meta.title, id)
+                  if (meta.lang !== undefined) updateHeadLang.run(meta.lang, id)
+                  if (meta.kind !== undefined) updateHeadKind.run(meta.kind, id)
+                }
+                fire()
                 return readHead(id)
               }),
             ),
@@ -473,9 +554,13 @@ export class ArtifactStore extends Effect.Tag("luna/ArtifactStore")<
                   | null
                 if (target == null) return null
                 appendVersion(id, target.content, "user", now)
+                fire()
                 return readHead(id)
               }),
             ),
+          changes: (notify) => {
+            listeners.add(notify)
+          },
         } satisfies ArtifactStoreApi
       }),
     )

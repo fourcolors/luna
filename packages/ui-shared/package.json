@@ -6,7 +6,9 @@
   "main": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./core": "./src/core.ts"
+    "./core": "./src/core.ts",
+    "./widget-sandbox": "./src/widget-sandbox.ts",
+    "./mcp-app-host": "./src/mcp-app-host.ts"
   },
   "scripts": {
     "test": "vitest run"

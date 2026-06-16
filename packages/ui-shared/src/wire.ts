@@ -57,6 +57,12 @@ export interface ChatAttachment {
   readonly data: string
 }
 
+/** Provenance for an assistant turn delivered by a background job (#124). */
+export interface ChatMessageDelivery {
+  readonly source: string
+  readonly label?: string
+}
+
 export interface ChatMessage {
   readonly id: string
   readonly seq: number
@@ -66,6 +72,9 @@ export interface ChatMessage {
   readonly toolUses: ReadonlyArray<ChatToolUse>
   /** Image attachments. Non-empty only on user turns. */
   readonly attachments: ReadonlyArray<ChatAttachment>
+  /** Present only when this turn was delivered by a background job (#124).
+   *  The UI renders it "from a background task" rather than a live reply. */
+  readonly delivery?: ChatMessageDelivery
 }
 
 export interface SessionSummary {
@@ -114,6 +123,11 @@ export interface HelloFrame {
     /** PRD Part C (W3): server exposes the read-only workflow gallery over the
      *  jobs store (workflow-list + workflow-runs). OPTIONAL/additive. */
     readonly workflows?: boolean
+    /** Suggested Actions: server routes suggested-action-respond and pushes
+     *  suggested-action-set/update per thread. OPTIONAL/additive — absent on
+     *  older servers; clients hide the inline chip + Actions panel when missing.
+     *  Mirrors packages/ui-ws/src/protocol.ts — keep in sync. */
+    readonly suggestedActions?: boolean
     /** Luna Vault (V1): server routes vault-put/delete/sync-config/import and
      *  pushes vault-list after hello. OPTIONAL/additive. */
     readonly vault?: boolean
@@ -131,6 +145,10 @@ export interface HelloFrame {
      *  hello and routes `model-routing-save`. OPTIONAL/additive — absent on
      *  older servers. Mirrors packages/ui-ws/src/protocol.ts — keep in sync. */
     readonly modelRouting?: boolean
+    /** PRD Part C (Apps): server resolves `ui://` app resources + routes
+     *  mcp-resource-read/mcp-tool-call. Lets a client render kind="mcp-app"
+     *  artifacts live (vs source). OPTIONAL/additive — mirrors protocol.ts. */
+    readonly mcpApps?: boolean
   }
   /**
    * Models the operator can pick for new threads. OPTIONAL and additive —
@@ -142,10 +160,12 @@ export interface HelloFrame {
     readonly id: string
     readonly label: string
     /**
-     * Effort levels valid for THIS model, server-computed. Absent on older
-     * servers; empty array = model takes no effort param (e.g. Haiku).
+     * Effort OPTIONS valid for THIS model, server-computed. Absent on older
+     * servers; empty array = model takes no effort param (e.g. Haiku). Not every
+     * entry is a real SDK effort level — "ultracode" is a pseudo-token the
+     * server demuxes into SDK settings (display/wire list).
      */
-    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max">
+    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max" | "ultracode">
   }>
 }
 export interface EventFrame {
@@ -400,6 +420,77 @@ export interface ArtifactUnpinFrame {
   readonly id: string
 }
 
+/* Widget summon-by-name (mirror packages/ui-ws/src/protocol.ts). A host that
+ * can open panels announces its directory after hello (widget-directory); the
+ * agent's open_widget / open_artifact tools then push widget-open /
+ * open-artifact-widget frames back to it. ui-web is such a host (it summons
+ * board panels), so it carries these too — additive, ignored by older clients. */
+export interface WidgetDirectoryEntry {
+  readonly kind: string
+  readonly title: string
+  readonly description: string
+}
+/** Server→client: open (or focus) the panel registered under `kind`. The host
+ *  resolves the kind through ITS OWN registry — can't conjure an unshipped one. */
+export interface WidgetOpenFrame {
+  readonly type: "widget-open"
+  readonly kind: string
+  readonly params?: Readonly<Record<string, string | number | boolean>>
+}
+/** Server→client: open (or focus) a pinned CONTENT artifact as its own panel —
+ *  the content-tier sibling of widget-open. Fired by open_artifact / the
+ *  widget_write/mcp_app_write/show_artifact auto-open. Gated on `artifacts`. */
+export interface OpenArtifactWidgetFrame {
+  readonly type: "open-artifact-widget"
+  readonly artifactId: string
+  readonly title: string
+  readonly kind: ArtifactKind
+}
+/** Client→server: this connection announces it can host panels (sent once after
+ *  hello). Replaces any directory previously announced for this connection. */
+export interface WidgetDirectoryFrame {
+  readonly type: "widget-directory"
+  readonly widgets: ReadonlyArray<WidgetDirectoryEntry>
+}
+
+/* MCP Apps relay (mirror packages/ui-ws/src/protocol.ts). A kind="mcp-app"
+ * artifact renders live via these: the host fetches a `ui://` template
+ * (resource-read) and routes the app's tools/call over the wire. All four are
+ * additive, gated on the hello `mcpApps` capability. */
+/** Client→server: resolve a `ui://` app resource (the app's HTML template). */
+export interface McpResourceReadFrame {
+  readonly type: "mcp-resource-read"
+  readonly requestId: string
+  readonly uri: string
+}
+/** Server→client: the resource read outcome (`text` = app HTML). */
+export interface McpResourceResultFrame {
+  readonly type: "mcp-resource-result"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly mimeType?: string
+  readonly text?: string
+  readonly message?: string
+}
+/** Client→server: a rendered MCP app called `tools/call`. `appUri` scopes the
+ *  call so the server enforces the same-server rule + curated allowlist. */
+export interface McpToolCallFrame {
+  readonly type: "mcp-tool-call"
+  readonly requestId: string
+  readonly appUri: string
+  readonly tool: string
+  readonly args: unknown
+}
+/** Server→client: the tool call outcome (`result` = the app's data — never
+ *  logged). `ok:false` carries a short non-sensitive reason. */
+export interface McpToolResultFrame {
+  readonly type: "mcp-tool-result"
+  readonly requestId: string
+  readonly ok: boolean
+  readonly result?: unknown
+  readonly message?: string
+}
+
 /* PRD Part C (W3) — workflow gallery frames (mirror ui-ws/protocol.ts). A
  * read-only, wire-safe view over the persisted jobs store: every job is a
  * gallery tile, badged `onDemand` (no schedule) vs scheduled (a cron string).
@@ -449,12 +540,82 @@ export interface WorkflowRefreshFrame {
   readonly type: "workflow-refresh"
 }
 
+/* Suggested Actions — Luna proposes actions ("do a task", "create a skill", …)
+ * inline in a thread; they collect in a per-thread Actions panel. PER-THREAD
+ * scope: every action carries its owning threadId. `set` is a full per-thread
+ * replace (initial paint + replay-on-open); `update` is a single-action delta
+ * (status/execution transition). Accept auto-executes server-side. Mirror
+ * packages/ui-ws/src/protocol.ts — keep in sync. */
+export type SuggestedActionType =
+  | "task"
+  | "research"
+  | "create_skill"
+  | "create_workflow"
+  | "run_workflow"
+export type SuggestedActionStatus =
+  | "proposed"
+  | "accepted"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "dismissed"
+/** One suggested action, wire-safe (no payloads/secrets cross the wire). */
+export interface SuggestedActionWire {
+  readonly id: string
+  readonly threadId: string
+  readonly actionType: SuggestedActionType
+  readonly title: string
+  readonly detail?: string
+  readonly rationale?: string
+  readonly status: SuggestedActionStatus
+  readonly source: "agent" | "dream"
+  readonly createdAt: number
+  /** Set once accepted — the durable job/workflow id driving execution. */
+  readonly executionId?: string | null
+  /** Short diagnostic when status === "failed". */
+  readonly error?: string | null
+}
+/** Server→client: the full set of a thread's non-terminal actions. Sent on
+ *  subscribe (replay) and re-sent wholesale on change. */
+export interface SuggestedActionSetFrame {
+  readonly type: "suggested-action-set"
+  readonly threadId: string
+  readonly actions: ReadonlyArray<SuggestedActionWire>
+}
+/** Server→client: a single action changed (status/execution delta). */
+export interface SuggestedActionUpdateFrame {
+  readonly type: "suggested-action-update"
+  readonly threadId: string
+  readonly action: SuggestedActionWire
+}
+/** Client→server: accept (auto-execute) or dismiss one suggested action. */
+export interface SuggestedActionRespondFrame {
+  readonly type: "suggested-action-respond"
+  readonly threadId: string
+  readonly actionId: string
+  readonly decision: "accept" | "dismiss"
+}
+
 /** Marks the true end of an agentic turn (SDK `result`). Consumed by clients
  *  that group consecutive assistant turns (the moon timeline); ui-web is
  *  seq-keyed and treats it as a no-op. */
 export interface TurnCompleteFrame {
   readonly type: "turn-complete"
   readonly threadId: string
+}
+
+/**
+ * Server→client: a background/job result was delivered into a thread (#124).
+ * Broadcast to every client as a "Luna finished X" toast (surfaces even when
+ * that thread is not on screen). The message itself arrives via assistant-done.
+ */
+export interface ResultDeliveredFrame {
+  readonly type: "result-delivered"
+  readonly threadId: string
+  readonly source: string
+  readonly label: string
+  readonly preview: string
+  readonly ts: number
 }
 
 /** Server→client: a chunk of pty stdout, base64-encoded (raw bytes, may include control codes). */
@@ -659,7 +820,7 @@ export interface ThreadConfigFrame {
   readonly type: "thread-config"
   readonly threadId: string
   readonly model?: string
-  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
   readonly applied: ReadonlyArray<"model" | "effort">
   readonly deferred: ReadonlyArray<"model" | "effort">
   readonly rejected?: ReadonlyArray<{ readonly field: "model" | "effort"; readonly reason: string }>
@@ -703,7 +864,7 @@ export interface SetThreadConfigFrame {
   readonly type: "set-thread-config"
   readonly threadId: string
   readonly model?: string
-  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
 }
 
 export type ServerFrame =
@@ -729,9 +890,16 @@ export type ServerFrame =
   | ConnectorStatusFrame
   | ArtifactListFrame
   | ArtifactUpdateFrame
+  | WidgetOpenFrame
+  | OpenArtifactWidgetFrame
+  | McpResourceResultFrame
+  | McpToolResultFrame
   | WorkflowListFrame
   | WorkflowRunsFrame
+  | SuggestedActionSetFrame
+  | SuggestedActionUpdateFrame
   | TurnCompleteFrame
+  | ResultDeliveredFrame
   | PtyOutputFrame
   | VaultListFrame
   | VaultStatusFrame
@@ -739,6 +907,9 @@ export type ServerFrame =
   | ModelRoutingStatusFrame
   | ThreadConfigFrame
   | SmartBarFrame
+  | ThreadArchivedFrame
+  | ThreadUnarchivedFrame
+  | ThreadArchiveErrorFrame
 
 /* Client → server frames */
 
@@ -757,7 +928,47 @@ export interface UnsubscribeThreadFrame {
 export interface ListThreadsFrame {
   readonly type: "list-threads"
   readonly limit?: number
+  /**
+   * Phase 3: filter by status. Omit for default (active-only) list.
+   * Pass 'archived' to get the archive panel contents.
+   * Mirrors packages/ui-ws/src/protocol.ts — keep in sync.
+   */
+  readonly status?: "active" | "archived"
 }
+/** Phase 3: Archive a thread (active->archived). NEVER deletes row or jsonl. */
+export interface ArchiveThreadFrame {
+  readonly type: "archive-thread"
+  readonly threadId: string
+}
+
+/** Phase 3: Unarchive a thread (archived->active). Clears archived_at. */
+export interface UnarchiveThreadFrame {
+  readonly type: "unarchive-thread"
+  readonly threadId: string
+}
+
+/** Phase 3: Server confirmation of an archive operation. */
+export interface ThreadArchivedFrame {
+  readonly type: "thread-archived"
+  readonly threadId: string
+}
+
+/** Phase 3: Server confirmation of an unarchive operation. */
+export interface ThreadUnarchivedFrame {
+  readonly type: "thread-unarchived"
+  readonly threadId: string
+}
+
+/**
+ * Phase 3: Sent when archive-thread / unarchive-thread failed (thread not
+ * found in registry, or registry not wired). Client should refresh its state.
+ */
+export interface ThreadArchiveErrorFrame {
+  readonly type: "thread-archive-error"
+  readonly threadId: string
+  readonly reason: "not-found" | "registry-unavailable"
+}
+
 export interface NewThreadFrame {
   readonly type: "new-thread"
   readonly model: string
@@ -766,7 +977,7 @@ export interface NewThreadFrame {
   readonly tags?: ReadonlyArray<string>
   readonly systemPrompt?: string
   /** Additive effort level for this thread. Older servers ignore it. */
-  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
 }
 /**
  * Small identity blob clients attach to each user-message so the server (and
@@ -825,8 +1036,12 @@ export type ClientFrame =
   | ConnectorSetClientFrame
   | ArtifactPinFrame
   | ArtifactUnpinFrame
+  | WidgetDirectoryFrame
+  | McpResourceReadFrame
+  | McpToolCallFrame
   | WorkflowRunsRequestFrame
   | WorkflowRefreshFrame
+  | SuggestedActionRespondFrame
   | PtyInputFrame
   | PtyResizeFrame
   | VaultPutFrame
@@ -835,3 +1050,5 @@ export type ClientFrame =
   | VaultImportFrame
   | ModelRoutingSaveFrame
   | SetThreadConfigFrame
+  | ArchiveThreadFrame
+  | UnarchiveThreadFrame

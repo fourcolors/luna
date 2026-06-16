@@ -15,6 +15,7 @@ export {
   type AvailableModel,
   type ChatPanelProps,
   type EffortLevel,
+  type EffortOption,
   type SlashCommand,
 } from "./ChatPanel.jsx"
 export {
@@ -50,3 +51,4 @@ export {
   parseAppleCsv,
   humanizeRelTime,
 } from "./VaultPanel.jsx"
+export { ActionsPanel, type ActionsPanelProps } from "./ActionsPanel.jsx"

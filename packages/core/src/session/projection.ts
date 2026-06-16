@@ -39,6 +39,19 @@ export interface ChatAttachment {
   readonly data: string
 }
 
+/**
+ * Provenance marker for an assistant turn that was DELIVERED into the thread by
+ * a background job/scheduled task rather than produced by a live reply (issue
+ * #124). Persisted on the stored payload as `luna_delivery`, so it survives a
+ * restart/reload and the UI can mark the bubble "from a background task".
+ */
+export interface ChatMessageDelivery {
+  /** Where the result came from, e.g. "suggested-action", "background-job". */
+  readonly source: string
+  /** Human label for what finished, e.g. the job/action title. */
+  readonly label?: string
+}
+
 /** A single rendered chat turn, role + text + optional tool_use blocks. */
 export interface ChatMessage {
   readonly id: string
@@ -51,6 +64,8 @@ export interface ChatMessage {
   readonly toolUses: ReadonlyArray<ChatToolUse>
   /** Image attachments on user turns. Empty array if none. */
   readonly attachments: ReadonlyArray<ChatAttachment>
+  /** Present only when this turn was delivered by a background job (#124). */
+  readonly delivery?: ChatMessageDelivery
 }
 
 const MAX_PREVIEW_CHARS = 140
@@ -199,6 +214,7 @@ export function projectOne(stored: StoredMessage): ChatMessage | null {
   // (defensive). Keep empty-text assistant turns when they carry tool_use
   // blocks (caller will render the tools).
   if (stored.kind === "user" && text.length === 0 && attachments.length === 0) return null
+  const delivery = extractDelivery(stored.payload)
   return {
     id: stored.id,
     seq: stored.seq,
@@ -207,6 +223,25 @@ export function projectOne(stored: StoredMessage): ChatMessage | null {
     text,
     toolUses,
     attachments,
+    ...(delivery ? { delivery } : {}),
+  }
+}
+
+/**
+ * Read the background-delivery marker (`luna_delivery`) off a stored payload.
+ * Returns null for ordinary SDK turns (the SDK never emits this field — it is
+ * stamped only by ChatService's background-delivery path, issue #124).
+ */
+function extractDelivery(payload: unknown): ChatMessageDelivery | null {
+  if (!isObj(payload)) return null
+  const raw = payload["luna_delivery"]
+  if (!isObj(raw)) return null
+  const source = raw["source"]
+  if (typeof source !== "string" || source.length === 0) return null
+  const label = raw["label"]
+  return {
+    source,
+    ...(typeof label === "string" && label.length > 0 ? { label } : {}),
   }
 }
 

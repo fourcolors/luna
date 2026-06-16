@@ -1,6 +1,6 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Structure Snapshots > Scenario: Hub structure (moon + string + wizard) matches the design pattern 1`] = `
+exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Structure Snapshots > Scenario: Hub structure (moon + wizard) matches the design pattern 1`] = `
 "
 
   <!-- The Draggable Moon -->
@@ -9,6 +9,13 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
          job asks for operator input (job-input-request broadcast); clears on
          the bridge's dismissal broadcast (answered/cancelled/expired). -->
     <div class="needs-input-pip" id="needs-input-pip" aria-hidden="true" hidden=""></div>
+    <!-- Ambient ladder, update rung (Slice C): a quiet accent-tinted pip that
+         lights when the Rust updater has staged a verified build (update://ready).
+         Mirrors .needs-input-pip but with the watercolor accent glow (updates are
+         good news, not an alert). Clicking it opens the Updates panel; the moon's
+         own click still opens chat (this pip is pointer-events:auto so the click
+         lands on it, not the drag region behind it). -->
+    <div class="update-pip" id="update-pip" aria-hidden="true" hidden=""></div>
     <div class="moon-aura" aria-hidden="true"></div>
     <div class="moon-wrapper" id="moon-wrapper">
       <div class="moon-glow"></div>
@@ -37,25 +44,6 @@ exports[`Luna Moon Companion - Behavioral Driven Tests > Feature: Visual DOM Str
         </svg>
       </div>
     </div>
-  </div>
-
-  <!-- Re-tether "string" (siblings of #moon, z-index > 100 to escape its drag
-       region). Hidden until the connection drops; pull the bead to reconnect to
-       the SAME thread. Physics ported verbatim from the approved demo. -->
-  <svg class="moon-rope-layer" id="moon-rope-layer" aria-hidden="true">
-    <defs>
-      <linearGradient id="moonRopeGrad" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="rgba(226,236,253,.55)"></stop>
-        <stop offset="100%" stop-color="rgba(138,180,248,.9)"></stop>
-      </linearGradient>
-    </defs>
-    <!-- halo / core / shimmer share one Verlet \`d\` per frame (see the CSS notes) -->
-    <path id="moon-rope-halo"></path>
-    <path id="moon-rope"></path>
-    <path id="moon-rope-shimmer" pathLength="1"></path>
-  </svg>
-  <div class="moon-bead" id="moon-bead" title="Pull to reconnect" aria-label="Reconnect to your thread">
-    <svg viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></g></svg>
   </div>
 
   <!-- ════════════════════════════════════════════════════════════════════

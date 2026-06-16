@@ -130,6 +130,41 @@ describe('settings.appearance panel', () => {
     expect(toggle.checked).toBe(false)
   })
 
+  // ── Window skin chip-row ──────────────────────────────────────────────────
+
+  it('renders 3 skin chips — studio is active by default', () => {
+    bootPanel({ type: 'settings.appearance' })
+    const chips = [...document.querySelectorAll('.chip')] as HTMLElement[]
+    const studio  = chips.find((c) => c.textContent === 'studio')
+    const classic = chips.find((c) => c.textContent === 'classic')
+    const aqua    = chips.find((c) => c.textContent === 'aqua')
+    expect(studio).not.toBeUndefined()
+    expect(classic).not.toBeUndefined()
+    expect(aqua).not.toBeUndefined()
+    expect(studio!.classList.contains('on')).toBe(true)
+    expect(classic!.classList.contains('on')).toBe(false)
+  })
+
+  it('clicking the aqua skin chip writes luna_skin=aqua + stamps data-skin', () => {
+    bootPanel({ type: 'settings.appearance' })
+    const chips = [...document.querySelectorAll('.chip')] as HTMLElement[]
+    const aqua = chips.find((c) => c.textContent === 'aqua')!
+    aqua.click()
+    expect(localStorage.getItem('luna_skin')).toBe('aqua')
+    expect(document.documentElement.getAttribute('data-skin')).toBe('aqua')
+    expect(aqua.classList.contains('on')).toBe(true)
+    expect(chips.find((c) => c.textContent === 'studio')!.classList.contains('on')).toBe(false)
+  })
+
+  it('storage event for luna_skin updates the active skin chip', () => {
+    bootPanel({ type: 'settings.appearance' })
+    localStorage.setItem('luna_skin', 'classic')
+    window.dispatchEvent(new StorageEvent('storage', { key: 'luna_skin', newValue: 'classic' }))
+    const chips = [...document.querySelectorAll('.chip')] as HTMLElement[]
+    expect(chips.find((c) => c.textContent === 'classic')!.classList.contains('on')).toBe(true)
+    expect(chips.find((c) => c.textContent === 'studio')!.classList.contains('on')).toBe(false)
+  })
+
   // ── Palette swatch click ──────────────────────────────────────────────────
 
   it('clicking the dawn swatch writes luna_palette=dawn to localStorage', () => {

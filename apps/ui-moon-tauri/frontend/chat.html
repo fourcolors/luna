@@ -23,6 +23,8 @@
   <!-- Palette TOKENS (3 watercolor palettes × light/dark). Load BEFORE moon-theme.css
        so token definitions are ready when the chrome layer references them. -->
   <link rel="stylesheet" href="vendor/moon-palette.css">
+  <!-- Skin tokens (--dk-*): AFTER palette (references it), BEFORE theme (consumes it). -->
+  <link rel="stylesheet" href="vendor/moon-skins.css">
   <!-- Shared theme (tokens + widget-window chrome) loads BEFORE the page
        style so page-specific rules win ties. -->
   <link rel="stylesheet" href="vendor/moon-theme.css">
@@ -69,11 +71,11 @@
       overflow: hidden;
     }
 
-    /* ── Mic button (chat header, next to the gear). Same chrome-free base as
-       .close-btn; its voice state paints as watercolor washes (flat pigment
-       pools, edge-feathered) — never a glossy LED. ── */
+    /* ── Mic button (lives in the composer control bar as a .bar-btn). Its voice
+       state paints as watercolor washes (flat pigment pools, edge-feathered) —
+       never a glossy LED. ── */
     .mic-btn { position: relative; }
-    /* `hidden` loses to .close-btn's `display: flex` by cascade (the UA
+    /* `hidden` loses to .bar-btn's `display: flex` by cascade (the UA
        [hidden] rule is non-important) — without this the dead mic button
        renders in every voice-less build. Same trap as .user-ask-panel. */
     .mic-btn[hidden] { display: none !important; }
@@ -115,38 +117,184 @@
     }
     .mic-btn[data-voice-state="error"] { color: #f87171; }
 
-    /* Header (window dragging lives on the widget title bar, not here) */
+    /* Header (window dragging lives on the widget title bar, not here).
+       Three zones: identity cluster (fixed) | Luna bar (flex, free space) |
+       actions (fixed). The flex bar in the middle is what the old space-between
+       layout left empty; it now hosts Luna's idle quip / suggestion teaser. */
     .chat-header {
-      padding: 14px 18px;
+      padding: 11px 14px 11px 16px;
       border-bottom: 1px solid var(--ink-faint);
       display: flex;
       align-items: center;
-      justify-content: space-between;
+      gap: 12px;
     }
-    
+
     .chat-title-group {
       display: flex;
       align-items: center;
       gap: 10px;
       pointer-events: none;
+      flex: 0 0 auto;
     }
-    
-    .chat-avatar {
-      width: 28px;
-      height: 28px;
-      background: radial-gradient(circle, var(--moon-bright) 0%, var(--accent) 100%);
+
+    .chat-meta { display: flex; flex-direction: column; gap: 1px; }
+    /* Status + build share one compact row beneath the name. */
+    .chat-status-row { display: flex; align-items: center; gap: 7px; }
+
+    /* ── Animated Luna face (replaces the old plain .chat-avatar orb).
+       A cute full-moon companion: glowing watercolor body (the same
+       --moon-bright→--accent blend the old orb used, so it re-themes across
+       every palette), faint craters, blinking eyes, a soft smile. Reacts to
+       connection / thinking / voice / suggesting via [data-state], set by the
+       MoonFace controller. Continuous motion is transform/opacity ONLY; the
+       soft drop-shadow "glow" is a static rest filter that TRANSITIONS (not
+       loops) between states, and the listening breath is an opacity/scale glow
+       layer (::before) — so nothing re-rasters a filter every frame (which is
+       costly in WKWebView). ── */
+    .luna-face {
+      width: 38px;
+      height: 38px;
+      flex: 0 0 auto;
+      position: relative;
+      pointer-events: none;
+      filter: drop-shadow(0 2px 7px color-mix(in oklab, var(--accent) 45%, transparent));
+      transition: filter 0.5s ease, opacity 0.5s ease;
+    }
+    .luna-face-svg { width: 100%; height: 100%; display: block; overflow: visible; }
+
+    /* Listening "breath" glow — a cheap radial gradient (no filter) painted
+       BEHIND the moon (::before is the first pseudo-child, so it sits under the
+       in-flow <svg>) that pulses via opacity/scale. Compositor-only, so it
+       replaces the old animated drop-shadow which re-rastered each frame. */
+    .luna-face::before {
+      content: '';
+      position: absolute;
+      inset: -30%;
       border-radius: 50%;
-      box-shadow: 0 0 8px color-mix(in oklab, var(--accent) 40%, transparent);
+      background: radial-gradient(circle, color-mix(in oklab, var(--accent) 45%, transparent) 0%, transparent 72%);
+      opacity: 0;
+      pointer-events: none;
     }
-    
+
+    .luna-bob {
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: luna-bob 5.4s ease-in-out infinite;
+    }
+    @keyframes luna-bob {
+      0%, 100% { transform: translateY(0) rotate(-1.5deg); }
+      50%      { transform: translateY(-1.6px) rotate(1.5deg); }
+    }
+
+    .luna-body-shade { mix-blend-mode: multiply; opacity: 0.5; }
+    .luna-crater { fill: var(--moon-shadow); opacity: 0.14; }
+    .luna-cheek  { fill: color-mix(in oklab, var(--wash-2, #e0a0a8) 80%, #ff9aa2); opacity: 0.4; }
+
+    /* Gradient stop colors set HERE (CSS declarations), not on the SVG
+       stop-color attribute, so var()/color-mix() actually resolve in WebKit/
+       WKWebView. The hardcoded hex fallbacks live in the markup. */
+    #lunaBody .luna-body-stop0  { stop-color: var(--moon-bright); }
+    #lunaBody .luna-body-stop1  { stop-color: color-mix(in oklab, var(--moon-bright) 52%, var(--accent)); }
+    #lunaBody .luna-body-stop2  { stop-color: color-mix(in oklab, var(--accent) 82%, var(--moon-bright)); }
+    #lunaShade .luna-shade-stop0 { stop-color: var(--moon-shadow); }
+
+    .luna-eye {
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: luna-blink 5.1s ease-in-out infinite;
+    }
+    .luna-eye-r { animation-delay: 40ms; }
+    @keyframes luna-blink {
+      0%, 90%, 100% { transform: scaleY(1); }
+      94%           { transform: scaleY(0.1); }
+    }
+    .luna-eyeball { fill: #222a44; }
+    .luna-spark   { fill: var(--moon-bright); opacity: 0.95; }
+
+    .luna-eyes-happy { opacity: 0; }
+    .luna-eye-arc { fill: none; stroke: #222a44; stroke-width: 3.4; stroke-linecap: round; }
+
+    .luna-mouth {
+      fill: none;
+      stroke: #222a44;
+      stroke-width: 3.2;
+      stroke-linecap: round;
+      transform-box: fill-box;
+      transform-origin: center;
+    }
+    .luna-mouth-o { fill: #222a44; opacity: 0; transform-box: fill-box; transform-origin: center; }
+    .luna-mouth-frown { fill: none; stroke: #222a44; stroke-width: 3.2; stroke-linecap: round; opacity: 0; }
+    .luna-sparkle { fill: var(--moon-bright); opacity: 0; transform-box: fill-box; transform-origin: 60px 60px; }
+
+    /* thinking / busy (a turn is in flight) — eyes drift up, a little "hmm". */
+    .luna-face[data-state="busy"] .luna-eyes    { transform: translate(-2px, -3px); }
+    .luna-face[data-state="busy"] .luna-mouth   { opacity: 0; }
+    .luna-face[data-state="busy"] .luna-mouth-o { opacity: 1; animation: luna-hmm 1.6s ease-in-out infinite; }
+    .luna-face[data-state="busy"] .luna-sparkle { opacity: 1; animation: luna-twinkle-orbit 3.2s linear infinite; }
+    .luna-face[data-state="busy"]               { filter: drop-shadow(0 0 9px color-mix(in oklab, var(--accent) 65%, transparent)); }
+    @keyframes luna-hmm { 0%,100% { transform: scaleY(0.7) translateY(1px); } 50% { transform: scaleY(1) translateY(0); } }
+    @keyframes luna-twinkle-orbit {
+      0%   { opacity: 0;   transform: rotate(0deg) scale(0.7); }
+      30%  { opacity: 0.9; }
+      70%  { opacity: 0.9; }
+      100% { opacity: 0;   transform: rotate(120deg) scale(1); }
+    }
+
+    /* listening (voice) — wide eyes + a breathing glow on the ::before layer
+       (opacity/scale, NOT an animated filter). */
+    .luna-face[data-state="listening"] .luna-eye { animation: none; transform: scale(1.18); }
+    .luna-face[data-state="listening"]::before   { animation: luna-listen-pulse 2.2s ease-in-out infinite; }
+    @keyframes luna-listen-pulse {
+      0%, 100% { opacity: 0.4; transform: scale(0.9); }
+      50%      { opacity: 0.8; transform: scale(1.12); }
+    }
+
+    /* speaking — mouth chatters. */
+    .luna-face[data-state="speaking"] .luna-mouth   { opacity: 0; }
+    .luna-face[data-state="speaking"] .luna-mouth-o { opacity: 1; animation: luna-talk 0.42s ease-in-out infinite; }
+    @keyframes luna-talk { 0%,100% { transform: scaleY(0.35); } 50% { transform: scaleY(1.05); } }
+
+    /* suggesting — happy closed-eye arcs, a little bounce, a sparkle. (The
+       smile stays as-is; the eyes + bounce carry the delight.) */
+    .luna-face[data-state="suggesting"] .luna-eyes       { opacity: 0; }
+    .luna-face[data-state="suggesting"] .luna-eyes-happy { opacity: 1; }
+    .luna-face[data-state="suggesting"] .luna-bob        { animation: luna-bounce 1.5s ease-in-out infinite; }
+    .luna-face[data-state="suggesting"] .luna-sparkle    { opacity: 1; animation: luna-pop 1.5s ease-in-out infinite; }
+    .luna-face[data-state="suggesting"]                  { filter: drop-shadow(0 0 11px color-mix(in oklab, var(--accent) 70%, transparent)); }
+    @keyframes luna-bounce { 0%,100% { transform: translateY(0) rotate(0); } 35% { transform: translateY(-3px) rotate(3deg); } 70% { transform: translateY(0) rotate(-2deg); } }
+    @keyframes luna-pop { 0%,100% { transform: scale(0.6); opacity: 0; } 45% { transform: scale(1.1); opacity: 1; } }
+
+    /* connecting — sleepy half-lids, slow drift. */
+    .luna-face[data-state="connecting"] .luna-eye { animation: none; transform: scaleY(0.42); }
+    .luna-face[data-state="connecting"] .luna-bob { animation-duration: 7.5s; }
+    .luna-face[data-state="connecting"]           { opacity: 0.85; filter: drop-shadow(0 0 5px color-mix(in oklab, var(--accent) 30%, transparent)); }
+
+    /* offline — eyes shut, desaturated, gentle frown (smile→frown via opacity,
+       not the CSS `d` property which WKWebView doesn't support). */
+    .luna-face[data-state="offline"] .luna-eye        { animation: none; transform: scaleY(0.08); }
+    .luna-face[data-state="offline"] .luna-mouth      { opacity: 0; }
+    .luna-face[data-state="offline"] .luna-mouth-frown { opacity: 1; }
+    .luna-face[data-state="offline"] .luna-bob        { animation-duration: 8s; }
+    .luna-face[data-state="offline"]             { filter: grayscale(0.55) drop-shadow(0 1px 4px rgba(0,0,0,0.35)); opacity: 0.7; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .luna-bob, .luna-eye, .luna-mouth-o, .luna-sparkle,
+      .luna-face[data-state="listening"]::before,   /* listening breath glow */
+      .luna-face[data-state] .luna-bob,
+      .luna-face[data-state] .luna-mouth-o,
+      .luna-face[data-state] .luna-sparkle { animation: none !important; }
+    }
+
     /* Watercolor: handwritten style title. */
     .chat-meta h2 {
       font-family: var(--font-hand);
-      font-size: 17px;
+      font-size: 18px;
       font-weight: 600;
+      line-height: 1.05;
+      margin: 0;
       color: var(--ink);
     }
-    
+
     .chat-meta span {
       font-size: 0.65rem;
       display: flex;
@@ -207,7 +355,79 @@
       color: var(--ink-soft);
       font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
       letter-spacing: 0.02em;
+      line-height: 1;
     }
+    /* Dim middot separating the status from the build sha (only when shown). */
+    .chat-meta small#build-sha:not([hidden])::before {
+      content: '·';
+      margin-right: 6px;
+      color: var(--ink-faint);
+    }
+
+    /* ── Free-space "Luna bar": an idle quip XOR a suggestion teaser ───────
+       Fills the gap the old space-between layout left empty. The container is
+       drag-through (pointer-events:none) so the empty/quip bar still drags the
+       native window; only the suggestion chip re-enables pointer events so it
+       stays clickable. Quip = a playful comment; suggestion = a teaser for a
+       `suggest_action` proposal that, on click, opens the full docked panel. ── */
+    .luna-bar {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+      overflow: hidden;
+    }
+    .luna-quip {
+      font-family: var(--font-hand);
+      font-size: 15px;
+      /* --ink-soft (≈3:1 on light paper) fails WCAG AA for this 15px text; a
+         baked ink/paper mix clears 4.5:1 in all six palettes while keeping the
+         soft, hand-written feel. */
+      color: color-mix(in oklab, var(--ink) 78%, var(--paper));
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+      opacity: 1;
+      transition: opacity 0.6s ease;
+      text-align: center;
+    }
+    .luna-quip.fading { opacity: 0; }
+    .luna-quip[hidden] { display: none; }
+
+    .luna-suggestion {
+      pointer-events: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      max-width: 100%;
+      padding: 5px 11px 5px 9px;
+      border-radius: 999px;
+      border: 1px solid color-mix(in oklab, var(--accent) 38%, transparent);
+      background: color-mix(in oklab, var(--accent) 14%, transparent);
+      color: var(--ink);
+      font-family: var(--font-body);
+      font-size: 12px;
+      cursor: pointer;
+      line-height: 1.1;
+      transition: background 0.2s, border-color 0.2s, transform 0.12s;
+      animation: luna-chip-in 0.4s ease;
+    }
+    .luna-suggestion:hover { background: color-mix(in oklab, var(--accent) 22%, transparent); border-color: color-mix(in oklab, var(--accent) 55%, transparent); }
+    .luna-suggestion:active { transform: translateY(1px); }
+    .luna-suggestion[hidden] { display: none; }
+    @keyframes luna-chip-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
+    .luna-suggestion-spark { font-size: 12px; line-height: 1; }
+    .luna-suggestion-text {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+      font-weight: 500;
+    }
+    .luna-suggestion-go { color: var(--ink-soft); font-size: 13px; line-height: 1; flex: 0 0 auto; }
 
 
     @keyframes pulseConnecting {
@@ -241,6 +461,100 @@
       display: flex;
       align-items: center;
       gap: 8px;
+    }
+
+    /* ── Title-bar rearrange: parallel-thread panels ───────────────────────
+       Close moves OFF the bar to a hover-revealed disk at the top-LEFT corner
+       (macOS-notification pattern); the drag grip grows + insets so that corner
+       is free; the new-thread + owns the right. All scoped to #title-bar so the
+       shared moon-theme.css .close-btn (other panels) and the .chat-panel
+       header-action buttons stay exactly as they were. */
+    #title-bar { position: relative; }
+
+    /* Bigger, inset drag handle — pulled off the true-left edge to clear the
+       corner where the hover-× appears. */
+    #title-bar .grip {
+      font-size: 13px;
+      margin-left: 20px;
+    }
+
+    /* Hover-reveal close: keeps the shared .close-btn chrome, but parked just
+       inside the top-left corner and invisible (+ click-through) until the bar
+       is hovered or the button is keyboard-focused. */
+    #title-bar #close-btn {
+      position: absolute;
+      top: 5px;
+      left: 6px;
+      z-index: 6;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.15s ease, background 0.1s, color 0.1s;
+    }
+    #title-bar:hover #close-btn,
+    #title-bar #close-btn:focus-visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    /* New-thread button — the promoted action, accent-tinted to invite. Sits at
+       the right (the flex:1 bar-title pushes it there). */
+    #title-bar .newthread-btn {
+      flex-shrink: 0;
+      background: none;
+      border: none;
+      color: var(--accent);
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.12s, color 0.12s;
+    }
+    #title-bar .newthread-btn:hover {
+      background: color-mix(in oklab, var(--accent) 16%, transparent);
+    }
+
+    /* Archive toggle button — appears when hovering over the active thread.
+       Functional-minimal: muted color to stay out of the way. */
+    #title-bar .archive-btn {
+      flex-shrink: 0;
+      background: none;
+      border: none;
+      color: var(--ink-faint, #888);
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.12s, color 0.12s;
+      font-size: 11px;
+      opacity: 0.7;
+    }
+    #title-bar .archive-btn:hover {
+      background: color-mix(in oklab, var(--ink-faint, #888) 14%, transparent);
+      opacity: 1;
+    }
+    #title-bar .archive-toggle-btn {
+      flex-shrink: 0;
+      background: none;
+      border: none;
+      color: var(--ink-faint, #888);
+      padding: 2px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 10px;
+      transition: background 0.12s, color 0.12s;
+      opacity: 0.7;
+    }
+    #title-bar .archive-toggle-btn:hover,
+    #title-bar .archive-toggle-btn.active {
+      background: color-mix(in oklab, var(--ink-faint, #888) 14%, transparent);
+      opacity: 1;
+      color: var(--ink, #333);
     }
 
     /* Watercolor scrollbar styling — applied to every scrolling container in
@@ -288,6 +602,21 @@
       gap: 12px;
     }
 
+    /* WebKit paints a UA focus ring on overflow:auto containers when they take
+       click/scroll focus — on .chat-messages it traces the card interior and
+       reads as a spurious extra border that blinks in on focus (the reported
+       "third border on focus"). These are passive scroll regions, never
+       keyboard-tab targets, so suppress the ring; real controls keep their
+       :focus-visible outlines. */
+    .chat-messages:focus,
+    .chat-messages:focus-visible,
+    .artifacts-panel-body:focus,
+    .artifacts-panel-body:focus-visible,
+    .artifacts-preview-body:focus,
+    .artifacts-preview-body:focus-visible,
+    .workflows-panel-body:focus,
+    .workflows-panel-body:focus-visible { outline: none; }
+
     /* Every message / timeline is a flex item in this column. Default
        flex-shrink is 1, so when the combined content is taller than the panel,
        flexbox COMPRESSES the items to fit instead of letting the container
@@ -307,10 +636,15 @@
        is added under .chat-messages. */
     .chat-messages > * { flex-shrink: 0; }
 
+    /* .msg is a TRANSPARENT layout column, not the bubble itself: it stacks the
+       painted bubble (.msg-body) and its action row (.msg-meta) so the row sits
+       OUTSIDE the bubble's background/border. align-items puts both flush to the
+       bubble's side (right for user, left for assistant). The bubble chrome
+       (padding, wash, border, radius) lives on .msg-body below. */
     .msg {
       max-width: 82%;
-      padding: 9px 13px;
-      border-radius: 14px;
+      display: flex;
+      flex-direction: column;
       /* Chat typeface + size knobs (data-font / data-fontsize). Code/tables
          inside keep their own --font-mono / fixed sizes via child rules. */
       font-family: var(--font-chat);
@@ -319,25 +653,29 @@
       animation: msgAppear 0.2s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
       transform-origin: bottom left;
     }
-    
+    .msg.user { align-self: flex-end; align-items: flex-end; transform-origin: bottom right; }
+    .msg.assistant { align-self: flex-start; align-items: flex-start; }
+
     @keyframes msgAppear {
       from { opacity: 0; transform: scale(0.92) translateY(8px); }
       to { opacity: 1; transform: scale(1) translateY(0); }
     }
-    
+
+    /* The painted bubble. Every .msg kind (user/assistant/banner/error/typing)
+       wraps its content in .msg-body, so the bubble chrome is uniform and the
+       optional .msg-meta footer always paints on the page, not the bubble. */
+    .msg-body { padding: 9px 13px; border-radius: 14px; max-width: 100%; }
+
     /* Watercolor message bubbles. User = paper envelope with ink border;
        assistant = soft panel-tint wash (hand-painted look). */
-    .msg.user {
-      align-self: flex-end;
+    .msg.user .msg-body {
       background: var(--paper);
       border: 1.3px solid var(--ink-faint);
       border-radius: 14px 4px 14px 14px;
       color: var(--ink);
-      transform-origin: bottom right;
     }
 
-    .msg.assistant {
-      align-self: flex-start;
+    .msg.assistant .msg-body {
       /* Wash painted on the ::before layer below (wc-wobble hand-painted
          edge, design fidelity) — text above stays crisp. */
       background: transparent;
@@ -347,7 +685,7 @@
       position: relative;
       isolation: isolate;
     }
-    .msg.assistant::before {
+    .msg.assistant .msg-body::before {
       content: '';
       position: absolute;
       inset: 0;
@@ -355,6 +693,252 @@
       background: color-mix(in oklab, var(--panel-tint) 22%, transparent);
       filter: url(#wc-wobble);
       z-index: -1;
+    }
+
+    /* Per-message action row: an always-visible footer that sits BELOW and
+       OUTSIDE the bubble (a sibling of .msg-body) holding the copy button +
+       the relative send-time. Side alignment is inherited from .msg's
+       align-items (user flush-right, assistant flush-left). The row is an
+       extensible flex container (future home for undo / branch). */
+    .msg-meta {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 3px;
+      padding: 0 2px;
+    }
+    .msg-time {
+      font-size: 0.7rem;
+      color: var(--ink-soft);
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    /* Light ghost icon button — no chip border/fill now that it lives on the
+       page rather than inside the bubble; subtle at rest, lifts on hover. */
+    .msg-copy {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      padding: 0;
+      border: none;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--ink-soft);
+      opacity: 0.6;
+      cursor: pointer;
+      transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    .msg-copy:hover {
+      opacity: 1;
+      background: color-mix(in oklab, var(--ink) 8%, transparent);
+      color: var(--ink);
+    }
+    .msg-copy:focus-visible {
+      opacity: 1;
+      outline: 1px solid var(--ink-faint);
+      outline-offset: 1px;
+    }
+    /* Brief confirmation state after a successful copy (mint, like the
+       code-block copy's done state). */
+    .msg-copy[data-copied="1"] {
+      opacity: 1;
+      color: #6ee7b7;
+      background: rgba(110, 231, 183, 0.12);
+    }
+    .msg-copy svg { width: 12px; height: 12px; display: block; }
+
+    /* #124 "from a background task" chip — marks an assistant turn that was
+       DELIVERED by a finished background/scheduled job (not a live reply). Lives
+       in the always-visible meta row, before the copy button. A faint accent
+       pill so it reads as a quiet provenance note, not a loud badge. */
+    .msg-delivery {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 0.68rem;
+      line-height: 1;
+      padding: 2px 7px 2px 6px;
+      border-radius: 999px;
+      color: color-mix(in oklab, var(--accent) 72%, var(--ink));
+      background: color-mix(in oklab, var(--accent) 12%, transparent);
+      border: 1px solid color-mix(in oklab, var(--accent) 26%, transparent);
+      -webkit-user-select: none;
+      user-select: none;
+      max-width: 220px;
+    }
+    .msg-delivery .glyph { font-size: 0.72rem; opacity: 0.85; }
+    .msg-delivery .label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-style: italic;
+    }
+
+    /* #124 background-result toast — a transient "Luna finished X" notification
+       broadcast to every window, so a result surfaces even when its thread is
+       not the one on screen. Bottom-left, above the composer; auto-dismisses. */
+    #result-toasts {
+      position: fixed;
+      left: 12px;
+      bottom: 84px;
+      z-index: 1200;
+      display: flex;
+      flex-direction: column-reverse;
+      gap: 8px;
+      max-width: min(340px, 78vw);
+      pointer-events: none;
+    }
+    .result-toast {
+      pointer-events: auto;
+      cursor: pointer;
+      border-radius: 13px;
+      padding: 9px 12px;
+      color: var(--ink);
+      background: color-mix(in oklab, var(--paper, #fffdf7) 92%, var(--accent) 8%);
+      border: 1px solid color-mix(in oklab, var(--accent) 34%, transparent);
+      box-shadow: 0 6px 18px color-mix(in oklab, var(--ink) 18%, transparent);
+      animation: result-toast-in 0.28s ease both;
+    }
+    .result-toast .rt-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: color-mix(in oklab, var(--accent) 72%, var(--ink));
+    }
+    .result-toast .rt-preview {
+      font-size: 0.74rem;
+      color: var(--ink-soft);
+      margin-top: 3px;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .result-toast.leaving { animation: result-toast-out 0.22s ease both; }
+    @keyframes result-toast-in {
+      from { opacity: 0; transform: translateY(8px) scale(0.98); }
+      to   { opacity: 1; transform: none; }
+    }
+    @keyframes result-toast-out {
+      from { opacity: 1; transform: none; }
+      to   { opacity: 0; transform: translateY(8px) scale(0.98); }
+    }
+
+    /* ── Update banner (the in-chat update nudge) ──────────────────────────────
+       A slim accent-tinted bar that the UpdateBanner engine inserts as a sibling
+       directly ABOVE .composer-input-wrap (the form is flex-column, so a block
+       before the input wrap sits above the textarea — exactly where the nudge
+       wants to live). Updates are GOOD NEWS: accent/positive palette, never the
+       red/warning styling. Built lazily by the engine; this is just its skin.
+       Mirrors the .result-toast idiom (token-only colors, soft accent wash). */
+    .update-banner {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-radius: 12px;
+      padding: 8px 10px 8px 12px;
+      color: var(--ink);
+      background: color-mix(in oklab, var(--paper, #fffdf7) 90%, var(--accent) 10%);
+      border: 1px solid color-mix(in oklab, var(--accent) 30%, transparent);
+      box-shadow: 0 4px 14px color-mix(in oklab, var(--ink) 12%, transparent);
+      animation: update-banner-in 0.3s ease both;
+    }
+    .update-banner.leaving { animation: update-banner-out 0.2s ease both; }
+    /* The soft pulsing accent dot — a calm "ready" heartbeat, not an alarm. */
+    .update-banner .ub-dot {
+      flex: 0 0 auto;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%,
+        color-mix(in oklab, var(--accent) 88%, white),
+        var(--accent) 70%);
+      box-shadow: 0 0 7px 1px color-mix(in oklab, var(--accent) 55%, transparent);
+      animation: ub-dot-breathe 2.4s ease-in-out infinite;
+    }
+    @keyframes ub-dot-breathe {
+      0%, 100% { transform: scale(0.85); opacity: 0.8; }
+      50%      { transform: scale(1.15); opacity: 1; }
+    }
+    /* Title + sub-line stack, taking the free middle space. */
+    .update-banner .ub-text { flex: 1 1 auto; min-width: 0; }
+    .update-banner .ub-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: color-mix(in oklab, var(--accent) 70%, var(--ink));
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .update-banner .ub-sub {
+      font-size: 0.72rem;
+      color: var(--ink-soft);
+      margin-top: 1px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    /* Primary "Restart" + quiet "What's new" actions. */
+    .update-banner .ub-actions {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .update-banner .ub-btn {
+      font: inherit;
+      font-size: 0.74rem;
+      cursor: pointer;
+      border-radius: 8px;
+      padding: 4px 10px;
+      border: 1px solid color-mix(in oklab, var(--accent) 32%, transparent);
+      background: transparent;
+      color: color-mix(in oklab, var(--accent) 78%, var(--ink));
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .update-banner .ub-btn:hover {
+      background: color-mix(in oklab, var(--accent) 12%, transparent);
+    }
+    .update-banner .ub-btn.primary {
+      background: color-mix(in oklab, var(--accent) 82%, var(--paper));
+      border-color: transparent;
+      color: var(--paper);
+      font-weight: 600;
+    }
+    .update-banner .ub-btn.primary:hover {
+      background: var(--accent);
+    }
+    /* The dismiss "×" — quiet, never the focus of the bar. */
+    .update-banner .ub-dismiss {
+      flex: 0 0 auto;
+      font: inherit;
+      font-size: 1rem;
+      line-height: 1;
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      color: var(--ink-faint);
+      padding: 2px 4px;
+      border-radius: 6px;
+      transition: color 0.15s ease, background 0.15s ease;
+    }
+    .update-banner .ub-dismiss:hover {
+      color: var(--ink-soft);
+      background: color-mix(in oklab, var(--ink) 8%, transparent);
+    }
+    @keyframes update-banner-in {
+      from { opacity: 0; transform: translateY(6px) scale(0.99); }
+      to   { opacity: 1; transform: none; }
+    }
+    @keyframes update-banner-out {
+      from { opacity: 1; transform: none; }
+      to   { opacity: 0; transform: translateY(6px) scale(0.99); }
     }
 
     /* Markdown tables (GFM). Dark-glass: thin separators, transparent
@@ -743,6 +1327,98 @@
     .user-ask-dismiss-btn:hover { background: color-mix(in oklab, var(--ink) 9%, transparent); border-color: var(--ink-soft); }
     .user-ask-dismiss-btn:active { transform: translateY(1px); }
 
+    /* ── Suggested-actions chip — docked inline banner (mirrors user-ask-panel /
+       secret-prompt-panel chrome). Shown by SuggestedActionsEngine when there is
+       at least one `proposed` action for the active thread and no higher-priority
+       panel (secret > survey > suggestion) is visible. ── */
+    .suggested-action-panel {
+      position: relative;
+      margin: 0 10px 8px 10px;
+      padding: 0;
+      background: color-mix(in oklab, var(--accent) 7%, transparent);
+      border: 1px solid color-mix(in oklab, var(--accent) 24%, transparent);
+      border-radius: 14px;
+      font-size: 0.84rem;
+      color: var(--ink);
+      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.14);
+      animation: msgAppear 0.22s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
+      overflow: hidden;
+    }
+    .suggested-action-panel[hidden] { display: none !important; }
+    .suggested-action-body {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 10px 12px 0 12px;
+    }
+    .suggested-action-type {
+      font-size: 0.62rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--ink-soft);
+    }
+    .suggested-action-title {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--ink);
+      line-height: 1.3;
+    }
+    .suggested-action-rationale {
+      font-size: 0.70rem;
+      color: var(--ink-soft);
+      line-height: 1.3;
+    }
+    .suggested-action-footer {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 12px;
+    }
+    .suggested-action-accept {
+      padding: 5px 12px;
+      background: color-mix(in oklab, var(--accent) 28%, transparent);
+      border: 1px solid color-mix(in oklab, var(--accent) 55%, transparent);
+      color: var(--ink);
+      border-radius: 7px;
+      font-family: var(--font-body);
+      font-weight: 600;
+      font-size: 0.76rem;
+      cursor: pointer;
+      transition: filter 0.15s ease, transform 0.1s ease;
+    }
+    .suggested-action-accept:hover:not(:disabled) { filter: brightness(1.1); }
+    .suggested-action-accept:active:not(:disabled) { transform: translateY(1px); }
+    .suggested-action-accept:disabled { opacity: 0.45; cursor: not-allowed; }
+    .suggested-action-dismiss {
+      padding: 5px 10px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      color: var(--ink-soft);
+      border-radius: 7px;
+      font-family: var(--font-body);
+      font-weight: 600;
+      font-size: 0.76rem;
+      cursor: pointer;
+      transition: background 0.15s ease, transform 0.1s ease;
+    }
+    .suggested-action-dismiss:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); color: var(--ink); }
+    .suggested-action-dismiss:active:not(:disabled) { transform: translateY(1px); }
+    .suggested-action-dismiss:disabled { opacity: 0.45; cursor: not-allowed; }
+    .suggested-action-see-all {
+      margin-left: auto;
+      padding: 5px 10px;
+      background: transparent;
+      border: none;
+      color: var(--ink-soft);
+      font-family: var(--font-body);
+      font-size: 0.72rem;
+      cursor: pointer;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      transition: color 0.15s ease;
+    }
+    .suggested-action-see-all:hover { color: var(--ink); }
+
     /* ── Artifacts panel (PRD Part C W1) — slide-in overlay anchored inside
        #chat-panel. Hidden until ArtifactsEngine.openPanel(). Uses the same
        watercolor palette as user-ask-panel and skill rows. ── */
@@ -975,8 +1651,8 @@
     .workflows-header-btn[hidden] { display: none !important; }
 
     /* Markdown rendering inside assistant bubbles (mirrors ui-web's .markdown conventions) */
-    .msg.assistant > :first-child { margin-top: 0; }
-    .msg.assistant > :last-child { margin-bottom: 0; }
+    .msg.assistant .msg-body > :first-child { margin-top: 0; }
+    .msg.assistant .msg-body > :last-child { margin-bottom: 0; }
     .msg.assistant p { margin: 0.5em 0; white-space: pre-wrap; } /* keep single newlines */
     .msg.assistant h1, .msg.assistant h2, .msg.assistant h3 {
       margin: 0.6em 0 0.3em;
@@ -1080,7 +1756,7 @@
 
     /* Bare <pre><code> that escapes the .code-block wrapper (defensive: if a
        future code-path emits plain <pre>, we still want it to look right). */
-    .msg.assistant > pre,
+    .msg.assistant .msg-body > pre,
     .msg.assistant li > pre {
       background: color-mix(in oklab, var(--ink) 7%, transparent);
       border: 1px solid color-mix(in oklab, var(--accent) 16%, transparent);
@@ -1089,7 +1765,7 @@
       overflow-x: auto;
       margin: 0.5em 0;
     }
-    .msg.assistant > pre > code,
+    .msg.assistant .msg-body > pre > code,
     .msg.assistant li > pre > code {
       background: none;
       padding: 0;
@@ -1185,34 +1861,58 @@
       position: relative; /* anchor for the absolutely-positioned scope menu popover */
     }
 
-    /* Horizontal row holding the attach button, text input and send button. */
-    .composer-row {
+    /* ── Two-tier composer (Claude-Code-style) ────────────────────────────────
+       Tier 1 = the input shell: a full-width textarea with a small watercolor
+       send button nested inline at its bottom-right corner. Tier 2 = a quiet
+       control bar below it: icon buttons (machine access, attach, voice) on the
+       left, the model/effort cluster on the right. */
+    .composer-input-wrap {
+      position: relative;
       display: flex;
-      gap: 8px;
-      align-items: flex-end; /* send/attach stay at the bottom as the textarea grows */
     }
-
-    /* Machine-access button (computer icon) — lives in the chat composer next to
-       the attach + send buttons, styled to match them. .active = scope on. */
-    .scope-btn {
-      width: 38px;
-      height: 38px;
+    .composer-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-height: 32px;
+    }
+    .composer-bar-left {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+    }
+    /* Quiet icon button shared by the bar (machine access, attach, voice mic).
+       Borderless by default; a soft ink wash on hover. */
+    .bar-btn {
+      width: 32px;
+      height: 32px;
       flex: 0 0 auto;
-      background: color-mix(in oklab, var(--ink) 5%, transparent);
-      border: 1px solid var(--ink-faint);
-      border-radius: 10px;
-      color: var(--accent);
+      background: transparent;
+      border: none;
+      border-radius: 9px;
+      color: var(--ink-soft);
       display: flex;
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      transition: background 0.2s, border-color 0.2s, color 0.2s;
+      position: relative;
+      transition: background 0.18s, color 0.18s;
     }
-    .scope-btn svg { width: 18px; height: 18px; }
-    .scope-btn:hover { background: color-mix(in oklab, var(--ink) 9%, transparent); }
+    .bar-btn:hover {
+      background: color-mix(in oklab, var(--ink) 8%, transparent);
+      color: var(--ink);
+    }
+    .bar-btn svg { width: 18px; height: 18px; }
+
+    /* Machine-access button — a .bar-btn whose .active state paints an accent
+       wash to signal "Luna can touch this Mac". */
     .scope-btn.active {
-      background: color-mix(in oklab, var(--accent) 18%, transparent);
-      border-color: color-mix(in oklab, var(--accent) 50%, transparent);
+      background: color-mix(in oklab, var(--accent) 16%, transparent);
+      color: var(--accent);
+    }
+    .scope-btn.active:hover {
+      background: color-mix(in oklab, var(--accent) 22%, transparent);
       color: var(--accent);
     }
 
@@ -1220,8 +1920,8 @@
        (position:relative), opening upward above the composer row. */
     .scope-menu {
       position: absolute;
-      left: 24px;
-      bottom: 74px;
+      left: 16px;
+      bottom: 58px;
       min-width: 230px;
       background: var(--paper);
       border: 1.3px solid var(--ink-faint);
@@ -1300,8 +2000,8 @@
        border, soft shadow per design touch E.5. */
     .cfg-menu {
       position: absolute;
-      right: 24px;
-      bottom: 74px;
+      right: 16px;
+      bottom: 58px;
       min-width: 200px;
       background: var(--paper);
       border: 1.3px solid var(--ink-faint);
@@ -1343,18 +2043,21 @@
     }
     .cfg-deferred-hint.visible { opacity: 1; }
 
-    /* Watercolor composer input — paper background, ink-faint border, accent focus ring. */
+    /* Watercolor composer input — paper background, ink-faint border, accent
+       focus ring. Right padding leaves room for the inline watercolor send button
+       nested at the bottom-right (see .send-btn). */
     .chat-input {
       flex: 1;
-      min-height: 38px;        /* one-line floor */
+      width: 100%;
+      min-height: 40px;        /* one-line floor */
       max-height: 320px;       /* cap so a few lines of chat history stay visible in the 480px panel */
-      height: 38px;            /* initial size; ChatEngine.autoGrowMessageInput resizes inline as you type */
+      height: 40px;            /* initial size; ChatEngine.autoGrowMessageInput resizes inline as you type */
       resize: none;            /* auto-grow recomputes height on every input — manual drag would fight it */
       overflow-y: auto;        /* once content exceeds max-height (320px), scroll inside */
       background: var(--paper);
       border: 1.4px solid var(--ink-faint);
-      border-radius: 12px;
-      padding: 9px 14px;       /* vertical padding now matters for multi-line text */
+      border-radius: 14px;
+      padding: 10px 44px 10px 14px;  /* right pad clears the inline send button */
       font-family: var(--font-chat);
       font-size: calc(0.84rem * var(--font-scale));
       line-height: 1.4;
@@ -1371,57 +2074,48 @@
       color: var(--ink-soft);
     }
     
-    /* Watercolor send button — blob shape via irregular border-radius + wc-wobble
-       filter, hover scale+rotate for a painterly bounce. */
+    /* Watercolor ENTER button — a fun, gently-wobbled ↵ glyph (NOT a filled
+       blob) nested inline at the input's bottom-right. The accent STROKE reads
+       clearly in every theme (accent is always a saturated hue against paper),
+       and #wc-wobble-soft gives it a hand-painted line without scribbling it.
+       A faint accent wash only blooms in on hover, so the resting state is just
+       the painted ↵. */
     .send-btn {
-      width: 38px;
-      height: 38px;
-      background: var(--accent);
+      position: absolute;
+      right: 6px;
+      bottom: 6px;
+      width: 30px;
+      height: 30px;
+      background: transparent;
       border: none;
       border-radius: 50% 46% 52% 48%;
-      color: var(--paper);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      filter: url(#wc-wobble);
-      transition: transform 0.15s ease;
-    }
-
-    .send-btn:hover {
-      transform: scale(1.07) rotate(-4deg);
-    }
-
-    .send-btn svg {
-      width: 16px;
-      height: 16px;
-      fill: currentColor;
-    }
-
-    /* Attach (paperclip) button — quieter sibling of the send button. */
-    .attach-btn {
-      width: 38px;
-      height: 38px;
-      flex: 0 0 auto;
-      background: color-mix(in oklab, var(--ink) 5%, transparent);
-      border: 1px solid var(--ink-faint);
-      border-radius: 10px;
       color: var(--accent);
       display: flex;
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      transition: background 0.2s, border-color 0.2s;
+      transition: transform 0.15s ease, background 0.18s ease, opacity 0.15s ease;
     }
 
-    .attach-btn:hover {
-      background: color-mix(in oklab, var(--ink) 7%, transparent);
-      border-color: color-mix(in oklab, var(--accent) 35%, transparent);
+    .send-btn:hover {
+      transform: scale(1.12) rotate(-3deg);
+      background: color-mix(in oklab, var(--accent) 14%, transparent);
+    }
+    .send-btn:disabled { opacity: 0.35; cursor: default; }
+
+    .send-btn svg {
+      width: 21px;
+      height: 21px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      filter: url(#wc-wobble-soft);
     }
 
+    /* Attach (paperclip) rides on .bar-btn; its icon is stroked, not filled. */
     .attach-btn svg {
-      width: 17px;
-      height: 17px;
       fill: none;
       stroke: currentColor;
       stroke-width: 2;
@@ -1587,75 +2281,141 @@
 <body>
 <!-- SVG filter defs for watercolor wobble (used by .wash-dot, .send-btn, etc.).
      Zero-size, position:absolute so it never occupies layout space. -->
-<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><filter id="wc-wobble"><feTurbulence type="fractalNoise" baseFrequency="0.015" numOctaves="3" result="n" seed="7"></feTurbulence><feDisplacementMap in="SourceGraphic" in2="n" scale="6" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap></filter></defs></svg>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><filter id="wc-wobble"><feTurbulence type="fractalNoise" baseFrequency="0.015" numOctaves="3" result="n" seed="7"></feTurbulence><feDisplacementMap in="SourceGraphic" in2="n" scale="6" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap></filter><filter id="wc-wobble-soft"><feTurbulence type="fractalNoise" baseFrequency="0.02" numOctaves="2" result="n" seed="4"></feTurbulence><feDisplacementMap in="SourceGraphic" in2="n" scale="2" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap></filter></defs></svg>
 <div class="widget-shell">
-  <!-- TITLE BAR — data-tauri-drag-region on the outer container enables
+  <!-- TITLE BAR — on the outer container enables
        native window drag. The close button is intentionally NOT drag-region. -->
-  <div class="title-bar" data-tauri-drag-region id="title-bar">
-    <span class="grip" data-tauri-drag-region>⋮⋮</span>
+  <div class="title-bar" id="title-bar">
+    <!-- Close lives at the top-LEFT corner, hidden until the title bar is
+         hovered (macOS-notification pattern); positioned absolutely (see the
+         #title-bar #close-btn rule in the page <style>) so it's out of the flex
+         flow. NOT a drag region, so the click lands instead of dragging. -->
+    <button class="close-btn" id="close-btn" title="Close" aria-label="Close chat">✕</button>
+    <span class="grip">⋮⋮</span>
     <span class="wash-dot" aria-hidden="true"></span>
-    <span class="bar-title" data-tauri-drag-region id="bar-title">Luna</span>
-    <button class="pin-btn" id="pin-btn" title="Unpin from group" aria-label="Unpin widget from its group" hidden>
-      <!-- Lucide "pin" (ISC) — standard icon, not hand-drawn. -->
+    <span class="bar-title" id="bar-title">Luna</span>
+    <!-- Archive current thread (Phase 3). Appears in title bar. -->
+    <button class="archive-btn" id="archive-thread-btn" title="Archive this thread" aria-label="Archive thread"
+            style="display:none;">
+      <!-- Box/archive icon -->
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M12 17v5"/>
-        <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>
+        <rect x="2" y="4" width="20" height="5" rx="1"/><path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9"/>
+        <path d="M10 13h4"/>
       </svg>
     </button>
-    <button class="close-btn" id="close-btn" title="Close" aria-label="Close chat">✕</button>
+    <!-- Toggle archived threads view -->
+    <button class="archive-toggle-btn" id="archive-view-btn" title="Show/hide archived threads"
+            aria-label="Toggle archived threads">Archived</button>
+    <!-- New thread — the promoted action, alone on the right. Spawns a fresh
+         Luna panel docked to the right of this one (open_widget chat?thread=new). -->
+    <button class="newthread-btn" id="new-thread-btn" title="New thread" aria-label="New parallel thread">
+      <!-- Lucide "plus" (ISC). -->
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 5v14"/><path d="M5 12h14"/>
+      </svg>
+    </button>
   </div>
   <div id="seam" aria-hidden="true"></div>
   <div id="outline" aria-hidden="true"></div>
   <div class="chat-panel" id="chat-panel">
     <!-- Chat Header supports dragging the native window too! -->
-    <div class="chat-header" data-tauri-drag-region>
+    <div class="chat-header">
       <div class="chat-title-group">
-        <div class="chat-avatar"></div>
+        <!-- Animated Luna face. Decorative (aria-hidden) + non-interactive so
+             it keeps dragging the native window like the old orb did. The
+             MoonFace controller sets data-state for connection / thinking /
+             voice / suggesting reactions. -->
+        <div class="luna-face" id="luna-face" data-state="" aria-hidden="true">
+          <svg class="luna-face-svg" viewBox="0 0 120 120">
+            <defs>
+              <!-- Stop colors are themed via CSS (see #lunaBody/.luna-*-stop
+                   rules) NOT the stop-color presentation attribute: var()/
+                   color-mix() are only substituted in CSS declarations, so in
+                   WebKit/WKWebView an attribute-level var() drops to black. The
+                   hardcoded hexes below are the safety-net fallback. -->
+              <radialGradient id="lunaBody" cx="38%" cy="33%" r="75%">
+                <stop class="luna-body-stop0" offset="0%"   stop-color="#f0f6ff"/>
+                <stop class="luna-body-stop1" offset="58%"  stop-color="#bfcce8"/>
+                <stop class="luna-body-stop2" offset="100%" stop-color="#9bb5d6"/>
+              </radialGradient>
+              <radialGradient id="lunaShade" cx="74%" cy="78%" r="62%">
+                <stop class="luna-shade-stop0" offset="0%" stop-color="#0f1225" stop-opacity="0.55"/>
+                <stop offset="100%" stop-color="#0f1225" stop-opacity="0"/>
+              </radialGradient>
+            </defs>
+            <g class="luna-bob">
+              <circle cx="60" cy="60" r="47" fill="url(#lunaBody)"/>
+              <circle class="luna-body-shade" cx="60" cy="60" r="47" fill="url(#lunaShade)"/>
+              <!-- craters on the periphery, clear of the face -->
+              <circle class="luna-crater" cx="90" cy="44" r="5.5"/>
+              <circle class="luna-crater" cx="30" cy="32" r="4"/>
+              <circle class="luna-crater" cx="86" cy="84" r="3.4"/>
+              <!-- cheeks -->
+              <ellipse class="luna-cheek" cx="39" cy="71" rx="7" ry="4.3"/>
+              <ellipse class="luna-cheek" cx="81" cy="71" rx="7" ry="4.3"/>
+              <!-- open eyes (blink) -->
+              <g class="luna-eyes">
+                <g class="luna-eye luna-eye-l">
+                  <ellipse class="luna-eyeball" cx="45" cy="58" rx="5.4" ry="7.6"/>
+                  <circle class="luna-spark" cx="43" cy="55" r="1.8"/>
+                </g>
+                <g class="luna-eye luna-eye-r">
+                  <ellipse class="luna-eyeball" cx="75" cy="58" rx="5.4" ry="7.6"/>
+                  <circle class="luna-spark" cx="73" cy="55" r="1.8"/>
+                </g>
+              </g>
+              <!-- happy closed-eye arcs (suggesting) -->
+              <g class="luna-eyes-happy">
+                <path class="luna-eye-arc" d="M38 60 Q45 52 52 60"/>
+                <path class="luna-eye-arc" d="M68 60 Q75 52 82 60"/>
+              </g>
+              <!-- mouth shapes, cross-faded by opacity (NOT the CSS `d`
+                   property, which WKWebView/WebKit doesn't support): smile
+                   (default) · 'o' (thinking/speaking) · frown (offline). -->
+              <path class="luna-mouth" d="M49 73 Q60 81 71 73"/>
+              <ellipse class="luna-mouth-o" cx="60" cy="76" rx="5" ry="5.5"/>
+              <path class="luna-mouth-frown" d="M50 79 Q60 72 70 79"/>
+              <!-- sparkle (thinking / suggesting); fill themed via CSS (.luna-sparkle),
+                   hex below is the WebKit fallback for the same reason as the stops. -->
+              <path class="luna-sparkle" d="M96 26 l2.4 5.6 5.6 2.4 -5.6 2.4 -2.4 5.6 -2.4 -5.6 -5.6 -2.4 5.6 -2.4 Z" fill="#f0f6ff"/>
+            </g>
+          </svg>
+        </div>
         <div class="chat-meta">
           <h2>Luna Companion</h2>
-          <span id="connection-status" class="disconnected">Disconnected</span>
-          <!-- Build identity from the server's hello frame (additive). Kept as a
-               <small>, NOT a <span>, so the `.chat-meta span::before` dot rule
-               doesn't draw a status dot next to it. Hidden until populated. -->
-          <small id="build-sha" hidden></small>
+          <div class="chat-status-row">
+            <span id="connection-status" class="disconnected">Disconnected</span>
+            <!-- Build identity from the server's hello frame (additive). Kept as a
+                 <small>, NOT a <span>, so the `.chat-meta span::before` dot rule
+                 doesn't draw a status dot next to it. Hidden until populated. -->
+            <small id="build-sha" hidden></small>
+          </div>
         </div>
       </div>
-      <div class="header-actions">
-        <!-- Voice mic. Hidden until VoiceEngine confirms this build's Rust
-             core has the voice pipeline (voice_status probe). Click toggles
-             hands-free listening in auto mode; press-and-hold is push-to-talk
-             in ptt mode. data-voice-state mirrors the moon's. -->
-        <button class="close-btn mic-btn" id="voice-mic-btn" data-voice-state="" aria-label="Voice input" title="Voice input" hidden>
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
-            <path d="M19 10v1a7 7 0 0 1-14 0v-1"></path>
-            <line x1="12" y1="18" x2="12" y2="22"></line>
-          </svg>
+
+      <!-- Free space: Luna's idle quip XOR a suggestion teaser. Populated by
+           the MoonBar controller; the suggestion chip mirrors the active
+           `suggest_action` proposal and opens the full docked panel on click. -->
+      <div class="luna-bar" id="luna-bar">
+        <div class="luna-quip" id="luna-quip" aria-live="off"></div>
+        <button class="luna-suggestion" id="luna-suggestion" type="button" hidden
+                aria-label="Open Luna's suggestion">
+          <span class="luna-suggestion-spark" aria-hidden="true">💡</span>
+          <span class="luna-suggestion-text" id="luna-suggestion-text"></span>
+          <span class="luna-suggestion-go" aria-hidden="true">→</span>
         </button>
-        <!-- Artifacts toggle — hidden until the server advertises the
-             `artifacts` capability. Shows a count badge of pinned artifacts.
-             PRD Part C W1. -->
-        <div class="artifacts-header-btn" id="artifacts-btn" hidden>
-          <button class="close-btn" id="artifacts-btn-inner" aria-label="Artifacts" title="Artifacts" type="button">
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
-            </svg>
-          </button>
-          <span class="artifacts-badge" id="artifacts-badge" hidden></span>
-        </div>
-        <!-- Workflows toggle — hidden until the server advertises the
-             `workflows` capability. PRD Part C W3. -->
-        <div class="workflows-header-btn" id="workflows-btn" hidden>
-          <button class="close-btn" id="workflows-btn-inner" aria-label="Workflows" title="Workflows" type="button">
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <rect x="3" y="3" width="7" height="7" rx="1"></rect>
-              <rect x="14" y="3" width="7" height="7" rx="1"></rect>
-              <rect x="3" y="14" width="7" height="7" rx="1"></rect>
-              <path d="M17.5 14v3m0 3v.01M14 17.5h3m3 0h.01"></path>
-            </svg>
-          </button>
-        </div>
+      </div>
+
+      <div class="header-actions">
+        <!-- (Voice mic moved into the composer control bar — see #voice-mic-btn
+             inside .composer-bar below.) -->
+        <!-- Artifacts & Workflows header toggles were removed in the top-bar
+             redesign to keep the bar minimal (the free space now hosts Luna's
+             quip / suggestion). Their engines + docked panels remain wired
+             (DOM refs are null-guarded), so re-adding a trigger is a markup-
+             only change if those capabilities need a home again. -->
         <!-- Settings gear. The hub's tabbed modal is gone from this page:
              the gear summons the settings LAUNCHER panel window
              (open_widget kind 'settings'). -->
@@ -1671,7 +2431,7 @@
     
     <div class="chat-messages" id="chat-messages">
       <div class="msg assistant">
-        Hey there! I am your native macOS Luna companion. Drag me anywhere on your screens, or click me to toggle this chat widget!
+        <div class="msg-body">Hey there! I am your native macOS Luna companion. Drag me anywhere on your screens, or click me to toggle this chat widget!</div>
       </div>
     </div>
     
@@ -1716,6 +2476,29 @@
         <span class="user-ask-hint secret-prompt-status" id="secret-prompt-status" hidden></span>
         <button type="button" class="user-ask-dismiss-btn" id="secret-prompt-cancel">Cancel</button>
         <button type="button" class="user-ask-submit" id="secret-prompt-submit">Submit</button>
+      </div>
+    </div>
+
+    <!-- Suggested-actions chip. Hidden by default; SuggestedActionsEngine
+         reveals it when there is at least one `proposed` action for the active
+         thread and no higher-priority panel (secret > survey > suggestion) is
+         already showing. Accept/Dismiss operate optimistically on the chip;
+         "See all" opens the full actions panel widget. -->
+    <div class="suggested-action-panel" id="suggested-action-panel" role="dialog" aria-labelledby="suggested-action-title" hidden>
+      <div class="user-ask-header">
+        <span class="user-ask-icon" aria-hidden="true">💡</span>
+        <h3 class="user-ask-title" id="suggested-action-title">Luna suggests</h3>
+        <button type="button" class="user-ask-dismiss" id="suggested-action-cancel-x" aria-label="Dismiss suggestion">×</button>
+      </div>
+      <div class="suggested-action-body">
+        <div class="suggested-action-type" id="suggested-action-type"></div>
+        <div class="suggested-action-title" id="suggested-action-text"></div>
+        <div class="suggested-action-rationale" id="suggested-action-rationale" hidden></div>
+      </div>
+      <div class="suggested-action-footer">
+        <button type="button" class="suggested-action-accept" id="suggested-action-accept">Accept</button>
+        <button type="button" class="suggested-action-dismiss" id="suggested-action-dismiss">Dismiss</button>
+        <button type="button" class="suggested-action-see-all" id="suggested-action-see-all">See all</button>
       </div>
     </div>
 
@@ -1784,44 +2567,67 @@
            a smart-bar frame. Hidden when the item list is empty (v1: info only).
            Sits inside the flex-column form ABOVE the composer row. -->
       <div id="smart-bar" class="smart-bar" hidden aria-label="Context bar"></div>
-      <div class="composer-row">
-        <input type="file" id="file-input" multiple hidden>
-        <!-- Machine access (computer icon) — opens #scope-menu above. -->
-        <button type="button" class="scope-btn" id="scope-btn" aria-label="Machine access" title="Let Luna access this machine">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="3" y="4.5" width="18" height="12" rx="1.8"></rect>
-            <line x1="8.5" y1="20" x2="15.5" y2="20"></line>
-            <line x1="12" y1="16.5" x2="12" y2="20"></line>
-          </svg>
-        </button>
-        <button type="button" class="attach-btn" id="attach-btn" aria-label="Attach files" title="Attach files">
-          <!-- paperclip -->
-          <svg viewBox="0 0 24 24">
-            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
-          </svg>
-        </button>
-        <textarea class="chat-input" id="message-input" placeholder="Type a message..." rows="1" autocomplete="off"></textarea>
-        <button type="submit" class="send-btn" aria-label="Send message">
-          <svg viewBox="0 0 24 24">
-            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
-          </svg>
-        </button>
-      </div>
-      <!-- Model + effort config cluster — compact right-aligned row below the
-           composer. Hidden until the server advertises availableModels (hello).
-           The two upward popovers (#model-cfg-menu, #effort-cfg-menu) are
-           anchored to .chat-input-area (position:relative). -->
+      <!-- Model + effort popovers — anchored to .chat-input-area (position:
+           relative); open upward above the control bar. Kept ahead of the visible
+           rows in source order so they stack above on open. -->
       <div id="model-cfg-menu" class="cfg-menu" role="menu" aria-hidden="true">
         <div class="cfg-menu-hint">Model for new conversations</div>
       </div>
       <div id="effort-cfg-menu" class="cfg-menu" role="menu" aria-hidden="true">
         <div class="cfg-menu-hint">Effort level</div>
       </div>
-      <div class="composer-config" id="composer-config" hidden>
-        <button type="button" class="cfg-btn" id="model-cfg-btn" aria-label="Change model" aria-haspopup="true">Server default</button>
-        <div class="cfg-sep" id="effort-cfg-sep" hidden></div>
-        <button type="button" class="cfg-btn" id="effort-cfg-btn" aria-label="Change effort" aria-haspopup="true" hidden>—</button>
-        <div class="cfg-deferred-hint" id="cfg-deferred-hint"></div>
+      <input type="file" id="file-input" multiple hidden>
+
+      <!-- Tier 1 — the input shell: a full-width textarea with the small
+           watercolor send button nested inline at its bottom-right corner. -->
+      <div class="composer-input-wrap">
+        <textarea class="chat-input" id="message-input" placeholder="Message Luna…" rows="1" autocomplete="off"></textarea>
+        <button type="submit" class="send-btn" aria-label="Send message" title="Send (Enter)">
+          <!-- ↵ return/enter glyph: vertical down-then-left + a left arrowhead. -->
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M19 7v4a2 2 0 0 1-2 2H6"/>
+            <path d="M9 9l-4 4 4 4"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Tier 2 — the control bar: icon buttons (machine access, attach, voice)
+           on the left, the model/effort cluster on the right. -->
+      <div class="composer-bar">
+        <div class="composer-bar-left">
+          <!-- Machine access (computer icon) — opens #scope-menu above. -->
+          <button type="button" class="bar-btn scope-btn" id="scope-btn" aria-label="Machine access" title="Let Luna access this machine">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="4.5" width="18" height="12" rx="1.8"></rect>
+              <line x1="8.5" y1="20" x2="15.5" y2="20"></line>
+              <line x1="12" y1="16.5" x2="12" y2="20"></line>
+            </svg>
+          </button>
+          <button type="button" class="bar-btn attach-btn" id="attach-btn" aria-label="Attach files" title="Attach files">
+            <!-- paperclip -->
+            <svg viewBox="0 0 24 24">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+            </svg>
+          </button>
+          <!-- Voice mic — relocated here from the header. type="button" is
+               REQUIRED now it lives inside the <form>, else a click submits.
+               Hidden until VoiceEngine confirms the Rust voice pipeline. Click
+               toggles hands-free listening; press-and-hold is push-to-talk in
+               ptt mode. data-voice-state mirrors the moon's. -->
+          <button type="button" class="bar-btn mic-btn" id="voice-mic-btn" data-voice-state="" aria-label="Voice input" title="Voice input" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
+              <path d="M19 10v1a7 7 0 0 1-14 0v-1"></path>
+              <line x1="12" y1="18" x2="12" y2="22"></line>
+            </svg>
+          </button>
+        </div>
+        <div class="composer-config" id="composer-config" hidden>
+          <button type="button" class="cfg-btn" id="model-cfg-btn" aria-label="Change model" aria-haspopup="true">Server default</button>
+          <div class="cfg-sep" id="effort-cfg-sep" hidden></div>
+          <button type="button" class="cfg-btn" id="effort-cfg-btn" aria-label="Change effort" aria-haspopup="true" hidden>—</button>
+          <div class="cfg-deferred-hint" id="cfg-deferred-hint"></div>
+        </div>
       </div>
     </form>
   </div>
@@ -1832,7 +2638,7 @@
     // chat.html — the chat WIDGET WINDOW (widget-system.md Phase 4,
     // "extraction-as-new-page"). The chat half of index.html, copied: this
     // window OWNS the conversation thread now (one-window-per-thread). The
-    // moon/tether/wizard/settings-modal choreography stays in the hub; window
+    // moon/wizard/settings-modal choreography stays in the hub; window
     // chrome (title bar, dock/snap, close) follows panel.html's conventions.
     //
     // Everything below boots cleanly when __TAURI__ is absent (jsdom /
@@ -1918,6 +2724,21 @@
       secretPromptSubmit:  document.getElementById('secret-prompt-submit'),
       secretPromptCancel:  document.getElementById('secret-prompt-cancel'),
       secretPromptCancelX: document.getElementById('secret-prompt-cancel-x'),
+      // Suggested-actions chip handles.
+      suggestedActionPanel:     document.getElementById('suggested-action-panel'),
+      suggestedActionType:      document.getElementById('suggested-action-type'),
+      suggestedActionText:      document.getElementById('suggested-action-text'),
+      suggestedActionRationale: document.getElementById('suggested-action-rationale'),
+      suggestedActionAccept:    document.getElementById('suggested-action-accept'),
+      suggestedActionDismiss:   document.getElementById('suggested-action-dismiss'),
+      suggestedActionSeeAll:    document.getElementById('suggested-action-see-all'),
+      suggestedActionCancelX:   document.getElementById('suggested-action-cancel-x'),
+      // Top-bar redesign: animated Luna face + free-space quip/suggestion bar.
+      lunaFace:           document.getElementById('luna-face'),
+      lunaBar:            document.getElementById('luna-bar'),
+      lunaQuip:           document.getElementById('luna-quip'),
+      lunaSuggestion:     document.getElementById('luna-suggestion'),
+      lunaSuggestionText: document.getElementById('luna-suggestion-text'),
       // Voice (mic button only — the controls live in the settings.voice panel).
       voiceMicBtn: document.getElementById('voice-mic-btn'),
       // local-shell machine-access scope controls.
@@ -1959,9 +2780,7 @@
     /**
      * Shared state manager — the CHAT-SCOPED subset of the hub's State.
      * Dropped here: the moon press/drag fields, shortcut recording, the
-     * settings-modal/channel fields, the re-tether episode state
-     * (tetherGraceTimer/tetherGen/growPromise/tetherPendingOnCollapse — the
-     * string lives on the hub), close-on-blur suppression, and the
+     * settings-modal/channel fields, close-on-blur suppression, and the
      * skills/connectors/vault projections (settings PANELS own those).
      */
     const State = {
@@ -2383,6 +3202,282 @@
     };
 
     /**
+     * SuggestedActionsEngine — inline chip controller.
+     *
+     * Shows the LATEST `proposed` action for the active thread in the docked
+     * suggested-action-panel chip. Stacking precedence: secret > survey >
+     * suggestion — if a higher-priority panel is visible the chip stays hidden.
+     *
+     * Receives data via MoonFrames handlers for `suggested-action-set` and
+     * `suggested-action-update`. The chip is per-thread: it clears whenever
+     * State.activeThreadId changes (handled in the `hello` and thread-switch
+     * flow by calling refresh() which re-evaluates the current proposed set).
+     *
+     * Wire frames:
+     *   server→client  suggested-action-set    { threadId, actions[] }
+     *   server→client  suggested-action-update { threadId, action }
+     *   client→server  suggested-action-respond { threadId, actionId, decision }
+     *
+     * Lifecycle:
+     *   applySet(frame)    — replace per-thread action store; refresh chip.
+     *   applyUpdate(frame) — upsert a single action; refresh chip.
+     *   refresh()          — re-evaluate visibility from current store.
+     *   _show(action)      — paint + reveal chip.
+     *   _hide()            — hide chip.
+     *   _respond(actionId, decision) — send wire frame + optimistic flip.
+     */
+    const SuggestedActionsEngine = {
+      // Map of threadId → SuggestedActionWire[]
+      _store: {},
+      // Whether the server advertises suggestedActions capability.
+      _capable: false,
+
+      applyCapability(hasCapability) {
+        this._capable = !!hasCapability;
+        if (!this._capable) this._hide();
+      },
+
+      applySet(frame) {
+        if (!frame || !frame.threadId) return;
+        this._store[frame.threadId] = Array.isArray(frame.actions) ? frame.actions : [];
+        this.refresh();
+      },
+
+      applyUpdate(frame) {
+        if (!frame || !frame.action || !frame.action.threadId) return;
+        const tid = frame.action.threadId;
+        const current = this._store[tid] || [];
+        const idx = current.findIndex((a) => a.id === frame.action.id);
+        if (idx >= 0) {
+          this._store[tid] = current.slice();
+          this._store[tid][idx] = Object.assign({}, current[idx], frame.action);
+        } else {
+          this._store[tid] = [frame.action].concat(current);
+        }
+        this.refresh();
+      },
+
+      refresh() {
+        if (!this._capable) { this._hide(); return; }
+        // Stacking precedence: secret > survey > suggestion.
+        // If a higher-priority panel is currently visible, keep chip hidden.
+        const secretVisible = DOM.secretPromptPanel && !DOM.secretPromptPanel.hidden;
+        const surveyVisible = DOM.userAskPanel && !DOM.userAskPanel.hidden;
+        if (secretVisible || surveyVisible) { this._hide(); return; }
+
+        const tid = State.activeThreadId;
+        if (!tid) { this._hide(); return; }
+        const actions = this._store[tid] || [];
+        // Find the most-recently-created proposed action.
+        const proposed = actions
+          .filter((a) => a.status === 'proposed')
+          .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
+        if (!proposed) { this._hide(); return; }
+        this._show(proposed);
+      },
+
+      _show(action) {
+        if (!DOM.suggestedActionPanel) return;
+        const typeLabels = {
+          task: 'Task',
+          research: 'Research',
+          create_skill: 'Create Skill',
+          create_workflow: 'Create Workflow',
+          run_workflow: 'Run Workflow',
+        };
+        if (DOM.suggestedActionType) DOM.suggestedActionType.textContent = typeLabels[action.actionType] || (action.actionType || '');
+        if (DOM.suggestedActionText) DOM.suggestedActionText.textContent = action.title || '';
+        if (DOM.suggestedActionRationale) {
+          if (action.rationale) {
+            DOM.suggestedActionRationale.textContent = action.rationale;
+            DOM.suggestedActionRationale.hidden = false;
+          } else {
+            DOM.suggestedActionRationale.textContent = '';
+            DOM.suggestedActionRationale.hidden = true;
+          }
+        }
+        // Store current actionId on panel so buttons always act on the shown action.
+        DOM.suggestedActionPanel.dataset.actionId = action.id;
+        // Top-bar redesign: the suggestion now surfaces as a compact teaser
+        // chip in the header's free space (MoonBar). The full docked panel
+        // (rationale + accept/dismiss/see-all) stays painted but hidden until
+        // the user clicks the chip — so the bar is the glance and the panel is
+        // the detail, instead of two suggestion surfaces showing at once.
+        MoonBar.showSuggestion(action);
+        MoonFace.setSuggesting(true);
+      },
+
+      _hide() {
+        if (DOM.suggestedActionPanel) DOM.suggestedActionPanel.hidden = true;
+        MoonBar.clearSuggestion();
+        MoonFace.setSuggesting(false);
+      },
+
+      _respond(actionId, decision) {
+        const tid = State.activeThreadId;
+        if (!tid || !actionId) return;
+        WebSocketEngine.send({ type: 'suggested-action-respond', threadId: tid, actionId: actionId, decision: decision });
+        // Optimistic flip — update the local store immediately so refresh()
+        // picks up the new status without waiting for a server round-trip.
+        const current = this._store[tid] || [];
+        const newStatus = decision === 'accept' ? 'accepted' : 'dismissed';
+        const idx = current.findIndex((a) => a.id === actionId);
+        if (idx >= 0) {
+          this._store[tid] = current.slice();
+          this._store[tid][idx] = Object.assign({}, current[idx], { status: newStatus });
+        }
+        this.refresh();
+      },
+    };
+
+    /**
+     * MoonFace — drives the animated header avatar's expression.
+     *
+     * The face reacts to four orthogonal signals, resolved by a fixed
+     * priority so conflicting signals never fight over [data-state]:
+     *   connection (connecting/offline) > thinking (a turn in flight) >
+     *   voice (listening/speaking) > suggesting > idle.
+     * All the actual motion lives in CSS keyframes keyed off [data-state];
+     * this controller only flips that one attribute.
+     */
+    const MoonFace = {
+      _conn: 'connecting',   // 'connecting' | 'connected' | 'disconnected'
+      _busy: false,          // a turn is in flight
+      _voice: '',            // '' | 'listening' | 'speaking'
+      _suggesting: false,
+      _el: null,
+
+      init() { this._el = DOM.lunaFace; this._apply(); },
+
+      // statusClass comes straight from WebSocketEngine.updateStatus:
+      // 'connected' | 'connecting' | 'disconnected' | 'version-warning'.
+      // A version-warning still chats, so it reads as connected (awake).
+      setConnection(statusClass) {
+        this._conn = statusClass === 'connecting' ? 'connecting'
+                   : statusClass === 'disconnected' ? 'disconnected'
+                   : 'connected';
+        this._apply();
+      },
+      setBusy(b)       { this._busy = !!b; this._apply(); },
+      setVoice(state)  { this._voice = (state === 'listening' || state === 'speaking') ? state : ''; this._apply(); },
+      setSuggesting(b) { this._suggesting = !!b; this._apply(); },
+
+      _resolve() {
+        if (this._conn === 'connecting')   return 'connecting';
+        if (this._conn === 'disconnected') return 'offline';
+        if (this._busy)                    return 'busy';
+        if (this._voice === 'listening')   return 'listening';
+        if (this._voice === 'speaking')    return 'speaking';
+        if (this._suggesting)              return 'suggesting';
+        return '';   // awake / idle
+      },
+      _apply() {
+        const el = this._el || (this._el = DOM.lunaFace);
+        if (el) el.dataset.state = this._resolve();
+      },
+    };
+
+    /**
+     * MoonBar — the header's free-space message zone.
+     *
+     * Shows EITHER a rotating idle quip (a playful comment, handwritten) OR a
+     * compact suggestion teaser chip mirroring the active `suggest_action`
+     * proposal. Clicking the chip opens the full docked panel (wired in boot).
+     * The quip line doubles as a connection mood line ("waking up…",
+     * "reconnecting…") so the bar always says something honest.
+     */
+    const MoonBar = {
+      _quips: [
+        'just vibing ✨',
+        'ready when you are 🌙',
+        'the night is quiet… I’m here',
+        'thinking up something clever…',
+        'your friendly moon, reporting in',
+        'drifting through some stardust',
+        'tap me anytime',
+        'all systems calm',
+      ],
+      _qi: 0,
+      _timer: null,
+      _conn: 'connecting',   // 'connecting' | 'connected' | 'disconnected'
+      _hasSuggestion: false,
+
+      init() {
+        if (!DOM.lunaQuip) return;
+        this._renderQuip(false);
+        this._scheduleRotate();
+      },
+
+      // Self-rescheduling (not setInterval) so it stops cleanly the moment the
+      // bar leaves the document — e.g. jsdom test teardown — instead of leaking
+      // a timer that fires forever on a detached node. The real chat window
+      // keeps #luna-quip mounted for its whole life, so quips keep rotating.
+      _scheduleRotate() {
+        if (this._timer) return;
+        this._timer = setTimeout(() => {
+          this._timer = null;
+          try {
+            if (!DOM.lunaQuip || !DOM.lunaQuip.isConnected) return;   // torn down → stop
+            if (!this._hasSuggestion && this._connQuip() == null) {
+              this._qi = (this._qi + 1) % this._quips.length;
+              this._renderQuip(true);
+            }
+            this._scheduleRotate();
+          } catch (_) { /* never let a stray tick surface an unhandled error */ }
+        }, 14000);
+        // Hygiene: under Node (the jsdom test harness) a long pending timer
+        // would keep the event loop alive; unref() lets the loop exit. It's
+        // undefined in the browser, where the timer behaves normally.
+        if (this._timer && typeof this._timer.unref === 'function') this._timer.unref();
+      },
+
+      setConnection(statusClass) {
+        this._conn = (statusClass === 'connected' || statusClass === 'version-warning') ? 'connected'
+                   : statusClass === 'connecting' ? 'connecting'
+                   : 'disconnected';
+        if (!this._hasSuggestion) this._renderQuip(false);
+      },
+
+      showSuggestion(action) {
+        if (!DOM.lunaSuggestion || !DOM.lunaSuggestionText) return;
+        this._hasSuggestion = true;
+        const title = (action && action.title) ? action.title : 'Luna has an idea';
+        DOM.lunaSuggestionText.textContent = title;
+        DOM.lunaSuggestion.title = title;
+        // Dynamic accessible name — a static aria-label would override the
+        // visible title and hide the actual suggestion from screen readers.
+        DOM.lunaSuggestion.setAttribute('aria-label', 'Open Luna’s suggestion: ' + title);
+        if (DOM.lunaQuip) DOM.lunaQuip.hidden = true;
+        DOM.lunaSuggestion.hidden = false;
+      },
+
+      clearSuggestion() {
+        this._hasSuggestion = false;
+        if (DOM.lunaSuggestion) DOM.lunaSuggestion.hidden = true;
+        if (DOM.lunaQuip) { DOM.lunaQuip.hidden = false; this._renderQuip(false); }
+      },
+
+      // A non-connected state replaces the playful quip with an honest mood line.
+      _connQuip() {
+        if (this._conn === 'connecting')   return 'waking up…';
+        if (this._conn === 'disconnected') return 'lost the thread… reconnecting';
+        return null;
+      },
+      _renderQuip(fade) {
+        const el = DOM.lunaQuip;
+        if (!el) return;
+        const conn = this._connQuip();
+        const text = conn != null ? conn : this._quips[this._qi % this._quips.length];
+        if (fade) {
+          el.classList.add('fading');
+          setTimeout(() => { el.textContent = text; el.classList.remove('fading'); }, 600);
+        } else {
+          el.textContent = text;
+        }
+      },
+    };
+
+    /**
      * Secure secret-entry UI controller.
      *
      * The agent (server) pushes a `secret-request` frame when it needs a secret
@@ -2731,16 +3826,14 @@
             popOutBtnP.textContent = '⤢';
             popOutBtnP.title = 'Open in widget window';
             popOutBtnP.setAttribute('data-action', 'pop-out');
-            popOutBtnP.addEventListener('click', async (e) => {
+            popOutBtnP.addEventListener('click', (e) => {
               e.stopPropagation();
               if (window.__TAURI__ && window.__TAURI__.core) {
-                // Cascade new windows — N pop-outs at the same default frame
-                // look like one window (perfectly stacked).
-                const open = await window.__TAURI__.core.invoke('list_widget_windows').catch(() => []);
-                const n = Array.isArray(open) ? open.length : 0;
+                // Snap-on-open (Rust) tiles the pop-out flush against the
+                // nearest open panel and links it in, so N pop-outs accrete
+                // into the stack instead of overlapping — no manual cascade.
                 window.__TAURI__.core.invoke('open_artifact_widget', {
                   artifactId: a.id, title: a.title || '',
-                  x: 180 + n * 44, y: 160 + n * 44,
                 }).catch(() => {/* best-effort */});
               }
             });
@@ -2792,19 +3885,17 @@
             popOutBtnS.textContent = '⤢';
             popOutBtnS.title = 'Open in widget window';
             popOutBtnS.setAttribute('data-action', 'pop-out');
-            popOutBtnS.addEventListener('click', async (e) => {
+            popOutBtnS.addEventListener('click', (e) => {
               e.stopPropagation();
               if (window.__TAURI__ && window.__TAURI__.core) {
                 // Widget windows render PINNED artifacts — pin this session
-                // artifact first (popping out IS pinning it as a widget),
-                // then spawn cascaded. The widget self-heals via the
-                // artifact-list broadcast once the pin lands.
+                // artifact first (popping out IS pinning it as a widget), then
+                // spawn. Snap-on-open (Rust) tiles it flush against the nearest
+                // open panel; the widget self-heals via the artifact-list
+                // broadcast once the pin lands.
                 if (!this._isPinned(a.id)) this.pin(a);
-                const open = await window.__TAURI__.core.invoke('list_widget_windows').catch(() => []);
-                const n = Array.isArray(open) ? open.length : 0;
                 window.__TAURI__.core.invoke('open_artifact_widget', {
                   artifactId: a.id, title: a.title || a.path || '',
-                  x: 180 + n * 44, y: 160 + n * 44,
                 }).catch(() => {/* best-effort */});
               }
             });
@@ -3104,6 +4195,10 @@
         if (State.ws) {
           this.disconnect();
         }
+        // A (re)connect means no turn from a prior socket is in flight; settle
+        // the face so a turn abandoned by a drop can't resurface as "thinking"
+        // when the new socket opens (covers paths where State.ws was nulled).
+        MoonFace.setBusy(false);
 
         // fix-6: each connect() bumps the generation. Handlers attached below
         // capture this gen; a superseded socket's late async events (which
@@ -3171,8 +4266,8 @@
             }
           }
           if (!State.isManuallyClosing) {
-            // No tether choreography in the chat WINDOW (the re-tether string
-            // lives on the moon hub): on a drop, status + scheduled retry.
+            // The chat window does not own reconnect choreography beyond
+            // scheduling the next retry (the hub handles any visual recovery).
             this.scheduleReconnect();
           }
         });
@@ -3193,6 +4288,9 @@
         // new server. Any caller of disconnect() now cancels the timer.
         this.clearTurnTimeout();
         this.clearSubscribeTimeout();
+        // A turn abandoned by a drop/teardown never gets a turn-complete frame;
+        // settle the face here so it doesn't resurface as "thinking" on reconnect.
+        MoonFace.setBusy(false);
         if (State.reconnectTimer) { clearTimeout(State.reconnectTimer); State.reconnectTimer = null; }
         if (State.ws) {
           Logger.info("Disconnecting WebSocket client manually");
@@ -3222,6 +4320,9 @@
       updateStatus(statusClass, text) {
         DOM.connectionStatus.className = statusClass;
         DOM.connectionStatus.textContent = text;
+        // Mirror connection into the animated face + free-space bar mood.
+        MoonFace.setConnection(statusClass);
+        MoonBar.setConnection(statusClass);
       },
 
       /**
@@ -3281,10 +4382,16 @@
         const banner = document.createElement('div');
         banner.id = bannerId;
         banner.className = 'msg assistant';
-        banner.textContent =
+        // Content wraps in .msg-body (the painted bubble) like every .msg kind —
+        // the bubble chrome lives on .msg-body, not .msg, so an unwrapped banner
+        // would render with no padding/wash.
+        const body = document.createElement('div');
+        body.className = 'msg-body';
+        body.textContent =
           `⚠️ Version mismatch: this app expects protocol v${MOON_EXPECTED_PROTOCOL_VERSION} ` +
           `but the server speaks v${serverVersion}. Update Luna Moon (or the server). ` +
           `Some features may not work.`;
+        banner.appendChild(body);
         DOM.chatMessages.appendChild(banner);
         DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
       },
@@ -3411,6 +4518,7 @@
           ChatState.dropPendingAssistant();
           ChatState.appendBanner('⚠️ No response from the server — try again.');
           ChatLoop.flush();
+          MoonFace.setBusy(false);   // abandoned turn → face stops thinking
         }, 90000);
       },
 
@@ -3437,9 +4545,8 @@
         }, 7000);
       },
 
-      // Reattach stalled (open socket but no thread-snapshot). The moon hub
-      // surfaces its re-tether string for this; the chat WINDOW only reports
-      // status — the close path / scheduleReconnect own actual recovery.
+      // Reattach stalled (open socket but no thread-snapshot). The chat WINDOW
+      // reports status only — the close path / scheduleReconnect own recovery.
       onReattachStalled() {
         this.updateStatus('disconnected', 'Reattach stalled');
       },
@@ -3472,6 +4579,17 @@
           State.activeThreadId = PINNED_THREAD;
           Logger.info(`Direct line: subscribing to pinned thread "${PINNED_THREAD}"`);
           this.send({ type: 'subscribe', threadId: PINNED_THREAD });
+          this.startSubscribeTimeout();
+          return;
+        }
+        // Fresh-spawn panel (opened via the title-bar + as ?thread=new): on the
+        // FIRST connect it owns no thread yet, so mint a brand-new one — the
+        // thread-created handler then adopts it (activeThreadId is null). On a
+        // later RECONNECT activeThreadId is already set, so this is skipped and
+        // we fall through to the normal resubscribe-to-current path below.
+        if (SPAWN_FRESH && !State.activeThreadId) {
+          Logger.info('Fresh-spawn panel: minting its own new thread');
+          this.sendNewThread();
           this.startSubscribeTimeout();
           return;
         }
@@ -3632,7 +4750,13 @@
         if (!menu) return;
         while (menu.children.length > 1) menu.removeChild(menu.lastChild);
         const entry = this._currentModelEntry();
-        const efforts = (entry && entry.efforts) || [];
+        const rawEfforts = (entry && entry.efforts) || [];
+        // Display order: surface "ultracode" at the TOP of the menu (the
+        // headline mode), then the real effort levels in server order.
+        const efforts = [
+          ...rawEfforts.filter((e) => e === 'ultracode'),
+          ...rawEfforts.filter((e) => e !== 'ultracode'),
+        ];
         const current = localStorage.getItem('luna_effort') || '';
         // "Server default" item (empty effort = omit from frame)
         const defItem = document.createElement('div');
@@ -3659,8 +4783,11 @@
           item.setAttribute('role', 'menuitemradio');
           item.setAttribute('aria-checked', ef === current ? 'true' : 'false');
           const itemLabel = document.createElement('span');
-          // Capitalize the effort label (low → Low, xhigh → Xhigh, max → Max)
-          itemLabel.textContent = ef.charAt(0).toUpperCase() + ef.slice(1);
+          // Capitalize the effort label (low → Low, xhigh → Xhigh, max → Max);
+          // ultracode gets a headline label with a ⚡ glyph.
+          itemLabel.textContent = ef === 'ultracode'
+            ? '⚡ Ultracode'
+            : ef.charAt(0).toUpperCase() + ef.slice(1);
           const check = document.createElement('span');
           check.className = 'cfg-menu-check';
           check.setAttribute('aria-hidden', 'true');
@@ -4022,6 +5149,10 @@
       // list in ComposerConfig; now apply the effort capability gate.
       State.serverSupportsEffort = caps.effortSelection;
       ComposerConfig.applyCapability(State.serverSupportsEffort);
+      // Suggested actions: raw-fallback pattern (flag added after
+      // parseHelloCapabilities was written; do not rely on caps.suggestedActions).
+      const hasSuggestedActions = !!(frame && frame.capabilities && frame.capabilities.suggestedActions);
+      SuggestedActionsEngine.applyCapability(hasSuggestedActions);
       // (skills/connectors/vault capability gating + the widget-directory
       // announce are HUB concerns — the launchers and panels live there.)
     });
@@ -4078,6 +5209,37 @@
       }
     });
 
+    MoonFrames.register('thread-archived', (frame) => {
+      // Server confirmed archive. If it was our active thread, show a notice.
+      Logger.info(`Thread archived: ${frame.threadId}`);
+      if (frame.threadId === State.activeThreadId) {
+        // Switch to a new thread since the active one is now archived.
+        WebSocketEngine.send({ type: 'list-threads' });
+        State.activeThreadId = null;
+      }
+    });
+
+    MoonFrames.register('thread-unarchived', (frame) => {
+      // Server confirmed unarchive. Subscribe to the restored thread.
+      Logger.info(`Thread unarchived: ${frame.threadId}`);
+      // Refresh the archive list panel if it's visible.
+      if (ArchivePanel.visible) {
+        ArchivePanel.refresh();
+      }
+    });
+
+    MoonFrames.register('thread-archive-error', (frame) => {
+      // Server could not archive/unarchive the thread (not found in registry
+      // or registry unavailable). Log and refresh the thread list so the
+      // sidebar reflects the actual state.
+      Logger.warn(`Thread archive operation failed for ${frame.threadId}: ${frame.reason}`);
+      // Refresh both lists so stale UI state is corrected.
+      WebSocketEngine.send({ type: 'list-threads' });
+      if (ArchivePanel.visible) {
+        ArchivePanel.refresh();
+      }
+    });
+
     MoonFrames.register('thread-created', (frame) => {
       // A new thread was created (either by us or elsewhere)
       if (!State.activeThreadId || State.activeThreadId !== frame.thread.id) {
@@ -4115,10 +5277,14 @@
       ChatLoop.flush();
       LocalShell.sendCapability();
       // Restart-survival: persist the thread we just landed on so reopening
-      // the app re-tethers to it. The snapshot proves this thread is valid
+      // the app resumes it. The snapshot proves this thread is valid
       // on the CURRENT server, so it's always safe to remember. Fire-and-
       // forget; never blocks or throws into the UI.
-      if (window.__TAURI__ && State.activeThreadId) {
+      // Only the MAIN line owns the restart-resume memory. A fresh-spawn side
+      // panel (?thread=new) or a Phase 8 direct line (?thread=<id>) must NOT
+      // overwrite it — otherwise reopening the app would resume the side/pinned
+      // thread instead of the main conversation.
+      if (window.__TAURI__ && State.activeThreadId && !SPAWN_FRESH && !PINNED_THREAD) {
         window.__TAURI__.core.invoke('set_last_thread_id', { threadId: State.activeThreadId })
           .catch((e) => Logger.warn('set_last_thread_id failed (non-fatal):', e));
       }
@@ -4147,9 +5313,22 @@
       // Finalize the active turn. flush() forces an immediate render so
       // a still-pending rAF frame can't overwrite the closed state.
       WebSocketEngine.clearTurnTimeout();
+      // #124: a background-delivered result arrives as a complete assistant-done
+      // with NO preceding deltas (so there is no in-flight turn to finish).
+      // Detect it by the delivery marker and push a complete turn directly.
+      if (frame.message && frame.message.delivery) {
+        State.activeTurnId = null;
+        ChatState.appendDelivered(frame.message);
+        ChatLoop.flush();
+        return;
+      }
       const doneTurnId = frame.turnId || State.activeTurnId;
       State.activeTurnId = null;
-      ChatState.finishTurn(doneTurnId, frame.message ? frame.message.text : null);
+      ChatState.finishTurn(
+        doneTurnId,
+        frame.message ? frame.message.text : null,
+        frame.message ? frame.message.ts : undefined,
+      );
       ChatLoop.flush();
       // Spoken replies: this message ended — flush its sentence
       // remainder (per message, so intermediate agentic steps speak too).
@@ -4162,6 +5341,7 @@
       State.activeTurnId = null;
       ChatState.failTurn(errTurnId, frame.error && frame.error.message);
       ChatLoop.flush();
+      MoonFace.setBusy(false);   // turn ended (error) → face stops thinking
     });
 
     MoonFrames.register('turn-complete', (frame) => {
@@ -4173,6 +5353,7 @@
       WebSocketEngine.clearTurnTimeout();
       ChatState.markRunSettled();
       ChatLoop.flush();
+      MoonFace.setBusy(false);   // whole turn ended → face stops thinking
       // Spoken replies: safety flush — anything still buffered for any
       // message in this turn gets spoken now.
       VoiceEngine.onTurnComplete();
@@ -4228,7 +5409,258 @@
       SecretPromptEngine.handleStatus(frame);
     });
 
+    MoonFrames.register('suggested-action-set', (frame) => {
+      // Full replacement set for a thread. SuggestedActionsEngine stores per-
+      // thread and only shows the chip when the active thread has proposed actions.
+      SuggestedActionsEngine.applySet(frame);
+    });
 
+    MoonFrames.register('suggested-action-update', (frame) => {
+      // Single action delta (status change or new action). Upsert into store.
+      SuggestedActionsEngine.applyUpdate(frame);
+    });
+
+    // #124: background-result toast. A "Luna finished X" notification BROADCAST
+    // to every window (not scoped to one thread's subscribers), so a finished
+    // background/job result surfaces even when its thread is not on screen.
+    // Self-contained: lazily mounts its own #result-toasts container, auto-
+    // dismisses after ~6.5s, and click-to-dismiss. Exposed on __MoonInternals
+    // for screenshot/agent-browser harnesses.
+    const ResultToasts = {
+      _host: null,
+      _timers: new Map(),
+      _seq: 0,
+      _container() {
+        if (this._host && document.body.contains(this._host)) return this._host;
+        let el = document.getElementById('result-toasts');
+        if (!el) {
+          el = document.createElement('div');
+          el.id = 'result-toasts';
+          document.body.appendChild(el);
+        }
+        this._host = el;
+        return el;
+      },
+      show(notification) {
+        const n = notification || {};
+        const host = this._container();
+        const id = 'rt-' + (++this._seq);
+        const toast = document.createElement('div');
+        toast.className = 'result-toast';
+        toast.dataset.id = id;
+        const title = document.createElement('div');
+        title.className = 'rt-title';
+        const star = document.createElement('span');
+        star.textContent = '✓';
+        const titleText = document.createElement('span');
+        titleText.textContent = 'Luna finished'
+          + (n.label ? ': ' + n.label : '');
+        title.appendChild(star);
+        title.appendChild(titleText);
+        toast.appendChild(title);
+        if (n.preview) {
+          const preview = document.createElement('div');
+          preview.className = 'rt-preview';
+          preview.textContent = String(n.preview);
+          toast.appendChild(preview);
+        }
+        const dismiss = () => this.dismiss(id);
+        toast.addEventListener('click', dismiss);
+        host.appendChild(toast);
+        this._timers.set(id, setTimeout(dismiss, 6500));
+        return id;
+      },
+      dismiss(id) {
+        const host = this._host;
+        if (!host) return;
+        const toast = host.querySelector('.result-toast[data-id="' + id + '"]');
+        const timer = this._timers.get(id);
+        if (timer) { clearTimeout(timer); this._timers.delete(id); }
+        if (!toast) return;
+        toast.classList.add('leaving');
+        setTimeout(() => { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 220);
+      },
+    };
+
+    MoonFrames.register('result-delivered', (frame) => {
+      ResultToasts.show(frame);
+    });
+
+    // ── Update banner (staged-update nudge, surface #2) ────────────────────────
+    // The primary in-chat nudge for a staged update: a slim accent bar inserted
+    // as a sibling DIRECTLY BEFORE .composer-input-wrap (the form is
+    // flex-direction:column, so a block before the input wrap renders ABOVE the
+    // textarea — right where the user's eye already is). It only appears once the
+    // Rust updater has DOWNLOADED + VERIFIED a build (update://ready); the
+    // download/apply split is deliberate — nothing restarts on its own, so the
+    // user presses "Restart" when ready. Mirrors the ResultToasts shape (a small
+    // self-contained object, safe DOM, exposed on __MoonInternals for tests).
+    //
+    // Dismissal persists `luna_update_dismissed = <version>` so a version the
+    // user waved off stays hidden until a NEWER build lands (the quiet orb pip in
+    // the hub keeps the ambient hint either way). Updates are GOOD NEWS — accent
+    // palette, gentle copy, never alarming.
+    const UpdateBanner = {
+      _el: null,
+      _version: null,
+
+      // Where the bar lives: directly before .composer-input-wrap inside the
+      // flex-column .chat-input-area. Returns null if the composer isn't present
+      // (e.g. a stripped test DOM) so callers degrade silently.
+      _anchor() {
+        return document.querySelector('.chat-input-area .composer-input-wrap')
+          || document.querySelector('.composer-input-wrap');
+      },
+
+      // True when this version was explicitly dismissed and no newer one exists.
+      _isDismissed(version) {
+        try {
+          const seen = localStorage.getItem('luna_update_dismissed');
+          // Hidden only while the dismissed version is still the newest one we
+          // know about; a different (newer) version re-shows the bar.
+          return !!seen && !!version && seen === version;
+        } catch (_) { return false; }
+      },
+
+      // Build (once) and reveal the bar for `frame.version`. No-op when dismissed
+      // for this exact version. Re-showing for a NEWER version refreshes the copy.
+      onReady(frame) {
+        const f = frame || {};
+        const version = (f && f.version != null) ? String(f.version) : '';
+        if (this._isDismissed(version)) return;
+
+        const anchor = this._anchor();
+        if (!anchor || !anchor.parentNode) return; // no composer → nothing to do
+
+        this._version = version;
+
+        // Reuse an existing bar (idempotent re-show on a newer version), else mint.
+        let bar = this._el;
+        if (!bar || !document.body.contains(bar)) {
+          bar = document.createElement('div');
+          bar.className = 'update-banner';
+          bar.id = 'update-banner';
+
+          const dot = document.createElement('div');
+          dot.className = 'ub-dot';
+          dot.setAttribute('aria-hidden', 'true');
+
+          const text = document.createElement('div');
+          text.className = 'ub-text';
+          const title = document.createElement('div');
+          title.className = 'ub-title';
+          const sub = document.createElement('div');
+          sub.className = 'ub-sub';
+          // textContent only — release version/notes are remote-ish data.
+          sub.textContent = 'Downloaded and verified — restart to apply';
+          text.appendChild(title);
+          text.appendChild(sub);
+
+          const actions = document.createElement('div');
+          actions.className = 'ub-actions';
+          const restart = document.createElement('button');
+          restart.type = 'button';
+          restart.className = 'ub-btn primary';
+          restart.textContent = 'Restart';
+          restart.addEventListener('click', () => this.onApply());
+          const whatsNew = document.createElement('button');
+          whatsNew.type = 'button';
+          whatsNew.className = 'ub-btn';
+          whatsNew.textContent = "What's new";
+          whatsNew.addEventListener('click', () => this._openUpdates());
+          actions.appendChild(restart);
+          actions.appendChild(whatsNew);
+
+          const dismiss = document.createElement('button');
+          dismiss.type = 'button';
+          dismiss.className = 'ub-dismiss';
+          dismiss.setAttribute('aria-label', 'Dismiss update notice');
+          dismiss.textContent = '×'; // ×
+          dismiss.addEventListener('click', () => this.dismiss(this._version));
+
+          bar.appendChild(dot);
+          bar.appendChild(text);
+          bar.appendChild(actions);
+          bar.appendChild(dismiss);
+
+          // Insert as a sibling directly BEFORE the input wrap (above the input).
+          anchor.parentNode.insertBefore(bar, anchor);
+          this._el = bar;
+        }
+
+        // (Re)fill the version-bearing title via textContent (safe DOM).
+        const titleEl = bar.querySelector('.ub-title');
+        if (titleEl) {
+          titleEl.textContent = version
+            ? ('Update ready · v' + version)
+            : 'Update ready';
+        }
+        bar.classList.remove('leaving');
+        bar.hidden = false;
+      },
+
+      // Restart-to-update: persist nothing here (Rust apply_update saves the
+      // layout + writes the reopen marker), just ask the core to install the
+      // STAGED bytes and relaunch. On success the app re-execs (invoke never
+      // resolves); guarded so off-Tauri / pre-Slice-A builds no-op cleanly.
+      onApply() {
+        const core = window.__TAURI__ && window.__TAURI__.core;
+        if (!core) return;
+        core.invoke('apply_update').catch((e) => Logger.warn('apply_update failed:', e));
+      },
+
+      // "What's new" → open the full staged-narrative Updates panel.
+      _openUpdates() {
+        const core = window.__TAURI__ && window.__TAURI__.core;
+        if (!core) return;
+        core.invoke('open_widget', { kind: 'settings.updates' })
+          .catch((e) => Logger.warn('open updates panel failed:', e));
+      },
+
+      // Dismiss: hide + remember the version so it stays hidden until a NEWER
+      // build lands. The orb pip in the hub keeps the ambient hint.
+      dismiss(version) {
+        const v = (version != null) ? String(version) : (this._version || '');
+        try { if (v) localStorage.setItem('luna_update_dismissed', v); } catch (_) { /* best-effort */ }
+        this.hide();
+      },
+
+      hide() {
+        const bar = this._el;
+        if (!bar) return;
+        bar.classList.add('leaving');
+        bar.hidden = true;
+      },
+    };
+
+    // On chat boot: listen for the app-wide update://ready broadcast and, if the
+    // build is ALREADY staged when this window opened, replay-on-open via the
+    // update_state snapshot so a freshly-spawned chat syncs without waiting for
+    // the next event. All guarded behind window.__TAURI__ (jsdom has none).
+    (function wireUpdateBanner() {
+      const T = window.__TAURI__;
+      if (!T) return;
+      try {
+        if (T.event && typeof T.event.listen === 'function') {
+          T.event.listen('update://ready', (e) => {
+            UpdateBanner.onReady((e && e.payload) || {});
+          }).catch(() => {});
+        }
+      } catch (_) { /* best-effort */ }
+      // Replay-on-open: a build staged before this window existed won't re-emit,
+      // so pull the current phase once and show the bar if we're already ready.
+      try {
+        if (T.core && typeof T.core.invoke === 'function') {
+          T.core.invoke('update_state')
+            .then((dto) => {
+              if (dto && dto.phase === 'ready') {
+                UpdateBanner.onReady({ version: dto.version, notes: dto.notes });
+              }
+            })
+            .catch(() => { /* command absent on older cores → ignore */ });
+        }
+      } catch (_) { /* best-effort */ }
+    })();
 
     // ── WS close hooks ────────────────────────────────────────────────────
     // Secret hygiene on socket drop (was inline in the close handler). The
@@ -4253,6 +5685,141 @@
     const enhanceCodeBlocks = LunaMarkdown.enhanceCodeBlocks;
     const StreamRender = LunaMarkdown.StreamRender;
 
+    // Copy-message affordance ─────────────────────────────────────────────
+    // Lucide-style inline SVG glyphs (two overlapping squares = copy; a
+    // checkmark = the brief "copied" confirmation). EXPLICIT width/height are
+    // load-bearing: these are injected via innerHTML at runtime, and WKWebView
+    // (Tauri's webview) computes an SVG's intrinsic size from its attributes —
+    // a viewBox-only SVG sized purely by CSS renders blank/wrong there, unlike
+    // Chromium. Matching the static header icons (chat.html ~1633-1668), which
+    // all carry explicit width/height, is what makes them render. Explicit
+    // close tags keep the HTML parser from treating the foreign elements as
+    // containers.
+    const MSG_COPY_GLYPH =
+      '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor"'
+      + ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+      + '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>'
+      + '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+    const MSG_CHECK_GLYPH =
+      '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor"'
+      + ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+      + '<path d="M20 6 9 17l-5-5"></path></svg>';
+
+    // How long the copy button shows its "copied" checkmark before reverting.
+    const MSG_COPY_FLASH_MS = 1200;
+
+    // Build the small always-visible "copy this message" button for a bubble.
+    // Copies `text` (the message's RAW source — markdown for assistant turns,
+    // the typed text for user turns) so a paste preserves structure/code,
+    // mirroring both apps/ui-web's MessageBubble and the code-block copy.
+    // Returns a fresh <button>; callers append it on every paint (the
+    // reconciler rebuilds bubble contents, so the button is re-created too).
+    function buildMessageCopyButton(text) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'msg-copy';
+      btn.title = 'Copy message';
+      btn.setAttribute('aria-label', 'Copy message');
+      btn.innerHTML = MSG_COPY_GLYPH;
+
+      const flashDone = () => {
+        btn.innerHTML = MSG_CHECK_GLYPH;
+        btn.dataset.copied = '1';
+        btn.title = 'Copied!';
+        btn.setAttribute('aria-label', 'Copied');
+        setTimeout(() => {
+          btn.innerHTML = MSG_COPY_GLYPH;
+          delete btn.dataset.copied;
+          btn.title = 'Copy message';
+          btn.setAttribute('aria-label', 'Copy message');
+        }, MSG_COPY_FLASH_MS);
+      };
+
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        // Deliberately DON'T stopPropagation: WKWebView doesn't focus a
+        // <button> on click (so no `focusin` fires), so we let the click
+        // bubble to the delegated #chat-messages listener that refreshes this
+        // message's relative time. The bubble-level handlers it reaches are
+        // safe for the copy button (the luna-link handler ignores non-links).
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          // Only confirm on a real success — a rejected write (insecure
+          // context / denied permission) leaves the glyph unchanged.
+          navigator.clipboard.writeText(text).then(flashDone, () => {});
+        } else {
+          // execCommand fallback for older WKWebView contexts (same path the
+          // code-block copy uses).
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          let ok = false;
+          try { ok = document.execCommand('copy'); } catch (_) {}
+          document.body.removeChild(ta);
+          if (ok) flashDone();
+        }
+      });
+      return btn;
+    }
+
+    // Compact relative send-time for the message meta stamp: "just now",
+    // "9m ago", "2h ago", "5d ago". `now` is injectable for deterministic
+    // tests (mirrors humanizeRelTime in ui-shared-solid, but compact — that
+    // one can't be imported into this standalone page). Luna always knows
+    // "now"; each message carries its send-time — we render the difference.
+    function formatRelTime(ts, now) {
+      if (typeof ts !== 'number' || !isFinite(ts)) return '';
+      const ref = typeof now === 'number' ? now : Date.now();
+      const sec = Math.max(0, Math.floor((ref - ts) / 1000));
+      if (sec < 60) return 'just now';
+      const min = Math.floor(sec / 60);
+      if (min < 60) return min + 'm ago';
+      const hr = Math.floor(min / 60);
+      if (hr < 24) return hr + 'h ago';
+      return Math.floor(hr / 24) + 'd ago';
+    }
+
+    // The per-message action row: an always-visible footer holding the copy
+    // button + the relative send-time. Built fresh each paint (like the copy
+    // button) so it survives the reconciler's node rebuild. The row is an
+    // extensible flex container — future actions (undo / branch) slot in here.
+    // `ts` may be undefined (pre-`ts` server, or image-only) — the time span
+    // is then omitted; the refresh handler re-reads data-ts on focus/click.
+    function buildMessageMeta(text, ts, delivery) {
+      const row = document.createElement('div');
+      row.className = 'msg-meta';
+      // #124: provenance chip for a delivered background-job result. Sits
+      // first in the row so "from a background task" reads before the actions.
+      if (delivery && typeof delivery === 'object') {
+        const chip = document.createElement('span');
+        chip.className = 'msg-delivery';
+        chip.title = 'Delivered by a background task'
+          + (delivery.label ? ': ' + delivery.label : '');
+        const glyph = document.createElement('span');
+        glyph.className = 'glyph';
+        glyph.textContent = '↩';
+        const label = document.createElement('span');
+        label.className = 'label';
+        label.textContent = delivery.label
+          ? 'from ' + delivery.label
+          : 'from a background task';
+        chip.appendChild(glyph);
+        chip.appendChild(label);
+        row.appendChild(chip);
+      }
+      row.appendChild(buildMessageCopyButton(text));
+      if (typeof ts === 'number' && isFinite(ts)) {
+        const time = document.createElement('span');
+        time.className = 'msg-time';
+        time.dataset.ts = String(ts);
+        time.textContent = formatRelTime(ts);
+        row.appendChild(time);
+      }
+      return row;
+    }
+
     // Wire UserAsk panel buttons (Submit / Dismiss). Safe to bind here because
     // the DOM is already parsed by the time this <script> executes (inline at
     // bottom of <body>), and the DOM map captured the handles a few lines up.
@@ -4274,6 +5841,26 @@
         if (!a) return;
         e.preventDefault();
         const href = a.getAttribute('href') || '';
+        // luna://artifact/<id> → reopen a pinned artifact in its own widget
+        // window. The title comes from the client's pinned-artifact cache
+        // (populated by the artifact-list frame); open_artifact_widget tolerates
+        // an empty/unknown title and renders by id, so an uncached id still opens.
+        const artMatch = /^luna:\/\/artifact\/([^?\s]+)$/i.exec(href);
+        if (artMatch) {
+          // decodeURIComponent throws on malformed percent-encoding (e.g. "%E0%").
+          // Bail out rather than letting the exception abort the whole handler.
+          let id;
+          try { id = decodeURIComponent(artMatch[1]); }
+          catch (_) { Logger.warn('luna-link artifact: malformed id, ignoring'); return; }
+          const known = State.pinnedArtifacts.find((p) => p.id === id);
+          if (window.__TAURI__ && window.__TAURI__.core) {
+            window.__TAURI__.core.invoke('open_artifact_widget', {
+              artifactId: id,
+              title: (known && known.title) || '',
+            }).catch((err) => Logger.warn('luna-link artifact open failed:', err));
+          }
+          return;
+        }
         const m = /^luna:\/\/widget\/([a-z0-9.]+)(?:\?(.*))?$/i.exec(href);
         if (!m) return;
         const args = { kind: m[1] };
@@ -4293,6 +5880,25 @@
             .catch((err) => Logger.warn('luna-link open failed:', err));
         }
       });
+    }
+
+    // Refresh-on-interaction (no timer): clicking or focusing a message
+    // recomputes its relative send-time from the stored epoch, so an idle
+    // "9m ago" updates the moment you touch it. `focusin` bubbles, so tabbing
+    // onto the copy button refreshes that message's time for free. One
+    // delegated listener on the stable container survives bubble rebuilds.
+    if (DOM.chatMessages) {
+      const refreshMsgTime = (e) => {
+        const t = e.target;
+        const msg = t && t.closest ? t.closest('.msg') : null;
+        if (!msg) return;
+        const span = msg.querySelector('.msg-time[data-ts]');
+        if (!span) return;
+        const ts = Number(span.dataset.ts);
+        if (isFinite(ts)) span.textContent = formatRelTime(ts);
+      };
+      DOM.chatMessages.addEventListener('click', refreshMsgTime);
+      DOM.chatMessages.addEventListener('focusin', refreshMsgTime);
     }
 
     // Wire the Artifacts panel close button and header toggle.
@@ -4330,6 +5936,53 @@
         if (e.key === 'Enter') { e.preventDefault(); SecretPromptEngine.submit(); }
       });
     }
+
+    // ── Suggested-actions chip click handlers ─────────────────────────────
+    if (DOM.suggestedActionAccept) {
+      DOM.suggestedActionAccept.addEventListener('click', () => {
+        const actionId = DOM.suggestedActionPanel && DOM.suggestedActionPanel.dataset.actionId;
+        if (actionId) SuggestedActionsEngine._respond(actionId, 'accept');
+      });
+    }
+    if (DOM.suggestedActionDismiss) {
+      DOM.suggestedActionDismiss.addEventListener('click', () => {
+        const actionId = DOM.suggestedActionPanel && DOM.suggestedActionPanel.dataset.actionId;
+        if (actionId) SuggestedActionsEngine._respond(actionId, 'dismiss');
+      });
+    }
+    if (DOM.suggestedActionCancelX) {
+      // X button = dismiss the shown action (same as Dismiss).
+      DOM.suggestedActionCancelX.addEventListener('click', () => {
+        const actionId = DOM.suggestedActionPanel && DOM.suggestedActionPanel.dataset.actionId;
+        if (actionId) SuggestedActionsEngine._respond(actionId, 'dismiss');
+        else if (DOM.suggestedActionPanel) DOM.suggestedActionPanel.hidden = true;
+      });
+    }
+    if (DOM.suggestedActionSeeAll) {
+      DOM.suggestedActionSeeAll.addEventListener('click', () => {
+        const thread = State.activeThreadId || '';
+        if (window.__TAURI__) {
+          window.__TAURI__.core.invoke('open_widget', { kind: 'actions', params: { thread } })
+            .catch(() => {});
+        }
+      });
+    }
+
+    // Top-bar redesign: the header suggestion chip is a teaser; clicking it
+    // reveals the full docked panel (rationale + accept/dismiss/see-all),
+    // which _show() has already painted with the active action.
+    if (DOM.lunaSuggestion) {
+      DOM.lunaSuggestion.addEventListener('click', () => {
+        if (DOM.suggestedActionPanel) {
+          DOM.suggestedActionPanel.hidden = false;
+          try { DOM.suggestedActionPanel.scrollIntoView({ block: 'nearest' }); } catch (_) { /* jsdom */ }
+        }
+      });
+    }
+
+    // Boot the animated face + free-space bar (idempotent; safe under jsdom).
+    MoonFace.init();
+    MoonBar.init();
 
     /**
      * File / image attachment composer state.
@@ -4706,6 +6359,8 @@
       // Turn shape:
       //   { key, role: 'user' | 'assistant', status: 'streaming' | 'done' | 'error' | 'banner',
       //     segments: Segment[], previews?, turnId?, errorText?,
+      //     ts? (ms-epoch send-time: server stamp for history/assistant-done,
+      //          client Date.now() for user — drives the meta-row "9m ago"),
       //     _cumText? (delta-dedup), _timelineCollapsed? (timeline toggle),
       //     _settled? (agentic turn fully ended — set on `turn-complete`) }
       //
@@ -4738,18 +6393,29 @@
             status: 'done',
             segments: [{ kind: 'text', raw: String(msg.text), done: true }],
             previews: null,
+            // Server send-time (ms epoch) — drives the "9m ago" meta stamp.
+            // Undefined for pre-`ts` servers; the renderer omits the time then.
+            ts: Number.isFinite(msg.ts) ? msg.ts : undefined,
+            // #124: provenance for a background-delivered result so the chip
+            // re-renders on replay/reopen. Absent for ordinary turns.
+            delivery: (msg.delivery && typeof msg.delivery === 'object') ? msg.delivery : null,
           });
         }
       },
 
-      appendUser(text, previews) {
+      appendUser(text, previews, ts) {
         const t = String(text ?? '');
+        // Client send-time — the user turn never round-trips the server, so we
+        // stamp it locally. Optional `ts` keeps tests deterministic; the live
+        // submit path omits it and gets Date.now(). Shared with the key.
+        const stamp = Number.isFinite(ts) ? ts : Date.now();
         this.turns.push({
-          key: 'u-' + Date.now() + '-' + this.turns.length,
+          key: 'u-' + stamp + '-' + this.turns.length,
           role: 'user',
           status: 'done',
           segments: t ? [{ kind: 'text', raw: t, done: true }] : [],
           previews: previews || null,
+          ts: stamp,
         });
       },
 
@@ -4761,6 +6427,28 @@
           status: 'banner',
           segments: t ? [{ kind: 'text', raw: t, done: true }] : [],
           previews: null,
+        });
+      },
+
+      // #124: a finished background/job result, delivered into this thread as a
+      // complete (non-streaming) assistant turn. Unlike the live reply path it
+      // has no deltas — so it can't ride finishTurn (which needs an in-flight
+      // turn). Pushed as a done assistant turn carrying the delivery marker so
+      // the renderer paints the "from a background task" chip. Rendered through
+      // the normal text path (status 'done', a single done text segment).
+      appendDelivered(message) {
+        const t = String((message && message.text) || '');
+        if (!t.trim()) return;
+        this.turns.push({
+          key: 'd-' + Date.now() + '-' + this.turns.length,
+          role: 'assistant',
+          status: 'done',
+          segments: [{ kind: 'text', raw: t, done: true }],
+          previews: null,
+          ts: Number.isFinite(message && message.ts) ? message.ts : Date.now(),
+          delivery: (message && message.delivery && typeof message.delivery === 'object')
+            ? message.delivery : { source: 'background-job' },
+          _settled: true,
         });
       },
 
@@ -4874,7 +6562,7 @@
         }
       },
 
-      finishTurn(turnId, fullText) {
+      finishTurn(turnId, fullText, ts) {
         const turn = this._findTurn(turnId) || this._findPending();
         if (!turn) return;
         // Close all open text segments.
@@ -4887,7 +6575,9 @@
           return;
         }
         turn.status = 'done';
-        // (fullText arg is unused — the renderer reconstructs from segments.)
+        // Stamp the server send-time (from assistant-done's message.ts) for the
+        // meta-row time. (fullText is unused — the renderer rebuilds from segments.)
+        if (Number.isFinite(ts)) turn.ts = ts;
       },
 
       failTurn(turnId, errorText) {
@@ -5042,6 +6732,16 @@
             out.push({ key: turn.key + '|e', kind: 'error', turn: turn, seg: null });
             i++; continue;
           }
+          // #124: a background-DELIVERED result is a standalone answer, never
+          // part of an agentic run. If it were merged into a run that later
+          // gains a tool, its text would be absorbed into the collapsed
+          // timeline "work" section and its "from a background task" chip
+          // lost. Render it as its own single-turn run so the answer bubble
+          // (with the chip) always shows.
+          if (turn.delivery) {
+            this._planRun([turn], out, false);
+            i++; continue;
+          }
           // Collect the run. With a turn-complete-capable server, group the
           // maximal run of consecutive assistant turns into one timeline. With
           // an OLDER server (no turn-complete capability), DON'T group — each
@@ -5050,10 +6750,13 @@
           const grouped = State.serverSupportsTurnComplete !== false;
           const run = [];
           if (grouped) {
+            // Stop at a delivered turn too — it's handled standalone above, so
+            // a normal run must not swallow a following delivery.
             while (i < turns.length
                 && turns[i].role === 'assistant'
                 && turns[i].status !== 'banner'
-                && turns[i].status !== 'error') {
+                && turns[i].status !== 'error'
+                && !turns[i].delivery) {
               run.push(turns[i]);
               i++;
             }
@@ -5212,37 +6915,60 @@
         node.textContent = '';
         let text = '';
         for (const s of w.turn.segments) if (s.kind === 'text') text += s.raw;
-        if (text) node.appendChild(document.createTextNode(text));
+        // Message content lives in .msg-body so the meta footer's time text
+        // doesn't bleed into the bubble's textContent.
+        const body = document.createElement('div');
+        body.className = 'msg-body';
+        if (text) body.appendChild(document.createTextNode(text));
         if (w.turn.previews && w.turn.previews.length) {
-          node.appendChild(this._buildPreviewTray(w.turn.previews, !!text));
+          body.appendChild(this._buildPreviewTray(w.turn.previews, !!text));
         }
+        node.appendChild(body);
+        // Always-visible action row: copy + relative send-time (skip image-only).
+        // NOTE: meta rows attach ONLY here and in _paintText — keep the two in
+        // sync (banners/errors/typing/timelines intentionally have none).
+        if (text) node.appendChild(buildMessageMeta(text, w.turn.ts));
       },
 
       _paintBanner(w, node) {
         // Banner text is plain — no markdown — so the operator can read e.g.
-        // "Connection lost — try again." literally.
+        // "Connection lost — try again." literally. Content wraps in .msg-body
+        // (the painted bubble) like every other .msg kind.
         node.textContent = '';
         let text = '';
         for (const s of w.turn.segments) if (s.kind === 'text') text += s.raw;
-        if (text) node.appendChild(document.createTextNode(text));
+        const body = document.createElement('div');
+        body.className = 'msg-body';
+        if (text) body.appendChild(document.createTextNode(text));
+        node.appendChild(body);
       },
 
       _paintError(w, node) {
-        node.textContent = '⚠️ Error: ' + (w.turn.errorText || '');
+        node.textContent = '';
+        const body = document.createElement('div');
+        body.className = 'msg-body';
+        body.textContent = '⚠️ Error: ' + (w.turn.errorText || '');
+        node.appendChild(body);
       },
 
       _paintTyping(node) {
-        node.innerHTML = '<div class="typing-dots">'
+        node.innerHTML = '<div class="msg-body"><div class="typing-dots">'
           + '<div class="dot"></div>'
           + '<div class="dot"></div>'
           + '<div class="dot"></div>'
-          + '</div>';
+          + '</div></div>';
       },
 
       _paintText(w, node) {
         const seg = w.seg;
         const fn = seg.done ? renderMarkdown : renderMarkdownStreaming;
-        node.innerHTML = fn(seg.raw);
+        // Rendered markdown lives in .msg-body so the meta footer's time text
+        // stays out of the bubble's textContent.
+        node.textContent = '';
+        const body = document.createElement('div');
+        body.className = 'msg-body';
+        body.innerHTML = fn(seg.raw);
+        node.appendChild(body);
         // Editor-feel: syntax-highlight + wire copy buttons on every code
         // block in the freshly-painted subtree. Cheap, idempotent, and the
         // streaming path is already rAF-coalesced upstream.
@@ -5251,6 +6977,13 @@
         // anything (tests, the old protocol's `data-stream-raw` snoops) can
         // still read it. Authoritative source is ChatState.
         node.dataset.streamRaw = seg.raw;
+        // Settled answers get the action row (copy + send-time). Gated on
+        // `done` so a still-streaming bubble doesn't sprout (and re-sprout,
+        // every coalesced frame) the row — it appears when the text is final.
+        // The other (and only other) meta-row attach point is _paintUser.
+        // #124: pass the turn's delivery marker so a background-delivered
+        // result shows the "from a background task" chip.
+        if (seg.done && seg.raw) node.appendChild(buildMessageMeta(seg.raw, w.turn.ts, w.turn.delivery));
       },
 
       // Build one tool card as a self-contained `.tool-call-card` (a <div>
@@ -5670,6 +7403,7 @@
 
         // Show typing indicator
         this.showTypingIndicator();
+        MoonFace.setBusy(true);   // a turn is in flight → face goes "thinking"
         WebSocketEngine.startTurnTimeout();
 
         // Send user message over the real WebSocket!
@@ -6126,6 +7860,7 @@
           }
         }
         if (DOM.voiceMicBtn) DOM.voiceMicBtn.dataset.voiceState = visual;
+        MoonFace.setVoice(visual);   // wide eyes when listening, chatter when speaking
       },
 
       onVoiceError(p) {
@@ -6204,8 +7939,20 @@
       }
       const a = e.target.closest && e.target.closest('a[href]');
       if (!a) return;
+      // luna:// widget/artifact links are owned by the delegated handler above
+      // (open_widget / open_artifact_widget). Leave them to it.
+      if (a.hasAttribute('data-luna-link')) return;
       e.preventDefault();
-      try { window.open(a.href, '_blank', 'noopener'); } catch (_) { /* inert link; UI preserved */ }
+      // In a Tauri webview window.open() can't reach the system browser, so
+      // route through the native opener (https + mailto only, enforced in Rust).
+      // Outside Tauri (dev-in-a-browser) window.open is still the right fallback.
+      const url = a.href;
+      if (window.__TAURI__ && window.__TAURI__.core) {
+        window.__TAURI__.core.invoke('open_external_url', { url })
+          .catch((err) => Logger.warn('open link failed:', err));
+      } else {
+        try { window.open(url, '_blank', 'noopener,noreferrer'); } catch (_) { /* inert link; UI preserved */ }
+      }
     });
 
     // ---- Attachment composer wiring ----
@@ -6305,7 +8052,13 @@
     // thread (its own open_widget instance label). Null = the main line.
     // Declared here, consumed at runtime by syncThread / the snapshot
     // persist (same IIFE scope; TDZ is safe — both run after evaluation).
-    const PINNED_THREAD = new URLSearchParams(location.search).get('thread') || null;
+    // A spawned "new thread" panel arrives as ?thread=new — a SENTINEL, not a
+    // real id: it mints its OWN fresh thread on its own socket (see syncThread)
+    // rather than subscribing. Any other value is a Phase 8 direct line pinned
+    // to that thread; null = the main line.
+    const _threadParam = new URLSearchParams(location.search).get('thread') || null;
+    const SPAWN_FRESH = _threadParam === 'new';
+    const PINNED_THREAD = SPAWN_FRESH ? null : _threadParam;
 
     // ── Widget-window chrome (panel.html conventions) ──────────────────────
     let W = null;
@@ -6323,6 +8076,194 @@
         try {
           if (window.__TAURI__ && window.__TAURI__.core && winLabel) {
             window.__TAURI__.core.invoke('close_widget', { label: winLabel }).catch(() => {});
+          }
+        } catch (_) { /* best-effort */ }
+      });
+    }
+
+    // New-thread button → spawn a FRESH Luna panel docked to the right of this
+    // one. open_widget focuses an existing window when its params match, so a
+    // unique nonce makes every click a new sibling; ?thread=new tells the new
+    // window to mint its own thread (syncThread); opener=this panel positions it
+    // flush-right and joins this panel's dock group.
+    // ── ArchivePanel Engine (Phase 3: thread archival) ─────────────────────
+    // Functional-minimal: archive button on active thread; "Archived" toggle
+    // to view/restore archived threads. No polling — request-response via WS.
+    const ArchivePanel = (() => {
+      let _visible = false;
+      let _archivedThreads = [];
+
+      const archiveBtn = document.getElementById('archive-thread-btn');
+      const toggleBtn = document.getElementById('archive-view-btn');
+
+      // HTML escaping helper — prevents stored-XSS from user-derived fields
+      // (thread titles come from user message text and must never be interpolated raw).
+      const escapeHtml = (str) => {
+        if (str == null) return '';
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      };
+
+      // Show archive button only when there's an active thread
+      const refreshArchiveBtn = () => {
+        if (archiveBtn) {
+          archiveBtn.style.display = State.activeThreadId ? 'flex' : 'none';
+        }
+      };
+
+      const renderArchivedPanel = () => {
+        // Find or create a notice area below the title bar.
+        let panel = document.getElementById('archive-panel-overlay');
+        if (!panel) {
+          panel = document.createElement('div');
+          panel.id = 'archive-panel-overlay';
+          panel.style.cssText = [
+            'position:absolute', 'top:36px', 'left:0', 'right:0',
+            'background:var(--paper,#fff)', 'border-bottom:1px solid var(--ink-faint,#ccc)',
+            'padding:8px 12px', 'z-index:200', 'max-height:50vh',
+            'overflow-y:auto', 'font-size:12px',
+          ].join(';');
+          const chatPanel = document.querySelector('.chat-panel') || document.body;
+          chatPanel.style.position = 'relative';
+          chatPanel.prepend(panel);
+        }
+
+        if (_archivedThreads.length === 0) {
+          panel.innerHTML = '<div style="color:var(--ink-faint,#888);padding:8px 0">No archived threads.</div>';
+          return;
+        }
+
+        const header = '<div style="font-weight:600;margin-bottom:6px;color:var(--ink,#333)">Archived threads</div>';
+        const rows = _archivedThreads.map((t) => {
+          // All user/server-derived fields are escaped to prevent stored-XSS.
+          // t.title comes from user message text; t.model and t.id from server
+          // but treated as untrusted for defence-in-depth.
+          const label = escapeHtml(t.title || t.id || '(untitled)');
+          const model = t.model
+            ? ` <span style="color:var(--ink-faint,#888);font-size:10px">${escapeHtml(t.model)}</span>`
+            : '';
+          // The Restore button passes t.id via a data attribute read by the
+          // onclick handler — avoids raw id interpolation inside the attribute.
+          return [
+            `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-top:1px solid var(--ink-faint,#eee)">`,
+            `  <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}${model}</span>`,
+            `  <button style="background:none;border:1px solid var(--ink-faint,#ccc);border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px"`,
+            `    data-thread-id="${escapeHtml(t.id)}" class="archive-restore-btn">Restore</button>`,
+            `</div>`,
+          ].join('');
+        });
+        panel.innerHTML = header + rows.join('');
+        // Attach click handlers via addEventListener (no inline onclick) so
+        // that thread IDs are read from the data attribute, never from raw HTML.
+        panel.querySelectorAll('.archive-restore-btn').forEach((btn) => {
+          btn.addEventListener('click', () => restore(btn.dataset.threadId));
+        });
+        window.ArchivePanel = ArchivePanel; // expose for legacy callers
+      };
+
+      const refresh = () => {
+        if (!_visible) return;
+        WebSocketEngine.send({ type: 'list-threads', status: 'archived' });
+      };
+
+      const show = () => {
+        // Set _visible BEFORE calling refresh() so that onArchivedList() (which
+        // fires when the WS response arrives) correctly re-renders the panel
+        // even though the overlay element does not exist yet.
+        _visible = true;
+        if (toggleBtn) toggleBtn.classList.add('active');
+        refresh();
+      };
+
+      const hide = () => {
+        _visible = false;
+        if (toggleBtn) toggleBtn.classList.remove('active');
+        const panel = document.getElementById('archive-panel-overlay');
+        if (panel) panel.remove();
+      };
+
+      const toggle = () => {
+        if (_visible) hide(); else show();
+      };
+
+      const archive = () => {
+        if (!State.activeThreadId) return;
+        if (!confirm('Archive this thread? It can be restored later.')) return;
+        WebSocketEngine.send({ type: 'archive-thread', threadId: State.activeThreadId });
+      };
+
+      const restore = (threadId) => {
+        WebSocketEngine.send({ type: 'unarchive-thread', threadId });
+        hide();
+      };
+
+      // Called by thread-list handler when status='archived'
+      const onArchivedList = (threads) => {
+        _archivedThreads = threads;
+        if (_visible) renderArchivedPanel();
+      };
+
+      if (archiveBtn) archiveBtn.addEventListener('click', archive);
+      if (toggleBtn) toggleBtn.addEventListener('click', toggle);
+
+      return { refresh, show, hide, toggle, archive, restore, onArchivedList, refreshArchiveBtn,
+               // visible getter exposed on the returned object so callers that
+               // hold a reference to it (rather than window.ArchivePanel) also
+               // see the boolean state, not the DOM-existence heuristic.
+               get visible() { return _visible; } };
+    })();
+
+    // Fix (Copilot comment #4): visible must reflect the boolean _visible flag
+    // set in show()/hide(), NOT whether the overlay DOM element exists.
+    // The overlay is only created AFTER the WS response arrives; between the
+    // toggle click and that response the old DOM-existence getter was wrong.
+    // The getter on the returned object above already delegates to _visible;
+    // redefine the property on the ArchivePanel reference to be consistent
+    // (the returned object's own getter is authoritative — no separate
+    // Object.defineProperty override needed here).
+    // Intentionally left without an Object.defineProperty override so that the
+    // closure-captured _visible is the single source of truth.
+
+    // Hook thread-list to route archived lists to the panel
+    const _origThreadListHandler = MoonFrames.dispatch;
+    const _origRegister = MoonFrames.register.bind(MoonFrames);
+    // Override the thread-list handler to also route archived lists
+    const _baseThreadListHandler = (() => {
+      // Re-register thread-list to check for archived frame
+      const saved = [];
+      const origDispatch = MoonFrames.dispatch;
+      // Patch: on thread-list with archived status, route to panel
+      const patchedDispatch = (frame) => {
+        if (frame && frame.type === 'thread-list' && frame.threads) {
+          // Heuristic: if showing archived, threads will be in archived state.
+          // The server sends thread-list in response to list-threads?status=archived.
+          // We detect by checking if all returned threads have status='archived' OR
+          // we rely on the ArchivePanel.visible flag.
+          if (ArchivePanel.visible) {
+            ArchivePanel.onArchivedList(frame.threads);
+            // Don't suppress — still let normal handler run (it handles initial subscriptions)
+          }
+        }
+        return origDispatch.call(MoonFrames, frame);
+      };
+      MoonFrames.dispatch = patchedDispatch;
+    })();
+
+    let _newThreadSeq = 0;
+    const winNewThreadBtn = document.getElementById('new-thread-btn');
+    if (winNewThreadBtn) {
+      winNewThreadBtn.addEventListener('click', () => {
+        try {
+          if (window.__TAURI__ && window.__TAURI__.core) {
+            const nonce = `${Date.now().toString(36)}-${++_newThreadSeq}`;
+            const args = { kind: 'chat', params: { thread: 'new', n: nonce } };
+            if (winLabel) args.opener = winLabel;
+            window.__TAURI__.core.invoke('open_widget', args)
+              .catch((err) => Logger.warn('new-thread spawn failed:', err));
           }
         } catch (_) { /* best-effort */ }
       });
@@ -6414,6 +8355,9 @@
       window.__MoonInternals.renderMarkdown = renderMarkdown;
       window.__MoonInternals.renderMarkdownStreaming = renderMarkdownStreaming;
       window.__MoonInternals.enhanceCodeBlocks = enhanceCodeBlocks;
+      window.__MoonInternals.buildMessageCopyButton = buildMessageCopyButton;
+      window.__MoonInternals.buildMessageMeta = buildMessageMeta;
+      window.__MoonInternals.formatRelTime = formatRelTime;
       window.__MoonInternals.StreamRender = StreamRender;
       window.__MoonInternals.isVisuallyEmpty = (b) => ChatEngine.isVisuallyEmpty(b);
       window.__MoonInternals.sweepTrailingEmptyAssistantBubbles = () => ChatEngine.sweepTrailingEmptyAssistantBubbles();
@@ -6421,7 +8365,12 @@
       window.__MoonInternals.attachToolResult = (f) => ChatEngine.attachToolResult(f);
       window.__MoonInternals.autoGrowMessageInput = () => ChatEngine.autoGrowMessageInput();
       window.__MoonInternals.handleFrame = (frame) => WebSocketEngine.handleFrame(frame);
+      window.__MoonInternals.ResultToasts = ResultToasts;   // #124 toast harness
+      window.__MoonInternals.UpdateBanner = UpdateBanner;   // staged-update nudge harness
       window.__MoonInternals.SurveyEngine = SurveyEngine;
+      window.__MoonInternals.SuggestedActionsEngine = SuggestedActionsEngine;
+      window.__MoonInternals.MoonFace = MoonFace;
+      window.__MoonInternals.MoonBar = MoonBar;
       window.__MoonInternals.ArtifactsEngine = ArtifactsEngine;
       window.__MoonInternals.WorkflowsEngine = WorkflowsEngine;
       window.__MoonInternals.SecretPromptEngine = SecretPromptEngine;

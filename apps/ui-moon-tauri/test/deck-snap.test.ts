@@ -32,52 +32,55 @@ beforeAll(() => {
   // The module assigns to globalThis.LunaDeckSnap; run it with `globalThis`
   // bound to our sandbox so we don't pollute the real global.
   new Function("globalThis", src)(sandbox)
-  computeSnap = (sandbox.LunaDeckSnap as { computeSnap: typeof computeSnap })
-    .computeSnap
+  computeSnap = (sandbox.LunaDeckSnap as { computeSnap: typeof computeSnap }).computeSnap
 })
 
-// The chat anchor sits at (500,300), 360x600.
+// The chat anchor sits at (500,300), 360x600 → corners TL(500,300) TR(860,300)
+// BL(500,900) BR(860,900). The design snaps a dragged window to one of 8
+// corner-aligned tiles (BOTH axes pinned), nearest-by-2D-distance within 30px.
 const anchor: Rect = { x: 500, y: 300, w: 360, h: 600 }
 
-describe("computeSnap", () => {
-  it("snaps to the RIGHT edge when the widget's left edge is within threshold", () => {
-    // widget left edge at 870, anchor right edge at 860 → gap 10 ≤ 22.
-    const snap = computeSnap(anchor, { x: 870, y: 320, w: 300, h: 200 })
-    expect(snap).toEqual({ x: 860, y: 320, edge: "r" })
+describe("computeSnap — corner-aligned magnetic snap (Luna Dock model)", () => {
+  it("snaps RIGHT · top-aligned when dropped near the anchor's top-right corner", () => {
+    // right-top tile = (860, 300); drop at (868,308) → dist √(8²+8²)=11.3 ≤ 30.
+    const snap = computeSnap(anchor, { x: 868, y: 308, w: 300, h: 200 })
+    expect(snap).toEqual({ x: 860, y: 300, edge: "r" })
   })
 
-  it("snaps to the LEFT edge, placing the widget flush to the left of the anchor", () => {
-    // widget right edge near anchor left (500); widget at x=190 w=300 → right=490, gap 10.
-    const snap = computeSnap(anchor, { x: 190, y: 320, w: 300, h: 200 })
-    expect(snap).toEqual({ x: 200, y: 320, edge: "l" }) // 500 - 300
+  it("snaps LEFT · top-aligned when dropped just outside the top-left corner", () => {
+    // left-top tile = (500 - 300, 300) = (200, 300); drop at (208,306) → dist 10.
+    const snap = computeSnap(anchor, { x: 208, y: 306, w: 300, h: 200 })
+    expect(snap).toEqual({ x: 200, y: 300, edge: "l" })
   })
 
-  it("snaps to the BOTTOM edge when below and horizontally overlapping", () => {
-    // anchor bottom = 900; widget top at 912 → gap 12.
-    const snap = computeSnap(anchor, { x: 520, y: 912, w: 300, h: 200 })
+  it("snaps BELOW · left-aligned when dropped near the bottom-left corner", () => {
+    // below-left tile = (500, 900); drop at (506,892) → dist 10.
+    const snap = computeSnap(anchor, { x: 506, y: 892, w: 300, h: 200 })
+    expect(snap).toEqual({ x: 500, y: 900, edge: "b" })
+  })
+
+  it("snaps to the NEAREST corner tile (below · right-aligned)", () => {
+    // w=340 → below-left (500,900) and below-right (520,900) sit 20px apart.
+    // drop at (518,894): below-right dist √(2²+6²)=6.3 beats below-left √(18²+6²)=19.
+    const snap = computeSnap(anchor, { x: 518, y: 894, w: 340, h: 200 })
     expect(snap).toEqual({ x: 520, y: 900, edge: "b" })
   })
 
-  it("returns null when no edge is within threshold", () => {
+  it("does NOT snap mid-edge — far from both corners of that edge", () => {
+    // The corner-align signature: a window at the vertical MIDDLE of the right
+    // edge is far from right-top (860,300) and right-bottom (860,700) → no snap,
+    // where the old edge-flush model would have stuck it mid-edge.
+    expect(computeSnap(anchor, { x: 868, y: 560, w: 300, h: 200 })).toBeNull()
+  })
+
+  it("returns null when no corner tile is within threshold", () => {
     expect(computeSnap(anchor, { x: 1000, y: 320, w: 300, h: 200 })).toBeNull()
   })
 
-  it("does NOT side-snap when there is no vertical overlap (diagonal off the corner)", () => {
-    // Left edge would be within threshold of the right edge, but the widget is
-    // entirely ABOVE the anchor (y+h=250 < anchor.y=300) → no vertical overlap.
-    const snap = computeSnap(anchor, { x: 870, y: 50, w: 300, h: 200 })
-    expect(snap).toBeNull()
-  })
-
-  it("picks the NEAREST edge when two are within threshold", () => {
-    // Near the bottom-right corner: right-gap 5, bottom-gap 15 → right wins.
-    const snap = computeSnap(anchor, { x: 865, y: 885, w: 300, h: 200 })
-    expect(snap?.edge).toBe("r")
-  })
-
   it("honors a custom threshold", () => {
-    const w = { x: 880, y: 320, w: 300, h: 200 } // right-gap 20
-    expect(computeSnap(anchor, w, 10)).toBeNull() // 20 > 10
-    expect(computeSnap(anchor, w, 25)?.edge).toBe("r") // 20 ≤ 25
+    // drop at (884,318): right-top (860,300) dist √(24²+18²)=30 exactly.
+    const w = { x: 884, y: 318, w: 300, h: 200 }
+    expect(computeSnap(anchor, w, 25)).toBeNull() // 30 > 25
+    expect(computeSnap(anchor, w, 35)?.edge).toBe("r") // 30 ≤ 35
   })
 })

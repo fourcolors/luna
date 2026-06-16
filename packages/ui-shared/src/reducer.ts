@@ -22,6 +22,7 @@ import type {
   SessionSummary,
   SkillCatalogItem,
   SmartBarItem,
+  SuggestedActionWire,
   VaultSyncWire,
   VaultWireItem,
   WorkflowGalleryItem,
@@ -65,8 +66,13 @@ export interface UIState {
     readonly connectors?: boolean
     readonly artifacts?: boolean
     readonly workflows?: boolean
+    /** Suggested Actions: inline chip + per-thread Actions panel available. */
+    readonly suggestedActions?: boolean
     /** Luna Vault (V1): vault-list pushed after hello; vault mutations routed. */
     readonly vault?: boolean
+    /** MCP Apps: server resolves ui:// resources + routes mcp-resource-read/
+     *  mcp-tool-call, so kind="mcp-app" artifacts can render live. */
+    readonly mcpApps?: boolean
     /**
      * Server accepts `set-thread-config` frames and computes the effort-validity
      * matrix per-model (advertised in `availableModels.efforts`). Clients hide
@@ -83,8 +89,9 @@ export interface UIState {
   readonly availableModels: ReadonlyArray<{
     readonly id: string
     readonly label: string
-    /** Effort levels valid for this model, server-computed. Absent = no effort param. */
-    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max">
+    /** Effort options valid for this model, server-computed. Absent = no effort
+     *  param. Includes the "ultracode" pseudo-token (not a real SDK effort). */
+    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max" | "ultracode">
   }> | null
   /** Sidebar projection — most-recently-active first (server orders). */
   readonly threadList: ReadonlyArray<SessionSummary>
@@ -124,6 +131,11 @@ export interface UIState {
    *  + per-job run history fetched on demand. Gated on capabilities.workflows. */
   readonly workflows: ReadonlyArray<WorkflowGalleryItem>
   readonly workflowRuns: ReadonlyMap<string, ReadonlyArray<WorkflowRunItem>>
+  /** Suggested Actions — Luna's proposed actions, keyed by owning threadId
+   *  (per-thread scope). The inline chip reads the active thread's latest
+   *  `proposed` entry; the Actions panel renders the whole thread array.
+   *  Gated on capabilities.suggestedActions. */
+  readonly suggestedActions: ReadonlyMap<string, ReadonlyArray<SuggestedActionWire>>
   /** Luna Vault (V1) — credential registry (metadata + opaque pointers only;
    *  never credential values). Gated on capabilities.vault. */
   readonly vaultItems: ReadonlyArray<VaultWireItem>
@@ -166,6 +178,7 @@ export const initialState: UIState = {
   pinnedArtifacts: [],
   workflows: [],
   workflowRuns: new Map(),
+  suggestedActions: new Map(),
   vaultItems: [],
   vaultSync: null,
   smartBarItems: [],
@@ -438,6 +451,29 @@ export const reduce = (state: UIState, action: Action): UIState => {
       next.set(frame.jobId, frame.runs)
       return { ...state, workflowRuns: next }
     }
+    case "suggested-action-set": {
+      // Server-authored full set for one thread (initial paint + replay-on-open
+      // + re-sent wholesale on change) — replace that thread's slice. Other
+      // threads untouched (per-thread scope).
+      const next = new Map(state.suggestedActions)
+      next.set(frame.threadId, frame.actions)
+      return { ...state, suggestedActions: next }
+    }
+    case "suggested-action-update": {
+      // One action changed (status/execution delta). Replace it in the thread's
+      // array by id, or append if not yet seen (a live action arriving before
+      // any set). Server status is authoritative.
+      const next = new Map(state.suggestedActions)
+      const cur = next.get(frame.threadId) ?? []
+      const seen = cur.some((a) => a.id === frame.action.id)
+      next.set(
+        frame.threadId,
+        seen
+          ? cur.map((a) => (a.id === frame.action.id ? frame.action : a))
+          : [...cur, frame.action],
+      )
+      return { ...state, suggestedActions: next }
+    }
     case "pty-output":
       // pty output is consumed by the setup terminal directly off the
       // transport (streamy frame), not folded into store state.
@@ -479,6 +515,24 @@ export const reduce = (state: UIState, action: Action): UIState => {
       // (that lives in cfg().model/cfg().effort in App.tsx). The UI layer
       // reads applied/deferred/rejected from this frame directly. No-op here.
       return state
+    case "widget-open":
+    case "open-artifact-widget":
+      // Imperative "open a panel" commands from the agent. They drive the board
+      // (summon a panel / select an artifact) as a SIDE EFFECT, handled in the
+      // App.tsx onFrame interceptor — they carry no persistent store state.
+      return state
+    case "mcp-resource-result":
+    case "mcp-tool-result":
+      // MCP Apps relay replies. Correlated by requestId to a pending promise in
+      // the App.tsx onFrame interceptor (the mcp-app iframe host awaits them);
+      // no persistent store state. Still dispatched for exhaustiveness.
+      return state
+    case "result-delivered":
+      // #124: a background/job result landed in a thread. Transient toast —
+      // surfaced as a side effect in the App.tsx onFrame interceptor (like
+      // widget-open), not persistent store state. The result message itself
+      // arrives via assistant-done and IS folded into the thread's messages.
+      return state
     case "smart-bar":
       // Server-assembled context item list for the active thread. Replace
       // wholesale — the server re-pushes the full list on every context
@@ -489,6 +543,16 @@ export const reduce = (state: UIState, action: Action): UIState => {
         smartBarItems: frame.items,
         smartBarThreadId: frame.threadId,
       }
+    case "thread-archived":
+    case "thread-unarchived":
+      // Phase 3 archive/unarchive ack frames. The thread list is refreshed
+      // by the UI re-querying list-threads after these acks — no persistent
+      // store state to fold here (same pattern as vault-status).
+      return state
+    case "thread-archive-error":
+      // Phase 3: operation failed (thread not found / registry unavailable).
+      // No persistent state to update; the UI layer handles the refresh.
+      return state
     default: {
       // Exhaustiveness guard: when every ServerFrame member has a matching
       // case arm, TypeScript narrows `frame` to `never` here. Adding a new

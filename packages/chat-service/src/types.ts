@@ -8,7 +8,7 @@
  * frame shape here means Tauri (and any future transport) gets the same
  * stream without depending on ui-ws.
  */
-import type { ChatMessage, SessionSummary } from "@luna/core"
+import type { ChatMessage, SessionSummary, SuggestedActionView } from "@luna/core"
 import type { Artifact } from "./artifacts.js"
 
 /**
@@ -146,6 +146,23 @@ export interface ChatTurnComplete {
 }
 
 /**
+ * Suggested Actions (per-thread). `set` carries the full non-terminal set for a
+ * thread (initial paint on subscribe / replay-on-open); `update` carries a
+ * single action's status/execution delta. ui-ws maps these 1:1 to the
+ * matching ServerFrames. The carried view is wire-safe (no payload).
+ */
+export interface ChatSuggestedActionSet {
+  readonly type: "suggested-action-set"
+  readonly threadId: string
+  readonly actions: ReadonlyArray<SuggestedActionView>
+}
+export interface ChatSuggestedActionUpdate {
+  readonly type: "suggested-action-update"
+  readonly threadId: string
+  readonly action: SuggestedActionView
+}
+
+/**
  * Union of every frame the per-thread subscribe Stream emits. ui-ws maps
  * this 1:1 to its ServerFrame chat variants.
  */
@@ -159,6 +176,29 @@ export type ChatFrame =
   | ChatToolCall
   | ChatToolResult
   | ChatTurnComplete
+  | ChatSuggestedActionSet
+  | ChatSuggestedActionUpdate
+
+/**
+ * A background/job/scheduled result that was delivered into a thread (issue
+ * #124). ChatService emits one of these on its `deliveries` stream every time
+ * `deliverResult` posts a result; the WS layer broadcasts it to ALL connected
+ * clients as a "Luna finished X" toast — so the user is notified even when the
+ * target thread is not the one on screen. Distinct from the per-thread
+ * ChatFrame stream (which only reaches subscribers of that one thread).
+ */
+export interface DeliveryNotification {
+  /** The thread the result landed in. Clicking the toast can open it. */
+  readonly threadId: string
+  /** Where the result came from, e.g. "suggested-action", "background-job". */
+  readonly source: string
+  /** Human label for what finished, e.g. the job/action title. */
+  readonly label: string
+  /** Short excerpt of the result text for the toast body. */
+  readonly preview: string
+  /** Wall-clock ms when delivered. */
+  readonly ts: number
+}
 
 /** Options accepted by `createThread`. Mirrors the subset of SessionOptions
  *  a chat caller cares about; ChatService overlays the chat-required fields
@@ -174,8 +214,14 @@ export interface CreateThreadOptions {
    * the model applies. Only valid for models that support effort (e.g.
    * Sonnet 4.6, Fable 5, Opus 4.8) — ignored silently on models that do not.
    * Persisted in thread-session-map.json for cross-restart recovery.
+   *
+   * `"ultracode"` is a pseudo-level: not a real SDK effort, but the dropdown
+   * token for the SDK's ultracode mode (xhigh + standing workflow
+   * orchestration). chat-service demuxes it into SDK `Settings` + the Workflow
+   * tool (see effort.ts `ultracodeFlagSettings`); it never reaches
+   * `Options.effort`.
    */
-  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
   readonly title?: string
   readonly tags?: ReadonlyArray<string>
   readonly parentSessionId?: string
@@ -247,6 +293,13 @@ export interface ThreadToolsBinding {
   /** Run after the session row exists, with its id — for per-session
    *  bindings (obs tagging, local-shell attach, sandbox re-attach). */
   readonly onBound: (sessionId: string) => void
+  /** Run when the thread's scope closes, with its id — the symmetric
+   *  teardown for `onBound`. Releases any per-session state the provider
+   *  registered at bind time (e.g. sandbox re-attach closures, tool
+   *  session cells) so a long-lived server doesn't accumulate one entry
+   *  per historical thread. Optional for back-compat: providers that hold
+   *  no per-session state omit it. */
+  readonly onUnbound?: (sessionId: string) => void
 }
 
 /**

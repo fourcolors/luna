@@ -25,7 +25,7 @@ import {
   clampEffortToModel,
   type AvailableModel,
   type ChatPanelProps,
-  type EffortLevel,
+  type EffortOption,
 } from "../src/ChatPanel.jsx"
 import type { ThreadView } from "@luna/ui-shared/core"
 import type { SessionSummary } from "@luna/ui-shared/core"
@@ -79,9 +79,9 @@ const HAIKU: AvailableModel = {
 interface Rig {
   readonly container: HTMLElement
   readonly modelChangeCalls: Array<{ threadId: string; model: string }>
-  readonly effortChangeCalls: Array<{ threadId: string; effort: EffortLevel }>
+  readonly effortChangeCalls: Array<{ threadId: string; effort: EffortOption }>
   readonly setModel: (m: string) => void
-  readonly setEffort: (e: EffortLevel | undefined) => void
+  readonly setEffort: (e: EffortOption | undefined) => void
   readonly setAvailableModels: (ms: ReadonlyArray<AvailableModel> | undefined) => void
   readonly setEffortSelection: (v: boolean | undefined) => void
   readonly dispose: () => void
@@ -99,7 +99,7 @@ const mount = (
   const [model, setModel] = createSignal<string>(
     initialProps.model ?? SONNET.id,
   )
-  const [effort, setEffort] = createSignal<EffortLevel | undefined>(
+  const [effort, setEffort] = createSignal<EffortOption | undefined>(
     initialProps.effort,
   )
   const [availableModels, setAvailableModels] = createSignal<

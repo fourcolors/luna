@@ -58,11 +58,16 @@ export interface HelloFrame {
     readonly id: string
     readonly label: string
     /**
-     * Effort levels valid for THIS model, server-computed. Absent on older
+     * Effort OPTIONS valid for THIS model, server-computed. Absent on older
      * servers; empty array = model takes no effort param (e.g. Haiku). Clients
      * never compute the matrix — always defer to this field when present.
+     *
+     * NOTE: not every entry is a real SDK effort level — "ultracode" is a
+     * pseudo-token (xhigh + standing workflow orchestration) that the server
+     * demuxes into SDK settings. Treat this as a display/wire list, not a list
+     * of SDK effort levels.
      */
-    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max">
+    readonly efforts?: ReadonlyArray<"low" | "medium" | "high" | "xhigh" | "max" | "ultracode">
   }>
   /** Capability flags so older clients can negotiate down. */
   readonly capabilities: {
@@ -112,6 +117,14 @@ export interface HelloFrame {
      * when absent/false.
      */
     readonly workflows?: boolean
+    /**
+     * Suggested Actions: the server has a SuggestedActions service bound — it
+     * pushes `suggested-action-set` per thread (on subscribe + on change),
+     * `suggested-action-update` deltas, and routes `suggested-action-respond`.
+     * OPTIONAL/additive — clients hide the inline chip + Actions panel when
+     * absent/false. Mirrors packages/ui-shared/src/wire.ts — keep in sync.
+     */
+    readonly suggestedActions?: boolean
     /**
      * Luna Vault (V1): the server has a VaultService bound — it pushes a
      * `vault-list` frame after `hello` and routes `vault-put` /
@@ -262,6 +275,28 @@ export interface ToolResultFrame {
 export interface TurnCompleteFrame {
   readonly type: "turn-complete"
   readonly threadId: string
+}
+
+/**
+ * A background/job/scheduled result was delivered into a thread (issue #124).
+ * BROADCAST to every connected client (not scoped to one thread's subscribers)
+ * so a "Luna finished X" toast surfaces even when that thread is not the one on
+ * screen. The result message itself also lands in the thread via the normal
+ * assistant-done frame (carrying ChatMessage.delivery); this frame is purely
+ * the cross-thread notification.
+ */
+export interface ResultDeliveredFrame {
+  readonly type: "result-delivered"
+  /** Thread the result landed in (clicking the toast can open it). */
+  readonly threadId: string
+  /** Where the result came from, e.g. "suggested-action", "background-job". */
+  readonly source: string
+  /** Human label for what finished, e.g. the job/action title. */
+  readonly label: string
+  /** Short excerpt of the result for the toast body. */
+  readonly preview: string
+  /** Wall-clock ms when delivered. */
+  readonly ts: number
 }
 
 export interface AccountListFrame {
@@ -535,6 +570,59 @@ export interface WorkflowRunsRequestFrame {
 /** Client→server: ask the server to re-send the gallery list. */
 export interface WorkflowRefreshFrame {
   readonly type: "workflow-refresh"
+}
+
+/* Suggested Actions — Luna proposes actions inline in a thread; they collect in
+ * a per-thread Actions panel. PER-THREAD scope: every action carries its owning
+ * threadId. `set` = full per-thread replace (initial paint + replay-on-open +
+ * re-sent on change); `update` = single-action status/execution delta. Accept
+ * auto-executes server-side as a durable job. All additive, gated on the hello
+ * `suggestedActions` capability. Mirrors packages/ui-shared/src/wire.ts. */
+export type SuggestedActionType =
+  | "task"
+  | "research"
+  | "create_skill"
+  | "create_workflow"
+  | "run_workflow"
+export type SuggestedActionStatus =
+  | "proposed"
+  | "accepted"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "dismissed"
+/** One suggested action, wire-safe (no payloads/secrets cross the wire). */
+export interface SuggestedActionWire {
+  readonly id: string
+  readonly threadId: string
+  readonly actionType: SuggestedActionType
+  readonly title: string
+  readonly detail?: string
+  readonly rationale?: string
+  readonly status: SuggestedActionStatus
+  readonly source: "agent" | "dream"
+  readonly createdAt: number
+  readonly executionId?: string | null
+  readonly error?: string | null
+}
+/** Server→client: the full set of a thread's non-terminal actions. */
+export interface SuggestedActionSetFrame {
+  readonly type: "suggested-action-set"
+  readonly threadId: string
+  readonly actions: ReadonlyArray<SuggestedActionWire>
+}
+/** Server→client: a single action changed (status/execution delta). */
+export interface SuggestedActionUpdateFrame {
+  readonly type: "suggested-action-update"
+  readonly threadId: string
+  readonly action: SuggestedActionWire
+}
+/** Client→server: accept (auto-execute) or dismiss one suggested action. */
+export interface SuggestedActionRespondFrame {
+  readonly type: "suggested-action-respond"
+  readonly threadId: string
+  readonly actionId: string
+  readonly decision: "accept" | "dismiss"
 }
 
 /* Luna Vault (V1) — credential registry frames. All additive, gated on the
@@ -1099,7 +1187,7 @@ export interface ThreadConfigFrame {
   readonly type: "thread-config"
   readonly threadId: string
   readonly model?: string
-  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
   readonly applied: ReadonlyArray<"model" | "effort">
   readonly deferred: ReadonlyArray<"model" | "effort">
   readonly rejected?: ReadonlyArray<{ readonly field: "model" | "effort"; readonly reason: string }>
@@ -1183,6 +1271,7 @@ export type ServerFrame =
   | ToolCallFrame
   | ToolResultFrame
   | TurnCompleteFrame
+  | ResultDeliveredFrame
   | AccountListFrame
   | SkillCatalogFrame
   | SkillStatusFrame
@@ -1194,6 +1283,8 @@ export type ServerFrame =
   | ArtifactUpdateFrame
   | WorkflowListFrame
   | WorkflowRunsFrame
+  | SuggestedActionSetFrame
+  | SuggestedActionUpdateFrame
   | LocalShellRequestFrame
   | LocalShellStatusFrame
   | RegisterOpTokenStatusFrame
@@ -1216,6 +1307,9 @@ export type ServerFrame =
   | SmartBarFrame
   | ModelRoutingListFrame
   | ModelRoutingStatusFrame
+  | ThreadArchivedFrame
+  | ThreadUnarchivedFrame
+  | ThreadArchiveErrorFrame
 
 /* -------------------------------------------------------------------------- */
 /* Client → server                                                            */
@@ -1239,6 +1333,46 @@ export interface UnsubscribeThreadFrame {
 export interface ListThreadsFrame {
   readonly type: "list-threads"
   readonly limit?: number
+  /**
+   * Phase 3: filter by status. Omit for default (active-only) list.
+   * Pass 'archived' to get the archive panel contents.
+   */
+  readonly status?: "active" | "archived"
+}
+
+/** Phase 3: Archive a thread (active->archived). NEVER deletes row or jsonl. */
+export interface ArchiveThreadFrame {
+  readonly type: "archive-thread"
+  readonly threadId: string
+}
+
+/** Phase 3: Unarchive a thread (archived->active). Clears archived_at. */
+export interface UnarchiveThreadFrame {
+  readonly type: "unarchive-thread"
+  readonly threadId: string
+}
+
+/** Phase 3: Server confirmation of an archive/unarchive operation. */
+export interface ThreadArchivedFrame {
+  readonly type: "thread-archived"
+  readonly threadId: string
+}
+
+export interface ThreadUnarchivedFrame {
+  readonly type: "thread-unarchived"
+  readonly threadId: string
+}
+
+/**
+ * Phase 3: Sent when archive-thread / unarchive-thread failed because the
+ * thread was not found in ThreadRegistry (registry absent or threadId unknown).
+ * The client should treat this as a no-op / stale-UI situation and refresh.
+ */
+export interface ThreadArchiveErrorFrame {
+  readonly type: "thread-archive-error"
+  readonly threadId: string
+  /** Human-readable reason — 'not-found' when registry returned false. */
+  readonly reason: "not-found" | "registry-unavailable"
 }
 
 export interface NewThreadFrame {
@@ -1249,7 +1383,7 @@ export interface NewThreadFrame {
   readonly tags?: ReadonlyArray<string>
   readonly systemPrompt?: string
   /** Additive effort level for this thread. Older servers ignore it. */
-  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
 }
 
 /**
@@ -1443,7 +1577,7 @@ export interface SetThreadConfigFrame {
   readonly type: "set-thread-config"
   readonly threadId: string
   readonly model?: string
-  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max"
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
 }
 
 export type ClientFrame =
@@ -1473,6 +1607,7 @@ export type ClientFrame =
   | ArtifactEditFrame
   | WorkflowRunsRequestFrame
   | WorkflowRefreshFrame
+  | SuggestedActionRespondFrame
   | WidgetDirectoryFrame
   | SubagentTreeRequestFrame
   | McpResourceReadFrame
@@ -1485,3 +1620,5 @@ export type ClientFrame =
   | VaultImportFrame
   | SetThreadConfigFrame
   | ModelRoutingSaveFrame
+  | ArchiveThreadFrame
+  | UnarchiveThreadFrame

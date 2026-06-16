@@ -36,6 +36,7 @@ import {
   type NewThreadFrame,
   type PendingAttachment,
   type ThreadView,
+  type SuggestedActionWire,
 } from "@luna/ui-shared/core"
 import { MarkdownView } from "./MarkdownView.jsx"
 import { MessageBubble } from "./MessageBubble.jsx"
@@ -43,12 +44,22 @@ import { MessageBubble } from "./MessageBubble.jsx"
 /** Commands recognised in the composer (slash-prefixed). */
 export type SlashCommand = "restart"
 
+/** The five real SDK effort levels. */
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max"
+
+/**
+ * What a client may pick in the effort dropdown / carry on the wire: a real
+ * effort level OR the "ultracode" token. ultracode is NOT a real SDK effort —
+ * the server demuxes it into the SDK's ultracode mode (xhigh + standing
+ * workflow orchestration). The web only renders + echoes the token; it never
+ * feeds it to an SDK. Mirrors the server's effort.ts `EffortOption`.
+ */
+export type EffortOption = EffortLevel | "ultracode"
 
 export interface AvailableModel {
   readonly id: string
   readonly label: string
-  readonly efforts?: ReadonlyArray<EffortLevel>
+  readonly efforts?: ReadonlyArray<EffortOption>
 }
 
 /**
@@ -65,8 +76,8 @@ export interface AvailableModel {
 export const clampEffortToModel = (
   availableModels: ReadonlyArray<AvailableModel> | null | undefined,
   modelId: string,
-  effort: EffortLevel | undefined,
-): EffortLevel | undefined => {
+  effort: EffortOption | undefined,
+): EffortOption | undefined => {
   if (effort === undefined || availableModels == null) return undefined
   const model = availableModels.find((m) => m.id === modelId)
   return model?.efforts?.includes(effort) ? effort : undefined
@@ -83,7 +94,7 @@ export const clampEffortToModel = (
  */
 export const buildNewThreadFrame = (params: {
   readonly model: string
-  readonly effort?: EffortLevel | undefined
+  readonly effort?: EffortOption | undefined
   readonly accountId?: string | null | undefined
   readonly availableModels?: ReadonlyArray<AvailableModel> | null | undefined
 }): NewThreadFrame => {
@@ -123,11 +134,20 @@ export interface ChatPanelProps {
   /** Currently selected model id for this thread. */
   readonly model?: string
   /** Currently selected effort level for this thread. */
-  readonly effort?: EffortLevel | undefined
+  readonly effort?: EffortOption | undefined
   /** Called when the user picks a different model. */
   readonly onModelChange?: (threadId: string, model: string) => void
   /** Called when the user picks a different effort level. */
-  readonly onEffortChange?: (threadId: string, effort: EffortLevel) => void
+  readonly onEffortChange?: (threadId: string, effort: EffortOption) => void
+  // ── Suggested actions inline chip ──────────────────────────────────────
+  /** The active thread's suggested actions (from store.state.suggestedActions). */
+  readonly suggestedActions?: ReadonlyArray<SuggestedActionWire>
+  /** Called when the user accepts the inline suggestion. */
+  readonly onAcceptSuggestion?: (id: string) => void
+  /** Called when the user dismisses the inline suggestion. */
+  readonly onDismissSuggestion?: (id: string) => void
+  /** Called when the user clicks "see all" — opens the actions panel. */
+  readonly onSeeAllSuggestions?: () => void
 }
 
 export const ChatPanel: Component<ChatPanelProps> = (props) => {
@@ -297,6 +317,75 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
             <For each={thread().messages}>
               {(m) => <MessageBubble message={m} />}
             </For>
+            {/* ── Suggested action inline chip ────────────────────────────
+                Shows the NEWEST proposed action (highest createdAt) when
+                handlers are wired in — matching Moon's chip. The store array is
+                oldest-first, so we pick the max by createdAt rather than the
+                first match. Stays purely presentational. */}
+            <Show
+              when={(() => {
+                const actions = props.suggestedActions
+                if (!actions || !props.onAcceptSuggestion || !props.onDismissSuggestion) return null
+                let newest: SuggestedActionWire | null = null
+                for (const a of actions) {
+                  if (a.status !== "proposed") continue
+                  if (newest === null || a.createdAt > newest.createdAt) newest = a
+                }
+                return newest
+              })()}
+            >
+              {(action) => (
+                <div
+                  class="bubble assistant"
+                  style={{
+                    "border-left": "2px solid var(--color-accent, #60a5fa)",
+                    "padding-left": "0.5rem",
+                    "margin-top": "0.5rem",
+                  }}
+                  role="status"
+                  aria-live="polite"
+                >
+                  <div class="bubble-role muted small">Luna suggested an action</div>
+                  <div style={{ "font-weight": "500", margin: "0.2rem 0" }}>
+                    {action().title}
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: "0.4rem",
+                      "flex-wrap": "wrap",
+                      "margin-top": "0.3rem",
+                    }}
+                  >
+                    <button
+                      type="button"
+                      class="chip small"
+                      style={{ color: "var(--color-success, #4ade80)" }}
+                      onClick={() => props.onAcceptSuggestion!(action().id)}
+                    >
+                      Accept
+                    </button>
+                    <button
+                      type="button"
+                      class="chip small"
+                      style={{ color: "var(--color-muted, #888)" }}
+                      onClick={() => props.onDismissSuggestion!(action().id)}
+                    >
+                      Dismiss
+                    </button>
+                    <Show when={props.onSeeAllSuggestions}>
+                      <button
+                        type="button"
+                        class="chip small"
+                        onClick={() => props.onSeeAllSuggestions!()}
+                      >
+                        see all
+                      </button>
+                    </Show>
+                  </div>
+                </div>
+              )}
+            </Show>
             <Show when={thread().inFlight}>
               {(inFlight) => (
                 <div class="bubble assistant in-flight">
@@ -369,124 +458,166 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
                 </For>
               </div>
             </Show>
-            {/*
-              Model + effort cluster (§3C). Shown only when the server
-              advertises `availableModels` AND the thread is active.
-              Effort control is additionally gated on `effortSelection` +
-              the selected model having a non-empty `efforts` array.
-              Options come from props only — no client-side matrix.
-            */}
-            <Show when={props.availableModels != null && props.availableModels.length > 0 && props.thread}>
-              {(thread) => {
-                const selectedModel = () =>
-                  props.availableModels!.find((m) => m.id === props.model) ??
-                  props.availableModels![0]!
-                const modelEfforts = () => selectedModel().efforts ?? []
-                const showEffort = () =>
-                  props.effortSelection === true && modelEfforts().length > 0
-                return (
-                  <div class="composer-config" role="group" aria-label="Model and effort">
-                    <label class="composer-config-label">
-                      <span class="muted small">Model</span>
-                      <select
-                        class="composer-config-select"
-                        value={props.model ?? selectedModel().id}
-                        onChange={(e) => {
-                          props.onModelChange?.(thread().summary.id, e.currentTarget.value)
-                        }}
-                        disabled={props.disabled}
-                        aria-label="Model"
-                      >
-                        <For each={props.availableModels}>
-                          {(m) => <option value={m.id}>{m.label}</option>}
-                        </For>
-                      </select>
-                    </label>
-                    <Show when={showEffort()}>
-                      <label class="composer-config-label">
-                        <span class="muted small">Effort</span>
-                        <select
-                          class="composer-config-select"
-                          value={props.effort ?? modelEfforts()[0]}
-                          onChange={(e) => {
-                            props.onEffortChange?.(
-                              thread().summary.id,
-                              e.currentTarget.value as EffortLevel,
-                            )
-                          }}
-                          disabled={props.disabled}
-                          aria-label="Effort"
-                        >
-                          <For each={modelEfforts()}>
-                            {(lv) => <option value={lv}>{lv}</option>}
-                          </For>
-                        </select>
-                      </label>
-                    </Show>
-                  </div>
-                )
-              }}
-            </Show>
-            <textarea
-              value={draft()}
-              onInput={(e) => setDraft(e.currentTarget.value)}
-              placeholder={placeholder()}
-              disabled={props.disabled}
-              onPaste={handlePaste}
-              onKeyDown={(e) => {
-                // ⌘/Ctrl+Enter always submits.
-                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                  e.preventDefault()
-                  submit()
-                  return
-                }
-                // Plain Enter submits ONLY when enterToSend is on AND
-                // no modifier is held. Shift+Enter falls through.
-                if (
-                  props.enterToSend &&
-                  e.key === "Enter" &&
-                  !e.shiftKey &&
-                  !e.metaKey &&
-                  !e.ctrlKey &&
-                  !e.altKey
-                ) {
-                  e.preventDefault()
-                  submit()
-                }
-              }}
-            />
-            <div class="composer-actions">
-              <input
-                ref={fileInputEl}
-                type="file"
-                accept="image/jpeg,image/png,image/gif,image/webp"
-                multiple
-                style={{ display: "none" }}
-                onChange={(e) => {
-                  const target = e.currentTarget
-                  if (target.files) void addFiles(target.files)
-                  target.value = ""
+            {/* Tier 1 — the input shell: a full-width textarea with the small
+                watercolor send button nested inline at its bottom-right corner.
+                While a turn is in flight that same inline slot becomes Stop. */}
+            <div class="composer-input-wrap">
+              <textarea
+                value={draft()}
+                onInput={(e) => setDraft(e.currentTarget.value)}
+                placeholder={placeholder()}
+                disabled={props.disabled}
+                onPaste={handlePaste}
+                onKeyDown={(e) => {
+                  // ⌘/Ctrl+Enter always submits.
+                  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                    e.preventDefault()
+                    submit()
+                    return
+                  }
+                  // Plain Enter submits ONLY when enterToSend is on AND
+                  // no modifier is held. Shift+Enter falls through.
+                  if (
+                    props.enterToSend &&
+                    e.key === "Enter" &&
+                    !e.shiftKey &&
+                    !e.metaKey &&
+                    !e.ctrlKey &&
+                    !e.altKey
+                  ) {
+                    e.preventDefault()
+                    submit()
+                  }
                 }}
               />
-              <button
-                class="attach-btn"
-                onClick={() => fileInputEl?.click()}
-                disabled={props.disabled}
-                title="Attach image"
-              >
-                📎
-              </button>
               <Show
                 when={thread().inFlight}
                 fallback={
-                  <button onClick={submit} disabled={!canSend()}>
-                    Send
+                  <button
+                    type="button"
+                    class="send-btn"
+                    onClick={submit}
+                    disabled={!canSend()}
+                    aria-label="Send message"
+                    title="Send (Enter)"
+                  >
+                    {/* ↵ return/enter glyph — down-then-left + a left arrowhead. */}
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M19 7v4a2 2 0 0 1-2 2H6" />
+                      <path d="M9 9l-4 4 4 4" />
+                    </svg>
                   </button>
                 }
               >
-                <button onClick={() => props.onInterrupt(thread().summary.id)}>
-                  Stop
+                <button
+                  type="button"
+                  class="send-btn stop"
+                  onClick={() => props.onInterrupt(thread().summary.id)}
+                  aria-label="Stop"
+                  title="Stop"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="6" y="6" width="12" height="12" rx="2.5" />
+                  </svg>
                 </button>
+              </Show>
+            </div>
+
+            {/* Tier 2 — the control bar: attach on the left, the model/effort
+                cluster on the right. The cluster shows only when the server
+                advertises `availableModels` AND the thread is active; effort is
+                additionally gated on `effortSelection` + a non-empty efforts
+                array. Options come from props only — no client-side matrix. */}
+            <div class="composer-bar">
+              <div class="composer-bar-left">
+                <input
+                  ref={fileInputEl}
+                  type="file"
+                  accept="image/jpeg,image/png,image/gif,image/webp"
+                  multiple
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const target = e.currentTarget
+                    if (target.files) void addFiles(target.files)
+                    target.value = ""
+                  }}
+                />
+                <button
+                  type="button"
+                  class="attach-btn"
+                  onClick={() => fileInputEl?.click()}
+                  disabled={props.disabled}
+                  title="Attach image"
+                  aria-label="Attach image"
+                >
+                  📎
+                </button>
+              </div>
+              <Show when={props.availableModels != null && props.availableModels.length > 0 && props.thread}>
+                {(thread) => {
+                  const selectedModel = () =>
+                    props.availableModels!.find((m) => m.id === props.model) ??
+                    props.availableModels![0]!
+                  const modelEfforts = () => selectedModel().efforts ?? []
+                  const showEffort = () =>
+                    props.effortSelection === true && modelEfforts().length > 0
+                  // Display order only: surface "ultracode" (the headline mode)
+                  // at the TOP, while the DATA order (modelEfforts) keeps it
+                  // LAST so the select's no-effort default stays a real level
+                  // and never auto-selects ultracode.
+                  const effortOptions = () => {
+                    const e = modelEfforts()
+                    return [
+                      ...e.filter((x) => x === "ultracode"),
+                      ...e.filter((x) => x !== "ultracode"),
+                    ]
+                  }
+                  return (
+                    <div class="composer-config" role="group" aria-label="Model and effort">
+                      <label class="composer-config-label">
+                        <span class="muted small">Model</span>
+                        <select
+                          class="composer-config-select"
+                          value={props.model ?? selectedModel().id}
+                          onChange={(e) => {
+                            props.onModelChange?.(thread().summary.id, e.currentTarget.value)
+                          }}
+                          disabled={props.disabled}
+                          aria-label="Model"
+                        >
+                          <For each={props.availableModels}>
+                            {(m) => <option value={m.id}>{m.label}</option>}
+                          </For>
+                        </select>
+                      </label>
+                      <Show when={showEffort()}>
+                        <label class="composer-config-label">
+                          <span class="muted small">Effort</span>
+                          <select
+                            class="composer-config-select"
+                            value={props.effort ?? modelEfforts()[0]}
+                            onChange={(e) => {
+                              props.onEffortChange?.(
+                                thread().summary.id,
+                                e.currentTarget.value as EffortOption,
+                              )
+                            }}
+                            disabled={props.disabled}
+                            aria-label="Effort"
+                          >
+                            <For each={effortOptions()}>
+                              {(lv) => (
+                                <option value={lv}>
+                                  {lv === "ultracode" ? "⚡ Ultracode" : lv}
+                                </option>
+                              )}
+                            </For>
+                          </select>
+                        </label>
+                      </Show>
+                    </div>
+                  )
+                }}
               </Show>
             </div>
           </div>

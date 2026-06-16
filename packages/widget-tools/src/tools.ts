@@ -16,7 +16,7 @@
 import { Effect } from "effect"
 import { z } from "zod"
 import { defineTool, ToolError } from "@luna/tools"
-import { ArtifactStore } from "@luna/core"
+import { ArtifactStore, deriveArtifactKind } from "@luna/core"
 import type { ArtifactKind } from "@luna/core"
 
 const WIDGET_TOOL_DISCOVERY = {
@@ -466,6 +466,136 @@ export const makeOpenArtifactTool = (
             new ToolError({
               tool: "open_artifact",
               op: "artifact.open",
+              cause: d instanceof Error ? d.message : String(d),
+            }),
+          ),
+        ),
+      ),
+  })
+
+/**
+ * show_artifact — pin a CONTENT artifact (code / markdown / html) and open it
+ * in a panel (widget-system.md S2, "show me that in a panel").
+ *
+ * The content-tier authoring sibling of widget_write: where widget_write
+ * creates an executable sandboxed widget, show_artifact takes a plain
+ * code/markdown/html body the agent already produced and (a) PINS it durably
+ * — so it persists, versions, and is reopenable by id like any artifact — then
+ * (b) opens it via the same summoner path both clients render by id. The kind
+ * is derived from `lang` (never "widget"/"mcp-app" — those are the executable
+ * kinds with their own verbs). A stable `artifactId` slug makes it idempotent:
+ * reusing the same id appends a new version and re-opens, rather than forking.
+ *
+ * Summoner-gated (registered only when a host can receive opens), like
+ * open_artifact. When a summoner is present but no host is connected the open
+ * is buffered and replayed on reconnect (the bridge's open-intent replay).
+ */
+export const makeShowArtifactTool = (
+  store: (typeof ArtifactStore)["Service"],
+  summoner: WidgetSummonerPort,
+) =>
+  defineTool({
+    name: "show_artifact",
+    description:
+      "Open a piece of CONTENT you produced — code, a markdown document, or an " +
+      "HTML preview — in a panel on the user's screen. Pass the content inline; " +
+      "it is pinned (so it persists and can be reopened later) and opened as its " +
+      "own panel rendered for its kind (code → highlighted, markdown → formatted, " +
+      "html → sandboxed preview). Use this for 'show me that in a panel' / to put " +
+      "a result somewhere the user can see and keep it. For an INTERACTIVE or " +
+      "live-data panel use widget_write / mcp_app_write instead. You only show " +
+      "the content — you cannot read or operate the opened panel.",
+    inputSchema: {
+      artifactId: z
+        .string()
+        .min(1)
+        .regex(
+          /^[a-z0-9][a-z0-9-]*$/,
+          "lowercase letters, digits and hyphens only (a stable slug)",
+        )
+        .describe(
+          "A stable kebab-case slug for this content (e.g. 'auth-flow-notes'). " +
+            "This is the doc's IDENTITY: reuse the SAME id to update/iterate it " +
+            "(each call is a new, revertable version, and the title/format may " +
+            "change); use a DIFFERENT id for a different document, or it replaces " +
+            "the first.",
+        ),
+      title: z
+        .string()
+        .min(1)
+        .describe("Human-friendly title shown in the panel's title bar."),
+      content: z
+        .string()
+        .min(1)
+        .describe("The raw content body — source code, markdown, or HTML."),
+      lang: z
+        .string()
+        .optional()
+        .describe(
+          "Language/format hint that picks the renderer: a code language " +
+            "('ts', 'python', …) renders highlighted; 'md'/'markdown' renders " +
+            "formatted; 'html' renders as a sandboxed preview. Omit for plain code.",
+        ),
+    },
+    alwaysLoad: true,
+    searchHint:
+      "Open a code / markdown / HTML result you wrote in a panel on the user's screen.",
+    handler: (args) =>
+      Effect.gen(function* () {
+        const id = `doc:${args.artifactId}`
+        const kind = deriveArtifactKind(args.lang, null)
+        const pinNew = () =>
+          store.pin({
+            id,
+            kind,
+            title: args.title,
+            content: args.content,
+            lang: args.lang ?? null,
+            editedBy: "agent",
+          })
+
+        const existing = yield* store.get(id)
+        let version: number
+        let action: "created" | "updated"
+        if (existing) {
+          // Iterate: append a version AND refresh the head's title/lang/kind so
+          // re-showing the same slug can change its title or FORMAT (md→html)
+          // and render correctly — not freeze to the first pin (review S2-F1).
+          const updated = yield* store.update(id, args.content, "agent", undefined, {
+            title: args.title,
+            lang: args.lang ?? null,
+            kind,
+          })
+          if (updated) {
+            version = updated.version
+            action = "updated"
+          } else {
+            // Raced with an unpin between get and update (review S2-F2): the head
+            // vanished, so recreate it rather than silently dropping the content.
+            const pinned = yield* pinNew()
+            version = pinned.version
+            action = "created"
+          }
+        } else {
+          const pinned = yield* pinNew()
+          version = pinned.version
+          action = "created"
+        }
+        const opened = summoner.openArtifact(id, args.title, kind)
+        return {
+          artifactId: id,
+          kind,
+          version,
+          action,
+          opened: opened.ok,
+          message: opened.message,
+        }
+      }).pipe(
+        Effect.catchAllDefect((d) =>
+          Effect.fail(
+            new ToolError({
+              tool: "show_artifact",
+              op: "artifact.show",
               cause: d instanceof Error ? d.message : String(d),
             }),
           ),

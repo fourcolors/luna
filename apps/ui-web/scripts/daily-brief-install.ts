@@ -8,9 +8,9 @@
  * brief by querying `obs_notes_recent` (or via the Moon UI when a panel
  * surfaces it).
  *
- * REQUIRES the V2 scheduler stack (chat-v0.12b or later). The server must
- * be running with `LUNA_SCHEDULER_V2_ENABLED=1` for the row to be picked
- * up by the ticker.
+ * REQUIRES the V2 scheduler stack (chat-v0.12b or later). The V2 ticker is on
+ * by default, so the row is picked up automatically unless the server runs
+ * with `LUNA_SCHEDULER_V2_ENABLED=0` (the kill switch).
  *
  * Usage:
  *   bun run apps/ui-web/scripts/daily-brief-install.ts
@@ -134,26 +134,19 @@ const buildPayload = () => ({
 })
 
 /**
- * Compute next fire time AS IF the host were UTC.
+ * Compute next fire time in UTC.
  *
- * Effect's `Cron.next` interprets cron expressions using the host's
- * local timezone. The chat-server runs in UTC; this install script may
- * run on a developer's Mac in a different TZ. We force UTC interpretation
- * here by temporarily flipping `process.env.TZ` around the Cron call,
- * then restoring it. The result is the same epoch-ms the server would
- * compute on its next tick — the row is then portable across hosts.
+ * Effect's `Cron.next` interprets cron expressions using the host's local
+ * timezone UNLESS an explicit tz is given. Passing "UTC" to `Cron.parse` pins
+ * matching to UTC regardless of this install host's `process.env.TZ`, and is
+ * exactly what the JobTicker's `computeNextRunAt` does at runtime — so the
+ * install-time and runtime next_run_at can never diverge, and the row is
+ * portable across hosts.
  */
 const computeNextRunAtUtc = (now: number): number | null => {
-  const prevTz = process.env.TZ
-  process.env.TZ = "UTC"
-  try {
-    const parsed = Cron.parse(CRON_EXPR)
-    if (parsed._tag === "Left") return null
-    return Cron.next(parsed.right, new Date(now)).getTime()
-  } finally {
-    if (prevTz === undefined) delete process.env.TZ
-    else process.env.TZ = prevTz
-  }
+  const parsed = Cron.parse(CRON_EXPR, "UTC")
+  if (parsed._tag === "Left") return null
+  return Cron.next(parsed.right, new Date(now)).getTime()
 }
 
 const jobsStoreL = JobsStoreService.makeLayer(paths.lunaDbPath).pipe(
@@ -207,17 +200,19 @@ const program = Effect.gen(function* () {
     )
   }
 
+  // Arm atomically (enabled + next_run_at in the INSERT) so there is no
+  // transient window where the row is enabled+next_run_at-null = immediately
+  // due to the now default-on V2 ticker before a follow-up write arms it.
   yield* store.record({
     id: JOB_ID,
     kind: "prompt",
     spec: CRON_EXPR,
     payload: buildPayload(),
-  })
-  yield* store.setV2Fields(JOB_ID, {
-    schedule: CRON_EXPR,
     enabled: true,
     nextRunAt,
   })
+  // `schedule` is metadata only (ticker uses schedule ?? spec) — safe after arming.
+  yield* store.setV2Fields(JOB_ID, { schedule: CRON_EXPR })
 
   const row = yield* store.getById(JOB_ID)
   console.log(`[daily-brief-install] installed '${JOB_ID}':`, {

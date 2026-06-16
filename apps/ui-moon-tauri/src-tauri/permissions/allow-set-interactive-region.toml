@@ -1,8 +1,0 @@
-[[permission]]
-identifier = "allow-set-interactive-region"
-description = "Allows the frontend to publish the clickable region (moon + rope) that drives the click-through cursor poll while the re-tether string is out"
-
-[permission.commands]
-allow = [
-  "set_interactive_region"
-]

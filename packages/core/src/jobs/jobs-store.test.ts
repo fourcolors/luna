@@ -307,6 +307,31 @@ describe("JobsStoreService (Memory layer)", () => {
     await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
   })
 
+  it("pruneRuns deletes finished runs older than the cutoff; keeps recent + unfinished", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      yield* store.record({ id: "pr", kind: "prompt", spec: "", payload: { label: "pr" } })
+
+      // old finished run — finished_at 1000
+      const r1 = yield* store.recordRunStart({ jobId: "pr", startedAt: 100 })
+      yield* store.recordRunEnd(r1.id, { finishedAt: 1000, status: "success" })
+      // recent finished run — finished_at 6000
+      const r2 = yield* store.recordRunStart({ jobId: "pr", startedAt: 5000 })
+      yield* store.recordRunEnd(r2.id, { finishedAt: 6000, status: "success" })
+      // unfinished run — must NEVER be pruned regardless of age
+      const r3 = yield* store.recordRunStart({ jobId: "pr", startedAt: 200 })
+
+      // Prune everything finished strictly before t=5000 → only r1.
+      const deleted = yield* store.pruneRuns(5000)
+      expect(deleted).toBe(1)
+
+      const rows = yield* store.listRuns("pr", 100)
+      const ids = rows.map((r) => r.id).sort((a, b) => a - b)
+      expect(ids).toEqual([r2.id, r3.id].sort((a, b) => a - b))
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestLayer)))
+  })
+
   it("listRuns respects the limit parameter", async () => {
     const program = Effect.gen(function* () {
       const store = yield* JobsStoreService
@@ -438,6 +463,85 @@ dSqlite("JobsStoreService (SQLite layer) — updateRunStatus", () => {
 
       // unknown run id → false
       expect(yield* store.updateRunStatus(999_999, "waiting")).toBe(false)
+    })
+    await Effect.runPromise(
+      Effect.scoped(program.pipe(Effect.provide(SqliteTestLayer))),
+    )
+  })
+})
+
+dSqlite("JobsStoreService (SQLite layer) — null clears, undefined omits", () => {
+  it("setV2Fields(null) clears the column; an omitted key leaves it untouched", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      yield* store.record({ id: "nz", kind: "prompt", spec: "", payload: { label: "nz" } })
+
+      // Arrange: set schedule + nextRunAt to non-null values.
+      yield* store.setV2Fields("nz", { schedule: "*/30 * * * *", nextRunAt: 5000 })
+      const set = yield* store.getById("nz")
+      expect(set?.schedule).toBe("*/30 * * * *")
+      expect(set?.nextRunAt).toBe(5000)
+
+      // Act 1: clear nextRunAt with an explicit null (COALESCE bug leaves it 5000).
+      yield* store.setV2Fields("nz", { nextRunAt: null })
+      const cleared1 = yield* store.getById("nz")
+      expect(cleared1?.nextRunAt).toBeNull()
+      expect(cleared1?.schedule).toBe("*/30 * * * *") // omitted key → untouched
+
+      // Act 2: clear schedule with an explicit null.
+      yield* store.setV2Fields("nz", { schedule: null })
+      const cleared2 = yield* store.getById("nz")
+      expect(cleared2?.schedule).toBeNull()
+
+      // Act 3: an omitted key still omits — an enabled-only patch leaves nextRunAt.
+      yield* store.setV2Fields("nz", { nextRunAt: 7000 })
+      yield* store.setV2Fields("nz", { enabled: false })
+      const omit = yield* store.getById("nz")
+      expect(omit?.nextRunAt).toBe(7000)
+      expect(omit?.enabled).toBe(false)
+    })
+    await Effect.runPromise(
+      Effect.scoped(program.pipe(Effect.provide(SqliteTestLayer))),
+    )
+  })
+
+  it("touch(null) clears next_run on the SQLite layer; omitted keys untouched", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      yield* store.record({ id: "tc", kind: "cron", spec: "*", payload: { label: "tc" } })
+      yield* store.touch("tc", { nextRun: 123, lastRun: 456, lastStatus: "scheduled" })
+      const set = yield* store.getById("tc")
+      expect(set?.nextRun).toBe(123)
+      expect(set?.lastRun).toBe(456)
+
+      yield* store.touch("tc", { nextRun: null })
+      const cleared = yield* store.getById("tc")
+      expect(cleared?.nextRun).toBeNull()
+      expect(cleared?.lastRun).toBe(456) // omitted key → untouched
+    })
+    await Effect.runPromise(
+      Effect.scoped(program.pipe(Effect.provide(SqliteTestLayer))),
+    )
+  })
+})
+
+dSqlite("JobsStoreService (SQLite layer) — pruneRuns", () => {
+  it("deletes finished runs older than the cutoff; keeps recent + unfinished", async () => {
+    const program = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      yield* store.record({ id: "pr", kind: "prompt", spec: "", payload: { label: "pr" } })
+      const r1 = yield* store.recordRunStart({ jobId: "pr", startedAt: 100 })
+      yield* store.recordRunEnd(r1.id, { finishedAt: 1000, status: "success" })
+      const r2 = yield* store.recordRunStart({ jobId: "pr", startedAt: 5000 })
+      yield* store.recordRunEnd(r2.id, { finishedAt: 6000, status: "success" })
+      const r3 = yield* store.recordRunStart({ jobId: "pr", startedAt: 200 })
+
+      const deleted = yield* store.pruneRuns(5000)
+      expect(deleted).toBe(1)
+
+      const rows = yield* store.listRuns("pr", 100)
+      const ids = rows.map((r) => r.id).sort((a, b) => a - b)
+      expect(ids).toEqual([r2.id, r3.id].sort((a, b) => a - b))
     })
     await Effect.runPromise(
       Effect.scoped(program.pipe(Effect.provide(SqliteTestLayer))),

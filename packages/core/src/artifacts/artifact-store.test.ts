@@ -92,6 +92,30 @@ describe("ArtifactStore.Memory", () => {
     ])
   })
 
+  it("update with `meta` re-sets head title/lang/kind; omitted fields stay put", async () => {
+    const { head, versions } = await runMem(
+      Effect.gen(function* () {
+        const store = yield* ArtifactStore
+        yield* store.pin(pin({ id: "d", kind: "markdown", title: "Notes", lang: "md", content: "# v1" }))
+        // Re-author as HTML with a new title (show_artifact format change).
+        const head = yield* store.update("d", "<h1>v2</h1>", "agent", undefined, {
+          title: "Preview",
+          lang: "html",
+          kind: "html",
+        })
+        const versions = yield* store.versions("d")
+        return { head, versions }
+      }),
+    )
+    expect(head?.kind).toBe("html")
+    expect(head?.title).toBe("Preview")
+    expect(head?.lang).toBe("html")
+    expect(head?.content).toBe("<h1>v2</h1>")
+    expect(head?.version).toBe(2)
+    // Ledger is still append-only — both versions preserved.
+    expect(versions.map((v) => v.content)).toEqual(["# v1", "<h1>v2</h1>"])
+  })
+
   it("revert copies an old version FORWARD as a new head (append-only)", async () => {
     const { head, versions } = await runMem(
       Effect.gen(function* () {
@@ -171,6 +195,27 @@ describe("ArtifactStore.Memory", () => {
     )
     expect(got?.kind).toBe("widget")
     expect(got?.bridgeCaps).toEqual(["luna.notify", "luna.fetch"])
+  })
+
+  it("changes() fires once per real mutation; idempotent re-pin does NOT fire", async () => {
+    const fires = await runMem(
+      Effect.gen(function* () {
+        const store = yield* ArtifactStore
+        let count = 0
+        store.changes(() => {
+          count++
+        })
+        yield* store.pin(pin({ id: "c", content: "v1" })) // +1 (new)
+        yield* store.pin(pin({ id: "c", content: "ignored" })) // +0 (idempotent)
+        yield* store.update("c", "v2", "agent") // +1
+        yield* store.revert("c", 1) // +1 (revert is an edit)
+        yield* store.update("missing", "x", "agent") // +0 (no such head)
+        yield* store.unpin("c") // +1
+        yield* store.unpin("c") // +0 (already gone)
+        return count
+      }),
+    )
+    expect(fires).toBe(4)
   })
 })
 
@@ -290,5 +335,43 @@ d("ArtifactStore (sqlite)", () => {
       }),
     )
     expect(got?.bridgeCaps).toEqual(["luna.notify"])
+  })
+
+  it("update with `meta` re-sets head title/lang/kind over the FILE (format change)", async () => {
+    const head = await runStore(
+      Effect.gen(function* () {
+        const store = yield* ArtifactStore
+        yield* store.pin(pin({ id: "d", kind: "markdown", title: "Notes", lang: "md", content: "# v1" }))
+        yield* store.update("d", "<h1>v2</h1>", "agent", undefined, {
+          title: "Preview",
+          lang: "html",
+          kind: "html",
+        })
+        return yield* store.get("d")
+      }),
+    )
+    expect(head?.kind).toBe("html")
+    expect(head?.title).toBe("Preview")
+    expect(head?.lang).toBe("html")
+    expect(head?.content).toBe("<h1>v2</h1>")
+    expect(head?.version).toBe(2)
+  })
+
+  it("changes() fires on real SQLite mutations, not on idempotent re-pin", async () => {
+    const count = await runStore(
+      Effect.gen(function* () {
+        const store = yield* ArtifactStore
+        let fires = 0
+        store.changes(() => {
+          fires++
+        })
+        yield* store.pin(pin({ id: "s", content: "v1" })) // +1
+        yield* store.pin(pin({ id: "s", content: "again" })) // +0 (idempotent)
+        yield* store.update("s", "v2", "agent") // +1
+        yield* store.unpin("s") // +1
+        return fires
+      }),
+    )
+    expect(count).toBe(3)
   })
 })

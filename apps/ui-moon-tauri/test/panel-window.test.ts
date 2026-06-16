@@ -83,37 +83,42 @@ describe('panel.html system-widget host', () => {
     expect(document.querySelector('.notice')!.textContent).toContain('settings.nope')
   })
 
-  it('settings.updates renders the check button with the panel title', () => {
+  // settings.updates is the representative system-widget the panel.html HOST
+  // tests ride on. The staged-narrative behaviour of the rebuilt updates panel
+  // (Slice B) is covered exhaustively in panel-updates.test.ts; here we only
+  // assert host-level concerns (title wiring, the panel renders, commands fire,
+  // failures degrade) against the new DOM contract.
+  it('settings.updates renders the staged panel with the panel title', () => {
     bootPanel({ type: 'settings.updates' })
     expect(document.getElementById('bar-title')!.textContent).toBe('Updates')
     expect(document.getElementById('check-update-btn')).toBeTruthy()
-    expect(document.getElementById('update-status')!.textContent).toBe('')
+    // Idle by default: status pill reads "Up to date", card hidden.
+    expect(document.getElementById('update-pill')!.textContent).toBe('Up to date')
+    expect((document.getElementById('update-card') as HTMLElement).hidden).toBe(true)
   })
 
-  it('check → up to date when check_for_update returns null', async () => {
+  it('Check for updates invokes check_for_update through the host ctx', async () => {
     const { invoke } = bootPanel({
       type: 'settings.updates',
       invoke: (cmd) => (cmd === 'check_for_update' ? null : null),
     })
     document.getElementById('check-update-btn')!.click()
-    await vi.waitFor(() =>
-      expect(document.getElementById('update-status')!.textContent).toBe('Up to date ✓'))
-    expect(invoke).toHaveBeenCalledWith('check_for_update')
-    expect((document.getElementById('install-update-btn')!.parentElement as HTMLElement).hidden).toBe(true)
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('check_for_update'))
   })
 
-  it('check → reveals Update & Restart when a version is available', async () => {
+  it('check returning a version moves the pill to "Update found" and shows the card', async () => {
     bootPanel({
       type: 'settings.updates',
       invoke: (cmd) => (cmd === 'check_for_update' ? { version: '9.9.9' } : null),
     })
     document.getElementById('check-update-btn')!.click()
     await vi.waitFor(() =>
-      expect(document.getElementById('update-status')!.textContent).toContain('9.9.9'))
-    expect((document.getElementById('install-update-btn')!.parentElement as HTMLElement).hidden).toBe(false)
+      expect(document.getElementById('update-pill')!.textContent).toBe('Update found'))
+    expect((document.getElementById('update-card') as HTMLElement).hidden).toBe(false)
+    expect(document.getElementById('update-card-version')!.textContent).toContain('9.9.9')
   })
 
-  it('check failure paints the error instead of throwing', async () => {
+  it('check failure paints the error line instead of throwing', async () => {
     bootPanel({
       type: 'settings.updates',
       invoke: (cmd) => {
@@ -121,28 +126,31 @@ describe('panel.html system-widget host', () => {
         return null
       },
     })
-    document.getElementById('check-update-btn')!.click()
+    expect(() => document.getElementById('check-update-btn')!.click()).not.toThrow()
     await vi.waitFor(() =>
-      expect(document.getElementById('update-status')!.textContent).toContain('Update check failed'))
+      expect((document.getElementById('update-error') as HTMLElement).hidden).toBe(false))
+    expect(document.getElementById('update-error')!.textContent).toContain('offline')
   })
 
-  it('install failure re-enables the button and reports', async () => {
+  it('Restart to update (at ready) invokes apply_update; failure re-enables it', async () => {
     bootPanel({
       type: 'settings.updates',
       invoke: (cmd) => {
-        if (cmd === 'check_for_update') return { version: '9.9.9' }
-        if (cmd === 'install_update') throw new Error('sig mismatch')
+        if (cmd === 'apply_update') throw new Error('sig mismatch')
         return null
       },
     })
-    document.getElementById('check-update-btn')!.click()
+    // Drive to the ready face via the exposed test seam.
+    const content = document.getElementById('content-area')!
+    ;(content as any).__updatesController.onEvent('update://ready', { version: '9.9.9', notes: 'n' })
+    const restartBtn = document.getElementById('restart-update-btn') as HTMLButtonElement
+    expect(restartBtn.hidden).toBe(false)
+    restartBtn.click()
     await vi.waitFor(() =>
-      expect((document.getElementById('install-update-btn')!.parentElement as HTMLElement).hidden).toBe(false))
-    const installBtn = document.getElementById('install-update-btn') as HTMLButtonElement
-    installBtn.click()
-    await vi.waitFor(() =>
-      expect(document.getElementById('update-status')!.textContent).toContain('Install failed'))
-    expect(installBtn.disabled).toBe(false)
+      expect((document.getElementById('update-error') as HTMLElement).hidden).toBe(false))
+    expect(document.getElementById('update-error')!.textContent).toContain('sig mismatch')
+    // Failure path re-enables the button so the user can retry.
+    expect(restartBtn.disabled).toBe(false)
   })
 
   it('✕ closes via close_widget with this window label', async () => {

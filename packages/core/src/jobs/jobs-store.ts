@@ -128,8 +128,8 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
             createdAt: ts,
             updatedAt: ts,
             schedule: null,
-            enabled: true,
-            nextRunAt: null,
+            enabled: input.enabled ?? true,
+            nextRunAt: input.nextRunAt ?? null,
           }
           const existed = yield* Ref.get(store).pipe(
             Effect.map((m) => m.has(input.id)),
@@ -304,6 +304,35 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
             .slice(0, limit),
         )
 
+      const pruneRuns: JobsStoreApi["pruneRuns"] = (cutoffMs) =>
+        Effect.sync(() => {
+          let deleted = 0
+          for (const [id, run] of runs) {
+            if (run.finishedAt !== null && run.finishedAt < cutoffMs) {
+              runs.delete(id)
+              deleted++
+            }
+          }
+          return deleted
+        })
+
+      const closeOrphanedRuns: JobsStoreApi["closeOrphanedRuns"] = (args) =>
+        Effect.sync(() => {
+          let closed = 0
+          for (const [id, run] of runs) {
+            if (run.finishedAt === null) {
+              runs.set(id, {
+                ...run,
+                status: "cancelled",
+                finishedAt: args.finishedAt,
+                error: run.error ?? args.error ?? "orphaned (process restart)",
+              })
+              closed++
+            }
+          }
+          return closed
+        })
+
       return {
         record,
         listAll,
@@ -317,6 +346,8 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
         recordRunEnd,
         updateRunStatus,
         listRuns,
+        pruneRuns,
+        closeOrphanedRuns,
       } satisfies JobsStoreApi
     }),
   )
@@ -374,9 +405,11 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
 
         // Prepared statements — V1 columns
         const insertStmt = db.query(
+          // enabled + next_run_at are bound explicitly so a caller can create a
+          // row already armed (atomic) rather than record()+setV2Fields().
           `INSERT INTO jobs
-             (id, kind, spec, next_run, last_run, last_status, payload_json, created_at, updated_at)
-           VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?, ?)`,
+             (id, kind, spec, next_run, last_run, last_status, payload_json, created_at, updated_at, enabled, next_run_at)
+           VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?)`,
         )
         // V2 SELECT includes the additive columns (schedule, enabled, next_run_at).
         const SELECT_COLS =
@@ -389,24 +422,31 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
           `SELECT ${SELECT_COLS} FROM jobs WHERE id = ?`,
         )
         const deleteStmt = db.query(`DELETE FROM jobs WHERE id = ?`)
+        // CASE-WHEN sentinel (not COALESCE): a leading 0|1 "present?" flag per
+        // column lets an explicit NULL CLEAR the field while an omitted key
+        // leaves it untouched — matching the Memory layer's `!== undefined`
+        // semantics. COALESCE(?, col) cannot tell "set NULL" from "omit".
         const touchStmt = db.query(
           `UPDATE jobs
-              SET next_run = COALESCE(?, next_run),
-                  last_run = COALESCE(?, last_run),
-                  last_status = COALESCE(?, last_status),
-                  updated_at = ?
+              SET next_run    = CASE WHEN ? = 1 THEN ? ELSE next_run END,
+                  last_run    = CASE WHEN ? = 1 THEN ? ELSE last_run END,
+                  last_status = CASE WHEN ? = 1 THEN ? ELSE last_status END,
+                  updated_at  = ?
             WHERE id = ?`,
         )
         const existsStmt = db.query(`SELECT 1 FROM jobs WHERE id = ? LIMIT 1`)
 
         // Prepared statements — V2 (jobs additive cols + job_runs ledger).
+        // CASE-WHEN sentinel: each column carries a leading 0|1 "present?" flag
+        // so an explicit NULL CLEARS it (e.g. resetting next_run_at) while an
+        // omitted key leaves it untouched. COALESCE(?, col) treated NULL as
+        // "omit", so the SQLite layer could never clear a field and silently
+        // diverged from the Memory layer (which honours null-clears).
         const setV2FieldsStmt = db.query(
-          // Use sentinel sub-selects so a partial patch only touches the
-          // requested columns. `?` bound to NULL leaves the existing value.
           `UPDATE jobs
-              SET schedule    = COALESCE(?, schedule),
-                  enabled     = COALESCE(?, enabled),
-                  next_run_at = COALESCE(?, next_run_at),
+              SET schedule    = CASE WHEN ? = 1 THEN ? ELSE schedule END,
+                  enabled     = CASE WHEN ? = 1 THEN ? ELSE enabled END,
+                  next_run_at = CASE WHEN ? = 1 THEN ? ELSE next_run_at END,
                   updated_at  = ?
             WHERE id = ?`,
         )
@@ -456,6 +496,21 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
             WHERE job_id = ?
             ORDER BY started_at DESC
             LIMIT ?`,
+        )
+        // Retention sweep: only CLOSED rows (finished_at NOT NULL) are
+        // eligible — an in-flight run is never deleted out from under a worker.
+        const pruneRunsStmt = db.query(
+          `DELETE FROM job_runs
+            WHERE finished_at IS NOT NULL AND finished_at < ?`,
+        )
+        // Crash recovery: close every in-flight row (finished_at NULL). Keeps
+        // any pre-existing error (COALESCE) so a partial worker error survives.
+        const closeOrphanStmt = db.query(
+          `UPDATE job_runs
+              SET status      = 'cancelled',
+                  finished_at = ?,
+                  error       = COALESCE(error, ?)
+            WHERE finished_at IS NULL`,
         )
 
         type RawRow = {
@@ -523,9 +578,20 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
               )
             }
             const payloadJson = JSON.stringify(input.payload)
+            const enabledVal = (input.enabled ?? true) ? 1 : 0
+            const nextRunAtVal = input.nextRunAt ?? null
             try {
               db.run("BEGIN IMMEDIATE")
-              insertStmt.run(input.id, input.kind, input.spec, payloadJson, ts, ts)
+              insertStmt.run(
+                input.id,
+                input.kind,
+                input.spec,
+                payloadJson,
+                ts,
+                ts,
+                enabledVal,
+                nextRunAtVal,
+              )
               db.run("COMMIT")
             } catch (e) {
               try {
@@ -552,8 +618,8 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
               createdAt: ts,
               updatedAt: ts,
               schedule: null,
-              enabled: true,
-              nextRunAt: null,
+              enabled: input.enabled ?? true,
+              nextRunAt: input.nextRunAt ?? null,
             } satisfies PersistedJob
           })
 
@@ -590,8 +656,11 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
             return yield* Effect.try({
               try: () => {
                 const result = touchStmt.run(
+                  patch.nextRun !== undefined ? 1 : 0,
                   patch.nextRun ?? null,
+                  patch.lastRun !== undefined ? 1 : 0,
                   patch.lastRun ?? null,
+                  patch.lastStatus !== undefined ? 1 : 0,
                   patch.lastStatus ?? null,
                   ts,
                   id,
@@ -611,8 +680,11 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
             return yield* Effect.try({
               try: () => {
                 const result = setV2FieldsStmt.run(
+                  patch.schedule !== undefined ? 1 : 0,
                   patch.schedule ?? null,
-                  patch.enabled === undefined ? null : patch.enabled ? 1 : 0,
+                  patch.enabled !== undefined ? 1 : 0,
+                  patch.enabled ? 1 : 0,
+                  patch.nextRunAt !== undefined ? 1 : 0,
                   patch.nextRunAt ?? null,
                   ts,
                   id,
@@ -721,6 +793,24 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
               new JobsStoreError({ op: "list", message: String(cause), cause }),
           })
 
+        const pruneRuns: JobsStoreApi["pruneRuns"] = (cutoffMs) =>
+          Effect.try({
+            try: () => pruneRunsStmt.run(cutoffMs).changes,
+            catch: (cause) =>
+              new JobsStoreError({ op: "delete", message: String(cause), cause }),
+          })
+
+        const closeOrphanedRuns: JobsStoreApi["closeOrphanedRuns"] = (args) =>
+          Effect.try({
+            try: () =>
+              closeOrphanStmt.run(
+                args.finishedAt,
+                args.error ?? "orphaned (process restart)",
+              ).changes,
+            catch: (cause) =>
+              new JobsStoreError({ op: "run_end", message: String(cause), cause }),
+          })
+
         return {
           record,
           listAll,
@@ -734,6 +824,8 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
           recordRunEnd,
           updateRunStatus,
           listRuns,
+          pruneRuns,
+          closeOrphanedRuns,
         } satisfies JobsStoreApi
       }),
     )

@@ -63,6 +63,7 @@ export interface TriggerSummary {
 }
 
 export interface TriggerAgentApi {
+  /** Register a trigger; a fresh runtime id is generated and returned. */
   readonly register: (
     spec: TriggerSpec,
   ) => Effect.Effect<TriggerId, TriggerError, Scope.Scope>
@@ -142,8 +143,10 @@ const make = (
       const id = nextTriggerId()
 
       if (spec.kind === "cron") {
-        // Use Either-based parser for typed errors.
-        const parsed = Cron.parse(spec.expr)
+        // Use Either-based parser for typed errors. Pin to UTC so the cron
+        // fires at the same wall-clock time no matter the host's process.env.TZ
+        // (otherwise a dev box and the prod server interpret it differently).
+        const parsed = Cron.parse(spec.expr, "UTC")
         if (Either.isLeft(parsed)) {
           return yield* Effect.fail(
             new TriggerError({
@@ -154,6 +157,20 @@ const make = (
           )
         }
         const cron = parsed.right
+        // Reject a parseable-but-unschedulable expression here (e.g.
+        // "0 0 30 2 *" — Feb 30 never occurs). Cron.next throws when no match
+        // exists within 10k iterations; without this probe we would register a
+        // fiber that dies on its FIRST tick and silently stops firing.
+        const probeNow = yield* EffectClock.currentTimeMillis
+        yield* Effect.try({
+          try: () => Cron.next(cron, new Date(probeNow)),
+          catch: (e) =>
+            new TriggerError({
+              kind: "cron-parse",
+              message: `cron "${spec.expr}" has no upcoming match`,
+              cause: e,
+            }),
+        })
         const loop: Effect.Effect<never> = Effect.gen(function* () {
           // Drive off Effect's Clock service — TestClock swaps in cleanly.
           const nowMs = yield* EffectClock.currentTimeMillis
@@ -161,15 +178,15 @@ const make = (
           try {
             nextDate = Cron.next(cron, new Date(nowMs))
           } catch (e) {
-            // Cron.next can throw if it can't find a match in 10k iters —
-            // surface as fault, exit loop (we don't want a hot-spin).
-            return yield* Effect.die(
-              new TriggerError({
-                kind: "cron-parse",
-                message: "cron next() failed",
-                cause: e,
-              }),
+            // Cron.next can throw if it can't find a match in 10k iters.
+            // Registration already probed this, so it should be unreachable —
+            // but if it ever happens mid-life, stop the loop GRACEFULLY (log +
+            // self-interrupt) rather than `Effect.die`, which propagates an
+            // uncaught defect and stops the trigger with no operator signal.
+            yield* Effect.logError(
+              `[luna/trigger] cron "${spec.expr}" has no further match; stopping this trigger: ${String(e)}`,
             )
+            return yield* Effect.interrupt
           }
           const delta = Math.max(0, nextDate.getTime() - nowMs)
           yield* Effect.sleep(Duration.millis(delta))

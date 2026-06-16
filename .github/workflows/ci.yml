@@ -10,18 +10,27 @@
 #      (`master \`2349697a…\`` in a .md) WITHOUT tripping on the legitimate
 #      `sk-ant-oat-totally-bogus` test fixtures / redaction docs in the repo.
 #
+# TEST RUNNERS — Luna's suite runs under TWO runners, and CI runs BOTH
+# (see TESTING.md). This split is the fix for the bun:sqlite FALSE failures:
+#   - `bun run test`     (vitest) — most suites. The bun:sqlite-backed suites
+#     are excluded here (vitest.config.ts BUN_RUNTIME_TESTS) because vitest's
+#     Node/vite pipeline cannot load `bun:sqlite`.
+#   - `bun run test:bun` (bun)    — the bun:sqlite-backed suites (DuckDbService /
+#     analytics / telemetry / wake + memory / vault). vitest cannot load
+#     bun:sqlite, so without this step their coverage is silently dropped.
+#
 # KNOWN-RED (surfaced, but NOT allowed to fail the build yet — continue-on-error):
-#   3. typecheck — there is a DOCUMENTED pre-existing `tsc` baseline (duckdb +
-#      agent-cli). chat-server.ts has no tsc gate at all. We run it so the
-#      output is visible in the logs and regressions are noticeable, but we do
-#      not block on it until the baseline is burned down.
-#   4. test — `bun run test` (vitest) has a DOCUMENTED known-red baseline of
-#      bun:sqlite / jsdom env failures. We run the full suite to surface it,
-#      but do not hard-fail CI on it yet.
+#   - typecheck — DOCUMENTED pre-existing `tsc` baseline.
+#   - test — the bun:sqlite FALSE failures are gone (excluded from vitest, run
+#     under Bun), but a SEPARATE macOS-only baseline remains RED on the Linux CI
+#     runner: keychain-helper (macOS Keychain), deploy-scripts (plutil/launchd),
+#     and apps/ui-web ui-models. Those genuinely can't run on linux. Both
+#     runners run for visibility; gating them is deferred until those suites are
+#     guarded for non-Darwin (tracked follow-up — see TESTING.md).
 #
 # Rationale: lockfile drift and leaked secrets are correctness/safety issues
-# that reached master with no automated guard, so they are the hard gates.
-# typecheck/test are run for visibility and ratcheted to green over time.
+# that reached master with no automated guard, so they hard-gate. typecheck and
+# the test runners are surfaced and ratcheted to green over time.
 
 name: CI
 
@@ -123,7 +132,17 @@ jobs:
         continue-on-error: true
         run: bun run typecheck
 
-      # KNOWN-RED (surfaced, not blocking): bun:sqlite / jsdom env failures.
-      - name: Test (known-red baseline — non-blocking)
+      # Surfaced, NON-BLOCKING (see header). The bun:sqlite FALSE failures are
+      # gone (excluded from vitest → run under Bun below), but a macOS-only
+      # baseline (keychain-helper / deploy-scripts / ui-models) stays red on the
+      # Linux runner, so vitest is not a hard gate yet.
+      - name: Test — vitest (non-blocking)
         continue-on-error: true
         run: bun run test
+
+      # Surfaced, NON-BLOCKING. The bun:sqlite-backed suites' ONLY coverage —
+      # vitest cannot load bun:sqlite. (Whole-package run, so a few macOS-only
+      # tests in these packages are also red on the Linux runner; see TESTING.md.)
+      - name: Test — bun:sqlite suites (non-blocking)
+        continue-on-error: true
+        run: bun run test:bun

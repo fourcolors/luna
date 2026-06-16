@@ -489,11 +489,12 @@ if [[ "$DRY_RUN" == true ]]; then
   printf '5. systemctl daemon-reload + stop + settle %ss + start %s\n' "$RESTART_SETTLE_SECS" "$SERVICE_NAME"
   printf '6. readiness probe: is-active + NRestarts-stable + curl http://127.0.0.1:%s/healthz==200 + /readyz mode=normal (<=%ss)\n' \
     "$READINESS_PORT" "$READINESS_TIMEOUT"
+  printf '7. on readiness OK: seed V2 dream/wake job rows via dream-wake-install.ts (idempotent, best-effort)\n'
   if [[ "$ROLLBACK" == true ]]; then
-    printf '7. on readiness FAIL: reset --hard PREV, re-install if lock reverted, re-pin claude, restart, re-probe (ROLLED BACK)\n'
+    printf '8. on readiness FAIL: reset --hard PREV, re-install if lock reverted, re-pin claude, restart, re-probe (ROLLED BACK)\n'
     printf '   if rollback also fails: CRITICAL, exit 2\n'
   else
-    printf '7. rollback DISABLED (--no-rollback): on readiness FAIL, exit 1 without reverting\n'
+    printf '8. rollback DISABLED (--no-rollback): on readiness FAIL, exit 1 without reverting\n'
   fi
   # Show the concrete commands that WOULD run, executing nothing. These route
   # exactly as the live path: git on the host, bun/systemctl via run_target
@@ -506,9 +507,37 @@ if [[ "$DRY_RUN" == true ]]; then
       "source /root/luna/scripts/lib/luna-deploy.sh && luna_configure_claude_executable /root/.luna/.env /root/luna"
   fi
   restart_service
+  run_target "$BUN_BIN" run "$CONTAINER_REPO_DIR/apps/ui-web/scripts/dream-wake-install.ts"
   luna_info "Dry run complete; no changes made."
   exit 0
 fi
+
+# --- post-deploy: seed V2 dream/wake job rows --------------------------------
+# The scheduler-v2 migration (DESIGN §5.3.5) DISABLES the legacy dream/wake cron
+# layers and drives BOTH cycles from durable `jobs` rows instead. Those rows are
+# created by dream-wake-install.ts, which is IDEMPOTENT (skip-if-exists, no
+# --force). If a promotion ships the migration but the rows were never seeded,
+# wake + dream silently go dark — observed on stable 2026-06-15 (legacy cron off
+# + no V2 rows = no driver). Seeding on every HEALTHY deploy closes that gap so
+# the cycles self-heal on promotion.
+#
+# Routed through run_target so it executes in the SAME scope as the server (host
+# for bare-host stable, inside the container for incus dev) — matching how
+# bun install runs — so it resolves the SAME ~/.luna/luna.db.
+#
+# BEST-EFFORT: the deploy has already succeeded and the server is healthy, so a
+# seed failure must only WARN, never fail the deploy or trip rollback. Always
+# returns 0 (callers also guard with `|| true`).
+seed_dream_wake_jobs() {
+  local script="$CONTAINER_REPO_DIR/apps/ui-web/scripts/dream-wake-install.ts"
+  luna_info "post-deploy: seeding V2 dream/wake job rows (idempotent)"
+  if run_target "$BUN_BIN" run "$script"; then
+    luna_info "post-deploy: dream/wake job rows ensured"
+  else
+    luna_warn "post-deploy: dream/wake seed FAILED (non-fatal); if wake/dream go dark, run manually: $BUN_BIN run $script"
+  fi
+  return 0
+}
 
 # --- rollback ----------------------------------------------------------------
 # Single rollback path used for EVERY forward failure — whether the new version
@@ -569,6 +598,7 @@ RESTART_BASELINE="$(readiness_restart_baseline)"
 
 if readiness_ok "$RESTART_BASELINE"; then
   luna_info "updated $PREV -> $NEW_HEAD ($SERVICE_NAME healthy)"
+  seed_dream_wake_jobs || true
   exit 0
 fi
 

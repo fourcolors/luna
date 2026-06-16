@@ -78,6 +78,7 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "tool-call",
   "tool-result",
   "turn-complete",
+  "result-delivered",
   "account-list",
   "skill-catalog",
   "skill-status",
@@ -89,6 +90,9 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "artifact-update",
   "workflow-list",
   "workflow-runs",
+  // PR #114 (Suggested Actions) — additive behind capabilities.suggestedActions.
+  "suggested-action-set",
+  "suggested-action-update",
   "local-shell-request",
   "local-shell-status",
   "register-op-token-status",
@@ -111,6 +115,10 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "smart-bar",
   "model-routing-list",
   "model-routing-status",
+  // Phase 3: thread archival (additive, behind status awareness)
+  "thread-archived",
+  "thread-unarchived",
+  "thread-archive-error",
 ].sort()
 
 const EXPECTED_CLIENT_FRAME_TYPES = [
@@ -139,6 +147,8 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "artifact-unpin",
   "workflow-runs-request",
   "workflow-refresh",
+  // PR #114 (Suggested Actions) — additive behind capabilities.suggestedActions.
+  "suggested-action-respond",
   "pty-input",
   "pty-resize",
   "vault-put",
@@ -152,6 +162,9 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "mcp-tool-call",
   "set-thread-config",
   "model-routing-save",
+  // Phase 3: thread archival (additive, behind status awareness)
+  "archive-thread",
+  "unarchive-thread",
 ].sort()
 
 const EXPECTED_PROTOCOL_VERSION = 2
@@ -237,7 +250,7 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     expect(UI_WS_PROTOCOL_VERSION).toBe(EXPECTED_PROTOCOL_VERSION)
   })
 
-  it("parser self-check: derived counts are sane (44 server, 35 client) — guards the regex itself", () => {
+  it("parser self-check: derived counts are sane (52 server, 40 client) — guards the regex itself", () => {
     // If the regex silently mis-parses, the toEqual above could pass for the
     // wrong reason. Pin the counts so a broken parser is caught here.
     // Prior base = 24 server / 15 client; the agent-summoned secure-secret-entry
@@ -269,11 +282,19 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // The live Agents view (S4) adds subagent-tree (server, broadcast) +
     // subagent-tree-request (client) → 46 server / 36 client. The Apps-panel
     // ledger-safe edit adds artifact-edit (client) → 46 server / 37 client.
-    // Smart Bar v1 adds smart-bar (server) → 47 server / 37 client.
+    // Suggested Actions (per-thread, gated on capabilities.suggestedActions)
+    // adds suggested-action-set + suggested-action-update (server) and
+    // suggested-action-respond (client) → 48 server / 38 client. The
+    // background-result delivery sink (#124) adds result-delivered (server,
+    // broadcast — the "Luna finished X" toast) → 49 server / 38 client.
+    // Smart Bar v1 adds smart-bar (server) → 50 server / 38 client.
+    // Phase 3 (thread archival) adds thread-archived + thread-unarchived (server)
+    // and archive-thread + unarchive-thread (client) → 52 server / 40 client.
+    // Phase 3 Copilot fix: thread-archive-error adds one more server frame → 53.
     // Model-routing settings (PR 1) adds model-routing-list + model-routing-status
-    // (server) and model-routing-save (client) → 49 server / 38 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(49)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(38)
+    // (server) and model-routing-save (client) → 55 server / 41 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(55)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(41)
   })
 
   // VERSION-SKEW (client half): nothing else pins the ui-shared wire.ts mirror

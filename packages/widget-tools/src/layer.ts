@@ -19,6 +19,7 @@ import {
   makeOpenArtifactTool,
   makeOpenWidgetTool,
   makeSearchArtifactsTool,
+  makeShowArtifactTool,
   makeWidgetTools,
 } from "./tools.js"
 import type { WidgetSummonerPort } from "./tools.js"
@@ -69,8 +70,9 @@ export const buildWidgetToolsAddendum = (
     "## Showing things on the user's screen\n" +
     "You can open windows on the user's screen. Pick the smallest action that fits the request:\n" +
     "- Show an EXISTING panel or settings page ('open my voice settings'): call `open_widget` with the closest matching kind — guess from the descriptions; a wrong guess returns the full list so you can retry.\n" +
+    "- SHOW CONTENT you just produced (code, a markdown doc, an HTML preview) in a panel ('show me that in a panel', 'put the code somewhere I can see it'): call `show_artifact` with the content inline — it is pinned and opened, rendered for its kind.\n" +
     "- REOPEN something built earlier (a widget/app/doc the user asks to see again): `search_artifacts` to find it, then `open_artifact` with the id. ALWAYS search before creating so you never make a duplicate.\n" +
-    "- CREATE a new panel: `widget_write` for a self-contained static or obs-event widget; `mcp_app_write` when it must pull LIVE data via the curated tools (pulse, list-artifacts). Newly created widgets/apps open automatically.\n" +
+    "- CREATE a new INTERACTIVE panel: `widget_write` for a self-contained static or obs-event widget; `mcp_app_write` when it must pull LIVE data via the curated tools (pulse, list-artifacts). Newly created widgets/apps open automatically.\n" +
     "You only SUMMON UI — you cannot read or operate what is inside an opened window, and panel mutations stay the user's own gesture." +
     dirLines
   )
@@ -89,7 +91,14 @@ const createWidgetToolsConfig = (
     ...makeMcpAppTools(store, summoner),
     makeSearchArtifactsTool(store),
     ...(summoner
-      ? [makeOpenWidgetTool(summoner), makeOpenArtifactTool(store, summoner)]
+      ? [
+          makeOpenWidgetTool(summoner),
+          makeOpenArtifactTool(store, summoner),
+          // show_artifact pins a CONTENT artifact (code/markdown/html) then
+          // opens it — summoner-gated like open_artifact (no host → nothing
+          // to show; opens buffer + replay on reconnect via the bridge).
+          makeShowArtifactTool(store, summoner),
+        ]
       : []),
   ]
   const server = buildWidgetToolsMcpServer(tools)

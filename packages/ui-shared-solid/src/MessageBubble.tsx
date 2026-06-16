@@ -80,6 +80,30 @@ export const MessageBubble: Component<{ message: ChatMessage }> = (props) => {
         </button>
       </Show>
       <div class="bubble-role">{props.message.role}</div>
+      {/* "From a background task" chip (#124) — assistant turns that were
+          delivered by a background/accepted job carry `message.delivery`.
+          Rendered off the message field so it shows for BOTH live
+          (assistant-done) and replayed (thread-snapshot) messages. Uses
+          delivery.label when present, else a generic fallback. */}
+      <Show when={props.message.delivery}>
+        {(delivery) => (
+          <div class="bubble-delivery" title="Delivered by a background task">
+            <span class="bubble-delivery-glyph" aria-hidden="true">
+              ↩
+            </span>
+            <Show
+              when={delivery().label}
+              fallback={<span>from a background task</span>}
+            >
+              {(label) => (
+                <span>
+                  from “<span class="bubble-delivery-label">{label()}</span>”
+                </span>
+              )}
+            </Show>
+          </div>
+        )}
+      </Show>
       <Show
         when={props.message.role === "assistant"}
         fallback={

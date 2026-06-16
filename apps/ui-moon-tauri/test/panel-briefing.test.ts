@@ -293,7 +293,8 @@ describe('briefing panel', () => {
     const calls = invokeFn.mock.calls
     const openCall = calls.find(([cmd]) => cmd === 'open_widget')
     expect(openCall).toBeTruthy()
-    expect(openCall![1]).toEqual({ kind: 'flow', params: { jobId: 'job-wait' } })
+    // opener = this briefing panel's own label, so the flow panel docks next to it.
+    expect(openCall![1]).toEqual({ kind: 'flow', params: { jobId: 'job-wait' }, opener: 'panel-briefing' })
   })
 
   it('Refresh button sends { type: "workflow-refresh" } over the WS', async () => {

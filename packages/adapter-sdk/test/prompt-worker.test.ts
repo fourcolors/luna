@@ -28,6 +28,10 @@ import {
   parsePromptPayload,
   type PromptPayload,
 } from "../src/prompt-worker.js"
+import type {
+  ChatThreadDelivery,
+  ChatThreadPoster,
+} from "../src/chat-thread-poster.js"
 import { makeFakeQuery, makeAssistantMessage } from "./fake-sdk.js"
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 
@@ -123,6 +127,26 @@ describe("parsePromptPayload", () => {
     expect(r).toMatch(/deliver_to.kind/)
   })
 
+  it("accepts a well-formed chat_thread deliver_to (#124)", () => {
+    const r = parsePromptPayload({
+      user_prompt: "x",
+      deliver_to: { kind: "chat_thread", thread_id: "thr_abc" },
+    }) as PromptPayload
+    expect(r.deliver_to).toEqual({ kind: "chat_thread", thread_id: "thr_abc" })
+  })
+
+  it("rejects a chat_thread deliver_to with a missing/empty thread_id", () => {
+    expect(
+      parsePromptPayload({ user_prompt: "x", deliver_to: { kind: "chat_thread" } }),
+    ).toMatch(/thread_id/)
+    expect(
+      parsePromptPayload({
+        user_prompt: "x",
+        deliver_to: { kind: "chat_thread", thread_id: "" },
+      }),
+    ).toMatch(/thread_id/)
+  })
+
   it("filters non-string entries out of allowed_tools", () => {
     const r = parsePromptPayload({
       user_prompt: "x",
@@ -198,6 +222,65 @@ describe("buildPromptWorker", () => {
       )
       const recent = yield* notes.getRecentAcrossSessions(50)
       expect(recent.length).toBe(0)
+    })
+    await Effect.runPromise(
+      prog.pipe(Effect.provide(Layer.mergeAll(sdkLayer, TestNotes))),
+    )
+  })
+
+  it("deliver_to=chat_thread posts the result to the poster (#124)", async () => {
+    const sdkLayer = fakeClientWithText("Done — found 3 options.")
+    const captured: ChatThreadDelivery[] = []
+    const poster: ChatThreadPoster = {
+      post: (delivery) =>
+        Effect.sync(() => {
+          captured.push(delivery)
+        }),
+    }
+    const prog = Effect.gen(function* () {
+      const sdk = yield* SDKClient
+      const notes = yield* AgentNotesService
+      const worker = buildPromptWorker(sdk, notes, null, poster)
+      const result = yield* worker(
+        {
+          user_prompt: "find options",
+          label: "Research flights",
+          source: "suggested-action",
+          deliver_to: { kind: "chat_thread", thread_id: "thr_main" },
+        },
+        ctx,
+      )
+      // The worker still returns the text (delivery is a side effect).
+      expect(result.outputText).toBe("Done — found 3 options.")
+    })
+    await Effect.runPromise(
+      prog.pipe(Effect.provide(Layer.mergeAll(sdkLayer, TestNotes))),
+    )
+    expect(captured).toEqual([
+      {
+        threadId: "thr_main",
+        text: "Done — found 3 options.",
+        source: "suggested-action",
+        label: "Research flights",
+      },
+    ])
+  })
+
+  it("deliver_to=chat_thread without a poster logs-and-drops, still returns text (#124)", async () => {
+    const sdkLayer = fakeClientWithText("Body.")
+    const prog = Effect.gen(function* () {
+      const sdk = yield* SDKClient
+      const notes = yield* AgentNotesService
+      // No poster wired (null) — the worker must not throw.
+      const worker = buildPromptWorker(sdk, notes, null, null)
+      const result = yield* worker(
+        {
+          user_prompt: "x",
+          deliver_to: { kind: "chat_thread", thread_id: "thr_gone" },
+        },
+        ctx,
+      )
+      expect(result.outputText).toBe("Body.")
     })
     await Effect.runPromise(
       prog.pipe(Effect.provide(Layer.mergeAll(sdkLayer, TestNotes))),

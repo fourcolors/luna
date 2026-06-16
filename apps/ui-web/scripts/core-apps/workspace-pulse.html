@@ -15,11 +15,16 @@
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+  /* Themed by the host across the sandbox (G1): the MCP Apps host ships Luna's
+     watercolor palette as SEP-1865 standard variables in the ui/initialize
+     result + host-context-changed; the script below applies them to :root.
+     Every color falls back to the original dark values, so the app still looks
+     right with no host (e.g. opened bare in a browser). */
   html, body {
     width: 100%; height: 100%;
-    background: #0a0e1c;
-    color: #e2ecfd;
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--color-background-primary, #0a0e1c);
+    color: var(--color-text-primary, #e2ecfd);
+    font-family: var(--font-sans, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
     font-size: 13px;
     overflow: hidden;
   }
@@ -38,7 +43,7 @@
     align-items: center;
     gap: 7px;
     padding: 10px 14px 8px;
-    border-bottom: 1px solid rgba(255,255,255,0.07);
+    border-bottom: 1px solid var(--color-border-primary, rgba(255,255,255,0.07));
     flex-shrink: 0;
   }
 
@@ -46,7 +51,7 @@
     font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.04em;
-    color: #8ab4f8;
+    color: var(--color-ring-primary, #8ab4f8);
     text-transform: uppercase;
     flex: 1;
   }
@@ -63,7 +68,7 @@
 
   #status-label {
     font-size: 10px;
-    color: #64748b;
+    color: var(--color-text-tertiary, #64748b);
     font-variant-numeric: tabular-nums;
   }
 
@@ -86,9 +91,9 @@
   }
 
   .tile {
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.09);
-    border-radius: 8px;
+    background: var(--color-background-secondary, rgba(255,255,255,0.04));
+    border: 1px solid var(--color-border-primary, rgba(255,255,255,0.09));
+    border-radius: var(--border-radius-md, 8px);
     padding: 7px 10px;
     display: flex;
     flex-direction: column;
@@ -97,16 +102,16 @@
 
   .tile-label {
     font-size: 10px;
-    color: #64748b;
+    color: var(--color-text-tertiary, #64748b);
     letter-spacing: 0.03em;
     text-transform: uppercase;
   }
 
   .tile-value {
-    font-family: ui-monospace, "SFMono-Regular", "Cascadia Code", Menlo, monospace;
+    font-family: var(--font-mono, ui-monospace, "SFMono-Regular", "Cascadia Code", Menlo, monospace);
     font-size: 18px;
     font-weight: 700;
-    color: #e2ecfd;
+    color: var(--color-text-primary, #e2ecfd);
     line-height: 1.1;
     transition: color 0.3s ease;
   }
@@ -116,7 +121,7 @@
     flex-shrink: 0;
     padding: 4px 14px 9px;
     font-size: 10px;
-    color: #3d4d65;
+    color: var(--color-text-tertiary, #3d4d65);
     letter-spacing: 0.02em;
   }
 </style>
@@ -177,6 +182,21 @@
     post({ jsonrpc: '2.0', method: method, params: params || {} });
   }
 
+  // ── G1: apply host-sent SEP-1865 theme variables to our :root. The host
+  //    ships them in the ui/initialize result and again on every
+  //    host-context-changed, so the panel tracks Luna's live palette/theme. ──
+  function applyHostStyles(styles) {
+    if (!styles || typeof styles !== 'object') return;
+    var vars = styles.variables || styles;
+    if (!vars || typeof vars !== 'object') return;
+    var root = document.documentElement;
+    for (var k in vars) {
+      if (Object.prototype.hasOwnProperty.call(vars, k) && typeof vars[k] === 'string') {
+        try { root.style.setProperty(k, vars[k]); } catch (_) {}
+      }
+    }
+  }
+
   window.addEventListener('message', function (e) {
     if (e.source !== window.parent) return; // only trust the host
     var m = e.data;
@@ -188,6 +208,11 @@
       delete pending[m.id];
       if ('error' in m) p.reject(m.error || { message: 'error' });
       else p.resolve(m.result);
+      return;
+    }
+    // G1: live theme change pushed by the host → re-apply the variables.
+    if (m.method === 'ui/notifications/host-context-changed' && m.params) {
+      applyHostStyles(m.params.styles);
       return;
     }
     // Host notifications. ui/notifications/tool-input: ignored in v1 (this
@@ -253,7 +278,9 @@
     protocolVersion: '2026-01-26',
     appInfo: { name: 'workspace-pulse', version: '1.0.0' },
   })
-    .then(function () {
+    .then(function (result) {
+      // G1: the host hands us the theme in the init result → correct first paint.
+      applyHostStyles(result && result.styles);
       notify('ui/notifications/initialized');
       tick();
       setInterval(tick, 5000);

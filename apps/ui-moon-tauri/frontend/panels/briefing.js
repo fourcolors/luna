@@ -163,7 +163,8 @@
           openBtn.setAttribute('aria-label', 'Open ' + (wf.label || wf.id));
           var jobId = wf.id;
           openBtn.addEventListener('click', function () {
-            ctx.invoke('open_widget', { kind: 'flow', params: { jobId: jobId } }).catch(function () {});
+            // opener=this briefing panel so the flow panel docks next to it.
+            ctx.invoke('open_widget', { kind: 'flow', params: { jobId: jobId }, opener: ctx.label }).catch(function () {});
           });
           row.appendChild(openBtn);
         }

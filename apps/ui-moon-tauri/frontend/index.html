@@ -89,6 +89,31 @@
       50% { transform: scale(1.25); opacity: 1; }
     }
 
+    /* Update pip (Slice C) — the needs-input-pip's calmer sibling: a soft glowing
+       accent dot that lights when a verified build is staged. Same size/breathe,
+       but the watercolor --accent glow instead of the amber needs-input tone, so
+       it reads as a gentle "ready" cue rather than an alert. Sits just below the
+       needs-input pip so both can show at once without overlapping. Unlike the
+       needs-input pip it is pointer-events:auto + clickable — tapping it opens
+       the Updates panel (the moon's own click still opens chat). */
+    .update-pip {
+      position: absolute;
+      top: 30px;
+      right: 16px;
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%,
+        color-mix(in oklab, var(--accent) 92%, white),
+        var(--accent) 60%,
+        color-mix(in oklab, var(--accent) 70%, black) 100%);
+      box-shadow: 0 0 8px 2px color-mix(in oklab, var(--accent) 55%, transparent);
+      z-index: 31;
+      cursor: pointer;
+      pointer-events: auto;
+      animation: pip-breathe 2.4s ease-in-out infinite;
+    }
+
     .moon-container {
       position: absolute;
       left: 15px;
@@ -117,9 +142,8 @@
        calm intensity so it's premium on a dark desktop without dimming a light
        one). Sized to fade FULLY to transparent before the window edge, so there's
        no hard rectangle; the dark pool is what makes the blue moon-glow read.
-       --moon-aura-d scales it with the window (collapsed default; the re-tether
-       envelope bumps it to a larger pool at the SAME intensity). pointer-events
-       none so it never eats the moon's drag region. */
+       --moon-aura-d scales it with the window. pointer-events none so it never
+       eats the moon's drag region. */
     .moon-aura {
       position: absolute;
       left: 50%;
@@ -188,87 +212,6 @@
                   filter 0.6s ease;   /* the detached dim fades, never snaps */
       pointer-events: auto;
     }
-
-    /* ── Re-tether "string": a Verlet rope that falls from the moon when the
-       connection drops; pull the bead to reconnect to the same thread. The rope
-       layer + bead are SIBLINGS of #moon (NOT children) so they don't inherit
-       its data-tauri-drag-region — Tauri resolves the drag region against the
-       topmost element under the cursor, so a sibling on top (z-index > the
-       moon's 100) wins the hit-test and the bead is grabbable while the rest of
-       the moon still drags the native window. Compositor-only: bead moves by
-       transform, the rope is a few <path> repaints sharing one `d`; the JS loop
-       parks when settled (no idle CPU). ── */
-    .moon-rope-layer {
-      position: absolute; inset: 0; width: 100%; height: 100%;
-      overflow: visible; pointer-events: none; z-index: 109; display: none;
-    }
-    /* Three strokes share one Verlet `d` each frame: a wide soft halo
-       underneath, the gradient core, and a faint shimmer pulse that travels
-       down toward the bead (energy flowing along the lifeline). */
-    #moon-rope { fill: none; stroke: url(#moonRopeGrad); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
-    #moon-rope-halo { fill: none; stroke: rgba(138, 180, 248, 0.16); stroke-width: 9; stroke-linecap: round; stroke-linejoin: round; }
-    #moon-rope-shimmer {
-      fill: none; stroke: rgba(240, 247, 255, 0.75); stroke-width: 2; stroke-linecap: round;
-      /* pathLength=1 on the element keeps these fractions valid while the
-         path's true length changes every physics frame. */
-      stroke-dasharray: 0.12 0.88;
-      animation: rope-shimmer 2.6s linear infinite;
-    }
-    @keyframes rope-shimmer {
-      from { stroke-dashoffset: 0; }
-      to   { stroke-dashoffset: -1; }   /* one full lap anchor → bead */
-    }
-    /* The bead: a soft WATERCOLOR blot, not a glossy sphere — flat translucent
-       washes whose pigment pools toward the rim (edge-darkening ring) and then
-       feathers to nothing (closest-side, same lesson as the aura: the fade must
-       complete INSIDE the element or it clips hard). No border, no specular
-       highlight, no inset shading — those are what made it read "3D". A second
-       off-centre lavender pool keeps the wash from looking uniform, and the
-       outline drifts slowly like wet pigment settling. */
-    .moon-bead {
-      position: absolute; left: 0; top: 0; width: 38px; height: 38px;
-      z-index: 110; cursor: grab; display: none; align-items: center; justify-content: center;
-      color: rgba(240, 246, 255, 0.92); will-change: transform; touch-action: none;
-      background:
-        radial-gradient(circle closest-side,
-          rgba(150, 188, 250, 0.30) 0%,
-          rgba(138, 180, 248, 0.40) 42%,
-          rgba(118, 162, 240, 0.62) 68%,
-          rgba(104, 146, 232, 0.78) 82%,
-          rgba(96, 138, 226, 0.28) 92%,
-          rgba(96, 138, 226, 0) 100%),
-        radial-gradient(circle at 64% 68%, rgba(165, 148, 238, 0.25) 0%, rgba(165, 148, 238, 0) 60%),
-        radial-gradient(circle at 32% 30%, rgba(126, 184, 240, 0.18) 0%, rgba(126, 184, 240, 0) 55%);
-      border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%;
-      box-shadow: 0 0 14px rgba(138, 180, 248, 0.30);
-      transition: opacity 0.3s ease, filter 0.25s ease, box-shadow 0.25s ease;
-      animation: bead-wash 7s ease-in-out infinite alternate;
-    }
-    .moon-bead.live { display: flex; }
-    .moon-bead:hover {
-      filter: saturate(1.35) brightness(1.06);   /* the wash deepens under the cursor */
-      box-shadow: 0 0 20px rgba(150, 190, 252, 0.5);
-    }
-    .moon-bead:active { cursor: grabbing; }
-    /* The icon reads as denser pigment in the pool's centre, not chrome on glass. */
-    .moon-bead svg { width: 15px; height: 15px; pointer-events: none; opacity: 0.9; filter: drop-shadow(0 0 2px rgba(20, 30, 60, 0.5)); }
-    @keyframes bead-wash {
-      0%   { border-radius: 47% 53% 51% 49% / 52% 46% 54% 48%; }
-      50%  { border-radius: 52% 48% 47% 53% / 47% 54% 46% 53%; }
-      100% { border-radius: 49% 51% 53% 47% / 53% 47% 52% 48%; }
-    }
-    /* success pulse on re-tether (played on #moon-wrapper; the JS clears any inline
-       lean transform first so this animation isn't overridden by it). */
-    .moon-wrapper.retether-pulse { animation: moon-retether-pulse 0.7s ease; }
-    @keyframes moon-retether-pulse {
-      0% { transform: scale(1); } 30% { transform: scale(1.12); } 100% { transform: scale(1); }
-    }
-    /* While detached (string out) the moon's light dims — losing the thread
-       literally takes the glow out of it; re-tethering brings it back (the
-       hover rule still wins, so the moon brightens under attention). Subtle on
-       purpose: it must read "asleep", never "broken". */
-    body.retethering .moon-glow { opacity: 0.45; }
-    body.retethering .moon-svg { filter: drop-shadow(0 6px 16px rgba(138, 180, 248, 0.18)); }
 
     /* ── Voice states on the moon (data-voice-state, set by VoiceEngine).
        Painterly like the bead: flat translucent washes, opacity + soft scale
@@ -891,6 +834,13 @@
          job asks for operator input (job-input-request broadcast); clears on
          the bridge's dismissal broadcast (answered/cancelled/expired). -->
     <div class="needs-input-pip" id="needs-input-pip" aria-hidden="true" hidden></div>
+    <!-- Ambient ladder, update rung (Slice C): a quiet accent-tinted pip that
+         lights when the Rust updater has staged a verified build (update://ready).
+         Mirrors .needs-input-pip but with the watercolor accent glow (updates are
+         good news, not an alert). Clicking it opens the Updates panel; the moon's
+         own click still opens chat (this pip is pointer-events:auto so the click
+         lands on it, not the drag region behind it). -->
+    <div class="update-pip" id="update-pip" aria-hidden="true" hidden></div>
     <div class="moon-aura" aria-hidden="true"></div>
     <div class="moon-wrapper" id="moon-wrapper">
       <div class="moon-glow"></div>
@@ -919,25 +869,6 @@
         </svg>
       </div>
     </div>
-  </div>
-
-  <!-- Re-tether "string" (siblings of #moon, z-index > 100 to escape its drag
-       region). Hidden until the connection drops; pull the bead to reconnect to
-       the SAME thread. Physics ported verbatim from the approved demo. -->
-  <svg class="moon-rope-layer" id="moon-rope-layer" aria-hidden="true">
-    <defs>
-      <linearGradient id="moonRopeGrad" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="rgba(226,236,253,.55)"></stop>
-        <stop offset="100%" stop-color="rgba(138,180,248,.9)"></stop>
-      </linearGradient>
-    </defs>
-    <!-- halo / core / shimmer share one Verlet `d` per frame (see the CSS notes) -->
-    <path id="moon-rope-halo"></path>
-    <path id="moon-rope"></path>
-    <path id="moon-rope-shimmer" pathLength="1"></path>
-  </svg>
-  <div class="moon-bead" id="moon-bead" title="Pull to reconnect" aria-label="Reconnect to your thread">
-    <svg viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></g></svg>
   </div>
 
   <!-- ════════════════════════════════════════════════════════════════════
@@ -1192,8 +1123,8 @@
     };
 
     /**
-     * Shared state manager — Phase 6 hub-lean set: connection + re-tether
-     * episode bookkeeping and the moon's press/click discrimination.
+     * Shared state manager — Phase 6 hub-lean set: connection state
+     * and the moon's press/click discrimination.
      */
 
     const State = {
@@ -1209,20 +1140,9 @@
       // chat header (the chat window renders its own dot) — kept as state for
       // logs and tests.
       connStatus: 'disconnected',
-      // Re-tether wiring: the pending scheduleReconnect() timer (so a manual pull
-      // can cancel it and connect now); a one-per-episode grace timer before the
-      // string drops (so transient blips self-heal silently); and a flag to defer
-      // the drop while the wizard overlay owns the window.
+      // Pending scheduleReconnect() timer (so a fresh connect() can cancel it
+      // before opening a second socket).
       reconnectTimer: null,
-      tetherGraceTimer: null,
-      tetherPendingOnCollapse: false,
-      // Epoch for showTether's async window-grow: bumped on reattach so a hello
-      // landing mid-grow abandons the deferred string (else it shows post-connect).
-      tetherGen: 0,
-      // The in-flight growToEnvelope() promise (or null). onReattached awaits it
-      // before restoring, so if a reconnect wins the race the window is collapsed
-      // back even though no string ever showed (no retract → no onRetracted fires).
-      growPromise: null,
       // Connection generation counter (fix-6). Bumped each connect(); each
       // socket's handlers capture their gen and ignore events if superseded.
       connGen: 0,
@@ -1251,79 +1171,6 @@
           Logger.info(`Resized window logical boundary: ${width}x${height}`);
         } catch (e) {
           Logger.error("Tauri window resizing failure:", e);
-        }
-      },
-
-      // ── Re-tether swing envelope ──────────────────────────────────────────
-      // The collapsed 140×185 window clips the string's swing, so while the
-      // string is live we grow the window to a swing envelope AND shift its
-      // screen origin so the MOON STAYS VISUALLY FIXED (no jump) — then the bead
-      // can fling any direction. All distances are LOGICAL px: outerPosition()/
-      // currentMonitor() return PHYSICAL, so we .toLogical(scaleFactor) or a
-      // Retina (sf=2) display doubles the origin and the moon leaps. Everything
-      // is in try/catch: if the window perms/APIs are missing it no-ops (the
-      // string still works, just clipped) rather than throwing into the UI.
-      ENVELOPE_W: 460,
-      ENVELOPE_H: 470,
-      COLLAPSED_W: 140,
-      COLLAPSED_H: 185,
-
-      async growToEnvelope() {
-        document.body.classList.add('retethering');
-        if (!window.__TAURI__) return;
-        try {
-          const { getCurrentWindow, LogicalSize, LogicalPosition } = window.__TAURI__.window;
-          const w = getCurrentWindow();
-          const sf = await w.scaleFactor();
-          const op = (await w.outerPosition()).toLogical(sf);     // current origin (logical)
-          const moonEl = document.getElementById('moon');
-          const curLeft = parseFloat(moonEl.style.left) || 15;    // collapsed CSS default
-          const curTop = parseFloat(moonEl.style.top) || 15;
-          const moonScreenX = op.x + curLeft, moonScreenY = op.y + curTop;
-          const TARGET_LEFT = (this.ENVELOPE_W - 110) / 2;        // 175 — moon centred horizontally
-          const TARGET_TOP = 15;                                  // near the top, room to hang below
-          let newOX = moonScreenX - TARGET_LEFT;
-          let newOY = moonScreenY - TARGET_TOP;
-          const mon = await w.currentMonitor();
-          if (mon && mon.position && mon.size) {
-            const mp = mon.position.toLogical(sf), ms = mon.size.toLogical(sf);
-            newOX = Math.max(mp.x, Math.min(mp.x + ms.width - this.ENVELOPE_W, newOX));
-            newOY = Math.max(mp.y, Math.min(mp.y + ms.height - this.ENVELOPE_H, newOY));
-          }
-          newOX = Math.round(newOX); newOY = Math.round(newOY);   // round ONCE so CSS + origin agree
-          // Compensate the moon's CSS so its SCREEN position is exact even after
-          // an edge-clamp (= TARGET_LEFT/TOP when unclamped).
-          moonEl.style.left = (moonScreenX - newOX) + 'px';
-          moonEl.style.top = (moonScreenY - newOY) + 'px';
-          await w.setPosition(new LogicalPosition(newOX, newOY));
-          await this.setWindowSize(this.ENVELOPE_W, this.ENVELOPE_H);
-        } catch (e) {
-          Logger.error("growToEnvelope failed (string still works, just clipped):", e);
-        }
-      },
-
-      async restoreCollapsed() {
-        if (!window.__TAURI__) { document.body.classList.remove('retethering'); return; }
-        try {
-          const { getCurrentWindow, LogicalSize, LogicalPosition } = window.__TAURI__.window;
-          const w = getCurrentWindow();
-          const sf = await w.scaleFactor();
-          const op = (await w.outerPosition()).toLogical(sf);
-          const moonEl = document.getElementById('moon');
-          const curLeft = parseFloat(moonEl.style.left) || 15;
-          const curTop = parseFloat(moonEl.style.top) || 15;
-          const moonScreenX = op.x + curLeft, moonScreenY = op.y + curTop;
-          // Restore the moon to its collapsed CSS spot (15,15) and shift the
-          // origin so its screen position is unchanged (preserves any window
-          // drag that happened while the string was out — we re-read the origin).
-          moonEl.style.left = '';
-          moonEl.style.top = '';
-          await w.setPosition(new LogicalPosition(Math.round(moonScreenX - 15), Math.round(moonScreenY - 15)));
-          await this.setWindowSize(this.COLLAPSED_W, this.COLLAPSED_H);
-        } catch (e) {
-          Logger.error("restoreCollapsed failed:", e);
-        } finally {
-          document.body.classList.remove('retethering');
         }
       },
 
@@ -1413,16 +1260,6 @@
           this.updateStatus('disconnected', 'Disconnected');
           if (!State.isManuallyClosing) {
             this.scheduleReconnect();
-            // One-per-episode grace countdown: if we're STILL detached when it
-            // fires, drop the re-tether string. A hello on the reconnected
-            // socket (or a manual pull) clears it first, so transient blips
-            // self-heal with no string.
-            if (!State.tetherGraceTimer && !MoonString.isLive()) {
-              State.tetherGraceTimer = setTimeout(() => {
-                State.tetherGraceTimer = null;
-                this.showTether();
-              }, 3500);
-            }
           }
         });
 
@@ -1435,7 +1272,6 @@
 
       disconnect() {
         if (State.reconnectTimer) { clearTimeout(State.reconnectTimer); State.reconnectTimer = null; }
-        if (State.tetherGraceTimer) { clearTimeout(State.tetherGraceTimer); State.tetherGraceTimer = null; }
         if (State.ws) {
           Logger.info("Disconnecting WebSocket client manually");
           State.isManuallyClosing = true;
@@ -1558,79 +1394,9 @@
         } catch (_) { /* quota/serialization — cosmetic cache only */ }
       },
 
-      // ── Re-tether: the moon's string drives this. The hub is hello-only
-      // (Phase 4) — there is no thread to re-subscribe, so a pull simply
-      // reconnects NOW (bypassing backoff); the fresh socket's hello is the
-      // reattach signal. MUST cancel the pending reconnect timer or it opens
-      // a 2nd socket.
-      reTether() {
-        this.updateStatus('connecting', 'Reconnecting…');
-        // The pull IS the feedback: wrap the string up into the moon right now
-        // and let the reconnect run behind it (string-demo behavior). The
-        // retract's onRetracted hook owns the window restore, so drop the
-        // stashed grow promise — onReattached must not restore a second time or
-        // the two setPosition/setSize IPC sequences can interleave. If the
-        // reconnect then fails, the close handler's grace timer drops the
-        // string again.
-        if (MoonString.isLive()) {
-          State.growPromise = null;
-          MoonString.retract(true);
-        }
-        if (State.tetherGraceTimer) { clearTimeout(State.tetherGraceTimer); State.tetherGraceTimer = null; }
-        if (State.reconnectTimer) { clearTimeout(State.reconnectTimer); State.reconnectTimer = null; }
-        State.reconnectAttempts = 0;        // bypass backoff — connect immediately
-        this.connect();                     // hello on the new socket → onReattached()
-      },
-
-      // ── Drop the string: we've been detached past the grace period. Never
-      // under the wizard overlay — it must keep the whole window interactive
-      // (a string episode would flip most of it native-click-through), so the
-      // drop defers until the wizard closes.
-      showTether() {
-        if (State.tetherGraceTimer) { clearTimeout(State.tetherGraceTimer); State.tetherGraceTimer = null; }
-        if (DOM.wizardPanel.classList.contains('active')) { State.tetherPendingOnCollapse = true; return; }
-        State.tetherPendingOnCollapse = false;
-        if (MoonString.isLive()) return;      // already out
-        // growToEnvelope() is several async IPC round-trips. Stamp an epoch so that
-        // if a background reconnect lands a hello mid-grow (→ onReattached bumps
-        // tetherGen), this deferred show is abandoned — otherwise the string
-        // would pop out *after* we're already reconnected. We also stash the grow
-        // promise so onReattached can sequence a window restore after it (the grow
-        // still ran, so the window must be collapsed back even with no string).
-        const gen = ++State.tetherGen;
-        const grow = TauriService.growToEnvelope();
-        State.growPromise = grow;
-        grow.then(() => {
-          if (gen === State.tetherGen && !MoonString.isLive()) MoonString.show();
-        });
-      },
-
-      // ── Back on the server (hello landed): clear timers; if the string is
-      // still out (a BACKGROUND reconnect succeeded — no pull, so reTether never
-      // retracted), retract it with the success pulse; the rope's onRetracted
-      // hook restores the collapsed window. After a pull the string is already
-      // wrapping in (or gone) and growPromise is null, so this is just the
-      // status flip.
-      async onReattached() {
+      // ── Back on the server (hello landed): signal reconnect success.
+      onReattached() {
         this.updateStatus('connected', 'Connected');
-        const gen = ++State.tetherGen;   // supersede any showTether() grow still in flight
-        if (State.tetherGraceTimer) { clearTimeout(State.tetherGraceTimer); State.tetherGraceTimer = null; }
-        State.tetherPendingOnCollapse = false;
-        if (MoonString.isLive()) {
-          State.growPromise = null;
-          MoonString.retract(true);          // animates out → onRetracted → restoreCollapsed()
-        } else if (State.growPromise) {
-          // The reconnect beat the window grow: the string never showed, so there's
-          // no retract to trigger restoreCollapsed — yet the window did (or is about
-          // to) expand. Wait for the grow to fully settle, THEN restore, so their
-          // setPosition/setSize IPCs can't interleave and strand the window open.
-          const p = State.growPromise;
-          State.growPromise = null;
-          await p.catch(() => {});
-          // If a fresh disconnect started a NEW tether episode while we waited, let
-          // it own the window — restoring now would fight its grow.
-          if (gen === State.tetherGen) await TauriService.restoreCollapsed();
-        }
       },
 
       scheduleReconnect() {
@@ -1672,9 +1438,7 @@
       // The server authenticated us. The hub is hello-only (Phase 4): no
       // thread sync — chat windows own threads.
       WebSocketEngine.checkProtocolVersion(frame);
-      // Phase 4: hello IS the hub's reattach signal (it gets no
-      // thread-snapshot without a subscription) — retract the string,
-      // clear the grace timer.
+      // Phase 4: hello IS the hub's reattach signal.
       WebSocketEngine.onReattached();
       // Summon-by-name (widget-system.md): announce this host's widget
       // directory so the agent's open_widget tool can summon panels. Sent on
@@ -1710,6 +1474,62 @@
       PendingInputs.delete(frame.requestId);
       renderPip();
     });
+
+    // ── Update pip (ambient ladder, update rung — Slice C surface #3) ──────────
+    // The quietest of the three update nudges: a soft accent pip on the orb that
+    // lights when the Rust updater has staged a VERIFIED build (update://ready).
+    // The composer banner is the primary nudge and the Updates panel is the full
+    // narrative; this is just the ambient hint when no chat window is on screen.
+    // Clicking the pip opens the Updates panel (the moon's own click still opens
+    // chat — the pip is its own pointer target, sitting above the drag region).
+    const showUpdatePip = () => {
+      const pip = document.getElementById('update-pip');
+      if (pip) pip.hidden = false;
+    };
+    const updatePipEl = document.getElementById('update-pip');
+    if (updatePipEl) {
+      updatePipEl.addEventListener('click', (e) => {
+        // The pip is its own pointer target; keep its click from bubbling.
+        // (The moon never listens for `click` — its open-chat fires on
+        // `pointerup` — so the real open-chat guard is the pointerup stop
+        // below; this just keeps the click clean for any future listener.)
+        e.stopPropagation();
+        if (window.__TAURI__ && window.__TAURI__.core) {
+          window.__TAURI__.core.invoke('open_widget', { kind: 'settings.updates' })
+            .catch((err) => Logger.warn('open updates panel failed:', err));
+        }
+      });
+      // The moon opens chat on `pointerup` (and starts its drag on
+      // `pointerdown`/`pointermove`) — it has NO click listener. So a pointer
+      // event that starts on the pip must NOT reach #moon, or a pip tap could
+      // co-trigger open-chat (when a recent moon press left pressStartTime/XY
+      // within the 280ms / 5px open threshold). Stop the whole pointer
+      // sequence so the pip opens ONLY the Updates panel.
+      updatePipEl.addEventListener('pointerdown', (e) => e.stopPropagation());
+      updatePipEl.addEventListener('pointermove', (e) => e.stopPropagation());
+      updatePipEl.addEventListener('pointerup', (e) => e.stopPropagation());
+    }
+    // Light the pip on the app-wide update://ready broadcast; an earlier
+    // update://available is an optional softer hint. Replay-on-boot via
+    // update_state so a build staged before the hub loaded still surfaces.
+    if (window.__TAURI__) {
+      const T = window.__TAURI__;
+      try {
+        if (T.event && typeof T.event.listen === 'function') {
+          T.event.listen('update://ready', () => showUpdatePip()).catch(() => {});
+          T.event.listen('update://available', () => showUpdatePip()).catch(() => {});
+        }
+      } catch (_) { /* best-effort */ }
+      try {
+        if (T.core && typeof T.core.invoke === 'function') {
+          T.core.invoke('update_state')
+            .then((dto) => {
+              if (dto && (dto.phase === 'ready' || dto.phase === 'available')) showUpdatePip();
+            })
+            .catch(() => { /* command absent on older cores → ignore */ });
+        }
+      } catch (_) { /* best-effort */ }
+    }
 
     MoonFrames.register('widget-open', (frame) => {
       // Summon-by-name, return leg: the agent asked for a widget by kind.
@@ -1750,8 +1570,10 @@
       window.__MoonInternals.handleFrame = (frame) => WebSocketEngine.handleFrame(frame);
       window.__MoonInternals.WebSocketEngine = WebSocketEngine;
       window.__MoonInternals.TauriService = TauriService;
-      // Mutable connection State so re-tether tests can drive/assert it.
+      // Mutable connection State so tests can drive/assert it.
       window.__MoonInternals.State = State;
+      // Update-pip driver (Slice C) so the jsdom suite can light the orb pip.
+      window.__MoonInternals.showUpdatePip = showUpdatePip;
     }
 
     /**
@@ -2076,344 +1898,6 @@
     DOM.moon.addEventListener('pointerup', (e) => UIController.handlePointerUp(e));
     DOM.moon.addEventListener('pointerleave', () => UIController.handlePointerLeave());
 
-    // ── Re-tether "string" — Verlet rope ported verbatim from the approved demo.
-    // Falls from the moon when the connection drops; fling the bead (any
-    // direction, springs back) or click / yank it down to reconnect to the SAME
-    // thread. Physics/render are pure client-side; the network action is injected
-    // via setOnPull() (Phase 6 wires it to WebSocketEngine.reTether). Coords are
-    // window/viewport space: the rope layer is inset:0 and the bead is positioned
-    // by transform off the window origin, so SVG/anchor/cursor all share one frame.
-    const MoonString = (() => {
-      const moon = document.getElementById('moon');
-      const moonWrapper = document.getElementById('moon-wrapper');
-      const layer = document.getElementById('moon-rope-layer');
-      const ropePath = document.getElementById('moon-rope');
-      const ropeHalo = document.getElementById('moon-rope-halo');
-      const ropeShimmer = document.getElementById('moon-rope-shimmer');
-      const bead = document.getElementById('moon-bead');
-      if (!moon || !moonWrapper || !layer || !ropePath || !ropeHalo || !ropeShimmer || !bead) {
-        return { show() {}, retract() {}, hideImmediate() {}, isLive: () => false, setOnPull() {}, setOnRetracted() {}, updateAnchor() {} };
-      }
-
-      // APPROVED tuning — do not change without re-validating the feel live.
-      const N = 16, REST = 150, SEG = REST / (N - 1);
-      const MAX = 300, PULL_TRIGGER = 60, FIXED = 1 / 120, GRAV = 2800, DAMP = 0.975, ITER = 14;
-      const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-
-      let ANCHOR_X = 0, ANCHOR_Y = 0;     // moon-bottom attach point (window coords); set on show()
-      let pts = [];
-      let dragging = false, dragX = 0, dragY = 0;
-      let velX = 0, velY = 0, lastCX = 0, lastCY = 0;   // smoothed cursor velocity → the throw
-      let startX = 0, startY = 0, moved = 0, grabDX = 0, grabDY = 0;
-      let running = false, retracting = false, dropping = false, raf = 0, acc = 0, lastT = 0, calm = 0;
-      let live = false, pendingPulse = false;
-      let onPull = () => retract(true);   // sensible default (pull → retract+pulse); Phase 6 overrides
-      let onRetracted = () => {};         // fires when the rope finishes retracting (Phase 6: restore window)
-
-      function updateAnchor() {
-        const r = moon.getBoundingClientRect();
-        ANCHOR_X = r.left + r.width / 2;
-        ANCHOR_Y = r.bottom - 6;          // just inside the lower arc
-      }
-      // Seed gathered AT the anchor: the `dropping` phase in loop() lowers the
-      // points straight down to rest (no sideways swing-in — the string just
-      // drops out of the moon). The physics solver doesn't run during the drop,
-      // so the compressed seed can't coil; by handoff the rope is at rest length.
-      function initRope() {
-        pts = [];
-        for (let i = 0; i < N; i++) {
-          pts.push({ x: ANCHOR_X, y: ANCHOR_Y, px: ANCHOR_X, py: ANCHOR_Y });
-        }
-      }
-      function energy() { let e = 0; for (let i = 1; i < N; i++) { const p = pts[i]; e += (p.x - p.px) ** 2 + (p.y - p.py) ** 2; } return e; }
-
-      function physics(dt) {
-        const gy = GRAV * dt * dt;
-        for (let i = 1; i < N; i++) {
-          if (dragging && i === N - 1) continue;          // bead is driven by the cursor
-          const p = pts[i];
-          const vx = (p.x - p.px) * DAMP, vy = (p.y - p.py) * DAMP;
-          p.px = p.x; p.py = p.y;
-          p.x += vx; p.y += vy + gy;
-        }
-        for (let k = 0; k < ITER; k++) {
-          pts[0].x = ANCHOR_X; pts[0].y = ANCHOR_Y;        // pin anchor
-          if (dragging) { pts[N - 1].x = dragX; pts[N - 1].y = dragY; }   // pin bead to cursor
-          for (let i = 0; i < N - 1; i++) {
-            const a = pts[i], b = pts[i + 1];
-            let dx = b.x - a.x, dy = b.y - a.y;
-            const d = Math.hypot(dx, dy) || 1e-4;
-            const diff = (d - SEG) / d;
-            let ma = 0.5, mb = 0.5;
-            if (i === 0) { ma = 0; mb = 1; }
-            if (dragging && i + 1 === N - 1) { mb = 0; ma = (i === 0) ? 0 : 1; }
-            a.x += dx * diff * ma; a.y += dy * diff * ma;
-            b.x -= dx * diff * mb; b.y -= dy * diff * mb;
-          }
-        }
-      }
-
-      // ── window-drag physics ──
-      // While the OS drags the window (native startDragging) no JS pointer
-      // events fire, and the rope's window-local coords don't change — so the
-      // string looks welded to the moon. The window's onMoved stream is the
-      // only signal: shift every FREE point opposite the window's logical
-      // delta (positions only, NOT px/py), so Verlet reads the apparent
-      // screen-space motion as velocity and the rope trails + swings. The
-      // per-event delta is clamped so coalesced events (e.g. paint frozen
-      // during the native drag, one fat delta on release) inject a believable
-      // swing rather than an explosion.
-      function injectWindowDelta(ldx, ldy) {
-        if (!live || retracting) return;
-        const dx = clamp(ldx, -80, 80), dy = clamp(ldy, -80, 80);
-        for (let i = 1; i < N; i++) {
-          if (dragging && i === N - 1) continue;   // the cursor owns the bead
-          pts[i].x -= dx; pts[i].y -= dy;
-        }
-        start();                                   // wake a parked loop
-      }
-
-      // ── click-through region ──
-      // While the string is live the window is a big, mostly-empty envelope
-      // that would otherwise swallow clicks meant for the apps behind it.
-      // Publish the truly-interactive region (moon + rope/bead, padded) to the
-      // Rust cursor poll, which flips set_ignore_cursor_events as the cursor
-      // enters/leaves. Throttled + delta-gated so a swinging rope costs a few
-      // IPC calls per second, and a parked one costs none.
-      const REGION_PAD = 30, REGION_MIN_DELTA = 24, REGION_MIN_MS = 90;
-      let lastRegion = { t: -1e9, x: 0, y: 0, w: 0, h: 0 };
-      function canInvoke() {
-        return !!(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke);
-      }
-      function pushRegion(force) {
-        if (!canInvoke()) return;
-        const now = performance.now();
-        let minX = ANCHOR_X, maxX = ANCHOR_X, minY = ANCHOR_Y, maxY = ANCHOR_Y;
-        for (let i = 0; i < N; i++) {
-          const p = pts[i];
-          if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
-          if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
-        }
-        const x = minX - REGION_PAD, y = minY - REGION_PAD;
-        const w = (maxX - minX) + REGION_PAD * 2, h = (maxY - minY) + REGION_PAD * 2;
-        if (!force) {
-          if (now - lastRegion.t < REGION_MIN_MS) return;
-          if (Math.abs(x - lastRegion.x) < REGION_MIN_DELTA && Math.abs(y - lastRegion.y) < REGION_MIN_DELTA &&
-              Math.abs(w - lastRegion.w) < REGION_MIN_DELTA && Math.abs(h - lastRegion.h) < REGION_MIN_DELTA) return;
-        }
-        lastRegion = { t: now, x, y, w, h };
-        const mr = moon.getBoundingClientRect();
-        const rects = [
-          [mr.left - 20, mr.top - 20, mr.width + 40, mr.height + 40], // the moon (+ hover runway)
-          [x, y, w, h],                                                // rope + bead
-        ];
-        window.__TAURI__.core.invoke('set_interactive_region', { enabled: true, rects })
-          .catch(() => {});
-      }
-      function clearRegion() {
-        if (!canInvoke()) return;
-        lastRegion = { t: -1e9, x: 0, y: 0, w: 0, h: 0 };
-        window.__TAURI__.core.invoke('set_interactive_region', { enabled: false, rects: [] })
-          .catch(() => {});
-      }
-
-      // Catmull-Rom through the Verlet points → one smooth cubic path. A raw
-      // polyline shows 14 visible elbows and reads as a chain of sticks; the
-      // spline reads as an actual string. Shared by the halo/core/shimmer.
-      function ropeD() {
-        let d = 'M ' + pts[0].x.toFixed(1) + ' ' + pts[0].y.toFixed(1);
-        for (let i = 0; i < N - 1; i++) {
-          const p0 = pts[i > 0 ? i - 1 : 0], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2 < N ? i + 2 : N - 1];
-          d += ' C ' + (p1.x + (p2.x - p0.x) / 6).toFixed(1) + ' ' + (p1.y + (p2.y - p0.y) / 6).toFixed(1)
-             + ' '   + (p2.x - (p3.x - p1.x) / 6).toFixed(1) + ' ' + (p2.y - (p3.y - p1.y) / 6).toFixed(1)
-             + ' '   + p2.x.toFixed(1) + ' ' + p2.y.toFixed(1);
-        }
-        return d;
-      }
-
-      function render() {
-        const d = ropeD();
-        ropePath.setAttribute('d', d);
-        ropeHalo.setAttribute('d', d);
-        ropeShimmer.setAttribute('d', d);
-        pushRegion();
-        const b = pts[N - 1];
-        bead.style.transform = 'translate3d(' + (b.x - 19) + 'px,' + (b.y - 19) + 'px,0)'; // 19 = half the 38px blot
-        // Lean the moon toward the pull — ONLY while dragging the bead. Pointer
-        // capture keeps the moon's own hover/tilt handler (which also writes
-        // moonWrapper.transform) from firing meanwhile, so there's no conflict.
-        if (dragging && !moonWrapper.classList.contains('retether-pulse')) {
-          const dx = b.x - ANCHOR_X, dy = b.y - ANCHOR_Y;
-          moonWrapper.style.transform = 'translate3d(' + (dx * 0.03) + 'px,' + Math.max(0, dy - REST) * 0.04 + 'px,0)';
-        }
-      }
-
-      function loop(now) {
-        if (!running) return;
-        let dt = (now - lastT) / 1000; lastT = now;
-        if (dt > 0.1) dt = 0.1;                              // clamp tab-switch gaps
-        if (retracting) {                                   // suck the rope up into the moon
-          let done = true;
-          for (let i = 1; i < N; i++) {
-            const p = pts[i];
-            p.x += (ANCHOR_X - p.x) * 0.22; p.y += (ANCHOR_Y - p.y) * 0.22; p.px = p.x; p.py = p.y;
-            if (Math.hypot(p.x - ANCHOR_X, p.y - ANCHOR_Y) > 3) done = false;
-          }
-          render();
-          if (done) return finishRetract();
-          raf = requestAnimationFrame(loop); return;
-        }
-        if (dropping) {                                     // lower the string straight down
-          let done = true;
-          for (let i = 1; i < N; i++) {
-            const p = pts[i];
-            const ty = ANCHOR_Y + i * SEG;                  // straight-down rest position
-            p.x += (ANCHOR_X - p.x) * 0.16; p.y += (ty - p.y) * 0.16;
-            p.px = p.x; p.py = p.y;                         // no carried velocity: hand off at rest
-            if (Math.abs(ty - p.y) > 1.5 || Math.abs(ANCHOR_X - p.x) > 1.5) done = false;
-          }
-          render();
-          if (done) dropping = false;                       // physics takes over from rest
-          raf = requestAnimationFrame(loop); return;
-        }
-        acc += dt; let n = 0;
-        while (acc >= FIXED) { physics(FIXED); acc -= FIXED; if (++n > 8) { acc = 0; break; } }
-        render();
-        // Park only after SUSTAINED calm (a swing peak is calm for a frame or two
-        // but re-accelerates; true rest stays calm) — see the demo's notes.
-        if (!dragging && energy() < 0.05) { if (++calm > 18) { running = false; return; } } else calm = 0;
-        raf = requestAnimationFrame(loop);
-      }
-      function start() { if (running) return; running = true; calm = 0; lastT = performance.now(); acc = 0; raf = requestAnimationFrame(loop); }
-
-      function show() {
-        // TODO: bead fires even when connected — disable until showTether() is
-        // properly gated on actual disconnection. Re-enable once the bug is fixed.
-        return;
-        if (live) return;
-        live = true; retracting = false; dropping = true;
-        updateAnchor();
-        initRope();
-        layer.style.display = 'block';
-        bead.classList.add('live'); bead.style.opacity = '1';
-        pushRegion(true);   // arm click-through: only moon+rope stay clickable
-        start();
-      }
-      function retract(pulse) {
-        if (!live) return;
-        dragging = false; retracting = true; dropping = false;
-        moonWrapper.style.transform = '';     // clear any lean before the pulse animation
-        pendingPulse = !!pulse;
-        start();
-      }
-      function finishRetract() {
-        running = false; retracting = false; live = false;
-        clearRegion();      // string gone: the whole window is interactive again
-        layer.style.display = 'none';
-        bead.classList.remove('live');
-        if (pendingPulse) {
-          moonWrapper.classList.add('retether-pulse');
-          setTimeout(() => moonWrapper.classList.remove('retether-pulse'), 800);
-        }
-        pendingPulse = false;
-        onRetracted();      // Phase 6: restore the collapsed window after the rope is gone
-      }
-
-      // Instant teardown (no retract animation, no pulse, no onRetracted) — used
-      // when the user opens the chat while the string is out; the caller restores
-      // the window itself as part of the chat-open resize.
-      function hideImmediate() {
-        if (!live && !running) return;
-        running = false; retracting = false; dropping = false; dragging = false; live = false; pendingPulse = false;
-        if (raf) cancelAnimationFrame(raf);
-        clearRegion();      // string gone: the whole window is interactive again
-        layer.style.display = 'none';
-        bead.classList.remove('live');
-        moonWrapper.style.transform = '';
-      }
-
-      bead.addEventListener('pointerdown', (e) => {
-        e.preventDefault();
-        dropping = false;                 // grabbed mid-drop: the cursor takes over
-        dragging = true; moved = 0; velX = velY = 0;
-        startX = lastCX = e.clientX; startY = lastCY = e.clientY;
-        const b = pts[N - 1];
-        grabDX = b.x - e.clientX; grabDY = b.y - e.clientY;  // hold the grabbed point under the cursor
-        dragX = b.x; dragY = b.y;                            // no first-frame jump
-        try { bead.setPointerCapture(e.pointerId); } catch (_) {}
-        start();
-      });
-      bead.addEventListener('pointermove', (e) => {
-        if (!dragging) return;
-        moved = Math.max(moved, Math.hypot(e.clientX - startX, e.clientY - startY));
-        velX = velX * 0.5 + (e.clientX - lastCX) * 0.5;
-        velY = velY * 0.5 + (e.clientY - lastCY) * 0.5;
-        lastCX = e.clientX; lastCY = e.clientY;
-        let dx = (e.clientX + grabDX) - ANCHOR_X, dy = (e.clientY + grabDY) - ANCHOR_Y;
-        const dist = Math.hypot(dx, dy);
-        if (dist > MAX) { dx *= MAX / dist; dy *= MAX / dist; }   // clamp reach, keep DIRECTION
-        dragX = ANCHOR_X + dx; dragY = ANCHOR_Y + dy;
-      });
-      function endDrag(e) {
-        if (!dragging) return; dragging = false;
-        try { bead.releasePointerCapture(e.pointerId); } catch (_) {}
-        moonWrapper.style.transform = '';     // release the lean; the free swing has no lean
-        const b = pts[N - 1];
-        const downwardYank = (b.y - ANCHOR_Y) > REST + PULL_TRIGGER && (b.y - ANCHOR_Y) > Math.abs(b.x - ANCHOR_X);
-        if (moved < 6 || downwardYank) { onPull(); return; }   // tap or firm down-pull = reconnect
-        b.px = b.x - clamp(velX, -45, 45);    // inject the throw (Verlet velocity = cursor velocity)
-        b.py = b.y - clamp(velY, -45, 45);
-        start();
-      }
-      bead.addEventListener('pointerup', endDrag);
-      bead.addEventListener('pointercancel', endDrag);
-
-      return {
-        show, retract, hideImmediate, updateAnchor, injectWindowDelta,
-        isLive: () => live,
-        setOnPull: (fn) => { onPull = typeof fn === 'function' ? fn : (() => {}); },
-        setOnRetracted: (fn) => { onRetracted = typeof fn === 'function' ? fn : (() => {}); },
-        // Read-only copy of the rope points, for tests/debugging (jsdom can't
-        // observe the physics any other way).
-        getPoints: () => pts.map((p) => ({ x: p.x, y: p.y, px: p.px, py: p.py })),
-      };
-    })();
-    window.__MoonInternals = window.__MoonInternals || {};
-    window.__MoonInternals.MoonString = MoonString;
-    // Wire the string to the network: a pull/click/yank re-tethers; once the rope
-    // has fully retracted (after a successful reattach) restore the collapsed window.
-    MoonString.setOnPull(() => WebSocketEngine.reTether());
-    MoonString.setOnRetracted(() => TauriService.restoreCollapsed());
-
-    // Window-drag → rope: the native drag fires no JS pointer events, so the
-    // window's onMoved stream is the only signal that the moon is being carried
-    // around the screen. Feed each logical delta into the rope so the string
-    // trails and swings with the drag instead of riding rigidly along.
-    // The baseline updates even while the rope is hidden (injectWindowDelta
-    // no-ops then), so the first live delta is never a spurious full-screen jump
-    // — including the onMoved fired by our own growToEnvelope() setPosition,
-    // which lands before show() and only refreshes the baseline.
-    (async function wireWindowMoveToRope() {
-      if (!window.__TAURI__) return;
-      try {
-        const w = window.__TAURI__.window.getCurrentWindow();
-        let sf = await w.scaleFactor();
-        let lastX = null, lastY = null;
-        try {
-          // Monitor hop mid-drag: refresh the scale and drop the baseline (one
-          // skipped delta beats one wrongly-scaled fling).
-          await w.onScaleChanged(({ payload }) => { sf = (payload && payload.scaleFactor) || sf; lastX = null; });
-        } catch (_) {}
-        await w.onMoved(({ payload }) => {
-          const lx = payload.x / sf, ly = payload.y / sf;
-          if (lastX !== null) MoonString.injectWindowDelta(lx - lastX, ly - lastY);
-          lastX = lx; lastY = ly;
-        });
-      } catch (e) {
-        Logger.warn('window-move→rope wiring unavailable:', e);
-      }
-    })();
-
     // ── Panel fan-out (Phase 3) ──────────────────────────────────────────
     // Settings live in panel WINDOWS. Two return channels reach the hub:
     // 1. hub-event — the Rust hub_event command (allowlisted names, targeted
@@ -2562,25 +2046,6 @@
       async open() {
         if (DOM.wizardPanel.classList.contains('active')) return;
         this._openedMinimized = true;  // the hub is permanently moon-sized (Phase 6)
-        // A live re-tether episode owns the NATIVE click-through region: while
-        // the string is out, everything except the moon+rope rects ignores the
-        // mouse at the OS level — the wizard would paint fine yet be dead to
-        // every click (first run is always disconnected, so this is the COMMON
-        // first-run state, not an edge). Tear the episode down exactly like
-        // chat-open does: bump the epoch (abandons a deferred MoonString.show()),
-        // drop the stashed grow promise, hideImmediate() (clears the region →
-        // the whole window is interactive again), and let the grow's IPCs
-        // settle before our own resize so they can't interleave. Keep the
-        // pending flag so the string returns when the wizard closes.
-        if (MoonString.isLive() || State.growPromise) {
-          State.tetherGen++;
-          const grow = State.growPromise;
-          State.growPromise = null;
-          MoonString.hideImmediate();
-          if (grow) await grow.catch(() => {});
-          await TauriService.restoreCollapsed();
-          State.tetherPendingOnCollapse = true;
-        }
         DOM.wizardPanel.classList.add('active');
         DOM.wizardPanel.setAttribute('aria-hidden', 'false');
         // Fire-and-forget like SettingsEngine.open — the card fades in over it.
@@ -2668,12 +2133,8 @@
         DOM.wizardPanel.classList.remove('active');
         DOM.wizardPanel.setAttribute('aria-hidden', 'true');
         if (this._openedMinimized) {
-          // Mirror the chat-collapse hand-off: if a string drop was deferred
-          // while the wizard was open (we're still detached), let the tether
-          // episode own the window now; otherwise just collapse.
           setTimeout(() => {
-            if (State.tetherPendingOnCollapse) WebSocketEngine.showTether();
-            else TauriService.setWindowSize(140, 185);
+            TauriService.setWindowSize(140, 185);
           }, 220);
         }
         this._openedMinimized = false;
@@ -3222,10 +2683,31 @@
       })
       .catch((e) => Logger.error('Setup wizard auto-open failed:', e));
 
-    // Silent self-update check shortly after boot (let the WS connect first).
-    // Surfaces an in-chat "Update & Restart" banner only if a newer signed
-    // build exists on GitHub Releases; stays quiet otherwise.
-    setTimeout(() => { SettingsEngine.checkForUpdate(true); }, 4000);
+    // Self-update discovery is owned by the Rust background loop (~8s after
+    // boot); the frontend no longer issues a redundant 4s checkForUpdate that
+    // raced the single-flight gate. The banner/pip render from update:// events.
+
+    // ── Restore polish: reopen the chat window after an update restart ─────────
+    // When apply_update relaunches the app it (Rust, Slice A) writes
+    // ~/.luna/pending-update.json {reopenChat} recording whether a chat window
+    // was open at restart, then saves layout.json (which restores the SYSTEM
+    // panels — but the chat window is NOT a panel- window, so it isn't covered by
+    // that restore). We read + consume the marker via take_pending_update (a
+    // one-shot Rust command that returns the marker and deletes the file), and if
+    // a chat window was open, re-open it through the same open_widget('chat') path
+    // the moon click uses — so the session lands exactly where it was. Best-effort
+    // and idempotent: if Slice A's command isn't present (older core) or no marker
+    // exists, the invoke rejects/returns null and we silently do nothing.
+    if (window.__TAURI__ && window.__TAURI__.core) {
+      const core = window.__TAURI__.core;
+      core.invoke('take_pending_update')
+        .then((marker) => {
+          if (marker && marker.reopenChat) {
+            return core.invoke('open_widget', { kind: 'chat' });
+          }
+        })
+        .catch(() => { /* command absent / no marker → nothing to restore */ });
+    }
 
     // Auto-wire the server token from ~/.luna/.env via a Tauri startup event.
     // The Rust backend (main.rs) reads UI_WS_TOKEN from ~/.luna/.env at launch

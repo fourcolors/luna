@@ -6,7 +6,7 @@ unattended, but with the irreversible actions (push, PR) kept in deterministic
 shell steps and only the code change delegated to a bounded agent.
 
 It is installed by [`apps/ui-web/scripts/push-through-install.ts`](../apps/ui-web/scripts/push-through-install.ts)
-and runs under the Phase-12b `JobTicker` (`LUNA_SCHEDULER_V2_ENABLED=1`).
+and runs under the Phase-12b `JobTicker` (on by default; set `LUNA_SCHEDULER_V2_ENABLED=0` to disable).
 
 ## Why a workflow (not a prompt) job
 
@@ -58,7 +58,7 @@ crashed run can't wedge the action), open a PR against `dev`, mark the action
 `status='doing'` so the next tick doesn't redo it, and release the lock.
 
 ## Prerequisites
-- `LUNA_SCHEDULER_V2_ENABLED=1` so the ticker fires the job.
+- The V2 ticker running (on by default; not disabled via `LUNA_SCHEDULER_V2_ENABLED=0`) so it fires the job.
 - `HOME` set on the systemd unit (e.g. `Environment=HOME=/root`) so `git`/`gh`
   find their credentials in the worker's process environment.
 - A git worktree at `/root/luna-auto` (step 0 self-heals it if missing).

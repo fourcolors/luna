@@ -2,41 +2,21 @@
  * SchedulerToolsLayer + helpers.
  *
  * Wires the three scheduler tools (schedule_create / schedule_list /
- * schedule_cancel) onto a live TriggerAgent + JobScheduler + JobsStore and
- * packages them as an SDK MCP server config that can be plugged into
- * `SessionOptions.sdkOptions.mcpServers`.
+ * schedule_cancel) onto a live `JobsStore` and packages them as an SDK MCP
+ * server config that can be plugged into `SessionOptions.sdkOptions.mcpServers`.
  *
- * The Layer's own Scope is threaded into makeSchedulerTools so cron trigger
- * fibers outlive individual tool calls and run for the full session lifetime.
- * When the Layer Scope closes (process exit / session teardown), the
- * TriggerAgent's supervised fibers are interrupted via the normal Effect
- * cascade (§3.4 #4); the persisted `jobs` rows remain so the next boot can
- * re-register them.
+ * V2-native: a schedule is a durable RECURRING `kind:"prompt"` row in the
+ * `jobs` table. The V2 JobTicker (on by default; LUNA_SCHEDULER_V2_ENABLED=0
+ * disables) reads the table every tick and re-fires the row, running the
+ * PromptWorker which delivers the turn's result to the operator as an obs_note.
+ * There is no in-process fiber to register and nothing to reload at boot — the
+ * jobs table IS the durable state, so a restart looks like a zero-tick gap.
  *
- * Boot-reload (the key durability behavior): after the JobsStore and
- * TriggerAgent are both built, the Layer reads every `jobs` row with
- * `kind = 'cron'` and re-registers the trigger BEFORE returning the
- * SchedulerToolsService. Net effect: a chat-server restart looks like a
- * zero-tick gap to any agent — fixed-point cron triggers continue firing on
- * their next match.
- *
- * Capacity / policy:
- *   - Default capacity: 32 (generous for a chat session's cron jobs).
- *   - Default offer policy: "drop-newest" — if the queue is somehow full,
- *     new submissions are rejected rather than blocking the cron loop.
+ * (Earlier versions registered a V1 TriggerAgent cron whose fire was a no-op;
+ * that delivered nothing. The ticker is now the single scheduler for these.)
  */
 import { Effect, Layer } from "effect"
-import * as ScopeImpl from "effect/Scope"
-import type * as Scope from "effect/Scope"
-import {
-  Clock,
-  JobSchedulerLayer,
-  JobsStoreService,
-  TriggerAgent,
-  TriggerAgentLayer,
-  type JobsStoreApi,
-  type TriggerAgentApi,
-} from "@luna/core"
+import { JobsStoreService, type JobsStoreApi } from "@luna/core"
 import { makeSdkMcpServer } from "@luna/tools"
 import type {
   AnyZodRawShape,
@@ -44,6 +24,7 @@ import type {
   SdkMcpToolDefinition,
 } from "@anthropic-ai/claude-agent-sdk"
 import { makeSchedulerTools } from "./tools.js"
+import type { SystemSchedule } from "./tools.js"
 
 /**
  * SchedulerToolsConfig — emitted by SchedulerToolsLayer, carries the SDK MCP
@@ -68,121 +49,44 @@ export class SchedulerToolsService extends Effect.Tag(
 export const SCHEDULER_SYSTEM_PROMPT_ADDENDUM =
   "You have three scheduler tools on MCP server `scheduler`. Use their fully " +
   "qualified MCP tool names exactly: " +
-  "`mcp__scheduler__schedule_create(expr, label?)` to register a recurring cron job " +
-  "(standard 5-field cron syntax, e.g. '0 9 * * 1' for every Monday at 9am), " +
-  "`mcp__scheduler__schedule_list()` to see all active schedules, and " +
-  "`mcp__scheduler__schedule_cancel(triggerId)` to stop a schedule. " +
+  "`mcp__scheduler__schedule_create(expr, prompt, label?)` to register a recurring " +
+  "schedule (standard 5-field cron syntax, e.g. '0 9 * * 1' for every Monday at 9am). " +
+  "IMPORTANT: cron times are interpreted in UTC, not the user's local timezone. " +
+  "'0 9 * * 1' fires at 09:00 UTC. If the user asks for a local time, convert it " +
+  "to UTC first (UTC has no daylight-saving shifts). The `prompt` is what you " +
+  "will autonomously do on each fire — its result is delivered to the operator as " +
+  "a note. " +
+  "`mcp__scheduler__schedule_list()` shows all active schedules (yours plus read-only " +
+  "system schedules like wake/dream), and " +
+  "`mcp__scheduler__schedule_cancel(triggerId)` stops one of yours. " +
   "Do not call bare tool names such as `schedule_create`; use the `mcp__scheduler__...` " +
-  "names. " +
-  "Use these when the user asks you to do something on a recurring schedule. " +
-  "Cron schedules are PERSISTED to luna.db (jobs table per DESIGN.md §5.1) " +
-  "and re-registered at chat-server boot, so they survive restarts. " +
-  "schedule_cancel removes the row, so a cancelled schedule does NOT come back."
+  "names. Use these when the user asks you to do something on a recurring schedule. " +
+  "Schedules are PERSISTED to luna.db and survive restarts; schedule_cancel removes " +
+  "the row, so a cancelled schedule does NOT come back."
 
 export interface SchedulerToolsLayerOptions {
-  /** Maximum concurrent jobs in the pool. Default: 32. */
-  readonly capacity?: number
   /**
-   * Backpressure policy when the pool is full.
-   * Default: "drop-newest" — new cron submissions are rejected rather than
-   * blocking the trigger loop.
+   * Read-only system schedules (e.g. wake/dream) surfaced by schedule_list so
+   * the operator sees the whole picture. These cannot be cancelled via
+   * schedule_cancel. Default: none.
    */
-  readonly offerPolicy?: "block" | "drop-newest" | "drop-oldest"
+  readonly systemSchedules?: ReadonlyArray<SystemSchedule>
 }
 
 /**
  * Build the MCP server config exposing the three scheduler tools, given a
- * resolved TriggerAgentApi, the layer-owned Scope, and a JobsStoreApi for
- * durable persistence.
+ * resolved JobsStoreApi and optional read-only system schedules.
  */
 export const buildSchedulerMcpServer = (
-  trigger: TriggerAgentApi,
-  layerScope: Scope.Scope,
   jobsStore: JobsStoreApi,
+  systemSchedules: ReadonlyArray<SystemSchedule> = [],
 ): McpSdkServerConfigWithInstance => {
   const tools = makeSchedulerTools(
-    trigger,
-    layerScope,
     jobsStore,
+    systemSchedules,
   ) as unknown as ReadonlyArray<SdkMcpToolDefinition<AnyZodRawShape>>
   return makeSdkMcpServer("scheduler", "0.1.0", tools)
 }
-
-/**
- * Boot-reload: replay every persisted cron job into TriggerAgent so the
- * fiber-set for live triggers mirrors what the `jobs` table says should be
- * running. Failures are logged but never block boot — a malformed row is
- * isolated, the rest still come back.
- */
-const reloadPersistedCrons = (
-  trigger: TriggerAgentApi,
-  layerScope: Scope.Scope,
-  jobsStore: JobsStoreApi,
-) =>
-  Effect.gen(function* () {
-    const rows = yield* jobsStore.listAll().pipe(
-      Effect.catchAll((cause) => {
-        console.warn("[scheduler/boot] could not list persisted jobs:", cause)
-        return Effect.succeed([] as const)
-      }),
-    )
-    let reloaded = 0
-    let dropped = 0
-    for (const row of rows) {
-      if (row.kind !== "cron") continue
-      const label = row.payload.label ?? "scheduled-job"
-      const expr = row.spec
-      const persistedId = row.id
-
-      // Register into the layer scope. We deliberately let TriggerAgent
-      // generate a fresh runtime triggerId rather than smuggling the
-      // persisted id back in — the public API doesn't expose id forcing,
-      // and the persisted id was only ever a handle for cancel(). On boot
-      // we delete the old row and write a fresh one keyed by the new
-      // runtime id so subsequent cancels work correctly.
-      const result = yield* Effect.either(
-        ScopeImpl.extend(layerScope)(
-          trigger.register({
-            kind: "cron",
-            expr,
-            build: () => ({
-              id: `${label}-${Date.now()}`,
-              run: Effect.succeed(`${label} tick`),
-            }),
-          }),
-        ),
-      )
-      if (result._tag === "Left") {
-        console.warn(
-          `[scheduler/boot] failed to reload cron ${persistedId} (${expr}):`,
-          result.left,
-        )
-        dropped++
-        continue
-      }
-      const newId = result.right
-      // Replace the row: remove old, record new keyed by the runtime id.
-      yield* Effect.ignore(jobsStore.remove(persistedId))
-      yield* Effect.ignore(
-        jobsStore.record({
-          id: newId,
-          kind: "cron",
-          spec: expr,
-          payload: { label, source: row.payload.source ?? "scheduler-tools" },
-        }),
-      )
-      // Opt the reloaded V1 cron row out of the V2 JobTicker. See the
-      // matching comment in tools.ts schedule_create handler + issue #58.
-      yield* Effect.ignore(jobsStore.setV2Fields(newId, { enabled: false }))
-      reloaded++
-    }
-    if (reloaded > 0 || dropped > 0) {
-      console.log(
-        `[scheduler/boot] reloaded ${reloaded} persisted cron schedule(s)` +
-          (dropped > 0 ? `, dropped ${dropped} malformed row(s)` : ""),
-      )
-    }
-  })
 
 /**
  * SchedulerToolsLayer — top-level Layer factory the dev rig wires in.
@@ -192,26 +96,18 @@ const reloadPersistedCrons = (
  * Requires JobsStoreService from the surrounding Layer graph. The chat-server
  * provides `JobsStoreService.makeLayer(lunaDbPath)`; tests can substitute
  * `JobsStoreService.Memory`.
- *
- * Internally composes: Clock → JobScheduler → TriggerAgent → MCP server.
  */
 export const SchedulerToolsLayer = (
   opts?: SchedulerToolsLayerOptions,
 ): Layer.Layer<SchedulerToolsService, never, JobsStoreService> =>
-  Layer.scoped(
+  Layer.effect(
     SchedulerToolsService,
     Effect.gen(function* () {
-      const trigger = yield* TriggerAgent
       const jobsStore = yield* JobsStoreService
-      // Capture the Layer's own Scope so trigger registrations outlive calls.
-      const layerScope = yield* Effect.scope
-      // Boot-reload before exposing the MCP server. Any failures inside
-      // reloadPersistedCrons are swallowed — boot must not fail because one
-      // row in jobs is malformed.
-      yield* reloadPersistedCrons(trigger, layerScope, jobsStore)
+      const systemSchedules = opts?.systemSchedules ?? []
       const createConfig = (): SchedulerToolsSessionConfig => ({
         serverName: "scheduler" as const,
-        server: buildSchedulerMcpServer(trigger, layerScope, jobsStore),
+        server: buildSchedulerMcpServer(jobsStore, systemSchedules),
         systemPromptAddendum: SCHEDULER_SYSTEM_PROMPT_ADDENDUM,
       })
       const config = createConfig()
@@ -220,13 +116,4 @@ export const SchedulerToolsLayer = (
         createSessionBinding: createConfig,
       }
     }),
-  ).pipe(
-    Layer.provide(TriggerAgentLayer.Default),
-    Layer.provide(
-      JobSchedulerLayer.make({
-        capacity: opts?.capacity ?? 32,
-        offerPolicy: opts?.offerPolicy ?? "drop-newest",
-      }),
-    ),
-    Layer.provide(Clock.Default),
   )

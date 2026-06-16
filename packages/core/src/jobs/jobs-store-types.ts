@@ -128,6 +128,15 @@ export interface JobsStoreApi {
       string,
       unknown
     >
+    /**
+     * Optional V2 fields applied ATOMICALLY at insert. Lets a caller create a
+     * row already in its final armed state (e.g. a one-shot that is enabled +
+     * due now) in a single write, instead of record()+setV2Fields() — which
+     * leaves a window where the row is transiently due and a ticker could
+     * double-fire it. Defaults: `enabled = true`, `nextRunAt = null`.
+     */
+    readonly enabled?: boolean
+    readonly nextRunAt?: number | null
   }) => Effect.Effect<PersistedJob, JobsStoreError>
 
   /** List every persisted job, ordered by createdAt ASC. */
@@ -244,4 +253,28 @@ export interface JobsStoreApi {
     jobId: string,
     limit?: number,
   ) => Effect.Effect<ReadonlyArray<JobRun>, JobsStoreError>
+
+  /**
+   * Retention sweep: delete every CLOSED `job_runs` row whose `finished_at`
+   * is strictly before `cutoffMs`. Rows still in flight (`finished_at IS
+   * NULL` — running/waiting) are NEVER pruned. Returns the number deleted.
+   * The ticker calls this with `now - retentionMaxAgeMs` so the audit ledger
+   * does not grow without bound.
+   */
+  readonly pruneRuns: (
+    cutoffMs: number,
+  ) => Effect.Effect<number, JobsStoreError>
+
+  /**
+   * Crash recovery: close every IN-FLIGHT run (`finished_at IS NULL` — i.e.
+   * `running`/`waiting`) as `cancelled`, stamping `finished_at` and an
+   * `error` (only when the row has none). A hard crash between
+   * `recordRunStart` and `recordRunEnd` otherwise leaves rows stuck forever.
+   * The ticker calls this ONCE at boot, before the first drain. Returns the
+   * number of rows closed.
+   */
+  readonly closeOrphanedRuns: (args: {
+    readonly finishedAt: number
+    readonly error?: string
+  }) => Effect.Effect<number, JobsStoreError>
 }

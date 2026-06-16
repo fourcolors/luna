@@ -25,9 +25,11 @@ import {
   filterEvents,
   type ClientFrame,
   type ChatAttachment,
+  type SuggestedActionStatus,
 } from "@luna/ui-shared/core"
 import {
   AccountSwitcher,
+  ActionsPanel,
   ArtifactPanel,
   ChatPanel,
   ConnectionSummary,
@@ -41,7 +43,7 @@ import {
   clampEffortToModel,
   createTransport,
   createUiStore,
-  type EffortLevel,
+  type EffortOption,
   type SlashCommand,
   type VaultStatusAck,
 } from "@luna/ui-shared-solid"
@@ -113,19 +115,24 @@ interface PersistedConfig {
    * in one assignment (review F11); JSON.stringify drops undefined keys, so
    * the persisted localStorage form never carries an explicit null/undefined.
    */
-  effort?: EffortLevel | undefined
+  effort?: EffortOption | undefined
   /** When true, plain Enter sends; Shift+Enter newline. Default false. */
   enterToSend: boolean
   /** Last-selected account id. null = use default broker rotation. */
   selectedAccountId: string | null
 }
 
+// Includes the "ultracode" wire token so a persisted ultracode selection
+// survives a reload. This is only a sanity filter on the raw localStorage
+// value — the per-model validity check happens later via clampEffortToModel
+// against the server-advertised matrix.
 const VALID_EFFORTS: ReadonlySet<string> = new Set([
   "low",
   "medium",
   "high",
   "xhigh",
   "max",
+  "ultracode",
 ])
 
 const loadConfig = (): PersistedConfig => {
@@ -137,7 +144,7 @@ const loadConfig = (): PersistedConfig => {
       const parsed = JSON.parse(raw) as Partial<PersistedConfig>
       const parsedEffort =
         typeof parsed.effort === "string" && VALID_EFFORTS.has(parsed.effort)
-          ? (parsed.effort as EffortLevel)
+          ? (parsed.effort as EffortOption)
           : undefined
       return {
         url: parsed.url ?? DEFAULT_URL,
@@ -169,6 +176,29 @@ const saveConfig = (cfg: PersistedConfig): void => {
   }
 }
 
+/**
+ * The board panels this web client can summon by `kind` — announced to the
+ * server (widget-directory) so the agent's open_widget tool can land on the
+ * first guess. Mirrors the board panel ids in createBoard's defaults; the
+ * server validates open_widget against this list (open-artifact-widget for
+ * CONTENT artifacts bypasses it). Capability-gated panels (workflows/actions)
+ * are announced too — summoning one the server didn't enable is a harmless
+ * no-op (board.summon ignores an unknown/empty panel).
+ */
+const WEB_WIDGET_DIRECTORY: ReadonlyArray<{
+  kind: string
+  title: string
+  description: string
+}> = [
+  { kind: "artifacts", title: "Artifacts", description: "Pinned artifacts, code, docs and previews" },
+  { kind: "settings", title: "Settings", description: "Connection, appearance and account settings" },
+  { kind: "threads", title: "Threads", description: "The conversation/thread list" },
+  { kind: "events", title: "Events", description: "The live observability event stream" },
+  { kind: "workflows", title: "Workflows", description: "Saved workflows and their run history" },
+  { kind: "actions", title: "Actions", description: "Suggested actions Luna has proposed" },
+  { kind: "favorites", title: "Favorites", description: "Your favorited panels" },
+]
+
 export const App: Component = () => {
   const [cfg, setCfg] = createSignal<PersistedConfig>(loadConfig())
   const [selectedKinds, setSelectedKinds] = createSignal<ReadonlySet<string>>(
@@ -179,6 +209,30 @@ export const App: Component = () => {
   // follows a successful mutation already updates the list). We keep the
   // last ack as a signal so VaultPanel can correlate its pending requestId.
   const [vaultLastStatus, setVaultLastStatus] = createSignal<VaultStatusAck | null>(null)
+
+  // ── result-delivered toasts (#124) ───────────────────────────────────────
+  // A background/job result was posted into a thread → show a transient
+  // "Luna finished X" toast. This is a SIDE EFFECT in the app layer (like
+  // widget-open / open-artifact-widget): the shared reducer intentionally
+  // no-ops `result-delivered`, so toast state never lives in the store. Each
+  // toast auto-dismisses after ~6s and is hand-dismissible. Keyed by an
+  // increasing id so duplicate labels don't collide.
+  interface ResultToast {
+    readonly id: number
+    readonly label: string
+    readonly preview: string
+  }
+  const [toasts, setToasts] = createSignal<ReadonlyArray<ResultToast>>([])
+  let toastSeq = 0
+  const TOAST_TTL_MS = 6000
+  const dismissToast = (id: number): void => {
+    setToasts((prev) => prev.filter((t) => t.id !== id))
+  }
+  const pushResultToast = (label: string, preview: string): void => {
+    const id = ++toastSeq
+    setToasts((prev) => [...prev, { id, label, preview }])
+    setTimeout(() => dismissToast(id), TOAST_TTL_MS)
+  }
 
   const store = createUiStore()
 
@@ -195,6 +249,59 @@ export const App: Component = () => {
   // but before SetupTerminal's onMount registers ptyWrite (the FIRST chunk is
   // the login URL). Buffer them and drain on register so nothing is dropped.
   let ptyWriteQueue: Uint8Array[] = []
+
+  // Agent-driven artifact focus: an `open-artifact-widget` frame sets this so
+  // the ArtifactPanel previews that artifact when the board summons it. The
+  // nonce forces re-selection even if the SAME id is opened twice.
+  let focusNonce = 0
+  const [focusArtifact, setFocusArtifact] =
+    createSignal<{ id: string; nonce: number } | null>(null)
+
+  // MCP Apps relay: a kind="mcp-app" artifact iframe asks for resources/tools;
+  // these helpers stamp a requestId, send the WS frame, and resolve when the
+  // matching result frame arrives (routed in onFrame). Bounded so a dropped
+  // result can't leak a pending promise forever.
+  let mcpReqSeq = 0
+  const mcpPending = new Map<
+    string,
+    (r: { ok: boolean; text?: string; result?: unknown; message?: string }) => void
+  >()
+  const mcpRequest = <T,>(
+    requestId: string,
+    frame: ClientFrame,
+    timeoutMs = 30000,
+  ): Promise<T> =>
+    new Promise((resolve) => {
+      const done = (r: unknown) => {
+        if (!mcpPending.has(requestId)) return
+        mcpPending.delete(requestId)
+        clearTimeout(timer)
+        resolve(r as T)
+      }
+      const timer = setTimeout(
+        () => done({ ok: false, message: "MCP request timed out" }),
+        timeoutMs,
+      )
+      mcpPending.set(requestId, done)
+      transport.send(frame)
+    })
+  const mcpReadResource = (uri: string) => {
+    const requestId = `mr${++mcpReqSeq}`
+    return mcpRequest<{ ok: boolean; mimeType?: string; text?: string; message?: string }>(
+      requestId,
+      { type: "mcp-resource-read", requestId, uri },
+    )
+  }
+  const mcpCallTool = (appUri: string, tool: string, args: unknown) => {
+    const requestId = `mt${++mcpReqSeq}`
+    return mcpRequest<{ ok: boolean; result?: unknown; message?: string }>(requestId, {
+      type: "mcp-tool-call",
+      requestId,
+      appUri,
+      tool,
+      args,
+    })
+  }
 
   const transport = createTransport({
     onFrame: (frame) => {
@@ -215,6 +322,31 @@ export const App: Component = () => {
       if (frame.type === "vault-status") {
         setVaultLastStatus({ requestId: frame.requestId, ok: frame.ok, message: frame.message })
       }
+      // Agent "open a panel" commands (the web client is a widget host — it
+      // announces its directory on connect). open-artifact-widget pops the
+      // artifacts panel and previews the named artifact; widget-open summons a
+      // board panel by id. Side-effect only; still dispatched (the reducer
+      // no-ops them) so the exhaustive default arm stays correct.
+      if (frame.type === "open-artifact-widget") {
+        board.summon("artifacts")
+        setFocusArtifact({ id: frame.artifactId, nonce: ++focusNonce })
+      } else if (frame.type === "widget-open") {
+        board.summon(frame.kind)
+      } else if (
+        frame.type === "mcp-resource-result" ||
+        frame.type === "mcp-tool-result"
+      ) {
+        // Settle the requestId-matched mcp-app relay promise. The reducer
+        // no-ops these (no store state); we still dispatch for exhaustiveness.
+        mcpPending.get(frame.requestId)?.(frame)
+      } else if (frame.type === "result-delivered") {
+        // A background job posted its result into a thread (#124). Surface a
+        // global toast — visible even when that thread isn't on screen. The
+        // message itself rides in via assistant-done/thread-snapshot (and
+        // carries `message.delivery` for the inline chip). Side-effect only;
+        // still dispatched below (the reducer no-ops it) for exhaustiveness.
+        pushResultToast(frame.label, frame.preview)
+      }
       store.dispatch(frame)
       // Sidebar freshness: any frame that mutates a thread's last-message
       // metadata should refresh the list. Server orders by lastMessageAt,
@@ -232,6 +364,11 @@ export const App: Component = () => {
       // populates without a manual click. (The settings panel stays where
       // the user left it — on the board, closing it is a ✕ away.)
       handle.send({ type: "list-threads" })
+      // Announce this client as a widget host so the agent's open_widget /
+      // open_artifact tools can summon panels here (the server's summon bridge
+      // registers the last announcer as the host). Content artifacts
+      // (open-artifact-widget) bypass this directory; it gates open_widget.
+      handle.send({ type: "widget-directory", widgets: WEB_WIDGET_DIRECTORY })
     },
   })
 
@@ -390,7 +527,7 @@ export const App: Component = () => {
    * fire set-thread-config for server-side application to the live session.
    * The `thread-config` ack is a no-op in the shared reducer today.
    */
-  const handleEffortChange = (threadId: string, effort: EffortLevel): void => {
+  const handleEffortChange = (threadId: string, effort: EffortOption): void => {
     setCfg({ ...cfg(), effort })
     send({ type: "set-thread-config", threadId, effort })
   }
@@ -414,6 +551,82 @@ export const App: Component = () => {
       : null,
   )
 
+  // ── Optimistic action status overrides ───────────────────────────────────
+  // When the user clicks Accept/Dismiss the chip/row flips immediately rather
+  // than waiting for the server's suggested-action-update round-trip.
+  // Keyed by actionId → optimistic status. Cleared when the authoritative
+  // update arrives in store.state.suggestedActions.
+  const [optimisticStatuses, setOptimisticStatuses] = createSignal<
+    ReadonlyMap<string, SuggestedActionStatus>
+  >(new Map())
+
+  // Reconcile: when store.state.suggestedActions changes, drop any optimistic
+  // overrides whose actionId is now present in the store with a terminal
+  // (non-proposed) status — the server's answer has arrived.
+  createEffect(() => {
+    const allActions = store.state.suggestedActions
+    const overrides = optimisticStatuses()
+    if (overrides.size === 0) return
+    const next = new Map(overrides)
+    let changed = false
+    for (const [id] of overrides) {
+      // Scan all threads' action arrays for this id.
+      let found = false
+      for (const [, actions] of allActions) {
+        const action = actions.find((a) => a.id === id)
+        if (action && action.status !== "proposed") {
+          next.delete(id)
+          changed = true
+          found = true
+          break
+        }
+        if (action) { found = true; break }
+      }
+      if (!found) { next.delete(id); changed = true }
+    }
+    if (changed) setOptimisticStatuses(next)
+  })
+
+  /**
+   * Return the active thread's suggested actions with optimistic status
+   * overrides applied. The overlay only changes `status` for IDs the user
+   * has clicked — everything else is authoritative from the store.
+   */
+  const activeThreadActions = createMemo(() => {
+    const threadId = selectedThread()?.summary.id
+    if (!threadId) return []
+    const actions = store.state.suggestedActions.get(threadId) ?? []
+    const overrides = optimisticStatuses()
+    if (overrides.size === 0) return actions
+    return actions.map((a) => {
+      const os = overrides.get(a.id)
+      return os !== undefined ? { ...a, status: os } : a
+    })
+  })
+
+  /** Send a suggested-action-respond frame and set an optimistic status. The
+   *  override is normally cleared by the authoritative update (reconcile effect
+   *  above). But if the server emits NO update — a cross-thread/unknown
+   *  actionId, or a lost-race respond() that returns null — nothing would clear
+   *  it. A timeout rollback reverts the override so the row becomes actionable
+   *  again and the user can retry, rather than the chip sticking forever. */
+  const OPTIMISTIC_ROLLBACK_MS = 8000
+  const respondToAction = (actionId: string, decision: "accept" | "dismiss"): void => {
+    const threadId = selectedThread()?.summary.id
+    if (!threadId) return
+    const optimistic: SuggestedActionStatus = decision === "accept" ? "accepted" : "dismissed"
+    setOptimisticStatuses((prev) => new Map([...prev, [actionId, optimistic]]))
+    send({ type: "suggested-action-respond", threadId, actionId, decision })
+    setTimeout(() => {
+      setOptimisticStatuses((prev) => {
+        if (!prev.has(actionId)) return prev // already reconciled by a server update
+        const next = new Map(prev)
+        next.delete(actionId)
+        return next
+      })
+    }, OPTIMISTIC_ROLLBACK_MS)
+  }
+
   /* ── Luna Studio board — floating panels on one canvas ─────────────────
      Engine ported from the design handoff's luna-app.jsx. Default layout:
      threads + settings stacked left, chat filling the rest; events /
@@ -433,6 +646,7 @@ export const App: Component = () => {
         events: { x: chatX + 40, y: TOP_MIN + 40, w: 620, h: 420, closed: true, min: false },
         artifacts: { x: vw - rightW - EDGE_MARGIN, y: TOP_MIN, w: rightW, h: half, closed: true, min: false },
         workflows: { x: vw - rightW - EDGE_MARGIN, y: TOP_MIN + half + SNAP_GAP, w: rightW, h: colH - half - SNAP_GAP, closed: true, min: false },
+        actions: { x: vw - rightW - EDGE_MARGIN, y: TOP_MIN + half + SNAP_GAP, w: rightW, h: colH - half - SNAP_GAP, closed: true, min: false },
         favorites: { x: EDGE_MARGIN + 80, y: TOP_MIN + 70, w: 290, h: 300, closed: true, min: false },
       }
     },
@@ -776,6 +990,14 @@ export const App: Component = () => {
           effort={cfg().effort}
           onModelChange={handleModelChange}
           onEffortChange={handleEffortChange}
+          {...(store.state.capabilities.suggestedActions === true
+            ? {
+                suggestedActions: activeThreadActions(),
+                onAcceptSuggestion: (id: string) => respondToAction(id, "accept"),
+                onDismissSuggestion: (id: string) => respondToAction(id, "dismiss"),
+                onSeeAllSuggestions: () => board.summon("actions"),
+              }
+            : {})}
         />
       ),
     },
@@ -829,6 +1051,13 @@ export const App: Component = () => {
           artifacts={selectedThread()?.artifacts ?? []}
           pinned={store.state.pinnedArtifacts}
           artifactsCapable={store.state.capabilities.artifacts === true}
+          focusSignal={focusArtifact()}
+          obsEvents={store.state.events}
+          mcp={
+            store.state.capabilities.mcpApps === true
+              ? { readResource: mcpReadResource, callTool: mcpCallTool }
+              : undefined
+          }
           onPin={(a) =>
             send({
               type: "artifact-pin",
@@ -861,6 +1090,22 @@ export const App: Component = () => {
       ),
     },
     {
+      // Suggested Actions panel — gated on capabilities.suggestedActions;
+      // older servers that don't advertise the cap hide this panel entirely.
+      id: "actions",
+      title: "actions",
+      tint: 5,
+      when: () => store.state.capabilities.suggestedActions === true,
+      render: () => (
+        <ActionsPanel
+          actions={activeThreadActions()}
+          disabled={!chatEnabled()}
+          onAccept={(id) => respondToAction(id, "accept")}
+          onDismiss={(id) => respondToAction(id, "dismiss")}
+        />
+      ),
+    },
+    {
       id: "favorites",
       title: "favorites",
       tint: 2,
@@ -883,6 +1128,11 @@ export const App: Component = () => {
           <filter id="wc-wobble">
             <feTurbulence type="fractalNoise" baseFrequency="0.015" numOctaves="3" result="n" seed="7" />
             <feDisplacementMap in="SourceGraphic" in2="n" scale="6" xChannelSelector="R" yChannelSelector="G" />
+          </filter>
+          {/* Gentler wobble for thin strokes (e.g. the composer's ↵ enter glyph). */}
+          <filter id="wc-wobble-soft">
+            <feTurbulence type="fractalNoise" baseFrequency="0.02" numOctaves="2" result="n" seed="4" />
+            <feDisplacementMap in="SourceGraphic" in2="n" scale="2" xChannelSelector="R" yChannelSelector="G" />
           </filter>
         </defs>
       </svg>
@@ -967,6 +1217,32 @@ export const App: Component = () => {
             }
           }}
         />
+      </Show>
+
+      {/* result-delivered toasts (#124) — fixed bottom-right stack, above the
+          board. Auto-dismissed by pushResultToast's timer; the × dismisses
+          early. aria-live=polite announces them to assistive tech. */}
+      <Show when={toasts().length > 0}>
+        <div class="toast-stack" role="status" aria-live="polite">
+          <For each={toasts()}>
+            {(t) => (
+              <div class="toast">
+                <button
+                  class="toast-close"
+                  title="Dismiss"
+                  aria-label="Dismiss notification"
+                  onClick={() => dismissToast(t.id)}
+                >
+                  ×
+                </button>
+                <div class="toast-title">Luna finished: {t.label}</div>
+                <Show when={t.preview}>
+                  <div class="toast-preview">{t.preview}</div>
+                </Show>
+              </div>
+            )}
+          </For>
+        </div>
       </Show>
     </div>
   )

@@ -47,7 +47,11 @@ import * as path from "node:path"
 import { WebSocketServer, type WebSocket } from "ws"
 import { UIService } from "@luna/core"
 import type { ObsEvent } from "@luna/core"
-import type { ChatService, ChatFrame } from "@luna/chat-service"
+import type {
+  ChatService,
+  ChatFrame,
+  DeliveryNotification,
+} from "@luna/chat-service"
 import type { LocalShellBridge } from "./local-shell-bridge.js"
 import type { SecretRequestBridge } from "./secret-request-bridge.js"
 import {
@@ -363,6 +367,22 @@ export interface UIWebSocketServerConfig {
     ) => import("effect").Effect.Effect<
       ReadonlyArray<import("./protocol.js").WorkflowRunItem>
     >
+  } | null
+  /**
+   * Optional Suggested Actions handle. When provided, the server advertises
+   * `capabilities.suggestedActions` and routes `suggested-action-respond` to
+   * `respond` (accept → auto-execute, dismiss). The resulting status/list
+   * frames reach the client over the normal chat subscribe stream (the service
+   * publishes onto the thread's pubsub), so this handle only needs `respond`.
+   * Errors are swallowed by the adapter — `respond` never fails the caller.
+   * Pass `null` in setup-mode. Structural type — mirrors workflowGallery.
+   */
+  readonly suggestedActions?: {
+    readonly respond: (input: {
+      readonly threadId: string
+      readonly actionId: string
+      readonly decision: "accept" | "dismiss"
+    }) => import("effect").Effect.Effect<void>
   } | null
   /**
    * Optional local-shell bridge. When provided, clients may advertise
@@ -915,6 +935,7 @@ export const startUIWebSocketServer = (
     const connectorService = config.connectorService ?? null
     const artifactStore = config.artifactStore ?? null
     const workflowGallery = config.workflowGallery ?? null
+    const suggestedActions = config.suggestedActions ?? null
     const vaultService = config.vaultService ?? null
     const modelRoutingService = config.modelRoutingService ?? null
     const buildSha = config.buildSha
@@ -1110,6 +1131,40 @@ export const startUIWebSocketServer = (
       })
     }
 
+    // #124: background-delivery notifications → broadcast a "Luna finished X"
+    // toast to EVERY connected client. Unlike the per-thread chat frames
+    // (which reach only that thread's subscribers via subscribe), this rides
+    // ChatService.deliveries so the result surfaces even when its thread is not
+    // the one on screen. The result message itself still lands in the thread
+    // via the normal assistant-done path (carrying ChatMessage.delivery).
+    // Forked into the SERVER SCOPE (not detached) so the consumer is
+    // interrupted deterministically on server teardown — mirroring the
+    // connector-refresh loop's `Effect.forkScoped`. (The nearby `.changes`
+    // hooks use Runtime.runFork because they run inside synchronous notify
+    // callbacks; this one is a long-lived runForEach in the gen body.)
+    if (chat !== null) {
+      yield* Effect.forkScoped(
+        chat.deliveries.pipe(
+          Stream.runForEach((n: DeliveryNotification) =>
+            Effect.gen(function* () {
+              const sockets = yield* Ref.get(activeSockets)
+              for (const sock of sockets) {
+                send(sock, {
+                  type: "result-delivered",
+                  threadId: n.threadId,
+                  source: n.source,
+                  label: n.label,
+                  preview: n.preview,
+                  ts: n.ts,
+                })
+              }
+            }),
+          ),
+          Effect.catchAllCause(() => Effect.void),
+        ),
+      )
+    }
+
     // The connection-handler effect: it OWNS its own scope (so we can use
     // addFinalizer for queue cleanup) but lives until the ws closes —
     // which we signal via a Deferred resolved from the ws "close" handler.
@@ -1171,6 +1226,7 @@ export const startUIWebSocketServer = (
             artifacts: artifactStore !== null,
             // PRD Part C/W3: read-only workflow gallery over the jobs store.
             workflows: workflowGallery !== null,
+            suggestedActions: suggestedActions !== null,
             // Luna Vault (V1): credential registry + put/delete/sync routing.
             // Clients hide the Vault section when absent/false.
             vault: vaultService !== null,
@@ -1593,11 +1649,46 @@ export const startUIWebSocketServer = (
           ),
         )
 
+        // Protocol-level heartbeat (RFC 6455 ping/pong) to reap HALF-OPEN
+        // connections. A laptop that sleeps or a network that drops without a
+        // TCP FIN leaves the socket open server-side; its per-connection
+        // forwarder + thread subscriptions then linger indefinitely holding
+        // memory (a primary source of the chat-server's slow growth → OOM).
+        // Browsers and WKWebView answer protocol pings AUTOMATICALLY, so this
+        // is a universal liveness check — unlike the app-level {type:"ping"}
+        // JSON frame below, which only the moon client auto-pongs (the web
+        // client merely displays lastPingAt). If a full ping interval passes
+        // with no pong, the socket is dead: terminate it so 'close' fires and
+        // the connection scope tears down its subscriber queues + buffers.
+        let isAlive = true
+        ws.on("pong", () => {
+          isAlive = true
+        })
         const pinger =
           pingMs > 0
             ? Effect.forever(
                 Effect.gen(function* () {
                   yield* Effect.sleep(`${pingMs} millis`)
+                  if (!isAlive) {
+                    try {
+                      ws.terminate()
+                    } catch {
+                      // already gone
+                    }
+                    // 'close' will fire and resolve the `closed` deferred,
+                    // closing the connection scope. Park until this fiber is
+                    // interrupted by that teardown rather than pinging a dead
+                    // socket on the next tick.
+                    yield* Effect.never
+                  }
+                  isAlive = false
+                  try {
+                    ws.ping()
+                  } catch {
+                    // socket already closing — let the close path tear down
+                  }
+                  // App-level ping too: the moon client uses {type:"ping"} for
+                  // its lastPingAt indicator (separate from protocol liveness).
                   send(ws, { type: "ping", ts: new Date().toISOString() })
                 }),
               )
@@ -1740,7 +1831,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || vaultService !== null || mcpAppHost !== null || subagentTree !== null || modelRoutingService !== null) {
+        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || suggestedActions !== null || vaultService !== null || mcpAppHost !== null || subagentTree !== null || widgetSummoner !== null || modelRoutingService !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -1867,6 +1958,22 @@ export const startUIWebSocketServer = (
                     }
                     return
                   }
+                  case "suggested-action-respond": {
+                    // Accept (auto-execute) or dismiss a suggested action. The
+                    // resulting status/list update reaches the client over the
+                    // chat subscribe stream (the service publishes onto the
+                    // thread's pubsub), so we only route the decision here.
+                    if (suggestedActions !== null) {
+                      yield* suggestedActions
+                        .respond({
+                          threadId: frame.threadId,
+                          actionId: frame.actionId,
+                          decision: frame.decision,
+                        })
+                        .pipe(Effect.catchAllCause(() => Effect.void))
+                    }
+                    return
+                  }
                   case "subscribe": {
                     if (chat === null) return
                     yield* subscribeChatThread(frame.threadId)
@@ -1886,11 +1993,39 @@ export const startUIWebSocketServer = (
                   }
                   case "list-threads": {
                     if (chat === null) return
-                    const threads = yield* chat.listThreads(frame.limit ?? 50)
+                    const threads = yield* chat.listThreads(frame.limit ?? 50, frame.status)
                     send(ws, { type: "thread-list", threads })
                     // Cache model for each thread so smart bar can show the model.
                     for (const t of threads) {
                       if (t.model) threadModelCache.set(t.id, t.model)
+                    }
+                    return
+                  }
+                  case "archive-thread": {
+                    if (chat === null) return
+                    const archiveOk = yield* chat.archiveThread(frame.threadId)
+                    if (archiveOk) {
+                      send(ws, { type: "thread-archived", threadId: frame.threadId })
+                    } else {
+                      send(ws, {
+                        type: "thread-archive-error",
+                        threadId: frame.threadId,
+                        reason: "not-found",
+                      })
+                    }
+                    return
+                  }
+                  case "unarchive-thread": {
+                    if (chat === null) return
+                    const unarchiveOk = yield* chat.unarchiveThread(frame.threadId)
+                    if (unarchiveOk) {
+                      send(ws, { type: "thread-unarchived", threadId: frame.threadId })
+                    } else {
+                      send(ws, {
+                        type: "thread-archive-error",
+                        threadId: frame.threadId,
+                        reason: "not-found",
+                      })
                     }
                     return
                   }
