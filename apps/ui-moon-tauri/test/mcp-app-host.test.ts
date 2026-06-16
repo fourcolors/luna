@@ -155,7 +155,7 @@ describe('LunaMcpHost — mount', () => {
 })
 
 describe('LunaMcpHost — handshake', () => {
-  it('answers ui/initialize with protocolVersion/host/capabilities under the SAME id', async () => {
+  it('answers ui/initialize with protocolVersion/host/capabilities (+ G1 theme/styles) under the SAME id', async () => {
     const rig = makeRig()
     await flush()
     rig.fromApp({
@@ -164,17 +164,15 @@ describe('LunaMcpHost — handshake', () => {
       method: 'ui/initialize',
       params: { protocolVersion: '2026-01-26', appInfo: { name: 'x' } },
     })
-    expect(rig.posted).toEqual([
-      {
-        jsonrpc: '2.0',
-        id: 1,
-        result: {
-          protocolVersion: '2026-01-26',
-          host: { name: 'luna-moon' },
-          capabilities: { serverTools: {} },
-        },
-      },
-    ])
+    expect(rig.posted).toHaveLength(1)
+    const reply = rig.posted[0] as any
+    expect(reply.id).toBe(1)
+    expect(reply.result.protocolVersion).toBe('2026-01-26')
+    expect(reply.result.host).toEqual({ name: 'luna-moon' })
+    expect(reply.result.capabilities).toEqual({ serverTools: {} })
+    // G1: the host hands the app a theme + standardized style variables.
+    expect(['dark', 'light']).toContain(reply.result.theme)
+    expect(reply.result.styles).toHaveProperty('variables')
     rig.handle.dispose()
   })
 
@@ -268,5 +266,67 @@ describe('LunaMcpHost — trust boundary + robustness', () => {
     rig.handle.dispose()
     rig.fromApp({ jsonrpc: '2.0', id: 1, method: 'ui/initialize', params: {} })
     expect(rig.posted).toEqual([])
+  })
+})
+
+describe('LunaMcpHost — G1 host theme injection', () => {
+  const SEP = () => (window as any).LunaMcpHost
+
+  it('maps Luna tokens → SEP-1865 variables (canonical contract)', () => {
+    const tokens: Record<string, string> = {
+      '--paper': '#111',
+      '--paper-2': '#222',
+      '--wash-1': '#333',
+      '--ink': '#eee',
+      '--ink-soft': '#ccc',
+      '--ink-faint': '#444',
+      '--accent': '#5af',
+      '--font-chat': 'Inter',
+      '--font-mono': 'Menlo',
+      '--radius': '10px',
+    }
+    const ctx = SEP().buildHostStyleContext((n: string) => tokens[n] ?? '', 'light')
+    // This expected object is the canonical mapping contract — it MUST stay in
+    // lockstep with the ui-shared ES source of truth
+    // (packages/ui-shared/src/mcp-app-host.ts, asserted there too). If the two
+    // maps drift, one of these two tests fails.
+    expect(ctx).toEqual({
+      theme: 'light',
+      styles: {
+        variables: {
+          '--color-background-primary': '#111',
+          '--color-background-secondary': '#222',
+          '--color-background-tertiary': '#333',
+          '--color-text-primary': '#eee',
+          '--color-text-secondary': '#ccc',
+          '--color-text-tertiary': '#444',
+          '--color-border-primary': '#444',
+          '--color-ring-primary': '#5af',
+          '--font-sans': 'Inter',
+          '--font-mono': 'Menlo',
+          '--border-radius-md': '10px',
+        },
+      },
+    })
+  })
+
+  it('omits empty tokens and normalizes an unknown theme to dark', () => {
+    const ctx = SEP().buildHostStyleContext(() => '', 'weird')
+    expect(ctx.theme).toBe('dark')
+    expect(ctx.styles.variables).toEqual({})
+  })
+
+  it('pushes host-context-changed when the host theme attribute flips', async () => {
+    const rig = makeRig()
+    await flush()
+    document.documentElement.setAttribute('data-theme', 'light')
+    await flush()
+    const changes = rig.posted.filter(
+      (m: any) => m && m.method === 'ui/notifications/host-context-changed',
+    )
+    expect(changes.length).toBeGreaterThanOrEqual(1)
+    expect((changes[changes.length - 1] as any).params.theme).toBe('light')
+    rig.handle.dispose()
+    document.documentElement.removeAttribute('data-theme')
   })
 })

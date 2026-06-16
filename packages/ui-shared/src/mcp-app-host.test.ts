@@ -14,7 +14,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   HOST_NAME,
+  LUNA_SEP_MAP,
   PROTOCOL_VERSION,
+  buildHostStyleContext,
   host,
   isRpcNotification,
   isRpcRequest,
@@ -85,15 +87,19 @@ describe("mcp-app-host — JSON-RPC pure helpers", () => {
 })
 
 describe("mcp-app-host — host handshake + relay", () => {
-  it("answers ui/initialize with protocol/host/capabilities", () => {
+  it("answers ui/initialize with protocol/host/capabilities (+ G1 theme/styles)", () => {
     const f = makeFrame()
     mountHost({ frameEl: f.frameEl, html: "<p>x</p>" })
     send(f, { jsonrpc: "2.0", id: 1, method: "ui/initialize", params: {} })
-    expect(f.posted).toContainEqual({
-      jsonrpc: "2.0",
-      id: 1,
-      result: { protocolVersion: PROTOCOL_VERSION, host: { name: HOST_NAME }, capabilities: { serverTools: {} } },
-    })
+    const reply = f.posted.find((m) => (m as { id?: unknown }).id === 1) as {
+      result: { protocolVersion: string; host: unknown; capabilities: unknown; theme: string; styles: { variables: unknown } }
+    }
+    expect(reply.result.protocolVersion).toBe(PROTOCOL_VERSION)
+    expect(reply.result.host).toEqual({ name: HOST_NAME })
+    expect(reply.result.capabilities).toEqual({ serverTools: {} })
+    // G1: the host hands the app a theme + standardized style variables.
+    expect(["dark", "light"]).toContain(reply.result.theme)
+    expect(reply.result.styles).toHaveProperty("variables")
   })
 
   it("pushes tool-input after ui/notifications/initialized (once)", () => {
@@ -199,5 +205,89 @@ describe("mcp-app-host — host handshake + relay", () => {
     handle.dispose()
     send(f, { jsonrpc: "2.0", id: 1, method: "ui/initialize" })
     expect(f.posted).toHaveLength(0)
+  })
+})
+
+describe("mcp-app-host — G1 host theme injection", () => {
+  it("maps Luna tokens → SEP-1865 variables; fan-out targets; omits empty tokens", () => {
+    const tokens: Record<string, string> = {
+      "--paper": "#111",
+      "--ink": "#eee",
+      "--ink-faint": "#444",
+      "--accent": "#5af",
+      "--radius": "10px",
+      // --paper-2 / --wash-1 / --ink-soft / --font-chat / --font-mono absent
+    }
+    const ctx = buildHostStyleContext((n) => tokens[n] ?? "", "dark")
+    expect(ctx.theme).toBe("dark")
+    expect(ctx.styles.variables["--color-background-primary"]).toBe("#111")
+    expect(ctx.styles.variables["--color-text-primary"]).toBe("#eee")
+    // ink-faint and accent each fan out to two standard names
+    expect(ctx.styles.variables["--color-text-tertiary"]).toBe("#444")
+    expect(ctx.styles.variables["--color-border-primary"]).toBe("#444")
+    // accent maps to the SEP standard ring/brand name — NOT a non-standard
+    // --color-accent (which no spec-compliant 3rd-party app would read).
+    expect(ctx.styles.variables["--color-ring-primary"]).toBe("#5af")
+    expect(ctx.styles.variables["--color-accent"]).toBeUndefined()
+    expect(ctx.styles.variables["--border-radius-md"]).toBe("10px")
+    // absent source token → no variable emitted (app keeps its own fallback)
+    expect(ctx.styles.variables["--color-background-secondary"]).toBeUndefined()
+  })
+
+  it("normalizes an unknown theme to dark; passes light through", () => {
+    expect(buildHostStyleContext(() => "", "weird").theme).toBe("dark")
+    expect(buildHostStyleContext(() => "", "light").theme).toBe("light")
+  })
+
+  it("every map entry targets at least one standard variable", () => {
+    for (const [luna, seps] of LUNA_SEP_MAP) {
+      expect(typeof luna).toBe("string")
+      expect(seps.length).toBeGreaterThan(0)
+    }
+  })
+
+  it("reads inline host tokens into the ui/initialize result variables", () => {
+    document.documentElement.style.setProperty("--paper", "#0a0e1c")
+    document.documentElement.style.setProperty("--ink", "#e2ecfd")
+    document.documentElement.setAttribute("data-theme", "dark")
+    const f = makeFrame()
+    const handle = mountHost({ frameEl: f.frameEl, html: "<p>x</p>" })
+    send(f, { jsonrpc: "2.0", id: 1, method: "ui/initialize", params: {} })
+    const reply = f.posted.find((m) => (m as { id?: unknown }).id === 1) as {
+      result: { styles: { variables: Record<string, string> } }
+    }
+    expect(reply.result.styles.variables["--color-background-primary"]).toBe("#0a0e1c")
+    expect(reply.result.styles.variables["--color-text-primary"]).toBe("#e2ecfd")
+    handle.dispose()
+    document.documentElement.style.removeProperty("--paper")
+    document.documentElement.style.removeProperty("--ink")
+    document.documentElement.removeAttribute("data-theme")
+  })
+
+  it("pushes host-context-changed when the host theme attribute changes", async () => {
+    document.documentElement.setAttribute("data-theme", "dark")
+    const f = makeFrame()
+    const handle = mountHost({ frameEl: f.frameEl, html: "<p>x</p>" })
+    document.documentElement.setAttribute("data-theme", "light")
+    await new Promise((r) => setTimeout(r, 0)) // let the MutationObserver flush
+    const changes = f.posted.filter(
+      (m) => (m as { method?: string }).method === "ui/notifications/host-context-changed",
+    )
+    expect(changes.length).toBeGreaterThanOrEqual(1)
+    expect((changes[changes.length - 1] as { params: { theme: string } }).params.theme).toBe("light")
+    handle.dispose()
+    document.documentElement.removeAttribute("data-theme")
+  })
+
+  it("stops pushing host-context-changed after dispose()", async () => {
+    const f = makeFrame()
+    const handle = mountHost({ frameEl: f.frameEl, html: "<p>x</p>" })
+    handle.dispose()
+    document.documentElement.setAttribute("data-theme", "light")
+    await new Promise((r) => setTimeout(r, 0))
+    expect(
+      f.posted.filter((m) => (m as { method?: string }).method === "ui/notifications/host-context-changed"),
+    ).toHaveLength(0)
+    document.documentElement.removeAttribute("data-theme")
   })
 })

@@ -57,6 +57,32 @@ const BRIDGE_SHIM =
   "};" +
   "})();<\/script>"
 
+// A passive, capability-FREE theme shim injected into the MCP-app cages
+// (buildMcpSrcdoc + buildGeneratedAppSrcdoc). It listens for the host's
+// SEP-1865 style variables — carried on the ui/initialize result and on every
+// ui/notifications/host-context-changed — and applies them to documentElement
+// so var(--color-background-primary)/var(--color-ring-primary)/… inherit Luna's
+// theme. It sends NOTHING, opens no network, and references neither window.luna
+// nor window.mcp: it grants NO capability, only mirrors host-provided CSS custom
+// properties — so ANY hosted app (incl. a third party's) themes with zero author
+// code. The trust check (e.source===window.parent) means only the host can feed it.
+const THEME_SHIM =
+  "<script>(function(){" +
+  "function apply(s){" +
+  "if(!s||typeof s!=='object')return;" +
+  "var v=s.variables||s;" +
+  "if(!v||typeof v!=='object')return;" +
+  "var r=document.documentElement;" +
+  "for(var k in v){if(Object.prototype.hasOwnProperty.call(v,k)&&typeof v[k]==='string'){try{r.style.setProperty(k,v[k]);}catch(_){}}}" +
+  "}" +
+  "window.addEventListener('message',function(e){" +
+  "if(e.source!==window.parent)return;" +
+  "var m=e.data; if(!m||m.jsonrpc!=='2.0')return;" +
+  "if(m.result&&m.result.styles){apply(m.result.styles);}" +
+  "else if(m.method==='ui/notifications/host-context-changed'&&m.params){apply(m.params.styles);}" +
+  "});" +
+  "})();<\/script>"
+
 /**
  * Assemble the full srcdoc string for a widget artifact: strict CSP meta +
  * the luna bridge shim + the agent-authored HTML body. The host sets this as
@@ -93,6 +119,7 @@ export function buildMcpSrcdoc(html: string): string {
     CSP +
     '">' +
     "</head><body>" +
+    THEME_SHIM +
     body +
     "</body></html>"
   )
@@ -142,6 +169,7 @@ export function buildGeneratedAppSrcdoc(html: string): string {
     CSP +
     '">' +
     "</head><body>" +
+    THEME_SHIM +
     MCP_CLIENT_SHIM +
     body +
     "</body></html>"
