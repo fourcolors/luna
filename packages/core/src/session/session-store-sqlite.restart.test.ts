@@ -394,4 +394,62 @@ describe("SessionStore SQLite restart-fidelity", () => {
 
     expect(recoverOk).toBe("recovery_msg")
   })
+
+  // ── seq-under-lock invariant ──────────────────────────────────────────────────
+  // Fix for Copilot review comment: messageNextSeq.get() was called BEFORE
+  // BEGIN IMMEDIATE, so two concurrent fibers could both read the same MAX(seq)
+  // before either held the write lock → duplicate seq numbers.
+  //
+  // After the fix: seq is computed INSIDE BEGIN IMMEDIATE … COMMIT, so the
+  // read + INSERT are atomic and seq is always monotonic and gap-free regardless
+  // of concurrency.
+  //
+  // This test fires N appends concurrently (Promise.all) and asserts that the
+  // resulting seqs are exactly [0 … N-1] with no duplicates and no gaps.
+  test("seq is monotonic and gap-free under concurrent appends (seq computed inside lock)", async () => {
+    const dbPath = makeTmp()
+    const N = 12
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const store = yield* SessionStore
+          yield* store.create({
+            id: "concurrent_seq",
+            options: { model: "claude-sonnet" },
+            createdAt: 1000,
+          })
+        }).pipe(Effect.provide(makeTestLayer(dbPath))),
+      ),
+    )
+
+    // Launch N concurrent appends to the same session using the same DB
+    // layer instance (one connection → SQLite serializes via the write lock;
+    // the race is between the seq read and the INSERT, not between threads).
+    const seqs = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const store = yield* SessionStore
+          // Fire all appends concurrently and collect results.
+          const results = yield* Effect.all(
+            Array.from({ length: N }, (_, i) =>
+              store.appendMessage({
+                sessionId: "concurrent_seq",
+                messageId: `concurrent_msg_${i}`,
+                ts: 1000 + i,
+                parentId: null,
+                kind: i % 2 === 0 ? ("user" as const) : ("assistant" as const),
+                payload: { index: i },
+              }),
+            ),
+            { concurrency: "unbounded" },
+          )
+          return results.map((m) => m.seq).sort((a, b) => a - b)
+        }).pipe(Effect.provide(makeTestLayer(dbPath))),
+      ),
+    )
+
+    // Must be exactly [0, 1, 2, ..., N-1]: no duplicates, no gaps.
+    expect(seqs).toEqual(Array.from({ length: N }, (_, i) => i))
+  })
 })

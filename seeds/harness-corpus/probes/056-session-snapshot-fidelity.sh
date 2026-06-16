@@ -170,12 +170,12 @@ fi
 if [[ $rc -eq 0 ]]; then
   echo "OK: session-snapshot-fidelity — both invariants hold (N frames in == N frames out; content faithful)"
   exit 0
-elif [[ $rc -eq 1 ]]; then
+else
+  # Any non-zero exit from bun test means an assertion or runtime failure —
+  # that is a hard FAIL, not a SKIP.  77 (SKIP) is reserved exclusively for
+  # unmet preconditions (no bun, no LUNA_REPO, missing packages/core) which
+  # are already handled above before bun test is ever invoked.
   last="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -n1)"
   echo "DRIFT: bun test exited $rc — $last"
   exit 1
-else
-  last="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -n1)"
-  echo "SKIP: probe could not execute (rc=$rc) — $last"
-  exit 77
 fi

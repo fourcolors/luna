@@ -407,56 +407,64 @@ export const makeSessionStoreSqlite = (
               )
             }
 
-            // Wrap seq-allocation + insert + meta update in a transaction so
-            // two concurrent appends to the same session can't race the seq.
-            const seqRow = messageNextSeq.get(input.sessionId) as {
-              next_seq: number
-            }
-            const seq = seqRow.next_seq
             const role =
               input.kind === "user" || input.kind === "assistant"
                 ? input.kind
                 : null
 
-            const stored: StoredMessage = {
-              id: input.messageId,
-              sessionId: input.sessionId,
-              seq,
-              ts: input.ts,
-              parentId: input.parentId,
-              kind: input.kind,
-              schemaVersion: MESSAGE_ENVELOPE_VERSION,
-              payload: input.payload,
-            }
-
-            // Update sidebar metadata. Mirrors in-memory store semantics
-            // exactly: any kind bumps lastMessageAt; only user/assistant
-            // refresh the preview.
-            const metaRow = sessionGetMeta.get(input.sessionId) as
-              | { meta_json: string }
-              | undefined
-            const meta = metaRow
-              ? parseMeta(metaRow.meta_json)
-              : {
-                  lastMessageAt: null,
-                  lastMessagePreview: null,
-                }
-            // Parented (subagent-internal) messages never refresh the preview:
-            // the SDK forwards a subagent's seed prompt as a parented user
-            // message, and without this gate every Task spawn would overwrite
-            // the sidebar with internal prompt text. lastMessageAt still bumps.
-            const nextPreview =
-              input.parentId == null &&
-              (input.kind === "user" || input.kind === "assistant")
-                ? extractTextPreview(input.payload) ?? meta.lastMessagePreview
-                : meta.lastMessagePreview
-            const nextMeta: SessionMeta = {
-              lastMessageAt: input.ts,
-              lastMessagePreview: nextPreview,
-            }
-
+            // BEGIN IMMEDIATE acquires a write lock BEFORE we read seq so
+            // that two fibers appending to the same session cannot both read
+            // the same MAX(seq) and then race the INSERT (duplicate seq).
+            // seq-allocation + INSERT + meta update are all atomic inside this
+            // one transaction.
             db.run("BEGIN IMMEDIATE")
+            let stored: StoredMessage
             try {
+              // Read seq INSIDE the write transaction so the read + INSERT
+              // are atomic. No other writer can slip between these two
+              // statements because BEGIN IMMEDIATE holds the write lock.
+              const seqRow = messageNextSeq.get(input.sessionId) as {
+                next_seq: number
+              }
+              const seq = seqRow.next_seq
+
+              stored = {
+                id: input.messageId,
+                sessionId: input.sessionId,
+                seq,
+                ts: input.ts,
+                parentId: input.parentId,
+                kind: input.kind,
+                schemaVersion: MESSAGE_ENVELOPE_VERSION,
+                payload: input.payload,
+              }
+
+              // Update sidebar metadata. Mirrors in-memory store semantics
+              // exactly: any kind bumps lastMessageAt; only user/assistant
+              // refresh the preview.
+              const metaRow = sessionGetMeta.get(input.sessionId) as
+                | { meta_json: string }
+                | undefined
+              const meta = metaRow
+                ? parseMeta(metaRow.meta_json)
+                : {
+                    lastMessageAt: null,
+                    lastMessagePreview: null,
+                  }
+              // Parented (subagent-internal) messages never refresh the preview:
+              // the SDK forwards a subagent's seed prompt as a parented user
+              // message, and without this gate every Task spawn would overwrite
+              // the sidebar with internal prompt text. lastMessageAt still bumps.
+              const nextPreview =
+                input.parentId == null &&
+                (input.kind === "user" || input.kind === "assistant")
+                  ? extractTextPreview(input.payload) ?? meta.lastMessagePreview
+                  : meta.lastMessagePreview
+              const nextMeta: SessionMeta = {
+                lastMessageAt: input.ts,
+                lastMessagePreview: nextPreview,
+              }
+
               messageInsert.run(
                 input.messageId,
                 input.sessionId,
