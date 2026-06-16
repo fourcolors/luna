@@ -15,11 +15,11 @@ function loadVendorInto(target: any, file: string) {
 }
 
 // The dock elements every widget-page carries (vendor/moon-dock.js requires
-// #seam / #outline and a [data-tauri-drag-region] title bar; the
+// #seam / #outline and a .title-bar; the
 // skin/weld code reads .widget-shell + .title-bar).
 const DOCK_DOM =
   '<div class="widget-shell">' +
-  '  <div class="title-bar" data-tauri-drag-region id="title-bar">' +
+  '  <div class="title-bar" id="title-bar">' +
   '    <span class="bar-title" id="bar-title">x</span>' +
   '    <button class="close-btn" id="close-btn"></button>' +
   '  </div>' +
@@ -38,7 +38,6 @@ function wireWith(label: string) {
       handlers[name] = cb
       return () => {}
     }),
-    onMoved: vi.fn(async () => () => {}),
   }
   ;(window as any).__TAURI__ = {
     window: { getCurrentWindow: () => win, Window: { getByLabel: vi.fn(async () => null) } },

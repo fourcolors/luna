@@ -6,8 +6,8 @@
  * `dock-group` / `dock-link` events, pin-to-detach, seam flash, perimeter
  * outline.
  *
- * Requires in the page: #seam, #outline elements and a
- * [data-tauri-drag-region] title bar. Requires vendor/deck-snap.js
+ * Requires in the page: #seam, #outline elements and a .title-bar element
+ * (the JS drag binds pointer events to it). Requires vendor/deck-snap.js
  * (LunaDeckSnap) for the pure snap math.
  *
  * Usage: LunaDock.wire({ win: getCurrentWindow(), label: win.label })
@@ -251,7 +251,7 @@
         W.listen('dock-group', function (e) {
           var p = e && e.payload;
           if (!p || p['for'] !== label) return;
-          applyGroupState(p); // also schedules the seam-badge repaint
+          applyGroupState(p);
         }).catch(function () {});
       }
     } catch (_) { /* best-effort */ }
