@@ -388,89 +388,119 @@ export const makeSessionStoreSqlite = (
         readonly payload: unknown
       }): Effect.Effect<StoredMessage, IntegrityError> =>
         Effect.suspend(() => {
-          const exists = sessionExists.get(input.sessionId) as
-            | { x: number }
-            | undefined
-          if (!exists) {
+          // All SQLite access — reads AND writes — lives inside one try/catch
+          // so that SQLITE_BUSY / SQLITE_IOERR on any statement surfaces as a
+          // typed IntegrityError (Effect.fail) rather than a raw throw that
+          // propagates as a defect through Effect.suspend.  A defect would
+          // escape adapter.ts's `Effect.catchAll` (which catches only typed
+          // failures) and could kill the live streaming fiber.
+          try {
+            const exists = sessionExists.get(input.sessionId) as
+              | { x: number }
+              | undefined
+            if (!exists) {
+              return Effect.fail(
+                integrity(
+                  "message_session_exists",
+                  `session ${input.sessionId} not found`,
+                ),
+              )
+            }
+
+            const role =
+              input.kind === "user" || input.kind === "assistant"
+                ? input.kind
+                : null
+
+            // BEGIN IMMEDIATE acquires a write lock BEFORE we read seq so
+            // that two fibers appending to the same session cannot both read
+            // the same MAX(seq) and then race the INSERT (duplicate seq).
+            // seq-allocation + INSERT + meta update are all atomic inside this
+            // one transaction.
+            db.run("BEGIN IMMEDIATE")
+            let stored: StoredMessage
+            try {
+              // Read seq INSIDE the write transaction so the read + INSERT
+              // are atomic. No other writer can slip between these two
+              // statements because BEGIN IMMEDIATE holds the write lock.
+              const seqRow = messageNextSeq.get(input.sessionId) as {
+                next_seq: number
+              }
+              const seq = seqRow.next_seq
+
+              stored = {
+                id: input.messageId,
+                sessionId: input.sessionId,
+                seq,
+                ts: input.ts,
+                parentId: input.parentId,
+                kind: input.kind,
+                schemaVersion: MESSAGE_ENVELOPE_VERSION,
+                payload: input.payload,
+              }
+
+              // Update sidebar metadata. Mirrors in-memory store semantics
+              // exactly: any kind bumps lastMessageAt; only user/assistant
+              // refresh the preview.
+              const metaRow = sessionGetMeta.get(input.sessionId) as
+                | { meta_json: string }
+                | undefined
+              const meta = metaRow
+                ? parseMeta(metaRow.meta_json)
+                : {
+                    lastMessageAt: null,
+                    lastMessagePreview: null,
+                  }
+              // Parented (subagent-internal) messages never refresh the preview:
+              // the SDK forwards a subagent's seed prompt as a parented user
+              // message, and without this gate every Task spawn would overwrite
+              // the sidebar with internal prompt text. lastMessageAt still bumps.
+              const nextPreview =
+                input.parentId == null &&
+                (input.kind === "user" || input.kind === "assistant")
+                  ? extractTextPreview(input.payload) ?? meta.lastMessagePreview
+                  : meta.lastMessagePreview
+              const nextMeta: SessionMeta = {
+                lastMessageAt: input.ts,
+                lastMessagePreview: nextPreview,
+              }
+
+              messageInsert.run(
+                input.messageId,
+                input.sessionId,
+                input.parentId,
+                input.kind,
+                role,
+                JSON.stringify(input.payload),
+                MESSAGE_ENVELOPE_VERSION,
+                input.ts,
+                seq,
+              )
+              sessionSetMeta.run(JSON.stringify(nextMeta), input.sessionId)
+              db.run("COMMIT")
+            } catch (cause) {
+              try {
+                db.run("ROLLBACK")
+              } catch {
+                /* ignore — best-effort cleanup */
+              }
+              return Effect.fail(
+                integrity("message_insert", `insert failed: ${String(cause)}`),
+              )
+            }
+
+            return Effect.succeed(stored)
+          } catch (cause) {
+            // Catches read errors (SQLITE_BUSY, SQLITE_IOERR, etc.) from the
+            // SELECTs above, converting them to typed failures so onMirrorError
+            // can handle them without the error escaping as a defect.
             return Effect.fail(
               integrity(
-                "message_session_exists",
-                `session ${input.sessionId} not found`,
+                "message_read",
+                `read failed during append: ${String(cause)}`,
               ),
             )
           }
-          // Wrap seq-allocation + insert + meta update in a transaction so
-          // two concurrent appends to the same session can't race the seq.
-          const seqRow = messageNextSeq.get(input.sessionId) as {
-            next_seq: number
-          }
-          const seq = seqRow.next_seq
-          const role =
-            input.kind === "user" || input.kind === "assistant"
-              ? input.kind
-              : null
-
-          const stored: StoredMessage = {
-            id: input.messageId,
-            sessionId: input.sessionId,
-            seq,
-            ts: input.ts,
-            parentId: input.parentId,
-            kind: input.kind,
-            schemaVersion: MESSAGE_ENVELOPE_VERSION,
-            payload: input.payload,
-          }
-
-          // Update sidebar metadata. Mirrors in-memory store semantics
-          // exactly: any kind bumps lastMessageAt; only user/assistant
-          // refresh the preview.
-          const metaRow = sessionGetMeta.get(input.sessionId) as
-            | { meta_json: string }
-            | undefined
-          const meta = metaRow ? parseMeta(metaRow.meta_json) : {
-            lastMessageAt: null,
-            lastMessagePreview: null,
-          }
-          // Parented (subagent-internal) messages never refresh the preview:
-          // the SDK forwards a subagent's seed prompt as a parented user
-          // message, and without this gate every Task spawn would overwrite
-          // the sidebar with internal prompt text. lastMessageAt still bumps.
-          const nextPreview =
-            input.parentId == null &&
-            (input.kind === "user" || input.kind === "assistant")
-              ? extractTextPreview(input.payload) ?? meta.lastMessagePreview
-              : meta.lastMessagePreview
-          const nextMeta: SessionMeta = {
-            lastMessageAt: input.ts,
-            lastMessagePreview: nextPreview,
-          }
-
-          try {
-            db.run("BEGIN IMMEDIATE")
-            messageInsert.run(
-              input.messageId,
-              input.sessionId,
-              input.parentId,
-              input.kind,
-              role,
-              JSON.stringify(input.payload),
-              MESSAGE_ENVELOPE_VERSION,
-              input.ts,
-              seq,
-            )
-            sessionSetMeta.run(JSON.stringify(nextMeta), input.sessionId)
-            db.run("COMMIT")
-          } catch (cause) {
-            try {
-              db.run("ROLLBACK")
-            } catch {
-              /* ignore — best-effort cleanup */
-            }
-            return Effect.fail(
-              integrity("message_insert", `insert failed: ${String(cause)}`),
-            )
-          }
-          return Effect.succeed(stored)
         })
 
       const readMessages = (
