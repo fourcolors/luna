@@ -111,6 +111,45 @@ html, body {
   box-shadow: 0 0 0 1.5px var(--dk-win-border, transparent);
 }
 
+/* Classic skin: crisp straight card edge — no watercolor wobble (winamp-retro
+   is hard hairlines, not hand-painted paper). */
+html[data-skin='classic'] .widget-shell::before {
+  filter: none;
+}
+
+/* Drag / snap affordance (ported from the design's .dock-win.dragging /
+   .snapping states). moon-dock.js toggles these during the native drag settle:
+   a deeper lift while a loose window is being dragged, and an accent preview
+   ring the moment it falls within magnet range of a neighbour — the predictive
+   "this will stick" hint the design shows before the drop. */
+.widget-shell.dragging {
+  box-shadow:
+    0 6px 12px rgba(60, 45, 35, 0.10),
+    0 32px 60px -18px rgba(60, 45, 35, 0.32);
+}
+html[data-theme='dark'] .widget-shell.dragging {
+  box-shadow:
+    0 6px 12px rgba(0, 0, 0, 0.40),
+    0 36px 64px -18px rgba(0, 0, 0, 0.60);
+}
+.widget-shell.snapping::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  /* Design's two-layer "this will stick" hint: accent ring + a deeper lift. */
+  box-shadow:
+    0 0 0 2px color-mix(in oklab, var(--accent) 40%, transparent),
+    0 16px 38px -12px rgba(60, 45, 35, 0.24);
+  pointer-events: none;
+  z-index: 6;
+}
+html[data-theme='dark'] .widget-shell.snapping::after {
+  box-shadow:
+    0 0 0 2px color-mix(in oklab, var(--accent) 40%, transparent),
+    0 16px 38px -12px rgba(0, 0, 0, 0.5);
+}
+
 /* Dark theme: deeper halo + a faint smooth edge ring for definition on the
    night paper (on the shell, so it stays a single crisp line, not wobbled).
    The stronger tint pool + night paper base now live in the studio dark token
@@ -188,14 +227,17 @@ html[data-grain='on'][data-theme='dark'] body::after {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 6px 8px 6px 10px;
+  /* Tight, symmetric Winamp-height header (design .dock-bar: 28px / 0 14px). */
+  padding: 0 14px;
   /* Soft wash from the active skin: studio --dk-bar-bg is the original tint
      gradient (unchanged); classic/aqua supply their own header fill. */
   background: var(--dk-bar-bg);
-  border-bottom: 1px solid color-mix(in oklab, var(--ink) 8%, transparent);
+  /* Header underline from the active skin: studio --dk-bar-border is `none`
+     (the wash carries the seam), classic supplies a crisp hairline. */
+  border-bottom: var(--dk-bar-border, 1px solid color-mix(in oklab, var(--ink) 8%, transparent));
   user-select: none;
   flex-shrink: 0;
-  min-height: 34px;
+  min-height: 28px;
 }
 /* Ink outline chrome: flat header, the drawn edge carries the structure. */
 html[data-chrome='ink'] .title-bar {
@@ -221,8 +263,17 @@ html[data-chrome='ink'] .title-bar {
 .dock-lights {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   flex: 0 0 auto;
+  /* Whole cluster stays hidden until the window is hovered (or a light is
+     keyboard-focused), matching the design's resting chrome — the glyphs then
+     hover-reveal on the bar (rule below). */
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.widget-shell:hover .dock-lights,
+.dock-lights:focus-within {
+  opacity: 1;
 }
 .bar-end {
   display: flex;
@@ -232,10 +283,10 @@ html[data-chrome='ink'] .title-bar {
   min-width: 52px; /* ≈ the 3-dot cluster width, so the title centers */
 }
 .light {
-  width: 12px;
-  height: 12px;
+  width: 11px;
+  height: 11px;
   padding: 0;
-  border: none;
+  border: 0.5px solid rgba(0, 0, 0, 0.16);
   border-radius: 50%;
   cursor: pointer;
   flex-shrink: 0;
@@ -320,28 +371,6 @@ html[data-anchor='true'] .bar-title {
   color: var(--ink);
 }
 
-/* ── Dock pin (visible while snapped into a group) ───────────────────── */
-.pin-btn {
-  flex-shrink: 0;
-  background: none;
-  border: none;
-  color: var(--accent);
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.1s;
-}
-.pin-btn:hover { background: color-mix(in oklab, var(--accent) 15%, transparent); }
-.pin-btn[hidden] { display: none; }
-.pin-btn.pop { animation: pin-pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1); }
-@keyframes pin-pop {
-  0% { transform: scale(0) rotate(-35deg); opacity: 0; }
-  100% { transform: scale(1) rotate(0); opacity: 1; }
-}
 
 /* ── Seam glow: the link animation when two windows click together ───── */
 /* Offset bars by --card-inset from each OS-window edge so they hug the card
@@ -381,53 +410,6 @@ html[data-anchor='true'] .bar-title {
 #outline.gr { border-right: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
 #outline.gt { border-top: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
 #outline.gb { border-bottom: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
-
-/* ── Dock-link seam badges: the little chain-link chips that sit on the seam
-   between two docked windows (vendor/moon-dock.js renders them). The layer is
-   click-through; only the badges catch the pointer. moon-dock.js positions
-   each badge by its CENTER (left/top), nested in the 22px transparent card
-   margin flush against the owned (right/bottom) seam — it can't straddle into
-   the neighbor window, which clips to its own bounds. Visual spec is the same
-   22px circle as the ui-web board's .pin-badge, for cross-surface parity.
-   Because the badge sits flush to the OS window edge on the seam side, the
-   sliver of its drop-shadow past that edge is clipped (html/body overflow) —
-   a known, minor seam-side flatten; the shadow that matters faces the card. */
-#dock-links {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 60; /* above #seam (50) and #outline (49) */
-}
-.dock-link {
-  position: absolute;
-  width: 22px;
-  height: 22px;
-  transform: translate(-50%, -50%); /* (left,top) is the badge center */
-  border-radius: 50%;
-  border: 1.3px solid color-mix(in oklab, var(--ink) 30%, transparent);
-  background: var(--paper);
-  color: var(--accent);
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  pointer-events: auto;
-  box-shadow: 0 3px 10px -3px color-mix(in oklab, var(--ink) 30%, transparent);
-  animation: dock-link-in 0.3s ease;
-}
-@keyframes dock-link-in {
-  from { transform: translate(-50%, -50%) scale(0); }
-}
-.dock-link:hover {
-  color: var(--ink);
-  transform: translate(-50%, -50%) scale(1.18);
-}
-.dock-link:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-/* .e-r / .e-b mark which seam edge a badge owns — hooks for inspection and any
-   future per-edge nudge; positioning itself is fully handled by left/top. */
 
 /* ── Scroll-container focus ring suppression ─────────────────────────────
    WebKit makes any overflow:auto/scroll element natively focusable WITHOUT a

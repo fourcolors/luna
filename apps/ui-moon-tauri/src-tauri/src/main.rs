@@ -1526,20 +1526,22 @@ async fn voice_ensure_model(app: tauri::AppHandle) -> Result<(), String> {
     .await
 }
 
-// ── widget dock groups (symmetric group-drag via native child windows) ──────
+// ── widget dock groups (symmetric group membership) ─────────────────────────
 //
-// widget-system.md Phase 0.5 operator feedback, round 3: groups are SYMMETRIC
-// and flat — no user-visible hierarchy. A group is a set of windows natively
-// parented in a star under one root; dragging ANY member re-roots the star at
-// the grabbed window first (`grab_dock`, fired on title-bar pointerdown), so
-// the compositor always carries the whole cluster with the drag. The ONLY way
-// out of a group is the pin (set_dock docked=false) — there is no drag-detach
-// gesture, which is what made round 2 feel "random".
+// Groups are SYMMETRIC and flat — no user-visible hierarchy. A group is just a
+// set of window labels that move together. The JS owns dragging now: a title-
+// bar pointerdown starts a JS drag and every pointermove setPositions the
+// dragged window AND every cluster member 1:1, so the whole cluster glides as a
+// unit without any native parenting. On pointerup the page reports the result —
+// set_dock(docked=true) to record a link, set_dock(docked=false) to detach a
+// module dragged clear. Rust keeps only the membership GRAPH (which labels are
+// grouped) and emits geometry; it no longer touches window positions during a
+// drag.
 //
 // On every membership change each member's page receives a `dock-group` event
-// with { grouped, members, outlineSides } — outlineSides are the member's
-// FREE (non-touching) sides so the pages can render a faint highlight around
-// the GROUP perimeter only, never across interior seams.
+// with { grouped, members, outlineSides, weldCorners } — outlineSides are the
+// member's FREE (non-touching) sides for a perimeter highlight, and weldCorners
+// are the corners to square at an interior weld seam.
 
 #[derive(Default)]
 struct DockState(std::sync::Mutex<DockGroups>);
@@ -1547,7 +1549,7 @@ struct DockState(std::sync::Mutex<DockGroups>);
 #[derive(Default, Debug)]
 struct DockGroups {
     next_id: u64,
-    /// group id → flat member set + the current native root.
+    /// group id → flat member set.
     groups: std::collections::HashMap<u64, DockGroup>,
     /// window label → group id.
     by_label: std::collections::HashMap<String, u64>,
@@ -1555,13 +1557,12 @@ struct DockGroups {
 
 #[derive(Default, Debug, Clone)]
 struct DockGroup {
+    /// A stable representative label for the group (the min member). No longer a
+    /// native parent — just a deterministic identity used when re-forming groups
+    /// after a member leaves.
     root: String,
     members: std::collections::HashSet<String>,
 }
-
-/// A native parenting mutation: (parent, child, attach?). Applied in order on
-/// the main thread. Detaches always precede attaches within one diff.
-type DockDiff = Vec<(String, String, bool)>;
 
 impl DockGroups {
     fn group_of(&self, label: &str) -> Option<&DockGroup> {
@@ -1574,17 +1575,17 @@ impl DockGroups {
             .unwrap_or_default()
     }
 
-    /// Link `child` with `anchor` (settle-snap landed flush). Returns the
-    /// parenting diff. Handles every membership combination; linking two
+    /// Link `child` with `anchor` (settle-snap landed flush). Updates the
+    /// membership graph. Handles every membership combination; linking two
     /// windows already in the same group is a no-op.
-    fn join(&mut self, child: &str, anchor: &str) -> DockDiff {
+    fn join(&mut self, child: &str, anchor: &str) {
         if child == anchor {
-            return Vec::new();
+            return;
         }
         let cg = self.by_label.get(child).copied();
         let ag = self.by_label.get(anchor).copied();
         match (cg, ag) {
-            (Some(c), Some(a)) if c == a => Vec::new(),
+            (Some(c), Some(a)) if c == a => {}
             (None, None) => {
                 let id = self.next_id;
                 self.next_id += 1;
@@ -1597,148 +1598,85 @@ impl DockGroups {
                 );
                 self.by_label.insert(child.to_string(), id);
                 self.by_label.insert(anchor.to_string(), id);
-                vec![(anchor.to_string(), child.to_string(), true)]
             }
             (None, Some(a)) => {
                 let g = self.groups.get_mut(&a).expect("group exists");
                 g.members.insert(child.to_string());
-                let root = g.root.clone();
                 self.by_label.insert(child.to_string(), a);
-                vec![(root, child.to_string(), true)]
             }
             (Some(c), None) => {
                 let g = self.groups.get_mut(&c).expect("group exists");
                 g.members.insert(anchor.to_string());
-                let root = g.root.clone();
                 self.by_label.insert(anchor.to_string(), c);
-                vec![(root, anchor.to_string(), true)]
             }
             (Some(c), Some(a)) => {
-                // Merge: child's whole group re-parents under anchor's root.
+                // Merge: child's whole group folds into anchor's group.
                 let moved = self.groups.remove(&c).expect("group exists");
                 let target = self.groups.get_mut(&a).expect("group exists");
-                let target_root = target.root.clone();
-                let mut diff: DockDiff = Vec::new();
-                for m in &moved.members {
-                    if *m != moved.root {
-                        diff.push((moved.root.clone(), m.clone(), false));
-                    }
-                }
                 for m in &moved.members {
                     target.members.insert(m.clone());
                     self.by_label.insert(m.clone(), a);
-                    diff.push((target_root.clone(), m.clone(), true));
                 }
-                diff
             }
         }
-    }
-
-    /// Re-root `label`'s group at `label` (called on grab, before the native
-    /// drag carries the cluster). No-op when ungrouped or already root.
-    fn reroot(&mut self, label: &str) -> DockDiff {
-        let Some(&id) = self.by_label.get(label) else {
-            return Vec::new();
-        };
-        let g = self.groups.get_mut(&id).expect("group exists");
-        if g.root == label {
-            return Vec::new();
-        }
-        let old_root = std::mem::replace(&mut g.root, label.to_string());
-        let mut diff: DockDiff = Vec::new();
-        for m in &g.members {
-            if *m != old_root {
-                diff.push((old_root.clone(), m.clone(), false));
-            }
-        }
-        for m in &g.members {
-            if *m != label {
-                diff.push((label.to_string(), m.clone(), true));
-            }
-        }
-        diff
     }
 
     /// Remove `label` from its group (pin click, or window destroyed).
-    /// Returns (diff, departed members) — a 2-member group dissolves
-    /// entirely, freeing both. `gone=true` skips native ops involving the
-    /// label itself (its window is already destroyed).
-    fn leave(&mut self, label: &str, gone: bool) -> (DockDiff, Vec<String>) {
+    /// Returns the departed members — a 2-member group dissolves entirely,
+    /// freeing both. `gone` is accepted for call-site symmetry (destroyed vs
+    /// pinned) but the membership update is identical either way.
+    fn leave(&mut self, label: &str, gone: bool) -> Vec<String> {
+        let _ = gone;
         let Some(&id) = self.by_label.get(label) else {
-            return (Vec::new(), Vec::new());
+            return Vec::new();
         };
         let g = self.groups.get_mut(&id).expect("group exists");
         g.members.remove(label);
         self.by_label.remove(label);
         let was_root = g.root == label;
-        let mut diff: DockDiff = Vec::new();
         let mut departed = vec![label.to_string()];
 
-        if !was_root && !gone {
-            diff.push((g.root.clone(), label.to_string(), false));
-        }
         if was_root {
-            // Detach the orphans from the dead/leaving root...
-            for m in g.members.clone() {
-                if !gone {
-                    diff.push((label.to_string(), m.clone(), false));
-                }
-            }
-            // ...and re-form the star under a surviving member.
+            // Re-form the star under a surviving member.
             if let Some(new_root) = g.members.iter().min().cloned() {
-                g.root = new_root.clone();
-                for m in g.members.clone() {
-                    if m != new_root {
-                        diff.push((new_root.clone(), m, true));
-                    }
-                }
+                g.root = new_root;
             }
         }
         // A group of one is no group.
         if g.members.len() <= 1 {
             let last = g.members.iter().next().cloned();
             if let Some(last) = last {
-                if !was_root && !gone {
-                    // label was a plain member; the survivor may still be
-                    // parented if it wasn't the root — it is the root here
-                    // (star of 2), so nothing to detach.
-                }
                 self.by_label.remove(&last);
                 departed.push(last);
             }
             self.groups.remove(&id);
         }
-        (diff, departed)
+        departed
     }
 
     /// Re-partition the group containing `member` by actual geometry: pieces
     /// that no longer touch split into separate groups; singletons dissolve.
-    /// Survivor groups keep working natives via fresh detach/attach diffs.
-    /// Returns (diff, all labels whose state may have changed).
+    /// Returns all labels whose state may have changed.
     fn regroup_by_geometry(
         &mut self,
         member: &str,
         rects: &[(String, (i32, i32, i32, i32))],
-    ) -> (DockDiff, Vec<String>) {
+    ) -> Vec<String> {
         let Some(&id) = self.by_label.get(member) else {
-            return (Vec::new(), Vec::new());
+            return Vec::new();
         };
         let comps = dock_components(rects);
         if comps.len() <= 1 {
-            return (Vec::new(), Vec::new());
+            return Vec::new();
         }
         let old = self.groups.remove(&id).expect("group exists");
-        let mut diff: DockDiff = Vec::new();
         let mut touched: Vec<String> = Vec::new();
-        // Tear the old star down completely…
+        // Tear the old group down completely…
         for m in &old.members {
             self.by_label.remove(m);
             touched.push(m.clone());
-            if *m != old.root {
-                diff.push((old.root.clone(), m.clone(), false));
-            }
         }
-        // …and re-star each connected component (singletons stay free).
+        // …and re-group each connected component (singletons stay free).
         for comp in comps {
             if comp.len() < 2 {
                 continue;
@@ -1750,30 +1688,23 @@ impl DockGroups {
             for m in &comp {
                 members.insert(m.clone());
                 self.by_label.insert(m.clone(), gid);
-                if *m != root {
-                    diff.push((root.clone(), m.clone(), true));
-                }
             }
             self.groups.insert(gid, DockGroup { root, members });
         }
-        (diff, touched)
+        touched
     }
 
     /// Form fresh groups from geometry among CURRENTLY-UNGROUPED labels — the
     /// boot-restore re-link. Each connected component of ≥2 touching rects
-    /// becomes a star over the SAME MEMBERS it had before the restart, rooted at
-    /// the min label (the rooting `regroup_by_geometry` uses). The root is only
-    /// the native parent, so a different root than the original runtime group
-    /// (which roots at whichever member was snapped to) is behaviourally
-    /// identical: same members, same drag-as-a-unit. A component touching any
-    /// already-grouped label is skipped, keeping this idempotent and safe over a
-    /// partially grouped state. Returns the attach diff + every label whose
-    /// membership changed (to notify).
+    /// becomes a group over the SAME MEMBERS it had before the restart, rooted
+    /// at the min label (matching `regroup_by_geometry`). A component touching
+    /// any already-grouped label is skipped, keeping this idempotent and safe
+    /// over a partially grouped state. Returns every label whose membership
+    /// changed (to notify).
     fn form_groups_by_geometry(
         &mut self,
         rects: &[(String, (i32, i32, i32, i32))],
-    ) -> (DockDiff, Vec<String>) {
-        let mut diff: DockDiff = Vec::new();
+    ) -> Vec<String> {
         let mut touched: Vec<String> = Vec::new();
         for comp in dock_components(rects) {
             if comp.len() < 2 {
@@ -1790,13 +1721,10 @@ impl DockGroups {
                 members.insert(m.clone());
                 self.by_label.insert(m.clone(), gid);
                 touched.push(m.clone());
-                if *m != root {
-                    diff.push((root.clone(), m.clone(), true));
-                }
             }
             self.groups.insert(gid, DockGroup { root, members });
         }
-        (diff, touched)
+        touched
     }
 }
 
@@ -1865,7 +1793,7 @@ fn dock_eject_vector(
         )
     };
     // Same threshold as deck-snap.js computeSnap — keep them in lockstep.
-    const MAGNET: i32 = 22;
+    const MAGNET: i32 = 30;
     let candidates = [
         (STEP * sx, 0),
         (0, STEP * sy),
@@ -1999,8 +1927,8 @@ fn dock_outline_sides(
 /// partial-width weld keeps its still-exposed corners round. Each corner squares
 /// if a neighbour is welded on EITHER edge meeting there and spans far enough to
 /// cover the probe point. Pure geometry; the dock client maps the result to
-/// per-corner border-radius (0 = squared). Same EPS as dock_outline_sides /
-/// dock_seams so the corner squares for exactly the seams Rust counts as flush.
+/// per-corner border-radius (0 = squared). Same EPS as dock_outline_sides so
+/// the corner squares for exactly the seams Rust counts as flush.
 ///
 /// Inset-invariant: every painted card is inset a uniform `--card-inset` (22px)
 /// inside its OS frame, so frame-space adjacency == card-space adjacency and the
@@ -2060,142 +1988,11 @@ fn dock_weld_corners(
     out
 }
 
-/// One interior dock seam, from the OWNING window's point of view: the badge
-/// sits on this window's `edge` ("r"|"b"), centered at (`x`, `y`) in the
-/// window's LOCAL logical px. Serialized into the `dock-group` payload; the
-/// page just renders it (no client-side geometry fan-out).
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-struct DockSeam {
-    partner: String,
-    edge: &'static str,
-    x: i32,
-    y: i32,
-}
-
-/// Per member, the dock seams it OWNS — the interior edges on its RIGHT/BOTTOM
-/// where a flush, overlapping neighbor sits. Checking ONLY right/bottom means
-/// every seam is reported by exactly one member (the left/top window), so the
-/// page draws one chain-link badge per seam with no cross-window dedup. (x, y)
-/// is the badge CENTER in the owner's LOCAL logical px, clamped 11px (badge
-/// radius) inside so the 22px badge stays on-window. Same EPS / MIN_OVERLAP as
-/// dock_rects_touch / dock_outline_sides → the badge appears for exactly the
-/// seams Rust counts as touching. The single source of truth for badge
-/// placement (the page-side computeSeams port is retired).
-fn dock_seams(
-    rects: &[(String, (i32, i32, i32, i32))], // (label, (x, y, w, h))
-) -> std::collections::HashMap<String, Vec<DockSeam>> {
-    const EPS: i32 = 2;
-    const MIN_OVERLAP: i32 = 8;
-    const BADGE_R: i32 = 11;
-    // Safe clamp: i32::clamp panics when min > max (degenerate/minimized rects),
-    // so floor the upper bound at BADGE_R.
-    let clamp = |v: i32, hi: i32| v.clamp(BADGE_R, hi.max(BADGE_R));
-    let mut out = std::collections::HashMap::new();
-    for (label, (x, y, w, h)) in rects {
-        let (l, t, r, b) = (*x, *y, x + w, y + h);
-        let mut seams: Vec<DockSeam> = Vec::new();
-        for (other, (ox, oy, ow, oh)) in rects {
-            // Never self, and never the hub: the moon is alignment-only and is
-            // never truly linked, so it gets no seam badge. Defense-in-depth —
-            // the hub is never a group member (is_dock_label gates every join),
-            // but keep the guard the page-side render used to carry.
-            if other == label || other == "main" {
-                continue;
-            }
-            let (ol, ot, or_, ob) = (*ox, *oy, ox + ow, oy + oh);
-            // RIGHT seam: we are the LEFT window (our right edge flush to other's left).
-            let v_overlap = b.min(ob) - t.max(ot);
-            if (r - ol).abs() <= EPS && v_overlap >= MIN_OVERLAP {
-                let mid_y = (t.max(ot) + b.min(ob)) / 2 - t;
-                seams.push(DockSeam {
-                    partner: other.clone(),
-                    edge: "r",
-                    x: w - BADGE_R,
-                    y: clamp(mid_y, h - BADGE_R),
-                });
-                continue; // a non-overlapping partner can be flush on only one side
-            }
-            // BOTTOM seam: we are the TOP window (our bottom edge flush to other's top).
-            let h_overlap = r.min(or_) - l.max(ol);
-            if (b - ot).abs() <= EPS && h_overlap >= MIN_OVERLAP {
-                let mid_x = (l.max(ol) + r.min(or_)) / 2 - l;
-                seams.push(DockSeam {
-                    partner: other.clone(),
-                    edge: "b",
-                    x: clamp(mid_x, w - BADGE_R),
-                    y: h - BADGE_R,
-                });
-            }
-        }
-        out.insert(label.clone(), seams);
-    }
-    out
-}
-
-/// Native half: parent/unparent via AppKit. MUST run on the main thread.
-/// NSWindowAbove = 1 — the child orders above its parent, which matches the
-/// accepted always-on-top stacking (PRD §23).
-#[cfg(target_os = "macos")]
-fn ns_set_child(parent: &tauri::WebviewWindow, child: &tauri::WebviewWindow, attach: bool) {
-    use objc2::msg_send;
-    use objc2::runtime::AnyObject;
-    let (Ok(p), Ok(c)) = (parent.ns_window(), child.ns_window()) else {
-        return;
-    };
-    let p = p as *mut AnyObject;
-    let c = c as *mut AnyObject;
-    if p.is_null() || c.is_null() {
-        return;
-    }
-    unsafe {
-        if attach {
-            let _: () = msg_send![&*p, addChildWindow: &*c, ordered: 1isize];
-        } else {
-            let _: () = msg_send![&*p, removeChildWindow: &*c];
-        }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn ns_set_child(_parent: &tauri::WebviewWindow, _child: &tauri::WebviewWindow, _attach: bool) {}
-
-/// Is the PRIMARY mouse button currently held? The dock settle uses this to
-/// make snap-on-release literal: macOS streams `Moved` events DURING a drag
-/// (the old drag-end-only claim was wrong for these windows), so a hover-
-/// pause over a neighbor used to satisfy the settle debounce and link a
-/// group mid-drag — under the user's hand. The webview cannot track this
-/// itself: the native drag loop swallows pointermove/pointerup, so JS asks
-/// AppKit. Global state, no window access needed; safe from any thread.
-#[tauri::command]
-fn pointer_button_down() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        use objc2::{class, msg_send};
-        // +[NSEvent pressedMouseButtons]: bit 0 = primary button.
-        let pressed: usize = unsafe { msg_send![class!(NSEvent), pressedMouseButtons] };
-        pressed & 1 != 0
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        false // fail-open: behaves like the pre-gate settle
-    }
-}
-
-/// Apply a parenting diff + push fresh `dock-group` state to every window
-/// whose membership might have changed. Main thread only.
-fn dock_apply_and_notify(
-    app: &tauri::AppHandle,
-    diff: DockDiff,
-    notify: Vec<String>,
-) {
-    for (parent, child, attach) in diff {
-        if let (Some(p), Some(c)) = (
-            app.get_webview_window(&parent),
-            app.get_webview_window(&child),
-        ) {
-            ns_set_child(&p, &c, attach);
-        }
-    }
+/// Push fresh `dock-group` state to every window whose membership might have
+/// changed. The JS drives all window positioning (live pointermove →
+/// setPosition), so this is now purely the membership + weld-geometry emit;
+/// there is no native parenting to apply. Main thread only (reads geometry).
+fn dock_apply_and_notify(app: &tauri::AppHandle, notify: Vec<String>) {
     let state = app.state::<DockState>();
     let s = state.0.lock().unwrap_or_else(|e| e.into_inner());
     for label in notify {
@@ -2211,16 +2008,12 @@ fn dock_apply_and_notify(
                 })
                 .collect();
             let outline = dock_outline_sides(&rects);
-            let seams = dock_seams(&rects);
             let weld = dock_weld_corners(&rects);
             serde_json::json!({
                 "for": label,
                 "grouped": true,
                 "members": members,
                 "outlineSides": outline.get(&label).cloned().unwrap_or_default(),
-                // The owned seam badges, placed by Rust (single source of truth);
-                // the page renders them directly, no geometry fan-out.
-                "seams": seams.get(&label).cloned().unwrap_or_default(),
                 // Corners to square at an interior weld seam (subset of tl/tr/br/bl).
                 "weldCorners": weld.get(&label).cloned().unwrap_or_default(),
             })
@@ -2305,13 +2098,13 @@ fn dock_new_panel(
         let _ = w.set_position(tauri::LogicalPosition::new(f64::from(px), f64::from(py)));
     }
     // Join exactly as a settle-snap would, then notify the cluster.
-    let (diff, notify) = {
+    let notify = {
         let state = app.state::<DockState>();
         let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
-        let diff = s.join(new_label, anchor_label);
-        (diff, s.members_of(new_label))
+        s.join(new_label, anchor_label);
+        s.members_of(new_label)
     };
-    dock_apply_and_notify(app, diff, notify);
+    dock_apply_and_notify(app, notify);
     let _ = app.emit_to(
         tauri::EventTarget::labeled(anchor_label),
         "dock-link",
@@ -2319,10 +2112,9 @@ fn dock_new_panel(
     );
 }
 
-/// After a member departs, re-partition its old group by geometry and apply
-/// the native changes. Survivors that no longer touch split into separate
-/// groups; singletons dissolve. Returns every label whose state changed.
-/// MUST run on the main thread.
+/// After a member departs, re-partition its old group by geometry. Survivors
+/// that no longer touch split into separate groups; singletons dissolve.
+/// Returns every label whose state changed. MUST run on the main thread.
 fn dock_regroup_after_leave(app: &tauri::AppHandle, survivors: &[String]) -> Vec<String> {
     if survivors.len() < 2 {
         return Vec::new();
@@ -2334,31 +2126,20 @@ fn dock_regroup_after_leave(app: &tauri::AppHandle, survivors: &[String]) -> Vec
             Some((m.clone(), dock_logical_rect(&w)?))
         })
         .collect();
-    let (diff, touched) = {
-        let state = app.state::<DockState>();
-        let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(seed) = survivors.first() else {
-            return Vec::new();
-        };
-        s.regroup_by_geometry(seed, &rects)
+    let state = app.state::<DockState>();
+    let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(seed) = survivors.first() else {
+        return Vec::new();
     };
-    for (parent, child, attach) in diff {
-        if let (Some(p), Some(c)) = (
-            app.get_webview_window(&parent),
-            app.get_webview_window(&child),
-        ) {
-            ns_set_child(&p, &c, attach);
-        }
-    }
-    touched
+    s.regroup_by_geometry(seed, &rects)
 }
 
-/// widget.html calls this after a settle-snap lands flush on `anchor`
-/// (docked=true) or from the pin (docked=false → leave the group; the window
-/// is ejected past the magnet range of every former neighbor). For a GROUPED
-/// caller reporting a merge, (dx, dy) is the snap delta in logical px and the
-/// caller's whole group is translated so the seam lands flush — individual
-/// members never move themselves (that would tear the cluster).
+/// The page calls this on pointerup after a live JS drag: docked=true records
+/// the link to `anchor` (the JS already positioned every window flush, so this
+/// is pure membership bookkeeping), and docked=false leaves the group — the
+/// loose leaver is ejected past the magnet range of every former neighbor.
+/// `dx`/`dy` are accepted for invoke-contract compatibility but unused: the JS
+/// owns positioning now, so there is no group-translate left to apply.
 #[tauri::command]
 fn set_dock(
     window: tauri::WebviewWindow,
@@ -2366,8 +2147,8 @@ fn set_dock(
     docked: bool,
     anchor: Option<String>,
     edge: Option<String>,
-    dx: Option<i32>,
-    dy: Option<i32>,
+    _dx: Option<i32>,
+    _dy: Option<i32>,
 ) -> Result<(), String> {
     let label = window.label().to_string();
     if label == "main" {
@@ -2391,7 +2172,7 @@ fn set_dock(
         if app.get_webview_window(&anchor).is_none() {
             return Err(format!("unknown anchor window: {anchor}"));
         }
-        let (diff, notify, group_translate) = {
+        let notify = {
             let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
             // Same-group re-affirm: nothing to do.
             if s.group_of(&label).is_some()
@@ -2399,35 +2180,16 @@ fn set_dock(
             {
                 return Ok(());
             }
-            // A grouped caller merging into an outsider: translate its whole
-            // CURRENT group by the snap delta first (collected before join
-            // rewires membership).
-            let translate: Vec<String> = if s.group_of(&label).is_some() {
-                s.members_of(&label)
-            } else {
-                Vec::new()
-            };
-            let diff = s.join(&label, &anchor);
-            (diff, s.members_of(&label), translate)
+            // The JS already positioned every window flush before reporting the
+            // link, so this is membership-only — record the join and notify.
+            s.join(&label, &anchor);
+            s.members_of(&label)
         };
-        let (tdx, tdy) = (dx.unwrap_or(0), dy.unwrap_or(0));
         let flash_anchor = anchor.clone();
         let edge = edge.unwrap_or_default();
         window
             .run_on_main_thread(move || {
-                if (tdx != 0 || tdy != 0) && !group_translate.is_empty() {
-                    for m in &group_translate {
-                        if let Some(w) = app.get_webview_window(m) {
-                            if let Some((x, y, _, _)) = dock_logical_rect(&w) {
-                                let _ = w.set_position(tauri::LogicalPosition::new(
-                                    f64::from(x + tdx),
-                                    f64::from(y + tdy),
-                                ));
-                            }
-                        }
-                    }
-                }
-                dock_apply_and_notify(&app, diff, notify);
+                dock_apply_and_notify(&app, notify);
                 // Tell the anchor's page to flash its side of the seam.
                 let _ = app.emit_to(
                     tauri::EventTarget::labeled(&flash_anchor),
@@ -2437,15 +2199,15 @@ fn set_dock(
             })
             .map_err(|e| e.to_string())
     } else {
-        let (diff, departed, remaining) = {
+        let (departed, remaining) = {
             let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
             let remaining_before = s.members_of(&label);
-            let (diff, departed) = s.leave(&label, false);
+            let departed = s.leave(&label, false);
             let remaining: Vec<String> = remaining_before
                 .into_iter()
                 .filter(|m| m != &label)
                 .collect();
-            (diff, departed, remaining)
+            (departed, remaining)
         };
         if departed.is_empty() {
             // Not in any group (double-click, stale pin) — nothing to do,
@@ -2454,17 +2216,14 @@ fn set_dock(
         }
         window
             .run_on_main_thread(move || {
-                // ORDER MATTERS: detach natives FIRST (an ejected window that
-                // still parents survivors would tow them), then eject the
-                // now-loose leaver to a spot that clears EVERY dock window's
-                // magnet — bystanders included, they have no cooldown — then
-                // regroup survivors by geometry and notify everyone with the
-                // final state. The hub is deliberately NOT an obstacle:
-                // panels float over the moon in normal layouts, so counting
-                // it can make every ladder spot "occupied" (live-observed);
-                // the worst a hub-adjacent landing causes is an alignment
-                // glide, never a link.
-                dock_apply_and_notify(&app, diff, Vec::new());
+                // Eject the now-loose leaver to a spot that clears EVERY dock
+                // window's magnet — bystanders included, they have no cooldown
+                // — then regroup survivors by geometry and notify everyone with
+                // the final state. The hub is deliberately NOT an obstacle:
+                // panels float over the moon in normal layouts, so counting it
+                // can make every ladder spot "occupied" (live-observed); the
+                // worst a hub-adjacent landing causes is an alignment glide,
+                // never a link.
                 if let Some(w) = app.get_webview_window(&label) {
                     if let Some(leaver) = dock_logical_rect(&w) {
                         let others: Vec<(i32, i32, i32, i32)> = app
@@ -2506,34 +2265,10 @@ fn set_dock(
                         notify.push(m);
                     }
                 }
-                dock_apply_and_notify(&app, Vec::new(), notify);
+                dock_apply_and_notify(&app, notify);
             })
             .map_err(|e| e.to_string())
     }
-}
-
-/// Fired on title-bar pointerdown, BEFORE the native drag session: re-root
-/// the grabbed window's group at the grabbed window, so the compositor
-/// carries the whole cluster no matter which member the user drags.
-#[tauri::command]
-fn grab_dock(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, DockState>,
-) -> Result<(), String> {
-    let label = window.label().to_string();
-    let app = window.app_handle().clone();
-    let diff = {
-        let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
-        s.reroot(&label)
-    };
-    if diff.is_empty() {
-        return Ok(());
-    }
-    window
-        .run_on_main_thread(move || {
-            dock_apply_and_notify(&app, diff, Vec::new());
-        })
-        .map_err(|e| e.to_string())
 }
 
 /// Replay-on-subscribe for dock membership. A panel/widget webview calls this
@@ -2554,16 +2289,16 @@ fn dock_group_state(
         s.members_of(&label)
     };
     // The sync reply is geometry-free (membership only) — enough for pin state.
-    // Seams + perimeter outline need window rects, so for a grouped window we
-    // schedule a full `dock-group` re-emit on the main thread; the page then
-    // paints its badges on boot instead of staying badge-less until the first
-    // move. Best-effort: a failed schedule just leaves the next real event to
-    // refresh us.
+    // The perimeter outline + weld corners need window rects, so for a grouped
+    // window we schedule a full `dock-group` re-emit on the main thread; the
+    // page then paints its weld geometry on boot instead of staying bare until
+    // the first move. Best-effort: a failed schedule just leaves the next real
+    // event to refresh us.
     if !members.is_empty() {
         let app = window.app_handle().clone();
         let l = label.clone();
         let _ = window.run_on_main_thread(move || {
-            dock_apply_and_notify(&app, Vec::new(), vec![l]);
+            dock_apply_and_notify(&app, vec![l]);
         });
     }
     serde_json::json!({
@@ -2596,14 +2331,14 @@ fn main() {
             {
                 write_panel_layout(&window.app_handle());
             }
-            // A docked window's RESIZE changes the shared overlap span (so the
-            // seam-badge midpoints move, and a seam can fall below MIN_OVERLAP),
-            // but a Move carries the rigid cluster so relative geometry is
-            // unchanged. Re-notify the whole group on Resized so every member
-            // repaints its seams with fresh geometry — the ONLY path that
-            // catches a NON-owner partner's resize (the owner's own onResized
-            // never fires for it). Main-thread handler, so the geometry read +
-            // emit inside dock_apply_and_notify are safe.
+            // A docked window's RESIZE changes the shared overlap span (so a
+            // weld can fall below MIN_OVERLAP and a corner un-squares), but a
+            // Move carries the rigid cluster so relative geometry is unchanged.
+            // Re-notify the whole group on Resized so every member repaints its
+            // weld geometry — the ONLY path that catches a NON-owner partner's
+            // resize (the owner's own onResized never fires for it). Main-thread
+            // handler, so the geometry read + emit inside dock_apply_and_notify
+            // are safe.
             if matches!(event, tauri::WindowEvent::Resized(_))
                 && is_dock_label(window.label())
                 && window.app_handle().get_webview_window("main").is_some()
@@ -2615,29 +2350,26 @@ fn main() {
                     s.members_of(window.label())
                 };
                 if !members.is_empty() {
-                    dock_apply_and_notify(app, Vec::new(), members);
+                    dock_apply_and_notify(app, members);
                 }
             }
-            // Detach dock edges the moment a close is REQUESTED — before the
-            // window dies. Closing a native parent takes its attached
-            // children down with it (AppKit cascade), so a grouped root's ✕
-            // used to close the whole cluster instead of just itself.
-            // close() always emits CloseRequested first; the Destroyed arm
-            // below stays as the safety net for destroy() paths.
+            // Drop the closing window from its group the moment a close is
+            // REQUESTED — before the window dies — so survivors keep coherent
+            // membership. close() always emits CloseRequested first; the
+            // Destroyed arm below stays as the safety net for destroy() paths.
             if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
                 let app = window.app_handle();
-                let (diff, survivors) = {
+                let survivors = {
                     let state = app.state::<DockState>();
                     let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
                     let before = s.members_of(window.label());
-                    let (diff, _departed) = s.leave(window.label(), false);
+                    let _ = s.leave(window.label(), false);
                     let survivors: Vec<String> = before
                         .into_iter()
                         .filter(|m| m != window.label())
                         .collect();
-                    (diff, survivors)
+                    survivors
                 };
-                dock_apply_and_notify(&app, diff, Vec::new());
                 let touched = dock_regroup_after_leave(&app, &survivors);
                 let mut notify = survivors;
                 for t in touched {
@@ -2645,31 +2377,23 @@ fn main() {
                         notify.push(t);
                     }
                 }
-                dock_apply_and_notify(&app, Vec::new(), notify);
+                dock_apply_and_notify(&app, notify);
             }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 let app = window.app_handle();
-                // Dock hygiene: the dead window leaves its group. Survivors
-                // are re-shown (AppKit cascades orderOut to children of a
-                // dying parent) and get fresh dock-group state. This handler
-                // runs on the main thread, so native ops are direct.
-                let (diff, survivors) = {
+                // Dock hygiene: the dead window leaves its group; survivors get
+                // fresh dock-group state. This handler runs on the main thread.
+                let survivors = {
                     let state = app.state::<DockState>();
                     let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
                     let before = s.members_of(window.label());
-                    let (diff, _departed) = s.leave(window.label(), true);
+                    let _ = s.leave(window.label(), true);
                     let survivors: Vec<String> = before
                         .into_iter()
                         .filter(|m| m != window.label())
                         .collect();
-                    (diff, survivors)
+                    survivors
                 };
-                for m in &survivors {
-                    if let Some(w) = app.get_webview_window(m) {
-                        let _ = w.show();
-                    }
-                }
-                dock_apply_and_notify(&app, diff, Vec::new());
                 let touched = dock_regroup_after_leave(&app, &survivors);
                 let mut notify = survivors;
                 for t in touched {
@@ -2677,7 +2401,7 @@ fn main() {
                         notify.push(t);
                     }
                 }
-                dock_apply_and_notify(&app, Vec::new(), notify);
+                dock_apply_and_notify(&app, notify);
                 if window.label() == "main" {
                     for (label, win) in app.webview_windows() {
                         if label != "main" {
@@ -2705,7 +2429,8 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         // PRD A §09: open the system browser for the connector OAuth hop.
         .plugin(tauri_plugin_opener::init())
-        // Widget dock graph for group-drag (set_dock + native child windows).
+        // Widget dock membership graph for group-drag (set_dock + JS-driven
+        // positioning).
         .manage(DockState::default())
         // PRD A §09: the client-brokered OAuth loopback state.
         .manage(OauthLoopback::default());
@@ -2736,9 +2461,7 @@ fn main() {
         close_widget,
         list_widget_windows,
         set_dock,
-        grab_dock,
         dock_group_state,
-        pointer_button_down,
         voice_status,
         voice_set_mode,
         voice_ptt_down,
@@ -2773,9 +2496,7 @@ fn main() {
         close_widget,
         list_widget_windows,
         set_dock,
-        grab_dock,
-        dock_group_state,
-        pointer_button_down
+        dock_group_state
     ]);
 
     builder
@@ -2844,7 +2565,7 @@ fn main() {
                                 }
                             }
                             // Re-link docked clusters by geometry: panels saved
-                            // flush rejoin a star over the same members, so a
+                            // flush rejoin a group over the same members, so a
                             // restored layout drags as a unit — not just visually
                             // adjacent. The GROUPING decision uses the SAVED rects
                             // (no live geometry read needed at setup, which the OS
@@ -2853,13 +2574,13 @@ fn main() {
                             // panel re-pulls its membership via dock_group_state
                             // once it wires its dock listeners (replay-on-
                             // subscribe), so a missed boot-time event is recovered.
-                            let (diff, notify) = {
+                            let notify = {
                                 let state = handle.state::<DockState>();
                                 let mut s =
                                     state.0.lock().unwrap_or_else(|e| e.into_inner());
                                 s.form_groups_by_geometry(&restored)
                             };
-                            dock_apply_and_notify(&handle, diff, notify);
+                            dock_apply_and_notify(&handle, notify);
                         }
                     }
                 }
@@ -3502,105 +3223,95 @@ mod tests {
 
 #[cfg(test)]
 mod dock_tests {
-    use super::{dock_outline_sides, dock_seams, dock_weld_corners, DockGroups, DockSeam};
+    use super::{dock_outline_sides, dock_weld_corners, DockGroups};
 
-    fn attaches(diff: &[(String, String, bool)]) -> Vec<(String, String)> {
-        diff.iter()
-            .filter(|(_, _, a)| *a)
-            .map(|(p, c, _)| (p.clone(), c.clone()))
-            .collect()
+    fn sorted_members(g: &DockGroups, label: &str) -> Vec<String> {
+        let mut m = g.members_of(label);
+        m.sort();
+        m
     }
 
     #[test]
-    fn joining_two_loose_windows_forms_a_star_rooted_at_the_anchor() {
+    fn joining_two_loose_windows_forms_a_group() {
         let mut g = DockGroups::default();
-        let diff = g.join("widget-a", "main");
-        assert_eq!(attaches(&diff), vec![("main".into(), "widget-a".into())]);
-        let mut members = g.members_of("widget-a");
-        members.sort();
-        assert_eq!(members, vec!["main".to_string(), "widget-a".to_string()]);
-        // Same-group re-join is a no-op.
-        assert!(g.join("widget-a", "main").is_empty());
+        g.join("widget-a", "main");
+        assert_eq!(
+            sorted_members(&g, "widget-a"),
+            vec!["main".to_string(), "widget-a".to_string()]
+        );
+        // Same-group re-join is a no-op (membership unchanged).
+        g.join("widget-a", "main");
+        assert_eq!(g.members_of("widget-a").len(), 2);
     }
 
     #[test]
-    fn newcomers_attach_to_the_group_root_not_the_touched_member() {
+    fn newcomers_join_the_touched_members_group() {
         let mut g = DockGroups::default();
-        let _ = g.join("widget-a", "main");
-        // b touches widget-a, but the star parents it to the root (main).
-        let diff = g.join("widget-b", "widget-a");
-        assert_eq!(attaches(&diff), vec![("main".into(), "widget-b".into())]);
+        g.join("widget-a", "main");
+        // b touches widget-a, so it joins widget-a's existing group.
+        g.join("widget-b", "widget-a");
         assert_eq!(g.members_of("widget-b").len(), 3);
+        assert_eq!(
+            sorted_members(&g, "widget-b"),
+            vec!["main".to_string(), "widget-a".to_string(), "widget-b".to_string()]
+        );
     }
 
     #[test]
-    fn merging_two_groups_reparents_the_absorbed_star() {
+    fn merging_two_groups_folds_the_absorbed_members_in() {
         let mut g = DockGroups::default();
-        let _ = g.join("widget-a", "main");
-        let _ = g.join("widget-c", "widget-b"); // second group, root widget-b
-        let diff = g.join("widget-b", "widget-a"); // merge into main's group
-        // widget-c detaches from widget-b, then both attach under main.
-        assert!(diff.contains(&("widget-b".into(), "widget-c".into(), false)));
-        assert!(diff.contains(&("main".into(), "widget-b".into(), true)));
-        assert!(diff.contains(&("main".into(), "widget-c".into(), true)));
+        g.join("widget-a", "main");
+        g.join("widget-c", "widget-b"); // second group
+        g.join("widget-b", "widget-a"); // merge into main's group
         assert_eq!(g.members_of("main").len(), 4);
-    }
-
-    #[test]
-    fn reroot_moves_every_member_under_the_grabbed_window() {
-        let mut g = DockGroups::default();
-        let _ = g.join("widget-a", "main");
-        let _ = g.join("widget-b", "widget-a");
-        let diff = g.reroot("widget-b");
-        // Old root detaches its children, new root adopts everyone else.
-        assert!(diff.contains(&("main".into(), "widget-a".into(), false)));
-        assert!(diff.contains(&("widget-b".into(), "main".into(), true)));
-        assert!(diff.contains(&("widget-b".into(), "widget-a".into(), true)));
-        // Grabbing the root again is a no-op.
-        assert!(g.reroot("widget-b").is_empty());
-        // Ungrouped windows are no-ops too.
-        assert!(g.reroot("widget-zzz").is_empty());
+        assert_eq!(
+            sorted_members(&g, "main"),
+            vec![
+                "main".to_string(),
+                "widget-a".to_string(),
+                "widget-b".to_string(),
+                "widget-c".to_string(),
+            ]
+        );
     }
 
     #[test]
     fn leaving_a_three_group_keeps_the_other_two_linked() {
         let mut g = DockGroups::default();
-        let _ = g.join("widget-a", "main");
-        let _ = g.join("widget-b", "widget-a");
-        let (diff, departed) = g.leave("widget-a", false);
+        g.join("widget-a", "main");
+        g.join("widget-b", "widget-a");
+        let departed = g.leave("widget-a", false);
         assert_eq!(departed, vec!["widget-a".to_string()]);
-        assert!(diff.contains(&("main".into(), "widget-a".into(), false)));
-        let mut rest = g.members_of("main");
-        rest.sort();
-        assert_eq!(rest, vec!["main".to_string(), "widget-b".to_string()]);
+        assert_eq!(
+            sorted_members(&g, "main"),
+            vec!["main".to_string(), "widget-b".to_string()]
+        );
     }
 
     #[test]
     fn a_two_group_dissolves_when_either_member_leaves() {
         let mut g = DockGroups::default();
-        let _ = g.join("widget-a", "main");
-        let (_, departed) = g.leave("widget-a", false);
-        let mut d = departed;
-        d.sort();
-        assert_eq!(d, vec!["main".to_string(), "widget-a".to_string()]);
+        g.join("widget-a", "main");
+        let mut departed = g.leave("widget-a", false);
+        departed.sort();
+        assert_eq!(departed, vec!["main".to_string(), "widget-a".to_string()]);
         assert!(g.members_of("main").is_empty());
         assert!(g.groups.is_empty());
     }
 
     #[test]
-    fn root_departure_reforms_the_star_under_a_survivor() {
+    fn root_departure_keeps_the_survivors_grouped() {
         let mut g = DockGroups::default();
-        let _ = g.join("widget-a", "main");
-        let _ = g.join("widget-b", "widget-a");
-        // The root (main) is destroyed — gone=true skips ops on the corpse.
-        let (diff, _) = g.leave("main", true);
-        for (p, c, _) in &diff {
-            assert!(p != "main" && c != "main", "no native ops on a dead window");
-        }
+        g.join("widget-a", "main");
+        g.join("widget-b", "widget-a");
+        // The root (main) is destroyed — gone=true (membership is identical).
+        let _ = g.leave("main", true);
         let survivors = g.members_of("widget-a");
         assert_eq!(survivors.len(), 2);
-        // One survivor adopted the other.
-        assert_eq!(attaches(&diff).len(), 1);
+        assert_eq!(
+            sorted_members(&g, "widget-a"),
+            vec!["widget-a".to_string(), "widget-b".to_string()]
+        );
     }
 
     #[test]
@@ -3699,88 +3410,6 @@ mod dock_tests {
         let out = dock_weld_corners(&rects);
         assert_eq!(out["widget-a"], Vec::<&str>::new());
     }
-
-    // dock_seams is the Rust source of truth for badge placement; these mirror
-    // the deck-snap.test.ts computeSeams cases so the two stay in lockstep.
-    fn seam(partner: &str, edge: &'static str, x: i32, y: i32) -> DockSeam {
-        DockSeam { partner: partner.to_string(), edge, x, y }
-    }
-
-    #[test]
-    fn seam_owned_by_the_left_window_on_its_right_edge() {
-        // a (left, 200x300) | b (250x220, flush right, vertically overlapping)
-        let rects = vec![
-            ("a".to_string(), (0, 0, 200, 300)),
-            ("b".to_string(), (200, 40, 250, 220)),
-        ];
-        let out = dock_seams(&rects);
-        // Overlap run [40,260] → mid 150 (a-local). Badge centered on a's right
-        // edge, inset 11px (badge radius) so it stays on-window.
-        assert_eq!(out["a"], vec![seam("b", "r", 189, 150)]);
-        // b's matching edge is its LEFT, which dock_seams never inspects → silent.
-        assert_eq!(out["b"], Vec::<DockSeam>::new());
-    }
-
-    #[test]
-    fn seam_owned_by_the_top_window_on_its_bottom_edge() {
-        let rects = vec![
-            ("a".to_string(), (0, 0, 200, 300)),
-            ("below".to_string(), (30, 300, 140, 180)),
-        ];
-        let out = dock_seams(&rects);
-        // Overlap run [30,170] → mid 100 (a-local x); y pinned to h - 11.
-        assert_eq!(out["a"], vec![seam("below", "b", 100, 289)]);
-    }
-
-    #[test]
-    fn seam_ignores_near_misses_and_thin_overlap() {
-        let rects = vec![
-            ("a".to_string(), (0, 0, 200, 300)),
-            ("gap".to_string(), (205, 40, 250, 220)),   // 5px gap (> EPS 2)
-            ("thin".to_string(), (200, 295, 250, 220)), // flush but 5px overlap (< 8)
-        ];
-        let out = dock_seams(&rects);
-        assert_eq!(out["a"], Vec::<DockSeam>::new());
-    }
-
-    #[test]
-    fn seam_clamps_toward_the_overlapping_end() {
-        // A tall partner overlaps only a's very top → midpoint ~10px up-edge;
-        // the clamp floor keeps the badge fully inside (y ≥ 11).
-        let rects = vec![
-            ("a".to_string(), (0, 0, 200, 300)),
-            ("tall".to_string(), (200, -260, 200, 280)),
-        ];
-        let out = dock_seams(&rects);
-        assert_eq!(out["a"][0].edge, "r");
-        assert_eq!(out["a"][0].y, 11);
-    }
-
-    #[test]
-    fn seam_one_per_partner_in_a_multi_window_group() {
-        let rects = vec![
-            ("a".to_string(), (0, 0, 200, 300)),
-            ("right".to_string(), (200, 0, 250, 300)),
-            ("below".to_string(), (0, 300, 200, 180)),
-            ("afar".to_string(), (600, 600, 100, 100)),
-        ];
-        let out = dock_seams(&rects);
-        let mut partners: Vec<&str> = out["a"].iter().map(|s| s.partner.as_str()).collect();
-        partners.sort_unstable();
-        assert_eq!(partners, vec!["below", "right"]);
-    }
-
-    #[test]
-    fn seam_never_against_the_hub() {
-        // Defense-in-depth: even if the alignment-only hub were ever flush in a
-        // group's rect list, it draws no seam badge.
-        let rects = vec![
-            ("widget-a".to_string(), (0, 0, 200, 300)),
-            ("main".to_string(), (200, 0, 200, 300)), // hub flush on the right
-        ];
-        let out = dock_seams(&rects);
-        assert_eq!(out["widget-a"], Vec::<DockSeam>::new());
-    }
 }
 
 #[cfg(test)]
@@ -3807,9 +3436,8 @@ mod dock_geometry_tests {
             ("a".to_string(), (0, 0, 280, 220)),
             ("c".to_string(), (560, 0, 280, 220)),
         ];
-        let (diff, touched) = g.regroup_by_geometry("a", &rects);
-        // Both singletons dissolve: no attaches, both freed.
-        assert!(diff.iter().all(|(_, _, attach)| !attach));
+        let touched = g.regroup_by_geometry("a", &rects);
+        // Both singletons dissolve: both freed, both reported as touched.
         let mut t = touched;
         t.sort();
         assert_eq!(t, vec!["a".to_string(), "c".to_string()]);
@@ -3830,7 +3458,7 @@ mod dock_geometry_tests {
             ("b".to_string(), (280, 0, 280, 220)),
             ("d".to_string(), (840, 0, 280, 220)),
         ];
-        let (_, touched) = g.regroup_by_geometry("a", &rects);
+        let touched = g.regroup_by_geometry("a", &rects);
         assert_eq!(touched.len(), 3);
         let mut ab = g.members_of("a");
         ab.sort();
@@ -3846,8 +3474,7 @@ mod dock_geometry_tests {
             ("a".to_string(), (0, 0, 280, 220)),
             ("b".to_string(), (280, 0, 280, 220)),
         ];
-        let (diff, touched) = g.regroup_by_geometry("a", &rects);
-        assert!(diff.is_empty());
+        let touched = g.regroup_by_geometry("a", &rects);
         assert!(touched.is_empty());
         assert_eq!(g.members_of("a").len(), 2);
     }
@@ -3875,9 +3502,8 @@ mod dock_geometry_tests {
             ("panel-flow".to_string(), (380, 100, 280, 220)), // flush right of now
             ("panel-settings".to_string(), (900, 100, 280, 220)), // alone
         ];
-        let (diff, touched) = g.form_groups_by_geometry(&rects);
-        // now|flow rejoin one star rooted at the MIN label ("panel-flow"); the
-        // lone panel stays free (no group of one).
+        let touched = g.form_groups_by_geometry(&rects);
+        // now|flow rejoin one group; the lone panel stays free (no group of one).
         let mut members = g.members_of("panel-now");
         members.sort();
         assert_eq!(
@@ -3885,17 +3511,14 @@ mod dock_geometry_tests {
             vec!["panel-flow".to_string(), "panel-now".to_string()]
         );
         assert!(g.members_of("panel-settings").is_empty());
-        // Exactly one attach (the non-root member parents under the root); both
-        // grouped labels are reported as touched.
-        assert_eq!(diff.iter().filter(|(_, _, attach)| *attach).count(), 1);
+        // Both grouped labels are reported as touched.
         let mut t = touched;
         t.sort();
         assert_eq!(t, vec!["panel-flow".to_string(), "panel-now".to_string()]);
 
         // Idempotent: a second pass over the SAME layout disturbs nothing — the
-        // labels are already grouped, so boot re-link never double-attaches.
-        let (diff2, touched2) = g.form_groups_by_geometry(&rects);
-        assert!(diff2.is_empty());
+        // labels are already grouped, so boot re-link never re-touches them.
+        let touched2 = g.form_groups_by_geometry(&rects);
         assert!(touched2.is_empty());
     }
 
@@ -3910,11 +3533,10 @@ mod dock_geometry_tests {
             ("panel-y".to_string(), (380, 100, 280, 220)),
             ("panel-z".to_string(), (660, 100, 280, 220)), // flush right of y
         ];
-        let (diff, touched) = g.form_groups_by_geometry(&rects);
+        let touched = g.form_groups_by_geometry(&rects);
         // The whole component touches an already-grouped label → skipped
         // wholesale (the guard): z is NOT yanked in, the existing group is
-        // untouched, no native ops emitted.
-        assert!(diff.is_empty());
+        // untouched.
         assert!(touched.is_empty());
         assert!(g.members_of("panel-z").is_empty());
         let mut xy = g.members_of("panel-x");
