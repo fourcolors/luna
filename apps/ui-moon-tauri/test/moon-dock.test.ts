@@ -15,13 +15,12 @@ function loadVendorInto(target: any, file: string) {
 }
 
 // The dock elements every widget-page carries (vendor/moon-dock.js requires
-// #pin-btn / #seam / #outline and a [data-tauri-drag-region] title bar; the
+// #seam / #outline and a [data-tauri-drag-region] title bar; the
 // skin/weld code reads .widget-shell + .title-bar).
 const DOCK_DOM =
   '<div class="widget-shell">' +
   '  <div class="title-bar" data-tauri-drag-region id="title-bar">' +
   '    <span class="bar-title" id="bar-title">x</span>' +
-  '    <button class="pin-btn" id="pin-btn" hidden></button>' +
   '    <button class="close-btn" id="close-btn"></button>' +
   '  </div>' +
   '  <div id="seam"></div>' +

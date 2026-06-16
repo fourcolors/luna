@@ -6,7 +6,7 @@
  * `dock-group` / `dock-link` events, pin-to-detach, seam flash, perimeter
  * outline.
  *
- * Requires in the page: #pin-btn, #seam, #outline elements and a
+ * Requires in the page: #seam, #outline elements and a
  * [data-tauri-drag-region] title bar. Requires vendor/deck-snap.js
  * (LunaDeckSnap) for the pure snap math.
  *
@@ -29,21 +29,8 @@
       try { document.documentElement.setAttribute('data-anchor', 'true'); } catch (_) { /* best-effort */ }
     }
 
-    var pinBtn = document.getElementById('pin-btn');
     var seamEl = document.getElementById('seam');
     var outlineEl = document.getElementById('outline');
-    // The seam-badge layer is owned by the dock client, not the page shells —
-    // create it once if absent so every widget/panel/chat page gets badges
-    // without hand-copying the div into each (it's position:fixed, so we mount
-    // it beside #outline to share that stacking context, else on <body>).
-    var dockLinksEl = document.getElementById('dock-links');
-    if (!dockLinksEl && document.body) {
-      dockLinksEl = document.createElement('div');
-      dockLinksEl.id = 'dock-links';
-      var anchor = outlineEl || seamEl;
-      if (anchor && anchor.parentNode) anchor.parentNode.appendChild(dockLinksEl);
-      else document.body.appendChild(dockLinksEl);
-    }
     var groupMembers = []; // my group's labels (incl. me); [] = ungrouped
     var exMembers = [];    // just-left group, ignored as snap targets…
     var exUntil = 0;       // …until this time (no instant re-link after unpin)
@@ -90,15 +77,6 @@
       if (!grouped && payload && Array.isArray(payload.exMembers) && payload.exMembers.length) {
         exMembers = payload.exMembers;
         exUntil = Date.now() + 1500;
-      }
-      if (pinBtn) {
-        if (grouped && pinBtn.hidden) {
-          pinBtn.hidden = false;
-          pinBtn.classList.add('pop');
-        } else if (!grouped) {
-          pinBtn.hidden = true;
-          pinBtn.classList.remove('pop');
-        }
       }
       if (outlineEl) {
         var sides = grouped && Array.isArray(payload.outlineSides) ? payload.outlineSides : [];
@@ -151,126 +129,112 @@
       // place and re-emits on resize), so the page does NO geometry fan-out and
       // never goes stale on a partner's resize.
       //
-      // Only (re)paint on real data: an ungroup CLEARS; a seams array SETS. A
-      // grouped payload with NO seams field is the geometry-free replay reply
-      // (dock_group_state, membership only) — leave existing badges UNTOUCHED so
-      // a racing seam-bearing re-emit isn't undone (and an older core that never
-      // sends seams just shows none). Clearing here would let the replay reply
-      // wipe badges the scheduled re-emit had already painted.
-      if (!grouped) paintSeams([]);
-      else if (Array.isArray(payload.seams)) paintSeams(payload.seams);
-    }
-    pinBtn && pinBtn.addEventListener('animationend', function () {
-      pinBtn.classList.remove('pop');
-    });
-
-    // Unpin = leave the group. Rust unparents, ejects us a step past the
-    // magnet range, and pushes fresh dock-group state to everyone.
-    pinBtn && pinBtn.addEventListener('click', function () {
-      setDock(false);
-    });
-
-    // ── Dock-link seam badges ──────────────────────────────────────────────
-    // Once we're grouped, draw the little chain-link badge on each interior seam
-    // we OWN. Rust computes the seams (dock_seams: a window owns only the seams
-    // on its right/bottom edges, so every seam gets exactly one badge) and ships
-    // them in the dock-group payload; we just place them. The badge nests in our
-    // 22px transparent card margin flush against the seam — it cannot straddle
-    // into the neighbor window, which clips to its bounds. Clicking it leaves
-    // the group (the same primitive as the pin button).
-    var LINK_SVG =
-      '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
-      ' stroke-width="2.4" stroke-linecap="round" aria-hidden="true">' +
-      '<path d="M9 15l6-6"/>' +
-      '<path d="M11 6l1.5-1.5a4 4 0 0 1 5.7 5.7L16.5 12"/>' +
-      '<path d="M13 18l-1.5 1.5a4 4 0 0 1-5.7-5.7L7.5 12"/></svg>';
-    var SEAM_BADGE_R = 11; // half the 22px badge — matches Rust dock_seams BADGE_R
-
-    function onSeamClick(e) {
-      e.preventDefault();
-      e.stopPropagation();
-      // Snip = THIS window leaves its whole group (the only unlink primitive —
-      // same as the pin button). Rust ejects us clear and re-pushes dock-group
-      // state to everyone, which clears our seams. For a 3+ window line this
-      // ejects the clicker rather than cutting just one seam; the aria/title
-      // copy ("Unlink these panels") stays honest for the common 2-window dock.
-      setDock(false);
     }
 
-    function makeSeamBadge(s, key) {
-      var btn = document.createElement('button');
-      btn.className = 'dock-link e-' + s.edge;
-      btn.type = 'button';
-      // Copy kept in lockstep with the ui-web board's .pin-badge (parity).
-      btn.title = 'Unlink';
-      btn.setAttribute('aria-label', 'Unlink these panels');
-      btn.setAttribute('data-seam-key', key);
-      btn.innerHTML = LINK_SVG;
-      btn.addEventListener('click', onSeamClick);
-      return btn;
-    }
 
-    function paintSeams(seams) {
-      if (!dockLinksEl) return;
-      // Lowest a right-edge badge may sit without overlapping the title-bar
-      // drag strip = title-bar bottom + badge radius (window-local px). 0 under
-      // headless layout (jsdom getBoundingClientRect) → no-op, matching the
-      // bare deck-snap clamp; only the real webview triggers the nudge.
-      var tb = document.querySelector('.title-bar');
-      var titleClear = tb ? Math.round(tb.getBoundingClientRect().bottom) + SEAM_BADGE_R : 0;
-      var maxBadgeY = (window.innerHeight || 0) - SEAM_BADGE_R;
-      // Diff by partner|edge: a badge that merely MOVES (a regroup or a resize
-      // shifts the shared overlap-run midpoint) is repositioned in place, so
-      // only a genuinely NEW seam plays the scale-in. Rebuilding wholesale
-      // re-popped every badge on each repaint — this mirrors the board, where
-      // Solid's keyed <For> reuses nodes and only animates fresh pins.
-      var existing = {};
-      var kids = dockLinksEl.children;
-      for (var i = 0; i < kids.length; i++) {
-        existing[kids[i].getAttribute('data-seam-key')] = kids[i];
+    // ── LIVE magnetic drag (the design's onMove model) ─────────────────────
+    // JS owns the drag now (data-tauri-drag-region is gone). pointerdown on a
+    // title bar starts a JS drag; every pointermove computes the snapped target
+    // for this window + its drag group via LunaDeckSnap.computeLiveDrag and
+    // setPositions them, so the cluster glides into place LIVE and welds the
+    // instant it falls within magnet range. pointerup links (if snapped) or
+    // detaches a module dragged clear of its cluster. This replaces the old
+    // grab_dock / native-drag / settle-on-release machinery.
+    function dockShell() { return document.querySelector('.widget-shell'); }
+    var drag = null;          // active drag (after the start snapshot)
+    var activeHandle = null;  // the title bar we captured (for cleanup)
+    var activePid = null;
+
+    function detachDrag() {
+      if (activeHandle) {
+        try { activeHandle.releasePointerCapture(activePid); } catch (_) {}
+        activeHandle.removeEventListener('pointermove', onDragMove);
+        activeHandle.removeEventListener('pointerup', onDragUp);
+        activeHandle.removeEventListener('pointercancel', onDragUp);
       }
-      var keep = {};
-      for (var j = 0; j < seams.length; j++) {
-        var s = seams[j];
-        var key = s.partner + '|' + s.edge;
-        keep[key] = true;
-        var el = existing[key];
-        if (!el) {
-          el = makeSeamBadge(s, key);
-          dockLinksEl.appendChild(el);
+      activeHandle = null; activePid = null;
+      var sh = dockShell();
+      if (sh) {
+        sh.classList.remove('dragging');
+        setTimeout(function () { var s = dockShell(); if (s) s.classList.remove('snapping'); }, 200);
+      }
+    }
+
+    function onDragMove(e) {
+      if (!drag) return;
+      var dx = e.screenX - drag.sx, dy = e.screenY - drag.sy;
+      var res = LunaDeckSnap.computeLiveDrag({
+        ox: drag.ox, oy: drag.oy, ow: drag.ow, oh: drag.oh, dx: dx, dy: dy,
+        members: drag.members.map(function (m) { return { label: m.label, ox: m.ox, oy: m.oy }; })
+      }, drag.cands);
+      drag.snapped = res.snapped; drag.anchor = res.anchor; drag.edge = res.edge;
+      var LP = window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.LogicalPosition;
+      if (LP) {
+        for (var i = 0; i < res.targets.length; i++) {
+          var m = drag.members[i];
+          if (m && m.win) { try { m.win.setPosition(new LP(res.targets[i].x, res.targets[i].y)); } catch (_) {} }
         }
-        // Owner-side flush against the seam, centered on the overlap run — but
-        // push a right-edge badge below the title bar if the overlap midpoint
-        // lands in it. A 22px button over [data-tauri-drag-region] both
-        // dead-zones the native grab AND unlinks on a stray click there; the
-        // seam owns the whole right edge, so nudging down keeps it on the seam.
-        var by = s.y;
-        if (s.edge === 'r' && titleClear) {
-          by = Math.max(by, titleClear);
-          if (maxBadgeY > SEAM_BADGE_R) by = Math.min(by, maxBadgeY);
-        }
-        el.style.left = s.x + 'px';
-        el.style.top = by + 'px';
       }
-      for (var k in existing) {
-        if (!keep[k]) dockLinksEl.removeChild(existing[k]);
+      var sh = dockShell();
+      if (sh) sh.classList.toggle('snapping', !!res.snapped);
+    }
+
+    function onDragUp() {
+      var d = drag; drag = null;
+      detachDrag();
+      if (!d) return; // released before the start snapshot armed — nothing to commit
+      if (d.snapped && d.anchor && d.anchor !== 'main') {
+        setDock(true, d.anchor, d.edge, 0, 0);   // link — windows are already flush
+      } else if (!d.snapped && d.wasGrouped && !d.isAnchor) {
+        setDock(false);                           // detach — a module dragged clear
       }
     }
 
-    // Re-root the group at THIS window the instant it is grabbed, so the
-    // native drag carries the whole cluster regardless of which member the
-    // user picked up. Capture phase: must precede the native drag region.
     document.addEventListener('pointerdown', function (e) {
-      try {
-        if (!e.target || !e.target.closest) return;
-        // Buttons in the title bar (pin, close) are presses, not grabs — a
-        // pin click must not re-root the group first.
-        if (e.target.closest('button')) return;
-        if (!e.target.closest('[data-tauri-drag-region]')) return;
-        if (window.__TAURI__ && window.__TAURI__.core) {
-          window.__TAURI__.core.invoke('grab_dock', {}).catch(function () {});
-        }
-      } catch (_) { /* best-effort */ }
+      if (activeHandle) return;                   // a drag is already in progress
+      if (e.button !== 0) return;
+      if (!e.target || !e.target.closest) return;
+      if (e.target.closest('button')) return;     // buttons are clicks, not grabs
+      var handle = e.target.closest('.title-bar, .chat-header');
+      if (!handle) return;
+      e.preventDefault();
+      activeHandle = handle; activePid = e.pointerId;
+      try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+      handle.addEventListener('pointermove', onDragMove);
+      handle.addEventListener('pointerup', onDragUp);
+      handle.addEventListener('pointercancel', onDragUp);
+      var sh0 = dockShell(); if (sh0) sh0.classList.add('dragging');
+      var sx = e.screenX, sy = e.screenY, pid = e.pointerId;
+      (async function () {
+        try {
+          var TW = window.__TAURI__ && window.__TAURI__.window;
+          var isAnchor = (label === 'panel-chat');
+          var wasGrouped = groupMembers.length > 1;
+          // Anchor tows the whole cluster; a plain module peels off alone.
+          var groupLabels = (isAnchor && wasGrouped) ? groupMembers.slice() : [label];
+          var self = await logicalRect(W);
+          var members = [];
+          for (var i = 0; i < groupLabels.length; i++) {
+            var lbl = groupLabels[i];
+            if (lbl === label) { members.push({ label: label, win: W, ox: self.x, oy: self.y }); continue; }
+            try {
+              var w = TW && TW.Window && typeof TW.Window.getByLabel === 'function'
+                ? await TW.Window.getByLabel(lbl) : null;
+              if (!w) continue;
+              var r = await logicalRect(w);
+              members.push({ label: lbl, win: w, ox: r.x, oy: r.y });
+            } catch (_) { /* member vanished mid-snapshot */ }
+          }
+          var cands = await candidateRects(groupLabels);
+          if (activeHandle !== handle) return;    // released/replaced before we armed
+          drag = {
+            pointerId: pid, handle: handle, sx: sx, sy: sy,
+            ox: self.x, oy: self.y, ow: self.w, oh: self.h,
+            members: members, cands: cands, isAnchor: isAnchor, wasGrouped: wasGrouped,
+            snapped: false, anchor: null, edge: null
+          };
+        } catch (_) { /* snapshot failed — onDragUp/detachDrag clean up */ }
+      })();
     }, true);
 
     try {
@@ -310,7 +274,8 @@
     // re-snaps against itself; that was round 2's "random movements").
     // All snap math runs in LOGICAL px: every window's physical rect is
     // divided by ITS OWN scale factor, so mixed-DPI monitor setups compare
-    // coherently and thresholds stay the designed 22 logical px.
+    // coherently and the snap threshold stays the designed 30 logical px
+    // (deck-snap DEFAULT_THRESHOLD = design SNAP = Rust MAGNET, all in lockstep).
     async function logicalRect(w) {
       var p = await w.outerPosition();
       var s = await w.outerSize();
@@ -319,10 +284,10 @@
       return { x: p.x / sf, y: p.y / sf, w: s.width / sf, h: s.height / sf };
     }
 
-    async function candidateRects() {
+    async function candidateRects(exclude) {
       var out = [];
       var TW = window.__TAURI__ && window.__TAURI__.window;
-      var skip = groupMembers.slice();
+      var skip = (exclude || groupMembers).slice();
       if (Date.now() < exUntil) skip = skip.concat(exMembers);
       try {
         if (skip.indexOf('main') === -1) {
@@ -348,97 +313,6 @@
       return out;
     }
 
-    try {
-      var snapSettleTimer = null;
-      var lastMoveTime = 0;
-      var settleGen = 0; // bumped on every move: stale async settles abort
-      var THROTTLE_MS = 16;
-      var DEBOUNCE_MS = 120;
-      var RECHECK_MS = 90; // button-held poll cadence until the real release
-
-      function armSettle(delay) {
-        if (snapSettleTimer) { clearTimeout(snapSettleTimer); snapSettleTimer = null; }
-        snapSettleTimer = setTimeout(runSettle, delay);
-      }
-
-      W.onMoved(function () {
-        var now = Date.now();
-        settleGen++;
-        if (now - lastMoveTime < THROTTLE_MS) return;
-        lastMoveTime = now;
-        armSettle(DEBOUNCE_MS);
-      }).catch(function () { /* onMoved may not exist in all versions */ });
-      // No seam re-render on our own resize: Rust re-emits dock-group to the
-      // whole group on WindowEvent::Resized, so an owner refreshes even when the
-      // NON-owning partner is the one resized — the case the page could never see.
-
-      async function runSettle() {
-          try {
-            var gen = settleGen;
-            var fresh = function () { return settleGen === gen; };
-            // SNAP-ON-RELEASE, literally. macOS streams Moved events DURING
-            // a drag, so a hover-pause over a neighbor satisfies the
-            // debounce while the hand is still down — and used to link the
-            // group mid-drag (operator feedback: "a bit aggressive"). The
-            // webview never sees pointerup once the native drag loop owns
-            // the window, so ask AppKit whether the button is still held
-            // and just keep re-checking until the actual drop. An older
-            // core without the command fails OPEN (snap now, old behavior).
-            var held = false;
-            try {
-              if (window.__TAURI__ && window.__TAURI__.core) {
-                held = !!(await window.__TAURI__.core.invoke('pointer_button_down'));
-              }
-            } catch (_) { /* command absent — fail open */ }
-            if (held) {
-              if (!fresh()) return; // a newer move owns the settle now
-              armSettle(RECHECK_MS);
-              return;
-            }
-            // Minimize fires a spurious onMoved with nonsense coordinates
-            // (tauri#7664) — never snap a minimized window.
-            if (typeof W.isMinimized === 'function' && (await W.isMinimized())) return;
-            if (!window.LunaDeckSnap) return;
-
-            var widgetRect = await logicalRect(W);
-
-            // Best NEW link across outsiders = smallest move distance,
-            // all in logical px.
-            var cands = await candidateRects();
-            if (!fresh()) return; // the window moved again mid-enumeration
-            var best = null;
-            for (var i = 0; i < cands.length; i++) {
-              var snap = LunaDeckSnap.computeSnap(cands[i].rect, widgetRect, 22);
-              if (!snap) continue;
-              var d = Math.abs(snap.x - widgetRect.x) + Math.abs(snap.y - widgetRect.y);
-              if (!best || d < best.d) best = { label: cands[i].label, snap: snap, d: d };
-            }
-            if (!best) return; // nothing new in range — groups only change via the pin
-
-            var grouped = groupMembers.length > 0;
-            if (!grouped) {
-              // Loose window: glide flush, then link (unless it's the hub —
-              // alignment-only, groups never include the moon).
-              if (best.d > 0 && window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.LogicalPosition) {
-                if (!fresh()) return;
-                await W.setPosition(new window.__TAURI__.window.LogicalPosition(best.snap.x, best.snap.y));
-              }
-              if (best.label === 'main') return;
-              if (!fresh()) return;
-              setDock(true, best.label, best.snap.edge, 0, 0);
-            } else {
-              // Grouped member: NEVER move yourself (that tears the cluster).
-              // Report the merge with the snap delta — Rust translates the
-              // WHOLE group so the seam lands flush with the cluster intact.
-              if (best.label === 'main') return;
-              if (!fresh()) return;
-              setDock(true, best.label, best.snap.edge,
-                Math.round(best.snap.x - widgetRect.x),
-                Math.round(best.snap.y - widgetRect.y));
-            }
-          } catch (_) { /* best-effort — never throw */ }
-      }
-    } catch (_) { /* best-effort */ }
   }
 
   g.LunaDock = { wire: wire };

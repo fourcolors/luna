@@ -1,9 +1,11 @@
 /**
- * moon-skins.css — the SKIN token contract for every Luna widget-page window.
+ * moon-skins.css — the SKIN token contract for every Luna widget-page window,
+ * ported 1:1 from the hand-crafted Luna Dock design file
+ * (the hand-crafted "Luna Dock" design prototype).
  *
  * A "skin" is a bundle of --dk-* custom properties (radius, paper, border,
- * shadow, header tint, title typography, blur, and the per-edge shadow pieces
- * the dock weld assembles). moon-theme.css consumes these tokens for the
+ * shadow, header tint + fill, title typography, blur, and the per-edge shadow
+ * pieces the dock weld assembles). moon-theme.css consumes these tokens for the
  * window chrome (.widget-shell / .widget-shell::before / .title-bar /
  * .bar-title); switching data-skin on <html> re-skins the window with no
  * markup change.
@@ -14,83 +16,81 @@
  * vendor/moon-appearance.js stamps data-skin on <html> pre-paint and live-syncs
  * it across windows on `storage` events (same machinery as data-palette/theme).
  *
- * Three skins ship: studio (today's watercolor look, the default) / classic
- * (winamp-retro: tight 4px corners, uppercase title) / aqua (glass: big 18px
- * corners, frosted blur). The contract already carries the hooks (radius +
- * paper + border) a later shape-skin phase (kawaii/puppy) would need.
+ * Three skins ship, each matched to the design file's exact values:
+ *   studio  — watercolor studio (radius 13, 19px Caveat title @76% ink, 30%/64px wash)
+ *   classic — winamp-retro (radius 4, 10.5px UPPERCASE, NO wash, accent anchor bar, hairline)
+ *   aqua    — glass (radius 18, 12px sans, frosted 16px blur, translucent 60% paper)
+ * The contract carries the hooks (radius + paper + border + control shape) that
+ * a later shape-skin phase (kawaii/puppy) would extend.
  *
- * THEME interplay: skin tokens live on <html>, so a more-specific
- * html[data-theme='dark'] block overrides the studio defaults regardless of
- * file order (custom-property cascade is specificity-based). The studio dark
- * block reproduces moon-theme.css's former dark ::before (paper-2 + 38% tint),
- * which is why that hard-coded dark override could be retired from the chrome.
+ * THEME interplay: skin tokens live on <html>, so html[data-skin='…'] and
+ * html[data-theme='dark'] have equal specificity — the skin blocks are placed
+ * AFTER the dark block so a skin's tokens win for the tokens it sets, while
+ * unset tokens fall back to the dark block (night paper) then studio.
+ * Design source: the Luna Dock prototype's --dk-* skin blocks.
  */
 
-/* ═══ studio — the default (today's watercolor pixels) ═══════════════════ */
+/* ═══ studio — the default (Luna Dock "watercolor studio") ═══════════════ */
 html {
-  /* Shape */
-  --dk-radius: var(--card-radius); /* 16px — matches today */
+  /* Shape — design: 13px */
+  --dk-radius: 13px;
 
   /* Paper card fill + header wash (consumed by .widget-shell::before) */
   --dk-win-paper: var(--paper);
-  --dk-tint-amt: 26%;
-  --dk-tint-bleed: 86px;
-  --dk-blur: 0px;                  /* no frost in studio (blur(0) = no-op) */
+  --dk-tint-amt: 30%;              /* design: 30% */
+  --dk-tint-bleed: 64px;          /* design: 64px */
+  --dk-blur: 0px;                 /* no frost in studio (blur(0) = no-op) */
 
-  /* Edge ring carried as a box-shadow on the wobbled ::before (NEVER a CSS
-     border — the wobble filter would split a real border into a doubled wavy
-     line). transparent = invisible ring, so studio is unchanged. */
+  /* Edge ring carried as a box-shadow on ::before (NEVER a CSS border — the
+     wobble filter would split a real border into a doubled wavy line).
+     transparent = invisible ring (design studio: 1px solid transparent). */
   --dk-win-border: transparent;
 
-  /* The soft warm paper halo on the unfiltered .widget-shell (light theme).
-     Identical to moon-theme.css's former hard-coded 3-layer halo. */
+  /* Solo-window halo (design studio --dk-win-shadow). The dock client overrides
+     this inline with the per-edge silhouette while welded. */
   --dk-win-shadow:
-    0 1px 2px rgba(60, 45, 35, 0.10),
-    0 0 16px -2px rgba(60, 45, 35, 0.13),
-    0 6px 20px -6px rgba(60, 45, 35, 0.26);
+    0 1px 2px rgba(60, 45, 35, 0.05),
+    0 2px 4px rgba(60, 45, 35, 0.06),
+    0 14px 34px -12px rgba(60, 45, 35, 0.20);
 
-  /* Title bar */
-  --dk-bar-bg: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--panel-tint) 26%, transparent) 0%,
-    transparent 100%
-  );
-  --dk-bar-bg-anchor: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--accent) 22%, transparent) 0%,
-    transparent 100%
-  );
+  /* Title bar — design studio: transparent (the wash bleeds up under it) */
+  --dk-bar-bg: transparent;
+  --dk-bar-bg-anchor: transparent;
+  --dk-bar-border: none;
 
-  /* Title typography (matches today's .bar-title) */
-  --dk-title-font: var(--font-hand);
-  --dk-title-size: 16px;
+  /* Title typography — design studio: 19px Caveat @76% ink, full ink on anchor */
+  --dk-title-font: var(--font-hand);                              /* Caveat */
+  --dk-title-size: 19px;
   --dk-title-weight: 600;
   --dk-title-spacing: 0.01em;
   --dk-title-transform: none;
-  --dk-title-color: var(--ink);
+  --dk-title-color: color-mix(in oklab, var(--ink) 76%, transparent);
   --dk-title-color-anchor: var(--ink);
 
   /* ── Per-edge silhouette shadow pieces (Phase 4 weld shadow) ───────────
      The dock client assembles a window's box-shadow from --dk-edge-amb plus
      the directional pieces for its NON-welded edges only, so a welded seam
-     casts no interior lip. Tuned to sum to the studio halo above when all four
-     edges are exposed (a solo window). */
-  --dk-edge-amb:
-    0 1px 2px rgba(60, 45, 35, 0.10),
-    0 0 16px -2px rgba(60, 45, 35, 0.13);
-  --dk-edge-t: 0 -5px 18px -8px rgba(60, 45, 35, 0.20);
-  --dk-edge-b: 0 6px 20px -6px rgba(60, 45, 35, 0.26);
-  --dk-edge-l: -5px 0 18px -8px rgba(60, 45, 35, 0.20);
-  --dk-edge-r: 5px 0 18px -8px rgba(60, 45, 35, 0.20);
-  --dk-edge-b-anchor: 0 7px 22px -6px rgba(60, 45, 35, 0.30);
+     casts no interior lip. Design studio --dk-edge-* values. */
+  --dk-edge-amb: 0 1px 2px rgba(60, 45, 35, 0.05);
+  --dk-edge-t: 0 -5px 14px -12px rgba(60, 45, 35, 0.09);
+  --dk-edge-b:
+    0 5px 9px -6px rgba(60, 45, 35, 0.09),
+    0 16px 32px -14px rgba(60, 45, 35, 0.20);
+  --dk-edge-b-anchor:
+    0 7px 12px -6px rgba(60, 45, 35, 0.10),
+    0 22px 44px -16px rgba(60, 45, 35, 0.26);
+  --dk-edge-l: -7px 0 18px -14px rgba(60, 45, 35, 0.12);
+  --dk-edge-r: 7px 0 18px -14px rgba(60, 45, 35, 0.12);
 }
 
-/* studio · dark — reproduce moon-theme.css's former dark ::before (paper-2 +
-   38% tint). The dark .widget-shell halo itself stays a hard-coded theme rule
-   in moon-theme.css (see --dk-win-shadow note there). */
+/* studio · dark — night paper base + black silhouette pieces. The design's
+   studio skin keeps the SAME 30% tint in dark (the night paper darkens it
+   naturally), so no --dk-tint-amt bump here. The dark .widget-shell halo
+   itself stays a hard-coded theme rule in moon-theme.css. */
 html[data-theme='dark'] {
-  --dk-win-paper: var(--paper-2);
-  --dk-tint-amt: 38%;
+  /* Design studio has NO dark paper override — the card stays on var(--paper)
+     (the darker night paper); only the halo goes black. Match that exactly. */
+  --dk-win-paper: var(--paper);
   --dk-edge-amb:
     0 1px 2px rgba(0, 0, 0, 0.30),
     0 0 16px -2px rgba(0, 0, 0, 0.40);
@@ -101,31 +101,81 @@ html[data-theme='dark'] {
   --dk-edge-b-anchor: 0 7px 22px -6px rgba(0, 0, 0, 0.66);
 }
 
-/* ═══ classic — winamp-retro: tight corners, uppercase title ════════════ */
+/* ═══ classic — winamp-retro: tight 4px corners, NO watercolor wash, crisp ══
+   hairline border, solid tinted bar, ACCENT anchor bar, uppercase tracked
+   title. Design: template.html:1607-1626. */
 html[data-skin='classic'] {
   --dk-radius: 4px;
-  --dk-title-font: var(--font-body);
-  --dk-title-size: 12px;
-  --dk-title-weight: 700;
-  --dk-title-spacing: 0.08em;
-  --dk-title-transform: uppercase;
+
+  /* The retro crux: NO watercolor bleed — the bar carries the tint instead. */
+  --dk-tint-amt: 0%;
+  --dk-tint-bleed: 0px;
+
+  --dk-win-border: color-mix(in oklab, var(--ink) 24%, transparent);
+  --dk-win-shadow:
+    0 2px 0 rgba(60, 45, 35, 0.04),
+    0 8px 18px -10px rgba(40, 30, 25, 0.40);
+
+  /* Solid tinted header (design uses the panel wash tint, here --panel-tint) +
+     ACCENT gradient on the anchor (chat) window. */
   --dk-bar-bg: linear-gradient(
     180deg,
-    color-mix(in oklab, var(--panel-tint) 55%, transparent) 0%,
-    color-mix(in oklab, var(--panel-tint) 30%, transparent) 100%
+    color-mix(in oklab, var(--panel-tint) 68%, var(--paper)),
+    color-mix(in oklab, var(--panel-tint) 40%, var(--paper))
   );
-  --dk-win-border: color-mix(in oklab, var(--ink) 22%, transparent);
+  --dk-bar-bg-anchor: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--accent) 88%, white),
+    var(--accent)
+  );
+  --dk-bar-border: 1px solid color-mix(in oklab, var(--ink) 16%, transparent);
+
+  --dk-title-font: var(--font-body);                          /* Albert Sans */
+  --dk-title-size: 10.5px;
+  --dk-title-weight: 700;
+  --dk-title-spacing: 0.16em;
+  --dk-title-transform: uppercase;
+  --dk-title-color: color-mix(in oklab, var(--ink) 64%, transparent);
+  --dk-title-color-anchor: #ffffff;
+
+  /* Crisp welded edges (derived to match the tight classic --dk-win-shadow). */
+  --dk-edge-amb: 0 2px 0 rgba(60, 45, 35, 0.04);
+  --dk-edge-t: 0 -4px 12px -10px rgba(40, 30, 25, 0.30);
+  --dk-edge-b: 0 8px 18px -10px rgba(40, 30, 25, 0.40);
+  --dk-edge-l: -4px 0 12px -10px rgba(40, 30, 25, 0.30);
+  --dk-edge-r: 4px 0 12px -10px rgba(40, 30, 25, 0.30);
+  --dk-edge-b-anchor: 0 12px 24px -12px rgba(40, 30, 25, 0.48);
 }
 
-/* ═══ aqua — glass: big corners, frosted blur, glassy edge ══════════════ */
+/* ═══ aqua — glass: big 18px corners, frosted blur, translucent paper, sans ══
+   title. Design: template.html:1629-1652. */
 html[data-skin='aqua'] {
   --dk-radius: 18px;
   --dk-blur: 16px;
-  --dk-win-paper: color-mix(in oklab, var(--paper) 70%, transparent);
-  --dk-tint-amt: 34%;
+  --dk-win-paper: color-mix(in oklab, var(--paper) 60%, transparent);
+  --dk-tint-amt: 26%;
+  --dk-tint-bleed: 116px;
   --dk-win-border: color-mix(in oklab, #ffffff 55%, transparent);
+  --dk-win-shadow:
+    0 2px 6px rgba(40, 40, 60, 0.06),
+    0 18px 50px -16px rgba(40, 40, 70, 0.30);
+
+  --dk-title-font: var(--font-body);                          /* Albert Sans */
+  --dk-title-size: 12px;
+  --dk-title-weight: 600;
+  --dk-title-spacing: 0.03em;
+  --dk-title-transform: none;
+  --dk-title-color: color-mix(in oklab, var(--ink) 68%, transparent);
+
+  /* Airy welded edges (derived to match the soft aqua --dk-win-shadow). */
+  --dk-edge-amb: 0 2px 6px rgba(40, 40, 60, 0.06);
+  --dk-edge-t: 0 -8px 26px -14px rgba(40, 40, 70, 0.22);
+  --dk-edge-b: 0 8px 28px -14px rgba(40, 40, 70, 0.30);
+  --dk-edge-l: -8px 0 26px -14px rgba(40, 40, 70, 0.22);
+  --dk-edge-r: 8px 0 26px -14px rgba(40, 40, 70, 0.22);
+  --dk-edge-b-anchor: 0 12px 34px -16px rgba(40, 40, 80, 0.36);
 }
 html[data-theme='dark'][data-skin='aqua'] {
-  --dk-win-paper: color-mix(in oklab, var(--paper-2) 62%, transparent);
-  --dk-win-border: color-mix(in oklab, #ffffff 22%, transparent);
+  --dk-win-paper: color-mix(in oklab, var(--paper) 52%, transparent);
+  --dk-win-border: color-mix(in oklab, #ffffff 18%, transparent);
 }

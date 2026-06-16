@@ -2172,25 +2172,17 @@
      Zero-size, position:absolute so it never occupies layout space. -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><filter id="wc-wobble"><feTurbulence type="fractalNoise" baseFrequency="0.015" numOctaves="3" result="n" seed="7"></feTurbulence><feDisplacementMap in="SourceGraphic" in2="n" scale="6" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap></filter><filter id="wc-wobble-soft"><feTurbulence type="fractalNoise" baseFrequency="0.02" numOctaves="2" result="n" seed="4"></feTurbulence><feDisplacementMap in="SourceGraphic" in2="n" scale="2" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap></filter></defs></svg>
 <div class="widget-shell">
-  <!-- TITLE BAR — data-tauri-drag-region on the outer container enables
+  <!-- TITLE BAR — on the outer container enables
        native window drag. The close button is intentionally NOT drag-region. -->
-  <div class="title-bar" data-tauri-drag-region id="title-bar">
+  <div class="title-bar" id="title-bar">
     <!-- Close lives at the top-LEFT corner, hidden until the title bar is
          hovered (macOS-notification pattern); positioned absolutely (see the
          #title-bar #close-btn rule in the page <style>) so it's out of the flex
          flow. NOT a drag region, so the click lands instead of dragging. -->
     <button class="close-btn" id="close-btn" title="Close" aria-label="Close chat">✕</button>
-    <span class="grip" data-tauri-drag-region>⋮⋮</span>
+    <span class="grip">⋮⋮</span>
     <span class="wash-dot" aria-hidden="true"></span>
-    <span class="bar-title" data-tauri-drag-region id="bar-title">Luna</span>
-    <button class="pin-btn" id="pin-btn" title="Unpin from group" aria-label="Unpin widget from its group" hidden>
-      <!-- Lucide "pin" (ISC) — standard icon, not hand-drawn. -->
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M12 17v5"/>
-        <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>
-      </svg>
-    </button>
+    <span class="bar-title" id="bar-title">Luna</span>
     <!-- Archive current thread (Phase 3). Appears in title bar. -->
     <button class="archive-btn" id="archive-thread-btn" title="Archive this thread" aria-label="Archive thread"
             style="display:none;">
@@ -2218,7 +2210,7 @@
   <div id="outline" aria-hidden="true"></div>
   <div class="chat-panel" id="chat-panel">
     <!-- Chat Header supports dragging the native window too! -->
-    <div class="chat-header" data-tauri-drag-region>
+    <div class="chat-header">
       <div class="chat-title-group">
         <!-- Animated Luna face. Decorative (aria-hidden) + non-interactive so
              it keeps dragging the native window like the old orb did. The
