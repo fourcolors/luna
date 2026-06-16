@@ -255,6 +255,9 @@ fn emit_update_error(app: &tauri::AppHandle, message: String) -> String {
         let mgr = app.state::<UpdateManager>();
         let mut s = mgr.0.lock().unwrap_or_else(|e| e.into_inner());
         s.phase = "error".to_string();
+        // Clear any staged artifact so the state machine stays consistent on
+        // error (a failed download/verify leaves no usable stage to apply).
+        s.staged = None;
     }
     let _ = app.emit(
         "update://error",

@@ -2683,10 +2683,9 @@
       })
       .catch((e) => Logger.error('Setup wizard auto-open failed:', e));
 
-    // Silent self-update check shortly after boot (let the WS connect first).
-    // Surfaces an in-chat "Update & Restart" banner only if a newer signed
-    // build exists on GitHub Releases; stays quiet otherwise.
-    setTimeout(() => { SettingsEngine.checkForUpdate(true); }, 4000);
+    // Self-update discovery is owned by the Rust background loop (~8s after
+    // boot); the frontend no longer issues a redundant 4s checkForUpdate that
+    // raced the single-flight gate. The banner/pip render from update:// events.
 
     // ── Restore polish: reopen the chat window after an update restart ─────────
     // When apply_update relaunches the app it (Rust, Slice A) writes
