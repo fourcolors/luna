@@ -173,6 +173,23 @@ describe('widget.html — snap + dock groups', () => {
     expect(movedHandler).toBeTypeOf('function')
   })
 
+  // Phase 5: the traffic-light titlebar keeps the dock-critical ids + drag
+  // region; close still closes, and min/zoom are inert-safe in this env.
+  it('keeps the dock contract ids and a drag region after the lights restyle', () => {
+    expect(document.getElementById('close-btn')).not.toBeNull()
+    expect(document.getElementById('pin-btn')).not.toBeNull()
+    expect(document.getElementById('bar-title')).not.toBeNull()
+    expect(document.querySelector('.dock-lights')).not.toBeNull()
+    expect(document.querySelector('[data-tauri-drag-region]')).not.toBeNull()
+  })
+
+  it('close light invokes close_widget; min/zoom lights never throw', () => {
+    ;(document.getElementById('min-btn') as HTMLButtonElement).click()
+    ;(document.getElementById('zoom-btn') as HTMLButtonElement).click()
+    ;(document.getElementById('close-btn') as HTMLButtonElement).click()
+    expect(invoke).toHaveBeenCalledWith('close_widget', { label: SELF })
+  })
+
   it('snaps flush to the hub but NEVER links with it (alignment-only — pins the getByLabel await)', async () => {
     movedHandler!()
     await vi.advanceTimersByTimeAsync(121)
@@ -344,6 +361,84 @@ describe('widget.html — snap + dock groups', () => {
     dispatchGroup({ grouped: false, members: [], outlineSides: [] })
     expect(pin.hidden).toBe(true)
     expect(outline.className).toBe('')
+  })
+
+  // Per-corner weld radius: Rust ships weldCorners (subset of tl/tr/br/bl) and
+  // the page squares exactly those corners on the card + its title-bar top.
+  it('squares only the welded corners from dock-group weldCorners', () => {
+    const shell = document.querySelector('.widget-shell') as HTMLElement
+    const bar = document.querySelector('.title-bar') as HTMLElement
+
+    // Welded on top → top corners square, bottom stays round (empty inline →
+    // falls back to the skin --dk-radius rule).
+    dispatchGroup({
+      grouped: true,
+      members: [SELF, 'widget-friend'],
+      outlineSides: ['l', 'r', 'b'],
+      weldCorners: ['tl', 'tr'],
+    })
+    expect(shell.style.borderTopLeftRadius).toBe('0px')
+    expect(shell.style.borderTopRightRadius).toBe('0px')
+    expect(shell.style.borderBottomLeftRadius).toBe('')
+    expect(shell.style.borderBottomRightRadius).toBe('')
+    // The title bar tracks the card's top corners.
+    expect(bar.style.borderTopLeftRadius).toBe('0px')
+    expect(bar.style.borderTopRightRadius).toBe('0px')
+  })
+
+  it('clears welded corners when the window leaves the group', () => {
+    const shell = document.querySelector('.widget-shell') as HTMLElement
+    dispatchGroup({
+      grouped: true,
+      members: [SELF, 'widget-friend'],
+      outlineSides: ['l', 'r', 'b'],
+      weldCorners: ['tl', 'tr'],
+    })
+    expect(shell.style.borderTopLeftRadius).toBe('0px')
+
+    dispatchGroup({ grouped: false, members: [], outlineSides: [], weldCorners: [] })
+    expect(shell.style.borderTopLeftRadius).toBe('')
+    expect(shell.style.borderTopRightRadius).toBe('')
+  })
+
+  it('a missing weldCorners field squares nothing (older core)', () => {
+    const shell = document.querySelector('.widget-shell') as HTMLElement
+    dispatchGroup({ grouped: true, members: [SELF, 'widget-friend'], outlineSides: ['l'] })
+    expect(shell.style.borderTopLeftRadius).toBe('')
+    expect(shell.style.borderBottomRightRadius).toBe('')
+  })
+
+  // Per-window silhouette shadow: a welded window casts depth only from its
+  // EXPOSED edges (outlineSides); the welded edges drop their lip.
+  it('builds the box-shadow from exposed edges only + marks welded edges', () => {
+    const shell = document.querySelector('.widget-shell') as HTMLElement
+    // Exposed on l/r/t, welded on the bottom.
+    dispatchGroup({ grouped: true, members: [SELF, 'widget-friend'], outlineSides: ['l', 'r', 't'] })
+    expect(shell.getAttribute('data-weld')).toBe('b')
+    const shadow = shell.style.boxShadow
+    expect(shadow).toContain('var(--dk-edge-amb)')
+    expect(shadow).toContain('var(--dk-edge-t)')
+    expect(shadow).toContain('var(--dk-edge-l)')
+    expect(shadow).toContain('var(--dk-edge-r)')
+    // The welded bottom edge contributes NO shadow piece.
+    expect(shadow).not.toContain('var(--dk-edge-b)')
+  })
+
+  it('a non-anchor (widget) window uses the plain bottom edge piece', () => {
+    const shell = document.querySelector('.widget-shell') as HTMLElement
+    dispatchGroup({ grouped: true, members: [SELF, 'widget-friend'], outlineSides: ['l', 'r', 'b'] })
+    expect(shell.style.boxShadow).toContain('var(--dk-edge-b)')
+    expect(shell.style.boxShadow).not.toContain('anchor')
+  })
+
+  it('clears the silhouette shadow + data-weld when ungrouped', () => {
+    const shell = document.querySelector('.widget-shell') as HTMLElement
+    dispatchGroup({ grouped: true, members: [SELF, 'widget-friend'], outlineSides: ['l', 'r', 't'] })
+    expect(shell.style.boxShadow).not.toBe('')
+
+    dispatchGroup({ grouped: false, members: [], outlineSides: [] })
+    expect(shell.style.boxShadow).toBe('')
+    expect(shell.hasAttribute('data-weld')).toBe(false)
   })
 
   // Rust now computes seam placement (main.rs dock_seams) and ships it in the

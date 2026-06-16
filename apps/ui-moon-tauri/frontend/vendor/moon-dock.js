@@ -22,6 +22,13 @@
     var label = opts && opts.label;
     if (!W) return; // not in Tauri
 
+    // The chat window is the cluster anchor — stamp data-anchor so moon-theme.css
+    // gives its title bar the accent fill/title color (chat keeps its MoonFace
+    // bar; this only re-tints the chrome, generically by attribute).
+    if (label === 'panel-chat') {
+      try { document.documentElement.setAttribute('data-anchor', 'true'); } catch (_) { /* best-effort */ }
+    }
+
     var pinBtn = document.getElementById('pin-btn');
     var seamEl = document.getElementById('seam');
     var outlineEl = document.getElementById('outline');
@@ -96,6 +103,48 @@
       if (outlineEl) {
         var sides = grouped && Array.isArray(payload.outlineSides) ? payload.outlineSides : [];
         outlineEl.className = sides.map(function (s) { return 'g' + s; }).join(' ');
+      }
+      // Per-corner weld radius: square ONLY the corners Rust flagged at an
+      // interior seam (a partial weld keeps its still-exposed corners round);
+      // clearing the inline value when ungrouped restores the skin's --dk-radius
+      // rule. The wobbled ::before follows via border-radius:inherit, and the
+      // title bar squares its matching TOP corners so the header tracks the card.
+      var weld = grouped && Array.isArray(payload.weldCorners) ? payload.weldCorners : [];
+      var shellEl = document.querySelector('.widget-shell');
+      if (shellEl) {
+        var radius = function (corner) { return weld.indexOf(corner) !== -1 ? '0px' : ''; };
+        shellEl.style.borderTopLeftRadius = radius('tl');
+        shellEl.style.borderTopRightRadius = radius('tr');
+        shellEl.style.borderBottomRightRadius = radius('br');
+        shellEl.style.borderBottomLeftRadius = radius('bl');
+        var barEl = document.querySelector('.title-bar');
+        if (barEl) {
+          barEl.style.borderTopLeftRadius = radius('tl');
+          barEl.style.borderTopRightRadius = radius('tr');
+        }
+        // Per-window silhouette shadow: a welded window drops the soft lip on
+        // its interior (welded) edges and casts depth only from its EXPOSED
+        // edges, so a docked cluster reads as one card rather than stacked
+        // ones. Exposed edges == outlineSides (the perimeter); welded edges are
+        // the complement. Inline wins over the skin/dark box-shadow rule; an
+        // ungroup clears it so --dk-win-shadow (the solo lift) returns. The
+        // dragged-window solo-lift opt-out is a documented v1 follow-up — this
+        // ships the always-unified silhouette.
+        if (grouped) {
+          var outlineSides = Array.isArray(payload.outlineSides) ? payload.outlineSides : [];
+          var isAnchor = label === 'panel-chat';
+          var pieces = ['var(--dk-edge-amb)'];
+          if (outlineSides.indexOf('t') !== -1) pieces.push('var(--dk-edge-t)');
+          if (outlineSides.indexOf('b') !== -1) pieces.push(isAnchor ? 'var(--dk-edge-b-anchor)' : 'var(--dk-edge-b)');
+          if (outlineSides.indexOf('l') !== -1) pieces.push('var(--dk-edge-l)');
+          if (outlineSides.indexOf('r') !== -1) pieces.push('var(--dk-edge-r)');
+          var welded = ['t', 'b', 'l', 'r'].filter(function (e) { return outlineSides.indexOf(e) === -1; });
+          shellEl.setAttribute('data-weld', welded.join(''));
+          shellEl.style.boxShadow = pieces.join(', ');
+        } else {
+          shellEl.removeAttribute('data-weld');
+          shellEl.style.boxShadow = '';
+        }
       }
       // Render the owned seam badges Rust placed for us — Rust is the single
       // source of truth for badge geometry (it has every member's rect in one

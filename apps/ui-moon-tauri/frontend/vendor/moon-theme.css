@@ -57,7 +57,13 @@ html, body {
   margin: var(--card-inset);
   height: calc(100% - var(--card-inset) * 2);
   width: calc(100% - var(--card-inset) * 2);
-  border-radius: var(--card-radius);
+  /* Corner radius comes from the active skin (vendor/moon-skins.css); studio
+     resolves --dk-radius to --card-radius, so the default is unchanged. The
+     dock client zeroes individual corners at a welded seam. */
+  border-radius: var(--dk-radius, var(--card-radius));
+  /* Ease corner squaring at dock settle (weld recomputes corners on settle,
+     not per drag-frame) so they don't pop. */
+  transition: border-radius 0.2s ease;
   isolation: isolate;
   /* The SOFT paper halo lives HERE, on the unfiltered shell — NOT on the
      wobbled ::before. The wc-wobble filter displaces everything it's applied
@@ -69,11 +75,11 @@ html, body {
      stays inside --card-inset (22px) so nothing shears at the window bounds.
      This is the card's ONLY depth cue: the OS window shadow is disabled
      (shadow:false in tauri.conf.json) so it can't stack a second, square-
-     cornered, focus-reactive shadow on top of this rounded one. */
-  box-shadow:
-    0 1px 2px rgba(60, 45, 35, 0.10),
-    0 0 16px -2px rgba(60, 45, 35, 0.13),
-    0 6px 20px -6px rgba(60, 45, 35, 0.26);
+     cornered, focus-reactive shadow on top of this rounded one.
+     The studio --dk-win-shadow (vendor/moon-skins.css) IS this 3-layer warm
+     halo, so the default is unchanged; the dock client overrides this inline
+     with a per-edge silhouette while welded. */
+  box-shadow: var(--dk-win-shadow);
 }
 
 /* Paper-wash layer — sits behind all content via z-index:-1.
@@ -87,28 +93,33 @@ html, body {
   border-radius: inherit;
   z-index: -1;
   filter: url(#wc-wobble);
+  /* Paper fill + head-tint pool, both from the active skin. Studio resolves to
+     the original --paper / 26% / 86px (and the dark token block flips to
+     --paper-2 / 38%), so the default is pixel-unchanged. Aqua makes the paper
+     translucent + raises --dk-blur so the frost shows through. */
   background:
     linear-gradient(180deg,
-      color-mix(in oklab, var(--panel-tint) 26%, transparent) 0%,
-      transparent 86px),
-    var(--paper);
+      color-mix(in oklab, var(--panel-tint) var(--dk-tint-amt, 26%), transparent) 0%,
+      transparent var(--dk-tint-bleed, 86px)),
+    var(--dk-win-paper, var(--paper));
+  /* Frost (aqua); studio --dk-blur is 0px → a no-op. */
+  backdrop-filter: blur(var(--dk-blur, 0px));
+  -webkit-backdrop-filter: blur(var(--dk-blur, 0px));
+  /* Skin edge ring carried as a box-shadow (NOT a CSS border — see the ink
+     chrome note below for why the wobble filter forbids a real border). Studio
+     --dk-win-border is transparent → invisible. Ink chrome overrides this. */
+  box-shadow: 0 0 0 1.5px var(--dk-win-border, transparent);
 }
 
 /* Dark theme: deeper halo + a faint smooth edge ring for definition on the
-   night paper (on the shell, so it stays a single crisp line, not wobbled),
-   slightly stronger tint pool. */
+   night paper (on the shell, so it stays a single crisp line, not wobbled).
+   The stronger tint pool + night paper base now live in the studio dark token
+   block (vendor/moon-skins.css), consumed by .widget-shell::before above. */
 html[data-theme='dark'] .widget-shell {
   box-shadow:
     0 0 0 1px color-mix(in oklab, var(--ink) 7%, transparent),
     0 0 16px -2px rgba(0, 0, 0, 0.4),
     0 6px 20px -6px rgba(0, 0, 0, 0.62);
-}
-html[data-theme='dark'] .widget-shell::before {
-  background:
-    linear-gradient(180deg,
-      color-mix(in oklab, var(--panel-tint) 38%, transparent) 0%,
-      transparent 86px),
-    var(--paper-2);
 }
 
 /* Ink chrome: a single visible inked edge (preserves PR #131's fix). It rides
@@ -145,9 +156,10 @@ html[data-chrome='ink'][data-theme='dark'] .widget-shell::before {
 }
 
 /* Title bar top corners must round to match the card so the wash gradient
-   never pokes square corners past the wobble-roughened card edge. */
+   never pokes square corners past the wobble-roughened card edge. Tracks the
+   skin radius; the dock client zeroes a top corner at a welded seam. */
 .title-bar {
-  border-radius: var(--card-radius) var(--card-radius) 0 0;
+  border-radius: var(--dk-radius, var(--card-radius)) var(--dk-radius, var(--card-radius)) 0 0;
 }
 
 /* ── Paper grain (optional, data-grain="on") ─────────────────────────────
@@ -177,12 +189,9 @@ html[data-grain='on'][data-theme='dark'] body::after {
   align-items: center;
   gap: 7px;
   padding: 6px 8px 6px 10px;
-  /* Soft wash: the window's tint pools at the top edge and feathers out. */
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--panel-tint) 26%, transparent) 0%,
-    transparent 100%
-  );
+  /* Soft wash from the active skin: studio --dk-bar-bg is the original tint
+     gradient (unchanged); classic/aqua supply their own header fill. */
+  background: var(--dk-bar-bg);
   border-bottom: 1px solid color-mix(in oklab, var(--ink) 8%, transparent);
   user-select: none;
   flex-shrink: 0;
@@ -205,6 +214,49 @@ html[data-chrome='ink'] .title-bar {
   cursor: grab;
 }
 
+/* ── Traffic lights (panel.html / widget.html title bars) ─────────────────
+   macOS-style cluster on the left; glyphs hover-reveal on the whole bar. The
+   right .bar-end mirrors the cluster width so .bar-title stays centered. chat
+   keeps its own MoonFace bar and never renders these. */
+.dock-lights {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.bar-end {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+  min-width: 52px; /* ≈ the 3-dot cluster width, so the title centers */
+}
+.light {
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  line-height: 1;
+  color: rgba(0, 0, 0, 0.55);
+}
+.light-close { background: #ff5f57; }
+.light-min { background: #febc2e; }
+.light-zoom { background: #28c840; }
+/* Glyphs appear only on hover (macOS pattern). */
+.light::before { opacity: 0; transition: opacity 0.12s ease; }
+.title-bar:hover .light::before,
+.light:focus-visible::before { opacity: 1; }
+.light-close::before { content: '\00d7'; }   /* × */
+.light-min::before { content: '\2013'; }      /* – */
+.light-zoom::before { content: '\002b'; }     /* + */
+
 /* Watercolor blot beside the title — takes the window's tint. The slightly
    irregular radius reads hand-painted; the wobble filter (when the page
    carries the #wc-wobble defs) roughs the edge. */
@@ -221,14 +273,30 @@ html[data-chrome='ink'] .title-bar {
 .bar-title {
   flex: 1;
   min-width: 0;
-  font-family: var(--font-hand);
-  font-size: 16px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  color: var(--ink);
+  /* Title typography from the active skin. Studio resolves to the original
+     handwritten Caveat 16px/600 (unchanged); classic switches to an uppercase
+     tracked sans, aqua keeps the hand but the skin can retune it. */
+  font-family: var(--dk-title-font, var(--font-hand));
+  font-size: var(--dk-title-size, 16px);
+  font-weight: var(--dk-title-weight, 600);
+  letter-spacing: var(--dk-title-spacing, 0.01em);
+  text-transform: var(--dk-title-transform, none);
+  color: var(--dk-title-color, var(--ink));
+  /* Centered between the traffic lights and the balancing .bar-end. */
+  text-align: center;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ── Anchor (chat) accent ──────────────────────────────────────────────────
+   moon-dock.js stamps html[data-anchor="true"] on the chat window so its bar
+   takes the accent fill + title color generically (no page-specific code). */
+html[data-anchor='true'] .title-bar {
+  background: var(--dk-bar-bg-anchor);
+}
+html[data-anchor='true'] .bar-title {
+  color: var(--dk-title-color-anchor, var(--ink));
 }
 
 .close-btn {

@@ -1993,6 +1993,73 @@ fn dock_outline_sides(
     out
 }
 
+/// Which CORNERS of each member sit at an interior weld seam and should square
+/// off? A corner squares only when a flush neighbour (≤EPS gap) actually REACHES
+/// it — probed `IN` px inward from the corner along the meeting edges — so a
+/// partial-width weld keeps its still-exposed corners round. Each corner squares
+/// if a neighbour is welded on EITHER edge meeting there and spans far enough to
+/// cover the probe point. Pure geometry; the dock client maps the result to
+/// per-corner border-radius (0 = squared). Same EPS as dock_outline_sides /
+/// dock_seams so the corner squares for exactly the seams Rust counts as flush.
+///
+/// Inset-invariant: every painted card is inset a uniform `--card-inset` (22px)
+/// inside its OS frame, so frame-space adjacency == card-space adjacency and the
+/// probe needs NO inset correction (the inset cancels on both windows).
+fn dock_weld_corners(
+    rects: &[(String, (i32, i32, i32, i32))], // (label, (x, y, w, h))
+) -> std::collections::HashMap<String, Vec<&'static str>> {
+    const EPS: i32 = 2;
+    const IN: i32 = 6; // probe inset from the corner along each edge
+    let mut out = std::collections::HashMap::new();
+    for (label, (x, y, w, h)) in rects {
+        let (l, t, r, b) = (*x, *y, x + w, y + h);
+        let (mut tl, mut tr, mut br, mut bl) = (false, false, false, false);
+        for (other, (ox, oy, ow, oh)) in rects {
+            // Never self; never the hub (the moon is alignment-only and is never
+            // truly welded — defense-in-depth, it is never a group member).
+            if other == label || other == "main" {
+                continue;
+            }
+            let (ol, ot, or_, ob) = (*ox, *oy, ox + ow, oy + oh);
+            let flush_left = (l - or_).abs() <= EPS; // `other` sits on a's left
+            let flush_right = (r - ol).abs() <= EPS; // `other` sits on a's right
+            let flush_top = (t - ob).abs() <= EPS; // `other` sits above a
+            let flush_bottom = (b - ot).abs() <= EPS; // `other` sits below a
+            let covers_y = |py: i32| ot - EPS <= py && py <= ob + EPS;
+            let covers_x = |px: i32| ol - EPS <= px && px <= or_ + EPS;
+            // A corner squares when a left/right neighbour reaches it vertically
+            // OR a top/bottom neighbour reaches it horizontally.
+            if (flush_left && covers_y(t + IN)) || (flush_top && covers_x(l + IN)) {
+                tl = true;
+            }
+            if (flush_right && covers_y(t + IN)) || (flush_top && covers_x(r - IN)) {
+                tr = true;
+            }
+            if (flush_right && covers_y(b - IN)) || (flush_bottom && covers_x(r - IN)) {
+                br = true;
+            }
+            if (flush_left && covers_y(b - IN)) || (flush_bottom && covers_x(l + IN)) {
+                bl = true;
+            }
+        }
+        let mut corners: Vec<&'static str> = Vec::new();
+        if tl {
+            corners.push("tl");
+        }
+        if tr {
+            corners.push("tr");
+        }
+        if br {
+            corners.push("br");
+        }
+        if bl {
+            corners.push("bl");
+        }
+        out.insert(label.clone(), corners);
+    }
+    out
+}
+
 /// One interior dock seam, from the OWNING window's point of view: the badge
 /// sits on this window's `edge` ("r"|"b"), centered at (`x`, `y`) in the
 /// window's LOCAL logical px. Serialized into the `dock-group` payload; the
@@ -2134,7 +2201,7 @@ fn dock_apply_and_notify(
     for label in notify {
         let members = s.members_of(&label);
         let payload = if members.is_empty() {
-            serde_json::json!({ "for": label, "grouped": false, "members": [], "outlineSides": [] })
+            serde_json::json!({ "for": label, "grouped": false, "members": [], "outlineSides": [], "weldCorners": [] })
         } else {
             let rects: Vec<(String, (i32, i32, i32, i32))> = members
                 .iter()
@@ -2145,6 +2212,7 @@ fn dock_apply_and_notify(
                 .collect();
             let outline = dock_outline_sides(&rects);
             let seams = dock_seams(&rects);
+            let weld = dock_weld_corners(&rects);
             serde_json::json!({
                 "for": label,
                 "grouped": true,
@@ -2153,6 +2221,8 @@ fn dock_apply_and_notify(
                 // The owned seam badges, placed by Rust (single source of truth);
                 // the page renders them directly, no geometry fan-out.
                 "seams": seams.get(&label).cloned().unwrap_or_default(),
+                // Corners to square at an interior weld seam (subset of tl/tr/br/bl).
+                "weldCorners": weld.get(&label).cloned().unwrap_or_default(),
             })
         };
         let _ = app.emit_to(tauri::EventTarget::labeled(&label), "dock-group", payload);
@@ -2423,6 +2493,7 @@ fn set_dock(
                         "grouped": false,
                         "members": [],
                         "outlineSides": [],
+                        "weldCorners": [],
                         "exMembers": remaining,
                     }),
                 );
@@ -2500,6 +2571,7 @@ fn dock_group_state(
         "grouped": !members.is_empty(),
         "members": members,
         "outlineSides": [],
+        "weldCorners": [],
     })
 }
 
@@ -3430,7 +3502,7 @@ mod tests {
 
 #[cfg(test)]
 mod dock_tests {
-    use super::{dock_outline_sides, dock_seams, DockGroups, DockSeam};
+    use super::{dock_outline_sides, dock_seams, dock_weld_corners, DockGroups, DockSeam};
 
     fn attaches(diff: &[(String, String, bool)]) -> Vec<(String, String)> {
         diff.iter()
@@ -3552,6 +3624,80 @@ mod dock_tests {
         ];
         let out = dock_outline_sides(&rects);
         assert_eq!(out["a"], vec!["l", "r", "t", "b"]);
+    }
+
+    // dock_weld_corners — per-corner squaring. The headless heart of Phase 3:
+    // a corner squares only when a flush neighbour reaches it (probed 6px in).
+    #[test]
+    fn weld_vertical_pair_squares_only_the_inner_corners() {
+        // a stacked above b, same 200px width, flush at y=300.
+        let rects = vec![
+            ("a".to_string(), (0, 0, 200, 300)),
+            ("b".to_string(), (0, 300, 200, 300)),
+        ];
+        let out = dock_weld_corners(&rects);
+        // a's bottom edge is welded → bottom corners square; top stays round.
+        assert_eq!(out["a"], vec!["br", "bl"]);
+        // b's top edge is welded → top corners square; bottom stays round.
+        assert_eq!(out["b"], vec!["tl", "tr"]);
+    }
+
+    #[test]
+    fn weld_partial_width_squares_only_the_covered_corner() {
+        // a is full width (200); b sits below but only covers a's left half
+        // [0,100]. a's bottom-LEFT is reached (probe x=6 covered), bottom-RIGHT
+        // is NOT (probe x=194 falls past b's right edge + EPS) → stays round.
+        let rects = vec![
+            ("a".to_string(), (0, 0, 200, 300)),
+            ("b".to_string(), (0, 300, 100, 300)),
+        ];
+        let out = dock_weld_corners(&rects);
+        assert_eq!(out["a"], vec!["bl"]);
+        // b is fully under a's width, so both its top corners are reached.
+        assert_eq!(out["b"], vec!["tl", "tr"]);
+    }
+
+    #[test]
+    fn weld_l_trio_keeps_the_exposed_outer_corner_round() {
+        // a top-left, b flush on a's right, c flush below a → a is welded on its
+        // right + bottom, so tr/br/bl square but the exposed tl stays round.
+        let rects = vec![
+            ("a".to_string(), (0, 0, 200, 200)),
+            ("b".to_string(), (200, 0, 200, 200)),
+            ("c".to_string(), (0, 200, 200, 200)),
+        ];
+        let out = dock_weld_corners(&rects);
+        assert_eq!(out["a"], vec!["tr", "br", "bl"]);
+    }
+
+    #[test]
+    fn weld_ignores_near_miss_and_thin_partial() {
+        // A 10px gap is not flush; a corner-only graze (probe point not reached)
+        // leaves every corner round.
+        let rects = vec![
+            ("a".to_string(), (0, 0, 200, 200)),
+            ("gap".to_string(), (210, 0, 200, 200)), // 10px gap on the right
+        ];
+        let out = dock_weld_corners(&rects);
+        assert_eq!(out["a"], Vec::<&str>::new());
+    }
+
+    #[test]
+    fn weld_ungrouped_single_rect_is_empty() {
+        let rects = vec![("solo".to_string(), (0, 0, 200, 200))];
+        let out = dock_weld_corners(&rects);
+        assert_eq!(out["solo"], Vec::<&str>::new());
+    }
+
+    #[test]
+    fn weld_never_against_the_hub() {
+        // The alignment-only moon never welds a corner, even if flush.
+        let rects = vec![
+            ("widget-a".to_string(), (0, 0, 200, 200)),
+            ("main".to_string(), (200, 0, 200, 200)),
+        ];
+        let out = dock_weld_corners(&rects);
+        assert_eq!(out["widget-a"], Vec::<&str>::new());
     }
 
     // dock_seams is the Rust source of truth for badge placement; these mirror

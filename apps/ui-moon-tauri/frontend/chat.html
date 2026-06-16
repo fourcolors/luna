@@ -23,6 +23,8 @@
   <!-- Palette TOKENS (3 watercolor palettes × light/dark). Load BEFORE moon-theme.css
        so token definitions are ready when the chrome layer references them. -->
   <link rel="stylesheet" href="vendor/moon-palette.css">
+  <!-- Skin tokens (--dk-*): AFTER palette (references it), BEFORE theme (consumes it). -->
+  <link rel="stylesheet" href="vendor/moon-skins.css">
   <!-- Shared theme (tokens + widget-window chrome) loads BEFORE the page
        style so page-specific rules win ties. -->
   <link rel="stylesheet" href="vendor/moon-theme.css">
