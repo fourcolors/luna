@@ -30,6 +30,54 @@
   var PROTOCOL_VERSION = '2026-01-26';
   var HOST_NAME = 'luna-moon';
 
+  // ── G1 theme-across-the-sandbox (mirror packages/ui-shared/src/mcp-app-host.ts;
+  //    asserted equal by the host-theme parity test). One mapping: Luna
+  //    watercolor tokens → SEP-1865 standard host style variables, shipped in
+  //    the ui/initialize result + host-context-changed so any MCP app themes by
+  //    writing var(--color-*) and inherits Luna's look. ───────────────────────
+  var LUNA_SEP_MAP = [
+    ['--paper', ['--color-background-primary']],
+    ['--paper-2', ['--color-background-secondary']],
+    ['--wash-1', ['--color-background-tertiary']],
+    ['--ink', ['--color-text-primary']],
+    ['--ink-soft', ['--color-text-secondary']],
+    ['--ink-faint', ['--color-text-tertiary', '--color-border-primary']],
+    ['--accent', ['--color-ring-primary']],
+    ['--font-chat', ['--font-sans']],
+    ['--font-mono', ['--font-mono']],
+    ['--radius', ['--border-radius-md']]
+  ];
+
+  /** Pure: map a Luna-token reader → the SEP host-style context. Empty tokens
+   *  are omitted (apps fall back to their own defaults). */
+  function buildHostStyleContext(readToken, theme) {
+    var variables = {};
+    for (var i = 0; i < LUNA_SEP_MAP.length; i++) {
+      var luna = LUNA_SEP_MAP[i][0];
+      var seps = LUNA_SEP_MAP[i][1];
+      var v = (readToken(luna) || '').trim();
+      if (v === '') continue;
+      for (var j = 0; j < seps.length; j++) variables[seps[j]] = v;
+    }
+    return { theme: theme === 'light' ? 'light' : 'dark', styles: { variables: variables } };
+  }
+
+  /** Read the live host style context off a document (defaults to this window's).
+   *  Inline custom props win over computed (test-friendly + prod-correct). */
+  function readHostStyleContext(doc) {
+    var d = doc || (typeof document !== 'undefined' ? document : undefined);
+    if (!d || !d.documentElement) return { theme: 'dark', styles: { variables: {} } };
+    var el = d.documentElement;
+    var computed = typeof getComputedStyle === 'function' ? getComputedStyle(el) : null;
+    function read(name) {
+      var inline = el.style.getPropertyValue(name);
+      if (inline && inline.trim() !== '') return inline;
+      return computed ? computed.getPropertyValue(name) : '';
+    }
+    var theme = el.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+    return buildHostStyleContext(read, theme);
+  }
+
   // ── Pure JSON-RPC shape helpers (exported for unit tests) ──────────────
   function isRpc(m) {
     return !!m && typeof m === 'object' && m.jsonrpc === '2.0';
@@ -71,6 +119,7 @@
     var onError = typeof opts.onError === 'function' ? opts.onError : function () {};
     var disposed = false;
     var initializedSeen = false;
+    var themeObserver = null;
 
     function reply(msg) {
       try {
@@ -87,6 +136,7 @@
 
       if (isRpcRequest(m)) {
         if (m.method === 'ui/initialize') {
+          var ctx = readHostStyleContext();
           reply({
             jsonrpc: '2.0',
             id: m.id,
@@ -94,6 +144,9 @@
               protocolVersion: PROTOCOL_VERSION,
               host: { name: HOST_NAME },
               capabilities: { serverTools: {} },
+              // G1: hand the app its theme up front → correct first paint.
+              theme: ctx.theme,
+              styles: ctx.styles,
             },
           });
           return;
@@ -142,6 +195,24 @@
 
     g.addEventListener('message', onMessage);
 
+    // G1: push remapped theme vars when the host page's palette/theme/font
+    // changes, so already-mounted panels re-theme live (host-context-changed).
+    if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined' && document.documentElement) {
+      themeObserver = new MutationObserver(function () {
+        if (disposed) return;
+        var ctx = readHostStyleContext();
+        reply({
+          jsonrpc: '2.0',
+          method: 'ui/notifications/host-context-changed',
+          params: { theme: ctx.theme, styles: ctx.styles },
+        });
+      });
+      themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['data-theme', 'data-palette', 'data-font', 'data-fontsize', 'data-chrome'],
+      });
+    }
+
     var sb = g.LunaWidgetSandbox;
 
     if (inlineHtml !== null) {
@@ -181,6 +252,10 @@
       dispose: function () {
         disposed = true;
         g.removeEventListener('message', onMessage);
+        if (themeObserver) {
+          themeObserver.disconnect();
+          themeObserver = null;
+        }
       },
     };
   }
@@ -191,5 +266,9 @@
     HOST_NAME: HOST_NAME,
     isRpcRequest: isRpcRequest,
     isRpcNotification: isRpcNotification,
+    // Exported for the host-theme mapping + parity tests.
+    LUNA_SEP_MAP: LUNA_SEP_MAP,
+    buildHostStyleContext: buildHostStyleContext,
+    readHostStyleContext: readHostStyleContext,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

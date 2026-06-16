@@ -24,6 +24,68 @@ import { buildGeneratedAppSrcdoc, buildMcpSrcdoc } from "./widget-sandbox.js"
 export const PROTOCOL_VERSION = "2026-01-26"
 export const HOST_NAME = "luna-web"
 
+/**
+ * G1 — theme across the sandbox. Luna watercolor token → SEP-1865 standardized
+ * host style variable(s). This ONE table is the standardization seam: the host
+ * reads these tokens off its own document and ships them in the `ui/initialize`
+ * result (+ `ui/notifications/host-context-changed`) under the spec's standard
+ * variable names, so ANY MCP app — ours or a third party's — themes by writing
+ * `var(--color-background-primary)` etc. and inherits Luna's look for free.
+ * Keep in lockstep with `apps/ui-moon-tauri/frontend/vendor/mcp-app-host.js`
+ * (asserted by the host-theme parity test).
+ */
+export const LUNA_SEP_MAP: ReadonlyArray<readonly [string, ReadonlyArray<string>]> = [
+  ["--paper", ["--color-background-primary"]],
+  ["--paper-2", ["--color-background-secondary"]],
+  ["--wash-1", ["--color-background-tertiary"]],
+  ["--ink", ["--color-text-primary"]],
+  ["--ink-soft", ["--color-text-secondary"]],
+  ["--ink-faint", ["--color-text-tertiary", "--color-border-primary"]],
+  ["--accent", ["--color-ring-primary"]],
+  ["--font-chat", ["--font-sans"]],
+  ["--font-mono", ["--font-mono"]],
+  ["--radius", ["--border-radius-md"]],
+]
+
+export interface HostStyleContext {
+  readonly theme: "light" | "dark"
+  readonly styles: { readonly variables: Record<string, string> }
+}
+
+/** Pure: map a Luna-token reader → the SEP host-style context. Tokens that read
+ *  empty are omitted, so apps fall back to their own defaults (spec: all host
+ *  style variables are optional). Exported for the mapping + parity tests. */
+export const buildHostStyleContext = (
+  readToken: (name: string) => string,
+  theme: string,
+): HostStyleContext => {
+  const variables: Record<string, string> = {}
+  for (const [luna, seps] of LUNA_SEP_MAP) {
+    const v = (readToken(luna) || "").trim()
+    if (v === "") continue
+    for (const sep of seps) variables[sep] = v
+  }
+  return { theme: theme === "light" ? "light" : "dark", styles: { variables } }
+}
+
+/** Read the live host style context off a document (defaults to the host page).
+ *  Inline custom props win over computed ones — keeps the read test-friendly
+ *  (set inline) and correct in prod (stylesheet-driven `:root` tokens). */
+export const readHostStyleContext = (doc?: Document): HostStyleContext => {
+  const d = doc || (typeof document !== "undefined" ? document : undefined)
+  if (!d || !d.documentElement) return { theme: "dark", styles: { variables: {} } }
+  const el = d.documentElement
+  const computed =
+    typeof getComputedStyle === "function" ? getComputedStyle(el) : null
+  const read = (name: string): string => {
+    const inline = el.style.getPropertyValue(name)
+    if (inline && inline.trim() !== "") return inline
+    return computed ? computed.getPropertyValue(name) : ""
+  }
+  const theme = el.getAttribute("data-theme") === "light" ? "light" : "dark"
+  return buildHostStyleContext(read, theme)
+}
+
 interface RpcMessage {
   jsonrpc?: string
   method?: string
@@ -87,6 +149,7 @@ export const host = (opts: McpHostOptions): McpHostHandle => {
   const onError = typeof opts.onError === "function" ? opts.onError : () => {}
   let disposed = false
   let initializedSeen = false
+  let themeObserver: MutationObserver | null = null
 
   const reply = (msg: unknown): void => {
     try {
@@ -104,6 +167,7 @@ export const host = (opts: McpHostOptions): McpHostHandle => {
 
     if (isRpcRequest(m)) {
       if (m.method === "ui/initialize") {
+        const ctx = readHostStyleContext()
         reply({
           jsonrpc: "2.0",
           id: m.id,
@@ -111,6 +175,10 @@ export const host = (opts: McpHostOptions): McpHostHandle => {
             protocolVersion: PROTOCOL_VERSION,
             host: { name: HOST_NAME },
             capabilities: { serverTools: {} },
+            // G1: host hands the app its theme up front, so first paint is
+            // already correct (no flash of unthemed content).
+            theme: ctx.theme,
+            styles: ctx.styles,
           },
         })
         return
@@ -159,6 +227,31 @@ export const host = (opts: McpHostOptions): McpHostHandle => {
 
   window.addEventListener("message", onMessage)
 
+  // G1: when the operator switches palette/theme/font on the host page, push the
+  // remapped variables so already-mounted panels re-theme live (spec
+  // `ui/notifications/host-context-changed`). The appearance module re-stamps
+  // these `data-*` attributes on <html>; we observe them directly so the source
+  // of the change (storage event, settings panel, anything) doesn't matter.
+  if (
+    typeof MutationObserver !== "undefined" &&
+    typeof document !== "undefined" &&
+    document.documentElement
+  ) {
+    themeObserver = new MutationObserver(() => {
+      if (disposed) return
+      const ctx = readHostStyleContext()
+      reply({
+        jsonrpc: "2.0",
+        method: "ui/notifications/host-context-changed",
+        params: { theme: ctx.theme, styles: ctx.styles },
+      })
+    })
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme", "data-palette", "data-font", "data-fontsize", "data-chrome"],
+    })
+  }
+
   if (inlineHtml !== null) {
     // Generated / store-backed app: mount inline in the generated-app cage
     // (CSP + window.mcp helper). The same-server tool rule + curated allowlist
@@ -186,6 +279,10 @@ export const host = (opts: McpHostOptions): McpHostHandle => {
     dispose: () => {
       disposed = true
       window.removeEventListener("message", onMessage)
+      if (themeObserver) {
+        themeObserver.disconnect()
+        themeObserver = null
+      }
     },
   }
 }

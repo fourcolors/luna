@@ -99,4 +99,17 @@ describe("widget-sandbox security invariants (the ES source of truth)", () => {
     expect(Shared.buildMcpSrcdoc("<p>x</p>")).not.toContain("window.luna")
     expect(Shared.buildSrcdoc("<p>x</p>")).toContain("window.luna")
   })
+
+  it("the MCP-app cages carry the passive theme shim; the legacy widget cage does not", () => {
+    const marker = "ui/notifications/host-context-changed"
+    // Every MCP-app cage themes automatically — the shim is present.
+    expect(Shared.buildMcpSrcdoc("<p>x</p>")).toContain(marker)
+    expect(Shared.buildGeneratedAppSrcdoc("<p>x</p>")).toContain(marker)
+    // The legacy luna.* widget cage is untouched (no MCP theme channel feeds it).
+    expect(Shared.buildSrcdoc("<p>x</p>")).not.toContain(marker)
+    // The theme shim grants NO capability: it references neither bridge.
+    const bare = Shared.buildMcpSrcdoc("<p>x</p>")
+    expect(bare).not.toContain("window.luna")
+    expect(bare).not.toContain("window.mcp")
+  })
 })

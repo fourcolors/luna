@@ -38,7 +38,7 @@
     },
     "apps/ui-moon-tauri": {
       "name": "@luna/ui-moon-tauri",
-      "version": "0.0.30",
+      "version": "0.0.32",
       "devDependencies": {
         "@tauri-apps/cli": "^2.1.0",
         "jsdom": "^29.1.1",
@@ -48,6 +48,7 @@
       "name": "@luna/ui-web",
       "version": "0.0.1",
       "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.29.0",
         "@xterm/addon-fit": "^0.11.0",
         "@xterm/xterm": "^6.0.0",
         "shiki": "^4.0.2",
