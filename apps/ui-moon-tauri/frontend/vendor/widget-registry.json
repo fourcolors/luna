@@ -28,8 +28,8 @@
       "page": "panel.html?type=settings.updates",
       "trust": "system",
       "singleton": true,
-      "width": 360,
-      "height": 200,
+      "width": 380,
+      "height": 440,
       "description": "Check for Luna Moon app updates and install them"
     },
     {
