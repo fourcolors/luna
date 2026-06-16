@@ -16,12 +16,13 @@
   'use strict';
   g.LunaPanelTypes = g.LunaPanelTypes || {};
 
-  // The eight settings panels, in the hub launcher's order.
+  // The settings panels, in the hub launcher's order.
   var PANELS = [
     { kind: 'settings.general',     label: 'General' },
     { kind: 'settings.appearance',  label: 'Appearance' },
     { kind: 'settings.connection',  label: 'Connection' },
     { kind: 'settings.voice',      label: 'Voice' },
+    { kind: 'settings.models',     label: 'Models' },
     { kind: 'settings.vault',      label: 'Vault' },
     { kind: 'settings.skills',     label: 'Skills' },
     { kind: 'settings.connectors', label: 'Connectors' },

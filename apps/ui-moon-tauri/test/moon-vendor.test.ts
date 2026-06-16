@@ -81,7 +81,7 @@ describe('moon-protocol.js', () => {
     expect(P().parseHelloCapabilities({})).toEqual({
       turnComplete: false, skills: false, connectors: false,
       artifacts: false, workflows: false, vault: false, mcpApps: false,
-      subagents: false, effortSelection: false,
+      subagents: false, effortSelection: false, modelRouting: false,
     })
     expect(P().parseHelloCapabilities(undefined).vault).toBe(false)
     expect(P().parseHelloCapabilities(undefined).effortSelection).toBe(false)

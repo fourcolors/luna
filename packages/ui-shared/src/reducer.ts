@@ -501,6 +501,15 @@ export const reduce = (state: UIState, action: Action): UIState => {
       // folded into persistent store state (the fresh vault-list that follows
       // a successful mutation already updates the list).
       return state
+    case "model-routing-list":
+      // Server-authoritative model-routing config (metadata + opaque refs only;
+      // no secret values). Consumed directly by the settings-models panel via
+      // its own WS registry; the shared store does not need to cache it.
+      return state
+    case "model-routing-status":
+      // Save-ack consumed by the settings-models panel pending-request tracker.
+      // No shared store state to update.
+      return state
     case "thread-config":
       // Ack for set-thread-config. The store has no model/effort state today
       // (that lives in cfg().model/cfg().effort in App.tsx). The UI layer

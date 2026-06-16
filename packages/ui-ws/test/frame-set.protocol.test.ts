@@ -113,6 +113,8 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "mcp-tool-result",
   "thread-config",
   "smart-bar",
+  "model-routing-list",
+  "model-routing-status",
   // Phase 3: thread archival (additive, behind status awareness)
   "thread-archived",
   "thread-unarchived",
@@ -159,6 +161,7 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "mcp-resource-read",
   "mcp-tool-call",
   "set-thread-config",
+  "model-routing-save",
   // Phase 3: thread archival (additive, behind status awareness)
   "archive-thread",
   "unarchive-thread",
@@ -288,8 +291,10 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // Phase 3 (thread archival) adds thread-archived + thread-unarchived (server)
     // and archive-thread + unarchive-thread (client) → 52 server / 40 client.
     // Phase 3 Copilot fix: thread-archive-error adds one more server frame → 53.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(53)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(40)
+    // Model-routing settings (PR 1) adds model-routing-list + model-routing-status
+    // (server) and model-routing-save (client) → 55 server / 41 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(55)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(41)
   })
 
   // VERSION-SKEW (client half): nothing else pins the ui-shared wire.ts mirror
