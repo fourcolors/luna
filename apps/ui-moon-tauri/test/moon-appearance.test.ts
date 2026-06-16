@@ -25,6 +25,7 @@ beforeEach(() => {
   el().removeAttribute('data-palette')
   el().removeAttribute('data-theme')
   el().removeAttribute('data-chrome')
+  el().removeAttribute('data-skin')
   el().removeAttribute('data-grain')
   delete (window as any).LunaAppearance
 })
@@ -64,6 +65,7 @@ describe('fresh load (no stored keys)', () => {
       palette: 'tide',
       theme: 'dark',
       chrome: 'wash',
+      skin: 'studio',
       grain: false,
       font: 'sans',
       fontSize: 'medium',
@@ -379,6 +381,80 @@ describe('font + fontSize', () => {
 })
 
 // ---------------------------------------------------------------------------
+// 6c. skin — the --dk-* skin dimension (studio / classic / aqua)
+// ---------------------------------------------------------------------------
+describe('skin', () => {
+  it('stamps default data-skin="studio" on fresh load', () => {
+    loadVendorInto(window, 'moon-appearance.js')
+    expect(el().getAttribute('data-skin')).toBe('studio')
+    expect(A().get().skin).toBe('studio')
+  })
+
+  it('reads stored skin=classic from localStorage', () => {
+    window.localStorage.setItem('luna_skin', 'classic')
+    loadVendorInto(window, 'moon-appearance.js')
+    expect(el().getAttribute('data-skin')).toBe('classic')
+  })
+
+  it('set("skin","aqua") persists + stamps data-skin', () => {
+    loadVendorInto(window, 'moon-appearance.js')
+    A().set('skin', 'aqua')
+    expect(window.localStorage.getItem('luna_skin')).toBe('aqua')
+    expect(el().getAttribute('data-skin')).toBe('aqua')
+  })
+
+  it('unknown skin value falls back to "studio"', () => {
+    window.localStorage.setItem('luna_skin', 'hologram')
+    loadVendorInto(window, 'moon-appearance.js')
+    expect(el().getAttribute('data-skin')).toBe('studio')
+  })
+
+  it('set with an invalid skin is a no-op', () => {
+    loadVendorInto(window, 'moon-appearance.js')
+    A().set('skin', 'hologram')
+    expect(el().getAttribute('data-skin')).toBe('studio')
+    expect(window.localStorage.getItem('luna_skin')).toBe(null)
+  })
+
+  it('storage event for luna_skin re-applies the new value', () => {
+    loadVendorInto(window, 'moon-appearance.js')
+    window.localStorage.setItem('luna_skin', 'aqua')
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: 'luna_skin',
+      newValue: 'aqua',
+      storageArea: window.localStorage,
+    }))
+    expect(el().getAttribute('data-skin')).toBe('aqua')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 6d. moon-skins.css carries the three skin blocks + the token contract
+// ---------------------------------------------------------------------------
+describe('moon-skins.css token contract', () => {
+  const skinsCss = fs.readFileSync(
+    path.resolve(__dirname, '../frontend/vendor/moon-skins.css'),
+    'utf8',
+  )
+
+  it('defines studio (html), classic, and aqua skin blocks', () => {
+    expect(skinsCss).toMatch(/(^|\n)html\s*\{/)
+    expect(skinsCss).toContain("html[data-skin='classic']")
+    expect(skinsCss).toContain("html[data-skin='aqua']")
+  })
+
+  it('classic squares the corners (4px) and uppercases the title', () => {
+    expect(skinsCss).toContain('--dk-radius: 4px')
+    expect(skinsCss).toContain('--dk-title-transform: uppercase')
+  })
+
+  it('aqua enlarges the radius (18px) and frosts (blur 16px)', () => {
+    expect(skinsCss).toContain('--dk-radius: 18px')
+    expect(skinsCss).toContain('--dk-blur: 16px')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // 7. API surface — get().grain is boolean; KEYS/DEFAULTS exposed
 // ---------------------------------------------------------------------------
 describe('API surface', () => {
@@ -390,21 +466,23 @@ describe('API surface', () => {
     expect(typeof A().get().grain).toBe('boolean')
   })
 
-  it('KEYS maps the six preference names', () => {
+  it('KEYS maps the preference names', () => {
     const keys = A().KEYS
     expect(keys.palette).toBe('luna_palette')
     expect(keys.theme).toBe('luna_theme')
     expect(keys.chrome).toBe('luna_chrome')
+    expect(keys.skin).toBe('luna_skin')
     expect(keys.grain).toBe('luna_grain')
     expect(keys.font).toBe('luna_font')
     expect(keys.fontSize).toBe('luna_fontsize')
   })
 
-  it('DEFAULTS maps the six preference names', () => {
+  it('DEFAULTS maps the preference names', () => {
     const defaults = A().DEFAULTS
     expect(defaults.palette).toBe('tide')
     expect(defaults.theme).toBe('dark')
     expect(defaults.chrome).toBe('wash')
+    expect(defaults.skin).toBe('studio')
     expect(defaults.grain).toBe('false')
     expect(defaults.font).toBe('sans')
     expect(defaults.fontSize).toBe('medium')

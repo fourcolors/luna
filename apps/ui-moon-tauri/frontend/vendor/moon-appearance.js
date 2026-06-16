@@ -34,6 +34,7 @@
     palette: 'luna_palette',
     theme: 'luna_theme',
     chrome: 'luna_chrome',
+    skin: 'luna_skin',
     grain: 'luna_grain',
     font: 'luna_font',
     fontSize: 'luna_fontsize',
@@ -43,6 +44,7 @@
     palette: ['dawn', 'meadow', 'tide'],
     theme: ['light', 'dark'],
     chrome: ['wash', 'ink'],
+    skin: ['studio', 'classic', 'aqua'],
     grain: ['true', 'false'],
     font: ['sans', 'serif', 'mono', 'hand'],
     fontSize: ['small', 'medium', 'large', 'xlarge'],
@@ -52,6 +54,7 @@
     palette: 'tide',
     theme: 'dark',
     chrome: 'wash',
+    skin: 'studio',
     grain: 'false',
     font: 'sans',
     fontSize: 'medium',
@@ -71,6 +74,7 @@
     el.setAttribute('data-palette', read('palette'));
     el.setAttribute('data-theme', read('theme'));
     el.setAttribute('data-chrome', read('chrome'));
+    el.setAttribute('data-skin', read('skin'));
     el.setAttribute('data-grain', read('grain') === 'true' ? 'on' : 'off');
     el.setAttribute('data-font', read('font'));
     el.setAttribute('data-fontsize', read('fontSize'));
@@ -89,6 +93,7 @@
       palette: read('palette'),
       theme: read('theme'),
       chrome: read('chrome'),
+      skin: read('skin'),
       grain: read('grain') === 'true',
       font: read('font'),
       fontSize: read('fontSize'),
@@ -100,7 +105,7 @@
   g.addEventListener('storage', function (e) {
     if (e.key === null ||
         e.key === KEYS.palette || e.key === KEYS.theme ||
-        e.key === KEYS.chrome || e.key === KEYS.grain ||
+        e.key === KEYS.chrome || e.key === KEYS.skin || e.key === KEYS.grain ||
         e.key === KEYS.font || e.key === KEYS.fontSize) {
       apply();
     }

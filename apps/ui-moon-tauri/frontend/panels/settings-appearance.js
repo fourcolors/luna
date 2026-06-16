@@ -46,10 +46,46 @@
 
       // ── Swatch helpers ─────────────────────────────────────────────────
 
-      /** Returns the live active palette / theme / chrome / grain state. */
+      /** Returns the live active palette / theme / chrome / skin / grain state. */
       function current() {
         return appearance.get();
       }
+
+      // ── Window skin (studio / classic / aqua) ──────────────────────────
+      // The skin re-binds the --dk-* chrome tokens (vendor/moon-skins.css):
+      // corner radius, paper, header tint, title type, blur. Same chip pattern
+      // as theme/chrome below.
+      var SKIN_OPTIONS = [
+        { value: 'studio',  label: 'studio' },
+        { value: 'classic', label: 'classic' },
+        { value: 'aqua',    label: 'aqua' },
+      ];
+
+      var skinLabel = document.createElement('div');
+      skinLabel.className = 'section-label';
+      skinLabel.textContent = 'Window skin';
+      el.appendChild(skinLabel);
+
+      var skinChipRow = document.createElement('div');
+      skinChipRow.className = 'chip-row';
+
+      var skinChips = {};
+      SKIN_OPTIONS.forEach(function (opt) {
+        var chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'chip' + (current().skin === opt.value ? ' on' : '');
+        chip.textContent = opt.label;
+        chip.addEventListener('click', function () {
+          appearance.set('skin', opt.value);
+          SKIN_OPTIONS.forEach(function (o) {
+            skinChips[o.value].classList.toggle('on', o.value === opt.value);
+          });
+        });
+        skinChips[opt.value] = chip;
+        skinChipRow.appendChild(chip);
+      });
+
+      el.appendChild(skinChipRow);
 
       // ── a. Watercolor palette ──────────────────────────────────────────
       var palLabel = document.createElement('div');
@@ -270,9 +306,12 @@
         var keys = appearance.KEYS;
         if (e.key === null ||
             e.key === keys.palette || e.key === keys.theme ||
-            e.key === keys.chrome  || e.key === keys.grain ||
+            e.key === keys.chrome  || e.key === keys.skin || e.key === keys.grain ||
             e.key === keys.font    || e.key === keys.fontSize) {
           var now = appearance.get();
+          SKIN_OPTIONS.forEach(function (o) {
+            skinChips[o.value].classList.toggle('on', o.value === now.skin);
+          });
           PALETTES.forEach(function (p) {
             swatchBtns[p].classList.toggle('active', p === now.palette);
           });
