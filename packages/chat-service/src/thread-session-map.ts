@@ -1,30 +1,27 @@
 /**
- * thread-session-map — durable on-disk mapping from Luna thread id to the
- * Claude SDK's own session UUID, plus optional model and effort overrides.
+ * thread-session-map — LEGACY fallback for the thread→SDK-session mapping.
  *
- * Why: the Claude Agent SDK persists conversation history per-SDK-session-id
- * as JSONL files under its config dir. When the Luna chat-server restarts,
- * the in-memory `Ref<Map>` tracking thread ↔ runtime-state is wiped, so
- * resuming a thread requires knowing which SDK session UUID it corresponds
- * to. This map closes that gap.
+ * STATUS: RETIRED as the primary durable mechanism. The ThreadRegistry
+ * (luna.db `threads` table, @luna/core) is now the source of truth. This
+ * module is kept ONLY as a headless/no-registry fallback for environments
+ * that do not wire the ThreadRegistry at boot (e.g. older tests, non-server
+ * usage). It is NO LONGER WRITTEN when the ThreadRegistry is present at
+ * chat-server boot (see chat-service.ts: dual-write is gated on
+ * `Option.isNone(threadRegistry)`).
  *
- * Shape: a single JSON file `~/.luna/thread-session-map.json` whose top-level
+ * Migration: on first boot with the ThreadRegistry wired, json-map-importer.ts
+ * performs a one-shot import of any existing entries from this file into
+ * luna.db. After that import the JSON file is treated as read-only; the
+ * registry is the only writer.
+ *
+ * Historical role: a single JSON file `~/.luna/thread-session-map.json`
+ * (doubled path: `$LUNA_HOME/.luna/thread-session-map.json`) whose top-level
  * keys are Luna thread ids (`thr_<base36>_<rand>`) and values are EITHER:
  *   - A bare string (legacy format) — the SDK session UUID.
  *   - An object `{sid?: string, model?: string, effort?: string}` — the SDK
  *     session UUID plus the thread's last-known model and effort selections.
- *     The recovery path (subscribe cache-miss) rebuilds createThread with
- *     these so a recovered thread uses the right model + effort.
- *
- * `sid` is OPTIONAL in the object shape: the SDK session id arrives
- * asynchronously (onSdkSessionId fires around the first turn), so a config
- * selection made before any turn is persisted as a config-only entry that
- * the later sid write merges into. Recovery skips sid-less entries (there
- * is no session to resume) but the intent is never silently dropped.
  *
  * Best-effort by design — disk failures must not break a live chat session.
- * Schema is intentionally tiny so corruption recovery is "delete the file
- * and the next chat round repopulates."
  */
 import {
   existsSync,
