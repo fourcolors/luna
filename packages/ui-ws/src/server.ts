@@ -1964,14 +1964,30 @@ export const startUIWebSocketServer = (
                   }
                   case "archive-thread": {
                     if (chat === null) return
-                    yield* chat.archiveThread(frame.threadId)
-                    send(ws, { type: "thread-archived", threadId: frame.threadId })
+                    const archiveOk = yield* chat.archiveThread(frame.threadId)
+                    if (archiveOk) {
+                      send(ws, { type: "thread-archived", threadId: frame.threadId })
+                    } else {
+                      send(ws, {
+                        type: "thread-archive-error",
+                        threadId: frame.threadId,
+                        reason: "not-found",
+                      })
+                    }
                     return
                   }
                   case "unarchive-thread": {
                     if (chat === null) return
-                    yield* chat.unarchiveThread(frame.threadId)
-                    send(ws, { type: "thread-unarchived", threadId: frame.threadId })
+                    const unarchiveOk = yield* chat.unarchiveThread(frame.threadId)
+                    if (unarchiveOk) {
+                      send(ws, { type: "thread-unarchived", threadId: frame.threadId })
+                    } else {
+                      send(ws, {
+                        type: "thread-archive-error",
+                        threadId: frame.threadId,
+                        reason: "not-found",
+                      })
+                    }
                     return
                   }
                   case "memory-search-request": {

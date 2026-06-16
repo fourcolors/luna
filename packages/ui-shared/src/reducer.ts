@@ -540,6 +540,10 @@ export const reduce = (state: UIState, action: Action): UIState => {
       // by the UI re-querying list-threads after these acks — no persistent
       // store state to fold here (same pattern as vault-status).
       return state
+    case "thread-archive-error":
+      // Phase 3: operation failed (thread not found / registry unavailable).
+      // No persistent state to update; the UI layer handles the refresh.
+      return state
     default: {
       // Exhaustiveness guard: when every ServerFrame member has a matching
       // case arm, TypeScript narrows `frame` to `never` here. Adding a new

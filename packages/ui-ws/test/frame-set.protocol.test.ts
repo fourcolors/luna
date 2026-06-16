@@ -116,6 +116,7 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   // Phase 3: thread archival (additive, behind status awareness)
   "thread-archived",
   "thread-unarchived",
+  "thread-archive-error",
 ].sort()
 
 const EXPECTED_CLIENT_FRAME_TYPES = [
@@ -286,7 +287,8 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // Smart Bar v1 adds smart-bar (server) → 50 server / 38 client.
     // Phase 3 (thread archival) adds thread-archived + thread-unarchived (server)
     // and archive-thread + unarchive-thread (client) → 52 server / 40 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(52)
+    // Phase 3 Copilot fix: thread-archive-error adds one more server frame → 53.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(53)
     expect(literalsForUnion(src, "ClientFrame")).toHaveLength(40)
   })
 
