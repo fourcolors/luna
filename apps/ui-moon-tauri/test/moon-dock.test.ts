@@ -57,10 +57,23 @@ function group(label: string, payload: Record<string, unknown>) {
 
 afterEach(() => {
   document.body.innerHTML = ''
+  document.documentElement.removeAttribute('data-anchor')
   delete (window as any).__TAURI__
   delete (window as any).LunaDock
   delete (window as any).LunaDeckSnap
   vi.restoreAllMocks()
+})
+
+describe('moon-dock wire — chat anchor stamp', () => {
+  it('stamps html[data-anchor="true"] for the chat window', () => {
+    wireWith('panel-chat')
+    expect(document.documentElement.getAttribute('data-anchor')).toBe('true')
+  })
+
+  it('does NOT stamp data-anchor for a non-chat window', () => {
+    wireWith('widget-a')
+    expect(document.documentElement.hasAttribute('data-anchor')).toBe(false)
+  })
 })
 
 describe('moon-dock applyGroupState — weld shadow + anchor', () => {

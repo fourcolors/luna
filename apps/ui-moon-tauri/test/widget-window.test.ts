@@ -173,6 +173,23 @@ describe('widget.html — snap + dock groups', () => {
     expect(movedHandler).toBeTypeOf('function')
   })
 
+  // Phase 5: the traffic-light titlebar keeps the dock-critical ids + drag
+  // region; close still closes, and min/zoom are inert-safe in this env.
+  it('keeps the dock contract ids and a drag region after the lights restyle', () => {
+    expect(document.getElementById('close-btn')).not.toBeNull()
+    expect(document.getElementById('pin-btn')).not.toBeNull()
+    expect(document.getElementById('bar-title')).not.toBeNull()
+    expect(document.querySelector('.dock-lights')).not.toBeNull()
+    expect(document.querySelector('[data-tauri-drag-region]')).not.toBeNull()
+  })
+
+  it('close light invokes close_widget; min/zoom lights never throw', () => {
+    ;(document.getElementById('min-btn') as HTMLButtonElement).click()
+    ;(document.getElementById('zoom-btn') as HTMLButtonElement).click()
+    ;(document.getElementById('close-btn') as HTMLButtonElement).click()
+    expect(invoke).toHaveBeenCalledWith('close_widget', { label: SELF })
+  })
+
   it('snaps flush to the hub but NEVER links with it (alignment-only — pins the getByLabel await)', async () => {
     movedHandler!()
     await vi.advanceTimersByTimeAsync(121)

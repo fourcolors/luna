@@ -22,6 +22,13 @@
     var label = opts && opts.label;
     if (!W) return; // not in Tauri
 
+    // The chat window is the cluster anchor — stamp data-anchor so moon-theme.css
+    // gives its title bar the accent fill/title color (chat keeps its MoonFace
+    // bar; this only re-tints the chrome, generically by attribute).
+    if (label === 'panel-chat') {
+      try { document.documentElement.setAttribute('data-anchor', 'true'); } catch (_) { /* best-effort */ }
+    }
+
     var pinBtn = document.getElementById('pin-btn');
     var seamEl = document.getElementById('seam');
     var outlineEl = document.getElementById('outline');

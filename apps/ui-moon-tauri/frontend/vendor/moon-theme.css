@@ -214,6 +214,49 @@ html[data-chrome='ink'] .title-bar {
   cursor: grab;
 }
 
+/* ── Traffic lights (panel.html / widget.html title bars) ─────────────────
+   macOS-style cluster on the left; glyphs hover-reveal on the whole bar. The
+   right .bar-end mirrors the cluster width so .bar-title stays centered. chat
+   keeps its own MoonFace bar and never renders these. */
+.dock-lights {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.bar-end {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+  min-width: 52px; /* ≈ the 3-dot cluster width, so the title centers */
+}
+.light {
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  line-height: 1;
+  color: rgba(0, 0, 0, 0.55);
+}
+.light-close { background: #ff5f57; }
+.light-min { background: #febc2e; }
+.light-zoom { background: #28c840; }
+/* Glyphs appear only on hover (macOS pattern). */
+.light::before { opacity: 0; transition: opacity 0.12s ease; }
+.title-bar:hover .light::before,
+.light:focus-visible::before { opacity: 1; }
+.light-close::before { content: '\00d7'; }   /* × */
+.light-min::before { content: '\2013'; }      /* – */
+.light-zoom::before { content: '\002b'; }     /* + */
+
 /* Watercolor blot beside the title — takes the window's tint. The slightly
    irregular radius reads hand-painted; the wobble filter (when the page
    carries the #wc-wobble defs) roughs the edge. */
@@ -239,9 +282,21 @@ html[data-chrome='ink'] .title-bar {
   letter-spacing: var(--dk-title-spacing, 0.01em);
   text-transform: var(--dk-title-transform, none);
   color: var(--dk-title-color, var(--ink));
+  /* Centered between the traffic lights and the balancing .bar-end. */
+  text-align: center;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ── Anchor (chat) accent ──────────────────────────────────────────────────
+   moon-dock.js stamps html[data-anchor="true"] on the chat window so its bar
+   takes the accent fill + title color generically (no page-specific code). */
+html[data-anchor='true'] .title-bar {
+  background: var(--dk-bar-bg-anchor);
+}
+html[data-anchor='true'] .bar-title {
+  color: var(--dk-title-color-anchor, var(--ink));
 }
 
 .close-btn {

@@ -92,18 +92,27 @@
 </svg>
 <div class="widget-shell">
   <div class="title-bar" data-tauri-drag-region id="title-bar">
-    <span class="grip" data-tauri-drag-region>⋮⋮</span>
-    <span class="wash-dot" aria-hidden="true"></span>
+    <!-- macOS-style traffic lights (left, glyphs hover-reveal). Close reuses the
+         #close-btn id the page wires to close_widget; min/zoom drive the native
+         window (best-effort). NOT drag-region so clicks aren't swallowed. -->
+    <div class="dock-lights">
+      <button class="light light-close" id="close-btn" type="button" title="Close" aria-label="Close panel"></button>
+      <button class="light light-min" id="min-btn" type="button" title="Minimize" aria-label="Minimize panel"></button>
+      <button class="light light-zoom" id="zoom-btn" type="button" title="Zoom" aria-label="Zoom panel"></button>
+    </div>
     <span class="bar-title" data-tauri-drag-region id="bar-title">Loading…</span>
-    <button class="pin-btn" id="pin-btn" title="Unpin from group" aria-label="Unpin widget from its group" hidden>
-      <!-- Lucide "pin" (ISC) — standard icon, not hand-drawn. -->
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M12 17v5"/>
-        <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>
-      </svg>
-    </button>
-    <button class="close-btn" id="close-btn" title="Close" aria-label="Close panel">✕</button>
+    <!-- Right cluster balances the lights so the title centers; holds the dock
+         pin (shown when grouped). -->
+    <div class="bar-end">
+      <button class="pin-btn" id="pin-btn" title="Unpin from group" aria-label="Unpin widget from its group" hidden>
+        <!-- Lucide "pin" (ISC) — standard icon, not hand-drawn. -->
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 17v5"/>
+          <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>
+        </svg>
+      </button>
+    </div>
   </div>
   <div id="seam" aria-hidden="true"></div>
   <div id="outline" aria-hidden="true"></div>
@@ -137,6 +146,16 @@
         window.__TAURI__.core.invoke('close_widget', { label: label }).catch(function () {});
       }
     } catch (_) { /* best-effort */ }
+  });
+
+  // ── Traffic-light minimize / zoom (best-effort; inert in non-Tauri) ────────
+  var minBtn = document.getElementById('min-btn');
+  var zoomBtn = document.getElementById('zoom-btn');
+  minBtn && minBtn.addEventListener('click', function () {
+    if (W && W.minimize) { try { W.minimize().catch(function () {}); } catch (_) {} }
+  });
+  zoomBtn && zoomBtn.addEventListener('click', function () {
+    if (W && W.toggleMaximize) { try { W.toggleMaximize().catch(function () {}); } catch (_) {} }
   });
 
   function showNotice(text) {
