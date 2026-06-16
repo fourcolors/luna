@@ -830,6 +830,117 @@
       to   { opacity: 0; transform: translateY(8px) scale(0.98); }
     }
 
+    /* ── Update banner (the in-chat update nudge) ──────────────────────────────
+       A slim accent-tinted bar that the UpdateBanner engine inserts as a sibling
+       directly ABOVE .composer-input-wrap (the form is flex-column, so a block
+       before the input wrap sits above the textarea — exactly where the nudge
+       wants to live). Updates are GOOD NEWS: accent/positive palette, never the
+       red/warning styling. Built lazily by the engine; this is just its skin.
+       Mirrors the .result-toast idiom (token-only colors, soft accent wash). */
+    .update-banner {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-radius: 12px;
+      padding: 8px 10px 8px 12px;
+      color: var(--ink);
+      background: color-mix(in oklab, var(--paper, #fffdf7) 90%, var(--accent) 10%);
+      border: 1px solid color-mix(in oklab, var(--accent) 30%, transparent);
+      box-shadow: 0 4px 14px color-mix(in oklab, var(--ink) 12%, transparent);
+      animation: update-banner-in 0.3s ease both;
+    }
+    .update-banner.leaving { animation: update-banner-out 0.2s ease both; }
+    /* The soft pulsing accent dot — a calm "ready" heartbeat, not an alarm. */
+    .update-banner .ub-dot {
+      flex: 0 0 auto;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%,
+        color-mix(in oklab, var(--accent) 88%, white),
+        var(--accent) 70%);
+      box-shadow: 0 0 7px 1px color-mix(in oklab, var(--accent) 55%, transparent);
+      animation: ub-dot-breathe 2.4s ease-in-out infinite;
+    }
+    @keyframes ub-dot-breathe {
+      0%, 100% { transform: scale(0.85); opacity: 0.8; }
+      50%      { transform: scale(1.15); opacity: 1; }
+    }
+    /* Title + sub-line stack, taking the free middle space. */
+    .update-banner .ub-text { flex: 1 1 auto; min-width: 0; }
+    .update-banner .ub-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: color-mix(in oklab, var(--accent) 70%, var(--ink));
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .update-banner .ub-sub {
+      font-size: 0.72rem;
+      color: var(--ink-soft);
+      margin-top: 1px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    /* Primary "Restart" + quiet "What's new" actions. */
+    .update-banner .ub-actions {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .update-banner .ub-btn {
+      font: inherit;
+      font-size: 0.74rem;
+      cursor: pointer;
+      border-radius: 8px;
+      padding: 4px 10px;
+      border: 1px solid color-mix(in oklab, var(--accent) 32%, transparent);
+      background: transparent;
+      color: color-mix(in oklab, var(--accent) 78%, var(--ink));
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .update-banner .ub-btn:hover {
+      background: color-mix(in oklab, var(--accent) 12%, transparent);
+    }
+    .update-banner .ub-btn.primary {
+      background: color-mix(in oklab, var(--accent) 82%, var(--paper));
+      border-color: transparent;
+      color: var(--paper);
+      font-weight: 600;
+    }
+    .update-banner .ub-btn.primary:hover {
+      background: var(--accent);
+    }
+    /* The dismiss "×" — quiet, never the focus of the bar. */
+    .update-banner .ub-dismiss {
+      flex: 0 0 auto;
+      font: inherit;
+      font-size: 1rem;
+      line-height: 1;
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      color: var(--ink-faint);
+      padding: 2px 4px;
+      border-radius: 6px;
+      transition: color 0.15s ease, background 0.15s ease;
+    }
+    .update-banner .ub-dismiss:hover {
+      color: var(--ink-soft);
+      background: color-mix(in oklab, var(--ink) 8%, transparent);
+    }
+    @keyframes update-banner-in {
+      from { opacity: 0; transform: translateY(6px) scale(0.99); }
+      to   { opacity: 1; transform: none; }
+    }
+    @keyframes update-banner-out {
+      from { opacity: 1; transform: none; }
+      to   { opacity: 0; transform: translateY(6px) scale(0.99); }
+    }
+
     /* Markdown tables (GFM). Dark-glass: thin separators, transparent
        background, tight cell padding so the table fits in the 560px-wide
        panel without forcing a horizontal scrollbar on short rows. */
@@ -5375,6 +5486,182 @@
       ResultToasts.show(frame);
     });
 
+    // ── Update banner (staged-update nudge, surface #2) ────────────────────────
+    // The primary in-chat nudge for a staged update: a slim accent bar inserted
+    // as a sibling DIRECTLY BEFORE .composer-input-wrap (the form is
+    // flex-direction:column, so a block before the input wrap renders ABOVE the
+    // textarea — right where the user's eye already is). It only appears once the
+    // Rust updater has DOWNLOADED + VERIFIED a build (update://ready); the
+    // download/apply split is deliberate — nothing restarts on its own, so the
+    // user presses "Restart" when ready. Mirrors the ResultToasts shape (a small
+    // self-contained object, safe DOM, exposed on __MoonInternals for tests).
+    //
+    // Dismissal persists `luna_update_dismissed = <version>` so a version the
+    // user waved off stays hidden until a NEWER build lands (the quiet orb pip in
+    // the hub keeps the ambient hint either way). Updates are GOOD NEWS — accent
+    // palette, gentle copy, never alarming.
+    const UpdateBanner = {
+      _el: null,
+      _version: null,
+
+      // Where the bar lives: directly before .composer-input-wrap inside the
+      // flex-column .chat-input-area. Returns null if the composer isn't present
+      // (e.g. a stripped test DOM) so callers degrade silently.
+      _anchor() {
+        return document.querySelector('.chat-input-area .composer-input-wrap')
+          || document.querySelector('.composer-input-wrap');
+      },
+
+      // True when this version was explicitly dismissed and no newer one exists.
+      _isDismissed(version) {
+        try {
+          const seen = localStorage.getItem('luna_update_dismissed');
+          // Hidden only while the dismissed version is still the newest one we
+          // know about; a different (newer) version re-shows the bar.
+          return !!seen && !!version && seen === version;
+        } catch (_) { return false; }
+      },
+
+      // Build (once) and reveal the bar for `frame.version`. No-op when dismissed
+      // for this exact version. Re-showing for a NEWER version refreshes the copy.
+      onReady(frame) {
+        const f = frame || {};
+        const version = (f && f.version != null) ? String(f.version) : '';
+        if (this._isDismissed(version)) return;
+
+        const anchor = this._anchor();
+        if (!anchor || !anchor.parentNode) return; // no composer → nothing to do
+
+        this._version = version;
+
+        // Reuse an existing bar (idempotent re-show on a newer version), else mint.
+        let bar = this._el;
+        if (!bar || !document.body.contains(bar)) {
+          bar = document.createElement('div');
+          bar.className = 'update-banner';
+          bar.id = 'update-banner';
+
+          const dot = document.createElement('div');
+          dot.className = 'ub-dot';
+          dot.setAttribute('aria-hidden', 'true');
+
+          const text = document.createElement('div');
+          text.className = 'ub-text';
+          const title = document.createElement('div');
+          title.className = 'ub-title';
+          const sub = document.createElement('div');
+          sub.className = 'ub-sub';
+          // textContent only — release version/notes are remote-ish data.
+          sub.textContent = 'Downloaded and verified — restart to apply';
+          text.appendChild(title);
+          text.appendChild(sub);
+
+          const actions = document.createElement('div');
+          actions.className = 'ub-actions';
+          const restart = document.createElement('button');
+          restart.type = 'button';
+          restart.className = 'ub-btn primary';
+          restart.textContent = 'Restart';
+          restart.addEventListener('click', () => this.onApply());
+          const whatsNew = document.createElement('button');
+          whatsNew.type = 'button';
+          whatsNew.className = 'ub-btn';
+          whatsNew.textContent = "What's new";
+          whatsNew.addEventListener('click', () => this._openUpdates());
+          actions.appendChild(restart);
+          actions.appendChild(whatsNew);
+
+          const dismiss = document.createElement('button');
+          dismiss.type = 'button';
+          dismiss.className = 'ub-dismiss';
+          dismiss.setAttribute('aria-label', 'Dismiss update notice');
+          dismiss.textContent = '×'; // ×
+          dismiss.addEventListener('click', () => this.dismiss(this._version));
+
+          bar.appendChild(dot);
+          bar.appendChild(text);
+          bar.appendChild(actions);
+          bar.appendChild(dismiss);
+
+          // Insert as a sibling directly BEFORE the input wrap (above the input).
+          anchor.parentNode.insertBefore(bar, anchor);
+          this._el = bar;
+        }
+
+        // (Re)fill the version-bearing title via textContent (safe DOM).
+        const titleEl = bar.querySelector('.ub-title');
+        if (titleEl) {
+          titleEl.textContent = version
+            ? ('Update ready · v' + version)
+            : 'Update ready';
+        }
+        bar.classList.remove('leaving');
+        bar.hidden = false;
+      },
+
+      // Restart-to-update: persist nothing here (Rust apply_update saves the
+      // layout + writes the reopen marker), just ask the core to install the
+      // STAGED bytes and relaunch. On success the app re-execs (invoke never
+      // resolves); guarded so off-Tauri / pre-Slice-A builds no-op cleanly.
+      onApply() {
+        const core = window.__TAURI__ && window.__TAURI__.core;
+        if (!core) return;
+        core.invoke('apply_update').catch((e) => Logger.warn('apply_update failed:', e));
+      },
+
+      // "What's new" → open the full staged-narrative Updates panel.
+      _openUpdates() {
+        const core = window.__TAURI__ && window.__TAURI__.core;
+        if (!core) return;
+        core.invoke('open_widget', { kind: 'settings.updates' })
+          .catch((e) => Logger.warn('open updates panel failed:', e));
+      },
+
+      // Dismiss: hide + remember the version so it stays hidden until a NEWER
+      // build lands. The orb pip in the hub keeps the ambient hint.
+      dismiss(version) {
+        const v = (version != null) ? String(version) : (this._version || '');
+        try { if (v) localStorage.setItem('luna_update_dismissed', v); } catch (_) { /* best-effort */ }
+        this.hide();
+      },
+
+      hide() {
+        const bar = this._el;
+        if (!bar) return;
+        bar.classList.add('leaving');
+        bar.hidden = true;
+      },
+    };
+
+    // On chat boot: listen for the app-wide update://ready broadcast and, if the
+    // build is ALREADY staged when this window opened, replay-on-open via the
+    // update_state snapshot so a freshly-spawned chat syncs without waiting for
+    // the next event. All guarded behind window.__TAURI__ (jsdom has none).
+    (function wireUpdateBanner() {
+      const T = window.__TAURI__;
+      if (!T) return;
+      try {
+        if (T.event && typeof T.event.listen === 'function') {
+          T.event.listen('update://ready', (e) => {
+            UpdateBanner.onReady((e && e.payload) || {});
+          }).catch(() => {});
+        }
+      } catch (_) { /* best-effort */ }
+      // Replay-on-open: a build staged before this window existed won't re-emit,
+      // so pull the current phase once and show the bar if we're already ready.
+      try {
+        if (T.core && typeof T.core.invoke === 'function') {
+          T.core.invoke('update_state')
+            .then((dto) => {
+              if (dto && dto.phase === 'ready') {
+                UpdateBanner.onReady({ version: dto.version, notes: dto.notes });
+              }
+            })
+            .catch(() => { /* command absent on older cores → ignore */ });
+        }
+      } catch (_) { /* best-effort */ }
+    })();
+
     // ── WS close hooks ────────────────────────────────────────────────────
     // Secret hygiene on socket drop (was inline in the close handler). The
     // registerCloseHook seam exists so this policy can travel with whichever
@@ -8079,6 +8366,7 @@
       window.__MoonInternals.autoGrowMessageInput = () => ChatEngine.autoGrowMessageInput();
       window.__MoonInternals.handleFrame = (frame) => WebSocketEngine.handleFrame(frame);
       window.__MoonInternals.ResultToasts = ResultToasts;   // #124 toast harness
+      window.__MoonInternals.UpdateBanner = UpdateBanner;   // staged-update nudge harness
       window.__MoonInternals.SurveyEngine = SurveyEngine;
       window.__MoonInternals.SuggestedActionsEngine = SuggestedActionsEngine;
       window.__MoonInternals.MoonFace = MoonFace;

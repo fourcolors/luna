@@ -89,6 +89,31 @@
       50% { transform: scale(1.25); opacity: 1; }
     }
 
+    /* Update pip (Slice C) — the needs-input-pip's calmer sibling: a soft glowing
+       accent dot that lights when a verified build is staged. Same size/breathe,
+       but the watercolor --accent glow instead of the amber needs-input tone, so
+       it reads as a gentle "ready" cue rather than an alert. Sits just below the
+       needs-input pip so both can show at once without overlapping. Unlike the
+       needs-input pip it is pointer-events:auto + clickable — tapping it opens
+       the Updates panel (the moon's own click still opens chat). */
+    .update-pip {
+      position: absolute;
+      top: 30px;
+      right: 16px;
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%,
+        color-mix(in oklab, var(--accent) 92%, white),
+        var(--accent) 60%,
+        color-mix(in oklab, var(--accent) 70%, black) 100%);
+      box-shadow: 0 0 8px 2px color-mix(in oklab, var(--accent) 55%, transparent);
+      z-index: 31;
+      cursor: pointer;
+      pointer-events: auto;
+      animation: pip-breathe 2.4s ease-in-out infinite;
+    }
+
     .moon-container {
       position: absolute;
       left: 15px;
@@ -809,6 +834,13 @@
          job asks for operator input (job-input-request broadcast); clears on
          the bridge's dismissal broadcast (answered/cancelled/expired). -->
     <div class="needs-input-pip" id="needs-input-pip" aria-hidden="true" hidden></div>
+    <!-- Ambient ladder, update rung (Slice C): a quiet accent-tinted pip that
+         lights when the Rust updater has staged a verified build (update://ready).
+         Mirrors .needs-input-pip but with the watercolor accent glow (updates are
+         good news, not an alert). Clicking it opens the Updates panel; the moon's
+         own click still opens chat (this pip is pointer-events:auto so the click
+         lands on it, not the drag region behind it). -->
+    <div class="update-pip" id="update-pip" aria-hidden="true" hidden></div>
     <div class="moon-aura" aria-hidden="true"></div>
     <div class="moon-wrapper" id="moon-wrapper">
       <div class="moon-glow"></div>
@@ -1443,6 +1475,62 @@
       renderPip();
     });
 
+    // ── Update pip (ambient ladder, update rung — Slice C surface #3) ──────────
+    // The quietest of the three update nudges: a soft accent pip on the orb that
+    // lights when the Rust updater has staged a VERIFIED build (update://ready).
+    // The composer banner is the primary nudge and the Updates panel is the full
+    // narrative; this is just the ambient hint when no chat window is on screen.
+    // Clicking the pip opens the Updates panel (the moon's own click still opens
+    // chat — the pip is its own pointer target, sitting above the drag region).
+    const showUpdatePip = () => {
+      const pip = document.getElementById('update-pip');
+      if (pip) pip.hidden = false;
+    };
+    const updatePipEl = document.getElementById('update-pip');
+    if (updatePipEl) {
+      updatePipEl.addEventListener('click', (e) => {
+        // The pip is its own pointer target; keep its click from bubbling.
+        // (The moon never listens for `click` — its open-chat fires on
+        // `pointerup` — so the real open-chat guard is the pointerup stop
+        // below; this just keeps the click clean for any future listener.)
+        e.stopPropagation();
+        if (window.__TAURI__ && window.__TAURI__.core) {
+          window.__TAURI__.core.invoke('open_widget', { kind: 'settings.updates' })
+            .catch((err) => Logger.warn('open updates panel failed:', err));
+        }
+      });
+      // The moon opens chat on `pointerup` (and starts its drag on
+      // `pointerdown`/`pointermove`) — it has NO click listener. So a pointer
+      // event that starts on the pip must NOT reach #moon, or a pip tap could
+      // co-trigger open-chat (when a recent moon press left pressStartTime/XY
+      // within the 280ms / 5px open threshold). Stop the whole pointer
+      // sequence so the pip opens ONLY the Updates panel.
+      updatePipEl.addEventListener('pointerdown', (e) => e.stopPropagation());
+      updatePipEl.addEventListener('pointermove', (e) => e.stopPropagation());
+      updatePipEl.addEventListener('pointerup', (e) => e.stopPropagation());
+    }
+    // Light the pip on the app-wide update://ready broadcast; an earlier
+    // update://available is an optional softer hint. Replay-on-boot via
+    // update_state so a build staged before the hub loaded still surfaces.
+    if (window.__TAURI__) {
+      const T = window.__TAURI__;
+      try {
+        if (T.event && typeof T.event.listen === 'function') {
+          T.event.listen('update://ready', () => showUpdatePip()).catch(() => {});
+          T.event.listen('update://available', () => showUpdatePip()).catch(() => {});
+        }
+      } catch (_) { /* best-effort */ }
+      try {
+        if (T.core && typeof T.core.invoke === 'function') {
+          T.core.invoke('update_state')
+            .then((dto) => {
+              if (dto && (dto.phase === 'ready' || dto.phase === 'available')) showUpdatePip();
+            })
+            .catch(() => { /* command absent on older cores → ignore */ });
+        }
+      } catch (_) { /* best-effort */ }
+    }
+
     MoonFrames.register('widget-open', (frame) => {
       // Summon-by-name, return leg: the agent asked for a widget by kind.
       // open_widget resolves it through the COMPILED-IN registry (unknown
@@ -1484,6 +1572,8 @@
       window.__MoonInternals.TauriService = TauriService;
       // Mutable connection State so tests can drive/assert it.
       window.__MoonInternals.State = State;
+      // Update-pip driver (Slice C) so the jsdom suite can light the orb pip.
+      window.__MoonInternals.showUpdatePip = showUpdatePip;
     }
 
     /**
@@ -2593,10 +2683,31 @@
       })
       .catch((e) => Logger.error('Setup wizard auto-open failed:', e));
 
-    // Silent self-update check shortly after boot (let the WS connect first).
-    // Surfaces an in-chat "Update & Restart" banner only if a newer signed
-    // build exists on GitHub Releases; stays quiet otherwise.
-    setTimeout(() => { SettingsEngine.checkForUpdate(true); }, 4000);
+    // Self-update discovery is owned by the Rust background loop (~8s after
+    // boot); the frontend no longer issues a redundant 4s checkForUpdate that
+    // raced the single-flight gate. The banner/pip render from update:// events.
+
+    // ── Restore polish: reopen the chat window after an update restart ─────────
+    // When apply_update relaunches the app it (Rust, Slice A) writes
+    // ~/.luna/pending-update.json {reopenChat} recording whether a chat window
+    // was open at restart, then saves layout.json (which restores the SYSTEM
+    // panels — but the chat window is NOT a panel- window, so it isn't covered by
+    // that restore). We read + consume the marker via take_pending_update (a
+    // one-shot Rust command that returns the marker and deletes the file), and if
+    // a chat window was open, re-open it through the same open_widget('chat') path
+    // the moon click uses — so the session lands exactly where it was. Best-effort
+    // and idempotent: if Slice A's command isn't present (older core) or no marker
+    // exists, the invoke rejects/returns null and we silently do nothing.
+    if (window.__TAURI__ && window.__TAURI__.core) {
+      const core = window.__TAURI__.core;
+      core.invoke('take_pending_update')
+        .then((marker) => {
+          if (marker && marker.reopenChat) {
+            return core.invoke('open_widget', { kind: 'chat' });
+          }
+        })
+        .catch(() => { /* command absent / no marker → nothing to restore */ });
+    }
 
     // Auto-wire the server token from ~/.luna/.env via a Tauri startup event.
     // The Rust backend (main.rs) reads UI_WS_TOKEN from ~/.luna/.env at launch
