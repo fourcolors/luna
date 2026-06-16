@@ -113,6 +113,10 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "mcp-tool-result",
   "thread-config",
   "smart-bar",
+  // Phase 3: thread archival (additive, behind status awareness)
+  "thread-archived",
+  "thread-unarchived",
+  "thread-archive-error",
 ].sort()
 
 const EXPECTED_CLIENT_FRAME_TYPES = [
@@ -155,6 +159,9 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "mcp-resource-read",
   "mcp-tool-call",
   "set-thread-config",
+  // Phase 3: thread archival (additive, behind status awareness)
+  "archive-thread",
+  "unarchive-thread",
 ].sort()
 
 const EXPECTED_PROTOCOL_VERSION = 2
@@ -240,7 +247,7 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     expect(UI_WS_PROTOCOL_VERSION).toBe(EXPECTED_PROTOCOL_VERSION)
   })
 
-  it("parser self-check: derived counts are sane (44 server, 35 client) — guards the regex itself", () => {
+  it("parser self-check: derived counts are sane (52 server, 40 client) — guards the regex itself", () => {
     // If the regex silently mis-parses, the toEqual above could pass for the
     // wrong reason. Pin the counts so a broken parser is caught here.
     // Prior base = 24 server / 15 client; the agent-summoned secure-secret-entry
@@ -278,8 +285,11 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // background-result delivery sink (#124) adds result-delivered (server,
     // broadcast — the "Luna finished X" toast) → 49 server / 38 client.
     // Smart Bar v1 adds smart-bar (server) → 50 server / 38 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(50)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(38)
+    // Phase 3 (thread archival) adds thread-archived + thread-unarchived (server)
+    // and archive-thread + unarchive-thread (client) → 52 server / 40 client.
+    // Phase 3 Copilot fix: thread-archive-error adds one more server frame → 53.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(53)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(40)
   })
 
   // VERSION-SKEW (client half): nothing else pins the ui-shared wire.ts mirror

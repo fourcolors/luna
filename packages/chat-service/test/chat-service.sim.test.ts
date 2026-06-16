@@ -2051,3 +2051,119 @@ describe("ChatService — ThreadRegistry-backed recovery", () => {
     { timeout: 15_000 },
   )
 })
+
+// ── listThreads archival-filter tests ─────────────────────────────────────────
+// Copilot comment #2: the default (active) listThreads path MUST exclude threads
+// that are archived in ThreadRegistry. These tests confirm:
+//   a) an archived thread does NOT appear in the default listThreads result.
+//   b) a non-archived thread DOES appear.
+//   c) the archived thread still appears when status='archived' is passed.
+describe("ChatService — listThreads excludes archived threads", () => {
+  // Minimal fake SDK that immediately provides a snapshot (createThread succeeds).
+  const noopFakeLayer = SDKClient.fake((p) => {
+    let done = false
+    return {
+      [Symbol.asyncIterator]: async function* () {
+        if (!done) {
+          done = true
+          yield {
+            type: "result",
+            session_id: `sdk-list-test-${Math.random().toString(36).slice(2)}`,
+            content: [],
+            stop_reason: "end_turn",
+          }
+        }
+      },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").Query
+  })
+
+  const baseLayerWithRegistry = Layer.mergeAll(
+    SessionStore.Default,
+    testClock,
+    obsLayer,
+    telemetryLayer,
+    Layer.succeed(MemoryRouterTag, noopMemoryRouter),
+    ThreadRegistryService.Memory.pipe(Layer.provide(testClock)),
+  )
+
+  const fullLayerWithRegistry = () =>
+    Layer.provideMerge(
+      ChatService.Default,
+      Layer.provideMerge(
+        SDKAdapter.Default,
+        Layer.mergeAll(noopFakeLayer, baseLayerWithRegistry),
+      ),
+    )
+
+  const run = <A, E>(
+    eff: Effect.Effect<
+      A,
+      E,
+      | ChatService
+      | SessionStore
+      | CoreClock
+      | ObservabilityService
+      | Scope.Scope
+      | TelemetryService
+      | ThreadRegistryService
+    >,
+  ) =>
+    Effect.runPromise(
+      Effect.scoped(eff).pipe(Effect.provide(fullLayerWithRegistry())),
+    )
+
+  it(
+    "archived thread does NOT appear in default listThreads; non-archived thread DOES",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const reg = yield* ThreadRegistryService
+
+          // Create two threads. createThread upserts both into ThreadRegistry.
+          const t1 = yield* chat.createThread({ model: "claude-test", title: "active-thread" })
+          const t2 = yield* chat.createThread({ model: "claude-test", title: "archived-thread" })
+
+          // Archive t2 in the registry.
+          const archiveOk = yield* reg.archive(t2.id)
+          expect(archiveOk).toBe(true)
+
+          // Default (active) list must include t1 but NOT t2.
+          const activeList = yield* chat.listThreads(50)
+          const activeIds = activeList.map((s) => s.id)
+          expect(activeIds).toContain(t1.id)
+          expect(activeIds).not.toContain(t2.id)
+        }),
+      )
+    },
+    { timeout: 15_000 },
+  )
+
+  it(
+    "archived thread appears in listThreads(status='archived') but not in default list",
+    async () => {
+      await run(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const reg = yield* ThreadRegistryService
+
+          const t1 = yield* chat.createThread({ model: "claude-test", title: "stay-active" })
+          const t2 = yield* chat.createThread({ model: "claude-test", title: "to-archive" })
+
+          yield* reg.archive(t2.id)
+
+          // Active list: only t1.
+          const activeList = yield* chat.listThreads(50)
+          expect(activeList.map((s) => s.id)).not.toContain(t2.id)
+
+          // Archived list: only t2 (via ThreadRegistry).
+          const archivedList = yield* chat.listThreads(50, "archived")
+          const archivedIds = archivedList.map((s) => s.id)
+          expect(archivedIds).toContain(t2.id)
+          expect(archivedIds).not.toContain(t1.id)
+        }),
+      )
+    },
+    { timeout: 15_000 },
+  )
+})
