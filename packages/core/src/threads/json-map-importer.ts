@@ -37,11 +37,10 @@ interface LegacyEntry {
 type LegacyMap = Record<string, string | LegacyEntry>
 
 const LUNA_THREAD_ID = /^thr_[A-Za-z0-9_]{1,64}$/
-const SDK_SESSION_ID = /^[A-Za-z0-9_-]{4,128}$/
 // SDK session ids from real Anthropic sessions are UUIDs (8-4-4-4-12 hex).
-// Simulator rows use fake sids like "thr-tc", "thr-tr", "thr-sub-tc" — these
-// are caught by the model check below, but we also reject any sid that doesn't
-// look like a real UUID or at least an alphanumeric identifier of ≥8 chars.
+// Simulator rows use fake sids like "thr-tc", "thr-tr", "thr-sub-tc" — we
+// reject any sid that doesn't look like a real UUID, which also catches all
+// fake simulator sids that slip past the model-field check.
 const SDK_UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
@@ -144,11 +143,11 @@ export const importJsonMap = async (
     let effort: string | undefined
 
     if (typeof value === "string") {
-      sid = SDK_SESSION_ID.test(value) ? value : undefined
+      sid = SDK_UUID_SHAPE.test(value) ? value : undefined
     } else if (value !== null && typeof value === "object") {
       const obj = value as LegacyEntry
       sid =
-        typeof obj.sid === "string" && SDK_SESSION_ID.test(obj.sid)
+        typeof obj.sid === "string" && SDK_UUID_SHAPE.test(obj.sid)
           ? obj.sid
           : undefined
       model = typeof obj.model === "string" ? obj.model : undefined
@@ -194,6 +193,7 @@ export const importJsonMap = async (
           cwd: defaultCwd,
           model: model ?? null,
           effort: effort ?? null,
+          nowMs,
         }),
       )
       result.inserted++

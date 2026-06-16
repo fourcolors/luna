@@ -70,7 +70,10 @@ export interface ThreadRow {
   readonly effort: string | null
   /** Unix ms when the thread row was first inserted. */
   readonly createdAt: number
-  /** Unix ms of the last turn (bumped on each turn start). */
+  /**
+   * Unix ms of the last activity (set on upsert/insert and updated via touch();
+   * per-turn bumping is wired by chat-service calling touch() at turn start).
+   */
   readonly lastActiveAt: number
 }
 
@@ -82,6 +85,13 @@ export interface ThreadUpsertInput {
   readonly title?: string | null
   readonly model?: string | null
   readonly effort?: string | null
+  /**
+   * Override the timestamp used for created_at / last_active_at on INSERT
+   * (ignored on UPDATE — last_active_at is always bumped to now on updates).
+   * Useful for boot-time import so migrated threads get the migration timestamp
+   * instead of the current clock.
+   */
+  readonly nowMs?: number
 }
 
 /** The registry API exposed via the Effect service tag. */
@@ -146,7 +156,8 @@ export class ThreadRegistryService extends Effect.Tag(
 
       const upsert: ThreadRegistryApi["upsert"] = (input) =>
         Effect.gen(function* () {
-          const ts = yield* nowMs()
+          const clockTs = yield* nowMs()
+          const ts = input.nowMs ?? clockTs
           const existing = (yield* Ref.get(store)).get(input.id)
           if (existing) {
             const updated: ThreadRow = {
@@ -158,7 +169,7 @@ export class ThreadRegistryService extends Effect.Tag(
               ...(input.title !== undefined ? { title: input.title } : {}),
               ...(input.model !== undefined ? { model: input.model } : {}),
               ...(input.effort !== undefined ? { effort: input.effort } : {}),
-              lastActiveAt: ts,
+              lastActiveAt: clockTs,
             }
             yield* Ref.update(store, (m) => {
               const n = new Map(m)
@@ -351,7 +362,8 @@ export class ThreadRegistryService extends Effect.Tag(
 
         const upsert: ThreadRegistryApi["upsert"] = (input) =>
           Effect.gen(function* () {
-            const ts = yield* clock.nowMs()
+            const clockTs = yield* clock.nowMs()
+            const insertTs = input.nowMs ?? clockTs
             const existing = existsStmt.get(input.id)
             if (existing) {
               updateStmt.run(
@@ -365,7 +377,7 @@ export class ThreadRegistryService extends Effect.Tag(
                 input.model ?? null,
                 input.effort !== undefined ? 1 : 0,
                 input.effort ?? null,
-                ts,
+                clockTs,
                 input.id,
               )
             } else {
@@ -376,8 +388,8 @@ export class ThreadRegistryService extends Effect.Tag(
                 input.title ?? null,
                 input.model ?? null,
                 input.effort ?? null,
-                ts,
-                ts,
+                insertTs,
+                insertTs,
               )
             }
             const row = getStmt.get(input.id) as RawRow | undefined
@@ -390,8 +402,8 @@ export class ThreadRegistryService extends Effect.Tag(
                 title: input.title ?? null,
                 model: input.model ?? null,
                 effort: input.effort ?? null,
-                createdAt: ts,
-                lastActiveAt: ts,
+                createdAt: insertTs,
+                lastActiveAt: insertTs,
               } satisfies ThreadRow
             }
             return rowToThread(row)

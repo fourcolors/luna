@@ -2031,13 +2031,11 @@ describe("ChatService — ThreadRegistry-backed recovery", () => {
 
           const chat = yield* ChatService
           const sub = chat.subscribe(THREAD_ID)
-          const fiber = yield* Effect.fork(
-            sub.pipe(Stream.take(1), Stream.runCollect),
-          )
-          yield* Effect.sleep("100 millis")
-          yield* Fiber.interrupt(fiber)
-
-          const frames = yield* Fiber.join(fiber)
+          // Collect exactly one frame; the stream completes on its own after
+          // take(1) so we join directly. No interrupt needed — take(1) is
+          // self-terminating. This avoids the race where interrupt fires before
+          // the first frame arrives and Fiber.join then throws.
+          const frames = yield* sub.pipe(Stream.take(1), Stream.runCollect)
           // Must still produce a snapshot (not empty/error).
           expect(Chunk.size(frames)).toBeGreaterThan(0)
           expect(Chunk.unsafeHead(frames).type).toBe("snapshot")
