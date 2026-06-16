@@ -845,6 +845,7 @@ export type ServerFrame =
   | SmartBarFrame
   | ThreadArchivedFrame
   | ThreadUnarchivedFrame
+  | ThreadArchiveErrorFrame
 
 /* Client → server frames */
 
@@ -892,6 +893,16 @@ export interface ThreadArchivedFrame {
 export interface ThreadUnarchivedFrame {
   readonly type: "thread-unarchived"
   readonly threadId: string
+}
+
+/**
+ * Phase 3: Sent when archive-thread / unarchive-thread failed (thread not
+ * found in registry, or registry not wired). Client should refresh its state.
+ */
+export interface ThreadArchiveErrorFrame {
+  readonly type: "thread-archive-error"
+  readonly threadId: string
+  readonly reason: "not-found" | "registry-unavailable"
 }
 
 export interface NewThreadFrame {

@@ -1965,10 +1965,27 @@ export class ChatService extends Effect.Service<ChatService>()(
             ),
           )
         }
-        // Default: active threads from SessionStore (pre-Phase-3 path).
-        return store
+        // Default: active threads from SessionStore, filtered by ThreadRegistry
+        // status when the registry is wired. Archived threads must NOT appear in
+        // the default (active) sidebar — they are only returned when status='archived'.
+        // Best-effort: if registry is absent, fall through without filtering.
+        const sessionList = store
           .list({ orderBy: "lastMessageAt", limit })
           .pipe(Stream.runCollect, Effect.map(Chunk.toReadonlyArray))
+        if (Option.isNone(threadRegistry)) {
+          return sessionList
+        }
+        const reg = threadRegistry.value
+        return Effect.gen(function* () {
+          const [sessions, archivedRows] = yield* Effect.all([
+            sessionList,
+            reg.listByStatus("archived").pipe(
+              Effect.catchAllCause(() => Effect.succeed([] as readonly { readonly id: string }[])),
+            ),
+          ])
+          const archivedIds = new Set(archivedRows.map((r) => r.id))
+          return sessions.filter((s) => !archivedIds.has(s.id))
+        })
       }
 
       /** Close a thread permanently (stop button + delete from sidebar).

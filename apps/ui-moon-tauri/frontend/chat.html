@@ -5123,6 +5123,18 @@
       }
     });
 
+    MoonFrames.register('thread-archive-error', (frame) => {
+      // Server could not archive/unarchive the thread (not found in registry
+      // or registry unavailable). Log and refresh the thread list so the
+      // sidebar reflects the actual state.
+      Logger.warn(`Thread archive operation failed for ${frame.threadId}: ${frame.reason}`);
+      // Refresh both lists so stale UI state is corrected.
+      WebSocketEngine.send({ type: 'list-threads' });
+      if (ArchivePanel.visible) {
+        ArchivePanel.refresh();
+      }
+    });
+
     MoonFrames.register('thread-created', (frame) => {
       // A new thread was created (either by us or elsewhere)
       if (!State.activeThreadId || State.activeThreadId !== frame.thread.id) {
@@ -7803,6 +7815,18 @@
       const archiveBtn = document.getElementById('archive-thread-btn');
       const toggleBtn = document.getElementById('archive-view-btn');
 
+      // HTML escaping helper — prevents stored-XSS from user-derived fields
+      // (thread titles come from user message text and must never be interpolated raw).
+      const escapeHtml = (str) => {
+        if (str == null) return '';
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      };
+
       // Show archive button only when there's an active thread
       const refreshArchiveBtn = () => {
         if (archiveBtn) {
@@ -7834,18 +7858,30 @@
 
         const header = '<div style="font-weight:600;margin-bottom:6px;color:var(--ink,#333)">Archived threads</div>';
         const rows = _archivedThreads.map((t) => {
-          const label = t.title || t.id || '(untitled)';
-          const model = t.model ? ` <span style="color:var(--ink-faint,#888);font-size:10px">${t.model}</span>` : '';
+          // All user/server-derived fields are escaped to prevent stored-XSS.
+          // t.title comes from user message text; t.model and t.id from server
+          // but treated as untrusted for defence-in-depth.
+          const label = escapeHtml(t.title || t.id || '(untitled)');
+          const model = t.model
+            ? ` <span style="color:var(--ink-faint,#888);font-size:10px">${escapeHtml(t.model)}</span>`
+            : '';
+          // The Restore button passes t.id via a data attribute read by the
+          // onclick handler — avoids raw id interpolation inside the attribute.
           return [
             `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-top:1px solid var(--ink-faint,#eee)">`,
             `  <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}${model}</span>`,
             `  <button style="background:none;border:1px solid var(--ink-faint,#ccc);border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px"`,
-            `    onclick="ArchivePanel.restore('${t.id}')">Restore</button>`,
+            `    data-thread-id="${escapeHtml(t.id)}" class="archive-restore-btn">Restore</button>`,
             `</div>`,
           ].join('');
         });
         panel.innerHTML = header + rows.join('');
-        window.ArchivePanel = ArchivePanel; // expose for inline onclick
+        // Attach click handlers via addEventListener (no inline onclick) so
+        // that thread IDs are read from the data attribute, never from raw HTML.
+        panel.querySelectorAll('.archive-restore-btn').forEach((btn) => {
+          btn.addEventListener('click', () => restore(btn.dataset.threadId));
+        });
+        window.ArchivePanel = ArchivePanel; // expose for legacy callers
       };
 
       const refresh = () => {
@@ -7854,6 +7890,9 @@
       };
 
       const show = () => {
+        // Set _visible BEFORE calling refresh() so that onArchivedList() (which
+        // fires when the WS response arrives) correctly re-renders the panel
+        // even though the overlay element does not exist yet.
         _visible = true;
         if (toggleBtn) toggleBtn.classList.add('active');
         refresh();
@@ -7890,13 +7929,23 @@
       if (archiveBtn) archiveBtn.addEventListener('click', archive);
       if (toggleBtn) toggleBtn.addEventListener('click', toggle);
 
-      return { visible: false, refresh, show, hide, toggle, archive, restore, onArchivedList, refreshArchiveBtn };
+      return { refresh, show, hide, toggle, archive, restore, onArchivedList, refreshArchiveBtn,
+               // visible getter exposed on the returned object so callers that
+               // hold a reference to it (rather than window.ArchivePanel) also
+               // see the boolean state, not the DOM-existence heuristic.
+               get visible() { return _visible; } };
     })();
 
-    // Expose for thread-list handler to detect archived view
-    Object.defineProperty(ArchivePanel, 'visible', {
-      get() { return document.getElementById('archive-panel-overlay') !== null; }
-    });
+    // Fix (Copilot comment #4): visible must reflect the boolean _visible flag
+    // set in show()/hide(), NOT whether the overlay DOM element exists.
+    // The overlay is only created AFTER the WS response arrives; between the
+    // toggle click and that response the old DOM-existence getter was wrong.
+    // The getter on the returned object above already delegates to _visible;
+    // redefine the property on the ArchivePanel reference to be consistent
+    // (the returned object's own getter is authoritative — no separate
+    // Object.defineProperty override needed here).
+    // Intentionally left without an Object.defineProperty override so that the
+    // closure-captured _visible is the single source of truth.
 
     // Hook thread-list to route archived lists to the panel
     const _origThreadListHandler = MoonFrames.dispatch;
