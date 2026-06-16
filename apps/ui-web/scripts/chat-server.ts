@@ -185,6 +185,7 @@ import {
   RoutedOpSecretProvider,
   scanUserSkills,
   SessionStore,
+  makeSessionStoreSqlite,
   SkillPrefsStore,
   SkillRegistry,
   syncUserSkills,
@@ -207,6 +208,10 @@ import {
   SuggestedActionsStore,
   AcceptHandler,
   AcceptHandlerLayer,
+  ThreadRegistryService,
+  importJsonMap,
+  runAutoArchive,
+  AUTO_ARCHIVE_IDLE_MS,
 } from "@luna/core"
 import { createDnaLoader, loadDna } from "./dna-loader.js"
 import { loadSystem } from "./system-loader.js"
@@ -1608,7 +1613,7 @@ export interface BuildWorkerRegistryLayerOpts {
   // dream leaf deps (DreamWorkerLayer R = DreamStore|DreamReasoner|SessionStore|MemoryRouter|Clock)
   readonly dreamStoreL: Layer.Layer<DreamStore, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
   readonly dreamReasonerL: Layer.Layer<import("@luna/core").DreamReasoner>
-  readonly sessionStoreL: Layer.Layer<SessionStore>
+  readonly sessionStoreL: Layer.Layer<SessionStore, never, import("@luna/memory").LunaSqliteBootstrap>
   readonly memoryRouterL: Layer.Layer<import("@luna/memory").MemoryRouter, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
   /** Optional ECE calibration sink (dream serviceOption). */
   readonly calibrationStoreL?: Layer.Layer<CalibrationStore, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
@@ -1696,7 +1701,15 @@ export const buildBaseLayer = (
     Layer.provide(obsL),
     Layer.provide(clockL),
   )
-  const storeL = SessionStore.Default
+  // Phase 2 — durable SessionStore: SQLite-backed so a restart replays
+  // the full transcript, not just the model's SDK context.
+  // LunaSqliteBootstrap is satisfied at the bottom of buildServerLayer,
+  // same as every other SQLite-backed layer here. Best-effort contract:
+  // a disk failure at Layer init will propagate (per the jobs-store /
+  // thread-registry precedent — the server does not start without its
+  // stores). A failure on a per-append write is caught by the adapter's
+  // onMirrorError hook and does NOT kill the live session.
+  const storeL = makeSessionStoreSqlite(paths.lunaDbPath)
 
   // Build one inner OP layer per discovered token, then wrap in the
   // routed dispatcher. The routed wrapper owns the op://-vs-luna-op://
@@ -2155,6 +2168,69 @@ export const buildBaseLayer = (
     }),
   ).pipe(Layer.provide(jobsStoreL))
 
+  // ThreadRegistry: durable `threads` table in luna.db (Phase 1).
+  // Replaces thread-session-map.json as the source of truth for
+  // thread→SDK-session mapping across restarts. ChatService resolves this
+  // via Effect.serviceOption — absent falls back to the legacy JSON map
+  // path for backward compat.
+  // LunaSqliteBootstrap is satisfied at the bottom of buildServerLayer,
+  // same as every other SQLite-backed layer here.
+  const threadRegistryL = ThreadRegistryService.makeLayer(paths.lunaDbPath).pipe(
+    Layer.provide(clockL),
+  )
+
+  // Boot migration: one-shot import from the legacy JSON map into the
+  // ThreadRegistry. Runs once at server boot (inside the ThreadRegistry's
+  // Layer.scoped, so it's part of the boot sequence). Idempotent — existing
+  // rows are skipped.
+  const threadRegistryWithMigrationL = Layer.scoped(
+    ThreadRegistryService,
+    Effect.gen(function* () {
+      // Build the SQLite-backed registry (which runs the migration DDL).
+      // We acquire it via Context.get from the inner layer build.
+      const ctx = yield* Layer.build(threadRegistryL)
+      const reg = Context.get(ctx, ThreadRegistryService)
+
+      // Run the JSON map import best-effort (don't fail boot on import error).
+      const lunaHome = process.env["LUNA_HOME"]
+      if (lunaHome !== undefined) {
+        const defaultCwd =
+          process.env["LUNA_REPO_ROOT"] ?? process.cwd()
+        const nowMs = Date.now()
+        // NOTE: this runs inside an Effect.gen generator (function*), so the
+        // async importJsonMap must be awaited via Effect.tryPromise + yield*,
+        // NOT a bare `await` (which is a syntax error in a non-async generator
+        // and only slips past tsc's top-level-await handling).
+        const importResult = yield* Effect.either(
+          Effect.tryPromise({
+            try: () =>
+              importJsonMap(reg, lunaHome, defaultCwd, nowMs, {
+                log: (level, msg) => {
+                  if (level === "warn") console.warn(msg)
+                  else console.log(msg)
+                },
+              }),
+            catch: (e) => e as Error,
+          }),
+        )
+        if (importResult._tag === "Right") {
+          const result = importResult.right
+          if (result.inserted > 0) {
+            console.log(
+              `[luna/thread-registry] boot import: inserted=${result.inserted} skippedNoSid=${result.skippedNoSid} skippedClaudeTest=${result.skippedClaudeTest} skippedAlreadyPresent=${result.skippedAlreadyPresent}`,
+            )
+          }
+        } else {
+          console.warn(
+            `[luna/thread-registry] boot import failed (best-effort): ${String(importResult.left)}`,
+          )
+        }
+      }
+
+      return reg
+    }),
+  )
+
   // ChatService — hoisted above the worker registry so the chat_thread
   // delivery poster (#124) can be provided ChatService. Effect layers are
   // memoized by reference, so reusing this same `chatL` variable in both
@@ -2173,6 +2249,9 @@ export const buildBaseLayer = (
       // ChatService resolves SuggestedActions via Effect.serviceOption — wire
       // it so the change-stream consumer + replay-on-subscribe activate.
       suggestedActionsL,
+      // ThreadRegistry: durable thread index. ChatService resolves via
+      // Effect.serviceOption — absent falls back to legacy JSON map.
+      threadRegistryWithMigrationL,
     ),
   )
 
@@ -2297,6 +2376,7 @@ export const buildBaseLayer = (
     connectorServiceL, // PRD Part A: same instance as threadToolsL — M2's WS connector frames resolve it here
     artifactStoreL, // PRD Part C/W1: buildServerLayer resolves it for the WS artifact frames
     vaultStoreL, // Vault V1: buildServerLayer resolves it for the WS vault frames
+    threadRegistryWithMigrationL, // Phase 1: durable thread index (luna.db threads table)
   )
 }
 
@@ -2469,6 +2549,66 @@ const buildServerLayer = (
       // only on a LUNA_SCHEDULER_V2_ENABLED=0 deploy, see the gated merge
       // above). Absent → accept leaves the action at `accepted`.
       const acceptHandlerOption = yield* Effect.serviceOption(AcceptHandler)
+
+      // ── Phase 3: auto-archive wiring ────────────────────────────────────────
+      //
+      // runAutoArchive has NO production caller without this block — threads
+      // would never auto-archive. This is the interim home; it can migrate to
+      // the wake cycle later once wake redesign is complete.
+      //
+      // Strategy: run once at boot (best-effort, fire-and-forget so a DB hiccup
+      // never blocks server start), then again every 24 hours in-process.
+      //
+      // Liveness predicate: ChatService's in-flight turn state is private (the
+      // `threads` Ref is internal). Rather than coupling the registry to
+      // ChatService's internals, we omit the predicate here and let the
+      // 14-day `last_active_at` proxy serve as the guard. A thread that had a
+      // live turn within the last 14 days will have its `last_active_at` updated
+      // and will not appear in listStale(). This is conservative and safe.
+      // (The `isLive` predicate in runAutoArchive's signature exists for callers
+      // that DO have access to a live-thread set — e.g. integration tests.)
+      const threadRegistryOption = yield* Effect.serviceOption(ThreadRegistryService)
+      const runAutoArchiveBestEffort = (): void => {
+        // NOTE: this is called from outside an Effect.gen generator (from a
+        // setTimeout-like position), so plain Promise is fine here.
+        if (Option.isNone(threadRegistryOption)) return
+        const reg = threadRegistryOption.value
+        const nowMs = Date.now()
+        // Effect.either wraps errors so a failure in runAutoArchive can never
+        // propagate out — this is the canonical best-effort escape hatch.
+        Effect.runPromise(
+          Effect.either(
+            runAutoArchive(reg, nowMs).pipe(
+              Effect.flatMap((archived) =>
+                archived.length > 0
+                  ? Effect.sync(() =>
+                      console.log(
+                        `[luna/thread-registry] auto-archived ${archived.length} idle thread(s): ${archived.join(", ")}`,
+                      ),
+                    )
+                  : Effect.void,
+              ),
+            ),
+          ),
+        ).catch(() => {
+          // Effect.either means errors appear as Left, not as Promise rejection.
+          // This catch is a belt-and-suspenders guard; it should never fire.
+        })
+      }
+
+      // Boot run: fire-and-forget, best-effort.
+      runAutoArchiveBestEffort()
+
+      // Daily interval: 24 h in-process. forkScoped ties the interval to the
+      // server scope so it is cancelled cleanly on graceful shutdown.
+      const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000
+      yield* Effect.forkScoped(
+        Effect.forever(
+          Effect.sleep(TWENTY_FOUR_HOURS_MS).pipe(
+            Effect.zipRight(Effect.sync(runAutoArchiveBestEffort)),
+          ),
+        ),
+      )
 
       // PRD A §08: access tokens live ~1h; refresh AHEAD of expiry so the
       // mount snapshot's bearer never goes stale mid-conversation. The

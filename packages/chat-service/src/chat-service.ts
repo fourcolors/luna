@@ -44,6 +44,7 @@ import {
   PubSub,
   Queue,
   Ref,
+  Runtime,
   Scope,
   Stream,
 } from "effect"
@@ -57,6 +58,7 @@ import {
   SuggestedActions,
   toView,
   ACTIVE_STATUSES,
+  ThreadRegistryService,
   type ChatMessage,
   type SessionSummary,
   type SessionOptions,
@@ -176,6 +178,22 @@ export const truncateOutput = (
   return { output: out, truncated }
 }
 
+/**
+ * Derive a cheap, no-model-call title from the first user message text.
+ * Takes the first line (up to the first newline), then trims whitespace and
+ * truncates to 60 characters. Returns null when the result would be empty.
+ *
+ * Phase 3 — Claude-Code-style naming without a model call.
+ * The title is set once on the first turn via ThreadRegistry.upsert; if the
+ * thread already has a title this path is skipped.
+ */
+export const deriveTitleFromMessage = (text: string): string | null => {
+  const firstLine = text.split("\n")[0] ?? ""
+  const trimmed = firstLine.trim()
+  if (trimmed.length === 0) return null
+  return trimmed.length <= 60 ? trimmed : trimmed.slice(0, 60)
+}
+
 /** Synthesize an SDKUserMessage envelope from text + optional file attachments.
  *
  * When attachments are present, we build a content-block array per the
@@ -287,11 +305,18 @@ export class ChatService extends Effect.Service<ChatService>()(
       const threadToolsProvider = yield* Effect.serviceOption(
         ThreadToolsProviderTag,
       )
+
+      // Optional — ThreadRegistry (luna.db durable index). When provided, it
+      // is the source of truth for thread→SDK-session mapping across restarts.
+      // When absent (tests/headless), the legacy JSON map path is used as
+      // best-effort fallback for backward compat (read-only; no dual-write).
+      const threadRegistry = yield* Effect.serviceOption(ThreadRegistryService)
       // Optional — the shared Suggested Actions service. When wired, propose()
       // (live tool + Dream) and respond() (ui-ws) mutate it; its `changes`
       // stream drives the per-thread frames below.
       const suggestedActions = yield* Effect.serviceOption(SuggestedActions)
       const serviceScope = yield* Effect.scope
+      const runtime = yield* Effect.runtime<never>()
 
       const threads = yield* Ref.make<ReadonlyMap<string, ThreadEntry>>(new Map())
 
@@ -641,49 +666,87 @@ export class ChatService extends Effect.Service<ChatService>()(
           const promptStream: Stream.Stream<SDKUserMessage> =
             Stream.fromQueue(inbox)
 
-          // When LUNA_HOME is set, persist `lunaThreadId → sdkSessionId` so a
-          // chat-server restart can resume this thread via the SDK's
-          // resume option (the SDK keeps conversation history per
-          // sdkSessionId in JSONL files on disk).
+          // Persist creation-time metadata in ThreadRegistry (when available)
+          // so a chat-server restart can resume this thread. The SDK session id
+          // arrives asynchronously via onSdkSessionId, so the initial upsert
+          // has sid=null; the later setSid() call fills it in.
+          //
+          // When ThreadRegistry is absent (tests/headless), fall back to the
+          // legacy JSON map — WRITE ONLY as fallback (no dual-write when the
+          // registry is present).
           const lunaHome = process.env["LUNA_HOME"]
-          const recordSdkSession: ((sdkSid: string) => void) | undefined =
-            lunaHome !== undefined
-              ? (sdkSid) => {
-                  try {
-                    appendThreadSessionEntry(lunaHome, id, sdkSid)
-                  } catch {
-                    // Best-effort persistence — must not break live chat.
-                  }
-                }
-              : undefined
 
-          // Eagerly persist the creation-time model/effort (clamped) so a
-          // selection made BEFORE the first turn survives a restart — the
-          // SDK session id only arrives asynchronously via onSdkSessionId,
-          // and the later sid write merges into this entry rather than
-          // replacing it (appendThreadSessionEntry preserves model/effort).
-          // Persist the ultracode TOKEN when the mode is on (so a restart
-          // replays it via buildSessionOptions's ultracode branch); else the
-          // clamped real effort.
+          // Persist the ultracode TOKEN when the mode is on; else the clamped effort.
           const persistEffort: EffortOption | undefined =
             isUltracode(opts.effort) && modelSupportsUltracode(opts.model ?? "")
               ? ULTRACODE
               : createClamp.effort
-          if (
-            lunaHome !== undefined &&
-            (opts.model !== undefined || persistEffort !== undefined)
-          ) {
-            try {
-              appendThreadConfigEntry(lunaHome, id, {
-                ...(opts.model !== undefined ? { model: opts.model } : {}),
-                ...(persistEffort !== undefined
-                  ? { effort: persistEffort }
-                  : {}),
-              })
-            } catch {
-              // Best-effort persistence — must not break live chat.
+
+          // Upsert the thread row (sid comes later via onSdkSessionId).
+          yield* Option.match(threadRegistry, {
+            onNone: () => Effect.void,
+            onSome: (reg) =>
+              reg
+                .upsert({
+                  id,
+                  sdkSessionId: null,
+                  cwd:
+                    (opts as { cwd?: string }).cwd ??
+                    process.env["LUNA_REPO_ROOT"] ??
+                    process.cwd(),
+                  ...(opts.model !== undefined ? { model: opts.model } : {}),
+                  ...(persistEffort !== undefined
+                    ? { effort: persistEffort }
+                    : {}),
+                })
+                .pipe(Effect.catchAllCause(() => Effect.void)),
+          })
+
+          // Legacy fallback: when no ThreadRegistry, write the JSON map.
+          if (Option.isNone(threadRegistry) && lunaHome !== undefined) {
+            if (opts.model !== undefined || persistEffort !== undefined) {
+              try {
+                appendThreadConfigEntry(lunaHome, id, {
+                  ...(opts.model !== undefined ? { model: opts.model } : {}),
+                  ...(persistEffort !== undefined
+                    ? { effort: persistEffort }
+                    : {}),
+                })
+              } catch {
+                // Best-effort persistence — must not break live chat.
+              }
             }
           }
+
+          // onSdkSessionId: fires when the SDK allocates a session UUID.
+          // Primary path: persist via ThreadRegistry. Fallback: JSON map.
+          const recordSdkSession: ((sdkSid: string) => void) | undefined = (() => {
+            // ThreadRegistry path (primary)
+            if (Option.isSome(threadRegistry)) {
+              const reg = threadRegistry.value
+              return (sdkSid: string) => {
+                // Best-effort background persist: run the Effect from this
+                // synchronous callback using the captured runtime. Errors are
+                // swallowed so a DB glitch never breaks a live chat session.
+                Runtime.runFork(runtime)(
+                  reg.setSid(id, sdkSid).pipe(
+                    Effect.catchAllCause(() => Effect.void),
+                  ),
+                )
+              }
+            }
+            // Legacy JSON map fallback (no ThreadRegistry provided)
+            if (lunaHome !== undefined) {
+              return (sdkSid: string) => {
+                try {
+                  appendThreadSessionEntry(lunaHome, id, sdkSid)
+                } catch {
+                  // Best-effort persistence — must not break live chat.
+                }
+              }
+            }
+            return undefined
+          })()
 
           // The adapter.query call is provided with the thread scope so its
           // AbortController + watchdog tear down when we close threadScope.
@@ -1189,6 +1252,27 @@ export class ChatService extends Effect.Service<ChatService>()(
             Effect.catchAllCause(() => Effect.void),
           )
 
+          // Phase 3: bump last_active_at on every turn (best-effort, off hot path).
+          // A DB failure here must never break live chat.
+          if (Option.isSome(threadRegistry)) {
+            yield* threadRegistry.value
+              .touch(threadId)
+              .pipe(Effect.catchAllCause(() => Effect.void))
+
+            // Phase 3 title heuristic: on the first turn, if the thread has no
+            // title yet, derive one from the user message text — first line,
+            // trimmed, max 60 chars. No model call; cheap and always available.
+            yield* Effect.gen(function* () {
+              const existing = yield* threadRegistry.value.get(threadId)
+              if (existing !== null && existing.title === null) {
+                const derived = deriveTitleFromMessage(text)
+                if (derived !== null) {
+                  yield* threadRegistry.value.upsert({ id: threadId, title: derived })
+                }
+              }
+            }).pipe(Effect.catchAllCause(() => Effect.void))
+          }
+
           return projected !== null
             ? Option.some(projected)
             : Option.none<ChatMessage>()
@@ -1455,10 +1539,19 @@ export class ChatService extends Effect.Service<ChatService>()(
                 yield* store
                   .setOptions(threadId, { sdkOptions: mergedSdk })
                   .pipe(Effect.catchAll(() => Effect.void))
-                const lunaHome = process.env["LUNA_HOME"]
-                if (lunaHome !== undefined) {
-                  appendThreadConfigEntry(lunaHome, threadId, { effort: ULTRACODE })
-                }
+                yield* Option.match(threadRegistry, {
+                  onNone: () => {
+                    const lunaHome = process.env["LUNA_HOME"]
+                    if (lunaHome !== undefined) {
+                      appendThreadConfigEntry(lunaHome, threadId, { effort: ULTRACODE })
+                    }
+                    return Effect.void
+                  },
+                  onSome: (reg) =>
+                    reg
+                      .setConfig(threadId, { effort: ULTRACODE })
+                      .pipe(Effect.catchAllCause(() => Effect.void)),
+                })
               } else {
                 rejected.push({ field: "effort", reason: "live ultracode switch failed" })
                 yield* Effect.logWarning(
@@ -1523,10 +1616,19 @@ export class ChatService extends Effect.Service<ChatService>()(
                 yield* store.setOptions(threadId, { sdkOptions: mergedSdk }).pipe(
                   Effect.catchAll(() => Effect.void),
                 )
-                const lunaHome = process.env["LUNA_HOME"]
-                if (lunaHome !== undefined) {
-                  appendThreadConfigEntry(lunaHome, threadId, { effort: effective })
-                }
+                yield* Option.match(threadRegistry, {
+                  onNone: () => {
+                    const lunaHome = process.env["LUNA_HOME"]
+                    if (lunaHome !== undefined) {
+                      appendThreadConfigEntry(lunaHome, threadId, { effort: effective })
+                    }
+                    return Effect.void
+                  },
+                  onSome: (reg) =>
+                    reg
+                      .setConfig(threadId, { effort: effective })
+                      .pipe(Effect.catchAllCause(() => Effect.void)),
+                })
               } else {
                 // The SDK call threw — the ack must NOT report success, and
                 // the unapplied value must NOT persist.
@@ -1554,10 +1656,19 @@ export class ChatService extends Effect.Service<ChatService>()(
               if (currentKind !== nextKind) {
                 // Cross-lane: deferred (next thread creation uses the new model)
                 deferred.push("model")
-                const lunaHome = process.env["LUNA_HOME"]
-                if (lunaHome !== undefined) {
-                  appendThreadConfigEntry(lunaHome, threadId, { model })
-                }
+                yield* Option.match(threadRegistry, {
+                  onNone: () => {
+                    const lunaHome = process.env["LUNA_HOME"]
+                    if (lunaHome !== undefined) {
+                      appendThreadConfigEntry(lunaHome, threadId, { model })
+                    }
+                    return Effect.void
+                  },
+                  onSome: (reg) =>
+                    reg
+                      .setConfig(threadId, { model })
+                      .pipe(Effect.catchAllCause(() => Effect.void)),
+                })
               } else if (handle !== null) {
                 // Same lane + live handle → hot-swap via setModel. Success-
                 // gated: a thrown setModel lands in `rejected`, not `applied`,
@@ -1574,10 +1685,19 @@ export class ChatService extends Effect.Service<ChatService>()(
                   yield* store.setOptions(threadId, { model, sdkOptions: mergedSdk2 }).pipe(
                     Effect.catchAll(() => Effect.void),
                   )
-                  const lunaHome = process.env["LUNA_HOME"]
-                  if (lunaHome !== undefined) {
-                    appendThreadConfigEntry(lunaHome, threadId, { model })
-                  }
+                  yield* Option.match(threadRegistry, {
+                    onNone: () => {
+                      const lunaHome = process.env["LUNA_HOME"]
+                      if (lunaHome !== undefined) {
+                        appendThreadConfigEntry(lunaHome, threadId, { model })
+                      }
+                      return Effect.void
+                    },
+                    onSome: (reg) =>
+                      reg
+                        .setConfig(threadId, { model })
+                        .pipe(Effect.catchAllCause(() => Effect.void)),
+                  })
                 } else {
                   rejected.push({ field: "model", reason: "live model switch failed" })
                   yield* Effect.logWarning(
@@ -1587,10 +1707,19 @@ export class ChatService extends Effect.Service<ChatService>()(
               } else {
                 // Same lane but no live handle (thread idle) → still accept
                 applied.push("model")
-                const lunaHome = process.env["LUNA_HOME"]
-                if (lunaHome !== undefined) {
-                  appendThreadConfigEntry(lunaHome, threadId, { model })
-                }
+                yield* Option.match(threadRegistry, {
+                  onNone: () => {
+                    const lunaHome = process.env["LUNA_HOME"]
+                    if (lunaHome !== undefined) {
+                      appendThreadConfigEntry(lunaHome, threadId, { model })
+                    }
+                    return Effect.void
+                  },
+                  onSome: (reg) =>
+                    reg
+                      .setConfig(threadId, { model })
+                      .pipe(Effect.catchAllCause(() => Effect.void)),
+                })
               }
             }
           }
@@ -1622,48 +1751,125 @@ export class ChatService extends Effect.Service<ChatService>()(
             const m = yield* Ref.get(threads)
             let entry = m.get(threadId)
             if (!entry) {
-              // Cache-miss recovery: if the chat-server was restarted and
-              // wiped its in-memory threads map, but the persisted
-              // thread-session-map remembers this threadId's SDK session
-              // id, transparently re-create the thread with the SDK's
-              // resume flag set. The model retains conversation context
-              // via the SDK's JSONL backing; the visual snapshot will be
-              // empty until new messages arrive.
-              const lunaHome = process.env["LUNA_HOME"]
-              const persistedEntry =
-                lunaHome !== undefined
-                  ? loadThreadSessionMap(lunaHome)[threadId]
-                  : undefined
-              // Support both legacy bare-string (sid only) and new object shape
-              const persistedSdkId =
-                persistedEntry !== undefined
-                  ? typeof persistedEntry === "string"
-                    ? persistedEntry
-                    : persistedEntry.sid
-                  : undefined
-              if (persistedSdkId !== undefined) {
-                // Rebuild createThread with the persisted model and effort so
-                // a recovered thread routes to the same provider and applies
-                // the same effort level the user originally selected.
-                // Legacy entries (bare strings) have no model/effort — omit
-                // them to keep the existing "default lane" behavior.
-                const savedModel =
-                  typeof persistedEntry === "object" && persistedEntry !== null
-                    ? persistedEntry.model
+              // Cache-miss recovery: the chat-server was restarted and wiped
+              // its in-memory threads map. Look up the thread in the durable
+              // ThreadRegistry first; fall back to the legacy JSON map when
+              // the registry is not wired.
+              //
+              // Three cases after lookup:
+              //   (A) thread found + has sdk_session_id → resume via SDK
+              //   (B) thread found + no sdk_session_id (first-turn not done yet,
+              //       or sid never captured) → re-create LIVE with empty history
+              //       + logged warning (never "unknown thread")
+              //   (C) thread not in registry + not in JSON → empty stream (unknown)
+
+              // ── Primary: ThreadRegistry ──────────────────────────────────
+              let persistedSdkId: string | undefined
+              let savedModel: string | undefined
+              let savedEffort: string | undefined
+              let savedCwd: string | undefined   // persisted working dir (load-bearing for SDK resume)
+              let knownButNoSid = false
+
+              if (Option.isSome(threadRegistry)) {
+                const row = yield* threadRegistry.value
+                  .get(threadId)
+                  .pipe(Effect.catchAllCause(() => Effect.succeed(null)))
+                if (row !== null) {
+                  savedCwd = row.cwd ?? undefined
+                  if (row.sdkSessionId !== null) {
+                    persistedSdkId = row.sdkSessionId
+                    savedModel = row.model ?? undefined
+                    savedEffort = row.effort ?? undefined
+                  } else {
+                    // Case B: known thread, no sid yet
+                    knownButNoSid = true
+                    savedModel = row.model ?? undefined
+                    savedEffort = row.effort ?? undefined
+                  }
+                }
+                // Case C: row === null → not known, fall through to empty stream
+              } else {
+                // ── Legacy fallback: JSON map (read-only) ─────────────────
+                const lunaHome = process.env["LUNA_HOME"]
+                const persistedEntry =
+                  lunaHome !== undefined
+                    ? loadThreadSessionMap(lunaHome)[threadId]
                     : undefined
-                const savedEffort =
-                  typeof persistedEntry === "object" && persistedEntry !== null
-                    ? persistedEntry.effort
-                    : undefined
+                if (persistedEntry !== undefined) {
+                  const sid =
+                    typeof persistedEntry === "string"
+                      ? persistedEntry
+                      : persistedEntry.sid
+                  if (sid !== undefined) {
+                    persistedSdkId = sid
+                    savedModel =
+                      typeof persistedEntry === "object" && persistedEntry !== null
+                        ? persistedEntry.model
+                        : undefined
+                    savedEffort =
+                      typeof persistedEntry === "object" && persistedEntry !== null
+                        ? persistedEntry.effort
+                        : undefined
+                  } else {
+                    // Object entry with no sid: known but no sid
+                    knownButNoSid = true
+                    savedModel =
+                      typeof persistedEntry === "object" && persistedEntry !== null
+                        ? persistedEntry.model
+                        : undefined
+                    savedEffort =
+                      typeof persistedEntry === "object" && persistedEntry !== null
+                        ? persistedEntry.effort
+                        : undefined
+                  }
+                }
+                // Legacy JSON map has no cwd — savedCwd remains undefined;
+                // buildSessionOptions falls back to LUNA_REPO_ROOT ?? process.cwd().
+              }
+
+              // ── Case B: known thread, no sid → re-create live (empty history) ──
+              if (knownButNoSid) {
+                yield* Effect.logWarning(
+                  `[chat] subscribe: thread ${threadId} is known but has no sdk_session_id — re-creating live with empty history (first-turn data unavailable)`,
+                )
                 const validEffort =
                   savedEffort !== undefined && isEffortOption(savedEffort)
                     ? savedEffort
                     : undefined
                 yield* createThread({
                   threadIdOverride: threadId,
+                  ...(savedModel !== undefined ? { model: savedModel } : {}),
+                  ...(validEffort !== undefined ? { effort: validEffort } : {}),
+                  // Pass saved cwd if available — even on live re-create, the
+                  // cwd governs which SDK project dir is used (affects tool roots).
+                  ...(savedCwd !== undefined ? { cwd: savedCwd } : {}),
+                })
+                const m2 = yield* Ref.get(threads)
+                entry = m2.get(threadId)
+              } else if (persistedSdkId !== undefined) {
+                // ── Case A: known + has sid → resume via SDK ───────────────
+                // Rebuild createThread with the persisted model and effort AND
+                // the persisted cwd so the SDK resumes the correct encoded
+                // project dir. If cwd is NULL (deliverable #7 degradation: cwd
+                // was never stored, or the JSON-map fallback path), log a
+                // warning and fall back to LUNA_REPO_ROOT / process.cwd().
+                const validEffort =
+                  savedEffort !== undefined && isEffortOption(savedEffort)
+                    ? savedEffort
+                    : undefined
+                if (savedCwd === undefined) {
+                  yield* Effect.logWarning(
+                    `[chat] subscribe: thread ${threadId} has no persisted cwd — resuming with default cwd (LUNA_REPO_ROOT ?? process.cwd()); encoded project dir may differ from original session`,
+                  )
+                }
+                yield* createThread({
+                  threadIdOverride: threadId,
                   resumeFromSessionId: persistedSdkId,
                   ...(savedModel !== undefined ? { model: savedModel } : {}),
                   ...(validEffort !== undefined ? { effort: validEffort } : {}),
+                  // Forward the persisted cwd. When null/undefined, buildSessionOptions
+                  // already falls back to LUNA_REPO_ROOT ?? process.cwd().
+                  ...(savedCwd !== undefined ? { cwd: savedCwd } : {}),
                 })
                 const m2 = yield* Ref.get(threads)
                 entry = m2.get(threadId)
@@ -1727,14 +1933,60 @@ export class ChatService extends Effect.Service<ChatService>()(
           }),
         )
 
-      /** Read-only sidebar projection. Returns most-recently-active first. */
-      const listThreads = (limit = 50): Effect.Effect<
-        ReadonlyArray<SessionSummary>,
-        never
-      > =>
-        store
+      /**
+       * Read-only sidebar projection. Returns most-recently-active first.
+       *
+       * Phase 3: when status='archived' and ThreadRegistry is wired,
+       * returns archived threads from the registry (they may not have
+       * SessionStore rows if archived before Phase 2, so the registry
+       * is the authoritative list). For the default 'active' case the
+       * SessionStore list is used (same as pre-Phase-3 behaviour).
+       */
+      const listThreads = (
+        limit = 50,
+        status?: "active" | "archived",
+      ): Effect.Effect<ReadonlyArray<SessionSummary>, never> => {
+        // For archived threads, pull from ThreadRegistry (it owns status).
+        if (status === "archived" && Option.isSome(threadRegistry)) {
+          return threadRegistry.value.listByStatus("archived").pipe(
+            Effect.map((rows) =>
+              rows.slice(0, limit).map((r) => ({
+                id: r.id,
+                parentId: null,
+                title: r.title,
+                tags: [],
+                createdAt: r.createdAt,
+                endedAt: r.archivedAt,
+                model: r.model ?? "unknown",
+                status: "closed" as const,
+                lastMessageAt: r.lastActiveAt,
+                lastMessagePreview: null,
+              })),
+            ),
+          )
+        }
+        // Default: active threads from SessionStore, filtered by ThreadRegistry
+        // status when the registry is wired. Archived threads must NOT appear in
+        // the default (active) sidebar — they are only returned when status='archived'.
+        // Best-effort: if registry is absent, fall through without filtering.
+        const sessionList = store
           .list({ orderBy: "lastMessageAt", limit })
           .pipe(Stream.runCollect, Effect.map(Chunk.toReadonlyArray))
+        if (Option.isNone(threadRegistry)) {
+          return sessionList
+        }
+        const reg = threadRegistry.value
+        return Effect.gen(function* () {
+          const [sessions, archivedRows] = yield* Effect.all([
+            sessionList,
+            reg.listByStatus("archived").pipe(
+              Effect.catchAllCause(() => Effect.succeed([] as readonly { readonly id: string }[])),
+            ),
+          ])
+          const archivedIds = new Set(archivedRows.map((r) => r.id))
+          return sessions.filter((s) => !archivedIds.has(s.id))
+        })
+      }
 
       /** Close a thread permanently (stop button + delete from sidebar).
        *  Closes the per-thread Scope which interrupts the SDK subprocess
@@ -1796,6 +2048,30 @@ export class ChatService extends Effect.Service<ChatService>()(
           return { hits }
         })
 
+      /**
+       * Phase 3: Archive a thread (active->archived). NEVER deletes the row or
+       * SDK jsonl — archive is a reversible status flip.
+       * Returns true if the thread exists in the ThreadRegistry; false otherwise.
+       * Best-effort: if ThreadRegistry is not wired, returns false.
+       */
+      const archiveThread = (threadId: string): Effect.Effect<boolean, never> =>
+        Option.match(threadRegistry, {
+          onNone: () => Effect.succeed(false),
+          onSome: (reg) =>
+            reg.archive(threadId).pipe(Effect.catchAllCause(() => Effect.succeed(false))),
+        })
+
+      /**
+       * Phase 3: Unarchive a thread (archived->active). Clears archived_at.
+       * Returns true if the thread exists; false otherwise.
+       */
+      const unarchiveThread = (threadId: string): Effect.Effect<boolean, never> =>
+        Option.match(threadRegistry, {
+          onNone: () => Effect.succeed(false),
+          onSome: (reg) =>
+            reg.unarchive(threadId).pipe(Effect.catchAllCause(() => Effect.succeed(false))),
+        })
+
       return {
         createThread,
         send,
@@ -1806,6 +2082,8 @@ export class ChatService extends Effect.Service<ChatService>()(
         listThreads,
         searchMemory,
         closeThread,
+        archiveThread,
+        unarchiveThread,
         /** Cross-thread background-delivery notifications (#124). The WS layer
          *  runs this once at boot and broadcasts each item to all clients. */
         deliveries: Stream.fromPubSub(deliveriesHub),

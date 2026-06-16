@@ -1954,11 +1954,39 @@ export const startUIWebSocketServer = (
                   }
                   case "list-threads": {
                     if (chat === null) return
-                    const threads = yield* chat.listThreads(frame.limit ?? 50)
+                    const threads = yield* chat.listThreads(frame.limit ?? 50, frame.status)
                     send(ws, { type: "thread-list", threads })
                     // Cache model for each thread so smart bar can show the model.
                     for (const t of threads) {
                       if (t.model) threadModelCache.set(t.id, t.model)
+                    }
+                    return
+                  }
+                  case "archive-thread": {
+                    if (chat === null) return
+                    const archiveOk = yield* chat.archiveThread(frame.threadId)
+                    if (archiveOk) {
+                      send(ws, { type: "thread-archived", threadId: frame.threadId })
+                    } else {
+                      send(ws, {
+                        type: "thread-archive-error",
+                        threadId: frame.threadId,
+                        reason: "not-found",
+                      })
+                    }
+                    return
+                  }
+                  case "unarchive-thread": {
+                    if (chat === null) return
+                    const unarchiveOk = yield* chat.unarchiveThread(frame.threadId)
+                    if (unarchiveOk) {
+                      send(ws, { type: "thread-unarchived", threadId: frame.threadId })
+                    } else {
+                      send(ws, {
+                        type: "thread-archive-error",
+                        threadId: frame.threadId,
+                        reason: "not-found",
+                      })
                     }
                     return
                   }

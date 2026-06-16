@@ -14,6 +14,9 @@ import { defineConfig } from "vitest/config"
 // Adding a new bun:sqlite-backed suite? Add it here; test:bun already covers it
 // via its per-package globs.
 const BUN_RUNTIME_TESTS = [
+  "packages/core/src/threads/thread-registry.sqlite.test.ts",
+  "packages/core/src/threads/thread-registry-archival.sqlite.test.ts",
+  "packages/core/src/session/session-store-sqlite.restart.test.ts",
   "packages/core/src/db/duckdb-service.test.ts",
   "packages/core/src/analytics/analytics.test.ts",
   "packages/core/src/telemetry/event-sink.test.ts",
