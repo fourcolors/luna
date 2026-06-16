@@ -14,7 +14,8 @@
 import {
   type ProviderEnv,
   readProviderEnv,
-  ANTHROPIC_KIND,
+  profileForKind,
+  resolveKind,
 } from "../provider-profile.js"
 import {
   type OverflowConfig,
@@ -102,7 +103,14 @@ export const resolveOverflowConfig = (
       model: pref.model,
       kind: pref.provider,
     }))
-    chains[binding.role] = steps
+    // Key the chain by the role's PRIMARY model id — NOT the role name. The
+    // broker resolves overflow chains by the requested model id
+    // (account-broker-sql.ts: `const lane = o.model`), so a chain keyed by the
+    // role string ("wake"/"advisor"/…) is never found. The primary model is
+    // what the lane requests (wake/dream via LUNA_WAKE_MODEL/LUNA_DREAM_MODEL,
+    // set in applyProviderSettingsToEnv) and is step 0 of its own failover chain.
+    const primaryModel = binding.preferenceList[0]?.model
+    if (primaryModel) chains[primaryModel] = steps
   }
 
   return { chains }
@@ -147,14 +155,43 @@ export const validateAndPrepare = (
   candidate: ProviderSettingsPayload,
   env: Record<string, string | undefined> = process.env,
 ): ProviderSettingsPayload => {
+  // Validate ONLY the candidate's own chains, not any pre-existing
+  // LUNA_OVERFLOW_CHAINS already in the ambient env: otherwise a dirty operator
+  // env (e.g. a wake chain on a structuredOutput="none" provider) would make
+  // EVERY save fail regardless of the submitted payload. Strip it for the audit.
+  const validationEnv = { ...env, LUNA_OVERFLOW_CHAINS: undefined }
   // Resolve what the effective config would look like.
-  const effectiveProviderEnv = resolveProviderEnv(candidate, env)
-  const effectiveOverflow = resolveOverflowConfig(candidate, env)
+  const effectiveProviderEnv = resolveProviderEnv(candidate, validationEnv)
+  const effectiveOverflow = resolveOverflowConfig(candidate, validationEnv)
 
   // Run the existing overflow audit against the effective resolved config.
   const findings = validateOverflowConfig(effectiveOverflow, effectiveProviderEnv)
   if (findings.length > 0) {
     throw new ProviderSettingsValidationError(findings)
+  }
+
+  // Explicit structured-output check for wake/dream role bindings.
+  // validateOverflowConfig only audits chains keyed by lane names (wake/dream/reasoner),
+  // but after the model-keying fix, chains are keyed by model id — so it bypasses that
+  // audit. We replicate the check here for the roles that consume JSON.
+  const JSON_ROLES = new Set(["wake", "dream"])
+  const roleFindings: string[] = []
+  for (const binding of candidate.roleBindings ?? []) {
+    if (!JSON_ROLES.has(binding.role)) continue
+    for (let i = 0; i < (binding.preferenceList?.length ?? 0); i++) {
+      const pref = binding.preferenceList![i]!
+      const kind = pref.provider ?? resolveKind(pref.model, effectiveProviderEnv)
+      const profile = profileForKind(kind, effectiveProviderEnv)
+      if (profile.capabilities.structuredOutput === "none") {
+        roleFindings.push(
+          `Role "${binding.role}" step ${i} (model "${pref.model}", kind "${kind}") ` +
+            `cannot produce structured output but the lane consumes JSON.`,
+        )
+      }
+    }
+  }
+  if (roleFindings.length > 0) {
+    throw new ProviderSettingsValidationError(roleFindings)
   }
 
   // Basic payload shape validation.

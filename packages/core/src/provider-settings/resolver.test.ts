@@ -138,10 +138,10 @@ describe("resolveOverflowConfig", () => {
       ],
     }
     const result = resolveOverflowConfig(store, env)
-    // Store chain for advisor overrides env.
-    expect(result.chains["advisor"]).toHaveLength(1)
-    expect((result.chains["advisor"] as Array<{ model: string }>)[0]?.model).toBe("claude-haiku-4-5")
-    // Env chain for wake is preserved (not in store).
+    // Store chain is keyed by primary model id (not role name) — the broker resolves by model.
+    expect(result.chains["claude-haiku-4-5"]).toHaveLength(1)
+    expect((result.chains["claude-haiku-4-5"] as Array<{ model: string }>)[0]?.model).toBe("claude-haiku-4-5")
+    // Env chain for wake is preserved (not in store, stays as env-keyed lane).
     expect(result.chains["wake"]).toHaveLength(1)
     expect((result.chains["wake"] as Array<{ model: string }>)[0]?.model).toBe("claude-sonnet-4-6")
   })
@@ -165,10 +165,11 @@ describe("resolveOverflowConfig", () => {
       ],
     }
     const result = resolveOverflowConfig(store, env)
-    // Custom env lane preserved.
+    // Custom env lane preserved (not a role binding, stays as-is).
     expect(result.chains["my-custom-lane"]).toBeDefined()
-    // Store dream chain added.
-    expect(result.chains["dream"]).toBeDefined()
+    // Store dream chain is keyed by primary model id, NOT role name.
+    expect(result.chains["claude-haiku-4-5"]).toBeDefined()
+    expect(result.chains["dream"]).toBeUndefined()
   })
 
   it("role chain steps carry the provider kind", () => {
@@ -186,7 +187,8 @@ describe("resolveOverflowConfig", () => {
       ],
     }
     const result = resolveOverflowConfig(store, {})
-    const steps = result.chains["daily-driver"] as Array<{ model: string; kind: string }>
+    // Chain is keyed by primary model ("claude-sonnet-4-6"), not the role name.
+    const steps = result.chains["claude-sonnet-4-6"] as Array<{ model: string; kind: string }>
     expect(steps).toHaveLength(2)
     expect(steps[0]?.kind).toBe("anthropic")
     expect(steps[1]?.kind).toBe("anthropic")

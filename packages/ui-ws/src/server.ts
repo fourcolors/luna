@@ -2918,12 +2918,16 @@ export const startUIWebSocketServer = (
                       message: saveResult.message,
                     })
                     if (saveResult.ok) {
-                      // Re-broadcast fresh list to ALL clients.
-                      const freshList = mrSvc.list()
-                      const sockets = yield* Ref.get(activeSockets)
-                      for (const sock of sockets) {
-                        send(sock, freshList)
-                      }
+                      // Re-broadcast fresh list to ALL clients. Crash-guarded: a list() failure
+                      // after a successful save must not kill the connection fiber or leave other
+                      // clients stale — the save already succeeded and was acked.
+                      yield* Effect.gen(function* () {
+                        const freshList = mrSvc.list()
+                        const sockets = yield* Ref.get(activeSockets)
+                        for (const sock of sockets) {
+                          send(sock, freshList)
+                        }
+                      }).pipe(Effect.catchAllCause(() => Effect.void))
                       // Schedule restart so the resolver feeds the engine.
                       mrSvc.scheduleRestart?.()
                     }

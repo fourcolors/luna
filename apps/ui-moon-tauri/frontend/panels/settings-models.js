@@ -80,6 +80,9 @@
       var roleBindings = [];   // RoleBindingItem[] from server
       var reqId = null;        // in-flight model-routing-save requestId
       var wsClient = null;
+      // isDirty: true when the user has made unsaved changes. Prevents server-push
+      // frames (model-routing-list) from wiping draft edits mid-session.
+      var isDirty = false;
 
       // Draft edits (not yet sent): mirrors of providers/roleBindings.
       var draftProviders = {};   // kind -> { enabled, credentialRef, monthlyCapUsd }
@@ -156,11 +159,18 @@
       }
 
       // Initialize draft state from received server data.
+      // If the user has unsaved edits (isDirty), only refresh the backing arrays
+      // without wiping their draft changes.
       function applyServerState(pList, bList) {
         providers = Array.isArray(pList) ? pList : [];
         roleBindings = Array.isArray(bList) ? bList : [];
 
-        // Populate draft from server state (fill-if-empty guard for mid-edit).
+        if (isDirty) {
+          // User has unsaved edits — preserve draft state, only refresh backing data.
+          return;
+        }
+
+        // No unsaved edits: repopulate drafts from server state.
         draftProviders = {};
         providers.forEach(function (p) {
           draftProviders[p.kind] = {
@@ -285,6 +295,7 @@
           cb.checked = !!draft.enabled;
           (function (kind) {
             cb.addEventListener('change', function () {
+              isDirty = true;
               if (!draftProviders[kind]) draftProviders[kind] = {};
               draftProviders[kind].enabled = cb.checked;
               render();
@@ -304,6 +315,7 @@
             refInput.value = draft.credentialRef || '';
             (function (kind) {
               refInput.addEventListener('input', function () {
+                isDirty = true;
                 if (!draftProviders[kind]) draftProviders[kind] = {};
                 draftProviders[kind].credentialRef = refInput.value;
               });
@@ -325,6 +337,7 @@
             capInput.value = draft.monthlyCapUsd !== '' ? String(draft.monthlyCapUsd) : '';
             (function (kind) {
               capInput.addEventListener('input', function () {
+                isDirty = true;
                 if (!draftProviders[kind]) draftProviders[kind] = {};
                 var v = parseFloat(capInput.value);
                 draftProviders[kind].monthlyCapUsd = isNaN(v) ? '' : v;
@@ -396,6 +409,7 @@
 
           (function (r) {
             select.addEventListener('change', function () {
+              isDirty = true;
               draftRoleModel[r] = select.value;
               render();
             });
@@ -477,6 +491,9 @@
       registry.register('model-routing-status', function (frame) {
         if (!frame || frame.requestId !== reqId) return;
         reqId = null;
+        if (frame.ok) {
+          isDirty = false;  // Save confirmed — safe to accept server state again.
+        }
         setStatus(
           frame.ok ? (frame.message || 'Saved. Server restarting…')
                    : (frame.message || 'Could not save settings.'),

@@ -207,6 +207,7 @@ import {
   openProviderSettingsStore,
   resolveAll,
   validateAndPrepare,
+  resolveRoleModel,
   type ProviderSettingsPayload,
   SuggestedActions,
   SuggestedActionsStore,
@@ -1182,6 +1183,21 @@ const applyProviderSettingsToEnv = (dbPath: string): void => {
       const hasChains = Object.keys(overflowConfig.chains).length > 0
       if (hasChains) {
         process.env["LUNA_OVERFLOW_CHAINS"] = JSON.stringify(overflowConfig)
+      }
+
+      // Wire reasoner-lane model SELECTION: wake/dream resolve their model from
+      // LUNA_WAKE_MODEL / LUNA_DREAM_MODEL (brokered-turn resolveReasonerModel).
+      // Set them from the operator's role binding so the chosen model is actually
+      // requested — and its failover chain (keyed by that model) fires. Only
+      // override when the store has an explicit binding (never clobber operator env).
+      for (const [role, varName] of [
+        ["wake", "LUNA_WAKE_MODEL"],
+        ["dream", "LUNA_DREAM_MODEL"],
+      ] as const) {
+        const hasBinding = (storeConfig.roleBindings ?? []).some(
+          (b) => b.role === role && (b.preferenceList?.[0]?.model ?? "") !== "",
+        )
+        if (hasBinding) process.env[varName] = resolveRoleModel(role, storeConfig)
       }
 
       writeSync(
@@ -3341,6 +3357,28 @@ const buildServerLayer = (
               readonly roleBindings: ReadonlyArray<import("@luna/ui-ws").RoleBindingItem>
             }): { readonly ok: boolean; readonly message: string } => {
               try {
+                // Sanitize client-supplied enums BEFORE casting: the wire types
+                // are `string`, so an out-of-set kind/role would otherwise be
+                // persisted and silently mis-route at boot. Reject unknowns.
+                const KNOWN_KINDS = new Set([
+                  "anthropic", "openai", "google", "ollama-cloud", "ollama-local",
+                ])
+                const KNOWN_ROLES = new Set(["advisor", "daily-driver", "wake", "dream"])
+                for (const p of input.providers) {
+                  if (!KNOWN_KINDS.has(p.kind)) {
+                    return { ok: false, message: `Unknown provider kind: ${String(p.kind)}` }
+                  }
+                }
+                for (const b of input.roleBindings) {
+                  if (!KNOWN_ROLES.has(b.role)) {
+                    return { ok: false, message: `Unknown role: ${String(b.role)}` }
+                  }
+                  for (const pref of b.preferenceList) {
+                    if (!KNOWN_KINDS.has(pref.provider)) {
+                      return { ok: false, message: `Unknown provider kind: ${String(pref.provider)}` }
+                    }
+                  }
+                }
                 const candidate: ProviderSettingsPayload = {
                   version: 1,
                   providers: input.providers.map((p) => ({

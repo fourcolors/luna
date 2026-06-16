@@ -45,5 +45,4 @@ export interface ProviderSettingsPayload {
   readonly version: 1
 }
 
-/** Wire-safe projection for the UI — same shape, no secrets. */
-export type ProviderSettingsWire = ProviderSettingsPayload
+
