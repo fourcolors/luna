@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 //
-// Focused tests for vendor/moon-dock.js applyGroupState — the skin/weld parts
-// of the dock client that the per-page tests (widget-window / chat-window)
-// don't both exercise. Here we wire LunaDock directly against a minimal DOM so
-// we can control the window LABEL (the anchor gate keys on 'panel-chat') and
-// drive the captured `dock-group` handler with arbitrary payloads.
+// Focused tests for vendor/moon-dock.js in the EMERGENT welding model: there is
+// no dock-group IPC payload anymore — a window enumerates its siblings' rects
+// and computes its own weld via LunaDeckSnap. We wire LunaDock against a minimal
+// DOM + faked Tauri windows at known positions and assert the resulting weld
+// visuals (silhouette shadow, squared corners, data-weld marker). The pure
+// geometry that feeds this is covered byte-for-byte in deck-weld.test.ts.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -14,44 +15,51 @@ function loadVendorInto(target: any, file: string) {
   new Function('globalThis', src)(target)
 }
 
-// The dock elements every widget-page carries (vendor/moon-dock.js requires
-// #seam / #outline and a .title-bar; the
-// skin/weld code reads .widget-shell + .title-bar).
 const DOCK_DOM =
   '<div class="widget-shell">' +
-  '  <div class="title-bar" id="title-bar">' +
-  '    <span class="bar-title" id="bar-title">x</span>' +
-  '    <button class="close-btn" id="close-btn"></button>' +
-  '  </div>' +
+  '  <div class="title-bar" id="title-bar"><span class="bar-title">x</span></div>' +
   '  <div id="seam"></div>' +
   '  <div id="outline"></div>' +
   '</div>'
 
-let handlers: Record<string, (e: { payload: unknown }) => void>
+type Layout = Record<string, [number, number, number, number]> // label → [x,y,w,h]
 
-function wireWith(label: string) {
-  handlers = {}
-  document.body.innerHTML = DOCK_DOM
-  const win = {
+// A fake Tauri window reporting a fixed logical rect (scaleFactor 1).
+function mkWin(label: string, rect: [number, number, number, number]) {
+  const [x, y, w, h] = rect
+  return {
     label,
-    listen: vi.fn(async (name: string, cb: (e: { payload: unknown }) => void) => {
-      handlers[name] = cb
-      return () => {}
-    }),
+    outerPosition: vi.fn(async () => ({ x, y })),
+    outerSize: vi.fn(async () => ({ width: w, height: h })),
+    scaleFactor: vi.fn(async () => 1),
+    listen: vi.fn(async () => () => {}),
+    onResized: vi.fn(async () => () => {}),
   }
+}
+
+// Wire `self` as the current window; `layout` holds every widget window
+// (including self) so list_widget_windows + getByLabel resolve real rects.
+function wireWith(selfLabel: string, layout: Layout) {
+  document.body.innerHTML = DOCK_DOM
+  const wins: Record<string, ReturnType<typeof mkWin>> = {}
+  for (const [lbl, r] of Object.entries(layout)) wins[lbl] = mkWin(lbl, r)
+  const self = wins[selfLabel]
   ;(window as any).__TAURI__ = {
-    window: { getCurrentWindow: () => win, Window: { getByLabel: vi.fn(async () => null) } },
-    core: { invoke: vi.fn(async () => null) },
+    window: {
+      getCurrentWindow: () => self,
+      LogicalPosition: class { constructor(public x: number, public y: number) {} },
+      Window: { getByLabel: vi.fn(async (l: string) => wins[l] || null) },
+    },
+    core: { invoke: vi.fn(async (cmd: string) => (cmd === 'list_widget_windows' ? Object.keys(layout) : null)) },
+    event: { emit: vi.fn(async () => {}), listen: vi.fn(async () => () => {}) },
   }
   loadVendorInto(window, 'deck-snap.js')
   loadVendorInto(window, 'moon-dock.js')
-  ;(window as any).LunaDock.wire({ win, label })
+  ;(window as any).LunaDock.wire({ win: self, label: selfLabel })
+  return self
 }
 
-function group(label: string, payload: Record<string, unknown>) {
-  expect(handlers['dock-group']).toBeTypeOf('function')
-  handlers['dock-group']({ payload: { for: label, ...payload } })
-}
+const shell = () => document.querySelector('.widget-shell') as HTMLElement
 
 afterEach(() => {
   document.body.innerHTML = ''
@@ -64,59 +72,40 @@ afterEach(() => {
 
 describe('moon-dock wire — chat anchor stamp', () => {
   it('stamps html[data-anchor="true"] for the chat window', () => {
-    wireWith('panel-chat')
+    wireWith('panel-chat', { 'panel-chat': [0, 0, 200, 300] })
     expect(document.documentElement.getAttribute('data-anchor')).toBe('true')
   })
-
   it('does NOT stamp data-anchor for a non-chat window', () => {
-    wireWith('widget-a')
+    wireWith('widget-a', { 'widget-a': [0, 0, 200, 300] })
     expect(document.documentElement.hasAttribute('data-anchor')).toBe(false)
   })
 })
 
-describe('moon-dock applyGroupState — weld shadow + anchor', () => {
-  it('the chat anchor window uses the accent bottom edge piece', () => {
-    wireWith('panel-chat')
-    group('panel-chat', { grouped: true, members: ['panel-chat', 'widget-a'], outlineSides: ['l', 'r', 'b'] })
-    const shell = document.querySelector('.widget-shell') as HTMLElement
-    expect(shell.style.boxShadow).toContain('var(--dk-edge-b-anchor)')
-    expect(shell.style.boxShadow).not.toContain('var(--dk-edge-b),')
+describe('moon-dock — emergent weld visuals', () => {
+  it('the chat anchor uses the accent bottom edge piece (bottom free, welded right)', async () => {
+    // panel-chat at (0,0,200x300); widget-a flush on its right → chat's bottom
+    // stays a free perimeter side, so it casts the anchor bottom edge.
+    wireWith('panel-chat', { 'panel-chat': [0, 0, 200, 300], 'widget-a': [200, 0, 200, 300] })
+    await vi.waitFor(() => expect(shell().style.boxShadow).toContain('var(--dk-edge-b-anchor)'))
+    expect(shell().getAttribute('data-weld')).toBe('r')
   })
 
-  it('a non-anchor window uses the plain bottom edge piece', () => {
-    wireWith('widget-a')
-    group('widget-a', { grouped: true, members: ['widget-a', 'widget-b'], outlineSides: ['l', 'r', 'b'] })
-    const shell = document.querySelector('.widget-shell') as HTMLElement
-    expect(shell.style.boxShadow).toContain('var(--dk-edge-b)')
-    expect(shell.style.boxShadow).not.toContain('anchor')
+  it('a non-anchor window squares the welded corners and marks the welded edge', async () => {
+    // widget-a at (0,300,200x300); widget-b flush ABOVE → top is welded.
+    wireWith('widget-a', { 'widget-a': [0, 300, 200, 300], 'widget-b': [0, 0, 200, 300] })
+    await vi.waitFor(() => expect(shell().getAttribute('data-weld')).toBe('t'))
+    expect(shell().style.boxShadow).toContain('var(--dk-edge-b)')
+    expect(shell().style.boxShadow).not.toContain('anchor')
+    expect(shell().style.borderTopLeftRadius).toBe('0px')
+    expect(shell().style.borderBottomLeftRadius).toBe('')
   })
 
-  it('squares welded corners and marks welded edges together', () => {
-    wireWith('widget-a')
-    group('widget-a', {
-      grouped: true,
-      members: ['widget-a', 'widget-b'],
-      outlineSides: ['l', 'r', 'b'],
-      weldCorners: ['tl', 'tr'],
-    })
-    const shell = document.querySelector('.widget-shell') as HTMLElement
-    expect(shell.style.borderTopLeftRadius).toBe('0px')
-    expect(shell.style.borderBottomLeftRadius).toBe('')
-    expect(shell.getAttribute('data-weld')).toBe('t')
-  })
-
-  it('ungroup clears the shadow, the weld marker, and the corner radii', () => {
-    wireWith('widget-a')
-    group('widget-a', {
-      grouped: true,
-      members: ['widget-a', 'widget-b'],
-      outlineSides: ['l', 'r', 'b'],
-      weldCorners: ['tl', 'tr'],
-    })
-    group('widget-a', { grouped: false, members: [], outlineSides: [], weldCorners: [] })
-    const shell = document.querySelector('.widget-shell') as HTMLElement
-    expect(shell.style.boxShadow).toBe('')
-    expect(shell.hasAttribute('data-weld')).toBe(false)
-    expect(shell.style.borderTopLeftRadius).toBe('')
+  it('a lone window casts no cluster shadow and squares no corners', async () => {
+    const self = wireWith('widget-a', { 'widget-a': [0, 0, 200, 300] })
+    await vi.waitFor(() => expect(self.outerPosition).toHaveBeenCalled())
+    await vi.waitFor(() => expect((window as any).__TAURI__.core.invoke).toHaveBeenCalled())
+    expect(shell().style.boxShadow).toBe('')
+    expect(shell().hasAttribute('data-weld')).toBe(false)
+    expect(shell().style.borderTopLeftRadius).toBe('')
   })
 })

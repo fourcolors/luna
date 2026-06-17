@@ -97,9 +97,144 @@
     return { targets: targets, snapped: !!best, anchor: best ? best.label : null, edge: best ? best.edge : null }
   }
 
+  // ── Emergent welding geometry ──────────────────────────────────────────
+  // Ported from the Rust dock graph (main.rs dock_rects_touch /
+  // dock_components / dock_outline_sides / dock_weld_corners) with the SAME
+  // constants, proven byte-identical against Rust's own unit-test fixtures.
+  // With these, every welding fact a window needs — cluster membership, the
+  // perimeter (free) sides, and the corners to square at an interior seam — is
+  // derivable CLIENT-SIDE from sibling rects, so there is no central group graph
+  // and no dock-group IPC to keep in sync. Pure; all rects are { x, y, w, h } in
+  // logical px and members are [{ label, rect }].
+  var WELD_EPS = 2 // flush tolerance (matches Rust EPS)
+  var WELD_MIN_OVERLAP = 8 // perpendicular overlap that counts as adjacency
+  var WELD_IN = 6 // probe inset from a corner along each meeting edge
+
+  // Two rects are welded when an edge is flush (≤EPS) AND they overlap on the
+  // perpendicular axis (≥MIN_OVERLAP).
+  function rectsTouch(a, b) {
+    var al = a.x, at = a.y, ar = a.x + a.w, ab = a.y + a.h
+    var bl = b.x, bt = b.y, br = b.x + b.w, bb = b.y + b.h
+    var vOverlap = Math.min(ab, bb) - Math.max(at, bt) >= WELD_MIN_OVERLAP
+    var hOverlap = Math.min(ar, br) - Math.max(al, bl) >= WELD_MIN_OVERLAP
+    return (
+      (vOverlap && (Math.abs(al - br) <= WELD_EPS || Math.abs(ar - bl) <= WELD_EPS)) ||
+      (hOverlap && (Math.abs(at - bb) <= WELD_EPS || Math.abs(ab - bt) <= WELD_EPS))
+    )
+  }
+
+  // Flood-fill connected components over rectsTouch → array of label arrays.
+  function weldComponents(members) {
+    var n = members.length
+    var seen = new Array(n)
+    var out = []
+    for (var s = 0; s < n; s++) {
+      if (seen[s]) continue
+      var comp = []
+      var stack = [s]
+      seen[s] = true
+      while (stack.length) {
+        var i = stack.pop()
+        comp.push(members[i].label)
+        for (var j = 0; j < n; j++) {
+          if (!seen[j] && rectsTouch(members[i].rect, members[j].rect)) {
+            seen[j] = true
+            stack.push(j)
+          }
+        }
+      }
+      out.push(comp)
+    }
+    return out
+  }
+
+  // Every label transitively welded to `label` (its cluster), including itself.
+  function weldClusterOf(label, members) {
+    var comps = weldComponents(members)
+    for (var i = 0; i < comps.length; i++) {
+      if (comps[i].indexOf(label) !== -1) return comps[i]
+    }
+    return [label]
+  }
+
+  // The FREE (non-touching) sides of each member — drives the perimeter
+  // silhouette. Push order l,r,t,b. Returns { [label]: Array<'l'|'r'|'t'|'b'> }.
+  function weldOutlineSides(members) {
+    var out = {}
+    for (var i = 0; i < members.length; i++) {
+      var a = members[i].rect
+      var l = a.x, t = a.y, r = a.x + a.w, b = a.y + a.h
+      var touched = { l: false, r: false, t: false, b: false }
+      for (var j = 0; j < members.length; j++) {
+        if (j === i) continue
+        var o = members[j].rect
+        var ol = o.x, ot = o.y, or_ = o.x + o.w, ob = o.y + o.h
+        var vOverlap = Math.min(b, ob) - Math.max(t, ot) >= WELD_MIN_OVERLAP
+        var hOverlap = Math.min(r, or_) - Math.max(l, ol) >= WELD_MIN_OVERLAP
+        if (vOverlap && Math.abs(l - or_) <= WELD_EPS) touched.l = true
+        if (vOverlap && Math.abs(r - ol) <= WELD_EPS) touched.r = true
+        if (hOverlap && Math.abs(t - ob) <= WELD_EPS) touched.t = true
+        if (hOverlap && Math.abs(b - ot) <= WELD_EPS) touched.b = true
+      }
+      var sides = []
+      if (!touched.l) sides.push("l")
+      if (!touched.r) sides.push("r")
+      if (!touched.t) sides.push("t")
+      if (!touched.b) sides.push("b")
+      out[members[i].label] = sides
+    }
+    return out
+  }
+
+  // Which CORNERS of each member sit at an interior weld seam (square them). A
+  // corner squares only when a flush neighbour REACHES it (probed WELD_IN px in),
+  // so a partial-width weld keeps its still-exposed corners round. The hub label
+  // (default "main") is alignment-only and never welds. Push order tl,tr,br,bl.
+  // Returns { [label]: Array<'tl'|'tr'|'br'|'bl'> }.
+  function weldCorners(members, hubLabel) {
+    var hub = hubLabel || "main"
+    var out = {}
+    for (var i = 0; i < members.length; i++) {
+      var a = members[i].rect
+      var l = a.x, t = a.y, r = a.x + a.w, b = a.y + a.h
+      var tl = false, tr = false, br = false, bl = false
+      var pyT = t + WELD_IN, pyB = b - WELD_IN, pxL = l + WELD_IN, pxR = r - WELD_IN
+      for (var j = 0; j < members.length; j++) {
+        if (j === i || members[j].label === hub) continue
+        var o = members[j].rect
+        var ol = o.x, ot = o.y, or_ = o.x + o.w, ob = o.y + o.h
+        var flushLeft = Math.abs(l - or_) <= WELD_EPS
+        var flushRight = Math.abs(r - ol) <= WELD_EPS
+        var flushTop = Math.abs(t - ob) <= WELD_EPS
+        var flushBottom = Math.abs(b - ot) <= WELD_EPS
+        var covYpyT = ot - WELD_EPS <= pyT && pyT <= ob + WELD_EPS
+        var covYpyB = ot - WELD_EPS <= pyB && pyB <= ob + WELD_EPS
+        var covXpxL = ol - WELD_EPS <= pxL && pxL <= or_ + WELD_EPS
+        var covXpxR = ol - WELD_EPS <= pxR && pxR <= or_ + WELD_EPS
+        if ((flushLeft && covYpyT) || (flushTop && covXpxL)) tl = true
+        if ((flushRight && covYpyT) || (flushTop && covXpxR)) tr = true
+        if ((flushRight && covYpyB) || (flushBottom && covXpxR)) br = true
+        if ((flushLeft && covYpyB) || (flushBottom && covXpxL)) bl = true
+      }
+      var corners = []
+      if (tl) corners.push("tl")
+      if (tr) corners.push("tr")
+      if (br) corners.push("br")
+      if (bl) corners.push("bl")
+      out[members[i].label] = corners
+    }
+    return out
+  }
+
   g.LunaDeckSnap = {
     computeSnap: computeSnap,
     computeLiveDrag: computeLiveDrag,
     DEFAULT_THRESHOLD: DEFAULT_THRESHOLD,
+    // emergent welding geometry (replaces the Rust dock graph)
+    rectsTouch: rectsTouch,
+    weldComponents: weldComponents,
+    weldClusterOf: weldClusterOf,
+    weldOutlineSides: weldOutlineSides,
+    weldCorners: weldCorners,
   }
 })(typeof globalThis !== "undefined" ? globalThis : this)
