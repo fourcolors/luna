@@ -1,8 +1,0 @@
-[[permission]]
-identifier = "allow-dock-group-state"
-description = "Allows a panel/widget window to read its own current dock-group membership (replay-on-subscribe), so a webview that loaded after its dock-group event fired can still learn it is grouped"
-
-[permission.commands]
-allow = [
-  "dock_group_state"
-]
