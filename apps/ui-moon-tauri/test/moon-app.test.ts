@@ -103,12 +103,13 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Behavioral Feature: Moon click → chat widget (Phase 4/6). The moon is the
-  // chat's LAUNCHER now: a quick click summons the chat widget window via the
-  // Rust open_widget command. Press/click discrimination still gates it — a
-  // long press or a drag must never spawn a window.
+  // Behavioral Feature: Moon click → EXPAND the workspace. The moon is the
+  // minimized form of all of Luna: a quick click pours the widgets back out via
+  // the Rust expand_from_moon command (which hides the orb, reveals the widgets,
+  // and opens chat if nothing is open yet). Press/click discrimination still
+  // gates it — a long press or a drag must never trigger the toggle.
   // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Moon click summons the chat widget', () => {
+  describe('Feature: Moon click expands the workspace out of the moon', () => {
     const click = (down: [number, number], up: [number, number], holdMs = 50) => {
       const moon = document.getElementById('moon')!
       moon.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: down[0], clientY: down[1] }))
@@ -116,22 +117,22 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       moon.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: up[0], clientY: up[1] }))
     }
 
-    it('Scenario: a quick click invokes open_widget({kind: "chat"})', async () => {
-      const invoke = vi.fn(async () => 'panel-chat')
+    it('Scenario: a quick click invokes expand_from_moon', async () => {
+      const invoke = vi.fn(async () => null)
       ;(window as any).__TAURI__.core = { invoke }
       click([100, 100], [100, 100])
-      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'chat' }))
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('expand_from_moon'))
     })
 
-    it('Scenario: a long press (≥280ms) is a grab, not a click — no widget spawn', () => {
-      const invoke = vi.fn(async () => 'panel-chat')
+    it('Scenario: a long press (≥280ms) is a grab, not a click — no expand', () => {
+      const invoke = vi.fn(async () => null)
       ;(window as any).__TAURI__.core = { invoke }
       click([100, 100], [100, 100], 400)
       expect(invoke).not.toHaveBeenCalled()
     })
 
-    it('Scenario: a press that moved ≥5px is a drag, not a click — no widget spawn', () => {
-      const invoke = vi.fn(async () => 'panel-chat')
+    it('Scenario: a press that moved ≥5px is a drag, not a click — no expand', () => {
+      const invoke = vi.fn(async () => null)
       ;(window as any).__TAURI__.core = { invoke }
       click([100, 100], [140, 130])
       expect(invoke).not.toHaveBeenCalled()
@@ -139,8 +140,7 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
 
     it('Scenario: off-Tauri (no core) a click logs and no-ops instead of throwing', () => {
       // The shared beforeEach mocks __TAURI__.window only — no core, exactly
-      // the frontend-dev/jsdom case. The old in-envelope toggleChat fallback
-      // died in Phase 6.
+      // the frontend-dev/jsdom case.
       expect(() => click([100, 100], [100, 100])).not.toThrow()
     })
   })

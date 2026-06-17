@@ -45,6 +45,8 @@
     "allow-open-artifact-widget",
     "allow-open-widget",
     "allow-close-widget",
-    "allow-list-widget-windows"
+    "allow-list-widget-windows",
+    "allow-collapse-to-moon",
+    "allow-expand-from-moon"
   ]
 }

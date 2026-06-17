@@ -1,0 +1,6 @@
+# Generated for the moon collapse/expand toggle — clicking the orb pours the
+# widgets back out. See main.rs (expand_out_of_moon).
+[[permission]]
+identifier = "allow-expand-from-moon"
+description = "Allows the expand_from_moon command"
+commands.allow = ["expand_from_moon"]
