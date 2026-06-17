@@ -56,6 +56,13 @@ export interface UIState {
   readonly lastDrop: { readonly n: number; readonly since: string } | null
   readonly lastPingAt: string | null
   readonly closeReason: string | null
+  /**
+   * Last `new-thread` failure message (server `thread-create-error` frame).
+   * A new thread has no id yet, so this lives at the top level rather than on
+   * a ThreadView. Cleared the moment a thread is successfully created. Without
+   * this the client would wait forever for a `thread-created` that never comes.
+   */
+  readonly threadCreateError: string | null
   /** Server-advertised capabilities. `skills` is additive/optional —
    *  absent against older servers (the Skills section hides). */
   readonly capabilities: {
@@ -161,6 +168,7 @@ export const initialState: UIState = {
   lastDrop: null,
   lastPingAt: null,
   closeReason: null,
+  threadCreateError: null,
   capabilities: { chat: false, streamingDeltas: false, setup: false },
   // null = server hasn't sent availableModels yet (old server or not connected);
   // the UI falls back to its hardcoded MODEL_OPTIONS list in that case.
@@ -320,6 +328,8 @@ export const reduce = (state: UIState, action: Action): UIState => {
         threads: next,
         threadList: list,
         selectedThreadId: frame.thread.id,
+        // A thread was created successfully — clear any prior create error.
+        threadCreateError: null,
       }
     }
     case "thread-snapshot": {
@@ -553,6 +563,11 @@ export const reduce = (state: UIState, action: Action): UIState => {
       // Phase 3: operation failed (thread not found / registry unavailable).
       // No persistent state to update; the UI layer handles the refresh.
       return state
+    case "thread-create-error":
+      // A `new-thread` request failed before a thread row existed. Surface the
+      // reason at the top level so the UI can stop its "creating…" spinner and
+      // show the error instead of waiting forever for a `thread-created`.
+      return { ...state, threadCreateError: frame.message }
     default: {
       // Exhaustiveness guard: when every ServerFrame member has a matching
       // case arm, TypeScript narrows `frame` to `never` here. Adding a new

@@ -193,6 +193,15 @@ export interface ThreadCreatedFrame {
   readonly type: "thread-created"
   readonly thread: SessionSummary
 }
+/**
+ * Sent when a `new-thread` request failed before a thread row could be
+ * created. Without it the client waits forever for a `thread-created` that
+ * never arrives.
+ */
+export interface ThreadCreateErrorFrame {
+  readonly type: "thread-create-error"
+  readonly message: string
+}
 export interface ThreadSnapshotFrame {
   readonly type: "thread-snapshot"
   readonly threadId: string
@@ -875,6 +884,7 @@ export type ServerFrame =
   | ByeFrame
   | ThreadListFrame
   | ThreadCreatedFrame
+  | ThreadCreateErrorFrame
   | ThreadSnapshotFrame
   | UserAcceptedFrame
   | AssistantDeltaFrame

@@ -154,6 +154,44 @@ const rowToMessage = (r: MessageDbRow): StoredMessage => ({
 const integrity = (resource: string, message: string) =>
   new IntegrityError({ module: "session-store", resource, message })
 
+/**
+ * Serialize a SessionOptions blob for the `options_json` column, dropping any
+ * value JSON cannot represent (cyclic references, functions, BigInt, etc.)
+ * instead of throwing.
+ *
+ * The durable session row only needs the *serializable* configuration
+ * (model, effort, settings, …). Live handles such as in-process MCP server
+ * objects belong only to the in-memory `sdkOptions` handed to the SDK adapter
+ * — they are re-wired fresh on every (re)build and are never read back from
+ * this row. The primary fix strips them upstream (chat-service.createThread);
+ * this is the belt to the upstream suspenders: a stray non-serializable field
+ * degrades to a lossy-but-valid row rather than bricking thread creation.
+ *
+ * Falls back to `getCircularReplacer` (which substitutes `"[Circular]"` /
+ * `"[Unserializable]"`) only when a first plain `JSON.stringify` throws, so the
+ * common path keeps full fidelity and zero overhead.
+ */
+const safeStringifyOptions = (opts: SessionOptions): string => {
+  try {
+    return JSON.stringify(opts)
+  } catch {
+    return JSON.stringify(opts, getCircularReplacer())
+  }
+}
+
+const getCircularReplacer = (): ((key: string, value: unknown) => unknown) => {
+  const seen = new WeakSet<object>()
+  return (_key, value) => {
+    if (typeof value === "bigint") return value.toString()
+    if (typeof value === "function") return undefined
+    if (typeof value === "object" && value !== null) {
+      if (seen.has(value)) return "[Circular]"
+      seen.add(value)
+    }
+    return value
+  }
+}
+
 // Minimal `bun:sqlite` shape we need. Typed locally so this file doesn't
 // depend on @types/bun (matches the memory backend convention).
 interface BunDb {
@@ -284,7 +322,14 @@ export const makeSessionStoreSqlite = (
               input.createdAt,
               null,
               opts.model,
-              JSON.stringify(opts),
+              // Defense-in-depth: the options blob is caller-supplied and may
+              // carry a non-serializable handle (e.g. live MCP server objects
+              // with cyclic refs). A raw JSON.stringify throw here used to
+              // brick thread creation. `safeStringifyOptions` drops cyclic /
+              // unserializable values so a future stray field degrades to a
+              // lossy-but-valid row instead of failing the INSERT. Callers that
+              // need a field round-tripped must keep it serializable.
+              safeStringifyOptions(opts),
               "active",
               JSON.stringify({
                 lastMessageAt: null,

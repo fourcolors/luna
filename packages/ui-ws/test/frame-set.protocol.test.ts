@@ -69,6 +69,8 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "bye",
   "thread-list",
   "thread-created",
+  // new-thread failure signal so the client doesn't hang forever.
+  "thread-create-error",
   "thread-snapshot",
   "user-accepted",
   "assistant-delta",
@@ -293,7 +295,10 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // Phase 3 Copilot fix: thread-archive-error adds one more server frame → 53.
     // Model-routing settings (PR 1) adds model-routing-list + model-routing-status
     // (server) and model-routing-save (client) → 55 server / 41 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(55)
+    // New-thread-failure signal adds thread-create-error (server only — sent
+    // when a new-thread request dies before a thread row exists, so the client
+    // stops waiting forever) → 56 server / 41 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(56)
     expect(literalsForUnion(src, "ClientFrame")).toHaveLength(41)
   })
 

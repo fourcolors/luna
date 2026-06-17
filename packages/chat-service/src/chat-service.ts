@@ -35,6 +35,7 @@
  * mirrors all OUTBOUND messages (assistant/result/system/etc.) per §12.2 #2.
  */
 import {
+  Cause,
   Chunk,
   Context,
   Effect,
@@ -116,6 +117,46 @@ interface ThreadEntry {
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null
+
+/**
+ * Return a copy of `SessionOptions` safe to persist in the durable session
+ * row, with non-serializable LIVE handles removed.
+ *
+ * `decorate()` injects in-process MCP server objects into
+ * `sdkOptions.mcpServers` (memory/scheduler/observability/local_shell/secret/
+ * skill/widget + connector mounts). Those objects carry cyclic references, so
+ * `JSON.stringify`-ing the whole options blob — which the SQLite SessionStore
+ * does to fill `options_json` — threw `cannot serialize cyclic structures`,
+ * which `Effect.orDie` converted into a silently-dropped defect that hung every
+ * new-thread request.
+ *
+ * The mcpServers belong ONLY to the in-memory `sdkOptions` handed to the SDK
+ * adapter for the live query; they are re-wired fresh by `decorate()` on every
+ * (re)build / resume and are never read back from the persisted row. So we drop
+ * `mcpServers` (both the top-level mirror and the `sdkOptions` copy) from the
+ * persisted snapshot while the live `sessionOptions` still flows unchanged to
+ * `adapter.query`.
+ */
+const stripNonPersistableOptions = (opts: SessionOptions): SessionOptions => {
+  const sdk = opts.sdkOptions
+  // Drop sdkOptions.mcpServers (the live, cyclic handles).
+  const sanitizedSdk =
+    isObj(sdk) && "mcpServers" in sdk
+      ? (() => {
+          const { mcpServers: _drop, ...rest } = sdk as Record<string, unknown>
+          return rest
+        })()
+      : sdk
+  // Drop any top-level mcpServers mirror too. It is typed via the loose
+  // CreateThreadOptions surface and may have been merged onto the blob.
+  const { mcpServers: _topDrop, ...restTop } = opts as SessionOptions & {
+    mcpServers?: unknown
+  }
+  return {
+    ...restTop,
+    ...(sanitizedSdk !== undefined ? { sdkOptions: sanitizedSdk } : {}),
+  }
+}
 
 /** Pull turn-id (uuid) from an assistant or stream_event SDK message. */
 const turnIdOf = (m: SDKMessage): string | null => {
@@ -621,9 +662,36 @@ export class ChatService extends Effect.Service<ChatService>()(
           }
 
           // Create the session row first — fail loudly if id collides.
+          //
+          // PERSISTENCE BOUNDARY: the durable row must hold only a
+          // *serializable* options snapshot. `decorate()` injects LIVE
+          // in-process MCP server objects into `sdkOptions.mcpServers`
+          // (memory/scheduler/observability/local_shell/secret/skill/widget +
+          // connector mounts); those objects carry cyclic references, so
+          // serializing them threw `JSON.stringify cannot serialize cyclic
+          // structures` inside the SQLite store's INSERT — which `Effect.orDie`
+          // turned into a defect that the ui-ws handler dropped silently,
+          // hanging every new-thread request. The live `sessionOptions` still
+          // flows UNCHANGED to `adapter.query` below (so the SDK gets its
+          // tools); only the persisted copy is sanitized. The mcpServers are
+          // re-wired fresh by decorate() on every (re)build / resume and are
+          // never read back from this row.
+          const persistOptions = stripNonPersistableOptions(sessionOptions)
           const summary = yield* store
-            .create({ id, options: sessionOptions, createdAt })
-            .pipe(Effect.orDie)
+            .create({ id, options: persistOptions, createdAt })
+            // Surface the typed failure at its source before converting to a
+            // defect — the silent-failure gap that hid the cyclic-serialize
+            // bug. The ui-ws new-thread handler additionally catches the
+            // resulting cause and sends the client a `thread-create-error`
+            // frame (server.ts), so the user is never left hanging.
+            .pipe(
+              Effect.tapErrorCause((cause) =>
+                Effect.logError(
+                  `[chat] createThread: session store create failed for ${id}: ${Cause.pretty(cause)}`,
+                ),
+              ),
+              Effect.orDie,
+            )
 
           // Session row exists → run the provider's post-create binding
           // (obs session tagging, local-shell attach, sandbox re-attach)

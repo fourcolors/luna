@@ -191,6 +191,17 @@ export interface ThreadCreatedFrame {
   readonly thread: SessionSummary
 }
 
+/**
+ * Sent when a `new-thread` request failed before a thread row could be
+ * created (e.g. the session store INSERT threw). Without this the client
+ * waits forever for a `thread-created` that never arrives. The message is a
+ * short, human-readable reason; the server logs the full cause.
+ */
+export interface ThreadCreateErrorFrame {
+  readonly type: "thread-create-error"
+  readonly message: string
+}
+
 export interface ThreadSnapshotFrame {
   readonly type: "thread-snapshot"
   readonly threadId: string
@@ -1262,6 +1273,7 @@ export type ServerFrame =
   | ByeFrame
   | ThreadListFrame
   | ThreadCreatedFrame
+  | ThreadCreateErrorFrame
   | ThreadSnapshotFrame
   | UserAcceptedFrame
   | AssistantDeltaFrame

@@ -84,6 +84,40 @@ d("SessionStore.fromPath (sqlite)", () => {
     expect(result.got?.tags).toEqual(["x"])
   })
 
+  it("create() does not throw on a cyclic options blob (safe-stringify)", async () => {
+    // Regression: chat-service decorate() injects LIVE MCP server objects into
+    // sdkOptions.mcpServers; those carry cyclic references. A raw
+    // JSON.stringify of the options blob threw "cannot serialize cyclic
+    // structures" inside the INSERT, which Effect.orDie turned into a
+    // silently-dropped defect that hung every new-thread request. The store's
+    // safe-stringify defense must degrade gracefully (no throw) and the row
+    // must still be readable.
+    const cyclic: Record<string, unknown> = { name: "memory" }
+    cyclic["self"] = cyclic // <-- the cycle
+    const result = await provideMem(
+      Effect.gen(function* () {
+        const store = yield* SessionStore
+        const summary = yield* store.create({
+          id: "cyc",
+          options: {
+            model: "m",
+            sdkOptions: { mcpServers: { memory: cyclic } },
+          },
+          createdAt: 7,
+        })
+        const got = yield* store.get("cyc")
+        // getOptions must not throw either (the persisted JSON is valid).
+        const opts = yield* store.getOptions("cyc")
+        return { summary, got, opts }
+      }),
+    )
+    expect(result.summary.id).toBe("cyc")
+    expect(result.summary.status).toBe("active")
+    expect(result.got?.model).toBe("m")
+    // The blob round-trips to valid JSON (the cycle was substituted, not fatal).
+    expect(result.opts).not.toBeNull()
+  })
+
   it("rejects duplicate session ids with IntegrityError", async () => {
     const exit = await Effect.runPromiseExit(
       Effect.scoped(

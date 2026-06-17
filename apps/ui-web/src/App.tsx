@@ -346,6 +346,11 @@ export const App: Component = () => {
         // carries `message.delivery` for the inline chip). Side-effect only;
         // still dispatched below (the reducer no-ops it) for exhaustiveness.
         pushResultToast(frame.label, frame.preview)
+      } else if (frame.type === "thread-create-error") {
+        // A `new-thread` request failed before a thread existed. Surface a
+        // toast so the user knows to retry instead of waiting forever for a
+        // `thread-created`. The reducer also records it (threadCreateError).
+        pushResultToast("Couldn't create thread", frame.message)
       }
       store.dispatch(frame)
       // Sidebar freshness: any frame that mutates a thread's last-message

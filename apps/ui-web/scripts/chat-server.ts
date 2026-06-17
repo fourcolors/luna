@@ -3082,6 +3082,12 @@ const buildServerLayer = (
       // Activation requires restart (applyProviderSettingsToEnv runs at next
       // boot, feeding the broker with the new config). No secret values cross
       // the wire — credentialRef is an opaque pointer only.
+      // Captured so the long-lived mrDb handle is closed on scope teardown.
+      // Every other store in this layer routes close() through an Effect
+      // finalizer; this one used to leak its bun:sqlite handle for the whole
+      // process lifetime. Assigned inside the IIFE below; the finalizer that
+      // calls it is registered immediately after.
+      let mrDbClose: (() => void) | null = null
       const modelRoutingService = (() => {
         try {
           const mrPaths = resolveRuntimePaths()
@@ -3093,6 +3099,7 @@ const buildServerLayer = (
             }
           }
           const mrDb = new Database(mrPaths.lunaDbPath)
+          mrDbClose = () => mrDb.close()
           const mrStore = openProviderSettingsStore(mrDb)
           return {
             list: (): import("@luna/ui-ws").ModelRoutingListFrame => {
@@ -3176,6 +3183,22 @@ const buildServerLayer = (
           return null
         }
       })()
+
+      // Close the model-routing bun:sqlite handle on scope teardown (parity
+      // with every other store, which routes close() through a finalizer).
+      // No-op when the store failed to open (mrDbClose stays null).
+      if (mrDbClose !== null) {
+        const closeMrDb = mrDbClose
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            try {
+              closeMrDb()
+            } catch {
+              // best-effort: a failed close on shutdown must not throw.
+            }
+          }),
+        )
+      }
 
       // tRPC control server — port 4754, alongside the WebSocket server.
       // Exposes control.restart / control.status / control.version. Bound to

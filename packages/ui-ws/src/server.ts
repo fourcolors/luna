@@ -2053,34 +2053,58 @@ export const startUIWebSocketServer = (
                   }
                   case "new-thread": {
                     if (chat === null) return
-                    const summary = yield* chat.createThread({
-                      model: frame.model,
-                      // effort is forwarded verbatim — chat-service clamps it
-                      // per-model inside createThread (buildSessionOptions),
-                      // so an invalid combo never reaches the SDK options.
-                      ...(frame.effort !== undefined ? { effort: frame.effort } : {}),
-                      ...(frame.title !== undefined ? { title: frame.title } : {}),
-                      ...(frame.tags !== undefined ? { tags: frame.tags } : {}),
-                      ...(frame.systemPrompt !== undefined
-                        ? { systemPrompt: frame.systemPrompt }
-                        : {}),
-                      ...(frame.accountId !== undefined
-                        ? { boundAccountId: frame.accountId }
-                        : {}),
-                    })
-                    send(ws, { type: "thread-created", thread: summary })
-                    // Cache the model so the smart bar can show it.
-                    if (summary.model) threadModelCache.set(summary.id, summary.model)
-                    // Auto-subscribe so the client doesn't need a
-                    // subscribe round-trip before sending the first
-                    // user-message — a common ChatGPT-style pattern. Register
-                    // the secret-entry client here too (not just on explicit
-                    // `subscribe`), so a client that trusts auto-subscribe can
-                    // still receive a `request_secret` prompt on this thread.
-                    yield* subscribeChatThread(summary.id)
-                    registerSecretClient(summary.id)
-                    // Smart bar will be pushed when the snapshot frame arrives
-                    // in the forwarder fiber — no extra push needed here.
+                    // createThread is typed `never` in its error channel, but
+                    // it can DIE (Effect.orDie on a session-store failure — e.g.
+                    // a non-serializable options blob). A dying fiber here used
+                    // to be swallowed by the handler's runFork, so the client
+                    // hung forever waiting for `thread-created`. Catch the whole
+                    // cause (defects included) and send a `thread-create-error`
+                    // frame so the client can recover. The cause is also logged
+                    // by the terminal defect logger at the runFork below.
+                    yield* Effect.gen(function* () {
+                      const summary = yield* chat.createThread({
+                        model: frame.model,
+                        // effort is forwarded verbatim — chat-service clamps it
+                        // per-model inside createThread (buildSessionOptions),
+                        // so an invalid combo never reaches the SDK options.
+                        ...(frame.effort !== undefined ? { effort: frame.effort } : {}),
+                        ...(frame.title !== undefined ? { title: frame.title } : {}),
+                        ...(frame.tags !== undefined ? { tags: frame.tags } : {}),
+                        ...(frame.systemPrompt !== undefined
+                          ? { systemPrompt: frame.systemPrompt }
+                          : {}),
+                        ...(frame.accountId !== undefined
+                          ? { boundAccountId: frame.accountId }
+                          : {}),
+                      })
+                      send(ws, { type: "thread-created", thread: summary })
+                      // Cache the model so the smart bar can show it.
+                      if (summary.model) threadModelCache.set(summary.id, summary.model)
+                      // Auto-subscribe so the client doesn't need a
+                      // subscribe round-trip before sending the first
+                      // user-message — a common ChatGPT-style pattern. Register
+                      // the secret-entry client here too (not just on explicit
+                      // `subscribe`), so a client that trusts auto-subscribe can
+                      // still receive a `request_secret` prompt on this thread.
+                      yield* subscribeChatThread(summary.id)
+                      registerSecretClient(summary.id)
+                      // Smart bar will be pushed when the snapshot frame arrives
+                      // in the forwarder fiber — no extra push needed here.
+                    }).pipe(
+                      Effect.catchAllCause((cause) =>
+                        Effect.sync(() => {
+                          console.error(
+                            "[ui-ws] new-thread failed:",
+                            Cause.pretty(cause),
+                          )
+                          send(ws, {
+                            type: "thread-create-error",
+                            message:
+                              "Could not create the thread. Please try again.",
+                          })
+                        }),
+                      ),
+                    )
                     return
                   }
                   case "user-message": {
@@ -2951,7 +2975,25 @@ export const startUIWebSocketServer = (
                 }
               })
 
-            Runtime.runFork(runtime)(handle())
+            // Terminal defect logger (permanent safety net). The message
+            // handler is forked detached, so ANY failure or defect it
+            // produces — e.g. an Effect.orDie in a service call — would
+            // otherwise be dropped silently with no log and no client
+            // signal (this is exactly what hid the new-thread hang). Logging
+            // the full cause here guarantees every handler defect is visible
+            // in the server logs. Individual cases (e.g. `new-thread`) are
+            // additionally expected to catch their own failures and send the
+            // client a typed error frame; this logger is the backstop for any
+            // they miss.
+            Runtime.runFork(runtime)(
+              handle().pipe(
+                Effect.tapErrorCause((c) =>
+                  Effect.sync(() =>
+                    console.error("[ui-ws] handler defect:", Cause.pretty(c)),
+                  ),
+                ),
+              ),
+            )
           })
         }
 

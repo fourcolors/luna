@@ -189,6 +189,82 @@ describe("ChatService resume tool-wiring", () => {
     expect(bound).toContain(created.id)
   })
 
+  it("createThread does NOT persist the provider's live mcpServers (cyclic-serialize hang regression)", async () => {
+    // Regression: decorate() injects LIVE in-process MCP server objects into
+    // sdkOptions.mcpServers; those carry CYCLIC references. The ChatService
+    // SessionStore was switched to the SQLite backend (PR #153), which
+    // JSON.stringify-es the options blob to fill options_json — and a cyclic
+    // value made that throw, which Effect.orDie turned into a silently-dropped
+    // defect that hung EVERY new-thread request. The fix strips mcpServers from
+    // the persisted snapshot while keeping them on the LIVE options handed to
+    // the adapter. This asserts both halves with a genuinely cyclic value, so
+    // the test would have reproduced the original failure had options been
+    // serialized with the live mcpServers.
+    let capturedOptions: Record<string, unknown> | undefined
+    const fakeLayer = SDKClient.fake((p) => {
+      capturedOptions = (p.options ?? {}) as Record<string, unknown>
+      return makeParkedQuery(
+        (p as { sessionId?: string }).sessionId ?? "thr-?",
+      )
+    })
+
+    // A live MCP server object with a self-reference (the cyclic structure
+    // that JSON.stringify cannot serialize).
+    const liveServer: Record<string, unknown> = { type: "sdk", instance: {} }
+    liveServer["self"] = liveServer
+
+    const provider: ThreadToolsProvider = {
+      decorate: () => ({
+        mcpServers: { memory: liveServer },
+        onBound: () => {},
+      }),
+    }
+
+    const baseLayer = Layer.mergeAll(
+      SessionStore.Default,
+      testClock,
+      ObservabilityService.makeLayer({
+        logToConsole: false,
+        jsonlPath: join(home, "events.jsonl"),
+      }).pipe(Layer.provide(testClock)),
+      TelemetryService.makeLayer().pipe(Layer.provide(testClock)),
+      Layer.succeed(ThreadToolsProviderTag, provider),
+      Layer.succeed(MemoryRouterTag, noopMemoryRouter),
+    )
+    const fullLayer = Layer.provideMerge(
+      ChatService.Default,
+      Layer.provideMerge(SDKAdapter.Default, Layer.mergeAll(fakeLayer, baseLayer)),
+    )
+
+    const persisted = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const store = yield* SessionStore
+          // Must NOT hang / die — the headline regression.
+          const summary = yield* chat.createThread({ model: "claude-test" })
+          yield* Effect.sleep("50 millis")
+          const opts = yield* store.getOptions(summary.id)
+          return opts
+        }),
+      ).pipe(Effect.provide(fullLayer)),
+    )
+
+    // LIVE path: the adapter still received the (cyclic) mcpServers.
+    expect(capturedOptions!["mcpServers"]).toBeDefined()
+    expect((capturedOptions!["mcpServers"] as Record<string, unknown>)["memory"]).toBeDefined()
+
+    // PERSISTED path: mcpServers stripped from the durable snapshot — neither
+    // the top-level mirror nor the sdkOptions copy survives, so the row is
+    // JSON-serializable.
+    expect(persisted).not.toBeNull()
+    expect((persisted as Record<string, unknown>)["mcpServers"]).toBeUndefined()
+    const sdk = (persisted as { sdkOptions?: Record<string, unknown> }).sdkOptions
+    expect(sdk?.["mcpServers"]).toBeUndefined()
+    // The persisted blob must be JSON-serializable (the actual bug surface).
+    expect(() => JSON.stringify(persisted)).not.toThrow()
+  })
+
   it("fires onUnbound with the session id when the thread scope closes", async () => {
     const fakeLayer = SDKClient.fake((p) =>
       makeParkedQuery((p as { sessionId?: string }).sessionId ?? "thr-?"),
