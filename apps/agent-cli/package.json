@@ -12,7 +12,6 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@luna/chat-service": "workspace:*",
     "@luna/core": "workspace:*",
     "@luna/memory": "workspace:*",
     "@luna/ui-ws": "workspace:*",
