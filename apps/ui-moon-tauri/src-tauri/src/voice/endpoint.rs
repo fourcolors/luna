@@ -50,8 +50,6 @@ pub fn silero_probe() -> Result<impl FnMut(&[f32]) -> f32, String> {
 
 pub struct Utterance {
     pub samples: Vec<f32>,
-    /// Offset of the utterance start within the source audio, in ms.
-    pub start_ms: u32,
 }
 
 pub struct Endpointer {
@@ -61,7 +59,6 @@ pub struct Endpointer {
     current: Vec<f32>,  // accumulating utterance, empty = not in speech
     silence_ms: u32,    // consecutive silence while in speech
     frames_seen: u32,
-    utterance_start_frame: u32,
     /// While true (ptt key held), the silence hang NEVER closes the
     /// utterance — VOICE.md scopes a ptt capture to the down→up window, so a
     /// mid-hold thinking pause must not endpoint early. `flush` (PttUp)
@@ -78,7 +75,6 @@ impl Endpointer {
             current: Vec::new(),
             silence_ms: 0,
             frames_seen: 0,
-            utterance_start_frame: 0,
             hold_open: false,
         }
     }
@@ -92,9 +88,8 @@ impl Endpointer {
         self.hold_open = hold;
     }
 
-    /// Discard any in-progress capture (voice_cancel, or mic suppression
-    /// starting while TTS speaks — stale pre-roll must not leak into the
-    /// next utterance).
+    /// Discard any in-progress capture (mic suppression starting while TTS
+    /// speaks — stale pre-roll must not leak into the next utterance).
     pub fn cancel_current(&mut self) {
         self.current.clear();
         self.pre_roll.clear();
@@ -111,9 +106,6 @@ impl Endpointer {
         if self.current.is_empty() {
             if is_speech {
                 // Speech onset: seed with pre-roll so the first syllable survives.
-                let pre_frames = (PRE_ROLL_MS / FRAME_MS) as usize;
-                self.utterance_start_frame =
-                    self.frames_seen.saturating_sub(1 + pre_frames as u32);
                 self.current = std::mem::take(&mut self.pre_roll);
                 self.current.extend_from_slice(frame);
                 self.silence_ms = 0;
@@ -160,10 +152,7 @@ impl Endpointer {
         if speech_ms < MIN_UTTERANCE_MS {
             return None; // a cough, not a sentence
         }
-        Some(Utterance {
-            samples,
-            start_ms: self.utterance_start_frame * FRAME_MS,
-        })
+        Some(Utterance { samples })
     }
 }
 
@@ -230,8 +219,6 @@ mod tests {
         // First retained sample is the marker of silence frame index 3 (0.004):
         // the first syllable's lead-in survives.
         assert!((utt.samples[0] - 0.004).abs() < 1e-6, "pre-roll head wrong");
-        // Onset at frames_seen=11 → start = 11 - 1 - 7 = frame 3 → 96ms.
-        assert_eq!(utt.start_ms, 3 * FRAME_MS);
     }
 
     #[test]
