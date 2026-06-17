@@ -32,7 +32,7 @@ const KIND_PREFIX_ALLOW = ["tool-", "mcp-"]
 const ACCOUNT_LABEL_RE = /^[a-z][a-z0-9-]{0,30}$/
 const RESERVED_LABELS = new Set(["env", "file", "op"])
 
-export interface AddArgs {
+interface AddArgs {
   id?: string
   label?: string
   kind?: string
@@ -82,7 +82,7 @@ const validateSecretRef = (ref: string): boolean => {
   return false
 }
 
-export const runAdd = (args: AddArgs): CmdResult => {
+const runAdd = (args: AddArgs): CmdResult => {
   const missing: string[] = []
   if (args.id === undefined || args.id.length === 0) missing.push("--id")
   if (args.label === undefined || args.label.length === 0)

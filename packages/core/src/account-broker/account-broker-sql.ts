@@ -586,7 +586,5 @@ const fromSql = (
     }),
   )
 
-export const AccountBrokerSqlLayer = { fromSql } as const
-
 // Re-export under the canonical AccountBrokerLayer barrel via index.ts.
 export { fromSql }

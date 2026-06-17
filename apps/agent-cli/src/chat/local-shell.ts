@@ -2,7 +2,7 @@ import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { posix as pathPosix } from "node:path"
 
-export type LocalShellApprovalMode = "prompt" | "auto"
+type LocalShellApprovalMode = "prompt" | "auto"
 
 export interface LocalShellState {
   readonly enabled: boolean
@@ -49,7 +49,7 @@ export const isCwdWithinRoots = (
   return roots.some((root) => isCwdWithinRoot(cwd, root))
 }
 
-export interface LocalCommandRequest {
+interface LocalCommandRequest {
   readonly requestId: string
   readonly threadId: string
   readonly command: string

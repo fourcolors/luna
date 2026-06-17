@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process"
 import { createRequire } from "node:module"
 
 export type Mode = "setup" | "normal"
-export type ReadinessReason =
+type ReadinessReason =
   | "accounts-read-failed"
   | "no-accounts"
   | "claude-login-ok"

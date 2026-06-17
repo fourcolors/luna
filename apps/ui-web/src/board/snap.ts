@@ -67,13 +67,11 @@ export interface LiveDragResult {
 }
 
 /** px — matches the Luna Dock design file's SNAP=30. */
-export const SNAP_THRESHOLD = 30
+const SNAP_THRESHOLD = 30
 /** flush tolerance (matches Rust EPS). */
 export const WELD_EPS = 2
 /** perpendicular overlap that counts as adjacency. */
-export const WELD_MIN_OVERLAP = 8
-/** probe inset from a corner along each meeting edge. */
-export const WELD_IN = 6
+const WELD_MIN_OVERLAP = 8
 
 interface SnapCandidate {
   edge: Snap["edge"]
@@ -189,7 +187,7 @@ export const rectsTouch = (a: Rect, b: Rect): boolean => {
 }
 
 /** Flood-fill connected components over rectsTouch → array of label arrays. */
-export const weldComponents = (members: Member[]): string[][] => {
+const weldComponents = (members: Member[]): string[][] => {
   const n = members.length
   const seen: boolean[] = new Array(n).fill(false)
   const out: string[][] = []
@@ -226,100 +224,3 @@ export const weldClusterOf = (label: string, members: Member[]): string[] => {
   return [label]
 }
 
-/**
- * The FREE (non-touching) sides of each member — drives the perimeter
- * silhouette. Push order l,r,t,b.
- */
-export const weldOutlineSides = (members: Member[]): Record<string, Array<Snap["edge"]>> => {
-  const out: Record<string, Array<Snap["edge"]>> = {}
-  for (let i = 0; i < members.length; i++) {
-    const mi = members[i]
-    if (!mi) continue
-    const a = mi.rect
-    const l = a.x
-    const t = a.y
-    const r = a.x + a.w
-    const b = a.y + a.h
-    const touched = { l: false, r: false, t: false, b: false }
-    for (let j = 0; j < members.length; j++) {
-      if (j === i) continue
-      const mj = members[j]
-      if (!mj) continue
-      const o = mj.rect
-      const ol = o.x
-      const ot = o.y
-      const or_ = o.x + o.w
-      const ob = o.y + o.h
-      const vOverlap = Math.min(b, ob) - Math.max(t, ot) >= WELD_MIN_OVERLAP
-      const hOverlap = Math.min(r, or_) - Math.max(l, ol) >= WELD_MIN_OVERLAP
-      if (vOverlap && Math.abs(l - or_) <= WELD_EPS) touched.l = true
-      if (vOverlap && Math.abs(r - ol) <= WELD_EPS) touched.r = true
-      if (hOverlap && Math.abs(t - ob) <= WELD_EPS) touched.t = true
-      if (hOverlap && Math.abs(b - ot) <= WELD_EPS) touched.b = true
-    }
-    const sides: Array<Snap["edge"]> = []
-    if (!touched.l) sides.push("l")
-    if (!touched.r) sides.push("r")
-    if (!touched.t) sides.push("t")
-    if (!touched.b) sides.push("b")
-    out[mi.label] = sides
-  }
-  return out
-}
-
-type Corner = "tl" | "tr" | "br" | "bl"
-
-/**
- * Which CORNERS of each member sit at an interior weld seam (square them). A
- * corner squares only when a flush neighbour REACHES it (probed WELD_IN px in),
- * so a partial-width weld keeps its still-exposed corners round. The hub label
- * (default "main") is alignment-only and never welds. Push order tl,tr,br,bl.
- */
-export const weldCorners = (members: Member[], hubLabel = "main"): Record<string, Corner[]> => {
-  const out: Record<string, Corner[]> = {}
-  for (let i = 0; i < members.length; i++) {
-    const mi = members[i]
-    if (!mi) continue
-    const a = mi.rect
-    const l = a.x
-    const t = a.y
-    const r = a.x + a.w
-    const b = a.y + a.h
-    let tl = false
-    let tr = false
-    let br = false
-    let bl = false
-    const pyT = t + WELD_IN
-    const pyB = b - WELD_IN
-    const pxL = l + WELD_IN
-    const pxR = r - WELD_IN
-    for (let j = 0; j < members.length; j++) {
-      const mj = members[j]
-      if (j === i || !mj || mj.label === hubLabel) continue
-      const o = mj.rect
-      const ol = o.x
-      const ot = o.y
-      const or_ = o.x + o.w
-      const ob = o.y + o.h
-      const flushLeft = Math.abs(l - or_) <= WELD_EPS
-      const flushRight = Math.abs(r - ol) <= WELD_EPS
-      const flushTop = Math.abs(t - ob) <= WELD_EPS
-      const flushBottom = Math.abs(b - ot) <= WELD_EPS
-      const covYpyT = ot - WELD_EPS <= pyT && pyT <= ob + WELD_EPS
-      const covYpyB = ot - WELD_EPS <= pyB && pyB <= ob + WELD_EPS
-      const covXpxL = ol - WELD_EPS <= pxL && pxL <= or_ + WELD_EPS
-      const covXpxR = ol - WELD_EPS <= pxR && pxR <= or_ + WELD_EPS
-      if ((flushLeft && covYpyT) || (flushTop && covXpxL)) tl = true
-      if ((flushRight && covYpyT) || (flushTop && covXpxR)) tr = true
-      if ((flushRight && covYpyB) || (flushBottom && covXpxR)) br = true
-      if ((flushLeft && covYpyB) || (flushBottom && covXpxL)) bl = true
-    }
-    const corners: Corner[] = []
-    if (tl) corners.push("tl")
-    if (tr) corners.push("tr")
-    if (br) corners.push("br")
-    if (bl) corners.push("bl")
-    out[mi.label] = corners
-  }
-  return out
-}

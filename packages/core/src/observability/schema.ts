@@ -124,7 +124,7 @@ export const CostAccruedSchema = Schema.Struct({
   estimatedUsd: Schema.Number,
 })
 
-export const RetrievalCallSchema = Schema.Struct({
+const RetrievalCallSchema = Schema.Struct({
   ...Base,
   kind: Schema.Literal("RetrievalCall"),
   sessionId: Schema.optional(Schema.String),

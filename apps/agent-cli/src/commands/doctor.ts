@@ -36,7 +36,7 @@ import { LunaWsClient } from "../chat/ws-client.js"
 /* Probe outcome enums (the seam between impure probes and pure rendering)     */
 /* -------------------------------------------------------------------------- */
 
-export type ReachOutcome =
+type ReachOutcome =
   | { readonly kind: "ok" }
   /** TCP connection refused — a process is not listening on that port. */
   | { readonly kind: "refused" }
@@ -45,7 +45,7 @@ export type ReachOutcome =
   /** Reached the port but /healthz did not return 200. */
   | { readonly kind: "bad-status"; readonly status: number }
 
-export type TokenOutcome =
+type TokenOutcome =
   | { readonly kind: "ok" }
   /** No token resolved from flags / env / dotenv — nothing to present. */
   | { readonly kind: "missing" }
@@ -54,7 +54,7 @@ export type TokenOutcome =
   /** Upgrade neither opened nor rejected within the timeout. */
   | { readonly kind: "timeout" }
 
-export type ModeOutcome =
+type ModeOutcome =
   /** hello arrived with capabilities.chat === true. */
   | { readonly kind: "chat"; readonly protocolVersion: number | null }
   /** hello arrived but server is obs/setup-only (no usable Claude credential). */
@@ -64,7 +64,7 @@ export type ModeOutcome =
   /** A non-hello / malformed first frame, or the socket died awaiting it. */
   | { readonly kind: "error"; readonly detail: string }
 
-export type ChatOutcome =
+type ChatOutcome =
   /** Real chat turn completed successfully (assistant-done received). */
   | { readonly kind: "ok" }
   /**

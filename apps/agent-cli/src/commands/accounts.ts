@@ -146,7 +146,7 @@ export interface AccountsResult {
  * Connect, wait for `hello` then `account-list`, and return a rendered result.
  * Always closes the socket before returning, even on error paths.
  */
-export const fetchAccounts = async (
+const fetchAccounts = async (
   cfg: ChatConfig,
   opts: AccountsRenderOptions,
 ): Promise<AccountsResult> => {
@@ -248,7 +248,7 @@ const accountsChatArgs = (args: {
   ...(args.token !== undefined ? { token: args.token } : {}),
 })
 
-export const resolveAccountsConfig = (
+const resolveAccountsConfig = (
   args: Parameters<typeof accountsChatArgs>[0],
   env: Record<string, string | undefined>,
   homeDir: string,

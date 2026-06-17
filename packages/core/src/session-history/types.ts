@@ -69,11 +69,3 @@ export interface SessionHistoryApi {
    */
   readonly deleteOlderThan: (ts: number) => Effect.Effect<number, SessionHistoryError>
 }
-
-// ── Legacy types (kept for backward compat — prefer SessionRecordInput) ──────
-
-/** @deprecated Use SessionRecordInput. Will be removed in a future phase. */
-export interface SessionHistoryConfig {
-  readonly dbPath: string
-  readonly enableAudit?: boolean
-}

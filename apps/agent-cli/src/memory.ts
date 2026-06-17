@@ -66,7 +66,7 @@ function parsePositiveIntegerFlag(
   return { value: Number(value) }
 }
 
-export function selectMemoryEmbedderLayer(
+function selectMemoryEmbedderLayer(
   env: Record<string, string | undefined>,
 ): Layer.Layer<EmbedderService, EmbedderError> {
   const choice = env["LUNA_EMBEDDER"]?.toLowerCase()

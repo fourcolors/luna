@@ -4,12 +4,12 @@
 import { openDb, defaultDbPath } from "../db.js"
 import type { CmdResult } from "./add.js"
 
-export interface RmArgs {
+interface RmArgs {
   id?: string
   dbPath?: string
 }
 
-export const runRm = (args: RmArgs): CmdResult => {
+const runRm = (args: RmArgs): CmdResult => {
   if (args.id === undefined || args.id.length === 0) {
     return {
       exitCode: 1,

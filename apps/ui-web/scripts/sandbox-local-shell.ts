@@ -51,7 +51,7 @@ const normalizeProfileName = (value: string | undefined): string =>
 const profileEnvPrefix = (profileName: string): string =>
   `LUNA_${profileName.toUpperCase().replace(/-/g, "_")}`
 
-export const isUnderSandboxRoot = (cwd: string, root: string): boolean => {
+const isUnderSandboxRoot = (cwd: string, root: string): boolean => {
   if (!cwd.startsWith("/") || !root.startsWith("/")) return false
   const normalizedCwd = pathPosix.normalize(cwd)
   const normalizedRoot = pathPosix.normalize(root)

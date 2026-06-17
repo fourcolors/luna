@@ -125,7 +125,7 @@ export const computeNextRunAtUtc = (
 
 // ── Plan: the set of rows the install wants ──────────────────────────────────
 
-export type JobPayload = { readonly label: string; readonly source?: string } & Record<
+type JobPayload = { readonly label: string; readonly source?: string } & Record<
   string,
   unknown
 >
@@ -190,7 +190,7 @@ export const planJobs = (cfg: PlanConfig): ReadonlyArray<PlannedJob> => {
 
 // ── Apply: write the plan idempotently ───────────────────────────────────────
 
-export type ApplyOutcome = "installed" | "skipped" | "replaced"
+type ApplyOutcome = "installed" | "skipped" | "replaced"
 
 export interface ApplyResult {
   readonly id: string

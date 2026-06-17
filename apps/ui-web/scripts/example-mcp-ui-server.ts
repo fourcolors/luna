@@ -20,7 +20,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 
 /** This server's single UI resource — its OWN namespace, not `ui://luna/*`. */
 export const EXAMPLE_APP_URI = "ui://example/dashboard"
-export const EXAMPLE_APP_MIME = "text/html;profile=mcp-app"
+const EXAMPLE_APP_MIME = "text/html;profile=mcp-app"
 export const EXAMPLE_TOOL = "example-stats"
 
 /** The app the external server ships. NO theme code, NO Luna bridge — only
