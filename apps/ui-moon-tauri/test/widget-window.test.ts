@@ -187,10 +187,13 @@ describe('widget.html — title bar + live magnetic drag', () => {
     expect(document.querySelector('.title-bar')).not.toBeNull()
   })
 
-  it('close light invokes close_widget; min/zoom lights never throw', () => {
+  it('close light invokes close_widget; min collapses into the moon; zoom never throws', () => {
     ;(document.getElementById('min-btn') as HTMLButtonElement).click()
     ;(document.getElementById('zoom-btn') as HTMLButtonElement).click()
     ;(document.getElementById('close-btn') as HTMLButtonElement).click()
+    // Minimize is the global "tuck everything into the moon" gesture, not a
+    // per-window OS-dock minimize.
+    expect(invoke).toHaveBeenCalledWith('collapse_to_moon')
     expect(invoke).toHaveBeenCalledWith('close_widget', { label: SELF })
   })
 

@@ -159,4 +159,12 @@ describe('panel.html system-widget host', () => {
     await vi.waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('close_widget', { label: 'panel-settings-updates' }))
   })
+
+  it('– (minimize) collapses the whole workspace into the moon via collapse_to_moon', async () => {
+    // The yellow light no longer drops THIS window to the OS dock; it tucks the
+    // entire workspace into the orb (collapse_to_moon), the global gesture.
+    const { invoke } = bootPanel({ type: 'settings.updates' })
+    document.getElementById('min-btn')!.click()
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('collapse_to_moon'))
+  })
 })

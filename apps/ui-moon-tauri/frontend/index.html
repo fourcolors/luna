@@ -260,6 +260,28 @@
       100% { transform: scale(1.45); opacity: 0; }
     }
 
+    /* ── "Absorbed into the moon" pulse ──────────────────────────────────────
+       Played when the workspace collapses INTO the orb (Rust emits moon-absorb
+       after show()ing it). The widgets are separate OS windows so there is no
+       true genie-suck across them; this quick swallow-and-settle on the orb is
+       the cue that "it went into the moon." A class toggle (added on the event,
+       removed on animationend) so it can replay every collapse. */
+    .moon-wrapper.absorbing {
+      animation: moon-absorb 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+    }
+    @keyframes moon-absorb {
+      0%   { transform: scale(1.32); }
+      55%  { transform: scale(0.9); }
+      100% { transform: scale(1); }
+    }
+    .moon-wrapper.absorbing .moon-glow {
+      animation: moon-absorb-glow 0.5s ease-out both;
+    }
+    @keyframes moon-absorb-glow {
+      0%   { opacity: 1; transform: scale(1.5); }
+      100% { opacity: 0.85; transform: scale(1); }
+    }
+
     /* Close-✕ chrome — survives the settings modal (Phase 6) because the
        wizard's ✕ reuses it (class="settings-x wizard-x"). */
     .settings-x {
@@ -1867,15 +1889,17 @@
         const distMove = Math.sqrt(Math.pow(e.clientX - State.pressStartX, 2) + Math.pow(e.clientY - State.pressStartY, 2));
 
         if (duration < 280 && distMove < 5) {
-          // Phase 4: the conversation is a WIDGET WINDOW (registry kind
-          // 'chat'); the moon is its launcher.
+          // The moon is the minimized form of the whole workspace: a click
+          // EXPANDS it — the orb hides and every widget window (chat + panels +
+          // artifacts) reappears. On a fresh moon with nothing open yet,
+          // expand_from_moon opens the chat as the default widget.
           if (window.__TAURI__ && window.__TAURI__.core) {
-            window.__TAURI__.core.invoke('open_widget', { kind: 'chat' })
-              .catch((e) => Logger.warn('open chat widget failed:', e));
+            window.__TAURI__.core.invoke('expand_from_moon')
+              .catch((e) => Logger.warn('expand from moon failed:', e));
           } else {
-            // Off-Tauri (frontend dev / jsdom): no window manager to summon
-            // the chat widget — log instead of the old in-envelope toggle.
-            Logger.info('moon click → open_widget(chat) needs the Tauri runtime; no-op');
+            // Off-Tauri (frontend dev / jsdom): no window manager to pour the
+            // widgets back out — log instead.
+            Logger.info('moon click → expand_from_moon needs the Tauri runtime; no-op');
           }
         }
       },
@@ -1956,8 +1980,27 @@
                 .catch((err) => Logger.warn(`hub-event ${p.name} failed:`, err));
             }
           }).catch(() => {});
+          // Absorb pulse: Rust emits moon-absorb right after revealing the orb
+          // on a collapse, so the moon plays its "swallowed the workspace"
+          // animation. Re-armable: drop the class on animationend so the next
+          // collapse replays it.
+          me.listen('moon-absorb', () => {
+            const w = DOM.moonWrapper;
+            if (!w) return;
+            w.classList.remove('absorbing');
+            // Reflow so re-adding the class restarts the animation.
+            void w.offsetWidth;
+            w.classList.add('absorbing');
+          }).catch(() => {});
         }
       } catch (_) { /* off-Tauri */ }
+      // Clear the pulse class once it finishes (keeps the element clean and lets
+      // the listener above re-trigger it). Bound once, outside the Tauri guard.
+      if (DOM.moonWrapper) {
+        DOM.moonWrapper.addEventListener('animationend', (e) => {
+          if (e.animationName === 'moon-absorb') DOM.moonWrapper.classList.remove('absorbing');
+        });
+      }
       window.addEventListener('storage', (e) => {
         if (!e || !e.key) return;
         if (e.key === 'luna_always_on_top') {
