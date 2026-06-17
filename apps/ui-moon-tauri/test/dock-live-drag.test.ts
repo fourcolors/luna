@@ -160,11 +160,15 @@ describe("computeLiveDrag — conforms to the Luna Dock design's onMove", () => 
 // position using the DESTINATION monitor's DPI instead, picked by the target
 // POINT so the chosen factor stays stable regardless of how much has crossed.
 describe("logicalToPhysical — places targets at the destination monitor's DPI", () => {
-  // The classic MacBook setup: Retina built-in (2×) at the origin, a 1×
-  // external to its right. Monitor rects are PHYSICAL px exactly as Tauri's
-  // availableMonitors() reports them; logical (point) widths are half / equal.
-  //   laptop   : physical 2880×1800 @ (0,0)     → logical 1440×900  @ point (0,0)
-  //   external : physical 1920×1080 @ (1440,0)  → logical 1920×1080 @ point (1440,0)
+  // The classic MacBook setup: Retina built-in (2×) at the origin, a 1× external
+  // to its right. Each rect below is what availableMonitors() reports: the
+  // monitor's LOGICAL (point) rect multiplied by its OWN scale factor. So the
+  // width/height ARE physical px, but the origin tracks the macOS *point* layout
+  // (the external sits right of the laptop's 1440 POINTS, then ×1 → x=1440) — it
+  // is NOT a flat physical-pixel grid where the external would start at 2880.
+  // That per-monitor scaling is precisely the mixed-DPI quirk under test.
+  //   laptop   : 1440×900  pt @ (0,0)     × sf 2  →  { x:0,    w:2880, h:1800 }
+  //   external : 1920×1080 pt @ (1440,0)  × sf 1  →  { x:1440, w:1920, h:1080 }
   const laptop: Monitor = { x: 0, y: 0, w: 2880, h: 1800, sf: 2 }
   const external: Monitor = { x: 1440, y: 0, w: 1920, h: 1080, sf: 1 }
   const monitors = [laptop, external]
