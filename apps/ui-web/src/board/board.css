@@ -197,16 +197,6 @@ html[data-theme='dark'][data-chrome='ink'] .panel-wash {
   .panel.entering { animation: panelBloom 0.65s cubic-bezier(0.22, 1, 0.36, 1) both; }
 }
 
-/* ── snap guides ───────────────────────────────────────────────────────── */
-.guide-v,
-.guide-h {
-  position: absolute;
-  z-index: 2500;
-  pointer-events: none;
-}
-.guide-v { top: 0; bottom: 0; width: 0; border-left: 1.5px dashed color-mix(in oklab, var(--accent) 70%, transparent); }
-.guide-h { left: 0; right: 0; height: 0; border-top: 1.5px dashed color-mix(in oklab, var(--accent) 70%, transparent); }
-
 /* ── shelf (closed panels, in the topbar) ──────────────────────────────── */
 .shelf { position: relative; display: flex; gap: 6px; align-items: center; }
 .shelf-chip {
@@ -278,37 +268,9 @@ html[data-theme='dark'][data-chrome='ink'] .panel-wash {
   color: var(--accent);
 }
 
-/* stickies mode: hand-placed tilt, straightens when pinned or dragged */
+/* stickies mode: hand-placed tilt, straightens while dragged */
 .board[data-mode='stickies'] .panel { transform: rotate(var(--tilt, 0deg)); }
-.board[data-mode='stickies'] .panel.pinned,
 .board[data-mode='stickies'] .panel.dragging { transform: rotate(0deg); }
-
-.pin-badge {
-  position: absolute;
-  width: 22px;
-  height: 22px;
-  margin: -11px 0 0 -11px;
-  border-radius: 50%;
-  border: 1.3px solid color-mix(in oklab, var(--ink) 30%, transparent);
-  background: var(--paper);
-  color: var(--accent);
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  box-shadow: 0 3px 10px -3px rgba(0, 0, 0, 0.3);
-  animation: pinIn 0.3s ease;
-}
-@keyframes pinIn { from { transform: scale(0); } }
-.board .pin-badge:hover {
-  color: var(--ink);
-  background: var(--paper);
-  transform: scale(1.18);
-}
-.board .pin-badge:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
 
 .mode-hint {
   position: absolute;
@@ -393,5 +355,5 @@ html[data-theme='dark'][data-chrome='ink'] .panel-wash {
     transform: none !important;
   }
   .panel-body { max-height: 60vh; }
-  .resize-handle, .guide-v, .guide-h, .pin-badge, .mode-hint { display: none; }
+  .resize-handle, .mode-hint { display: none; }
 }
