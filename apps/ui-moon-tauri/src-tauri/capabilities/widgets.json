@@ -24,6 +24,7 @@
     "allow-close-widget",
     "allow-list-widget-windows",
     "allow-grab-dock",
+    "allow-collapse-to-moon",
     "allow-pointer-button-down"
   ]
 }

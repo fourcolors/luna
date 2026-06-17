@@ -40,6 +40,7 @@
     "opener:allow-open-url",
     "allow-open-widget",
     "allow-open-artifact-widget",
+    "allow-collapse-to-moon",
     "allow-pointer-button-down"
   ]
 }

@@ -1690,6 +1690,75 @@ fn list_widget_windows(app: tauri::AppHandle) -> Vec<String> {
         .collect()
 }
 
+// ── Collapse ⟷ expand: the moon is the minimized form of the workspace ───────
+//
+// The moon orb (window "main") and the widget windows (panel-* / widget-*) are
+// MUTUALLY EXCLUSIVE surfaces: either the orb is showing (collapsed) or the
+// widgets are (expanded). "Minimize" on any widget tucks the WHOLE set into the
+// moon; clicking the moon pours the whole set back out. The windows are HIDDEN,
+// not closed, so positions / dock groups / page state all survive the round
+// trip — the only way a widget leaves the set is the user closing it (×).
+
+/// Hide every widget window and reveal + focus the moon orb. Widgets are hidden
+/// (not destroyed) so a later expand restores them exactly. Emits `moon-absorb`
+/// to the orb so index.html can play the "pulled into the moon" pulse.
+fn collapse_into_moon(app: &tauri::AppHandle) {
+    let windows = app.webview_windows();
+    for (label, win) in &windows {
+        if is_dock_label(label) {
+            let _ = win.hide();
+        }
+    }
+    if let Some(moon) = windows.get("main") {
+        let _ = moon.show();
+        let _ = moon.set_focus();
+        let _ = app.emit_to(tauri::EventTarget::labeled("main"), "moon-absorb", ());
+    }
+}
+
+/// Reveal every widget window and hide the moon orb. Show the widgets BEFORE
+/// hiding the orb so the desktop is never momentarily empty. When nothing is
+/// open yet (a fresh moon), open the chat as the default widget so a click still
+/// lands somewhere.
+fn expand_out_of_moon(app: &tauri::AppHandle) {
+    let windows = app.webview_windows();
+    let mut shown = 0usize;
+    for (label, win) in &windows {
+        if is_dock_label(label) {
+            let _ = win.show();
+            shown += 1;
+        }
+    }
+    if let Some(moon) = windows.get("main") {
+        let _ = moon.hide();
+    }
+    if shown == 0 {
+        // No widgets to restore → open the chat. open_widget is async and shows
+        // the window itself; spawn it so this stays callable from sync contexts
+        // (the global-shortcut closure and the sync command wrapper).
+        let app2 = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = open_widget(app2, "chat".to_string(), None, None, None, None).await;
+        });
+    }
+}
+
+/// Collapse the whole workspace into the moon (a widget's minimize button / the
+/// keyboard toggle when expanded).
+#[tauri::command]
+fn collapse_to_moon(app: tauri::AppHandle) -> Result<(), String> {
+    collapse_into_moon(&app);
+    Ok(())
+}
+
+/// Expand the workspace back out of the moon (the moon's own click / the
+/// keyboard toggle when collapsed).
+#[tauri::command]
+fn expand_from_moon(app: tauri::AppHandle) -> Result<(), String> {
+    expand_out_of_moon(&app);
+    Ok(())
+}
+
 // ── voice pipeline commands (feature "voice") ───────────────────────────────
 //
 // Thin wrappers over luna_moon_ui_lib::voice::VoiceController (managed as
@@ -2076,6 +2145,30 @@ fn main() {
                     // already gone) so quitting never wipes the layout.
                     write_panel_layout(&app);
                 }
+                // Don't strand the user with nothing on screen: while the
+                // workspace is EXPANDED the moon is hidden, so closing (×) the
+                // LAST widget would leave an empty desktop. When a widget is
+                // destroyed and none remain while the orb is hidden, bring the
+                // moon back (the workspace has collapsed by attrition). Skipped
+                // during hub-owned shutdown — main is already gone, so the
+                // get_webview_window("main") guard fails closed.
+                if is_dock_label(window.label()) {
+                    if let Some(moon) = app.get_webview_window("main") {
+                        let any_widget_left = app
+                            .webview_windows()
+                            .keys()
+                            .any(|l| l != window.label() && is_dock_label(l));
+                        if !any_widget_left && !moon.is_visible().unwrap_or(true) {
+                            let _ = moon.show();
+                            let _ = moon.set_focus();
+                            let _ = app.emit_to(
+                                tauri::EventTarget::labeled("main"),
+                                "moon-absorb",
+                                (),
+                            );
+                        }
+                    }
+                }
             }
         })
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -2118,6 +2211,8 @@ fn main() {
         hub_event,
         close_widget,
         list_widget_windows,
+        collapse_to_moon,
+        expand_from_moon,
         voice_status,
         voice_set_mode,
         voice_ptt_down,
@@ -2154,7 +2249,9 @@ fn main() {
         open_widget,
         hub_event,
         close_widget,
-        list_widget_windows
+        list_widget_windows,
+        collapse_to_moon,
+        expand_from_moon
     ]);
 
     builder
@@ -2241,28 +2338,19 @@ fn main() {
                     let shortcut_clone = shortcut.clone();
                     let _ = app.global_shortcut().on_shortcut(shortcut, |app, _shortcut, event| {
                         if event.state == ShortcutState::Pressed {
-                            // Toggle EVERY app window on the hub's visibility
-                            // (widget-system.md Phase 0). Toggling only "main"
-                            // used to strand floating widget windows on screen
-                            // with the moon hidden. Closed windows no longer
-                            // exist, so this never resurrects anything.
-                            let windows = app.webview_windows();
-                            // No hub window → mid-teardown; never blind-show
-                            // orphans (a missing hub would read as "hidden"
-                            // and make every press a show-forever).
-                            let Some(hub) = windows.get("main") else {
+                            // Collapse ⟷ expand toggle (same gesture as the moon
+                            // click / a widget's minimize): when the orb is
+                            // showing we're collapsed → expand; otherwise we're
+                            // expanded → collapse back into the moon.
+                            // No hub window → mid-teardown; never blind-act on
+                            // orphans (a missing hub would read as "collapsed").
+                            let Some(hub) = app.get_webview_window("main") else {
                                 return;
                             };
-                            let hub_visible = hub.is_visible().unwrap_or(false);
-                            for (label, window) in windows {
-                                if hub_visible {
-                                    let _ = window.hide();
-                                } else {
-                                    let _ = window.show();
-                                    if label == "main" {
-                                        let _ = window.set_focus();
-                                    }
-                                }
+                            if hub.is_visible().unwrap_or(false) {
+                                expand_out_of_moon(app);
+                            } else {
+                                collapse_into_moon(app);
                             }
                         }
                     });

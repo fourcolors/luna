@@ -233,12 +233,28 @@
         members: drag.members.map(function (m) { return { label: m.label, ox: m.ox, oy: m.oy }; })
       }, drag.cands);
       drag.snapped = res.snapped; drag.anchor = res.anchor; drag.edge = res.edge;
-      var LP = window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.LogicalPosition;
-      if (LP) {
-        for (var i = 0; i < res.targets.length; i++) {
-          var m = drag.members[i];
-          if (m && m.win) { try { m.win.setPosition(new LP(res.targets[i].x, res.targets[i].y)); } catch (_) {} }
-        }
+      // Position every member. Targets are LOGICAL (CSS-point) top-lefts. When
+      // we captured a monitor layout, resolve each to a PHYSICAL position using
+      // the DESTINATION monitor's DPI and write THAT — a LogicalPosition write
+      // rides the dragged window's live (seam-bistable) scale factor and
+      // flickers across a mixed-DPI boundary. No layout (single monitor /
+      // non-Tauri) → the original LogicalPosition path, byte-for-byte.
+      var TW = window.__TAURI__ && window.__TAURI__.window;
+      var PP = TW && TW.PhysicalPosition;
+      var LP = TW && TW.LogicalPosition;
+      var mons = drag.monitors;
+      for (var i = 0; i < res.targets.length; i++) {
+        var m = drag.members[i];
+        if (!m || !m.win) continue;
+        var t = res.targets[i];
+        var phys = (PP && mons && mons.length) ? LunaDeckSnap.logicalToPhysical(t.x, t.y, mons) : null;
+        try {
+          if (phys) m.win.setPosition(new PP(phys.x, phys.y));
+          else if (LP) m.win.setPosition(new LP(t.x, t.y));
+        } catch (_) {}
+      }
+      if (g.__LUNA_DOCK_DEBUG) {
+        try { console.log('[luna-dock] move', { screenX: e.screenX, screenY: e.screenY, lead: { x: drag.ox + dx, y: drag.oy + dy }, target0: res.targets[0], phys0: (mons && mons.length ? LunaDeckSnap.logicalToPhysical(res.targets[0].x, res.targets[0].y, mons) : null), monitors: mons }); } catch (_) {}
       }
       // Paint MY seam live from the start snapshot (synchronous, no IPC): my
       // lead rect against the static neighbour rects captured at drag start.
@@ -313,11 +329,27 @@
             } catch (_) { /* member vanished mid-snapshot */ }
           }
           var cands = await candidateRects(groupLabels);
+          // Monitor layout, captured ONCE (it can't change mid-drag) so every
+          // pointermove can place a target on whatever display it lands on at
+          // that display's DPI — PHYSICAL px straight from Tauri:
+          // { x, y, w, h, sf } per monitor. Empty/unavailable (single monitor,
+          // non-Tauri) → onDragMove keeps writing LogicalPosition.
+          var monitors = [];
+          try {
+            if (TW && typeof TW.availableMonitors === 'function') {
+              var mons = await TW.availableMonitors();
+              if (Array.isArray(mons)) {
+                monitors = mons.map(function (mo) {
+                  return { x: mo.position.x, y: mo.position.y, w: mo.size.width, h: mo.size.height, sf: mo.scaleFactor || 1 };
+                });
+              }
+            }
+          } catch (_) { /* unavailable → LogicalPosition fallback */ }
           if (activeHandle !== handle) return;    // released/replaced before we armed
           drag = {
             pointerId: pid, handle: handle, sx: sx, sy: sy,
             ox: self.x, oy: self.y, ow: self.w, oh: self.h,
-            members: members, cands: cands,
+            members: members, cands: cands, monitors: monitors,
             // weld neighbours = snap candidates minus the hub (hub never welds)
             weldNeighbors: cands.filter(function (c) { return c.label !== HUB; }),
             isAnchor: isAnchor, wasGrouped: wasGrouped, startCluster: startCluster,

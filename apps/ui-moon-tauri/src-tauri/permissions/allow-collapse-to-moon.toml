@@ -1,0 +1,6 @@
+# Generated for the moon collapse/expand toggle — minimize tucks the whole
+# workspace into the orb. See main.rs (collapse_into_moon).
+[[permission]]
+identifier = "allow-collapse-to-moon"
+description = "Allows the collapse_to_moon command"
+commands.allow = ["collapse_to_moon"]

@@ -139,10 +139,17 @@
   });
 
   // ── Traffic-light minimize / zoom (best-effort; inert in non-Tauri) ────────
+  // Minimize collapses the WHOLE workspace into the moon (every widget hides,
+  // the orb returns) rather than dropping this one window to the OS dock — the
+  // moon is the minimized form of all of Luna.
   var minBtn = document.getElementById('min-btn');
   var zoomBtn = document.getElementById('zoom-btn');
   minBtn && minBtn.addEventListener('click', function () {
-    if (W && W.minimize) { try { W.minimize().catch(function () {}); } catch (_) {} }
+    try {
+      if (window.__TAURI__ && window.__TAURI__.core) {
+        window.__TAURI__.core.invoke('collapse_to_moon').catch(function () {});
+      }
+    } catch (_) { /* best-effort */ }
   });
   zoomBtn && zoomBtn.addEventListener('click', function () {
     if (W && W.toggleMaximize) { try { W.toggleMaximize().catch(function () {}); } catch (_) {} }

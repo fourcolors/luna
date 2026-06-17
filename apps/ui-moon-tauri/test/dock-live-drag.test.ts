@@ -33,11 +33,23 @@ let computeLiveDrag: (
   threshold?: number,
 ) => { targets: Target[]; snapped: boolean; anchor: string | null; edge: string | null }
 
+interface Monitor { x: number; y: number; w: number; h: number; sf: number }
+let logicalToPhysical: (
+  x: number,
+  y: number,
+  monitors: Monitor[],
+) => { x: number; y: number } | null
+
 beforeAll(() => {
   const src = readFileSync(path.resolve(__dirname, "../frontend/vendor/deck-snap.js"), "utf8")
   const sandbox: Record<string, unknown> = {}
   new Function("globalThis", src)(sandbox)
-  computeLiveDrag = (sandbox.LunaDeckSnap as { computeLiveDrag: typeof computeLiveDrag }).computeLiveDrag
+  const ns = sandbox.LunaDeckSnap as {
+    computeLiveDrag: typeof computeLiveDrag
+    logicalToPhysical: typeof logicalToPhysical
+  }
+  computeLiveDrag = ns.computeLiveDrag
+  logicalToPhysical = ns.logicalToPhysical
 })
 
 // ── GOLDEN REFERENCE — ported verbatim from luna-dock.jsx ──────────────────
@@ -138,5 +150,53 @@ describe("computeLiveDrag — conforms to the Luna Dock design's onMove", () => 
     ])
     expect(got.anchor).toBe("near")
     expect(got.targets[0]).toEqual({ label: "mod", x: 200, y: 500 })
+  })
+})
+
+// ── logicalToPhysical — the mixed-DPI write fix ────────────────────────────
+// A LogicalPosition write across a 2× laptop / 1× external seam flickers
+// because the platform reconverts using the dragged window's own (seam-
+// bistable) scale factor. logicalToPhysical resolves each target to a PHYSICAL
+// position using the DESTINATION monitor's DPI instead, picked by the target
+// POINT so the chosen factor stays stable regardless of how much has crossed.
+describe("logicalToPhysical — places targets at the destination monitor's DPI", () => {
+  // The classic MacBook setup: Retina built-in (2×) at the origin, a 1× external
+  // to its right. Each rect below is what availableMonitors() reports: the
+  // monitor's LOGICAL (point) rect multiplied by its OWN scale factor. So the
+  // width/height ARE physical px, but the origin tracks the macOS *point* layout
+  // (the external sits right of the laptop's 1440 POINTS, then ×1 → x=1440) — it
+  // is NOT a flat physical-pixel grid where the external would start at 2880.
+  // That per-monitor scaling is precisely the mixed-DPI quirk under test.
+  //   laptop   : 1440×900  pt @ (0,0)     × sf 2  →  { x:0,    w:2880, h:1800 }
+  //   external : 1920×1080 pt @ (1440,0)  × sf 1  →  { x:1440, w:1920, h:1080 }
+  const laptop: Monitor = { x: 0, y: 0, w: 2880, h: 1800, sf: 2 }
+  const external: Monitor = { x: 1440, y: 0, w: 1920, h: 1080, sf: 1 }
+  const monitors = [laptop, external]
+
+  it("a point on the Retina laptop scales by 2×", () => {
+    expect(logicalToPhysical(100, 100, monitors)).toEqual({ x: 200, y: 200 })
+  })
+
+  it("a point on the 1× external scales by 1× (no flicker — destination DPI wins)", () => {
+    // point (1500,100) is inside the external's logical rect [1440,3360)×[0,1080)
+    expect(logicalToPhysical(1500, 100, monitors)).toEqual({ x: 1500, y: 100 })
+  })
+
+  it("the same logical point resolves differently per monitor — that's the bug being fixed", () => {
+    // 1439 (still laptop) → ×2; 1441 (now external) → ×1. The factor is chosen
+    // by where the point IS, never by the window's straddling state, so it
+    // can't oscillate between frames for a given cursor position.
+    expect(logicalToPhysical(1439, 10, monitors)).toEqual({ x: 2878, y: 20 })
+    expect(logicalToPhysical(1441, 10, monitors)).toEqual({ x: 1441, y: 10 })
+  })
+
+  it("a point past every display falls back to the NEAREST monitor, not monitors[0]", () => {
+    // far right of the external → still the external's 1×, not the laptop's 2×
+    expect(logicalToPhysical(5000, 100, monitors)).toEqual({ x: 5000, y: 100 })
+  })
+
+  it("returns null with no layout so the caller keeps the LogicalPosition path", () => {
+    expect(logicalToPhysical(100, 100, [])).toBeNull()
+    expect(logicalToPhysical(100, 100, undefined as unknown as Monitor[])).toBeNull()
   })
 })

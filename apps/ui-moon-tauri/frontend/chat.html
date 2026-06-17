@@ -496,6 +496,43 @@
       pointer-events: auto;
     }
 
+    /* Minimize disk — neutral twin of the close-×, parked just to its right and
+       sharing the same hover-reveal. Close is the only red affordance. */
+    .min-btn {
+      flex-shrink: 0;
+      background: none;
+      border: none;
+      color: var(--ink-soft);
+      font-size: 17px;
+      line-height: 1;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.1s, color 0.1s;
+    }
+    .min-btn:hover {
+      background: color-mix(in oklab, var(--ink-faint, #888) 16%, transparent);
+      color: var(--ink, #333);
+    }
+    #title-bar #min-btn {
+      position: absolute;
+      top: 5px;
+      left: 30px;
+      z-index: 6;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.15s ease, background 0.1s, color 0.1s;
+    }
+    #title-bar:hover #min-btn,
+    #title-bar #min-btn:focus-visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
     /* New-thread button — the promoted action, accent-tinted to invite. Sits at
        the right (the flex:1 bar-title pushes it there). */
     #title-bar .newthread-btn {
@@ -2291,6 +2328,10 @@
          #title-bar #close-btn rule in the page <style>) so it's out of the flex
          flow. NOT a drag region, so the click lands instead of dragging. -->
     <button class="close-btn" id="close-btn" title="Close" aria-label="Close chat">✕</button>
+    <!-- Minimize tucks the WHOLE workspace back into the moon (invoke
+         collapse_to_moon), parked just right of the hover-× and revealed with
+         it. NOT a drag region so the click lands. -->
+    <button class="min-btn" id="min-btn" title="Minimize into the moon" aria-label="Minimize into the moon">–</button>
     <span class="grip">⋮⋮</span>
     <span class="wash-dot" aria-hidden="true"></span>
     <span class="bar-title" id="bar-title">Luna</span>
@@ -8076,6 +8117,20 @@
         try {
           if (window.__TAURI__ && window.__TAURI__.core && winLabel) {
             window.__TAURI__.core.invoke('close_widget', { label: winLabel }).catch(() => {});
+          }
+        } catch (_) { /* best-effort */ }
+      });
+    }
+
+    // Minimize → collapse the WHOLE workspace into the moon (every widget hides,
+    // the orb returns). The moon is the minimized form of all of Luna, so this
+    // is a global gesture, not a per-window OS-dock minimize.
+    const winMinBtn = document.getElementById('min-btn');
+    if (winMinBtn) {
+      winMinBtn.addEventListener('click', () => {
+        try {
+          if (window.__TAURI__ && window.__TAURI__.core) {
+            window.__TAURI__.core.invoke('collapse_to_moon').catch(() => {});
           }
         } catch (_) { /* best-effort */ }
       });

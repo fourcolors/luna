@@ -183,9 +183,12 @@
   }
   var minBtn = document.getElementById('min-btn');
   var zoomBtn = document.getElementById('zoom-btn');
+  // Minimize collapses the WHOLE workspace into the moon (the orb is the
+  // minimized form of all of Luna), not just this one widget to the OS dock.
   minBtn && minBtn.addEventListener('click', function () {
-    var w = currentWin();
-    if (w && w.minimize) { try { w.minimize().catch(function () {}); } catch (_) {} }
+    if (window.__TAURI__ && window.__TAURI__.core) {
+      try { window.__TAURI__.core.invoke('collapse_to_moon').catch(function () {}); } catch (_) {}
+    }
   });
   zoomBtn && zoomBtn.addEventListener('click', function () {
     var w = currentWin();

@@ -3580,4 +3580,27 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(face().dataset.state).toBe('')
     })
   })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: window chrome — close + minimize. Minimize is NOT a per-window
+  // OS-dock minimize: it collapses the WHOLE workspace into the moon
+  // (collapse_to_moon), the same gesture as a panel's yellow light.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: window chrome (close / minimize-into-moon)', () => {
+    it('Scenario: the minimize disk invokes collapse_to_moon (tuck everything into the orb)', () => {
+      const invoke = vi.fn(async () => null)
+      ;(window as any).__TAURI__.core = { invoke }
+      const minBtn = document.getElementById('min-btn')
+      expect(minBtn).not.toBeNull()
+      minBtn!.click()
+      expect(invoke).toHaveBeenCalledWith('collapse_to_moon')
+    })
+
+    it('Scenario: the close disk still closes only this window (close_widget with its label)', () => {
+      const invoke = vi.fn(async () => null)
+      ;(window as any).__TAURI__.core = { invoke }
+      document.getElementById('close-btn')!.click()
+      expect(invoke).toHaveBeenCalledWith('close_widget', { label: 'chat-test' })
+    })
+  })
 })
