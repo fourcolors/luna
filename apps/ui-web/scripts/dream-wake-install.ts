@@ -32,9 +32,9 @@
  * (default prefix "wake"), so re-running after adding a workspace installs only
  * the new wake row.
  *
- * REQUIRES the V2 scheduler stack. The server must run with
- * `LUNA_SCHEDULER_V2_ENABLED=1` for these rows to be drained by the ticker
- * (which is ALSO the flag that disables the legacy cron layers — see M5).
+ * REQUIRES the V2 scheduler stack. The JobTicker (the only scheduler) drains
+ * these rows automatically once installed — dream/wake run exclusively as these
+ * job rows (the legacy cron layers were removed).
  *
  * Usage:
  *   bun run apps/ui-web/scripts/dream-wake-install.ts

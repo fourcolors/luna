@@ -735,9 +735,9 @@ describe("put — A5: reserved-name denylist", () => {
     const { deps } = makeDeps()
     const mutations = makeVaultMutations(deps)
     const res = await mutations.put({
-      name: "Luna Scheduler",
+      name: "Luna Repo Root",
       kind: "env-secret",
-      varName: "LUNA_SCHEDULER_V2_ENABLED",
+      varName: "LUNA_REPO_ROOT",
       value: FAKE_ENV_VALUE,
     })
     expect(res.ok).toBe(false)

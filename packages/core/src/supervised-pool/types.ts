@@ -3,14 +3,13 @@
  * SupervisedPool types — Phase 11.5a helper extraction.
  *
  * A generic, internal primitive that packages the FiberSet + LIFO finalizer +
- * capacity semaphore + Ref-shadow-size supervision pattern from JobScheduler
- * (`job-scheduler.ts:108-113, :121-124, :128+215, :159`) into a reusable
- * helper. Intentionally decoupled from the `Job*` types in
- * `packages/core/src/jobs/`.
+ * capacity semaphore + Ref-shadow-size supervision pattern from the original V1
+ * JobScheduler (since removed) into a reusable helper. Intentionally decoupled
+ * from the `Job*` types in `packages/core/src/jobs/`.
  *
- * Deviations from JobScheduler's public surface (advisor-locked):
+ * Deviations from the original V1 JobScheduler's public surface (advisor-locked):
  *   - `submit` returns a `SubmitOutcome` discriminated union — no errors
- *     raised. Consumers (e.g. JobScheduler, future TeamBroker) map the
+ *     raised. Consumers (e.g. TeamBroker) map the
  *     outcome to their own tagged errors as needed (§6.3 additive).
  *   - `results: Stream<PoolResult>` replaces the `onJobDone?` callback;
  *     consumers tap/filter at will.

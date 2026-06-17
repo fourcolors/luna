@@ -42,7 +42,7 @@
  *               lock.
  *
  * PREREQUISITES (all true on luna-dev as of 2026-06-08):
- *   - V2 scheduler running (on by default; not LUNA_SCHEDULER_V2_ENABLED=0) so the ticker fires it.
+ *   - V2 scheduler running (the only scheduler) so the ticker fires it.
  *   - `Environment=HOME=/root` on the unit so gh/git find creds in the worker's
  *     process env (proven via worker-path diagnostics).
  *   - A git worktree at LUNA_PUSH_THROUGH_WORKTREE. Step 0 self-heals it with an

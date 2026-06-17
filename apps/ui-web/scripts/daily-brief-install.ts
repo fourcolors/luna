@@ -8,9 +8,8 @@
  * brief by querying `obs_notes_recent` (or via the Moon UI when a panel
  * surfaces it).
  *
- * REQUIRES the V2 scheduler stack (chat-v0.12b or later). The V2 ticker is on
- * by default, so the row is picked up automatically unless the server runs
- * with `LUNA_SCHEDULER_V2_ENABLED=0` (the kill switch).
+ * REQUIRES the V2 scheduler stack (chat-v0.12b or later). The V2 ticker is the
+ * only scheduler, so the row is picked up automatically once installed.
  *
  * Usage:
  *   bun run apps/ui-web/scripts/daily-brief-install.ts

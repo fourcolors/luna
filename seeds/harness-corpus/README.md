@@ -20,8 +20,8 @@ bash seeds/harness-corpus/install.sh
 # registers the nightly `harness-corpus-nightly` workflow job in luna.db.
 ```
 
-The nightly job only fires when the scheduler is enabled
-(`LUNA_SCHEDULER_V2_ENABLED=1` on the chat-server). Run it any time by hand:
+The nightly job fires automatically once the chat-server is running (the V2
+JobTicker is the only scheduler). Run it any time by hand:
 
 ```bash
 ~/.luna/harness-corpus/run-corpus.sh          # human table; exit 1 if any FAIL

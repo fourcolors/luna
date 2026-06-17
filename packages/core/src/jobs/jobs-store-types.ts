@@ -1,15 +1,15 @@
 /**
  * JobsStore types — persisted-job record + service API.
  *
- * Lives in the `jobs` table per DESIGN.md §5.1. Phase 1 (this file) only
- * handles `cron` kind; `oneshot` and `file-watch` are reserved for later
- * phases. Stream-kind TriggerAgent triggers are NOT persisted — Streams are
- * inherently process-local and cannot be serialized.
+ * Lives in the `jobs` table per DESIGN.md §5.1. The live kinds are the V2
+ * ticker kinds (`prompt`, `workflow`, `dream`, `wake`); `oneshot` and
+ * `file-watch` are reserved for later phases, and `cron` is a legacy kind kept
+ * only so the ticker can recognize and skip rows left by the removed V1 path.
  *
- * Storage model — one row per registered cron schedule:
- *   id            (string, PK)   — same value returned as TriggerId by
+ * Storage model — one row per schedule:
+ *   id            (string, PK)   — same value returned as the schedule id by
  *                                  scheduler-tools.schedule_create.
- *   kind          (string)       — "cron" (phase 1)
+ *   kind          (string)       — one of JobKind (see below)
  *   spec          (string)       — the 5-field cron expression
  *   payload_json  (string)       — { label, source: "scheduler-tools" | other }
  *   next_run      (int | null)   — opportunistic, may lag
@@ -28,12 +28,12 @@
 import type { Effect } from "effect"
 import { Data } from "effect"
 
-// Phase 12b adds "prompt" + "workflow" alongside the V1 kinds. WorkerRegistry
-// dispatches by string, so adding kinds here is the type-system catch-up.
-// The scheduler-v2 dream/wake migration (M1-M4) adds the dedicated "dream" +
-// "wake" worker kinds: the install script (sched-v2 install) writes rows with
-// these kinds and the JobTicker dispatches them through the WorkerRegistry
-// under the matching DREAM_WORKER_KIND / WAKE_WORKER_KIND discriminant.
+// The live V2 ticker kinds are "prompt" + "workflow" (generic workers) plus the
+// dedicated "dream" + "wake" workers: the install script writes rows with these
+// kinds and the JobTicker dispatches them through the WorkerRegistry under the
+// matching DREAM_WORKER_KIND / WAKE_WORKER_KIND discriminant. "cron" is retained
+// only so the ticker recognizes (and skips) inert rows left by the removed V1
+// path; "oneshot" / "file-watch" are reserved for later phases.
 export type JobKind =
   | "cron"
   | "oneshot"

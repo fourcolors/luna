@@ -29,8 +29,8 @@ else
   echo "seeded harness-corpus -> $DEST"
 fi
 
-# 2. register the nightly workflow job (idempotent). Requires the V2 scheduler
-#    (LUNA_SCHEDULER_V2_ENABLED=1) on the chat-server to actually fire.
+# 2. register the nightly workflow job (idempotent). The V2 scheduler (the only
+#    scheduler) on the chat-server drains it automatically.
 if command -v python3 >/dev/null 2>&1 && [[ -f "$LUNA_DB" ]]; then
   python3 - "$LUNA_DB" "$DEST" <<'PY'
 import sqlite3, json, time, datetime, sys, shlex

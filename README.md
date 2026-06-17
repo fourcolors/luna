@@ -53,8 +53,7 @@ Luna is built from composable Effect Layers:
 | `AccountBroker` | Multi-account OAuth token rotation with health tracking |
 | `SessionStore` | SQLite-backed chat session + message persistence |
 | `ChatService` | Agent execution, streaming, MCP integration |
-| `JobScheduler` | Bounded fiber pool for background jobs |
-| `TriggerAgent` | Cron + stream-based job triggers |
+| `JobTicker` | Single supervised scheduler — drains the `jobs` table and dispatches due rows (prompt/workflow/dream/wake) to the `WorkerRegistry` |
 | `MemoryTools` | MCP server for persistent vector + structured memory |
 | `SchedulerTools` | MCP server for scheduling recurring agent tasks |
 | `WorkflowRuntime` | Durable multi-step workflows via `@effect/workflow` |

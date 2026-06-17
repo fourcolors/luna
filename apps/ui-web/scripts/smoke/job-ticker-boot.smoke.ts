@@ -2,14 +2,12 @@
  * job-ticker-boot.smoke.ts — boot-risk verification for the Phase 12b
  * JobTicker layer wiring (DESIGN.md §5.3).
  *
- * Just like the wake-cron-boot smoke, `chat-server.ts` has no tsc gate
- * (root tsconfig excludes apps/ui-web/**) so a missing service or wrong
- * Layer.provide composition crashes the whole boot. This smoke proves the
- * JobTicker layer builds with a ManagedRuntime using the REAL exported
- * `JobTickerLayer` + a real in-memory `JobsStoreService.Memory` + a real
- * `makeWorkerRegistry({})` — the exact composition shape used by
- * chat-server.ts (the V2 ticker is on by default; LUNA_SCHEDULER_V2_ENABLED=0
- * disables it).
+ * `chat-server.ts` has no tsc gate (root tsconfig excludes apps/ui-web/**) so a
+ * missing service or wrong Layer.provide composition crashes the whole boot.
+ * This smoke proves the JobTicker layer builds with a ManagedRuntime using the
+ * REAL exported `JobTickerLayer` + a real in-memory `JobsStoreService.Memory` +
+ * a real `makeWorkerRegistry({})` — the exact composition shape used by
+ * chat-server.ts, where the JobTicker is the only scheduler and is always wired.
  *
  * Regression guard: removing `Layer.provide(jobsStoreL)` (or any other dep)
  * from the JobTicker wiring in chat-server.ts MUST make this smoke FAIL
@@ -29,7 +27,7 @@ import { Effect, Layer, ManagedRuntime } from "effect"
 
 // ──────────────────────────────────────────────────────────────────────────
 // Build the layer under test — MIRRORS the shape used in chat-server.ts
-// (the V2 ticker is on by default; LUNA_SCHEDULER_V2_ENABLED=0 disables it).
+// (the V2 ticker is the only scheduler and is always wired).
 // ──────────────────────────────────────────────────────────────────────────
 
 const jobsStoreL = JobsStoreService.Memory.pipe(Layer.provide(Clock.Default))

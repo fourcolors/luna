@@ -459,13 +459,13 @@ CREATE TABLE schema_versions (
 
 ### 5.3 Scheduler V2 — global ticker + DB-as-queue + worker registry (Phase 12b, revisable)
 
-Background: §5.1 reserves a `jobs` table and ships a working durable cron
-registry (`packages/scheduler-tools` boot-reload), but the trigger model is
-**one fiber per cron** (TriggerAgent's `sleep until Cron.next(expr)` loop).
-The `next_run` / `last_run` / `last_status` columns from §5.1 are declared
-but never written. There is no per-fire history. New persisted crons fire
+Background: §5.1 reserved a `jobs` table and shipped a working durable cron
+registry, but the original trigger model was **one fiber per cron** (the
+since-removed V1 TriggerAgent's `sleep until Cron.next(expr)` loop). The
+`next_run` / `last_run` / `last_status` columns from §5.1 were declared but
+never written, there was no per-fire history, and new persisted crons fired
 with `Effect.succeed("${label} tick")` — a no-op — because `schedule_create`
-has no way to express "what should this job DO."
+had no way to express "what should this job DO."
 
 Phase 12b replaces the fiber-per-cron model with an **Oban-style global
 ticker that polls the `jobs` table once per minute, claims due rows, and
@@ -543,18 +543,18 @@ Effect.repeat(
    (shouldn't happen single-process today; we'll harden when we add
    distributed coordination in Phase 13).
 5. INSERT a `job_runs` row with `status='running'`.
-6. Submit a `JobSpec` to the existing `JobScheduler` (we KEEP the
-   supervised pool — it's the right primitive for bounded worker
-   parallelism). The spec's `run` is the result of
-   `WorkerRegistry.dispatch(kind, payload)`.
+6. Dispatch the row directly through `WorkerRegistry.dispatch(kind, payload)`
+   inside its OWN per-job Scope, bounded by `workerDeadline` (`Effect.timeoutFail`)
+   so a stuck worker is interrupted rather than blocking the loop. (There is no
+   separate worker pool — the removed V1 `JobScheduler` is not in this path.)
 7. On `Exit`, UPDATE the matching `job_runs` row with `finished_at`,
    `status`, `output_text`/`error`, and `steps_json`.
 
-The drain is bounded per tick by `JobScheduler` capacity (default 32); excess
-due rows roll into the next tick. A job that runs longer than 60 s does not
-block subsequent ticks — only its OWN re-fire (the row's `next_run_at` won't
-be `≤ now` while the previous attempt is still in flight, since the claim
-already advanced it).
+Within a tick, due rows are dispatched sequentially; excess due rows roll into
+the next tick. A job that runs longer than its deadline does not block
+subsequent ticks — only its OWN re-fire (the row's `next_run_at` won't be
+`≤ now` while the previous attempt is still in flight, since the claim already
+advanced it).
 
 #### 5.3.3 WorkerRegistry contract
 
@@ -620,10 +620,13 @@ propagates to the `job_runs` row.
 }
 ```
 
-#### 5.3.5 Cutover plan
+#### 5.3.5 Dream + wake as V2 job rows
 
-V2 ships behind `LUNA_SCHEDULER_V2_ENABLED=1` so it can run **side by side**
-with the existing TriggerAgent.
+Dream and wake run as V2 job rows drained by the JobTicker, which is the **only**
+scheduler. The legacy fiber-per-cron path — `TriggerAgent` + `JobScheduler` +
+the `buildDreamCronLayer` / `buildWakeCronLayer` boot factories + the
+`LUNA_SCHEDULER_V2_ENABLED` flag — has been removed (the cutover below is
+complete).
 
 **Worker kinds.** Dream and wake are NOT migrated onto the generic `prompt` /
 `workflow` workers — those are typed `Worker<never>` and close over only
@@ -645,19 +648,17 @@ Both kinds are registered into the boot `WorkerRegistry` alongside `prompt` +
 draining the `jobs` table dispatches `kind='dream'` / `kind='wake'` rows to
 them.
 
-The order of operations:
-
-| Step | Effect |
-|---|---|
-| 1 | Schema migration ships in a release; `jobs` rows get new columns; `job_runs` empty. |
-| 2 | `LUNA_SCHEDULER_V2_ENABLED=1` flips on JobTicker (which now registers the `dream` + `wake` worker kinds too); old TriggerAgent still up. |
-| 3 | Run `dream-wake-install.ts` to seed ONE `kind='dream'` row + ONE `kind='wake'` row per wake-enabled workspace (idempotent, `enabled=1`, UTC `next_run_at`). The dream row reuses dream's existing nightly schedule (`0 3 * * *`); each wake row reuses the wake schedule (`*/30 * * * *`). No generic `prompt`/`workflow` row is involved. |
-| 4 | The SAME `LUNA_SCHEDULER_V2_ENABLED=1` flag gates BOTH `buildDreamCronLayer` and `buildWakeCronLayer` to register NOTHING (each returns an empty Layer), so dream + wake run EXCLUSIVELY through their V2 job rows — the boot graph holds EITHER the legacy crons OR the V2 ticker for dream/wake, never both. Reversible: flip the flag off and the legacy crons re-register. |
-| 5 | Verify on dev: V2 `dream` + `wake` rows present in `jobs`; legacy cron layers register nothing; `job_runs` rows close `success` and the dream watermark / wake_log advance. |
-| 6 | After ≥24 h clean on dev, remove TriggerAgent + the old per-cron Layers (`buildDreamCronLayer` / `buildWakeCronLayer`) and the flag gate entirely. |
+The cutover ran in stages — schema migration, then the JobTicker registering the
+`dream` + `wake` worker kinds, then `dream-wake-install.ts` seeding ONE
+`kind='dream'` row (nightly `0 3 * * *`) + ONE `kind='wake'` row per
+wake-enabled workspace (`*/30 * * * *`, idempotent, `enabled=1`, UTC
+`next_run_at`) — and is now complete: the JobTicker is always wired and the
+legacy `TriggerAgent` / cron-layer path and its flag gate have been deleted.
 
 §5.1 jobs columns from V1 (`spec`, `next_run`, `last_run`, `last_status`)
 are kept indefinitely as deprecated synonyms; new code never writes them.
+Legacy `kind="cron"` rows left in an existing DB are skipped by the ticker (no
+`cron` worker), so they stay inert rather than firing or erroring.
 
 #### 5.3.6 Non-goals (V1)
 

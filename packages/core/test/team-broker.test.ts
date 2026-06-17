@@ -4,8 +4,8 @@
  * Real `Effect.sleep` with generous tolerances per brief §8 deviation note;
  * lag-threshold tests pick small wall-clock numbers (50–100 ms) and the
  * watchdog tick is set commensurately. Lead-scope-close test uses
- * `Layer.buildWithScope` + `Scope.close` matching the pattern in
- * `test/jobs/job-scheduler.sim.test.ts`.
+ * `Layer.buildWithScope` + `Scope.close` (the standard Effect scope-teardown
+ * pattern).
  */
 import { describe, expect, it } from "vitest"
 import {
