@@ -2999,10 +2999,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       await Promise.resolve()
     })
 
-    it('dock wiring is live: LunaDock.wire hooked this window (dock-group listener)', () => {
-      // The live-drag model drives dragging from a pointerdown handler (no
-      // onMoved/settle); the observable wire() signal is the dock-group listener.
-      expect(windowEventHandlers['dock-group']).toBeTypeOf('function')
+    it('dock wiring is live: LunaDock.wire hooked this window (dock-link listener)', () => {
+      // The emergent-weld model drives dragging from a pointerdown handler (no
+      // onMoved/settle) and computes welds locally; the observable window-scoped
+      // wire() signal is the dock-link seam-flash listener.
+      expect(windowEventHandlers['dock-link']).toBeTypeOf('function')
     })
   })
 

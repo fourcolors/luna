@@ -1,25 +1,37 @@
 /**
  * createBoard — the Luna Studio window manager, ported to Solid from the
- * "Luna Workspace" design handoff's luna-app.jsx (the reference
- * implementation lives at ~/Downloads/Brainstorm/project/luna-app.jsx).
+ * "Luna Workspace" design handoff's luna-app.jsx, with its snap model swapped
+ * to the Luna Dock / Moon Deck reference (mirrors
+ * apps/ui-moon-tauri/frontend/vendor/deck-snap.js → LunaDeckSnap, reimplemented
+ * in ./snap.ts since the two packages share no module system).
  *
  * One canvas, free-floating panels:
- *   - drag by the panel head; edges magnetically snap to siblings + canvas
- *     margins with dashed guides (computeSnap/snapAxis are verbatim ports)
+ *   - drag by the panel head; the panel clicks FLUSH at a shared CORNER of a
+ *     sibling — both axes pinned — nearest within a magnet threshold
+ *     (computeSnap/computeLiveDrag in ./snap.ts). No alignment guides.
  *   - resize from the corner; minimize rolls a panel up to its title bar
  *   - closed panels collect as shelf chips in the topbar
- *   - board mode = the tidy default; stickies mode adds a hand-placed tilt
- *     and edge-to-edge PINNING — pinned panels straighten and drag as one
- *     group (groupOf/detectPins ported)
+ *   - EMERGENT welding: a cluster is whatever is flush RIGHT NOW (weldClusterOf
+ *     over the live rects — no recorded pins). Dragging a member tows its whole
+ *     welded cluster by a uniform delta. Board mode = the tidy default;
+ *     stickies mode adds a hand-placed tilt.
  *   - favorites: star a panel to keep it in the favorites grid
  *
  * Layout, mode, and favorites persist to localStorage (luna_board_v1) and
- * restore clamped to the current canvas size.
+ * restore clamped to the current canvas size. Pins were never persisted, so
+ * old saved state loads unchanged.
  *
  * Coordinates are CANVAS-relative (the .board element), not viewport.
  */
 import { batch, createSignal } from "solid-js"
 import { createStore, produce } from "solid-js/store"
+import {
+  computeLiveDrag,
+  weldClusterOf,
+  type Candidate,
+  type LiveDragMember,
+  type Member,
+} from "./snap.js"
 
 export const SNAP_GAP = 16
 export const EDGE_MARGIN = 16
@@ -43,16 +55,6 @@ export interface PanelState extends PanelRect {
   entering: boolean
 }
 
-export interface Pin {
-  a: string
-  b: string
-}
-
-export interface Guide {
-  type: "v" | "h"
-  at: number
-}
-
 interface PersistedPanel extends PanelRect {
   closed: boolean
   min: boolean
@@ -71,24 +73,6 @@ export const tiltFor = (id: string): number => {
   let h = 0
   for (const c of id) h = (h * 31 + c.charCodeAt(0)) % 997
   return ((h % 5) - 2) * 0.6
-}
-
-interface SnapCandidate {
-  pos: number
-  line: number
-}
-
-const snapAxis = (
-  raw: number,
-  candidates: SnapCandidate[],
-  thresh: number,
-): (SnapCandidate & { d: number }) | null => {
-  let best: (SnapCandidate & { d: number }) | null = null
-  for (const c of candidates) {
-    const d = Math.abs(raw - c.pos)
-    if (d <= thresh && (best === null || d < best.d)) best = { ...c, d }
-  }
-  return best
 }
 
 const loadPersisted = (): PersistedBoard | null => {
@@ -114,7 +98,9 @@ export const createBoard = (opts: BoardOptions) => {
   const persisted = loadPersisted()
 
   const [panels, setPanels] = createStore<PanelState[]>([])
-  const [guides, setGuides] = createSignal<Guide[]>([])
+  // Live "is the dragged panel currently corner-snapped" flag — set to the
+  // dragged id while a flush snap is active (drives .panel.snapped), null
+  // otherwise. Replaces the old gap-snap guide state.
   const [snappedId, setSnappedId] = createSignal<string | null>(null)
   const [dragId, setDragId] = createSignal<string | null>(null)
   const [mode, setModeSignal] = createSignal<BoardMode>(
@@ -123,7 +109,6 @@ export const createBoard = (opts: BoardOptions) => {
   const [favs, setFavs] = createSignal<string[]>(
     Array.isArray(persisted?.favs) ? persisted.favs.filter((f) => typeof f === "string") : [],
   )
-  const [pins, setPins] = createSignal<Pin[]>([])
 
   let canvasEl: HTMLElement | null = null
   let zTop = 10
@@ -219,96 +204,14 @@ export const createBoard = (opts: BoardOptions) => {
     setPanels(i, "z", zTop)
   }
 
-  /* ---------- magnetic snapping (verbatim port) ---------- */
-  const computeSnap = (
-    id: string,
-    rx: number,
-    ry: number,
-    w: number,
-    h: number,
-    exclude?: string[],
-  ): { x: number; y: number; guides: Guide[]; snapped: boolean } => {
-    const skip = exclude ?? [id]
-    const { vw, vh } = canvasSize()
-    const candX: SnapCandidate[] = [
-      { pos: EDGE_MARGIN, line: EDGE_MARGIN },
-      { pos: vw - w - EDGE_MARGIN, line: vw - EDGE_MARGIN },
-    ]
-    const candY: SnapCandidate[] = [
-      { pos: TOP_MIN, line: TOP_MIN },
-      { pos: vh - h - EDGE_MARGIN, line: vh - EDGE_MARGIN },
-    ]
-    for (const p of panels) {
-      if (skip.includes(p.id) || p.closed) continue
-      const ph = p.min ? HEAD_H : p.h
-      candX.push(
-        { pos: p.x, line: p.x },
-        { pos: p.x + p.w - w, line: p.x + p.w },
-        { pos: p.x + p.w + SNAP_GAP, line: p.x + p.w + SNAP_GAP / 2 },
-        { pos: p.x - w - SNAP_GAP, line: p.x - SNAP_GAP / 2 },
-      )
-      candY.push(
-        { pos: p.y, line: p.y },
-        { pos: p.y + ph - h, line: p.y + ph },
-        { pos: p.y + ph + SNAP_GAP, line: p.y + ph + SNAP_GAP / 2 },
-        { pos: p.y - h - SNAP_GAP, line: p.y - SNAP_GAP / 2 },
-      )
-    }
-    const sx = thresh > 0 ? snapAxis(rx, candX, thresh) : null
-    const sy = thresh > 0 ? snapAxis(ry, candY, thresh) : null
-    const g: Guide[] = []
-    if (sx) g.push({ type: "v", at: sx.line })
-    if (sy) g.push({ type: "h", at: sy.line })
-    return { x: sx ? sx.pos : rx, y: sy ? sy.pos : ry, guides: g, snapped: sx !== null || sy !== null }
-  }
-
-  /* ---------- pinning (stickies mode; verbatim port) ---------- */
-  const groupOf = (id: string): string[] => {
-    const open = new Set(panels.filter((p) => !p.closed).map((p) => p.id))
-    const adj: Record<string, string[]> = {}
-    for (const pin of pins()) {
-      if (!open.has(pin.a) || !open.has(pin.b)) continue
-      ;(adj[pin.a] = adj[pin.a] ?? []).push(pin.b)
-      ;(adj[pin.b] = adj[pin.b] ?? []).push(pin.a)
-    }
-    const seen = new Set([id])
-    const stack = [id]
-    while (stack.length > 0) {
-      const cur = stack.pop()!
-      for (const nb of adj[cur] ?? []) {
-        if (!seen.has(nb)) {
-          seen.add(nb)
-          stack.push(nb)
-        }
-      }
-    }
-    return [...seen]
-  }
-
-  const detectPins = (id: string, group: string[]): string[] => {
-    const open = panels.filter((p) => !p.closed)
-    const a = open.find((p) => p.id === id)
-    if (!a) return []
-    const tol = 3
-    const out: string[] = []
-    for (const b of open) {
-      if (group.includes(b.id)) continue
-      const vOv = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y)
-      const hOv = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)
-      const sideBySide =
-        vOv > 36 &&
-        (Math.abs(a.x + a.w + SNAP_GAP - b.x) <= tol || Math.abs(b.x + b.w + SNAP_GAP - a.x) <= tol)
-      const stacked =
-        hOv > 36 &&
-        (Math.abs(a.y + a.h + SNAP_GAP - b.y) <= tol || Math.abs(b.y + b.h + SNAP_GAP - a.y) <= tol)
-      if (sideBySide || stacked) out.push(b.id)
-    }
-    return out
-  }
-
-  const unpin = (pin: Pin): void => {
-    setPins((ps) => ps.filter((p) => p !== pin))
-  }
+  /* ---------- emergent welding ---------- */
+  // The live rect of an open panel (minimized panels are head-height only).
+  const memberRect = (p: PanelState): Member => ({
+    label: p.id,
+    rect: { x: p.x, y: p.y, w: p.w, h: p.min ? HEAD_H : p.h },
+  })
+  // Every OPEN panel as a weld member — the substrate for cluster detection.
+  const openMembers = (): Member[] => panels.filter((p) => !p.closed).map(memberRect)
 
   /* ---------- drag / resize ---------- */
   interface DragState {
@@ -320,8 +223,10 @@ export const createBoard = (opts: BoardOptions) => {
     oy: number
     ow: number
     oh: number
-    group: string[]
-    origins: Record<string, { x: number; y: number }>
+    /** Panels towed with this drag (the live weld cluster, incl. self). */
+    cluster: Set<string>
+    /** Each towed panel's origin, captured at drag start. */
+    members: LiveDragMember[]
   }
   let drag: DragState | null = null
 
@@ -333,21 +238,28 @@ export const createBoard = (opts: BoardOptions) => {
     if (d.dragMode === "move") {
       const p = panels[idx(d.id)]
       if (!p) return
-      const res = computeSnap(d.id, d.ox + dx, d.oy + dy, p.w, p.min ? HEAD_H : p.h, d.group)
+      // Candidates = open panels NOT in the towed cluster. Snap the lead panel
+      // flush at a sibling corner, then tow the whole cluster by that delta.
+      const candidates: Candidate[] = thresh > 0
+        ? panels
+            .filter((q) => !q.closed && !d.cluster.has(q.id))
+            .map((q) => ({ label: q.id, rect: { x: q.x, y: q.y, w: q.w, h: q.min ? HEAD_H : q.h } }))
+        : []
+      const res = computeLiveDrag(
+        { ox: d.ox, oy: d.oy, ow: p.w, oh: p.min ? HEAD_H : p.h, dx, dy, members: d.members },
+        candidates,
+        thresh,
+      )
       batch(() => {
-        setGuides(res.guides)
         setSnappedId(res.snapped ? d.id : null)
-        const fdx = res.x - d.ox
-        const fdy = res.y - d.oy
+        const by = new Map(res.targets.map((t) => [t.label, t]))
         setPanels(
           produce((ps) => {
             for (const q of ps) {
-              if (q.id === d.id) {
-                q.x = res.x
-                q.y = res.y
-              } else if (d.group.includes(q.id)) {
-                q.x = d.origins[q.id]!.x + fdx
-                q.y = d.origins[q.id]!.y + fdy
+              const t = by.get(q.id)
+              if (t) {
+                q.x = t.x
+                q.y = t.y
               }
             }
           }),
@@ -372,27 +284,13 @@ export const createBoard = (opts: BoardOptions) => {
   const cancelDrag = (): void => {
     drag = null
     setDragId(null)
-    setGuides([])
     window.removeEventListener("pointermove", onPointerMove)
     window.removeEventListener("pointerup", onPointerUp)
   }
 
   const onPointerUp = (): void => {
-    const d = drag
-    if (d && d.dragMode === "move" && mode() === "stickies") {
-      const mates = detectPins(d.id, d.group)
-      if (mates.length > 0) {
-        setPins((prev) => {
-          const next = [...prev]
-          for (const b of mates) {
-            if (!next.some((pn) => (pn.a === d.id && pn.b === b) || (pn.a === b && pn.b === d.id))) {
-              next.push({ a: d.id, b })
-            }
-          }
-          return next
-        })
-      }
-    }
+    // Welding is emergent — a panel that lands flush IS welded on the next
+    // drag (weldClusterOf reads the live rects), so there is nothing to record.
     cancelDrag()
     setTimeout(() => setSnappedId(null), 250)
     persistSoon()
@@ -403,11 +301,14 @@ export const createBoard = (opts: BoardOptions) => {
     e.preventDefault()
     const p = panels[idx(id)]
     if (!p) return
-    const group = dragMode === "move" && mode() === "stickies" ? groupOf(id) : [id]
-    const origins: Record<string, { x: number; y: number }> = {}
-    for (const q of panels) {
-      if (group.includes(q.id)) origins[q.id] = { x: q.x, y: q.y }
-    }
+    // Emergent weld cluster: whatever is flush with the grabbed panel RIGHT NOW
+    // tows with it. Applies in BOTH board and stickies modes (matches Moon).
+    const cluster =
+      dragMode === "move" ? weldClusterOf(id, openMembers()) : [id]
+    const clusterSet = new Set(cluster)
+    const members: LiveDragMember[] = panels
+      .filter((q) => clusterSet.has(q.id))
+      .map((q) => ({ label: q.id, ox: q.x, oy: q.y }))
     drag = {
       id,
       dragMode,
@@ -417,8 +318,8 @@ export const createBoard = (opts: BoardOptions) => {
       oy: p.y,
       ow: p.w,
       oh: p.h,
-      group,
-      origins,
+      cluster: clusterSet,
+      members,
     }
     bringToFront(id)
     setDragId(id)
@@ -468,54 +369,11 @@ export const createBoard = (opts: BoardOptions) => {
 
   const setMode = (m: BoardMode): void => {
     setModeSignal(m)
-    if (m === "board") setPins([])
     persistSoon()
-  }
-
-  /* ---------- pin badge geometry (verbatim port) ---------- */
-  const pinBadges = (): Array<{ pin: Pin; x: number; y: number; z: number }> => {
-    if (mode() !== "stickies") return []
-    const out: Array<{ pin: Pin; x: number; y: number; z: number }> = []
-    for (const pin of pins()) {
-      const a = panels.find((p) => p.id === pin.a && !p.closed)
-      const b = panels.find((p) => p.id === pin.b && !p.closed)
-      if (!a || !b) continue
-      let x: number
-      let y: number
-      if (Math.abs(a.x + a.w + SNAP_GAP - b.x) < 26) {
-        x = a.x + a.w + SNAP_GAP / 2
-        y = (Math.max(a.y, b.y) + Math.min(a.y + a.h, b.y + b.h)) / 2
-      } else if (Math.abs(b.x + b.w + SNAP_GAP - a.x) < 26) {
-        x = b.x + b.w + SNAP_GAP / 2
-        y = (Math.max(a.y, b.y) + Math.min(a.y + a.h, b.y + b.h)) / 2
-      } else if (Math.abs(a.y + a.h + SNAP_GAP - b.y) < 26) {
-        y = a.y + a.h + SNAP_GAP / 2
-        x = (Math.max(a.x, b.x) + Math.min(a.x + a.w, b.x + b.w)) / 2
-      } else if (Math.abs(b.y + b.h + SNAP_GAP - a.y) < 26) {
-        y = b.y + b.h + SNAP_GAP / 2
-        x = (Math.max(a.x, b.x) + Math.min(a.x + a.w, b.x + b.w)) / 2
-      } else {
-        x = (a.x + a.w / 2 + b.x + b.w / 2) / 2
-        y = (a.y + a.h / 2 + b.y + b.h / 2) / 2
-      }
-      out.push({ pin, x, y, z: Math.max(a.z, b.z) + 1 })
-    }
-    return out
-  }
-
-  const pinnedIds = (): Set<string> => {
-    const out = new Set<string>()
-    if (mode() !== "stickies") return out
-    for (const pin of pins()) {
-      out.add(pin.a)
-      out.add(pin.b)
-    }
-    return out
   }
 
   return {
     panels,
-    guides,
     snappedId,
     dragId,
     mode,
@@ -531,9 +389,6 @@ export const createBoard = (opts: BoardOptions) => {
     toggleFav,
     bringToFront,
     setMode,
-    unpin,
-    pinBadges,
-    pinnedIds,
   }
 }
 

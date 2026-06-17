@@ -11,13 +11,17 @@ import * as path from 'node:path'
  * capture-phase pointerdown on a `.title-bar` / `.chat-header` arms a drag,
  * snapshots the window + group + snap candidates asynchronously, then every
  * pointermove computes the snapped target via LunaDeckSnap.computeLiveDrag and
- * setPositions each member window LIVE. pointerup links (set_dock docked:true)
- * if the last move snapped, or detaches a module dragged clear of its cluster.
+ * setPositions each member window LIVE. pointerup emits a frontend `dock-link`
+ * event if the last move snapped onto a sibling, or peels a module off cleanly
+ * (no link) when dragged clear. Welding is EMERGENT: a window computes its own
+ * perimeter/seams from sibling geometry — there is no set_dock invoke and no
+ * dock-group payload anymore.
  *
  * These drive the REAL vendor script + widget.html shell against a mocked
  * __TAURI__ surface. The precise snap math is conformance-tested in
- * dock-live-drag.test.ts / deck-snap.test.ts; here we assert the WIRING:
- * pointerdown arms the drag, pointermove moves the window, pointerup commits.
+ * dock-live-drag.test.ts / deck-snap.test.ts; the weld geometry in
+ * deck-weld.test.ts; here we assert the WIRING: pointerdown arms the drag,
+ * pointermove moves the window, pointerup links/peels, geometry drives welds.
  */
 
 interface Rect { x: number; y: number; w: number; h: number }
@@ -46,6 +50,8 @@ describe('widget.html — title bar + live magnetic drag', () => {
 
   let setPositionCalls: Array<{ x: number; y: number }>
   let eventHandlers: Record<string, (e: { payload: unknown }) => void>
+  let globalHandlers: Record<string, (e: { payload: unknown }) => void>
+  let emitCalls: Array<{ name: string; payload: unknown }>
   let me: {
     label: string
     listen: ReturnType<typeof vi.fn>
@@ -58,22 +64,25 @@ describe('widget.html — title bar + live magnetic drag', () => {
   let getByLabel: ReturnType<typeof vi.fn>
   let invoke: ReturnType<typeof vi.fn>
 
-  interface DockArgs {
-    docked: boolean
-    anchor: string | null
+  interface DockLink {
+    for: string
+    from: string
     edge: string | null
-    dx: number
-    dy: number
   }
-  const dockArgs = (): DockArgs[] =>
-    invoke.mock.calls
-      .filter((c: unknown[]) => c[0] === 'set_dock')
-      .map((c: unknown[]) => c[1] as DockArgs)
+  // Emergent model: a confirmed link is a frontend-emitted `dock-link` event
+  // (not a set_dock invoke). Read them back from the captured event.emit calls.
+  const dockLinks = (): DockLink[] =>
+    emitCalls.filter((c) => c.name === 'dock-link').map((c) => c.payload as DockLink)
 
-  const dispatchGroup = (payload: Record<string, unknown>) => {
-    expect(eventHandlers['dock-group']).toBeTypeOf('function')
-    // The page filters on the recipient field — stamp it like Rust does.
-    eventHandlers['dock-group']({ payload: { for: SELF, ...payload } })
+  const broadcasts = (name: string): number =>
+    emitCalls.filter((c) => c.name === name).length
+
+  // Drive a global `dock-geometry-changed` broadcast (what neighbours emit when
+  // they move) → the window recomputes its own weld from current sibling rects.
+  const refreshWeld = async () => {
+    expect(globalHandlers['dock-geometry-changed']).toBeTypeOf('function')
+    globalHandlers['dock-geometry-changed']({ payload: {} })
+    await flush()
   }
 
   // Let the async start-snapshot (logicalRect + members + candidateRects, all
@@ -106,6 +115,8 @@ describe('widget.html — title bar + live magnetic drag', () => {
   beforeEach(() => {
     setPositionCalls = []
     eventHandlers = {}
+    globalHandlers = {}
+    emitCalls = []
 
     const html = fs.readFileSync(
       path.resolve(__dirname, '../frontend/widget.html'),
@@ -127,6 +138,7 @@ describe('widget.html — title bar + live magnetic drag', () => {
       setPosition: vi.fn(async (p: MockLogicalPosition) => {
         setPositionCalls.push({ x: p.x, y: p.y })
       }),
+      onResized: vi.fn(async () => () => {}),
     }
     const mainWin = {
       outerPosition: vi.fn(async () => ({ x: MAIN_RECT.x, y: MAIN_RECT.y })),
@@ -146,7 +158,17 @@ describe('widget.html — title bar + live magnetic drag', () => {
         LogicalPosition: MockLogicalPosition,
       },
       core: { invoke },
-      event: { listen: vi.fn(async () => () => {}) },
+      event: {
+        // Global broadcast bus: capture the dock-geometry-changed subscriber so
+        // a test can fire it, and record every emit (dock-link / geometry tick).
+        listen: vi.fn(async (name: string, cb: (e: { payload: unknown }) => void) => {
+          globalHandlers[name] = cb
+          return () => {}
+        }),
+        emit: vi.fn(async (name: string, payload: unknown) => {
+          emitCalls.push({ name, payload })
+        }),
+      },
     }
 
     loadVendorInto(window, 'moon-protocol.js')
@@ -197,28 +219,32 @@ describe('widget.html — title bar + live magnetic drag', () => {
     expect(invoke).toHaveBeenCalledWith('close_widget', { label: SELF })
   })
 
-  // ── Cross-talk immunity ─────────────────────────────────────────────────
-  it('ignores dock-group events addressed to OTHER windows (cross-talk immunity)', () => {
-    expect(eventHandlers['dock-group']).toBeTypeOf('function')
-    // A third-party event leaking through must not create phantom state.
-    eventHandlers['dock-group']({
-      payload: { for: 'widget-other', grouped: true, members: ['widget-other', 'widget-x'], outlineSides: ['l'] },
-    })
+  // ── Perimeter outline renders from LOCAL sibling geometry ───────────────
+  it('a lone widget shows no perimeter outline', async () => {
+    // wire() ran refreshWeld on init with list_widget_windows = [] → ungrouped.
+    await flush()
     expect((document.getElementById('outline') as HTMLDivElement).className).toBe('')
   })
 
-  // ── Perimeter outline renders from dock-group state ─────────────────────
-  it('perimeter outline renders from dock-group state', () => {
+  it('perimeter outline renders from local sibling geometry on a geometry tick', async () => {
     const outline = document.getElementById('outline') as HTMLDivElement
+    // A sibling welds flush below SELF (528,108,300x200) at y=308 → SELF's bottom
+    // edge is interior, so its free perimeter sides are l, r, t.
+    const below = {
+      outerPosition: vi.fn(async () => ({ x: 528, y: 308 })),
+      outerSize: vi.fn(async () => ({ width: 300, height: 200 })),
+      scaleFactor: vi.fn(async () => 1),
+    }
+    invoke.mockImplementation(async (cmd: string) =>
+      cmd === 'list_widget_windows' ? ['widget-below'] : null,
+    )
+    getByLabel.mockImplementation(async (l: string) => (l === 'widget-below' ? below : null))
+    await refreshWeld()
+    expect(outline.className).toBe('gl gr gt')
 
-    dispatchGroup({ grouped: true, members: ['main', SELF], outlineSides: ['r', 't', 'b'] })
-    expect(outline.className).toBe('gr gt gb')
-
-    // Interior seams stay unhighlighted: only the listed outer sides render.
-    dispatchGroup({ grouped: true, members: ['main', SELF, 'widget-x'], outlineSides: ['t'] })
-    expect(outline.className).toBe('gt')
-
-    dispatchGroup({ grouped: false, members: [], outlineSides: [] })
+    // Sibling out of the picture → ungrouped → outline clears.
+    invoke.mockImplementation(async (cmd: string) => (cmd === 'list_widget_windows' ? [] : null))
+    await refreshWeld()
     expect(outline.className).toBe('')
   })
 
@@ -264,10 +290,10 @@ describe('widget.html — title bar + live magnetic drag', () => {
     // snapping flush to it glides the window into place but never links a group.
     bar.dispatchEvent(pointer('pointerup'))
     await flush()
-    expect(dockArgs()).toHaveLength(0)
+    expect(dockLinks()).toHaveLength(0)
   })
 
-  it('snaps + links a SIBLING widget on pointerup (set_dock docked:true)', async () => {
+  it('snaps + emits a dock-link for a SIBLING on pointerup', async () => {
     const bar = document.querySelector('.title-bar') as HTMLElement
     stubCapture(bar)
 
@@ -293,8 +319,9 @@ describe('widget.html — title bar + live magnetic drag', () => {
 
     bar.dispatchEvent(pointer('pointerup'))
     await flush()
-    const last = dockArgs()[dockArgs().length - 1]
-    expect(last).toEqual({ docked: true, anchor: 'widget-zzz', edge: 'l', dx: 0, dy: 0 })
+    // The link is now a frontend dock-link event aimed at the anchor's page.
+    const links = dockLinks()
+    expect(links[links.length - 1]).toEqual({ for: 'widget-zzz', from: SELF, edge: 'l' })
   })
 
   it('a free drag (no candidate in range) follows the raw delta and does NOT link', async () => {
@@ -316,34 +343,39 @@ describe('widget.html — title bar + live magnetic drag', () => {
 
     bar.dispatchEvent(pointer('pointerup'))
     await flush()
-    // Ungrouped + no snap → nothing committed.
-    expect(dockArgs()).toHaveLength(0)
+    // Ungrouped + no snap → no link emitted.
+    expect(dockLinks()).toHaveLength(0)
   })
 
-  it('a non-anchor module dragged clear of its cluster detaches on pointerup (docked:false)', async () => {
+  it('a non-anchor module welded to a friend peels off cleanly when dragged clear (no link)', async () => {
     const bar = document.querySelector('.title-bar') as HTMLElement
     stubCapture(bar)
 
-    // Rust says we're grouped with a friend (we are NOT the anchor — SELF is a
-    // plain widget). Dragging clear of every window detaches us.
-    dispatchGroup({ grouped: true, members: [SELF, 'widget-friend'], outlineSides: ['l', 'r', 't', 'b'] })
-    me.outerPosition.mockResolvedValue({ x: 2000, y: 1500 })
-    // The friend is excluded as a candidate; no other window in range.
+    // A friend welds flush below SELF so emergent geometry groups us (SELF is a
+    // plain widget, not the anchor). It stays at its spot the whole time.
+    const friend = {
+      outerPosition: vi.fn(async () => ({ x: 528, y: 308 })),
+      outerSize: vi.fn(async () => ({ width: 300, height: 200 })),
+      scaleFactor: vi.fn(async () => 1),
+    }
     invoke.mockImplementation(async (cmd: string) =>
       cmd === 'list_widget_windows' ? ['widget-friend'] : null,
     )
-    getByLabel.mockImplementation(async () => null)
+    getByLabel.mockImplementation(async (l: string) => (l === 'widget-friend' ? friend : null))
+    await refreshWeld() // now grouped with the friend
+    expect((document.getElementById('outline') as HTMLDivElement).className).toBe('gl gr gt')
 
     bar.dispatchEvent(pointer('pointerdown', { screenX: 0, screenY: 0 }))
     await flush()
-
-    bar.dispatchEvent(pointer('pointermove', { screenX: 120, screenY: 90 }))
+    // Drag far past the friend's magnet so the last move does not snap.
+    bar.dispatchEvent(pointer('pointermove', { screenX: 600, screenY: 400 }))
     await flush()
-
     bar.dispatchEvent(pointer('pointerup'))
     await flush()
-    // Dragged clear while grouped → detach.
-    const last = dockArgs()[dockArgs().length - 1]
-    expect(last.docked).toBe(false)
+
+    // Peeled off clean: no phantom link, and a geometry tick tells the friend to
+    // repaint without SELF welded.
+    expect(dockLinks()).toHaveLength(0)
+    expect(broadcasts('dock-geometry-changed')).toBeGreaterThan(0)
   })
 })

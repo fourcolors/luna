@@ -1937,207 +1937,14 @@ async fn voice_ensure_model(app: tauri::AppHandle) -> Result<(), String> {
     .await
 }
 
-// ── widget dock groups (symmetric group membership) ─────────────────────────
+// ── widget dock geometry (open-time clustering) ─────────────────────────────
 //
-// Groups are SYMMETRIC and flat — no user-visible hierarchy. A group is just a
-// set of window labels that move together. The JS owns dragging now: a title-
-// bar pointerdown starts a JS drag and every pointermove setPositions the
-// dragged window AND every cluster member 1:1, so the whole cluster glides as a
-// unit without any native parenting. On pointerup the page reports the result —
-// set_dock(docked=true) to record a link, set_dock(docked=false) to detach a
-// module dragged clear. Rust keeps only the membership GRAPH (which labels are
-// grouped) and emits geometry; it no longer touches window positions during a
-// drag.
-//
-// On every membership change each member's page receives a `dock-group` event
-// with { grouped, members, outlineSides, weldCorners } — outlineSides are the
-// member's FREE (non-touching) sides for a perimeter highlight, and weldCorners
-// are the corners to square at an interior weld seam.
-
-#[derive(Default)]
-struct DockState(std::sync::Mutex<DockGroups>);
-
-#[derive(Default, Debug)]
-struct DockGroups {
-    next_id: u64,
-    /// group id → flat member set.
-    groups: std::collections::HashMap<u64, DockGroup>,
-    /// window label → group id.
-    by_label: std::collections::HashMap<String, u64>,
-}
-
-#[derive(Default, Debug, Clone)]
-struct DockGroup {
-    /// A stable representative label for the group (the min member). No longer a
-    /// native parent — just a deterministic identity used when re-forming groups
-    /// after a member leaves.
-    root: String,
-    members: std::collections::HashSet<String>,
-}
-
-impl DockGroups {
-    fn group_of(&self, label: &str) -> Option<&DockGroup> {
-        self.by_label.get(label).and_then(|id| self.groups.get(id))
-    }
-
-    fn members_of(&self, label: &str) -> Vec<String> {
-        self.group_of(label)
-            .map(|g| g.members.iter().cloned().collect())
-            .unwrap_or_default()
-    }
-
-    /// Link `child` with `anchor` (settle-snap landed flush). Updates the
-    /// membership graph. Handles every membership combination; linking two
-    /// windows already in the same group is a no-op.
-    fn join(&mut self, child: &str, anchor: &str) {
-        if child == anchor {
-            return;
-        }
-        let cg = self.by_label.get(child).copied();
-        let ag = self.by_label.get(anchor).copied();
-        match (cg, ag) {
-            (Some(c), Some(a)) if c == a => {}
-            (None, None) => {
-                let id = self.next_id;
-                self.next_id += 1;
-                let mut members = std::collections::HashSet::new();
-                members.insert(child.to_string());
-                members.insert(anchor.to_string());
-                self.groups.insert(
-                    id,
-                    DockGroup { root: anchor.to_string(), members },
-                );
-                self.by_label.insert(child.to_string(), id);
-                self.by_label.insert(anchor.to_string(), id);
-            }
-            (None, Some(a)) => {
-                let g = self.groups.get_mut(&a).expect("group exists");
-                g.members.insert(child.to_string());
-                self.by_label.insert(child.to_string(), a);
-            }
-            (Some(c), None) => {
-                let g = self.groups.get_mut(&c).expect("group exists");
-                g.members.insert(anchor.to_string());
-                self.by_label.insert(anchor.to_string(), c);
-            }
-            (Some(c), Some(a)) => {
-                // Merge: child's whole group folds into anchor's group.
-                let moved = self.groups.remove(&c).expect("group exists");
-                let target = self.groups.get_mut(&a).expect("group exists");
-                for m in &moved.members {
-                    target.members.insert(m.clone());
-                    self.by_label.insert(m.clone(), a);
-                }
-            }
-        }
-    }
-
-    /// Remove `label` from its group (pin click, or window destroyed).
-    /// Returns the departed members — a 2-member group dissolves entirely,
-    /// freeing both. `gone` is accepted for call-site symmetry (destroyed vs
-    /// pinned) but the membership update is identical either way.
-    fn leave(&mut self, label: &str, gone: bool) -> Vec<String> {
-        let _ = gone;
-        let Some(&id) = self.by_label.get(label) else {
-            return Vec::new();
-        };
-        let g = self.groups.get_mut(&id).expect("group exists");
-        g.members.remove(label);
-        self.by_label.remove(label);
-        let was_root = g.root == label;
-        let mut departed = vec![label.to_string()];
-
-        if was_root {
-            // Re-form the star under a surviving member.
-            if let Some(new_root) = g.members.iter().min().cloned() {
-                g.root = new_root;
-            }
-        }
-        // A group of one is no group.
-        if g.members.len() <= 1 {
-            let last = g.members.iter().next().cloned();
-            if let Some(last) = last {
-                self.by_label.remove(&last);
-                departed.push(last);
-            }
-            self.groups.remove(&id);
-        }
-        departed
-    }
-
-    /// Re-partition the group containing `member` by actual geometry: pieces
-    /// that no longer touch split into separate groups; singletons dissolve.
-    /// Returns all labels whose state may have changed.
-    fn regroup_by_geometry(
-        &mut self,
-        member: &str,
-        rects: &[(String, (i32, i32, i32, i32))],
-    ) -> Vec<String> {
-        let Some(&id) = self.by_label.get(member) else {
-            return Vec::new();
-        };
-        let comps = dock_components(rects);
-        if comps.len() <= 1 {
-            return Vec::new();
-        }
-        let old = self.groups.remove(&id).expect("group exists");
-        let mut touched: Vec<String> = Vec::new();
-        // Tear the old group down completely…
-        for m in &old.members {
-            self.by_label.remove(m);
-            touched.push(m.clone());
-        }
-        // …and re-group each connected component (singletons stay free).
-        for comp in comps {
-            if comp.len() < 2 {
-                continue;
-            }
-            let root = comp.iter().min().cloned().expect("non-empty");
-            let gid = self.next_id;
-            self.next_id += 1;
-            let mut members = std::collections::HashSet::new();
-            for m in &comp {
-                members.insert(m.clone());
-                self.by_label.insert(m.clone(), gid);
-            }
-            self.groups.insert(gid, DockGroup { root, members });
-        }
-        touched
-    }
-
-    /// Form fresh groups from geometry among CURRENTLY-UNGROUPED labels — the
-    /// boot-restore re-link. Each connected component of ≥2 touching rects
-    /// becomes a group over the SAME MEMBERS it had before the restart, rooted
-    /// at the min label (matching `regroup_by_geometry`). A component touching
-    /// any already-grouped label is skipped, keeping this idempotent and safe
-    /// over a partially grouped state. Returns every label whose membership
-    /// changed (to notify).
-    fn form_groups_by_geometry(
-        &mut self,
-        rects: &[(String, (i32, i32, i32, i32))],
-    ) -> Vec<String> {
-        let mut touched: Vec<String> = Vec::new();
-        for comp in dock_components(rects) {
-            if comp.len() < 2 {
-                continue; // a lone panel stays free — no group of one
-            }
-            if comp.iter().any(|m| self.by_label.contains_key(m)) {
-                continue; // never disturb a label that is already grouped
-            }
-            let root = comp.iter().min().cloned().expect("non-empty component");
-            let gid = self.next_id;
-            self.next_id += 1;
-            let mut members = std::collections::HashSet::new();
-            for m in &comp {
-                members.insert(m.clone());
-                self.by_label.insert(m.clone(), gid);
-                touched.push(m.clone());
-            }
-            self.groups.insert(gid, DockGroup { root, members });
-        }
-        touched
-    }
-}
+// Welding is emergent JS now (moon-dock.js + deck-snap.js): each window squares
+// its own seams from live geometry on every move/resize, and there is no Rust
+// membership graph. Rust keeps only the pure-geometry helpers below, used at
+// OPEN time to place a freshly-spawned panel flush against the cluster nearest
+// its spawn point — the connected component (flush-touching rects) is unioned
+// into a bounding box the new panel appends against.
 
 /// A window's outer rect in LOGICAL px (its own monitor's scale) — all dock
 /// geometry runs in logical units so mixed-DPI setups compare coherently.
@@ -2151,90 +1958,6 @@ fn dock_logical_rect(w: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i32)> {
         (f64::from(s.width) / sf) as i32,
         (f64::from(s.height) / sf) as i32,
     ))
-}
-
-/// Is rect `a` within `t` px of a snapable seam against `b` (same candidate
-/// geometry as deck-snap.js computeSnap)? Used to validate eject clearance.
-fn dock_in_magnet(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32), t: i32) -> bool {
-    let (ax, ay, aw, ah) = a;
-    let (bx, by, bw, bh) = b;
-    let (al, at_, ar, ab) = (ax, ay, ax + aw, ay + ah);
-    let (bl, bt, br, bb) = (bx, by, bx + bw, by + bh);
-    let v_overlap = at_ < bb && ab > bt;
-    let h_overlap = al < br && ar > bl;
-    (v_overlap && ((al - br).abs() <= t || (ar - bl).abs() <= t))
-        || (h_overlap && ((at_ - bb).abs() <= t || (ab - bt).abs() <= t))
-}
-
-/// Do two rects intersect?
-fn dock_rects_overlap(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
-    let (ax, ay, aw, ah) = a;
-    let (bx, by, bw, bh) = b;
-    ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by
-}
-
-/// Pick an eject vector (logical px) that lands the leaver clear of every
-/// other dock window's MAGNET, not just its body. The ex-member cooldown
-/// only shields the group the leaver just left — a bystander's magnet has
-/// no cooldown, and the eject's own setPosition fires onMoved, so landing
-/// flush with one re-links instantly (live-observed: an unpin stepped a
-/// panel straight onto a third window's seam). When the screen is too
-/// crowded for a fully-clear spot, settle for overlap-free — the cooldown
-/// covers the seams that can survive that. Prefers the axis pointing away
-/// from the crowd centroid.
-fn dock_eject_vector(
-    leaver: (i32, i32, i32, i32),
-    others: &[(i32, i32, i32, i32)],
-) -> (i32, i32) {
-    const STEP: i32 = 36;
-    let (lx, ly, lw, lh) = leaver;
-    let (lcx, lcy) = (i64::from(lx) + i64::from(lw) / 2, i64::from(ly) + i64::from(lh) / 2);
-    let (mut cx, mut cy, mut n) = (0i64, 0i64, 0i64);
-    for (ox, oy, ow, oh) in others {
-        cx += i64::from(*ox) + i64::from(*ow) / 2;
-        cy += i64::from(*oy) + i64::from(*oh) / 2;
-        n += 1;
-    }
-    let (sx, sy) = if n == 0 {
-        (1, 0)
-    } else {
-        (
-            if lcx >= cx / n { 1 } else { -1 },
-            if lcy >= cy / n { 1 } else { -1 },
-        )
-    };
-    // Same threshold as deck-snap.js computeSnap — keep them in lockstep.
-    const MAGNET: i32 = 30;
-    let candidates = [
-        (STEP * sx, 0),
-        (0, STEP * sy),
-        (STEP * sx, STEP * sy),
-        (-STEP * sx, 0),
-        (0, -STEP * sy),
-        (2 * STEP * sx, 0),
-        (0, 2 * STEP * sy),
-        (2 * STEP * sx, 2 * STEP * sy),
-        (3 * STEP * sx, 0),
-        (0, 3 * STEP * sy),
-        (3 * STEP * sx, 3 * STEP * sy),
-    ];
-    for (dx, dy) in candidates {
-        let moved = (lx + dx, ly + dy, lw, lh);
-        if others
-            .iter()
-            .all(|o| !dock_rects_overlap(moved, *o) && !dock_in_magnet(moved, *o, MAGNET))
-        {
-            return (dx, dy);
-        }
-    }
-    // No magnet-free spot in ladder range: fall back to overlap-free only.
-    for (dx, dy) in candidates {
-        let moved = (lx + dx, ly + dy, lw, lh);
-        if others.iter().all(|o| !dock_rects_overlap(moved, *o)) {
-            return (dx, dy);
-        }
-    }
-    (STEP * sx, STEP * sy) // give up gracefully: diagonal shove
 }
 
 /// Two rects touch when an edge pair sits flush (≤2 px) with real
@@ -2282,176 +2005,38 @@ fn dock_components(
     out
 }
 
-/// Which sides of each member face OUT of the group? A side is interior when
-/// it sits flush (≤2 px) against another member with real perpendicular
-/// overlap. Pure geometry — drives the perimeter highlight.
-fn dock_outline_sides(
-    rects: &[(String, (i32, i32, i32, i32))], // (label, (x, y, w, h))
-) -> std::collections::HashMap<String, Vec<&'static str>> {
-    const EPS: i32 = 2;
-    const MIN_OVERLAP: i32 = 8;
-    let mut out = std::collections::HashMap::new();
-    for (label, (x, y, w, h)) in rects {
-        let (l, t, r, b) = (*x, *y, x + w, y + h);
-        let mut sides: Vec<&'static str> = Vec::new();
-        let mut touched = (false, false, false, false); // l r t b
-        for (other, (ox, oy, ow, oh)) in rects {
-            if other == label {
-                continue;
-            }
-            let (ol, ot, or_, ob) = (*ox, *oy, ox + ow, oy + oh);
-            let v_overlap = (b.min(ob) - t.max(ot)) >= MIN_OVERLAP;
-            let h_overlap = (r.min(or_) - l.max(ol)) >= MIN_OVERLAP;
-            if v_overlap && (l - or_).abs() <= EPS {
-                touched.0 = true;
-            }
-            if v_overlap && (r - ol).abs() <= EPS {
-                touched.1 = true;
-            }
-            if h_overlap && (t - ob).abs() <= EPS {
-                touched.2 = true;
-            }
-            if h_overlap && (b - ot).abs() <= EPS {
-                touched.3 = true;
-            }
-        }
-        if !touched.0 {
-            sides.push("l");
-        }
-        if !touched.1 {
-            sides.push("r");
-        }
-        if !touched.2 {
-            sides.push("t");
-        }
-        if !touched.3 {
-            sides.push("b");
-        }
-        out.insert(label.clone(), sides);
-    }
-    out
-}
-
-/// Which CORNERS of each member sit at an interior weld seam and should square
-/// off? A corner squares only when a flush neighbour (≤EPS gap) actually REACHES
-/// it — probed `IN` px inward from the corner along the meeting edges — so a
-/// partial-width weld keeps its still-exposed corners round. Each corner squares
-/// if a neighbour is welded on EITHER edge meeting there and spans far enough to
-/// cover the probe point. Pure geometry; the dock client maps the result to
-/// per-corner border-radius (0 = squared). Same EPS as dock_outline_sides so
-/// the corner squares for exactly the seams Rust counts as flush.
-///
-/// Inset-invariant: every painted card is inset a uniform `--card-inset` (22px)
-/// inside its OS frame, so frame-space adjacency == card-space adjacency and the
-/// probe needs NO inset correction (the inset cancels on both windows).
-fn dock_weld_corners(
-    rects: &[(String, (i32, i32, i32, i32))], // (label, (x, y, w, h))
-) -> std::collections::HashMap<String, Vec<&'static str>> {
-    const EPS: i32 = 2;
-    const IN: i32 = 6; // probe inset from the corner along each edge
-    let mut out = std::collections::HashMap::new();
-    for (label, (x, y, w, h)) in rects {
-        let (l, t, r, b) = (*x, *y, x + w, y + h);
-        let (mut tl, mut tr, mut br, mut bl) = (false, false, false, false);
-        for (other, (ox, oy, ow, oh)) in rects {
-            // Never self; never the hub (the moon is alignment-only and is never
-            // truly welded — defense-in-depth, it is never a group member).
-            if other == label || other == "main" {
-                continue;
-            }
-            let (ol, ot, or_, ob) = (*ox, *oy, ox + ow, oy + oh);
-            let flush_left = (l - or_).abs() <= EPS; // `other` sits on a's left
-            let flush_right = (r - ol).abs() <= EPS; // `other` sits on a's right
-            let flush_top = (t - ob).abs() <= EPS; // `other` sits above a
-            let flush_bottom = (b - ot).abs() <= EPS; // `other` sits below a
-            let covers_y = |py: i32| ot - EPS <= py && py <= ob + EPS;
-            let covers_x = |px: i32| ol - EPS <= px && px <= or_ + EPS;
-            // A corner squares when a left/right neighbour reaches it vertically
-            // OR a top/bottom neighbour reaches it horizontally.
-            if (flush_left && covers_y(t + IN)) || (flush_top && covers_x(l + IN)) {
-                tl = true;
-            }
-            if (flush_right && covers_y(t + IN)) || (flush_top && covers_x(r - IN)) {
-                tr = true;
-            }
-            if (flush_right && covers_y(b - IN)) || (flush_bottom && covers_x(r - IN)) {
-                br = true;
-            }
-            if (flush_left && covers_y(b - IN)) || (flush_bottom && covers_x(l + IN)) {
-                bl = true;
-            }
-        }
-        let mut corners: Vec<&'static str> = Vec::new();
-        if tl {
-            corners.push("tl");
-        }
-        if tr {
-            corners.push("tr");
-        }
-        if br {
-            corners.push("br");
-        }
-        if bl {
-            corners.push("bl");
-        }
-        out.insert(label.clone(), corners);
-    }
-    out
-}
-
-/// Push fresh `dock-group` state to every window whose membership might have
-/// changed. The JS drives all window positioning (live pointermove →
-/// setPosition), so this is now purely the membership + weld-geometry emit;
-/// there is no native parenting to apply. Main thread only (reads geometry).
-fn dock_apply_and_notify(app: &tauri::AppHandle, notify: Vec<String>) {
-    let state = app.state::<DockState>();
-    let s = state.0.lock().unwrap_or_else(|e| e.into_inner());
-    for label in notify {
-        let members = s.members_of(&label);
-        let payload = if members.is_empty() {
-            serde_json::json!({ "for": label, "grouped": false, "members": [], "outlineSides": [], "weldCorners": [] })
-        } else {
-            let rects: Vec<(String, (i32, i32, i32, i32))> = members
-                .iter()
-                .filter_map(|m| {
-                    let w = app.get_webview_window(m)?;
-                    Some((m.clone(), dock_logical_rect(&w)?))
-                })
-                .collect();
-            let outline = dock_outline_sides(&rects);
-            let weld = dock_weld_corners(&rects);
-            serde_json::json!({
-                "for": label,
-                "grouped": true,
-                "members": members,
-                "outlineSides": outline.get(&label).cloned().unwrap_or_default(),
-                // Corners to square at an interior weld seam (subset of tl/tr/br/bl).
-                "weldCorners": weld.get(&label).cloned().unwrap_or_default(),
-            })
-        };
-        let _ = app.emit_to(tauri::EventTarget::labeled(&label), "dock-group", payload);
-    }
-}
-
-/// Group bounding box for `label` (logical px): the union of every member's
-/// rect, or `label`'s own rect when it is ungrouped. None when no member has a
-/// readable rect (e.g. minimized). Main thread (reads window geometry).
+/// Group bounding box for `label` (logical px): the union of the live cluster
+/// `label` belongs to, derived purely from window GEOMETRY (no membership
+/// graph). Every visible dock window's current rect is flood-filled by the
+/// touch predicate; the component that contains `label` is unioned. An
+/// ungrouped panel is its own one-member component, so this returns its own
+/// rect. None when `label` has no readable rect (e.g. minimized). The hub
+/// ("main") is never `is_dock_label`, so it never enters the cluster. Main
+/// thread (reads window geometry).
 fn group_bbox_of(app: &tauri::AppHandle, label: &str) -> Option<(i32, i32, i32, i32)> {
-    let members = {
-        let state = app.state::<DockState>();
-        let s = state.0.lock().unwrap_or_else(|e| e.into_inner());
-        let m = s.members_of(label);
-        if m.is_empty() {
-            vec![label.to_string()]
-        } else {
-            m
-        }
-    };
-    let rects: Vec<(i32, i32, i32, i32)> = members
-        .iter()
-        .filter_map(|m| app.get_webview_window(m).and_then(|w| dock_logical_rect(&w)))
+    // Every dock window's live rect, keyed by label. `label` itself is included
+    // here (it is always a widget-*/panel- window at the call sites).
+    let rects: Vec<(String, (i32, i32, i32, i32))> = app
+        .webview_windows()
+        .into_iter()
+        .filter(|(l, _)| is_dock_label(l))
+        .filter_map(|(l, w)| dock_logical_rect(&w).map(|r| (l, r)))
         .collect();
-    cluster_bbox(&rects)
+    // No readable rect for `label` (minimized / mid-build) → no anchor box.
+    if !rects.iter().any(|(l, _)| l == label) {
+        return None;
+    }
+    // The connected component (flush-touching cluster) that contains `label`;
+    // a lone panel forms its own one-member component.
+    let comp = dock_components(&rects)
+        .into_iter()
+        .find(|c| c.iter().any(|l| l == label))?;
+    let member_rects: Vec<(i32, i32, i32, i32)> = rects
+        .iter()
+        .filter(|(l, _)| comp.iter().any(|cl| cl == l))
+        .map(|(_, r)| *r)
+        .collect();
+    cluster_bbox(&member_rects)
 }
 
 /// The open dock cluster nearest `new_label` (excluding the hub and the new
@@ -2484,11 +2069,12 @@ fn nearest_dock_anchor(
     Some((anchor, bbox))
 }
 
-/// Place a freshly-spawned panel flush against an existing dock cluster and
-/// join its group — the open-time twin of a settle-snap. `anchor_rect` is the
-/// cluster bounding box; `anchor_label` is any member (join re-parents under
-/// the group root). Mirrors the settle path: glide flush, join, flash the
-/// seam. Best-effort; main thread.
+/// Place a freshly-spawned panel flush against an existing dock cluster — the
+/// open-time twin of a settle-snap. `anchor_rect` is the live cluster bounding
+/// box; the new panel is set flush at its right edge (or left, on overflow).
+/// Welding is emergent: the moved window's moon-dock.js squares its seam on the
+/// next geometry event, so Rust only positions + flashes the anchor's seam.
+/// Best-effort; main thread.
 fn dock_new_panel(
     app: &tauri::AppHandle,
     new_label: &str,
@@ -2508,217 +2094,12 @@ fn dock_new_panel(
     if let Some(w) = app.get_webview_window(new_label) {
         let _ = w.set_position(tauri::LogicalPosition::new(f64::from(px), f64::from(py)));
     }
-    // Join exactly as a settle-snap would, then notify the cluster.
-    let notify = {
-        let state = app.state::<DockState>();
-        let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
-        s.join(new_label, anchor_label);
-        s.members_of(new_label)
-    };
-    dock_apply_and_notify(app, notify);
+    // Tell the anchor's page to flash its side of the new seam.
     let _ = app.emit_to(
         tauri::EventTarget::labeled(anchor_label),
         "dock-link",
         serde_json::json!({ "for": anchor_label, "from": new_label, "edge": edge }),
     );
-}
-
-/// After a member departs, re-partition its old group by geometry. Survivors
-/// that no longer touch split into separate groups; singletons dissolve.
-/// Returns every label whose state changed. MUST run on the main thread.
-fn dock_regroup_after_leave(app: &tauri::AppHandle, survivors: &[String]) -> Vec<String> {
-    if survivors.len() < 2 {
-        return Vec::new();
-    }
-    let rects: Vec<(String, (i32, i32, i32, i32))> = survivors
-        .iter()
-        .filter_map(|m| {
-            let w = app.get_webview_window(m)?;
-            Some((m.clone(), dock_logical_rect(&w)?))
-        })
-        .collect();
-    let state = app.state::<DockState>();
-    let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(seed) = survivors.first() else {
-        return Vec::new();
-    };
-    s.regroup_by_geometry(seed, &rects)
-}
-
-/// The page calls this on pointerup after a live JS drag: docked=true records
-/// the link to `anchor` (the JS already positioned every window flush, so this
-/// is pure membership bookkeeping), and docked=false leaves the group — the
-/// loose leaver is ejected past the magnet range of every former neighbor.
-/// `dx`/`dy` are accepted for invoke-contract compatibility but unused: the JS
-/// owns positioning now, so there is no group-translate left to apply.
-#[tauri::command]
-fn set_dock(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, DockState>,
-    docked: bool,
-    anchor: Option<String>,
-    edge: Option<String>,
-    _dx: Option<i32>,
-    _dy: Option<i32>,
-) -> Result<(), String> {
-    let label = window.label().to_string();
-    if label == "main" {
-        return Err("the hub reports no docks of its own".into());
-    }
-    let app = window.app_handle().clone();
-
-    if docked {
-        let anchor = anchor.ok_or_else(|| "anchor required when docking".to_string())?;
-        if anchor == "main" {
-            // The hub is alignment-only — widget groups never include it, so
-            // dragging widgets can never tow the moon around.
-            return Err("the hub is not a dockable anchor".into());
-        }
-        if !is_dock_label(&anchor) {
-            // Anchor strings come straight from page JS — keep the dock
-            // graph inside the widget-family namespace (widget-* content
-            // windows + panel-* system windows; never the hub).
-            return Err(format!("anchor outside the widget namespace: {anchor}"));
-        }
-        if app.get_webview_window(&anchor).is_none() {
-            return Err(format!("unknown anchor window: {anchor}"));
-        }
-        let notify = {
-            let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
-            // Same-group re-affirm: nothing to do.
-            if s.group_of(&label).is_some()
-                && s.by_label.get(&label) == s.by_label.get(&anchor)
-            {
-                return Ok(());
-            }
-            // The JS already positioned every window flush before reporting the
-            // link, so this is membership-only — record the join and notify.
-            s.join(&label, &anchor);
-            s.members_of(&label)
-        };
-        let flash_anchor = anchor.clone();
-        let edge = edge.unwrap_or_default();
-        window
-            .run_on_main_thread(move || {
-                dock_apply_and_notify(&app, notify);
-                // Tell the anchor's page to flash its side of the seam.
-                let _ = app.emit_to(
-                    tauri::EventTarget::labeled(&flash_anchor),
-                    "dock-link",
-                    serde_json::json!({ "for": flash_anchor, "from": label, "edge": edge }),
-                );
-            })
-            .map_err(|e| e.to_string())
-    } else {
-        let (departed, remaining) = {
-            let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
-            let remaining_before = s.members_of(&label);
-            let departed = s.leave(&label, false);
-            let remaining: Vec<String> = remaining_before
-                .into_iter()
-                .filter(|m| m != &label)
-                .collect();
-            (departed, remaining)
-        };
-        if departed.is_empty() {
-            // Not in any group (double-click, stale pin) — nothing to do,
-            // and definitely no eject of an innocent loose window.
-            return Ok(());
-        }
-        window
-            .run_on_main_thread(move || {
-                // Eject the now-loose leaver to a spot that clears EVERY dock
-                // window's magnet — bystanders included, they have no cooldown
-                // — then regroup survivors by geometry and notify everyone with
-                // the final state. The hub is deliberately NOT an obstacle:
-                // panels float over the moon in normal layouts, so counting it
-                // can make every ladder spot "occupied" (live-observed); the
-                // worst a hub-adjacent landing causes is an alignment glide,
-                // never a link.
-                if let Some(w) = app.get_webview_window(&label) {
-                    if let Some(leaver) = dock_logical_rect(&w) {
-                        let others: Vec<(i32, i32, i32, i32)> = app
-                            .webview_windows()
-                            .iter()
-                            .filter(|(l, _)| l.as_str() != label && is_dock_label(l))
-                            .filter_map(|(_, mw)| dock_logical_rect(mw))
-                            .collect();
-                        let (ex, ey) = dock_eject_vector(leaver, &others);
-                        let _ = w.set_position(tauri::LogicalPosition::new(
-                            f64::from(leaver.0 + ex),
-                            f64::from(leaver.1 + ey),
-                        ));
-                    }
-                }
-                let touched = dock_regroup_after_leave(&app, &remaining);
-                // The leaver gets its grouped:false payload with exMembers so
-                // its settle ignores the old group briefly (no instant
-                // re-link off a surviving flush seam); everyone else gets the
-                // generic final state.
-                let _ = app.emit_to(
-                    tauri::EventTarget::labeled(&label),
-                    "dock-group",
-                    serde_json::json!({
-                        "for": label,
-                        "grouped": false,
-                        "members": [],
-                        "outlineSides": [],
-                        "weldCorners": [],
-                        "exMembers": remaining,
-                    }),
-                );
-                let mut notify: Vec<String> = departed
-                    .into_iter()
-                    .filter(|d| d != &label)
-                    .collect();
-                for m in remaining.into_iter().chain(touched) {
-                    if !notify.contains(&m) {
-                        notify.push(m);
-                    }
-                }
-                dock_apply_and_notify(&app, notify);
-            })
-            .map_err(|e| e.to_string())
-    }
-}
-
-/// Replay-on-subscribe for dock membership. A panel/widget webview calls this
-/// once right after wiring its dock listeners, so a window whose `dock-group`
-/// event fired BEFORE its webview finished loading (e.g. a boot-restored
-/// cluster — the setup() emit races the page load) still learns it is grouped.
-/// Returns the membership half of the `dock-group` payload; the perimeter
-/// outline is omitted (cosmetic, and it refreshes on the next real event) so
-/// this stays a pure DockState read with no off-thread window geometry.
-#[tauri::command]
-fn dock_group_state(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, DockState>,
-) -> serde_json::Value {
-    let label = window.label().to_string();
-    let members = {
-        let s = state.0.lock().unwrap_or_else(|e| e.into_inner());
-        s.members_of(&label)
-    };
-    // The sync reply is geometry-free (membership only) — enough for pin state.
-    // The perimeter outline + weld corners need window rects, so for a grouped
-    // window we schedule a full `dock-group` re-emit on the main thread; the
-    // page then paints its weld geometry on boot instead of staying bare until
-    // the first move. Best-effort: a failed schedule just leaves the next real
-    // event to refresh us.
-    if !members.is_empty() {
-        let app = window.app_handle().clone();
-        let l = label.clone();
-        let _ = window.run_on_main_thread(move || {
-            dock_apply_and_notify(&app, vec![l]);
-        });
-    }
-    serde_json::json!({
-        "for": label,
-        "grouped": !members.is_empty(),
-        "members": members,
-        "outlineSides": [],
-        "weldCorners": [],
-    })
 }
 
 fn main() {
@@ -2742,77 +2123,8 @@ fn main() {
             {
                 write_panel_layout(&window.app_handle());
             }
-            // A docked window's RESIZE changes the shared overlap span (so a
-            // weld can fall below MIN_OVERLAP and a corner un-squares), but a
-            // Move carries the rigid cluster so relative geometry is unchanged.
-            // Re-notify the whole group on Resized so every member repaints its
-            // weld geometry — the ONLY path that catches a NON-owner partner's
-            // resize (the owner's own onResized never fires for it). Main-thread
-            // handler, so the geometry read + emit inside dock_apply_and_notify
-            // are safe.
-            if matches!(event, tauri::WindowEvent::Resized(_))
-                && is_dock_label(window.label())
-                && window.app_handle().get_webview_window("main").is_some()
-            {
-                let app = window.app_handle();
-                let members = {
-                    let state = app.state::<DockState>();
-                    let s = state.0.lock().unwrap_or_else(|e| e.into_inner());
-                    s.members_of(window.label())
-                };
-                if !members.is_empty() {
-                    dock_apply_and_notify(app, members);
-                }
-            }
-            // Drop the closing window from its group the moment a close is
-            // REQUESTED — before the window dies — so survivors keep coherent
-            // membership. close() always emits CloseRequested first; the
-            // Destroyed arm below stays as the safety net for destroy() paths.
-            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
-                let app = window.app_handle();
-                let survivors = {
-                    let state = app.state::<DockState>();
-                    let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
-                    let before = s.members_of(window.label());
-                    let _ = s.leave(window.label(), false);
-                    let survivors: Vec<String> = before
-                        .into_iter()
-                        .filter(|m| m != window.label())
-                        .collect();
-                    survivors
-                };
-                let touched = dock_regroup_after_leave(&app, &survivors);
-                let mut notify = survivors;
-                for t in touched {
-                    if !notify.contains(&t) {
-                        notify.push(t);
-                    }
-                }
-                dock_apply_and_notify(&app, notify);
-            }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 let app = window.app_handle();
-                // Dock hygiene: the dead window leaves its group; survivors get
-                // fresh dock-group state. This handler runs on the main thread.
-                let survivors = {
-                    let state = app.state::<DockState>();
-                    let mut s = state.0.lock().unwrap_or_else(|e| e.into_inner());
-                    let before = s.members_of(window.label());
-                    let _ = s.leave(window.label(), true);
-                    let survivors: Vec<String> = before
-                        .into_iter()
-                        .filter(|m| m != window.label())
-                        .collect();
-                    survivors
-                };
-                let touched = dock_regroup_after_leave(&app, &survivors);
-                let mut notify = survivors;
-                for t in touched {
-                    if !notify.contains(&t) {
-                        notify.push(t);
-                    }
-                }
-                dock_apply_and_notify(&app, notify);
                 if window.label() == "main" {
                     for (label, win) in app.webview_windows() {
                         if label != "main" {
@@ -2864,9 +2176,6 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         // PRD A §09: open the system browser for the connector OAuth hop.
         .plugin(tauri_plugin_opener::init())
-        // Widget dock membership graph for group-drag (set_dock + JS-driven
-        // positioning).
-        .manage(DockState::default())
         // PRD A §09: the client-brokered OAuth loopback state.
         .manage(OauthLoopback::default())
         // Staged-update flow: live phase + the verified, held archive bytes so
@@ -2904,8 +2213,6 @@ fn main() {
         list_widget_windows,
         collapse_to_moon,
         expand_from_moon,
-        set_dock,
-        dock_group_state,
         voice_status,
         voice_set_mode,
         voice_ptt_down,
@@ -2944,9 +2251,7 @@ fn main() {
         close_widget,
         list_widget_windows,
         collapse_to_moon,
-        expand_from_moon,
-        set_dock,
-        dock_group_state
+        expand_from_moon
     ]);
 
     builder
@@ -2989,10 +2294,11 @@ fn main() {
                 if let Some(path) = layout_path() {
                     if let Ok(raw) = std::fs::read_to_string(&path) {
                         if let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) {
-                            // Restore each panel, remembering its label + final
-                            // (clamped) logical rect so docked neighbours can be
-                            // re-linked once every panel is spawned.
-                            let mut restored: Vec<(String, (i32, i32, i32, i32))> = Vec::new();
+                            // Restore each panel at its saved (clamped) rect. The
+                            // welding is emergent now: each restored panel's
+                            // moon-dock.js re-welds against its neighbours on its
+                            // first boot geometry event, so there is no Rust-side
+                            // re-link to perform here.
                             for p in doc["panels"].as_array().unwrap_or(&Vec::new()) {
                                 let Some(kind) = p["kind"].as_str() else { continue };
                                 let Some(desc) = registry_lookup(kind) else { continue };
@@ -3002,35 +2308,8 @@ fn main() {
                                 );
                                 let w = p["w"].as_f64().filter(|v| *v >= 220.0);
                                 let h = p["h"].as_f64().filter(|v| *v >= 120.0);
-                                if spawn_panel(&handle, desc, Some(x), Some(y), w, h).is_ok() {
-                                    restored.push((
-                                        panel_label(kind),
-                                        (
-                                            x as i32,
-                                            y as i32,
-                                            w.unwrap_or(desc.width) as i32,
-                                            h.unwrap_or(desc.height) as i32,
-                                        ),
-                                    ));
-                                }
+                                let _ = spawn_panel(&handle, desc, Some(x), Some(y), w, h);
                             }
-                            // Re-link docked clusters by geometry: panels saved
-                            // flush rejoin a group over the same members, so a
-                            // restored layout drags as a unit — not just visually
-                            // adjacent. The GROUPING decision uses the SAVED rects
-                            // (no live geometry read needed at setup, which the OS
-                            // may not have realized yet). The dock-group event
-                            // emitted below races the panels' webview load; each
-                            // panel re-pulls its membership via dock_group_state
-                            // once it wires its dock listeners (replay-on-
-                            // subscribe), so a missed boot-time event is recovered.
-                            let notify = {
-                                let state = handle.state::<DockState>();
-                                let mut s =
-                                    state.0.lock().unwrap_or_else(|e| e.into_inner());
-                                s.form_groups_by_geometry(&restored)
-                            };
-                            dock_apply_and_notify(&handle, notify);
                         }
                     }
                 }
@@ -3723,199 +3002,8 @@ mod tests {
 }
 
 #[cfg(test)]
-mod dock_tests {
-    use super::{dock_outline_sides, dock_weld_corners, DockGroups};
-
-    fn sorted_members(g: &DockGroups, label: &str) -> Vec<String> {
-        let mut m = g.members_of(label);
-        m.sort();
-        m
-    }
-
-    #[test]
-    fn joining_two_loose_windows_forms_a_group() {
-        let mut g = DockGroups::default();
-        g.join("widget-a", "main");
-        assert_eq!(
-            sorted_members(&g, "widget-a"),
-            vec!["main".to_string(), "widget-a".to_string()]
-        );
-        // Same-group re-join is a no-op (membership unchanged).
-        g.join("widget-a", "main");
-        assert_eq!(g.members_of("widget-a").len(), 2);
-    }
-
-    #[test]
-    fn newcomers_join_the_touched_members_group() {
-        let mut g = DockGroups::default();
-        g.join("widget-a", "main");
-        // b touches widget-a, so it joins widget-a's existing group.
-        g.join("widget-b", "widget-a");
-        assert_eq!(g.members_of("widget-b").len(), 3);
-        assert_eq!(
-            sorted_members(&g, "widget-b"),
-            vec!["main".to_string(), "widget-a".to_string(), "widget-b".to_string()]
-        );
-    }
-
-    #[test]
-    fn merging_two_groups_folds_the_absorbed_members_in() {
-        let mut g = DockGroups::default();
-        g.join("widget-a", "main");
-        g.join("widget-c", "widget-b"); // second group
-        g.join("widget-b", "widget-a"); // merge into main's group
-        assert_eq!(g.members_of("main").len(), 4);
-        assert_eq!(
-            sorted_members(&g, "main"),
-            vec![
-                "main".to_string(),
-                "widget-a".to_string(),
-                "widget-b".to_string(),
-                "widget-c".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn leaving_a_three_group_keeps_the_other_two_linked() {
-        let mut g = DockGroups::default();
-        g.join("widget-a", "main");
-        g.join("widget-b", "widget-a");
-        let departed = g.leave("widget-a", false);
-        assert_eq!(departed, vec!["widget-a".to_string()]);
-        assert_eq!(
-            sorted_members(&g, "main"),
-            vec!["main".to_string(), "widget-b".to_string()]
-        );
-    }
-
-    #[test]
-    fn a_two_group_dissolves_when_either_member_leaves() {
-        let mut g = DockGroups::default();
-        g.join("widget-a", "main");
-        let mut departed = g.leave("widget-a", false);
-        departed.sort();
-        assert_eq!(departed, vec!["main".to_string(), "widget-a".to_string()]);
-        assert!(g.members_of("main").is_empty());
-        assert!(g.groups.is_empty());
-    }
-
-    #[test]
-    fn root_departure_keeps_the_survivors_grouped() {
-        let mut g = DockGroups::default();
-        g.join("widget-a", "main");
-        g.join("widget-b", "widget-a");
-        // The root (main) is destroyed — gone=true (membership is identical).
-        let _ = g.leave("main", true);
-        let survivors = g.members_of("widget-a");
-        assert_eq!(survivors.len(), 2);
-        assert_eq!(
-            sorted_members(&g, "widget-a"),
-            vec!["widget-a".to_string(), "widget-b".to_string()]
-        );
-    }
-
-    #[test]
-    fn outline_marks_only_perimeter_sides() {
-        // Two 100x100 windows side by side: a | b
-        let rects = vec![
-            ("a".to_string(), (0, 0, 100, 100)),
-            ("b".to_string(), (100, 0, 100, 100)),
-        ];
-        let out = dock_outline_sides(&rects);
-        assert_eq!(out["a"], vec!["l", "t", "b"]); // right side is interior
-        assert_eq!(out["b"], vec!["r", "t", "b"]); // left side is interior
-    }
-
-    #[test]
-    fn outline_ignores_near_misses_and_corner_touches() {
-        let rects = vec![
-            ("a".to_string(), (0, 0, 100, 100)),
-            ("far".to_string(), (110, 0, 100, 100)),   // 10px gap — not flush
-            ("corner".to_string(), (100, 95, 100, 100)), // only 5px overlap
-        ];
-        let out = dock_outline_sides(&rects);
-        assert_eq!(out["a"], vec!["l", "r", "t", "b"]);
-    }
-
-    // dock_weld_corners — per-corner squaring. The headless heart of Phase 3:
-    // a corner squares only when a flush neighbour reaches it (probed 6px in).
-    #[test]
-    fn weld_vertical_pair_squares_only_the_inner_corners() {
-        // a stacked above b, same 200px width, flush at y=300.
-        let rects = vec![
-            ("a".to_string(), (0, 0, 200, 300)),
-            ("b".to_string(), (0, 300, 200, 300)),
-        ];
-        let out = dock_weld_corners(&rects);
-        // a's bottom edge is welded → bottom corners square; top stays round.
-        assert_eq!(out["a"], vec!["br", "bl"]);
-        // b's top edge is welded → top corners square; bottom stays round.
-        assert_eq!(out["b"], vec!["tl", "tr"]);
-    }
-
-    #[test]
-    fn weld_partial_width_squares_only_the_covered_corner() {
-        // a is full width (200); b sits below but only covers a's left half
-        // [0,100]. a's bottom-LEFT is reached (probe x=6 covered), bottom-RIGHT
-        // is NOT (probe x=194 falls past b's right edge + EPS) → stays round.
-        let rects = vec![
-            ("a".to_string(), (0, 0, 200, 300)),
-            ("b".to_string(), (0, 300, 100, 300)),
-        ];
-        let out = dock_weld_corners(&rects);
-        assert_eq!(out["a"], vec!["bl"]);
-        // b is fully under a's width, so both its top corners are reached.
-        assert_eq!(out["b"], vec!["tl", "tr"]);
-    }
-
-    #[test]
-    fn weld_l_trio_keeps_the_exposed_outer_corner_round() {
-        // a top-left, b flush on a's right, c flush below a → a is welded on its
-        // right + bottom, so tr/br/bl square but the exposed tl stays round.
-        let rects = vec![
-            ("a".to_string(), (0, 0, 200, 200)),
-            ("b".to_string(), (200, 0, 200, 200)),
-            ("c".to_string(), (0, 200, 200, 200)),
-        ];
-        let out = dock_weld_corners(&rects);
-        assert_eq!(out["a"], vec!["tr", "br", "bl"]);
-    }
-
-    #[test]
-    fn weld_ignores_near_miss_and_thin_partial() {
-        // A 10px gap is not flush; a corner-only graze (probe point not reached)
-        // leaves every corner round.
-        let rects = vec![
-            ("a".to_string(), (0, 0, 200, 200)),
-            ("gap".to_string(), (210, 0, 200, 200)), // 10px gap on the right
-        ];
-        let out = dock_weld_corners(&rects);
-        assert_eq!(out["a"], Vec::<&str>::new());
-    }
-
-    #[test]
-    fn weld_ungrouped_single_rect_is_empty() {
-        let rects = vec![("solo".to_string(), (0, 0, 200, 200))];
-        let out = dock_weld_corners(&rects);
-        assert_eq!(out["solo"], Vec::<&str>::new());
-    }
-
-    #[test]
-    fn weld_never_against_the_hub() {
-        // The alignment-only moon never welds a corner, even if flush.
-        let rects = vec![
-            ("widget-a".to_string(), (0, 0, 200, 200)),
-            ("main".to_string(), (200, 0, 200, 200)),
-        ];
-        let out = dock_weld_corners(&rects);
-        assert_eq!(out["widget-a"], Vec::<&str>::new());
-    }
-}
-
-#[cfg(test)]
 mod dock_geometry_tests {
-    use super::{dock_components, dock_rects_touch, DockGroups};
+    use super::{dock_components, dock_rects_touch};
 
     #[test]
     fn touch_predicate_matches_flush_edges_only() {
@@ -3924,60 +3012,6 @@ mod dock_geometry_tests {
         assert!(dock_rects_touch(a, (0, 100, 100, 100))); // flush below
         assert!(!dock_rects_touch(a, (110, 0, 100, 100))); // 10px gap
         assert!(!dock_rects_touch(a, (100, 95, 100, 100))); // 5px overlap only
-    }
-
-    #[test]
-    fn chain_minus_middle_splits_into_two_singletons_that_dissolve() {
-        let mut g = DockGroups::default();
-        let _ = g.join("b", "a");
-        let _ = g.join("c", "b");
-        // The middle (b) leaves; survivors a and c are 280px apart.
-        let _ = g.leave("b", false);
-        let rects = vec![
-            ("a".to_string(), (0, 0, 280, 220)),
-            ("c".to_string(), (560, 0, 280, 220)),
-        ];
-        let touched = g.regroup_by_geometry("a", &rects);
-        // Both singletons dissolve: both freed, both reported as touched.
-        let mut t = touched;
-        t.sort();
-        assert_eq!(t, vec!["a".to_string(), "c".to_string()]);
-        assert!(g.members_of("a").is_empty());
-        assert!(g.members_of("c").is_empty());
-    }
-
-    #[test]
-    fn four_chain_minus_one_keeps_the_touching_pair_linked() {
-        let mut g = DockGroups::default();
-        let _ = g.join("b", "a");
-        let _ = g.join("c", "b");
-        let _ = g.join("d", "c");
-        let _ = g.leave("c", false);
-        // a|b still flush; d is far away.
-        let rects = vec![
-            ("a".to_string(), (0, 0, 280, 220)),
-            ("b".to_string(), (280, 0, 280, 220)),
-            ("d".to_string(), (840, 0, 280, 220)),
-        ];
-        let touched = g.regroup_by_geometry("a", &rects);
-        assert_eq!(touched.len(), 3);
-        let mut ab = g.members_of("a");
-        ab.sort();
-        assert_eq!(ab, vec!["a".to_string(), "b".to_string()]);
-        assert!(g.members_of("d").is_empty());
-    }
-
-    #[test]
-    fn connected_survivors_are_left_alone() {
-        let mut g = DockGroups::default();
-        let _ = g.join("b", "a");
-        let rects = vec![
-            ("a".to_string(), (0, 0, 280, 220)),
-            ("b".to_string(), (280, 0, 280, 220)),
-        ];
-        let touched = g.regroup_by_geometry("a", &rects);
-        assert!(touched.is_empty());
-        assert_eq!(g.members_of("a").len(), 2);
     }
 
     #[test]
@@ -3992,133 +3026,5 @@ mod dock_geometry_tests {
         assert_eq!(comps.len(), 2);
         let big = comps.iter().find(|c| c.len() == 3).expect("L-component");
         assert!(big.contains(&"a".to_string()) && big.contains(&"c".to_string()));
-    }
-
-    #[test]
-    fn form_groups_relinks_flush_clusters_and_leaves_singletons_free() {
-        let mut g = DockGroups::default();
-        // A saved layout after a restart: two flush panels + one detached.
-        let rects = vec![
-            ("panel-now".to_string(), (100, 100, 280, 220)),
-            ("panel-flow".to_string(), (380, 100, 280, 220)), // flush right of now
-            ("panel-settings".to_string(), (900, 100, 280, 220)), // alone
-        ];
-        let touched = g.form_groups_by_geometry(&rects);
-        // now|flow rejoin one group; the lone panel stays free (no group of one).
-        let mut members = g.members_of("panel-now");
-        members.sort();
-        assert_eq!(
-            members,
-            vec!["panel-flow".to_string(), "panel-now".to_string()]
-        );
-        assert!(g.members_of("panel-settings").is_empty());
-        // Both grouped labels are reported as touched.
-        let mut t = touched;
-        t.sort();
-        assert_eq!(t, vec!["panel-flow".to_string(), "panel-now".to_string()]);
-
-        // Idempotent: a second pass over the SAME layout disturbs nothing — the
-        // labels are already grouped, so boot re-link never re-touches them.
-        let touched2 = g.form_groups_by_geometry(&rects);
-        assert!(touched2.is_empty());
-    }
-
-    #[test]
-    fn form_groups_skips_a_component_touching_an_already_grouped_label() {
-        let mut g = DockGroups::default();
-        // Pre-existing runtime group: x|y already linked.
-        let _ = g.join("panel-y", "panel-x");
-        // A flush chain where a THIRD panel touches the existing pair.
-        let rects = vec![
-            ("panel-x".to_string(), (100, 100, 280, 220)),
-            ("panel-y".to_string(), (380, 100, 280, 220)),
-            ("panel-z".to_string(), (660, 100, 280, 220)), // flush right of y
-        ];
-        let touched = g.form_groups_by_geometry(&rects);
-        // The whole component touches an already-grouped label → skipped
-        // wholesale (the guard): z is NOT yanked in, the existing group is
-        // untouched.
-        assert!(touched.is_empty());
-        assert!(g.members_of("panel-z").is_empty());
-        let mut xy = g.members_of("panel-x");
-        xy.sort();
-        assert_eq!(xy, vec!["panel-x".to_string(), "panel-y".to_string()]);
-    }
-}
-
-#[cfg(test)]
-mod dock_eject_tests {
-    use super::{dock_eject_vector, dock_in_magnet, dock_rects_overlap};
-
-    #[test]
-    fn magnet_check_matches_snap_candidates() {
-        let a = (336, 0, 300, 300);
-        assert!(dock_in_magnet(a, (300, 300, 300, 300), 28)); // flush below seam
-        assert!(!dock_in_magnet(a, (800, 0, 300, 300), 28)); // far away
-    }
-
-    #[test]
-    fn straight_eject_when_clear() {
-        // Pair: leaver right of the survivor — +x eject is clear.
-        let leaver = (300, 0, 300, 300);
-        let others = vec![(0, 0, 300, 300)];
-        assert_eq!(dock_eject_vector(leaver, &others), (36, 0));
-    }
-
-    #[test]
-    fn middle_of_row_never_lands_inside_a_neighbor() {
-        // L(0,0) M(300,0) R(600,0): +x would bury M in R — the ladder must
-        // pick a non-overlapping vector (vertical slide).
-        let leaver = (300, 0, 300, 300);
-        let others = vec![(0, 0, 300, 300), (600, 0, 300, 300)];
-        let (dx, dy) = dock_eject_vector(leaver, &others);
-        let moved = (300 + dx, dy, 300, 300);
-        assert!(
-            others.iter().all(|o| !dock_rects_overlap(moved, *o)),
-            "eject ({dx},{dy}) buried the leaver in a neighbor"
-        );
-    }
-
-    #[test]
-    fn lone_leaver_gets_the_default_shove() {
-        assert_eq!(dock_eject_vector((0, 0, 100, 100), &[]), (36, 0));
-    }
-
-    #[test]
-    fn eject_clears_a_bystanders_magnet() {
-        // The live incident, verbatim: voice unpins from chat (its survivor,
-        // below) while the Now panel sits a hair right of the +x step. The
-        // old overlap-only ladder took (+36, 0) and landed flush on Now's
-        // left seam — a window with NO cooldown — and the settle linked
-        // them instantly. The vector must clear every magnet, not just
-        // every body.
-        let leaver = (1080, 208, 400, 420); // voice
-        let others = vec![
-            (959, 628, 560, 520),  // chat (ex-member survivor)
-            (1519, 195, 320, 440), // Now (bystander)
-        ];
-        let (dx, dy) = dock_eject_vector(leaver, &others);
-        let moved = (1080 + dx, 208 + dy, 400, 420);
-        assert!(
-            others
-                .iter()
-                .all(|o| !dock_rects_overlap(moved, *o) && !dock_in_magnet(moved, *o, 22)),
-            "eject ({dx},{dy}) landed inside someone's magnet"
-        );
-    }
-
-    #[test]
-    fn crowded_screen_falls_back_to_overlap_free() {
-        // Sandwiched mid-row: every ladder spot keeps a flush seam with an
-        // ex-member, so tier 1 finds nothing — the fallback must still
-        // return an overlap-free vector (the cooldown covers those seams).
-        let leaver = (300, 0, 300, 300);
-        let others = vec![(0, 0, 300, 300), (600, 0, 300, 300)];
-        let (dx, dy) = dock_eject_vector(leaver, &others);
-        let moved = (300 + dx, dy, 300, 300);
-        assert!(
-            others.iter().all(|o| !dock_rects_overlap(moved, *o)),
-            "fallback eject ({dx},{dy}) buried the leaver"
-        );
     }
 }

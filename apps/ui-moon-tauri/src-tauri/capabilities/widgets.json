@@ -23,9 +23,7 @@
     "allow-get-platform",
     "allow-close-widget",
     "allow-list-widget-windows",
-    "allow-set-dock",
     "allow-grab-dock",
-    "allow-dock-group-state",
     "allow-collapse-to-moon",
     "allow-pointer-button-down"
   ]

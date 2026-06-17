@@ -4,9 +4,11 @@
  * luna-app.jsx JSX (~/Downloads/Brainstorm/project/luna-app.jsx).
  *
  * <Board> renders the canvas: floating panels (head = wash-dot + Caveat
- * title + star/min/close, body = the app-provided component), snap guides,
- * stickies pin badges, and the mode hint. <Shelf> renders the closed-panel
- * chips for the topbar. <FavoritesGrid> is the favorites panel body.
+ * title + star/min/close, body = the app-provided component) and the stickies
+ * mode hint. Panels snap FLUSH at sibling corners and welded clusters drag as
+ * one (engine: ./createBoard.ts → ./snap.ts) — no guide overlay, no pin
+ * badges. <Shelf> renders the closed-panel chips for the topbar.
+ * <FavoritesGrid> is the favorites panel body.
  */
 import {
   type Component,
@@ -90,7 +92,6 @@ export const Board: Component<BoardProps> = (props) => {
                 classList={{
                   entering: p.entering,
                   snapped: props.board.snappedId() === p.id,
-                  pinned: props.board.pinnedIds().has(p.id),
                   minimized: p.min,
                   dragging: props.board.dragId() === p.id,
                 }}
@@ -153,36 +154,8 @@ export const Board: Component<BoardProps> = (props) => {
         }}
       </For>
 
-      <For each={props.board.guides()}>
-        {(g) =>
-          g.type === "v" ? (
-            <div class="guide-v" style={{ left: `${g.at}px` }} />
-          ) : (
-            <div class="guide-h" style={{ top: `${g.at}px` }} />
-          )
-        }
-      </For>
-
-      <For each={props.board.pinBadges()}>
-        {(b) => (
-          <button
-            class="pin-badge"
-            style={{ left: `${b.x}px`, top: `${b.y}px`, "z-index": b.z }}
-            title="Unlink"
-            aria-label="Unlink these panels"
-            onClick={() => props.board.unpin(b.pin)}
-          >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
-              <path d="M9 15l6-6" />
-              <path d="M11 6l1.5-1.5a4 4 0 0 1 5.7 5.7L16.5 12" />
-              <path d="M13 18l-1.5 1.5a4 4 0 0 1-5.7-5.7L7.5 12" />
-            </svg>
-          </button>
-        )}
-      </For>
-
       <Show when={hint()}>
-        <div class="mode-hint">snap two panels edge to edge to pin them — pinned panels drag together ✦</div>
+        <div class="mode-hint">snap panels flush — welded panels drag together ✦</div>
       </Show>
     </div>
   )
