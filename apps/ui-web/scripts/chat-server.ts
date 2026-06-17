@@ -793,8 +793,12 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
     Layer.provide(
       // Surface the system-managed cycles (wake/dream) as read-only entries in
       // schedule_list so the operator sees the whole schedule picture, not just
-      // agent-created schedules. Exprs mirror the wake/dream V2 job rows
-      // installed by dream-wake-install.ts.
+      // agent-created schedules. Gating + exprs MIRROR dream-wake-install.ts so
+      // the display matches what is actually installed: the dream row is always
+      // installed (at LUNA_DREAM_CRON, default "0 3 * * *"); wake rows are
+      // installed per workspace only when LUNA_WAKE_ENABLED!="0" (at
+      // LUNA_WAKE_CRON_EXPR, default "*/30 * * * *"). Keep these resolutions in
+      // lockstep with that script.
       SchedulerToolsLayer({
         systemSchedules: [
           ...(process.env["LUNA_WAKE_ENABLED"]?.trim() !== "0"
@@ -805,7 +809,10 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
                 },
               ]
             : []),
-          { label: "dream (nightly consolidation)", expr: "0 3 * * *" },
+          {
+            label: "dream (nightly consolidation)",
+            expr: process.env["LUNA_DREAM_CRON"]?.trim() || "0 3 * * *",
+          },
         ],
       }),
     ),

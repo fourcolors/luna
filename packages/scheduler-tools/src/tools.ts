@@ -49,10 +49,12 @@ const nextRunAtUtc = (expr: string): number | null => {
   }
 }
 
-// Effectively-unique id: a ms timestamp (monotonic across restarts) + a random
-// suffix. A process-local counter would reset on
-// restart and could collide with an already-persisted schedule — record()
-// rejects duplicate ids, so that would make schedule_create fail nondeterministically.
+// Effectively-unique id: a wall-clock ms timestamp (for coarse ordering /
+// human readability) + a random suffix. Uniqueness is guaranteed by the random
+// suffix plus record()'s duplicate-id rejection — NOT by the timestamp, which
+// is wall-clock and may repeat or move backwards across restarts / clock jumps.
+// A process-local counter would reset on restart and could collide with an
+// already-persisted schedule, making schedule_create fail nondeterministically.
 const nextScheduleId = (): string =>
   `sched-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 
