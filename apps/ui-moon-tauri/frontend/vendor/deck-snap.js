@@ -97,9 +97,63 @@
     return { targets: targets, snapped: !!best, anchor: best ? best.label : null, edge: best ? best.edge : null }
   }
 
+  // logicalToPhysical — resolve a LOGICAL (CSS-point) top-left to the PHYSICAL
+  // pixel position to hand Tauri's setPosition, anchored to whichever monitor
+  // contains the point. This is what makes a cross-display drag mixed-DPI safe.
+  //
+  // A window dragged from a 2× Retina laptop onto a 1× external must be PLACED
+  // using the DESTINATION display's scale factor. Writing a LogicalPosition
+  // instead lets the platform re-resolve the coordinate with the dragged
+  // window's OWN scale factor — and while the window straddles the seam that
+  // factor rapidly flip-flops 2×↔1×, so the same logical value lands at two
+  // different physical spots on alternating frames: the violent flicker.
+  //
+  //   monitors = [{ x, y, w, h, sf }] — PHYSICAL px + scale factor, exactly as
+  //     Tauri's availableMonitors() reports (position, size, scaleFactor).
+  //   Returns { x, y } in PHYSICAL px, or null when the layout is unknown (no
+  //     monitors) so the caller can fall back to a LogicalPosition write.
+  //
+  // Each monitor's logical rect is its physical rect ÷ its own sf; the target
+  // point lives in that same shared point space (Tauri's physical/sf == the
+  // browser's screenX/Y point space). Selecting the monitor by the POINT keeps
+  // the chosen scale factor stable no matter how much of the window has
+  // crossed, so the placement stops oscillating.
+  function logicalToPhysical(x, y, monitors) {
+    if (!monitors || !monitors.length) return null
+    var pick = null
+    for (var i = 0; i < monitors.length; i++) {
+      var m = monitors[i]
+      var lx = m.x / m.sf,
+        ly = m.y / m.sf
+      if (x >= lx && x < lx + m.w / m.sf && y >= ly && y < ly + m.h / m.sf) {
+        pick = m
+        break
+      }
+    }
+    if (!pick) {
+      // Off every display (a gap between monitors, or dragged past an outer
+      // edge): pick the nearest by logical-center distance so the mapping stays
+      // continuous instead of snapping to monitors[0].
+      var best = Infinity
+      for (var j = 0; j < monitors.length; j++) {
+        var mm = monitors[j]
+        var d = Math.hypot(x - (mm.x + mm.w / 2) / mm.sf, y - (mm.y + mm.h / 2) / mm.sf)
+        if (d < best) {
+          best = d
+          pick = mm
+        }
+      }
+    }
+    // physical = monitorPhysOrigin + (point − monitorLogicalOrigin) × sf, which
+    // reduces exactly to point × sf because a monitor's physical origin IS its
+    // logical origin × its own scale factor.
+    return { x: Math.round(x * pick.sf), y: Math.round(y * pick.sf) }
+  }
+
   g.LunaDeckSnap = {
     computeSnap: computeSnap,
     computeLiveDrag: computeLiveDrag,
+    logicalToPhysical: logicalToPhysical,
     DEFAULT_THRESHOLD: DEFAULT_THRESHOLD,
   }
 })(typeof globalThis !== "undefined" ? globalThis : this)
