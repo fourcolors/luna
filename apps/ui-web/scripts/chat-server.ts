@@ -172,10 +172,8 @@ import {
   CalibrationStore,
   Clock,
   DEFAULT_UI_KINDS,
-  DreamCronLayer,
   DreamStore,
   DreamWorkerLayer,
-  WakeCronLayer,
   WakeLogStore,
   WakeWorkerLayer,
   EnvSecretProvider,
@@ -795,7 +793,12 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
     Layer.provide(
       // Surface the system-managed cycles (wake/dream) as read-only entries in
       // schedule_list so the operator sees the whole schedule picture, not just
-      // agent-created crons. Exprs mirror the wake/dream cron wiring below.
+      // agent-created schedules. Gating + exprs MIRROR dream-wake-install.ts so
+      // the display matches what is actually installed: the dream row is always
+      // installed (at LUNA_DREAM_CRON, default "0 3 * * *"); wake rows are
+      // installed per workspace only when LUNA_WAKE_ENABLED!="0" (at
+      // LUNA_WAKE_CRON_EXPR, default "*/30 * * * *"). Keep these resolutions in
+      // lockstep with that script.
       SchedulerToolsLayer({
         systemSchedules: [
           ...(process.env["LUNA_WAKE_ENABLED"]?.trim() !== "0"
@@ -806,7 +809,10 @@ export const ThreadToolsProviderLayer = (refreshIntervalMs: number = BELIEF_REFR
                 },
               ]
             : []),
-          { label: "dream (nightly consolidation)", expr: "0 3 * * *" },
+          {
+            label: "dream (nightly consolidation)",
+            expr: process.env["LUNA_DREAM_CRON"]?.trim() || "0 3 * * *",
+          },
         ],
       }),
     ),
@@ -1455,107 +1461,15 @@ const secretRequestBridge = createSecretRequestBridge({
   log: (msg) => writeSync(1, `${msg}\n`),
 })
 
-// ── Dream cron sub-layer factory (exported for boot smoke) ──────────────
-//
-// Phase 3 D1: exported so the boot smoke can import THIS symbol and verify
-// the real wiring shape — NOT a hand-copied mirror. The smoke uses node-
-// runnable doubles (DreamStore.Memory, FakeMemoryRouter, SessionStore.Default,
-// SDKClient.fake, Clock.Default) while keeping DreamReasonerDefault (real)
-// so the SDKClient+MemoryRouter requirements are preserved in the proof.
-//
-// DreamReasonerDefault requires BOTH SDKClient AND MemoryRouter (it closes
-// over both at build time so reason()'s R channel is never).
-export interface BuildDreamCronLayerOpts {
-  readonly expr: string
-  readonly sdkClientL: Layer.Layer<SDKClient>
-  readonly memoryRouterL: Layer.Layer<import("@luna/memory").MemoryRouter>
-  readonly storeL: Layer.Layer<SessionStore>
-  readonly clockL: Layer.Layer<Clock>
-  /**
-   * AccountBroker layer. A5/A6: DreamReasonerDefault now requires AccountBroker
-   * (it acquires a credential per reason() through the provider seam so the
-   * nightly Dream can run on a cheap model via LUNA_DREAM_MODEL). The live boot
-   * passes the same `brokerL` (AccountBrokerLayer.fromSql) it wires into the
-   * chat adapter; the boot smoke passes a seeded fake broker (fromAccounts) so
-   * the graph still composes without a missing-service defect.
-   */
-  readonly brokerL: Layer.Layer<AccountBroker>
-  /**
-   * DreamStore layer to use. The live boot passes
-   * `DreamStore.makeLayer(paths.lunaDbPath).pipe(Layer.provide(clockL))`
-   * (which requires LunaSqliteBootstrap, satisfied at the bottom of
-   * buildServerLayer). The boot smoke passes `DreamStore.Memory` (no SQLite
-   * needed) to keep the smoke node-runnable.
-   */
-  readonly dreamStoreL: Layer.Layer<DreamStore>
-  /**
-   * MEASURE-ONLY calibration sink (Slices A/3/B). OPTIONAL by design — both
-   * consumers read it via Effect.serviceOption, so it must be present in the
-   * cron fiber's RUNTIME CONTEXT (provided into this composition) to do
-   * anything: applyOps records calibration rows, and the reasoner runs its
-   * N-pass sampling extras ONLY when the sink is present (no sink = extras
-   * skipped, no SDK cost). Omitting it keeps the old graph byte-identical;
-   * applyOps then logs a warning per belief proposal so an unwired sink is
-   * visible in the dream logs. The live boot passes
-   * `CalibrationStore.makeLayer(paths.lunaDbPath).pipe(Layer.provide(clockL))`.
-   */
-  readonly calibrationStoreL?: Layer.Layer<
-    CalibrationStore,
-    import("effect").ConfigError,
-    import("@luna/memory").LunaSqliteBootstrap
-  >
-  /**
-   * M5 cutover (scheduler-v2 dream/wake migration, DESIGN.md §5.3.5). When
-   * TRUE, this factory registers NO legacy dream cron — it returns an empty
-   * Layer so `registerDreamCron` is never called and no fiber-per-cron trigger
-   * is installed. The nightly dream then runs EXCLUSIVELY through the V2 path
-   * (the `dream` job row drained by the JobTicker into the dream worker), so
-   * the cycle can never double-run. The live boot passes the SAME
-   * `LUNA_SCHEDULER_V2_ENABLED=1` flag that turns the V2 ticker on, so the boot
-   * graph contains EITHER the legacy cron OR the V2 ticker, never both.
-   * Reversible: flip the flag off and the legacy cron re-registers unchanged.
-   */
-  readonly schedulerV2Enabled?: boolean
-}
-
-export const buildDreamCronLayer = (opts: BuildDreamCronLayerOpts) => {
-  // M5 cutover gate: under V2, the dream job row drives the cycle — register
-  // no legacy cron trigger here (return early, BEFORE building the sub-graph,
-  // so registerDreamCron is never reached). Layer.empty contributes nothing to
-  // the boot mergeAll. See BuildDreamCronLayerOpts.schedulerV2Enabled.
-  if (opts.schedulerV2Enabled === true) {
-    return Layer.empty
-  }
-  const { expr, sdkClientL, memoryRouterL, storeL, clockL, dreamStoreL, brokerL } =
-    opts
-  // DreamReasonerDefault requires SDKClient, MemoryRouter AND AccountBroker
-  // (closes over all three at build time so reason()'s R channel is never).
-  // SDKClient is the real dependency this smoke proves is satisfiable —
-  // SDKClient.fake keeps it real while making zero model calls. brokerL is the
-  // provider-seam dependency (A5): the reasoner acquires a credential per turn.
-  const dreamReasonerL = DreamReasonerDefault.pipe(
-    Layer.provide(sdkClientL),
-    Layer.provide(memoryRouterL),
-    Layer.provide(brokerL),
-  )
-  const base = DreamCronLayer(expr).pipe(
-    Layer.provide(dreamStoreL),
-    Layer.provide(dreamReasonerL),
-    Layer.provide(storeL),
-    Layer.provide(memoryRouterL),
-    Layer.provide(clockL),
-  )
-  // serviceOption deps must be IN the composition (not merely somewhere in the
-  // server) for the forked cron fiber to inherit them.
-  return opts.calibrationStoreL === undefined
-    ? base
-    : base.pipe(Layer.provide(opts.calibrationStoreL))
-}
+// The legacy `buildDreamCronLayer` factory (fiber-per-cron dream registration
+// via TriggerAgent) was removed with the V1 scheduler. The nightly dream now
+// runs exclusively through the V2 path: a `kind:"dream"` job row drained by the
+// JobTicker into the DreamWorker registered in `buildWorkerRegistryLayer` below.
 
 // ── Survey sub-layer factory (exported for boot smoke) ──────────────────
 //
 // Phase 3 D3: exported so the boot smoke can import THIS symbol and verify
-// the real wiring shape. Mirrors buildDreamCronLayer's shape exactly.
+// the real wiring shape.
 //
 // Survey.Default requires AlignmentStore + BeliefWriter + Clock + MemoryRouter.
 // BeliefWriter.Default requires MemoryRouter + Clock.
@@ -1564,7 +1478,7 @@ export const buildDreamCronLayer = (opts: BuildDreamCronLayerOpts) => {
 // The smoke passes AlignmentStore.Memory (no SQLite) + a Ref-backed FakeMemory
 // MemoryRouter while keeping the real Survey.Default so the real dep graph is
 // proven composable. `as never` on the Memory double sidesteps the param-type
-// narrowing (same pattern as dream-cron-boot.smoke.ts).
+// narrowing.
 export interface BuildSurveyLayerOpts {
   readonly alignmentStoreL: Layer.Layer<AlignmentStore, import("effect").ConfigError, Clock | import("@luna/memory").LunaSqliteBootstrap>
   readonly beliefWriterL: Layer.Layer<BeliefWriter, import("effect").ConfigError, import("@luna/memory").LunaSqliteBootstrap>
@@ -1580,86 +1494,13 @@ export const buildSurveyLayer = (opts: BuildSurveyLayerOpts) =>
     Layer.provide(opts.clockL),
   )
 
-// ── Wake sub-layer factory ──────────────────────────────────────────────
-//
-// Path A (per Luna self-dev workspace decision log entry "Path A chosen"):
-// at each cron tick, a single-shot WakeReasoner SDK call inspects the
-// workspace's open goals + next_actions + recent wakes and emits a JSON
-// digest into the workspace's `wake_log` table. No autonomous execution
-// — operator (or future Path B multi-turn agent) acts on the digest.
-//
-// Inputs from outside:
-//   - expr            — cron expression for the wake cycle (e.g. "*/30 * * * *").
-//   - workspaceSlug   — slug of the workspace this wake watches.
-//   - workspacePath   — absolute path to that workspace's repo root.
-//                       Reader opens <path>/.workspace/workspace.db.
-//   - sdkClientL      — shared SDKClient layer (real on live boot, fake in smokes).
-//   - clockL          — shared Clock layer (same instance as scheduler clock).
-//
-// WakeReasonerDefault requires SDKClient. WakeLogStore.makeLayer opens
-// workspace.db (which must exist; bootstrap-workspace.ts creates it).
-// WakeCronLayer encapsulates its own JobScheduler+TriggerAgent (same as
-// DreamCronLayer — independent fiber-set keeps wake fires isolated).
-export interface BuildWakeCronLayerOpts {
-  readonly expr: string
-  readonly workspaceSlug: string
-  readonly workspacePath: string
-  readonly sdkClientL: Layer.Layer<SDKClient>
-  readonly clockL: Layer.Layer<Clock>
-  /**
-   * AgentNotesService layer. Each wake fire is mirrored into agent_notes
-   * (kind='wake_digest', sessionId='wake-cron') so the operator sees
-   * recent wake reasoning in obs_notes_recent without querying the
-   * workspace-scoped wake_log table directly.
-   */
-  readonly agentNotesL: Layer.Layer<AgentNotesService>
-  /**
-   * AccountBroker layer. A5/A6: WakeReasonerDefault now requires AccountBroker
-   * (it acquires a credential per reason() through the provider seam so the
-   * wake cron can run on a cheap model via LUNA_WAKE_MODEL). The live boot
-   * passes the same `brokerL` it wires into the chat adapter; the boot smoke
-   * passes a seeded fake broker (fromAccounts) so the graph still composes.
-   */
-  readonly brokerL: Layer.Layer<AccountBroker>
-  /**
-   * M5 cutover (scheduler-v2 dream/wake migration, DESIGN.md §5.3.5). When
-   * TRUE, this factory registers NO legacy wake cron — it returns an empty
-   * Layer so `registerWakeCron` is never called and no fiber-per-cron trigger
-   * is installed. The wake cycle then runs EXCLUSIVELY through the V2 path (the
-   * per-workspace `wake` job rows drained by the JobTicker into the wake
-   * worker), so it can never double-run. The live boot passes the SAME
-   * `LUNA_SCHEDULER_V2_ENABLED=1` flag that turns the V2 ticker on, so the boot
-   * graph contains EITHER the legacy cron OR the V2 ticker, never both.
-   * Reversible: flip the flag off and the legacy cron re-registers unchanged.
-   */
-  readonly schedulerV2Enabled?: boolean
-}
-
-export const buildWakeCronLayer = (opts: BuildWakeCronLayerOpts) => {
-  // M5 cutover gate: under V2, the per-workspace wake job rows drive the cycle
-  // — register no legacy cron trigger here (return early, BEFORE building the
-  // sub-graph, so registerWakeCron is never reached). Layer.empty contributes
-  // nothing to the boot mergeAll. See BuildWakeCronLayerOpts.schedulerV2Enabled.
-  if (opts.schedulerV2Enabled === true) {
-    return Layer.empty
-  }
-  const wakeReasonerL = WakeReasonerDefault.pipe(
-    Layer.provide(opts.sdkClientL),
-    Layer.provide(opts.brokerL),
-  )
-  const wakeLogStoreL = WakeLogStore.makeLayer(
-    `${opts.workspacePath}/.workspace/workspace.db`,
-  )
-  return WakeCronLayer(opts.expr, {
-    workspaceSlug: opts.workspaceSlug,
-    workspacePath: opts.workspacePath,
-  }).pipe(
-    Layer.provide(wakeReasonerL),
-    Layer.provide(wakeLogStoreL),
-    Layer.provide(opts.agentNotesL),
-    Layer.provide(opts.clockL),
-  )
-}
+// The legacy `buildWakeCronLayer` factory (fiber-per-cron wake registration via
+// TriggerAgent) was removed with the V1 scheduler. Wake (Path A: a single-shot
+// WakeReasoner SDK call that inspects the workspace's open goals + next_actions
+// + recent wakes and emits a JSON digest into the workspace's `wake_log` table)
+// now runs exclusively through the V2 path: per-workspace `kind:"wake"` job rows
+// drained by the JobTicker into the WakeWorker registered in
+// `buildWorkerRegistryLayer` below.
 
 // ── V2 worker registry factory (M3 boot wiring) ────────────────────────
 //
@@ -1678,8 +1519,7 @@ export const buildWakeCronLayer = (opts: BuildWakeCronLayerOpts) => {
 // composition with no SDKClient / SQLite / workspace.db assumptions of its own.
 // Optional deps (calibrationStoreL — dream's ECE serviceOption sink;
 // jobInputToolsL — the prompt/workflow request_input serviceOption provider) are
-// folded in only when supplied, exactly mirroring the prior inline wiring +
-// buildDreamCronLayer's optional-calibration handling.
+// folded in only when supplied.
 export interface BuildWorkerRegistryLayerOpts {
   readonly clockL: Layer.Layer<Clock>
   readonly sdkClientL: Layer.Layer<SDKClient>
@@ -1908,9 +1748,9 @@ export const buildBaseLayer = (
     Layer.provide(suggestedActionsStoreL),
   )
   // AcceptHandler: auto-executes an accepted action as a durable one-shot job
-  // (the V2 ticker dispatches it — on by default; LUNA_SCHEDULER_V2_ENABLED=0
-  // disables) and forks the completion observer. Resolved via serviceOption
-  // inside SuggestedActions.respond — present here means accept actually runs.
+  // (the V2 ticker dispatches it) and forks the completion observer. Resolved
+  // via serviceOption inside SuggestedActions.respond — present here means
+  // accept actually runs.
   const acceptHandlerL = AcceptHandlerLayer().pipe(
     Layer.provide(suggestedActionsL),
     Layer.provide(jobsStoreL),
@@ -2123,104 +1963,37 @@ export const buildBaseLayer = (
     Layer.provide(telPlatformL),
   )
 
-  // Phase 3 D1: nightly Dream cron. DreamCronLayer provides its OWN
-  // JobScheduler+TriggerAgent (a second instance — harmless, like memoryRouterL).
-  // DreamReasonerDefault (from adapter-sdk) requires both SDKClient + MemoryRouter;
-  // we close over the boot's sdkClientL + memoryRouterL. DreamStore uses luna.db.
-  // LunaSqliteBootstrap is satisfied at the bottom of buildServerLayer, same as
-  // every other SQLite-backed layer here.
+  // DreamStore (luna.db) for the V2 DreamWorker, wired into
+  // buildWorkerRegistryLayer below. DreamReasonerDefault (from adapter-sdk)
+  // closes over the boot's sdkClientL + memoryRouterL. LunaSqliteBootstrap is
+  // satisfied at the bottom of buildServerLayer, same as every other
+  // SQLite-backed layer here.
   const dreamStoreL = DreamStore.makeLayer(paths.lunaDbPath).pipe(Layer.provide(clockL))
   // MEASURE-ONLY calibration sink (PR #100): same luna.db, additive
-  // calibration_log table. Presence of this layer is what turns the
-  // instrumentation ON (rows recorded + reasoner sampling extras run);
-  // see BuildDreamCronLayerOpts.calibrationStoreL.
+  // calibration_log table. Presence of this layer turns the instrumentation ON
+  // (rows recorded + reasoner sampling extras run); the DreamWorker reads it via
+  // Effect.serviceOption.
   const calibrationStoreL = CalibrationStore.makeLayer(paths.lunaDbPath).pipe(
     Layer.provide(clockL),
   )
 
-  // Scheduler V2 cutover flag (DESIGN.md §5.3 / §5.3.5). Computed HERE — before
-  // the dream / wake cron layers — because the M5 cutover gates BOTH legacy
-  // cron factories on it: when V2 is enabled the dream + wake cycles run
-  // EXCLUSIVELY through their V2 job rows (the JobTicker dispatches them to the
-  // dedicated dream / wake worker kinds), so the legacy fiber-per-cron layers
-  // must register nothing or the cycles would double-run. The boot graph thus
-  // contains EITHER the legacy crons OR the V2 ticker for dream/wake, never
-  // both. Reversible: flip the flag off and the legacy crons re-register.
-  const schedulerV2Enabled =
-    process.env["LUNA_SCHEDULER_V2_ENABLED"]?.trim() === "1"
-
-  const dreamCronL = buildDreamCronLayer({
-    expr: "0 3 * * *",
-    sdkClientL,
-    memoryRouterL,
-    storeL,
-    clockL,
-    dreamStoreL,
-    calibrationStoreL,
-    // A5: same broker the chat adapter uses — DreamReasonerDefault acquires a
-    // credential per reason() through the provider seam (LUNA_DREAM_MODEL).
-    brokerL,
-    // M5 cutover: under V2 the dream job row drives the cycle — register no
-    // legacy cron (buildDreamCronLayer returns Layer.empty when this is true).
-    schedulerV2Enabled,
-  })
-
-  // Wake cron (Path A): WakeReasoner inspects the workspace state at each
-  // tick and emits a JSON digest into <workspace>/.workspace/workspace.db's
-  // wake_log table. Controlled by env so operators can disable / retune
-  // without redeploying:
-  //   LUNA_WAKE_ENABLED        — "0" disables the cron entirely (default: enabled)
-  //   LUNA_WAKE_CRON_EXPR      — cron expression (default: "*/30 * * * *")
-  //   LUNA_WAKE_WORKSPACE_SLUG — slug of the workspace to wake (default: "luna")
-  //   LUNA_WAKE_WORKSPACE_PATH — repo root path; falls back to LUNA_REPO_ROOT
-  //                              then process.cwd().
-  // When disabled or the workspace path can't be resolved, the layer is
-  // simply omitted from the mergeAll (no fiber registered).
-  const wakeEnabled = process.env["LUNA_WAKE_ENABLED"]?.trim() !== "0"
-  const wakeExpr =
-    process.env["LUNA_WAKE_CRON_EXPR"]?.trim() || "*/30 * * * *"
-  const wakeWorkspaceSlug =
-    process.env["LUNA_WAKE_WORKSPACE_SLUG"]?.trim() || "luna"
+  // Wake (Path A) workspace path: the V2 WakeWorker opens
+  // <workspacePath>/.workspace/workspace.db (wakeWorkerLogStoreL below). Resolved
+  // from LUNA_WAKE_WORKSPACE_PATH, falling back to LUNA_REPO_ROOT then cwd.
   const wakeWorkspacePath =
     process.env["LUNA_WAKE_WORKSPACE_PATH"]?.trim() ||
     process.env["LUNA_REPO_ROOT"]?.trim() ||
     process.cwd()
-  const wakeCronL = wakeEnabled
-    ? buildWakeCronLayer({
-        expr: wakeExpr,
-        workspaceSlug: wakeWorkspaceSlug,
-        workspacePath: wakeWorkspacePath,
-        sdkClientL,
-        clockL,
-        agentNotesL,
-        // A5: same broker the chat adapter uses — WakeReasonerDefault acquires a
-        // credential per reason() through the provider seam (LUNA_WAKE_MODEL).
-        brokerL,
-        // M5 cutover: under V2 the per-workspace wake job rows drive the cycle —
-        // register no legacy cron (buildWakeCronLayer returns Layer.empty when
-        // this is true).
-        schedulerV2Enabled,
-      })
-    : null
 
-
-  // Phase 12b (scheduler-rebuild) — DESIGN.md §5.3 / §5.3.5. Behind the
-  // `LUNA_SCHEDULER_V2_ENABLED` flag (computed above). With the flag OFF
-  // (default), the V2 ticker layer is omitted from the layer graph — no fiber
-  // forked, no DB queries per minute — and the legacy dream / wake cron layers
-  // register as before. With the flag ON, a single supervised JobTicker fiber
-  // drains the `jobs` table every 60 s, claims due rows, and dispatches them
-  // through the WorkerRegistry — which registers the prompt + workflow workers
-  // AND the dedicated dream + wake workers (M1-M3). The M5 cutover (above) makes
-  // buildDreamCronLayer / buildWakeCronLayer register NOTHING under the same
-  // flag, so dream/wake run EXCLUSIVELY via their V2 job rows and never
-  // double-fire. EITHER legacy crons OR the V2 ticker drive dream/wake — never
-  // both.
-  if (schedulerV2Enabled) {
-    console.log(
-      "[luna/sched] V2 ticker ENABLED (LUNA_SCHEDULER_V2_ENABLED=1) — kinds=prompt,workflow,dream,wake registered; legacy dream/wake cron layers DISABLED (run via V2 job rows)",
-    )
-  }
+  // Scheduler V2 (DESIGN.md §5.3 / §5.3.5) is the only scheduler. A single
+  // supervised JobTicker fiber drains the `jobs` table every 60 s, claims due
+  // rows, and dispatches them through the WorkerRegistry — which registers the
+  // prompt + workflow workers AND the dedicated dream + wake workers. The
+  // nightly dream + per-workspace wake cycles run exclusively as `kind:"dream"` /
+  // `kind:"wake"` job rows drained by the ticker (no legacy fiber-per-cron path).
+  console.log(
+    "[luna/sched] V2 ticker active — kinds=prompt,workflow,dream,wake",
+  )
   // Phase 5 (widget-system.md): per-run request_input tool for the job
   // workers. The provider closes over the jobs store (to flip the run
   // running↔waiting) and the broadcast jobInputBridge (to reach connected
@@ -2375,14 +2148,12 @@ export const buildBaseLayer = (
   // (chatThreadPosterL) is threaded through so the prompt worker's
   // serviceOption resolves it at dispatch time — preserving deliver_to=chat_thread.
   //
-  // dreamReasonerL / wakeReasonerL mirror what buildDreamCronLayer /
-  // buildWakeCronLayer build internally (DreamReasonerDefault needs SDKClient +
-  // MemoryRouter + AccountBroker; WakeReasonerDefault needs SDKClient +
-  // AccountBroker), closing over the SAME boot identities (sdkClientL,
-  // memoryRouterL, brokerL). wakeLogStoreL opens the wake workspace's
-  // workspace.db at the same path the wake cron uses. These are built here (not
-  // reused from the cron-layer factories, which keep them local) so the dream /
-  // wake workers reach real services at dispatch time.
+  // dreamReasonerL / wakeReasonerL are what the dream / wake workers need
+  // (DreamReasonerDefault needs SDKClient + MemoryRouter + AccountBroker;
+  // WakeReasonerDefault needs SDKClient + AccountBroker), closing over the SAME
+  // boot identities (sdkClientL, memoryRouterL, brokerL). wakeLogStoreL opens
+  // the wake workspace's workspace.db at wakeWorkspacePath so the dream / wake
+  // workers reach real services at dispatch time.
   const dreamWorkerReasonerL = DreamReasonerDefault.pipe(
     Layer.provide(sdkClientL),
     Layer.provide(memoryRouterL),
@@ -2409,13 +2180,9 @@ export const buildBaseLayer = (
     wakeReasonerL: wakeWorkerReasonerL,
     wakeLogStoreL: wakeWorkerLogStoreL,
   })
-  const jobTickerL = schedulerV2Enabled
-    ? JobTickerLayer().pipe(
-        Layer.provide(
-          Layer.mergeAll(jobsStoreL, workerRegistryL, clockL),
-        ),
-      )
-    : null
+  const jobTickerL = JobTickerLayer().pipe(
+    Layer.provide(Layer.mergeAll(jobsStoreL, workerRegistryL, clockL)),
+  )
 
   // Phase 3 D3: Survey layer for the WS-mediated check-in. AlignmentStore and
   // BeliefWriter both use memoryRouterL + clockL from the same boot identities
@@ -2438,18 +2205,13 @@ export const buildBaseLayer = (
     noopTracerL,
     agentNotesL,
     workspacesL,
-    jobsStoreL,  // Phase 12a: persisted cron schedules (DESIGN §5.1 jobs table)
-    dreamCronL, // Phase 3 D1: nightly dream cron (Layer.empty under V2 — M5 cutover; the dream job row drives the cycle instead)
-    wakeCronL ?? Layer.empty, // wake cron: workspace digest each tick (Layer.empty under V2 — M5 cutover; disabled if LUNA_WAKE_ENABLED=0)
-    jobTickerL ?? Layer.empty, // Phase 12b V2 ticker: enabled via LUNA_SCHEDULER_V2_ENABLED=1 — drives dream/wake via job rows (DESIGN §5.3.5)
+    jobsStoreL,  // Phase 12a: persisted schedules (DESIGN §5.1 jobs table)
+    jobTickerL, // V2 ticker: the only scheduler — drains the jobs table and drives prompt/workflow/dream/wake via job rows (DESIGN §5.3.5)
     surveyL,    // Phase 3 D3: Survey available for buildServerLayer to resolve + pass to the WS server
     suggestedActionsL, // Suggested Actions: buildServerLayer resolves it for the WS respond handle (same instance the chat layer uses)
-    // Auto-execute + completion observer — wired whenever the V2 ticker is on
-    // (the default). Without the ticker a job can never dispatch, so on a
-    // LUNA_SCHEDULER_V2_ENABLED=0 deploy we omit AcceptHandler and accept simply
-    // leaves the action at `accepted` (respond resolves it via serviceOption —
-    // absent → no exec) rather than stranding it in `in_progress` forever.
-    schedulerV2Enabled ? acceptHandlerL : Layer.empty,
+    // Auto-execute + completion observer for accepted suggested actions. The V2
+    // ticker dispatches the durable one-shot job AcceptHandler enqueues.
+    acceptHandlerL,
     skillRegistryL, // PRD Part B: same instance as threadToolsL (memoized by reference) — buildServerLayer resolves it for the WS skill frames
     connectorServiceL, // PRD Part A: same instance as threadToolsL — M2's WS connector frames resolve it here
     artifactStoreL, // PRD Part C/W1: buildServerLayer resolves it for the WS artifact frames
@@ -2627,9 +2389,9 @@ const buildServerLayer = (
       const jobsStore = yield* JobsStoreService // PRD Part C/W3 (gallery source)
       const telemetry = yield* TelemetryService // Phase 7: pulse-snapshot source
       const suggestedActionsService = yield* SuggestedActions // suggest_action
-      // Optional — present whenever the V2 ticker is on (the default; absent
-      // only on a LUNA_SCHEDULER_V2_ENABLED=0 deploy, see the gated merge
-      // above). Absent → accept leaves the action at `accepted`.
+      // AcceptHandler is always wired (see the merge above), so this resolves.
+      // Kept as serviceOption for defensive symmetry with SuggestedActions.respond
+      // (absent → accept would leave the action at `accepted`).
       const acceptHandlerOption = yield* Effect.serviceOption(AcceptHandler)
 
       // ── Phase 3: auto-archive wiring ────────────────────────────────────────

@@ -182,8 +182,7 @@ describe("DreamWorkerLayer", () => {
   // applyOps. The worker must FOLD it into the captured context so a
   // belief_candidate op still writes a calibration row at dispatch time. This
   // is the regression guard for "instrumentation silently no-ops once dream
-  // runs through V2" — the exact bug the advisor flagged. Mirrors
-  // dream-cron-layer.test.ts case (c).
+  // runs through V2" — the exact bug the advisor flagged.
   it("(e) a CalibrationStore in the worker composition is forwarded to the fired dream (serviceOption)", async () => {
     const candidate = makeBeliefRecord({
       statement: "Operator prefers terse answers",

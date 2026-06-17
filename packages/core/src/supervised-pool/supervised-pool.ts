@@ -2,28 +2,25 @@
 /**
  * SupervisedPool — generic Fiber-supervision helper (Phase 11.5a).
  *
- * Extracted verbatim-in-spirit from `packages/core/src/jobs/job-scheduler.ts`.
- * Consumers (JobScheduler in 11.5b, future TeamBroker candidates) wrap this
+ * Extracted verbatim-in-spirit from the original V1 JobScheduler (since removed
+ * with the V1 scheduler). Consumers (e.g. TeamBroker candidates) wrap this
  * helper with their own typed error channels / id generators / status maps.
  *
- * Invariants honored (cite §-anchor + template line):
+ * Invariants honored (cite §-anchor):
  *   - §3.4 #4 LIFO finalizer ordering: `Queue.shutdown` finalizer registered
  *     BEFORE `FiberSet.make` so the FiberSet finalizer runs FIRST (interrupts
  *     in-flight fibers, allowing their `onExit` to push final PoolResults)
- *     and the queue-shutdown finalizer runs AFTER, closing the results
- *     queue. Template: `job-scheduler.ts:108-113`.
+ *     and the queue-shutdown finalizer runs AFTER, closing the results queue.
  *   - §3.4 #1 no cross-Scope fiber refs: `RunningEntry` stays internal; the
- *     public `SupervisedPool` API exposes only string ids. Template:
- *     `job-scheduler.ts:89`.
+ *     public `SupervisedPool` API exposes only string ids.
  *   - Ref-shadow-size: `Effect.Semaphore` has no sync `available` accessor,
- *     so we mirror in-flight count in `Ref<number>` for drop-policy
- *     decisions. Template: `job-scheduler.ts:121-124`.
+ *     so we mirror in-flight count in `Ref<number>` for drop-policy decisions.
  *   - Submit-mutex atomicity: drop-oldest / drop-newest decisions read size,
  *     decide, and fork-or-interrupt under a single-permit semaphore to be
- *     atomic w.r.t. concurrent submits. Template: `job-scheduler.ts:128, 215`.
+ *     atomic w.r.t. concurrent submits.
  *   - Per-job Scope isolation: each `job.run` is invoked under its OWN
  *     `Effect.scoped(...)` so job-level finalizers fire on job completion,
- *     not on pool Scope close. Template: `job-scheduler.ts:159`.
+ *     not on pool Scope close.
  *   - Supervisor-failure-kills-pool: emergent from Scope cascade; no
  *     explicit code.
  */

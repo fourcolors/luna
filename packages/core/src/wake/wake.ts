@@ -1,15 +1,13 @@
 // packages/core/src/wake/wake.ts
 //
 // Wake orchestration: read workspace state from workspace.db, call the
-// reasoner, write a wake_log row. Mirrors dream/dream.ts's `runDream` +
-// `registerDreamCron` pattern.
+// reasoner, write a wake_log row. Mirrors dream/dream.ts's `runDream`.
 //
 // runWake intentionally never fails — any error short-circuits to a
-// wake_log row with outcome='error', so the cron loop is non-poisoning
-// (one bad tick doesn't kill the trigger fiber).
-import { Effect, Clock as EffectClock } from "effect"
+// wake_log row with outcome='error', so a bad tick is non-poisoning (the
+// WakeWorker records the failure and the next scheduled tick proceeds).
+import { Effect } from "effect"
 import { readFileSync, existsSync } from "node:fs"
-import type { TriggerAgentApi } from "../jobs/trigger-agent.js"
 import { AgentNotesService } from "../agent-notes/agent-notes.js"
 import { WakeReasoner } from "./reasoner.js"
 import { WakeLogStore } from "./wake-log-store.js"
@@ -311,42 +309,7 @@ export const runWake = (
     }
   })
 
-/**
- * Register a wake cron on the given TriggerAgent. Captures the wake-service
- * environment (WakeReasoner + WakeLogStore) into the cron `build()` closure
- * via `Effect.context()` so each tick runs with the same services.
- *
- * Returns the TriggerId so the caller can cancel if needed.
- */
-export const registerWakeCron = (
-  trigger: TriggerAgentApi,
-  expr: string,
-  opts: WakeCronOptions,
-) =>
-  Effect.gen(function* () {
-    // Capture wake-service env at registration time. Scope is NOT included —
-    // the JobScheduler injects a per-job Scope on each tick.
-    const ctx = yield* Effect.context<WakeReasoner | WakeLogStore | AgentNotesService>()
-    yield* Effect.logInfo(
-      `[luna/wake] registerWakeCron: expr="${expr}" workspaceSlug="${opts.workspaceSlug}" workspacePath="${opts.workspacePath}"`,
-    )
-    const triggerId = yield* trigger.register({
-      kind: "cron",
-      expr,
-      build: () => ({
-        run: EffectClock.currentTimeMillis.pipe(
-          Effect.tap((now) =>
-            Effect.logInfo(
-              `[luna/wake] tick: ${new Date(now).toISOString()} workspace=${opts.workspaceSlug}`,
-            ),
-          ),
-          Effect.flatMap((now) => runWake(now, opts)),
-          Effect.provide(ctx),
-        ),
-      }),
-    })
-    yield* Effect.logInfo(
-      `[luna/wake] registered triggerId=${triggerId} for expr="${expr}"`,
-    )
-    return triggerId
-  })
+// The legacy `registerWakeCron` (TriggerAgent fiber-per-cron registration) was
+// removed with the V1 scheduler. Wake now runs exclusively through the V2 path:
+// per-workspace `kind:"wake"` job rows drained by the JobTicker into the
+// WakeWorker (see wake-worker.ts), which calls `runWake(now, opts)` directly.

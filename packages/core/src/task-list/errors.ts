@@ -16,8 +16,8 @@
  * the frozen `ValidationError` so callers can pattern-match on the TaskList
  * channel without false positives from upstream ValidationErrors. The frozen
  * `ValidationError` carries `module: string`, but multiplexing on `module`
- * forces stringly-typed branching — we prefer a dedicated tag here. This is
- * the same pattern jobs/errors.ts uses (TriggerError vs root ValidationError).
+ * forces stringly-typed branching — we prefer a dedicated tag here, the same
+ * additive-error pattern the other module error channels use.
  */
 import { Data } from "effect"
 

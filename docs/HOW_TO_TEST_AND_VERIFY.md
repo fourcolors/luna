@@ -102,7 +102,7 @@ bun run test test/update-server.test.ts test/deploy-scripts.test.ts \
 
 # Boot smokes (the deploy-risk gate — chat-server has no tsc gate; these prove the real layer graph builds):
 LUNA_UI_WS_TOKEN=smoke-test-token-ok bun run apps/ui-web/scripts/smoke/setup-mode-boot.smoke.ts
-# also: belief-injection-boot, dream-cron-boot, survey-boot  → each prints "PASS" / "OK"
+# also: belief-injection-boot, job-ticker-boot, survey-boot  → each prints "PASS" / "OK"
 ```
 Version-skew snapshot test — prove it catches a frame rename (the bug that started this):
 temporarily rename a frame `type` literal in `packages/ui-ws/src/protocol.ts` (e.g. `"subscribe"` →

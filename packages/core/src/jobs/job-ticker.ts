@@ -21,15 +21,15 @@
  * thousand-row jobs table and re-create the per-trigger cost we're replacing.
  * Within a tick, due jobs are dispatched sequentially; each worker dispatch is
  * bounded by `workerDeadline` (Effect.timeoutFail) so a stuck worker is
- * interrupted rather than blocking the loop indefinitely. (The JobScheduler
- * pool is V1's mechanism — the V2 ticker does NOT route through it.)
+ * interrupted rather than blocking the loop indefinitely.
  *
- * Cutover note: V2 is the DEFAULT scheduler — the chat-server wires this layer
- * unless `LUNA_SCHEDULER_V2_ENABLED=0` (the kill switch). The agent-facing
- * scheduler tools are fully V2 (a schedule is a `kind:"prompt"` row). The
- * wake / dream cycles still run on their own TriggerAgent loops, separate from
- * this ticker; the two don't touch the same rows (V2 reads `enabled=1 AND
- * next_run_at <= now` and skips `kind="cron"` rows entirely).
+ * This is the ONLY scheduler — the chat-server always wires this layer. The
+ * agent-facing scheduler tools are fully ticker-driven (a schedule is a
+ * `kind:"prompt"` row); the wake / dream cycles run as `kind:"wake"` /
+ * `kind:"dream"` rows drained here. The legacy `kind="cron"` rows from the
+ * removed V1 (fiber-per-cron) path are never claimed — the ticker reads
+ * `enabled=1 AND next_run_at <= now` and skips `kind="cron"` rows defensively
+ * so any stragglers left in an existing DB stay inert.
  */
 import { Cron, Duration, Effect, Either, Layer, Ref, Schedule } from "effect"
 import * as EffectClock from "effect/Clock"
@@ -59,8 +59,8 @@ export interface TickSummary {
   readonly failed: number
   readonly skippedUnknownKind: number
   readonly skippedClaimLost: number
-  /** V1 cron rows (`kind="cron"`) skipped — they belong to TriggerAgent, not
-   *  the V2 ticker, so they are never claimed or dispatched here. */
+  /** Legacy `kind="cron"` rows (from the removed V1 path) skipped — there is no
+   *  "cron" worker, so they are never claimed or dispatched here. */
   readonly skippedV1Cron: number
   /** Closed `job_runs` rows deleted by this tick's retention sweep (0 if the
    *  sweep interval has not elapsed since the last prune). */
@@ -237,11 +237,10 @@ export const JobTickerLayer = (
         let skippedV1Cron = 0
 
         for (const job of due) {
-          // V1 cron rows (kind="cron") belong to the in-process TriggerAgent,
-          // not the V2 ticker — there is no "cron" worker, so claiming one would
-          // write a spurious unknown_kind failure every tick. Skip them
-          // structurally so a missed enabled=false opt-out (the V1→V2 disable is
-          // best-effort) can NEVER leak a V1 row into V2 dispatch.
+          // Legacy `kind="cron"` rows (from the removed V1 fiber-per-cron path)
+          // have no worker — claiming one would write a spurious unknown_kind
+          // failure every tick. Skip them structurally so any stragglers left in
+          // an existing DB stay inert rather than hot-looping.
           if (job.kind === "cron") {
             skippedV1Cron++
             continue

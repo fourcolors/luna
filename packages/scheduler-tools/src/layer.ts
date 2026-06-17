@@ -6,14 +6,11 @@
  * server config that can be plugged into `SessionOptions.sdkOptions.mcpServers`.
  *
  * V2-native: a schedule is a durable RECURRING `kind:"prompt"` row in the
- * `jobs` table. The V2 JobTicker (on by default; LUNA_SCHEDULER_V2_ENABLED=0
- * disables) reads the table every tick and re-fires the row, running the
- * PromptWorker which delivers the turn's result to the operator as an obs_note.
- * There is no in-process fiber to register and nothing to reload at boot — the
- * jobs table IS the durable state, so a restart looks like a zero-tick gap.
- *
- * (Earlier versions registered a V1 TriggerAgent cron whose fire was a no-op;
- * that delivered nothing. The ticker is now the single scheduler for these.)
+ * `jobs` table. The V2 JobTicker (the only scheduler) reads the table every
+ * tick and re-fires the row, running the PromptWorker which delivers the turn's
+ * result to the operator as an obs_note. There is no in-process fiber to
+ * register and nothing to reload at boot — the jobs table IS the durable state,
+ * so a restart looks like a zero-tick gap.
  */
 import { Effect, Layer } from "effect"
 import { JobsStoreService, type JobsStoreApi } from "@luna/core"

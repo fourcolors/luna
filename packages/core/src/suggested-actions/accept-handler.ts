@@ -3,7 +3,7 @@
  * background job (the auto-execute path, locked decision #4 + #2).
  *
  * Every action type lands on the SAME durable substrate — a `jobs` row picked
- * up by the V2 JobTicker (on by default; LUNA_SCHEDULER_V2_ENABLED=0 disables). The four
+ * up by the V2 JobTicker (the only scheduler). The four
  * "subagent" types (task / research / create_skill / create_workflow) become a
  * `kind:'prompt'` job that spawns a subagent driven by the agent-authored
  * prompt; `run_workflow` clones an EXISTING saved `kind:'workflow'` job into a

@@ -13,8 +13,6 @@
  *        AND records a CostAccrued event per iteration; budget gate
  *        trips with `ExperimentBudgetExceededError`. (Caller-glue
  *        composition per `labs/types.ts` line 29 — `trial: Effect<A>`.)
- *   F5 — TriggerAgent (cron) fires via TestClock → emits ToolCall →
- *        UIService subscriber observes it.
  *   Cost accuracy predicate — multi-dim/multi-event accumulation,
  *        bucket independence, budget threshold semantics.
  *
@@ -41,8 +39,6 @@ import {
   Queue,
   Ref,
   Stream,
-  TestClock,
-  TestContext,
 } from "effect"
 import { Clock } from "../../src/clock.js"
 import { ObservabilityService } from "../../src/observability/index.js"
@@ -60,12 +56,6 @@ import type {
   GatewayResponse,
 } from "../../src/gateway/index.js"
 import { NetSecClient } from "../../src/netsec/index.js"
-import {
-  JobScheduler,
-  JobSchedulerLayer,
-  TriggerAgent,
-  TriggerAgentLayer,
-} from "../../src/jobs/index.js"
 
 const originalFetch = globalThis.fetch
 
@@ -88,7 +78,6 @@ const restoreFetch = () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Layer composition shared across F1, F2, the cost-predicate suite.
-// (F5 needs TestClock + JobScheduler/TriggerAgent — composed inline.)
 // ─────────────────────────────────────────────────────────────────────────────
 const stubRunner = (replies: ReadonlyArray<string>): Runner => {
   let i = 0
@@ -378,91 +367,6 @@ describe("F2 — Labs budget trip via Harness", () => {
     )
     expect(Exit.isFailure(exit)).toBe(true)
     expect(JSON.stringify(exit)).toContain("ExperimentBudgetExceededError")
-  })
-})
-
-// ─────────────────────────────────────────────────────────────────────────────
-// F5 smoke — TriggerAgent (cron) → ToolCall → UI subscriber.
-// ─────────────────────────────────────────────────────────────────────────────
-describe("F5 smoke — TriggerAgent→Obs→UI", () => {
-  it("cron tick (TestClock) emits a ToolCall observed by UIService", async () => {
-    const got = await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const obs = yield* ObservabilityService
-          const ui = yield* UIService
-          const trig = yield* TriggerAgent
-          const sched = yield* JobScheduler
-
-          // Eager UI subscribe BEFORE the cron fires (§16).
-          const uiStream = yield* ui.subscribe
-          const uiFiber = yield* Effect.fork(
-            uiStream.pipe(
-              Stream.take(1),
-              Stream.runCollect,
-              Effect.map(Chunk.toReadonlyArray),
-            ),
-          )
-
-          // Background drain on scheduler results so the pool slot frees.
-          yield* Effect.fork(
-            sched.results.pipe(
-              Stream.take(1),
-              Stream.runDrain,
-            ),
-          )
-
-          // Register an every-5-min cron whose job emits a ToolCall.
-          yield* trig.register({
-            kind: "cron",
-            expr: "*/5 * * * *",
-            build: () => ({
-              run: obs.emit({
-                kind: "ToolCall",
-                ts: new Date().toISOString(),
-                level: "info",
-                sessionId: "s-f5",
-                toolName: "cron-fire",
-                durationMs: 0,
-                status: "success",
-              }),
-            }),
-          })
-
-          // Advance virtual time across one window (then a touch more
-          // to allow scheduling/dispatch).
-          yield* TestClock.adjust(Duration.minutes(5))
-          yield* TestClock.adjust(Duration.millis(1))
-          yield* TestClock.adjust(Duration.minutes(5))
-
-          return yield* Fiber.join(uiFiber)
-        }).pipe(
-          Effect.provide(
-            (() => {
-              const clockL = Clock.Default
-              const obsL = ObservabilityService.makeLayer({
-                logToConsole: false,
-              }).pipe(Layer.provide(clockL))
-              const uiL = UIService.makeLayer().pipe(
-                Layer.provide(obsL),
-                Layer.provide(clockL),
-              )
-              const schedL = JobSchedulerLayer.make({ capacity: 4 }).pipe(
-                Layer.provide(clockL),
-              )
-              const trigL = TriggerAgentLayer.Default.pipe(
-                Layer.provide(schedL),
-              )
-              return Layer.mergeAll(clockL, obsL, uiL, schedL, trigL)
-            })(),
-          ),
-          Effect.provide(TestContext.TestContext),
-          Effect.timeout(Duration.seconds(5)),
-        ),
-      ),
-    )
-    expect(got).toHaveLength(1)
-    expect(got[0]?.kind).toBe("ToolCall")
   })
 })
 

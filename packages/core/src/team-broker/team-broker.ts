@@ -37,7 +37,8 @@
  *   Queue.shutdown — so orphan events can be published into the still-open
  *   eventsQ during teardown.
  *
- * Reuses forkDaemon + explicit interrupt pattern from `jobs/job-scheduler.ts`.
+ * Reuses the forkDaemon + explicit interrupt pattern of the SupervisedPool
+ * helper (packages/core/src/supervised-pool/).
  */
 import {
   Effect,

@@ -96,7 +96,7 @@ describe("reconcileVaultItems — denylist", () => {
 
   it("never adopts any LUNA_* variable", () => {
     const { toAdopt } = reconcileVaultItems({
-      envVarNames: ["LUNA_OP_ACCOUNTS", "LUNA_INTERNAL_SECRET", "LUNA_SCHEDULER_V2_ENABLED"],
+      envVarNames: ["LUNA_OP_ACCOUNTS", "LUNA_INTERNAL_SECRET", "LUNA_REPO_ROOT"],
       opTokenLabels: [],
       existing: [],
       now: NOW,

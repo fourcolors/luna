@@ -146,9 +146,8 @@ Luna runs autonomous background work via a job scheduler backed by
 > `workflow-worker.ts`) + `packages/core/src/` (`dream/dream-worker.ts`,
 > `wake/wake-worker.ts`) + `packages/core/src/jobs/` (ticker, store)
 
-The scheduler runs **only when `LUNA_SCHEDULER_V2_ENABLED=1`** is set on
-the chat-server (boot log: `[luna/sched] V2 ticker ENABLED`). Without the
-flag, no ticker polls and inserted job rows sit inert.
+The scheduler runs whenever the chat-server is up — the JobTicker is the only
+scheduler and is always wired (boot log: `[luna/sched] V2 ticker active`).
 
 ### Job kinds
 
@@ -232,11 +231,9 @@ wake is per-workspace there is **ONE `wake` row per wake-enabled workspace**
 (default schedule `*/30 * * * *`).
 
 The `dream` + `wake` rows are seeded by
-`apps/ui-web/scripts/dream-wake-install.ts` (idempotent). When
-`LUNA_SCHEDULER_V2_ENABLED=1`, these rows are the ONLY driver of the dream /
-wake cycles — the legacy `buildDreamCronLayer` / `buildWakeCronLayer` cron
-layers register nothing under the flag, so the cycles never double-run
-(DESIGN.md §5.3.5).
+`apps/ui-web/scripts/dream-wake-install.ts` (idempotent). These rows are the
+ONLY driver of the dream / wake cycles — the legacy fiber-per-cron layers were
+removed, so the cycles run exclusively through the JobTicker (DESIGN.md §5.3).
 
 ### Submitting jobs
 

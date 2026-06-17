@@ -6,18 +6,13 @@
  *   - schedule_cancel(triggerId)            → { cancelled: boolean }
  *
  * V2-native: a schedule is a durable RECURRING `kind:"prompt"` row in the
- * `jobs` table. The V2 JobTicker (on by default) re-fires it on each cron tick
- * and runs the PromptWorker, which executes the agent-authored `user_prompt`
- * and delivers the result to the operator as an obs_note. So a schedule
- * actually DOES something on fire (it used to fire a no-op).
+ * `jobs` table. The V2 JobTicker (the only scheduler) re-fires it on each cron
+ * tick and runs the PromptWorker, which executes the agent-authored
+ * `user_prompt` and delivers the result to the operator as an obs_note.
  *
  * Persistence is automatic: the row lives in `jobs`, and the ticker reads the
  * table every tick — there is nothing to re-register at boot. schedule_cancel
  * deletes the row so it stops firing and does not come back.
- *
- * Note: on a LUNA_SCHEDULER_V2_ENABLED=0 deploy (the kill switch) the ticker is
- * not running, so the row persists but does not fire until V2 is re-enabled —
- * the schedule is captured durably either way.
  */
 import { Cron, Effect, Either } from "effect"
 import { z } from "zod"
@@ -54,10 +49,12 @@ const nextRunAtUtc = (expr: string): number | null => {
   }
 }
 
-// Effectively-unique id: a ms timestamp (monotonic across restarts) + a random
-// suffix, mirroring JobScheduler.genId. A process-local counter would reset on
-// restart and could collide with an already-persisted schedule — record()
-// rejects duplicate ids, so that would make schedule_create fail nondeterministically.
+// Effectively-unique id: a wall-clock ms timestamp (for coarse ordering /
+// human readability) + a random suffix. Uniqueness is guaranteed by the random
+// suffix plus record()'s duplicate-id rejection — NOT by the timestamp, which
+// is wall-clock and may repeat or move backwards across restarts / clock jumps.
+// A process-local counter would reset on restart and could collide with an
+// already-persisted schedule, making schedule_create fail nondeterministically.
 const nextScheduleId = (): string =>
   `sched-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 
