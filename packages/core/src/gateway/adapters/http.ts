@@ -23,7 +23,7 @@ import {
 import * as http from "node:http"
 import type { GatewayAdapter, GatewayMessage, GatewayResponse } from "../types.js"
 
-export interface HttpAdapterConfig {
+interface HttpAdapterConfig {
   /** Port to listen on. Default: 3000. */
   readonly port?: number
   /** Host to bind. Default: "127.0.0.1". */

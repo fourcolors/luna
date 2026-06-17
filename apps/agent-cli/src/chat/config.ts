@@ -8,7 +8,7 @@ const LAST_THREAD_VALID = /^[A-Za-z0-9_-]{4,128}$/
  * Path where the last-active thread id is persisted per profile, so a
  * vanilla `luna chat` (no --thread, no --new) resumes where you left off.
  */
-export const lastThreadPath = (homeDir: string, profileName: string): string =>
+const lastThreadPath = (homeDir: string, profileName: string): string =>
   join(homeDir, ".luna", `.last-thread-${profileName}`)
 
 export const readLastThread = (

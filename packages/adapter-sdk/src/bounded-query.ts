@@ -45,7 +45,7 @@ export const DEFAULT_QUERY_TIMEOUT_MS = 10 * 60 * 1000 // 10 min
 /** Whole-turn token totals lifted off the SDK result frame (same field names
  * the chat adapter's B4 usage report reads). Lets broker-acquired callers
  * (wake/dream reasoners) meter their turns against the spend meter. */
-export interface BoundedQueryUsage {
+interface BoundedQueryUsage {
   readonly tokensIn: number
   readonly tokensOut: number
   readonly cacheRead: number

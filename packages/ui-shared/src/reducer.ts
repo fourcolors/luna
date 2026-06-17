@@ -16,7 +16,6 @@ import type {
   ConnectorCatalogItem,
   ConnectorInstanceItem,
   ObsEvent,
-  ObsEventKind,
   PinnedArtifactItem,
   ServerFrame,
   SessionSummary,
@@ -589,5 +588,3 @@ export const filterEvents = (
   if (selectedKinds.size === 0) return events
   return events.filter((e) => selectedKinds.has(e.kind))
 }
-
-export type { ObsEventKind }

@@ -39,8 +39,8 @@ export interface Appearance {
 }
 
 export const PALETTES: ReadonlyArray<Palette> = ["dawn", "meadow", "tide"]
-export const THEMES: ReadonlyArray<Theme> = ["light", "dark"]
-export const CHROMES: ReadonlyArray<Chrome> = ["wash", "ink"]
+const THEMES: ReadonlyArray<Theme> = ["light", "dark"]
+const CHROMES: ReadonlyArray<Chrome> = ["wash", "ink"]
 export const FONTS: ReadonlyArray<Font> = ["sans", "serif", "mono", "hand"]
 export const FONT_SIZES: ReadonlyArray<FontSize> = ["small", "medium", "large", "xlarge"]
 

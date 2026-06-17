@@ -38,7 +38,7 @@ export function buildBrokerEnvOverlay(
  *      under the overlay when the profile sets none (the anthropic profile
  *      has no baseUrl — inheriting one would silently re-route it).
  */
-export const BROKER_ENV_SCRUB_VARS = [
+const BROKER_ENV_SCRUB_VARS = [
   "CLAUDE_CODE_OAUTH_TOKEN",
   "ANTHROPIC_AUTH_TOKEN",
   "ANTHROPIC_API_KEY",

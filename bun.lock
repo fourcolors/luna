@@ -19,7 +19,6 @@
         "luna": "./src/luna.ts",
       },
       "dependencies": {
-        "@luna/chat-service": "workspace:*",
         "@luna/core": "workspace:*",
         "@luna/memory": "workspace:*",
         "@luna/ui-ws": "workspace:*",
@@ -38,7 +37,7 @@
     },
     "apps/ui-moon-tauri": {
       "name": "@luna/ui-moon-tauri",
-      "version": "0.0.32",
+      "version": "0.0.34",
       "devDependencies": {
         "@tauri-apps/cli": "^2.1.0",
         "jsdom": "^29.1.1",
@@ -51,9 +50,7 @@
         "@modelcontextprotocol/sdk": "^1.29.0",
         "@xterm/addon-fit": "^0.11.0",
         "@xterm/xterm": "^6.0.0",
-        "shiki": "^4.0.2",
         "solid-js": "^1.9.12",
-        "solid-markdown": "^2.1.1",
       },
       "devDependencies": {
         "@luna/adapter-sdk": "workspace:*",
@@ -154,10 +151,8 @@
       "name": "@luna/control-server",
       "version": "0.0.1",
       "dependencies": {
-        "@luna/core": "workspace:*",
         "@trpc/server": "^11.0.0",
         "effect": "^3.21.0",
-        "zod": "^4.0.0",
       },
       "devDependencies": {
         "vitest": "^2.1.5",
@@ -345,7 +340,6 @@
       "version": "0.0.1",
       "dependencies": {
         "@luna/adapter-sdk": "workspace:*",
-        "@luna/core": "workspace:*",
         "effect": "^3.21.0",
       },
       "devDependencies": {

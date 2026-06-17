@@ -70,7 +70,7 @@ const applyMigration = (
 }
 
 // ── Schema (§5.1, byte-exact columns) ──────────────────────────────────────
-export const SCHEMA_V1 = `
+const SCHEMA_V1 = `
   CREATE TABLE IF NOT EXISTS accounts (
     id            TEXT PRIMARY KEY,
     label         TEXT NOT NULL,

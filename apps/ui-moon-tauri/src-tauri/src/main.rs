@@ -1857,13 +1857,6 @@ async fn voice_ptt_up(controller: tauri::State<'_, VoiceController>) -> Result<(
 
 #[cfg(feature = "voice")]
 #[tauri::command]
-async fn voice_cancel(controller: tauri::State<'_, VoiceController>) -> Result<(), String> {
-    controller.cancel();
-    Ok(())
-}
-
-#[cfg(feature = "voice")]
-#[tauri::command]
 async fn speak_text(
     controller: tauri::State<'_, VoiceController>,
     text: String,
@@ -2217,7 +2210,6 @@ fn main() {
         voice_set_mode,
         voice_ptt_down,
         voice_ptt_up,
-        voice_cancel,
         speak_text,
         voice_stop_speaking,
         voice_list_voices,

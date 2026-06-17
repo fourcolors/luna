@@ -104,7 +104,7 @@ export const upsertEnv = (homeDir: string, key: string, value: string): void => 
   writeAtomic0600(dir, path, contents)
 }
 
-export const DEFAULT_MOON_PROFILE = "stable"
+const DEFAULT_MOON_PROFILE = "stable"
 
 /** A single channel's creds inside moon-connection.json. */
 interface MoonProfile {

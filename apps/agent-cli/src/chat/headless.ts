@@ -58,13 +58,13 @@ export const buildSurveyVerdicts = (
   return out
 }
 
-export type AssistantTurnState = {
+type AssistantTurnState = {
   readonly turnId: string
   readonly text: string
   readonly done: boolean
 }
 
-export type SessionErrorEvent = {
+type SessionErrorEvent = {
   readonly message: string
   readonly kind?: string
   readonly turnId: string | null

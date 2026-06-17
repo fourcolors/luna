@@ -66,9 +66,6 @@ enum Cmd {
     /// (false = unknown/stale id fell back to the system default).
     SetVoice(String, mpsc::Sender<bool>),
     ListVoices(mpsc::Sender<Vec<Voice>>),
-    /// Diagnostic/test hook: which voice id is currently pinned (None =
-    /// system default, including after a stale-id fallback).
-    CurrentVoiceId(mpsc::Sender<Option<String>>),
     Shutdown,
 }
 
@@ -87,7 +84,7 @@ impl AvSpeechTts {
 
     /// Engine with a custom utterance volume (0.0–1.0). Used by the audible
     /// smoke test to whisper at 0.1.
-    pub fn with_volume(volume: f32) -> Self {
+    fn with_volume(volume: f32) -> Self {
         let (tx, rx) = mpsc::channel();
         let speaking = Arc::new(AtomicBool::new(false));
         let flag = speaking.clone();
@@ -110,16 +107,6 @@ impl AvSpeechTts {
         }
     }
 
-    /// Diagnostic/test hook (NOT part of the `TtsEngine` trait): the
-    /// currently pinned voice id, `None` when the system default is active —
-    /// which is also the post-fallback state after a stale id.
-    pub fn current_voice_id(&self) -> Option<String> {
-        let (reply_tx, reply_rx) = mpsc::channel();
-        if self.tx.send(Cmd::CurrentVoiceId(reply_tx)).is_err() {
-            return None;
-        }
-        reply_rx.recv_timeout(LIST_TIMEOUT).unwrap_or(None)
-    }
 }
 
 impl TtsEngine for AvSpeechTts {
@@ -236,10 +223,6 @@ fn worker_main(rx: mpsc::Receiver<Cmd>, speaking: Arc<AtomicBool>, volume: f32) 
                 }
                 Ok(Cmd::ListVoices(reply)) => {
                     let _ = reply.send(collect_voices());
-                }
-                Ok(Cmd::CurrentVoiceId(reply)) => {
-                    let _ = reply
-                        .send(voice.as_ref().map(|v| unsafe { v.identifier() }.to_string()));
                 }
                 Ok(Cmd::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => return true,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -369,7 +352,6 @@ mod tests {
             .next()
             .expect("at least one voice");
         assert!(tts.set_voice(&first.id), "known id applies as asked");
-        assert_eq!(tts.current_voice_id(), Some(first.id.clone()));
         // Stale/unknown id → system default, NOT sticky-previous — and the
         // fallback is REPORTED (false) so the app can emit a voice-error
         // instead of Settings silently showing a voice that isn't speaking.
@@ -377,12 +359,9 @@ mod tests {
             !tts.set_voice("com.apple.voice.does.not.exist.luna-test"),
             "stale id must report the fallback"
         );
-        assert_eq!(tts.current_voice_id(), None);
         // Empty id = explicit reset to system default (a success, not a fallback).
-        assert!(tts.set_voice(&first.id));
-        assert_eq!(tts.current_voice_id(), Some(first.id));
+        assert!(tts.set_voice(&first.id), "re-pinning known id applies as asked");
         assert!(tts.set_voice(""), "explicit reset is applied-as-asked");
-        assert_eq!(tts.current_voice_id(), None);
     }
 
     #[test]

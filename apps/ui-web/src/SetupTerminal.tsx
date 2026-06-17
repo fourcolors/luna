@@ -32,7 +32,7 @@ const bytesToB64 = (bytes: Uint8Array): string => {
 }
 
 /** UTF-8 string → base64 (TextEncoder → bytes → base64). */
-export const strToB64 = (s: string): string =>
+const strToB64 = (s: string): string =>
   bytesToB64(new TextEncoder().encode(s))
 
 // ── component ─────────────────────────────────────────────────────────────────

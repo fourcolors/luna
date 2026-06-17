@@ -39,7 +39,7 @@ import {
  * 6 chars + "…". The doctor verify output already redacts the URL query string.
  */
 
-export const DEFAULT_PAIR_PROFILE = "stable"
+const DEFAULT_PAIR_PROFILE = "stable"
 
 /** Pure: a ws(s):// URL pointing at host[:port]/ui (the UI WebSocket path). */
 export const isValidPairUrl = (raw: string): boolean => {

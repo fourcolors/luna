@@ -58,7 +58,7 @@ const ACCOUNTS_DDL = `
  *
  * Exposed as a named export so tests can stub it.
  */
-export const openSetupDb = (dbPath: string): MinimalDb => {
+const openSetupDb = (dbPath: string): MinimalDb => {
   // Ensure parent directory exists (same pattern as agent-cli/db.ts).
   if (dbPath !== ":memory:") {
     const dir = path.dirname(dbPath)
@@ -83,11 +83,11 @@ export const openSetupDb = (dbPath: string): MinimalDb => {
 
 /** Pointer to the Claude.ai subscription login cached in CLAUDE_CONFIG_DIR.
  * It idle-expires (~hours), so it's the FALLBACK default, not the preferred one. */
-export const CLAUDE_CODE_LOGIN_REF = "claude-code:login"
+const CLAUDE_CODE_LOGIN_REF = "claude-code:login"
 /** Pointer to a long-lived `claude setup-token` value supplied via the
  * `CLAUDE_CODE_OAUTH_TOKEN` env var (loaded from the gitignored runtime `.env`).
  * Durable — does NOT idle-expire. */
-export const ENV_OAUTH_TOKEN_REF = "env:CLAUDE_CODE_OAUTH_TOKEN"
+const ENV_OAUTH_TOKEN_REF = "env:CLAUDE_CODE_OAUTH_TOKEN"
 
 /**
  * Pure policy: choose the default account `secret_ref` from the environment.

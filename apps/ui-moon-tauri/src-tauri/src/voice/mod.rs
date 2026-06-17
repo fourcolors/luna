@@ -231,19 +231,14 @@ impl VoiceController {
         }
     }
 
-    pub fn mode(&self) -> VoiceMode {
-        lock_unpoisoned(&self.shared).mode
-    }
-
-    /// Start/stop the pipeline thread. With a missing model this emits
-    /// voice-error("model missing") and stays off — the frontend drives
-    /// voice_ensure_model first, then retries (startModelDownload re-applies
-    /// the chosen mode after a successful download).
-    pub fn set_mode(&self, mode_str: &str) -> Result<VoiceStatus, String> {
-        self.set_mode_with_sync(mode_str, |_| {})
-    }
-
-    /// [`set_mode`] plus a `sync` callback invoked with the EFFECTIVE mode
+    /// [`set_mode_with_sync`]: Start/stop the pipeline thread. With a missing
+    /// model this emits voice-error("model missing") and stays off — the
+    /// frontend drives voice_ensure_model first, then retries
+    /// (startModelDownload re-applies the chosen mode after a successful
+    /// download). Pass `|_| {}` as the sync callback when no shortcut
+    /// registration sync is needed.
+    ///
+    /// `sync` is invoked with the EFFECTIVE mode
     /// while the pipeline lock is still held. The app hangs the global PTT
     /// shortcut register/unregister on this: syncing AFTER set_mode returned
     /// was a TOCTOU — two interleaved mode changes could complete in one
@@ -956,7 +951,7 @@ mod tests {
     #[test]
     fn set_mode_with_missing_model_emits_error_and_stays_off() {
         let r = rig(false, "hi");
-        let st = r.controller.set_mode("auto").unwrap();
+        let st = r.controller.set_mode_with_sync("auto", |_| {}).unwrap();
         assert_eq!(st.mode, "off", "mode must stay off without a model");
         assert_eq!(st.state, "off");
         assert!(!st.model_present);
@@ -968,7 +963,7 @@ mod tests {
     #[test]
     fn unknown_mode_is_an_error() {
         let r = rig(true, "hi");
-        assert!(r.controller.set_mode("loud").is_err());
+        assert!(r.controller.set_mode_with_sync("loud", |_| {}).is_err());
     }
 
     #[test]
@@ -977,7 +972,7 @@ mod tests {
         // Pre-load enough speech + closing silence for one utterance.
         push_frames(&r.queue, speech_frames(15));
         push_frames(&r.queue, silence_frames(25));
-        let st = r.controller.set_mode("auto").unwrap();
+        let st = r.controller.set_mode_with_sync("auto", |_| {}).unwrap();
         assert_eq!(st.mode, "auto");
 
         r.sink.wait_for("starting", |e| state_is(e, "starting"));
@@ -998,7 +993,7 @@ mod tests {
         r.sink.wait_for_after(before, "re-listen after transcript", |e| {
             state_is(e, "listening")
         });
-        r.controller.set_mode("off").unwrap();
+        r.controller.set_mode_with_sync("off", |_| {}).unwrap();
         let st = r.controller.status();
         assert_eq!(st.state, "off");
     }
@@ -1008,7 +1003,7 @@ mod tests {
         let r = rig(true, "   "); // whisper returned only blanks
         push_frames(&r.queue, speech_frames(15));
         push_frames(&r.queue, silence_frames(25));
-        r.controller.set_mode("auto").unwrap();
+        r.controller.set_mode_with_sync("auto", |_| {}).unwrap();
         r.sink.wait_for("transcribing", |e| state_is(e, "transcribing"));
         r.sink.wait_for("back to listening", |e| state_is(e, "listening"));
         wait_drained(&r.queue);
@@ -1016,7 +1011,7 @@ mod tests {
             !r.sink.has_event(|e| e.0 == "voice-transcript"),
             "blank transcripts must never be emitted"
         );
-        r.controller.set_mode("off").unwrap();
+        r.controller.set_mode_with_sync("off", |_| {}).unwrap();
     }
 
     #[test]
@@ -1024,7 +1019,7 @@ mod tests {
         let r = rig(true, "ptt works");
         // Frames present BEFORE the hold must be discarded.
         push_frames(&r.queue, speech_frames(5));
-        r.controller.set_mode("ptt").unwrap();
+        r.controller.set_mode_with_sync("ptt", |_| {}).unwrap();
         r.sink.wait_for("idle", |e| state_is(e, "idle"));
         wait_drained(&r.queue);
         assert!(
@@ -1041,13 +1036,13 @@ mod tests {
             e.0 == "voice-transcript" && e.1["text"] == "ptt works"
         });
         r.sink.wait_for("idle after ptt_up", |e| state_is(e, "idle"));
-        r.controller.set_mode("off").unwrap();
+        r.controller.set_mode_with_sync("off", |_| {}).unwrap();
     }
 
     #[test]
     fn cancel_discards_in_flight_capture() {
         let r = rig(true, "should never appear");
-        r.controller.set_mode("auto").unwrap();
+        r.controller.set_mode_with_sync("auto", |_| {}).unwrap();
         r.sink.wait_for("listening", |e| state_is(e, "listening"));
         // Speech with NO closing silence → capture is in-flight…
         push_frames(&r.queue, speech_frames(15));
@@ -1061,7 +1056,7 @@ mod tests {
             !r.sink.has_event(|e| e.0 == "voice-transcript"),
             "cancelled capture must not produce a transcript"
         );
-        r.controller.set_mode("off").unwrap();
+        r.controller.set_mode_with_sync("off", |_| {}).unwrap();
     }
 
     #[test]
@@ -1077,17 +1072,17 @@ mod tests {
     #[test]
     fn speak_text_reaches_tts_when_voice_is_on() {
         let r = rig(true, "hi");
-        r.controller.set_mode("auto").unwrap();
+        r.controller.set_mode_with_sync("auto", |_| {}).unwrap();
         r.sink.wait_for("listening", |e| state_is(e, "listening"));
         r.controller.speak_text("good evening", true).unwrap();
         assert_eq!(r.spoken.lock().unwrap().as_slice(), ["good evening"]);
-        r.controller.set_mode("off").unwrap();
+        r.controller.set_mode_with_sync("off", |_| {}).unwrap();
     }
 
     #[test]
     fn half_duplex_discards_mic_while_speaking_then_rearms() {
         let r = rig(true, "leaked through tts");
-        r.controller.set_mode("auto").unwrap();
+        r.controller.set_mode_with_sync("auto", |_| {}).unwrap();
         r.sink.wait_for("listening", |e| state_is(e, "listening"));
 
         // TTS starts speaking → state speaking, mic discarded.
@@ -1115,7 +1110,7 @@ mod tests {
         r.sink.wait_for("transcript after re-arm", |e| {
             e.0 == "voice-transcript"
         });
-        r.controller.set_mode("off").unwrap();
+        r.controller.set_mode_with_sync("off", |_| {}).unwrap();
     }
 
     #[test]
@@ -1144,7 +1139,7 @@ mod tests {
             model_present: Box::new(|| true),
         };
         let controller = VoiceController::new(sink.clone(), deps, Box::new(tts::NoopTts));
-        controller.set_mode("auto").unwrap();
+        controller.set_mode_with_sync("auto", |_| {}).unwrap();
         sink.wait_for("load error", |e| {
             e.0 == "voice-error"
                 && e.1["message"]
@@ -1157,7 +1152,7 @@ mod tests {
         let st = controller.status();
         assert_eq!(st.state, "error");
         // Switching off clears it.
-        controller.set_mode("off").unwrap();
+        controller.set_mode_with_sync("off", |_| {}).unwrap();
         assert_eq!(controller.status().state, "off");
     }
 
@@ -1176,10 +1171,10 @@ mod tests {
         );
         push_frames(&queue, speech_frames(15));
         push_frames(&queue, silence_frames(25));
-        controller.set_mode("auto").unwrap();
+        controller.set_mode_with_sync("auto", |_| {}).unwrap();
         sink.wait_for("transcribing", |e| state_is(e, "transcribing"));
         // Stop lands while transcribe() sleeps; set_mode joins through it.
-        controller.set_mode("off").unwrap();
+        controller.set_mode_with_sync("off", |_| {}).unwrap();
         assert!(
             !sink.has_event(|e| e.0 == "voice-transcript"),
             "a transcript whose inference a Stop rode through must be \
@@ -1203,12 +1198,12 @@ mod tests {
         let controller = Arc::new(controller);
         push_frames(&queue, speech_frames(15));
         push_frames(&queue, silence_frames(25));
-        controller.set_mode("auto").unwrap();
+        controller.set_mode_with_sync("auto", |_| {}).unwrap();
         sink.wait_for("transcribing", |e| state_is(e, "transcribing"));
 
         let c2 = controller.clone();
         let teardown = std::thread::spawn(move || {
-            c2.set_mode("off").unwrap(); // blocks in join through the 500ms inference
+            c2.set_mode_with_sync("off", |_| {}).unwrap(); // blocks in join through the 500ms inference
         });
         std::thread::sleep(Duration::from_millis(50)); // let set_mode reach the join
         let t0 = Instant::now();
@@ -1242,7 +1237,7 @@ mod tests {
             Box::new(tts),
         );
         let controller = Arc::new(controller);
-        controller.set_mode("auto").unwrap();
+        controller.set_mode_with_sync("auto", |_| {}).unwrap();
         sink.wait_for("listening", |e| state_is(e, "listening"));
 
         // Boot-shaped stall: list_voices blocks, holding the tts Mutex…
@@ -1263,7 +1258,7 @@ mod tests {
         *m.lock().unwrap() = true;
         cv.notify_all();
         lister.join().unwrap();
-        controller.set_mode("off").unwrap();
+        controller.set_mode_with_sync("off", |_| {}).unwrap();
     }
 
     /// Finding 4 (TOCTOU): the PTT-shortcut sync callback runs INSIDE the
@@ -1294,7 +1289,7 @@ mod tests {
         }
         assert_eq!(
             registered.load(Ordering::SeqCst),
-            controller.mode() == VoiceMode::Ptt,
+            controller.status().mode == VoiceMode::Ptt.as_str(),
             "registration must match the final mode after arbitrary interleaving"
         );
         controller
@@ -1341,7 +1336,7 @@ mod tests {
             model_present: Box::new(|| true),
         };
         let controller = VoiceController::new(sink.clone(), deps, Box::new(tts::NoopTts));
-        controller.set_mode("auto").unwrap();
+        controller.set_mode_with_sync("auto", |_| {}).unwrap();
         push_frames(&queue, speech_frames(1)); // first full VAD frame → probe panics
         sink.wait_for("crash voice-error", |e| {
             e.0 == "voice-error"
@@ -1354,7 +1349,7 @@ mod tests {
         // Controls on the dead pipeline are harmless no-ops; off recovers.
         controller.ptt_down();
         controller.cancel();
-        controller.set_mode("off").unwrap();
+        controller.set_mode_with_sync("off", |_| {}).unwrap();
         assert_eq!(controller.status().state, "off");
     }
 
@@ -1388,7 +1383,7 @@ mod tests {
     #[test]
     fn ptt_hold_survives_a_silence_hang_pause_one_transcript_on_release() {
         let r = rig(true, "one full thought");
-        r.controller.set_mode("ptt").unwrap();
+        r.controller.set_mode_with_sync("ptt", |_| {}).unwrap();
         r.sink.wait_for("idle", |e| state_is(e, "idle"));
         r.controller.ptt_down();
         r.sink.wait_for("listening", |e| state_is(e, "listening"));
@@ -1411,7 +1406,7 @@ mod tests {
             .filter(|e| e.0 == "voice-transcript")
             .count();
         assert_eq!(transcripts, 1, "exactly ONE transcript for the whole hold");
-        r.controller.set_mode("off").unwrap();
+        r.controller.set_mode_with_sync("off", |_| {}).unwrap();
     }
 
     /// Finding 14: a stale voice id's fallback-to-default must be REPORTED

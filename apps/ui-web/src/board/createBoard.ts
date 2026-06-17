@@ -40,7 +40,7 @@ export const HEAD_H = 36
 
 export type BoardMode = "board" | "stickies"
 
-export interface PanelRect {
+interface PanelRect {
   x: number
   y: number
   w: number

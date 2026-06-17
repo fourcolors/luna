@@ -8,11 +8,11 @@
 import { openDb, defaultDbPath, type AccountRow } from "../db.js"
 import type { CmdResult } from "./add.js"
 
-export interface ListArgs {
+interface ListArgs {
   dbPath?: string
 }
 
-export const runList = (args: ListArgs): CmdResult => {
+const runList = (args: ListArgs): CmdResult => {
   const dbPath = args.dbPath ?? defaultDbPath()
   let db
   try {

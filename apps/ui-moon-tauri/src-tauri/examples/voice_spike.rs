@@ -166,9 +166,8 @@ fn main() {
         total_inference += secs;
         total_speech += dur;
         println!(
-            "[{}] @{:.1}s ({:.1}s, stt {:.0}ms, rtf {:.2}): {}",
+            "[{}] ({:.1}s, stt {:.0}ms, rtf {:.2}): {}",
             i,
-            u.start_ms as f64 / 1000.0,
             dur,
             secs * 1000.0,
             secs / dur,
