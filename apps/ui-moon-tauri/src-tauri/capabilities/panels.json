@@ -23,7 +23,6 @@
     "allow-get-platform",
     "allow-close-widget",
     "allow-list-widget-windows",
-    "allow-grab-dock",
     "allow-check-for-update",
     "allow-install-update",
     "allow-hub-event",
@@ -40,7 +39,6 @@
     "opener:allow-open-url",
     "allow-open-widget",
     "allow-open-artifact-widget",
-    "allow-collapse-to-moon",
-    "allow-pointer-button-down"
+    "allow-collapse-to-moon"
   ]
 }
