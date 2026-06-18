@@ -9,7 +9,10 @@ import {
   type GithubRelease,
   parseMatchingRefsBody,
   pickLatestServerTag,
+  ReleaseNotFoundError,
   renderUpdatePlan,
+  resolveLatestReleasedTag,
+  sortServerTagsDesc,
 } from "../src/commands/update.js"
 
 /* -------------------------------------------------------------------------- */
@@ -90,6 +93,25 @@ describe("pickLatestServerTag (pure)", () => {
     const tags = ["server-v0.3.0", "server-v0.2.0", "server-v0.1.0"]
     expect(pickLatestServerTag(tags)).toBe("server-v0.3.0")
   })
+
+  // FINDING 1 (NaN-seed) regression: a malformed tag like "server-v" parses to
+  // NaN components, and compareServerSemver(real, NaN) === NaN, so `NaN > 0` is
+  // false. If "server-v" SEEDED the reduce it would never be displaced → garbage,
+  // order-dependent pick. pickLatestServerTag now filters malformed tags FIRST, so
+  // the result is total and independent of input order. Both orders must agree.
+  it("picks the real version when a malformed tag appears first", () => {
+    expect(pickLatestServerTag(["server-v", "server-v0.2.0"])).toBe("server-v0.2.0")
+  })
+
+  it("picks the real version when a malformed tag appears last (would seed the reduce)", () => {
+    // Reversed so the malformed tag is the natural reduce seed — the NaN-never-
+    // displaced case that the upstream filter neutralizes.
+    expect(pickLatestServerTag(["server-v0.2.0", "server-v"])).toBe("server-v0.2.0")
+  })
+
+  it("returns null when ALL tags are malformed", () => {
+    expect(pickLatestServerTag(["server-v", "server-vnext", "server-v-test"])).toBeNull()
+  })
 })
 
 /* -------------------------------------------------------------------------- */
@@ -120,6 +142,145 @@ describe("parseMatchingRefsBody (pure)", () => {
       { ref: "refs/tags/server-v0.1.0", object: { sha: "def5678", type: "commit" } },
     ]
     expect(parseMatchingRefsBody(body)).toEqual(["server-v0.1.0"])
+  })
+
+  // FINDING 1: git/matching-refs/tags/server-v returns EVERY ref starting with
+  // "server-v", including non-version refs (server-vnext, server-v, server-v-test).
+  // Those parse to NaN and would corrupt the semver pick — drop them here.
+  it("filters out malformed (non-semver) server-v* tags", () => {
+    const body = [
+      { ref: "refs/tags/server-vnext", object: { sha: "abc1234", type: "commit" } },
+      { ref: "refs/tags/server-v", object: { sha: "def5678", type: "commit" } },
+      { ref: "refs/tags/server-v-test", object: { sha: "aaa1111", type: "commit" } },
+      { ref: "refs/tags/server-v0.2.0", object: { sha: "bbb2222", type: "commit" } },
+    ]
+    expect(parseMatchingRefsBody(body)).toEqual(["server-v0.2.0"])
+  })
+
+  it("keeps a well-formed pre-release tag (server-v0.2.0-rc.1)", () => {
+    const body = [{ ref: "refs/tags/server-v0.2.0-rc.1", object: { sha: "abc1234", type: "commit" } }]
+    expect(parseMatchingRefsBody(body)).toEqual(["server-v0.2.0-rc.1"])
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* sortServerTagsDesc (pure)                                                  */
+/* -------------------------------------------------------------------------- */
+
+describe("sortServerTagsDesc (pure)", () => {
+  it("returns [] for an empty array", () => {
+    expect(sortServerTagsDesc([])).toEqual([])
+  })
+
+  it("sorts newest → oldest by numeric semver (string-sort trap)", () => {
+    // String sort would order "server-v0.10.0" BELOW "server-v0.9.0"; numeric must
+    // place 0.10.0 first.
+    const tags = ["server-v0.2.0", "server-v0.10.0", "server-v0.9.0"]
+    expect(sortServerTagsDesc(tags)).toEqual([
+      "server-v0.10.0",
+      "server-v0.9.0",
+      "server-v0.2.0",
+    ])
+  })
+
+  it("does not mutate the input array (purity)", () => {
+    const tags = ["server-v0.1.0", "server-v0.3.0", "server-v0.2.0"]
+    const copy = [...tags]
+    sortServerTagsDesc(tags)
+    expect(tags).toEqual(copy)
+  })
+
+  it("drops malformed tags so the comparator never returns NaN (FINDING 1)", () => {
+    const tags = ["server-vnext", "server-v0.2.0", "server-v", "server-v0.10.0"]
+    expect(sortServerTagsDesc(tags)).toEqual(["server-v0.10.0", "server-v0.2.0"])
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* resolveLatestReleasedTag (iterate-with-404-fallback)                       */
+/* -------------------------------------------------------------------------- */
+
+describe("resolveLatestReleasedTag (FINDING 2: newest tag may lack a Release)", () => {
+  // The injected fetchRelease lets us drive the 404-fallback without any network.
+  // We map tag → outcome: a GithubRelease (200), a ReleaseNotFoundError (404), or
+  // a transient Error (403/network) that must propagate.
+  const fetcherFrom = (
+    outcomes: Record<string, GithubRelease | "404" | "transient">,
+  ) =>
+    async (tag: string): Promise<GithubRelease> => {
+      const outcome = outcomes[tag]
+      if (outcome === undefined || outcome === "404") throw new ReleaseNotFoundError(tag)
+      if (outcome === "transient") {
+        throw new Error("GitHub rate limit (403) — set GITHUB_TOKEN or wait and retry")
+      }
+      return outcome
+    }
+
+  it("returns the newest tag's release when it has one", async () => {
+    const rel = makeRelease({ tag_name: "server-v0.3.0" })
+    const result = await resolveLatestReleasedTag(
+      ["server-v0.3.0", "server-v0.2.0"],
+      fetcherFrom({ "server-v0.3.0": rel }),
+    )
+    expect(result).not.toBeNull()
+    expect(result!.tag).toBe("server-v0.3.0")
+    expect(result!.release).toStrictEqual(rel)
+  })
+
+  it("falls through a 404 on the newest tag to the next tag that has a release", async () => {
+    // server-v0.3.0 was tagged but its release CI is mid-run (404). The latest
+    // *released* version is server-v0.2.0 — discovery must resolve to it, not abort.
+    const rel = makeRelease({ tag_name: "server-v0.2.0" })
+    const result = await resolveLatestReleasedTag(
+      ["server-v0.3.0", "server-v0.2.0"],
+      fetcherFrom({ "server-v0.3.0": "404", "server-v0.2.0": rel }),
+    )
+    expect(result!.tag).toBe("server-v0.2.0")
+    expect(result!.release).toStrictEqual(rel)
+  })
+
+  it("returns null when EVERY candidate tag 404s (→ no-release path)", async () => {
+    const result = await resolveLatestReleasedTag(
+      ["server-v0.3.0", "server-v0.2.0", "server-v0.1.0"],
+      fetcherFrom({ "server-v0.3.0": "404", "server-v0.2.0": "404", "server-v0.1.0": "404" }),
+    )
+    expect(result).toBeNull()
+  })
+
+  it("propagates a transient (403) error instead of treating it as 'no release'", async () => {
+    // A rate-limit on the FIRST candidate must NOT be swallowed as a 404 — otherwise
+    // --check would falsely report "no releases" during a transient outage. The
+    // error propagates so run() routes it to the graceful check-github-error path.
+    await expect(
+      resolveLatestReleasedTag(
+        ["server-v0.3.0", "server-v0.2.0"],
+        fetcherFrom({ "server-v0.3.0": "transient", "server-v0.2.0": makeRelease() }),
+      ),
+    ).rejects.toThrow("rate limit (403)")
+  })
+
+  it("returns null for an empty candidate list (never calls the fetcher)", async () => {
+    let called = false
+    const result = await resolveLatestReleasedTag([], async (tag) => {
+      called = true
+      return makeRelease({ tag_name: tag })
+    })
+    expect(result).toBeNull()
+    expect(called).toBe(false)
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* ReleaseNotFoundError (signal type for the 404 fallback)                    */
+/* -------------------------------------------------------------------------- */
+
+describe("ReleaseNotFoundError", () => {
+  it("is an Error subclass carrying the tag, distinguishable via instanceof", () => {
+    const err = new ReleaseNotFoundError("server-v0.3.0")
+    expect(err).toBeInstanceOf(Error)
+    expect(err).toBeInstanceOf(ReleaseNotFoundError)
+    expect(err.tag).toBe("server-v0.3.0")
+    expect(err.message).toContain("server-v0.3.0")
   })
 })
 

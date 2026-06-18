@@ -95,6 +95,23 @@ export interface ServerLatestJson {
 /* -------------------------------------------------------------------------- */
 
 /**
+ * Matches a well-formed server release tag: "server-v" + numeric major.minor.patch,
+ * with an OPTIONAL SemVer pre-release suffix (e.g. "server-v0.2.0-rc.1").
+ *
+ * WHY this guard exists: git/matching-refs/tags/server-v returns EVERY ref whose
+ * name starts with "server-v" — including non-version refs an operator might push
+ * by accident or convention ("server-vnext", "server-v", "server-v-test"). Those
+ * yield NaN when parsed as major.minor.patch, and compareServerSemver(real, NaN)
+ * returns NaN. Because `NaN > 0` is false, a malformed tag that SEEDS the reduce in
+ * pickLatestServerTag would never be displaced by a real version → garbage pick,
+ * order-dependent on ref ordering. We defend at TWO layers: parseMatchingRefsBody
+ * drops malformed tags at ingestion (primary), and pickLatestServerTag/
+ * sortServerTagsDesc skip them too (defense-in-depth, so the comparators stay
+ * total and order-independent even if a malformed tag ever reaches them).
+ */
+export const SERVER_VERSION_TAG = /^server-v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/
+
+/**
  * Pure: compare two server-v* tag names by numeric semver.
  *
  * WHY numeric: string-sorting "server-v0.10.0" < "server-v0.9.0" because "1"
@@ -137,16 +154,42 @@ export const compareServerSemver = (a: string, b: string): number => {
 
 /**
  * Pure: given an array of server-v* tag names, return the one with the highest
- * semver version. Returns null for an empty array.
+ * semver version. Returns null when none are well-formed (incl. empty input).
  *
- * WHY not Array.sort: Array.sort mutates the original array in some environments
- * and its string-sort default is wrong for versions (see compareServerSemver).
- * We use reduce so we make a single linear pass, returning the running maximum.
+ * Malformed tags (see SERVER_VERSION_TAG) are filtered out FIRST so the reduce
+ * never compares against a NaN-producing tag — that is what makes the result
+ * total and independent of input order (FINDING 1). After filtering we reduce in
+ * a single linear pass, returning the running maximum.
+ *
+ * WHY not Array.sort for the max: Array.prototype.sort mutates the input array
+ * and its string-sort default is wrong for versions (see compareServerSemver);
+ * reduce sidesteps both.
  */
 export const pickLatestServerTag = (tags: ReadonlyArray<string>): string | null => {
-  if (tags.length === 0) return null
-  return tags.reduce((best, tag) => (compareServerSemver(tag, best) > 0 ? tag : best))
+  const wellFormed = tags.filter((t) => SERVER_VERSION_TAG.test(t))
+  if (wellFormed.length === 0) return null
+  return wellFormed.reduce((best, tag) => (compareServerSemver(tag, best) > 0 ? tag : best))
 }
+
+/**
+ * Pure: return the well-formed tags sorted newest → oldest by semver. Malformed
+ * tags are dropped (see SERVER_VERSION_TAG) so the sort comparator never returns
+ * NaN — keeping the order deterministic (FINDING 1).
+ *
+ * WHY this exists separately from pickLatestServerTag: the newest TAG is not
+ * guaranteed to have a published RELEASE. server-latest.json lives on the
+ * Release, not the tag — and a tag can exist with no Release (release CI still
+ * running, or it failed after the tag was pushed). If we picked only the single
+ * newest tag and its Release 404'd, discovery would abort and never consider the
+ * latest *released* server-v*. So run() iterates this descending list, trying each
+ * tag's Release in turn and stopping at the first 200. The engine's own
+ * SHA-equality no-op prevents a downgrade if an older release is selected.
+ *
+ * Copies the input before sorting (Array.prototype.sort mutates in place) so the
+ * function stays pure and the caller's array is untouched.
+ */
+export const sortServerTagsDesc = (tags: ReadonlyArray<string>): ReadonlyArray<string> =>
+  tags.filter((t) => SERVER_VERSION_TAG.test(t)).sort((a, b) => compareServerSemver(b, a))
 
 /**
  * Pure: parse and validate the matching-refs API response body.
@@ -156,9 +199,12 @@ export const pickLatestServerTag = (tags: ReadonlyArray<string>): string | null 
  * (CDN edge cases); validating here keeps the type cast honest and ensures every
  * failure degrades through the same user-friendly error path.
  *
- * Returns an array of tag names with the "refs/tags/" prefix stripped.
- * Entries whose ref does not start with "refs/tags/" are silently skipped
- * (future-proofs against unexpected ref shapes in the API response).
+ * Returns an array of tag names with the "refs/tags/" prefix stripped, KEEPING
+ * ONLY well-formed server-v<major.minor.patch> tags (see SERVER_VERSION_TAG).
+ * Entries whose ref does not start with "refs/tags/", or whose stripped name is
+ * not a well-formed version tag, are silently dropped. This is the single
+ * choke-point that protects the (numeric, NaN-fragile) semver comparison from
+ * malformed input.
  */
 export const parseMatchingRefsBody = (body: unknown): ReadonlyArray<string> => {
   if (!Array.isArray(body)) {
@@ -166,9 +212,11 @@ export const parseMatchingRefsBody = (body: unknown): ReadonlyArray<string> => {
   }
   const tags: string[] = []
   for (const entry of body) {
-    if (typeof entry?.ref === "string" && entry.ref.startsWith("refs/tags/")) {
-      tags.push(entry.ref.slice("refs/tags/".length))
-    }
+    if (typeof entry?.ref !== "string" || !entry.ref.startsWith("refs/tags/")) continue
+    const tag = entry.ref.slice("refs/tags/".length)
+    // Drop non-version refs (server-vnext, server-v, server-v-test, …) so the
+    // numeric semver compare never sees a NaN-producing tag. See SERVER_VERSION_TAG.
+    if (SERVER_VERSION_TAG.test(tag)) tags.push(tag)
   }
   return tags
 }
@@ -480,13 +528,32 @@ const fetchServerRefTags = async (): Promise<ReadonlyArray<string>> => {
 }
 
 /**
+ * A 404 from the /releases/tags/:tag endpoint: the tag exists (matching-refs
+ * returned it) but no Release has been published for it yet. This is NOT a
+ * failure — it's the "release CI mid-run, or it failed after the tag push"
+ * case — so run() catches THIS distinct type to skip to the next-newest tag,
+ * while letting transient errors (403 rate limit, network, 5xx) propagate to the
+ * graceful check-github-error / exit-1 path. A bare status check would conflate
+ * "no release for this tag" with "GitHub is unreachable", which need opposite
+ * handling: try-the-next-tag vs. degrade-gracefully.
+ */
+export class ReleaseNotFoundError extends Error {
+  constructor(public readonly tag: string) {
+    super(`no published release for tag ${tag}`)
+    this.name = "ReleaseNotFoundError"
+  }
+}
+
+/**
  * Fetch the release object for a specific tag.
- * Throws with a user-friendly message on network / rate-limit errors.
+ * Throws ReleaseNotFoundError on 404 (tag has no published Release — caller
+ * should try the next tag); throws a user-friendly Error on network / rate-limit
+ * / other non-200 (transient — caller should degrade gracefully).
  *
- * WHY a tag-specific fetch: once pickLatestServerTag has selected the newest
- * server-v* tag by semver, we need the full release object to find the
- * server-latest.json asset URL. The /releases/tags/:tag endpoint returns exactly
- * that one release — no interleaving, no pagination, no cliff.
+ * WHY a tag-specific fetch: once a server-v* tag has been selected by semver, we
+ * need the full release object to find the server-latest.json asset URL. The
+ * /releases/tags/:tag endpoint returns exactly that one release — no interleaving,
+ * no pagination, no cliff.
  */
 const fetchReleaseByTag = async (tag: string): Promise<GithubRelease> => {
   const controller = new AbortController()
@@ -504,6 +571,11 @@ const fetchReleaseByTag = async (tag: string): Promise<GithubRelease> => {
     clearTimeout(timer)
   }
 
+  // 404 = tag exists but no Release yet — a recoverable "try the next tag" signal,
+  // NOT a transient API failure. Distinguish it before the generic non-200 throw.
+  if (res.status === 404) {
+    throw new ReleaseNotFoundError(tag)
+  }
   if (res.status === 403) {
     throw new Error("GitHub rate limit (403) — set GITHUB_TOKEN or wait and retry")
   }
@@ -512,6 +584,43 @@ const fetchReleaseByTag = async (tag: string): Promise<GithubRelease> => {
   }
 
   return (await res.json()) as GithubRelease
+}
+
+/**
+ * Resolve the newest server-v* tag that actually has a published Release.
+ *
+ * Iterates `sortedTagsDesc` (newest → oldest), fetching each tag's Release via
+ * the injected `fetchRelease`. The FIRST tag that resolves (200) wins and is
+ * returned with its release object. A ReleaseNotFoundError (404) for a tag means
+ * "release pending/missing for THIS tag" → skip to the next candidate. ANY OTHER
+ * error (403 rate limit, network, 5xx) is transient and unrelated to release
+ * presence, so it propagates immediately for the caller's graceful-degrade path
+ * (we must NOT mask a rate limit as "no releases"). When every candidate 404s,
+ * returns null → the caller renders the existing "No server releases published
+ * yet" exit-0 path.
+ *
+ * `fetchRelease` is injected (rather than calling fetchReleaseByTag directly) so
+ * this resolution loop is unit-testable with a mock — no real network in tests.
+ *
+ * WHY iterate instead of pick-one: the newest TAG may have no Release (CI mid-run
+ * or failed post-tag). Picking only the top tag and aborting on its 404 would hide
+ * the latest *released* version. The engine's SHA-equality no-op prevents any
+ * downgrade if an older-but-released tag is selected.
+ */
+export const resolveLatestReleasedTag = async (
+  sortedTagsDesc: ReadonlyArray<string>,
+  fetchRelease: (tag: string) => Promise<GithubRelease>,
+): Promise<{ readonly tag: string; readonly release: GithubRelease } | null> => {
+  for (const tag of sortedTagsDesc) {
+    try {
+      const release = await fetchRelease(tag)
+      return { tag, release }
+    } catch (e) {
+      if (e instanceof ReleaseNotFoundError) continue // no Release for this tag yet — try older
+      throw e // transient (403/network/5xx) — let the caller degrade gracefully
+    }
+  }
+  return null // every candidate tag lacked a published Release
 }
 
 /**
@@ -824,18 +933,22 @@ export const updateCommand = defineCommand({
       process.exit(1)
     }
 
-    // Step 2: pick newest by semver (numeric comparison — avoids "0.9.0" > "0.10.0" trap)
-    const latestTag = pickLatestServerTag(serverTags)
-    if (latestTag === null) {
+    // Step 2: sort newest → oldest by semver (numeric — avoids "0.9.0" > "0.10.0" trap).
+    // We sort the WHOLE list (not just pick the max) because the newest tag may not
+    // have a published Release yet; step 3 walks candidates until one resolves.
+    const sortedTags = sortServerTagsDesc(serverTags)
+    if (sortedTags.length === 0) {
       return writeAndExit(
         renderUpdatePlan({ kind: isCheck ? "check-no-release" : "no-release" }),
       )
     }
 
-    // Step 3: fetch the specific release object for that tag to get its assets
-    let latestRelease: GithubRelease
+    // Step 3: resolve the newest tag that actually has a published Release. A 404
+    // for the newest tag (release CI mid-run, or failed post-tag) skips to the next
+    // candidate; a transient error (403/network) propagates to the graceful path.
+    let resolved: { readonly tag: string; readonly release: GithubRelease } | null
     try {
-      latestRelease = await fetchReleaseByTag(latestTag)
+      resolved = await resolveLatestReleasedTag(sortedTags, fetchReleaseByTag)
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e)
       if (isCheck) {
@@ -844,6 +957,15 @@ export const updateCommand = defineCommand({
       process.stderr.write(`Error: ${detail}\n`)
       process.exit(1)
     }
+
+    // Every candidate tag lacked a published Release — the newest *released*
+    // server-v does not exist yet. Same UX as "no server-v* tag at all".
+    if (resolved === null) {
+      return writeAndExit(
+        renderUpdatePlan({ kind: isCheck ? "check-no-release" : "no-release" }),
+      )
+    }
+    const latestRelease = resolved.release
 
     // Step 4: fetch the server-latest.json asset to get the canonical targetSha
     let latestJson: ServerLatestJson
