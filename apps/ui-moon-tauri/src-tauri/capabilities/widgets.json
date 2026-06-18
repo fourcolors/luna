@@ -23,6 +23,7 @@
     "allow-get-platform",
     "allow-close-widget",
     "allow-list-widget-windows",
-    "allow-collapse-to-moon"
+    "allow-collapse-to-moon",
+    "allow-set-native-controls-visible"
   ]
 }

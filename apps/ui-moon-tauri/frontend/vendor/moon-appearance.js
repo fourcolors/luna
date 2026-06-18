@@ -74,10 +74,45 @@
     el.setAttribute('data-palette', read('palette'));
     el.setAttribute('data-theme', read('theme'));
     el.setAttribute('data-chrome', read('chrome'));
-    el.setAttribute('data-skin', read('skin'));
+    var skin = read('skin');
+    el.setAttribute('data-skin', skin);
     el.setAttribute('data-grain', read('grain') === 'true' ? 'on' : 'off');
     el.setAttribute('data-font', read('font'));
     el.setAttribute('data-fontsize', read('fontSize'));
+    // classic skin draws its own CSS traffic-lights, so hide the native ones;
+    // studio/aqua keep native. Deferred via syncNativeControls because apply()
+    // stamps at first paint, which can run BEFORE window.__TAURI__ is injected
+    // (a load-time invoke is silently skipped → native lights wouldn't hide
+    // under classic). Inert on the orb window (no native buttons).
+    syncNativeControls(skin);
+  }
+
+  // Drive the native macOS traffic-lights to match the skin. window.__TAURI__
+  // is injected slightly after the first-paint apply(), so fire immediately if
+  // the API is live, else poll briefly until it is (then once). A newer skin
+  // change cancels a pending poll. No-op (and no dangling timer) outside Tauri.
+  var nativeCtlTimer = null;
+  function syncNativeControls(skin) {
+    var visible = skin !== 'classic';
+    function fire() {
+      try {
+        if (g.__TAURI__ && g.__TAURI__.core) {
+          g.__TAURI__.core.invoke('set_native_controls_visible', { visible: visible }).catch(function () {});
+          return true;
+        }
+      } catch (e) { /* never throw from a stamp */ }
+      return false;
+    }
+    if (nativeCtlTimer) { g.clearInterval(nativeCtlTimer); nativeCtlTimer = null; }
+    if (fire()) return;
+    // __TAURI__ injects shortly after this first-paint stamp, so poll until it
+    // is live. Skip the poll only under jsdom (unit tests) so no timer is left
+    // running there — real Tauri/WKWebView is never reported as jsdom.
+    try { if (/jsdom/i.test((g.navigator && g.navigator.userAgent) || '')) return; } catch (e) {}
+    var tries = 0;
+    nativeCtlTimer = g.setInterval(function () {
+      if (fire() || ++tries > 100) { g.clearInterval(nativeCtlTimer); nativeCtlTimer = null; }
+    }, 50);
   }
 
   function set(name, value) {
