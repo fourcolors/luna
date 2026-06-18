@@ -20,10 +20,9 @@
 
 /* ── Transparent window envelope ─────────────────────────────────────────
    Widget windows use OS transparency (.transparent(true) in Rust) so the
-   wobble filter on .widget-shell::before can bleed past the card edge into
-   the transparent margin AND the soft halo shadow can cast freely. html/body
-   must be fully transparent — the CARD (the ::before pseudo-layer) is the
-   visual background.
+   soft halo shadow on .widget-shell can cast freely past the card edge into
+   the transparent margin. html/body must be fully transparent — the CARD
+   (the ::before pseudo-layer) is the visual background.
 
    --card-inset is the single source of truth for the transparent margin: it
    must be ≥ the shadow's visible reach, or body's overflow:hidden + the OS
@@ -48,10 +47,13 @@ html, body {
 /* ── Paper card shell ────────────────────────────────────────────────────
    .widget-shell (the outer flex column in all three widget pages) becomes
    the CARD: inset --card-inset per side from the OS window frame, giving the
-   wc-wobble filter room to roughen the edge and the box-shadow room to cast
-   a soft halo without clipping. Visible content shrinks by 2×inset in each
-   dimension vs the registered window size; flush-docked windows show a
-   2×inset paper gap at the seam (intentional, board-like spacing). */
+   box-shadow halo room to cast freely without clipping. Visible content shrinks
+   by 2×inset in each dimension vs the registered window size; flush-docked
+   windows show a 2×inset paper gap at the seam on FREE (non-welded) sides.
+   On WELDED sides applyWeldVisuals (moon-dock.js) collapses the per-side margin
+   to 0 (and recomputes height/width per axis) so welded cards meet flush — zero
+   gap, no "board-like spacing" at a seam. The halo is already suppressed on
+   welded sides (silhouette shadow, applyWeldVisuals) so no bleed clipping. */
 .widget-shell {
   position: relative;
   margin: var(--card-inset);
@@ -64,6 +66,14 @@ html, body {
   /* Ease corner squaring at dock settle (weld recomputes corners on settle,
      not per drag-frame) so they don't pop. */
   transition: border-radius 0.2s ease;
+  /* NOTE: On welded sides, applyWeldVisuals (moon-dock.js) sets
+     marginTop/Right/Bottom/Left and height/width inline to collapse the per-side
+     inset to 0 so flush OS windows produce zero gap between painted cards
+     (Fix 2 Option B, luna-dock-moon-alignment-plan.md §3). When un-grouped those
+     inline styles are cleared back to '' so this class rule restores.
+     There is intentionally NO CSS transition for margin/width/height — inset
+     changes are applied instantly on settle (no per-frame mid-drag resize jank).
+     Only border-radius eases. */
   isolation: isolate;
   /* The SOFT paper halo lives HERE, on the unfiltered shell — NOT on the
      wobbled ::before. The wc-wobble filter displaces everything it's applied
@@ -83,7 +93,10 @@ html, body {
 }
 
 /* Paper-wash layer — sits behind all content via z-index:-1.
-   The wc-wobble filter roughens its outline so the card reads hand-painted.
+   No displacement filter here — the window outline must be crisp so that
+   squared seam corners read as a clean weld (reference: dock.css §8, zero
+   filter on the window outline). The watercolor character comes from the
+   paper fill + head-tint gradient and the soft halo on .widget-shell above.
    The head-tint gradient pools the panel's watercolor wash at the top.
    NO box-shadow here — see .widget-shell above for why the halo moved. */
 .widget-shell::before {
@@ -92,7 +105,6 @@ html, body {
   inset: 0;
   border-radius: inherit;
   z-index: -1;
-  filter: url(#wc-wobble);
   /* Paper fill + head-tint pool, both from the active skin. Studio resolves to
      the original --paper / 26% / 86px (and the dark token block flips to
      --paper-2 / 38%), so the default is pixel-unchanged. Aqua makes the paper
@@ -109,12 +121,6 @@ html, body {
      chrome note below for why the wobble filter forbids a real border). Studio
      --dk-win-border is transparent → invisible. Ink chrome overrides this. */
   box-shadow: 0 0 0 1.5px var(--dk-win-border, transparent);
-}
-
-/* Classic skin: crisp straight card edge — no watercolor wobble (winamp-retro
-   is hard hairlines, not hand-painted paper). */
-html[data-skin='classic'] .widget-shell::before {
-  filter: none;
 }
 
 /* Drag / snap affordance (ported from the design's .dock-win.dragging /
@@ -161,13 +167,11 @@ html[data-theme='dark'] .widget-shell {
     0 6px 20px -6px rgba(0, 0, 0, 0.62);
 }
 
-/* Ink chrome: a single visible inked edge (preserves PR #131's fix). It rides
-   on the wobbled ::before so the wc-wobble gives the inked stroke the same
-   hand-painted waver as the fill — carried as a ring box-shadow, NOT a `border`
-   (a border sits inside the box while the halo ring sits outside; the filter
-   displaces the two concentric edges into offset wavy lines with a transparent
-   sliver between = the doubled "3rd border"). The soft halo stays on the
-   unfiltered .widget-shell; ::before carries ONLY the single inked ring. */
+/* Ink chrome: a single visible inked edge (preserves PR #131's fix). Carried
+   as a ring box-shadow on ::before, NOT a `border` (a border sits inside the
+   box while a box-shadow ring sits outside; a real border on ::before would be
+   displaced by any future filter and produce a doubled-edge artifact). The soft
+   halo stays on .widget-shell; ::before carries ONLY the single inked ring. */
 html[data-chrome='ink'] .widget-shell::before {
   box-shadow: 0 0 0 1.5px color-mix(in oklab, var(--ink) 55%, transparent);
   background:
@@ -208,8 +212,13 @@ html[data-grain='on'] body::after {
   content: '';
   position: fixed;
   /* Match the card geometry so grain stays inside the paper card and
-     doesn't paint into the transparent window margin. */
-  inset: var(--card-inset);
+     doesn't paint into the transparent window margin. On welded sides
+     applyWeldVisuals (moon-dock.js) sets --grain-{t,r,b,l} on <html> to 0px
+     so the grain flush-fills the card edge instead of stopping 22px short. */
+  top:    var(--grain-t, var(--card-inset));
+  right:  var(--grain-r, var(--card-inset));
+  bottom: var(--grain-b, var(--card-inset));
+  left:   var(--grain-l, var(--card-inset));
   border-radius: var(--card-radius);
   pointer-events: none;
   opacity: 0.5;
@@ -247,6 +256,12 @@ html[data-chrome='ink'] .title-bar {
     transparent 100%
   );
 }
+/* macOS traffic-light offset guard: padding-top is applied INLINE by
+   applyWeldVisuals (moon-dock.js) only inside the applyInset block, so it
+   moves in lockstep with the margin-top collapse. Keying it on [data-weld]
+   here caused it to fire mid-drag (data-weld is stamped unconditionally) while
+   the margin only collapsed at settle → transient 22px title-bar growth.
+   Kept as a comment so the intent is documented; do not restore the CSS rule. */
 
 .grip {
   color: color-mix(in oklab, var(--ink) 35%, transparent);
@@ -403,20 +418,24 @@ html[data-anchor='true'] .bar-title {
 
 /* ── Seam glow: the link animation when two windows click together ───── */
 /* Offset bars by --card-inset from each OS-window edge so they hug the card
-   face (the transparent margin sits outside the painted card). */
+   face (the transparent margin sits outside the painted card).
+   Per-side overrides (--seam-l/r/t/b) let applyWeldVisuals (moon-dock.js)
+   collapse a welded side's offset to 0px so the glow bar lands on the real
+   seam line (the flush OS edge) rather than 22px inside a now-flush card.
+   Default is var(--card-inset) so ungrouped / non-welded sides are unchanged. */
 #seam {
   position: fixed;
   pointer-events: none;
   opacity: 0;
   z-index: 50;
 }
-#seam.flash-l { left: var(--card-inset); top: var(--card-inset); bottom: var(--card-inset); width: 7px;
+#seam.flash-l { left: var(--seam-l, var(--card-inset)); top: var(--seam-t, var(--card-inset)); bottom: var(--seam-b, var(--card-inset)); width: 7px;
   background: linear-gradient(to right, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
-#seam.flash-r { right: var(--card-inset); top: var(--card-inset); bottom: var(--card-inset); width: 7px;
+#seam.flash-r { right: var(--seam-r, var(--card-inset)); top: var(--seam-t, var(--card-inset)); bottom: var(--seam-b, var(--card-inset)); width: 7px;
   background: linear-gradient(to left, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
-#seam.flash-t { top: var(--card-inset); left: var(--card-inset); right: var(--card-inset); height: 7px;
+#seam.flash-t { top: var(--seam-t, var(--card-inset)); left: var(--seam-l, var(--card-inset)); right: var(--seam-r, var(--card-inset)); height: 7px;
   background: linear-gradient(to bottom, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
-#seam.flash-b { bottom: var(--card-inset); left: var(--card-inset); right: var(--card-inset); height: 7px;
+#seam.flash-b { bottom: var(--seam-b, var(--card-inset)); left: var(--seam-l, var(--card-inset)); right: var(--seam-r, var(--card-inset)); height: 7px;
   background: linear-gradient(to top, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
 #seam.on { animation: seam-flash 0.7s ease-out; }
 @keyframes seam-flash {
@@ -439,6 +458,21 @@ html[data-anchor='true'] .bar-title {
 #outline.gr { border-right: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
 #outline.gt { border-top: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
 #outline.gb { border-bottom: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
+
+/* TODO Fix 3 — per-seam border suppression for visible-border skins (classic/aqua).
+   Reference dock.css:320-321 drops border-top / border-left on the welded inner
+   window's wash layer so each seam has exactly ONE divider. Moon's ::before ink-ring
+   is expressed as `box-shadow: 0 0 0 1.5px var(--dk-win-border)` — a uniform ring,
+   not a CSS `border` — so border-top:0 / border-left:0 keyed on [data-weld~="t/l"]
+   does not apply here without restructuring the ring implementation.
+   For studio skin --dk-win-border is transparent → no visible doubling today.
+   For classic / aqua the welded seam would show a doubled hairline.
+   Options:
+     (a) Switch ::before to a real CSS `border` + `border-top:0` / `border-left:0`
+         on `.widget-shell[data-weld~="t"] ::before` / `[data-weld~="l"]`.
+     (b) Re-express the ring as four individual inset box-shadow layers (one per side,
+         each offset so it only paints one edge) and drop the welded-side layer.
+   Implement when classic/aqua weld rendering is validated on real hardware. */
 
 /* ── Scroll-container focus ring suppression ─────────────────────────────
    WebKit makes any overflow:auto/scroll element natively focusable WITHOUT a
