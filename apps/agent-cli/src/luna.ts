@@ -8,6 +8,7 @@ import { chatCommand } from "./commands/chat.js"
 import { doctorCommand } from "./commands/doctor.js"
 import { memoryCommand } from "./commands/memory.js"
 import { pairCommand } from "./commands/pair.js"
+import { updateCommand } from "./commands/update.js"
 
 export const approveLocalCommand = async (command: string): Promise<boolean> => {
   let input: ReturnType<typeof createReadStream> | undefined
@@ -43,6 +44,7 @@ const root = defineCommand({
     memory: memoryCommand,
     doctor: doctorCommand,
     pair: pairCommand,
+    update: updateCommand,
   },
 })
 
