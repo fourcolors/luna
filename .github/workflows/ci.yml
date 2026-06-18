@@ -127,6 +127,14 @@ jobs:
       - name: Moon version sync (HARD GATE)
         run: bun run scripts/bump-moon.ts --check
 
+      # HARD GATE 4: the server release version (server.version.json) is valid
+      # semver. The `server-v*` tag the release pipeline cuts is derived from this
+      # file; an invalid/missing version would otherwise only surface AFTER an
+      # irreversible tag push (release-server.yml's coherence guard). Catch it here
+      # on every PR. `bump-server.ts` is the single writer of this file.
+      - name: Server version sync (HARD GATE)
+        run: bun run scripts/bump-server.ts --check
+
       # KNOWN-RED (surfaced, not blocking): pre-existing tsc baseline.
       - name: Typecheck (known-red baseline — non-blocking)
         continue-on-error: true

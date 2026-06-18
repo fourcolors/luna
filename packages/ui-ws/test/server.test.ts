@@ -678,6 +678,55 @@ describe("UIWebSocketServer", () => {
     }
   })
 
+  it("surfaces serverVersion in /readyz and the hello frame when threaded in (release identity, additive)", async () => {
+    // Mirrors the buildSha reach test above: thread serverVersion and assert it
+    // lands in BOTH /readyz JSON and the connect-time hello frame.
+    rig = await startRig(undefined, { serverVersion: "0.1.0" })
+
+    const res = await fetch(rig.url.replace("ws://", "http://").replace("/ui", "/readyz"))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      status: "ok",
+      mode: "normal",
+      credentialOk: true,
+      serverVersion: "0.1.0",
+    })
+
+    const frames = await collectFrames(
+      rig.url,
+      { authorization: `Bearer ${TOKEN}` },
+      1,
+    )
+    if (frames[0]?.type === "hello") {
+      expect(frames[0].serverVersion).toBe("0.1.0")
+    } else {
+      throw new Error("expected hello frame")
+    }
+  })
+
+  it("omits serverVersion from /readyz and the hello frame when not configured (back-compat)", async () => {
+    // Absence path: a server started without serverVersion must NOT emit the
+    // field on the wire (not present, not undefined/null) so older consumers
+    // and the existing {status,mode,credentialOk} shape are unaffected.
+    rig = await startRig()
+
+    const res = await fetch(rig.url.replace("ws://", "http://").replace("/ui", "/readyz"))
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Record<string, unknown>
+    expect(Object.prototype.hasOwnProperty.call(body, "serverVersion")).toBe(false)
+
+    const frames = await collectFrames(
+      rig.url,
+      { authorization: `Bearer ${TOKEN}` },
+      1,
+    )
+    if (frames[0]?.type === "hello") {
+      expect(Object.prototype.hasOwnProperty.call(frames[0], "serverVersion")).toBe(false)
+    } else {
+      throw new Error("expected hello frame")
+    }
+  })
+
   it("refuses to start with token shorter than 16 chars", async () => {
     const baseLayer = makeFullLayer()
     const badLayer = Layer.scoped(
