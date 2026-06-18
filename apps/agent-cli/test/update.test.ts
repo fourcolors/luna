@@ -3,9 +3,12 @@ import {
   buildCurrentHeader,
   buildEngineArgs,
   classifyEngineExit,
+  compareServerSemver,
   compareServerVersion,
+  type GithubMatchingRef,
   type GithubRelease,
-  pickLatestServerRelease,
+  parseMatchingRefsBody,
+  pickLatestServerTag,
   renderUpdatePlan,
 } from "../src/commands/update.js"
 
@@ -26,69 +29,97 @@ const makeRelease = (overrides: Partial<GithubRelease> = {}): GithubRelease => (
 })
 
 /* -------------------------------------------------------------------------- */
-/* pickLatestServerRelease                                                    */
+/* compareServerSemver (pure)                                                 */
 /* -------------------------------------------------------------------------- */
 
-describe("pickLatestServerRelease (pure)", () => {
-  it("returns null when the list is empty", () => {
-    expect(pickLatestServerRelease([])).toBeNull()
+describe("compareServerSemver (pure)", () => {
+  it("numeric: server-v0.10.0 beats server-v0.9.0 (string sort would invert this)", () => {
+    // THE critical test: "0.9" > "0.10" lexicographically, so string-sorting would
+    // pick 0.9.0 as "newer". Numeric comparison must return positive here.
+    expect(compareServerSemver("server-v0.10.0", "server-v0.9.0")).toBeGreaterThan(0)
   })
 
-  it("returns null when no server-v* release exists (moon-only releases)", () => {
-    const releases: GithubRelease[] = [
-      makeRelease({ tag_name: "moon-v0.0.36" }),
-      makeRelease({ tag_name: "moon-v0.0.35" }),
+  it("numeric: server-v0.10.0 beats server-v0.2.0", () => {
+    expect(compareServerSemver("server-v0.10.0", "server-v0.2.0")).toBeGreaterThan(0)
+  })
+
+  it("numeric: server-v0.2.0 beats server-v0.1.0", () => {
+    expect(compareServerSemver("server-v0.2.0", "server-v0.1.0")).toBeGreaterThan(0)
+  })
+
+  it("equal tags return 0", () => {
+    expect(compareServerSemver("server-v0.1.0", "server-v0.1.0")).toBe(0)
+  })
+
+  it("major version comparison dominates minor", () => {
+    expect(compareServerSemver("server-v1.0.0", "server-v0.99.0")).toBeGreaterThan(0)
+  })
+
+  it("pre-release suffix is stripped for numeric comparison only", () => {
+    // server-v0.2.0-rc.1 has numeric base 0.2.0, which beats 0.1.0
+    expect(compareServerSemver("server-v0.2.0-rc.1", "server-v0.1.0")).toBeGreaterThan(0)
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* pickLatestServerTag (pure)                                                 */
+/* -------------------------------------------------------------------------- */
+
+describe("pickLatestServerTag (pure)", () => {
+  it("returns null for an empty array", () => {
+    expect(pickLatestServerTag([])).toBeNull()
+  })
+
+  it("picks server-v0.10.0 over [server-v0.9.0, server-v0.2.0, server-v0.10.0] — THE string-sort trap", () => {
+    // String sort: "server-v0.10.0" < "server-v0.9.0" because "1" < "9".
+    // Numeric sort must produce "server-v0.10.0".
+    const tags = ["server-v0.9.0", "server-v0.2.0", "server-v0.10.0"]
+    expect(pickLatestServerTag(tags)).toBe("server-v0.10.0")
+  })
+
+  it("returns the single element when array has one entry", () => {
+    expect(pickLatestServerTag(["server-v0.1.0"])).toBe("server-v0.1.0")
+  })
+
+  it("works when tags are given in ascending order", () => {
+    const tags = ["server-v0.1.0", "server-v0.2.0", "server-v0.3.0"]
+    expect(pickLatestServerTag(tags)).toBe("server-v0.3.0")
+  })
+
+  it("works when tags are given in descending order", () => {
+    const tags = ["server-v0.3.0", "server-v0.2.0", "server-v0.1.0"]
+    expect(pickLatestServerTag(tags)).toBe("server-v0.3.0")
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* parseMatchingRefsBody (pure)                                               */
+/* -------------------------------------------------------------------------- */
+
+describe("parseMatchingRefsBody (pure)", () => {
+  it("returns [] for an empty array body", () => {
+    expect(parseMatchingRefsBody([])).toEqual([])
+  })
+
+  it("returns tag names stripped of 'refs/tags/' prefix for a valid refs array", () => {
+    const body: GithubMatchingRef[] = [
+      { ref: "refs/tags/server-v0.1.0", object: { sha: "abc1234", type: "commit" } },
+      { ref: "refs/tags/server-v0.2.0", object: { sha: "def5678", type: "commit" } },
     ]
-    expect(pickLatestServerRelease(releases)).toBeNull()
+    expect(parseMatchingRefsBody(body)).toEqual(["server-v0.1.0", "server-v0.2.0"])
   })
 
-  it("returns null when the only server-v* release is a draft", () => {
-    const releases: GithubRelease[] = [makeRelease({ tag_name: "server-v0.1.0", draft: true })]
-    expect(pickLatestServerRelease(releases)).toBeNull()
+  it("throws with 'unexpected' in the message when body is a non-array object", () => {
+    expect(() => parseMatchingRefsBody({ message: "rate limited" })).toThrow("unexpected")
   })
 
-  it("ignores draft server-v* releases and picks the next non-draft", () => {
-    const releases: GithubRelease[] = [
-      makeRelease({ tag_name: "server-v0.2.0", draft: true }),
-      makeRelease({ tag_name: "server-v0.1.0", draft: false }),
+  it("skips entries whose ref does not start with 'refs/tags/'", () => {
+    // The API should only return tag refs, but a defensive skip is warranted
+    const body = [
+      { ref: "refs/heads/main", object: { sha: "abc1234", type: "commit" } },
+      { ref: "refs/tags/server-v0.1.0", object: { sha: "def5678", type: "commit" } },
     ]
-    const result = pickLatestServerRelease(releases)
-    expect(result).not.toBeNull()
-    expect(result!.tag_name).toBe("server-v0.1.0")
-  })
-
-  it("picks the first (newest, per GitHub API contract) non-draft server-v* release", () => {
-    const releases: GithubRelease[] = [
-      makeRelease({ tag_name: "moon-v0.0.36" }),          // not server-v*: skip
-      makeRelease({ tag_name: "server-v0.3.0" }),          // newest server-v*: pick
-      makeRelease({ tag_name: "server-v0.2.0" }),
-      makeRelease({ tag_name: "server-v0.1.0" }),
-    ]
-    const result = pickLatestServerRelease(releases)
-    expect(result!.tag_name).toBe("server-v0.3.0")
-  })
-
-  it("ignores moon-v* tags even when they appear before server-v* tags", () => {
-    const releases: GithubRelease[] = [
-      makeRelease({ tag_name: "moon-v0.0.36" }),
-      makeRelease({ tag_name: "moon-v0.0.35" }),
-      makeRelease({ tag_name: "server-v0.1.0" }),
-    ]
-    const result = pickLatestServerRelease(releases)
-    expect(result!.tag_name).toBe("server-v0.1.0")
-  })
-
-  it("treats a pre-release server-v* as a valid pick (only drafts are excluded)", () => {
-    const releases: GithubRelease[] = [
-      makeRelease({ tag_name: "server-v0.2.0-rc.1", draft: false }),
-    ]
-    expect(pickLatestServerRelease(releases)?.tag_name).toBe("server-v0.2.0-rc.1")
-  })
-
-  it("returns the picked release with its full assets array intact", () => {
-    const release = makeRelease({ tag_name: "server-v0.1.0" })
-    const result = pickLatestServerRelease([release])
-    expect(result).toStrictEqual(release)
+    expect(parseMatchingRefsBody(body)).toEqual(["server-v0.1.0"])
   })
 })
 

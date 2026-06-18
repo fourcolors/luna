@@ -64,6 +64,21 @@ export interface GithubRelease {
 }
 
 /**
+ * One entry from the git/matching-refs API.
+ * GET /repos/:owner/:repo/git/matching-refs/tags/server-v returns an array of
+ * these — one per tag whose name starts with "server-v". No pagination: the API
+ * returns the complete list in a single response, so >100 moon-v* releases never
+ * push server-v* tags off the page.
+ */
+export interface GithubMatchingRef {
+  readonly ref: string  // e.g. "refs/tags/server-v0.1.0"
+  readonly object: {
+    readonly sha: string
+    readonly type: string
+  }
+}
+
+/**
  * Parsed server-latest.json asset (published with each server-v* release).
  *
  * Note: the asset also carries a `version` field (e.g. "0.1.0") but we do not
@@ -76,26 +91,86 @@ export interface ServerLatestJson {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Pure: pick the newest server-v* non-draft release                          */
+/* Pure: semver helpers for server-v* tag selection                           */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Pure: from a GitHub Releases API response array (newest-first per the API
- * contract), return the first entry whose tag_name starts with "server-v" and
- * is not a draft. Returns null when no qualifying release exists — which is the
- * EXPECTED state until the first server-v* tag has been cut.
+ * Pure: compare two server-v* tag names by numeric semver.
  *
- * Note: "pre-release" is NOT filtered out — a server-v* pre-release is still
- * a valid update target. Only drafts are excluded (drafts are unpublished and
- * their assets are not accessible without auth).
+ * WHY numeric: string-sorting "server-v0.10.0" < "server-v0.9.0" because "1"
+ * < "9" lexicographically. This is the classic versioning pitfall. We strip the
+ * "server-v" prefix, split on ".", and compare each component as an integer.
+ *
+ * Pre-release suffixes (e.g. "server-v0.2.0-rc.1") are stripped at the first "-"
+ * for numeric comparison only — the returned order is by numeric version, not by
+ * pre-release precedence. A full SemVer pre-release ordering (rc < release) is
+ * intentionally out of scope: on a single release channel, multiple pre-releases
+ * for the same numeric version are unlikely, and the added complexity is not
+ * justified.
+ *
+ * Returns positive when a > b, negative when a < b, 0 when equal.
  */
-export const pickLatestServerRelease = (releases: ReadonlyArray<GithubRelease>): GithubRelease | null => {
-  for (const release of releases) {
-    if (release.tag_name.startsWith("server-v") && !release.draft) {
-      return release
+export const compareServerSemver = (a: string, b: string): number => {
+  const stripPrefix = (tag: string): string => {
+    // Remove "server-v" prefix, then strip any pre-release suffix after "-"
+    const withoutPrefix = tag.startsWith("server-v") ? tag.slice("server-v".length) : tag
+    const dashIdx = withoutPrefix.indexOf("-")
+    return dashIdx === -1 ? withoutPrefix : withoutPrefix.slice(0, dashIdx)
+  }
+
+  const parseComponents = (version: string): readonly [number, number, number] => {
+    const parts = version.split(".")
+    return [
+      Number.parseInt(parts[0] ?? "0", 10),
+      Number.parseInt(parts[1] ?? "0", 10),
+      Number.parseInt(parts[2] ?? "0", 10),
+    ]
+  }
+
+  const [aMaj, aMin, aPatch] = parseComponents(stripPrefix(a))
+  const [bMaj, bMin, bPatch] = parseComponents(stripPrefix(b))
+
+  if (aMaj !== bMaj) return aMaj - bMaj
+  if (aMin !== bMin) return aMin - bMin
+  return aPatch - bPatch
+}
+
+/**
+ * Pure: given an array of server-v* tag names, return the one with the highest
+ * semver version. Returns null for an empty array.
+ *
+ * WHY not Array.sort: Array.sort mutates the original array in some environments
+ * and its string-sort default is wrong for versions (see compareServerSemver).
+ * We use reduce so we make a single linear pass, returning the running maximum.
+ */
+export const pickLatestServerTag = (tags: ReadonlyArray<string>): string | null => {
+  if (tags.length === 0) return null
+  return tags.reduce((best, tag) => (compareServerSemver(tag, best) > 0 ? tag : best))
+}
+
+/**
+ * Pure: parse and validate the matching-refs API response body.
+ *
+ * Extracted for testability — the impure fetchServerRefTags calls this. The API
+ * can return a JSON object instead of an array when rate-limited even on a 200
+ * (CDN edge cases); validating here keeps the type cast honest and ensures every
+ * failure degrades through the same user-friendly error path.
+ *
+ * Returns an array of tag names with the "refs/tags/" prefix stripped.
+ * Entries whose ref does not start with "refs/tags/" are silently skipped
+ * (future-proofs against unexpected ref shapes in the API response).
+ */
+export const parseMatchingRefsBody = (body: unknown): ReadonlyArray<string> => {
+  if (!Array.isArray(body)) {
+    throw new Error("GitHub returned an unexpected (non-array) matching-refs body")
+  }
+  const tags: string[] = []
+  for (const entry of body) {
+    if (typeof entry?.ref === "string" && entry.ref.startsWith("refs/tags/")) {
+      tags.push(entry.ref.slice("refs/tags/".length))
     }
   }
-  return null
+  return tags
 }
 
 /* -------------------------------------------------------------------------- */
@@ -280,16 +355,29 @@ export const renderUpdatePlan = (input: UpdatePlanInput): UpdateReport => {
 
 const READYZ_TIMEOUT_MS = 3_000
 const GITHUB_TIMEOUT_MS = 10_000
-// per_page=100 is GitHub's maximum page size. Without it the API returns only 30
-// releases (default), newest-first across ALL release tags (moon-v* and server-v*
-// interleaved). Because server-v* releases are published --latest=false and are a
-// minority of the combined stream, a server-v* release falls off the first 30-item
-// page within weeks of normal moon activity. Once that happens pickLatestServerRelease
-// returns null and `luna update` silently reports "No server releases published yet"
-// — a false negative. per_page=100 buys substantial headroom (50 server releases at
-// 2 moon releases/day ≈ 25 days before the next page boundary). Full Link-header
-// pagination is Phase 2 if the combined cadence ever exceeds ~100 total releases.
-const GITHUB_RELEASES_URL = "https://api.github.com/repos/fourcolors/luna/releases?per_page=100"
+/**
+ * Server-side prefix filter using the git refs API.
+ *
+ * WHY not /releases?per_page=100: that endpoint returns ALL tags (moon-v* and
+ * server-v* interleaved) newest-first. Once the total tag count exceeds 100, a
+ * server-v* release will fall off page 1 and `luna update` silently reports
+ * "No server releases published yet" — a false negative. The moon release cadence
+ * (multiple per week) means we hit that cliff within months.
+ *
+ * The git/matching-refs endpoint returns ONLY tags whose name starts with the
+ * given prefix — no pagination, no interleaving, no cliff. It is the correct
+ * primitive for "find all server-v* tags".
+ */
+const GITHUB_MATCHING_REFS_URL =
+  "https://api.github.com/repos/fourcolors/luna/git/matching-refs/tags/server-v"
+
+/**
+ * Fetch a SPECIFIC release by tag name — no pagination risk.
+ * We use this instead of /releases/latest because that endpoint is reserved for
+ * the Moon client updater (Tauri/minisign). Disturbing it would silently break Moon.
+ */
+const GITHUB_RELEASE_BY_TAG_URL = (tag: string): string =>
+  `https://api.github.com/repos/fourcolors/luna/releases/tags/${encodeURIComponent(tag)}`
 
 /**
  * Parsed /readyz response fields we care about.
@@ -340,10 +428,10 @@ const probeReadyz = async (port: number): Promise<ReadyzResult | undefined> => {
 }
 
 /**
- * Fetch the GitHub Releases list filtered for server-v* tags.
- * Throws with a user-friendly message on network / rate-limit errors.
+ * Build the standard GitHub API request headers.
+ * Extracted to avoid duplication between fetchServerRefTags and fetchReleaseByTag.
  */
-const fetchReleases = async (): Promise<ReadonlyArray<GithubRelease>> => {
+const githubHeaders = (): Record<string, string> => {
   const headers: Record<string, string> = {
     "User-Agent": "luna-update",
     Accept: "application/vnd.github+json",
@@ -352,12 +440,27 @@ const fetchReleases = async (): Promise<ReadonlyArray<GithubRelease>> => {
   if (token !== undefined && token.length > 0) {
     headers["Authorization"] = `Bearer ${token}`
   }
+  return headers
+}
 
+/**
+ * Fetch all git refs whose name starts with "server-v" using the matching-refs API.
+ * Returns an array of tag names (e.g. ["server-v0.1.0", "server-v0.10.0"]).
+ *
+ * This replaces the old fetchReleases + per_page=100 approach. The matching-refs
+ * endpoint is prefix-filtered server-side, so the result contains ONLY server-v*
+ * tags regardless of how many moon-v* tags exist. No pagination: the API returns
+ * the complete list in one call.
+ */
+const fetchServerRefTags = async (): Promise<ReadonlyArray<string>> => {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), GITHUB_TIMEOUT_MS)
   let res: Response
   try {
-    res = await fetch(GITHUB_RELEASES_URL, { signal: controller.signal, headers })
+    res = await fetch(GITHUB_MATCHING_REFS_URL, {
+      signal: controller.signal,
+      headers: githubHeaders(),
+    })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     throw new Error(`network error reaching GitHub: ${msg}`)
@@ -373,16 +476,42 @@ const fetchReleases = async (): Promise<ReadonlyArray<GithubRelease>> => {
   }
 
   const body: unknown = await res.json()
-  // Validate the array shape before narrowing: a proxy or CDN edge can return a
-  // JSON object (e.g. { message: "rate limited" }) on a 200, which would cause
-  // pickLatestServerRelease's for...of / .startsWith to throw an UNCAUGHT error
-  // and produce a raw stack trace instead of the graceful check-github-error path.
-  // Catching this here keeps the lie in the type cast honest and ensures every
-  // failure degrades through the same user-friendly error path.
-  if (!Array.isArray(body)) {
-    throw new Error("GitHub returned an unexpected (non-array) releases body")
+  return parseMatchingRefsBody(body)
+}
+
+/**
+ * Fetch the release object for a specific tag.
+ * Throws with a user-friendly message on network / rate-limit errors.
+ *
+ * WHY a tag-specific fetch: once pickLatestServerTag has selected the newest
+ * server-v* tag by semver, we need the full release object to find the
+ * server-latest.json asset URL. The /releases/tags/:tag endpoint returns exactly
+ * that one release — no interleaving, no pagination, no cliff.
+ */
+const fetchReleaseByTag = async (tag: string): Promise<GithubRelease> => {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), GITHUB_TIMEOUT_MS)
+  let res: Response
+  try {
+    res = await fetch(GITHUB_RELEASE_BY_TAG_URL(tag), {
+      signal: controller.signal,
+      headers: githubHeaders(),
+    })
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    throw new Error(`network error reaching GitHub: ${msg}`)
+  } finally {
+    clearTimeout(timer)
   }
-  return body as GithubRelease[]
+
+  if (res.status === 403) {
+    throw new Error("GitHub rate limit (403) — set GITHUB_TOKEN or wait and retry")
+  }
+  if (res.status !== 200) {
+    throw new Error(`GitHub API returned ${res.status}`)
+  }
+
+  return (await res.json()) as GithubRelease
 }
 
 /**
@@ -676,10 +805,14 @@ export const updateCommand = defineCommand({
       return writeAndExit(renderUpdatePlan(classifyEngineExit(engineExit, pinnedRef)))
     }
 
-    // GitHub discovery path
-    let releases: ReadonlyArray<GithubRelease>
+    // GitHub discovery path — three-step: refs → semver-pick → release-by-tag
+
+    // Step 1: fetch all server-v* tag names from the matching-refs API.
+    // This endpoint is prefix-filtered server-side: moon-v* tags never appear,
+    // so there is no page-size cliff regardless of total tag count.
+    let serverTags: ReadonlyArray<string>
     try {
-      releases = await fetchReleases()
+      serverTags = await fetchServerRefTags()
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e)
       if (isCheck) {
@@ -691,17 +824,18 @@ export const updateCommand = defineCommand({
       process.exit(1)
     }
 
-    const latest = pickLatestServerRelease(releases)
-    if (latest === null) {
+    // Step 2: pick newest by semver (numeric comparison — avoids "0.9.0" > "0.10.0" trap)
+    const latestTag = pickLatestServerTag(serverTags)
+    if (latestTag === null) {
       return writeAndExit(
         renderUpdatePlan({ kind: isCheck ? "check-no-release" : "no-release" }),
       )
     }
 
-    // Fetch the server-latest.json asset to get the canonical targetSha
-    let latestJson: ServerLatestJson
+    // Step 3: fetch the specific release object for that tag to get its assets
+    let latestRelease: GithubRelease
     try {
-      latestJson = await fetchServerLatestJson(latest!)
+      latestRelease = await fetchReleaseByTag(latestTag)
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e)
       if (isCheck) {
@@ -711,7 +845,20 @@ export const updateCommand = defineCommand({
       process.exit(1)
     }
 
-    const { tag, targetSha } = latestJson!
+    // Step 4: fetch the server-latest.json asset to get the canonical targetSha
+    let latestJson: ServerLatestJson
+    try {
+      latestJson = await fetchServerLatestJson(latestRelease)
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e)
+      if (isCheck) {
+        return writeAndExit(renderUpdatePlan({ kind: "check-github-error", detail }))
+      }
+      process.stderr.write(`Error: ${detail}\n`)
+      process.exit(1)
+    }
+
+    const { tag, targetSha } = latestJson
 
     // -------------------------------------------------------------------------
     // Step 3: compare
