@@ -511,6 +511,15 @@ const sandboxReattachers = new Map<string, () => void>()
 // registers; the fiber null-guards every call.
 let notifySkillCatalogChanged: (() => void) | null = null
 
+// 14-day auto-archive bridge: buildServerLayer's runAutoArchive loop calls this
+// with the ids it archived, and ui-ws re-broadcasts a `thread-archived` frame
+// for each to every connected client (same late-binding holder pattern as
+// notifySkillCatalogChanged — producer and ui-ws hook live in different layer
+// scopes of this boot script). Null until a WS server registers; every caller
+// null-guards.
+let notifyThreadsArchived: ((threadIds: ReadonlyArray<string>) => void) | null =
+  null
+
 // Luna Vault V3: same late-binding bridge for out-of-band vault-list
 // broadcasts — the 1Password sync poll loop (buildServerLayer) calls it after
 // a pass that changed registry rows, and ui-ws re-broadcasts the (wire-safe)
@@ -2425,11 +2434,16 @@ const buildServerLayer = (
             runAutoArchive(reg, nowMs).pipe(
               Effect.flatMap((archived) =>
                 archived.length > 0
-                  ? Effect.sync(() =>
+                  ? Effect.sync(() => {
                       console.log(
                         `[luna/thread-registry] auto-archived ${archived.length} idle thread(s): ${archived.join(", ")}`,
-                      ),
-                    )
+                      )
+                      // Notify connected clients so an actively-viewed thread
+                      // that just got auto-archived recovers gracefully instead
+                      // of going silently stale. Null-guarded: no-op pre-server
+                      // (e.g. the boot run before any WS client connects).
+                      notifyThreadsArchived?.(archived)
+                    })
                   : Effect.void,
               ),
             ),
@@ -3221,6 +3235,12 @@ const buildServerLayer = (
         accountBroker: broker,
         survey: surveyHandle, // Phase 3 D3: resolved handle
         skillRegistry: skillsWsHandle, // PRD Part B: bodies pre-stripped
+        // 14-day auto-archive → broadcast `thread-archived` to live clients.
+        threadArchiveNotifier: {
+          changes: (notify) => {
+            notifyThreadsArchived = notify
+          },
+        },
         connectorService: connectorsWsHandle, // PRD Part A: instances pre-projected
         artifactStore: artifactsWsHandle, // PRD Part C/W1: pinned artifacts (wire-safe)
         workflowGallery: workflowGalleryHandle, // PRD Part C/W3: read-only jobs gallery

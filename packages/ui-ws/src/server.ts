@@ -256,6 +256,21 @@ export interface UIWebSocketServerConfig {
     readonly changes?: (notify: () => void) => void
   } | null
   /**
+   * Optional thread-archive notifier (14-day auto-archive policy). The server
+   * passes a `notify` callback; the provider (chat-server's runAutoArchive
+   * loop) calls it with the ids it archived OUTSIDE any client request. On
+   * notify, the server broadcasts a `thread-archived` frame for each id to
+   * every connected client, so an actively-viewed thread that gets
+   * auto-archived recovers gracefully (the client clears + re-lists). Without
+   * it, server-side auto-archive is invisible to live clients until reconnect.
+   * Mirrors skillRegistry.changes. Pass `null`/absent in setup-mode.
+   */
+  readonly threadArchiveNotifier?: {
+    readonly changes: (
+      notify: (threadIds: ReadonlyArray<string>) => void,
+    ) => void
+  } | null
+  /**
    * Optional connector handle (PRD Part A §18). When provided, the server
    * advertises `capabilities.connectors`, sends `connector-catalog` +
    * `connector-list` after hello, and routes the client-brokered OAuth
@@ -932,6 +947,7 @@ export const startUIWebSocketServer = (
     const jobInputBridge = config.jobInputBridge ?? null
     const mcpAppHost = config.mcpAppHost ?? null
     const skillRegistry = config.skillRegistry ?? null
+    const threadArchiveNotifier = config.threadArchiveNotifier ?? null
     const connectorService = config.connectorService ?? null
     const artifactStore = config.artifactStore ?? null
     const workflowGallery = config.workflowGallery ?? null
@@ -1080,6 +1096,31 @@ export const startUIWebSocketServer = (
             const sockets = yield* Ref.get(activeSockets)
             for (const sock of sockets) {
               send(sock, { type: "skill-catalog", skills: wire })
+            }
+          }).pipe(Effect.catchAllCause(() => Effect.void)),
+        )
+      })
+    }
+
+    // 14-day auto-archive (server-side policy, no client request) → broadcast a
+    // `thread-archived` frame for each auto-archived id to every connected
+    // client. The client's thread-archived handler clears + re-lists if the
+    // archived thread was the one on screen, so an actively-viewed thread
+    // recovers gracefully instead of silently going stale. Mirrors the
+    // skill-catalog/artifact changes hooks above.
+    if (
+      threadArchiveNotifier !== null &&
+      threadArchiveNotifier.changes !== undefined
+    ) {
+      const registerArchiveChanges = threadArchiveNotifier.changes
+      registerArchiveChanges((threadIds) => {
+        Runtime.runFork(runtime)(
+          Effect.gen(function* () {
+            const sockets = yield* Ref.get(activeSockets)
+            for (const sock of sockets) {
+              for (const threadId of threadIds) {
+                send(sock, { type: "thread-archived", threadId })
+              }
             }
           }).pipe(Effect.catchAllCause(() => Effect.void)),
         )
