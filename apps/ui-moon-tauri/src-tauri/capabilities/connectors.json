@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "connectors",
+  "description": "ADDITIVE permission set for the Connectors settings panel (label panel-settings-connectors, registry kind 'settings.connectors'). The panel-* glob in panels.json already grants the dock/snap surface plus open-external-url for the OAuth browser hop; this capability adds the client-brokered OAuth loopback commands the connector consent flow needs (start the loopback listener, wait for the redirect code, cancel). Scoped to THIS panel so the other settings panels don't inherit the loopback surface.",
+  "windows": ["panel-settings-connectors"],
+  "permissions": [
+    "allow-oauth-loopback-start",
+    "allow-oauth-loopback-wait",
+    "allow-oauth-loopback-cancel"
+  ]
+}
