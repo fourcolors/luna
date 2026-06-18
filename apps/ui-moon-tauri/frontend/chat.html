@@ -478,18 +478,22 @@
       margin-left: 20px;
     }
 
-    /* Hover-reveal close: keeps the shared .close-btn chrome, but parked just
-       inside the top-left corner and invisible (+ click-through) until the bar
-       is hovered or the button is keyboard-focused. */
+    /* Faux close/min buttons — hidden by default (native traffic lights take
+       over in studio/aqua). The classic skin re-shows them via moon-skins.css.
+       All JS handlers are preserved; they simply have no visible target unless
+       classic skin is active. */
     #title-bar #close-btn {
       position: absolute;
       top: 5px;
       left: 6px;
       z-index: 6;
+      display: none;              /* hidden; classic restores via moon-skins.css */
       opacity: 0;
       pointer-events: none;
       transition: opacity 0.15s ease, background 0.1s, color 0.1s;
     }
+    /* classic skin only: hover-reveal (moon-skins.css sets display:flex, so
+       these rules then take effect). */
     #title-bar:hover #close-btn,
     #title-bar #close-btn:focus-visible {
       opacity: 1;
@@ -523,6 +527,7 @@
       top: 5px;
       left: 30px;
       z-index: 6;
+      display: none;              /* hidden; classic restores via moon-skins.css */
       opacity: 0;
       pointer-events: none;
       transition: opacity 0.15s ease, background 0.1s, color 0.1s;
@@ -2355,6 +2360,17 @@
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M12 5v14"/><path d="M5 12h14"/>
+      </svg>
+    </button>
+    <!-- Collapse the whole workspace back into the moon orb (Luna-specific
+         gesture; the yellow native button does OS-minimize instead). Sits at
+         the far right so it clears the native traffic lights on the left. -->
+    <button class="collapse-moon-btn" id="collapse-moon-btn"
+            title="Collapse into the moon" aria-label="Collapse into the moon">
+      <!-- Half-moon glyph: simple filled crescent via overlapping circles. -->
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"
+           stroke="none" aria-hidden="true">
+        <path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a6.5 6.5 0 1 1-7.54-7.54A9.05 9.05 0 0 0 12 3z"/>
       </svg>
     </button>
   </div>
@@ -8160,6 +8176,20 @@
     const winMinBtn = document.getElementById('min-btn');
     if (winMinBtn) {
       winMinBtn.addEventListener('click', () => {
+        try {
+          if (window.__TAURI__ && window.__TAURI__.core) {
+            window.__TAURI__.core.invoke('collapse_to_moon').catch(() => {});
+          }
+        } catch (_) { /* best-effort */ }
+      });
+    }
+
+    // Collapse-into-moon glyph — right-side affordance for the same gesture.
+    // Present on all skins so studio/aqua users (no faux min-btn) can still
+    // tuck the workspace into the orb without reaching for the menu.
+    const collapseMoonBtn = document.getElementById('collapse-moon-btn');
+    if (collapseMoonBtn) {
+      collapseMoonBtn.addEventListener('click', () => {
         try {
           if (window.__TAURI__ && window.__TAURI__.core) {
             window.__TAURI__.core.invoke('collapse_to_moon').catch(() => {});

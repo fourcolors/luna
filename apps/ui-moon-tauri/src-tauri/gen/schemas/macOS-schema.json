@@ -471,6 +471,12 @@
           "markdownDescription": "Allows writing the last active thread id so a restart re-tethers to the same thread"
         },
         {
+          "description": "Allows the set_native_controls_visible command",
+          "type": "string",
+          "const": "allow-set-native-controls-visible",
+          "markdownDescription": "Allows the set_native_controls_visible command"
+        },
+        {
           "description": "Allows enqueueing one sentence for client-side TTS playback",
           "type": "string",
           "const": "allow-speak-text",

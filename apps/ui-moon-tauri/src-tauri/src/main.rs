@@ -1436,7 +1436,12 @@ fn spawn_panel_at(
         tauri::WebviewUrl::App(url.to_string().into()),
     )
     .title(&desc.title)
-    .decorations(false)
+    // Native decorations ONLY on macOS, where the Overlay block below turns
+    // them into floating traffic-lights over the transparent CSS card. On
+    // other platforms decorations(true) would draw a full opaque OS title bar
+    // + frame around the transparent rounded card (broken chrome) — keep those
+    // borderless, exactly as before this feature.
+    .decorations(cfg!(target_os = "macos"))
     .transparent(true)
     // No native OS shadow: the CSS card-shell halo (.widget-shell box-shadow)
     // is the single, rounded-correct, focus-independent depth cue. The OS
@@ -1448,6 +1453,17 @@ fn spawn_panel_at(
     .visible(visible)
     .inner_size(width.unwrap_or(desc.width), height.unwrap_or(desc.height))
     .min_inner_size(220.0, 120.0);
+    // macOS Overlay title bar: native traffic-light buttons float above the
+    // transparent CSS edge without a visible title bar chrome. hidden_title
+    // removes the window title text; traffic_light_position places the buttons
+    // within the card header zone (inset 40 px right, 42 px down from top-left).
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true)
+            .traffic_light_position(tauri::LogicalPosition::new(40.0_f64, 42.0_f64));
+    }
     if let (Some(px), Some(py)) = (x, y) {
         builder = builder.position(px, py);
     }
@@ -1610,7 +1626,12 @@ async fn open_artifact_widget(
         tauri::WebviewUrl::App(url.into()),
     )
     .title(if title.is_empty() { "Artifact" } else { &title })
-    .decorations(false)
+    // Native decorations ONLY on macOS, where the Overlay block below turns
+    // them into floating traffic-lights over the transparent CSS card. On
+    // other platforms decorations(true) would draw a full opaque OS title bar
+    // + frame around the transparent rounded card (broken chrome) — keep those
+    // borderless, exactly as before this feature.
+    .decorations(cfg!(target_os = "macos"))
     .transparent(true)
     // No native OS shadow — the CSS card-shell halo is the single depth cue
     // (see spawn_panel_at above for the full rationale).
@@ -1619,6 +1640,17 @@ async fn open_artifact_widget(
     .skip_taskbar(true)
     .inner_size(width.unwrap_or(360.0), height.unwrap_or(440.0))
     .min_inner_size(220.0, 160.0);
+    // macOS Overlay title bar: native traffic-light buttons float above the
+    // transparent CSS edge without a visible title bar chrome. hidden_title
+    // removes the window title text; traffic_light_position places the buttons
+    // within the card header zone (inset 40 px right, 42 px down from top-left).
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true)
+            .traffic_light_position(tauri::LogicalPosition::new(40.0_f64, 42.0_f64));
+    }
     // When it will snap (no explicit position), build hidden and reveal flush
     // after positioning so the window never flashes at the OS-default spot. A
     // partial position counts as none (the builder honours only both coords).
@@ -1706,6 +1738,10 @@ fn collapse_into_moon(app: &tauri::AppHandle) {
     let windows = app.webview_windows();
     for (label, win) in &windows {
         if is_dock_label(label) {
+            // Deminiaturize before hiding so a card OS-minimized via the native
+            // yellow traffic-light doesn't linger as a Dock tile while the
+            // workspace is collapsed. No-op on non-minimized windows.
+            let _ = win.unminimize();
             let _ = win.hide();
         }
     }
@@ -1725,6 +1761,11 @@ fn expand_out_of_moon(app: &tauri::AppHandle) {
     let mut shown = 0usize;
     for (label, win) in &windows {
         if is_dock_label(label) {
+            // A card the user OS-minimized via the native yellow traffic-light
+            // is miniaturized in the Dock; show() alone does NOT deminiaturize
+            // on macOS, so unminimize first — otherwise the card is stranded in
+            // the Dock with no in-app way back. No-op on non-minimized windows.
+            let _ = win.unminimize();
             let _ = win.show();
             shown += 1;
         }
@@ -1756,6 +1797,50 @@ fn collapse_to_moon(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn expand_from_moon(app: tauri::AppHandle) -> Result<(), String> {
     expand_out_of_moon(&app);
+    Ok(())
+}
+
+/// Show or hide the macOS native traffic-light buttons (close / miniaturize /
+/// zoom) on the CALLING card window. Invoked by the skin system when switching
+/// between the `default` skin (native lights on) and the `classic` skin
+/// (CSS faux-lights on, native lights hidden). Each card window calls this on
+/// itself via `window.__TAURI__.core.invoke('set_native_controls_visible', …)`.
+///
+/// Non-macOS: compiles to a no-op that returns `Ok(())` immediately.
+#[tauri::command]
+fn set_native_controls_visible(window: tauri::WebviewWindow, visible: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSWindow, NSWindowButton};
+
+        // SAFETY: ns_window() returns the raw NSWindow* backing this Tauri
+        // window. The pointer is valid for the lifetime of the window (Tauri
+        // holds it alive). We hold no Retained<> reference — cast-and-call
+        // only within this scope.
+        let ns_win_ptr = window.ns_window().map_err(|e| e.to_string())?;
+        // objc2 0.6 marks its generated methods `#[unsafe(method(...))]`;
+        // a single outer `unsafe` block covers the raw pointer cast and all
+        // objc2 method calls within it.
+        unsafe {
+            let ns_win: &NSWindow = &*ns_win_ptr.cast();
+            for btn_kind in [
+                NSWindowButton::CloseButton,
+                NSWindowButton::MiniaturizeButton,
+                NSWindowButton::ZoomButton,
+            ] {
+                // standardWindowButton: returns None when the button was
+                // removed by the OS (e.g. a styleMask without a close button).
+                // Guard defensively so a missing button never aborts the call.
+                if let Some(btn) = ns_win.standardWindowButton(btn_kind) {
+                    btn.setHidden(!visible);
+                }
+            }
+        }
+    }
+    // On non-macOS there are no traffic-light buttons; suppress unused-var
+    // warnings without the cfg block.
+    #[cfg(not(target_os = "macos"))]
+    let _ = (&window, visible);
     Ok(())
 }
 
@@ -2206,6 +2291,7 @@ fn main() {
         list_widget_windows,
         collapse_to_moon,
         expand_from_moon,
+        set_native_controls_visible,
         voice_status,
         voice_set_mode,
         voice_ptt_down,
@@ -2243,7 +2329,8 @@ fn main() {
         close_widget,
         list_widget_windows,
         collapse_to_moon,
-        expand_from_moon
+        expand_from_moon,
+        set_native_controls_visible
     ]);
 
     builder

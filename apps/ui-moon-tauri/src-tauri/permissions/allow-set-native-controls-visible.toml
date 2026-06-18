@@ -1,0 +1,7 @@
+# Generated for the native macOS window-button hybrid: the classic skin hides
+# the native traffic lights so its CSS faux-lights take over. See main.rs
+# (set_native_controls_visible).
+[[permission]]
+identifier = "allow-set-native-controls-visible"
+description = "Allows the set_native_controls_visible command"
+commands.allow = ["set_native_controls_visible"]

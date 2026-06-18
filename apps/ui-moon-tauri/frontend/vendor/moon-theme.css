@@ -259,18 +259,20 @@ html[data-chrome='ink'] .title-bar {
 /* ── Traffic lights (panel.html / widget.html title bars) ─────────────────
    macOS-style cluster on the left; glyphs hover-reveal on the whole bar. The
    right .bar-end mirrors the cluster width so .bar-title stays centered. chat
-   keeps its own MoonFace bar and never renders these. */
+   keeps its own MoonFace bar and never renders these.
+   Native macOS traffic lights replace these by default (studio/aqua skins) —
+   the CSS cluster is hidden so there are no double lights. The classic skin
+   re-shows them (see moon-skins.css [data-skin='classic'] block). */
 .dock-lights {
-  display: flex;
+  display: none;             /* hidden by default — native lights take over   */
   align-items: center;
   gap: 7px;
   flex: 0 0 auto;
-  /* Whole cluster stays hidden until the window is hovered (or a light is
-     keyboard-focused), matching the design's resting chrome — the glyphs then
-     hover-reveal on the bar (rule below). */
   opacity: 0;
   transition: opacity 0.2s ease;
 }
+/* Hover-reveal kept for classic skin (where display is restored). No-op in
+   studio/aqua because display:none prevents these from firing. */
 .widget-shell:hover .dock-lights,
 .dock-lights:focus-within {
   opacity: 1;
@@ -281,6 +283,33 @@ html[data-chrome='ink'] .title-bar {
   justify-content: flex-end;
   flex: 0 0 auto;
   min-width: 52px; /* ≈ the 3-dot cluster width, so the title centers */
+}
+
+/* ── Collapse-into-moon glyph (right side of every card titlebar) ──────────
+   Subtle affordance for the Luna-specific "tuck workspace back into the orb"
+   gesture. Sits in .bar-end so it stays right, clear of the native traffic
+   lights at top-left (trafficLightPosition ~x40 y42). Theme-aware via --muted
+   / --accent; hover nudges the accent without being loud. */
+.collapse-moon-btn {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  cursor: pointer;
+  color: var(--muted, #888);
+  opacity: 0.55;
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
+  flex-shrink: 0;
+}
+.collapse-moon-btn:hover {
+  opacity: 1;
+  color: var(--accent, #7b9);
+  background: color-mix(in oklab, var(--accent, #7b9) 10%, transparent);
 }
 .light {
   width: 11px;

@@ -131,8 +131,18 @@
       <button class="light light-zoom" id="zoom-btn" type="button" title="Zoom" aria-label="Zoom widget"></button>
     </div>
     <span class="bar-title" id="bar-title">Loading…</span>
-    <!-- Right cluster balances the lights so the title stays centered. -->
-    <div class="bar-end"></div>
+    <!-- Right cluster balances the lights so the title stays centered; also
+         houses the collapse-to-moon glyph (on the right, clear of native
+         traffic lights which sit top-left). -->
+    <div class="bar-end">
+      <button class="collapse-moon-btn" id="collapse-moon-btn"
+              title="Collapse into the moon" aria-label="Collapse into the moon">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"
+             stroke="none" aria-hidden="true">
+          <path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a6.5 6.5 0 1 1-7.54-7.54A9.05 9.05 0 0 0 12 3z"/>
+        </svg>
+      </button>
+    </div>
   </div>
   <div id="seam" aria-hidden="true"></div>
   <div id="outline" aria-hidden="true"></div>
@@ -193,6 +203,15 @@
   zoomBtn && zoomBtn.addEventListener('click', function () {
     var w = currentWin();
     if (w && w.toggleMaximize) { try { w.toggleMaximize().catch(function () {}); } catch (_) {} }
+  });
+
+  // Collapse-into-moon glyph (right side of title bar) — same gesture as
+  // min-btn but always visible in studio/aqua where the faux lights are hidden.
+  var collapseMoonBtn = document.getElementById('collapse-moon-btn');
+  collapseMoonBtn && collapseMoonBtn.addEventListener('click', function () {
+    if (window.__TAURI__ && window.__TAURI__.core) {
+      try { window.__TAURI__.core.invoke('collapse_to_moon').catch(function () {}); } catch (_) {}
+    }
   });
 
   // ── Utility: show a text notice in the content area ───────────────────────
