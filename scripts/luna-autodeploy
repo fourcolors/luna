@@ -37,6 +37,13 @@ set -euo pipefail
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 UPDATE_SERVER="$(dirname "$SELF")/luna-update-server"
 
+# Source shared deploy helpers (luna_active_ws_count and friends). The lib
+# defines luna_info/luna_warn/luna_die, but this script intentionally uses its
+# own echo-based logging (bracketed profile prefix), so the lib functions are
+# present but not called here — no naming conflict, sourcing is safe.
+# shellcheck source=scripts/lib/luna-deploy.sh
+source "$(dirname "$SELF")/lib/luna-deploy.sh"
+
 # ── profile config ───────────────────────────────────────────────────────────
 P_REPO="" P_BRANCH="" P_INCUS="" P_PORT="" ; P_UPDATE_ARGS=()
 profile_config() {
@@ -60,19 +67,6 @@ profile_config() {
   esac
 }
 
-# Count ESTABLISHED WebSocket connections on the channel port. Dev terminates
-# inside the container (host :5753 is only the incusd proxy), so check there.
-active_ws_count() {
-  local n
-  if [[ -n "$P_INCUS" ]]; then
-    n="$(incus exec "$P_INCUS" -- sh -c "ss -tnH state established '( sport = :$P_PORT )' 2>/dev/null | wc -l" 2>/dev/null || echo 0)"
-  else
-    n="$(ss -tnH state established "( sport = :$P_PORT )" 2>/dev/null | wc -l || echo 0)"
-  fi
-  n="$(printf '%s' "$n" | tr -dc '0-9')"
-  printf '%s' "${n:-0}"
-}
-
 # ── deploy one channel ───────────────────────────────────────────────────────
 FORCE=false ALLOW_ACTIVE=false DRY_RUN=false INTERVAL=""
 
@@ -92,7 +86,7 @@ do_deploy() {
   fi
 
   if [[ "$ALLOW_ACTIVE" != true && "$FORCE" != true ]]; then
-    local n; n="$(active_ws_count)"
+    local n; n="$(luna_active_ws_count "$P_PORT" "$P_INCUS")"
     if [[ "$n" -gt 0 ]]; then
       echo "[autodeploy:$profile] DEFERRED — $n active session(s); will retry next tick (origin ${remote_sha:0:9})"
       return 0

@@ -2130,4 +2130,52 @@ esac
       expect(countOf("bootstrap")).toBeGreaterThanOrEqual(2)
     })
   })
+
+  describe("luna_active_ws_count (shared connect-aware deferral helper)", () => {
+    const LIB = join(repoRoot, "scripts/lib/luna-deploy.sh")
+
+    // Source the lib in a bash snippet with LUNA_TEST_WS_COUNT pinned so the
+    // test never calls ss(8) or incus and is hermetic in CI (where there are no
+    // established sockets). The seam mirrors LUNA_TAILSCALE_IP / LUNA_TEST_BUN_PATH.
+    const runWsCount = (
+      port: string,
+      env: Record<string, string | undefined> = {},
+    ) =>
+      spawnSync(
+        "bash",
+        ["-c", `set -uo pipefail; source "${LIB}"; luna_active_ws_count "${port}"`],
+        { cwd: repoRoot, encoding: "utf8", env: { ...process.env, ...env } },
+      )
+
+    it("returns 0 when LUNA_TEST_WS_COUNT is unset (no established sockets in CI)", () => {
+      // LUNA_TEST_WS_COUNT deliberately absent: the seam is not triggered, but
+      // ss(8) either isn't present on the CI machine or returns 0 because there
+      // are no established connections to the test port. We only assert the default
+      // digit-strip produces a valid non-negative integer — not the exact value —
+      // because calling real ss on a random port is safe and still exercises the
+      // production path without depending on live state.
+      const result = runWsCount("19999")
+      expect(result.status).toBe(0)
+      expect(result.stdout.trim()).toMatch(/^\d+$/)
+    })
+
+    it("returns the pinned value when LUNA_TEST_WS_COUNT is set to a digit string", () => {
+      const result = runWsCount("4753", { LUNA_TEST_WS_COUNT: "3" })
+      expect(result.status).toBe(0)
+      expect(result.stdout.trim()).toBe("3")
+    })
+
+    it("returns 0 when LUNA_TEST_WS_COUNT is set to empty string", () => {
+      const result = runWsCount("4753", { LUNA_TEST_WS_COUNT: "" })
+      expect(result.status).toBe(0)
+      expect(result.stdout.trim()).toBe("0")
+    })
+
+    it("digit-strips non-numeric characters from LUNA_TEST_WS_COUNT", () => {
+      // e.g. LUNA_TEST_WS_COUNT="x7y" → strips non-digits → "7"
+      const result = runWsCount("4753", { LUNA_TEST_WS_COUNT: "x7y" })
+      expect(result.status).toBe(0)
+      expect(result.stdout.trim()).toBe("7")
+    })
+  })
 })
