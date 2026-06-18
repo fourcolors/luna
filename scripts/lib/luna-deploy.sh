@@ -232,6 +232,49 @@ luna_resolve_bind_addr() {
   printf '127.0.0.1'
 }
 
+# Count ESTABLISHED TCP connections on a given server port, optionally through
+# an Incus container boundary.
+#
+# Why a shared helper: both luna-autodeploy (systemd poll-deploy) and the
+# forthcoming `luna update` CLI (Slice 4) need the same connect-aware deferral
+# logic — "don't restart the server while the operator is mid-conversation."
+# Centralising here means one implementation to audit and one set of tests.
+#
+# Signature: luna_active_ws_count <port> [incus_container]
+#   <port>             — the server's WebSocket listen port (e.g. 4753)
+#   [incus_container]  — when non-empty, run ss(8) INSIDE the named Incus
+#                        instance. Dev terminates connections inside the container
+#                        (the host-side incusd proxy is transparent to ss), so
+#                        checking the host would always return 0 and defeat the
+#                        deferral guard.
+#
+# Test seam: if LUNA_TEST_WS_COUNT is set (even to empty), its value is used
+# verbatim instead of shelling out to ss(8). CI environments have no established
+# sockets, so without the seam every test assertion would be comparing against
+# a live (and unpredictable) socket count. This mirrors the LUNA_TAILSCALE_IP /
+# LUNA_TEST_BUN_PATH seams already in this file: set the variable to pin the
+# outcome; leave it unset for production behavior.
+luna_active_ws_count() {
+  local port="$1"
+  local incus="${2:-}"
+  local n
+
+  if [[ "${LUNA_TEST_WS_COUNT+set}" == "set" ]]; then
+    n="$LUNA_TEST_WS_COUNT"
+    n="$(printf '%s' "$n" | tr -dc '0-9')"
+    printf '%s' "${n:-0}"
+    return 0
+  fi
+
+  if [[ -n "$incus" ]]; then
+    n="$(incus exec "$incus" -- sh -c "ss -tnH state established '( sport = :$port )' 2>/dev/null | wc -l" 2>/dev/null || echo 0)"
+  else
+    n="$(ss -tnH state established "( sport = :$port )" 2>/dev/null | wc -l || echo 0)"
+  fi
+  n="$(printf '%s' "$n" | tr -dc '0-9')"
+  printf '%s' "${n:-0}"
+}
+
 luna_find_bun() {
   if [[ -n "${LUNA_TEST_BUN_PATH:-}" ]]; then
     printf '%s\n' "$LUNA_TEST_BUN_PATH"
