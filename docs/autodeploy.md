@@ -23,11 +23,14 @@ It's a thin, safe wrapper — all the deploy/rollback logic lives in
 
 | Channel | Repo (host) | Branch | Target | Mode |
 |---|---|---|---|---|
-| `dev` | `/root/luna/dev/repo` | `dev` | incus container `luna-dev` (:4753) | **auto** (timer) |
+| `dev` | `/root/luna/dev/repo` | `$LUNA_DEV_BRANCH` (no default) | incus container `luna-dev` (:4753) | **auto** (timer) |
 | `stable` | `/root/luna/stable/repo` | `master` | bare-host system unit (:4753) | **one-command** (manual) |
 
-Dev auto-tracks `origin/dev`. **Stable is deliberately one-command** — the daily
-driver must never restart unexpectedly.
+The `dev` profile has no default branch — the `dev` git branch is gone. Set
+`LUNA_DEV_BRANCH` to a real ref (a feature branch or a `moon-v*` tag) to stage
+it, or disable the dev timer (`luna-autodeploy uninstall-timer dev`) when nothing
+is staged. **Stable is deliberately one-command** — the daily driver must never
+restart unexpectedly.
 
 ## Usage
 

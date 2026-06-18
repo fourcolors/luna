@@ -212,8 +212,10 @@ Luna is designed to run with one local client and two server runtimes:
 | Stable | The agent you actually use day to day | `luna chat` | `ws://jax-box:4753/ui` | `ws://jax-box.local:4753/ui` |
 | Dev | A separate runtime for testing fixes and branches | `luna chat --dev` | `ws://jax-box:5753/ui` | `ws://jax-box.local:5753/ui` |
 
-Stable tracks the `master` branch. Dev tracks the `dev` branch. Promote code by
-testing it through dev first, then merging `dev` into `master`.
+Stable tracks the `master` branch. There is no long-lived `dev` branch — Luna is
+trunk-based: all work lands on `master` via PRs. The dev runtime is an optional
+staging server you point at any feature branch or release tag to try a change
+before it reaches stable. See [Branching & releases](#branching--releases).
 
 The terminal client reads profile settings from `~/.luna/.env`:
 
@@ -257,14 +259,16 @@ jax-box:5753 -> luna-dev:4753  WebSocket server
 jax-box:5754 -> luna-dev:4754  control server
 ```
 
-Create the dev container from a clone on jax-box:
+Create the dev container from a clone on jax-box. Point `--branch` at whatever
+ref you want to stage — a feature branch or a `moon-v*` release tag (it no longer
+tracks a `dev` branch):
 
 ```bash
 scripts/luna-container-create \
   --profile dev \
   --name luna-dev \
   --repo git@github.com:fourcolors/luna.git \
-  --branch dev \
+  --branch <feature-branch-or-tag> \
   --repo-path /root/luna/dev/repo \
   --state-path /root/.luna-dev \
   --host jax-box \
@@ -316,32 +320,37 @@ bun run --filter '@luna/ui-web' dev
 bun run --filter '@luna/ui-web' server:chat
 ```
 
-### Stable/dev workflow
+### Branching & releases
 
-Develop from `dev`, push back to `dev`, and test through the dev runtime:
-
-```bash
-git checkout dev
-git pull --ff-only origin dev
-git checkout -b <feature-branch>
-bun run typecheck
-bun run --filter '@luna/agent-cli' test
-git push origin <feature-branch>
-git checkout dev
-git merge --ff-only <feature-branch>
-git push origin dev
-luna chat --dev
-```
-
-After the dev runtime is working, merge `dev` to `master` and promote stable on
-jax-box. Use a normal merge or PR if `master` and `dev` have diverged:
+Luna is **trunk-based**: `master` is the only long-lived branch — there is no
+`dev` branch. Do work on a short-lived feature branch, open a PR against
+`master`, and squash-merge it.
 
 ```bash
 git checkout master
 git pull --ff-only origin master
-git merge --ff-only origin/dev
-git push origin master
+git checkout -b <feature-branch>
+bun run typecheck
+bun run --filter '@luna/agent-cli' test
+git push -u origin <feature-branch>
+gh pr create --base master --fill   # review, then squash-merge
 ```
+
+Optionally stage the change first on the dev runtime by pointing it at your
+feature branch or a tag (see [Container system](#container-system)) before it
+reaches stable.
+
+**Releases are cut from tags, not branches.** Moon desktop builds are published
+by pushing a `moon-v*` tag, which triggers `.github/workflows/release-moon.yml`
+(build → sign → GitHub Release with updater artifacts):
+
+```bash
+# bumps the version triple, commits, creates tag moon-v<x.y.z>, and pushes it
+bun run scripts/bump-moon.ts <x.y.z> --tag --push
+```
+
+See [RELEASES.md](RELEASES.md) for the full release conventions (the "Latest"
+invariant and the `chat-v*` / other tag-only releases).
 
 Then update the stable runtime:
 

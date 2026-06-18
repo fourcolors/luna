@@ -4,10 +4,11 @@ This is the intended operator flow for the Luna stable/dev split on jax-box.
 
 Branch policy:
 
-- `master` is stable. The main Luna agent runs this branch.
-- `dev` is integration. The dev container runs this branch.
-- Promote by testing `dev`, merging `dev` into `master`, then restarting the
-  stable runtime.
+- `master` is the only long-lived branch. The main Luna agent runs it.
+- The dev container is a staging runtime, not a branch — point it at whatever
+  ref you want to stage (a feature branch or a `moon-v*` tag).
+- Land work on `master` via a PR (squash-merge), then restart the stable
+  runtime. There is no `dev`→`master` promotion.
 
 ## Local Client
 
@@ -123,7 +124,7 @@ scripts/luna-container-create \
   --profile dev \
   --name luna-dev \
   --repo git@github.com:fourcolors/luna.git \
-  --branch dev \
+  --branch <feature-branch-or-tag> \
   --repo-path /root/luna/dev/repo \
   --state-path /root/.luna-dev \
   --host jax-box \
@@ -148,28 +149,27 @@ Develop against dev:
 luna chat --dev
 ```
 
-Code flow:
+Code flow (trunk-based — work lands on `master` via a PR, squash-merged):
 
 ```bash
-git checkout dev
-git pull --ff-only origin dev
+git checkout master
+git pull --ff-only origin master
 git checkout -b <feature-branch>
 bun run test
 bun run typecheck
 git push origin <feature-branch>
-git checkout dev
-git merge --ff-only <feature-branch>
-git push origin dev
+gh pr create --base master --fill   # review, then squash-merge
 ```
 
-Update the dev runtime on jax-box:
+Update the dev runtime on jax-box. Point it at whatever ref you want to stage —
+a feature branch or a `moon-v*` tag (substitute `<feature-branch-or-tag>` below):
 
 ```bash
 ssh root@jax-box
 cd /root/luna/dev/repo
-git fetch origin dev
-git checkout dev
-git pull --ff-only origin dev
+git fetch origin
+git checkout <feature-branch-or-tag>
+git pull --ff-only origin <feature-branch-or-tag>   # skip for a tag (detached)
 incus exec luna-dev -- bash -lc 'cd /root/luna && /root/.bun/bin/bun install --frozen-lockfile'
 # Restart as stop -> settle -> start, NOT a fast `systemctl restart`: a fast restart
 # can start the new chat-server before the outgoing one releases its DuckDB/SQLite
@@ -182,14 +182,11 @@ incus exec luna-dev -- systemctl start luna-dev-chat-server.service
 curl -fsS http://127.0.0.1:5753/healthz
 ```
 
-After testing through the dev runtime, merge `dev` to `master`. Use a normal
-merge or PR if the branches have diverged:
+After testing through the dev runtime, land the work on `master` by opening a
+PR and squash-merging it. There is no `dev`→`master` promotion:
 
 ```bash
-git checkout master
-git pull --ff-only origin master
-git merge --ff-only origin/dev
-git push origin master
+gh pr create --base master --fill   # review, then squash-merge
 ```
 
 Promote stable on jax-box:
