@@ -14,7 +14,7 @@ serde_json = "1"
 tauri-plugin-global-shortcut = "2.3.2"
 tauri-plugin-dialog = "2"
 # Self-update from GitHub Releases (minisign-verified). Drives the
-# check_for_update / install_update commands in main.rs.
+# check_for_update / apply_update commands in main.rs.
 tauri-plugin-updater = "2"
 # Open the system browser for the connector OAuth consent hop (PRD A §09).
 # The Moon previously had NO programmatic browser-open path.
