@@ -45,7 +45,12 @@ describe('moon-native-titlebar.js', () => {
     loadVendorInto(window, 'moon-native-titlebar.js')
     invoke.mockClear()
     document.getElementById('title-bar')!.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }))
-    await Promise.resolve()
+    // show() does: syncPosition().then(() => invokeVisible(true))
+    // syncPosition() returns invoke('sync_traffic_light_position').catch() — that's a
+    // Promise that resolves after 1 microtask tick; the .then(invokeVisible) runs on
+    // the next tick. Flush enough ticks so the full chain completes before asserting.
+    const flush = async (n = 10) => { for (let i = 0; i < n; i++) await Promise.resolve() }
+    await flush()
     expect(invoke).toHaveBeenCalledWith('sync_traffic_light_position', expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }))
     expect(invoke).toHaveBeenCalledWith('set_native_controls_visible', { visible: true })
     const syncIdx = invoke.mock.calls.findIndex((c) => c[0] === 'sync_traffic_light_position')

@@ -39,6 +39,10 @@
   }
 
   var active = null;
+  // Monotonically-increasing sequence number for the current gesture.
+  // Incremented on every pointerdown; each onMove captures its own token so
+  // stale in-flight IPC results can't clobber a newer move.
+  var gestureSeq = 0;
 
   function cursorFor(dir) {
     if (dir === 'n' || dir === 's') return 'ns-resize';
@@ -82,6 +86,10 @@
   }
 
   async function onDown(e) {
+    // Finding B: ignore a second pointerdown while a resize is already active.
+    // A resize is inherently single-pointer; a concurrent down would strand the
+    // first gesture's capture and leave orphaned listeners.
+    if (active) return;
     if (!hasTauri() || e.button !== 0) return;
     var hit = e.target.closest('.resize-hit');
     if (!hit) return;
@@ -95,6 +103,7 @@
     var snap;
     try { snap = await readLogical(win); } catch (_) { return; }
 
+    gestureSeq++;
     active = {
       dir: dir,
       win: win,
@@ -108,6 +117,10 @@
       sf: snap.sf,
       handle: hit,
       pid: e.pointerId,
+      // Sequence token for this gesture (Finding A); each onMove bakes in its
+      // own moveSeq so the last scheduled move always wins.
+      seq: gestureSeq,
+      moveSeq: 0,
     };
     try { hit.setPointerCapture(e.pointerId); } catch (_) { /* jsdom */ }
     hit.addEventListener('pointermove', onMove);
@@ -118,6 +131,11 @@
 
   async function onMove(e) {
     if (!active) return;
+    // Finding A: stamp a per-move sequence number so concurrent in-flight calls
+    // can detect they've been superseded.  The last move always wins; earlier
+    // ones bail after their awaits complete if a newer move has run ahead.
+    var myGestureSeq = active.seq;
+    var myMoveSeq = ++active.moveSeq;
     var dx = (e.screenX - active.startX) / active.sf;
     var dy = (e.screenY - active.startY) / active.sf;
     var next = applyDir(active, dx, dy);
@@ -126,6 +144,10 @@
       var LS = active.TW.LogicalSize;
       var moved = next.x !== active.x || next.y !== active.y;
       if (moved) await active.win.setPosition(new LP(next.x, next.y));
+      // After any await, check if this move is still the latest for this gesture.
+      // If a newer pointermove has fired (higher moveSeq) or the gesture ended
+      // (active is null / different seq), skip the setSize to avoid stale geometry.
+      if (!active || active.seq !== myGestureSeq || active.moveSeq !== myMoveSeq) return;
       await active.win.setSize(new LS(next.w, next.h));
     } catch (_) { /* best-effort */ }
   }

@@ -2244,12 +2244,18 @@ fn default_snap_target(
     app: &tauri::AppHandle,
     new_label: &str,
 ) -> Option<(String, (i32, i32, i32, i32))> {
-    if let Some(chat) = app.get_webview_window("panel-chat") {
-        let chat_ok = chat.is_minimized().map(|m| !m).unwrap_or(true)
-            && chat.is_visible().unwrap_or(true);
-        if chat_ok {
-            if let Some(bbox) = group_bbox_of(app, "panel-chat") {
-                return Some(("panel-chat".to_string(), bbox));
+    // Never snap a window onto itself: skip the chat-preference branch when
+    // the new window IS panel-chat (e.g. a future code path that calls this
+    // before hiding it, or a test double that bypasses the hidden-at-build
+    // invariant). Fall through to nearest_dock_anchor in that case.
+    if new_label != "panel-chat" {
+        if let Some(chat) = app.get_webview_window("panel-chat") {
+            let chat_ok = chat.is_minimized().map(|m| !m).unwrap_or(true)
+                && chat.is_visible().unwrap_or(true);
+            if chat_ok {
+                if let Some(bbox) = group_bbox_of(app, "panel-chat") {
+                    return Some(("panel-chat".to_string(), bbox));
+                }
             }
         }
     }

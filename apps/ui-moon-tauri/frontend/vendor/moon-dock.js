@@ -515,12 +515,20 @@
     // positioned or we'd paint ungrouped at the default spot and never revisit
     // (the reference place() runs before paint; we defer to match that).
     async function bootSettle() {
+      // Track whether we had to wait for visibility. A freshly snap-on-opened
+      // window starts hidden (isVisible()===false) and becomes visible after
+      // Rust positions+shows it — so waited===true means genuine fresh snap.
+      // A boot-restored window is already visible on the first poll — waited
+      // stays false and we skip the pop-in animation. If isVisible() throws we
+      // treat it as already-visible (safe default: no animation).
+      var waited = false;
       try {
         var tries = 0;
         while (tries < 120) {
           var vis = true;
           try { vis = await W.isVisible(); } catch (_) { /* default visible */ }
           if (vis) break;
+          waited = true; // was hidden — this is a fresh snap-on-open
           tries++;
           await new Promise(function (r) { setTimeout(r, 16); });
         }
@@ -531,7 +539,9 @@
       } catch (_) { /* best-effort */ }
       await refreshWeld();
       broadcastGeometry(/*settled=*/true);
-      playEntering();
+      // Only play the dock-pop entrance animation for windows that were hidden
+      // at startup (fresh snap-on-open). Boot-restored windows skip it.
+      if (waited) { playEntering(); }
     }
     bootSettle();
   }

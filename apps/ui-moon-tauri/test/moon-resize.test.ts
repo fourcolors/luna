@@ -50,12 +50,24 @@ describe('moon-resize.js', () => {
         LogicalPosition,
       },
     }
+    // Drain N microtask ticks to flush a multi-await async chain.
+    const flush = async (n = 10) => { for (let i = 0; i < n; i++) await Promise.resolve() }
+
     loadVendorInto(window, 'moon-resize.js')
     const se = document.querySelector('.resize-se') as HTMLElement
+
+    // onDown is async: it awaits scaleFactor + outerPosition + outerSize (3+ ticks)
+    // before setting `active`. Dispatch pointerdown then flush so `active` is set
+    // before pointermove fires — otherwise onMove returns early (active is null).
     se.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, screenX: 10, screenY: 20 }))
+    await flush()
+
+    // Now `active` is set; pointermove will call setPosition then setSize (2 more awaits).
     se.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, screenX: 30, screenY: 50 }))
+    await flush()
+
     se.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
-    await Promise.resolve()
+
     expect(setSize).toHaveBeenCalled()
     const arg = setSize.mock.calls[0][0] as InstanceType<typeof LogicalSize>
     expect(arg.w).toBe(380)
