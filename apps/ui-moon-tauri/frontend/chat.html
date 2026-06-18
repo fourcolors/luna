@@ -467,18 +467,11 @@
 
     /* ── Title-bar rearrange: parallel-thread panels ───────────────────────
        Close moves OFF the bar to a hover-revealed disk at the top-LEFT corner
-       (macOS-notification pattern); the drag grip grows + insets so that corner
-       is free; the new-thread + owns the right. All scoped to #title-bar so the
-       shared moon-theme.css .close-btn (other panels) and the .chat-panel
-       header-action buttons stay exactly as they were. */
+       (macOS-notification pattern); the left edge is left clear for the native
+       macOS traffic lights. The new-thread + owns the right. All scoped to
+       #title-bar so the shared moon-theme.css .close-btn (other panels) and the
+       .chat-panel header-action buttons stay exactly as they were. */
     #title-bar { position: relative; }
-
-    /* Bigger, inset drag handle — pulled off the true-left edge to clear the
-       corner where the hover-× appears. */
-    #title-bar .grip {
-      font-size: 13px;
-      margin-left: 20px;
-    }
 
     /* Faux close/min buttons — hidden by default (native traffic lights take
        over in studio/aqua). The classic skin re-shows them via moon-skins.css.
@@ -2298,8 +2291,6 @@
          collapse_to_moon), parked just right of the hover-× and revealed with
          it. NOT a drag region so the click lands. -->
     <button class="min-btn" id="min-btn" title="Minimize into the moon" aria-label="Minimize into the moon">–</button>
-    <span class="grip">⋮⋮</span>
-    <span class="wash-dot" aria-hidden="true"></span>
     <span class="bar-title" id="bar-title">Luna</span>
     <!-- New thread — the promoted action, alone on the right. Spawns a fresh
          Luna panel docked to the right of this one (open_widget chat?thread=new). -->
