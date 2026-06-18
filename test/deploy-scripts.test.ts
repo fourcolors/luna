@@ -1688,4 +1688,446 @@ exit 0
     expect(runtime).toContain("not a filesystem sandbox")
     expect(runtime).toContain("rollback")
   })
+
+  describe("luna-update-server supervisor abstraction", () => {
+    // Shared helper: make a minimal git repo + a PATH shim directory with fake
+    // executables that log their argv and emit canned output. Returns paths for
+    // reuse across tests.
+    const makeUpdateEnv = (temp: string) => {
+      const repo = join(temp, "repo")
+      const bin = join(temp, "bin")
+      mkdirSync(join(repo, ".git"), { recursive: true })
+      mkdirSync(bin, { recursive: true })
+      return { repo, bin }
+    }
+
+    // Write a fake executable that logs all argv to a file and emits canned stdout.
+    const writeFake = (
+      path: string,
+      body: string,
+    ) => {
+      writeFileSync(path, `#!/usr/bin/env bash\n${body}\n`)
+      spawnSync("chmod", ["+x", path])
+    }
+
+    // Run luna-update-server with given args+env, short-circuiting after the unit
+    // existence check by injecting a fake git repo and fake binaries.
+    const runUpdate = (
+      temp: string,
+      args: ReadonlyArray<string>,
+      extraEnv: Record<string, string | undefined> = {},
+    ) => {
+      const { repo, bin } = makeUpdateEnv(temp)
+      return spawnSync(
+        "bash",
+        [join(repoRoot, "scripts/luna-update-server"), ...args],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+            LUNA_TEST_BUN_PATH: join(bin, "bun"),
+            LUNA_RESTART_SETTLE_SECS: "0",
+            LUNA_READINESS_TIMEOUT: "2",
+            LUNA_READINESS_INTERVAL: "1",
+            ...extraEnv,
+          },
+        },
+      )
+    }
+
+    it("validation: --supervisor launchd --incus x exits non-zero with a clear message", () => {
+      const temp = makeTempDir()
+      const result = runUpdate(temp, [
+        "--supervisor", "launchd",
+        "--incus", "luna-stable",
+        "--repo-dir", join(temp, "repo"),
+        "--dry-run",
+      ])
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toContain("launchd")
+      expect(result.stderr).toContain("incus")
+    })
+
+    it("validation: --supervisor launchd --user exits non-zero with a clear message", () => {
+      const temp = makeTempDir()
+      const result = runUpdate(temp, [
+        "--supervisor", "launchd",
+        "--user",
+        "--repo-dir", join(temp, "repo"),
+        "--dry-run",
+      ])
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toContain("launchd")
+      expect(result.stderr).toContain("user")
+    })
+
+    it("validation: --user --incus x exits non-zero with a clear message", () => {
+      const temp = makeTempDir()
+      const result = runUpdate(temp, [
+        "--user",
+        "--incus", "luna-stable",
+        "--repo-dir", join(temp, "repo"),
+        "--dry-run",
+      ])
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toContain("user")
+      expect(result.stderr).toContain("incus")
+    })
+
+    it("--user routes systemctl --user for stop/start/is-active and defaults to $HOME/.config/systemd/user", () => {
+      const temp = makeTempDir()
+      const { repo, bin } = makeUpdateEnv(temp)
+
+      // Fake git: succeeds for fetch, returns a stable HEAD sha, makes reset a no-op
+      const gitLog = join(temp, "git.log")
+      writeFake(join(bin, "git"), `
+printf '%s\\n' "$*" >> "${gitLog}"
+case "$*" in
+  *"rev-parse HEAD"*) printf 'aabbcc111111\\n' ;;
+  *"hash-object"*) printf 'deadbeef\\n' ;;
+  *) true ;;
+esac
+exit 0
+`)
+
+      // Fake bun: no-op
+      writeFake(join(bin, "bun"), `exit 0`)
+
+      // Fake curl: returns 200 for healthz, 404 for readyz (old-server fallback = ready)
+      writeFake(join(bin, "curl"), `
+args="$*"
+case "$args" in
+  */healthz*) printf '200'; exit 0 ;;
+  */readyz*)  printf '\\n404'; exit 0 ;;
+  *) exit 0 ;;
+esac
+`)
+
+      // Fake systemctl: log argv, emit canned responses
+      const sctlLog = join(temp, "systemctl.log")
+      writeFake(join(bin, "systemctl"), `
+printf '%s\\n' "$*" >> "${sctlLog}"
+case "$*" in
+  *"is-active"*) printf 'active\\n'; exit 0 ;;
+  *"--value"*)   printf '0\\n'; exit 0 ;;
+  *) exit 0 ;;
+esac
+`)
+
+      // Create the user unit file so preflight passes
+      const userUnitDir = join(temp, "home", ".config", "systemd", "user")
+      mkdirSync(userUnitDir, { recursive: true })
+      const serviceFile = join(userUnitDir, "luna-chat-server.service")
+      writeFileSync(serviceFile, "[Unit]\nDescription=Luna\n")
+
+      const result = spawnSync(
+        "bash",
+        [join(repoRoot, "scripts/luna-update-server"),
+          "--user",
+          "--repo-dir", repo,
+          "--luna-home", join(temp, "lunahome"),
+          "--service-dir", userUnitDir,
+          "--ref", "aabbcc111111",
+        ],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            HOME: join(temp, "home"),
+            PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+            LUNA_TEST_BUN_PATH: join(bin, "bun"),
+            LUNA_RESTART_SETTLE_SECS: "0",
+            LUNA_READINESS_TIMEOUT: "4",
+            LUNA_READINESS_INTERVAL: "1",
+          },
+        },
+      )
+
+      // The script should succeed (fake is-active=active, curl 200 -> old-server 404 fallback)
+      expect(result.status, result.stderr).toBe(0)
+
+      // systemctl log must show --user for stop, start, daemon-reload, is-active
+      const sctlLines = existsSync(sctlLog) ? readFileSync(sctlLog, "utf8") : ""
+      expect(sctlLines).toContain("--user stop")
+      expect(sctlLines).toContain("--user start")
+      expect(sctlLines).toContain("--user daemon-reload")
+      expect(sctlLines).toContain("--user is-active")
+    })
+
+    it("--supervisor launchd: dry-run prints bootout/bootstrap, not systemctl", () => {
+      const temp = makeTempDir()
+      const { repo } = makeUpdateEnv(temp)
+      // We don't need the plist to exist for dry-run — preflight is skipped.
+      const result = spawnSync(
+        "bash",
+        [join(repoRoot, "scripts/luna-update-server"),
+          "--supervisor", "launchd",
+          "--repo-dir", repo,
+          "--dry-run",
+        ],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: process.env.PATH ?? "/usr/bin:/bin",
+            LUNA_RESTART_SETTLE_SECS: "0",
+            // Inject launchctl so the "launchctl required" preflight passes
+            // (we only need it in PATH for the binary-presence check)
+          },
+        },
+      )
+      // dry-run exits 0
+      expect(result.status, result.stderr).toBe(0)
+      // Plan must mention launchd primitives
+      expect(result.stdout).toContain("bootout")
+      expect(result.stdout).toContain("bootstrap")
+      expect(result.stdout).not.toContain("daemon-reload")
+    })
+
+    it("--supervisor launchd: parses a real \"PID\" = <n>; line, runs the death-poll, then bootout->bootstrap in order, tolerating bootout rc=3", () => {
+      const temp = makeTempDir()
+      const { repo, bin } = makeUpdateEnv(temp)
+
+      // Fake git
+      const gitLog = join(temp, "git.log")
+      writeFake(join(bin, "git"), `
+printf '%s\\n' "$*" >> "${gitLog}"
+case "$*" in
+  *"rev-parse HEAD"*) printf 'aabbcc222222\\n' ;;
+  *"hash-object"*) printf 'deadbeef\\n' ;;
+  *) true ;;
+esac
+exit 0
+`)
+      writeFake(join(bin, "bun"), `exit 0`)
+
+      // Fake curl: healthz 200, readyz 404
+      writeFake(join(bin, "curl"), `
+case "$*" in
+  */healthz*) printf '200'; exit 0 ;;
+  */readyz*)  printf '\\n404'; exit 0 ;;
+  *) exit 0 ;;
+esac
+`)
+
+      // Fake launchctl: log argv, simulate:
+      //   list $LABEL: emit the REAL macOS-26 line format `\t"PID" = <n>;` so the
+      //     engine's `sed -n 's/.*"PID" = \([0-9]*\);.*/\1/p'` actually yields a
+      //     non-empty PID and the death-poll executes (regression for the prior
+      //     `awk -F'"' '{print $4}'` bug, which extracted the EMPTY field after the
+      //     closing quote and silently disabled the poll). The PID is a high,
+      //     already-dead value (999999) so `kill -0` fails on the FIRST iteration
+      //     and the poll completes instantly without hanging the test.
+      //   bootout: return rc=3 (already stopped) to test tolerance
+      //   print: return "state = running" (active)
+      //   bootstrap: succeed
+      const lctlLog = join(temp, "launchctl.log")
+      writeFake(join(bin, "launchctl"), `
+printf '%s\\n' "$*" >> "${lctlLog}"
+case "$1" in
+  list)
+    # Real launchctl list output shape (tab-indented, "PID" = <n>;). 999999 is a
+    # high unused PID -> kill -0 fails immediately -> the poll exits on iter 1.
+    printf '{\n\t"PID" = 999999;\n\t"Label" = "com.user.luna-chat-server";\n};\n'
+    exit 0
+    ;;
+  bootout)
+    # rc=3 = "No such process" — must be tolerated
+    exit 3
+    ;;
+  print)
+    # Emit a print output with state = running (active) and runs = 0
+    printf 'state = running\nruns = 0\n'
+    exit 0
+    ;;
+  bootstrap)
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+`)
+
+      // Create the plist file so preflight passes
+      const plistDir = join(temp, "home", "Library", "LaunchAgents")
+      const plistPath = join(plistDir, "com.user.luna-chat-server.plist")
+      mkdirSync(plistDir, { recursive: true })
+      writeFileSync(plistPath, `<?xml version="1.0"?><plist version="1.0"><dict><key>Label</key><string>com.user.luna-chat-server</string></dict></plist>`)
+
+      const start = Date.now()
+      const result = spawnSync(
+        "bash",
+        [join(repoRoot, "scripts/luna-update-server"),
+          "--supervisor", "launchd",
+          "--repo-dir", repo,
+          "--luna-home", join(temp, "lunahome"),
+          "--launchd-plist", plistPath,
+          "--ref", "aabbcc222222",
+        ],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            HOME: join(temp, "home"),
+            PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+            LUNA_TEST_BUN_PATH: join(bin, "bun"),
+            LUNA_RESTART_SETTLE_SECS: "0",
+            LUNA_READINESS_TIMEOUT: "4",
+            LUNA_READINESS_INTERVAL: "1",
+          },
+        },
+      )
+      const elapsedMs = Date.now() - start
+
+      expect(result.status, result.stderr).toBe(0)
+      // The poll must exit on the FIRST iteration (PID already dead), so the whole
+      // run stays well under the 15s death-poll ceiling. If the PID parse silently
+      // yielded empty the poll would be skipped (still fast) — but a future
+      // regression that DID parse a live PID would hang ~15s; this guards the floor.
+      expect(elapsedMs).toBeLessThan(14000)
+
+      // launchctl log must show list (PID capture) BEFORE bootout BEFORE bootstrap.
+      const lctlLines = existsSync(lctlLog) ? readFileSync(lctlLog, "utf8") : ""
+      const listIdx = lctlLines.indexOf("list")
+      const bootoutIdx = lctlLines.indexOf("bootout")
+      const bootstrapIdx = lctlLines.indexOf("bootstrap")
+      expect(listIdx).toBeGreaterThanOrEqual(0)
+      expect(bootoutIdx).toBeGreaterThanOrEqual(0)
+      expect(bootstrapIdx).toBeGreaterThanOrEqual(0)
+      expect(listIdx).toBeLessThan(bootoutIdx)
+      expect(bootoutIdx).toBeLessThan(bootstrapIdx)
+    })
+
+    it("the launchd PID parser extracts the integer from a real \"PID\" = <n>; line (airtight regression guard vs the awk-field bug)", () => {
+      // The integration test above uses an already-dead PID, so it cannot DISTINGUISH
+      // the fixed sed parser from the original buggy `awk -F'"' '{print $4}'` (both
+      // make the poll finish fast). This is the airtight, timing-independent guard:
+      // it asserts the SHIPPED sed parser yields the integer AND that the old awk form
+      // yields EMPTY, against the exact macOS-26 line shape `\t"PID" = <n>;`. A
+      // regression to the awk parser (which silently disabled the death-poll) fails here.
+      const line = '\t"PID" = 1182;\n'
+      const sed = spawnSync("sed", ["-n", 's/.*"PID" = \\([0-9]*\\);.*/\\1/p'], { input: line, encoding: "utf8" })
+      expect(sed.stdout.trim()).toBe("1182")
+      const awkBug = spawnSync("awk", ['-F"', '/"PID"/{print $4}'], { input: line, encoding: "utf8" })
+      expect(awkBug.stdout.trim()).toBe("")
+    })
+
+    it("--supervisor launchd: a failed forward readiness probe actually drives the launchd rollback restart (2nd bootout->bootstrap), exiting 1", () => {
+      // This test must NOT pass --no-rollback. With --no-rollback the engine calls
+      // luna_die on readiness failure and NEVER reaches do_rollback, so the launchd
+      // rollback path (a SECOND sup_stop/sup_start = bootout+bootstrap) would go
+      // completely unexercised — a tautological "it failed" assertion. Here rollback
+      // runs for real: we make the FORWARD probe fail and the ROLLBACK re-probe
+      // succeed, then assert the launchctl log shows TWO bootout+bootstrap pairs and
+      // the process exits 1 (rolled back to PREV, healthy).
+      const temp = makeTempDir()
+      const { repo, bin } = makeUpdateEnv(temp)
+
+      // Fake git: forward ref and PREV differ so the rollback `reset --hard PREV`
+      // is meaningful. rev-parse HEAD is read TWICE (PREV before apply, NEW_HEAD
+      // after); both return the same canned sha — fine, the rollback target is PREV.
+      writeFake(join(bin, "git"), `
+case "$*" in
+  *"rev-parse HEAD"*) printf 'aabbcc333333\\n' ;;
+  *"hash-object"*) printf 'deadbeef\\n' ;;
+  *) true ;;
+esac
+exit 0
+`)
+      writeFake(join(bin, "bun"), `exit 0`)
+
+      // Stateful curl: /healthz returns 000 (fail) UNTIL the rollback restart has
+      // happened, then 200. We key off a marker file the fake launchctl writes on
+      // its SECOND bootstrap (= the rollback restart). readyz returns 404 once
+      // healthz is 200 so the gate takes the old-server liveness-only fallback =
+      // ready. This makes the forward probe fail and the rollback re-probe pass,
+      // deterministically (no timing races — the marker is set by the restart).
+      const rolledBackMarker = join(temp, "rolled-back.flag")
+      writeFake(join(bin, "curl"), `
+case "$*" in
+  */healthz*)
+    if [[ -f "${rolledBackMarker}" ]]; then printf '200'; exit 0; fi
+    printf '000'; exit 1 ;;
+  */readyz*)  printf '\\n404'; exit 0 ;;
+  *) exit 1 ;;
+esac
+`)
+
+      // launchctl: count bootstrap invocations; the 2nd (rollback restart) drops
+      // the marker that flips curl to healthy. print always reports running so
+      // is-active is "active" on BOTH probes — it is the curl gate that fails the
+      // forward attempt and passes the rollback attempt. list emits a real
+      // `"PID" = <n>;` line (dead PID) so the death-poll runs and exits instantly.
+      const lctlLog = join(temp, "launchctl.log")
+      const bootstrapCounter = join(temp, "bootstrap.count")
+      writeFake(join(bin, "launchctl"), `
+printf '%s\\n' "$*" >> "${lctlLog}"
+case "$1" in
+  list)
+    printf '{\n\t"PID" = 999999;\n\t"Label" = "com.user.luna-chat-server";\n};\n'
+    exit 0
+    ;;
+  bootout) exit 3 ;;
+  print)  printf 'state = running\nruns = 0\n'; exit 0 ;;
+  bootstrap)
+    printf 'x' >> "${bootstrapCounter}"
+    # On the 2nd bootstrap (the rollback restart) flip curl to healthy.
+    if [[ "$(wc -c < "${bootstrapCounter}" | tr -d ' ')" -ge 2 ]]; then
+      : > "${rolledBackMarker}"
+    fi
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+`)
+
+      const plistDir = join(temp, "home", "Library", "LaunchAgents")
+      const plistPath = join(plistDir, "com.user.luna-chat-server.plist")
+      mkdirSync(plistDir, { recursive: true })
+      writeFileSync(plistPath, `<?xml version="1.0"?><plist version="1.0"><dict></dict></plist>`)
+
+      const result = spawnSync(
+        "bash",
+        [join(repoRoot, "scripts/luna-update-server"),
+          "--supervisor", "launchd",
+          "--repo-dir", repo,
+          "--luna-home", join(temp, "lunahome"),
+          "--launchd-plist", plistPath,
+          "--ref", "ffffff444444",
+        ],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            HOME: join(temp, "home"),
+            PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+            LUNA_TEST_BUN_PATH: join(bin, "bun"),
+            LUNA_RESTART_SETTLE_SECS: "0",
+            LUNA_READINESS_TIMEOUT: "2",
+            LUNA_READINESS_INTERVAL: "1",
+          },
+        },
+      )
+
+      // Exit 1 = forward update failed but rollback recovered (the documented code).
+      // NOT 2 (that is rollback-also-failed) and NOT 0 (forward succeeded).
+      expect(result.status, result.stderr).toBe(1)
+      // The rollback message must appear (proves do_rollback ran, not luna_die).
+      expect(result.stderr).toMatch(/ROLL(ING|ED) BACK/i)
+
+      // The launchd restart ran TWICE: once forward, once for the rollback. So the
+      // log must carry >= 2 bootout AND >= 2 bootstrap — this is the real proof the
+      // launchd rollback restart path executed (the whole point of the fix).
+      const lctlLines = existsSync(lctlLog) ? readFileSync(lctlLog, "utf8") : ""
+      const countOf = (needle: string) =>
+        lctlLines.split("\n").filter((l) => l.startsWith(needle)).length
+      expect(countOf("bootout")).toBeGreaterThanOrEqual(2)
+      expect(countOf("bootstrap")).toBeGreaterThanOrEqual(2)
+    })
+  })
 })
