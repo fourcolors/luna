@@ -25,15 +25,18 @@ const DOCK_DOM =
 type Layout = Record<string, [number, number, number, number]> // label → [x,y,w,h]
 
 // A fake Tauri window reporting a fixed logical rect (scaleFactor 1).
-function mkWin(label: string, rect: [number, number, number, number]) {
+function mkWin(label: string, rect: [number, number, number, number], opts?: { visible?: boolean }) {
   const [x, y, w, h] = rect
+  let visible = opts?.visible !== false
   return {
     label,
     outerPosition: vi.fn(async () => ({ x, y })),
     outerSize: vi.fn(async () => ({ width: w, height: h })),
     scaleFactor: vi.fn(async () => 1),
+    isVisible: vi.fn(async () => visible),
     listen: vi.fn(async () => () => {}),
     onResized: vi.fn(async () => () => {}),
+    set visible(v: boolean) { visible = v },
   }
 }
 
@@ -107,5 +110,41 @@ describe('moon-dock — emergent weld visuals', () => {
     expect(shell().style.boxShadow).toBe('')
     expect(shell().hasAttribute('data-weld')).toBe(false)
     expect(shell().style.borderTopLeftRadius).toBe('')
+  })
+
+  it('collapses welded-side margin to 0 so flush OS windows have no card gap', async () => {
+    // panel-settings docked flush-right of chat → settings' LEFT is welded.
+    wireWith('panel-settings', {
+      'panel-chat': [0, 0, 200, 300],
+      'panel-settings': [200, 0, 200, 300],
+    })
+    await vi.waitFor(() => expect(shell().getAttribute('data-weld')).toBe('l'))
+    expect(shell().style.marginLeft).toBe('0px')
+    expect(shell().style.marginRight).toBe('var(--card-inset)')
+    expect(shell().style.width).toBe('calc(100% - 0px - var(--card-inset))')
+  })
+
+  it('defers boot weld until the window becomes visible (snap-on-open)', async () => {
+    document.body.innerHTML = DOCK_DOM
+    const wins: Record<string, ReturnType<typeof mkWin>> = {
+      'panel-chat': mkWin('panel-chat', [0, 0, 200, 300]),
+      'panel-new': mkWin('panel-new', [200, 0, 200, 300], { visible: false }),
+    }
+    const self = wins['panel-new']
+    ;(window as any).__TAURI__ = {
+      window: {
+        getCurrentWindow: () => self,
+        LogicalPosition: class { constructor(public x: number, public y: number) {} },
+        Window: { getByLabel: vi.fn(async (l: string) => wins[l] || null) },
+      },
+      core: { invoke: vi.fn(async (cmd: string) => (cmd === 'list_widget_windows' ? Object.keys(wins) : null)) },
+      event: { emit: vi.fn(async () => {}), listen: vi.fn(async () => () => {}) },
+    }
+    loadVendorInto(window, 'deck-snap.js')
+    loadVendorInto(window, 'moon-dock.js')
+    ;(window as any).LunaDock.wire({ win: self, label: 'panel-new' })
+    expect(shell().getAttribute('data-weld')).toBe(null)
+    self.visible = true
+    await vi.waitFor(() => expect(shell().getAttribute('data-weld')).toBe('l'))
   })
 })

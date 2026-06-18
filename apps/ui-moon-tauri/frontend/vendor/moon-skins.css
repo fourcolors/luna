@@ -147,23 +147,12 @@ html[data-skin='classic'] {
   --dk-edge-b-anchor: 0 12px 24px -12px rgba(40, 30, 25, 0.48);
 }
 
-/* classic skin — restore CSS traffic lights (native lights hidden by Tauri
-   decorations=false + setHidden in this skin; the CSS cluster is the only
-   control affordance). Re-apply the original opacity-reveal hover behaviour.
-   chat.html's #close-btn / #min-btn are also restored so they remain visible. */
-html[data-skin='classic'] .dock-lights {
-  display: flex;     /* re-show the three-dot cluster */
-}
-/* The hover-reveal in moon-theme.css still fires once display is restored,
-   but classic historically shows the lights at rest (winamp always-visible). */
-html[data-skin='classic'] .widget-shell .dock-lights {
-  opacity: 1;
-}
-/* chat.html has its own close-btn / min-btn (absolutely positioned in the
-   title bar corner); restore them so they stay available under classic. */
+/* classic skin — restore CSS traffic lights (native hidden by
+   set_native_controls_visible; the CSS cluster is the only control affordance).
+   chat.html's #close-btn / #min-btn are also restored. */
 html[data-skin='classic'] #title-bar #close-btn,
 html[data-skin='classic'] #title-bar #min-btn {
-  display: flex;
+  display: flex !important;
 }
 
 /* ═══ aqua — glass: big 18px corners, frosted blur, translucent paper, sans ══

@@ -156,13 +156,24 @@ html[data-theme='dark'] .widget-shell.snapping::after {
     0 16px 38px -12px rgba(0, 0, 0, 0.5);
 }
 
-/* Dark theme: deeper halo + a faint smooth edge ring for definition on the
-   night paper (on the shell, so it stays a single crisp line, not wobbled).
-   The stronger tint pool + night paper base now live in the studio dark token
-   block (vendor/moon-skins.css), consumed by .widget-shell::before above. */
+/* Snap-on-open settle (reference `.dock-win.entering` / dock-pop). */
+.widget-shell.entering {
+  animation: dock-pop 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes dock-pop {
+  from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .widget-shell.entering { animation: none; }
+}
+
+/* Dark theme: soft halos only — no 1px ink ring on the shell. That ring traced
+   the card top (especially under the transparent studio title bar) as a thin
+   light line on hover/focus that read as a spurious title-bar border. Ink
+   chrome already omits this ring (see below); wash/studio dark matches it. */
 html[data-theme='dark'] .widget-shell {
   box-shadow:
-    0 0 0 1px color-mix(in oklab, var(--ink) 7%, transparent),
     0 0 16px -2px rgba(0, 0, 0, 0.4),
     0 6px 20px -6px rgba(0, 0, 0, 0.62);
 }
@@ -204,6 +215,10 @@ html[data-chrome='ink'][data-theme='dark'] .widget-shell::before {
 .title-bar {
   border-radius: var(--dk-radius, var(--card-radius)) var(--dk-radius, var(--card-radius)) 0 0;
 }
+/* Title bar is a drag handle, never a tab target — suppress WebKit's focus ring
+   (reads as a light outline tracing the header's rounded top on click/hover). */
+.title-bar:focus,
+.title-bar:focus-visible { outline: none; }
 
 /* ── Paper grain (optional, data-grain="on") ─────────────────────────────
    A fractal-noise wash over the whole window; multiply on paper, screen on
@@ -271,33 +286,31 @@ html[data-chrome='ink'] .title-bar {
   cursor: grab;
 }
 
-/* ── Traffic lights (panel.html / widget.html title bars) ─────────────────
-   macOS-style cluster on the left; glyphs hover-reveal on the whole bar. The
-   right .bar-end mirrors the cluster width so .bar-title stays centered. chat
-   keeps its own MoonFace bar and never renders these.
-   Native macOS traffic lights replace these by default (studio/aqua skins) —
-   the CSS cluster is hidden so there are no double lights. The classic skin
-   re-shows them (see moon-skins.css [data-skin='classic'] block). */
-.dock-lights {
-  display: none;             /* hidden by default — native lights take over   */
-  align-items: center;
-  gap: 7px;
-  flex: 0 0 auto;
-  opacity: 0;
-  transition: opacity 0.2s ease;
-}
-/* Hover-reveal kept for classic skin (where display is restored). No-op in
-   studio/aqua because display:none prevents these from firing. */
-.widget-shell:hover .dock-lights,
-.dock-lights:focus-within {
-  opacity: 1;
-}
+/* ── Title-bar side clusters (balance .bar-title centering) ───────────────
+   studio/aqua: native macOS traffic lights only (hover-revealed via
+   moon-native-titlebar.js) — the CSS .dock-lights cluster is classic-only.
+   classic: faux traffic lights live in .bar-start > .dock-lights (panel/widget)
+   or chat's own #close-btn / #min-btn (see moon-skins.css). */
+.bar-start,
 .bar-end {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   flex: 0 0 auto;
   min-width: 52px; /* ≈ the 3-dot cluster width, so the title centers */
+}
+.bar-end {
+  justify-content: flex-end;
+}
+/* Classic-only faux lights — never paint under studio/aqua (no double lights). */
+.dock-lights {
+  display: none !important;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+}
+html[data-skin='classic'] .dock-lights {
+  display: flex !important;
+  opacity: 1;
 }
 
 /* ── Collapse-into-moon glyph (right side of every card titlebar) ──────────
@@ -458,6 +471,65 @@ html[data-anchor='true'] .bar-title {
 #outline.gr { border-right: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
 #outline.gt { border-top: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
 #outline.gb { border-bottom: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
+
+/* ── Resize grips (moon-resize.js) ─────────────────────────────────────────
+   Custom resize for transparent card windows: 8-direction hit targets on the
+   card face (.widget-shell). Only the SE corner shows the L-bracket indicator;
+   it is hover-revealed like the web board reference. */
+.resize-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 55;
+  border-radius: inherit;
+}
+.resize-hit {
+  position: absolute;
+  pointer-events: auto;
+  touch-action: none;
+}
+/* Edge strips */
+.resize-n { top: -3px; left: 16px; right: 16px; height: 8px; cursor: ns-resize; }
+.resize-s { bottom: -3px; left: 16px; right: 16px; height: 8px; cursor: ns-resize; }
+.resize-e { right: -3px; top: 16px; bottom: 16px; width: 8px; cursor: ew-resize; }
+.resize-w { left: -3px; top: 16px; bottom: 16px; width: 8px; cursor: ew-resize; }
+/* Corners */
+.resize-ne { top: -2px; right: -2px; width: 14px; height: 14px; cursor: nesw-resize; }
+.resize-nw { top: -2px; left: -2px; width: 14px; height: 14px; cursor: nwse-resize; }
+.resize-sw { bottom: -2px; left: -2px; width: 14px; height: 14px; cursor: nesw-resize; }
+.resize-se {
+  right: 0;
+  bottom: 0;
+  width: 22px;
+  height: 22px;
+  cursor: nwse-resize;
+}
+/* L-bracket indicator — hidden at rest, revealed on card hover (reference UI). */
+.resize-se::after {
+  content: '';
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid color-mix(in oklab, var(--ink) 42%, transparent);
+  border-bottom: 2px solid color-mix(in oklab, var(--ink) 42%, transparent);
+  border-radius: 0 0 4px 0;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+}
+.widget-shell:hover .resize-se::after,
+.resize-se:hover::after {
+  opacity: 0.65;
+}
+.resize-se:hover::after {
+  opacity: 0.95;
+}
+html[data-theme='dark'] .resize-se::after {
+  border-right-color: color-mix(in oklab, var(--ink) 58%, transparent);
+  border-bottom-color: color-mix(in oklab, var(--ink) 58%, transparent);
+}
 
 /* TODO Fix 3 — per-seam border suppression for visible-border skins (classic/aqua).
    Reference dock.css:320-321 drops border-top / border-left on the welded inner

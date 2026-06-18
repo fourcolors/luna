@@ -1,0 +1,6 @@
+# Native macOS traffic-light layout: moon-native-titlebar.js measures #title-bar
+# and calls sync_traffic_light_position so the cluster sits over opaque card chrome.
+[[permission]]
+identifier = "allow-sync-traffic-light-position"
+description = "Allows the sync_traffic_light_position command"
+commands.allow = ["sync_traffic_light_position"]

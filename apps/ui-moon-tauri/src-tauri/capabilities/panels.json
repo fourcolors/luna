@@ -39,6 +39,7 @@
     "allow-open-widget",
     "allow-open-artifact-widget",
     "allow-collapse-to-moon",
-    "allow-set-native-controls-visible"
+    "allow-set-native-controls-visible",
+    "allow-sync-traffic-light-position"
   ]
 }

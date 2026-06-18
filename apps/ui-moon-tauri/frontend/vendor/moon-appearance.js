@@ -79,21 +79,24 @@
     el.setAttribute('data-grain', read('grain') === 'true' ? 'on' : 'off');
     el.setAttribute('data-font', read('font'));
     el.setAttribute('data-fontsize', read('fontSize'));
-    // classic skin draws its own CSS traffic-lights, so hide the native ones;
-    // studio/aqua keep native. Deferred via syncNativeControls because apply()
-    // stamps at first paint, which can run BEFORE window.__TAURI__ is injected
-    // (a load-time invoke is silently skipped → native lights wouldn't hide
-    // under classic). Inert on the orb window (no native buttons).
+    // Native lights stay hidden at boot; classic uses CSS faux controls and
+    // studio/aqua reveal native lights on #title-bar hover (moon-native-titlebar.js).
+    // Deferred via syncNativeControls because apply() can run before __TAURI__
+    // is injected. Inert on the orb window (no native buttons).
     syncNativeControls(skin);
+    if (g.LunaNativeTitlebar && g.LunaNativeTitlebar.sync) {
+      g.LunaNativeTitlebar.sync();
+    }
   }
 
-  // Drive the native macOS traffic-lights to match the skin. window.__TAURI__
-  // is injected slightly after the first-paint apply(), so fire immediately if
-  // the API is live, else poll briefly until it is (then once). A newer skin
-  // change cancels a pending poll. No-op (and no dangling timer) outside Tauri.
+  // Always hide native traffic lights here — moon-native-titlebar.js owns
+  // hover-reveal for studio/aqua; classic uses the CSS cluster instead.
+  // window.__TAURI__ is injected slightly after the first-paint apply(), so
+  // fire immediately if the API is live, else poll briefly until it is.
   var nativeCtlTimer = null;
   function syncNativeControls(skin) {
-    var visible = skin !== 'classic';
+    var visible = false;
+    void skin;
     function fire() {
       try {
         if (g.__TAURI__ && g.__TAURI__.core) {
