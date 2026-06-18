@@ -84,10 +84,12 @@ describe('settings.general panel', () => {
     expect(document.getElementById('fresh-thread-btn')).toBeTruthy()
   })
 
-  it('always-on-top defaults to checked when localStorage is empty', () => {
+  it('always-on-top defaults to UNCHECKED when localStorage is empty', () => {
+    // Panels/screens no longer float by default — they only stay on top once
+    // the user has explicitly enabled the setting (luna_always_on_top === 'true').
     bootPanel({ type: 'settings.general' })
     const cb = document.getElementById('always-on-top-toggle') as HTMLInputElement
-    expect(cb.checked).toBe(true)
+    expect(cb.checked).toBe(false)
   })
 
   it('close-on-blur defaults to unchecked when localStorage is empty', () => {
@@ -117,14 +119,14 @@ describe('settings.general panel', () => {
   it('toggling always-on-top writes luna_always_on_top to localStorage', () => {
     bootPanel({ type: 'settings.general' })
     const cb = document.getElementById('always-on-top-toggle') as HTMLInputElement
-    // Default is checked (true); uncheck it.
-    cb.checked = false
-    cb.dispatchEvent(new Event('change'))
-    expect(localStorage.getItem('luna_always_on_top')).toBe('false')
-    // Re-check it.
+    // Default is unchecked (false); check it to float.
     cb.checked = true
     cb.dispatchEvent(new Event('change'))
     expect(localStorage.getItem('luna_always_on_top')).toBe('true')
+    // Un-check it.
+    cb.checked = false
+    cb.dispatchEvent(new Event('change'))
+    expect(localStorage.getItem('luna_always_on_top')).toBe('false')
   })
 
   // ── Close on blur checkbox ────────────────────────────────────────────────

@@ -1448,7 +1448,12 @@ fn spawn_panel_at(
     // shadow follows the SQUARE window bounds and intensifies on focus, which
     // stacked a second, misaligned, focus-reactive edge on the rounded card.
     .shadow(false)
-    .always_on_top(true)
+    // Panels/screens do NOT float above other apps by default. The page itself
+    // (vendor/moon-window-float.js, loaded by chat.html/panel.html) re-enables
+    // always-on-top at boot when the user has explicitly turned on the
+    // "Always on Top" setting (luna_always_on_top === "true"). The orb window
+    // (index.html) keeps its own default-on behavior independently.
+    .always_on_top(false)
     .skip_taskbar(true)
     .visible(visible)
     .inner_size(width.unwrap_or(desc.width), height.unwrap_or(desc.height))
@@ -1636,7 +1641,10 @@ async fn open_artifact_widget(
     // No native OS shadow — the CSS card-shell halo is the single depth cue
     // (see spawn_panel_at above for the full rationale).
     .shadow(false)
-    .always_on_top(true)
+    // Artifact widgets do NOT float by default — same rule as panels above.
+    // vendor/moon-window-float.js (loaded by widget.html) re-enables it at boot
+    // when luna_always_on_top === "true".
+    .always_on_top(false)
     .skip_taskbar(true)
     .inner_size(width.unwrap_or(360.0), height.unwrap_or(440.0))
     .min_inner_size(220.0, 160.0);
