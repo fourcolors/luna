@@ -1,8 +1,0 @@
-[[permission]]
-identifier = "allow-check-for-update"
-description = "Allows querying GitHub Releases for an available app update"
-
-[permission.commands]
-allow = [
-  "check_for_update"
-]

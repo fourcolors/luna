@@ -1,0 +1,12 @@
+[[permission]]
+identifier = "allow-updater"
+description = "Allows SYSTEM windows to participate in the staged self-update flow (the steps are split across the main, chat, and settings windows): check for an update, download/verify/stage it, read the current update state, apply (install + relaunch) a staged build, and consume the one-shot post-restart reopen marker."
+
+[permission.commands]
+allow = [
+  "check_for_update",
+  "start_update_download",
+  "apply_update",
+  "update_state",
+  "take_pending_update"
+]

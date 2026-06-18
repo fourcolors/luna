@@ -389,16 +389,6 @@ fn take_pending_update() -> Option<serde_json::Value> {
     serde_json::from_str(&raw).ok()
 }
 
-/// EXISTING (back-compat / devtools): one-shot download + install + restart.
-/// Re-implemented on the staged halves — `start_update_download` (which checks,
-/// downloads, verifies, stages) then `apply_update` (which persists + installs +
-/// relaunches). Behaviour is unchanged for callers; it just shares the new path.
-#[tauri::command]
-async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
-    start_update_download(app.clone()).await?;
-    apply_update(app).await
-}
-
 #[tauri::command]
 fn get_last_thread_id() -> Option<String> {
     if let Ok(home) = std::env::var("HOME") {
@@ -2287,7 +2277,6 @@ fn main() {
         apply_update,
         update_state,
         take_pending_update,
-        install_update,
         oauth_loopback_start,
         oauth_loopback_wait,
         oauth_loopback_cancel,
@@ -2326,7 +2315,6 @@ fn main() {
         apply_update,
         update_state,
         take_pending_update,
-        install_update,
         oauth_loopback_start,
         oauth_loopback_wait,
         oauth_loopback_cancel,

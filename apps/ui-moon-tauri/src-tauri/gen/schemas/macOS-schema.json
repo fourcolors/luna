@@ -345,12 +345,6 @@
       "description": "Permission identifier",
       "oneOf": [
         {
-          "description": "Allows querying GitHub Releases for an available app update",
-          "type": "string",
-          "const": "allow-check-for-update",
-          "markdownDescription": "Allows querying GitHub Releases for an available app update"
-        },
-        {
           "description": "Allows the close_widget command",
           "type": "string",
           "const": "allow-close-widget",
@@ -385,12 +379,6 @@
           "type": "string",
           "const": "allow-hub-event",
           "markdownDescription": "Allows a settings panel to request an ALLOWLISTED hub action (fresh-thread, profile-changed, connection-changed, open-wizard) — named events only, never arbitrary payloads."
-        },
-        {
-          "description": "Allows downloading + installing an available update, then relaunching",
-          "type": "string",
-          "const": "allow-install-update",
-          "markdownDescription": "Allows downloading + installing an available update, then relaunching"
         },
         {
           "description": "Allows the list_widget_windows command",
@@ -481,6 +469,12 @@
           "type": "string",
           "const": "allow-speak-text",
           "markdownDescription": "Allows enqueueing one sentence for client-side TTS playback"
+        },
+        {
+          "description": "Allows SYSTEM windows to participate in the staged self-update flow (the steps are split across the main, chat, and settings windows): check for an update, download/verify/stage it, read the current update state, apply (install + relaunch) a staged build, and consume the one-shot post-restart reopen marker.",
+          "type": "string",
+          "const": "allow-updater",
+          "markdownDescription": "Allows SYSTEM windows to participate in the staged self-update flow (the steps are split across the main, chat, and settings windows): check for an update, download/verify/stage it, read the current update state, apply (install + relaunch) a staged build, and consume the one-shot post-restart reopen marker."
         },
         {
           "description": "Allows discarding in-flight voice capture/transcription",

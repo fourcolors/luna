@@ -1728,20 +1728,6 @@
           return null;
         }
       },
-
-      // Download + install + relaunch via the Rust `install_update` command.
-      // On success the app re-execs, so the invoke typically never resolves.
-      // (No hub UI calls this since Phase 6 — the updates panel owns the
-      // interactive flow; kept for operator/devtools use.)
-      async installUpdate() {
-        const core = window.__TAURI__ && window.__TAURI__.core;
-        if (!core) return;
-        try {
-          await core.invoke('install_update');
-        } catch (e) {
-          Logger.error('install_update failed:', e);
-        }
-      }
     };
 
     // ════════════════════════════════════════════════════════════════════════
