@@ -54,8 +54,12 @@
     // Broadcast "geometry changed" so every other dock window recomputes its
     // weld. A global emit (not emit_to) is correct here: this tick is FOR
     // everyone, unlike the old targeted dock-group payloads.
-    function broadcastGeometry() {
-      try { var e = ev(); if (e && e.emit) e.emit('dock-geometry-changed', { from: label }); } catch (_) { /* best-effort */ }
+    // `settled` distinguishes a mid-drag tick (false → neighbours repaint
+    // radius only, no inset resize while someone is dragging) from a settle
+    // tick (true → neighbours also collapse/restore their per-side inset so a
+    // docked-onto neighbour's seam closes flush, not just the dragged window).
+    function broadcastGeometry(settled) {
+      try { var e = ev(); if (e && e.emit) e.emit('dock-geometry-changed', { from: label, settled: !!settled }); } catch (_) { /* best-effort */ }
     }
 
     // The window's TOUCHING side is opposite the anchor-relative edge
@@ -80,7 +84,18 @@
     // welded cluster reads as one card. Identical DOM contract to the old
     // applyGroupState — only the SOURCE moved from a Rust IPC payload to the
     // local LunaDeckSnap.weld* computation.
-    function applyWeldVisuals(grouped, outlineSides, weldCorners) {
+    //
+    // applyInset (boolean, default false):
+    //   When true AND grouped: collapses per-side margin to 0 on welded sides
+    //   and recomputes height/width per axis so welded OS windows produce zero
+    //   gap between painted cards (Fix 2 Option B). Free sides keep --card-inset.
+    //   When true AND NOT grouped: clears all six inline styles back to '' so
+    //   the CSS class defaults restore (mirrors the radius '' clear).
+    //   When false: margin/size styles are left untouched — mid-drag calls
+    //   (paintWeldFrom from onDragMove) pass false so the card never resizes
+    //   per-frame during a live drag.
+    //   NO CSS transition for margin/width/height — inset changes are instant.
+    function applyWeldVisuals(grouped, outlineSides, weldCorners, applyInset) {
       groupMembers = grouped ? groupMembers : [];
       if (outlineEl) {
         outlineEl.className = grouped ? outlineSides.map(function (s) { return 'g' + s; }).join(' ') : '';
@@ -107,22 +122,105 @@
         var welded = ['t', 'b', 'l', 'r'].filter(function (e) { return outlineSides.indexOf(e) === -1; });
         shellEl.setAttribute('data-weld', welded.join(''));
         shellEl.style.boxShadow = pieces.join(', ');
+        // Fix 2b — sync #seam flash bar offsets to match the per-side inset.
+        // #seam is position:fixed (resolves to the OS-window viewport, not the
+        // .widget-shell), so when Fix 2 collapses a welded side's card margin to
+        // 0px the CSS `var(--card-inset)` offset on the matching flash bar lands
+        // 22px INSIDE the now-flush card face. We override per-side with 0px on
+        // welded sides via CSS custom properties; the flash-* rules use
+        // `var(--seam-<side>, var(--card-inset))` so only the welded sides move.
+        if (seamEl) {
+          seamEl.style.setProperty('--seam-t', welded.indexOf('t') !== -1 ? '0px' : '');
+          seamEl.style.setProperty('--seam-r', welded.indexOf('r') !== -1 ? '0px' : '');
+          seamEl.style.setProperty('--seam-b', welded.indexOf('b') !== -1 ? '0px' : '');
+          seamEl.style.setProperty('--seam-l', welded.indexOf('l') !== -1 ? '0px' : '');
+        }
+        // Fix 2 — per-side inset collapse on welded edges (settle/boot/resize only;
+        // mid-drag calls pass applyInset=false to avoid per-frame card resizing).
+        if (applyInset) {
+          var mt = outlineSides.indexOf('t') !== -1 ? 'var(--card-inset)' : '0px';
+          var mr = outlineSides.indexOf('r') !== -1 ? 'var(--card-inset)' : '0px';
+          var mb = outlineSides.indexOf('b') !== -1 ? 'var(--card-inset)' : '0px';
+          var ml = outlineSides.indexOf('l') !== -1 ? 'var(--card-inset)' : '0px';
+          shellEl.style.marginTop    = mt;
+          shellEl.style.marginRight  = mr;
+          shellEl.style.marginBottom = mb;
+          shellEl.style.marginLeft   = ml;
+          // Must recompute per axis from the ACTUAL per-side margins; leaving the
+          // CSS default `calc(100% - var(--card-inset)*2)` while one margin is 0
+          // produces a 22px dead zone where the card stops short of the OS edge.
+          shellEl.style.height = 'calc(100% - ' + mt + ' - ' + mb + ')';
+          shellEl.style.width  = 'calc(100% - ' + ml + ' - ' + mr + ')';
+          // macOS traffic-light guard: when margin-top collapses to 0 on a TOP
+          // weld, the title bar shifts to y=0 while native lights stay at y=42
+          // (main.rs traffic_light_position), floating them into content.
+          // Add padding-top here (inline, same timing as margin collapse) rather
+          // than in CSS keyed on [data-weld] — data-weld is stamped mid-drag too,
+          // which would cause a transient 22px title-bar growth during live drag
+          // (the margin-top only collapses at settle, not mid-drag).
+          var barEl = shellEl.querySelector('.title-bar');
+          if (barEl) {
+            barEl.style.paddingTop = welded.indexOf('t') !== -1 ? 'var(--card-inset)' : '';
+          }
+          // Fix: grain overlay (body::after position:fixed) uses --seam-* props
+          // already written above; body::after CSS reads them via per-side custom
+          // properties (set on the #seam element). Instead, propagate the same
+          // inset values onto document.documentElement so body::after can read them.
+          var root = document.documentElement;
+          root.style.setProperty('--grain-t', welded.indexOf('t') !== -1 ? '0px' : '');
+          root.style.setProperty('--grain-r', welded.indexOf('r') !== -1 ? '0px' : '');
+          root.style.setProperty('--grain-b', welded.indexOf('b') !== -1 ? '0px' : '');
+          root.style.setProperty('--grain-l', welded.indexOf('l') !== -1 ? '0px' : '');
+        }
       } else {
         shellEl.removeAttribute('data-weld');
         shellEl.style.boxShadow = '';
+        // Fix 2b — clear seam offsets when ungrouped so the flash bars revert
+        // to the CSS default (var(--card-inset)) via the cascade fallback.
+        if (seamEl) {
+          seamEl.style.removeProperty('--seam-t');
+          seamEl.style.removeProperty('--seam-r');
+          seamEl.style.removeProperty('--seam-b');
+          seamEl.style.removeProperty('--seam-l');
+        }
+        // Fix 2 — restore CSS class defaults when ungrouped ('' = clear inline,
+        // restoring the class-level `margin: var(--card-inset)` and calc sizes).
+        // UNCONDITIONAL (no applyInset guard) — mirrors the unconditional radius
+        // reset above. When a card peels away mid-drag its corners un-square
+        // immediately; if inset were still gated behind applyInset=false the
+        // previously-collapsed margin would stay at 0px until onDragUp, producing
+        // a rounded corner flush against the OS window edge for the drag duration.
+        shellEl.style.marginTop    = '';
+        shellEl.style.marginRight  = '';
+        shellEl.style.marginBottom = '';
+        shellEl.style.marginLeft   = '';
+        shellEl.style.height       = '';
+        shellEl.style.width        = '';
+        // Clear title-bar padding-top guard (set inline in the grouped branch).
+        var barEl = shellEl.querySelector('.title-bar');
+        if (barEl) { barEl.style.paddingTop = ''; }
+        // Clear grain overlay per-side props on documentElement.
+        var root = document.documentElement;
+        root.style.removeProperty('--grain-t');
+        root.style.removeProperty('--grain-r');
+        root.style.removeProperty('--grain-b');
+        root.style.removeProperty('--grain-l');
       }
     }
 
     // Compute + apply this window's weld from a member list [{label, rect}]
     // (which already excludes the hub). Returns my cluster's labels.
-    function paintWeldFrom(members) {
+    // applyInset: when true, also collapses/restores per-side card margin for
+    // welded/ungrouped state (Fix 2). Mid-drag calls omit this (default false)
+    // so the card never resizes per-frame during a live drag.
+    function paintWeldFrom(members, applyInset) {
       var S = window.LunaDeckSnap;
       var cluster = S.weldClusterOf(label, members);
       var grouped = cluster.length > 1;
       groupMembers = grouped ? cluster : [];
       var outline = grouped ? (S.weldOutlineSides(members)[label] || []) : [];
       var weld = grouped ? (S.weldCorners(members)[label] || []) : [];
-      applyWeldVisuals(grouped, outline, weld);
+      applyWeldVisuals(grouped, outline, weld, applyInset);
       return cluster;
     }
 
@@ -163,11 +261,18 @@
     // Fresh enumeration → repaint my weld. Cheap geometry, one IPC round of
     // window reads; runs on a geometry-changed tick / resize / boot, NOT per
     // pointermove (the drag paints locally from its start snapshot instead).
+    // applyInset (default true): passed through to paintWeldFrom/applyWeldVisuals.
+    //   false is used by the dock-geometry-changed listener so that a NEIGHBOR
+    //   window's live-drag broadcast does NOT collapse this window's card margin
+    //   mid-drag (avoids the asymmetric half-closed-seam while dragging). The
+    //   dragged window's own onDragUp→refreshWeld() still passes true (default)
+    //   so the full inset collapses correctly at settle.
     var refreshing = false;
-    async function refreshWeld() {
+    async function refreshWeld(applyInset) {
       if (refreshing) return;
       refreshing = true;
-      try { paintWeldFrom(await weldMembers()); }
+      var doInset = (applyInset === undefined) ? true : !!applyInset;
+      try { paintWeldFrom(await weldMembers(), /*applyInset=*/doInset); }
       catch (_) { /* best-effort */ }
       finally { refreshing = false; }
     }
@@ -289,7 +394,7 @@
         } catch (_) { /* best-effort */ }
       }
       refreshWeld();          // settle my own weld from real rects
-      broadcastGeometry();    // everyone else repaints around the new position
+      broadcastGeometry(/*settled=*/true); // neighbours settle their per-side inset around the new position too
     }
 
     document.addEventListener('pointerdown', function (e) {
@@ -366,7 +471,16 @@
     try {
       var e = ev();
       if (e && e.listen) {
-        e.listen('dock-geometry-changed', function () { refreshWeld(); }).catch(function () {});
+        // A mid-drag tick (payload.settled=false, one per rAF) does a RADIUS-ONLY
+        // repaint — collapsing this window's card margin while a NEIGHBOUR is being
+        // dragged would resize a stationary card every frame. The SETTLE tick
+        // (payload.settled=true, from a neighbour's onDragUp / onResized / boot)
+        // DOES collapse/restore this window's per-side inset, so when a window docks
+        // onto me MY side of the seam closes flush too — not just the dragged one.
+        e.listen('dock-geometry-changed', function (evt) {
+          var settled = !!(evt && evt.payload && evt.payload.settled);
+          refreshWeld(/*applyInset=*/settled);
+        }).catch(function () {});
       }
       if (typeof W.listen === 'function') {
         W.listen('dock-link', function (ev2) {
@@ -377,14 +491,14 @@
       }
       // My own native resize changes the weld for my neighbours too.
       if (typeof W.onResized === 'function') {
-        W.onResized(function () { refreshWeld(); broadcastGeometry(); }).catch(function () {});
+        W.onResized(function () { refreshWeld(); broadcastGeometry(/*settled=*/true); }).catch(function () {});
       }
     } catch (_) { /* best-effort */ }
 
     // Boot: paint my weld from current geometry and let neighbours repaint
     // around me (covers a boot-restored cluster and a freshly-spawned panel).
     refreshWeld();
-    broadcastGeometry();
+    broadcastGeometry(/*settled=*/true);
   }
 
   g.LunaDock = { wire: wire };
