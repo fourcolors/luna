@@ -153,7 +153,7 @@
           shellEl.style.width  = 'calc(100% - ' + ml + ' - ' + mr + ')';
           // macOS traffic-light guard: when margin-top collapses to 0 on a TOP
           // weld, the title bar shifts to y=0 while native lights stay at y=42
-          // (main.rs traffic_light_position), floating them into content.
+          // (main.rs traffic_light_position ~y30), floating them into content.
           // Add padding-top here (inline, same timing as margin collapse) rather
           // than in CSS keyed on [data-weld] — data-weld is stamped mid-drag too,
           // which would cause a transient 22px title-bar growth during live drag
@@ -205,6 +205,9 @@
         root.style.removeProperty('--grain-r');
         root.style.removeProperty('--grain-b');
         root.style.removeProperty('--grain-l');
+      }
+      if (window.LunaNativeTitlebar && window.LunaNativeTitlebar.syncPosition) {
+        window.LunaNativeTitlebar.syncPosition();
       }
     }
 
@@ -487,6 +490,9 @@
           var p = ev2 && ev2.payload;
           if (!p || p['for'] !== label) return;
           flashSeam(p.edge); // anchor side: our touching side IS the edge
+          // A freshly-spawned sibling just docked flush — collapse our welded
+          // side immediately (don't wait for its boot broadcast).
+          refreshWeld();
         }).catch(function () {});
       }
       // My own native resize changes the weld for my neighbours too.
@@ -495,10 +501,49 @@
       }
     } catch (_) { /* best-effort */ }
 
-    // Boot: paint my weld from current geometry and let neighbours repaint
-    // around me (covers a boot-restored cluster and a freshly-spawned panel).
-    refreshWeld();
-    broadcastGeometry(/*settled=*/true);
+    // Reference `.dock-win.entering` pop — play once when we land grouped after
+    // snap-on-open (or a drag settle that created a fresh link).
+    function playEntering() {
+      var sh = dockShell();
+      if (!sh || groupMembers.length < 2) return;
+      sh.classList.add('entering');
+      sh.addEventListener('animationend', function () { sh.classList.remove('entering'); }, { once: true });
+    }
+
+    // Snap-on-open builds the webview hidden at the OS-default spot, then Rust
+    // positions it flush and show()s. Boot weld MUST wait until visible +
+    // positioned or we'd paint ungrouped at the default spot and never revisit
+    // (the reference place() runs before paint; we defer to match that).
+    async function bootSettle() {
+      // Track whether we had to wait for visibility. A freshly snap-on-opened
+      // window starts hidden (isVisible()===false) and becomes visible after
+      // Rust positions+shows it — so waited===true means genuine fresh snap.
+      // A boot-restored window is already visible on the first poll — waited
+      // stays false and we skip the pop-in animation. If isVisible() throws we
+      // treat it as already-visible (safe default: no animation).
+      var waited = false;
+      try {
+        var tries = 0;
+        while (tries < 120) {
+          var vis = true;
+          try { vis = await W.isVisible(); } catch (_) { /* default visible */ }
+          if (vis) break;
+          waited = true; // was hidden — this is a fresh snap-on-open
+          tries++;
+          await new Promise(function (r) { setTimeout(r, 16); });
+        }
+        // Two rAFs: let set_position from the main-thread snap land first.
+        await new Promise(function (r) {
+          requestAnimationFrame(function () { requestAnimationFrame(r); });
+        });
+      } catch (_) { /* best-effort */ }
+      await refreshWeld();
+      broadcastGeometry(/*settled=*/true);
+      // Only play the dock-pop entrance animation for windows that were hidden
+      // at startup (fresh snap-on-open). Boot-restored windows skip it.
+      if (waited) { playEntering(); }
+    }
+    bootSettle();
   }
 
   g.LunaDock = { wire: wire };

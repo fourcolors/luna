@@ -471,6 +471,12 @@
           "markdownDescription": "Allows enqueueing one sentence for client-side TTS playback"
         },
         {
+          "description": "Allows the sync_traffic_light_position command",
+          "type": "string",
+          "const": "allow-sync-traffic-light-position",
+          "markdownDescription": "Allows the sync_traffic_light_position command"
+        },
+        {
           "description": "Allows SYSTEM windows to participate in the staged self-update flow (the steps are split across the main, chat, and settings windows): check for an update, download/verify/stage it, read the current update state, apply (install + relaunch) a staged build, and consume the one-shot post-restart reopen marker.",
           "type": "string",
           "const": "allow-updater",

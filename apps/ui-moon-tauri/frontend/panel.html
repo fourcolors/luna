@@ -8,6 +8,7 @@
   <script src="vendor/moon-ws.js"></script>
   <script src="vendor/deck-snap.js"></script>
   <script src="vendor/moon-dock.js"></script>
+  <script src="vendor/moon-resize.js"></script>
   <!-- Google Fonts: Albert Sans (body) + Caveat (handwritten accent) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -21,6 +22,7 @@
   <link rel="stylesheet" href="vendor/moon-theme.css">
   <!-- Stamps data-palette/data-theme/data-chrome/data-grain on <html> pre-paint -->
   <script src="vendor/moon-appearance.js"></script>
+  <script src="vendor/moon-native-titlebar.js"></script>
   <!-- Honors the "Always on Top" setting for this panel (default: not floating). -->
   <script src="vendor/moon-window-float.js"></script>
   <style>
@@ -94,13 +96,14 @@
 </svg>
 <div class="widget-shell">
   <div class="title-bar" id="title-bar">
-    <!-- macOS-style traffic lights (left, glyphs hover-reveal). Close reuses the
-         #close-btn id the page wires to close_widget; min/zoom drive the native
-         window (best-effort). NOT drag-region so clicks aren't swallowed. -->
-    <div class="dock-lights">
-      <button class="light light-close" id="close-btn" type="button" title="Close" aria-label="Close panel"></button>
-      <button class="light light-min" id="min-btn" type="button" title="Minimize" aria-label="Minimize panel"></button>
-      <button class="light light-zoom" id="zoom-btn" type="button" title="Zoom" aria-label="Zoom panel"></button>
+    <!-- Classic skin only: CSS faux traffic lights. studio/aqua use native
+         macOS buttons (hover-revealed on this bar via moon-native-titlebar.js). -->
+    <div class="bar-start">
+      <div class="dock-lights">
+        <button class="light light-close" id="close-btn" type="button" title="Close" aria-label="Close panel"></button>
+        <button class="light light-min" id="min-btn" type="button" title="Minimize" aria-label="Minimize panel"></button>
+        <button class="light light-zoom" id="zoom-btn" type="button" title="Zoom" aria-label="Zoom panel"></button>
+      </div>
     </div>
     <span class="bar-title" id="bar-title">Loading…</span>
     <!-- Right cluster balances the lights so the title stays centered; also

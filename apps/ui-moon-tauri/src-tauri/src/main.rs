@@ -1448,23 +1448,25 @@ fn spawn_panel_at(
     .visible(visible)
     .inner_size(width.unwrap_or(desc.width), height.unwrap_or(desc.height))
     .min_inner_size(220.0, 120.0);
-    // macOS Overlay title bar: native traffic-light buttons float above the
-    // transparent CSS edge without a visible title bar chrome. hidden_title
-    // removes the window title text; traffic_light_position places the buttons
-    // within the card header zone (inset 40 px right, 42 px down from top-left).
+    // macOS overlay title bar: hidden_title drops the window title text;
+    // exact traffic-light placement is synced from #title-bar via
+    // sync_traffic_light_position (wry's static inset cannot move the cluster
+    // down into the card — only horizontal nudge).
     #[cfg(target_os = "macos")]
     {
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
-            .hidden_title(true)
-            .traffic_light_position(tauri::LogicalPosition::new(40.0_f64, 42.0_f64));
+            .hidden_title(true);
     }
     if let (Some(px), Some(py)) = (x, y) {
         builder = builder.position(px, py);
     }
     // Return the built window so callers reveal it via the handle they already
     // hold — no re-fetch that could miss (and strand a hidden window).
-    builder.build().map_err(|e| e.to_string())
+    let win = builder.build().map_err(|e| e.to_string())?;
+    // Antinote-style: native lights stay hidden until the title bar is hovered.
+    let _ = apply_native_controls_visible(&win, false);
+    Ok(win)
 }
 
 /// Allowlisted hub actions a settings panel may request. Panels own their
@@ -1572,7 +1574,7 @@ async fn open_widget(
         let scheduled = win.run_on_main_thread(move || {
             let target = match opener {
                 Some(anchor) => group_bbox_of(&app2, &anchor).map(|r| (anchor, r)),
-                None => nearest_dock_anchor(&app2, &label2),
+                None => default_snap_target(&app2, &label2),
             };
             if let Some((anchor, anchor_rect)) = target {
                 dock_new_panel(&app2, &label2, &anchor, anchor_rect, width);
@@ -1581,6 +1583,7 @@ async fn open_widget(
             if let Some(w) = app2.get_webview_window(&label2) {
                 let _ = w.show();
             }
+            broadcast_dock_geometry_settled(&app2, &label2);
         });
         // Never leave the window stuck hidden if the main-thread hop can't queue.
         if scheduled.is_err() {
@@ -1638,16 +1641,12 @@ async fn open_artifact_widget(
     .skip_taskbar(true)
     .inner_size(width.unwrap_or(360.0), height.unwrap_or(440.0))
     .min_inner_size(220.0, 160.0);
-    // macOS Overlay title bar: native traffic-light buttons float above the
-    // transparent CSS edge without a visible title bar chrome. hidden_title
-    // removes the window title text; traffic_light_position places the buttons
-    // within the card header zone (inset 40 px right, 42 px down from top-left).
+    // macOS overlay title bar — position synced from the page (spawn_panel_at).
     #[cfg(target_os = "macos")]
     {
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
-            .hidden_title(true)
-            .traffic_light_position(tauri::LogicalPosition::new(40.0_f64, 42.0_f64));
+            .hidden_title(true);
     }
     // When it will snap (no explicit position), build hidden and reveal flush
     // after positioning so the window never flashes at the OS-default spot. A
@@ -1660,6 +1659,7 @@ async fn open_artifact_widget(
     // Keep the built window handle so reveal can never miss it (a re-fetch
     // could return None and strand a hidden window).
     let win = builder.build().map_err(|e| e.to_string())?;
+    let _ = apply_native_controls_visible(&win, false);
     // Snap-on-open: with no explicit position, the artifact / MCP-app window
     // accretes onto the nearest open dock cluster and joins its group, exactly
     // like a system panel. An explicit (x, y) — e.g. a restored pop-out — is
@@ -1669,12 +1669,13 @@ async fn open_artifact_widget(
         let label2 = label.clone();
         let w = width.unwrap_or(360.0) as i32;
         let scheduled = win.run_on_main_thread(move || {
-            if let Some((anchor, anchor_rect)) = nearest_dock_anchor(&app2, &label2) {
+            if let Some((anchor, anchor_rect)) = default_snap_target(&app2, &label2) {
                 dock_new_panel(&app2, &label2, &anchor, anchor_rect, w);
             }
             if let Some(w2) = app2.get_webview_window(&label2) {
                 let _ = w2.show();
             }
+            broadcast_dock_geometry_settled(&app2, &label2);
         });
         if scheduled.is_err() {
             let _ = win.show();
@@ -1798,27 +1799,46 @@ fn expand_from_moon(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// AppKit / NSWindow APIs must run on the process main thread. Tauri invokes
+/// commands on a tokio worker — calling objc from there raises an NSException
+/// that Rust cannot catch (`foreign exception → abort`). Dispatch through the
+/// webview window's main-thread queue when we aren't already on it.
+#[cfg(target_os = "macos")]
+fn with_appkit_main_thread<R: Send + 'static>(
+    window: tauri::WebviewWindow,
+    f: impl FnOnce(&tauri::WebviewWindow) -> Result<R, String> + Send + 'static,
+) -> Result<R, String> {
+    if unsafe { libc::pthread_main_np() != 0 } {
+        return f(&window);
+    }
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let win = window.clone();
+    window
+        .run_on_main_thread(move || {
+            let _ = tx.send(f(&win));
+        })
+        .map_err(|e| e.to_string())?;
+    rx.recv()
+        .map_err(|_| "main-thread AppKit handler dropped".to_string())?
+}
+
+#[cfg(not(target_os = "macos"))]
+fn with_appkit_main_thread<R>(
+    window: tauri::WebviewWindow,
+    f: impl FnOnce(&tauri::WebviewWindow) -> Result<R, String>,
+) -> Result<R, String> {
+    f(&window)
+}
+
 /// Show or hide the macOS native traffic-light buttons (close / miniaturize /
-/// zoom) on the CALLING card window. Invoked by the skin system when switching
-/// between the `default` skin (native lights on) and the `classic` skin
-/// (CSS faux-lights on, native lights hidden). Each card window calls this on
-/// itself via `window.__TAURI__.core.invoke('set_native_controls_visible', …)`.
-///
-/// Non-macOS: compiles to a no-op that returns `Ok(())` immediately.
-#[tauri::command]
-fn set_native_controls_visible(window: tauri::WebviewWindow, visible: bool) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
+/// zoom) on a card window. Used at spawn (hidden until title-bar hover) and by
+/// the `set_native_controls_visible` command from the frontend skin/hover layer.
+#[cfg(target_os = "macos")]
+fn apply_native_controls_visible(window: &tauri::WebviewWindow, visible: bool) -> Result<(), String> {
+    with_appkit_main_thread(window.clone(), move |win| {
         use objc2_app_kit::{NSWindow, NSWindowButton};
 
-        // SAFETY: ns_window() returns the raw NSWindow* backing this Tauri
-        // window. The pointer is valid for the lifetime of the window (Tauri
-        // holds it alive). We hold no Retained<> reference — cast-and-call
-        // only within this scope.
-        let ns_win_ptr = window.ns_window().map_err(|e| e.to_string())?;
-        // objc2 0.6 marks its generated methods `#[unsafe(method(...))]`;
-        // a single outer `unsafe` block covers the raw pointer cast and all
-        // objc2 method calls within it.
+        let ns_win_ptr = win.ns_window().map_err(|e| e.to_string())?;
         unsafe {
             let ns_win: &NSWindow = &*ns_win_ptr.cast();
             for btn_kind in [
@@ -1826,20 +1846,111 @@ fn set_native_controls_visible(window: tauri::WebviewWindow, visible: bool) -> R
                 NSWindowButton::MiniaturizeButton,
                 NSWindowButton::ZoomButton,
             ] {
-                // standardWindowButton: returns None when the button was
-                // removed by the OS (e.g. a styleMask without a close button).
-                // Guard defensively so a missing button never aborts the call.
                 if let Some(btn) = ns_win.standardWindowButton(btn_kind) {
                     btn.setHidden(!visible);
                 }
             }
         }
-    }
-    // On non-macOS there are no traffic-light buttons; suppress unused-var
-    // warnings without the cfg block.
-    #[cfg(not(target_os = "macos"))]
-    let _ = (&window, visible);
+        Ok(())
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn apply_native_controls_visible(_window: &tauri::WebviewWindow, _visible: bool) -> Result<(), String> {
     Ok(())
+}
+
+/// Align the native traffic-light cluster with the CSS `#title-bar`.
+///
+/// `x` / `y` are logical px from the webview top-left (same space as
+/// `getBoundingClientRect`): `x` is the close-button left edge, `y` is the
+/// close-button top edge. Tauri's builder `traffic_light_position` only nudges
+/// horizontally — it cannot push the cluster down into the 22px card inset, so
+/// we reposition the AppKit buttons directly on every sync.
+#[cfg(target_os = "macos")]
+fn apply_traffic_light_layout(
+    window: &tauri::WebviewWindow,
+    x: f64,
+    y_top: f64,
+) -> Result<(), String> {
+    if !x.is_finite() || !y_top.is_finite() {
+        return Ok(());
+    }
+    with_appkit_main_thread(window.clone(), move |win| {
+        use objc2_app_kit::{NSView, NSWindow, NSWindowButton};
+        use objc2_foundation::NSPoint;
+
+        let ns_win_ptr = win.ns_window().map_err(|e| e.to_string())?;
+        let ns_view_ptr = win.ns_view().map_err(|e| e.to_string())?;
+
+        unsafe {
+            let ns_win: &NSWindow = &*ns_win_ptr.cast();
+            let web_root: &NSView = &*ns_view_ptr.cast();
+            let Some(close) = ns_win.standardWindowButton(NSWindowButton::CloseButton) else {
+                return Ok(());
+            };
+            let Some(mini) = ns_win.standardWindowButton(NSWindowButton::MiniaturizeButton) else {
+                return Ok(());
+            };
+            let zoom = ns_win.standardWindowButton(NSWindowButton::ZoomButton);
+
+            let close_rect = close.frame();
+            let mini_rect = mini.frame();
+            let space = mini_rect.origin.x - close_rect.origin.x;
+            let btn_h = close_rect.size.height;
+
+            let Some(btn_super) = close.superview() else {
+                return Ok(());
+            };
+            // Web top-left (getBoundingClientRect) → AppKit coords on the WKWebView root.
+            let web_h = web_root.bounds().size.height;
+            let target_web = NSPoint::new(x, web_h - y_top - btn_h);
+            let origin_base = btn_super.convertPoint_fromView(target_web, Some(web_root));
+
+            let mut buttons = vec![&*close, &*mini];
+            if let Some(ref z) = zoom {
+                buttons.push(&*z);
+            }
+            for (i, btn) in buttons.iter().enumerate() {
+                let mut origin = origin_base;
+                origin.x += f64::from(i as u32) * space;
+                btn.setFrameOrigin(origin);
+            }
+        }
+        Ok(())
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn apply_traffic_light_layout(
+    _window: &tauri::WebviewWindow,
+    _x: f64,
+    _y_top: f64,
+) -> Result<(), String> {
+    Ok(())
+}
+
+/// Sync native traffic-light layout to the CSS title bar (see
+/// `apply_traffic_light_layout`). Called from moon-native-titlebar.js on hover,
+/// resize, and after dock weld geometry changes.
+#[tauri::command]
+fn sync_traffic_light_position(
+    window: tauri::WebviewWindow,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    apply_traffic_light_layout(&window, x, y)
+}
+
+/// Show or hide the macOS native traffic-light buttons (close / miniaturize /
+/// zoom) on the CALLING card window. Invoked by moon-native-titlebar.js for
+/// Antinote-style hover reveal (studio/aqua) and by moon-appearance.js when
+/// switching skins. Each card window calls this on itself.
+///
+/// Non-macOS: compiles to a no-op that returns `Ok(())` immediately.
+#[tauri::command]
+fn set_native_controls_visible(window: tauri::WebviewWindow, visible: bool) -> Result<(), String> {
+    apply_native_controls_visible(&window, visible)
 }
 
 // ── voice pipeline commands (feature "voice") ───────────────────────────────
@@ -2115,6 +2226,42 @@ fn group_bbox_of(app: &tauri::AppHandle, label: &str) -> Option<(i32, i32, i32, 
     cluster_bbox(&member_rects)
 }
 
+/// Broadcast a settled geometry tick so every dock window recomputes weld +
+/// per-side inset collapse. Emitted after snap-on-open positioning so panels
+/// that booted hidden at the OS-default spot repaint flush at the seam.
+fn broadcast_dock_geometry_settled(app: &tauri::AppHandle, from: &str) {
+    let _ = app.emit(
+        "dock-geometry-changed",
+        serde_json::json!({ "from": from, "settled": true }),
+    );
+}
+
+/// Snap-on-open target when the caller did not pass an explicit opener (gear
+/// menu, orb launcher): prefer the chat anchor's cluster when it is open —
+/// the reference stacks new modules from the anchor. Otherwise fall back to the
+/// cluster nearest the new window's current rect.
+fn default_snap_target(
+    app: &tauri::AppHandle,
+    new_label: &str,
+) -> Option<(String, (i32, i32, i32, i32))> {
+    // Never snap a window onto itself: skip the chat-preference branch when
+    // the new window IS panel-chat (e.g. a future code path that calls this
+    // before hiding it, or a test double that bypasses the hidden-at-build
+    // invariant). Fall through to nearest_dock_anchor in that case.
+    if new_label != "panel-chat" {
+        if let Some(chat) = app.get_webview_window("panel-chat") {
+            let chat_ok = chat.is_minimized().map(|m| !m).unwrap_or(true)
+                && chat.is_visible().unwrap_or(true);
+            if chat_ok {
+                if let Some(bbox) = group_bbox_of(app, "panel-chat") {
+                    return Some(("panel-chat".to_string(), bbox));
+                }
+            }
+        }
+    }
+    nearest_dock_anchor(app, new_label)
+}
+
 /// The open dock cluster nearest `new_label` (excluding the hub and the new
 /// window itself), as `(a member label to join, the cluster's bounding box)`.
 /// This is the snap-on-open target: a freshly-spawned panel accretes onto the
@@ -2289,6 +2436,7 @@ fn main() {
         collapse_to_moon,
         expand_from_moon,
         set_native_controls_visible,
+        sync_traffic_light_position,
         voice_status,
         voice_set_mode,
         voice_ptt_down,
@@ -2326,7 +2474,8 @@ fn main() {
         list_widget_windows,
         collapse_to_moon,
         expand_from_moon,
-        set_native_controls_visible
+        set_native_controls_visible,
+        sync_traffic_light_position
     ]);
 
     builder

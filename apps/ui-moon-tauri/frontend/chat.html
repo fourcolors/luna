@@ -16,6 +16,7 @@
   <script src="vendor/moon-markdown.js"></script>
   <script src="vendor/deck-snap.js"></script>
   <script src="vendor/moon-dock.js"></script>
+  <script src="vendor/moon-resize.js"></script>
   <!-- Watercolor font families: Albert Sans (body) + Caveat (handwritten accents). -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -32,6 +33,7 @@
        so palette tokens resolve on the first frame; also live-updates on
        cross-window storage events. -->
   <script src="vendor/moon-appearance.js"></script>
+  <script src="vendor/moon-native-titlebar.js"></script>
   <!-- Honors the "Always on Top" setting for this panel (default: not floating). -->
   <script src="vendor/moon-window-float.js"></script>
   <style>
@@ -473,16 +475,14 @@
        .chat-panel header-action buttons stay exactly as they were. */
     #title-bar { position: relative; }
 
-    /* Faux close/min buttons — hidden by default (native traffic lights take
-       over in studio/aqua). The classic skin re-shows them via moon-skins.css.
-       All JS handlers are preserved; they simply have no visible target unless
-       classic skin is active. */
+    /* Faux close/min — classic skin only (studio/aqua use native traffic lights
+       hover-revealed via moon-native-titlebar.js). Handlers stay wired for classic. */
     #title-bar #close-btn {
       position: absolute;
       top: 5px;
       left: 6px;
       z-index: 6;
-      display: none;              /* hidden; classic restores via moon-skins.css */
+      display: none !important;
       opacity: 0;
       pointer-events: none;
       transition: opacity 0.15s ease, background 0.1s, color 0.1s;
@@ -522,7 +522,7 @@
       top: 5px;
       left: 30px;
       z-index: 6;
-      display: none;              /* hidden; classic restores via moon-skins.css */
+      display: none !important;
       opacity: 0;
       pointer-events: none;
       transition: opacity 0.15s ease, background 0.1s, color 0.1s;
@@ -2282,10 +2282,9 @@
   <!-- TITLE BAR — on the outer container enables
        native window drag. The close button is intentionally NOT drag-region. -->
   <div class="title-bar" id="title-bar">
-    <!-- Close lives at the top-LEFT corner, hidden until the title bar is
-         hovered (macOS-notification pattern); positioned absolutely (see the
-         #title-bar #close-btn rule in the page <style>) so it's out of the flex
-         flow. NOT a drag region, so the click lands instead of dragging. -->
+    <!-- Balances .bar-end so the title stays centered when native lights are hidden. -->
+    <div class="bar-start" aria-hidden="true"></div>
+    <!-- Classic skin only: faux close/min (studio/aqua use native traffic lights). -->
     <button class="close-btn" id="close-btn" title="Close" aria-label="Close chat">✕</button>
     <!-- Minimize tucks the WHOLE workspace back into the moon (invoke
          collapse_to_moon), parked just right of the hover-× and revealed with
@@ -8019,7 +8018,9 @@
     if (DOM.toggleSettings) {
       DOM.toggleSettings.addEventListener('click', () => {
         if (window.__TAURI__ && window.__TAURI__.core) {
-          window.__TAURI__.core.invoke('open_widget', { kind: 'settings' })
+          const args = { kind: 'settings' };
+          if (winLabel) args.opener = winLabel;
+          window.__TAURI__.core.invoke('open_widget', args)
             .catch((e) => Logger.warn('open_widget failed:', e));
         }
       });

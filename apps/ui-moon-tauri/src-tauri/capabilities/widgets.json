@@ -24,6 +24,7 @@
     "allow-close-widget",
     "allow-list-widget-windows",
     "allow-collapse-to-moon",
-    "allow-set-native-controls-visible"
+    "allow-set-native-controls-visible",
+    "allow-sync-traffic-light-position"
   ]
 }
