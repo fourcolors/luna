@@ -5,7 +5,7 @@
  * loaded by panel.html's per-type loader (or preloaded by the jsdom harness).
  *
  * localStorage keys (identical to the hub's SettingsEngine):
- *   luna_always_on_top   — "true" | "false"  (default: "true")
+ *   luna_always_on_top   — "true" | "false"  (default: "false")
  *   luna_close_on_blur   — "true" | "false"  (default: "false")
  *   luna_global_shortcut — combo string       (default: "⌥Space")
  *
@@ -37,7 +37,7 @@
       aotLabel.textContent = 'Always on Top';
       var aotDesc = document.createElement('span');
       aotDesc.className = 'setting-desc';
-      aotDesc.textContent = 'Keep Luna floating above other windows';
+      aotDesc.textContent = 'Keep Luna and her panels floating above other apps';
       aotInfo.appendChild(aotLabel);
       aotInfo.appendChild(aotDesc);
 
@@ -47,7 +47,7 @@
       aotToggle.type = 'checkbox';
       aotToggle.id = 'always-on-top-toggle';
       var savedAot = localStorage.getItem('luna_always_on_top');
-      aotToggle.checked = savedAot !== null ? savedAot === 'true' : true;
+      aotToggle.checked = savedAot !== null ? savedAot === 'true' : false;
       var aotSlider = document.createElement('span');
       aotSlider.className = 'slider';
       aotSwitch.appendChild(aotToggle);
