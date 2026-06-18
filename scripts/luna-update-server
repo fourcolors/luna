@@ -118,6 +118,10 @@ Options:
                             SQLITE_CANTOPEN on boot). Default: 6.
   --no-rollback             Do not auto-roll-back on readiness failure (advanced).
   --dry-run                 Print the plan and change NOTHING.
+  --supervisor   <systemd|launchd>   supervisor backend (default: systemd; env: LUNA_SUPERVISOR)
+  --user                             use systemd --user scope (systemd only)
+  --launchd-label <label>            launchd service label (default: com.user.luna-chat-server; env: LUNA_LAUNCHD_LABEL)
+  --launchd-plist <path>             full path to launchd plist (default: ~/Library/LaunchAgents/<label>.plist; env: LUNA_LAUNCHD_PLIST)
   -h, --help                Show this help.
 
 Exit codes:
@@ -127,6 +131,11 @@ Exit codes:
      manual intervention required).
 EOF
 }
+
+SUPERVISOR="${LUNA_SUPERVISOR:-systemd}"       # systemd | launchd
+SYSTEMD_USER=false                              # --user flag
+LAUNCHD_LABEL="${LUNA_LAUNCHD_LABEL:-com.user.luna-chat-server}"
+LAUNCHD_PLIST="${LUNA_LAUNCHD_PLIST:-$HOME/Library/LaunchAgents/${LAUNCHD_LABEL}.plist}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -143,6 +152,10 @@ while [[ $# -gt 0 ]]; do
     --restart-settle) RESTART_SETTLE_SECS="${2:?missing --restart-settle value}"; shift 2 ;;
     --no-rollback) ROLLBACK=false; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
+    --supervisor)  SUPERVISOR="${2:?missing --supervisor value}"; shift 2 ;;
+    --user)        SYSTEMD_USER=true; shift ;;
+    --launchd-label) LAUNCHD_LABEL="${2:?missing --launchd-label value}"; LAUNCHD_PLIST="$HOME/Library/LaunchAgents/${LAUNCHD_LABEL}.plist"; shift 2 ;;
+    --launchd-plist) LAUNCHD_PLIST="${2:?missing --launchd-plist value}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) luna_die "unknown option: $1" ;;
   esac
@@ -150,9 +163,38 @@ done
 
 luna_validate_profile "$PROFILE"
 
+# Supervisor validation — incompatible combinations are caught early before any
+# mutating step so the operator sees a clear diagnosis, not a half-updated server.
+# Reject an unknown value FIRST: the preflight branches `launchd`-vs-else while the
+# sup_* functions branch `systemd`-vs-else, so a typo like `--supervisor sytemd`
+# would split-brain (systemd preflight + launchctl restart). Fail clean instead.
+[[ "$SUPERVISOR" == "systemd" || "$SUPERVISOR" == "launchd" ]] ||
+  luna_die "invalid --supervisor: '$SUPERVISOR' (expected 'systemd' or 'launchd')"
+if [[ "$SUPERVISOR" == "launchd" ]]; then
+  # launchd is macOS-only; --incus targets a Linux container and is incompatible.
+  [[ -z "$INCUS_CONTAINER" ]] || luna_die "--supervisor launchd is incompatible with --incus (launchd is macOS-only; containers run Linux systemd)"
+  # --user is a systemd concept; launchd has no system/user split in the same sense.
+  [[ "$SYSTEMD_USER" == false ]] || luna_die "--supervisor launchd is incompatible with --user (launchd has no system/user unit split)"
+  # Require the launchctl binary so the error is clear before any mutating step.
+  command -v launchctl >/dev/null 2>&1 || luna_die "--supervisor launchd requires launchctl (not found in PATH)"
+fi
+if [[ "$SYSTEMD_USER" == true && -n "$INCUS_CONTAINER" ]]; then
+  luna_die "--user is incompatible with --incus (user units run on the bare host, not inside a container)"
+fi
+
 if [[ -z "$SERVICE_NAME" ]]; then
   SERVICE_NAME="$(luna_service_name "$PROFILE")"
 fi
+
+# For --user, default SERVICE_DIR to the XDG systemd user unit directory when the
+# operator did not explicitly pass --service-dir / LUNA_SERVICE_DIR. This mirrors
+# where `systemctl --user enable` expects to find units (or where a unit file was
+# placed by the operator). The system default (/etc/systemd/system) would be wrong
+# — units there are not visible to the user scope.
+if [[ "$SYSTEMD_USER" == true && -z "${LUNA_SERVICE_DIR:-}" && "$SERVICE_DIR" == "/etc/systemd/system" ]]; then
+  SERVICE_DIR="$HOME/.config/systemd/user"
+fi
+USER_UNIT_FILE="$SERVICE_DIR/$SERVICE_NAME"
 
 # --- resolve the git-on-host / rest-in-container path split -------------------
 # HOST_REPO_DIR    : where `git` runs (always on the HOST).
@@ -231,6 +273,14 @@ if [[ -n "$INCUS_CONTAINER" ]]; then
   printf 'Repo (in-container):   %s\n' "$CONTAINER_REPO_DIR"
   printf 'Service: %s (in container)\n' "$SERVICE_FILE"
   printf 'Target: incus container %s\n' "$INCUS_CONTAINER"
+elif [[ "$SUPERVISOR" == "launchd" ]]; then
+  printf 'Repo: %s\n' "$HOST_REPO_DIR"
+  printf 'Service: %s (launchd plist: %s)\n' "$LAUNCHD_LABEL" "$LAUNCHD_PLIST"
+  printf 'Target: macOS launchd (gui/%s)\n' "$UID"
+elif [[ "$SYSTEMD_USER" == true ]]; then
+  printf 'Repo: %s\n' "$HOST_REPO_DIR"
+  printf 'Service: %s (systemd --user)\n' "$SERVICE_FILE"
+  printf 'Target: bare host (user scope)\n'
 else
   printf 'Repo: %s\n' "$HOST_REPO_DIR"
   printf 'Service: %s\n' "$SERVICE_FILE"
@@ -242,22 +292,29 @@ fi
 # host can always stat), so the check is the same host-side test for both shapes.
 [[ -d "$HOST_REPO_DIR/.git" ]] || luna_die "$HOST_REPO_DIR is not a git clone"
 
-# User-unit trap (memory): jax master runs a hand-edited `systemctl --user` unit,
-# NOT a system unit under /etc/systemd/system. This script targets the SYSTEM
-# unit. If that unit file is absent, refuse — restarting the wrong scope (or
-# spawning a competing :4753 listener) is exactly the failure we must avoid.
-# Guard runs in non-dry-run only (dry-run touches nothing and just prints).
+# Unit-existence preflight: confirm the supervisor artifact (systemd unit or launchd
+# plist) actually exists before we mutate the repo. Running without one means we
+# would update the code but have no way to restart the service — a silent half-deploy.
+# Dry-run is exempt: it prints the plan without touching anything, so a missing unit
+# should not block a dry inspection of what WOULD happen.
 if [[ "$DRY_RUN" == false ]]; then
-  if [[ -n "$INCUS_CONTAINER" ]]; then
+  if [[ "$SUPERVISOR" == "launchd" ]]; then
+    [[ -f "$LAUNCHD_PLIST" ]] ||
+      luna_die "launchd plist $LAUNCHD_PLIST not found; create it (e.g. via render_launchd_plist) before running luna-update-server"
+  elif [[ -n "$INCUS_CONTAINER" ]]; then
     # The unit is a CONTAINER-FS artifact (the in-container luna-server-install
     # renders it under /etc/systemd/system), so probe it inside the container.
     incus exec "$INCUS_CONTAINER" -- test -f "$SERVICE_FILE" ||
       luna_die "system unit $SERVICE_FILE not found in container $INCUS_CONTAINER; \
-a --user unit host is out of scope for v1 (will not restart the wrong scope)"
+run luna-server-install inside the container first"
+  elif [[ "$SYSTEMD_USER" == true ]]; then
+    [[ -f "$USER_UNIT_FILE" ]] ||
+      luna_die "systemd user unit $USER_UNIT_FILE not found; \
+copy or symlink your unit there (e.g. cp my.service $USER_UNIT_FILE) then run systemctl --user daemon-reload"
   else
     [[ -f "$SERVICE_FILE" ]] ||
-      luna_die "system unit $SERVICE_FILE not found; a --user unit host (e.g. the \
-current jax master) is out of scope for v1 (will not restart the wrong scope)"
+      luna_die "system unit $SERVICE_FILE not found; \
+run luna-server-install to create it, or pass --supervisor launchd / --user for non-system-unit hosts"
   fi
 fi
 
@@ -316,9 +373,10 @@ lockfile_hash() {
 # target) returns 404, and the gate falls back to liveness-only so update-server
 # can still drive pre-/readyz deploys.
 readiness_restart_baseline() {
-  # NRestarts after the restart we just issued; "0" if unknown.
+  # Baseline restart/launch count right after we issued the restart. If this
+  # climbs during the probe window the unit is crash-looping, not recovering.
   local n
-  n="$(run_target_capture systemctl show "$SERVICE_NAME" --property=NRestarts --value 2>/dev/null || printf '0')"
+  n="$(sup_restart_count)"
   [[ "$n" =~ ^[0-9]+$ ]] || n="0"
   printf '%s' "$n"
 }
@@ -328,31 +386,22 @@ readiness_ok() {
   local deadline=$((SECONDS + READINESS_TIMEOUT))
   local active nrestarts http
   while (( SECONDS < deadline )); do
-    active="$(run_target_capture systemctl is-active "$SERVICE_NAME" 2>/dev/null || printf 'unknown')"
+    active="$(sup_is_active)"
     if [[ "$active" == "active" ]]; then
-      # Did it crash-loop since restart? NRestarts climbing => not healthy.
-      nrestarts="$(run_target_capture systemctl show "$SERVICE_NAME" --property=NRestarts --value 2>/dev/null || printf '0')"
+      nrestarts="$(sup_restart_count)"
       [[ "$nrestarts" =~ ^[0-9]+$ ]] || nrestarts="0"
       if (( nrestarts <= baseline )); then
         http="$(run_target_capture curl -fsS -o /dev/null -w '%{http_code}' \
           --max-time "$READINESS_CURL_MAX_TIME" \
           "http://127.0.0.1:${READINESS_PORT}/healthz" 2>/dev/null || printf '000')"
         if [[ "$http" == "200" ]]; then
-          # Deepened gate (#28): /healthz 200 alone can't tell a NORMAL server from
-          # a SETUP-mode one (a credential-lapsed server still answers 200). Require
-          # /readyz to confirm normal mode. No -f, so a non-2xx still yields a body
-          # + code; a connection failure falls through to '000'.
           readyz="$(run_target_capture curl -sS -w '\n%{http_code}' \
             --max-time "$READINESS_CURL_MAX_TIME" \
             "http://127.0.0.1:${READINESS_PORT}/readyz" 2>/dev/null || printf '\n000')"
           local rcode="${readyz##*$'\n'}"
-          # Older server without /readyz (e.g. a rollback target): fall back to
-          # liveness-only so update-server can still drive pre-/readyz builds.
           if [[ "$rcode" == "404" || "$rcode" == "000" ]]; then
             return 0
           fi
-          # /readyz present: ready ONLY if it reports normal mode. A setup-mode
-          # body (credential not usable) is NOT ready → keep polling → rollback.
           if printf '%s' "$readyz" | grep -q '"mode":"normal"'; then
             return 0
           fi
@@ -448,19 +497,144 @@ settle_after_stop() {
   return 0
 }
 
+# --- supervisor abstraction ---------------------------------------------------
+# The following five functions (sup_reload, sup_stop, sup_start, sup_is_active,
+# sup_restart_count) form a thin abstraction over systemd and launchd so the
+# restart/readiness logic above them is written once and routes by $SUPERVISOR.
+#
+# Key invariant: all five return 0 on success, non-zero on failure — callers use
+# `|| return 1` to propagate into rollback exactly as the bare systemctl calls did.
+#
+# launchd notes (verified on macOS 26.5.1):
+#   - `bootout` is ASYNC: the process may still be running when it returns. We
+#     capture the PID BEFORE bootout and poll kill -0 until dead (bounded 15s).
+#   - bootout when already-gone returns rc=3 "No such process" -> tolerate as OK.
+#   - `bootstrap gui/$UID <plist>` is the modern load primitive (not `launchctl load`).
+#   - `print gui/$UID/$LABEL` -> state = running (is-active analogue).
+#   - `print gui/$UID/$LABEL` -> runs = N (crash-loop counter analogue).
+
+# sup_reload — daemon configuration reload before start.
+# systemd: daemon-reload (forces the kernel to re-read unit files so a changed
+#   ExecStart / EnvironmentFile / etc. takes effect on the next start).
+# launchd: no-op (launchd reads the plist fresh on bootstrap; no reload needed).
+sup_reload() {
+  if [[ "$SUPERVISOR" == "systemd" ]]; then
+    run_target systemctl $(_systemctl_user_flag) daemon-reload
+  else
+    # launchd: the plist is re-read at bootstrap time, so there is no persistent
+    # daemon state to reload. Return 0 unconditionally.
+    return 0
+  fi
+}
+
+# sup_stop — stop the supervised service and wait for the process to be gone.
+# systemd: synchronous (systemctl stop blocks until the unit's cgroup is torn down).
+# launchd: async! capture PID first, then bootout, then poll kill -0 until dead.
+#   Dry-run: just print the bootout command; skip the poll (nothing to wait for).
+sup_stop() {
+  if [[ "$SUPERVISOR" == "systemd" ]]; then
+    run_target systemctl $(_systemctl_user_flag) stop "$SERVICE_NAME"
+  else
+    # Capture PID BEFORE bootout — once the service is gone launchctl list
+    # no longer has a "PID" field, so we must read it first. The line format is
+    # exactly `\t"PID" = 1182;` (verified on macOS 26), so pull the integer
+    # between `= ` and `;`. (An earlier `awk -F'"' '{print $4}'` extracted the
+    # EMPTY field after the closing quote, silently disabling the death-poll —
+    # the settle then only "worked" because it outlived the dying process.)
+    local pid=""
+    pid="$(launchctl list "$LAUNCHD_LABEL" 2>/dev/null | sed -n 's/.*"PID" = \([0-9]*\);.*/\1/p' || true)"
+
+    # bootout: rc=3 "No such process" is normal when the unit is already stopped;
+    # treat it as success so an idempotent stop doesn't abort the deploy.
+    if [[ "$DRY_RUN" == true ]]; then
+      luna_run launchctl bootout "gui/$UID/$LAUNCHD_LABEL"
+      return 0
+    fi
+    launchctl bootout "gui/$UID/$LAUNCHD_LABEL" 2>/dev/null || {
+      local rc=$?
+      # rc=3 = "No such process" = already stopped. Any other rc is a real error.
+      [[ $rc -eq 3 ]] || { printf 'error: launchctl bootout failed (rc=%d)\n' "$rc" >&2; return 1; }
+    }
+
+    # Poll until the process is actually gone (bootout is async).
+    # A missing or empty PID means nothing was running — skip the poll.
+    if [[ -n "$pid" ]]; then
+      local i=0
+      while (( i < 15 )); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 1
+        (( i++ )) || true
+      done
+      if kill -0 "$pid" 2>/dev/null; then
+        luna_warn "launchctl bootout timed out: PID $pid still alive after 15s; proceeding anyway"
+      fi
+    fi
+  fi
+}
+
+# sup_start — load/start the supervised service.
+# systemd: systemctl start (picks up the unit from SERVICE_DIR, already reloaded).
+# launchd: bootstrap gui/$UID <plist> (reads the plist file at LAUNCHD_PLIST).
+sup_start() {
+  if [[ "$SUPERVISOR" == "systemd" ]]; then
+    run_target systemctl $(_systemctl_user_flag) start "$SERVICE_NAME"
+  else
+    luna_run launchctl bootstrap "gui/$UID" "$LAUNCHD_PLIST"
+  fi
+}
+
+# sup_is_active — check whether the service is currently running.
+# Returns: prints "active" if running; "unknown" otherwise. Callers compare with ==.
+# systemd: `systemctl is-active <unit>` (prints "active" when running).
+# launchd: `launchctl print gui/$UID/$LABEL | grep 'state = running'`.
+sup_is_active() {
+  if [[ "$SUPERVISOR" == "systemd" ]]; then
+    run_target_capture systemctl $(_systemctl_user_flag) is-active "$SERVICE_NAME" 2>/dev/null || printf 'unknown'
+  else
+    if launchctl print "gui/$UID/$LAUNCHD_LABEL" 2>/dev/null | grep -q 'state = running'; then
+      printf 'active'
+    else
+      printf 'unknown'
+    fi
+  fi
+}
+
+# sup_restart_count — how many times has the supervisor restarted this service?
+# Used by readiness_ok to detect crash-looping: if the count climbs during the
+# probe window, the service is not actually healthy despite momentary is-active.
+# systemd: NRestarts property via systemctl show.
+# launchd: the `runs` field from `launchctl print` (increments on each launch).
+# Both: non-numeric output -> "0" (safe default, disables the climb check).
+sup_restart_count() {
+  local n
+  if [[ "$SUPERVISOR" == "systemd" ]]; then
+    n="$(run_target_capture systemctl $(_systemctl_user_flag) show "$SERVICE_NAME" --property=NRestarts --value 2>/dev/null || printf '0')"
+  else
+    n="$(launchctl print "gui/$UID/$LAUNCHD_LABEL" 2>/dev/null | awk '/^[[:space:]]*runs =/{print $3}' || printf '0')"
+  fi
+  [[ "$n" =~ ^[0-9]+$ ]] || n="0"
+  printf '%s' "$n"
+}
+
+# _systemctl_user_flag — emit "--user" when the --user flag was passed, empty otherwise.
+# Used by every systemctl call so bare-host system-scope is unchanged and user-scope
+# is a single toggle. This is a helper, not a supervisor abstraction function.
+_systemctl_user_flag() {
+  [[ "$SYSTEMD_USER" == true ]] && printf '%s' '--user' || true
+}
+
 # Restart the unit as a CLEAN stop -> settle -> start instead of a fast
-# `systemctl restart`. `systemctl stop` is synchronous (it blocks until the
-# unit's cgroup is fully torn down), so the process is gone when it returns; the
-# settle then covers the lagging WAL/SHM handle release before `systemctl start`
-# reopens the DBs (see RESTART_SETTLE_SECS). Used by BOTH the forward path AND
-# rollback, and by both shapes: run_target routes each systemctl step into the
-# container for --incus, while the settle is a host-side wall-clock wait (the
-# same elapsed time, with no extra incus round-trip).
+# supervisor-restart. sup_stop handles the async launchd death-poll internally,
+# so settle_after_stop always runs on confirmed-dead (or timed-out-with-warning).
+# sup_reload is a no-op for launchd.
 restart_service() {
-  run_target systemctl daemon-reload || return 1
-  run_target systemctl stop "$SERVICE_NAME" || return 1
+  # Stop -> settle -> start instead of a fast supervisor-restart. sup_stop handles
+  # the async launchd death-poll internally, so settle_after_stop always runs on
+  # confirmed-dead (or timed-out-with-warning). sup_reload is a no-op for launchd.
+  sup_reload || return 1
+  sup_stop   || return 1
   settle_after_stop
-  run_target systemctl start "$SERVICE_NAME" || return 1
+  sup_start  || return 1
 }
 
 # --- plan / dry-run -----------------------------------------------------------
@@ -486,9 +660,21 @@ if [[ "$DRY_RUN" == true ]]; then
   else
     printf '4. re-pin LUNA_CLAUDE_CODE_EXECUTABLE in %s\n' "$ENV_FILE"
   fi
-  printf '5. systemctl daemon-reload + stop + settle %ss + start %s\n' "$RESTART_SETTLE_SECS" "$SERVICE_NAME"
-  printf '6. readiness probe: is-active + NRestarts-stable + curl http://127.0.0.1:%s/healthz==200 + /readyz mode=normal (<=%ss)\n' \
-    "$READINESS_PORT" "$READINESS_TIMEOUT"
+  if [[ "$SUPERVISOR" == "launchd" ]]; then
+    printf '5. launchctl bootout gui/%s/%s + settle %ss + bootstrap gui/%s %s\n' \
+      "$UID" "$LAUNCHD_LABEL" "$RESTART_SETTLE_SECS" "$UID" "$LAUNCHD_PLIST"
+  elif [[ "$SYSTEMD_USER" == true ]]; then
+    printf '5. systemctl --user daemon-reload + stop + settle %ss + start %s\n' "$RESTART_SETTLE_SECS" "$SERVICE_NAME"
+  else
+    printf '5. systemctl daemon-reload + stop + settle %ss + start %s\n' "$RESTART_SETTLE_SECS" "$SERVICE_NAME"
+  fi
+  if [[ "$SUPERVISOR" == "launchd" ]]; then
+    restart_count_term="runs-stable"
+  else
+    restart_count_term="NRestarts-stable"
+  fi
+  printf '6. readiness probe: is-active + %s + curl http://127.0.0.1:%s/healthz==200 + /readyz mode=normal (<=%ss)\n' \
+    "$restart_count_term" "$READINESS_PORT" "$READINESS_TIMEOUT"
   printf '7. on readiness OK: seed V2 dream/wake job rows via dream-wake-install.ts (idempotent, best-effort)\n'
   if [[ "$ROLLBACK" == true ]]; then
     printf '8. on readiness FAIL: reset --hard PREV, re-install if lock reverted, re-pin claude, restart, re-probe (ROLLED BACK)\n'
@@ -559,8 +745,18 @@ do_rollback() {
       exit 1
     fi
   fi
-  printf 'CRITICAL: update to %s failed AND rollback to %s also failed — server may be DOWN. Manual intervention required (check: systemctl status %s; journalctl -u %s).\n' \
-    "$REF" "$PREV" "$SERVICE_NAME" "$SERVICE_NAME" >&2
+  # Remediation hint must match the supervisor — pointing a macOS operator at
+  # `systemctl`/`journalctl` during an outage sends them to dead-ends.
+  local hint
+  if [[ "$SUPERVISOR" == "launchd" ]]; then
+    hint="launchctl print gui/$UID/$LAUNCHD_LABEL; log show --last 10m --predicate 'process == \"bun\"'"
+  elif [[ "$SYSTEMD_USER" == true ]]; then
+    hint="systemctl --user status $SERVICE_NAME; journalctl --user -u $SERVICE_NAME"
+  else
+    hint="systemctl status $SERVICE_NAME; journalctl -u $SERVICE_NAME"
+  fi
+  printf 'CRITICAL: update to %s failed AND rollback to %s also failed — server may be DOWN. Manual intervention required (check: %s).\n' \
+    "$REF" "$PREV" "$hint" >&2
   exit 2
 }
 
