@@ -2842,6 +2842,14 @@
       // thread-snapshot. If none arrives we treat the reattach as STALLED.
       // Cleared on snapshot/close/disconnect.
       subscribeTimeout: null,
+      // One-shot guard for the stall self-heal. A stored last-thread id can
+      // point at a thread this server's DB no longer holds (pruned, reset, or
+      // written against a different server — the last-thread file is global).
+      // The first stall recovers via list-threads; a SECOND stall in the same
+      // socket means the server is genuinely unresponsive, so we stop and
+      // surface the dead state instead of looping. Reset on a fresh connect
+      // and on every successful reattach.
+      reattachRecovering: false,
       // The pending scheduleReconnect() timer.
       reconnectTimer: null,
       // Connection generation counter (fix-6). Bumped each connect(); each
@@ -4247,6 +4255,7 @@
         // ignored once a newer connect() has incremented State.connGen.
         const myGen = ++State.connGen;
         this.clearSubscribeTimeout();   // a fresh connect owns its own subscribe watchdog
+        State.reattachRecovering = false;  // and its own one-shot stall self-heal budget
         if (State.reconnectTimer) { clearTimeout(State.reconnectTimer); State.reconnectTimer = null; }
 
         Logger.info(`Connecting to WebSocket: ${State.wsUrl}`);
@@ -4586,15 +4595,38 @@
         }, 7000);
       },
 
-      // Reattach stalled (open socket but no thread-snapshot). The chat WINDOW
-      // reports status only — the close path / scheduleReconnect own recovery.
+      // Reattach stalled: open socket, but the thread we subscribed to never
+      // produced a thread-snapshot. The usual cause is a stored last-thread id
+      // the CURRENT server can't resolve — it was pruned/reset, or the global
+      // (non-server-scoped) last-thread file carried an id from another server.
+      //
+      // Self-heal once, the way the Agent SDK recommends handling a resume that
+      // can't be found: don't dead-end on it — recover gracefully. Drop the
+      // unresolvable id and list this server's threads; the `thread-list`
+      // handler then auto-subscribes to the most-recent valid thread (or mints
+      // a fresh one if the server has none). A second stall in the same socket
+      // means the server itself is unresponsive, so we stop and surface the
+      // dead state rather than looping. PINNED_THREAD panels are exempt: a
+      // direct line is bound to ONE thread for life and must never silently
+      // jump to a different one.
       onReattachStalled() {
+        if (!PINNED_THREAD && !State.reattachRecovering) {
+          State.reattachRecovering = true;
+          Logger.warn('Reattach stalled — stored thread not on this server; recovering via list-threads');
+          this.updateStatus('connecting', 'Recovering…');
+          State.activeThreadId = null;          // unset so thread-list auto-subscribes to most-recent/fresh
+          this.send({ type: 'list-threads' });
+          this.startSubscribeTimeout();          // bound the recovery subscribe with the same watchdog
+          return;
+        }
+        Logger.warn('Reattach stalled — recovery exhausted; surfacing stalled status');
         this.updateStatus('disconnected', 'Reattach stalled');
       },
 
       // Back on our thread (thread-snapshot landed): status only. The window
       // grow/retract choreography this drove in the hub does not exist here.
       onReattached() {
+        State.reattachRecovering = false;   // success refreshes the self-heal budget
         this.updateStatus('connected', 'Connected');
       },
 

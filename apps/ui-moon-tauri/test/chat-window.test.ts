@@ -2075,6 +2075,49 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
       expect(invoke).toHaveBeenCalledWith('set_last_thread_id', { threadId: 'thread-xyz' })
     })
+
+    it('Scenario: a stalled reattach self-heals once by listing this server\'s threads', () => {
+      const m = M()
+      stubInvoke()
+      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
+      m.State.ws = fakeOpenSocket()        // socket is fine; the stored thread is gone from THIS server
+      m.State.activeThreadId = 'thread-pruned-from-this-server'
+      m.State.reattachRecovering = false
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      m.WebSocketEngine.startSubscribeTimeout()
+      vi.advanceTimersByTime(7000)         // watchdog fires → real onReattachStalled recovers
+
+      expect(m.State.reattachRecovering).toBe(true)
+      expect(m.State.activeThreadId).toBeNull()                    // dropped the unresolvable id
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'list-threads' })
+      expect(m.State.subscribeTimeout).not.toBeNull()              // recovery subscribe is itself watched
+    })
+
+    it('Scenario: a SECOND stall in the same socket surfaces the dead state instead of looping', () => {
+      const m = M()
+      stubInvoke()
+      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
+      m.State.ws = fakeOpenSocket()
+      m.State.reattachRecovering = true    // recovery already spent this socket
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+
+      m.WebSocketEngine.onReattachStalled()
+
+      expect(sendSpy).not.toHaveBeenCalledWith({ type: 'list-threads' })
+      expect(statusSpy).toHaveBeenCalledWith('disconnected', 'Reattach stalled')
+    })
+
+    it('Scenario: a successful reattach refreshes the self-heal budget', () => {
+      const m = M()
+      vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+      m.State.reattachRecovering = true
+
+      m.WebSocketEngine.onReattached()
+
+      expect(m.State.reattachRecovering).toBe(false)
+    })
   })
 
   // ───────────────────────────────────────────────────────────────────────────
