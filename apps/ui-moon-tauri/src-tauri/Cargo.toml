@@ -1,6 +1,6 @@
 [package]
 name = "luna-moon-ui"
-version = "0.0.35"
+version = "0.0.36"
 description = "Native transparent floating Moon companion for Luna"
 edition = "2021"
 
