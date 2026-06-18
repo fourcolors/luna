@@ -558,47 +558,6 @@
       background: color-mix(in oklab, var(--accent) 16%, transparent);
     }
 
-    /* Archive toggle button — appears when hovering over the active thread.
-       Functional-minimal: muted color to stay out of the way. */
-    #title-bar .archive-btn {
-      flex-shrink: 0;
-      background: none;
-      border: none;
-      color: var(--ink-faint, #888);
-      width: 22px;
-      height: 22px;
-      border-radius: 50%;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: background 0.12s, color 0.12s;
-      font-size: 11px;
-      opacity: 0.7;
-    }
-    #title-bar .archive-btn:hover {
-      background: color-mix(in oklab, var(--ink-faint, #888) 14%, transparent);
-      opacity: 1;
-    }
-    #title-bar .archive-toggle-btn {
-      flex-shrink: 0;
-      background: none;
-      border: none;
-      color: var(--ink-faint, #888);
-      padding: 2px 6px;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 10px;
-      transition: background 0.12s, color 0.12s;
-      opacity: 0.7;
-    }
-    #title-bar .archive-toggle-btn:hover,
-    #title-bar .archive-toggle-btn.active {
-      background: color-mix(in oklab, var(--ink-faint, #888) 14%, transparent);
-      opacity: 1;
-      color: var(--ink, #333);
-    }
-
     /* Watercolor scrollbar styling — applied to every scrolling container in
        the moon. `width` covers vertical, `height` covers horizontal (assistant
        `<pre>` blocks scroll horizontally). Thumbs use the ink-faint token so
@@ -2340,19 +2299,6 @@
     <span class="grip">⋮⋮</span>
     <span class="wash-dot" aria-hidden="true"></span>
     <span class="bar-title" id="bar-title">Luna</span>
-    <!-- Archive current thread (Phase 3). Appears in title bar. -->
-    <button class="archive-btn" id="archive-thread-btn" title="Archive this thread" aria-label="Archive thread"
-            style="display:none;">
-      <!-- Box/archive icon -->
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <rect x="2" y="4" width="20" height="5" rx="1"/><path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9"/>
-        <path d="M10 13h4"/>
-      </svg>
-    </button>
-    <!-- Toggle archived threads view -->
-    <button class="archive-toggle-btn" id="archive-view-btn" title="Show/hide archived threads"
-            aria-label="Toggle archived threads">Archived</button>
     <!-- New thread — the promoted action, alone on the right. Spawns a fresh
          Luna panel docked to the right of this one (open_widget chat?thread=new). -->
     <button class="newthread-btn" id="new-thread-btn" title="New thread" aria-label="New parallel thread">
@@ -5299,33 +5245,12 @@
     });
 
     MoonFrames.register('thread-archived', (frame) => {
-      // Server confirmed archive. If it was our active thread, show a notice.
+      // Server archived a thread (e.g. auto-archive). If it was our active
+      // thread, clear it and refresh so we pick up another.
       Logger.info(`Thread archived: ${frame.threadId}`);
       if (frame.threadId === State.activeThreadId) {
-        // Switch to a new thread since the active one is now archived.
         WebSocketEngine.send({ type: 'list-threads' });
         State.activeThreadId = null;
-      }
-    });
-
-    MoonFrames.register('thread-unarchived', (frame) => {
-      // Server confirmed unarchive. Subscribe to the restored thread.
-      Logger.info(`Thread unarchived: ${frame.threadId}`);
-      // Refresh the archive list panel if it's visible.
-      if (ArchivePanel.visible) {
-        ArchivePanel.refresh();
-      }
-    });
-
-    MoonFrames.register('thread-archive-error', (frame) => {
-      // Server could not archive/unarchive the thread (not found in registry
-      // or registry unavailable). Log and refresh the thread list so the
-      // sidebar reflects the actual state.
-      Logger.warn(`Thread archive operation failed for ${frame.threadId}: ${frame.reason}`);
-      // Refresh both lists so stale UI state is corrected.
-      WebSocketEngine.send({ type: 'list-threads' });
-      if (ArchivePanel.visible) {
-        ArchivePanel.refresh();
       }
     });
 
@@ -8203,173 +8128,6 @@
     // unique nonce makes every click a new sibling; ?thread=new tells the new
     // window to mint its own thread (syncThread); opener=this panel positions it
     // flush-right and joins this panel's dock group.
-    // ── ArchivePanel Engine (Phase 3: thread archival) ─────────────────────
-    // Functional-minimal: archive button on active thread; "Archived" toggle
-    // to view/restore archived threads. No polling — request-response via WS.
-    const ArchivePanel = (() => {
-      let _visible = false;
-      let _archivedThreads = [];
-
-      const archiveBtn = document.getElementById('archive-thread-btn');
-      const toggleBtn = document.getElementById('archive-view-btn');
-
-      // HTML escaping helper — prevents stored-XSS from user-derived fields
-      // (thread titles come from user message text and must never be interpolated raw).
-      const escapeHtml = (str) => {
-        if (str == null) return '';
-        return String(str)
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/"/g, '&quot;')
-          .replace(/'/g, '&#39;');
-      };
-
-      // Show archive button only when there's an active thread
-      const refreshArchiveBtn = () => {
-        if (archiveBtn) {
-          archiveBtn.style.display = State.activeThreadId ? 'flex' : 'none';
-        }
-      };
-
-      const renderArchivedPanel = () => {
-        // Find or create a notice area below the title bar.
-        let panel = document.getElementById('archive-panel-overlay');
-        if (!panel) {
-          panel = document.createElement('div');
-          panel.id = 'archive-panel-overlay';
-          panel.style.cssText = [
-            'position:absolute', 'top:36px', 'left:0', 'right:0',
-            'background:var(--paper,#fff)', 'border-bottom:1px solid var(--ink-faint,#ccc)',
-            'padding:8px 12px', 'z-index:200', 'max-height:50vh',
-            'overflow-y:auto', 'font-size:12px',
-          ].join(';');
-          const chatPanel = document.querySelector('.chat-panel') || document.body;
-          chatPanel.style.position = 'relative';
-          chatPanel.prepend(panel);
-        }
-
-        if (_archivedThreads.length === 0) {
-          panel.innerHTML = '<div style="color:var(--ink-faint,#888);padding:8px 0">No archived threads.</div>';
-          return;
-        }
-
-        const header = '<div style="font-weight:600;margin-bottom:6px;color:var(--ink,#333)">Archived threads</div>';
-        const rows = _archivedThreads.map((t) => {
-          // All user/server-derived fields are escaped to prevent stored-XSS.
-          // t.title comes from user message text; t.model and t.id from server
-          // but treated as untrusted for defence-in-depth.
-          const label = escapeHtml(t.title || t.id || '(untitled)');
-          const model = t.model
-            ? ` <span style="color:var(--ink-faint,#888);font-size:10px">${escapeHtml(t.model)}</span>`
-            : '';
-          // The Restore button passes t.id via a data attribute read by the
-          // onclick handler — avoids raw id interpolation inside the attribute.
-          return [
-            `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-top:1px solid var(--ink-faint,#eee)">`,
-            `  <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}${model}</span>`,
-            `  <button style="background:none;border:1px solid var(--ink-faint,#ccc);border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px"`,
-            `    data-thread-id="${escapeHtml(t.id)}" class="archive-restore-btn">Restore</button>`,
-            `</div>`,
-          ].join('');
-        });
-        panel.innerHTML = header + rows.join('');
-        // Attach click handlers via addEventListener (no inline onclick) so
-        // that thread IDs are read from the data attribute, never from raw HTML.
-        panel.querySelectorAll('.archive-restore-btn').forEach((btn) => {
-          btn.addEventListener('click', () => restore(btn.dataset.threadId));
-        });
-        window.ArchivePanel = ArchivePanel; // expose for legacy callers
-      };
-
-      const refresh = () => {
-        if (!_visible) return;
-        WebSocketEngine.send({ type: 'list-threads', status: 'archived' });
-      };
-
-      const show = () => {
-        // Set _visible BEFORE calling refresh() so that onArchivedList() (which
-        // fires when the WS response arrives) correctly re-renders the panel
-        // even though the overlay element does not exist yet.
-        _visible = true;
-        if (toggleBtn) toggleBtn.classList.add('active');
-        refresh();
-      };
-
-      const hide = () => {
-        _visible = false;
-        if (toggleBtn) toggleBtn.classList.remove('active');
-        const panel = document.getElementById('archive-panel-overlay');
-        if (panel) panel.remove();
-      };
-
-      const toggle = () => {
-        if (_visible) hide(); else show();
-      };
-
-      const archive = () => {
-        if (!State.activeThreadId) return;
-        if (!confirm('Archive this thread? It can be restored later.')) return;
-        WebSocketEngine.send({ type: 'archive-thread', threadId: State.activeThreadId });
-      };
-
-      const restore = (threadId) => {
-        WebSocketEngine.send({ type: 'unarchive-thread', threadId });
-        hide();
-      };
-
-      // Called by thread-list handler when status='archived'
-      const onArchivedList = (threads) => {
-        _archivedThreads = threads;
-        if (_visible) renderArchivedPanel();
-      };
-
-      if (archiveBtn) archiveBtn.addEventListener('click', archive);
-      if (toggleBtn) toggleBtn.addEventListener('click', toggle);
-
-      return { refresh, show, hide, toggle, archive, restore, onArchivedList, refreshArchiveBtn,
-               // visible getter exposed on the returned object so callers that
-               // hold a reference to it (rather than window.ArchivePanel) also
-               // see the boolean state, not the DOM-existence heuristic.
-               get visible() { return _visible; } };
-    })();
-
-    // Fix (Copilot comment #4): visible must reflect the boolean _visible flag
-    // set in show()/hide(), NOT whether the overlay DOM element exists.
-    // The overlay is only created AFTER the WS response arrives; between the
-    // toggle click and that response the old DOM-existence getter was wrong.
-    // The getter on the returned object above already delegates to _visible;
-    // redefine the property on the ArchivePanel reference to be consistent
-    // (the returned object's own getter is authoritative — no separate
-    // Object.defineProperty override needed here).
-    // Intentionally left without an Object.defineProperty override so that the
-    // closure-captured _visible is the single source of truth.
-
-    // Hook thread-list to route archived lists to the panel
-    const _origThreadListHandler = MoonFrames.dispatch;
-    const _origRegister = MoonFrames.register.bind(MoonFrames);
-    // Override the thread-list handler to also route archived lists
-    const _baseThreadListHandler = (() => {
-      // Re-register thread-list to check for archived frame
-      const saved = [];
-      const origDispatch = MoonFrames.dispatch;
-      // Patch: on thread-list with archived status, route to panel
-      const patchedDispatch = (frame) => {
-        if (frame && frame.type === 'thread-list' && frame.threads) {
-          // Heuristic: if showing archived, threads will be in archived state.
-          // The server sends thread-list in response to list-threads?status=archived.
-          // We detect by checking if all returned threads have status='archived' OR
-          // we rely on the ArchivePanel.visible flag.
-          if (ArchivePanel.visible) {
-            ArchivePanel.onArchivedList(frame.threads);
-            // Don't suppress — still let normal handler run (it handles initial subscriptions)
-          }
-        }
-        return origDispatch.call(MoonFrames, frame);
-      };
-      MoonFrames.dispatch = patchedDispatch;
-    })();
-
     let _newThreadSeq = 0;
     const winNewThreadBtn = document.getElementById('new-thread-btn');
     if (winNewThreadBtn) {
