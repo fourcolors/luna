@@ -1,0 +1,137 @@
+# Release Server — publishes a GitHub Release for a server-v* tag carrying
+# one lightweight asset: server-latest.json.
+#
+# Trigger: push a `server-v*` annotated tag (cut via `scripts/bump-server.ts`).
+# The server ships as source (no binary build or signing needed — bun install
+# runs on the host at update time). The release therefore carries a single
+# JSON descriptor that `luna update` fetches to compare versions.
+#
+# CRITICAL INVARIANT — the Moon updater's "Latest" flag must NEVER be stolen.
+# Every server release is published with --latest=false. See RELEASES.md
+# "The Latest invariant" for the full rationale. A re-anchor guard is included
+# as a belt-and-suspenders defense: if the server release somehow acquired the
+# Latest flag, the guard re-anchors it to the most recent moon-v* release.
+#
+# Security: all github context values that flow into shell run: steps are
+# pinned to env: vars — never interpolated directly — to prevent injection.
+# github.ref_name is constrained to `server-v*` by the on.push.tags filter,
+# but we follow the env-var pattern regardless as a standing discipline.
+#
+# NOTE: editing this file requires pushing over the SSH remote — the gh HTTPS
+# token lacks the `workflow` scope.
+
+name: Release Server
+
+on:
+  push:
+    tags:
+      - "server-v*"
+
+permissions:
+  contents: write # needed to create/edit GitHub Releases
+
+jobs:
+  release-server:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Fetch full history so git describe can find the annotated tag.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Extract version from tag
+        id: ver
+        # All github context values enter via env: — never inline-interpolated in
+        # the shell body — following the injection-safe pattern from the GitHub
+        # security guide (https://github.blog/security/vulnerability-research/
+        # how-to-catch-github-actions-workflow-injections-before-attackers-do/).
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          TAG="${REF_NAME}"
+          VERSION="${TAG#server-v}"
+          # Validate: tag must be server-v<semver> and version must be x.y.z
+          if ! echo "${VERSION}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: tag '${TAG}' does not produce a valid semver ('${VERSION}'). Aborting." >&2
+            exit 1
+          fi
+          # Coherence guard: the version baked into the tagged tree's
+          # server.version.json MUST match the tag's version. A drift here means
+          # the tag was cut without running bump-server.ts (or against the wrong
+          # commit) — fail before publishing a release whose descriptor lies.
+          # (checkout uses fetch-depth:0 + fetch-tags so `git show <tag>:…` works.)
+          JSON_VERSION="$(git show "${TAG}:server.version.json" | jq -r .version)"
+          if [ "${JSON_VERSION}" != "${VERSION}" ]; then
+            echo "ERROR: tag ${TAG} version ${VERSION} != server.version.json ${JSON_VERSION}" >&2
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Server tag: ${TAG}, version: ${VERSION}"
+
+      - name: Build server-latest.json
+        id: json
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # The tag's target commit SHA is the ground truth for update comparison.
+          TARGET_SHA="$(git rev-parse --short "${TAG}^{}")"
+          DATE="$(date -u +%Y-%m-%d)"
+          # Write JSON with jq to guarantee valid output regardless of field values.
+          jq -n \
+            --arg version  "${VERSION}" \
+            --arg tag      "${TAG}" \
+            --arg sha      "${TARGET_SHA}" \
+            --arg notes    "See https://github.com/${REPO}/releases/tag/${TAG}" \
+            --arg date     "${DATE}" \
+            '{version: $version, tag: $tag, targetSha: $sha, notes: $notes, date: $date}' \
+            > server-latest.json
+          echo "Built server-latest.json:"
+          cat server-latest.json
+          echo "targetSha=${TARGET_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release (--latest=false)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          TARGET_SHA: ${{ steps.json.outputs.targetSha }}
+          REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          gh release create "${TAG}" \
+            --title "Luna Server ${VERSION}" \
+            --notes "Server release ${VERSION} (${TARGET_SHA}). Install or update via \`luna update\`. See RELEASES.md for runbook." \
+            --latest=false \
+            --target "${COMMIT_SHA}" \
+            server-latest.json \
+            --repo "${REPO}"
+
+      # Belt-and-suspenders: ensure this server release did NOT steal the Latest
+      # flag from the most recent moon-v* release. Mirrors the re-anchor step in
+      # release-moon.yml. Finds the newest non-draft moon-v* release and sets it
+      # as Latest; skips (warning only) if no moon release exists yet.
+      - name: Re-anchor Latest flag to newest Moon release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          MOON_TAG="$(gh release list \
+            --repo "${REPO}" \
+            --limit 200 \
+            --json tagName,isDraft \
+            --jq '[.[] | select(.isDraft == false and (.tagName | startswith("moon-v"))) | .tagName] | first // ""')"
+          if [ -z "${MOON_TAG}" ]; then
+            echo "WARNING: no moon-v* release found — skipping Latest re-anchor (first server release before any Moon release)."
+            exit 0
+          fi
+          echo "Re-anchoring Latest to ${MOON_TAG} (ensuring server release did not steal it)."
+          gh release edit "${MOON_TAG}" --latest --repo "${REPO}"
+          echo "Latest flag confirmed on ${MOON_TAG}."

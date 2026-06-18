@@ -9,14 +9,38 @@
 import { initTRPC } from "@trpc/server"
 import os from "node:os"
 import { spawnSync } from "node:child_process"
+import { readFileSync } from "node:fs"
+import { join, dirname } from "node:path"
+import { fileURLToPath } from "node:url"
 
 const t = initTRPC.create()
 
 /** Module-level start timestamp — captured once when this module is first imported. */
 const MODULE_START_MS = Date.now()
 
-/** Package version read at import time (static string so it's bundle-safe). */
-const PKG_VERSION = "0.0.1"
+/**
+ * Server semver — read from `server.version.json` at the repo root at import
+ * time. `server.version.json` is the single source of truth bumped by
+ * `scripts/bump-server.ts`; this wires it into `control.status` / `control.version`
+ * so operators can inspect the live semver via the control plane (replacing the
+ * dead `"0.0.1"` literal). Falls back to `"0.0.0"` if the file is absent or
+ * malformed (e.g. in a container that strips non-source files) — a conspicuous
+ * sentinel rather than a stale hard-coded version.
+ */
+const PKG_VERSION = (() => {
+  try {
+    // `import.meta.url` resolves to this file; the version JSON is two dirs up
+    // (packages/control-server/src → repo root).
+    const versionFile = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "server.version.json")
+    const raw = JSON.parse(readFileSync(versionFile, "utf8")) as unknown
+    if (raw !== null && typeof raw === "object" && "version" in raw && typeof (raw as Record<string, unknown>)["version"] === "string") {
+      return (raw as Record<string, string>)["version"] as string
+    }
+    return "0.0.0"
+  } catch {
+    return "0.0.0"
+  }
+})()
 
 /** Service label used in launchctl commands. */
 const CHAT_SERVICE_LABEL = "com.user.luna-chat-server"

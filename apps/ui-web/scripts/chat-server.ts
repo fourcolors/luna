@@ -377,6 +377,40 @@ const resolveBuildSha = (): string => {
 /** Git short-SHA of this build — computed once, threaded into the endpoints. */
 const BUILD_SHA = resolveBuildSha()
 
+/**
+ * Resolve the semver of THIS server release, ONCE at process startup. Parallels
+ * `resolveBuildSha()`. Resolution order:
+ *   1. `LUNA_BUILD_VERSION` env var (set by release/install scripts) — trimmed;
+ *      an empty value falls through.
+ *   2. `git describe --tags --match 'server-v*' --abbrev=0` — strips to the
+ *      bare semver (e.g. "server-v0.1.0" → "0.1.0"). Wrapped in try/catch so
+ *      a missing .git, no matching tag, or git not on PATH never crashes boot.
+ *   3. `undefined` on any failure/empty path — the wire field is documented as
+ *      semver, so an unresolvable version OMITS the field (server.ts spreads
+ *      `serverVersion` only when defined) rather than threading a fake
+ *      "unknown" semver. Unlike buildSha, which keeps its "unknown" sentinel.
+ */
+const resolveBuildVersion = (): string | undefined => {
+  const fromEnv = process.env["LUNA_BUILD_VERSION"]?.trim()
+  if (fromEnv) return fromEnv
+  try {
+    const raw = execFileSync("git", ["describe", "--tags", "--match", "server-v*", "--abbrev=0"], {
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim()
+    if (!raw) return undefined
+    // Strip the "server-v" prefix so the wire value is a bare semver string.
+    return raw.startsWith("server-v") ? raw.slice("server-v".length) : raw
+  } catch {
+    return undefined
+  }
+}
+
+/** Semver of this server release (or `undefined` when unresolvable) — computed
+ *  once, threaded into the endpoints; `undefined` omits the wire field. */
+const BUILD_VERSION = resolveBuildVersion()
+
 /* ── UI model-list helpers ───────────────────────────────────────────────────
  *
  * `parseUiModels` parses the LUNA_UI_MODELS env var (comma-separated
@@ -2336,6 +2370,7 @@ export const buildSetupServerLayer = (
         advertisedKinds: DEFAULT_UI_KINDS,
         pingIntervalMs: 5000,
         buildSha: BUILD_SHA,
+        serverVersion: BUILD_VERSION,
         chatService: null,
         accountBroker: null,
         survey: null,
@@ -3226,6 +3261,7 @@ const buildServerLayer = (
         advertisedKinds: DEFAULT_UI_KINDS,
         pingIntervalMs: 5000,
         buildSha: BUILD_SHA,
+        serverVersion: BUILD_VERSION,
         // Advertise the operator-configured + built-in model list so the UI
         // dropdown is driven by the server (LUNA_UI_MODELS overrides go first
         // and become the recommended default). Absent on older/setup-mode

@@ -45,6 +45,14 @@ export interface HelloFrame {
    */
   readonly buildSha?: string
   /**
+   * Semver of the running server release (e.g. "0.1.0"), sourced from
+   * `LUNA_BUILD_VERSION` env → `git describe --tags --match 'server-v*'` →
+   * graceful fallback. OPTIONAL and additive — older servers omit it and
+   * older clients ignore it. Enables update-available comparison without
+   * SHA-only heuristics. Same additive pattern as `buildSha`.
+   */
+  readonly serverVersion?: string
+  /**
    * Models the operator can pick for new threads. OPTIONAL and additive —
    * absent on older servers; the client falls back to its own hardcoded list
    * when this field is missing. The FIRST entry is the recommended default

@@ -172,6 +172,15 @@ export interface UIWebSocketServerConfig {
    */
   readonly buildSha?: string
   /**
+   * Semver of the running server release (e.g. "0.1.0"). When provided, it
+   * is echoed in the `hello` frame's `serverVersion` field and in `/readyz`
+   * JSON. Source: `LUNA_BUILD_VERSION` env → `git describe --tags --match
+   * 'server-v*'` → graceful fallback (resolved in chat-server.ts and
+   * threaded in here). Additive — absent = field omitted; older clients and
+   * older consumers ignore it.
+   */
+  readonly serverVersion?: string
+  /**
    * Operator-configured model list for the UI model-switcher dropdown.
    * When provided, the array is echoed verbatim in the `hello` frame's
    * `availableModels` field. Additive — absent = field omitted; clients
@@ -955,6 +964,7 @@ export const startUIWebSocketServer = (
     const vaultService = config.vaultService ?? null
     const modelRoutingService = config.modelRoutingService ?? null
     const buildSha = config.buildSha
+    const serverVersion = config.serverVersion
     const availableModels = config.availableModels
 
     const httpServer = http.createServer((req, res) => {
@@ -983,6 +993,11 @@ export const startUIWebSocketServer = (
             mode,
             credentialOk: mode === "normal",
             ...(buildSha !== undefined ? { buildSha } : {}),
+            // `serverVersion` is additive: included only when the caller threaded it
+            // in (production does; test rigs that don't thread it see it omitted).
+            // Older /readyz consumers are unaffected — the existing field list is
+            // unchanged; this is appended after `buildSha` per the same pattern.
+            ...(serverVersion !== undefined ? { serverVersion } : {}),
           }),
         )
         return
@@ -1236,6 +1251,9 @@ export const startUIWebSocketServer = (
           // an absent buildSha leaves the field off entirely — older clients
           // ignore it; newer clients against an old server simply see nothing.
           ...(buildSha !== undefined ? { buildSha } : {}),
+          // Additive server semver (no protocol bump). Same pattern as buildSha:
+          // threaded in from chat-server.ts; absent on older/setup-mode servers.
+          ...(serverVersion !== undefined ? { serverVersion } : {}),
           // Additive model list (no protocol bump). When provided, the client
           // uses this list for its model-switcher dropdown instead of its own
           // hardcoded default. Absent on older/setup-mode servers — clients

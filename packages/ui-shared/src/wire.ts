@@ -102,6 +102,19 @@ export interface HelloFrame {
   readonly type: "hello"
   readonly protocolVersion: 2
   readonly kinds: ReadonlyArray<string>
+  /**
+   * Git short-SHA of the running server build. OPTIONAL and additive — older
+   * servers omit it; older clients ignore it. Mirrors
+   * `packages/ui-ws/src/protocol.ts HelloFrame.buildSha` — keep in sync.
+   */
+  readonly buildSha?: string
+  /**
+   * Semver of the running server release (e.g. "0.1.0"). OPTIONAL and additive
+   * — older servers omit it; older clients ignore it. Enables update-available
+   * comparison. Mirrors `packages/ui-ws/src/protocol.ts HelloFrame.serverVersion`
+   * — keep in sync.
+   */
+  readonly serverVersion?: string
   readonly capabilities: {
     readonly chat: boolean
     readonly streamingDeltas: boolean

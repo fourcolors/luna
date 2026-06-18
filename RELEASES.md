@@ -62,6 +62,39 @@ This bit us once already (chat-v0.12b briefly held "Latest" on
   updater is the only consumer of "Latest" and it cannot use anything
   else.
 
+## Server releases (`server-v*`)
+
+- **Trigger:** push a `server-v*` annotated tag cut by `bump-server.ts`.
+- **Pipeline:** `.github/workflows/release-server.yml` runs on `ubuntu-latest`
+  (no macOS runner, no binary build — the server ships as source). It publishes
+  a GitHub Release with a single asset, `server-latest.json`, carrying `{version,
+  tag, targetSha, notes, date}`.
+- **"Latest" flag:** **MUST be set to false.** The workflow enforces
+  `--latest=false` on `gh release create`. It also runs a re-anchor guard as a
+  belt-and-suspenders measure (the same guard `release-moon.yml` runs) that
+  re-points the Latest flag to the newest `moon-v*` release after every server
+  publish. A server release stealing Latest would break the Moon updater.
+- **Operator runbook:**
+
+  ```zsh
+  # 1. Bump the version and cut the tag locally (no publish yet):
+  bun run scripts/bump-server.ts <x.y.z> --tag
+
+  # 2. Review the diff and the tag, then push to trigger the release pipeline:
+  bun run scripts/bump-server.ts <x.y.z> --tag --push
+  # — or equivalently after step 1: git push origin server-v<x.y.z>
+  ```
+
+  `--push` is operator-gated: it publishes a GitHub Release visible to all
+  self-hosters. Do not run it without reviewing intent and the tag contents.
+- **What the workflow publishes:** only `server-latest.json`. No binaries, no
+  signed bundles — the server is updated via `git fetch` + conditional
+  `bun install` by `scripts/luna-update-server` (the apply engine), invoked
+  through `luna update` (Phase 1 Slice 4).
+- **Discovery contract:** `luna update` and any monitoring script resolve the
+  latest server release via the GitHub Releases API **filtered for `server-v*`**
+  — never via the `releases/latest` endpoint (reserved for Moon).
+
 ## Verification
 
 After cutting any release, sanity-check the updater endpoint:
