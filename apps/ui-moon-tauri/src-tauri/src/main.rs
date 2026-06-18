@@ -1436,7 +1436,12 @@ fn spawn_panel_at(
         tauri::WebviewUrl::App(url.to_string().into()),
     )
     .title(&desc.title)
-    .decorations(true)
+    // Native decorations ONLY on macOS, where the Overlay block below turns
+    // them into floating traffic-lights over the transparent CSS card. On
+    // other platforms decorations(true) would draw a full opaque OS title bar
+    // + frame around the transparent rounded card (broken chrome) — keep those
+    // borderless, exactly as before this feature.
+    .decorations(cfg!(target_os = "macos"))
     .transparent(true)
     // No native OS shadow: the CSS card-shell halo (.widget-shell box-shadow)
     // is the single, rounded-correct, focus-independent depth cue. The OS
@@ -1621,7 +1626,12 @@ async fn open_artifact_widget(
         tauri::WebviewUrl::App(url.into()),
     )
     .title(if title.is_empty() { "Artifact" } else { &title })
-    .decorations(true)
+    // Native decorations ONLY on macOS, where the Overlay block below turns
+    // them into floating traffic-lights over the transparent CSS card. On
+    // other platforms decorations(true) would draw a full opaque OS title bar
+    // + frame around the transparent rounded card (broken chrome) — keep those
+    // borderless, exactly as before this feature.
+    .decorations(cfg!(target_os = "macos"))
     .transparent(true)
     // No native OS shadow — the CSS card-shell halo is the single depth cue
     // (see spawn_panel_at above for the full rationale).
@@ -1728,6 +1738,10 @@ fn collapse_into_moon(app: &tauri::AppHandle) {
     let windows = app.webview_windows();
     for (label, win) in &windows {
         if is_dock_label(label) {
+            // Deminiaturize before hiding so a card OS-minimized via the native
+            // yellow traffic-light doesn't linger as a Dock tile while the
+            // workspace is collapsed. No-op on non-minimized windows.
+            let _ = win.unminimize();
             let _ = win.hide();
         }
     }
@@ -1747,6 +1761,11 @@ fn expand_out_of_moon(app: &tauri::AppHandle) {
     let mut shown = 0usize;
     for (label, win) in &windows {
         if is_dock_label(label) {
+            // A card the user OS-minimized via the native yellow traffic-light
+            // is miniaturized in the Dock; show() alone does NOT deminiaturize
+            // on macOS, so unminimize first — otherwise the card is stranded in
+            // the Dock with no in-app way back. No-op on non-minimized windows.
+            let _ = win.unminimize();
             let _ = win.show();
             shown += 1;
         }
