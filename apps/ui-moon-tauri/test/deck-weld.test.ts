@@ -19,6 +19,18 @@ let S: {
   weldClusterOf: (label: string, m: Member[]) => string[]
   weldOutlineSides: (m: Member[]) => Record<string, string[]>
   weldCorners: (m: Member[], hub?: string) => Record<string, string[]>
+  weldStyle: (
+    grouped: boolean,
+    outlineSides: string[],
+    weldCorners: string[],
+    isAnchor?: boolean,
+  ) => {
+    radii: { tl: boolean; tr: boolean; br: boolean; bl: boolean }
+    grouped: boolean
+    weld: string
+    boxShadow: string
+    outlineClass: string
+  }
 }
 
 // fixtures here are [label, [x,y,w,h]] (Rust's shape); adapt to { label, rect }.
@@ -90,5 +102,34 @@ describe("weldCorners — per-corner squaring (vs Rust dock_weld_corners)", () =
   })
   it("never welds against the hub ('main')", () => {
     expect(S.weldCorners(ms(["widget-a", [0, 0, 200, 200]], ["main", [200, 0, 200, 200]]))["widget-a"]).toEqual([])
+  })
+})
+
+describe("weldStyle — pure geometry → card visual style", () => {
+  it("a solo (ungrouped) window squares nothing and clears its chrome", () => {
+    const s = S.weldStyle(false, [], [])
+    expect(s.grouped).toBe(false)
+    expect(s.radii).toEqual({ tl: false, tr: false, br: false, bl: false })
+    expect(s.boxShadow).toBe("")
+    expect(s.weld).toBe("")
+    expect(s.outlineClass).toBe("")
+  })
+
+  it("a left-welded window squares its left corners, casts free-side edges, marks the weld", () => {
+    // free sides t,r,b (left is welded) → welded marker = 'l'
+    const s = S.weldStyle(true, ["t", "r", "b"], ["tl", "bl"], false)
+    expect(s.radii).toEqual({ tl: true, tr: false, br: false, bl: true })
+    expect(s.weld).toBe("l")
+    expect(s.boxShadow).toContain("var(--dk-edge-amb)")
+    expect(s.boxShadow).toContain("var(--dk-edge-t)")
+    expect(s.boxShadow).toContain("var(--dk-edge-r)")
+    expect(s.boxShadow).not.toContain("var(--dk-edge-l)") // welded side casts no edge
+    expect(s.outlineClass).toBe("gt gr gb")
+  })
+
+  it("the chat anchor casts the distinct bottom accent edge", () => {
+    expect(S.weldStyle(true, ["b"], [], true).boxShadow).toContain("var(--dk-edge-b-anchor)")
+    expect(S.weldStyle(true, ["b"], [], false).boxShadow).toContain("var(--dk-edge-b)")
+    expect(S.weldStyle(true, ["b"], [], false).boxShadow).not.toContain("anchor")
   })
 })

@@ -55,10 +55,10 @@ html, body {
    box-shadow halo room to cast freely without clipping. Visible content shrinks
    by 2×inset in each dimension vs the registered window size; flush-docked
    windows show a 2×inset paper gap at the seam on FREE (non-welded) sides.
-   On WELDED sides applyWeldVisuals (moon-dock.js) collapses the per-side margin
-   to 0 (and recomputes height/width per axis) so welded cards meet flush — zero
-   gap, no "board-like spacing" at a seam. The halo is already suppressed on
-   welded sides (silhouette shadow, applyWeldVisuals) so no bleed clipping. */
+   On WELDED sides applyWeldVisuals (moon-dock.js) squares the welded corners and
+   suppresses the halo (silhouette shadow) on those sides; the card's margin/size
+   are NOT collapsed. Cards meet flush via face-aligned positioning (frame
+   overlap), not a per-side margin collapse — so no bleed clipping at the seam. */
 .widget-shell {
   position: relative;
   margin: var(--card-inset-top) var(--card-inset) var(--card-inset);
@@ -194,14 +194,10 @@ html[data-chrome='ink'] .widget-shell::before {
     var(--paper);
 }
 
-/* Ink + dark: drop the faint 7% shell ring (the inked ring IS the edge) and
-   keep only the soft dark halos on the shell; ::before carries the single
-   inked ring on the night paper base. */
-html[data-chrome='ink'][data-theme='dark'] .widget-shell {
-  box-shadow:
-    0 0 16px -2px rgba(0, 0, 0, 0.4),
-    0 6px 20px -6px rgba(0, 0, 0, 0.62);
-}
+/* Ink + dark: the shell halo is already the plain dark `html[data-theme='dark']
+   .widget-shell` rule above (identical values), so no shell override is needed
+   here — only ::before differs, carrying the single inked ring on the night
+   paper base. */
 html[data-chrome='ink'][data-theme='dark'] .widget-shell::before {
   box-shadow: 0 0 0 1.5px color-mix(in oklab, var(--ink) 55%, transparent);
   background:
@@ -217,10 +213,6 @@ html[data-chrome='ink'][data-theme='dark'] .widget-shell::before {
 .title-bar {
   border-radius: var(--dk-radius, var(--card-radius)) var(--dk-radius, var(--card-radius)) 0 0;
 }
-/* Title bar is a drag handle, never a tab target — suppress WebKit's focus ring
-   (reads as a light outline tracing the header's rounded top on click/hover). */
-.title-bar:focus,
-.title-bar:focus-visible { outline: none; }
 
 /* ── Paper grain (optional, data-grain="on") ─────────────────────────────
    A fractal-noise wash over the whole window; multiply on paper, screen on
@@ -535,33 +527,31 @@ html[data-theme='dark'] .resize-se::after {
   border-bottom-color: color-mix(in oklab, var(--ink) 58%, transparent);
 }
 
-/* TODO Fix 3 — per-seam border suppression for visible-border skins (classic/aqua).
-   Reference dock.css:320-321 drops border-top / border-left on the welded inner
-   window's wash layer so each seam has exactly ONE divider. Moon's ::before ink-ring
-   is expressed as `box-shadow: 0 0 0 1.5px var(--dk-win-border)` — a uniform ring,
-   not a CSS `border` — so border-top:0 / border-left:0 keyed on [data-weld~="t/l"]
-   does not apply here without restructuring the ring implementation.
-   For studio skin --dk-win-border is transparent → no visible doubling today.
-   For classic / aqua the welded seam would show a doubled hairline.
-   Options:
-     (a) Switch ::before to a real CSS `border` + `border-top:0` / `border-left:0`
-         on `.widget-shell[data-weld~="t"] ::before` / `[data-weld~="l"]`.
-     (b) Re-express the ring as four individual inset box-shadow layers (one per side,
-         each offset so it only paints one edge) and drop the welded-side layer.
-   Implement when classic/aqua weld rendering is validated on real hardware. */
-
-/* ── Scroll-container focus ring suppression ─────────────────────────────
+/* ── Scroll-container / mouse-focus ring suppression ─────────────────────
    WebKit makes any overflow:auto/scroll element natively focusable WITHOUT a
    tabindex, then paints a UA focus ring along its layout bounds when it takes
    click/scroll focus. Inside a card that ring traces the interior edge and
-   reads as a spurious extra border that blinks in on focus. These containers
-   are passive scroll regions (never keyboard-tab targets), so suppressing the
-   ring costs no a11y — real controls (.dock-link, buttons, inputs, menu
-   items) keep their own :focus-visible outlines. */
-.content-area:focus,
-.content-area:focus-visible,
-.content-area pre:focus,
-.content-area pre:focus-visible { outline: none; }
+   reads as a spurious extra border that blinks in on focus (the reported
+   "weird highlight around a selected window").
+
+   ONE robust rule kills it everywhere: drop the outline whenever an element is
+   :focus but NOT :focus-visible — i.e. focus arrived by mouse/scroll, not the
+   keyboard. Real controls keep their keyboard :focus-visible outlines, so this
+   costs no a11y. */
+:focus:not(:focus-visible) { outline: none; }
+
+/* Belt-and-suspenders for the genuinely non-tabbable scroll containers, which
+   are passive scroll regions (never keyboard-tab targets) and so should never
+   show a ring regardless of how WebKit classifies the focus. */
+.title-bar,
+.chat-panel,
+.chat-messages,
+.content-area,
+.content-area pre,
+.widget-frame,
+.tool-card-input,
+.tool-card-output,
+.msg.assistant pre { outline: none; }
 
 /* ── Scrollbar base ──────────────────────────────────────────────────── */
 .content-area::-webkit-scrollbar { width: 5px; }

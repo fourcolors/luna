@@ -1287,19 +1287,28 @@ fn is_dock_label(label: &str) -> bool {
     label.starts_with("widget-") || label.starts_with("panel-")
 }
 
+/// The transparent margin between an OS window frame and the VISIBLE card, in
+/// logical px. MUST mirror CSS `--card-inset` (vendor/moon-theme.css): the snap
+/// aligns card FACES, not OS frames (deck-snap.js `insetRect`), so to make two
+/// cards meet flush their frames must OVERLAP by `2 * CARD_INSET`.
+const CARD_INSET: i32 = 22;
+
 /// Spawn position for a panel opened FROM another window (the stacks
-/// mechanic): flush at the opener's right edge, or its left edge when the
-/// right would overflow the monitor. Pure for tests. Rects are logical px.
+/// mechanic): CARD-flush at the opener's right edge, or its left edge when the
+/// right would overflow the monitor. The OS frames overlap by `2 * CARD_INSET`
+/// so the visible cards touch (matching the drag-snap's card-face alignment).
+/// Pure for tests. Rects are logical px.
 fn panel_spawn_pos(
     opener: (i32, i32, i32, i32),
     width: i32,
     monitor_right: i32,
 ) -> (i32, i32, &'static str) {
     let (ox, oy, ow, _oh) = opener;
-    if ox + ow + width <= monitor_right {
-        (ox + ow, oy, "r")
+    let overlap = 2 * CARD_INSET; // frame overlap that makes the CARD faces flush
+    if ox + ow - overlap + width <= monitor_right {
+        (ox + ow - overlap, oy, "r")
     } else {
-        (ox - width, oy, "l")
+        (ox - width + overlap, oy, "l")
     }
 }
 
@@ -2755,11 +2764,14 @@ mod panel_registry_tests {
     #[test]
     fn panel_spawn_prefers_right_edge_and_falls_back_left_on_overflow() {
         // Opener at (100, 50) 360×440, panel 360 wide, monitor right at 1600.
-        assert_eq!(panel_spawn_pos((100, 50, 360, 440), 360, 1600), (460, 50, "r"));
-        // Right edge would overflow → flush at the opener's LEFT.
-        assert_eq!(panel_spawn_pos((1300, 50, 360, 440), 360, 1600), (940, 50, "l"));
-        // Exactly fits → still right.
-        assert_eq!(panel_spawn_pos((880, 50, 360, 440), 360, 1600), (1240, 50, "r"));
+        // Frames overlap by 2*CARD_INSET (44) so the CARD faces meet flush:
+        // right x = 100+360-44 = 416.
+        assert_eq!(panel_spawn_pos((100, 50, 360, 440), 360, 1600), (416, 50, "r"));
+        // Right edge would overflow → CARD-flush at the opener's LEFT:
+        // x = 1300-360+44 = 984.
+        assert_eq!(panel_spawn_pos((1300, 50, 360, 440), 360, 1600), (984, 50, "l"));
+        // Fits → right: x = 880+360-44 = 1196.
+        assert_eq!(panel_spawn_pos((880, 50, 360, 440), 360, 1600), (1196, 50, "r"));
     }
 
     #[test]

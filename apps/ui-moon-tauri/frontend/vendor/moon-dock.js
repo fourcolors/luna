@@ -82,40 +82,30 @@
     // padding) — sticking windows together changes corners only, never size or
     // layout. (The old per-side inset collapse that made cards reflow on docking
     // is gone; it was the "weird border state" reported during drag.)
+    // Thin DOM applier over the PURE LunaDeckSnap.weldStyle mapping. The weld
+    // changes ONLY corners + the perimeter accent edge — never the card's shape
+    // (margin/size/padding) — so sticking windows together can't resize or reflow
+    // them. Flush docking comes from card-face positioning (see readInsets /
+    // computeLiveDrag), not from collapsing margins.
     function applyWeldVisuals(grouped, outlineSides, weldCorners) {
       groupMembers = grouped ? groupMembers : [];
-      if (outlineEl) {
-        outlineEl.className = grouped ? outlineSides.map(function (s) { return 'g' + s; }).join(' ') : '';
-      }
+      var style = window.LunaDeckSnap.weldStyle(grouped, outlineSides, weldCorners, label === 'panel-chat');
+      if (outlineEl) outlineEl.className = grouped ? style.outlineClass : '';
       var shellEl = document.querySelector('.widget-shell');
       if (!shellEl) return;
-      var radius = function (corner) { return grouped && weldCorners.indexOf(corner) !== -1 ? '0px' : ''; };
-      shellEl.style.borderTopLeftRadius = radius('tl');
-      shellEl.style.borderTopRightRadius = radius('tr');
-      shellEl.style.borderBottomRightRadius = radius('br');
-      shellEl.style.borderBottomLeftRadius = radius('bl');
+      var px = function (on) { return on ? '0px' : ''; };
+      shellEl.style.borderTopLeftRadius = px(style.radii.tl);
+      shellEl.style.borderTopRightRadius = px(style.radii.tr);
+      shellEl.style.borderBottomRightRadius = px(style.radii.br);
+      shellEl.style.borderBottomLeftRadius = px(style.radii.bl);
       var barEl = document.querySelector('.title-bar');
       if (barEl) {
-        barEl.style.borderTopLeftRadius = radius('tl');
-        barEl.style.borderTopRightRadius = radius('tr');
+        barEl.style.borderTopLeftRadius = px(style.radii.tl);
+        barEl.style.borderTopRightRadius = px(style.radii.tr);
       }
-      if (grouped) {
-        var isAnchor = label === 'panel-chat';
-        var pieces = ['var(--dk-edge-amb)'];
-        if (outlineSides.indexOf('t') !== -1) pieces.push('var(--dk-edge-t)');
-        if (outlineSides.indexOf('b') !== -1) pieces.push(isAnchor ? 'var(--dk-edge-b-anchor)' : 'var(--dk-edge-b)');
-        if (outlineSides.indexOf('l') !== -1) pieces.push('var(--dk-edge-l)');
-        if (outlineSides.indexOf('r') !== -1) pieces.push('var(--dk-edge-r)');
-        var welded = ['t', 'b', 'l', 'r'].filter(function (e) { return outlineSides.indexOf(e) === -1; });
-        shellEl.setAttribute('data-weld', welded.join(''));
-        shellEl.style.boxShadow = pieces.join(', ');
-        // NOTE: the weld used to also collapse the per-side card margin to 0 and
-        // recompute height/width/title-bar padding so welded windows met flush
-        // (Fix 2 / 2b, with #seam + grain bookkeeping). That MUTATED THE CARD'S
-        // SHAPE on docking — the card grew/reflowed as windows stuck together,
-        // which read as the borders "changing into a weird state". The magnetic
-        // weld now only squares the welded CORNERS (above); the card keeps its
-        // shape, so sticking can never resize or reflow it.
+      if (style.grouped) {
+        shellEl.setAttribute('data-weld', style.weld);
+        shellEl.style.boxShadow = style.boxShadow;
       } else {
         shellEl.removeAttribute('data-weld');
         shellEl.style.boxShadow = '';
@@ -125,15 +115,38 @@
       }
     }
 
-    // Compute + apply this window's weld from a member list [{label, rect}]
-    // (which already excludes the hub). Returns my cluster's labels.
+    // The card insets (the transparent margin between the OS frame and the
+    // visible card) — the SINGLE SOURCE OF TRUTH is the CSS, so geometry and
+    // chrome can never disagree. All magnet math runs in card-face space, so a
+    // window aligns by what the user sees, not its larger OS frame.
+    function readInsets() {
+      try {
+        var cs = getComputedStyle(document.documentElement);
+        var side = parseFloat(cs.getPropertyValue('--card-inset'));
+        var top = parseFloat(cs.getPropertyValue('--card-inset-top'));
+        return {
+          l: isFinite(side) ? side : 22,
+          r: isFinite(side) ? side : 22,
+          b: isFinite(side) ? side : 22,
+          t: isFinite(top) ? top : 4,
+        };
+      } catch (_) { return { l: 22, r: 22, b: 22, t: 4 }; }
+    }
+
+    // Compute + apply this window's weld from a member list [{label, rect}] of OS
+    // FRAME rects (which already excludes the hub). Weld detection runs in
+    // CARD-FACE space — two windows weld when their visible cards meet flush,
+    // which (because faces are inset) means their OS frames OVERLAP by the inset
+    // sum. Returns my cluster's labels.
     function paintWeldFrom(members) {
       var S = window.LunaDeckSnap;
-      var cluster = S.weldClusterOf(label, members);
+      var ins = readInsets();
+      var cards = members.map(function (m) { return { label: m.label, rect: S.insetRect(m.rect, ins) }; });
+      var cluster = S.weldClusterOf(label, cards);
       var grouped = cluster.length > 1;
       groupMembers = grouped ? cluster : [];
-      var outline = grouped ? (S.weldOutlineSides(members)[label] || []) : [];
-      var weld = grouped ? (S.weldCorners(members)[label] || []) : [];
+      var outline = grouped ? (S.weldOutlineSides(cards)[label] || []) : [];
+      var weld = grouped ? (S.weldCorners(cards)[label] || []) : [];
       applyWeldVisuals(grouped, outline, weld);
       return cluster;
     }
@@ -244,7 +257,7 @@
       var res = S.computeLiveDrag({
         ox: drag.ox, oy: drag.oy, ow: drag.ow, oh: drag.oh, dx: dx, dy: dy,
         members: drag.members.map(function (m) { return { label: m.label, ox: m.ox, oy: m.oy }; })
-      }, drag.cands);
+      }, drag.cands, undefined, drag.insets);
       drag.snapped = res.snapped; drag.anchor = res.anchor; drag.edge = res.edge;
       // Position every member. Targets are LOGICAL (CSS-point) top-lefts. When
       // we captured a monitor layout, resolve each to a PHYSICAL position using
@@ -360,10 +373,11 @@
             pointerId: pid, handle: handle, sx: sx, sy: sy,
             ox: self.x, oy: self.y, ow: self.w, oh: self.h,
             members: members, cands: cands, monitors: monitors,
-            // weld neighbours = snap candidates minus the hub (hub never welds)
-            weldNeighbors: cands.filter(function (c) { return c.label !== HUB; }),
+            // card insets captured once so the live snap aligns card FACES, not
+            // OS frames (computeLiveDrag runs in card-face space).
+            insets: readInsets(),
             isAnchor: isAnchor, wasGrouped: wasGrouped, startCluster: startCluster,
-            snapped: false, anchor: null, edge: null, tick: false
+            snapped: false, anchor: null, edge: null
           };
         } catch (_) { /* snapshot failed — onDragUp/detachDrag clean up */ }
       })();
