@@ -1,6 +1,7 @@
 ---
 description: Cut a Luna Moon release — bump + tag (auto-fires the CI build), monitor it, then report download link, version & changelog and update the GitHub release notes.
 argument-hint: "[x.y.z]  (optional — omit to auto-bump the patch)"
+model: sonnet
 allowed-tools: Read, Bash(git fetch:*), Bash(git pull:*), Bash(git tag:*), Bash(git log:*), Bash(git rev-parse:*), Bash(git status:*), Bash(git ls-remote:*), Bash(grep:*), Bash(gh run list:*), Bash(gh run view:*), Bash(gh run watch:*), Bash(gh release view:*), Bash(gh release list:*), Bash(curl:*)
 ---
 
