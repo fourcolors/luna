@@ -1,8 +1,22 @@
 # Release Moon — builds the Luna Moon desktop app and publishes a GitHub Release
 # with the Tauri v2 auto-updater artifacts (.app.tar.gz + .sig + latest.json).
 #
-# Trigger: push a tag like `moon-v0.0.2`. SEPARATE from ci.yml (which runs on
-# push/PR, not tags) so the two never overlap.
+# TWO ways to release, both land in this ONE workflow run:
+#   1. Tag push — `git push origin moon-v0.0.40` (e.g. the local
+#      `bump-moon.ts <ver> --tag --push` path). Builds the already-tagged commit.
+#   2. The button — Actions ▸ "Release Moon" ▸ Run workflow ▸ enter a version.
+#      The run BUMPS all four version files in lockstep, commits them to master,
+#      tags `moon-v<version>`, pushes both, then builds — no local Mac, no git
+#      ritual, no Cargo.lock hand-edit. This is the recommended path.
+#
+# Why one workflow and not a separate "cut" workflow that pushes a tag: a tag
+# pushed using the in-run GITHUB_TOKEN does NOT trigger another workflow
+# (`on: push: tags`) — so a split design would push the tag and the build would
+# silently never fire. Doing the bump+tag+build in a single run sidesteps that
+# entirely (no PAT / deploy key needed). The master push is allowed because this
+# workflow grants `contents: write` and `actions/checkout` persists the token.
+#
+# SEPARATE from ci.yml (which runs on push/PR, not tags) so the two never overlap.
 #
 # Prereqs (one-time): repo secrets TAURI_SIGNING_PRIVATE_KEY +
 # TAURI_SIGNING_PRIVATE_KEY_PASSWORD (the updater minisign keypair). The matching
@@ -19,9 +33,15 @@ on:
   push:
     tags:
       - "moon-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release as x.y.z (bumps all 4 files, commits to master, tags moon-v<version>, then builds + publishes)"
+        required: true
+        type: string
 
 permissions:
-  contents: write # tauri-action needs this to create the Release
+  contents: write # tauri-action needs this to create the Release; the cut step also pushes the bump commit to master
 
 jobs:
   release-moon:
@@ -35,6 +55,47 @@ jobs:
         with:
           # Match ci.yml / the bun that wrote the text lockfile.
           bun-version: "1.3.14"
+
+      # Resolve the tag once so every later step is trigger-agnostic:
+      #   - tag push:        the pushed ref (github.ref_name = moon-v0.0.40)
+      #   - workflow_dispatch: moon-v<input.version> (the cut step creates it)
+      - name: Resolve release tag
+        id: tag
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=moon-v${VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # workflow_dispatch only: turn a bare version into a tagged, pushed commit.
+      # bump-moon.ts rewrites all four version files atomically (and validates the
+      # x.y.z shape — a bad value exits non-zero and fails the run before anything
+      # is committed). We then commit to master + tag + push both; the build below
+      # runs on this exact working tree.
+      - name: Cut version, commit + tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euxo pipefail
+          # Refuse a re-used tag up front (mirrors bump-moon.ts --tag's guard).
+          if git ls-remote --exit-code --tags origin "refs/tags/moon-v${VERSION}" >/dev/null 2>&1; then
+            echo "::error::tag moon-v${VERSION} already exists on origin — pick a new version"
+            exit 1
+          fi
+          bun run scripts/bump-moon.ts "${VERSION}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(ui-moon-tauri): bump to ${VERSION}"
+          git tag -a "moon-v${VERSION}" -m "Luna Moon ${VERSION}"
+          # Push the bump to master first so the remote tag resolves to it, then
+          # the tag. (A GITHUB_TOKEN push won't trigger ci.yml — fine, no double run.)
+          git push origin HEAD:master
+          git push origin "moon-v${VERSION}"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -75,8 +136,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/ui-moon-tauri
-          tagName: ${{ github.ref_name }}
-          releaseName: "Luna Moon ${{ github.ref_name }}"
+          # steps.tag.outputs.name, not github.ref_name — on a workflow_dispatch
+          # github.ref_name is the branch (master), not the moon-v* tag.
+          tagName: ${{ steps.tag.outputs.name }}
+          releaseName: "Luna Moon ${{ steps.tag.outputs.name }}"
           # MUST be false/false — a draft or prerelease makes the
           # releases/latest/download/latest.json endpoint 404, so the updater
           # would silently never find an update.
@@ -96,4 +159,4 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euxo pipefail
-          gh release edit "${{ github.ref_name }}" --latest --repo "${{ github.repository }}"
+          gh release edit "${{ steps.tag.outputs.name }}" --latest --repo "${{ github.repository }}"

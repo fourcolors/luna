@@ -27,16 +27,24 @@ This bit us once already (chat-v0.12b briefly held "Latest" on
 
 ## Moon releases (`moon-v*`)
 
-- **Trigger:** push a `moon-v*` tag.
+- **Trigger:** EITHER (1) run the **"Release Moon"** workflow from the
+  Actions tab and enter a version (recommended), OR (2) push a `moon-v*`
+  tag. Both funnel into the same `release-moon.yml` run.
 - **Pipeline:** `.github/workflows/release-moon.yml` runs on macOS-14,
   builds + signs + publishes via `tauri-apps/tauri-action`.
 - **"Latest" flag:** automatically set by tauri-action; a final
   `gh release edit --latest` step re-anchors it as a belt-and-suspenders
   guard against a non-Moon release that might have stolen it between
   tag push and pipeline completion.
-- **Operator runbook:** `bun run scripts/bump-moon.ts <version>` (if
-  present) or hand-bump `package.json` / `tauri.conf.json` / `Cargo.toml`
-  then push `moon-v<version>`.
+- **Operator runbook (recommended — no local Mac, no git ritual):** open
+  GitHub → **Actions → Release Moon → Run workflow**, enter `x.y.z`. The
+  run bumps all four version files in lockstep, commits them to `master`,
+  tags `moon-v<version>`, pushes both, then builds + signs + publishes.
+- **Operator runbook (local):** `bun run scripts/bump-moon.ts <version> --tag --push`,
+  then `git push origin master`. The bump moves **all four** version files —
+  `package.json` / `tauri.conf.json` / `Cargo.toml` / **`Cargo.lock`** (the
+  `luna-moon-ui` entry). `bump-moon.ts --check` is the CI gate that fails a
+  PR on any version drift across the four.
 
 ## Chat-server / library releases (`chat-v*`, anything else)
 
