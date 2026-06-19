@@ -547,6 +547,7 @@ html[data-theme='dark'] .resize-se::after {
 .chat-panel,
 .chat-messages,
 .content-area,
+.content-area pre,
 .widget-frame,
 .tool-card-input,
 .tool-card-output,
