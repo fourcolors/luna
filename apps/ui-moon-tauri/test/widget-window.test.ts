@@ -228,10 +228,11 @@ describe('widget.html — title bar + live magnetic drag', () => {
 
   it('perimeter outline renders from local sibling geometry on a geometry tick', async () => {
     const outline = document.getElementById('outline') as HTMLDivElement
-    // A sibling welds flush below SELF (528,108,300x200) at y=308 → SELF's bottom
-    // edge is interior, so its free perimeter sides are l, r, t.
+    // A sibling welds CARD-flush below SELF (528,108,300x200): the vertical card
+    // gap is inset_b(22)+inset_t(4)=26, so its frame sits at y=308-26=282 (frames
+    // overlap). SELF's bottom card edge is then interior → free sides l, r, t.
     const below = {
-      outerPosition: vi.fn(async () => ({ x: 528, y: 308 })),
+      outerPosition: vi.fn(async () => ({ x: 528, y: 282 })),
       outerSize: vi.fn(async () => ({ width: 300, height: 200 })),
       scaleFactor: vi.fn(async () => 1),
     }
@@ -278,11 +279,13 @@ describe('widget.html — title bar + live magnetic drag', () => {
     expect(invoke).toHaveBeenCalledWith('list_widget_windows')
     expect(getByLabel).toHaveBeenCalledWith('main')
 
-    // Move: nudge the lead (528-8,108-8)=(520,100) exactly onto main's top-right
-    // corner tile → computeLiveDrag snaps RIGHT·top to (520,100).
-    bar.dispatchEvent(pointer('pointermove', { screenX: -8, screenY: -8 }))
+    // Move: nudge the lead so its CARD face lands on main's right·top card tile.
+    // main card-right·top = (122+376, 104) = (498,104); SELF card-left·top there →
+    // SELF frame = (498-22, 104-4) = (476,100). Delta from origin (528,108) =
+    // (-52,-8). computeLiveDrag (card space) snaps RIGHT·top to (476,100).
+    bar.dispatchEvent(pointer('pointermove', { screenX: -52, screenY: -8 }))
     await flush()
-    expect(setPositionCalls).toEqual([{ x: 520, y: 100 }]) // corner-aligned target
+    expect(setPositionCalls).toEqual([{ x: 476, y: 100 }]) // card-face-aligned target
     expect(shell.classList.contains('snapping')).toBe(true)
 
     // Up: the last move snapped, but the candidate is the hub ('main'). The
@@ -297,8 +300,9 @@ describe('widget.html — title bar + live magnetic drag', () => {
     const bar = document.querySelector('.title-bar') as HTMLElement
     stubCapture(bar)
 
-    // A sibling widget whose top-left sits to our right; its left·top corner
-    // tile (838-300,108)=(538,108) is within magnet of our origin (528,108).
+    // A sibling widget to our right; SELF docks CARD-flush on its LEFT. sibling
+    // card-left·top = (860,112); SELF card-right meets it → SELF card-left =
+    // 860-256 = 604 → SELF frame = (604-22, 112-4) = (582,108).
     const sibling = {
       outerPosition: vi.fn(async () => ({ x: 838, y: 108 })),
       outerSize: vi.fn(async () => ({ width: 200, height: 200 })),
@@ -312,10 +316,10 @@ describe('widget.html — title bar + live magnetic drag', () => {
     bar.dispatchEvent(pointer('pointerdown', { screenX: 0, screenY: 0 }))
     await flush()
 
-    // Move onto the sibling's left tile (538,108): dx=+10, dy=0.
-    bar.dispatchEvent(pointer('pointermove', { screenX: 10, screenY: 0 }))
+    // Move onto the sibling's left card tile (582,108): delta from (528,108) = +54.
+    bar.dispatchEvent(pointer('pointermove', { screenX: 54, screenY: 0 }))
     await flush()
-    expect(setPositionCalls[setPositionCalls.length - 1]).toEqual({ x: 538, y: 108 })
+    expect(setPositionCalls[setPositionCalls.length - 1]).toEqual({ x: 582, y: 108 })
 
     bar.dispatchEvent(pointer('pointerup'))
     await flush()
@@ -351,10 +355,11 @@ describe('widget.html — title bar + live magnetic drag', () => {
     const bar = document.querySelector('.title-bar') as HTMLElement
     stubCapture(bar)
 
-    // A friend welds flush below SELF so emergent geometry groups us (SELF is a
-    // plain widget, not the anchor). It stays at its spot the whole time.
+    // A friend welds CARD-flush below SELF (frame y=282, a 26px frame overlap) so
+    // emergent geometry groups us (SELF is a plain widget, not the anchor). It
+    // stays at its spot the whole time.
     const friend = {
-      outerPosition: vi.fn(async () => ({ x: 528, y: 308 })),
+      outerPosition: vi.fn(async () => ({ x: 528, y: 282 })),
       outerSize: vi.fn(async () => ({ width: 300, height: 200 })),
       scaleFactor: vi.fn(async () => 1),
     }

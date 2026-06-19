@@ -160,3 +160,34 @@ describe('moon-dock — emergent weld visuals', () => {
     await vi.waitFor(() => expect(shell().getAttribute('data-weld')).toBe('l'))
   })
 })
+
+describe('moon-dock — drag lifecycle state machine', () => {
+  function pointer(type: string, target: Element, opts: Record<string, unknown> = {}) {
+    // jsdom lacks PointerEvent; a MouseEvent with pointerId carries what the
+    // capture-phase handler reads (button, target, pointerId).
+    const ev = new MouseEvent(type, { bubbles: true, button: 0, ...opts }) as MouseEvent & { pointerId?: number }
+    ev.pointerId = (opts.pointerId as number) ?? 1
+    target.dispatchEvent(ev)
+    return ev
+  }
+
+  it('arms on a title-bar pointerdown (.dragging) and returns to idle on pointerup', () => {
+    wireWith('widget-a', { 'widget-a': [0, 0, 200, 300] })
+    const bar = document.getElementById('title-bar')!
+    // idle → arming: pointerdown on the drag handle adds .dragging synchronously.
+    pointer('pointerdown', bar)
+    expect(shell().classList.contains('dragging')).toBe(true)
+    // arming/dragging → idle: pointerup removes .dragging and detaches.
+    pointer('pointerup', bar)
+    expect(shell().classList.contains('dragging')).toBe(false)
+  })
+
+  it('does NOT arm a drag from a pointerdown on a button (it is a click, not a grab)', () => {
+    wireWith('widget-a', { 'widget-a': [0, 0, 200, 300] })
+    const bar = document.getElementById('title-bar')!
+    const btn = document.createElement('button')
+    bar.appendChild(btn)
+    pointer('pointerdown', btn)
+    expect(shell().classList.contains('dragging')).toBe(false)
+  })
+})

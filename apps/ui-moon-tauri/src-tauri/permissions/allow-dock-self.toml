@@ -1,0 +1,7 @@
+# Snap-on-open placement, owned by the frontend: a freshly-opened panel computes
+# its flush dock position in JS and calls dock_self to position + reveal itself.
+# See main.rs (dock_self) — replaces the old Rust dock graph.
+[[permission]]
+identifier = "allow-dock-self"
+description = "Allows the dock_self command"
+commands.allow = ["dock_self"]

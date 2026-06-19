@@ -357,6 +357,12 @@
           "markdownDescription": "Allows the collapse_to_moon command"
         },
         {
+          "description": "Allows the dock_self command",
+          "type": "string",
+          "const": "allow-dock-self",
+          "markdownDescription": "Allows the dock_self command"
+        },
+        {
           "description": "Allows the expand_from_moon command",
           "type": "string",
           "const": "allow-expand-from-moon",
