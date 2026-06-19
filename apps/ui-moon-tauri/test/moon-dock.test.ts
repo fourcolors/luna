@@ -112,16 +112,23 @@ describe('moon-dock — emergent weld visuals', () => {
     expect(shell().style.borderTopLeftRadius).toBe('')
   })
 
-  it('collapses welded-side margin to 0 so flush OS windows have no card gap', async () => {
+  it('welds CORNERS only — never mutates the card margin/size (no reshape on dock)', async () => {
     // panel-settings docked flush-right of chat → settings' LEFT is welded.
     wireWith('panel-settings', {
       'panel-chat': [0, 0, 200, 300],
       'panel-settings': [200, 0, 200, 300],
     })
     await vi.waitFor(() => expect(shell().getAttribute('data-weld')).toBe('l'))
-    expect(shell().style.marginLeft).toBe('0px')
-    expect(shell().style.marginRight).toBe('var(--card-inset)')
-    expect(shell().style.width).toBe('calc(100% - 0px - var(--card-inset))')
+    // The welded (left) corners square; the free (right) corners stay rounded.
+    expect(shell().style.borderTopLeftRadius).toBe('0px')
+    expect(shell().style.borderBottomLeftRadius).toBe('0px')
+    expect(shell().style.borderTopRightRadius).toBe('')
+    // The card's SHAPE is untouched: no margin collapse, no size recompute.
+    // Sticking windows together can no longer resize or reflow the card.
+    expect(shell().style.marginLeft).toBe('')
+    expect(shell().style.marginRight).toBe('')
+    expect(shell().style.width).toBe('')
+    expect(shell().style.height).toBe('')
   })
 
   it('defers boot weld until the window becomes visible (snap-on-open)', async () => {

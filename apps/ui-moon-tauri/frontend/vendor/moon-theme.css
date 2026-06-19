@@ -36,6 +36,11 @@
    override this rule. */
 :root {
   --card-inset: 22px;
+  /* The TOP inset is trimmed so the card header rises to meet the native
+     traffic lights, which AppKit pins to the window's top-left corner. The
+     full --card-inset still applies left/right/bottom for the halo + weld seam;
+     only the top buffer (the dead gap above the card under the lights) shrinks. */
+  --card-inset-top: 4px;
   --card-radius: 16px;
 }
 
@@ -56,8 +61,8 @@ html, body {
    welded sides (silhouette shadow, applyWeldVisuals) so no bleed clipping. */
 .widget-shell {
   position: relative;
-  margin: var(--card-inset);
-  height: calc(100% - var(--card-inset) * 2);
+  margin: var(--card-inset-top) var(--card-inset) var(--card-inset);
+  height: calc(100% - var(--card-inset-top) - var(--card-inset));
   width: calc(100% - var(--card-inset) * 2);
   /* Corner radius comes from the active skin (vendor/moon-skins.css); studio
      resolves --dk-radius to --card-radius, so the default is unchanged. The
@@ -66,14 +71,11 @@ html, body {
   /* Ease corner squaring at dock settle (weld recomputes corners on settle,
      not per drag-frame) so they don't pop. */
   transition: border-radius 0.2s ease;
-  /* NOTE: On welded sides, applyWeldVisuals (moon-dock.js) sets
-     marginTop/Right/Bottom/Left and height/width inline to collapse the per-side
-     inset to 0 so flush OS windows produce zero gap between painted cards
-     (Fix 2 Option B, luna-dock-moon-alignment-plan.md §3). When un-grouped those
-     inline styles are cleared back to '' so this class rule restores.
-     There is intentionally NO CSS transition for margin/width/height — inset
-     changes are applied instantly on settle (no per-frame mid-drag resize jank).
-     Only border-radius eases. */
+  /* NOTE: the weld (applyWeldVisuals, moon-dock.js) deliberately NEVER touches
+     this card's margin or size — magnetic docking squares the welded corners
+     only, leaving the shape fixed (the old per-side inset collapse that reflowed
+     the card on docking was removed). Only border-radius changes on weld, and it
+     eases via the transition above so corners don't pop. */
   isolation: isolate;
   /* The SOFT paper halo lives HERE, on the unfiltered shell — NOT on the
      wobbled ::before. The wc-wobble filter displaces everything it's applied
