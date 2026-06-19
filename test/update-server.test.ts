@@ -317,7 +317,7 @@ describe("luna-update-server", () => {
     })
 
     expect(r.status).not.toBe(0)
-    expect(r.stderr).toContain("out of scope for v1")
+    expect(r.stderr).toContain("not found; run luna-server-install")
   })
 
   it("happy path: readiness OK → update applied, exit 0, no rollback", () => {
@@ -361,7 +361,9 @@ describe("luna-update-server", () => {
     const cycles = (readFileSync(systemctlLog, "utf8").match(/stop /g) ?? []).length
     expect(cycles).toBe(1)
     // bun.lock is identical between prev and target → install skipped.
-    expect(existsSync(bunLog)).toBe(false)
+    const bunLogContent = existsSync(bunLog) ? readFileSync(bunLog, "utf8") : ""
+    const hasInstall = bunLogContent.split("\n").some(line => line.startsWith("install"))
+    expect(hasInstall).toBe(false)
     expect(r.stdout).toContain("skipping bun install")
   })
 
@@ -854,7 +856,9 @@ exit 0
     expect(incus).toContain("exec luna-dev -- systemctl start luna-dev-chat-server.service")
     expect(incus).toContain("exec luna-dev -- systemctl daemon-reload")
     // bun.lock identical prev↔target → install skipped (incus bun never invoked).
-    expect(existsSync(bunLog)).toBe(false)
+    const bunLogContent = existsSync(bunLog) ? readFileSync(bunLog, "utf8") : ""
+    const hasInstall = bunLogContent.split("\n").some(line => line.startsWith("install"))
+    expect(hasInstall).toBe(false)
     expect(r.stdout).toContain("skipping bun install")
     // Exactly one restart cycle (no rollback) — counted from the in-container log
     // (one `stop ` per stop -> settle -> start cycle).

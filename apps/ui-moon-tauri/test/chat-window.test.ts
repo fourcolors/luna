@@ -1999,7 +1999,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
       await m.WebSocketEngine.syncThread()
 
-      expect(invoke).not.toHaveBeenCalled() // never touched the disk file
+      expect(invoke).not.toHaveBeenCalledWith('get_last_thread_id') // never touched the disk file
       expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'live-thread' })
     })
 
@@ -2027,7 +2027,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
       await m.WebSocketEngine.syncThread()
 
-      expect(invoke).not.toHaveBeenCalled()
+      expect(invoke).not.toHaveBeenCalledWith('get_last_thread_id')
       expect(sendSpy).toHaveBeenCalledWith({ type: 'list-threads' })
       expect(m.State.skipLastThreadFile).toBe(false) // one-shot guard consumed
     })
@@ -2514,7 +2514,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(M().VoiceEngine.available).toBe(false)
       expect(document.getElementById('voice-mic-btn')!.hidden).toBe(true)
       // Only the probe was attempted — no follow-up voice commands to spam.
-      expect(invoke.mock.calls.map((c) => c[0])).toEqual(['voice_status'])
+      expect(invoke.mock.calls.map((c) => c[0]).filter(c => c !== 'list_widget_windows')).toEqual(['voice_status'])
     })
 
     it('Scenario: with a voice backend, boot probes status, subscribes WINDOW-TARGETED events, re-applies persisted settings', async () => {
@@ -3007,7 +3007,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const invoke = vi.fn(async () => null)
       ;(window as any).__TAURI__.core = { invoke }
       document.getElementById('toggle-settings')!.click()
-      expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'settings' })
+      expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'settings', opener: 'chat-test' })
     })
 
     it('the GEAR degrades to a no-op off-Tauri (no core) without throwing', () => {

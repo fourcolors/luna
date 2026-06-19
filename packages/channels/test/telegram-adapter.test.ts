@@ -88,7 +88,10 @@ const makeFakeTransport = (
   }
 
   const transport: TelegramHttpTransport = (method, params) =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
+      if (method === "getUpdates") {
+        yield* Effect.sleep("1 millis")
+      }
       calls.push({ method, params })
       // Check per-method queue first
       const methodQueue = methodQueues.get(method)
