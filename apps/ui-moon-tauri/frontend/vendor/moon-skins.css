@@ -68,10 +68,11 @@ html {
   --dk-title-color-anchor: var(--ink);
 
   /* ── Per-edge silhouette shadow pieces (Phase 4 weld shadow) ───────────
-     The dock client assembles a window's box-shadow from --dk-edge-amb plus
-     the directional pieces for its NON-welded edges only, so a welded seam
-     casts no interior lip. Design studio --dk-edge-* values. */
-  --dk-edge-amb: 0 1px 2px rgba(60, 45, 35, 0.05);
+     The dock client assembles a welded window's box-shadow PURELY from the
+     directional pieces for its NON-welded (free) edges, so a welded seam casts
+     no interior lip. There is deliberately NO symmetric ambient piece: a spread-0
+     ambient radiates on all four sides and bled onto welded seams (read as a ring
+     INSIDE the cluster). Design studio --dk-edge-* values. */
   --dk-edge-t: 0 -5px 14px -12px rgba(60, 45, 35, 0.09);
   --dk-edge-b:
     0 5px 9px -6px rgba(60, 45, 35, 0.09),
@@ -91,7 +92,6 @@ html[data-theme='dark'] {
   /* Design studio has NO dark paper override — the card stays on var(--paper)
      (the darker night paper); only the halo goes black. Match that exactly. */
   --dk-win-paper: var(--paper);
-  --dk-edge-amb: 0 1px 2px rgba(0, 0, 0, 0.30);
   --dk-edge-t: 0 -5px 18px -8px rgba(0, 0, 0, 0.45);
   --dk-edge-b: 0 6px 20px -6px rgba(0, 0, 0, 0.62);
   --dk-edge-l: -5px 0 18px -8px rgba(0, 0, 0, 0.45);
@@ -137,7 +137,6 @@ html[data-skin='classic'] {
   --dk-title-color-anchor: #ffffff;
 
   /* Crisp welded edges (derived to match the tight classic --dk-win-shadow). */
-  --dk-edge-amb: 0 2px 0 rgba(60, 45, 35, 0.04);
   --dk-edge-t: 0 -4px 12px -10px rgba(40, 30, 25, 0.30);
   --dk-edge-b: 0 8px 18px -10px rgba(40, 30, 25, 0.40);
   --dk-edge-l: -4px 0 12px -10px rgba(40, 30, 25, 0.30);
@@ -174,7 +173,6 @@ html[data-skin='aqua'] {
   --dk-title-color: color-mix(in oklab, var(--ink) 68%, transparent);
 
   /* Airy welded edges (derived to match the soft aqua --dk-win-shadow). */
-  --dk-edge-amb: 0 2px 6px rgba(40, 40, 60, 0.06);
   --dk-edge-t: 0 -8px 26px -14px rgba(40, 40, 70, 0.22);
   --dk-edge-b: 0 8px 28px -14px rgba(40, 40, 70, 0.30);
   --dk-edge-l: -8px 0 26px -14px rgba(40, 40, 70, 0.22);

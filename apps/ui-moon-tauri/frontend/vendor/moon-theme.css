@@ -129,16 +129,19 @@ html, body {
    .snapping states). moon-dock.js toggles these during the native drag settle:
    a deeper lift while a loose window is being dragged, and an accent preview
    ring the moment it falls within magnet range of a neighbour — the predictive
-   "this will stick" hint the design shows before the drop. */
+   "this will stick" hint the design shows before the drop.
+   !important so the lift overrides a GROUPED window's INLINE welded silhouette
+   (applyWeldVisuals sets shellEl.style.boxShadow) while towing a cluster — without
+   clearing the inline value, so the welded shadow snaps back instantly on drop. */
 .widget-shell.dragging {
   box-shadow:
     0 6px 12px rgba(60, 45, 35, 0.10),
-    0 32px 60px -18px rgba(60, 45, 35, 0.32);
+    0 32px 60px -18px rgba(60, 45, 35, 0.32) !important;
 }
 html[data-theme='dark'] .widget-shell.dragging {
   box-shadow:
     0 6px 12px rgba(0, 0, 0, 0.40),
-    0 36px 64px -18px rgba(0, 0, 0, 0.60);
+    0 36px 64px -18px rgba(0, 0, 0, 0.60) !important;
 }
 .widget-shell.snapping::after {
   content: '';
@@ -209,6 +212,10 @@ html[data-chrome='ink'][data-theme='dark'] .widget-shell::before {
    skin radius; the dock client zeroes a top corner at a welded seam. */
 .title-bar {
   border-radius: var(--dk-radius, var(--card-radius)) var(--dk-radius, var(--card-radius)) 0 0;
+  /* Ease the top-corner squaring in lockstep with the shell (which also has this
+     0.2s ease) so a weld/unweld doesn't snap the bar's corner past the still-
+     rounding card corner. moon-dock.js zeroes both top radii in the same call. */
+  transition: border-radius 0.2s ease;
 }
 
 /* ── Paper grain (optional, data-grain="on") ─────────────────────────────
@@ -224,7 +231,10 @@ html[data-grain='on'] body::after {
   right:  var(--card-inset);
   bottom: var(--card-inset);
   left:   var(--card-inset);
-  border-radius: var(--card-radius);
+  /* Track the SKIN radius (like the shell + #outline) so grain clips to the card
+     corner exactly — a fixed --card-radius bleeds past the 4px classic / under the
+     18px aqua corner. */
+  border-radius: var(--dk-radius, var(--card-radius));
   pointer-events: none;
   opacity: 0.5;
   mix-blend-mode: multiply;
@@ -447,13 +457,19 @@ html[data-anchor='true'] .bar-title {
 }
 
 /* ── Group perimeter: a very low highlight on OUTER sides only ───────── */
-/* Hugs the card edge exactly via the shared inset + radius. */
+/* Must trace the card edge EXACTLY. The shell uses --card-inset-top (4px) on top
+   (the native traffic-lights trim) + the skin radius (--dk-radius), so a symmetric
+   inset/fixed radius here would float the top accent ~18px below the card edge and
+   round its corners wrong. Mirror the shell's geometry instead. */
 #outline {
   position: fixed;
-  inset: var(--card-inset);
+  top: var(--card-inset-top);
+  right: var(--card-inset);
+  bottom: var(--card-inset);
+  left: var(--card-inset);
   pointer-events: none;
   z-index: 49;
-  border-radius: var(--card-radius);
+  border-radius: var(--dk-radius, var(--card-radius));
   border: 0 solid transparent;
 }
 #outline.gl { border-left: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
@@ -522,6 +538,25 @@ html[data-anchor='true'] .bar-title {
 html[data-theme='dark'] .resize-se::after {
   border-right-color: color-mix(in oklab, var(--ink) 58%, transparent);
   border-bottom-color: color-mix(in oklab, var(--ink) 58%, transparent);
+}
+
+/* Weld-aware resize: a side flush against a welded neighbour can't be resized
+   without tearing the shared seam, so disable that edge's hit strip + its two
+   adjacent corner grips. data-weld (set by moon-dock.js from weldStyle.weld) lists
+   the WELDED side letters — this is its consumer (previously the marker was unused). */
+.widget-shell[data-weld*="t"] .resize-n,
+.widget-shell[data-weld*="t"] .resize-ne,
+.widget-shell[data-weld*="t"] .resize-nw,
+.widget-shell[data-weld*="b"] .resize-s,
+.widget-shell[data-weld*="b"] .resize-se,
+.widget-shell[data-weld*="b"] .resize-sw,
+.widget-shell[data-weld*="l"] .resize-w,
+.widget-shell[data-weld*="l"] .resize-nw,
+.widget-shell[data-weld*="l"] .resize-sw,
+.widget-shell[data-weld*="r"] .resize-e,
+.widget-shell[data-weld*="r"] .resize-ne,
+.widget-shell[data-weld*="r"] .resize-se {
+  pointer-events: none;
 }
 
 /* ── Scroll-container / mouse-focus ring suppression ─────────────────────

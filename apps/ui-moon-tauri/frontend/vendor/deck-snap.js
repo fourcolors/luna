@@ -261,7 +261,13 @@
     if (!grouped) return { radii: radii, grouped: false, weld: "", boxShadow: "", outlineClass: "" }
     var sides = outlineSides || []
     var has = function (s) { return sides.indexOf(s) !== -1 }
-    var pieces = ["var(--dk-edge-amb)"]
+    // Per-edge silhouette ONLY — one directional piece per FREE (non-welded) side.
+    // The old symmetric --dk-edge-amb seed was prepended unconditionally and, being
+    // spread-0, cast a soft lip on ALL four sides — including welded seams (the
+    // "ring was inside the cluster, not on the outer border" bug). Dropping it keeps
+    // the cluster's outer halo (the directional pieces) while a welded seam — and a
+    // fully-interior member (0 free sides) — casts nothing. See moon-skins.css --dk-edge-*.
+    var pieces = []
     if (has("t")) pieces.push("var(--dk-edge-t)")
     if (has("b")) pieces.push(isAnchor ? "var(--dk-edge-b-anchor)" : "var(--dk-edge-b)")
     if (has("l")) pieces.push("var(--dk-edge-l)")
@@ -272,7 +278,10 @@
       radii: radii,
       grouped: true,
       weld: welded.join(""),
-      boxShadow: pieces.join(", "),
+      // "none" (NOT "") when fully interior: moon-dock.js applies this inline, and an
+      // empty string would clear the inline prop and let the CSS --dk-win-shadow solo
+      // halo bleed back onto a buried card. "none" explicitly suppresses it (flat).
+      boxShadow: pieces.length ? pieces.join(", ") : "none",
       outlineClass: sides.map(function (s) { return "g" + s }).join(" "),
     }
   }

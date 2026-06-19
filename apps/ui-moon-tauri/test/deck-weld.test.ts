@@ -127,11 +127,24 @@ describe("weldStyle — pure geometry → card visual style", () => {
     const s = S.weldStyle(true, ["t", "r", "b"], ["tl", "bl"], false)
     expect(s.radii).toEqual({ tl: true, tr: false, br: false, bl: true })
     expect(s.weld).toBe("l")
-    expect(s.boxShadow).toContain("var(--dk-edge-amb)")
+    // No symmetric ambient — it was spread-0 and leaked onto the welded seam.
+    expect(s.boxShadow).not.toContain("var(--dk-edge-amb)")
     expect(s.boxShadow).toContain("var(--dk-edge-t)")
     expect(s.boxShadow).toContain("var(--dk-edge-r)")
+    expect(s.boxShadow).toContain("var(--dk-edge-b)") // free bottom still casts
     expect(s.boxShadow).not.toContain("var(--dk-edge-l)") // welded side casts no edge
     expect(s.outlineClass).toBe("gt gr gb")
+  })
+
+  it("a fully-interior member (no free sides) casts NOTHING — never the solo halo", () => {
+    // 0 free sides → no directional pieces → boxShadow must be "none", NOT "".
+    // moon-dock.js applies this inline; "" would clear the inline prop and let the
+    // CSS --dk-win-shadow solo halo bleed back onto a buried card. "none" = flat.
+    const s = S.weldStyle(true, [], ["tl", "tr", "br", "bl"], false)
+    expect(s.grouped).toBe(true)
+    expect(s.weld).toBe("tblr")
+    expect(s.boxShadow).toBe("none")
+    expect(s.outlineClass).toBe("")
   })
 
   it("the chat anchor casts the distinct bottom accent edge", () => {
