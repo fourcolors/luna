@@ -228,14 +228,13 @@ html[data-chrome='ink'][data-theme='dark'] .widget-shell::before {
 html[data-grain='on'] body::after {
   content: '';
   position: fixed;
-  /* Match the card geometry so grain stays inside the paper card and
-     doesn't paint into the transparent window margin. On welded sides
-     applyWeldVisuals (moon-dock.js) sets --grain-{t,r,b,l} on <html> to 0px
-     so the grain flush-fills the card edge instead of stopping 22px short. */
-  top:    var(--grain-t, var(--card-inset));
-  right:  var(--grain-r, var(--card-inset));
-  bottom: var(--grain-b, var(--card-inset));
-  left:   var(--grain-l, var(--card-inset));
+  /* Match the card geometry so grain stays inside the paper card and doesn't
+     paint into the transparent window margin. The top uses --card-inset-top to
+     track the trimmed header inset; the other sides use the full --card-inset. */
+  top:    var(--card-inset-top);
+  right:  var(--card-inset);
+  bottom: var(--card-inset);
+  left:   var(--card-inset);
   border-radius: var(--card-radius);
   pointer-events: none;
   opacity: 0.5;
@@ -279,12 +278,6 @@ html[data-chrome='ink'] .title-bar {
     transparent 100%
   );
 }
-/* macOS traffic-light offset guard: padding-top is applied INLINE by
-   applyWeldVisuals (moon-dock.js) only inside the applyInset block, so it
-   moves in lockstep with the margin-top collapse. Keying it on [data-weld]
-   here caused it to fire mid-drag (data-weld is stamped unconditionally) while
-   the margin only collapsed at settle → transient 22px title-bar growth.
-   Kept as a comment so the intent is documented; do not restore the CSS rule. */
 
 .grip {
   color: color-mix(in oklab, var(--ink) 35%, transparent);
@@ -438,25 +431,24 @@ html[data-anchor='true'] .bar-title {
 
 
 /* ── Seam glow: the link animation when two windows click together ───── */
-/* Offset bars by --card-inset from each OS-window edge so they hug the card
-   face (the transparent margin sits outside the painted card).
-   Per-side overrides (--seam-l/r/t/b) let applyWeldVisuals (moon-dock.js)
-   collapse a welded side's offset to 0px so the glow bar lands on the real
-   seam line (the flush OS edge) rather than 22px inside a now-flush card.
-   Default is var(--card-inset) so ungrouped / non-welded sides are unchanged. */
+/* Offset bars by the card inset from each OS-window edge so they hug the card
+   face (the transparent margin sits outside the painted card). The top uses
+   --card-inset-top to track the trimmed header inset; the others use the full
+   --card-inset. (The weld no longer collapses these per-side — it squares
+   corners only — so the old --seam-* override layer is gone.) */
 #seam {
   position: fixed;
   pointer-events: none;
   opacity: 0;
   z-index: 50;
 }
-#seam.flash-l { left: var(--seam-l, var(--card-inset)); top: var(--seam-t, var(--card-inset)); bottom: var(--seam-b, var(--card-inset)); width: 7px;
+#seam.flash-l { left: var(--card-inset); top: var(--card-inset-top); bottom: var(--card-inset); width: 7px;
   background: linear-gradient(to right, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
-#seam.flash-r { right: var(--seam-r, var(--card-inset)); top: var(--seam-t, var(--card-inset)); bottom: var(--seam-b, var(--card-inset)); width: 7px;
+#seam.flash-r { right: var(--card-inset); top: var(--card-inset-top); bottom: var(--card-inset); width: 7px;
   background: linear-gradient(to left, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
-#seam.flash-t { top: var(--seam-t, var(--card-inset)); left: var(--seam-l, var(--card-inset)); right: var(--seam-r, var(--card-inset)); height: 7px;
+#seam.flash-t { top: var(--card-inset-top); left: var(--card-inset); right: var(--card-inset); height: 7px;
   background: linear-gradient(to bottom, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
-#seam.flash-b { bottom: var(--seam-b, var(--card-inset)); left: var(--seam-l, var(--card-inset)); right: var(--seam-r, var(--card-inset)); height: 7px;
+#seam.flash-b { bottom: var(--card-inset); left: var(--card-inset); right: var(--card-inset); height: 7px;
   background: linear-gradient(to top, color-mix(in oklab, var(--accent) 85%, transparent), transparent); }
 #seam.on { animation: seam-flash 0.7s ease-out; }
 @keyframes seam-flash {

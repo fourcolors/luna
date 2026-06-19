@@ -51,15 +51,12 @@
 
     function ev() { return window.__TAURI__ && window.__TAURI__.event; }
 
-    // Broadcast "geometry changed" so every other dock window recomputes its
-    // weld. A global emit (not emit_to) is correct here: this tick is FOR
-    // everyone, unlike the old targeted dock-group payloads.
-    // `settled` distinguishes a mid-drag tick (false → neighbours repaint
-    // radius only, no inset resize while someone is dragging) from a settle
-    // tick (true → neighbours also collapse/restore their per-side inset so a
-    // docked-onto neighbour's seam closes flush, not just the dragged window).
-    function broadcastGeometry(settled) {
-      try { var e = ev(); if (e && e.emit) e.emit('dock-geometry-changed', { from: label, settled: !!settled }); } catch (_) { /* best-effort */ }
+    // Broadcast "geometry changed" so every other dock window re-squares its
+    // welded corners. A global emit (not emit_to) is correct here: this tick is
+    // FOR everyone, unlike the old targeted dock-group payloads. Only emitted on
+    // settle (drag drop / resize / boot) — never per pointer-move.
+    function broadcastGeometry() {
+      try { var e = ev(); if (e && e.emit) e.emit('dock-geometry-changed', { from: label }); } catch (_) { /* best-effort */ }
     }
 
     // The window's TOUCHING side is opposite the anchor-relative edge
@@ -302,7 +299,7 @@
         } catch (_) { /* best-effort */ }
       }
       refreshWeld();          // settle my own weld from real rects
-      broadcastGeometry(/*settled=*/true); // neighbours settle their per-side inset around the new position too
+      broadcastGeometry();    // neighbours re-square their corners around the new position too
     }
 
     document.addEventListener('pointerdown', function (e) {
@@ -391,14 +388,14 @@
           var p = ev2 && ev2.payload;
           if (!p || p['for'] !== label) return;
           flashSeam(p.edge); // anchor side: our touching side IS the edge
-          // A freshly-spawned sibling just docked flush — collapse our welded
-          // side immediately (don't wait for its boot broadcast).
+          // A freshly-spawned sibling just docked — re-square our welded corners
+          // immediately (don't wait for its boot broadcast).
           refreshWeld();
         }).catch(function () {});
       }
       // My own native resize changes the weld for my neighbours too.
       if (typeof W.onResized === 'function') {
-        W.onResized(function () { refreshWeld(); broadcastGeometry(/*settled=*/true); }).catch(function () {});
+        W.onResized(function () { refreshWeld(); broadcastGeometry(); }).catch(function () {});
       }
     } catch (_) { /* best-effort */ }
 
@@ -439,7 +436,7 @@
         });
       } catch (_) { /* best-effort */ }
       await refreshWeld();
-      broadcastGeometry(/*settled=*/true);
+      broadcastGeometry();
       // Only play the dock-pop entrance animation for windows that were hidden
       // at startup (fresh snap-on-open). Boot-restored windows skip it.
       if (waited) { playEntering(); }
