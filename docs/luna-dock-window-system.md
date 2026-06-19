@@ -282,10 +282,12 @@ window outline. Search the dock CSS: **zero `filter: url(#wc-wobble)` on
 
 **Cluster silhouette shadow (studio skin, mod04 :472-482 + dock.css :28-37):**
 - Instead of each window casting its own box-shadow, the JS assembles
-  `box-shadow` from per-edge pieces (`--dk-edge-amb/-t/-b/-l/-r`) emitting
-  **only the edges that are NOT welded**. The result: a stuck cluster is
-  shadowed around its **combined outer silhouette** and perfectly flat at every
-  interior seam — it looks like one object, not a pile.
+  `box-shadow` from per-edge directional pieces (`--dk-edge-t/-b/-l/-r`) emitting
+  **only the edges that are NOT welded**. There is deliberately no symmetric
+  ambient piece (a spread-0 ambient radiates on all four sides and would lip onto
+  welded seams). The result: a stuck cluster is shadowed around its **combined
+  outer silhouette** and perfectly flat at every interior seam — it looks like one
+  object, not a pile. A fully-interior member (0 free sides) casts `none`.
 - This inline shadow overrides the per-panel rules. Skins without `--dk-edge-*`
   fall back to the flat-seam rules above.
 

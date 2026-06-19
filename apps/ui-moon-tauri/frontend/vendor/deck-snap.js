@@ -261,7 +261,13 @@
     if (!grouped) return { radii: radii, grouped: false, weld: "", boxShadow: "", outlineClass: "" }
     var sides = outlineSides || []
     var has = function (s) { return sides.indexOf(s) !== -1 }
-    var pieces = ["var(--dk-edge-amb)"]
+    // Per-edge silhouette ONLY — one directional piece per FREE (non-welded) side.
+    // The old symmetric --dk-edge-amb seed was prepended unconditionally and, being
+    // spread-0, cast a soft lip on ALL four sides — including welded seams (the
+    // "ring was inside the cluster, not on the outer border" bug). Dropping it keeps
+    // the cluster's outer halo (the directional pieces) while a welded seam — and a
+    // fully-interior member (0 free sides) — casts nothing. See moon-skins.css --dk-edge-*.
+    var pieces = []
     if (has("t")) pieces.push("var(--dk-edge-t)")
     if (has("b")) pieces.push(isAnchor ? "var(--dk-edge-b-anchor)" : "var(--dk-edge-b)")
     if (has("l")) pieces.push("var(--dk-edge-l)")
@@ -272,7 +278,10 @@
       radii: radii,
       grouped: true,
       weld: welded.join(""),
-      boxShadow: pieces.join(", "),
+      // "none" (NOT "") when fully interior: moon-dock.js applies this inline, and an
+      // empty string would clear the inline prop and let the CSS --dk-win-shadow solo
+      // halo bleed back onto a buried card. "none" explicitly suppresses it (flat).
+      boxShadow: pieces.length ? pieces.join(", ") : "none",
       outlineClass: sides.map(function (s) { return "g" + s }).join(" "),
     }
   }
@@ -364,37 +373,129 @@
   // browser's screenX/Y point space). Selecting the monitor by the POINT keeps
   // the chosen scale factor stable no matter how much of the window has
   // crossed, so the placement stops oscillating.
-  function logicalToPhysical(x, y, monitors) {
-    if (!monitors || !monitors.length) return null
-    var pick = null
+  function resolveLogicalOrigins(monitors) {
+    var isMac = false;
     for (var i = 0; i < monitors.length; i++) {
-      var m = monitors[i]
-      var lx = m.x / m.sf,
-        ly = m.y / m.sf
-      if (x >= lx && x < lx + m.w / m.sf && y >= ly && y < ly + m.h / m.sf) {
-        pick = m
-        break
+      for (var j = 0; j < monitors.length; j++) {
+        if (i === j) continue;
+        var mi = monitors[i], mj = monitors[j];
+        if ((mi.x > mj.x && mi.x < mj.x + mj.w) || (mi.y > mj.y && mi.y < mj.y + mj.h)) {
+          isMac = true;
+          break;
+        }
+      }
+      if (isMac) break;
+    }
+
+    var result = [];
+    if (isMac) {
+      for (var k = 0; k < monitors.length; k++) {
+        var m = monitors[k];
+        result.push({ m: m, lx: m.x / m.sf, ly: m.y / m.sf });
+      }
+      return result;
+    }
+
+    var primary = null;
+    for (var n = 0; n < monitors.length; n++) {
+      if (monitors[n].x === 0 && monitors[n].y === 0) {
+        primary = monitors[n];
+        break;
       }
     }
-    if (!pick) {
-      // Off every display (a gap between monitors, or dragged past an outer
-      // edge): pick the nearest by logical-center distance so the mapping stays
-      // continuous instead of snapping to monitors[0].
-      var best = Infinity
-      for (var j = 0; j < monitors.length; j++) {
-        var mm = monitors[j]
-        var d = Math.hypot(x - (mm.x + mm.w / 2) / mm.sf, y - (mm.y + mm.h / 2) / mm.sf)
-        if (d < best) {
-          best = d
-          pick = mm
+    if (!primary) primary = monitors[0];
+
+    var solved = new Map();
+    solved.set(primary, { lx: 0, ly: 0 });
+    var queue = [primary];
+
+    while (queue.length > 0) {
+      var u = queue.shift();
+      var uLoc = solved.get(u);
+
+      for (var idx = 0; idx < monitors.length; idx++) {
+        var v = monitors[idx];
+        if (solved.has(v)) continue;
+
+        var touches = false;
+        var lx = 0, ly = 0;
+
+        if (Math.abs(v.x - (u.x + u.w)) < 2) {
+          lx = uLoc.lx + u.w / u.sf;
+          ly = uLoc.ly + (v.y - u.y) / u.sf;
+          touches = true;
+        } else if (Math.abs((v.x + v.w) - u.x) < 2) {
+          lx = uLoc.lx - v.w / v.sf;
+          ly = uLoc.ly + (v.y - u.y) / v.sf;
+          touches = true;
+        } else if (Math.abs(v.y - (u.y + u.h)) < 2) {
+          ly = uLoc.ly + u.h / u.sf;
+          lx = uLoc.lx + (v.x - u.x) / u.sf;
+          touches = true;
+        } else if (Math.abs((v.y + v.h) - u.y) < 2) {
+          ly = uLoc.ly - v.h / v.sf;
+          lx = uLoc.lx + (v.x - u.x) / v.sf;
+          touches = true;
+        }
+
+        if (touches) {
+          solved.set(v, { lx: lx, ly: ly });
+          queue.push(v);
         }
       }
     }
-    // physical = monitorPhysOrigin + (point − monitorLogicalOrigin) × sf, which
-    // reduces exactly to point × sf because a monitor's physical origin IS its
-    // logical origin × its own scale factor.
-    return { x: Math.round(x * pick.sf), y: Math.round(y * pick.sf) }
+
+    for (var idx2 = 0; idx2 < monitors.length; idx2++) {
+      var m2 = monitors[idx2];
+      if (!solved.has(m2)) {
+        solved.set(m2, { lx: m2.x / m2.sf, ly: m2.y / m2.sf });
+      }
+    }
+
+    for (var idx3 = 0; idx3 < monitors.length; idx3++) {
+      var m3 = monitors[idx3];
+      var loc = solved.get(m3);
+      result.push({ m: m3, lx: loc.lx, ly: loc.ly });
+    }
+    return result;
   }
+
+  function logicalToPhysical(x, y, monitors) {
+    if (!monitors || !monitors.length) return null;
+    var resolved = resolveLogicalOrigins(monitors);
+    var pick = null;
+    var pickLoc = null;
+
+    for (var i = 0; i < resolved.length; i++) {
+      var item = resolved[i];
+      var m = item.m;
+      var lx = item.lx, ly = item.ly;
+      if (x >= lx && x < lx + m.w / m.sf && y >= ly && y < ly + m.h / m.sf) {
+        pick = m;
+        pickLoc = item;
+        break;
+      }
+    }
+    if (!pick) {
+      var best = Infinity;
+      for (var j = 0; j < resolved.length; j++) {
+        var item2 = resolved[j];
+        var mm = item2.m;
+        var d = Math.hypot(x - (item2.lx + (mm.w / 2) / mm.sf), y - (item2.ly + (mm.h / 2) / mm.sf));
+        if (d < best) {
+          best = d;
+          pick = mm;
+          pickLoc = item2;
+        }
+      }
+    }
+
+    return {
+      x: Math.round(pick.x + (x - pickLoc.lx) * pick.sf),
+      y: Math.round(pick.y + (y - pickLoc.ly) * pick.sf)
+    };
+  }
+
 
   g.LunaDeckSnap = {
     computeSnap: computeSnap,

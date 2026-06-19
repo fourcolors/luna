@@ -371,7 +371,7 @@ describe("UIWebSocketServer (chat routing)", () => {
     )
     // Filter out obs `event` frames — they can interleave with chat frames
     // now that ChatService emits SessionStart on createThread.
-    const frames = allFrames.filter((f) => f.type !== "event")
+    const frames = allFrames.filter((f) => f.type !== "event" && f.type !== "smart-bar")
     expect(frames.map((f) => f.type)).toEqual([
       "hello",
       "thread-created",
@@ -414,7 +414,7 @@ describe("UIWebSocketServer (chat routing)", () => {
     )
     // Filter out obs `event` frames — they interleave with chat frames now
     // that ChatService emits SessionStart/CostAccrued/SessionEnd.
-    const frames = allFrames.filter((f) => f.type !== "event")
+    const frames = allFrames.filter((f) => f.type !== "event" && f.type !== "smart-bar")
     expect(frames.map((f) => f.type)).toEqual([
       "hello",
       "thread-created",

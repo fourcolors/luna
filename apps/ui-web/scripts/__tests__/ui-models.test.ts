@@ -165,8 +165,8 @@ describe("buildAvailableModels", () => {
     // Base list has exactly 4 entries; order is: Sonnet, Fable, Opus, Haiku.
     expect(result).toEqual([
       { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 — balanced",    efforts: ["low", "medium", "high", "max"] },
-      { id: "claude-fable-5",    label: "Fable 5 (1M context)",             efforts: ["low", "medium", "high", "xhigh", "max"] },
-      { id: "claude-opus-4-8",   label: "Claude Opus 4.8 — most capable",  efforts: ["low", "medium", "high", "xhigh", "max"] },
+      { id: "claude-fable-5",    label: "Fable 5 (1M context)",             efforts: ["low", "medium", "high", "xhigh", "max", "ultracode"] },
+      { id: "claude-opus-4-8",   label: "Claude Opus 4.8 — most capable",  efforts: ["low", "medium", "high", "xhigh", "max", "ultracode"] },
       { id: "claude-haiku-4-5",  label: "Claude Haiku 4.5 — fastest",      efforts: [] },
     ])
   })
@@ -222,6 +222,6 @@ describe("buildAvailableModels", () => {
       LUNA_UI_MODELS: "claude-opus-4-8=My Opus",
     })
     const entry = result.find((m) => m.id === "claude-opus-4-8")
-    expect(entry?.efforts).toEqual(["low", "medium", "high", "xhigh", "max"])
+    expect(entry?.efforts).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"])
   })
 })
