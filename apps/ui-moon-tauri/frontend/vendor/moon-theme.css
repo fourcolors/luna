@@ -119,10 +119,10 @@ html, body {
   /* Frost (aqua); studio --dk-blur is 0px → a no-op. */
   backdrop-filter: blur(var(--dk-blur, 0px));
   -webkit-backdrop-filter: blur(var(--dk-blur, 0px));
-  /* Skin edge ring carried as a box-shadow (NOT a CSS border — see the ink
-     chrome note below for why the wobble filter forbids a real border). Studio
-     --dk-win-border is transparent → invisible. Ink chrome overrides this. */
-  box-shadow: 0 0 0 1.5px var(--dk-win-border, transparent);
+  /* Skin edge ring lives on ::before only for skins that set a visible
+     --dk-win-border (classic/aqua rules below). Studio default = none. NEVER
+     a CSS border (see moon-theme.css ink chrome note). */
+  box-shadow: none;
 }
 
 /* Drag / snap affordance (ported from the design's .dock-win.dragging /
@@ -170,14 +170,11 @@ html[data-theme='dark'] .widget-shell.snapping::after {
   .widget-shell.entering { animation: none; }
 }
 
-/* Dark theme: soft halos only — no 1px ink ring on the shell. That ring traced
-   the card top (especially under the transparent studio title bar) as a thin
-   light line on hover/focus that read as a spurious title-bar border. Ink
-   chrome already omits this ring (see below); wash/studio dark matches it. */
+/* Dark theme: soft drop halo only — no 0-spread edge ring. The old
+   `0 0 16px -2px` layer hugged the card perimeter and read as a thin light
+   highlight border around the window (same artifact as the studio tight layers). */
 html[data-theme='dark'] .widget-shell {
-  box-shadow:
-    0 0 16px -2px rgba(0, 0, 0, 0.4),
-    0 6px 20px -6px rgba(0, 0, 0, 0.62);
+  box-shadow: 0 14px 34px -12px rgba(0, 0, 0, 0.55);
 }
 
 /* Ink chrome: a single visible inked edge (preserves PR #131's fix). Carried
