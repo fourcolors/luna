@@ -23,6 +23,17 @@
   "use strict"
 
   var DEFAULT_THRESHOLD = 30 // px — matches the Luna Dock design file's SNAP=30
+  var ZERO_INSETS = { l: 0, r: 0, t: 0, b: 0 }
+
+  // Inset an OS-frame rect by the card insets → the VISIBLE CARD rect. All magnet
+  // geometry (snap + weld detection) runs in this card-face space so windows
+  // align by what the user SEES, not by the larger transparent OS frame. The
+  // card sits `--card-inset` inside the frame on l/r/b and `--card-inset-top` on
+  // top; passing ZERO_INSETS makes this the identity (raw frame space).
+  function insetRect(rect, ins) {
+    var i = ins || ZERO_INSETS
+    return { x: rect.x + i.l, y: rect.y + i.t, w: rect.w - i.l - i.r, h: rect.h - i.t - i.b }
+  }
 
   function computeSnap(anchor, widget, threshold) {
     if (!anchor || !widget) return null
@@ -73,20 +84,27 @@
   //               plain module drag = just itself.
   //   candidates = [{label, rect:{x,y,w,h}}] — windows NOT in the drag group.
   // Returns { targets:[{label,x,y}], snapped, anchor, edge }.
-  function computeLiveDrag(drag, candidates, threshold) {
-    var lead = { x: drag.ox + drag.dx, y: drag.oy + drag.dy, w: drag.ow, h: drag.oh }
+  function computeLiveDrag(drag, candidates, threshold, insets) {
+    var ins = insets || ZERO_INSETS
+    // Snap in CARD-FACE space: inset the lead + every candidate so faces (not OS
+    // frames) align flush. The snap DELTA is identical in card- and frame-space
+    // (card = frame + constant inset), so we apply it straight to frame origins.
+    var leadFrame = { x: drag.ox + drag.dx, y: drag.oy + drag.dy, w: drag.ow, h: drag.oh }
+    var lead = insetRect(leadFrame, ins)
     var best = null
     var cands = candidates || []
     for (var i = 0; i < cands.length; i++) {
-      var s = computeSnap(cands[i].rect, lead, threshold)
+      var s = computeSnap(insetRect(cands[i].rect, ins), lead, threshold)
       if (!s) continue
       var d = Math.hypot(s.x - lead.x, s.y - lead.y)
       if (best === null || d < best.d) {
         best = { x: s.x, y: s.y, edge: s.edge, label: cands[i].label, d: d }
       }
     }
-    var tx = best ? best.x : lead.x
-    var ty = best ? best.y : lead.y
+    // best.x/y are the lead CARD top-left; convert back to a FRAME top-left
+    // (subtract the lead's own top/left inset) before deriving the group delta.
+    var tx = best ? best.x - ins.l : leadFrame.x
+    var ty = best ? best.y - ins.t : leadFrame.y
     var fdx = tx - drag.ox
     var fdy = ty - drag.oy
     var members = drag.members || []
@@ -226,6 +244,39 @@
     return out
   }
 
+  // weldStyle — PURE mapping from weld geometry → a card's visual style (no DOM).
+  // Separating this from the DOM applier (moon-dock.js applyWeldVisuals) makes the
+  // corner/edge tables unit-testable and keeps all the {tl,tr,br,bl}/{t,r,b,l}
+  // repetition in ONE place.
+  //   grouped       — is this window part of a multi-window cluster?
+  //   outlineSides  — its FREE (non-welded) perimeter sides (from weldOutlineSides)
+  //   weldCorners   — its corners that sit at an interior seam (from weldCorners)
+  //   isAnchor      — the chat anchor casts a distinct bottom accent edge
+  // Returns { radii:{tl,tr,br,bl}(bool, true=square), grouped, weld(string),
+  //           boxShadow(string), outlineClass(string) }.
+  function weldStyle(grouped, outlineSides, weldCorners, isAnchor) {
+    var wc = weldCorners || []
+    var sq = function (c) { return grouped && wc.indexOf(c) !== -1 }
+    var radii = { tl: sq("tl"), tr: sq("tr"), br: sq("br"), bl: sq("bl") }
+    if (!grouped) return { radii: radii, grouped: false, weld: "", boxShadow: "", outlineClass: "" }
+    var sides = outlineSides || []
+    var has = function (s) { return sides.indexOf(s) !== -1 }
+    var pieces = ["var(--dk-edge-amb)"]
+    if (has("t")) pieces.push("var(--dk-edge-t)")
+    if (has("b")) pieces.push(isAnchor ? "var(--dk-edge-b-anchor)" : "var(--dk-edge-b)")
+    if (has("l")) pieces.push("var(--dk-edge-l)")
+    if (has("r")) pieces.push("var(--dk-edge-r)")
+    // welded sides = the complement of the free sides (drives the data-weld marker).
+    var welded = ["t", "b", "l", "r"].filter(function (e) { return !has(e) })
+    return {
+      radii: radii,
+      grouped: true,
+      weld: welded.join(""),
+      boxShadow: pieces.join(", "),
+      outlineClass: sides.map(function (s) { return "g" + s }).join(" "),
+    }
+  }
+
   // logicalToPhysical — resolve a LOGICAL (CSS-point) top-left to the PHYSICAL
   // pixel position to hand Tauri's setPosition, anchored to whichever monitor
   // contains the point. This is what makes a cross-display drag mixed-DPI safe.
@@ -284,11 +335,13 @@
     computeLiveDrag: computeLiveDrag,
     logicalToPhysical: logicalToPhysical,
     DEFAULT_THRESHOLD: DEFAULT_THRESHOLD,
+    insetRect: insetRect,
     // emergent welding geometry (replaces the Rust dock graph)
     rectsTouch: rectsTouch,
     weldComponents: weldComponents,
     weldClusterOf: weldClusterOf,
     weldOutlineSides: weldOutlineSides,
     weldCorners: weldCorners,
+    weldStyle: weldStyle,
   }
 })(typeof globalThis !== "undefined" ? globalThis : this)

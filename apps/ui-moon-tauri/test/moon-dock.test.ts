@@ -86,16 +86,20 @@ describe('moon-dock wire — chat anchor stamp', () => {
 
 describe('moon-dock — emergent weld visuals', () => {
   it('the chat anchor uses the accent bottom edge piece (bottom free, welded right)', async () => {
-    // panel-chat at (0,0,200x300); widget-a flush on its right → chat's bottom
-    // stays a free perimeter side, so it casts the anchor bottom edge.
-    wireWith('panel-chat', { 'panel-chat': [0, 0, 200, 300], 'widget-a': [200, 0, 200, 300] })
+    // panel-chat at (0,0,200x300); widget-a CARD-flush on its right (frames
+    // overlap by the 44px inset sum: x=200-44=156) → chat's bottom stays a free
+    // perimeter side, so it casts the anchor bottom edge.
+    wireWith('panel-chat', { 'panel-chat': [0, 0, 200, 300], 'widget-a': [156, 0, 200, 300] })
     await vi.waitFor(() => expect(shell().style.boxShadow).toContain('var(--dk-edge-b-anchor)'))
     expect(shell().getAttribute('data-weld')).toBe('r')
   })
 
   it('a non-anchor window squares the welded corners and marks the welded edge', async () => {
-    // widget-a at (0,300,200x300); widget-b flush ABOVE → top is welded.
-    wireWith('widget-a', { 'widget-a': [0, 300, 200, 300], 'widget-b': [0, 0, 200, 300] })
+    // widget-a at (0,300,200x300); widget-b CARD-flush ABOVE → top welded.
+    // Vertical face gap = card-inset(22) + card-inset-top(4) = 26, so widget-b
+    // sits at y = 300 - (300 - 26)... i.e. its card-bottom (y+300-22) meets
+    // widget-a's card-top (300+4=304): y=26.
+    wireWith('widget-a', { 'widget-a': [0, 300, 200, 300], 'widget-b': [0, 26, 200, 300] })
     await vi.waitFor(() => expect(shell().getAttribute('data-weld')).toBe('t'))
     expect(shell().style.boxShadow).toContain('var(--dk-edge-b)')
     expect(shell().style.boxShadow).not.toContain('anchor')
@@ -113,10 +117,11 @@ describe('moon-dock — emergent weld visuals', () => {
   })
 
   it('welds CORNERS only — never mutates the card margin/size (no reshape on dock)', async () => {
-    // panel-settings docked flush-right of chat → settings' LEFT is welded.
+    // panel-settings docked CARD-flush right of chat (frames overlap 44px:
+    // x=200-44=156) → settings' LEFT is welded.
     wireWith('panel-settings', {
       'panel-chat': [0, 0, 200, 300],
-      'panel-settings': [200, 0, 200, 300],
+      'panel-settings': [156, 0, 200, 300],
     })
     await vi.waitFor(() => expect(shell().getAttribute('data-weld')).toBe('l'))
     // The welded (left) corners square; the free (right) corners stay rounded.
@@ -135,7 +140,7 @@ describe('moon-dock — emergent weld visuals', () => {
     document.body.innerHTML = DOCK_DOM
     const wins: Record<string, ReturnType<typeof mkWin>> = {
       'panel-chat': mkWin('panel-chat', [0, 0, 200, 300]),
-      'panel-new': mkWin('panel-new', [200, 0, 200, 300], { visible: false }),
+      'panel-new': mkWin('panel-new', [156, 0, 200, 300], { visible: false }), // card-flush right
     }
     const self = wins['panel-new']
     ;(window as any).__TAURI__ = {

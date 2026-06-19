@@ -27,10 +27,12 @@ interface Drag {
 interface Candidate { label: string; rect: Rect }
 interface Target { label: string; x: number; y: number }
 
+interface Insets { l: number; r: number; t: number; b: number }
 let computeLiveDrag: (
   drag: Drag,
   candidates: Candidate[],
   threshold?: number,
+  insets?: Insets,
 ) => { targets: Target[]; snapped: boolean; anchor: string | null; edge: string | null }
 
 interface Monitor { x: number; y: number; w: number; h: number; sf: number }
@@ -150,6 +152,41 @@ describe("computeLiveDrag — conforms to the Luna Dock design's onMove", () => 
     ])
     expect(got.anchor).toBe("near")
     expect(got.targets[0]).toEqual({ label: "mod", x: 200, y: 500 })
+  })
+})
+
+// ── Card-face alignment — the flush-docking fix ────────────────────────────
+// With insets, the snap aligns the visible CARD faces (frame inset by
+// --card-inset / --card-inset-top), not the larger OS frames. Two cards meet
+// flush ⇒ their OS frames OVERLAP by the inset sum. This is what makes docked
+// windows actually touch instead of leaving a 44px transparent gap.
+describe("computeLiveDrag — card-face alignment (insets)", () => {
+  const insets: Insets = { l: 22, r: 22, t: 4, b: 22 }
+  const anchor: Rect = { x: 500, y: 300, w: 360, h: 600 } // card-right = 500+360-22 = 838
+
+  it("snaps the card face flush (frames overlap by the inset sum), not the frame", () => {
+    // lead frame (810,296) → card (832,300); anchor card-right-top is (838,304),
+    // 7px away → snaps. Card target (838,304) → frame target (816,300).
+    const drag: Drag = {
+      ox: 810, oy: 296, ow: 360, oh: 400, dx: 0, dy: 0,
+      members: [{ label: "mod", ox: 810, oy: 296 }],
+    }
+    const got = computeLiveDrag(drag, [{ label: "anchor", rect: anchor }], undefined, insets)
+    expect(got.snapped).toBe(true)
+    expect(got.edge).toBe("r")
+    expect(got.targets[0]).toEqual({ label: "mod", x: 816, y: 300 })
+    // The dragged window's card-left now equals the anchor's card-right:
+    expect(816 + insets.l).toBe(anchor.x + anchor.w - insets.r) // 838 === 838
+  })
+
+  it("without insets the SAME drag stays frame-space and is out of magnet range", () => {
+    const drag: Drag = {
+      ox: 810, oy: 296, ow: 360, oh: 400, dx: 0, dy: 0,
+      members: [{ label: "mod", ox: 810, oy: 296 }],
+    }
+    const got = computeLiveDrag(drag, [{ label: "anchor", rect: anchor }]) // no insets
+    expect(got.snapped).toBe(false) // frame right edge (860) is 50px away
+    expect(got.targets[0]).toEqual({ label: "mod", x: 810, y: 296 })
   })
 })
 

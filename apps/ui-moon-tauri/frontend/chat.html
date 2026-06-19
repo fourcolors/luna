@@ -598,20 +598,10 @@
       gap: 12px;
     }
 
-    /* WebKit paints a UA focus ring on overflow:auto containers when they take
-       click/scroll focus — on .chat-messages it traces the card interior and
-       reads as a spurious extra border that blinks in on focus (the reported
-       "third border on focus"). These are passive scroll regions, never
-       keyboard-tab targets, so suppress the ring; real controls keep their
-       :focus-visible outlines. */
-    .chat-messages:focus,
-    .chat-messages:focus-visible,
-    .artifacts-panel-body:focus,
-    .artifacts-panel-body:focus-visible,
-    .artifacts-preview-body:focus,
-    .artifacts-preview-body:focus-visible,
-    .workflows-panel-body:focus,
-    .workflows-panel-body:focus-visible { outline: none; }
+    /* (Mouse/scroll focus-ring suppression now lives in vendor/moon-theme.css:
+       the global `:focus:not(:focus-visible)` rule kills the UA ring on these
+       overflow:auto containers everywhere, so the old per-class allow-list here
+       — .chat-messages / .artifacts-* / .workflows-* — is no longer needed.) */
 
     /* Every message / timeline is a flex item in this column. Default
        flex-shrink is 1, so when the combined content is taller than the panel,
