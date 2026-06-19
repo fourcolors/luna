@@ -277,6 +277,72 @@
     }
   }
 
+  // dockOnOpenPosition — PURE snap-on-open placement (the JS owner of what Rust
+  // used to compute via dock_rects_touch/dock_components/group_bbox_of +
+  // panel_spawn_pos). Where should a freshly-opened panel dock, CARD-flush
+  // against the preferred/nearest existing cluster?
+  //   self     = the new window's FRAME rect {x,y,w,h} (x,y only used for the
+  //              nearest-anchor tie-break; w,h are its size)
+  //   members  = OTHER visible dock windows [{label, rect}] (FRAME rects; hub +
+  //              the new window excluded by the caller)
+  //   insets   = card insets {l,r,t,b}
+  //   prefer   = a member label to prefer joining (e.g. 'panel-chat'); ignored
+  //              if absent from members
+  //   monitorRight = logical-px right edge for the overflow → left fallback
+  //                  (omit/Infinity = never overflow)
+  // Runs in CARD-FACE space so it clusters by what the user SEES (face-flush =
+  // frame-overlap) and lands the new card flush against the cluster's card edge.
+  // Returns { x, y, anchor, edge } in FRAME coords, or null when nothing dockable.
+  function dockOnOpenPosition(self, members, insets, prefer, monitorRight) {
+    var ms = members || []
+    if (!ms.length) return null
+    var ins = insets || ZERO_INSETS
+    // anchor: the preferred member if present, else nearest centre to self
+    // (deterministic label tie-break — mirrors Rust pick_nearest_label).
+    var anchor = null
+    if (prefer) {
+      for (var i = 0; i < ms.length; i++) if (ms[i].label === prefer) { anchor = prefer; break }
+    }
+    if (!anchor) {
+      var fcx = self.x + self.w / 2, fcy = self.y + self.h / 2
+      var best = null
+      for (var j = 0; j < ms.length; j++) {
+        var r = ms[j].rect, cx = r.x + r.w / 2, cy = r.y + r.h / 2
+        var d = (cx - fcx) * (cx - fcx) + (cy - fcy) * (cy - fcy)
+        if (best === null || d < best.d || (d === best.d && ms[j].label < best.label)) {
+          best = { d: d, label: ms[j].label }
+        }
+      }
+      anchor = best && best.label
+    }
+    if (!anchor) return null
+    // Cluster membership + bbox in CARD-face space (frame-flush would miss the
+    // now-overlapping frames of face-aligned neighbours).
+    var cards = ms.map(function (m) { return { label: m.label, rect: insetRect(m.rect, ins) } })
+    var cluster = weldClusterOf(anchor, cards)
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+    for (var k = 0; k < cards.length; k++) {
+      if (cluster.indexOf(cards[k].label) === -1) continue
+      var c = cards[k].rect
+      if (c.x < x0) x0 = c.x
+      if (c.y < y0) y0 = c.y
+      if (c.x + c.w > x1) x1 = c.x + c.w
+      if (c.y + c.h > y1) y1 = c.y + c.h
+    }
+    if (!isFinite(x0)) return null
+    // Dock the new card flush to the cluster's card edge; top-aligned. Convert
+    // the resulting card top-left back to a FRAME top-left for setPosition.
+    var selfCardW = self.w - ins.l - ins.r
+    var rightFrameX = x1 - ins.l // self card-left = cluster card-right (x1)
+    var frameY = y0 - ins.t      // self card-top  = cluster card-top  (y0)
+    var lim = (monitorRight == null) ? Infinity : monitorRight
+    if (rightFrameX + self.w <= lim) {
+      return { x: Math.round(rightFrameX), y: Math.round(frameY), anchor: anchor, edge: "r" }
+    }
+    var leftFrameX = (x0 - selfCardW) - ins.l // self card-right = cluster card-left (x0)
+    return { x: Math.round(leftFrameX), y: Math.round(frameY), anchor: anchor, edge: "l" }
+  }
+
   // logicalToPhysical — resolve a LOGICAL (CSS-point) top-left to the PHYSICAL
   // pixel position to hand Tauri's setPosition, anchored to whichever monitor
   // contains the point. This is what makes a cross-display drag mixed-DPI safe.
@@ -343,5 +409,6 @@
     weldOutlineSides: weldOutlineSides,
     weldCorners: weldCorners,
     weldStyle: weldStyle,
+    dockOnOpenPosition: dockOnOpenPosition,
   }
 })(typeof globalThis !== "undefined" ? globalThis : this)

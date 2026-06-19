@@ -31,6 +31,13 @@ let S: {
     boxShadow: string
     outlineClass: string
   }
+  dockOnOpenPosition: (
+    self: Rect,
+    members: Member[],
+    insets: { l: number; r: number; t: number; b: number },
+    prefer?: string | null,
+    monitorRight?: number,
+  ) => { x: number; y: number; anchor: string; edge: string } | null
 }
 
 // fixtures here are [label, [x,y,w,h]] (Rust's shape); adapt to { label, rect }.
@@ -131,5 +138,46 @@ describe("weldStyle — pure geometry → card visual style", () => {
     expect(S.weldStyle(true, ["b"], [], true).boxShadow).toContain("var(--dk-edge-b-anchor)")
     expect(S.weldStyle(true, ["b"], [], false).boxShadow).toContain("var(--dk-edge-b)")
     expect(S.weldStyle(true, ["b"], [], false).boxShadow).not.toContain("anchor")
+  })
+})
+
+describe("dockOnOpenPosition — JS snap-on-open (replaces Rust group_bbox_of + panel_spawn_pos)", () => {
+  const insets = { l: 22, r: 22, t: 4, b: 22 }
+  const self = (w: number, h: number): Rect => ({ x: 0, y: 0, w, h })
+
+  it("returns null when nothing dockable is open", () => {
+    expect(S.dockOnOpenPosition(self(360, 440), [], insets, null, 1600)).toBeNull()
+  })
+
+  it("single anchor: card-flush right — MATCHES the Rust panel_spawn_pos fixture (416,50,r)", () => {
+    // Cross-check: the Rust test asserts panel_spawn_pos((100,50,360,440),360,1600)=(416,50,"r").
+    const got = S.dockOnOpenPosition(self(360, 440), ms(["a", [100, 50, 360, 440]]), insets, "a", 1600)
+    expect(got).toEqual({ x: 416, y: 50, anchor: "a", edge: "r" })
+  })
+
+  it("single anchor: overflow falls back to the LEFT — MATCHES Rust (984,50,l)", () => {
+    const got = S.dockOnOpenPosition(self(360, 440), ms(["a", [1300, 50, 360, 440]]), insets, "a", 1600)
+    expect(got).toEqual({ x: 984, y: 50, anchor: "a", edge: "l" })
+  })
+
+  it("docks past the WHOLE cluster, not just the anchor (card-flush cluster bbox)", () => {
+    // A at (100,50); B card-flush to A's right (B.x = 100+360-44 = 416). The new
+    // panel must land right of B (the cluster's right card edge), not over B.
+    const members = ms(["a", [100, 50, 360, 440]], ["b", [416, 50, 360, 440]])
+    const got = S.dockOnOpenPosition(self(360, 440), members, insets, "a", 9999)
+    // cluster card bbox right = (416+22)+(360-44) = 754 → frame x = 754-22 = 732.
+    expect(got).toEqual({ x: 732, y: 50, anchor: "a", edge: "r" })
+  })
+
+  it("prefers the named anchor (e.g. panel-chat) over the nearest", () => {
+    const members = ms(["panel-chat", [100, 50, 360, 440]], ["widget-x", [40, 600, 360, 440]])
+    const got = S.dockOnOpenPosition(self(360, 440), members, insets, "panel-chat", 9999)
+    expect(got!.anchor).toBe("panel-chat")
+  })
+
+  it("without a prefer, picks the nearest by centre with a stable label tie-break", () => {
+    const near: Member[] = ms(["far", [2000, 2000, 360, 440]], ["near", [60, 60, 360, 440]])
+    const got = S.dockOnOpenPosition({ x: 50, y: 50, w: 360, h: 440 }, near, insets, null, 9999)
+    expect(got!.anchor).toBe("near")
   })
 })

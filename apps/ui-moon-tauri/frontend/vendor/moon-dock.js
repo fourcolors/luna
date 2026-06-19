@@ -185,6 +185,85 @@
       return out;
     }
 
+    // ── Snap-on-open (JS owns it; replaces the old Rust dock graph) ──────────
+    // OTHER dock windows that are VISIBLE + not minimized, as [{label, rect}]
+    // (FRAME rects). A fresh panel docks onto this set's nearest/preferred
+    // cluster. Mirrors the old Rust nearest_dock_anchor filter (never snap to a
+    // minimized/hidden window — its coords are stale).
+    async function visibleDockSiblings() {
+      var TW = window.__TAURI__ && window.__TAURI__.window;
+      var out = [];
+      try {
+        var labels = await window.__TAURI__.core.invoke('list_widget_windows');
+        if (!Array.isArray(labels)) return out;
+        for (var i = 0; i < labels.length; i++) {
+          if (labels[i] === label) continue;
+          try {
+            var w = await TW.Window.getByLabel(labels[i]);
+            if (!w) continue;
+            var vis = true, min = false;
+            try { vis = await w.isVisible(); } catch (_) { /* default visible */ }
+            try { min = await w.isMinimized(); } catch (_) { /* default not */ }
+            if (!vis || min) continue;
+            out.push({ label: labels[i], rect: await logicalRect(w) });
+          } catch (_) { /* sibling vanished */ }
+        }
+      } catch (_) { /* listing unavailable */ }
+      return out;
+    }
+
+    // Logical-px right edge of the monitor under `pt` (a logical point), for the
+    // snap-on-open overflow → left fallback. Infinity when the layout is unknown
+    // (single monitor / non-Tauri) so we never spuriously flip to the left.
+    async function monitorRightFor(pt) {
+      var TW = window.__TAURI__ && window.__TAURI__.window;
+      try {
+        if (TW && typeof TW.availableMonitors === 'function') {
+          var mons = await TW.availableMonitors();
+          if (Array.isArray(mons) && mons.length) {
+            for (var i = 0; i < mons.length; i++) {
+              var m = mons[i], sf = m.scaleFactor || 1;
+              var lx = m.position.x / sf, lw = m.size.width / sf, ly = m.position.y / sf, lh = m.size.height / sf;
+              if (pt.x >= lx && pt.x < lx + lw && pt.y >= ly && pt.y < ly + lh) return lx + lw;
+            }
+            var f = mons[0], fsf = f.scaleFactor || 1; // off every display → first monitor
+            return f.position.x / fsf + f.size.width / fsf;
+          }
+        }
+      } catch (_) { /* unavailable */ }
+      return Infinity;
+    }
+
+    // The preferred dock anchor passed by Rust on the URL (the "stacks" opener);
+    // absent for gear/orb opens, which fall back to the chat anchor's cluster.
+    function dockOpenerParam() {
+      try {
+        var v = new URLSearchParams(g.location.search).get('__dockOpener');
+        return v || null;
+      } catch (_) { return null; }
+    }
+
+    // Compute this freshly-opened panel's flush dock position in JS and ask Rust
+    // to position + reveal it (dock_self). Rust builds the window hidden; this is
+    // what places it — so it never flashes at the OS-default spot.
+    async function dockSelfOnOpen() {
+      var invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+      if (!invoke) return;
+      try {
+        var ins = readInsets();
+        var self = await logicalRect(W);
+        var members = await visibleDockSiblings();
+        var prefer = dockOpenerParam() || 'panel-chat';
+        var center = { x: self.x + self.w / 2, y: self.y + self.h / 2 };
+        var monRight = await monitorRightFor(center);
+        var pos = window.LunaDeckSnap.dockOnOpenPosition(self, members, ins, prefer, monRight);
+        if (pos) await invoke('dock_self', { x: pos.x, y: pos.y, anchor: pos.anchor, edge: pos.edge });
+        else await invoke('dock_self', {}); // no cluster (first panel) → just reveal in place
+      } catch (_) {
+        try { await invoke('dock_self', {}); } catch (_) { /* last-ditch: Rust fallback reveals */ }
+      }
+    }
+
     // Fresh enumeration → repaint my weld (corner squaring only). Cheap geometry,
     // one IPC round of window reads; runs on a geometry-changed tick / resize /
     // boot, NOT per pointermove. Since the weld no longer mutates card shape,
@@ -229,20 +308,28 @@
       return out;
     }
 
-    // ── LIVE magnetic drag ─────────────────────────────────────────────────
+    // ── LIVE magnetic drag — a small explicit state machine ────────────────
+    // idle → arming (pointerdown captured a handle; the start snapshot is in
+    // flight) → dragging (snapshot landed; pointermove flows) → idle (pointerup
+    // / cancel settles). This replaces three loose vars (drag/activeHandle/
+    // activePid): the once-implicit "arming" state (handle captured but no
+    // snapshot yet) is now explicit, so the released-before-armed race is a
+    // normal transition (`sm.handle !== handle`) rather than a null-check.
     function dockShell() { return document.querySelector('.widget-shell'); }
-    var drag = null;          // active drag (after the start snapshot)
-    var activeHandle = null;  // the title bar we captured (for cleanup)
-    var activePid = null;
+    // sm.ctx = the drag snapshot (geometry inputs + live snap results), null
+    // until 'dragging'. sm.handle/pid = the captured title bar (cleanup).
+    var sm = { phase: 'idle', handle: null, pid: null, ctx: null };
 
-    function detachDrag() {
-      if (activeHandle) {
-        try { activeHandle.releasePointerCapture(activePid); } catch (_) {}
-        activeHandle.removeEventListener('pointermove', onDragMove);
-        activeHandle.removeEventListener('pointerup', onDragUp);
-        activeHandle.removeEventListener('pointercancel', onDragUp);
+    // Any phase → idle: release capture, detach listeners, drop the affordance
+    // classes. Safe to call from 'arming' (no ctx yet) or 'dragging'.
+    function endDrag() {
+      if (sm.handle) {
+        try { sm.handle.releasePointerCapture(sm.pid); } catch (_) {}
+        sm.handle.removeEventListener('pointermove', onDragMove);
+        sm.handle.removeEventListener('pointerup', onDragUp);
+        sm.handle.removeEventListener('pointercancel', onDragUp);
       }
-      activeHandle = null; activePid = null;
+      sm.phase = 'idle'; sm.handle = null; sm.pid = null; sm.ctx = null;
       var sh = dockShell();
       if (sh) {
         sh.classList.remove('dragging');
@@ -251,7 +338,8 @@
     }
 
     function onDragMove(e) {
-      if (!drag) return;
+      if (sm.phase !== 'dragging') return;
+      var drag = sm.ctx;
       var S = window.LunaDeckSnap;
       var dx = e.screenX - drag.sx, dy = e.screenY - drag.sy;
       var res = S.computeLiveDrag({
@@ -294,8 +382,8 @@
     }
 
     function onDragUp() {
-      var d = drag; drag = null;
-      detachDrag();
+      var d = sm.ctx;  // null if released while still 'arming' (snapshot not landed)
+      endDrag();       // → idle (releases capture, detaches listeners, clears ctx)
       if (!d) return; // released before the start snapshot armed — nothing to commit
       // A module dragged clear of its old cluster ignores it briefly so it does
       // not instantly re-link off a surviving flush seam.
@@ -316,20 +404,22 @@
     }
 
     document.addEventListener('pointerdown', function (e) {
-      if (activeHandle) return;                   // a drag is already in progress
+      if (sm.phase !== 'idle') return;            // a drag is already arming/active
       if (e.button !== 0) return;
       if (!e.target || !e.target.closest) return;
       if (e.target.closest('button')) return;     // buttons are clicks, not grabs
       var handle = e.target.closest('.title-bar, .chat-header');
       if (!handle) return;
       e.preventDefault();
-      activeHandle = handle; activePid = e.pointerId;
+      // idle → arming: capture the handle now; the snapshot below promotes us to
+      // 'dragging' (or a release mid-snapshot leaves us to be reset by onDragUp).
+      sm.phase = 'arming'; sm.handle = handle; sm.pid = e.pointerId;
       try { handle.setPointerCapture(e.pointerId); } catch (_) {}
       handle.addEventListener('pointermove', onDragMove);
       handle.addEventListener('pointerup', onDragUp);
       handle.addEventListener('pointercancel', onDragUp);
       var sh0 = dockShell(); if (sh0) sh0.classList.add('dragging');
-      var sx = e.screenX, sy = e.screenY, pid = e.pointerId;
+      var sx = e.screenX, sy = e.screenY;
       (async function () {
         try {
           var TW = window.__TAURI__ && window.__TAURI__.window;
@@ -368,9 +458,11 @@
               }
             }
           } catch (_) { /* unavailable → LogicalPosition fallback */ }
-          if (activeHandle !== handle) return;    // released/replaced before we armed
-          drag = {
-            pointerId: pid, handle: handle, sx: sx, sy: sy,
+          if (sm.phase !== 'arming' || sm.handle !== handle) return; // released/replaced mid-snapshot
+          // arming → dragging: sm holds handle/pid; ctx holds the snapshot
+          // (geometry inputs + the live snap results filled in by onDragMove).
+          sm.ctx = {
+            sx: sx, sy: sy,
             ox: self.x, oy: self.y, ow: self.w, oh: self.h,
             members: members, cands: cands, monitors: monitors,
             // card insets captured once so the live snap aligns card FACES, not
@@ -379,7 +471,8 @@
             isAnchor: isAnchor, wasGrouped: wasGrouped, startCluster: startCluster,
             snapped: false, anchor: null, edge: null
           };
-        } catch (_) { /* snapshot failed — onDragUp/detachDrag clean up */ }
+          sm.phase = 'dragging';
+        } catch (_) { /* snapshot failed — onDragUp/endDrag clean up */ }
       })();
     }, true);
 
@@ -422,38 +515,28 @@
       sh.addEventListener('animationend', function () { sh.classList.remove('entering'); }, { once: true });
     }
 
-    // Snap-on-open builds the webview hidden at the OS-default spot, then Rust
-    // positions it flush and show()s. Boot weld MUST wait until visible +
-    // positioned or we'd paint ungrouped at the default spot and never revisit
-    // (the reference place() runs before paint; we defer to match that).
+    // Snap-on-open builds the webview HIDDEN at the OS-default spot. This window
+    // now OWNS its placement: it computes the flush dock position in JS
+    // (dockSelfOnOpen → LunaDeckSnap.dockOnOpenPosition) and asks Rust to
+    // position + reveal it (dock_self). A boot-restored window is already
+    // visible — it skips placement and just re-welds. So hidden-at-boot ===
+    // fresh snap-on-open (the same invariant the old poll relied on).
     async function bootSettle() {
-      // Track whether we had to wait for visibility. A freshly snap-on-opened
-      // window starts hidden (isVisible()===false) and becomes visible after
-      // Rust positions+shows it — so waited===true means genuine fresh snap.
-      // A boot-restored window is already visible on the first poll — waited
-      // stays false and we skip the pop-in animation. If isVisible() throws we
-      // treat it as already-visible (safe default: no animation).
-      var waited = false;
+      var freshSnap = false;
+      try { freshSnap = (await W.isVisible()) === false; } catch (_) { /* default: already visible */ }
+      if (freshSnap) {
+        await dockSelfOnOpen(); // positions + reveals this window flush to its cluster
+      }
       try {
-        var tries = 0;
-        while (tries < 120) {
-          var vis = true;
-          try { vis = await W.isVisible(); } catch (_) { /* default visible */ }
-          if (vis) break;
-          waited = true; // was hidden — this is a fresh snap-on-open
-          tries++;
-          await new Promise(function (r) { setTimeout(r, 16); });
-        }
-        // Two rAFs: let set_position from the main-thread snap land first.
+        // Two rAFs: let the set_position land before we read rects for the weld.
         await new Promise(function (r) {
           requestAnimationFrame(function () { requestAnimationFrame(r); });
         });
       } catch (_) { /* best-effort */ }
       await refreshWeld();
       broadcastGeometry();
-      // Only play the dock-pop entrance animation for windows that were hidden
-      // at startup (fresh snap-on-open). Boot-restored windows skip it.
-      if (waited) { playEntering(); }
+      // Pop-in only for a genuine fresh snap-on-open; boot-restored windows skip it.
+      if (freshSnap) { playEntering(); }
     }
     bootSettle();
   }

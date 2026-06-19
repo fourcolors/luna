@@ -47,6 +47,7 @@
     "allow-list-widget-windows",
     "allow-collapse-to-moon",
     "allow-expand-from-moon",
-    "allow-set-native-controls-visible"
+    "allow-set-native-controls-visible",
+    "allow-dock-self"
   ]
 }
