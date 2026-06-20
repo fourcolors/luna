@@ -1817,11 +1817,22 @@ fn apply_native_controls_visible(_window: &tauri::WebviewWindow, _visible: bool)
 
 /// Align the native traffic-light cluster with the CSS `#title-bar`.
 ///
-/// `x` / `y` are logical px from the webview top-left (same space as
-/// `getBoundingClientRect`): `x` is the close-button left edge, `y` is the
-/// close-button top edge. Tauri's builder `traffic_light_position` only nudges
-/// horizontally — it cannot push the cluster down into the 22px card inset, so
-/// we reposition the AppKit buttons directly on every sync.
+/// `x` / `y_top` are logical px from the webview top-left (same space as
+/// `getBoundingClientRect`): `x` is the close-button left edge, `y_top` is the
+/// close-button top edge. The webview is full-bleed (TitleBarStyle::Overlay), so
+/// these are equivalently the inset from the window's own top-left.
+///
+/// We mirror wry's own `inset_traffic_lights`: GROW the NSTitlebarContainerView
+/// (the standard buttons' grandparent) so its bounds enclose the lowered buttons
+/// BEFORE offsetting them. This is load-bearing for CLICKABILITY, not just looks.
+/// AppKit clips a view's `hitTest:` to its superview's bounds, so buttons shoved
+/// below the default (~28pt) container's bounds still PAINT but stop receiving
+/// mouse events — the pointer falls through to the full-bleed WKWebView beneath,
+/// so no native hover glyph is drawn and clicks do nothing. That was the "lights
+/// visible but dead" bug: the previous code moved the bare buttons via
+/// `setFrameOrigin` but never resized their container. The resize MUST re-run on
+/// every sync (AppKit re-pins + shrinks the container on reveal/resize/zoom/
+/// focus), which the JS hover/resize/weld syncs already guarantee.
 #[cfg(target_os = "macos")]
 fn apply_traffic_light_layout(
     window: &tauri::WebviewWindow,
@@ -1833,14 +1844,11 @@ fn apply_traffic_light_layout(
     }
     with_appkit_main_thread(window.clone(), move |win| {
         use objc2_app_kit::{NSView, NSWindow, NSWindowButton};
-        use objc2_foundation::NSPoint;
 
         let ns_win_ptr = win.ns_window().map_err(|e| e.to_string())?;
-        let ns_view_ptr = win.ns_view().map_err(|e| e.to_string())?;
 
         unsafe {
             let ns_win: &NSWindow = &*ns_win_ptr.cast();
-            let web_root: &NSView = &*ns_view_ptr.cast();
             let Some(close) = ns_win.standardWindowButton(NSWindowButton::CloseButton) else {
                 return Ok(());
             };
@@ -1849,27 +1857,36 @@ fn apply_traffic_light_layout(
             };
             let zoom = ns_win.standardWindowButton(NSWindowButton::ZoomButton);
 
-            let close_rect = close.frame();
-            let mini_rect = mini.frame();
-            let space = mini_rect.origin.x - close_rect.origin.x;
-            let btn_h = close_rect.size.height;
-
-            let Some(btn_super) = close.superview() else {
+            // The standard buttons live inside the (short) NSTitlebarContainerView,
+            // reached two levels up from the close button — exactly as wry does.
+            let Some(group) = close.superview() else {
                 return Ok(());
             };
-            // Web top-left (getBoundingClientRect) → AppKit coords on the WKWebView root.
-            let web_h = web_root.bounds().size.height;
-            let target_web = NSPoint::new(x, web_h - y_top - btn_h);
-            let origin_base = btn_super.convertPoint_fromView(target_web, Some(web_root));
+            let Some(container) = group.superview() else {
+                return Ok(());
+            };
 
-            let mut buttons = vec![&*close, &*mini];
-            if let Some(ref z) = zoom {
-                buttons.push(&*z);
+            let close_rect = NSView::frame(&close);
+            let space = NSView::frame(&mini).origin.x - close_rect.origin.x;
+
+            // Grow the container so its bounds enclose the lowered buttons (else
+            // they paint but stop hit-testing — see the doc comment). Pin its top
+            // to the window top: height = close height + y_top, origin.y flipped
+            // into AppKit's bottom-left space.
+            let title_bar_h = close_rect.size.height + y_top;
+            let mut container_rect = NSView::frame(&container);
+            container_rect.size.height = title_bar_h;
+            container_rect.origin.y = ns_win.frame().size.height - title_bar_h;
+            container.setFrame(container_rect);
+
+            let mut buttons = vec![close, mini];
+            if let Some(zoom) = zoom {
+                buttons.push(zoom);
             }
-            for (i, btn) in buttons.iter().enumerate() {
-                let mut origin = origin_base;
-                origin.x += f64::from(i as u32) * space;
-                btn.setFrameOrigin(origin);
+            for (i, button) in buttons.into_iter().enumerate() {
+                let mut rect = NSView::frame(&button);
+                rect.origin.x = x + (i as f64) * space;
+                button.setFrameOrigin(rect.origin);
             }
         }
         Ok(())

@@ -118,6 +118,11 @@
    * counts as "reaching for a light".
    */
   function overLights(cx, cy) {
+    // Only meaningful when the native hover-lights are the active model; on
+    // classic the corner is faux DOM buttons (no native views to protect), so
+    // report false there — this keeps the moon-dock drag guard from carving a
+    // dead zone out of the classic title bar.
+    if (!usesNativeHover()) return false;
     var bar = g.document && g.document.getElementById('title-bar');
     if (!bar) return false;
     var br = bar.getBoundingClientRect();
@@ -228,5 +233,5 @@
     boot();
   }
 
-  g.LunaNativeTitlebar = { sync: sync, wire: wire, syncPosition: syncPosition, measurePosition: measurePosition };
+  g.LunaNativeTitlebar = { sync: sync, wire: wire, syncPosition: syncPosition, measurePosition: measurePosition, overLights: overLights };
 })(typeof window !== 'undefined' ? window : globalThis);
