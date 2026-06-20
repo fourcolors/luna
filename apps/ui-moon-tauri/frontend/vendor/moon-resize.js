@@ -1,9 +1,16 @@
 /**
  * moon-resize.js — custom resize grips for card windows (chat / panel / widget).
  *
- * macOS borderless/transparent cards can't rely on startResizeDragging, so
- * pointer-driven setSize/setPosition drives resize in all 8 directions. The
- * bottom-right grip shows the L-bracket indicator (board.css pattern); edges
+ * Native resize-drag (Tauri startResizeDragging → tao drag_resize_window) is
+ * UNIMPLEMENTED on macOS — the tao impl returns NotSupported and does nothing
+ * (Tauri swallows the error, so the call looks like it succeeds). So these
+ * transparent, borderless cards drive resize themselves: a pointermove loop reads
+ * the cursor and setPosition/setSize's the window. That loop is COALESCED to one
+ * update per animation frame (flushResize) so the resized edge tracks the cursor
+ * instead of trailing it — the same fix the live drag uses, since the lag came
+ * from firing two IPC calls on EVERY pointer-move.
+ *
+ * The bottom-right grip shows the L-bracket indicator (board.css pattern); edges
  * and other corners are thin hit strips revealed on card hover.
  *
  * Load after moon-dock.js on every widget-page window. No-op outside Tauri.
@@ -39,10 +46,6 @@
   }
 
   var active = null;
-  // Monotonically-increasing sequence number for the current gesture.
-  // Incremented on every pointerdown; each onMove captures its own token so
-  // stale in-flight IPC results can't clobber a newer move.
-  var gestureSeq = 0;
 
   function cursorFor(dir) {
     if (dir === 'n' || dir === 's') return 'ns-resize';
@@ -103,7 +106,6 @@
     var snap;
     try { snap = await readLogical(win); } catch (_) { return; }
 
-    gestureSeq++;
     active = {
       dir: dir,
       win: win,
@@ -117,10 +119,11 @@
       sf: snap.sf,
       handle: hit,
       pid: e.pointerId,
-      // Sequence token for this gesture (Finding A); each onMove bakes in its
-      // own moveSeq so the last scheduled move always wins.
-      seq: gestureSeq,
-      moveSeq: 0,
+      // rAF coalescing: pointermove only stashes the latest screen coords + arms
+      // one frame; flushResize does the actual setPosition/setSize once per frame.
+      lastX: e.screenX,
+      lastY: e.screenY,
+      rafPending: false,
     };
     try { hit.setPointerCapture(e.pointerId); } catch (_) { /* jsdom */ }
     hit.addEventListener('pointermove', onMove);
@@ -129,26 +132,38 @@
     g.document.documentElement.style.cursor = cursorFor(dir);
   }
 
-  async function onMove(e) {
+  // pointermove is hot (≤120 Hz). Do NO work here beyond stashing the latest
+  // cursor position and arming one rAF — the actual setPosition/setSize runs in
+  // flushResize, at most once per painted frame. The old loop fired BOTH IPC calls
+  // on EVERY pointer-move, flooding the channel so the edge trailed the cursor.
+  function onMove(e) {
     if (!active) return;
-    // Finding A: stamp a per-move sequence number so concurrent in-flight calls
-    // can detect they've been superseded.  The last move always wins; earlier
-    // ones bail after their awaits complete if a newer move has run ahead.
-    var myGestureSeq = active.seq;
-    var myMoveSeq = ++active.moveSeq;
-    var dx = (e.screenX - active.startX) / active.sf;
-    var dy = (e.screenY - active.startY) / active.sf;
+    active.lastX = e.screenX;
+    active.lastY = e.screenY;
+    if (active.rafPending) return;
+    active.rafPending = true;
+    var raf = g.requestAnimationFrame
+      ? function (cb) { g.requestAnimationFrame(cb); }
+      : function (cb) { setTimeout(cb, 16); };
+    raf(flushResize);
+  }
+
+  // The per-frame resize step: compute the new rect from the latest cursor and
+  // push it in ONE pair of fire-and-forget calls (awaiting would re-serialize the
+  // channel we just unclogged). setPosition before setSize so a w/n drag's moved
+  // origin and new size land together; e/s/se grips only change size.
+  function flushResize() {
+    if (!active) return;
+    active.rafPending = false;
+    var dx = (active.lastX - active.startX) / active.sf;
+    var dy = (active.lastY - active.startY) / active.sf;
     var next = applyDir(active, dx, dy);
     try {
       var LP = active.TW.LogicalPosition;
       var LS = active.TW.LogicalSize;
       var moved = next.x !== active.x || next.y !== active.y;
-      if (moved) await active.win.setPosition(new LP(next.x, next.y));
-      // After any await, check if this move is still the latest for this gesture.
-      // If a newer pointermove has fired (higher moveSeq) or the gesture ended
-      // (active is null / different seq), skip the setSize to avoid stale geometry.
-      if (!active || active.seq !== myGestureSeq || active.moveSeq !== myMoveSeq) return;
-      await active.win.setSize(new LS(next.w, next.h));
+      if (moved && LP) active.win.setPosition(new LP(next.x, next.y));
+      if (LS) active.win.setSize(new LS(next.w, next.h));
     } catch (_) { /* best-effort */ }
   }
 

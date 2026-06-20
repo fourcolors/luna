@@ -1957,6 +1957,42 @@ fn dock_self(
     Ok(())
 }
 
+/// One window's target in a live-drag batch. `x`/`y` are f64 so the logical
+/// path keeps sub-pixel precision; the physical path rounds to whole device px.
+#[derive(serde::Deserialize)]
+struct DockMove {
+    label: String,
+    x: f64,
+    y: f64,
+}
+
+/// Move a whole welded cluster in ONE call. The live drag (moon-dock.js) used to
+/// fire a separate `set_position` IPC PER member PER pointer-move — N round trips
+/// a frame, which is what made a dragged card trail the cursor. The frontend now
+/// coalesces to one rAF per frame and hands the whole batch here, so a cluster
+/// moves in a single hop. `physical` selects the coordinate space: true =
+/// PhysicalPosition (mixed-DPI safe — the frontend already resolved each target
+/// to its destination monitor's pixels), false = LogicalPosition (single
+/// display). Only dock labels (widget-* / panel-*) are honored — never the hub —
+/// so a compromised page can't shove arbitrary windows around. Best-effort: a
+/// vanished window or a failed move is silently skipped, exactly like the old
+/// per-window path.
+#[tauri::command]
+fn dock_move_cluster(app: tauri::AppHandle, moves: Vec<DockMove>, physical: bool) {
+    for m in moves {
+        if !is_dock_label(&m.label) {
+            continue;
+        }
+        if let Some(w) = app.get_webview_window(&m.label) {
+            if physical {
+                let _ = w.set_position(tauri::PhysicalPosition::new(m.x as i32, m.y as i32));
+            } else {
+                let _ = w.set_position(tauri::LogicalPosition::new(m.x, m.y));
+            }
+        }
+    }
+}
+
 // ── voice pipeline commands (feature "voice") ───────────────────────────────
 //
 // Thin wrappers over luna_moon_ui_lib::voice::VoiceController (managed as
@@ -2274,6 +2310,7 @@ fn main() {
         set_native_controls_visible,
         sync_traffic_light_position,
         dock_self,
+        dock_move_cluster,
         voice_status,
         voice_set_mode,
         voice_ptt_down,
@@ -2313,7 +2350,8 @@ fn main() {
         expand_from_moon,
         set_native_controls_visible,
         sync_traffic_light_position,
-        dock_self
+        dock_self,
+        dock_move_cluster
     ]);
 
     builder

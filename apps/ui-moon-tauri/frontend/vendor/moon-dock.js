@@ -318,10 +318,18 @@
     function dockShell() { return document.querySelector('.widget-shell'); }
     // sm.ctx = the drag snapshot (geometry inputs + live snap results), null
     // until 'dragging'. sm.handle/pid = the captured title bar (cleanup).
-    var sm = { phase: 'idle', handle: null, pid: null, ctx: null };
+    // sm.pendingXY = the latest pointer screen coords awaiting a frame flush;
+    // sm.rafPending = a flush is already scheduled for this frame. Together they
+    // COALESCE the pointer-move stream to ONE position write per animation frame
+    // (see onDragMove/flushDrag): a 120 Hz trackpad otherwise floods the IPC
+    // channel with set_position calls the window server can't drain in time, so
+    // the card processes a backlog of stale coords and visibly trails the cursor.
+    var sm = { phase: 'idle', handle: null, pid: null, ctx: null, pendingXY: null, rafPending: false };
 
     // Any phase → idle: release capture, detach listeners, drop the affordance
-    // classes. Safe to call from 'arming' (no ctx yet) or 'dragging'.
+    // classes, and abandon any frame still queued (the guard in flushDrag makes
+    // a late rAF a no-op once we are back to 'idle'). Safe to call from 'arming'
+    // (no ctx yet) or 'dragging'.
     function endDrag() {
       if (sm.handle) {
         try { sm.handle.releasePointerCapture(sm.pid); } catch (_) {}
@@ -330,6 +338,7 @@
         sm.handle.removeEventListener('pointercancel', onDragUp);
       }
       sm.phase = 'idle'; sm.handle = null; sm.pid = null; sm.ctx = null;
+      sm.pendingXY = null; sm.rafPending = false;
       var sh = dockShell();
       if (sh) {
         sh.classList.remove('dragging');
@@ -337,46 +346,89 @@
       }
     }
 
+    // pointermove is hot (≤120 Hz). Do NO work here beyond stashing the latest
+    // cursor position and arming one rAF — the actual snap math + the (single)
+    // IPC move run in flushDrag, at most once per painted frame.
     function onDragMove(e) {
       if (sm.phase !== 'dragging') return;
+      sm.pendingXY = { sx: e.screenX, sy: e.screenY };
+      if (sm.rafPending) return;
+      sm.rafPending = true;
+      var raf = g.requestAnimationFrame
+        ? function (cb) { g.requestAnimationFrame(cb); }
+        : function (cb) { setTimeout(cb, 16); };
+      raf(flushDrag);
+    }
+
+    // The per-frame drag step: snap the lead, translate the whole group, and
+    // hand the WHOLE cluster to Rust in ONE call (dock_move_cluster) — the old
+    // path fired a separate setPosition IPC per member EVERY pointer-move, so a
+    // 3-window stack cost 3 round trips a frame and the cards trailed the cursor.
+    function flushDrag() {
+      sm.rafPending = false;
+      if (sm.phase !== 'dragging' || !sm.ctx) return; // released before this frame ran
+      var xy = sm.pendingXY;
+      if (!xy) return;
+      sm.pendingXY = null;
       var drag = sm.ctx;
       var S = window.LunaDeckSnap;
-      var dx = e.screenX - drag.sx, dy = e.screenY - drag.sy;
+      if (!S) return; // dep torn down (page closing mid-drag / test teardown) before this frame ran
+      var dx = xy.sx - drag.sx, dy = xy.sy - drag.sy;
       var res = S.computeLiveDrag({
         ox: drag.ox, oy: drag.oy, ow: drag.ow, oh: drag.oh, dx: dx, dy: dy,
         members: drag.members.map(function (m) { return { label: m.label, ox: m.ox, oy: m.oy }; })
       }, drag.cands, undefined, drag.insets);
       drag.snapped = res.snapped; drag.anchor = res.anchor; drag.edge = res.edge;
-      // Position every member. Targets are LOGICAL (CSS-point) top-lefts. When
-      // we captured a monitor layout, resolve each to a PHYSICAL position using
-      // the DESTINATION monitor's DPI and write THAT — a LogicalPosition write
-      // rides the dragged window's live (seam-bistable) scale factor and
+      // Resolve every member's target. Targets are LOGICAL (CSS-point) top-lefts.
+      // When we captured a monitor layout, resolve each to a PHYSICAL position
+      // using the DESTINATION monitor's DPI and send THOSE — a LogicalPosition
+      // write rides the dragged window's live (seam-bistable) scale factor and
       // flickers across a mixed-DPI boundary. No layout (single monitor /
-      // non-Tauri) → the original LogicalPosition path, byte-for-byte.
-      var TW = window.__TAURI__ && window.__TAURI__.window;
-      var PP = TW && TW.PhysicalPosition;
-      var LP = TW && TW.LogicalPosition;
+      // non-Tauri) → the LogicalPosition path, byte-for-byte as before.
       var mons = drag.monitors;
+      var usePhysical = !!(mons && mons.length);
+      var moves = [];
       for (var i = 0; i < res.targets.length; i++) {
         var m = drag.members[i];
-        if (!m || !m.win) continue;
+        if (!m) continue;
         var t = res.targets[i];
-        var phys = (PP && mons && mons.length) ? LunaDeckSnap.logicalToPhysical(t.x, t.y, mons) : null;
-        try {
-          if (phys) m.win.setPosition(new PP(phys.x, phys.y));
-          else if (LP) m.win.setPosition(new LP(t.x, t.y));
-        } catch (_) {}
+        if (usePhysical) {
+          var phys = S.logicalToPhysical(t.x, t.y, mons);
+          moves.push({ label: m.label, x: phys ? phys.x : t.x, y: phys ? phys.y : t.y });
+        } else {
+          moves.push({ label: m.label, x: t.x, y: t.y });
+        }
+      }
+      // ONE batched IPC for the whole cluster. Fire-and-forget (the next frame
+      // supersedes it; awaiting would re-serialize the channel we just unclogged).
+      // Fall back to the per-window setPosition path when invoke is unavailable
+      // (older runtime / tests) so behavior degrades, never breaks.
+      var invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+      if (invoke) {
+        try { invoke('dock_move_cluster', { moves: moves, physical: usePhysical }); } catch (_) {}
+      } else {
+        var TW = window.__TAURI__ && window.__TAURI__.window;
+        var PP = TW && TW.PhysicalPosition;
+        var LP = TW && TW.LogicalPosition;
+        for (var k = 0; k < moves.length; k++) {
+          var mm = drag.members[k];
+          if (!mm || !mm.win) continue;
+          try {
+            if (usePhysical && PP) mm.win.setPosition(new PP(moves[k].x, moves[k].y));
+            else if (LP) mm.win.setPosition(new LP(moves[k].x, moves[k].y));
+          } catch (_) {}
+        }
       }
       if (g.__LUNA_DOCK_DEBUG) {
-        try { console.log('[luna-dock] move', { screenX: e.screenX, screenY: e.screenY, lead: { x: drag.ox + dx, y: drag.oy + dy }, target0: res.targets[0], phys0: (mons && mons.length ? LunaDeckSnap.logicalToPhysical(res.targets[0].x, res.targets[0].y, mons) : null), monitors: mons }); } catch (_) {}
+        try { console.log('[luna-dock] move', { screenX: xy.sx, screenY: xy.sy, lead: { x: drag.ox + dx, y: drag.oy + dy }, target0: res.targets[0], move0: moves[0], physical: usePhysical }); } catch (_) {}
       }
       // Weld VISUALS (corner squaring, seam silhouette, per-side margins) are
       // FROZEN during the drag and recomputed exactly once on drop
-      // (onDragUp → refreshWeld). Repainting them per pointer-move — on the
-      // dragged card AND, via a mid-drag broadcast, on every stationary
-      // neighbour — is what made the borders flicker/square mid-drag. The only
-      // live affordance kept is the predictive snap ring (.snapping), which is a
-      // pure box-shadow and never touches geometry.
+      // (onDragUp → refreshWeld). Repainting them per frame — on the dragged card
+      // AND, via a mid-drag broadcast, on every stationary neighbour — is what
+      // made the borders flicker/square mid-drag. The only live affordance kept
+      // is the predictive snap ring (.snapping), a pure box-shadow that never
+      // touches geometry.
       var sh = dockShell();
       if (sh) sh.classList.toggle('snapping', !!res.snapped);
     }
@@ -403,6 +455,77 @@
       broadcastGeometry();    // neighbours re-square their corners around the new position too
     }
 
+    // ── Native single-window drag + snap-on-release ────────────────────────
+    // startDragging hands the whole gesture to the OS window server: it tracks the
+    // cursor with zero added latency (the emulated loop trailed by ~1 frame). The
+    // cost is that the OS owns the position mid-drag, so there is no LIVE magnet —
+    // we snap to the nearest neighbour ONCE, when the window settles.
+    function startNativeDrag() {
+      try { W.startDragging(); } catch (_) { return; }
+      var sh = dockShell(); if (sh) sh.classList.add('dragging');
+      var settle = 0, unlisten = null, done = false;
+      function finish() {
+        if (done) return; done = true;
+        if (settle) { clearTimeout(settle); settle = 0; }
+        if (unlisten) { try { unlisten(); } catch (_) {} unlisten = null; }
+        document.removeEventListener('pointerup', onUp, true);
+        document.removeEventListener('pointercancel', onUp, true);
+        var s = dockShell();
+        if (s) { s.classList.remove('dragging'); setTimeout(function () { var x = dockShell(); if (x) x.classList.remove('snapping'); }, 200); }
+        snapOnRelease();
+      }
+      // The OS drag loop swallows pointermove/up, so the window's own Moved events
+      // are the reliable end signal: when motion stops for SETTLE_MS, it's released.
+      function onMovedTick() {
+        if (settle) clearTimeout(settle);
+        settle = setTimeout(finish, 140);
+      }
+      // A grab that never moves (a click on the title bar) emits no Moved — but the
+      // webview DOES get that pointerup, so settle promptly off it too.
+      function onUp() {
+        if (settle) clearTimeout(settle);
+        settle = setTimeout(finish, 30);
+      }
+      document.addEventListener('pointerup', onUp, true);
+      document.addEventListener('pointercancel', onUp, true);
+      try {
+        var p = W.onMoved(onMovedTick);
+        if (p && p.then) p.then(function (u) { if (done) { try { u(); } catch (_) {} } else { unlisten = u; } });
+      } catch (_) { /* no onMoved → rely on pointerup */ }
+    }
+
+    // Snap my card flush to the nearest neighbour ONCE, on release, then re-weld
+    // everyone. Reuses the SAME corner-aligned magnet as the live drag
+    // (LunaDeckSnap.computeSnap), in card-face space, just a single shot.
+    async function snapOnRelease() {
+      try {
+        var S = window.LunaDeckSnap;
+        var ins = readInsets();
+        var self = await logicalRect(W);
+        var cands = await candidateRects([label]);
+        var leadCard = S.insetRect({ x: self.x, y: self.y, w: self.w, h: self.h }, ins);
+        var best = null;
+        for (var i = 0; i < cands.length; i++) {
+          var snap = S.computeSnap(S.insetRect(cands[i].rect, ins), leadCard);
+          if (!snap) continue;
+          var d = Math.hypot(snap.x - leadCard.x, snap.y - leadCard.y);
+          if (best === null || d < best.d) best = { x: snap.x, y: snap.y, edge: snap.edge, label: cands[i].label, d: d };
+        }
+        if (best) {
+          var TW = window.__TAURI__ && window.__TAURI__.window;
+          var LP = TW && TW.LogicalPosition;
+          // card target → frame target (subtract my own top/left inset).
+          if (LP) { try { await W.setPosition(new LP(best.x - ins.l, best.y - ins.t)); } catch (_) {} }
+          if (best.label !== HUB) {
+            flashSeam(oppositeEdge(best.edge));
+            try { var e2 = ev(); if (e2 && e2.emit) e2.emit('dock-link', { 'for': best.label, from: label, edge: best.edge }); } catch (_) {}
+          }
+        }
+      } catch (_) { /* best-effort */ }
+      refreshWeld();          // settle my own weld from the real (snapped) rect
+      broadcastGeometry();    // neighbours re-square their corners around me
+    }
+
     document.addEventListener('pointerdown', function (e) {
       if (sm.phase !== 'idle') return;            // a drag is already arming/active
       if (e.button !== 0) return;
@@ -419,6 +542,19 @@
       var handle = e.target.closest('.title-bar, .chat-header');
       if (!handle) return;
       e.preventDefault();
+      // A SINGLE-window drag — a lone card, or a plain module peeling off its
+      // cluster (anything that is NOT the anchor towing its welded cluster) — goes
+      // NATIVE: hand it to the OS via startDragging (zero per-frame IPC, the
+      // OS-smooth feel the emulated loop can't match) and snap to a neighbour on
+      // RELEASE. The anchor-tows-a-cluster case stays on the emulated 1:1 path
+      // below, because native startDragging moves only its own window (towing the
+      // welded cluster natively needs child windows — the follow-up). Environments
+      // without startDragging (tests / non-Tauri) fall through to emulated.
+      var towsCluster = (label === 'panel-chat') && groupMembers.length > 1;
+      if (!towsCluster && typeof W.startDragging === 'function') {
+        startNativeDrag();
+        return;
+      }
       // idle → arming: capture the handle now; the snapshot below promotes us to
       // 'dragging' (or a release mid-snapshot leaves us to be reset by onDragUp).
       sm.phase = 'arming'; sm.handle = handle; sm.pid = e.pointerId;

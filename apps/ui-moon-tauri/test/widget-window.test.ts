@@ -11,7 +11,8 @@ import * as path from 'node:path'
  * capture-phase pointerdown on a `.title-bar` / `.chat-header` arms a drag,
  * snapshots the window + group + snap candidates asynchronously, then every
  * pointermove computes the snapped target via LunaDeckSnap.computeLiveDrag and
- * setPositions each member window LIVE. pointerup emits a frontend `dock-link`
+ * — coalesced to one animation frame — moves the whole cluster in a single
+ * batched `dock_move_cluster` invoke. pointerup emits a frontend `dock-link`
  * event if the last move snapped onto a sibling, or peels a module off cleanly
  * (no link) when dragged clear. Welding is EMERGENT: a window computes its own
  * perimeter/seams from sibling geometry — there is no set_dock invoke and no
@@ -77,6 +78,15 @@ describe('widget.html — title bar + live magnetic drag', () => {
   const broadcasts = (name: string): number =>
     emitCalls.filter((c) => c.name === name).length
 
+  // The live drag now moves the whole cluster in ONE batched invoke
+  // (dock_move_cluster) per animation frame instead of N per-window setPosition
+  // calls. Read back the latest batch's moves [{label,x,y}].
+  const lastClusterMove = (): Array<{ label: string; x: number; y: number }> | null => {
+    const calls = invoke.mock.calls.filter((c) => c[0] === 'dock_move_cluster')
+    if (!calls.length) return null
+    return (calls[calls.length - 1][1] as { moves: Array<{ label: string; x: number; y: number }> }).moves
+  }
+
   // Drive a global `dock-geometry-changed` broadcast (what neighbours emit when
   // they move) → the window recomputes its own weld from current sibling rects.
   const refreshWeld = async () => {
@@ -88,6 +98,11 @@ describe('widget.html — title bar + live magnetic drag', () => {
   // Let the async start-snapshot (logicalRect + members + candidateRects, all
   // awaited promises) settle before we drive pointermove/up.
   const flush = async () => {
+    for (let i = 0; i < 30; i++) await Promise.resolve()
+    // The live-drag move is now coalesced into ONE requestAnimationFrame
+    // (flushDrag) rather than running synchronously per pointermove, so drain a
+    // frame too — then settle the microtasks its (fire-and-forget) invoke queues.
+    await new Promise((r) => requestAnimationFrame(() => r(undefined)))
     for (let i = 0; i < 30; i++) await Promise.resolve()
   }
 
@@ -285,7 +300,8 @@ describe('widget.html — title bar + live magnetic drag', () => {
     // (-52,-8). computeLiveDrag (card space) snaps RIGHT·top to (476,100).
     bar.dispatchEvent(pointer('pointermove', { screenX: -52, screenY: -8 }))
     await flush()
-    expect(setPositionCalls).toEqual([{ x: 476, y: 100 }]) // card-face-aligned target
+    // One batched cluster move (just SELF here) at the card-face-aligned target.
+    expect(lastClusterMove()).toEqual([{ label: SELF, x: 476, y: 100 }])
     expect(shell.classList.contains('snapping')).toBe(true)
 
     // Up: the last move snapped, but the candidate is the hub ('main'). The
@@ -319,7 +335,7 @@ describe('widget.html — title bar + live magnetic drag', () => {
     // Move onto the sibling's left card tile (582,108): delta from (528,108) = +54.
     bar.dispatchEvent(pointer('pointermove', { screenX: 54, screenY: 0 }))
     await flush()
-    expect(setPositionCalls[setPositionCalls.length - 1]).toEqual({ x: 582, y: 108 })
+    expect(lastClusterMove()).toEqual([{ label: SELF, x: 582, y: 108 }])
 
     bar.dispatchEvent(pointer('pointerup'))
     await flush()
@@ -342,7 +358,7 @@ describe('widget.html — title bar + live magnetic drag', () => {
     bar.dispatchEvent(pointer('pointermove', { screenX: 80, screenY: 60 }))
     await flush()
     // Free drag: window follows the raw cursor delta (2000+80, 1500+60).
-    expect(setPositionCalls[setPositionCalls.length - 1]).toEqual({ x: 2080, y: 1560 })
+    expect(lastClusterMove()).toEqual([{ label: SELF, x: 2080, y: 1560 }])
     expect(shell.classList.contains('snapping')).toBe(false)
 
     bar.dispatchEvent(pointer('pointerup'))

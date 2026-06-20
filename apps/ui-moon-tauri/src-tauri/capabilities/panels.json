@@ -41,6 +41,7 @@
     "allow-collapse-to-moon",
     "allow-set-native-controls-visible",
     "allow-sync-traffic-light-position",
-    "allow-dock-self"
+    "allow-dock-self",
+    "allow-dock-move-cluster"
   ]
 }
