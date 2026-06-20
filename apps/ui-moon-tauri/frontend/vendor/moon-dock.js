@@ -408,6 +408,14 @@
       if (e.button !== 0) return;
       if (!e.target || !e.target.closest) return;
       if (e.target.closest('button')) return;     // buttons are clicks, not grabs
+      // Native macOS traffic lights are AppKit views, not DOM <button>s, so the
+      // guard above misses them — a mousedown over the light band would arm a
+      // window drag and swallow the click. overLights is skin-gated (false unless
+      // the native hover-lights are active), so classic is unaffected.
+      try {
+        if (window.LunaNativeTitlebar && window.LunaNativeTitlebar.overLights &&
+            window.LunaNativeTitlebar.overLights(e.clientX, e.clientY)) return;
+      } catch (_) { /* never block dragging on a chrome hiccup */ }
       var handle = e.target.closest('.title-bar, .chat-header');
       if (!handle) return;
       e.preventDefault();

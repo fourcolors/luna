@@ -95,6 +95,25 @@ describe('moon-native-titlebar.js', () => {
     vi.useRealTimers()
   })
 
+  it('exports a skin-gated overLights() for the dock drag guard', () => {
+    // studio (default skin): native hover-lights are active. jsdom lays out at
+    // the origin (title-bar rect all-zero), so the light band is the very
+    // top-left: a point inside it returns true, one well clear returns false.
+    loadVendorInto(window, 'moon-native-titlebar.js')
+    const nt = (window as any).LunaNativeTitlebar
+    expect(typeof nt.overLights).toBe('function')
+    expect(nt.overLights(4, 0)).toBe(true)
+    expect(nt.overLights(600, 600)).toBe(false)
+
+    // classic skin: native lights are hidden (faux DOM buttons own the corner),
+    // so overLights must NOT claim the band — else the drag guard would carve a
+    // dead zone out of the classic title bar.
+    window.localStorage.setItem('luna_skin', 'classic')
+    delete (window as any).LunaNativeTitlebar
+    loadVendorInto(window, 'moon-native-titlebar.js')
+    expect((window as any).LunaNativeTitlebar.overLights(4, 0)).toBe(false)
+  })
+
   it('does not reveal native controls on hover under classic skin', () => {
     window.localStorage.setItem('luna_skin', 'classic')
     const invoke = vi.fn().mockResolvedValue(undefined)
