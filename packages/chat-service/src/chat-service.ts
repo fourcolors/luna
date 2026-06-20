@@ -219,6 +219,35 @@ export const truncateOutput = (
   return { output: out, truncated }
 }
 
+/** Max chars of failure detail surfaced in the user-facing assistant-error
+ *  frame. The informative part (the underlying cause) leads, so this keeps the
+ *  bubble bounded without losing the reason. */
+const MAX_STREAM_FAILURE_CHARS = 400
+
+/**
+ * Render an adapter-stream failure `Cause` into a SHORT, user-facing reason —
+ * the underlying SDK cause, never the opaque "An error has occurred".
+ *
+ * A typed failure (the common case: the adapter fails the stream with an
+ * `SDKError`) has its `message` surfaced — `SDKError.message` now carries the
+ * real cause (e.g. "native binary not found … pathToClaudeCodeExecutable").
+ * A defect/interrupt with no typed failure falls back to the first line of the
+ * pretty render (no full stack — that goes to the server log, not the user).
+ */
+export const formatStreamFailureReason = (
+  cause: Cause.Cause<unknown>,
+): string => {
+  const failure = Cause.failureOption(cause)
+  const reason = Option.match(failure, {
+    onSome: (e) =>
+      e instanceof Error && e.message.length > 0 ? e.message : String(e),
+    onNone: () => Cause.pretty(cause).split("\n")[0] ?? "unknown error",
+  })
+  return reason.length > MAX_STREAM_FAILURE_CHARS
+    ? reason.slice(0, MAX_STREAM_FAILURE_CHARS) + "…"
+    : reason
+}
+
 /**
  * Derive a cheap, no-model-call title from the first user message text.
  * Takes the first line (up to the first newline), then trims whitespace and
@@ -868,8 +897,16 @@ export class ChatService extends Effect.Service<ChatService>()(
               }),
             ),
             Effect.catchAllCause((cause) => {
-              const message = `adapter stream failed: ${cause.toString().slice(0, 200)}`
+              const message = `adapter stream failed: ${formatStreamFailureReason(cause)}`
               return Effect.gen(function* () {
+                // Server-side log with the FULL cause (incl. stack) — this path
+                // previously emitted nothing to stdout/stderr, so a fatal
+                // adapter failure (e.g. a stale pathToClaudeCodeExecutable) left
+                // zero diagnostic trail in the logs. The user frame + obs event
+                // carry the bounded reason; the log carries everything.
+                yield* Effect.logError(
+                  `[chat] adapter stream failed for ${id}: ${Cause.pretty(cause)}`,
+                )
                 yield* inc("luna.chat.adapter_stream.errors")
                 yield* obs.emit({
                   kind: "Error",

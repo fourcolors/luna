@@ -50,7 +50,25 @@ export class SDKError extends Data.TaggedError("SDKError")<{
   readonly op: string
   readonly sessionId?: string
   readonly cause: unknown
-}> {}
+}> {
+  /**
+   * Effect's `Data.TaggedError` renders as the generic "An error has occurred"
+   * when the error declares no `message` — which hid the REAL SDK failure (e.g.
+   * `ReferenceError: Claude Code native binary not found … specify
+   * options.pathToClaudeCodeExecutable`) behind an opaque "SDKError: An error
+   * has occurred at adapter.ts:NNN". This getter surfaces `op`, `sessionId`,
+   * and the underlying `cause` so every consumer — the chat-service user
+   * frame, server logs, and the wake/dream reasoners' `String(cause)` — sees
+   * WHY the SDK stream died. The `cause` field is preserved untouched for
+   * programmatic inspection / pattern matching.
+   */
+  override get message(): string {
+    const c = this.cause
+    const rendered = c instanceof Error ? `${c.name}: ${c.message}` : String(c)
+    const sid = this.sessionId !== undefined ? ` [${this.sessionId}]` : ""
+    return `SDK ${this.op} failed${sid}: ${rendered}`
+  }
+}
 
 // §6.2 — MemoryBackend leaf errors. Raised by concrete backends
 // (sqlite/file/in-memory/vector) and composed by MemoryRouter.
