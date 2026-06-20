@@ -119,9 +119,13 @@ html, body {
   /* Frost (aqua); studio --dk-blur is 0px → a no-op. */
   backdrop-filter: blur(var(--dk-blur, 0px));
   -webkit-backdrop-filter: blur(var(--dk-blur, 0px));
-  /* Skin edge ring lives on ::before only for skins that set a visible
-     --dk-win-border (classic/aqua rules below). Studio default = none. NEVER
-     a CSS border (see moon-theme.css ink chrome note). */
+  /* ⛔ HARD RULE — NO WINDOW OUTLINE (docs/no-window-outline.md).
+     The card window has NO crisp edge ring / outline / border on ANY skin or
+     chrome. `box-shadow: none` here is the ONLY allowed value for the ::before
+     ring layer — never `0 0 0 Npx`, never a `border`, never an `outline`. The
+     soft blurred halo lives on .widget-shell (--dk-win-shadow), NOT here. A
+     crisp ring reads as the "outline tracing the window" that is explicitly
+     unwanted. Enforced by test/no-window-outline.test.ts. */
   box-shadow: none;
 }
 
@@ -186,7 +190,7 @@ html[data-theme='dark'] .widget-shell {
    displaced by any future filter and produce a doubled-edge artifact). The soft
    halo stays on .widget-shell; ::before carries ONLY the single inked ring. */
 html[data-chrome='ink'] .widget-shell::before {
-  box-shadow: 0 0 0 1.5px color-mix(in oklab, var(--ink) 55%, transparent);
+  /* NO edge ring — see docs/no-window-outline.md (was a 1.5px ink ring). */
   background:
     linear-gradient(180deg,
       color-mix(in oklab, var(--panel-tint) 18%, transparent) 0%,
@@ -199,7 +203,7 @@ html[data-chrome='ink'] .widget-shell::before {
    here — only ::before differs, carrying the single inked ring on the night
    paper base. */
 html[data-chrome='ink'][data-theme='dark'] .widget-shell::before {
-  box-shadow: 0 0 0 1.5px color-mix(in oklab, var(--ink) 55%, transparent);
+  /* NO edge ring — see docs/no-window-outline.md (was a 1.5px ink ring). */
   background:
     linear-gradient(180deg,
       color-mix(in oklab, var(--panel-tint) 18%, transparent) 0%,

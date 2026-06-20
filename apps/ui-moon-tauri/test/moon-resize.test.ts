@@ -28,7 +28,10 @@ describe('moon-resize.js', () => {
     expect(layer!.querySelectorAll('.resize-hit').length).toBe(8)
   })
 
-  it('SE drag calls setSize with grown dimensions', async () => {
+  it('resizes via setSize, coalesced to one update per animation frame', async () => {
+    // Native resize-drag is unimplemented on macOS (tao no-op), so the emulated
+    // pointermove → setPosition/setSize loop is the only path. It is rAF-coalesced:
+    // pointermove just stashes coords; flushResize does the IPC once per frame.
     const setSize = vi.fn().mockResolvedValue(undefined)
     const setPosition = vi.fn().mockResolvedValue(undefined)
     class LogicalSize {
@@ -50,27 +53,26 @@ describe('moon-resize.js', () => {
         LogicalPosition,
       },
     }
-    // Drain N microtask ticks to flush a multi-await async chain.
-    const flush = async (n = 10) => { for (let i = 0; i < n; i++) await Promise.resolve() }
+    const micro = async (n = 10) => { for (let i = 0; i < n; i++) await Promise.resolve() }
+    // flushResize runs in a requestAnimationFrame (a macrotask) — drain one frame.
+    const frame = async () => { await new Promise((r) => requestAnimationFrame(() => r(undefined))); await micro() }
 
     loadVendorInto(window, 'moon-resize.js')
     const se = document.querySelector('.resize-se') as HTMLElement
 
-    // onDown is async: it awaits scaleFactor + outerPosition + outerSize (3+ ticks)
-    // before setting `active`. Dispatch pointerdown then flush so `active` is set
-    // before pointermove fires — otherwise onMove returns early (active is null).
+    // onDown awaits scaleFactor + outerPosition + outerSize before setting `active`.
     se.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, screenX: 10, screenY: 20 }))
-    await flush()
-
-    // Now `active` is set; pointermove will call setPosition then setSize (2 more awaits).
+    await micro()
+    // pointermove stashes coords + arms one rAF; the setSize happens in flushResize.
     se.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, screenX: 30, screenY: 50 }))
-    await flush()
-
+    await frame()
     se.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
 
     expect(setSize).toHaveBeenCalled()
     const arg = setSize.mock.calls[0][0] as InstanceType<typeof LogicalSize>
-    expect(arg.w).toBe(380)
-    expect(arg.h).toBe(470)
+    expect(arg.w).toBe(380) // 360 + (30-10) cursor dx
+    expect(arg.h).toBe(470) // 440 + (50-20) cursor dy
+    // SE grip changes size only — origin stays put, so no setPosition.
+    expect(setPosition).not.toHaveBeenCalled()
   })
 })

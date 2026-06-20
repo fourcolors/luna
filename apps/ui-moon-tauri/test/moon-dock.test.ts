@@ -191,3 +191,29 @@ describe('moon-dock — drag lifecycle state machine', () => {
     expect(shell().classList.contains('dragging')).toBe(false)
   })
 })
+
+describe('moon-dock — native single-window drag', () => {
+  function pointer(type: string, target: Element, opts: Record<string, unknown> = {}) {
+    const ev = new MouseEvent(type, { bubbles: true, button: 0, ...opts }) as MouseEvent & { pointerId?: number }
+    ev.pointerId = (opts.pointerId as number) ?? 1
+    target.dispatchEvent(ev)
+    return ev
+  }
+
+  it('a lone window with native support drags via startDragging, skipping the emulated loop', () => {
+    const self = wireWith('widget-a', { 'widget-a': [0, 0, 200, 300] })
+    // Hand the window the native APIs; the grab handler reads them dynamically.
+    const startDragging = vi.fn()
+    ;(self as any).startDragging = startDragging
+    ;(self as any).onMoved = vi.fn(async () => () => {})
+    ;(self as any).setPosition = vi.fn()
+    const bar = document.getElementById('title-bar')!
+    pointer('pointerdown', bar)
+    // Native path taken: the OS drives the drag and .dragging is applied…
+    expect(startDragging).toHaveBeenCalledTimes(1)
+    expect(shell().classList.contains('dragging')).toBe(true)
+    // …and the emulated per-pointermove loop is NOT armed (no setPosition on move).
+    pointer('pointermove', bar)
+    expect((self as any).setPosition).not.toHaveBeenCalled()
+  })
+})

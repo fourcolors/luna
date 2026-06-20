@@ -1,0 +1,8 @@
+# Live-drag cluster move, owned by the frontend: moon-dock.js coalesces a drag to
+# one rAF per frame and moves the whole welded cluster in a single call (was N
+# per-window set_position IPC round trips a frame — the drag-lag driver).
+# See main.rs (dock_move_cluster).
+[[permission]]
+identifier = "allow-dock-move-cluster"
+description = "Allows the dock_move_cluster command"
+commands.allow = ["dock_move_cluster"]

@@ -9,7 +9,17 @@
     "windows": [
       {
         "label": "main",
-        "title": "Luna Moon Dev"
+        "title": "Luna Moon Dev",
+        "width": 140,
+        "height": 185,
+        "resizable": true,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "fullscreen": false,
+        "visible": true,
+        "dragDropEnabled": false
       }
     ]
   }

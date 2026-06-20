@@ -184,8 +184,14 @@ html[data-theme='dark'][data-skin='aqua'] {
   --dk-win-border: color-mix(in oklab, #ffffff 18%, transparent);
 }
 
-/* Visible edge ring on classic/aqua only — studio default omits (moon-theme.css). */
-html[data-skin='classic'] .widget-shell::before,
-html[data-skin='aqua'] .widget-shell::before {
-  box-shadow: 0 0 0 1.5px var(--dk-win-border);
-}
+/* ╔═══════════════════════════════════════════════════════════════════════╗
+   ║  NO WINDOW OUTLINE — hard rule, see docs/no-window-outline.md          ║
+   ╚═══════════════════════════════════════════════════════════════════════╝
+   The card window must NEVER carry a crisp edge ring / outline / border. A
+   `box-shadow: 0 0 0 Npx` (spread, no blur) — or a `border` / `outline` — on
+   .widget-shell(::before) traces the rounded rectangle and reads as an unwanted
+   outline around the window. ONLY the soft, blurred `--dk-win-shadow` halo is
+   allowed on the card. There is NO skin/chrome exception. Removed here: the
+   classic/aqua `0 0 0 1.5px var(--dk-win-border)` ring (`--dk-win-border` is now
+   unused; do not re-wire it into a ring). A regression test enforces this:
+   apps/ui-moon-tauri/test/no-window-outline.test.ts. */

@@ -357,6 +357,12 @@
           "markdownDescription": "Allows the collapse_to_moon command"
         },
         {
+          "description": "Allows the dock_move_cluster command",
+          "type": "string",
+          "const": "allow-dock-move-cluster",
+          "markdownDescription": "Allows the dock_move_cluster command"
+        },
+        {
           "description": "Allows the dock_self command",
           "type": "string",
           "const": "allow-dock-self",
