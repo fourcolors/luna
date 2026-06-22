@@ -37,7 +37,7 @@
     },
     "apps/ui-moon-tauri": {
       "name": "@luna/ui-moon-tauri",
-      "version": "0.0.34",
+      "version": "0.0.42",
       "devDependencies": {
         "@tauri-apps/cli": "^2.1.0",
         "jsdom": "^29.1.1",
@@ -374,6 +374,20 @@
         "solid-js": "^1.9.12",
       },
     },
+    "packages/ui-transport": {
+      "name": "@luna/ui-transport",
+      "version": "0.0.1",
+      "dependencies": {
+        "@luna/ui-shared": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/node": "^22.9.0",
+        "@types/ws": "^8.5.13",
+        "typescript": "^5.6.3",
+        "vitest": "^2.1.5",
+        "ws": "^8.18.0",
+      },
+    },
     "packages/ui-ws": {
       "name": "@luna/ui-ws",
       "version": "0.0.1",
@@ -634,6 +648,8 @@
     "@luna/ui-shared": ["@luna/ui-shared@workspace:packages/ui-shared"],
 
     "@luna/ui-shared-solid": ["@luna/ui-shared-solid@workspace:packages/ui-shared-solid"],
+
+    "@luna/ui-transport": ["@luna/ui-transport@workspace:packages/ui-transport"],
 
     "@luna/ui-web": ["@luna/ui-web@workspace:apps/ui-web"],
 
