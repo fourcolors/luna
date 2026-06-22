@@ -126,6 +126,7 @@ import {
   applyRuntimePathEnvDefaults,
   resolveRuntimePaths,
 } from "./runtime-paths.js"
+import { applyClaudeExecutablePreflight } from "./claude-executable.js"
 
 // Load Luna's runtime .env before anything else so CLAUDE_CONFIG_DIR (and any
 // other Luna env vars) are in process.env when the SDK initialises. LUNA_HOME
@@ -152,6 +153,11 @@ const bootShadowedEnvKeys = new Set<string>()
     }
   }
   applyRuntimePathEnvDefaults(resolveRuntimePaths())
+  // Heal LUNA_CLAUDE_CODE_EXECUTABLE before the SDK adapter (or any thread) reads
+  // it: a missing/stale pin (e.g. a container whose /usr/local/bin/claude was
+  // never provisioned) otherwise makes `query()` throw ENOENT on every new
+  // thread. Self-heals all start paths (autodeploy, manual restart, rebuild).
+  applyClaudeExecutablePreflight()
 }
 import { Context, Effect, Layer, ManagedRuntime, Option, Runtime, Stream } from "effect"
 import {

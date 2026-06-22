@@ -41,6 +41,28 @@ describe("Root error taxonomy", () => {
     expect(Exit.isFailure(exit)).toBe(true)
   })
 
+  it("SDKError.message surfaces op + underlying cause (not 'An error has occurred')", () => {
+    const underlying = new Error("native binary not found at /x/musl/claude")
+    const err = new SDKError({
+      op: "iterate",
+      sessionId: "thread-1",
+      cause: underlying,
+    })
+    expect(err.message).toContain("iterate")
+    expect(err.message).toContain("thread-1")
+    expect(err.message).toContain("native binary not found")
+    // Effect's default empty-message rendering must be gone.
+    expect(String(err)).not.toContain("An error has occurred")
+    // The cause field is still preserved for programmatic inspection.
+    expect(err.cause).toBe(underlying)
+  })
+
+  it("SDKError.message renders a non-Error cause via String()", () => {
+    const err = new SDKError({ op: "query", cause: "raw-string-cause" })
+    expect(err.message).toContain("query")
+    expect(err.message).toContain("raw-string-cause")
+  })
+
   it("distinct error tags do not cross-match", async () => {
     const program = Effect.fail(
       new ConfigError({

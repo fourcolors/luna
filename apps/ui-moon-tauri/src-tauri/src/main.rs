@@ -1843,12 +1843,27 @@ fn apply_traffic_light_layout(
         return Ok(());
     }
     with_appkit_main_thread(window.clone(), move |win| {
-        use objc2_app_kit::{NSView, NSWindow, NSWindowButton};
+        use objc2_app_kit::{
+            NSTitlebarSeparatorStyle, NSView, NSWindow, NSWindowButton,
+        };
 
         let ns_win_ptr = win.ns_window().map_err(|e| e.to_string())?;
 
         unsafe {
             let ns_win: &NSWindow = &*ns_win_ptr.cast();
+
+            // Kill AppKit's titlebar separator (default `.automatic`). With
+            // TitleBarStyle::Overlay it draws a focus-reactive hairline at the
+            // BOTTOM of the NSTitlebarContainerView we grow below — and that
+            // container is sized to the traffic-light CENTER (close_h + y_top ≈
+            // 24px), which lands ~8px ABOVE the CSS header's bottom (4px inset +
+            // 28px `.title-bar` min-height = 32px). So the native line floats
+            // *inside* the header, offset from where the eye expects the seam.
+            // The CSS `.title-bar` border-bottom is the only header seam we
+            // want; `.None` removes the native line AND that 8px offset in one
+            // move. Idempotent + re-applied on every focus/hover/resize sync.
+            ns_win.setTitlebarSeparatorStyle(NSTitlebarSeparatorStyle::None);
+
             let Some(close) = ns_win.standardWindowButton(NSWindowButton::CloseButton) else {
                 return Ok(());
             };

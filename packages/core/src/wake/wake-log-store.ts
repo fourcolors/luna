@@ -18,6 +18,8 @@
 // bun:sqlite is loaded via dynamic-import-string indirection, mirroring the
 // pattern in jobs-store.ts and agent-notes.ts (the project deliberately
 // avoids @types/bun — see DESIGN.md §6.2).
+import { mkdirSync } from "node:fs"
+import { dirname } from "node:path"
 import { Effect, Layer, Ref } from "effect"
 import { ConfigError } from "../errors.js"
 import type { WakeLogRow, WakeLogRowInput, WakeOutcome } from "./types.js"
@@ -102,6 +104,23 @@ export class WakeLogStore extends Effect.Tag("luna/WakeLogStore")<
             }),
           )
         }
+        // Ensure the workspace dir exists before opening — the workspace.db is
+        // workspace-scoped (not under ~/.luna), so on a fresh local/dev boot the
+        // `.workspace/` parent may not exist yet and bun:sqlite would otherwise
+        // fail with SQLITE_CANTOPEN. mkdir is idempotent; skip the in-memory case.
+        if (dbPath !== ":memory:") {
+          try {
+            mkdirSync(dirname(dbPath), { recursive: true })
+          } catch (cause) {
+            return yield* Effect.fail(
+              new ConfigError({
+                module: "wake-log-store",
+                key: "workspace-dir",
+                message: `failed to create workspace dir for ${dbPath}: ${String(cause)}`,
+              }),
+            )
+          }
+        }
         const db = new Database(dbPath)
         // Conservative pragmas — match what bootstrap-workspace.ts uses so
         // we don't fight over journal mode.
@@ -137,10 +156,15 @@ export class WakeLogStore extends Effect.Tag("luna/WakeLogStore")<
         // incl. the goals FK). We do NOT create it here — that would risk schema
         // drift — so an un-bootstrapped workspace surfaces a WakeError on first
         // file (caught by runWake; non-poisoning).
-        const insertActionStmt = db.query(
-          "INSERT INTO next_actions (goal_slug, action, status, priority, created_at, updated_at) " +
-            "VALUES (?, ?, 'todo', ?, ?, ?)",
-        )
+        //
+        // PREPARED LAZILY (on first appendNextActions), NOT here: `db.query()`
+        // compiles the SQL immediately, and against a workspace.db whose
+        // next_actions table doesn't exist yet that throws `no such table` at
+        // LAYER-CONSTRUCTION time — i.e. it crashes BOOT, breaking the very
+        // promise the paragraph above makes ("surfaces a WakeError on first
+        // file"). Deferring restores that contract (and unblocks a fresh local
+        // boot / an un-bootstrapped workspace).
+        let insertActionStmt: BunStmt | null = null
         return {
           append: (row) =>
             Effect.try({
@@ -194,6 +218,15 @@ export class WakeLogStore extends Effect.Tag("luna/WakeLogStore")<
           appendNextActions: (actions, now) =>
             Effect.try({
               try: () => {
+                // Lazy prepare — see the note at the declaration. A missing
+                // next_actions table throws HERE (inside the Effect.try), so it
+                // becomes a caught WakeError, not a boot crash.
+                if (insertActionStmt === null) {
+                  insertActionStmt = db.query(
+                    "INSERT INTO next_actions (goal_slug, action, status, priority, created_at, updated_at) " +
+                      "VALUES (?, ?, 'todo', ?, ?, ?)",
+                  )
+                }
                 let inserted = 0
                 for (const a of actions) {
                   insertActionStmt.run(a.goalSlug, a.action, a.priority, now, now)

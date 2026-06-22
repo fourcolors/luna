@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from "vitest"
-import { Chunk, Effect, Fiber, Layer, Stream } from "effect"
+import { Cause, Chunk, Effect, Fiber, Layer, Stream } from "effect"
+import { SDKError } from "@luna/core"
 import { unlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -14,6 +15,7 @@ import { MemoryRouterTag, type MemoryRouter } from "@luna/memory"
 import type { Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
 import { ChatService, type ChatFrame } from "../src/index.js"
 import {
+  formatStreamFailureReason,
   normalizeToolResultContent,
   truncateOutput,
 } from "../src/chat-service.js"
@@ -37,6 +39,35 @@ describe("normalizeToolResultContent", () => {
   })
   it("returns an empty string for null", () => {
     expect(normalizeToolResultContent(null)).toBe("")
+  })
+})
+
+describe("formatStreamFailureReason", () => {
+  it("surfaces an SDKError failure's real cause", () => {
+    const cause = Cause.fail(
+      new SDKError({
+        op: "iterate",
+        sessionId: "thr-1",
+        cause: new Error("native binary not found"),
+      }),
+    )
+    const r = formatStreamFailureReason(cause)
+    expect(r).toContain("native binary not found")
+    expect(r).not.toContain("An error has occurred")
+  })
+  it("falls back to the first pretty line for a defect (no typed failure)", () => {
+    const cause = Cause.die(new Error("boom defect"))
+    const r = formatStreamFailureReason(cause)
+    expect(r).toContain("boom defect")
+    // First line only — no multi-line stack dump in the user reason.
+    expect(r.split("\n").length).toBe(1)
+  })
+  it("bounds an over-long reason", () => {
+    const long = "x".repeat(1000)
+    const cause = Cause.fail(new SDKError({ op: "iterate", cause: long }))
+    const r = formatStreamFailureReason(cause)
+    expect(r.length).toBeLessThanOrEqual(401)
+    expect(r.endsWith("…")).toBe(true)
   })
 })
 
@@ -125,6 +156,62 @@ const queryYielding = (
     supplyToolPermissionResponse: async () => {},
     mcpServerStatus: async () => ({}),
   } as Partial<Query>) as Query
+}
+
+/** Fake Query whose iteration THROWS once a prompt arrives — models the SDK
+ *  subprocess failing to spawn / handshake (e.g. a bad pathToClaudeCodeExecutable).
+ *  The throw surfaces in the adapter producer's catch → SDKError → the
+ *  chat-service `adapter stream failed` path. */
+const queryThrowingOnTurn = (
+  prompt: AsyncIterable<SDKUserMessage>,
+  errMessage: string,
+): Query => {
+  async function* gen(): AsyncGenerator<SDKMessage, void> {
+    for await (const _u of prompt) {
+      throw new Error(errMessage)
+    }
+  }
+  const it = gen()
+  return Object.assign(it, {
+    interrupt: async () => {},
+    setPermissionMode: async () => {},
+    setModel: async () => {},
+    applyFlagSettings: async () => {},
+    setMaxThinkingTokens: async () => {},
+    supplyToolPermissionResponse: async () => {},
+    mcpServerStatus: async () => ({}),
+  } as Partial<Query>) as Query
+}
+
+/** Like collectFrames, but the fake SDK throws on the turn so the run exercises
+ *  the adapter-stream-failure surfacing path. */
+const collectFramesFailing = (
+  errMessage: string,
+): Promise<ReadonlyArray<ChatFrame>> => {
+  const fakeLayer = SDKClient.fake((p) =>
+    queryThrowingOnTurn(p.prompt as AsyncIterable<SDKUserMessage>, errMessage),
+  )
+  return Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const chat = yield* ChatService
+        const t = yield* chat.createThread({ model: "claude-test" })
+        const sub = chat.subscribe(t.id)
+        const collected: ChatFrame[] = []
+        const fiber = yield* Effect.fork(
+          sub.pipe(
+            Stream.tap((f) => Effect.sync(() => collected.push(f))),
+            Stream.runDrain,
+          ),
+        )
+        yield* Effect.sleep("30 millis")
+        yield* chat.send(t.id, "go")
+        yield* Effect.sleep("1 second")
+        yield* Fiber.interrupt(fiber)
+        return collected as ReadonlyArray<ChatFrame>
+      }),
+    ).pipe(Effect.provide(fullLayer(fakeLayer))),
+  )
 }
 
 /** Subscribe, drive one user turn, and collect all frames within ~1s. */
@@ -478,6 +565,37 @@ describe("ChatService subagent (parented) frames", () => {
         // Same wire turn id (state survived) and cumulative text intact.
         expect(second.turnId).toBe(first.turnId)
         expect(second.text).toBe("thinking… done")
+      }
+    },
+    { timeout: 10_000 },
+  )
+})
+
+describe("ChatService adapter-stream failure surfacing", () => {
+  it(
+    "surfaces the underlying SDK cause, not an opaque 'An error has occurred'",
+    async () => {
+      // The exact shape the SDK throws when its bundled binary can't spawn —
+      // the real production failure that this regression guards (see
+      // dream-reasoner.ts musl/glibc landmine + the new-chat-panel bug).
+      const marker =
+        "Claude Code native binary not found at /x/musl/claude. Please specify a valid path with options.pathToClaudeCodeExecutable."
+      const frames = await collectFramesFailing(marker)
+      const errFrame = frames.find((f) => f.type === "assistant-error")
+      expect(errFrame).toBeDefined()
+      const msg =
+        errFrame && errFrame.type === "assistant-error"
+          ? errFrame.error.message
+          : ""
+      // Still tagged as an adapter stream failure...
+      expect(msg).toContain("adapter stream failed")
+      // ...but now the REAL reason is visible (the whole point of the fix).
+      expect(msg).toContain("native binary not found")
+      expect(msg).toContain("pathToClaudeCodeExecutable")
+      // And the opaque Effect default must NOT be the surfaced text.
+      expect(msg).not.toContain("An error has occurred")
+      if (errFrame && errFrame.type === "assistant-error") {
+        expect(errFrame.error.kind).toBe("sdk")
       }
     },
     { timeout: 10_000 },
