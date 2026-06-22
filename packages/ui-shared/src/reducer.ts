@@ -17,6 +17,7 @@ import type {
   ConnectorInstanceItem,
   ObsEvent,
   PinnedArtifactItem,
+  ServerDescriptor,
   ServerFrame,
   SessionSummary,
   SkillCatalogItem,
@@ -157,6 +158,12 @@ export interface UIState {
   readonly smartBarItems: ReadonlyArray<SmartBarItem>
   /** threadId of the last received smart-bar frame — used for stale-drop. */
   readonly smartBarThreadId: string | null
+  /**
+   * Server descriptor from the most recent `hello` frame. null until the
+   * first hello arrives or when not connected. Additive — older servers omit
+   * the field; this stays null when descriptor is absent from the frame.
+   */
+  readonly serverDescriptor: ServerDescriptor | null
 }
 
 export const initialState: UIState = {
@@ -190,6 +197,7 @@ export const initialState: UIState = {
   vaultSync: null,
   smartBarItems: [],
   smartBarThreadId: null,
+  serverDescriptor: null,
 }
 
 const MAX_RETAINED = 500
@@ -285,6 +293,9 @@ export const reduce = (state: UIState, action: Action): UIState => {
         // is older and omitted the field; the UI falls back to its hardcoded
         // list. undefined → null so UIState's type stays non-nullable-optional.
         availableModels: frame.availableModels ?? null,
+        // Capture the additive server descriptor when present. null means the
+        // server is older and omitted the field. Older clients ignore it.
+        serverDescriptor: frame.descriptor ?? null,
         closeReason: null,
       }
     case "event": {
