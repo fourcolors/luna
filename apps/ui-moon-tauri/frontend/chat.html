@@ -8194,9 +8194,13 @@
         if (savedWsToken !== null) loadedToken = savedWsToken;
       }
 
-      // URL: prefer the value from the secure file, then localStorage, then default.
-      const savedWsUrl = localStorage.getItem('luna_ws_url');
-      State.wsUrl = loadedUrl || savedWsUrl || 'ws://127.0.0.1:4753/ui';
+      // URL: prefer the value from the secure file, then the legacy bare key
+      // (read-only after C2 — writes removed from index.html), then default.
+      // Route-keyed resolution (MoonSession.resolveBootRoute) is the hub's
+      // concern; the chat window reads the URL the hub persisted via
+      // moon-connection.json / load_connection.
+      const legacyUrlCache = localStorage.getItem('luna_ws_url');
+      State.wsUrl = loadedUrl || legacyUrlCache || 'ws://127.0.0.1:4753/ui';
       State.wsToken = loadedToken !== null ? loadedToken : '';
 
       // Establish the initial WebSocket connection!
