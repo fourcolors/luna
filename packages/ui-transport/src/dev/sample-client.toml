@@ -1,0 +1,21 @@
+# sample-client.toml — Example bootstrap config for the multiroute slice.
+# Tests and docs reference this string directly.
+# For production: cp to ~/.luna/client.toml, chmod 0600, fill in real tokenRefs.
+
+kind              = "bootstrap"
+fileFormatVersion = 3
+default           = "jax-stable"
+
+# ── Luna chat-server (WebSocket) ─────────────────────────────────────────────
+[route.jax-stable]
+  label     = "Stable (prod)"
+  endpoints = ["ws://jax-box:4753/ui", "ws://jax-box.local:4753/ui"]
+  tokenRef  = "env:LUNA_STABLE_UI_WS_TOKEN"
+  # expect  = "spki:sha256:9f2c…"   # populate after first connect (TOFU)
+
+# ── Hermes Nous Research agent harness (HTTP + SSE) ──────────────────────────
+[route.hermes-local]
+  label     = "Hermes (local)"
+  endpoints = ["http://127.0.0.1:8642/v1"]
+  tokenRef  = "env:HERMES_API_KEY"
+  # No expect pin on loopback http:// — no TLS, no MITM surface (§5.1).

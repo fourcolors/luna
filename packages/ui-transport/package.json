@@ -12,7 +12,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@luna/ui-shared": "workspace:*"
+    "@luna/ui-shared": "workspace:*",
+    "smol-toml": "^1.7.0"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

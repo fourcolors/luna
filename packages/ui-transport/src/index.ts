@@ -27,3 +27,11 @@ export type { FetchFn } from "./adapters/hermes-http-sse.js"
 // Dev / stub server (for tests and local development)
 export { startHermesStub } from "./dev/hermes-stub.js"
 export type { HermesStubHandle, HermesStubOptions } from "./dev/hermes-stub.js"
+
+// Connection pool (Chunk 4-A)
+export { ConnectionManager } from "./pool/connection-manager.js"
+export type { RouteHandle } from "./pool/connection-manager.js"
+
+// Bootstrap config parser + tokenRef resolver (Chunk 4-B)
+export { parseClientConfig, resolveTokenRef } from "./bootstrap/client-config.js"
+export type { ParsedClientConfig } from "./bootstrap/client-config.js"
