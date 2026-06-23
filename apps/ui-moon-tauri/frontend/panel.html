@@ -25,6 +25,10 @@
   <script src="vendor/moon-native-titlebar.js"></script>
   <!-- Honors the "Always on Top" setting for this panel (default: not floating). -->
   <script src="vendor/moon-window-float.js"></script>
+  <!-- Phase 2 C3 route module: MoonSession.resolveBootRoute / setPanelRoute /
+       listRoutes / setDefaultRoute. Degrades gracefully when __TAURI__ is absent
+       or client.toml does not exist (un-migrated user). -->
+  <script src="vendor/moon-session.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -187,6 +191,9 @@
     div.className = 'notice';
     div.textContent = text;
     contentArea.appendChild(div);
+    // Observability: record the last notice so agent-browser / tests can assert
+    // whether a connection error was surfaced.
+    if (window.__PanelInternals) window.__PanelInternals.lastNotice = text;
   }
 
   // ── Panel type modules ─────────────────────────────────────────────────
@@ -210,13 +217,94 @@
     // client over the shared transport, connected with the stored creds.
     // Returns the client (already connecting); callers register frames on
     // the registry they passed in.
+    //
+    // Phase 2 C7 — per-panel route binding:
+    //   1. Try MoonSession.resolveBootRoute(panelId) — uses any panel-specific
+    //      route binding (set via set_panel_route) or falls back to the default
+    //      route from client.toml. Returns RouteInfo { endpoints[], token_ref }.
+    //   2. Use endpoints[0] as wsUrl. The token still comes from load_connection
+    //      (token_ref resolution is Phase 3 / C6); if route resolution succeeds
+    //      but load_connection fails, surface that error.
+    //   3. If MoonSession is unavailable (no __TAURI__) or returns null (no
+    //      client.toml / un-migrated), fall back to the legacy load_connection
+    //      path unchanged.
+    //   4. Child/settings panels opened from a parent panel inherit the DEFAULT
+    //      route — no explicit parent-route signal is plumbed through panel.html
+    //      today. Explicit parent→child route binding is a C8 follow-up.
+    //
+    // Error surfacing:
+    //   - Off-Tauri (no __TAURI__): silent fallback (expected in browser dev).
+    //   - Tauri present but route/connection failed: showNotice() with reason.
     connectWs: function (registry, opts) {
+      var hasTauri = !!(window.__TAURI__ && window.__TAURI__.core);
       var client = LunaWS.createClient(Object.assign({ registry: registry, autoPong: true }, opts || {}));
-      ctx.invoke('load_connection').then(function (creds) {
-        if (creds && creds.wsUrl) {
-          try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) { /* notice handled by caller */ }
-        }
-      }).catch(function () { /* off-Tauri */ });
+
+      // Resolve the effective panel identifier (window label, populated from
+      // Tauri when running inside the app; null in browser / test environments).
+      var effectivePanelId = label || null;
+
+      if (typeof MoonSession !== 'undefined') {
+        // Phase 2 C7 — per-panel route resolution via MoonSession (C3).
+        // MoonSession.resolveBootRoute() returns null if:
+        //   - client.toml not found → un-migrated user, fall back to legacy
+        //   - any Tauri error → degrade gracefully
+        MoonSession.resolveBootRoute(effectivePanelId).then(function (route) {
+          if (route && Array.isArray(route.endpoints) && route.endpoints.length > 0) {
+            // Route resolved via client.toml — use the first endpoint as the
+            // WebSocket URL. Token still comes from load_connection (Phase 3
+            // will wire token_ref → resolved token from route directly).
+            var wsUrl = route.endpoints[0];
+            // Expose for observability (agent-browser smoke + future C8 hub).
+            if (window.__PanelInternals) {
+              window.__PanelInternals.resolvedRouteKey = route.key || null;
+            }
+            ctx.invoke('load_connection').then(function (creds) {
+              var wsToken = (creds && creds.wsToken) ? creds.wsToken : null;
+              try { client.connect(wsUrl, wsToken); } catch (e) {
+                showNotice('Panel connection failed: ' + (e && e.message ? e.message : String(e)));
+              }
+            }).catch(function (e) {
+              // load_connection rejected — Tauri is present but command failed.
+              showNotice('Panel connection failed: ' + (e && e.message ? e.message : String(e)));
+            });
+          } else {
+            // No client.toml route configured — legacy load_connection path.
+            ctx.invoke('load_connection').then(function (creds) {
+              if (creds && creds.wsUrl) {
+                try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) { /* notice handled by caller */ }
+              }
+            }).catch(function (e) {
+              if (hasTauri) {
+                // Tauri is present but load_connection rejected — surface it.
+                showNotice('Panel connection failed: ' + (e && e.message ? e.message : String(e)));
+              }
+              // Off-Tauri: stay silent (expected in browser dev / jsdom).
+            });
+          }
+        }).catch(function (e) {
+          // resolveBootRoute itself rejected (shouldn't happen — MoonSession
+          // catches internally, but belt-and-suspenders). Fall back to legacy.
+          ctx.invoke('load_connection').then(function (creds) {
+            if (creds && creds.wsUrl) {
+              try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) {}
+            }
+          }).catch(function (connErr) {
+            if (hasTauri) {
+              showNotice('Panel connection failed: ' + (connErr && connErr.message ? connErr.message : String(connErr)));
+            }
+          });
+        });
+      } else {
+        // Legacy path (no MoonSession — off-Tauri / un-migrated / tests).
+        // SYNCHRONOUS invocation preserved byte-identically from master so that
+        // tests can assert ctx.invoke was called immediately after connectWs().
+        ctx.invoke('load_connection').then(function (creds) {
+          if (creds && creds.wsUrl) {
+            try { client.connect(creds.wsUrl, creds.wsToken || null); } catch (_) { /* notice handled by caller */ }
+          }
+        }).catch(function () { /* off-Tauri */ });
+      }
+
       return client;
     },
   };
@@ -234,7 +322,10 @@
       barTitle.textContent = 'Unknown panel';
       showNotice('Unknown panel type: "' + type + '"');
     }
-    window.__PanelInternals = { type: type, hasModule: !!mod };
+    // Expose observability fields for agent-browser smoke and tests.
+    // resolvedRouteKey: set by connectWs when a client.toml route is used.
+    // lastNotice: set by showNotice — truthy means an error was surfaced.
+    window.__PanelInternals = { type: type, hasModule: !!mod, resolvedRouteKey: null, lastNotice: null };
   }
 
   var registered = window.LunaPanelTypes && window.LunaPanelTypes[type];
