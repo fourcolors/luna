@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p apps/agent-cli/tsconfig.json && tsc --noEmit -p apps/ui-web/tsconfig.json && tsc --noEmit -p packages/ui-shared-solid/tsconfig.json",
     "vault:migrate-keychain:dry-run": "bun apps/ui-web/scripts/vault-migrate-keychain.ts --dry-run",
     "vault:migrate-keychain:apply": "bun apps/ui-web/scripts/vault-migrate-keychain.ts --apply --keep-env",
-    "install:safe": "BUN_INSTALL_CACHE_DIR=/tmp/bun-cache bun install"
+    "install:safe": "BUN_INSTALL_CACHE_DIR=/tmp/bun-cache bun install",
+    "bundle:ui-transport": "bun apps/ui-moon-tauri/scripts/bundle-ui-transport.ts"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
