@@ -24,9 +24,12 @@ export type { WsFactory } from "./adapters/luna-ws.js"
 export { HermesHttpSseAdapter, projectHermesDescriptor } from "./adapters/hermes-http-sse.js"
 export type { FetchFn } from "./adapters/hermes-http-sse.js"
 
-// Dev / stub server (for tests and local development)
+// Dev / stub servers (for tests and local development)
 export { startHermesStub } from "./dev/hermes-stub.js"
 export type { HermesStubHandle, HermesStubOptions } from "./dev/hermes-stub.js"
+
+export { startLunaStub } from "./dev/luna-stub.js"
+export type { LunaStubHandle, LunaStubOptions } from "./dev/luna-stub.js"
 
 // Connection pool (Chunk 4-A)
 export { ConnectionManager } from "./pool/connection-manager.js"

@@ -53,6 +53,16 @@ export function startHermesStub(opts?: HermesStubOptions): Promise<HermesStubHan
   const VERSION = opts?.version ?? "0.17.0-stub"
   const DELTA_COUNT = opts?.deltaCount ?? 3
 
+  // Dev stub is browser-facing: the harness page fetches it cross-origin (a
+  // different port), so it must answer CORS. A real Hermes deployment would set
+  // these or be same-origin; permissive is fine for a local dev stub.
+  const CORS_HEADERS: Record<string, string> = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "authorization, content-type",
+    "Access-Control-Max-Age": "86400",
+  }
+
   function checkAuth(req: http.IncomingMessage): boolean {
     const auth = req.headers["authorization"] ?? ""
     if (!auth.startsWith("Bearer ")) return false
@@ -61,7 +71,7 @@ export function startHermesStub(opts?: HermesStubOptions): Promise<HermesStubHan
 
   function sendJson(res: http.ServerResponse, body: unknown, status = 200): void {
     const payload = JSON.stringify(body)
-    res.writeHead(status, { "Content-Type": "application/json" })
+    res.writeHead(status, { "Content-Type": "application/json", ...CORS_HEADERS })
     res.end(payload)
   }
 
@@ -97,6 +107,7 @@ export function startHermesStub(opts?: HermesStubOptions): Promise<HermesStubHan
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
+        ...CORS_HEADERS,
       })
 
       // Emit delta chunks
@@ -129,6 +140,13 @@ export function startHermesStub(opts?: HermesStubOptions): Promise<HermesStubHan
       const method = req.method ?? "GET"
       const url = new URL(req.url ?? "/", `http://127.0.0.1`)
       const path = url.pathname
+
+      // ── CORS preflight (answer BEFORE auth — preflight carries no token) ─
+      if (method === "OPTIONS") {
+        res.writeHead(204, CORS_HEADERS)
+        res.end()
+        return
+      }
 
       // ── Auth check ─────────────────────────────────────────────────────
       if (!checkAuth(req)) {
