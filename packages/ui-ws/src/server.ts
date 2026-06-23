@@ -1270,6 +1270,13 @@ export const startUIWebSocketServer = (
           // additive pattern — conditional-spread so it's omitted on older/setup paths
           // that don't provide the inputs. Older clients ignore it entirely.
           ...((() => {
+            // NOTE: `isLoopback` and `timerAllowed` are intentionally NOT passed here.
+            // The `administer` capability therefore remains conservatively denied for all
+            // connections — which is the correct and safe default. Raw socket-loopback
+            // cannot be used as the operator-identity signal: this server runs inside an
+            // incus container, so all external connections arrive via the incusd :4753 proxy
+            // and would appear loopback to the process, wrongly granting administer.
+            // Wire these fields only as part of Phase-2 C9 (trust/token authz work).
             const descriptor = projectLunaDescriptor({
               ...(config.serverName !== undefined ? { serverName: config.serverName } : {}),
               ...(serverVersion !== undefined || buildSha !== undefined ? { version: serverVersion ?? buildSha } : {}),

@@ -1,14 +1,11 @@
 {
-  "name": "@luna/ui-shared",
+  "name": "@luna/server-registry",
   "version": "0.0.1",
   "private": true,
   "type": "module",
   "main": "src/index.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./core": "./src/core.ts",
-    "./widget-sandbox": "./src/widget-sandbox.ts",
-    "./mcp-app-host": "./src/mcp-app-host.ts"
+    ".": "./src/index.ts"
   },
   "scripts": {
     "test": "vitest run"
