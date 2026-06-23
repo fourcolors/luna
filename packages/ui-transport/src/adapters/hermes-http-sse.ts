@@ -8,6 +8,7 @@ import type {
   RouteConfig,
 } from "../contract.js"
 import type { ServerDescriptor } from "../contract.js"
+import type { TokenResolver } from "../token-resolver.js"
 import { Broadcast } from "../internal/broadcast.js"
 
 // ── Types for Hermes HTTP responses ──────────────────────────────────────────
@@ -175,6 +176,14 @@ export class HermesHttpSseAdapter implements ClientTransportAdapter {
   readonly #route: RouteConfig
   readonly #fetch: FetchFn
 
+  /**
+   * Optional injected resolver: turns route.tokenRef (env:/file:/op:/none) into
+   * a concrete bearer token. When absent, the literal route.tokenRef is used
+   * (backward compat). Resolution is lazy + cached (resolve once).
+   */
+  readonly #tokenResolver: TokenResolver | undefined
+  #resolvedToken: string | null = null
+
   #lastAttach: AttachResult | null = null
   #disposed = false
 
@@ -187,10 +196,34 @@ export class HermesHttpSseAdapter implements ClientTransportAdapter {
   /** Drain functions for open sessions (called on dispose() to unblock parked iterables). */
   readonly #sessionDrains = new Map<string, () => void>()
 
-  constructor(route: RouteConfig, fetchFn?: FetchFn) {
+  constructor(
+    route: RouteConfig,
+    fetchFn?: FetchFn,
+    /**
+     * Optional resolver for route.tokenRef → bearer token. When omitted, the
+     * literal route.tokenRef is used (backward compat). Resolved lazily, once.
+     */
+    tokenResolver?: TokenResolver,
+  ) {
     this.routeKey = route.routeKey
     this.#route = route
     this.#fetch = fetchFn ?? globalThis.fetch.bind(globalThis)
+    this.#tokenResolver = tokenResolver
+  }
+
+  /**
+   * Resolve the bearer token for this route, lazily and cached. If a resolver
+   * was injected, it is used (only for this route). Otherwise the literal
+   * route.tokenRef is returned unchanged (backward compat). The resolved token
+   * is held in memory only — never logged, never written back to disk.
+   */
+  async #resolveToken(): Promise<string> {
+    if (this.#resolvedToken !== null) return this.#resolvedToken
+    const token = this.#tokenResolver
+      ? await this.#tokenResolver(this.#route.tokenRef)
+      : this.#route.tokenRef
+    this.#resolvedToken = token
+    return token
   }
 
   // ── Public: ClientTransportAdapter ─────────────────────────────────────────
@@ -199,9 +232,23 @@ export class HermesHttpSseAdapter implements ClientTransportAdapter {
     if (this.#disposed) throw new Error(`HermesHttpSseAdapter(${this.routeKey}): disposed`)
 
     const baseUrl = this.#baseUrl()
-    const token = this.#route.tokenRef
 
     this.#connectionBroadcast.publish({ status: "connecting" })
+
+    // Resolve the bearer token BEFORE the first fetch. If an injected resolver
+    // rejects (op:// fail-closed, env unset, Tauri command error), fail closed:
+    // no fetch is issued with an empty/garbage token. We also transition the
+    // connection stream to a terminal "down" state (so a consumer subscribed
+    // SOLELY to `connection` is not pinned at "connecting") and re-throw to
+    // preserve the rejected-attach contract callers already await.
+    let token: string
+    try {
+      token = await this.#resolveToken()
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      this.#connectionBroadcast.publish({ status: "down", reason })
+      throw err
+    }
 
     try {
       const headers: Record<string, string> = {
@@ -378,7 +425,9 @@ export class HermesHttpSseAdapter implements ClientTransportAdapter {
     /** Internal: start an SSE fetch and pump frames into the queue. */
     const startStream = async (userText: string): Promise<void> => {
       const baseUrl = this.#baseUrl()
-      const token = this.#route.tokenRef
+      // Reuse the token resolved at attach() (cached). openSession() calls
+      // attach() first if not yet attached, so this never re-prompts op://.
+      const token = await this.#resolveToken()
 
       // Assign a new messageId for this turn
       currentMessageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2)}`

@@ -1,33 +1,11 @@
-// Contract types and interfaces
-export type {
-  AttachResult,
-  ChatFrame,
-  ChatInput,
-  ChatSession,
-  ClientTransportAdapter,
-  ConnectionState,
-  DescriptorOrigin,
-  NormalizedMessage,
-  NormalizedToolCall,
-  RouteConfig,
-  ServerDescriptor,
-  ServerKind,
-} from "./contract.js"
+/**
+ * Default (Node) entry for @luna/ui-transport.
+ *
+ * Re-exports the Node surface from ./node.ts, which itself re-exports the
+ * browser-safe surface (./browser.ts) plus the Node-only bootstrap parser and
+ * the Node-backed token resolver. Browser consumers must import ./browser.js
+ * directly (or via the bundled vendor/ui-transport.js) to avoid pulling in
+ * node:fs / node:child_process.
+ */
 
-// Factory
-export { selectAdapter } from "./factory.js"
-
-// Adapters
-export { LunaWsAdapter } from "./adapters/luna-ws.js"
-export type { WsFactory } from "./adapters/luna-ws.js"
-
-export { HermesHttpSseAdapter, projectHermesDescriptor } from "./adapters/hermes-http-sse.js"
-export type { FetchFn } from "./adapters/hermes-http-sse.js"
-
-// Connection pool (Chunk 4-A)
-export { ConnectionManager } from "./pool/connection-manager.js"
-export type { RouteHandle } from "./pool/connection-manager.js"
-
-// Bootstrap config parser + tokenRef resolver (Chunk 4-B)
-export { parseClientConfig, resolveTokenRef } from "./bootstrap/client-config.js"
-export type { ParsedClientConfig } from "./bootstrap/client-config.js"
+export * from "./node.js"

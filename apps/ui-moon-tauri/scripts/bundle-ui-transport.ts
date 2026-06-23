@@ -96,12 +96,20 @@ if (import.meta.main) {
   }
   console.log("[bundle-ui-transport] ✓ All required exports found in bundle")
 
-  // Confirm Node-only modules are absent
-  const forbidden = ["smol-toml", "node:fs", "node:path"]
-  const found = forbidden.filter((m) => output.includes(m))
+  // Confirm Node-only modules are absent. Guard against ANY `node:` builtin
+  // specifier (not a hardcoded subset) so a future leak of node:child_process,
+  // node:os, node:url, etc. — e.g. via the resolveTokenRef op:// path — cannot
+  // slip past a clean-looking bundle. The leading-boundary class avoids matching
+  // an identifier that merely ends in "node:" inside a larger word.
+  const NODE_SPECIFIER = /(^|[^A-Za-z0-9_$])node:[a-z][a-z/_-]*/
+  const forbidden: { label: string; hit: () => boolean }[] = [
+    { label: "smol-toml", hit: () => output.includes("smol-toml") },
+    { label: "node: builtin specifier", hit: () => NODE_SPECIFIER.test(output) },
+  ]
+  const found = forbidden.filter((f) => f.hit()).map((f) => f.label)
   if (found.length > 0) {
     console.error("[bundle-ui-transport] ✗ Bundle contains forbidden Node-only modules:", found)
     process.exit(1)
   }
-  console.log("[bundle-ui-transport] ✓ No Node-only modules in bundle (smol-toml / node:fs absent)")
+  console.log("[bundle-ui-transport] ✓ No Node-only modules in bundle (no smol-toml / no node: specifier)")
 }

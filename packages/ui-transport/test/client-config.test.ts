@@ -256,17 +256,210 @@ describe("resolveTokenRef", () => {
     })
   })
 
-  // op:// scheme
-  describe("op:// scheme", () => {
-    it("throws a clear 'not wired' error", async () => {
-      await expect(resolveTokenRef("op://Luna/stable/token")).rejects.toThrow(
-        /1Password resolver not wired/,
+  // op:// scheme — now WIRED (C6) via the 1Password CLI with an injectable
+  // spawn so these tests NEVER launch a real `op` process.
+  describe("op:// scheme (1Password CLI)", () => {
+    const OP_PATH = "/usr/local/bin/op"
+
+    /** A fake spawn that records its call and returns a canned result. */
+    function makeFakeSpawn(result: Partial<{
+      code: number | null
+      signal: NodeJS.Signals | null
+      stdout: string
+      stderr: string
+    }>) {
+      const calls: Array<{ binaryPath: string; argv: readonly string[]; timeoutMs: number }> = []
+      const fn = async (
+        binaryPath: string,
+        argv: readonly string[],
+        opts: { timeoutMs: number },
+      ) => {
+        calls.push({ binaryPath, argv, timeoutMs: opts.timeoutMs })
+        return {
+          code: result.code ?? 0,
+          signal: result.signal ?? null,
+          stdout: result.stdout ?? "",
+          stderr: result.stderr ?? "",
+        }
+      }
+      return { fn, calls }
+    }
+
+    // A lookup that pretends `op` is on PATH at OP_PATH (no real fs access).
+    const fakeLookup = () => OP_PATH
+
+    it("resolves a token when op exits 0 (allowInteractive + mocked spawn)", async () => {
+      const { fn, calls } = makeFakeSpawn({ code: 0, stdout: "s3cr3t-token\n" })
+      const token = await resolveTokenRef(
+        "op://Luna/stable/token",
+        {},
+        undefined,
+        undefined,
+        {
+          allowInteractive: true,
+          opBinaryPath: OP_PATH,
+          opSpawn: fn,
+          opPathLookup: fakeLookup,
+        },
       )
+      expect(token).toBe("s3cr3t-token") // trimmed
+      expect(calls).toHaveLength(1)
     })
 
-    it("error message includes guidance to use env: or file:", async () => {
-      const err = await resolveTokenRef("op://Luna/hermes-api/key").catch((e) => e)
-      expect(err.message).toMatch(/env:|file:/)
+    it("refuses op:// by DEFAULT (headless / no allowInteractive) — fail-closed", async () => {
+      const { fn, calls } = makeFakeSpawn({ code: 0, stdout: "should-not-be-read" })
+      await expect(
+        resolveTokenRef("op://Luna/stable/token", {}, undefined, undefined, {
+          opBinaryPath: OP_PATH,
+          opSpawn: fn,
+          opPathLookup: fakeLookup,
+        }),
+      ).rejects.toThrow(/refused in non-interactive contexts/)
+      // The spawn must NEVER have been invoked when refused.
+      expect(calls).toHaveLength(0)
+    })
+
+    it("throws on a nonzero exit (fail-closed)", async () => {
+      const { fn } = makeFakeSpawn({ code: 1, stderr: "[ERROR] item not found" })
+      await expect(
+        resolveTokenRef("op://Luna/missing/token", {}, undefined, undefined, {
+          allowInteractive: true,
+          opBinaryPath: OP_PATH,
+          opSpawn: fn,
+          opPathLookup: fakeLookup,
+        }),
+      ).rejects.toThrow(/exited with code 1/)
+    })
+
+    it("throws on a timeout (spawn killed via SIGTERM signal)", async () => {
+      const { fn } = makeFakeSpawn({ code: null, signal: "SIGTERM", stdout: "" })
+      await expect(
+        resolveTokenRef("op://Luna/slow/token", {}, undefined, undefined, {
+          allowInteractive: true,
+          opBinaryPath: OP_PATH,
+          opTimeoutMs: 50,
+          opSpawn: fn,
+          opPathLookup: fakeLookup,
+        }),
+      ).rejects.toThrow(/timed out/)
+    })
+
+    it("throws on a timeout when the spawn REJECTS with killed (execFile-style)", async () => {
+      const rejectingSpawn = async () => {
+        const e = new Error("Command failed: op read") as NodeJS.ErrnoException & { killed?: boolean; signal?: string }
+        e.killed = true
+        e.signal = "SIGTERM"
+        throw e
+      }
+      await expect(
+        resolveTokenRef("op://Luna/slow/token", {}, undefined, undefined, {
+          allowInteractive: true,
+          opBinaryPath: OP_PATH,
+          opTimeoutMs: 50,
+          opSpawn: rejectingSpawn,
+          opPathLookup: fakeLookup,
+        }),
+      ).rejects.toThrow(/timed out/)
+    })
+
+    it("throws when the op binary is missing (no PATH match, no injected path)", async () => {
+      const { fn, calls } = makeFakeSpawn({ code: 0, stdout: "tok" })
+      await expect(
+        resolveTokenRef("op://Luna/stable/token", {}, undefined, undefined, {
+          allowInteractive: true,
+          opSpawn: fn,
+          opPathLookup: () => null, // op not found anywhere
+        }),
+      ).rejects.toThrow(/not found on PATH/)
+      expect(calls).toHaveLength(0)
+    })
+
+    it("throws when the spawn rejects with ENOENT (binary vanished between check and spawn)", async () => {
+      const enoentSpawn = async () => {
+        const e = new Error("spawn op ENOENT") as NodeJS.ErrnoException
+        e.code = "ENOENT"
+        throw e
+      }
+      await expect(
+        resolveTokenRef("op://Luna/stable/token", {}, undefined, undefined, {
+          allowInteractive: true,
+          opBinaryPath: OP_PATH,
+          opSpawn: enoentSpawn,
+          opPathLookup: fakeLookup,
+        }),
+      ).rejects.toThrow(/ENOENT|could not be spawned/)
+    })
+
+    it("rejects a non-absolute injected op binary path", async () => {
+      const { fn } = makeFakeSpawn({ code: 0, stdout: "tok" })
+      await expect(
+        resolveTokenRef("op://Luna/stable/token", {}, undefined, undefined, {
+          allowInteractive: true,
+          opBinaryPath: "op", // not absolute → refuse
+          opSpawn: fn,
+          opPathLookup: fakeLookup,
+        }),
+      ).rejects.toThrow(/must be an absolute path/)
+    })
+
+    it("throws on an empty resolved secret (exit 0 but blank stdout)", async () => {
+      const { fn } = makeFakeSpawn({ code: 0, stdout: "   \n" })
+      await expect(
+        resolveTokenRef("op://Luna/blank/token", {}, undefined, undefined, {
+          allowInteractive: true,
+          opBinaryPath: OP_PATH,
+          opSpawn: fn,
+          opPathLookup: fakeLookup,
+        }),
+      ).rejects.toThrow(/empty secret/)
+    })
+
+    // ── ARGV-INJECTION SAFETY ──────────────────────────────────────────────────
+    // The whole point: a malicious ref MUST NOT reach a shell. We assert the
+    // spawn receives an argv VECTOR with the binary as element 0 and the ref as
+    // a DISCRETE element — never an "sh -c"-style single concatenated string.
+    it("passes the ref as a discrete argv element — never a shell string", async () => {
+      const { fn, calls } = makeFakeSpawn({ code: 0, stdout: "ok" })
+      // This test proves the VECTORIZATION property (binary + ref as separate
+      // argv elements). It uses a charset-VALID ref on purpose so it reaches the
+      // spawn — the metacharacter-rejection property is proven by the adjacent
+      // "rejects a ref containing shell metacharacters" test instead.
+      const validRef = "op://Luna/item/field"
+      await resolveTokenRef(validRef, {}, undefined, undefined, {
+        allowInteractive: true,
+        opBinaryPath: OP_PATH,
+        opSpawn: fn,
+        opPathLookup: fakeLookup,
+      })
+      expect(calls).toHaveLength(1)
+      const call = calls[0]!
+      // binary is the validated absolute path, passed SEPARATELY from argv.
+      expect(call.binaryPath).toBe(OP_PATH)
+      // argv is a vector; the ref is its own element, not interpolated.
+      expect(Array.isArray(call.argv)).toBe(true)
+      expect(call.argv).toContain("read")
+      expect(call.argv).toContain(validRef)
+      // No element is a shell invocation, and the binary is NOT "sh"/"bash".
+      expect(call.binaryPath).not.toMatch(/\/(sh|bash|zsh)$/)
+      expect(call.argv).not.toContain("-c")
+      // The ref must NOT be glued onto another arg (no element CONTAINS the ref
+      // alongside other text — it stands alone).
+      const refElements = call.argv.filter((a) => a.includes("op://"))
+      expect(refElements).toEqual([validRef])
+    })
+
+    it("rejects a ref containing shell metacharacters before any spawn (defense-in-depth)", async () => {
+      const { fn, calls } = makeFakeSpawn({ code: 0, stdout: "ok" })
+      await expect(
+        resolveTokenRef("op://Luna/item/field;rm -rf ~", {}, undefined, undefined, {
+          allowInteractive: true,
+          opBinaryPath: OP_PATH,
+          opSpawn: fn,
+          opPathLookup: fakeLookup,
+        }),
+      ).rejects.toThrow(/characters outside the allowed set/)
+      // Refused at the charset gate → spawn never called.
+      expect(calls).toHaveLength(0)
     })
   })
 

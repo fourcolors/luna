@@ -18,6 +18,7 @@
  */
 
 import type { AttachResult, ClientTransportAdapter, ConnectionState, RouteConfig } from "../contract.js"
+import type { TokenResolver } from "../token-resolver.js"
 import { selectAdapter } from "../factory.js"
 
 /** The live state of one managed connection in the pool. */
@@ -61,17 +62,28 @@ export class ConnectionManager {
 
   #disposed = false
 
+  readonly #adapterFactory: (route: RouteConfig) => ClientTransportAdapter
+
   /**
    * @param routes - Pre-parsed route map from parseClientConfig(). File I/O
    *                 stays out; the manager works purely with resolved RouteConfigs.
-   * @param adapterFactory - Override the adapter factory for tests. Defaults to
-   *                         selectAdapter from factory.ts.
+   * @param adapterFactory - Override the adapter factory for tests. When omitted,
+   *                 defaults to selectAdapter bound with `tokenResolver` so the
+   *                 produced adapters resolve their tokenRef lazily at connect.
+   * @param tokenResolver - Optional resolver threaded into the default factory so
+   *                 each adapter turns route.tokenRef (env:/file:/op:/none) into a
+   *                 concrete token at connect time. Ignored when `adapterFactory`
+   *                 is supplied explicitly (the caller's factory owns resolution).
+   *                 When omitted, adapters fall back to the literal route.tokenRef.
    */
   constructor(
     routes: ReadonlyMap<string, RouteConfig>,
-    private readonly adapterFactory: (route: RouteConfig) => ClientTransportAdapter = selectAdapter,
+    adapterFactory?: (route: RouteConfig) => ClientTransportAdapter,
+    tokenResolver?: TokenResolver,
   ) {
     this.#routes = routes
+    this.#adapterFactory =
+      adapterFactory ?? ((route: RouteConfig) => selectAdapter(route, tokenResolver))
   }
 
   // ── acquire ──────────────────────────────────────────────────────────────────
@@ -141,7 +153,7 @@ export class ConnectionManager {
    * deferred and are NOT implemented here.
    */
   async #startAttach(routeKey: string, config: RouteConfig): Promise<PoolEntry> {
-    const adapter = this.adapterFactory(config)
+    const adapter = this.#adapterFactory(config)
     const attachResult = await adapter.attach()
 
     // Guard: if disposeAll() ran while we were awaiting attach(), the manager is
