@@ -352,6 +352,151 @@ pub fn set_panel_route(panel_id: String, route_key: String) -> Result<(), String
     save_session(&session)
 }
 
+// ── Phase-2 C10: legacy migration ────────────────────────────────────────────
+
+/// Default profile name (mirrors DEFAULT_PROFILE in main.rs).
+const DEFAULT_PROFILE: &str = "stable";
+
+/// Read `~/.luna/moon-connection.json` and extract the profiles map for
+/// migration. Returns `Some((activeProfile, HashMap<profileName → wsUrl>))`
+/// or `None` if the file is absent / unreadable / unrecognised.
+///
+/// Mirrors the `normalize_profiles()` logic in main.rs but is read-only and
+/// self-contained so the migration can run without touching main.rs state.
+fn read_legacy_profiles_for_migration_in(
+    luna_dir: &std::path::Path,
+) -> Option<(String, std::collections::HashMap<String, String>)> {
+    let path = luna_dir.join("moon-connection.json");
+    let contents = std::fs::read_to_string(&path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&contents).ok()?;
+    let obj = value.as_object()?;
+
+    // New multi-profile format: both `activeProfile` + `profiles` present.
+    if let (Some(active), Some(profiles_obj)) = (
+        obj.get("activeProfile").and_then(|v| v.as_str()),
+        obj.get("profiles").and_then(|v| v.as_object()),
+    ) {
+        let mut map = std::collections::HashMap::new();
+        for (name, profile_val) in profiles_obj {
+            let ws_url = profile_val
+                .get("wsUrl")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            map.insert(name.clone(), ws_url);
+        }
+        return Some((active.to_string(), map));
+    }
+
+    // Legacy flat format: top-level `wsUrl` / `wsToken` → treat as `profiles["stable"]`.
+    if obj.contains_key("wsUrl") || obj.contains_key("wsToken") {
+        let ws_url = obj
+            .get("wsUrl")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let mut map = std::collections::HashMap::new();
+        map.insert(DEFAULT_PROFILE.to_string(), ws_url);
+        return Some((DEFAULT_PROFILE.to_string(), map));
+    }
+
+    None
+}
+
+/// Inner implementation of the migration that operates on an explicit luna_dir.
+/// Separated from the public wrapper so tests can pass a tempdir without
+/// mutating the `HOME` environment variable (which is a shared process global).
+fn migrate_legacy_to_client_toml_in(luna_dir: &std::path::Path) -> Result<(), String> {
+    let client_toml = luna_dir.join("client.toml");
+
+    // Idempotent: if client.toml already exists, do nothing.
+    if client_toml.exists() {
+        return Ok(());
+    }
+
+    // Read legacy profiles; bail out silently when nothing to migrate.
+    let (active_profile, profiles) = match read_legacy_profiles_for_migration_in(luna_dir) {
+        Some(pair) => pair,
+        None => return Ok(()),
+    };
+
+    // Build TOML string.
+    let mut lines: Vec<String> = vec![
+        r#"kind = "bootstrap""#.to_string(),
+        "fileFormatVersion = 3".to_string(),
+        format!(r#"default = "{}""#, active_profile),
+    ];
+
+    let mut wrote_any = false;
+    // Stable sort for deterministic output (active profile first, then alpha).
+    let mut profile_names: Vec<&String> = profiles.keys().collect();
+    profile_names.sort_by(|a, b| {
+        let a_is_active = *a == &active_profile;
+        let b_is_active = *b == &active_profile;
+        b_is_active.cmp(&a_is_active).then_with(|| a.cmp(b))
+    });
+
+    for name in profile_names {
+        let ws_url = &profiles[name];
+        if ws_url.is_empty() {
+            continue;
+        }
+        lines.push(String::new());
+        lines.push(format!("[route.{}]", name));
+        lines.push(format!(r#"endpoints = ["{}"]"#, ws_url));
+        lines.push(format!(r#"label = "{}""#, name));
+        lines.push(r#"tokenRef = "legacy""#.to_string());
+        wrote_any = true;
+    }
+
+    if !wrote_any {
+        // All profiles had empty wsUrl — nothing useful to migrate.
+        return Ok(());
+    }
+
+    let body = lines.join("\n") + "\n";
+
+    // Atomic write (F10 write-verify pattern).
+    write_atomic_0600(&client_toml, &body)?;
+
+    // Re-read and parse to verify the written file is valid.
+    let written = std::fs::read_to_string(&client_toml)
+        .map_err(|e| format!("migration verify read failed: {e}"))?;
+    if let Err(e) = parse_client_config(&written) {
+        // Verification failed — remove the bad file so next boot retries cleanly.
+        let _ = std::fs::remove_file(&client_toml);
+        return Err(format!("migration verify parse failed: {e}"));
+    }
+
+    Ok(())
+}
+
+/// Migrate `~/.luna/moon-connection.json` → `~/.luna/client.toml` (idempotent).
+///
+/// Safety contract (F10):
+/// * If client.toml ALREADY exists → no-op immediately (idempotent).
+/// * If moon-connection.json is absent or unparseable → no-op (nothing to migrate).
+/// * Write-verify: write to temp → rename (atomic, via write_atomic_0600) →
+///   RE-READ AND PARSE the written file to verify it's valid BEFORE returning Ok.
+///   If verification fails → remove the bad file so next boot retries cleanly;
+///   return Err.
+/// * moon-connection.json is NEVER touched (stays intact as token source + rollback).
+///
+/// The token handling: each [route.<profileName>] gets `tokenRef = "legacy"`.
+/// The actual token continues to come from load_connection / moon-connection.json.
+/// Phase-3 wires real op:// / env: / file: refs; "legacy" is the placeholder
+/// that tells the token resolver "fall back to moon-connection.json".
+pub fn migrate_legacy_to_client_toml() -> Result<(), String> {
+    migrate_legacy_to_client_toml_in(&luna_dir()?)
+}
+
+/// Tauri command: migrate `~/.luna/moon-connection.json` → `~/.luna/client.toml`.
+/// Called on boot from the frontend. Idempotent. Never touches moon-connection.json.
+#[tauri::command]
+pub fn migrate_legacy_connection() -> Result<(), String> {
+    migrate_legacy_to_client_toml()
+}
+
 // ── unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -614,6 +759,153 @@ tokenRef  = "env:TOK"
     }
 
     // ── FIX 2: set_default_route preserves comments, unknown fields, and order
+
+    // ── Phase-2 C10: migration tests ─────────────────────────────────────────
+
+    #[test]
+    fn migration_no_op_when_client_toml_exists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let luna_dir = dir.path().join(".luna");
+        std::fs::create_dir_all(&luna_dir).expect("mkdir .luna");
+
+        // Write a minimal valid client.toml.
+        let existing_toml = r#"kind = "bootstrap"
+fileFormatVersion = 3
+default = "stable"
+
+[route.stable]
+endpoints = ["ws://existing:4753/ui"]
+label = "stable"
+tokenRef = "legacy"
+"#;
+        std::fs::write(luna_dir.join("client.toml"), existing_toml).expect("write client.toml");
+
+        // No moon-connection.json needed — the no-op path should fire first.
+        let result = migrate_legacy_to_client_toml_in(&luna_dir);
+        assert!(result.is_ok(), "must return Ok: {:?}", result);
+
+        // File must be UNCHANGED.
+        let after = std::fs::read_to_string(luna_dir.join("client.toml")).expect("read back");
+        assert_eq!(after, existing_toml, "client.toml must not be modified");
+    }
+
+    #[test]
+    fn migration_no_op_when_no_moon_connection() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let luna_dir = dir.path().join(".luna");
+        std::fs::create_dir_all(&luna_dir).expect("mkdir .luna");
+        // No moon-connection.json and no client.toml.
+
+        let result = migrate_legacy_to_client_toml_in(&luna_dir);
+        assert!(result.is_ok(), "must return Ok: {:?}", result);
+        assert!(
+            !luna_dir.join("client.toml").exists(),
+            "client.toml must NOT be created when there is nothing to migrate"
+        );
+    }
+
+    #[test]
+    fn migration_creates_client_toml_from_new_format_moon_connection() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let luna_dir = dir.path().join(".luna");
+        std::fs::create_dir_all(&luna_dir).expect("mkdir .luna");
+
+        let moon_conn = r#"{"activeProfile":"stable","profiles":{"stable":{"wsUrl":"ws://jax:4753/ui","wsToken":"tok123"},"dev":{"wsUrl":"ws://jax:5753/ui","wsToken":"devtok"}}}"#;
+        std::fs::write(luna_dir.join("moon-connection.json"), moon_conn)
+            .expect("write moon-connection.json");
+
+        let result = migrate_legacy_to_client_toml_in(&luna_dir);
+        assert!(result.is_ok(), "migration must succeed: {:?}", result);
+
+        let client_toml_path = luna_dir.join("client.toml");
+        assert!(client_toml_path.exists(), "client.toml must be created");
+
+        let contents = std::fs::read_to_string(&client_toml_path).expect("read client.toml");
+        let cfg = parse_client_config(&contents).expect("must be valid client.toml");
+
+        assert_eq!(cfg.default, "stable", "default must be stable");
+
+        let stable = cfg.route.get("stable").expect("stable route must exist");
+        assert_eq!(
+            stable.endpoints,
+            vec!["ws://jax:4753/ui"],
+            "stable endpoint"
+        );
+        assert_eq!(stable.token_ref, "legacy", "tokenRef must be 'legacy'");
+
+        let dev = cfg.route.get("dev").expect("dev route must exist");
+        assert_eq!(dev.endpoints, vec!["ws://jax:5753/ui"], "dev endpoint");
+        assert_eq!(dev.token_ref, "legacy", "dev tokenRef must be 'legacy'");
+
+        // moon-connection.json must be UNCHANGED.
+        let after_moon = std::fs::read_to_string(luna_dir.join("moon-connection.json"))
+            .expect("moon-connection.json must still exist");
+        assert_eq!(
+            after_moon, moon_conn,
+            "moon-connection.json must not be touched"
+        );
+    }
+
+    #[test]
+    fn migration_creates_client_toml_from_legacy_flat_moon_connection() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let luna_dir = dir.path().join(".luna");
+        std::fs::create_dir_all(&luna_dir).expect("mkdir .luna");
+
+        let moon_conn = r#"{"wsUrl":"ws://oldserver:4753/ui","wsToken":"mytoken"}"#;
+        std::fs::write(luna_dir.join("moon-connection.json"), moon_conn)
+            .expect("write moon-connection.json");
+
+        let result = migrate_legacy_to_client_toml_in(&luna_dir);
+        assert!(result.is_ok(), "migration must succeed: {:?}", result);
+
+        let client_toml_path = luna_dir.join("client.toml");
+        assert!(client_toml_path.exists(), "client.toml must be created");
+
+        let contents = std::fs::read_to_string(&client_toml_path).expect("read client.toml");
+        let cfg = parse_client_config(&contents).expect("must be valid client.toml");
+
+        assert_eq!(
+            cfg.default, "stable",
+            "default must be stable (DEFAULT_PROFILE)"
+        );
+
+        let stable = cfg.route.get("stable").expect("stable route must exist");
+        assert_eq!(
+            stable.endpoints,
+            vec!["ws://oldserver:4753/ui"],
+            "stable endpoint from legacy flat"
+        );
+        assert_eq!(stable.token_ref, "legacy", "tokenRef must be 'legacy'");
+    }
+
+    #[test]
+    fn migration_is_idempotent_second_call_is_noop() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let luna_dir = dir.path().join(".luna");
+        std::fs::create_dir_all(&luna_dir).expect("mkdir .luna");
+
+        let moon_conn = r#"{"wsUrl":"ws://jax:4753/ui","wsToken":"tok"}"#;
+        std::fs::write(luna_dir.join("moon-connection.json"), moon_conn)
+            .expect("write moon-connection.json");
+
+        // First call — creates client.toml.
+        migrate_legacy_to_client_toml_in(&luna_dir).expect("first call must succeed");
+
+        let after_first = std::fs::read_to_string(luna_dir.join("client.toml"))
+            .expect("client.toml after first call");
+
+        // Second call — client.toml already exists, must be a no-op.
+        migrate_legacy_to_client_toml_in(&luna_dir).expect("second call must succeed");
+
+        let after_second = std::fs::read_to_string(luna_dir.join("client.toml"))
+            .expect("client.toml after second call");
+
+        assert_eq!(
+            after_first, after_second,
+            "second migration call must leave client.toml unchanged"
+        );
+    }
 
     #[test]
     fn test_set_default_preserves_comments_and_order() {

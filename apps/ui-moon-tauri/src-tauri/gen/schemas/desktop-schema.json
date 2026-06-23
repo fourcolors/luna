@@ -435,6 +435,12 @@
           "markdownDescription": "Allows running a shell command on the client machine via the local-shell bridge"
         },
         {
+          "description": "Allows migrating moon-connection.json to client.toml (idempotent boot-time migration)",
+          "type": "string",
+          "const": "allow-migrate-legacy-connection",
+          "markdownDescription": "Allows migrating moon-connection.json to client.toml (idempotent boot-time migration)"
+        },
+        {
           "description": "Allows the oauth_loopback_cancel command",
           "type": "string",
           "const": "allow-oauth-loopback-cancel",

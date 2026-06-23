@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-migrate-legacy-connection"
+description = "Allows migrating moon-connection.json to client.toml (idempotent boot-time migration)"
+
+[permission.commands]
+allow = [
+  "migrate_legacy_connection"
+]

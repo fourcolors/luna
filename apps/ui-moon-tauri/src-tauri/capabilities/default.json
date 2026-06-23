@@ -19,6 +19,7 @@
     "allow-set-last-thread-id",
     "allow-save-connection",
     "allow-load-connection",
+    "allow-migrate-legacy-connection",
     "allow-load-profiles",
     "allow-set-active-profile",
     "allow-load-route",
