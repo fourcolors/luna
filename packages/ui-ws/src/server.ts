@@ -61,6 +61,7 @@ import {
   type PtyOutputFrame,
   type SmartBarItem,
 } from "./protocol.js"
+import { projectLunaDescriptor } from "./descriptor.js"
 import type { SurveyItem, SurveyVerdict } from "@luna/core"
 
 /**
@@ -180,6 +181,11 @@ export interface UIWebSocketServerConfig {
    * older consumers ignore it.
    */
   readonly serverVersion?: string
+  /**
+   * Human-readable name for this server instance. Echoed in the hello frame's
+   * `descriptor.identity.name` field. Additive — absent = defaults to "luna".
+   */
+  readonly serverName?: string
   /**
    * Operator-configured model list for the UI model-switcher dropdown.
    * When provided, the array is echoed verbatim in the `hello` frame's
@@ -1259,6 +1265,34 @@ export const startUIWebSocketServer = (
           // hardcoded default. Absent on older/setup-mode servers — clients
           // fall back gracefully (see HelloFrame.availableModels in protocol.ts).
           ...(availableModels !== undefined ? { availableModels } : {}),
+          // Additive server descriptor (no protocol bump). Built fresh per connection
+          // so issuedAt and generation are always current. Mirrors the serverVersion
+          // additive pattern — conditional-spread so it's omitted on older/setup paths
+          // that don't provide the inputs. Older clients ignore it entirely.
+          ...((() => {
+            const descriptor = projectLunaDescriptor({
+              ...(config.serverName !== undefined ? { serverName: config.serverName } : {}),
+              ...(serverVersion !== undefined || buildSha !== undefined ? { version: serverVersion ?? buildSha } : {}),
+              port,
+              credentialOk: setupPty == null,
+              setupMode: setupPty != null,
+              caps: {
+                chat: chat !== null,
+                localShell: localShellBridge !== null,
+                skills: skillRegistry !== null,
+                connectors: connectorService !== null,
+                artifacts: artifactStore !== null,
+                workflows: workflowGallery !== null,
+                suggestedActions: suggestedActions !== null,
+                vault: vaultService !== null,
+                mcpApps: mcpAppHost !== null,
+                effortSelection: chat !== null,
+                subagents: chat !== null,
+                modelRouting: modelRoutingService !== null,
+              },
+            })
+            return { descriptor }
+          })()),
           // Capabilities reflect what was bound at startup. When a
           // ChatService is passed in `config.chatService`, the inbound
           // router below handles subscribe/send/interrupt and translates

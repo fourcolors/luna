@@ -113,5 +113,9 @@ export type {
   SuggestedActionSetFrame,
   SuggestedActionUpdateFrame,
   SuggestedActionRespondFrame,
+  ServerDescriptor,
+  ServerDescriptorCapability,
+  ServerKind,
+  OperationName,
 } from "./wire.js"
 export { UI_WS_PROTOCOL_VERSION } from "./wire.js"

@@ -37,7 +37,7 @@
     },
     "apps/ui-moon-tauri": {
       "name": "@luna/ui-moon-tauri",
-      "version": "0.0.34",
+      "version": "0.0.42",
       "devDependencies": {
         "@tauri-apps/cli": "^2.1.0",
         "jsdom": "^29.1.1",
@@ -374,6 +374,21 @@
         "solid-js": "^1.9.12",
       },
     },
+    "packages/ui-transport": {
+      "name": "@luna/ui-transport",
+      "version": "0.0.1",
+      "dependencies": {
+        "@luna/ui-shared": "workspace:*",
+        "smol-toml": "^1.7.0",
+      },
+      "devDependencies": {
+        "@types/node": "^22.9.0",
+        "@types/ws": "^8.5.13",
+        "typescript": "^5.6.3",
+        "vitest": "^2.1.5",
+        "ws": "^8.18.0",
+      },
+    },
     "packages/ui-ws": {
       "name": "@luna/ui-ws",
       "version": "0.0.1",
@@ -634,6 +649,8 @@
     "@luna/ui-shared": ["@luna/ui-shared@workspace:packages/ui-shared"],
 
     "@luna/ui-shared-solid": ["@luna/ui-shared-solid@workspace:packages/ui-shared-solid"],
+
+    "@luna/ui-transport": ["@luna/ui-transport@workspace:packages/ui-transport"],
 
     "@luna/ui-web": ["@luna/ui-web@workspace:apps/ui-web"],
 
@@ -1266,6 +1283,8 @@
     "side-channel-weakmap": ["side-channel-weakmap@1.0.2", "", { "dependencies": { "call-bound": "^1.0.2", "es-errors": "^1.3.0", "get-intrinsic": "^1.2.5", "object-inspect": "^1.13.3", "side-channel-map": "^1.0.1" } }, "sha512-WPS/HvHQTYnHisLo9McqBHOJk2FkHO/tlpvldyrnem4aeQp4hai3gythswg6p01oSoTl58rcpiFAjF2br2Ak2A=="],
 
     "siginfo": ["siginfo@2.0.0", "", {}, "sha512-ybx0WO1/8bSBLEWXZvEd7gMW3Sn3JFlW3TvX1nREbDLRNQNaeNN8WK0meBwPdAaOI7TtRRRJn/Es1zhrrCHu7g=="],
+
+    "smol-toml": ["smol-toml@1.7.0", "", {}, "sha512-aqVvWoyO21L23mb+drl4RmMXbf6N7FdHjAhTRA9ZBL7apWBgfWC16KjrASI+1p9GAroljyMHj6fK67i0UiTNvQ=="],
 
     "solid-js": ["solid-js@1.9.12", "", { "dependencies": { "csstype": "^3.1.0", "seroval": "~1.5.0", "seroval-plugins": "~1.5.0" } }, "sha512-QzKaSJq2/iDrWR1As6MHZQ8fQkdOBf8GReYb7L5iKwMGceg7HxDcaOHk0at66tNgn9U2U7dXo8ZZpLIAmGMzgw=="],
 
