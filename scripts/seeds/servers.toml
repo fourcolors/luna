@@ -8,9 +8,12 @@
 #
 # The loader also hard-fails if kind != "registry".
 #
-# This seed reproduces TODAY's exact flags from luna-autodeploy's hardcoded
-# profile_config() case statement — a provable NO-OP (Phase 1a).
-# Phase 1b will flip stable to incus after empirical verification.
+# Phase 1b: stable has been flipped to its REAL runtime — the luna-stable incus
+# container. This was empirically verified (1b.1 gate): `incus list` shows
+# luna-stable RUNNING; host luna-chat-server.service is INACTIVE; the in-container
+# unit is ACTIVE; host :4753 is an incusd proxy into the container's bun process;
+# /root/luna/stable/repo is bind-mounted to the container's /root/luna.
+# The previous bare-host stanza was the P_INCUS="" bug class — now corrected.
 
 kind          = "registry"
 schemaVersion = 1
@@ -18,20 +21,27 @@ host          = "jax-box"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # stable — production daily driver.
-# RUNTIME: bare-host (no incus) — matches today's P_INCUS="" in profile_config().
-# Phase 1b will migrate this to incus after on-host empirical verification.
+# RUNTIME: incus container luna-stable (empirically verified 1b.1, 2026-06-22).
+#   - Host repo /root/luna/stable/repo bind-mounted to container /root/luna
+#   - Service runs INSIDE the container (luna-chat-server.service)
+#   - Host :4753 is an incusd proxy into the container's bun process
+#   - Host luna-chat-server.service is INACTIVE (not a bare-host deploy)
 # ─────────────────────────────────────────────────────────────────────────────
 [[server]]
 name        = "stable"
 description = "Production chat-server (daily driver)"
 enabled     = true
 
-# update.params.hostRepoDir → P_REPO (matches LUNA_STABLE_REPO_DIR default)
-update.params.hostRepoDir = "/root/luna/stable/repo"
+# update.params.hostRepoDir → P_REPO (bind-mounted host-side repo path)
+update.params.hostRepoDir         = "/root/luna/stable/repo"
 # update.params.ref → P_BRANCH = "master" (after stripping "origin/")
-update.params.ref         = "origin/master"
-# No incus container → bare-host deploy → uses --repo-dir flag (not --incus)
-# runtime.target.incus.container is intentionally absent.
+update.params.ref                 = "origin/master"
+# Incus container name → P_INCUS (non-empty → --incus flag in P_UPDATE_ARGS)
+runtime.target.incus.container    = "luna-stable"
+# containerRepoDir: DOCUMENTARY ONLY — records the in-container bind-mount target
+# of hostRepoDir for humans. The current engine hardcodes /root/luna and does NOT
+# read this key (reserved for the Phase-4 TS engine).
+runtime.target.incus.containerRepoDir = "/root/luna"
 
 # Health / WS port
 ports.proxy = 4753

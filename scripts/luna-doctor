@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+#
+# luna-doctor — Runtime self-validation: declared registry config == real host state.
+#
+# Checks that what the registry SAYS about a server's runtime is actually TRUE
+# on the host.  This makes the P_INCUS="" class of bug fail-loud rather than
+# silently deploying to the wrong target.
+#
+# Usage:
+#   luna-doctor [<profile>]           — validate one profile (default: all enabled)
+#   luna-doctor --all                 — validate all enabled profiles
+#
+# Exit:
+#   0   = all declared checks pass
+#   1   = one or more checks FAILED (declared != real)
+#   2   = bad usage, registry unreadable, or unknown profile
+#
+# ## What is checked:
+#
+#   runtime=incus:
+#     (a) incus exec <container> -- systemctl is-active <unit>   → MUST return "active"
+#     (b) bare-host systemctl is-active <unit>                   → MUST return inactive/fail
+#     Failure on (a) or (b) → FAIL LOUDLY.
+#
+#   runtime=bareFolder:
+#     (a) bare-host systemctl is-active <unit>                   → MUST return "active"
+#     (b) incus: no container should be answering for this unit  (advisory only for now)
+#
+#   F5 rail:
+#     stable (deploy.timer=false): bare-host timer unit luna-autodeploy-stable.timer
+#     must NOT be installed.
+#
+# ## Test seams (mirror luna-deploy.sh and luna-autodeploy pattern):
+#   LUNA_TEST_DOCTOR_INCUS_ACTIVE   — "true"/"false" — override incus exec check
+#   LUNA_TEST_DOCTOR_HOST_ACTIVE    — "true"/"false" — override host systemctl check
+#   LUNA_TEST_DOCTOR_TIMER_PRESENT  — "true"/"false" — override timer presence check
+#
+# These seams allow unit tests to simulate incus-active/bare-inactive (pass) or
+# bare-active/incus-inactive (the P_INCUS="" regression) without a real container.
+
+set -euo pipefail
+
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
+# Source the registry reader.
+# shellcheck source=scripts/lib/luna-registry.sh
+source "$(dirname "$SELF")/lib/luna-registry.sh"
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+_doctor_ok()   { printf '[doctor:%s] OK:   %s\n' "$1" "$2"; }
+_doctor_fail() { printf '[doctor:%s] FAIL: %s\n' "$1" "$2" >&2; }
+_doctor_info() { printf '[doctor:%s] INFO: %s\n' "$1" "$2"; }
+
+# ── check: is the systemd unit active INSIDE the incus container? ─────────────
+# Returns 0 (active) or 1 (not active / error).
+_check_incus_unit_active() {
+  local container="$1" unit="$2"
+  if [[ "${LUNA_TEST_DOCTOR_INCUS_ACTIVE+set}" == "set" ]]; then
+    [[ "$LUNA_TEST_DOCTOR_INCUS_ACTIVE" == "true" ]]
+    return $?
+  fi
+  command -v incus >/dev/null 2>&1 || return 1
+  local state
+  state="$(incus exec "$container" -- systemctl is-active "$unit" 2>/dev/null || true)"
+  [[ "$state" == "active" ]]
+}
+
+# ── check: is the systemd unit active on the BARE HOST? ──────────────────────
+# Returns 0 (active) or 1 (not active / error).
+_check_host_unit_active() {
+  local unit="$1"
+  if [[ "${LUNA_TEST_DOCTOR_HOST_ACTIVE+set}" == "set" ]]; then
+    [[ "$LUNA_TEST_DOCTOR_HOST_ACTIVE" == "true" ]]
+    return $?
+  fi
+  command -v systemctl >/dev/null 2>&1 || return 1
+  local state
+  state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+  [[ "$state" == "active" ]]
+}
+
+# ── check: is the autodeploy timer unit present on the bare host? ─────────────
+# Returns 0 (present/installed) or 1 (absent).
+_check_host_timer_present() {
+  local timer_unit="$1"
+  if [[ "${LUNA_TEST_DOCTOR_TIMER_PRESENT+set}" == "set" ]]; then
+    [[ "$LUNA_TEST_DOCTOR_TIMER_PRESENT" == "true" ]]
+    return $?
+  fi
+  command -v systemctl >/dev/null 2>&1 || return 1
+  # "loaded" or "active" in the list means installed
+  systemctl list-unit-files "$timer_unit" --no-pager 2>/dev/null | grep -q "$timer_unit"
+}
+
+# ── validate_profile <profile> ────────────────────────────────────────────────
+# Loads the registry entry for <profile>, then performs declared==real checks.
+# Returns 0 (all pass) or sets DOCTOR_FAILED=true on failure.
+DOCTOR_FAILED=false
+
+validate_profile() {
+  local profile="$1"
+
+  # Load registry entry (exits 2 on unknown profile / security violation).
+  # luna_load_server sets P_REPO, P_BRANCH, P_INCUS, P_PORT, P_SERVICE_NAME,
+  # P_TIMER_ALLOWED, and P_UPDATE_ARGS.  We use P_INCUS, P_SERVICE_NAME,
+  # P_TIMER_ALLOWED directly; the others are output vars consumed by callers.
+  # shellcheck disable=SC2034  # output vars set for the deploy engine; we read P_INCUS/P_SERVICE_NAME/P_TIMER_ALLOWED
+  P_REPO="" P_BRANCH="" P_INCUS="" P_PORT="" P_SERVICE_NAME="" P_TIMER_ALLOWED=""
+  # shellcheck disable=SC2034
+  P_UPDATE_ARGS=()
+  luna_load_server "$profile"
+
+  local runtime_kind
+  if [[ -n "$P_INCUS" ]]; then
+    runtime_kind="incus"
+  else
+    runtime_kind="bareFolder"
+  fi
+
+  _doctor_info "$profile" "declared runtime=$runtime_kind, unit=$P_SERVICE_NAME, timer_allowed=$P_TIMER_ALLOWED"
+
+  if [[ "$runtime_kind" == "incus" ]]; then
+    local container="$P_INCUS"
+
+    # (a) incus exec <container> -- systemctl is-active <unit> MUST return active
+    if _check_incus_unit_active "$container" "$P_SERVICE_NAME"; then
+      _doctor_ok "$profile" "in-container unit $P_SERVICE_NAME is active (container=$container)"
+    else
+      _doctor_fail "$profile" "DECLARED incus runtime but in-container unit $P_SERVICE_NAME is NOT active."
+      _doctor_fail "$profile" "  Expected: incus exec $container -- systemctl is-active $P_SERVICE_NAME → active"
+      _doctor_fail "$profile" "  This means the registry claims incus but the container is not running the service."
+      _doctor_fail "$profile" "  Check: incus list && incus exec $container -- systemctl status $P_SERVICE_NAME"
+      DOCTOR_FAILED=true
+    fi
+
+    # (b) bare-host systemctl is-active <unit> MUST NOT return active
+    if _check_host_unit_active "$P_SERVICE_NAME"; then
+      _doctor_fail "$profile" "DECLARED incus runtime but bare-host unit $P_SERVICE_NAME IS active — P_INCUS=\"\" regression detected!"
+      _doctor_fail "$profile" "  Expected: bare-host systemctl is-active $P_SERVICE_NAME → inactive/failed"
+      _doctor_fail "$profile" "  This is the P_INCUS=\"\" bug class: service is running bare-host, NOT inside $container."
+      _doctor_fail "$profile" "  Flip the registry runtime to bareFolder OR stop the bare-host unit."
+      DOCTOR_FAILED=true
+    else
+      _doctor_ok "$profile" "bare-host unit $P_SERVICE_NAME is correctly inactive (service lives in $container)"
+    fi
+
+  else
+    # runtime=bareFolder
+
+    # (a) bare-host systemctl is-active <unit> MUST return active
+    if _check_host_unit_active "$P_SERVICE_NAME"; then
+      _doctor_ok "$profile" "bare-host unit $P_SERVICE_NAME is active"
+    else
+      _doctor_fail "$profile" "DECLARED bareFolder runtime but bare-host unit $P_SERVICE_NAME is NOT active."
+      _doctor_fail "$profile" "  Check: systemctl status $P_SERVICE_NAME"
+      DOCTOR_FAILED=true
+    fi
+
+    # Advisory: check if any incus container is accidentally serving this unit
+    # (can't reliably enumerate all containers without incus list, skip in base impl)
+    _doctor_info "$profile" "bareFolder runtime: no container to cross-check"
+  fi
+
+  # F5: if deploy.timer=false, the autodeploy timer MUST NOT be installed on the host
+  if [[ "$P_TIMER_ALLOWED" == "false" ]]; then
+    local timer_unit="luna-autodeploy-${profile}.timer"
+    if _check_host_timer_present "$timer_unit"; then
+      _doctor_fail "$profile" "F5 VIOLATION: $timer_unit is INSTALLED but deploy.timer=false!"
+      _doctor_fail "$profile" "  This bypasses the no-autodeploy safety rail for $profile."
+      _doctor_fail "$profile" "  Remove the timer: luna-autodeploy uninstall-timer $profile"
+      DOCTOR_FAILED=true
+    else
+      _doctor_ok "$profile" "autodeploy timer $timer_unit is correctly absent (deploy.timer=false)"
+    fi
+  else
+    _doctor_info "$profile" "deploy.timer=true — timer presence not checked by F5 rail"
+  fi
+}
+
+# ── arg parse + dispatch ──────────────────────────────────────────────────────
+CMD="${1:-}"
+
+case "$CMD" in
+  -h|--help)
+    sed -n '2,40p' "$SELF" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+  ""|--all)
+    # Validate all profiles available in the registry.
+    # We rely on luna_load_server knowing the profiles; enumerate by loading and
+    # scanning — simpler: just validate the known profiles dev and stable.
+    # (A full-registry enumerate would require a separate scanner; deferrable.)
+    registry_file="${LUNA_SERVERS_CONFIG:-/etc/luna/servers.toml}"
+    if [[ ! -f "$registry_file" ]]; then
+      printf 'luna-doctor: registry file not found: %s\n' "$registry_file" >&2
+      exit 2
+    fi
+    # Extract profile names from the registry (name = "..." lines after [[server]])
+    profiles=()
+    while IFS= read -r line; do
+      profiles+=("$line")
+    done < <(awk '
+      /^\[\[server\]\]/ { in_s=1; next }
+      in_s && /^name[[:space:]]*=/ {
+        split($0, kv, /[[:space:]]*=[[:space:]]*/); v=kv[2]; gsub(/^"|"$/, "", v); print v; in_s=0
+      }
+    ' "$registry_file")
+
+    if [[ "${#profiles[@]}" -eq 0 ]]; then
+      printf 'luna-doctor: no [[server]] entries found in %s\n' "$registry_file" >&2
+      exit 2
+    fi
+
+    for p in "${profiles[@]}"; do
+      validate_profile "$p" || true  # individual failures recorded in DOCTOR_FAILED
+    done
+    ;;
+  *)
+    # Treat CMD as a profile name
+    validate_profile "$CMD"
+    ;;
+esac
+
+# Summary
+if [[ "$DOCTOR_FAILED" == "true" ]]; then
+  printf '\n[doctor] FAILED — one or more declared==real checks did not pass (see errors above).\n' >&2
+  exit 1
+else
+  printf '\n[doctor] All declared==real checks PASSED.\n'
+  exit 0
+fi

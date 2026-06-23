@@ -1,12 +1,14 @@
 /**
- * Phase 1a — luna-registry.sh unit tests.
+ * Phase 1a + 1b — luna-registry.sh unit tests.
  *
  * Tests the data-driven server registry reader and its integration with
  * luna-autodeploy, including:
  *   - luna_load_server: field extraction, flag assembly, env overrides
- *   - GOLDEN NO-OP: registry-driven path produces BYTE-IDENTICAL --dry-run
- *     output to the hardcoded profile_config() case (LUNA_REGISTRY_DISABLE=1)
- *     for BOTH stable and dev profiles
+ *   - GOLDEN (1b): stable now produces "--incus luna-stable" (NOT "--repo-dir")
+ *     reflecting the real incus runtime empirically verified in 1b.1.
+ *     The LUNA_REGISTRY_DISABLE=1 hardcoded fallback still uses --repo-dir
+ *     (legacy bare-host path); the registry path is now the correct incus path.
+ *   - dev golden: unchanged — still "--incus luna-dev"
  *   - Security: group/world-writable file refusal
  *   - Discriminator: kind != "registry" → hard fail
  *   - Unknown profile → exit 2
@@ -153,24 +155,24 @@ const runDryRun = (
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("luna_load_server — field extraction", () => {
-  it("stable: P_INCUS is empty (bare-host), P_UPDATE_ARGS has --repo-dir not --incus", () => {
+  it("stable: P_INCUS=luna-stable (incus runtime), P_UPDATE_ARGS has --incus not --repo-dir", () => {
+    // Phase 1b: stable runs INSIDE the luna-stable incus container.
+    // Empirically verified 1b.1: host service INACTIVE, container service ACTIVE,
+    // host :4753 is incusd proxy, /root/luna/stable/repo bind-mounted to /root/luna.
     const result = loadServer("stable")
     expect(result.status, result.stderr).toBe(0)
-    expect(result.stdout).toContain("P_INCUS=")
-    // P_INCUS must be empty string
-    const incus = result.stdout.match(/^P_INCUS=(.*)$/m)?.[1] ?? "NOTFOUND"
-    expect(incus).toBe("")
-    // Must have --repo-dir
-    expect(result.stdout).toContain("P_UPDATE_ARGS=--profile stable --repo-dir")
-    // Must NOT have --incus
-    expect(result.stdout).not.toContain("--incus")
+    expect(result.stdout).toMatch(/^P_INCUS=luna-stable$/m)
+    // Must have --incus
+    expect(result.stdout).toContain("P_UPDATE_ARGS=--profile stable --incus luna-stable")
+    // Must NOT have --repo-dir (bare-host invocation was the P_INCUS="" bug)
+    expect(result.stdout).not.toContain("--repo-dir")
   })
 
-  it("stable: assembles correct P_UPDATE_ARGS", () => {
+  it("stable: assembles correct P_UPDATE_ARGS (1b: incus path)", () => {
     const result = loadServer("stable")
     expect(result.status, result.stderr).toBe(0)
     expect(result.stdout).toContain(
-      "P_UPDATE_ARGS=--profile stable --repo-dir /root/luna/stable/repo --ref origin/master",
+      "P_UPDATE_ARGS=--profile stable --incus luna-stable --ref origin/master",
     )
   })
 
@@ -218,13 +220,17 @@ describe("luna_load_server — field extraction", () => {
     expect(result.stdout).toMatch(/^P_SERVICE_NAME=luna-dev-chat-server\.service$/m)
   })
 
-  it("env override: LUNA_STABLE_REPO_DIR wins over registry default", () => {
+  it("env override: LUNA_STABLE_REPO_DIR wins over registry default (P_REPO is set; stable uses --incus)", () => {
+    // Phase 1b: stable uses incus (not --repo-dir), so LUNA_STABLE_REPO_DIR still
+    // overrides P_REPO (the host-side bind path) but P_UPDATE_ARGS uses --incus.
     const result = loadServer("stable", {
       extraEnv: { LUNA_STABLE_REPO_DIR: "/custom/stable/repo" },
     })
     expect(result.status, result.stderr).toBe(0)
     expect(result.stdout).toMatch(/^P_REPO=\/custom\/stable\/repo$/m)
-    expect(result.stdout).toContain("--repo-dir /custom/stable/repo")
+    // In 1b, stable uses --incus not --repo-dir
+    expect(result.stdout).toContain("--incus luna-stable")
+    expect(result.stdout).not.toContain("--repo-dir")
   })
 
   it("env override: LUNA_DEV_INCUS wins over registry incus container name", () => {
@@ -238,10 +244,16 @@ describe("luna_load_server — field extraction", () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GOLDEN NO-OP: registry-driven path == hardcoded case (byte-identical DRY-RUN)
+// GOLDEN (1b): registry-driven DRY-RUN output assertions
+//
+// Phase 1b NOTE: stable is no longer byte-identical to the hardcoded fallback.
+// The registry path is CORRECT (--incus luna-stable) while the hardcoded
+// fallback remains the legacy bare-host bug (--repo-dir).  We no longer
+// compare them — instead we assert the EXPECTED registry content directly.
+// dev remains byte-identical between registry and hardcoded (both use incus).
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("GOLDEN NO-OP: registry-driven == hardcoded DRY-RUN output", () => {
+describe("GOLDEN (1b): registry-driven DRY-RUN output", () => {
   /**
    * Extract the DRY-RUN argv line from luna-autodeploy --dry-run output.
    * The line looks like:
@@ -256,28 +268,40 @@ describe("GOLDEN NO-OP: registry-driven == hardcoded DRY-RUN output", () => {
     return match[0].replace(/DRY-RUN: .+(luna-update-server)/, "DRY-RUN: luna-update-server")
   }
 
-  it("stable: registry-driven DRY-RUN line is byte-identical to LUNA_REGISTRY_DISABLE=1", () => {
-    // Use a SHARED env so both runs have the exact same repo path →
-    // the --repo-dir argument is identical in both outputs.
+  it("stable: registry-driven DRY-RUN uses --incus luna-stable (1b: incus runtime)", () => {
+    // Phase 1b: registry path is CORRECT (--incus luna-stable).
+    // The hardcoded fallback (LUNA_REGISTRY_DISABLE=1) retains the legacy
+    // bare-host path and is intentionally different — it is the rollback only.
     const sharedEnv = makeDryRunEnv("stable")
-    const golden = runDryRun("stable", { disableRegistry: true, sharedEnv })
     const registry = runDryRun("stable", { disableRegistry: false, sharedEnv })
 
-    expect(golden.status, `golden stderr: ${golden.stderr}`).toBe(0)
     expect(registry.status, `registry stderr: ${registry.stderr}`).toBe(0)
 
-    const goldenLine = extractDryRunLine(golden.stdout)
     const registryLine = extractDryRunLine(registry.stdout)
 
-    expect(registryLine).toBe(goldenLine)
-    // Explicit content assertion (belt-and-suspenders)
-    expect(registryLine).toContain("--profile stable")
-    expect(registryLine).toContain("--repo-dir")
-    expect(registryLine).toContain("--ref origin/master")
-    expect(registryLine).not.toContain("--incus")
+    // Must use incus (the real runtime)
+    expect(registryLine).toContain("--profile stable --incus luna-stable --ref origin/master")
+    // Must NOT use bare-host --repo-dir (that was the P_INCUS="" bug)
+    expect(registryLine).not.toContain("--repo-dir")
   })
 
-  it("dev: registry-driven DRY-RUN line is byte-identical to LUNA_REGISTRY_DISABLE=1", () => {
+  it("stable: hardcoded fallback (DISABLE=1) still produces bare-host --repo-dir (legacy kill-switch path)", () => {
+    // Verifies the kill-switch/rollback path is preserved and intentionally
+    // differs from the registry path after 1b.
+    const sharedEnv = makeDryRunEnv("stable")
+    const fallback = runDryRun("stable", { disableRegistry: true, sharedEnv })
+
+    expect(fallback.status, `fallback stderr: ${fallback.stderr}`).toBe(0)
+
+    const fallbackLine = extractDryRunLine(fallback.stdout)
+
+    expect(fallbackLine).toContain("--profile stable")
+    expect(fallbackLine).toContain("--repo-dir")
+    expect(fallbackLine).toContain("--ref origin/master")
+    expect(fallbackLine).not.toContain("--incus")
+  })
+
+  it("dev: registry-driven DRY-RUN line is byte-identical to LUNA_REGISTRY_DISABLE=1 (dev unchanged)", () => {
     const sharedEnv = makeDryRunEnv("dev")
     const golden = runDryRun("dev", { disableRegistry: true, sharedEnv })
     const registry = runDryRun("dev", { disableRegistry: false, sharedEnv })
@@ -289,7 +313,7 @@ describe("GOLDEN NO-OP: registry-driven == hardcoded DRY-RUN output", () => {
     const registryLine = extractDryRunLine(registry.stdout)
 
     expect(registryLine).toBe(goldenLine)
-    // Explicit content assertion
+    // Explicit content assertion (dev is unchanged from 1a)
     expect(registryLine).toContain("--profile dev")
     expect(registryLine).toContain("--incus luna-dev")
     expect(registryLine).toContain("--ref origin/dev")
@@ -439,21 +463,31 @@ describe("F7: --validate existence checks", () => {
     )
   }
 
-  it("stable: all checks pass via seams → exit 0", () => {
-    const result = runValidate("stable", { repo: true, service: true })
+  it("stable: all checks pass via seams → exit 0 (1b: now includes incus check)", () => {
+    // Phase 1b: stable has runtime.target.incus.container=luna-stable,
+    // so --validate now also checks the incus container.
+    const result = runValidate("stable", { repo: true, incus: true, service: true })
     expect(result.status, result.stderr).toBe(0)
     expect(result.stdout).toContain("All checks passed")
   })
 
   it("stable: repo missing → exit 2 with FAIL message", () => {
-    const result = runValidate("stable", { repo: false, service: true })
+    const result = runValidate("stable", { repo: false, incus: true, service: true })
     expect(result.status).toBe(2)
     expect(result.stderr).toContain("FAIL")
     expect(result.stderr).toContain("repo")
   })
 
+  it("stable: incus container missing → exit 2 with FAIL message (1b: luna-stable)", () => {
+    // Phase 1b: stable uses incus, so a missing container is a validation failure.
+    const result = runValidate("stable", { repo: true, incus: false, service: true })
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain("FAIL")
+    expect(result.stderr).toContain("luna-stable")
+  })
+
   it("stable: service missing → exit 2 with FAIL message", () => {
-    const result = runValidate("stable", { repo: true, service: false })
+    const result = runValidate("stable", { repo: true, incus: true, service: false })
     expect(result.status).toBe(2)
     expect(result.stderr).toContain("FAIL")
     expect(result.stderr).toContain("luna-chat-server.service")
