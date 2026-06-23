@@ -30,9 +30,14 @@
 # Profile config is DATA-DRIVEN from /etc/luna/servers.toml (or LUNA_SERVERS_CONFIG).
 # Set LUNA_REGISTRY_DISABLE=1 to fall back to the hardcoded case (one-flag rollback).
 #
-# Built-in profiles (hardcoded fallback, jax-box topology):
-#   dev    : host repo /root/luna/dev/repo,    branch dev,    incus container luna-dev, WS :4753 (in container)
-#   stable : host repo /root/luna/stable/repo, branch master, bare-host,                WS :4753 (host)
+# Built-in profiles (hardcoded fallback — kill-switch/rollback ONLY, jax-box topology):
+#   dev    : host repo /root/luna/dev/repo,    branch dev,    incus container luna-dev,    WS :4753 (in container)
+#   stable : host repo /root/luna/stable/repo, branch master, incus container luna-stable, WS :4753 (incusd proxy)
+#
+# NOTE: the hardcoded stable case below still uses bare-host (--repo-dir) as the
+# LEGACY PRE-REGISTRY fallback (kill-switch/rollback path only). The registry
+# (Phase 1b) correctly reflects stable's REAL runtime: the luna-stable incus
+# container. Do not mistake the fallback bare-host for the production topology.
 #
 # Exit: 0 = up-to-date / deferred / deployed-clean / validate-ok;
 #       1 = update failed but luna-update-server rolled back;
@@ -198,9 +203,14 @@ profile_config() {
     stable)
       P_REPO="${LUNA_STABLE_REPO_DIR:-/root/luna/stable/repo}"
       P_BRANCH="${LUNA_STABLE_BRANCH:-master}"
+      # LEGACY PRE-REGISTRY BARE-HOST FALLBACK (kill-switch/rollback only).
+      # In production, stable runs INSIDE the luna-stable incus container —
+      # the registry (Phase 1b) is authoritative for the real topology.
+      # This P_INCUS="" / --repo-dir path is ONLY reached when
+      # LUNA_REGISTRY_DISABLE=1 is set (one-flag rollback) or the registry
+      # file is absent. Do NOT use this as a reference for the actual runtime.
       P_INCUS=""
       P_PORT="${LUNA_STABLE_WS_PORT:-4753}"
-      # bare-host: default --repo-dir (/root/luna) has no .git here, so pass it.
       P_UPDATE_ARGS=(--profile stable --repo-dir "$P_REPO" --ref "origin/$P_BRANCH")
       P_SERVICE_NAME="luna-chat-server.service"
       P_TIMER_ALLOWED="false"

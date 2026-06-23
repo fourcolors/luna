@@ -379,18 +379,21 @@ describe("F11 REGRESSION: dry-run golden no-op still byte-identical", () => {
     expect(withPinLine).toBe(goldenLine)
   })
 
-  it("original registry.test.ts golden: registry-driven == hardcoded DRY-RUN (stable)", () => {
+  it("1b golden: stable registry uses --incus luna-stable (diverges from hardcoded fallback intentionally)", () => {
+    // Phase 1b: the registry path is correct (--incus luna-stable).
+    // The hardcoded fallback (DISABLE=1) retains the legacy bare-host path.
+    // These MUST differ after 1b — registry=incus, fallback=repo-dir.
+    // This test verifies the registry path, not equality between the two.
     const sharedEnv = makeDryRunEnv()
 
-    const golden = runDryRun("stable", { disableRegistry: true, sharedEnv })
     const registry = runDryRun("stable", { disableRegistry: false, sharedEnv })
 
-    expect(golden.status, `golden stderr: ${golden.stderr}`).toBe(0)
     expect(registry.status, `registry stderr: ${registry.stderr}`).toBe(0)
 
-    const goldenLine = extractDryRunLine(golden.stdout)
     const registryLine = extractDryRunLine(registry.stdout)
-    expect(registryLine).toBe(goldenLine)
+    // Registry must produce the incus invocation (the correct one)
+    expect(registryLine).toContain("--profile stable --incus luna-stable --ref origin/master")
+    expect(registryLine).not.toContain("--repo-dir")
   })
 })
 
