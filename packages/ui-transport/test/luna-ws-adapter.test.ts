@@ -280,6 +280,41 @@ describe("LunaWsAdapter", () => {
 
       await adapter.dispose()
     })
+
+    it("resolver-throw fails closed: connection goes to 'down' and attach rejects (no socket dialed)", async () => {
+      let wsFactoryCalled = false
+      const realFactory = makeNodeWsFactory()
+      const guardedWsFactory: WsFactory = (url: string) => {
+        wsFactoryCalled = true
+        return realFactory(url)
+      }
+      const throwingResolver = async (ref: string): Promise<string> => {
+        throw new Error(`resolver boom for ${ref}`)
+      }
+      const adapter = new LunaWsAdapter(
+        { routeKey: "resolver-fail", endpoints: [server!.url], tokenRef: "env:NEVER_SET" },
+        guardedWsFactory,
+        undefined,
+        undefined,
+        throwingResolver,
+      )
+
+      const states: string[] = []
+      const iter = adapter.connection[Symbol.asyncIterator]()
+      const collect = (async () => {
+        states.push((await iter.next()).value.status) // connecting
+        states.push((await iter.next()).value.status) // down
+      })()
+
+      await expect(adapter.attach()).rejects.toThrow(/resolver boom/)
+      await collect
+
+      expect(states).toEqual(["connecting", "down"])
+      // Fail-closed: no token reached the wire — the WS factory was never invoked.
+      expect(wsFactoryCalled).toBe(false)
+
+      await adapter.dispose()
+    })
   })
 
   describe("dispose()", () => {

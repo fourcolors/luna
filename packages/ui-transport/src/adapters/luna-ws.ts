@@ -17,6 +17,7 @@ import type {
   RouteConfig,
 } from "../contract.js"
 import type { ServerDescriptor } from "../contract.js"
+import type { TokenResolver } from "../token-resolver.js"
 import { Broadcast } from "../internal/broadcast.js"
 
 /** WebSocket-compatible constructor signature used for testability. */
@@ -94,6 +95,14 @@ export class LunaWsAdapter implements ClientTransportAdapter {
   readonly #wsFactory: WsFactory
   readonly #handshakeTimeoutMs: number
 
+  /**
+   * Optional injected resolver: turns route.tokenRef (env:/file:/op:/none) into
+   * a concrete bearer token. When absent, the literal route.tokenRef is used as
+   * the token (backward compat). Resolution is lazy + cached (resolve once).
+   */
+  readonly #tokenResolver: TokenResolver | undefined
+  #resolvedToken: string | null = null
+
   #ws: WebSocket | null = null
   #lastAttach: AttachResult | null = null
   #disposed = false
@@ -134,6 +143,11 @@ export class LunaWsAdapter implements ClientTransportAdapter {
     handshakeTimeoutMs = 10_000,
     /** For tests: override reconnect timing constants. */
     reconnectOpts?: { maxAttempts?: number; baseMs?: number; maxMs?: number },
+    /**
+     * Optional resolver for route.tokenRef → bearer token. When omitted, the
+     * literal route.tokenRef is used (backward compat). Resolved lazily, once.
+     */
+    tokenResolver?: TokenResolver,
   ) {
     this.routeKey = route.routeKey
     this.#route = route
@@ -142,6 +156,22 @@ export class LunaWsAdapter implements ClientTransportAdapter {
     this.#maxReconnectAttempts = reconnectOpts?.maxAttempts ?? LunaWsAdapter.#MAX_RECONNECT_ATTEMPTS
     this.#baseReconnectMs = reconnectOpts?.baseMs ?? LunaWsAdapter.#BASE_RECONNECT_MS
     this.#maxReconnectMs = reconnectOpts?.maxMs ?? LunaWsAdapter.#MAX_RECONNECT_MS
+    this.#tokenResolver = tokenResolver
+  }
+
+  /**
+   * Resolve the bearer token for this route, lazily and cached. If a resolver
+   * was injected, it is used (only for this route). Otherwise the literal
+   * route.tokenRef is returned unchanged (backward compat). The resolved token
+   * is held in memory only — never logged, never written back to disk.
+   */
+  async #resolveToken(): Promise<string> {
+    if (this.#resolvedToken !== null) return this.#resolvedToken
+    const token = this.#tokenResolver
+      ? await this.#tokenResolver(this.#route.tokenRef)
+      : this.#route.tokenRef
+    this.#resolvedToken = token
+    return token
   }
 
   /**
@@ -189,8 +219,23 @@ export class LunaWsAdapter implements ClientTransportAdapter {
 
     this.#publishConnectionState({ status: "connecting" })
 
+    // Resolve the bearer token BEFORE dialing. If an injected resolver rejects
+    // (op:// fail-closed, env unset, Tauri command error), fail closed: no
+    // empty/garbage token ever reaches the wire (the tokenized URL is never
+    // built). We additionally transition the connection stream to a terminal
+    // "down" state so a consumer subscribed SOLELY to `connection` does not see
+    // it pinned at "connecting" — then re-throw to preserve the rejected-attach
+    // contract that hosts already await.
+    let token: string
+    try {
+      token = await this.#resolveToken()
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      this.#publishConnectionState({ status: "down", reason })
+      throw err
+    }
     const sep = url.includes("?") ? "&" : "?"
-    const tokenizedUrl = `${url}${sep}token=${encodeURIComponent(this.#route.tokenRef)}`
+    const tokenizedUrl = `${url}${sep}token=${encodeURIComponent(token)}`
 
     const result = await this.#connectWs(tokenizedUrl)
     this.#lastAttach = result
@@ -528,8 +573,11 @@ export class LunaWsAdapter implements ClientTransportAdapter {
     const url = this.#route.endpoints[0]
     if (!url) return
 
+    // Reuse the cached token from the initial attach (resolved once). On the
+    // off-chance it is not yet cached (defensive), resolve again.
+    const token = await this.#resolveToken()
     const sep = url.includes("?") ? "&" : "?"
-    const tokenizedUrl = `${url}${sep}token=${encodeURIComponent(this.#route.tokenRef)}`
+    const tokenizedUrl = `${url}${sep}token=${encodeURIComponent(token)}`
 
     this.#ws = null
 

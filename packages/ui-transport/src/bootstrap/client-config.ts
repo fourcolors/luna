@@ -28,6 +28,8 @@ import { parse as parseToml } from "smol-toml"
 import type { RouteConfig } from "../contract.js"
 import * as fs from "node:fs"
 import * as fsAsync from "node:fs/promises"
+import { execFile } from "node:child_process"
+import { delimiter as PATH_DELIMITER, isAbsolute as pathIsAbsolute, join as pathJoin } from "node:path"
 
 // ── constants ─────────────────────────────────────────────────────────────────
 
@@ -36,6 +38,74 @@ import * as fsAsync from "node:fs/promises"
  * Reject anything higher so callers upgrade instead of silently misinterpreting.
  */
 const MAX_FILE_FORMAT_VERSION = 3
+
+/** Default hard timeout (ms) for the `op read` subprocess before it is killed. */
+const OP_DEFAULT_TIMEOUT_MS = 10_000
+
+/** The 1Password CLI binary name we look up on PATH (or accept injected, absolute). */
+const OP_BINARY_NAME = "op"
+
+// ── op:// resolution types ─────────────────────────────────────────────────────
+
+/**
+ * Result of running a child process for op:// resolution. Deliberately a tiny,
+ * spawn-library-agnostic shape so tests can supply a fake without importing
+ * node:child_process.
+ */
+export interface OpSpawnResult {
+  /** Process exit code; null if the process was killed by a signal. */
+  readonly code: number | null
+  /** Signal that killed the process (e.g. "SIGTERM" on timeout), if any. */
+  readonly signal: NodeJS.Signals | null
+  readonly stdout: string
+  readonly stderr: string
+}
+
+/**
+ * Injectable spawn function for op:// resolution. Receives a validated absolute
+ * binary path and an argv VECTOR (never a shell string). MUST NOT inherit a TTY
+ * or stdin. The default implementation is `defaultOpSpawn` (node:child_process
+ * execFile); tests inject a fake so they never spawn a real `op`.
+ */
+export type OpSpawnFn = (
+  binaryPath: string,
+  argv: readonly string[],
+  opts: { readonly timeoutMs: number },
+) => Promise<OpSpawnResult>
+
+/**
+ * Options governing op:// (1Password) resolution. These are SEPARATE from the
+ * positional env/file injection params so that the env:/file:/none code paths
+ * stay byte-identical to their prior behavior — callers that never touch op://
+ * never pass these.
+ */
+export interface ResolveTokenRefOptions {
+  /**
+   * Gate for op:// resolution. `op read` needs an interactive 1Password session
+   * (biometric/desktop-app unlock or an `OP_SERVICE_ACCOUNT_TOKEN`); it has no
+   * safe non-interactive default. So op:// is REFUSED unless the host explicitly
+   * opts in by setting this to true. Headless contexts (timers, CI, the wake/
+   * Dream loops) leave it false → op:// fails closed with a clear error.
+   * Default: false.
+   */
+  readonly allowInteractive?: boolean
+  /**
+   * Absolute path to the `op` binary. If provided it is validated (absolute +
+   * exists + executable) and used verbatim — no PATH lookup. If omitted, `op`
+   * is resolved from PATH and the resolved path is validated the same way.
+   */
+  readonly opBinaryPath?: string
+  /** Hard timeout (ms) for the `op read` subprocess. Default: 10_000. */
+  readonly opTimeoutMs?: number
+  /** Injectable spawn (tests). Defaults to `defaultOpSpawn` (execFile). */
+  readonly opSpawn?: OpSpawnFn
+  /**
+   * Injectable PATH-resolver for the `op` binary (tests). Given the PATH env and
+   * the binary name, returns an absolute path or null. Defaults to a real
+   * PATH+fs lookup. Lets tests exercise the missing-binary path with no real fs.
+   */
+  readonly opPathLookup?: (binaryName: string, pathEnv: string | undefined) => string | null
+}
 
 // ── ParsedClientConfig ───────────────────────────────────────────────────────
 
@@ -201,12 +271,15 @@ export function parseClientConfig(toml: string): ParsedClientConfig {
  *                    transport does not require a bearer credential (e.g. a
  *                    future local OS-session-trust bridge). Document clearly
  *                    in client.toml why tokenRef="none" is appropriate.
- *   op://...         Throws a clear "not wired in this slice" error. 1Password
- *                    resolution requires an interactive session and a CLI
- *                    binary (`op`). Wire it properly before shipping: call
- *                    `op read <ref>` with a pinned absolute path, a hard
- *                    timeout, no TTY, and refuse in headless/timer contexts
- *                    per §8.
+ *   op://...         Resolve via the 1Password CLI (`op read <ref>`). Node-only.
+ *                    Hardened per §8: argv VECTOR (never a shell string), a
+ *                    pinned/validated ABSOLUTE `op` binary path, a hard timeout
+ *                    (~10s), NO TTY / no inherited stdin, output trimmed, and
+ *                    fail-closed on nonzero exit / timeout / missing binary.
+ *                    REFUSED by default in headless/non-interactive contexts:
+ *                    `op read` needs an interactive 1Password session, so it
+ *                    only runs when the host opts in via
+ *                    options.allowInteractive===true (see ResolveTokenRefOptions).
  *
  * Raw values (no scheme prefix) are rejected — every tokenRef must carry a
  * recognizable scheme so the reader can see immediately how it resolves.
@@ -231,6 +304,11 @@ export async function resolveTokenRef(
   readFileFn: (path: string) => Promise<string> = defaultReadFile,
   /** Injectable lstat for tests. Defaults to fs.lstatSync. */
   lstatFn: (path: string) => fs.Stats = defaultLstat,
+  /**
+   * op:// (1Password) resolution options — interactive gate, pinned binary,
+   * timeout, injectable spawn. Ignored by env:/file:/none. See type docs.
+   */
+  options: ResolveTokenRefOptions = {},
 ): Promise<string> {
   if (ref === "none") {
     // Explicit no-auth sentinel. Only valid for routes where the transport does
@@ -333,24 +411,13 @@ export async function resolveTokenRef(
   }
 
   if (ref.startsWith("op://")) {
-    // 1Password resolution is NOT wired in this slice.
-    // To wire it: run `op read <ref>` with:
-    //   - A pinned absolute path to the `op` binary (never rely on PATH alone)
-    //   - A hard timeout (~5s) so a slow/hanging op doesn't wedge attach
-    //   - No TTY (--no-masking / headless mode); refuse in timer/headless contexts
-    //   - Scrub the resolved value from any logs before returning
-    // See §8 of deploy-router-abstraction.md for the full hardening requirements.
-    throw new Error(
-      `resolveTokenRef: 1Password resolver not wired in this slice. ` +
-        `Use env:<VAR> or file:<abs-path> instead of "${ref}". ` +
-        `To wire op://, see §8 of deploy-router-abstraction.md.`,
-    )
+    return resolveOpRef(ref, env, options)
   }
 
   // No recognized scheme — reject to avoid silent passthrough of a raw secret.
   throw new Error(
     `resolveTokenRef: unrecognized scheme in "${ref}". ` +
-      `Valid schemes: env:, file:, none, op:// (op:// not yet wired — use env: or file:).`,
+      `Valid schemes: env:, file:, none, op://.`,
   )
 }
 
@@ -362,4 +429,243 @@ async function defaultReadFile(path: string): Promise<string> {
 
 function defaultLstat(path: string): fs.Stats {
   return fs.lstatSync(path)
+}
+
+// ── op:// (1Password) resolution ───────────────────────────────────────────────
+
+/**
+ * Strict charset for an op:// reference body. 1Password secret references are
+ * `op://<vault>/<item>[/<section>]/<field>` with optional query/attributes. We
+ * allow the conservative set of characters those URIs use and REFUSE anything
+ * else — shell metacharacters (`;`, `|`, `&`, `$`, backticks, quotes, spaces,
+ * newlines) can never appear, so even though we never build a shell string this
+ * is a defense-in-depth belt-and-suspenders. Fail-closed on any stray char.
+ */
+const OP_REF_BODY_CHARSET = /^[A-Za-z0-9._\-/?=&%]+$/
+
+/**
+ * Resolve an `op://` reference to a secret via the 1Password CLI.
+ *
+ * Hardening (§8):
+ *   - REFUSE unless options.allowInteractive === true (headless default = fail).
+ *   - Validate the ref against a strict charset (no shell metacharacters).
+ *   - Resolve the `op` binary to a validated ABSOLUTE path (PATH lookup or
+ *     injected); confirm it exists + is executable. Missing → throw.
+ *   - Invoke as an argv VECTOR: [opPath, "read", "--no-newline", ref]. NEVER a
+ *     shell string — the ref is a discrete argv element, so it cannot reach a
+ *     shell even if it contained metacharacters.
+ *   - Hard timeout (~10s) kills a hung `op`; timeout → throw.
+ *   - No TTY / no inherited stdin (the spawn impl uses stdin:"ignore").
+ *   - Nonzero exit → throw (stderr is scrubbed to a generic phrase; the actual
+ *     stderr may echo the ref but never the secret, and we don't surface it).
+ *   - Trim the resolved value; empty → throw.
+ *   - The resolved token is NEVER placed in argv of any other process and NEVER
+ *     logged.
+ */
+async function resolveOpRef(
+  ref: string,
+  env: Record<string, string | undefined>,
+  options: ResolveTokenRefOptions,
+): Promise<string> {
+  // Gate 1: headless refuse-by-default. op read needs an interactive 1Password
+  // session (biometric/app unlock or a service-account token). There is no safe
+  // non-interactive default, so we fail closed unless the host opts in.
+  if (options.allowInteractive !== true) {
+    throw new Error(
+      `resolveTokenRef: op:// resolution is refused in non-interactive contexts. ` +
+        `1Password (\`op read\`) needs an interactive session; pass ` +
+        `options.allowInteractive=true only from an interactive host. ` +
+        `For headless/timer contexts use env:<VAR> or file:<abs-path> instead.`,
+    )
+  }
+
+  // Gate 2: strict charset (defense-in-depth; we never build a shell string).
+  const body = ref.slice("op://".length)
+  if (!body || !OP_REF_BODY_CHARSET.test(body)) {
+    throw new Error(
+      `resolveTokenRef: op:// reference contains characters outside the allowed ` +
+        `set (got "${ref}"). Expected op://<vault>/<item>/<field>.`,
+    )
+  }
+
+  // Gate 3: resolve + validate the `op` binary to an absolute, executable path.
+  // When a custom spawn is injected (tests), the binary is never really exec'd,
+  // so we keep the absolute-path validation but skip the on-disk executable
+  // check — the injected spawn owns binary semantics. The default (production)
+  // path always verifies the binary exists + is executable on disk.
+  const usingDefaultSpawn = options.opSpawn === undefined
+  const opPath = resolveOpBinary(env, options, usingDefaultSpawn)
+
+  // Gate 4: invoke as an argv vector (never a shell string). `--no-newline`
+  // suppresses op's trailing newline; we trim regardless.
+  const spawn = options.opSpawn ?? defaultOpSpawn
+  const timeoutMs = options.opTimeoutMs ?? OP_DEFAULT_TIMEOUT_MS
+  const argv: readonly string[] = ["read", "--no-newline", ref]
+
+  let result: OpSpawnResult
+  try {
+    result = await spawn(opPath, argv, { timeoutMs })
+  } catch (err) {
+    // execFile rejects on spawn failure (ENOENT) or timeout (killed signal).
+    const e = err as NodeJS.ErrnoException & { killed?: boolean; signal?: string }
+    if (e?.killed || e?.signal === "SIGTERM" || e?.code === "ETIMEDOUT") {
+      throw new Error(
+        `resolveTokenRef: op:// resolution timed out after ${timeoutMs}ms running \`op read\`. ` +
+          `Is 1Password unlocked / the session active?`,
+      )
+    }
+    if (e?.code === "ENOENT") {
+      throw new Error(
+        `resolveTokenRef: op:// resolution failed — the 'op' binary at ${opPath} could not be spawned (ENOENT).`,
+      )
+    }
+    throw new Error(
+      `resolveTokenRef: op:// resolution failed to spawn \`op read\`: ${e instanceof Error ? e.message : String(e)}`,
+    )
+  }
+
+  // Timeout surfaced via signal (fake spawns / non-throwing impls).
+  if (result.signal === "SIGTERM" || result.signal === "SIGKILL") {
+    throw new Error(
+      `resolveTokenRef: op:// resolution timed out after ${timeoutMs}ms (killed ${result.signal}).`,
+    )
+  }
+
+  // Nonzero exit → fail closed. We DO NOT echo stderr verbatim into the thrown
+  // message (it can be noisy / leak the ref); a short generic phrase is enough.
+  if (result.code !== 0) {
+    throw new Error(
+      `resolveTokenRef: op:// resolution failed — \`op read\` exited with code ${result.code}. ` +
+        `Check that 1Password is unlocked and the reference "${ref}" is valid.`,
+    )
+  }
+
+  const token = result.stdout.trim()
+  if (!token) {
+    throw new Error(
+      `resolveTokenRef: op:// resolution returned an empty secret for "${ref}".`,
+    )
+  }
+  return token
+}
+
+/**
+ * Resolve the `op` binary to a validated absolute path.
+ *   - If options.opBinaryPath is given, it MUST be absolute, exist (when
+ *     verifyOnDisk), and be executable — used verbatim (no PATH lookup).
+ *   - Otherwise look `op` up on PATH and validate the resolved path the same way.
+ *
+ * @param verifyOnDisk When true (default/production spawn), confirm the binary
+ *   exists + is executable via fs.accessSync. When false (an injected test
+ *   spawn), the on-disk check is skipped — the absolute-path requirement still
+ *   applies, and for the PATH-lookup branch a custom opPathLookup still decides
+ *   whether a binary was "found".
+ * Throws (fail-closed) if no valid binary is found.
+ */
+function resolveOpBinary(
+  env: Record<string, string | undefined>,
+  options: ResolveTokenRefOptions,
+  verifyOnDisk: boolean,
+): string {
+  const injected = options.opBinaryPath
+  if (injected !== undefined) {
+    if (!pathIsAbsolute(injected)) {
+      throw new Error(
+        `resolveTokenRef: options.opBinaryPath must be an absolute path (got "${injected}").`,
+      )
+    }
+    if (verifyOnDisk) assertExecutable(injected)
+    return injected
+  }
+
+  const lookup = options.opPathLookup ?? defaultOpPathLookup
+  const found = lookup(OP_BINARY_NAME, env["PATH"])
+  if (!found) {
+    throw new Error(
+      `resolveTokenRef: the 1Password CLI ('op') was not found on PATH. ` +
+        `Install it or pass options.opBinaryPath with an absolute path.`,
+    )
+  }
+  if (!pathIsAbsolute(found)) {
+    throw new Error(
+      `resolveTokenRef: resolved 'op' path "${found}" is not absolute — refusing.`,
+    )
+  }
+  if (verifyOnDisk) assertExecutable(found)
+  return found
+}
+
+/** Throw unless `binaryPath` exists and is executable by the current user. */
+function assertExecutable(binaryPath: string): void {
+  try {
+    fs.accessSync(binaryPath, fs.constants.X_OK)
+  } catch {
+    throw new Error(
+      `resolveTokenRef: the 'op' binary at "${binaryPath}" does not exist or is not executable.`,
+    )
+  }
+}
+
+/**
+ * Default PATH lookup for a binary: walk PATH entries, return the first absolute
+ * candidate that exists and is executable, else null. No shell, no `which`.
+ */
+function defaultOpPathLookup(binaryName: string, pathEnv: string | undefined): string | null {
+  if (!pathEnv) return null
+  for (const dir of pathEnv.split(PATH_DELIMITER)) {
+    if (!dir || !pathIsAbsolute(dir)) continue
+    const candidate = pathJoin(dir, binaryName)
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK)
+      return candidate
+    } catch {
+      // not here — keep walking
+    }
+  }
+  return null
+}
+
+/**
+ * Default spawn for op:// resolution: node:child_process execFile with an argv
+ * VECTOR (never a shell), stdin ignored (no TTY), and a hard kill timeout.
+ * Resolves with the captured streams + exit status rather than rejecting on a
+ * nonzero exit, so resolveOpRef can produce uniform fail-closed errors.
+ */
+function defaultOpSpawn(
+  binaryPath: string,
+  argv: readonly string[],
+  opts: { readonly timeoutMs: number },
+): Promise<OpSpawnResult> {
+  return new Promise<OpSpawnResult>((resolve, reject) => {
+    execFile(
+      binaryPath,
+      [...argv],
+      {
+        timeout: opts.timeoutMs,
+        killSignal: "SIGTERM",
+        // No TTY / no inherited stdin — op must not prompt on a terminal here.
+        stdio: ["ignore", "pipe", "pipe"],
+        // Cap output to avoid unbounded buffering of a hostile/huge response.
+        maxBuffer: 1024 * 1024,
+        windowsHide: true,
+      } as Parameters<typeof execFile>[2],
+      (err, stdout, stderr) => {
+        if (err) {
+          const e = err as NodeJS.ErrnoException & { killed?: boolean; signal?: NodeJS.Signals | null; code?: string | number }
+          // Spawn failure (ENOENT) or timeout (killed) → reject so the caller's
+          // catch maps it to a clear timeout / missing-binary error.
+          if (e.killed || e.signal === "SIGTERM" || e.signal === "SIGKILL" || e.code === "ENOENT") {
+            reject(e)
+            return
+          }
+          // Nonzero exit → still resolve so resolveOpRef applies fail-closed
+          // logic uniformly. execFile sets err.code to the numeric exit code.
+          const code = typeof e.code === "number" ? e.code : 1
+          resolve({ code, signal: e.signal ?? null, stdout: String(stdout), stderr: String(stderr) })
+          return
+        }
+        resolve({ code: 0, signal: null, stdout: String(stdout), stderr: String(stderr) })
+      },
+    )
+  })
 }

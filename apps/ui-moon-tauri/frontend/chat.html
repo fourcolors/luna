@@ -4770,7 +4770,20 @@
           return;
         }
 
-        // Build a single-route ConnectionManager for this window's route
+        // Build a single-route ConnectionManager for this window's route.
+        //
+        // NOTE (Phase 3 seam): no TokenResolver is injected here yet, so the
+        // adapter falls back to the LITERAL tokenRef. That is correct TODAY
+        // because Moon routes carry an already-resolved literal token (from the
+        // secure moon-connection.json) or "none" — NOT a scheme ref. We do NOT
+        // inject LT.unconfiguredBrowserTokenResolver here: that stub throws on
+        // EVERY ref (including a valid literal token), which would break the
+        // live connection. The throwing stub only makes sense once the real
+        // Tauri-backed resolver is wired AND routes start carrying scheme refs
+        // (env:/file:/op://) instead of literal tokens — a later chunk. Until
+        // then a scheme-prefixed tokenRef would (incorrectly) be used as the
+        // literal bearer; this is tracked as the host-side resolver-wiring
+        // follow-up and is out of scope for the seam-only token-resolver slice.
         const routeMap = new Map([[routeKey, { routeKey, endpoints, tokenRef }]]);
         const manager = new LT.ConnectionManager(routeMap, LT.selectAdapter);
 

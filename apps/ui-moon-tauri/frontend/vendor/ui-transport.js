@@ -48,6 +48,7 @@ var __export = (target, all) => {
 // packages/ui-transport/src/browser.ts
 var exports_browser = {};
 __export(exports_browser, {
+  unconfiguredBrowserTokenResolver: () => unconfiguredBrowserTokenResolver,
   selectAdapter: () => selectAdapter,
   projectHermesDescriptor: () => projectHermesDescriptor,
   LunaWsAdapter: () => LunaWsAdapter,
@@ -200,6 +201,8 @@ class LunaWsAdapter {
   #route;
   #wsFactory;
   #handshakeTimeoutMs;
+  #tokenResolver;
+  #resolvedToken = null;
   #ws = null;
   #lastAttach = null;
   #disposed = false;
@@ -218,7 +221,7 @@ class LunaWsAdapter {
   #maxReconnectAttempts;
   #baseReconnectMs;
   #maxReconnectMs;
-  constructor(route, wsFactory, handshakeTimeoutMs = 1e4, reconnectOpts) {
+  constructor(route, wsFactory, handshakeTimeoutMs = 1e4, reconnectOpts, tokenResolver) {
     this.routeKey = route.routeKey;
     this.#route = route;
     this.#wsFactory = wsFactory ?? defaultWsFactory;
@@ -226,6 +229,14 @@ class LunaWsAdapter {
     this.#maxReconnectAttempts = reconnectOpts?.maxAttempts ?? LunaWsAdapter.#MAX_RECONNECT_ATTEMPTS;
     this.#baseReconnectMs = reconnectOpts?.baseMs ?? LunaWsAdapter.#BASE_RECONNECT_MS;
     this.#maxReconnectMs = reconnectOpts?.maxMs ?? LunaWsAdapter.#MAX_RECONNECT_MS;
+    this.#tokenResolver = tokenResolver;
+  }
+  async#resolveToken() {
+    if (this.#resolvedToken !== null)
+      return this.#resolvedToken;
+    const token = this.#tokenResolver ? await this.#tokenResolver(this.#route.tokenRef) : this.#route.tokenRef;
+    this.#resolvedToken = token;
+    return token;
   }
   subscribeFrames(cb) {
     this.#frameCallbacks.add(cb);
@@ -250,8 +261,16 @@ class LunaWsAdapter {
       return this.#lastAttach;
     }
     this.#publishConnectionState({ status: "connecting" });
+    let token;
+    try {
+      token = await this.#resolveToken();
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.#publishConnectionState({ status: "down", reason });
+      throw err;
+    }
     const sep = url.includes("?") ? "&" : "?";
-    const tokenizedUrl = `${url}${sep}token=${encodeURIComponent(this.#route.tokenRef)}`;
+    const tokenizedUrl = `${url}${sep}token=${encodeURIComponent(token)}`;
     const result = await this.#connectWs(tokenizedUrl);
     this.#lastAttach = result;
     this.#publishConnectionState({ status: "ready" });
@@ -520,8 +539,9 @@ class LunaWsAdapter {
     const url = this.#route.endpoints[0];
     if (!url)
       return;
+    const token = await this.#resolveToken();
     const sep = url.includes("?") ? "&" : "?";
-    const tokenizedUrl = `${url}${sep}token=${encodeURIComponent(this.#route.tokenRef)}`;
+    const tokenizedUrl = `${url}${sep}token=${encodeURIComponent(token)}`;
     this.#ws = null;
     try {
       const result = await this.#connectWs(tokenizedUrl);
@@ -696,23 +716,40 @@ class HermesHttpSseAdapter {
   transportKind = "hermes-http-sse";
   #route;
   #fetch;
+  #tokenResolver;
+  #resolvedToken = null;
   #lastAttach = null;
   #disposed = false;
   #descriptorBroadcast = new Broadcast;
   #connectionBroadcast = new Broadcast;
   #sessionAborts = new Map;
   #sessionDrains = new Map;
-  constructor(route, fetchFn) {
+  constructor(route, fetchFn, tokenResolver) {
     this.routeKey = route.routeKey;
     this.#route = route;
     this.#fetch = fetchFn ?? globalThis.fetch.bind(globalThis);
+    this.#tokenResolver = tokenResolver;
+  }
+  async#resolveToken() {
+    if (this.#resolvedToken !== null)
+      return this.#resolvedToken;
+    const token = this.#tokenResolver ? await this.#tokenResolver(this.#route.tokenRef) : this.#route.tokenRef;
+    this.#resolvedToken = token;
+    return token;
   }
   async attach() {
     if (this.#disposed)
       throw new Error(`HermesHttpSseAdapter(${this.routeKey}): disposed`);
     const baseUrl = this.#baseUrl();
-    const token = this.#route.tokenRef;
     this.#connectionBroadcast.publish({ status: "connecting" });
+    let token;
+    try {
+      token = await this.#resolveToken();
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.#connectionBroadcast.publish({ status: "down", reason });
+      throw err;
+    }
     try {
       const headers = {
         Authorization: `Bearer ${token}`,
@@ -837,7 +874,7 @@ class HermesHttpSseAdapter {
     };
     const startStream = async (userText) => {
       const baseUrl = this.#baseUrl();
-      const token = this.#route.tokenRef;
+      const token = await this.#resolveToken();
       currentMessageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       let doneEmitted = false;
       let res;
@@ -1030,30 +1067,30 @@ class HermesHttpSseAdapter {
 }
 
 // packages/ui-transport/src/factory.ts
-function selectAdapter(route) {
+function selectAdapter(route, tokenResolver) {
   const firstEndpoint = route.endpoints[0];
   if (!firstEndpoint) {
     throw new Error(`selectAdapter: route "${route.routeKey}" has no endpoints`);
   }
   const scheme = new URL(firstEndpoint).protocol;
   if (scheme === "ws:" || scheme === "wss:") {
-    return new LunaWsAdapter(route);
+    return new LunaWsAdapter(route, undefined, undefined, undefined, tokenResolver);
   }
   if (scheme === "http:" || scheme === "https:") {
-    return new HermesHttpSseAdapter(route);
+    return new HermesHttpSseAdapter(route, undefined, tokenResolver);
   }
   throw new Error(`no adapter for scheme ${scheme} on route ${route.routeKey}`);
 }
 // packages/ui-transport/src/pool/connection-manager.ts
 class ConnectionManager {
-  adapterFactory;
   #routes;
   #pool = new Map;
   #inflight = new Map;
   #disposed = false;
-  constructor(routes, adapterFactory = selectAdapter) {
-    this.adapterFactory = adapterFactory;
+  #adapterFactory;
+  constructor(routes, adapterFactory, tokenResolver) {
     this.#routes = routes;
+    this.#adapterFactory = adapterFactory ?? ((route) => selectAdapter(route, tokenResolver));
   }
   async acquire(routeKey) {
     if (this.#disposed) {
@@ -1085,7 +1122,7 @@ class ConnectionManager {
     return this.#makeHandle(routeKey, entry);
   }
   async#startAttach(routeKey, config) {
-    const adapter = this.adapterFactory(config);
+    const adapter = this.#adapterFactory(config);
     const attachResult = await adapter.attach();
     if (this.#disposed) {
       try {
@@ -1155,6 +1192,10 @@ class ConnectionManager {
     }));
   }
 }
+// packages/ui-transport/src/token-resolver.ts
+var unconfiguredBrowserTokenResolver = async (tokenRef) => {
+  throw new Error(`ui-transport: no TokenResolver injected — the browser host must inject a ` + `Tauri-backed resolver before attaching routes (tried to resolve "${tokenRef}"). ` + `Pass a resolver via the adapter/ConnectionManager options.`);
+};
 
   global.LunaTransport = module.exports;
 })(typeof globalThis !== "undefined" ? globalThis : typeof window !== "undefined" ? window : this);
