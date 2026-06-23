@@ -95,12 +95,63 @@
       channelInfo.appendChild(channelError);
 
       var channelSelect = makeSelect('channel-select');
-      ['stable', 'dev'].forEach(function (v) {
-        var opt = document.createElement('option');
-        opt.value = v;
-        opt.textContent = v.charAt(0).toUpperCase() + v.slice(1);
-        channelSelect.appendChild(opt);
-      });
+      // C8: enumerate routes from MoonSession.listRoutes() when available;
+      // fall back to the hardcoded ['stable','dev'] list for un-migrated users
+      // or off-Tauri environments.  The async population runs after render so
+      // the select always has at least the fallback options synchronously.
+      (function populateChannelSelect() {
+        var FALLBACK = ['stable', 'dev'];
+        function addOption(key, label, isDefault) {
+          var opt = document.createElement('option');
+          opt.value = key;
+          opt.textContent = label;
+          if (isDefault) opt.selected = true;
+          channelSelect.appendChild(opt);
+        }
+        function addFallback() {
+          FALLBACK.forEach(function (v) {
+            addOption(v, v.charAt(0).toUpperCase() + v.slice(1), false);
+          });
+        }
+        var ms = (typeof globalThis !== 'undefined') && globalThis.MoonSession;
+        if (ms && typeof ms.listRoutes === 'function') {
+          ms.listRoutes().then(function (result) {
+            if (result && Array.isArray(result.routes) && result.routes.length > 0) {
+              // Remove any synchronously-added fallback options first (safe DOM removal).
+              while (channelSelect.firstChild) channelSelect.removeChild(channelSelect.firstChild);
+              result.routes.forEach(function (r) {
+                var key   = r.key   || r.name || String(r);
+                var label = r.label || key;
+                addOption(key, label, key === result.default);
+              });
+              // Reflect active profile selection after dynamic population.
+              // If the active profile is NOT among the route keys (C8: client.toml
+              // keys can diverge from profile names), append it as a dynamic option
+              // so it is always present and selectable — mirrors the load_profiles
+              // hasOpt/append guard below.
+              if (channelSelect._activeProfile) {
+                var activeKey = channelSelect._activeProfile;
+                var hasActive = Array.from(channelSelect.options).some(function (o) {
+                  return o.value === activeKey;
+                });
+                if (!hasActive) {
+                  var dynOpt = document.createElement('option');
+                  dynOpt.value = activeKey;
+                  dynOpt.textContent = activeKey.charAt(0).toUpperCase() + activeKey.slice(1);
+                  channelSelect.appendChild(dynOpt);
+                }
+                channelSelect.value = activeKey;
+              }
+            } else {
+              // listRoutes returned nothing useful → un-migrated; leave fallback.
+            }
+          }).catch(function () {
+            // listRoutes rejected → leave fallback options in place.
+          });
+        }
+        // Always add synchronous fallback so the select is usable immediately.
+        addFallback();
+      }());
 
       channelRow.appendChild(channelInfo);
       channelRow.appendChild(channelSelect);
@@ -276,6 +327,8 @@
       ctx.invoke('load_profiles').then(function (prof) {
         if (prof && typeof prof.activeProfile === 'string' && prof.activeProfile) {
           var active = prof.activeProfile;
+          // Stash for use by the async listRoutes repopulation (C8).
+          channelSelect._activeProfile = active;
           // Add dynamic profile option if not already present.
           var hasOpt = Array.from(channelSelect.options).some(function (o) { return o.value === active; });
           if (!hasOpt) {
