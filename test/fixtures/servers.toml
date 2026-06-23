@@ -1,0 +1,38 @@
+# test/fixtures/servers.toml — GOLDEN FIXTURE for luna-registry.sh unit tests.
+#
+# This file is the test oracle for Phase 1a: the registry-driven path must
+# produce BYTE-IDENTICAL P_UPDATE_ARGS to the hardcoded profile_config() case.
+#
+# Mode note: in production /etc/luna/servers.toml must be 0600. The test harness
+# uses LUNA_TEST_STAT_MODE to simulate permission checks without chmod.
+
+kind          = "registry"
+schemaVersion = 1
+host          = "test-box"
+
+# stable: bare-host, no incus → P_INCUS="" → --repo-dir flag
+[[server]]
+name        = "stable"
+description = "stable golden fixture"
+enabled     = true
+
+update.params.hostRepoDir = "/root/luna/stable/repo"
+update.params.ref         = "origin/master"
+
+ports.proxy = 4753
+
+deploy.timer = false
+
+# dev: incus luna-dev → P_INCUS="luna-dev" → --incus flag
+[[server]]
+name        = "dev"
+description = "dev golden fixture"
+enabled     = true
+
+update.params.hostRepoDir      = "/root/luna/dev/repo"
+update.params.ref              = "origin/dev"
+runtime.target.incus.container = "luna-dev"
+
+ports.proxy = 4753
+
+deploy.timer = true

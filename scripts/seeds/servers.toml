@@ -1,0 +1,61 @@
+# /etc/luna/servers.toml — SERVER OPERATOR REGISTRY (seed template).
+#
+# PRODUCTION DEPLOYMENT:
+#   sudo install -m 0600 -o root -g root scripts/seeds/servers.toml /etc/luna/servers.toml
+#
+# This file must be mode 0600, root-owned.
+# luna-registry.sh REFUSES to load it if group/world-writable (& 0022 != 0).
+#
+# The loader also hard-fails if kind != "registry".
+#
+# This seed reproduces TODAY's exact flags from luna-autodeploy's hardcoded
+# profile_config() case statement — a provable NO-OP (Phase 1a).
+# Phase 1b will flip stable to incus after empirical verification.
+
+kind          = "registry"
+schemaVersion = 1
+host          = "jax-box"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# stable — production daily driver.
+# RUNTIME: bare-host (no incus) — matches today's P_INCUS="" in profile_config().
+# Phase 1b will migrate this to incus after on-host empirical verification.
+# ─────────────────────────────────────────────────────────────────────────────
+[[server]]
+name        = "stable"
+description = "Production chat-server (daily driver)"
+enabled     = true
+
+# update.params.hostRepoDir → P_REPO (matches LUNA_STABLE_REPO_DIR default)
+update.params.hostRepoDir = "/root/luna/stable/repo"
+# update.params.ref → P_BRANCH = "master" (after stripping "origin/")
+update.params.ref         = "origin/master"
+# No incus container → bare-host deploy → uses --repo-dir flag (not --incus)
+# runtime.target.incus.container is intentionally absent.
+
+# Health / WS port
+ports.proxy = 4753
+
+# deploy guard: stable NEVER auto-deploys on a timer (security rail enforced in code)
+deploy.timer       = false
+deploy.trackBranch = "master"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# dev — auto-deployed on a timer via incus container luna-dev.
+# RUNTIME: incus — matches today's P_INCUS="luna-dev" in profile_config().
+# ─────────────────────────────────────────────────────────────────────────────
+[[server]]
+name        = "dev"
+description = "Dev chat-server (auto-deployed on a timer)"
+enabled     = true
+
+update.params.hostRepoDir         = "/root/luna/dev/repo"
+update.params.ref                 = "origin/dev"
+# Incus container name → P_INCUS (non-empty → --incus flag in P_UPDATE_ARGS)
+runtime.target.incus.container    = "luna-dev"
+
+ports.proxy = 4753
+
+deploy.timer         = true
+deploy.timerInterval = "3min"
+deploy.trackBranch   = "dev"
