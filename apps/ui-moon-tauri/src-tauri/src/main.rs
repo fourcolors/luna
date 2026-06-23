@@ -2378,6 +2378,9 @@ fn main() {
         client_config::set_default_route,
         client_config::get_panel_route,
         client_config::set_panel_route,
+        // Phase-2 last-thread (per-panel/per-route).
+        client_config::get_panel_last_thread,
+        client_config::set_panel_last_thread,
         // Phase-2 C10: legacy migration.
         client_config::migrate_legacy_connection,
         local_shell_exec,
@@ -2427,6 +2430,9 @@ fn main() {
         client_config::set_default_route,
         client_config::get_panel_route,
         client_config::set_panel_route,
+        // Phase-2 last-thread (per-panel/per-route).
+        client_config::get_panel_last_thread,
+        client_config::set_panel_last_thread,
         // Phase-2 C10: legacy migration.
         client_config::migrate_legacy_connection,
         local_shell_exec,

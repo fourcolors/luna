@@ -70,6 +70,66 @@
   }
 
   /**
+   * Resolve the per-panel/per-route last-thread pointer.
+   *
+   * Returns the stored thread id string if one is available for this panel in
+   * moon-session.json, or null when:
+   *   • panelId is absent / falsy (unbound — no route context)
+   *   • window.__TAURI__ is not present (browser / jsdom dev)
+   *   • No entry exists in moon-session.json AND ~/.luna/.last-thread-default
+   *     is absent (the Rust side handles the legacy migration transparently)
+   *
+   * The migration from the legacy global file is handled entirely in Rust
+   * (get_panel_last_thread adopts the legacy file on first call and writes the
+   * result into the panel slot).  This function just wraps the Tauri command.
+   *
+   * PINNED windows (?thread=<id>) must NOT call this — they are bound to a
+   * single thread via URL param and must not interact with the restart pointer.
+   *
+   * @param {string|null|undefined} panelId  Panel identifier (window label).
+   * @returns {Promise<string|null>}
+   */
+  async function resolveBootThread(panelId) {
+    if (!panelId) return null;
+    const invoke = _invoke();
+    if (!invoke) return null;
+    try {
+      const id = await invoke('get_panel_last_thread', { panelId: String(panelId) });
+      return (typeof id === 'string' && id) ? id : null;
+    } catch (e) {
+      if (typeof console !== 'undefined') {
+        console.warn('[MoonSession] resolveBootThread failed, returning null:', e && e.message || e);
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Persist a thread id as the per-panel last-thread pointer in moon-session.json.
+   * Also dual-writes the legacy global file for one-release rollback safety.
+   *
+   * No-op (returns false) outside Tauri or when panelId is absent.
+   *
+   * @param {string} panelId
+   * @param {string} threadId
+   * @returns {Promise<boolean>}
+   */
+  async function setPanelLastThread(panelId, threadId) {
+    if (!panelId || !threadId) return false;
+    const invoke = _invoke();
+    if (!invoke) return false;
+    try {
+      await invoke('set_panel_last_thread', { panelId: String(panelId), threadId: String(threadId) });
+      return true;
+    } catch (e) {
+      if (typeof console !== 'undefined') {
+        console.warn('[MoonSession] setPanelLastThread failed:', e && e.message || e);
+      }
+      return false;
+    }
+  }
+
+  /**
    * Assign a specific route to a panel.
    * No-op (returns false) outside Tauri.
    *
@@ -140,6 +200,8 @@
 
   globalThis.MoonSession = {
     resolveBootRoute,
+    resolveBootThread,
+    setPanelLastThread,
     setPanelRoute,
     listRoutes,
     setDefaultRoute,

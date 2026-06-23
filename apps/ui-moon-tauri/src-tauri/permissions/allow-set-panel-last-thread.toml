@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-set-panel-last-thread"
+description = "Allows writing a panel's per-route last-thread pointer to moon-session.json (Phase-2 last-thread)"
+
+[permission.commands]
+allow = [
+  "set_panel_last_thread"
+]

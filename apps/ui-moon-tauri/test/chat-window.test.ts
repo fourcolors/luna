@@ -2003,7 +2003,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'live-thread' })
     })
 
-    it('Scenario: syncThread falls back to the Tauri last-thread file on a cold start', async () => {
+    it('Scenario: syncThread cold-start reads the Tauri file then subscribes directly (no list round-trip)', async () => {
       const m = M()
       const invoke = stubInvoke((cmd) =>
         Promise.resolve(cmd === 'get_last_thread_id' ? 'file-thread' : null),
@@ -2014,8 +2014,14 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
       await m.WebSocketEngine.syncThread()
 
+      // File is read on cold start.
       expect(invoke).toHaveBeenCalledWith('get_last_thread_id')
+      // BLIND SUBSCRIBE: subscribes directly, no list round-trip. The server can
+      // snapshot any thread by id regardless of recency, so a valid-but-old thread
+      // (beyond a capped list window) resumes correctly without an advisory gate.
+      expect(m.State.activeThreadId).toBe('file-thread')
       expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'file-thread' })
+      expect(sendSpy).not.toHaveBeenCalledWith({ type: 'list-threads' })
     })
 
     it('Scenario: a server switch ignores BOTH the stale in-memory id and the file, listing fresh', async () => {
@@ -2076,30 +2082,31 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(invoke).toHaveBeenCalledWith('set_last_thread_id', { threadId: 'thread-xyz' })
     })
 
-    it('Scenario: a stalled reattach self-heals once by listing this server\'s threads', () => {
+    it('Scenario: a stalled reattach self-heals by listing this server\'s threads (round 1)', () => {
       const m = M()
       stubInvoke()
       vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
       m.State.ws = fakeOpenSocket()        // socket is fine; the stored thread is gone from THIS server
       m.State.activeThreadId = 'thread-pruned-from-this-server'
-      m.State.reattachRecovering = false
+      m.State.reattachRound = 0
       const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
 
       m.WebSocketEngine.startSubscribeTimeout()
       vi.advanceTimersByTime(7000)         // watchdog fires → real onReattachStalled recovers
 
-      expect(m.State.reattachRecovering).toBe(true)
+      expect(m.State.reattachRound).toBe(1)
       expect(m.State.activeThreadId).toBeNull()                    // dropped the unresolvable id
+      expect(m.State.stalledThreadId).toBe('thread-pruned-from-this-server')
       expect(sendSpy).toHaveBeenCalledWith({ type: 'list-threads' })
       expect(m.State.subscribeTimeout).not.toBeNull()              // recovery subscribe is itself watched
     })
 
-    it('Scenario: a SECOND stall in the same socket surfaces the dead state instead of looping', () => {
+    it('Scenario: stalls surface "Reattach stalled" only after the retry budget is exhausted', () => {
       const m = M()
       stubInvoke()
       vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
       m.State.ws = fakeOpenSocket()
-      m.State.reattachRecovering = true    // recovery already spent this socket
+      m.State.reattachRound = 3            // budget at the limit (MAX_REATTACH_ROUNDS = 3)
       const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
       const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
 
@@ -2112,11 +2119,390 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: a successful reattach refreshes the self-heal budget', () => {
       const m = M()
       vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
-      m.State.reattachRecovering = true
+      m.State.reattachRound = 2
+      m.State.stalledThreadId = 'some-thread'
 
       m.WebSocketEngine.onReattached()
 
-      expect(m.State.reattachRecovering).toBe(false)
+      expect(m.State.reattachRound).toBe(0)
+      expect(m.State.stalledThreadId).toBeNull()
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: Phase-2 per-panel last-thread path (winLabel non-null, MoonSession loaded)
+  //
+  // The existing 'thread reattach' tests above all run with MoonSession absent
+  // (moon-session.js not in the vendor load list) so they exercise Path 2:
+  // the legacy get_last_thread_id fallback.  These tests load moon-session.js
+  // and confirm that when winLabel is available (the production case —
+  // mockMe.label = 'chat-test' so winLabel is 'chat-test') Path 1 runs instead.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Phase-2 per-panel last-thread path', () => {
+    const M = () => (window as any).__MoonInternals
+
+    const stubInvokeWithSession = (impl: (cmd: string, args?: any) => any) => {
+      const invoke = vi.fn(impl)
+      ;(window as any).__TAURI__.core = { invoke }
+      return invoke
+    }
+
+    beforeEach(() => {
+      // Load moon-session.js so MoonSession is available on globalThis.
+      // The page script checks `typeof MoonSession !== 'undefined'` and this
+      // makes that branch true, matching the production Tauri context.
+      loadVendorInto(window, 'moon-session.js')
+      const m = M()
+      m.State.activeThreadId = null
+      m.State.skipLastThreadFile = false
+      m.State.pendingReattachId = null
+      m.State.stalledThreadId = null
+      m.State.stalledIdSet = new Set()
+      m.State.pinnedThread = null
+      m.State.reattachRound = 0
+    })
+
+    afterEach(() => {
+      delete (window as any).MoonSession
+    })
+
+    it('Scenario: syncThread cold-start uses MoonSession.resolveBootThread (per-panel Path 1) when winLabel is set', async () => {
+      // mockMe.label = 'chat-test' so the page script sets winLabel = 'chat-test'
+      // at boot.  With MoonSession loaded, syncThread should call
+      // get_panel_last_thread rather than get_last_thread_id.
+      const m = M()
+      const invoke = stubInvokeWithSession((cmd, args) => {
+        if (cmd === 'get_panel_last_thread' && args?.panelId === 'chat-test') {
+          return Promise.resolve('per-panel-thread-id')
+        }
+        // get_last_thread_id must NOT be reached when Path 1 succeeds.
+        if (cmd === 'get_last_thread_id') {
+          return Promise.resolve('legacy-thread-id')
+        }
+        return Promise.resolve(null)
+      })
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      await m.WebSocketEngine.syncThread()
+
+      // Path 1 must fire.
+      expect(invoke).toHaveBeenCalledWith('get_panel_last_thread', { panelId: 'chat-test' })
+      // Subscribed to the per-panel id, not the legacy one.
+      expect(m.State.activeThreadId).toBe('per-panel-thread-id')
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'per-panel-thread-id' })
+      // Legacy fallback must NOT be called when Path 1 succeeds.
+      expect(invoke).not.toHaveBeenCalledWith('get_last_thread_id')
+    })
+
+    it('Scenario: syncThread falls back to legacy get_last_thread_id when MoonSession.resolveBootThread returns null', async () => {
+      const m = M()
+      const invoke = stubInvokeWithSession((cmd) => {
+        if (cmd === 'get_panel_last_thread') return Promise.resolve(null)   // no slot yet
+        if (cmd === 'get_last_thread_id') return Promise.resolve('legacy-fallback')
+        return Promise.resolve(null)
+      })
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      await m.WebSocketEngine.syncThread()
+
+      // Path 1 was tried but returned null → Path 2 fires.
+      expect(invoke).toHaveBeenCalledWith('get_panel_last_thread', { panelId: 'chat-test' })
+      expect(invoke).toHaveBeenCalledWith('get_last_thread_id')
+      expect(m.State.activeThreadId).toBe('legacy-fallback')
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'legacy-fallback' })
+    })
+
+    it('Scenario: thread-snapshot handler calls MoonSession.setPanelLastThread (not set_last_thread_id) when winLabel is set', () => {
+      const m = M()
+      const invoke = stubInvokeWithSession(() => Promise.resolve(undefined))
+      const fakeWs = { readyState: WebSocket.OPEN, send: vi.fn() }
+      m.State.ws = fakeWs
+      m.State.activeThreadId = 'thread-snap-123'
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      ;(window as any).cancelAnimationFrame = () => {}
+
+      m.handleFrame({ type: 'thread-snapshot', messages: [] })
+
+      // Per-panel write must be called with the correct panel label and thread id.
+      expect(invoke).toHaveBeenCalledWith('set_panel_last_thread', {
+        panelId: 'chat-test',
+        threadId: 'thread-snap-123',
+      })
+      // The legacy-only set_last_thread_id must NOT be called when the per-panel
+      // path succeeds (set_panel_last_thread dual-writes the legacy file itself).
+      expect(invoke).not.toHaveBeenCalledWith('set_last_thread_id', expect.anything())
+    })
+
+    it('Scenario: PINNED window with MoonSession present does NOT call get_panel_last_thread', async () => {
+      const m = M()
+      const invoke = stubInvokeWithSession(() => Promise.resolve(null))
+      m.State.pinnedThread = 'pinned-xyz'
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      await m.WebSocketEngine.syncThread()
+
+      // Pinned windows skip both Path 1 and Path 2.
+      expect(invoke).not.toHaveBeenCalledWith('get_panel_last_thread', expect.anything())
+      expect(invoke).not.toHaveBeenCalledWith('get_last_thread_id')
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'pinned-xyz' })
+    })
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Feature: cold-start blind-subscribe + hardened self-heal
+  //
+  // These tests pin the Phase-1 (revised) design:
+  //   - File-sourced ids are subscribed DIRECTLY on cold start — no advisory
+  //     list-threads round-trip. The server can snapshot any thread by id
+  //     regardless of recency, so a valid-but-old id (beyond a capped list
+  //     window) resumes correctly. A truly-gone id stalls and is recovered by
+  //     onReattachStalled → list-threads → most-recent / fresh.
+  //   - Mid-session reconnect: fast path re-subscribes to in-memory id directly.
+  //   - The self-heal is a BOUNDED retry loop (up to MAX_REATTACH_ROUNDS=3).
+  //   - Tombstone threads (listed but never snapshot-able) are detected and
+  //     skipped via stalledIdSet — handles multiple adjacent tombstones, not
+  //     just the single most-recent one.
+  //   - "Reattach stalled" is surfaced only when the server is genuinely
+  //     unresponsive (no list reply, or budget exhausted).
+  //   - PINNED_THREAD windows are always subscribed directly — never re-pointed.
+  //     State.pinnedThread is injectable so the guard can be exercised in jsdom
+  //     without a URL reload.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: cold-start blind-subscribe + hardened self-heal', () => {
+    const M = () => (window as any).__MoonInternals
+
+    const stubInvoke = (impl?: (cmd: string, args?: any) => any) => {
+      const invoke = vi.fn(impl ?? (() => Promise.resolve(null)))
+      ;(window as any).__TAURI__.core = { invoke }
+      return invoke
+    }
+    const fakeOpenSocket = () => ({ readyState: WebSocket.OPEN, send: vi.fn() })
+
+    beforeEach(() => {
+      const m = M()
+      m.State.activeThreadId = null
+      m.State.pendingReattachId = null
+      m.State.stalledThreadId = null
+      m.State.stalledIdSet = new Set()
+      m.State.pinnedThread = null
+      m.State.reattachRound = 0
+      m.State.skipLastThreadFile = false
+      ;(window as any).requestAnimationFrame = (cb: FrameRequestCallback) => { cb(0); return 1 }
+      ;(window as any).cancelAnimationFrame = () => {}
+      m.ChatState.reset()
+    })
+
+    // ── Cold-start direct subscribe (CRITICAL fix: no advisory capped-list gate) ──
+
+    it('Scenario: stored id on cold start → subscribes directly without a list round-trip', async () => {
+      // This is the regression fix for the capped-list advisory bug:
+      // a user with >50 threads whose stored id is not in the 50-most-recent
+      // must still resume correctly. We blind-subscribe and let the watchdog
+      // recover if the id is truly gone.
+      const m = M()
+      stubInvoke((cmd) => Promise.resolve(cmd === 'get_last_thread_id' ? 'th-stored' : null))
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+
+      await m.WebSocketEngine.syncThread()
+
+      // Blind subscribe — no list-threads round-trip.
+      expect(m.State.activeThreadId).toBe('th-stored')
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'th-stored' })
+      expect(sendSpy).not.toHaveBeenCalledWith({ type: 'list-threads' })
+      // Never stalls (watchdog has not fired yet).
+      expect(statusSpy).not.toHaveBeenCalledWith('disconnected', 'Reattach stalled')
+    })
+
+    it('Scenario: stored id truly gone on server → stalls, then recovers to most-recent, never surfaces "Reattach stalled"', async () => {
+      // After blind-subscribe, if the server never sends a snapshot the watchdog
+      // fires onReattachStalled → list-threads → most-recent without surfacing the
+      // stalled status (within budget).
+      const m = M()
+      stubInvoke((cmd) => Promise.resolve(cmd === 'get_last_thread_id' ? 'th-gone' : null))
+      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
+      m.State.ws = fakeOpenSocket()
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+
+      await m.WebSocketEngine.syncThread()
+      // Blind-subscribed; watchdog armed.
+      expect(m.State.activeThreadId).toBe('th-gone')
+
+      // Watchdog fires (no snapshot arrived).
+      vi.advanceTimersByTime(7000)
+
+      // onReattachStalled: recorded stalled id, sent list-threads (round 1).
+      expect(m.State.stalledThreadId).toBe('th-gone')
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'list-threads' })
+      // NOT surfaced as stalled yet (within budget).
+      expect(statusSpy).not.toHaveBeenCalledWith('disconnected', 'Reattach stalled')
+
+      // Server replies with a list that does NOT include th-gone.
+      m.handleFrame({ type: 'thread-list', threads: [{ id: 'th-recent' }, { id: 'th-old' }] })
+
+      // Falls back to the most-recent thread.
+      expect(m.State.activeThreadId).toBe('th-recent')
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'th-recent' })
+      // Never surfaced "Reattach stalled" — recovered cleanly.
+      expect(statusSpy).not.toHaveBeenCalledWith('disconnected', 'Reattach stalled')
+    })
+
+    it('Scenario: empty server on cold start (no stored id) → mints a fresh thread, never stalls', async () => {
+      const m = M()
+      stubInvoke((cmd) => Promise.resolve(cmd === 'get_last_thread_id' ? null : null))
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+
+      await m.WebSocketEngine.syncThread()
+
+      // No stored id → list-threads first.
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'list-threads' })
+
+      // Server has no threads at all.
+      m.handleFrame({ type: 'thread-list', threads: [] })
+
+      // Mints a fresh thread.
+      expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({ type: 'new-thread' }))
+      // Never stalls.
+      expect(statusSpy).not.toHaveBeenCalledWith('disconnected', 'Reattach stalled')
+    })
+
+    it('Scenario: mid-session reconnect (in-memory thread) → subscribes directly, no list round-trip', async () => {
+      const m = M()
+      const invoke = stubInvoke(() => Promise.resolve('file-thread'))
+      m.State.activeThreadId = 'live-thread'    // session already running
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      await m.WebSocketEngine.syncThread()
+
+      // Fast path: re-subscribes to in-memory thread without touching the file.
+      expect(invoke).not.toHaveBeenCalledWith('get_last_thread_id')
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'live-thread' })
+      // No list sent.
+      expect(sendSpy).not.toHaveBeenCalledWith({ type: 'list-threads' })
+    })
+
+    // ── Tombstone-advance path ────────────────────────────────────────────────
+
+    it('Scenario: single tombstone (lists but no snapshot) → thread-list handler advances to next', () => {
+      const m = M()
+      stubInvoke()
+      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
+      m.State.ws = fakeOpenSocket()
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+
+      // First round: subscribed to th-tombstone, stalled.
+      m.State.activeThreadId = 'th-tombstone'
+      m.State.reattachRound = 0
+      m.WebSocketEngine.startSubscribeTimeout()
+      vi.advanceTimersByTime(7000)
+
+      // onReattachStalled recorded the stalled id in stalledIdSet and sent list-threads.
+      expect(m.State.stalledThreadId).toBe('th-tombstone')
+      expect(m.State.stalledIdSet.has('th-tombstone')).toBe(true)
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'list-threads' })
+
+      // Server sends list with tombstone still at position 0.
+      m.handleFrame({ type: 'thread-list', threads: [{ id: 'th-tombstone' }, { id: 'th-good' }] })
+
+      // Handler skips th-tombstone (in stalledIdSet) and subscribes to th-good.
+      expect(m.State.activeThreadId).toBe('th-good')
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'th-good' })
+      expect(m.State.stalledThreadId).toBeNull()
+      // Never surfaced "Reattach stalled" — recovered cleanly.
+      expect(statusSpy).not.toHaveBeenCalledWith('disconnected', 'Reattach stalled')
+    })
+
+    it('Scenario: two adjacent tombstones → stalledIdSet skips both, converges on the good thread', () => {
+      // Regression for the oscillation bug: with single-stalledThreadId tracking,
+      // list=[A(tomb), B(tomb), C(good)] oscillated A↔B and never reached C.
+      // With stalledIdSet accumulation, both A and B are skipped on round 2.
+      const m = M()
+      stubInvoke()
+      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
+      m.State.ws = fakeOpenSocket()
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+
+      // Round 1: subscribe A → stall.
+      m.State.activeThreadId = 'th-A'
+      m.State.reattachRound = 0
+      m.WebSocketEngine.startSubscribeTimeout()
+      vi.advanceTimersByTime(7000)
+      expect(m.State.stalledIdSet.has('th-A')).toBe(true)
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'list-threads' })
+
+      // List returns [A, B, C]. Handler skips A → subscribes B.
+      m.handleFrame({ type: 'thread-list', threads: [{ id: 'th-A' }, { id: 'th-B' }, { id: 'th-C' }] })
+      expect(m.State.activeThreadId).toBe('th-B')
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'th-B' })
+
+      // Round 2: B also stalls (tombstone).
+      m.WebSocketEngine.startSubscribeTimeout()
+      vi.advanceTimersByTime(7000)
+      expect(m.State.stalledIdSet.has('th-A')).toBe(true)
+      expect(m.State.stalledIdSet.has('th-B')).toBe(true)
+
+      // List returns [A, B, C] again. Handler skips A and B → subscribes C.
+      m.handleFrame({ type: 'thread-list', threads: [{ id: 'th-A' }, { id: 'th-B' }, { id: 'th-C' }] })
+      expect(m.State.activeThreadId).toBe('th-C')
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'th-C' })
+      // Never surfaced "Reattach stalled".
+      expect(statusSpy).not.toHaveBeenCalledWith('disconnected', 'Reattach stalled')
+    })
+
+    it('Scenario: server unresponsive (no list reply) → surfaces stalled after retry budget', () => {
+      const m = M()
+      stubInvoke()
+      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
+      m.State.ws = fakeOpenSocket()
+      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+      vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+
+      // Exhaust 3 rounds of stalls (server never replies to list-threads).
+      m.State.reattachRound = 0
+      m.WebSocketEngine.onReattachStalled()  // round 1
+      expect(m.State.reattachRound).toBe(1)
+      expect(statusSpy).not.toHaveBeenCalledWith('disconnected', 'Reattach stalled')
+
+      m.WebSocketEngine.onReattachStalled()  // round 2
+      expect(m.State.reattachRound).toBe(2)
+      expect(statusSpy).not.toHaveBeenCalledWith('disconnected', 'Reattach stalled')
+
+      m.WebSocketEngine.onReattachStalled()  // round 3
+      expect(m.State.reattachRound).toBe(3)
+      expect(statusSpy).not.toHaveBeenCalledWith('disconnected', 'Reattach stalled')
+
+      m.WebSocketEngine.onReattachStalled()  // round 4 — exceeds budget
+      expect(statusSpy).toHaveBeenCalledWith('disconnected', 'Reattach stalled')
+    })
+
+    it('Scenario: PINNED_THREAD window always subscribes its pinned id directly (never re-pointed)', async () => {
+      // State.pinnedThread is injectable (set at boot from PINNED_THREAD URL param).
+      // Tests set it directly to exercise the guard without a page reload.
+      const m = M()
+      stubInvoke((cmd) => Promise.resolve(cmd === 'get_last_thread_id' ? 'other-thread' : null))
+      vi.spyOn(m.WebSocketEngine, 'connect').mockImplementation(() => {})
+      m.State.ws = fakeOpenSocket()
+      m.State.pinnedThread = 'pinned-id'
+      const sendSpy = vi.spyOn(m.WebSocketEngine, 'send').mockImplementation(() => {})
+      const statusSpy = vi.spyOn(m.WebSocketEngine, 'updateStatus').mockImplementation(() => {})
+
+      // syncThread with pinnedThread set: subscribes directly, never list-threads.
+      await m.WebSocketEngine.syncThread()
+      expect(m.State.activeThreadId).toBe('pinned-id')
+      expect(sendSpy).toHaveBeenCalledWith({ type: 'subscribe', threadId: 'pinned-id' })
+      expect(sendSpy).not.toHaveBeenCalledWith({ type: 'list-threads' })
+
+      // onReattachStalled on a pinned window: surfaces stalled immediately (no recovery).
+      sendSpy.mockClear()
+      statusSpy.mockClear()
+      m.WebSocketEngine.onReattachStalled()
+      expect(statusSpy).toHaveBeenCalledWith('disconnected', 'Reattach stalled')
+      // Never sent list-threads (pinned windows don't re-point).
+      expect(sendSpy).not.toHaveBeenCalledWith({ type: 'list-threads' })
     })
   })
 

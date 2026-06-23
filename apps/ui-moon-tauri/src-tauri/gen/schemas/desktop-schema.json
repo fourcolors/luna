@@ -381,6 +381,12 @@
           "markdownDescription": "Allows reading the CLI thread file"
         },
         {
+          "description": "Allows reading a panel's per-route last-thread pointer from moon-session.json (Phase-2 last-thread)",
+          "type": "string",
+          "const": "allow-get-panel-last-thread",
+          "markdownDescription": "Allows reading a panel's per-route last-thread pointer from moon-session.json (Phase-2 last-thread)"
+        },
+        {
           "description": "Allows reading a panel's assigned route from ~/.luna/moon-session.json (Phase-2 C3)",
           "type": "string",
           "const": "allow-get-panel-route",
@@ -505,6 +511,12 @@
           "type": "string",
           "const": "allow-set-native-controls-visible",
           "markdownDescription": "Allows the set_native_controls_visible command"
+        },
+        {
+          "description": "Allows writing a panel's per-route last-thread pointer to moon-session.json (Phase-2 last-thread)",
+          "type": "string",
+          "const": "allow-set-panel-last-thread",
+          "markdownDescription": "Allows writing a panel's per-route last-thread pointer to moon-session.json (Phase-2 last-thread)"
         },
         {
           "description": "Allows persisting a panel's route to ~/.luna/moon-session.json (Phase-2 C3)",

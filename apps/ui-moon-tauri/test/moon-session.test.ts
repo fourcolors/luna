@@ -182,6 +182,138 @@ describe('MoonSession.resolveBootRoute — no client.toml / error cases (C)', ()
   })
 })
 
+// ── Phase-2 last-thread: resolveBootThread ───────────────────────────────────
+
+describe('MoonSession.resolveBootThread — no __TAURI__', () => {
+  it('returns null immediately without Tauri', async () => {
+    expect(await S().resolveBootThread('panel-chat')).toBeNull()
+  })
+
+  it('returns null when panelId is falsy (no route context)', async () => {
+    installTauri(window, vi.fn())
+    expect(await S().resolveBootThread(null)).toBeNull()
+    expect(await S().resolveBootThread('')).toBeNull()
+    expect(await S().resolveBootThread(undefined)).toBeNull()
+  })
+})
+
+describe('MoonSession.resolveBootThread — with Tauri', () => {
+  it('calls get_panel_last_thread with the panel id and returns the thread id', async () => {
+    const invoke = vi.fn().mockImplementation((cmd: string, args: any) => {
+      if (cmd === 'get_panel_last_thread' && args?.panelId === 'panel-chat') {
+        return 'thread-abc123'
+      }
+      return null
+    })
+    installTauri(window, invoke)
+
+    const result = await S().resolveBootThread('panel-chat')
+    expect(result).toBe('thread-abc123')
+    expect(invoke).toHaveBeenCalledWith('get_panel_last_thread', { panelId: 'panel-chat' })
+  })
+
+  it('returns null when get_panel_last_thread returns null (no thread stored)', async () => {
+    installTauri(window, (_cmd: string) => null)
+    const result = await S().resolveBootThread('panel-chat')
+    expect(result).toBeNull()
+  })
+
+  it('returns null when get_panel_last_thread returns an empty string', async () => {
+    installTauri(window, (_cmd: string) => '')
+    const result = await S().resolveBootThread('panel-chat')
+    expect(result).toBeNull()
+  })
+
+  it('returns null and warns when get_panel_last_thread throws', async () => {
+    installTauri(window, (cmd: string) => {
+      if (cmd === 'get_panel_last_thread') throw new Error('vault locked')
+      return null
+    })
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const result = await S().resolveBootThread('panel-chat')
+    expect(result).toBeNull()
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[MoonSession] resolveBootThread failed'),
+      expect.anything(),
+    )
+    warnSpy.mockRestore()
+  })
+
+  it('per-route isolation: different panelIds get different thread ids', async () => {
+    const invoke = vi.fn().mockImplementation((cmd: string, args: any) => {
+      if (cmd !== 'get_panel_last_thread') return null
+      if (args?.panelId === 'panel-chat') return 'thread-for-chat'
+      if (args?.panelId === 'panel-secondary') return 'thread-for-secondary'
+      return null
+    })
+    installTauri(window, invoke)
+
+    const chatThread = await S().resolveBootThread('panel-chat')
+    const secondaryThread = await S().resolveBootThread('panel-secondary')
+
+    expect(chatThread).toBe('thread-for-chat')
+    expect(secondaryThread).toBe('thread-for-secondary')
+    expect(chatThread).not.toBe(secondaryThread)
+  })
+
+  it('unbound window (no panelId) returns null, forcing legacy fallback', async () => {
+    // When there is no route/panel context (winLabel absent), the caller
+    // gets null and must fall back to get_last_thread_id directly.
+    const invoke = vi.fn()
+    installTauri(window, invoke)
+
+    expect(await S().resolveBootThread(null)).toBeNull()
+    // get_panel_last_thread must NOT be called for an unbound window
+    expect(invoke).not.toHaveBeenCalled()
+  })
+})
+
+// ── Phase-2 last-thread: setPanelLastThread ───────────────────────────────────
+
+describe('MoonSession.setPanelLastThread', () => {
+  it('calls set_panel_last_thread and returns true', async () => {
+    const invoke = vi.fn().mockResolvedValue(undefined)
+    installTauri(window, invoke)
+
+    const ok = await S().setPanelLastThread('panel-chat', 'thread-xyz')
+    expect(ok).toBe(true)
+    expect(invoke).toHaveBeenCalledWith('set_panel_last_thread', {
+      panelId: 'panel-chat',
+      threadId: 'thread-xyz',
+    })
+  })
+
+  it('returns false outside Tauri', async () => {
+    expect(await S().setPanelLastThread('panel-chat', 'thread-xyz')).toBe(false)
+  })
+
+  it('returns false when panelId is empty', async () => {
+    const invoke = vi.fn().mockResolvedValue(undefined)
+    installTauri(window, invoke)
+    expect(await S().setPanelLastThread('', 'thread-xyz')).toBe(false)
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('returns false when threadId is empty', async () => {
+    const invoke = vi.fn().mockResolvedValue(undefined)
+    installTauri(window, invoke)
+    expect(await S().setPanelLastThread('panel-chat', '')).toBe(false)
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('returns false and warns when set_panel_last_thread throws', async () => {
+    installTauri(window, () => { throw new Error('disk full') })
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const ok = await S().setPanelLastThread('panel-chat', 'thread-xyz')
+    expect(ok).toBe(false)
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[MoonSession] setPanelLastThread failed'),
+      expect.anything(),
+    )
+    warnSpy.mockRestore()
+  })
+})
+
 describe('MoonSession passthroughs', () => {
   it('setPanelRoute invokes set_panel_route and returns true', async () => {
     const invoke = vi.fn().mockResolvedValue(undefined)

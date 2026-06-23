@@ -17,6 +17,8 @@
     "core:window:allow-scale-factor",
     "allow-get-last-thread-id",
     "allow-set-last-thread-id",
+    "allow-get-panel-last-thread",
+    "allow-set-panel-last-thread",
     "allow-save-connection",
     "allow-load-connection",
     "allow-migrate-legacy-connection",
