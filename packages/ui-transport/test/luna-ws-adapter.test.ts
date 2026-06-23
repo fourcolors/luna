@@ -313,15 +313,16 @@ describe("LunaWsAdapter", () => {
       await adapter.dispose()
     })
 
-    it("throws for http:// endpoints (Chunk 3)", async () => {
+    it("returns HermesHttpSseAdapter for http:// endpoints (Chunk 3 wired)", async () => {
       const { selectAdapter } = await import("../src/factory.js")
-      expect(() =>
-        selectAdapter({
-          routeKey: "http-route",
-          endpoints: ["http://localhost:8642/v1/chat"],
-          tokenRef: "tok",
-        }),
-      ).toThrow("hermes-http-sse adapter not yet implemented")
+      // Chunk 3 is now implemented — http:// returns a HermesHttpSseAdapter, not throws.
+      const adapter = selectAdapter({
+        routeKey: "http-route",
+        endpoints: ["http://localhost:8642/v1"],
+        tokenRef: "tok",
+      })
+      expect(adapter.transportKind).toBe("hermes-http-sse")
+      await adapter.dispose()
     })
   })
 
