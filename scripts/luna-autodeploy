@@ -17,21 +17,26 @@
 #     trail: each run prints what it did and the from->to SHAs.
 #
 # Designed to be run BOTH ways (per operator choice 2026-06-08):
-#   - DEV   on a systemd timer  (auto-tracks origin/dev), and
+#   - DEV   on a systemd timer  (auto-tracks origin/master), and
 #   - STABLE by hand            (the operator's one-command deploy; NEVER a timer
 #                                — the daily driver must not restart unexpectedly).
 #
 # Usage:
-#   luna-autodeploy <dev|stable> [--force] [--allow-active] [--dry-run]
-#   luna-autodeploy install-timer dev   [--interval <systemd-time, default 3min>]
-#   luna-autodeploy uninstall-timer dev
+#   luna-autodeploy <profile> [--force] [--allow-active] [--dry-run]
+#   luna-autodeploy <profile> --validate
+#   luna-autodeploy install-timer <profile>  [--interval <systemd-time, default 3min>]
+#   luna-autodeploy uninstall-timer <profile>
 #
-# Profile -> config (jax-box topology; override via env if it ever changes):
+# Profile config is DATA-DRIVEN from /etc/luna/servers.toml (or LUNA_SERVERS_CONFIG).
+# Set LUNA_REGISTRY_DISABLE=1 to fall back to the hardcoded case (one-flag rollback).
+#
+# Built-in profiles (hardcoded fallback, jax-box topology):
 #   dev    : host repo /root/luna/dev/repo,    branch dev,    incus container luna-dev, WS :4753 (in container)
 #   stable : host repo /root/luna/stable/repo, branch master, bare-host,                WS :4753 (host)
 #
-# Exit: 0 = up-to-date / deferred / deployed-clean; 1 = update failed but
-# luna-update-server rolled back; 2 = bad usage or CRITICAL (rollback failed).
+# Exit: 0 = up-to-date / deferred / deployed-clean / validate-ok;
+#       1 = update failed but luna-update-server rolled back;
+#       2 = bad usage or CRITICAL (rollback failed) or validate-failed.
 set -euo pipefail
 
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
@@ -44,16 +49,151 @@ UPDATE_SERVER="$(dirname "$SELF")/luna-update-server"
 # shellcheck source=scripts/lib/luna-deploy.sh
 source "$(dirname "$SELF")/lib/luna-deploy.sh"
 
+# Source the registry reader (provides luna_load_server).
+# shellcheck source=scripts/lib/luna-registry.sh
+source "$(dirname "$SELF")/lib/luna-registry.sh"
+
+# ── F11: pinned-copy engine quarantine ───────────────────────────────────────
+# Before the REAL luna-update-server invocation, copy the engine bundle (the
+# binary + its lib/ siblings) to a content-addressed directory OUTSIDE the
+# working tree.  This prevents self-mutation: luna-update-server does
+# `git reset --hard`, which would overwrite the running script if the commit
+# being deployed touches scripts/.
+#
+# Args:   luna_pin_engine <repo_dir>
+# Stdout: path of the pinned engine binary (caller should use this path)
+# Stderr: warnings only (fall-safe: always echoes a usable path)
+#
+# Test seam:
+#   LUNA_TEST_PIN_DIR — override the pin base dir (default /usr/local/lib/luna)
+#
+luna_pin_engine() {
+  # repo_dir kept for API compatibility (callers pass it); sha now from engine repo (FIX 2)
+  # shellcheck disable=SC2034
+  local repo_dir="$1"
+  local engine_src="$UPDATE_SERVER"
+  local lib_src
+  lib_src="$(dirname "$engine_src")/lib"
+
+  # ── FIX 2: Stamp from the ENGINE's own repo, not the deploy target ──────────
+  # The engine lives beside this script; use its repo for the sha so the cache
+  # key reflects the engine version being quarantined, not the target's HEAD.
+  local sha
+  local engine_repo
+  engine_repo="$(dirname "$engine_src")"
+  sha="$(git -C "$engine_repo" rev-parse HEAD 2>/dev/null)" || \
+    sha="$(sha1sum "$engine_src" 2>/dev/null | cut -c1-40)" || \
+    sha=""
+  if [[ -z "$sha" ]]; then
+    printf 'luna-autodeploy WARNING: could not determine HEAD sha for %s; running in-tree engine; self-mutation hazard present\n' "$engine_repo" >&2
+    printf '%s' "$engine_src"
+    return 0
+  fi
+
+  # ── Resolve pin dir ─────────────────────────────────────────────────────────
+  local pin_base="${LUNA_TEST_PIN_DIR:-/usr/local/lib/luna}"
+  local pin_dir="${pin_base}/deploy-engine@${sha}"
+
+  # ── FIX 1: Idempotency gate on .complete marker, not executable bit ─────────
+  # If the dir exists WITH .complete it is fully populated — reuse it.
+  if [[ -f "${pin_dir}/.complete" ]]; then
+    printf '%s' "${pin_dir}/luna-update-server"
+    return 0
+  fi
+
+  # If the dir exists WITHOUT .complete it is a stale partial from a prior crash —
+  # remove it so we start fresh rather than running a libless engine.
+  if [[ -d "$pin_dir" ]]; then
+    rm -rf "$pin_dir"
+  fi
+
+  # ── Populate atomically via a tmp sibling ───────────────────────────────────
+  local tmp_dir="${pin_dir}.tmp.$$"
+  # Clean up tmp on any early-exit failure path
+  _pin_cleanup() { rm -rf "$tmp_dir" 2>/dev/null || true; }
+
+  if ! mkdir -p "$tmp_dir" 2>/dev/null; then
+    printf 'luna-autodeploy WARNING: could not create pin dir %s; running in-tree engine; self-mutation hazard present\n' "$pin_dir" >&2
+    printf '%s' "$engine_src"
+    return 0
+  fi
+
+  # Copy engine binary
+  if ! cp "$engine_src" "${tmp_dir}/luna-update-server" 2>/dev/null; then
+    printf 'luna-autodeploy WARNING: could not copy engine to %s; running in-tree engine; self-mutation hazard present\n' "$pin_dir" >&2
+    _pin_cleanup
+    printf '%s' "$engine_src"
+    return 0
+  fi
+  chmod +x "${tmp_dir}/luna-update-server"
+
+  # Copy lib/ alongside so the engine's $(dirname $SELF)/lib/... sourcing resolves
+  if ! cp -r "$lib_src" "${tmp_dir}/lib" 2>/dev/null; then
+    printf 'luna-autodeploy WARNING: could not copy lib/ to %s; running in-tree engine; self-mutation hazard present\n' "$pin_dir" >&2
+    _pin_cleanup
+    printf '%s' "$engine_src"
+    return 0
+  fi
+
+  # Completeness marker: written LAST so a partial is never seen as complete
+  touch "${tmp_dir}/.complete"
+
+  # Atomic publish: mv wins the race; if pin_dir already exists (concurrent
+  # deploy won) reuse it as long as it's complete.
+  if ! mv "$tmp_dir" "$pin_dir" 2>/dev/null; then
+    _pin_cleanup
+    if [[ -f "${pin_dir}/.complete" ]]; then
+      # Concurrent deploy already published a complete dir — use it.
+      printf '%s' "${pin_dir}/luna-update-server"
+      return 0
+    fi
+    printf 'luna-autodeploy WARNING: could not publish pin dir %s; running in-tree engine; self-mutation hazard present\n' "$pin_dir" >&2
+    printf '%s' "$engine_src"
+    return 0
+  fi
+
+  # ── FIX 3: Prune old pin dirs (keep 5 most-recent), best-effort ─────────────
+  local _prune_max=5
+  local _old_dirs
+  # shellcheck disable=SC2012
+  _old_dirs="$(ls -dt "${pin_base}/deploy-engine@"* 2>/dev/null | tail -n +"$(( _prune_max + 1 ))")" || true
+  if [[ -n "$_old_dirs" ]]; then
+    while IFS= read -r _old; do
+      rm -rf "$_old" 2>/dev/null || true
+    done <<< "$_old_dirs"
+  fi
+
+  printf '%s' "${pin_dir}/luna-update-server"
+}
+
 # ── profile config ───────────────────────────────────────────────────────────
-P_REPO="" P_BRANCH="" P_INCUS="" P_PORT="" ; P_UPDATE_ARGS=()
+# P_TIMER_ALLOWED is set by luna_load_server; hardcoded fallback sets it inline.
+P_REPO="" P_BRANCH="" P_INCUS="" P_PORT="" P_SERVICE_NAME="" P_TIMER_ALLOWED=""
+P_UPDATE_ARGS=()
+
 profile_config() {
-  case "$1" in
+  local _profile="$1"
+
+  # Registry-driven path: use luna_load_server unless kill-switch is set.
+  local _registry_file="${LUNA_SERVERS_CONFIG:-/etc/luna/servers.toml}"
+  if [[ "${LUNA_REGISTRY_DISABLE:-0}" != "1" && -f "$_registry_file" ]]; then
+    # luna_load_server exits 2 on unknown profile or security violation.
+    luna_load_server "$_profile"
+    return
+  fi
+
+  # ── HARDCODED FALLBACK (kill-switch LUNA_REGISTRY_DISABLE=1, or no registry file) ──
+  # This is the original profile_config() case preserved byte-for-byte.
+  # P_TIMER_ALLOWED mirrors the data that would come from the registry.
+  case "$_profile" in
     dev)
       P_REPO="${LUNA_DEV_REPO_DIR:-/root/luna/dev/repo}"
       P_BRANCH="${LUNA_DEV_BRANCH:-dev}"
       P_INCUS="${LUNA_DEV_INCUS:-luna-dev}"
       P_PORT="${LUNA_DEV_WS_PORT:-4753}"
       P_UPDATE_ARGS=(--profile dev --incus "$P_INCUS" --ref "origin/$P_BRANCH")
+      P_SERVICE_NAME="luna-dev-chat-server.service"
+      P_TIMER_ALLOWED="true"
       ;;
     stable)
       P_REPO="${LUNA_STABLE_REPO_DIR:-/root/luna/stable/repo}"
@@ -62,13 +202,15 @@ profile_config() {
       P_PORT="${LUNA_STABLE_WS_PORT:-4753}"
       # bare-host: default --repo-dir (/root/luna) has no .git here, so pass it.
       P_UPDATE_ARGS=(--profile stable --repo-dir "$P_REPO" --ref "origin/$P_BRANCH")
+      P_SERVICE_NAME="luna-chat-server.service"
+      P_TIMER_ALLOWED="false"
       ;;
-    *) echo "luna-autodeploy: unknown profile '$1' (want dev|stable)" >&2; exit 2 ;;
+    *) echo "luna-autodeploy: unknown profile '$_profile' (want dev|stable)" >&2; exit 2 ;;
   esac
 }
 
 # ── deploy one channel ───────────────────────────────────────────────────────
-FORCE=false ALLOW_ACTIVE=false DRY_RUN=false INTERVAL=""
+FORCE=false ALLOW_ACTIVE=false DRY_RUN=false INTERVAL="" VALIDATE=false
 
 do_deploy() {
   local profile="$1"; profile_config "$profile"
@@ -99,8 +241,12 @@ do_deploy() {
     return 0
   fi
 
+  # F11: pin engine BEFORE the real exec so git-reset-hard cannot self-mutate it
+  local pinned_engine
+  pinned_engine="$(luna_pin_engine "$P_REPO")"
+
   local rc=0
-  "$UPDATE_SERVER" "${P_UPDATE_ARGS[@]}" || rc=$?
+  "$pinned_engine" "${P_UPDATE_ARGS[@]}" || rc=$?
   case "$rc" in
     0) echo "[autodeploy:$profile] OK — now at ${remote_sha:0:9}" ;;
     1) echo "[autodeploy:$profile] ROLLED BACK — update failed, recovered to ${local_sha:0:9}" >&2 ;;
@@ -109,13 +255,98 @@ do_deploy() {
   return "$rc"
 }
 
-# ── systemd timer install (dev only) ─────────────────────────────────────────
+# ── F7: --validate — existence checks on registry-declared infra ─────────────
+# Distinct from --dry-run (which only renders flags). Checks that the referenced
+# container / repo dir / systemd unit actually EXIST on this host.
+#
+# Test seams (mirrors LUNA_TEST_* pattern):
+#   LUNA_TEST_VALIDATE_REPO    — override repo .git dir existence check
+#   LUNA_TEST_VALIDATE_INCUS   — override incus container existence check
+#   LUNA_TEST_VALIDATE_SERVICE — override systemd unit existence check
+do_validate() {
+  local profile="$1"; profile_config "$profile"
+  local ok=true
+
+  echo "[validate:$profile] Checking registry entries..."
+
+  # 1. Repo dir
+  local repo_ok
+  if [[ "${LUNA_TEST_VALIDATE_REPO+set}" == "set" ]]; then
+    repo_ok="$LUNA_TEST_VALIDATE_REPO"
+  elif [[ -d "$P_REPO/.git" ]]; then
+    repo_ok="true"
+  else
+    repo_ok="false"
+  fi
+  if [[ "$repo_ok" == "true" ]]; then
+    echo "[validate:$profile] OK: repo dir $P_REPO"
+  else
+    echo "[validate:$profile] FAIL: repo dir $P_REPO not found or not a git repo" >&2
+    ok=false
+  fi
+
+  # 2. Incus container (only if incus is configured)
+  if [[ -n "$P_INCUS" ]]; then
+    local incus_ok
+    if [[ "${LUNA_TEST_VALIDATE_INCUS+set}" == "set" ]]; then
+      incus_ok="$LUNA_TEST_VALIDATE_INCUS"
+    elif command -v incus >/dev/null 2>&1 && incus info "$P_INCUS" >/dev/null 2>&1; then
+      incus_ok="true"
+    else
+      incus_ok="false"
+    fi
+    if [[ "$incus_ok" == "true" ]]; then
+      echo "[validate:$profile] OK: incus container $P_INCUS"
+    else
+      echo "[validate:$profile] FAIL: incus container $P_INCUS not found or not running" >&2
+      ok=false
+    fi
+  else
+    echo "[validate:$profile] OK: bare-host mode (no incus container)"
+  fi
+
+  # 3. Systemd unit file (only if P_SERVICE_NAME is set)
+  if [[ -n "$P_SERVICE_NAME" ]]; then
+    local svc_ok
+    if [[ "${LUNA_TEST_VALIDATE_SERVICE+set}" == "set" ]]; then
+      svc_ok="$LUNA_TEST_VALIDATE_SERVICE"
+    elif [[ -f "/etc/systemd/system/$P_SERVICE_NAME" ]] || \
+         systemctl cat "$P_SERVICE_NAME" >/dev/null 2>&1; then
+      svc_ok="true"
+    else
+      svc_ok="false"
+    fi
+    if [[ "$svc_ok" == "true" ]]; then
+      echo "[validate:$profile] OK: systemd unit $P_SERVICE_NAME"
+    else
+      echo "[validate:$profile] FAIL: systemd unit $P_SERVICE_NAME not found" >&2
+      ok=false
+    fi
+  fi
+
+  if [[ "$ok" == "true" ]]; then
+    echo "[validate:$profile] All checks passed."
+    return 0
+  else
+    echo "[validate:$profile] Validation FAILED — check errors above." >&2
+    return 2
+  fi
+}
+
+# ── systemd timer install ─────────────────────────────────────────────────────
 install_timer() {
   local profile="$1"; profile_config "$profile"
-  if [[ "$profile" != dev ]]; then
-    echo "luna-autodeploy: timers are dev-only by design (stable is one-command: 'luna-autodeploy stable')" >&2
+
+  # (F5) Hard-reject timer install for any profile where the registry says
+  # timer is not allowed. This enforces the stable-no-autodeploy rail in CODE,
+  # not just data — even if someone edits the registry entry, this gate fires.
+  if [[ "$P_TIMER_ALLOWED" != "true" ]]; then
+    echo "luna-autodeploy: timers are not allowed for profile '$profile' (registry deploy.timer=false)." >&2
+    echo "  This is a deliberate production safety rail: '$profile' must be deployed by hand." >&2
+    echo "  If you intend to enable auto-deploy for this profile, set deploy.timer=true in the registry." >&2
     exit 2
   fi
+
   local interval="${INTERVAL:-3min}"
   local svc="/etc/systemd/system/luna-autodeploy-$profile.service"
   local tmr="/etc/systemd/system/luna-autodeploy-$profile.timer"
@@ -164,22 +395,25 @@ uninstall_timer() {
 CMD="${1:-}"
 case "$CMD" in
   install-timer|uninstall-timer)
-    SUBPROFILE="${2:?usage: luna-autodeploy $CMD <dev|stable>}"; shift 2
+    SUBPROFILE="${2:?usage: luna-autodeploy $CMD <profile>}"; shift 2
     while [[ $# -gt 0 ]]; do case "$1" in --interval) INTERVAL="${2:?}"; shift 2 ;; *) echo "unknown arg: $1" >&2; exit 2 ;; esac; done
     [[ "$CMD" == install-timer ]] && install_timer "$SUBPROFILE" || uninstall_timer "$SUBPROFILE"
     ;;
-  dev|stable)
-    shift
+  *)
+    # A profile name (or unknown command) — must be a non-empty string.
+    [[ -n "$CMD" && "$CMD" != "-h" && "$CMD" != "--help" ]] || { sed -n '2,40p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0; }
+    PROFILE="$CMD"; shift
     while [[ $# -gt 0 ]]; do case "$1" in
       --force) FORCE=true; shift ;;
       --allow-active) ALLOW_ACTIVE=true; shift ;;
       --dry-run) DRY_RUN=true; shift ;;
+      --validate) VALIDATE=true; shift ;;
       *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac; done
-    do_deploy "$CMD"
+    if [[ "$VALIDATE" == true ]]; then
+      do_validate "$PROFILE"
+    else
+      do_deploy "$PROFILE"
+    fi
     ;;
-  ""|-h|--help)
-    sed -n '2,40p' "$SELF" | sed 's/^# \{0,1\}//'
-    ;;
-  *) echo "luna-autodeploy: unknown command '$CMD'" >&2; exit 2 ;;
 esac
