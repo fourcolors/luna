@@ -20,6 +20,7 @@
     "core:window:allow-close",
     "core:event:default",
     "allow-load-connection",
+    "allow-migrate-legacy-connection",
     "allow-get-platform",
     "allow-close-widget",
     "allow-list-widget-windows",

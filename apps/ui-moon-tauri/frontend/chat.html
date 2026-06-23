@@ -8688,6 +8688,18 @@
       let loadedUrl = null;
       let loadedToken = null;
 
+      // ── Step 0: one-time migration from moon-connection.json → client.toml ─
+      // Runs before resolveBootRoute (inside PoolEngine.connect) so client.toml
+      // exists when C2 reads it. Idempotent: Rust returns early when client.toml
+      // already exists. Non-blocking: failure logs and falls through to legacy path.
+      try {
+        if (window.__TAURI__ && window.__TAURI__.core) {
+          await window.__TAURI__.core.invoke('migrate_legacy_connection');
+        }
+      } catch (e) {
+        Logger.warn('[boot] legacy migration skipped:', e);
+      }
+
       if (window.__TAURI__ && window.__TAURI__.core) {
         try {
           const conn = await window.__TAURI__.core.invoke('load_connection');

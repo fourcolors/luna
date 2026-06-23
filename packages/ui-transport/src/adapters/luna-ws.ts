@@ -427,14 +427,31 @@ export class LunaWsAdapter implements ClientTransportAdapter {
           this.#helloReject = null
           clearTimeout(timeout)
 
-          const result: AttachResult = frame.descriptor
-            ? { descriptor: frame.descriptor, origin: "server-emitted" as const }
-            : {
-                descriptor: synthesizeLegacyDescriptor(this.#route),
-                origin: "synthesized-legacy" as const,
-              }
+          if (frame.descriptor) {
+            // Server emitted a descriptor — normal path.
+            resolve({ descriptor: frame.descriptor, origin: "server-emitted" as const })
+            return
+          }
 
-          resolve(result)
+          // No descriptor from server. Check if route is pinned.
+          const isPinned =
+            this.#route.expect != null &&
+            Object.values(this.#route.expect).some((v) => v != null && v !== "")
+
+          if (isPinned) {
+            // PINNED route answered without a descriptor — downgrade attack / wrong server.
+            const reason = `pinned route '${this.routeKey}' answered without a descriptor — refusing downgrade`
+            this.#publishConnectionState({ status: "identity-failed", reason })
+            ws.close(1008, "identity-failed")
+            reject(new Error(`LunaWsAdapter(${this.routeKey}): ${reason}`))
+            return
+          }
+
+          // Unpinned route — synthesize legacy descriptor (backward compat).
+          resolve({
+            descriptor: synthesizeLegacyDescriptor(this.#route),
+            origin: "synthesized-legacy" as const,
+          })
           return
         }
 

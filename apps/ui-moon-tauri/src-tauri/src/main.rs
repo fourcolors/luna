@@ -2378,6 +2378,8 @@ fn main() {
         client_config::set_default_route,
         client_config::get_panel_route,
         client_config::set_panel_route,
+        // Phase-2 C10: legacy migration.
+        client_config::migrate_legacy_connection,
         local_shell_exec,
         get_platform,
         check_for_update,
@@ -2425,6 +2427,8 @@ fn main() {
         client_config::set_default_route,
         client_config::get_panel_route,
         client_config::set_panel_route,
+        // Phase-2 C10: legacy migration.
+        client_config::migrate_legacy_connection,
         local_shell_exec,
         get_platform,
         check_for_update,

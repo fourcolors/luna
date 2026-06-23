@@ -773,6 +773,68 @@ describe("LunaWsAdapter", () => {
     })
   })
 
+  // ── Phase-2 C10: pinned-route downgrade guard ─────────────────────────────
+
+  describe("pinned-route downgrade guard", () => {
+    it("pinned route + no descriptor → rejects with identity-failed", async () => {
+      // Server sends hello WITHOUT descriptor.
+      server = await startTestServer({ token: TOKEN, sendDescriptor: false })
+
+      const adapter = new LunaWsAdapter(
+        {
+          routeKey: "pinned-route",
+          endpoints: [server.url],
+          tokenRef: TOKEN,
+          expect: { spki: "sha256:abc" },
+        },
+        makeNodeWsFactory(),
+      )
+
+      const states: string[] = []
+      const connIter = adapter.connection[Symbol.asyncIterator]()
+
+      // Collect states concurrently so we catch "identity-failed".
+      const stateCollection = (async () => {
+        for await (const s of { [Symbol.asyncIterator]: () => connIter }) {
+          states.push(s.status)
+          if (s.status === "identity-failed") break
+        }
+      })()
+
+      // attach() must reject with the downgrade message.
+      await expect(adapter.attach()).rejects.toThrow("refusing downgrade")
+
+      await stateCollection
+
+      expect(states).toContain("identity-failed")
+
+      await adapter.dispose()
+    })
+
+    it("unpinned route + no descriptor → synthesizes legacy (backward compat)", async () => {
+      // Server sends hello WITHOUT descriptor.
+      server = await startTestServer({ token: TOKEN, sendDescriptor: false })
+
+      const adapter = new LunaWsAdapter(
+        {
+          routeKey: "legacy-route",
+          endpoints: [server.url],
+          tokenRef: TOKEN,
+          // NO expect field — unpinned route.
+        },
+        makeNodeWsFactory(),
+      )
+
+      // attach() must succeed and synthesize a legacy descriptor.
+      const result = await adapter.attach()
+      expect(result.origin).toBe("synthesized-legacy")
+      expect(result.descriptor.identity.kind).toBe("unknown")
+      expect(result.descriptor.identity.synthesized).toBe(true)
+
+      await adapter.dispose()
+    })
+  })
+
   describe("subscribeFrames", () => {
     it("delivers post-hello server frames to callback", async () => {
       server = await startTestServer({ token: TOKEN, sendDescriptor: true })

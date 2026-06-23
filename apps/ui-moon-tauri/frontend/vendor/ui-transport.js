@@ -445,11 +445,22 @@ class LunaWsAdapter {
           settled = true;
           this.#helloReject = null;
           clearTimeout(timeout);
-          const result = frame.descriptor ? { descriptor: frame.descriptor, origin: "server-emitted" } : {
+          if (frame.descriptor) {
+            resolve({ descriptor: frame.descriptor, origin: "server-emitted" });
+            return;
+          }
+          const isPinned = this.#route.expect != null && Object.values(this.#route.expect).some((v) => v != null && v !== "");
+          if (isPinned) {
+            const reason = `pinned route '${this.routeKey}' answered without a descriptor — refusing downgrade`;
+            this.#publishConnectionState({ status: "identity-failed", reason });
+            ws.close(1008, "identity-failed");
+            reject(new Error(`LunaWsAdapter(${this.routeKey}): ${reason}`));
+            return;
+          }
+          resolve({
             descriptor: synthesizeLegacyDescriptor(this.#route),
             origin: "synthesized-legacy"
-          };
-          resolve(result);
+          });
           return;
         }
         if (settled) {
