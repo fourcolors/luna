@@ -308,10 +308,13 @@ export class HermesHttpSseAdapter implements ClientTransportAdapter {
    * This makes the UI backend-agnostic: the same for-await loop works for both
    * LunaWsAdapter and HermesHttpSseAdapter.
    */
-  async openSession(opts: { readonly threadId?: string }): Promise<ChatSession> {
+  async openSession(opts: { readonly threadId?: string; readonly model?: string }): Promise<ChatSession> {
     if (this.#disposed) throw new Error(`HermesHttpSseAdapter(${this.routeKey}): disposed`)
     if (!this.#lastAttach) await this.attach()
 
+    // opts.model is intentionally ignored: Hermes selects the model server-side
+    // via its own configuration (unlike LunaWsAdapter which threads model through
+    // the new-thread frame). This asymmetry is by design, not an oversight.
     const threadId = opts.threadId ?? `hermes-${Date.now()}`
     const sessionId = `${threadId}-${Date.now()}`
 

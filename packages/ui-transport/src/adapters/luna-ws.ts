@@ -98,15 +98,12 @@ export class LunaWsAdapter implements ClientTransportAdapter {
   #lastAttach: AttachResult | null = null
   #disposed = false
 
-  // FIX 1: Broadcast helpers replace the queue/waiter arrays.
   readonly #descriptorBroadcast = new Broadcast<AttachResult>()
   readonly #connectionBroadcast = new Broadcast<ConnectionState>()
 
-  // Pending hello resolution (set during attach())
-  #helloResolve: ((result: AttachResult) => void) | null = null
+  // Set by #connectWs so dispose() can abort an in-flight connect.
   #helloReject: ((err: Error) => void) | null = null
 
-  // FIX 4: Pending new-thread resolution.
   #pendingNewThread: {
     resolve: (threadId: string) => void
     reject: (err: Error) => void
@@ -115,16 +112,32 @@ export class LunaWsAdapter implements ClientTransportAdapter {
   // Session map — initialized before dispatchToSessions is ever called.
   readonly #sessions = new Map<string, SessionEntry>()
 
+  // Reconnect state
+  #reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  #reconnectAttempts = 0
+  static readonly #MAX_RECONNECT_ATTEMPTS = 6
+  static readonly #BASE_RECONNECT_MS = 500
+  static readonly #MAX_RECONNECT_MS = 15_000
+
+  readonly #maxReconnectAttempts: number
+  readonly #baseReconnectMs: number
+  readonly #maxReconnectMs: number
+
   constructor(
     route: RouteConfig,
     wsFactory?: WsFactory,
     /** Timeout in ms before handshake is considered failed. Default: 10_000. */
     handshakeTimeoutMs = 10_000,
+    /** For tests: override reconnect timing constants. */
+    reconnectOpts?: { maxAttempts?: number; baseMs?: number; maxMs?: number },
   ) {
     this.routeKey = route.routeKey
     this.#route = route
     this.#wsFactory = wsFactory ?? defaultWsFactory
     this.#handshakeTimeoutMs = handshakeTimeoutMs
+    this.#maxReconnectAttempts = reconnectOpts?.maxAttempts ?? LunaWsAdapter.#MAX_RECONNECT_ATTEMPTS
+    this.#baseReconnectMs = reconnectOpts?.baseMs ?? LunaWsAdapter.#BASE_RECONNECT_MS
+    this.#maxReconnectMs = reconnectOpts?.maxMs ?? LunaWsAdapter.#MAX_RECONNECT_MS
   }
 
   async attach(): Promise<AttachResult> {
@@ -138,140 +151,16 @@ export class LunaWsAdapter implements ClientTransportAdapter {
       return this.#lastAttach
     }
 
-    return new Promise<AttachResult>((resolve, reject) => {
-      this.#helloResolve = resolve
-      this.#helloReject = reject
+    this.#connectionBroadcast.publish({ status: "connecting" })
 
-      // FIX 3: settled flag prevents double-resolve/reject after timeout.
-      let settled = false
+    const sep = url.includes("?") ? "&" : "?"
+    const tokenizedUrl = `${url}${sep}token=${encodeURIComponent(this.#route.tokenRef)}`
 
-      const timeout = setTimeout(() => {
-        if (settled) return
-        settled = true
-        // Close the socket so the server knows we gave up.
-        if (this.#ws) {
-          try { this.#ws.close() } catch { /* ignore */ }
-          this.#ws = null
-        }
-        this.#connectionBroadcast.publish({ status: "handshake-timeout" })
-        const err = new Error(`LunaWsAdapter(${this.routeKey}): handshake timeout after 10s`)
-        if (this.#helloReject) {
-          this.#helloReject(err)
-          this.#helloResolve = null
-          this.#helloReject = null
-        }
-      }, this.#handshakeTimeoutMs)
-
-      this.#connectionBroadcast.publish({ status: "connecting" })
-
-      // FIX 5: Token is already in the URL query string — no Bearer header.
-      const sep = url.includes("?") ? "&" : "?"
-      const tokenizedUrl = `${url}${sep}token=${encodeURIComponent(this.#route.tokenRef)}`
-
-      let ws: WebSocket
-      try {
-        ws = this.#wsFactory(tokenizedUrl)
-      } catch (e) {
-        settled = true
-        clearTimeout(timeout)
-        reject(e instanceof Error ? e : new Error(String(e)))
-        return
-      }
-
-      this.#ws = ws
-
-      ws.addEventListener("open", () => {
-        // Socket is open but waiting for hello — "connecting" already emitted.
-      })
-
-      ws.addEventListener("message", (ev) => {
-        // FIX 3: guard against late messages after timeout.
-        if (settled) {
-          // Still dispatch to sessions for post-attach messages.
-          let frame: ServerFrame
-          try {
-            frame = JSON.parse(String((ev as MessageEvent).data)) as ServerFrame
-          } catch { return }
-          this.#dispatchToSessions(frame)
-          return
-        }
-
-        let frame: ServerFrame
-        try {
-          frame = JSON.parse(String((ev as MessageEvent).data)) as ServerFrame
-        } catch {
-          return // drop malformed frames
-        }
-
-        if (isHelloFrame(frame)) {
-          settled = true
-          clearTimeout(timeout)
-
-          const result: AttachResult = frame.descriptor
-            ? { descriptor: frame.descriptor, origin: "server-emitted" as const }
-            : {
-                descriptor: synthesizeLegacyDescriptor(this.#route),
-                origin: "synthesized-legacy" as const,
-              }
-
-          this.#lastAttach = result
-          this.#connectionBroadcast.publish({ status: "ready" })
-          this.#descriptorBroadcast.publish(result)
-
-          if (this.#helloResolve) {
-            this.#helloResolve(result)
-            this.#helloResolve = null
-            this.#helloReject = null
-          }
-        }
-
-        // Route message to open sessions (including thread-created).
-        this.#dispatchToSessions(frame)
-      })
-
-      ws.addEventListener("close", (ev) => {
-        // FIX 3: guard against double-settle.
-        if (settled) {
-          // Post-attach close: emit down state.
-          const closeEv = ev as { code?: number; reason?: string }
-          const reason = `code=${closeEv.code ?? 0} reason=${closeEv.reason ?? ""}`
-          if ((closeEv.code ?? 0) === 1008) {
-            this.#connectionBroadcast.publish({ status: "auth-failed", reason })
-          } else {
-            this.#connectionBroadcast.publish({ status: "down", reason })
-          }
-          return
-        }
-        settled = true
-        clearTimeout(timeout)
-
-        const closeEv = ev as { code?: number; reason?: string }
-        const reason = `code=${closeEv.code ?? 0} reason=${closeEv.reason ?? ""}`
-
-        // FIX 6: distinguish auth failures (1008) from other closes.
-        if ((closeEv.code ?? 0) === 1008) {
-          this.#connectionBroadcast.publish({ status: "auth-failed", reason })
-        } else {
-          this.#connectionBroadcast.publish({ status: "down", reason })
-        }
-
-        if (this.#helloReject) {
-          this.#helloReject(
-            new Error(`LunaWsAdapter(${this.routeKey}): socket closed before hello (${reason})`),
-          )
-          this.#helloResolve = null
-          this.#helloReject = null
-        }
-      })
-
-      ws.addEventListener("error", () => {
-        // FIX 3: Do NOT settle here. In both browser WebSocket and the ws
-        // package, an error event is always followed by a close event.
-        // Let the close handler do the definitive settle so it can read the
-        // close code (e.g. 1008 for auth-failed vs generic network error).
-        // If settled is already true (e.g. after hello), ignore the error.
-      })
-    })
+    const result = await this.#connectWs(tokenizedUrl)
+    this.#lastAttach = result
+    this.#connectionBroadcast.publish({ status: "ready" })
+    this.#descriptorBroadcast.publish(result)
+    return result
   }
 
   async describe(): Promise<AttachResult> {
@@ -279,7 +168,6 @@ export class LunaWsAdapter implements ClientTransportAdapter {
     return this.attach()
   }
 
-  // FIX 1: Wire getters to Broadcast.subscribe().
   get descriptorChanges(): AsyncIterable<AttachResult> {
     return { [Symbol.asyncIterator]: () => this.#descriptorBroadcast.subscribe() }
   }
@@ -288,17 +176,17 @@ export class LunaWsAdapter implements ClientTransportAdapter {
     return { [Symbol.asyncIterator]: () => this.#connectionBroadcast.subscribe() }
   }
 
-  async openSession(opts: { readonly threadId?: string }): Promise<ChatSession> {
+  async openSession(opts: { readonly threadId?: string; readonly model?: string }): Promise<ChatSession> {
     if (!this.#lastAttach) await this.attach()
     const ws = this.#ws
     if (!ws) throw new Error(`LunaWsAdapter(${this.routeKey}): no active connection`)
 
-    // FIX 4: If no threadId, use new-thread protocol to get a real thread ID.
+    // If no threadId, use new-thread protocol to get a real thread ID.
     let threadId: string
     if (opts.threadId) {
       threadId = opts.threadId
     } else {
-      threadId = await this.#createNewThread(ws)
+      threadId = await this.#createNewThread(ws, opts.model)
     }
 
     const sessionId = `${threadId}-${Date.now()}`
@@ -332,7 +220,6 @@ export class LunaWsAdapter implements ClientTransportAdapter {
           frameQueue.push(frame)
         }
       },
-      // FIX 2: dispose() calls this to cleanly terminate the message iterable.
       close: drainClose,
     }
     this.#sessions.set(sessionId, sessionEntry)
@@ -393,24 +280,29 @@ export class LunaWsAdapter implements ClientTransportAdapter {
   async dispose(): Promise<void> {
     this.#disposed = true
 
-    // FIX 2: Terminate all broadcast subscribers cleanly.
+    // Cancel any pending reconnect timer.
+    if (this.#reconnectTimer !== null) {
+      clearTimeout(this.#reconnectTimer)
+      this.#reconnectTimer = null
+    }
+
+    // Terminate all broadcast subscribers cleanly.
     this.#descriptorBroadcast.close()
     this.#connectionBroadcast.close()
 
-    // FIX 2: Reject any in-flight hello promise.
+    // Reject any in-flight hello promise.
     if (this.#helloReject) {
       this.#helloReject(new Error(`LunaWsAdapter(${this.routeKey}): disposed`))
-      this.#helloResolve = null
       this.#helloReject = null
     }
 
-    // FIX 2: Reject any pending new-thread creation.
+    // Reject any pending new-thread creation.
     if (this.#pendingNewThread) {
       this.#pendingNewThread.reject(new Error(`LunaWsAdapter(${this.routeKey}): disposed`))
       this.#pendingNewThread = null
     }
 
-    // FIX 2: Close all session message iterables cleanly.
+    // Close all session message iterables cleanly.
     for (const [, entry] of this.#sessions) {
       entry.close()
     }
@@ -426,18 +318,184 @@ export class LunaWsAdapter implements ClientTransportAdapter {
   // ── private helpers ──────────────────────────────────────────────────────
 
   /**
-   * FIX 4: Send new-thread and wait for thread-created / thread-create-error.
+   * Creates a WebSocket, wires up event handlers, and returns a Promise that
+   * resolves with the AttachResult on hello or rejects on close-before-hello /
+   * timeout. Also handles post-hello drops by scheduling a reconnect.
    */
-  async #createNewThread(ws: WebSocket): Promise<string> {
+  #connectWs(tokenizedUrl: string): Promise<AttachResult> {
+    return new Promise<AttachResult>((resolve, reject) => {
+      let settled = false
+
+      // Expose reject so dispose() can abort an in-flight connect.
+      this.#helloReject = (err: Error) => {
+        if (settled) return
+        settled = true
+        this.#helloReject = null
+        reject(err)
+      }
+
+      const timeout = setTimeout(() => {
+        if (settled) return
+        settled = true
+        this.#helloReject = null
+        if (this.#ws) {
+          try { this.#ws.close() } catch { /* ignore */ }
+          this.#ws = null
+        }
+        this.#connectionBroadcast.publish({ status: "handshake-timeout" })
+        reject(new Error(`LunaWsAdapter(${this.routeKey}): handshake timeout after 10s`))
+      }, this.#handshakeTimeoutMs)
+
+      let ws: WebSocket
+      try {
+        ws = this.#wsFactory(tokenizedUrl)
+      } catch (e) {
+        settled = true
+        this.#helloReject = null
+        clearTimeout(timeout)
+        reject(e instanceof Error ? e : new Error(String(e)))
+        return
+      }
+
+      this.#ws = ws
+
+      ws.addEventListener("open", () => {
+        // Socket is open but waiting for hello — "connecting" already emitted.
+      })
+
+      ws.addEventListener("message", (ev) => {
+        // Guard: ignore events from a superseded socket (after #doReconnect nulls #ws
+        // and opens a fresh one). Without this, a late close re-fire on a dead socket
+        // could call #scheduleReconnect() a second time.
+        if (this.#ws !== ws) return
+        let frame: ServerFrame
+        try {
+          frame = JSON.parse(String((ev as MessageEvent).data)) as ServerFrame
+        } catch { return }
+
+        if (!settled && isHelloFrame(frame)) {
+          settled = true
+          this.#helloReject = null
+          clearTimeout(timeout)
+
+          const result: AttachResult = frame.descriptor
+            ? { descriptor: frame.descriptor, origin: "server-emitted" as const }
+            : {
+                descriptor: synthesizeLegacyDescriptor(this.#route),
+                origin: "synthesized-legacy" as const,
+              }
+
+          resolve(result)
+          return
+        }
+
+        if (settled) {
+          this.#dispatchToSessions(frame)
+        }
+      })
+
+      ws.addEventListener("close", (ev) => {
+        if (this.#ws !== ws) return
+        const closeEv = ev as { code?: number; reason?: string }
+        const code = closeEv.code ?? 0
+        const reason = `code=${code} reason=${closeEv.reason ?? ""}`
+
+        if (!settled) {
+          // Close before hello — reject the connect promise.
+          settled = true
+          this.#helloReject = null
+          clearTimeout(timeout)
+
+          if (code === 1008) {
+            this.#connectionBroadcast.publish({ status: "auth-failed", reason })
+          } else {
+            this.#connectionBroadcast.publish({ status: "down", reason })
+          }
+          reject(new Error(`LunaWsAdapter(${this.routeKey}): socket closed before hello (${reason})`))
+          return
+        }
+
+        // Post-hello close.
+        if (this.#disposed) return
+
+        if (code === 1008) {
+          // Auth failure is terminal — no reconnect.
+          this.#connectionBroadcast.publish({ status: "auth-failed", reason })
+          return
+        }
+
+        // Transient drop: start reconnect loop.
+        this.#connectionBroadcast.publish({ status: "recovering", reason })
+        this.#scheduleReconnect()
+      })
+
+      ws.addEventListener("error", () => {
+        if (this.#ws !== ws) return
+        // In both browser WebSocket and the ws package, an error event is
+        // always followed by a close event. Let the close handler do the
+        // definitive settle so it can read the close code.
+      })
+    })
+  }
+
+  #scheduleReconnect(): void {
+    if (this.#disposed) return
+    if (this.#reconnectAttempts >= this.#maxReconnectAttempts) {
+      this.#connectionBroadcast.publish({ status: "down", reason: "max reconnect attempts exceeded" })
+      return
+    }
+    const delay =
+      Math.min(
+        this.#baseReconnectMs * Math.pow(2, this.#reconnectAttempts),
+        this.#maxReconnectMs,
+      ) + Math.random() * 200
+    this.#reconnectAttempts++
+    this.#reconnectTimer = setTimeout(() => {
+      this.#reconnectTimer = null
+      void this.#doReconnect()
+    }, delay)
+  }
+
+  async #doReconnect(): Promise<void> {
+    if (this.#disposed) return
+
+    const url = this.#route.endpoints[0]
+    if (!url) return
+
+    const sep = url.includes("?") ? "&" : "?"
+    const tokenizedUrl = `${url}${sep}token=${encodeURIComponent(this.#route.tokenRef)}`
+
+    this.#ws = null
+
+    try {
+      const result = await this.#connectWs(tokenizedUrl)
+      if (this.#disposed) return
+      this.#reconnectAttempts = 0
+      this.#lastAttach = result
+      this.#connectionBroadcast.publish({ status: "ready" })
+      this.#descriptorBroadcast.publish(result)
+    } catch {
+      if (!this.#disposed) {
+        this.#connectionBroadcast.publish({ status: "recovering" })
+        this.#scheduleReconnect()
+      }
+    }
+  }
+
+  /**
+   * Send new-thread and wait for thread-created / thread-create-error.
+   * Passes `model` to the server only if provided.
+   */
+  async #createNewThread(ws: WebSocket, model?: string): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       if (this.#pendingNewThread) {
         reject(new Error(`LunaWsAdapter(${this.routeKey}): concurrent new-thread not supported`))
         return
       }
       this.#pendingNewThread = { resolve, reject }
-      const frame: { type: string; model: string } = {
+      const frame: { type: string; model?: string } = {
         type: "new-thread",
-        model: "claude-sonnet-4-5",
+        ...(model ? { model } : {}),
       }
       ws.send(JSON.stringify(frame))
     })
@@ -446,7 +504,7 @@ export class LunaWsAdapter implements ClientTransportAdapter {
   // ── private session dispatch ─────────────────────────────────────────────
 
   #dispatchToSessions(frame: ServerFrame): void {
-    // FIX 4: Intercept thread-created / thread-create-error for new-thread.
+    // Intercept thread-created / thread-create-error for new-thread.
     if (isThreadCreatedFrame(frame)) {
       if (this.#pendingNewThread) {
         const pending = this.#pendingNewThread
