@@ -442,6 +442,32 @@ fn read_connection_value() -> Option<serde_json::Value> {
     serde_json::from_str::<serde_json::Value>(&contents).ok()
 }
 
+/// Path-injectable variant of `read_connection_value` — reads
+/// `<luna_dir>/moon-connection.json`.  Used by `load_connection_in` so the
+/// integration test can drive a tempdir without touching `$HOME`.
+fn read_connection_value_in(luna_dir: &std::path::Path) -> Option<serde_json::Value> {
+    let path = luna_dir.join("moon-connection.json");
+    let contents = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<serde_json::Value>(&contents).ok()
+}
+
+/// Path-injectable variant of `client_config::load_client_config_pub` — parses
+/// `<luna_dir>/client.toml`.  Returns `None` when the file is absent (clean
+/// fall-through to the legacy path), `Err(reason)` when present but invalid.
+fn load_client_config_in(
+    luna_dir: &std::path::Path,
+) -> Option<Result<client_config::ClientConfig, String>> {
+    let path = luna_dir.join("client.toml");
+    if !path.exists() {
+        return None;
+    }
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => return Some(Err(format!("cannot read client.toml: {e}"))),
+    };
+    Some(client_config::parse_client_config(&contents))
+}
+
 /// Normalize any on-disk shape (legacy flat OR new {activeProfile, profiles})
 /// into the new structure: returns (active_profile, profiles_map).
 ///
@@ -607,56 +633,76 @@ fn save_connection(url: String, token: String, profile: Option<String>) -> Resul
     persist_profiles(&active, &profiles)
 }
 
-/// Returns the flat {wsUrl, wsToken} of the ACTIVE profile — the SAME contract
-/// the frontend's connect path already consumes (it reads conn.wsUrl /
-/// conn.wsToken). Legacy flat files are migrated transparently in memory, so a
-/// currently-running user gets byte-identical creds. NEVER writes on load.
+/// Inner implementation of `load_connection` that operates on an explicit
+/// `luna_dir` so the integration test can drive a tempdir without mutating
+/// `$HOME` (a shared process global that makes tests flaky and non-parallel).
 ///
-/// # Phase-2 C3 backward-compat shim
-/// When `~/.luna/client.toml` is present this command delegates to
-/// `client_config::load_route(default)` and re-maps the result into the legacy
-/// `{wsUrl, wsToken}` shape that the current chat.html JS expects.
-/// `endpoints[0]` becomes `wsUrl`; `tokenRef` becomes `wsToken` (raw — token
-/// resolution is a Phase-3 concern, so the JS receives the ref string for now).
-/// When `client.toml` is absent the pre-C3 `moon-connection.json` path is used
-/// unchanged — zero behaviour change for users who have not yet migrated.
-#[tauri::command]
-fn load_connection() -> Option<serde_json::Value> {
-    // C3 forward path: client.toml present → delegate to route module.
+/// The public `#[tauri::command]` wrapper calls this with `~/.luna`.
+///
+/// # "legacy" sentinel resolution
+/// After `migrate_legacy_connection` runs, `client.toml` contains
+/// `tokenRef = "legacy"` as a placeholder.  The real WS token still lives in
+/// `moon-connection.json`.  When `ws_token == "legacy"` this function reads the
+/// real token from `moon-connection.json` for that route's profile and returns
+/// it — while keeping `ws_url` from `client.toml` (authoritative for routing).
+///
+/// If the sentinel cannot be resolved (moon-connection.json absent, profile not
+/// found, or token empty) the sentinel is returned as-is so the frontend shows
+/// Disconnected — the correct UX for a genuinely uncredentialled channel.
+///
+/// A `tokenRef` that is NOT "legacy" (e.g. `env:VAR`, `file:path`, `op://…`)
+/// is returned unchanged; those refs are Phase-3's concern.
+fn load_connection_in(luna_dir: &std::path::Path) -> Option<serde_json::Value> {
+    // C3 forward path: client.toml present → read route config.
     // client.toml ABSENT → fall through to legacy path (pre-migration users).
     // client.toml PRESENT but invalid → surface the error rather than silently
     // falling back to legacy creds (which would connect to the wrong server).
-    if let Ok(home) = std::env::var("HOME") {
-        let toml_path = std::path::PathBuf::from(&home)
-            .join(".luna")
-            .join("client.toml");
-        if toml_path.exists() {
-            match client_config::load_client_config_pub() {
-                Err(reason) => {
-                    // client.toml is present but malformed — DO NOT fall back to
-                    // legacy; surface the error so the frontend can show it.
-                    eprintln!("error: [luna] client.toml invalid: {reason}");
+    if let Some(result) = load_client_config_in(luna_dir) {
+        match result {
+            Err(reason) => {
+                // client.toml is present but malformed — DO NOT fall back to
+                // legacy; surface the error so the frontend can show it.
+                eprintln!("error: [luna] client.toml invalid: {reason}");
+                return Some(serde_json::json!({
+                    "error": format!("client.toml invalid: {reason}"),
+                }));
+            }
+            Ok(cfg) => {
+                if let Some(entry) = cfg.route.get(&cfg.default) {
+                    let ws_url = entry.endpoints.first().cloned().unwrap_or_default();
+                    let ws_token = if entry.token_ref == "legacy" {
+                        // Resolve the "legacy" sentinel: the real token lives in
+                        // moon-connection.json under a profile keyed by cfg.default.
+                        // URL stays from client.toml (authoritative for routing).
+                        let resolved = read_connection_value_in(luna_dir)
+                            .map(|v| {
+                                let (_, profiles) = normalize_profiles(&v);
+                                profile_connection(&profiles, &cfg.default).and_then(|c| {
+                                    c["wsToken"]
+                                        .as_str()
+                                        .filter(|t| !t.is_empty())
+                                        .map(|t| t.to_string())
+                                })
+                            })
+                            .flatten();
+                        // Fall through to the sentinel when resolution fails so the
+                        // frontend surfaces Disconnected rather than silently breaking.
+                        resolved.unwrap_or_else(|| entry.token_ref.clone())
+                    } else {
+                        // Non-"legacy" ref (env:, file:, op://…) returned unchanged.
+                        entry.token_ref.clone()
+                    };
                     return Some(serde_json::json!({
-                        "error": format!("client.toml invalid: {reason}"),
+                        "wsUrl": ws_url,
+                        "wsToken": ws_token,
                     }));
-                }
-                Ok(cfg) => {
-                    if let Some(entry) = cfg.route.get(&cfg.default) {
-                        let ws_url = entry.endpoints.first().cloned().unwrap_or_default();
-                        // tokenRef is returned raw — Phase-3 resolves op:// / env: / file: refs.
-                        let ws_token = entry.token_ref.clone();
-                        return Some(serde_json::json!({
-                            "wsUrl": ws_url,
-                            "wsToken": ws_token,
-                        }));
-                    }
                 }
             }
         }
     }
 
     // Legacy path: moon-connection.json (unchanged from pre-C3).
-    let value = read_connection_value()?;
+    let value = read_connection_value_in(luna_dir)?;
     let (active, profiles) = normalize_profiles(&value);
     // Return ONLY the active profile's creds. We deliberately do NOT fall back to
     // another profile when the active channel is credless: doing so would make
@@ -666,6 +712,30 @@ fn load_connection() -> Option<serde_json::Value> {
     // (The legacy flat file always migrates to a credentialed stable profile, so
     // this never regresses the running user.)
     profile_connection(&profiles, &active)
+}
+
+/// Returns the flat {wsUrl, wsToken} of the ACTIVE profile — the SAME contract
+/// the frontend's connect path already consumes (it reads conn.wsUrl /
+/// conn.wsToken). Legacy flat files are migrated transparently in memory, so a
+/// currently-running user gets byte-identical creds. NEVER writes on load.
+///
+/// # Phase-2 C3 backward-compat shim
+/// When `~/.luna/client.toml` is present this command delegates to the route
+/// module and re-maps the result into the legacy `{wsUrl, wsToken}` shape that
+/// the current chat.html JS expects.  `endpoints[0]` becomes `wsUrl`.
+///
+/// When `tokenRef` is the migration sentinel `"legacy"` the real token is
+/// resolved from `moon-connection.json` (see `load_connection_in`).  Any other
+/// `tokenRef` string (e.g. `env:VAR`) is returned raw — Phase-3 resolves those.
+///
+/// When `client.toml` is absent the pre-C3 `moon-connection.json` path is used
+/// unchanged — zero behaviour change for users who have not yet migrated.
+#[tauri::command]
+fn load_connection() -> Option<serde_json::Value> {
+    let luna_dir = std::env::var("HOME")
+        .ok()
+        .map(|h| std::path::PathBuf::from(h).join(".luna"))?;
+    load_connection_in(&luna_dir)
 }
 
 /// List profiles + the active one, for the Settings UI channel switch. Returns
@@ -2996,6 +3066,163 @@ mod tests {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── load_connection_in integration tests ────────────────────────────────
+    //
+    // These are the tests that would have caught the C3/C10 interaction bug:
+    // migrate_legacy_connection writes tokenRef="legacy" but the old
+    // load_connection returned it raw → frontend sent "legacy" as bearer →
+    // server rejected → Disconnected on every 0.0.43 boot.
+    //
+    // All tests use a tempdir so they never touch the real ~/.luna and are
+    // safe to run in parallel.
+
+    fn with_tmp_luna_dir<F: FnOnce(std::path::PathBuf)>(f: F) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let luna = dir.path().join(".luna");
+        std::fs::create_dir_all(&luna).expect("mkdir .luna");
+        f(luna);
+        // dir drops here → cleaned up automatically
+    }
+
+    /// THE headline regression test.
+    ///
+    /// Reproduces the exact 0.0.43 boot sequence:
+    ///   1. moon-connection.json exists with a real 64-char token.
+    ///   2. migrate_legacy_to_client_toml_in runs → creates client.toml with
+    ///      tokenRef = "legacy".
+    ///   3. load_connection_in is called → MUST return the real token, NOT "legacy".
+    #[test]
+    fn load_connection_resolves_legacy_sentinel_to_real_moon_connection_token() {
+        with_tmp_luna_dir(|luna_dir| {
+            let real_token = "a".repeat(64); // 64-char stand-in for a real WS token
+            let moon_conn = serde_json::json!({
+                "activeProfile": "stable",
+                "profiles": {
+                    "stable": {
+                        "wsUrl": "ws://host:4753/ui",
+                        "wsToken": real_token
+                    }
+                }
+            })
+            .to_string();
+            std::fs::write(luna_dir.join("moon-connection.json"), &moon_conn)
+                .expect("write moon-connection.json");
+
+            // Run the real migration (same function the boot sequence calls).
+            client_config::migrate_legacy_to_client_toml_in(&luna_dir)
+                .expect("migration must succeed");
+
+            // Verify the migration produced a client.toml with tokenRef="legacy".
+            let toml_contents =
+                std::fs::read_to_string(luna_dir.join("client.toml")).expect("client.toml");
+            assert!(
+                toml_contents.contains(r#"tokenRef = "legacy""#),
+                "migration must write tokenRef = \"legacy\"; got:\n{toml_contents}"
+            );
+
+            // THE CRITICAL ASSERTION: load_connection_in must resolve the sentinel.
+            let result = load_connection_in(&luna_dir)
+                .expect("must return Some (not None) when creds exist");
+
+            let ws_token = result["wsToken"]
+                .as_str()
+                .expect("wsToken must be a string");
+            assert_eq!(
+                ws_token,
+                "a".repeat(64).as_str(),
+                "wsToken must be the REAL token from moon-connection.json, not the \"legacy\" sentinel"
+            );
+
+            // wsUrl must come from client.toml (route's endpoints[0]).
+            let ws_url = result["wsUrl"].as_str().expect("wsUrl must be a string");
+            assert_eq!(
+                ws_url, "ws://host:4753/ui",
+                "wsUrl must be the route endpoint from client.toml"
+            );
+
+            // Sanity: the returned token must NOT be the sentinel string.
+            assert_ne!(
+                ws_token, "legacy",
+                "REGRESSION: returned \"legacy\" as the bearer token — server will reject it"
+            );
+        });
+    }
+
+    /// (a) client.toml with a non-"legacy" tokenRef is returned as-is.
+    ///     Phase-3 resolves env:/file:/op:// refs; load_connection must not mangle them.
+    #[test]
+    fn load_connection_returns_non_legacy_token_ref_unchanged() {
+        with_tmp_luna_dir(|luna_dir| {
+            let client_toml = r#"kind = "bootstrap"
+fileFormatVersion = 3
+default = "stable"
+
+[route.stable]
+endpoints = ["ws://host:4753/ui"]
+label = "stable"
+tokenRef = "env:LUNA_WS_TOKEN"
+"#;
+            std::fs::write(luna_dir.join("client.toml"), client_toml).expect("write client.toml");
+
+            let result =
+                load_connection_in(&luna_dir).expect("must return Some when client.toml is valid");
+            assert_eq!(
+                result["wsToken"].as_str(),
+                Some("env:LUNA_WS_TOKEN"),
+                "non-legacy tokenRef must be returned verbatim (Phase-3 resolves it)"
+            );
+            assert_eq!(result["wsUrl"].as_str(), Some("ws://host:4753/ui"));
+        });
+    }
+
+    /// (b) No client.toml → legacy path — returns the active profile's real creds
+    ///     from moon-connection.json verbatim.
+    #[test]
+    fn load_connection_no_client_toml_returns_active_profile_creds() {
+        with_tmp_luna_dir(|luna_dir| {
+            let moon_conn = r#"{"activeProfile":"stable","profiles":{"stable":{"wsUrl":"ws://jax:4753/ui","wsToken":"real-token-xyz"}}}"#;
+            std::fs::write(luna_dir.join("moon-connection.json"), moon_conn)
+                .expect("write moon-connection.json");
+
+            let result =
+                load_connection_in(&luna_dir).expect("must return Some when creds present");
+            assert_eq!(result["wsToken"].as_str(), Some("real-token-xyz"));
+            assert_eq!(result["wsUrl"].as_str(), Some("ws://jax:4753/ui"));
+        });
+    }
+
+    /// (c) client.toml with tokenRef="legacy" but moon-connection.json is missing →
+    ///     returns the sentinel as-is so the frontend shows Disconnected (graceful
+    ///     degradation, no panic).
+    #[test]
+    fn load_connection_legacy_sentinel_with_missing_moon_connection_returns_sentinel() {
+        with_tmp_luna_dir(|luna_dir| {
+            let client_toml = r#"kind = "bootstrap"
+fileFormatVersion = 3
+default = "stable"
+
+[route.stable]
+endpoints = ["ws://host:4753/ui"]
+label = "stable"
+tokenRef = "legacy"
+"#;
+            std::fs::write(luna_dir.join("client.toml"), client_toml).expect("write client.toml");
+            // No moon-connection.json in the tempdir.
+
+            let result = load_connection_in(&luna_dir)
+                .expect("must return Some (not panic) when resolution fails");
+            // Falls through to the sentinel — frontend shows Disconnected, which is
+            // correct for a channel with no credentials.
+            assert_eq!(
+                result["wsToken"].as_str(),
+                Some("legacy"),
+                "must degrade to sentinel (not panic) when moon-connection.json is absent"
+            );
+            // wsUrl still comes from client.toml.
+            assert_eq!(result["wsUrl"].as_str(), Some("ws://host:4753/ui"));
+        });
     }
 
     // ── local shell executor ────────────────────────────────────────────────

@@ -216,8 +216,10 @@ fn load_client_config() -> Result<ClientConfig, String> {
     parse_client_config(&contents)
 }
 
-/// Public alias used by `main.rs`'s `load_connection` shim so the backward-
-/// compat path can inspect the default route without going through a Tauri command.
+/// Public alias so external callers (e.g. future non-Tauri tooling) can inspect
+/// the default route without going through a Tauri command.
+/// `main.rs` now uses `load_client_config_in` directly for testability.
+#[allow(dead_code)]
 pub(crate) fn load_client_config_pub() -> Result<ClientConfig, String> {
     load_client_config()
 }
@@ -390,10 +392,7 @@ fn read_legacy_last_thread_in(luna_dir: &std::path::Path) -> Option<String> {
 ///
 /// PINNED windows must never call this — they are bound to ONE thread via URL
 /// param and must not interact with the restart-resume pointer.
-fn get_panel_last_thread_in(
-    luna_dir: &std::path::Path,
-    panel_id: &str,
-) -> Option<String> {
+fn get_panel_last_thread_in(luna_dir: &std::path::Path, panel_id: &str) -> Option<String> {
     let session_path = luna_dir.join("moon-session.json");
 
     // Load the session from the explicit luna_dir (not the HOME-derived path).
@@ -548,7 +547,9 @@ fn read_legacy_profiles_for_migration_in(
 /// Inner implementation of the migration that operates on an explicit luna_dir.
 /// Separated from the public wrapper so tests can pass a tempdir without
 /// mutating the `HOME` environment variable (which is a shared process global).
-fn migrate_legacy_to_client_toml_in(luna_dir: &std::path::Path) -> Result<(), String> {
+/// `pub(crate)` so the integration tests in `main.rs` can call it directly to
+/// reproduce the real boot sequence (migrate → load_connection).
+pub(crate) fn migrate_legacy_to_client_toml_in(luna_dir: &std::path::Path) -> Result<(), String> {
     let client_toml = luna_dir.join("client.toml");
 
     // Idempotent: if client.toml already exists, do nothing.
@@ -1215,7 +1216,10 @@ tokenRef  = "env:ALPHA_TOKEN"
 
             // The panel slot must now be persisted in moon-session.json.
             let session_path = luna_dir.join("moon-session.json");
-            assert!(session_path.exists(), "moon-session.json must be created after adopt");
+            assert!(
+                session_path.exists(),
+                "moon-session.json must be created after adopt"
+            );
             let contents = std::fs::read_to_string(&session_path).expect("read");
             let session: MoonSession = serde_json::from_str(&contents).expect("parse");
             assert_eq!(
@@ -1253,8 +1257,11 @@ tokenRef  = "env:ALPHA_TOKEN"
             write_atomic_0600(&luna_dir.join("moon-session.json"), &json).expect("write");
 
             // Also write a legacy file with a DIFFERENT id.
-            std::fs::write(luna_dir.join(LEGACY_LAST_THREAD_FILE), "legacy-should-be-ignored")
-                .expect("write legacy");
+            std::fs::write(
+                luna_dir.join(LEGACY_LAST_THREAD_FILE),
+                "legacy-should-be-ignored",
+            )
+            .expect("write legacy");
 
             let result = get_panel_last_thread_in(&luna_dir, "panel-chat");
             assert_eq!(
@@ -1287,8 +1294,8 @@ tokenRef  = "env:ALPHA_TOKEN"
             );
 
             // Legacy file must also be written.
-            let legacy =
-                std::fs::read_to_string(luna_dir.join(LEGACY_LAST_THREAD_FILE)).expect("read legacy");
+            let legacy = std::fs::read_to_string(luna_dir.join(LEGACY_LAST_THREAD_FILE))
+                .expect("read legacy");
             assert_eq!(
                 legacy.trim(),
                 "thread-set-123",
@@ -1317,9 +1324,12 @@ tokenRef  = "env:ALPHA_TOKEN"
                 "slot must store the trimmed id"
             );
 
-            let legacy =
-                std::fs::read_to_string(luna_dir.join(LEGACY_LAST_THREAD_FILE)).expect("read legacy");
-            assert_eq!(legacy, "thread-padded", "legacy file must store the trimmed id");
+            let legacy = std::fs::read_to_string(luna_dir.join(LEGACY_LAST_THREAD_FILE))
+                .expect("read legacy");
+            assert_eq!(
+                legacy, "thread-padded",
+                "legacy file must store the trimmed id"
+            );
         });
     }
 
@@ -1419,7 +1429,11 @@ tokenRef  = "env:ALPHA_TOKEN"
             let chat_thread = get_panel_last_thread_in(&luna_dir, "panel-chat");
             let secondary_thread = get_panel_last_thread_in(&luna_dir, "panel-secondary");
 
-            assert_eq!(chat_thread.as_deref(), Some("thread-for-chat"), "panel-chat slot");
+            assert_eq!(
+                chat_thread.as_deref(),
+                Some("thread-for-chat"),
+                "panel-chat slot"
+            );
             assert_eq!(
                 secondary_thread.as_deref(),
                 Some("thread-for-secondary"),
