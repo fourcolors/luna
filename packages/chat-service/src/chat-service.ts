@@ -706,21 +706,41 @@ export class ChatService extends Effect.Service<ChatService>()(
           // re-wired fresh by decorate() on every (re)build / resume and are
           // never read back from this row.
           const persistOptions = stripNonPersistableOptions(sessionOptions)
-          const summary = yield* store
-            .create({ id, options: persistOptions, createdAt })
-            // Surface the typed failure at its source before converting to a
-            // defect — the silent-failure gap that hid the cyclic-serialize
-            // bug. The ui-ws new-thread handler additionally catches the
-            // resulting cause and sends the client a `thread-create-error`
-            // frame (server.ts), so the user is never left hanging.
-            .pipe(
-              Effect.tapErrorCause((cause) =>
-                Effect.logError(
-                  `[chat] createThread: session store create failed for ${id}: ${Cause.pretty(cause)}`,
-                ),
-              ),
-              Effect.orDie,
-            )
+
+          // Recovery tolerance: when `threadIdOverride` is set the caller is
+          // the subscribe() cache-miss path restoring an existing thread. If
+          // the session-store ALREADY has a row for this id (inconsistent
+          // state: ThreadRegistry has sdkSessionId=null but the store row
+          // exists from the original createThread), reuse the persisted row
+          // instead of colliding on store.create(). Without this guard,
+          // store.create() returns an IntegrityError that Effect.orDie turns
+          // into a defect, killing the fiber before any snapshot is emitted —
+          // the client's subscribe watchdog times out with "Reattach stalled".
+          //
+          // New-thread path (no threadIdOverride, or fresh id with no existing
+          // row) is unchanged: store.create() fails loudly on a real collision.
+          const existingRow =
+            opts.threadIdOverride !== undefined
+              ? yield* store.get(id)
+              : null
+          const summary =
+            existingRow !== null
+              ? existingRow
+              : yield* store
+                  .create({ id, options: persistOptions, createdAt })
+                  // Surface the typed failure at its source before converting to a
+                  // defect — the silent-failure gap that hid the cyclic-serialize
+                  // bug. The ui-ws new-thread handler additionally catches the
+                  // resulting cause and sends the client a `thread-create-error`
+                  // frame (server.ts), so the user is never left hanging.
+                  .pipe(
+                    Effect.tapErrorCause((cause) =>
+                      Effect.logError(
+                        `[chat] createThread: session store create failed for ${id}: ${Cause.pretty(cause)}`,
+                      ),
+                    ),
+                    Effect.orDie,
+                  )
 
           // Session row exists → run the provider's post-create binding
           // (obs session tagging, local-shell attach, sandbox re-attach)

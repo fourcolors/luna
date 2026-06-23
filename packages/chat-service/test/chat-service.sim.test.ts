@@ -2050,6 +2050,90 @@ describe("ChatService — ThreadRegistry-backed recovery", () => {
     },
     { timeout: 15_000 },
   )
+
+  // REGRESSION: subscribe() Case B — thread in registry with sdkSessionId=null
+  // BUT session-store ALREADY has a row for the id (inconsistent state that
+  // occurs when the server restarts mid-first-turn before onSdkSessionId fires).
+  //
+  // Without the fix, createThread() calls store.create() which returns an
+  // IntegrityError; Effect.orDie kills the fiber; no snapshot is emitted;
+  // the client's watchdog times out with "Reattach stalled" forever.
+  //
+  // With the fix, createThread() detects the existing row via store.get() and
+  // reuses it — the subscribe() path emits a thread-snapshot and does NOT throw.
+  it(
+    "subscribe_resumes_thread_with_existing_session_row_no_sid: Case B with pre-existing store row emits snapshot, no IntegrityError",
+    async () => {
+      const THREAD_ID = "thr_test_caseb_collision01"
+      const SAVED_MODEL = "claude-test"
+      let queryCallCount = 0
+      let threwError = false
+
+      const fakeLayer = SDKClient.fake((p) => {
+        queryCallCount++
+        return makeChatLoopQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: `sdk-new-caseb-${queryCallCount}`,
+          responseFor: (t) => `echo:${t}`,
+        })
+      })
+
+      let frames: Chunk.Chunk<import("../src/types.js").ChatFrame> | undefined
+
+      try {
+        await runScopedWithRegistry(
+          Effect.gen(function* () {
+            const reg = yield* ThreadRegistryService
+            const store = yield* SessionStore
+
+            // Step 1: seed ThreadRegistry with sdkSessionId=null (Case B).
+            yield* reg.upsert({
+              id: THREAD_ID,
+              sdkSessionId: null,
+              cwd: "/test/cwd",
+              model: SAVED_MODEL,
+            })
+
+            // Step 2: seed SessionStore with a row for the SAME id — this is
+            // the inconsistent state that causes the collision. The row would
+            // have been created by the original createThread() call before the
+            // server restarted, but onSdkSessionId never captured the sid.
+            yield* store.create({
+              id: THREAD_ID,
+              options: {
+                model: SAVED_MODEL,
+                disableIdleTimeout: true,
+                sdkOptions: { model: SAVED_MODEL },
+              },
+              createdAt: Date.now(),
+            }).pipe(Effect.orDie)
+
+            const chat = yield* ChatService
+
+            // Step 3: subscribe() — without the fix this dies on IntegrityError;
+            // with the fix it should yield a snapshot immediately.
+            const sub = chat.subscribe(THREAD_ID)
+            frames = yield* sub.pipe(Stream.take(1), Stream.runCollect)
+          }),
+          fakeLayer,
+        )
+      } catch (e) {
+        threwError = true
+        console.error("subscribe_resumes_thread_with_existing_session_row_no_sid threw:", e)
+      }
+
+      // Must NOT have thrown — the IntegrityError must be swallowed by reuse.
+      expect(threwError).toBe(false)
+      // Must have emitted at least one frame (the snapshot).
+      expect(frames).toBeDefined()
+      expect(Chunk.size(frames!)).toBeGreaterThan(0)
+      const first = Chunk.unsafeHead(frames!)
+      expect(first.type).toBe("snapshot")
+      // SDK must have been called — the thread was re-created live.
+      expect(queryCallCount).toBeGreaterThan(0)
+    },
+    { timeout: 15_000 },
+  )
 })
 
 // ── listThreads archival-filter tests ─────────────────────────────────────────
