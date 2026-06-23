@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-set-panel-route"
+description = "Allows persisting a panel's route to ~/.luna/moon-session.json (Phase-2 C3)"
+
+[permission.commands]
+allow = [
+  "set_panel_route"
+]

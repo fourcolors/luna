@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-get-panel-route"
+description = "Allows reading a panel's assigned route from ~/.luna/moon-session.json (Phase-2 C3)"
+
+[permission.commands]
+allow = [
+  "get_panel_route"
+]

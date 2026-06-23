@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-list-routes"
+description = "Allows listing all routes from ~/.luna/client.toml (Phase-2 C3)"
+
+[permission.commands]
+allow = [
+  "list_routes"
+]

@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-set-default-route"
+description = "Allows updating the default route field in ~/.luna/client.toml (Phase-2 C3)"
+
+[permission.commands]
+allow = [
+  "set_default_route"
+]

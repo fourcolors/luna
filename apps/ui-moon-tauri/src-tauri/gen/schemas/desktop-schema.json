@@ -381,6 +381,12 @@
           "markdownDescription": "Allows reading the CLI thread file"
         },
         {
+          "description": "Allows reading a panel's assigned route from ~/.luna/moon-session.json (Phase-2 C3)",
+          "type": "string",
+          "const": "allow-get-panel-route",
+          "markdownDescription": "Allows reading a panel's assigned route from ~/.luna/moon-session.json (Phase-2 C3)"
+        },
+        {
           "description": "Allows reading the client OS identifier (macos/linux/windows)",
           "type": "string",
           "const": "allow-get-platform",
@@ -391,6 +397,12 @@
           "type": "string",
           "const": "allow-hub-event",
           "markdownDescription": "Allows a settings panel to request an ALLOWLISTED hub action (fresh-thread, profile-changed, connection-changed, open-wizard) — named events only, never arbitrary payloads."
+        },
+        {
+          "description": "Allows listing all routes from ~/.luna/client.toml (Phase-2 C3)",
+          "type": "string",
+          "const": "allow-list-routes",
+          "markdownDescription": "Allows listing all routes from ~/.luna/client.toml (Phase-2 C3)"
         },
         {
           "description": "Allows the list_widget_windows command",
@@ -409,6 +421,12 @@
           "type": "string",
           "const": "allow-load-profiles",
           "markdownDescription": "Allows listing the channel profiles + active profile from the mode-600 WS connection file"
+        },
+        {
+          "description": "Allows loading a named route from ~/.luna/client.toml (Phase-2 C3)",
+          "type": "string",
+          "const": "allow-load-route",
+          "markdownDescription": "Allows loading a named route from ~/.luna/client.toml (Phase-2 C3)"
         },
         {
           "description": "Allows running a shell command on the client machine via the local-shell bridge",
@@ -465,6 +483,12 @@
           "markdownDescription": "Allows switching the active channel profile in the mode-600 WS connection file"
         },
         {
+          "description": "Allows updating the default route field in ~/.luna/client.toml (Phase-2 C3)",
+          "type": "string",
+          "const": "allow-set-default-route",
+          "markdownDescription": "Allows updating the default route field in ~/.luna/client.toml (Phase-2 C3)"
+        },
+        {
           "description": "Allows writing the last active thread id so a restart re-tethers to the same thread",
           "type": "string",
           "const": "allow-set-last-thread-id",
@@ -475,6 +499,12 @@
           "type": "string",
           "const": "allow-set-native-controls-visible",
           "markdownDescription": "Allows the set_native_controls_visible command"
+        },
+        {
+          "description": "Allows persisting a panel's route to ~/.luna/moon-session.json (Phase-2 C3)",
+          "type": "string",
+          "const": "allow-set-panel-route",
+          "markdownDescription": "Allows persisting a panel's route to ~/.luna/moon-session.json (Phase-2 C3)"
         },
         {
           "description": "Allows enqueueing one sentence for client-side TTS playback",

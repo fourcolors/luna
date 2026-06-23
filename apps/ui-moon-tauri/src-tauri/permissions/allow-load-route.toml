@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-load-route"
+description = "Allows loading a named route from ~/.luna/client.toml (Phase-2 C3)"
+
+[permission.commands]
+allow = [
+  "load_route"
+]
