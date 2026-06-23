@@ -74,6 +74,6 @@ export interface ClientTransportAdapter {
   describe(): Promise<AttachResult>
   readonly descriptorChanges: AsyncIterable<AttachResult>
   readonly connection: AsyncIterable<ConnectionState>
-  openSession(opts: { readonly threadId?: string }): Promise<ChatSession>
+  openSession(opts: { readonly threadId?: string; readonly model?: string }): Promise<ChatSession>
   dispose(): Promise<void>
 }

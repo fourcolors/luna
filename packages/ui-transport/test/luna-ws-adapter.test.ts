@@ -32,6 +32,8 @@ function makeTestDescriptor(
 interface TestServer {
   url: string
   close(): Promise<void>
+  dropClients(): void
+  lastNewThreadFrame?: Record<string, unknown>
 }
 
 async function startTestServer(opts: {
@@ -42,6 +44,8 @@ async function startTestServer(opts: {
   silentConnect?: boolean
   /** If set, the server handles new-thread and responds with thread-created. */
   handleNewThread?: boolean
+  /** If true, records the last new-thread frame received into server.lastNewThreadFrame. */
+  recordFrames?: boolean
 }): Promise<TestServer> {
   return new Promise((resolve, reject) => {
     const wss = new WebSocketServer({ port: 0 })
@@ -95,7 +99,7 @@ async function startTestServer(opts: {
         ws.send(JSON.stringify(hello))
 
         // Handle new-thread protocol if requested.
-        if (opts.handleNewThread) {
+        if (opts.handleNewThread || opts.recordFrames) {
           ws.on("message", (data) => {
             let frame: Record<string, unknown>
             try {
@@ -103,43 +107,56 @@ async function startTestServer(opts: {
             } catch { return }
 
             if (frame["type"] === "new-thread") {
-              // Send back a thread-created response.
-              const threadCreated = {
-                type: "thread-created",
-                thread: {
-                  id: "thread-abc",
-                  parentId: null,
-                  title: null,
-                  tags: [],
-                  createdAt: Date.now(),
-                  endedAt: null,
-                  model: "claude-sonnet-4-5",
-                  status: "active",
-                  lastMessageAt: null,
-                  lastMessageExcerpt: null,
-                },
+              // Record the frame if requested.
+              if (opts.recordFrames) {
+                serverHandle.lastNewThreadFrame = frame
               }
-              ws.send(JSON.stringify(threadCreated))
 
-              // Also send a thread-snapshot so the subscription is primed.
-              setTimeout(() => {
-                const snapshot = {
-                  type: "thread-snapshot",
-                  threadId: "thread-abc",
-                  throughSeq: 0,
-                  messages: [],
+              if (opts.handleNewThread) {
+                // Send back a thread-created response.
+                const threadCreated = {
+                  type: "thread-created",
+                  thread: {
+                    id: "thread-abc",
+                    parentId: null,
+                    title: null,
+                    tags: [],
+                    createdAt: Date.now(),
+                    endedAt: null,
+                    model: "claude-sonnet-4-5",
+                    status: "active",
+                    lastMessageAt: null,
+                    lastMessageExcerpt: null,
+                  },
                 }
-                if (ws.readyState === ws.OPEN) {
-                  ws.send(JSON.stringify(snapshot))
-                }
-              }, 10)
+                ws.send(JSON.stringify(threadCreated))
+
+                // Also send a thread-snapshot so the subscription is primed.
+                setTimeout(() => {
+                  const snapshot = {
+                    type: "thread-snapshot",
+                    threadId: "thread-abc",
+                    throughSeq: 0,
+                    messages: [],
+                  }
+                  if (ws.readyState === ws.OPEN) {
+                    ws.send(JSON.stringify(snapshot))
+                  }
+                }, 10)
+              }
             }
           })
         }
       })
 
-      resolve({
+      const serverHandle: TestServer = {
         url: `ws://127.0.0.1:${port}/ui`,
+        lastNewThreadFrame: undefined,
+        dropClients: () => {
+          for (const client of wss.clients) {
+            client.close(1001, "drop")
+          }
+        },
         close: () =>
           // Close with a 500ms timeout to avoid hanging if underlying HTTP
           // server keeps-alive prevent immediate shutdown.
@@ -147,7 +164,9 @@ async function startTestServer(opts: {
             new Promise<void>((res, rej) => wss.close((e) => (e ? rej(e) : res()))),
             new Promise<void>((res) => setTimeout(res, 500)),
           ]),
-      })
+      }
+
+      resolve(serverHandle)
     })
   })
 }
@@ -493,6 +512,263 @@ describe("LunaWsAdapter", () => {
       expect(session.threadId).not.toBe("new")
 
       session.close()
+      await adapter.dispose()
+    })
+  })
+
+  describe("reconnect / production-readiness", () => {
+    it("model omitted by default: new-thread frame has no model field", async () => {
+      server = await startTestServer({
+        token: TOKEN,
+        sendDescriptor: true,
+        handleNewThread: true,
+        recordFrames: true,
+      })
+
+      const adapter = new LunaWsAdapter(
+        { routeKey: "model-omit-test", endpoints: [server.url], tokenRef: TOKEN },
+        makeNodeWsFactory(),
+      )
+      await adapter.attach()
+      await adapter.openSession({})  // no model
+
+      expect(server.lastNewThreadFrame).toBeDefined()
+      expect(server.lastNewThreadFrame!["model"]).toBeUndefined()
+
+      await adapter.dispose()
+    })
+
+    it("model threaded when provided: new-thread frame includes model", async () => {
+      server = await startTestServer({
+        token: TOKEN,
+        sendDescriptor: true,
+        handleNewThread: true,
+        recordFrames: true,
+      })
+
+      const adapter = new LunaWsAdapter(
+        { routeKey: "model-thread-test", endpoints: [server.url], tokenRef: TOKEN },
+        makeNodeWsFactory(),
+      )
+      await adapter.attach()
+      await adapter.openSession({ model: "claude-opus-4-5" })
+
+      expect(server.lastNewThreadFrame?.["model"]).toBe("claude-opus-4-5")
+
+      await adapter.dispose()
+    })
+
+    it("transient drop: emits recovering then ready on reconnect", async () => {
+      server = await startTestServer({
+        token: TOKEN,
+        sendDescriptor: true,
+        handleNewThread: false,
+      })
+
+      const adapter = new LunaWsAdapter(
+        { routeKey: "reconnect-test", endpoints: [server.url], tokenRef: TOKEN },
+        makeNodeWsFactory(),
+        10_000,
+      )
+
+      await adapter.attach()
+
+      const states: string[] = []
+      const connIter = adapter.connection[Symbol.asyncIterator]()
+
+      // Collect states in background
+      const stateCollection = (async () => {
+        for await (const s of { [Symbol.asyncIterator]: () => connIter }) {
+          states.push(s.status)
+          if (s.status === "ready" && states.includes("recovering")) break
+          if (states.length > 20) break
+        }
+      })()
+
+      // Drop all clients — server stays up so reconnect can succeed
+      server.dropClients()
+
+      // Wait for recovering + ready (reconnect succeeds to the same server)
+      await Promise.race([
+        stateCollection,
+        new Promise<void>((_, rej) =>
+          setTimeout(() => rej(new Error("timeout waiting for reconnect")), 3000),
+        ),
+      ])
+
+      expect(states).toContain("recovering")
+      expect(states).toContain("ready")
+
+      await adapter.dispose()
+    }, 10_000)
+
+    it("exhausted reconnects emit down and stop", async () => {
+      server = await startTestServer({ token: TOKEN, sendDescriptor: true })
+
+      // Use fast reconnect timing (10ms base, 3 max attempts) so the test
+      // completes in well under a second without changing production defaults.
+      const adapter = new LunaWsAdapter(
+        { routeKey: "exhaust-test", endpoints: [server.url], tokenRef: TOKEN },
+        makeNodeWsFactory(),
+        50,  // short handshake timeout so reconnect attempts fail fast
+        { maxAttempts: 3, baseMs: 10, maxMs: 50 },
+      )
+
+      await adapter.attach()
+
+      const states: string[] = []
+      const connIter = adapter.connection[Symbol.asyncIterator]()
+
+      const stateCollection = (async () => {
+        for await (const s of { [Symbol.asyncIterator]: () => connIter }) {
+          states.push(s.status)
+          if (s.status === "down") break
+          if (states.length > 30) break
+        }
+      })()
+
+      // Drop existing clients first (wss.close() alone keeps existing sockets alive),
+      // then close the server so reconnect attempts fail immediately (connection refused)
+      server.dropClients()
+      await server.close()
+      server = undefined
+
+      // 3 attempts × (backoff + 50ms handshake timeout) ≈ 300ms total
+      await Promise.race([
+        stateCollection,
+        new Promise<void>((_, rej) =>
+          setTimeout(() => rej(new Error("timeout waiting for down")), 5000),
+        ),
+      ])
+
+      expect(states).toContain("recovering")
+      expect(states[states.length - 1]).toBe("down")
+
+      await adapter.dispose()
+    }, 10_000)
+
+    it("dispose during pending reconnect cancels the timer", async () => {
+      server = await startTestServer({
+        token: TOKEN,
+        sendDescriptor: true,
+      })
+
+      // Use short reconnect base so the timer fires quickly — but we dispose
+      // before it does, proving the timer gets cancelled.
+      const adapter = new LunaWsAdapter(
+        { routeKey: "dispose-timer-test", endpoints: [server.url], tokenRef: TOKEN },
+        makeNodeWsFactory(),
+        10_000,
+        { maxAttempts: 6, baseMs: 500, maxMs: 15_000 },
+      )
+
+      await adapter.attach()
+
+      const states: string[] = []
+      const connIter = adapter.connection[Symbol.asyncIterator]()
+
+      // Collect until recovering
+      const untilRecovering = (async () => {
+        for await (const s of { [Symbol.asyncIterator]: () => connIter }) {
+          states.push(s.status)
+          if (s.status === "recovering") break
+        }
+      })()
+
+      server.dropClients()
+
+      await Promise.race([
+        untilRecovering,
+        new Promise<void>((_, rej) =>
+          setTimeout(() => rej(new Error("timeout waiting for recovering")), 2000),
+        ),
+      ])
+
+      expect(states).toContain("recovering")
+
+      const statesBefore = states.length
+
+      // Dispose immediately — should cancel the reconnect timer
+      await adapter.dispose()
+
+      // Wait 1s — broadcast is closed so no new states can arrive after dispose
+      await new Promise((r) => setTimeout(r, 1000))
+
+      expect(states.length).toBe(statesBefore) // no new states after dispose
+    }, 10_000)
+
+    it("reconnect re-emits a descriptor via descriptorChanges", async () => {
+      server = await startTestServer({
+        token: TOKEN,
+        sendDescriptor: true,
+      })
+
+      const adapter = new LunaWsAdapter(
+        { routeKey: "descriptor-reconnect-test", endpoints: [server.url], tokenRef: TOKEN },
+        makeNodeWsFactory(),
+        10_000,
+        { maxAttempts: 6, baseMs: 10, maxMs: 500 },
+      )
+
+      // Subscribe to descriptorChanges BEFORE attaching so we catch both emissions.
+      const descriptors: string[] = []
+      const descIter = adapter.descriptorChanges[Symbol.asyncIterator]()
+
+      // Collect descriptors in background until we have two.
+      const descCollection = (async () => {
+        for await (const d of { [Symbol.asyncIterator]: () => descIter }) {
+          descriptors.push(d.origin)
+          if (descriptors.length >= 2) break
+        }
+      })()
+
+      await adapter.attach()
+
+      // Trigger a transient drop; the server stays up so reconnect succeeds.
+      server.dropClients()
+
+      // Wait for 2 descriptors (initial attach + post-reconnect re-emit).
+      await Promise.race([
+        descCollection,
+        new Promise<void>((_, rej) =>
+          setTimeout(() => rej(new Error("timeout waiting for second descriptor")), 5000),
+        ),
+      ])
+
+      expect(descriptors).toHaveLength(2)
+      expect(descriptors[0]).toBe("server-emitted")
+      expect(descriptors[1]).toBe("server-emitted")
+
+      await adapter.dispose()
+    }, 10_000)
+
+    it("auth-failed does not trigger reconnect", async () => {
+      server = await startTestServer({
+        token: TOKEN,
+        rejectAuth: true,
+      })
+
+      const adapter = new LunaWsAdapter(
+        { routeKey: "auth-no-reconnect-test", endpoints: [server.url], tokenRef: TOKEN },
+        makeNodeWsFactory(),
+      )
+
+      const states: string[] = []
+      const connIter = adapter.connection[Symbol.asyncIterator]()
+
+      const stateCollection = (async () => {
+        for await (const s of { [Symbol.asyncIterator]: () => connIter }) {
+          states.push(s.status)
+          if (s.status === "auth-failed" || s.status === "down") break
+        }
+      })()
+
+      await expect(adapter.attach()).rejects.toThrow()
+      await stateCollection
+
+      // Should have auth-failed or down but NOT recovering
+      expect(states).not.toContain("recovering")
+
       await adapter.dispose()
     })
   })
