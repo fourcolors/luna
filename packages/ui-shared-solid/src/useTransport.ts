@@ -18,13 +18,13 @@
  */
 import { createSignal, onCleanup } from "solid-js"
 import {
-  browserWebSocketTransport,
   type ClientFrame,
   type ConnectionStatus,
   type ServerFrame,
   type Transport,
   type TransportHandle,
 } from "@luna/ui-shared/core"
+import { pooledWebSocketTransport } from "./pooled-transport.js"
 
 export interface CreateTransportParams {
   readonly transport?: Transport
@@ -46,7 +46,7 @@ export interface TransportComposable {
 export const createTransport = (
   params: CreateTransportParams,
 ): TransportComposable => {
-  const transport = params.transport ?? browserWebSocketTransport
+  const transport = params.transport ?? pooledWebSocketTransport
   const [status, setStatus] = createSignal<ConnectionStatus>({ kind: "idle" })
   let handle: TransportHandle | null = null
 
@@ -69,6 +69,8 @@ export const createTransport = (
       onFrame: params.onFrame,
       onStatus: (s) => {
         setStatus(s)
+        // NOTE: onOpen can fire multiple times per logical session — each transparent
+        // reconnect re-emits ready→open, so onOpen handlers must be idempotent.
         if (s.kind === "open" && handle && params.onOpen) {
           params.onOpen(handle)
         }
