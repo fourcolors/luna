@@ -43,6 +43,11 @@
        Unused until C6b wires it into the chat engine. -->
   <script src="vendor/ui-transport.js"></script>
   <script src="vendor/pool-engine.js"></script>
+  <!-- Phase-2 last-thread: per-panel/per-route session helpers (resolveBootThread,
+       setPanelLastThread, resolveBootRoute). Loaded before the app script so
+       syncThread can use it at cold-start. Degrades gracefully when __TAURI__
+       is absent (browser / jsdom). -->
+  <script src="vendor/moon-session.js"></script>
   <style>
     /* ── Widget-window base (panel.html conventions) ─────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -2793,14 +2798,28 @@
       // thread-snapshot. If none arrives we treat the reattach as STALLED.
       // Cleared on snapshot/close/disconnect.
       subscribeTimeout: null,
-      // One-shot guard for the stall self-heal. A stored last-thread id can
-      // point at a thread this server's DB no longer holds (pruned, reset, or
-      // written against a different server — the last-thread file is global).
-      // The first stall recovers via list-threads; a SECOND stall in the same
-      // socket means the server is genuinely unresponsive, so we stop and
-      // surface the dead state instead of looping. Reset on a fresh connect
-      // and on every successful reattach.
-      reattachRecovering: false,
+      // Bounded retry counter for the stall self-heal. A file-sourced last-thread
+      // id may point at a thread the current server no longer holds (pruned, reset,
+      // or written against a different server). Each stall increments the counter;
+      // once it reaches MAX_REATTACH_ROUNDS the dead state is surfaced. Reset on
+      // every fresh connect() and on every successful reattach (thread-snapshot).
+      reattachRound: 0,
+      // When a cold-start file-sourced id is PENDING VALIDATION (waiting for the
+      // thread-list response to confirm it exists), we park it here instead of
+      // writing State.activeThreadId — that stays null until we know it's valid.
+      // Cleared once the thread-list arrives and resolves the validation.
+      pendingReattachId: null,
+      // The thread id that most recently STALLED (got no snapshot after subscribe).
+      // Kept for single-tombstone detection by legacy callers; stalledIdSet is the
+      // authoritative multi-tombstone accumulator used by the thread-list handler.
+      stalledThreadId: null,
+      // Set of ALL thread ids that stalled during this connect() session.
+      // Cleared on every fresh connect(). Used by the thread-list tombstone-advance
+      // path to skip every known-bad id, not just the most-recent one.
+      stalledIdSet: new Set(),
+      // The pinned thread id for ?thread=<id> windows (injectable for tests).
+      // Set once at boot from PINNED_THREAD; tests may set m.State.pinnedThread directly.
+      pinnedThread: null,
       // The pending scheduleReconnect() timer.
       reconnectTimer: null,
       // Connection generation counter (fix-6). Bumped each connect(); each
@@ -4206,7 +4225,10 @@
         // ignored once a newer connect() has incremented State.connGen.
         const myGen = ++State.connGen;
         this.clearSubscribeTimeout();   // a fresh connect owns its own subscribe watchdog
-        State.reattachRecovering = false;  // and its own one-shot stall self-heal budget
+        State.reattachRound = 0;           // and its own bounded stall self-heal budget
+        State.pendingReattachId = null;    // clear any in-flight advisory validation
+        State.stalledThreadId = null;      // clear tombstone tracker
+        State.stalledIdSet = new Set();    // clear multi-tombstone accumulator
         if (State.reconnectTimer) { clearTimeout(State.reconnectTimer); State.reconnectTimer = null; }
 
         Logger.info(`Connecting to WebSocket: ${State.wsUrl}`);
@@ -4546,38 +4568,53 @@
         }, 7000);
       },
 
-      // Reattach stalled: open socket, but the thread we subscribed to never
-      // produced a thread-snapshot. The usual cause is a stored last-thread id
-      // the CURRENT server can't resolve — it was pruned/reset, or the global
-      // (non-server-scoped) last-thread file carried an id from another server.
+      // Reattach stalled: the socket is OPEN but the thread we subscribed to
+      // never produced a thread-snapshot within the watchdog window. This can
+      // mean (a) the stored id is unknown to this server (pruned/reset/wrong
+      // server), or (b) the thread was listed but is a "tombstone" — the server
+      // returns it in list-threads but never emits a snapshot for it.
       //
-      // Self-heal once, the way the Agent SDK recommends handling a resume that
-      // can't be found: don't dead-end on it — recover gracefully. Drop the
-      // unresolvable id and list this server's threads; the `thread-list`
-      // handler then auto-subscribes to the most-recent valid thread (or mints
-      // a fresh one if the server has none). A second stall in the same socket
-      // means the server itself is unresponsive, so we stop and surface the
-      // dead state rather than looping. PINNED_THREAD panels are exempt: a
-      // direct line is bound to ONE thread for life and must never silently
-      // jump to a different one.
+      // Hardened self-heal (up to MAX_REATTACH_ROUNDS per connect):
+      //   Round 1+: re-list threads. If the thread we just stalled on appears
+      //             again at the top, it's a tombstone — advance to the next
+      //             most-recent instead. If the list is empty or the server
+      //             doesn't reply, we've exhausted our options.
+      //   After MAX_REATTACH_ROUNDS: surface "Reattach stalled".
+      //   PINNED_THREAD panels are exempt — they're bound to ONE thread and
+      //   must never silently jump to another.
       onReattachStalled() {
-        if (!PINNED_THREAD && !State.reattachRecovering) {
-          State.reattachRecovering = true;
-          Logger.warn('Reattach stalled — stored thread not on this server; recovering via list-threads');
-          this.updateStatus('connecting', 'Recovering…');
-          State.activeThreadId = null;          // unset so thread-list auto-subscribes to most-recent/fresh
-          this.send({ type: 'list-threads' });
-          this.startSubscribeTimeout();          // bound the recovery subscribe with the same watchdog
+        if (State.pinnedThread || PINNED_THREAD) {
+          Logger.warn('Reattach stalled — pinned thread panel; not recovering');
+          this.updateStatus('disconnected', 'Reattach stalled');
           return;
         }
-        Logger.warn('Reattach stalled — recovery exhausted; surfacing stalled status');
-        this.updateStatus('disconnected', 'Reattach stalled');
+        State.reattachRound++;
+        if (State.reattachRound > MAX_REATTACH_ROUNDS) {
+          Logger.warn(`Reattach stalled — budget exhausted after ${MAX_REATTACH_ROUNDS} rounds; surfacing stalled status`);
+          this.updateStatus('disconnected', 'Reattach stalled');
+          return;
+        }
+        // Record which thread just stalled so the thread-list handler can
+        // detect tombstones. stalledIdSet accumulates ALL stalled ids this
+        // connect; stalledThreadId is kept for single-round compat.
+        if (State.activeThreadId) {
+          State.stalledIdSet.add(State.activeThreadId);
+          State.stalledThreadId = State.activeThreadId;
+        }
+        State.activeThreadId = null;          // unset so thread-list drives the next subscribe
+        Logger.warn(`Reattach stalled (round ${State.reattachRound}/${MAX_REATTACH_ROUNDS}) — recovering via list-threads`);
+        this.updateStatus('connecting', 'Recovering…');
+        this.send({ type: 'list-threads' });
+        this.startSubscribeTimeout();          // bound the recovery subscribe with the same watchdog
       },
 
-      // Back on our thread (thread-snapshot landed): status only. The window
-      // grow/retract choreography this drove in the hub does not exist here.
+      // Back on our thread (thread-snapshot landed): clear recovery state and
+      // report connected. The window grow/retract choreography this drove in
+      // the hub does not exist here.
       onReattached() {
-        State.reattachRecovering = false;   // success refreshes the self-heal budget
+        State.reattachRound = 0;           // success refreshes the self-heal budget
+        State.stalledThreadId = null;
+        State.stalledIdSet = new Set();    // clear multi-tombstone accumulator on success
         this.updateStatus('connected', 'Connected');
       },
 
@@ -4599,10 +4636,11 @@
         // ONE thread for its whole life: always subscribe to it, never read
         // or write the last-thread file (that memory belongs to the MAIN
         // line), never list/auto-create.
-        if (PINNED_THREAD) {
-          State.activeThreadId = PINNED_THREAD;
-          Logger.info(`Direct line: subscribing to pinned thread "${PINNED_THREAD}"`);
-          this.send({ type: 'subscribe', threadId: PINNED_THREAD });
+        const pinnedId = State.pinnedThread || PINNED_THREAD;
+        if (pinnedId) {
+          State.activeThreadId = pinnedId;
+          Logger.info(`Direct line: subscribing to pinned thread "${pinnedId}"`);
+          this.send({ type: 'subscribe', threadId: pinnedId });
           this.startSubscribeTimeout();
           return;
         }
@@ -4623,33 +4661,68 @@
         const skipFile = State.skipLastThreadFile;
         State.skipLastThreadFile = false;
 
-        // Prefer the thread we're ALREADY on. State.activeThreadId survives a
-        // socket drop in-memory, so a mid-session reconnect re-subscribes to the
-        // exact same thread with no disk round-trip. Only fall back to the Tauri
-        // last-thread file on a cold start (no in-memory thread). On a server
-        // switch (skipFile) the in-memory id belongs to the OLD server, so ignore
-        // it too and list fresh.
-        let lastThreadId = skipFile ? null : State.activeThreadId;
-        if (!lastThreadId && !skipFile && window.__TAURI__) {
-          try {
-            lastThreadId = await window.__TAURI__.core.invoke('get_last_thread_id');
-            Logger.info(`Tauri get_last_thread_id returned: ${lastThreadId}`);
-          } catch (e) {
-            Logger.error("Failed to invoke get_last_thread_id via Tauri:", e);
+        // ── Fast path: in-memory thread (mid-session reconnect) ─────────────
+        // State.activeThreadId was valid moments ago — re-subscribe directly
+        // without a list round-trip. Only trust it when skipFile is false
+        // (skipFile=true means the server changed, so the in-memory id belongs
+        // to the OLD server and must be discarded).
+        if (!skipFile && State.activeThreadId) {
+          Logger.info(`Syncing (fast path): re-subscribing to in-memory thread "${State.activeThreadId}"`);
+          this.send({ type: 'subscribe', threadId: State.activeThreadId });
+          this.startSubscribeTimeout();
+          return;
+        }
+
+        // ── Cold-start / server-switch path ──────────────────────────────────
+        // Resolution order (Phase-2 last-thread):
+        //   1. Per-panel/per-route slot in moon-session.json via
+        //      MoonSession.resolveBootThread(winLabel) — scoped to this window
+        //      and its server, so a server-switch never returns a stale id.
+        //   2. Legacy global file (~/.luna/.last-thread-default) via
+        //      get_last_thread_id — fallback when no route/panel context is
+        //      known (current main-line live state).  The Rust side
+        //      (get_panel_last_thread) transparently adopts the legacy file on
+        //      first call so path 1 wins on the second cold-start automatically.
+        let fileThreadId = null;
+        if (!skipFile) {
+          // Path 1: per-panel/per-route (Phase-2).
+          // winLabel is the Tauri window label (e.g. "panel-chat") and is set
+          // at boot near line 8684 — it's non-null inside Tauri.
+          if (typeof MoonSession !== 'undefined' && winLabel) {
+            try {
+              fileThreadId = await MoonSession.resolveBootThread(winLabel);
+              if (fileThreadId) {
+                Logger.info(`Per-route last-thread (${winLabel}): ${fileThreadId}`);
+              }
+            } catch (e) {
+              Logger.warn('MoonSession.resolveBootThread failed, falling back to legacy:', e && e.message || e);
+            }
+          }
+          // Path 2: legacy global file (fallback when no route/panel context).
+          if (!fileThreadId && window.__TAURI__) {
+            try {
+              fileThreadId = await window.__TAURI__.core.invoke('get_last_thread_id');
+              Logger.info(`Legacy get_last_thread_id returned: ${fileThreadId}`);
+            } catch (e) {
+              Logger.error("Failed to invoke get_last_thread_id via Tauri:", e);
+            }
           }
         }
 
-        if (lastThreadId) {
-          State.activeThreadId = lastThreadId;
-          Logger.info(`Syncing: subscribing to thread "${lastThreadId}"`);
-          this.send({ type: 'subscribe', threadId: lastThreadId });
+        if (fileThreadId) {
+          // BLIND SUBSCRIBE: subscribe directly to the stored id. The server
+          // can snapshot any thread by id regardless of recency, so a valid-
+          // but-old thread (beyond a capped list window) resumes correctly.
+          // If the id is truly gone the subscribe watchdog fires and
+          // onReattachStalled recovers via list-threads → most-recent / fresh.
+          State.activeThreadId = fileThreadId;
+          Logger.info(`Syncing (direct): subscribing to stored id "${fileThreadId}"`);
+          this.send({ type: 'subscribe', threadId: fileThreadId });
         } else {
-          // No known thread → ask the server for its list (it auto-subscribes to
-          // the most recent, or creates one).
+          // No known thread → list threads (subscribes to most-recent or mints fresh).
           Logger.info("No known thread; listing threads instead");
           this.send({ type: 'list-threads' });
         }
-        // Either path should land us on a thread-snapshot; watch for it.
         this.startSubscribeTimeout();
       },
 
@@ -4709,8 +4782,12 @@
 
         this.clearSubscribeTimeout();
         this.clearTurnTimeout();
-        // (4) Fresh connect resets the one-shot stall self-heal budget
-        State.reattachRecovering = false;
+        // (4) Fresh connect resets the bounded stall self-heal budget (mirrors
+        // WebSocketEngine.connect — refresh reattachRound + the tombstone set so
+        // a reconnect gets a full recovery budget, not a stale one).
+        State.reattachRound = 0;
+        State.pendingReattachId = null;
+        State.stalledIdSet = new Set();
 
         MoonFace.setBusy(false);
         this.updateStatus('connecting', 'Connecting…');
@@ -5019,21 +5096,32 @@
       // ── Reattach self-heal (behavior 4, #170) ─────────────────────────
       // Mirrors WebSocketEngine.onReattachStalled / onReattached exactly.
       onReattachStalled() {
-        if (!PINNED_THREAD && !State.reattachRecovering) {
-          State.reattachRecovering = true;
-          Logger.warn('[PoolEngine] Reattach stalled — recovering via list-threads');
-          this.updateStatus('connecting', 'Recovering…');
-          State.activeThreadId = null;
-          this.send({ type: 'list-threads' });
-          this.startSubscribeTimeout();
+        if (State.pinnedThread || PINNED_THREAD) {
+          Logger.warn('[PoolEngine] Reattach stalled — pinned thread panel; not recovering');
+          this.updateStatus('disconnected', 'Reattach stalled');
           return;
         }
-        Logger.warn('[PoolEngine] Reattach stalled — recovery exhausted; surfacing stalled status');
-        this.updateStatus('disconnected', 'Reattach stalled');
+        State.reattachRound++;
+        if (State.reattachRound > MAX_REATTACH_ROUNDS) {
+          Logger.warn(`[PoolEngine] Reattach stalled — budget exhausted after ${MAX_REATTACH_ROUNDS} rounds`);
+          this.updateStatus('disconnected', 'Reattach stalled');
+          return;
+        }
+        if (State.activeThreadId) {
+          State.stalledIdSet.add(State.activeThreadId);
+          State.stalledThreadId = State.activeThreadId;
+        }
+        State.activeThreadId = null;
+        Logger.warn(`[PoolEngine] Reattach stalled (round ${State.reattachRound}/${MAX_REATTACH_ROUNDS}) — recovering via list-threads`);
+        this.updateStatus('connecting', 'Recovering…');
+        this.send({ type: 'list-threads' });
+        this.startSubscribeTimeout();
       },
 
       onReattached() {
-        State.reattachRecovering = false;
+        State.reattachRound = 0;
+        State.stalledThreadId = null;
+        State.stalledIdSet = new Set();
         this.updateStatus('connected', 'Connected');
       },
 
@@ -5041,10 +5129,11 @@
       // Mirrors WebSocketEngine.syncThread exactly — same subscribe / list-threads
       // / new-thread logic, same subscribe watchdog arming.
       async syncThread() {
-        if (PINNED_THREAD) {
-          State.activeThreadId = PINNED_THREAD;
-          Logger.info(`[PoolEngine] Direct line: subscribing to pinned thread "${PINNED_THREAD}"`);
-          this.send({ type: 'subscribe', threadId: PINNED_THREAD });
+        const pinnedId = State.pinnedThread || PINNED_THREAD;
+        if (pinnedId) {
+          State.activeThreadId = pinnedId;
+          Logger.info(`[PoolEngine] Direct line: subscribing to pinned thread "${pinnedId}"`);
+          this.send({ type: 'subscribe', threadId: pinnedId });
           this.startSubscribeTimeout();
           return;
         }
@@ -5057,20 +5146,45 @@
         const skipFile = State.skipLastThreadFile;
         State.skipLastThreadFile = false;
 
-        let lastThreadId = skipFile ? null : State.activeThreadId;
-        if (!lastThreadId && !skipFile && window.__TAURI__) {
-          try {
-            lastThreadId = await window.__TAURI__.core.invoke('get_last_thread_id');
-            Logger.info(`[PoolEngine] Tauri get_last_thread_id returned: ${lastThreadId}`);
-          } catch (e) {
-            Logger.error('[PoolEngine] Failed to invoke get_last_thread_id via Tauri:', e);
+        // Fast path: in-memory thread (mid-session reconnect).
+        if (!skipFile && State.activeThreadId) {
+          Logger.info(`[PoolEngine] Syncing (fast path): re-subscribing to in-memory thread "${State.activeThreadId}"`);
+          this.send({ type: 'subscribe', threadId: State.activeThreadId });
+          this.startSubscribeTimeout();
+          return;
+        }
+
+        // Cold-start: read per-panel/per-route last-thread (Phase-2) then fall
+        // back to the legacy global file.  Blind-subscribe directly; the
+        // subscribe watchdog + onReattachStalled handles a gone id.
+        let fileThreadId = null;
+        if (!skipFile) {
+          // Path 1: per-panel/per-route slot (Phase-2).
+          if (typeof MoonSession !== 'undefined' && winLabel) {
+            try {
+              fileThreadId = await MoonSession.resolveBootThread(winLabel);
+              if (fileThreadId) {
+                Logger.info(`[PoolEngine] Per-route last-thread (${winLabel}): ${fileThreadId}`);
+              }
+            } catch (e) {
+              Logger.warn('[PoolEngine] resolveBootThread failed, falling back to legacy:', e && e.message || e);
+            }
+          }
+          // Path 2: legacy global file fallback.
+          if (!fileThreadId && window.__TAURI__) {
+            try {
+              fileThreadId = await window.__TAURI__.core.invoke('get_last_thread_id');
+              Logger.info(`[PoolEngine] Legacy get_last_thread_id returned: ${fileThreadId}`);
+            } catch (e) {
+              Logger.error('[PoolEngine] Failed to invoke get_last_thread_id via Tauri:', e);
+            }
           }
         }
 
-        if (lastThreadId) {
-          State.activeThreadId = lastThreadId;
-          Logger.info(`[PoolEngine] Syncing: subscribing to thread "${lastThreadId}"`);
-          this.send({ type: 'subscribe', threadId: lastThreadId });
+        if (fileThreadId) {
+          State.activeThreadId = fileThreadId;
+          Logger.info(`[PoolEngine] Syncing (direct): subscribing to stored id "${fileThreadId}"`);
+          this.send({ type: 'subscribe', threadId: fileThreadId });
         } else {
           Logger.info('[PoolEngine] No known thread; listing threads instead');
           this.send({ type: 'list-threads' });
@@ -5736,15 +5850,33 @@
     });
 
     MoonFrames.register('thread-list', (frame) => {
-      // If we don't have an active thread subscribed yet, subscribe to the most recent one
       const threads = frame.threads || [];
-      if (!State.activeThreadId && threads.length > 0) {
-        const mostRecent = threads[0];
-        State.activeThreadId = mostRecent.id;
-        Logger.info(`No active thread; auto-subscribing to most recent thread "${mostRecent.id}"`);
-        WebSocketEngine.send({ type: 'subscribe', threadId: mostRecent.id });
-      } else if (!State.activeThreadId) {
-        // No threads exist! Let's start a brand new thread.
+
+      // ── Tombstone-advance: stall self-heal round ──────────────────────────
+      // onReattachStalled() cleared activeThreadId and added the stalled id(s)
+      // to stalledIdSet. Pick the first thread NOT in that set so we skip every
+      // known-bad thread, not just the most-recent one. This handles the case of
+      // multiple adjacent tombstones: [A(bad), B(bad), C(good)] converges to C
+      // rather than oscillating between A and B.
+      if (State.activeThreadId) {
+        // Already subscribed — this is an informational list (e.g. thread-archived
+        // refresh). Don't re-subscribe.
+        return;
+      }
+
+      if (threads.length > 0) {
+        // Find first thread not in the stalled set (skip all known tombstones).
+        const target = threads.find((t) => !State.stalledIdSet.has(t.id)) || threads[threads.length - 1];
+        if (State.stalledIdSet.size > 0) {
+          Logger.info(`Tombstone-advance: skipping ${State.stalledIdSet.size} stalled id(s), subscribing to "${target.id}"`);
+        }
+        State.stalledThreadId = null;   // consumed
+        State.activeThreadId = target.id;
+        Logger.info(`No active thread; auto-subscribing to thread "${target.id}"`);
+        WebSocketEngine.send({ type: 'subscribe', threadId: target.id });
+      } else {
+        // No threads exist — mint a fresh one.
+        State.stalledThreadId = null;
         Logger.info("No threads exist on the server; creating a brand new thread");
         WebSocketEngine.sendNewThread();
       }
@@ -5805,8 +5937,20 @@
       // overwrite it — otherwise reopening the app would resume the side/pinned
       // thread instead of the main conversation.
       if (window.__TAURI__ && State.activeThreadId && !SPAWN_FRESH && !PINNED_THREAD) {
-        window.__TAURI__.core.invoke('set_last_thread_id', { threadId: State.activeThreadId })
-          .catch((e) => Logger.warn('set_last_thread_id failed (non-fatal):', e));
+        // Phase-2 last-thread: write per-panel/per-route slot (moon-session.json)
+        // when this window has a panel label (Tauri context).  set_panel_last_thread
+        // dual-writes the legacy file too, so set_last_thread_id is redundant when
+        // the per-panel path succeeds — but we keep the legacy call as a safety net
+        // for one release, and as the ONLY write when winLabel is unavailable.
+        const _threadId = State.activeThreadId;
+        if (typeof MoonSession !== 'undefined' && winLabel) {
+          MoonSession.setPanelLastThread(winLabel, _threadId)
+            .catch((e) => Logger.warn('setPanelLastThread failed (non-fatal):', e));
+        } else {
+          // No route context — fall back to the legacy global write only.
+          window.__TAURI__.core.invoke('set_last_thread_id', { threadId: _threadId })
+            .catch((e) => Logger.warn('set_last_thread_id failed (non-fatal):', e));
+        }
       }
       WebSocketEngine.onReattached();   // clear the grace timer + retract the string (if it was out)
     });
@@ -8581,6 +8725,14 @@
     const _threadParam = new URLSearchParams(location.search).get('thread') || null;
     const SPAWN_FRESH = _threadParam === 'new';
     const PINNED_THREAD = SPAWN_FRESH ? null : _threadParam;
+    // Max stall-recovery rounds before we give up and surface "Reattach stalled".
+    // 3 rounds covers: one tombstone advance + one validation miss + one final retry.
+    const MAX_REATTACH_ROUNDS = 3;
+
+    // Wire the injectable State.pinnedThread from the URL-derived PINNED_THREAD.
+    // Tests set m.State.pinnedThread directly to exercise the pinned guard without
+    // needing to reload the page with a ?thread= param.
+    State.pinnedThread = PINNED_THREAD;
 
     // ── Widget-window chrome (panel.html conventions) ──────────────────────
     let W = null;

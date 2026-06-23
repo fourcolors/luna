@@ -85,6 +85,14 @@ struct MoonSession {
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct PanelState {
     route: Option<String>,
+    /// Per-panel last-thread pointer.  Written on every thread-snapshot;
+    /// read on cold-start to resume the right thread for this window/server.
+    /// Semantically bound to the route this panel runs on (the panel is already
+    /// route-bound, so the tuple (panel_id, route) is uniquely identified by
+    /// `panel_id` alone — but the field is next to `route` to make the
+    /// coupling explicit in the persisted JSON).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_thread: Option<String>,
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -350,6 +358,140 @@ pub fn set_panel_route(panel_id: String, route_key: String) -> Result<(), String
     let mut session = load_session();
     session.panels.entry(panel_id).or_default().route = Some(route_key);
     save_session(&session)
+}
+
+// ── Phase-2 last-thread (per-panel) ──────────────────────────────────────────
+
+/// The file name for the legacy global last-thread pointer.
+const LEGACY_LAST_THREAD_FILE: &str = ".last-thread-default";
+
+/// Read the legacy `~/.luna/.last-thread-default` file and return its content,
+/// or `None` if absent / empty.
+fn read_legacy_last_thread_in(luna_dir: &std::path::Path) -> Option<String> {
+    let path = luna_dir.join(LEGACY_LAST_THREAD_FILE);
+    let content = std::fs::read_to_string(path).ok()?;
+    let id = content.trim().to_string();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id)
+    }
+}
+
+/// Inner implementation of `get_panel_last_thread` that accepts an explicit
+/// `luna_dir` so tests can pass a tempdir without mutating `HOME`.
+///
+/// Resolution order (Phase-2 migration):
+///   1. `panels[panel_id].last_thread` in moon-session.json — if set, return it.
+///   2. Legacy `~/.luna/.last-thread-default` — adopt it (write into the panel
+///      slot so the next read is fast, idempotent on 2nd call) but do NOT delete
+///      the legacy file (one-release grace period for rollback).
+///   3. Returns `None` when neither source is set.
+///
+/// PINNED windows must never call this — they are bound to ONE thread via URL
+/// param and must not interact with the restart-resume pointer.
+fn get_panel_last_thread_in(
+    luna_dir: &std::path::Path,
+    panel_id: &str,
+) -> Option<String> {
+    let session_path = luna_dir.join("moon-session.json");
+
+    // Load the session from the explicit luna_dir (not the HOME-derived path).
+    let mut session: MoonSession = std::fs::read_to_string(&session_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    // 1. Per-panel slot already set → fast path (idempotent on 2nd call).
+    if let Some(existing) = session
+        .panels
+        .get(panel_id)
+        .and_then(|p| p.last_thread.clone())
+    {
+        return Some(existing);
+    }
+
+    // 2. Adopt from the legacy file (one-release migration).
+    let legacy_id = read_legacy_last_thread_in(luna_dir)?;
+
+    // Persist the adopted id into the panel slot so future reads skip this path.
+    session
+        .panels
+        .entry(panel_id.to_string())
+        .or_default()
+        .last_thread = Some(legacy_id.clone());
+    // Best-effort write — failure is non-fatal (we still return the adopted id).
+    if let Ok(body) = serde_json::to_string_pretty(&session) {
+        let _ = write_atomic_0600(&session_path, &body);
+    }
+
+    Some(legacy_id)
+}
+
+/// Inner implementation of `set_panel_last_thread` that accepts an explicit
+/// `luna_dir` so tests can pass a tempdir without mutating `HOME`.
+///
+/// Trims `thread_id` once at entry so both the session slot and the legacy
+/// file store the same value, regardless of any whitespace in the caller's input.
+fn set_panel_last_thread_in(
+    luna_dir: &std::path::Path,
+    panel_id: &str,
+    thread_id: &str,
+) -> Result<(), String> {
+    // Trim once — both stores must agree on the id (no whitespace divergence).
+    let thread_id = thread_id.trim().to_string();
+
+    let session_path = luna_dir.join("moon-session.json");
+
+    // Load the session from the explicit luna_dir.
+    let mut session: MoonSession = std::fs::read_to_string(&session_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    // Per-panel write (authoritative store).
+    session
+        .panels
+        .entry(panel_id.to_string())
+        .or_default()
+        .last_thread = Some(thread_id.clone());
+    let body = serde_json::to_string_pretty(&session)
+        .map_err(|e| format!("moon-session.json serialize error: {e}"))?;
+    write_atomic_0600(&session_path, &body)?;
+
+    // Dual-write: also update the legacy global file for rollback safety.
+    let legacy_path = luna_dir.join(LEGACY_LAST_THREAD_FILE);
+    std::fs::create_dir_all(luna_dir).map_err(|e| format!("create ~/.luna failed: {e}"))?;
+    // Plain write (not 0600 atomic) — mirrors the existing set_last_thread_id in
+    // main.rs which uses std::fs::write.  The dual-write is fire-and-forget
+    // redundancy; the authoritative store is moon-session.json.
+    std::fs::write(&legacy_path, &thread_id)
+        .map_err(|e| format!("failed to write .last-thread-default: {e}"))?;
+
+    Ok(())
+}
+
+/// Retrieve the per-panel last-thread pointer from `moon-session.json`.
+///
+/// Delegates to `get_panel_last_thread_in` with the real `~/.luna` directory.
+/// PINNED windows must never call this — they are bound to ONE thread via URL
+/// param and must not interact with the restart-resume pointer.
+#[tauri::command]
+pub fn get_panel_last_thread(panel_id: String) -> Option<String> {
+    let luna_dir = luna_dir().ok()?;
+    get_panel_last_thread_in(&luna_dir, &panel_id)
+}
+
+/// Persist `thread_id` as the last-thread pointer for `panel_id` in
+/// `moon-session.json`.  Additionally writes the legacy global file so that
+/// older app versions still resume correctly (one-release dual-write period).
+///
+/// Delegates to `set_panel_last_thread_in` with the real `~/.luna` directory.
+/// Atomic 0600 write (mirrors the existing `set_panel_route` pattern).
+#[tauri::command]
+pub fn set_panel_last_thread(panel_id: String, thread_id: String) -> Result<(), String> {
+    let luna_dir = luna_dir()?;
+    set_panel_last_thread_in(&luna_dir, &panel_id, &thread_id)
 }
 
 // ── Phase-2 C10: legacy migration ────────────────────────────────────────────
@@ -667,6 +809,7 @@ tokenRef  = "   "
             "panel-chat".to_string(),
             PanelState {
                 route: Some("jax-dev".to_string()),
+                last_thread: None,
             },
         );
         let body = serde_json::to_string_pretty(&session).expect("serialize");
@@ -963,5 +1106,359 @@ tokenRef  = "env:ALPHA_TOKEN"
         // Default is updated.
         let cfg = parse_client_config(&updated).expect("re-parse");
         assert_eq!(cfg.default, "alpha", "default must be updated to alpha");
+    }
+
+    // ── Phase-2 last-thread: PanelState.last_thread ──────────────────────────
+
+    /// Helper: build a minimal MoonSession JSON with one panel.
+    fn session_json_with_last_thread(panel_id: &str, thread_id: Option<&str>) -> String {
+        let thread_val = match thread_id {
+            Some(id) => format!(r#", "last_thread": "{}""#, id),
+            None => String::new(),
+        };
+        format!(r#"{{"panels": {{"{panel_id}": {{"route": "stable"{thread_val}}}}}}}"#)
+    }
+
+    #[test]
+    fn panel_state_serializes_last_thread_when_set() {
+        let state = PanelState {
+            route: Some("stable".to_string()),
+            last_thread: Some("thread-abc123".to_string()),
+        };
+        let json = serde_json::to_string(&state).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(v["last_thread"].as_str(), Some("thread-abc123"));
+        assert_eq!(v["route"].as_str(), Some("stable"));
+    }
+
+    #[test]
+    fn panel_state_omits_last_thread_when_none() {
+        let state = PanelState {
+            route: Some("stable".to_string()),
+            last_thread: None,
+        };
+        let json = serde_json::to_string(&state).expect("serialize");
+        // skip_serializing_if = "Option::is_none" means key must be absent.
+        assert!(
+            !json.contains("last_thread"),
+            "last_thread key must be absent when None; got: {json}"
+        );
+    }
+
+    #[test]
+    fn panel_state_deserializes_last_thread() {
+        let json = r#"{"route": "stable", "last_thread": "thread-xyz"}"#;
+        let state: PanelState = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(state.last_thread.as_deref(), Some("thread-xyz"));
+        assert_eq!(state.route.as_deref(), Some("stable"));
+    }
+
+    #[test]
+    fn panel_state_deserializes_without_last_thread() {
+        let json = r#"{"route": "stable"}"#;
+        let state: PanelState = serde_json::from_str(json).expect("deserialize");
+        assert!(
+            state.last_thread.is_none(),
+            "last_thread must default to None"
+        );
+    }
+
+    // ── Phase-2 last-thread: get_panel_last_thread migration ─────────────────
+
+    /// Shared tempdir helper — creates a fresh `~/.luna`-equivalent dir and
+    /// passes it to the closure.  Avoids mutating the `HOME` env var (a process-
+    /// global that cannot be safely shared across parallel tests).
+    fn with_tmp_luna<F: FnOnce(std::path::PathBuf)>(f: F) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let luna = dir.path().join(".luna");
+        std::fs::create_dir_all(&luna).expect("mkdir .luna");
+        f(luna);
+        // `dir` drops here — cleaned up automatically.
+    }
+
+    #[test]
+    fn get_panel_last_thread_reads_from_session_json() {
+        with_tmp_luna(|luna_dir| {
+            // Write a moon-session.json with a last_thread for panel-chat.
+            let json = session_json_with_last_thread("panel-chat", Some("thread-from-session"));
+            let session_path = luna_dir.join("moon-session.json");
+            write_atomic_0600(&session_path, &json).expect("write session");
+
+            // Call the real inner fn against the tempdir.
+            let result = get_panel_last_thread_in(&luna_dir, "panel-chat");
+            assert_eq!(
+                result.as_deref(),
+                Some("thread-from-session"),
+                "must return the stored thread id"
+            );
+        });
+    }
+
+    // ── End-to-end tests for the inner command functions ─────────────────────
+
+    /// (a) Empty slot + legacy present → returns legacy id AND the panel slot is
+    ///     now persisted (idempotent fast-path on 2nd call).
+    #[test]
+    fn get_panel_last_thread_in_adopts_legacy_and_persists_slot() {
+        with_tmp_luna(|luna_dir| {
+            // Write legacy file but NO moon-session.json.
+            let legacy = luna_dir.join(LEGACY_LAST_THREAD_FILE);
+            std::fs::write(&legacy, "legacy-thread-id\n").expect("write legacy");
+
+            // First call: empty slot → reads legacy → returns "legacy-thread-id".
+            let first = get_panel_last_thread_in(&luna_dir, "panel-chat");
+            assert_eq!(
+                first.as_deref(),
+                Some("legacy-thread-id"),
+                "first call must adopt the legacy id"
+            );
+
+            // The panel slot must now be persisted in moon-session.json.
+            let session_path = luna_dir.join("moon-session.json");
+            assert!(session_path.exists(), "moon-session.json must be created after adopt");
+            let contents = std::fs::read_to_string(&session_path).expect("read");
+            let session: MoonSession = serde_json::from_str(&contents).expect("parse");
+            assert_eq!(
+                session
+                    .panels
+                    .get("panel-chat")
+                    .and_then(|p| p.last_thread.as_deref()),
+                Some("legacy-thread-id"),
+                "slot must be persisted after adopt"
+            );
+
+            // Second call (idempotent fast-path): returns the slot id without
+            // reading the legacy file again.
+            let second = get_panel_last_thread_in(&luna_dir, "panel-chat");
+            assert_eq!(
+                second.as_deref(),
+                Some("legacy-thread-id"),
+                "second call must hit the fast-path slot"
+            );
+
+            // Legacy file must NOT be deleted (one-release grace period).
+            assert!(
+                legacy.exists(),
+                "legacy .last-thread-default must NOT be deleted during migration"
+            );
+        });
+    }
+
+    /// (b) Slot already set → legacy is ignored and never read.
+    #[test]
+    fn get_panel_last_thread_in_prefers_slot_over_legacy() {
+        with_tmp_luna(|luna_dir| {
+            // Pre-populate the panel slot.
+            let json = session_json_with_last_thread("panel-chat", Some("slot-thread"));
+            write_atomic_0600(&luna_dir.join("moon-session.json"), &json).expect("write");
+
+            // Also write a legacy file with a DIFFERENT id.
+            std::fs::write(luna_dir.join(LEGACY_LAST_THREAD_FILE), "legacy-should-be-ignored")
+                .expect("write legacy");
+
+            let result = get_panel_last_thread_in(&luna_dir, "panel-chat");
+            assert_eq!(
+                result.as_deref(),
+                Some("slot-thread"),
+                "slot must win over legacy when already set"
+            );
+        });
+    }
+
+    /// (c) set_panel_last_thread_in writes session slot atomically + dual-writes
+    ///     legacy (slot first, then legacy file).  Both stores must agree.
+    #[test]
+    fn set_panel_last_thread_in_writes_slot_and_legacy() {
+        with_tmp_luna(|luna_dir| {
+            set_panel_last_thread_in(&luna_dir, "panel-chat", "thread-set-123")
+                .expect("set must succeed");
+
+            // Panel slot in moon-session.json.
+            let contents =
+                std::fs::read_to_string(luna_dir.join("moon-session.json")).expect("read session");
+            let session: MoonSession = serde_json::from_str(&contents).expect("parse");
+            assert_eq!(
+                session
+                    .panels
+                    .get("panel-chat")
+                    .and_then(|p| p.last_thread.as_deref()),
+                Some("thread-set-123"),
+                "session slot must contain the thread id"
+            );
+
+            // Legacy file must also be written.
+            let legacy =
+                std::fs::read_to_string(luna_dir.join(LEGACY_LAST_THREAD_FILE)).expect("read legacy");
+            assert_eq!(
+                legacy.trim(),
+                "thread-set-123",
+                "legacy file must contain the same trimmed id"
+            );
+        });
+    }
+
+    /// (d) set_panel_last_thread_in trims whitespace: both stores agree on the
+    ///     trimmed form even when the caller passes a padded id.
+    #[test]
+    fn set_panel_last_thread_in_trims_whitespace() {
+        with_tmp_luna(|luna_dir| {
+            set_panel_last_thread_in(&luna_dir, "panel-chat", "  thread-padded  ")
+                .expect("set must succeed");
+
+            let contents =
+                std::fs::read_to_string(luna_dir.join("moon-session.json")).expect("read session");
+            let session: MoonSession = serde_json::from_str(&contents).expect("parse");
+            assert_eq!(
+                session
+                    .panels
+                    .get("panel-chat")
+                    .and_then(|p| p.last_thread.as_deref()),
+                Some("thread-padded"),
+                "slot must store the trimmed id"
+            );
+
+            let legacy =
+                std::fs::read_to_string(luna_dir.join(LEGACY_LAST_THREAD_FILE)).expect("read legacy");
+            assert_eq!(legacy, "thread-padded", "legacy file must store the trimmed id");
+        });
+    }
+
+    /// (e) set_panel_last_thread_in followed by get_panel_last_thread_in is a
+    ///     clean round-trip without touching the legacy file on the read side.
+    #[test]
+    fn set_then_get_panel_last_thread_in_round_trips() {
+        with_tmp_luna(|luna_dir| {
+            set_panel_last_thread_in(&luna_dir, "panel-chat", "thread-rt")
+                .expect("set must succeed");
+            let result = get_panel_last_thread_in(&luna_dir, "panel-chat");
+            assert_eq!(
+                result.as_deref(),
+                Some("thread-rt"),
+                "get must return what was just set"
+            );
+        });
+    }
+
+    #[test]
+    fn last_thread_migration_adopts_legacy_file_when_panel_slot_absent() {
+        with_tmp_luna(|luna_dir| {
+            // Write legacy file but NO moon-session.json.
+            let legacy = luna_dir.join(LEGACY_LAST_THREAD_FILE);
+            std::fs::write(&legacy, "legacy-thread-id").expect("write legacy");
+
+            // Use the real inner fn: both the return value AND the persisted slot
+            // are asserted (not a manual simulation any more).
+            let result = get_panel_last_thread_in(&luna_dir, "panel-chat");
+            assert_eq!(
+                result.as_deref(),
+                Some("legacy-thread-id"),
+                "get_panel_last_thread_in must adopt the legacy id"
+            );
+
+            // Re-read: panel slot now has the adopted id.
+            let contents =
+                std::fs::read_to_string(luna_dir.join("moon-session.json")).expect("read");
+            let s2: MoonSession = serde_json::from_str(&contents).expect("parse");
+            assert_eq!(
+                s2.panels
+                    .get("panel-chat")
+                    .and_then(|p| p.last_thread.as_deref()),
+                Some("legacy-thread-id"),
+                "adopted id must be persisted in panel slot"
+            );
+
+            // Legacy file must NOT be deleted (one-release grace period).
+            assert!(
+                legacy.exists(),
+                "legacy .last-thread-default must NOT be deleted during migration"
+            );
+        });
+    }
+
+    #[test]
+    fn last_thread_legacy_absent_returns_none() {
+        with_tmp_luna(|luna_dir| {
+            // No legacy file, no moon-session.json.
+            let result = read_legacy_last_thread_in(&luna_dir);
+            assert!(
+                result.is_none(),
+                "must return None when legacy file is absent"
+            );
+        });
+    }
+
+    #[test]
+    fn last_thread_legacy_empty_returns_none() {
+        with_tmp_luna(|luna_dir| {
+            let legacy = luna_dir.join(LEGACY_LAST_THREAD_FILE);
+            std::fs::write(&legacy, "  \n  ").expect("write empty legacy");
+            let result = read_legacy_last_thread_in(&luna_dir);
+            assert!(
+                result.is_none(),
+                "must return None when legacy file contains only whitespace"
+            );
+        });
+    }
+
+    // ── Phase-2 last-thread: per-route isolation ──────────────────────────────
+
+    /// Panel A's last-thread must not bleed into Panel B's slot.
+    #[test]
+    fn per_panel_last_thread_isolation() {
+        with_tmp_luna(|luna_dir| {
+            // Write a session with two different panels.
+            let json = r#"{
+                "panels": {
+                    "panel-chat": {"route": "stable", "last_thread": "thread-for-chat"},
+                    "panel-secondary": {"route": "dev", "last_thread": "thread-for-secondary"}
+                }
+            }"#;
+            let session_path = luna_dir.join("moon-session.json");
+            write_atomic_0600(&session_path, json).expect("write session");
+
+            let chat_thread = get_panel_last_thread_in(&luna_dir, "panel-chat");
+            let secondary_thread = get_panel_last_thread_in(&luna_dir, "panel-secondary");
+
+            assert_eq!(chat_thread.as_deref(), Some("thread-for-chat"), "panel-chat slot");
+            assert_eq!(
+                secondary_thread.as_deref(),
+                Some("thread-for-secondary"),
+                "panel-secondary slot"
+            );
+            assert_ne!(
+                chat_thread, secondary_thread,
+                "panel A last-thread must differ from panel B's"
+            );
+        });
+    }
+
+    /// Writing panel A's last-thread must not affect panel B's slot.
+    #[test]
+    fn set_last_thread_for_one_panel_does_not_affect_other() {
+        with_tmp_luna(|luna_dir| {
+            // Start with two panels in the session via the real inner fn.
+            set_panel_last_thread_in(&luna_dir, "panel-chat", "old-chat-thread")
+                .expect("set panel-chat");
+            set_panel_last_thread_in(&luna_dir, "panel-secondary", "secondary-thread")
+                .expect("set panel-secondary");
+
+            // Update only panel-chat's last_thread.
+            set_panel_last_thread_in(&luna_dir, "panel-chat", "new-chat-thread")
+                .expect("update panel-chat");
+
+            // Verify panel-secondary is untouched.
+            let chat = get_panel_last_thread_in(&luna_dir, "panel-chat");
+            let secondary = get_panel_last_thread_in(&luna_dir, "panel-secondary");
+            assert_eq!(
+                chat.as_deref(),
+                Some("new-chat-thread"),
+                "panel-chat must have the new thread"
+            );
+            assert_eq!(
+                secondary.as_deref(),
+                Some("secondary-thread"),
+                "panel-secondary must be untouched"
+            );
+        });
     }
 }

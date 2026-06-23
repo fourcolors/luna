@@ -8,6 +8,8 @@
     "allow-local-shell-exec",
     "allow-get-last-thread-id",
     "allow-set-last-thread-id",
+    "allow-get-panel-last-thread",
+    "allow-set-panel-last-thread",
     "allow-open-widget",
     "allow-open-artifact-widget",
     "allow-voice-status",
