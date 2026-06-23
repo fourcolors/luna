@@ -26,6 +26,13 @@
   <script src="vendor/moon-protocol.js"></script>
   <script src="vendor/moon-ws.js"></script>
 
+  <!-- Phase 2 C2: route-keyed boot helper.  Wraps the C3 Tauri commands
+       (get_panel_route / list_routes / load_route) so boot can resolve the
+       WS endpoint from client.toml instead of the shared luna_ws_url key.
+       Degrades to null gracefully when Tauri is absent or no client.toml
+       exists, letting the legacy load_connection path take over. -->
+  <script src="vendor/moon-session.js"></script>
+
   <style>
     :root {
       /*
@@ -1637,20 +1644,58 @@
 
         // Load WebSocket configuration.
         //
-        // The token must NOT live in localStorage (XSS-reachable). Under Tauri it
-        // is read from the mode-600 ~/.luna/moon-connection.json via load_connection;
-        // the (non-secret) URL may still be cached in localStorage as a convenience.
-        // Outside Tauri we degrade to localStorage so frontend dev keeps working.
+        // Phase 2 C2: resolution order:
+        //   1. MoonSession.resolveBootRoute() — reads client.toml via C3 Tauri
+        //      commands (get_panel_route → list_routes → load_route).  Returns
+        //      a RouteInfo on success, null when no client.toml is present.
+        //   2. Legacy path — load_connection → moon-connection.json (unchanged).
+        //   3. Last resort — bare luna_ws_url localStorage key (legacy cache,
+        //      read-only; writes have been removed).
+        //
+        // The token must NOT live in localStorage (XSS-reachable). Under Tauri
+        // it is read from the mode-600 ~/.luna/moon-connection.json; outside
+        // Tauri we degrade to localStorage so frontend dev keeps working.
         let loadedUrl = null;
         let loadedToken = null;
+        let resolvedRouteKey = null;  // for observability + namespaced cache
 
+        // ── Step 1: try the route-keyed path (Phase 2 C2) ──────────────────
+        if (typeof MoonSession !== 'undefined') {
+          try {
+            const route = await MoonSession.resolveBootRoute();
+            if (route) {
+              loadedUrl = route.endpoints[0];
+              // Phase 2 takes ONLY the URL from the route. The token is NOT taken
+              // from route.tokenRef here — it continues to come from the secure
+              // moon-connection.json via load_connection (Step 2 below). tokenRef
+              // is intentionally ignored until Phase 3 resolves env:/file:/op://
+              // refs into real tokens. Do NOT pass tokenRef as wsToken — a scheme
+              // ref string would fail auth.
+              // KNOWN LIMITATION (Phase 2): if a migrated client.toml default route
+              // points at a DIFFERENT server than the legacy moon-connection.json
+              // token was minted for, the connection uses the new URL with the old
+              // token and will fail auth until Phase 3 wires per-route token resolution.
+              resolvedRouteKey = route.key;
+              Logger.info(`[boot] route-keyed resolution: key="${route.key}" endpoint="${loadedUrl}"`);
+              // Expose on window for agent-browser / smoke-test observability.
+              if (typeof window !== 'undefined') {
+                window.__moonBootRoute = { key: route.key, endpoint: loadedUrl, label: route.label };
+              }
+            }
+          } catch (e) {
+            Logger.warn('[boot] MoonSession.resolveBootRoute threw unexpectedly:', e);
+          }
+        }
+
+        // ── Step 2: legacy load_connection path ─────────────────────────────
         if (window.__TAURI__ && window.__TAURI__.core) {
           try {
             const conn = await window.__TAURI__.core.invoke('load_connection');
             if (conn) {
               // File keys are camelCase (wsUrl/wsToken), matching save_connection
               // and the luna-config emit.
-              if (typeof conn.wsUrl === 'string' && conn.wsUrl) loadedUrl = conn.wsUrl;
+              // URL: route-keyed path wins if it resolved; legacy fills the gap.
+              if (!loadedUrl && typeof conn.wsUrl === 'string' && conn.wsUrl) loadedUrl = conn.wsUrl;
               if (typeof conn.wsToken === 'string') loadedToken = conn.wsToken;
             }
           } catch (e) {
@@ -1666,6 +1711,8 @@
             if (loadedToken === null) {
               // Use the legacy token for THIS session regardless of write outcome.
               loadedToken = legacyToken;
+              // Use the stale bare luna_ws_url only as a migration helper; no
+              // longer written back (C2: removed all bare-key writes).
               const migrateUrl = loadedUrl || localStorage.getItem('luna_ws_url') || 'ws://127.0.0.1:4753/ui';
               const migrated = await this.persistConnection(migrateUrl, legacyToken);
               if (loadedUrl === null) loadedUrl = migrateUrl;
@@ -1690,9 +1737,11 @@
           if (savedWsToken !== null) loadedToken = savedWsToken;
         }
 
-        // URL: prefer the value from the secure file, then localStorage, then default.
-        const savedWsUrl = localStorage.getItem('luna_ws_url');
-        State.wsUrl = loadedUrl || savedWsUrl || 'ws://127.0.0.1:4753/ui';
+        // ── Step 3: URL resolution — route-keyed > secure file > legacy cache ─
+        // The bare luna_ws_url key is now read-only (no writes); treat it as a
+        // last-resort fallback for un-migrated sessions only.
+        const legacyUrlCache = localStorage.getItem('luna_ws_url');
+        State.wsUrl = loadedUrl || legacyUrlCache || 'ws://127.0.0.1:4753/ui';
 
         // Token: from secure file (or localStorage fallback off-Tauri), else empty.
         // (The URL/token INPUTS live in the settings.connection panel.)
@@ -1926,8 +1975,8 @@
           const creds = await core.invoke('load_connection');
           State.wsUrl = creds && creds.wsUrl ? creds.wsUrl : '';
           State.wsToken = creds && typeof creds.wsToken === 'string' ? creds.wsToken : '';
-          // URL is a non-secret convenience cache; mirror the new channel's URL.
-          localStorage.setItem('luna_ws_url', State.wsUrl);
+          // C2: bare luna_ws_url writes removed; URL now resolved via route
+          // (MoonSession.resolveBootRoute) or load_connection at boot.
           if (State.wsUrl) {
             WebSocketEngine.connect();
           } else {
@@ -2339,7 +2388,8 @@
         this.resetFinishGuard();
         State.wsUrl = url;
         State.wsToken = token;
-        localStorage.setItem('luna_ws_url', url);
+        // C2: removed bare luna_ws_url write; URL is resolved at boot via
+        // MoonSession.resolveBootRoute() or load_connection, not localStorage.
         await SettingsEngine.persistConnection(url, token);
         // (Thread state is the chat WINDOW's concern — the hub is hello-only.)
         WebSocketEngine.connect();
@@ -2759,7 +2809,8 @@
           // localStorage) so re-launches don't need a re-emit. URL is a
           // non-secret convenience cache.
           await SettingsEngine.persistConnection(State.wsUrl, State.wsToken)
-          localStorage.setItem('luna_ws_url',   State.wsUrl)
+          // C2: removed bare luna_ws_url write; URL authority is now the
+          // route (MoonSession.resolveBootRoute) or moon-connection.json.
           Logger.info('luna-config: token seeded from ~/.luna/.env, connecting...')
           // Reconnect unconditionally so the freshly-seeded token is applied to
           // the live connection. connect() disconnects-first, cleanly tearing

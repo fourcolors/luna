@@ -408,7 +408,9 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       expect(saved![1]).toEqual({ url: 'ws://moonbase:4753/ui', token: 'sekrit' })
       expect(M().State.wsUrl).toBe('ws://moonbase:4753/ui')
       expect(M().State.wsToken).toBe('sekrit')
-      expect(localStorage.getItem('luna_ws_url')).toBe('ws://moonbase:4753/ui')
+      // C2: wizard no longer writes the bare luna_ws_url key; URL authority
+      // is now moon-connection.json (via save_connection) + MoonSession route.
+      expect(localStorage.getItem('luna_ws_url')).toBeNull()
       expect(localStorage.getItem('luna.moon.setupComplete')).toBe('1')
       expect(activeStep()).toBe('done')
     })
