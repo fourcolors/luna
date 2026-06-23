@@ -259,10 +259,7 @@ fn emit_update_error(app: &tauri::AppHandle, message: String) -> String {
         // error (a failed download/verify leaves no usable stage to apply).
         s.staged = None;
     }
-    let _ = app.emit(
-        "update://error",
-        serde_json::json!({ "message": message }),
-    );
+    let _ = app.emit("update://error", serde_json::json!({ "message": message }));
     message
 }
 
@@ -392,7 +389,9 @@ fn take_pending_update() -> Option<serde_json::Value> {
 #[tauri::command]
 fn get_last_thread_id() -> Option<String> {
     if let Ok(home) = std::env::var("HOME") {
-        let path = std::path::PathBuf::from(home).join(".luna").join(".last-thread-default");
+        let path = std::path::PathBuf::from(home)
+            .join(".luna")
+            .join(".last-thread-default");
         if let Ok(content) = std::fs::read_to_string(path) {
             let thread_id = content.trim().to_string();
             if !thread_id.is_empty() {
@@ -529,7 +528,11 @@ fn write_atomic_0600(path: &std::path::Path, body: &str) -> Result<(), String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let tmp = dir.join(format!(".moon-connection.{}.{}.tmp", std::process::id(), nanos));
+    let tmp = dir.join(format!(
+        ".moon-connection.{}.{}.tmp",
+        std::process::id(),
+        nanos
+    ));
 
     let write_result = (|| -> Result<(), String> {
         let mut file = std::fs::OpenOptions::new()
@@ -541,7 +544,8 @@ fn write_atomic_0600(path: &std::path::Path, body: &str) -> Result<(), String> {
             .map_err(|e| format!("open temp failed: {}", e))?;
         file.write_all(body.as_bytes())
             .map_err(|e| format!("write temp failed: {}", e))?;
-        file.sync_all().map_err(|e| format!("sync temp failed: {}", e))?;
+        file.sync_all()
+            .map_err(|e| format!("sync temp failed: {}", e))?;
         Ok(())
     })();
     if let Err(e) = write_result {
@@ -577,11 +581,7 @@ fn persist_profiles(
 }
 
 #[tauri::command]
-fn save_connection(
-    url: String,
-    token: String,
-    profile: Option<String>,
-) -> Result<(), String> {
+fn save_connection(url: String, token: String, profile: Option<String>) -> Result<(), String> {
     // Read + migrate the existing file so other profiles are PRESERVED. A
     // legacy flat file becomes profiles.stable transparently. Missing/garbage
     // starts from an empty profile set.
@@ -611,8 +611,51 @@ fn save_connection(
 /// the frontend's connect path already consumes (it reads conn.wsUrl /
 /// conn.wsToken). Legacy flat files are migrated transparently in memory, so a
 /// currently-running user gets byte-identical creds. NEVER writes on load.
+///
+/// # Phase-2 C3 backward-compat shim
+/// When `~/.luna/client.toml` is present this command delegates to
+/// `client_config::load_route(default)` and re-maps the result into the legacy
+/// `{wsUrl, wsToken}` shape that the current chat.html JS expects.
+/// `endpoints[0]` becomes `wsUrl`; `tokenRef` becomes `wsToken` (raw — token
+/// resolution is a Phase-3 concern, so the JS receives the ref string for now).
+/// When `client.toml` is absent the pre-C3 `moon-connection.json` path is used
+/// unchanged — zero behaviour change for users who have not yet migrated.
 #[tauri::command]
 fn load_connection() -> Option<serde_json::Value> {
+    // C3 forward path: client.toml present → delegate to route module.
+    // client.toml ABSENT → fall through to legacy path (pre-migration users).
+    // client.toml PRESENT but invalid → surface the error rather than silently
+    // falling back to legacy creds (which would connect to the wrong server).
+    if let Ok(home) = std::env::var("HOME") {
+        let toml_path = std::path::PathBuf::from(&home)
+            .join(".luna")
+            .join("client.toml");
+        if toml_path.exists() {
+            match client_config::load_client_config_pub() {
+                Err(reason) => {
+                    // client.toml is present but malformed — DO NOT fall back to
+                    // legacy; surface the error so the frontend can show it.
+                    eprintln!("error: [luna] client.toml invalid: {reason}");
+                    return Some(serde_json::json!({
+                        "error": format!("client.toml invalid: {reason}"),
+                    }));
+                }
+                Ok(cfg) => {
+                    if let Some(entry) = cfg.route.get(&cfg.default) {
+                        let ws_url = entry.endpoints.first().cloned().unwrap_or_default();
+                        // tokenRef is returned raw — Phase-3 resolves op:// / env: / file: refs.
+                        let ws_token = entry.token_ref.clone();
+                        return Some(serde_json::json!({
+                            "wsUrl": ws_url,
+                            "wsToken": ws_token,
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    // Legacy path: moon-connection.json (unchanged from pre-C3).
     let value = read_connection_value()?;
     let (active, profiles) = normalize_profiles(&value);
     // Return ONLY the active profile's creds. We deliberately do NOT fall back to
@@ -696,13 +739,23 @@ struct LocalShellExecResult {
 fn is_secret_env_key(key: &str) -> bool {
     let k = key.to_ascii_uppercase();
     const NEEDLES: [&str; 7] = [
-        "TOKEN", "SECRET", "PASS", "CREDENTIAL", "AUTH", "COOKIE", "SESSION",
+        "TOKEN",
+        "SECRET",
+        "PASS",
+        "CREDENTIAL",
+        "AUTH",
+        "COOKIE",
+        "SESSION",
     ];
     if NEEDLES.iter().any(|n| k.contains(n)) {
         return true;
     }
-    k.contains("APIKEY") || k.contains("API_KEY") || k.contains("API-KEY")
-        || k.contains("PRIVATEKEY") || k.contains("PRIVATE_KEY") || k.contains("PRIVATE-KEY")
+    k.contains("APIKEY")
+        || k.contains("API_KEY")
+        || k.contains("API-KEY")
+        || k.contains("PRIVATEKEY")
+        || k.contains("PRIVATE_KEY")
+        || k.contains("PRIVATE-KEY")
 }
 
 /// Drain a child pipe fully, retaining at most `cap` bytes and counting the rest
@@ -1121,7 +1174,9 @@ async fn oauth_loopback_wait(
 #[tauri::command]
 fn oauth_loopback_cancel(state: tauri::State<'_, OauthLoopback>) {
     if let Some(active) = state.inner.lock().unwrap().take() {
-        active.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        active
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         // Poke the port so a blocked accept wakes promptly (best-effort).
         let _ = std::net::TcpStream::connect(("127.0.0.1", active.port));
     }
@@ -1139,8 +1194,12 @@ fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
     // returns None rather than panicking if a multi-byte char straddles the
     // boundary. We match on the prefix but open the ORIGINAL `url`, since
     // lowercasing the whole string would corrupt the path/query/address.
-    let is_https = url.get(..8).map_or(false, |p| p.eq_ignore_ascii_case("https://"));
-    let is_mailto = url.get(..7).map_or(false, |p| p.eq_ignore_ascii_case("mailto:"));
+    let is_https = url
+        .get(..8)
+        .map_or(false, |p| p.eq_ignore_ascii_case("https://"));
+    let is_mailto = url
+        .get(..7)
+        .map_or(false, |p| p.eq_ignore_ascii_case("mailto:"));
     if !(is_https || is_mailto) {
         return Err("only https:// or mailto: URLs can be opened".into());
     }
@@ -1202,7 +1261,8 @@ struct WidgetDescriptor {
     page: String,
     trust: String,
     #[serde(default)]
-    #[allow(dead_code)] // all v1 panels are singletons; instance suffixes come with non-singleton kinds
+    #[allow(dead_code)]
+    // all v1 panels are singletons; instance suffixes come with non-singleton kinds
     singleton: bool,
     #[serde(default = "default_panel_width")]
     width: f64,
@@ -1296,7 +1356,6 @@ fn has_explicit_position(x: Option<f64>, y: Option<f64>) -> bool {
     x.is_some() && y.is_some()
 }
 
-
 /// ~/.luna/layout.json — positions of OPEN system panels (and nothing else:
 /// pin state for content widgets stays server-side; design doc Persistence).
 fn layout_path() -> Option<std::path::PathBuf> {
@@ -1349,8 +1408,18 @@ fn spawn_panel(
     height: Option<f64>,
 ) -> Result<String, String> {
     // Boot restore positions at build time → show immediately (it does not snap).
-    spawn_panel_at(app, desc, &panel_label(&desc.kind), &desc.page, x, y, width, height, true)
-        .map(|w| w.label().to_string())
+    spawn_panel_at(
+        app,
+        desc,
+        &panel_label(&desc.kind),
+        &desc.page,
+        x,
+        y,
+        width,
+        height,
+        true,
+    )
+    .map(|w| w.label().to_string())
 }
 
 /// spawn_panel with an explicit label + url (non-singleton instances).
@@ -1572,29 +1641,26 @@ async fn open_artifact_widget(
     // A dedicated, self-contained page (NOT index.html) — keeps the widget
     // runtime isolated from the moon monolith. The real id rides in the query.
     let url = format!("widget.html?id={}", encode_query_value(&artifact_id));
-    let mut builder = tauri::WebviewWindowBuilder::new(
-        &app,
-        &label,
-        tauri::WebviewUrl::App(url.into()),
-    )
-    .title(if title.is_empty() { "Artifact" } else { &title })
-    // Native decorations ONLY on macOS, where the Overlay block below turns
-    // them into floating traffic-lights over the transparent CSS card. On
-    // other platforms decorations(true) would draw a full opaque OS title bar
-    // + frame around the transparent rounded card (broken chrome) — keep those
-    // borderless, exactly as before this feature.
-    .decorations(cfg!(target_os = "macos"))
-    .transparent(true)
-    // No native OS shadow — the CSS card-shell halo is the single depth cue
-    // (see spawn_panel_at above for the full rationale).
-    .shadow(false)
-    // Artifact widgets do NOT float by default — same rule as panels above.
-    // vendor/moon-window-float.js (loaded by widget.html) re-enables it at boot
-    // when luna_always_on_top === "true".
-    .always_on_top(false)
-    .skip_taskbar(true)
-    .inner_size(width.unwrap_or(360.0), height.unwrap_or(440.0))
-    .min_inner_size(220.0, 160.0);
+    let mut builder =
+        tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
+            .title(if title.is_empty() { "Artifact" } else { &title })
+            // Native decorations ONLY on macOS, where the Overlay block below turns
+            // them into floating traffic-lights over the transparent CSS card. On
+            // other platforms decorations(true) would draw a full opaque OS title bar
+            // + frame around the transparent rounded card (broken chrome) — keep those
+            // borderless, exactly as before this feature.
+            .decorations(cfg!(target_os = "macos"))
+            .transparent(true)
+            // No native OS shadow — the CSS card-shell halo is the single depth cue
+            // (see spawn_panel_at above for the full rationale).
+            .shadow(false)
+            // Artifact widgets do NOT float by default — same rule as panels above.
+            // vendor/moon-window-float.js (loaded by widget.html) re-enables it at boot
+            // when luna_always_on_top === "true".
+            .always_on_top(false)
+            .skip_taskbar(true)
+            .inner_size(width.unwrap_or(360.0), height.unwrap_or(440.0))
+            .min_inner_size(220.0, 160.0);
     // macOS overlay title bar — position synced from the page (spawn_panel_at).
     #[cfg(target_os = "macos")]
     {
@@ -1789,7 +1855,10 @@ fn with_appkit_main_thread<R>(
 /// zoom) on a card window. Used at spawn (hidden until title-bar hover) and by
 /// the `set_native_controls_visible` command from the frontend skin/hover layer.
 #[cfg(target_os = "macos")]
-fn apply_native_controls_visible(window: &tauri::WebviewWindow, visible: bool) -> Result<(), String> {
+fn apply_native_controls_visible(
+    window: &tauri::WebviewWindow,
+    visible: bool,
+) -> Result<(), String> {
     with_appkit_main_thread(window.clone(), move |win| {
         use objc2_app_kit::{NSWindow, NSWindowButton};
 
@@ -1811,7 +1880,10 @@ fn apply_native_controls_visible(window: &tauri::WebviewWindow, visible: bool) -
 }
 
 #[cfg(not(target_os = "macos"))]
-fn apply_native_controls_visible(_window: &tauri::WebviewWindow, _visible: bool) -> Result<(), String> {
+fn apply_native_controls_visible(
+    _window: &tauri::WebviewWindow,
+    _visible: bool,
+) -> Result<(), String> {
     Ok(())
 }
 
@@ -1843,9 +1915,7 @@ fn apply_traffic_light_layout(
         return Ok(());
     }
     with_appkit_main_thread(window.clone(), move |win| {
-        use objc2_app_kit::{
-            NSTitlebarSeparatorStyle, NSView, NSWindow, NSWindowButton,
-        };
+        use objc2_app_kit::{NSTitlebarSeparatorStyle, NSView, NSWindow, NSWindowButton};
 
         let ns_win_ptr = win.ns_window().map_err(|e| e.to_string())?;
 
@@ -1921,11 +1991,7 @@ fn apply_traffic_light_layout(
 /// `apply_traffic_light_layout`). Called from moon-native-titlebar.js on hover,
 /// resize, and after dock weld geometry changes.
 #[tauri::command]
-fn sync_traffic_light_position(
-    window: tauri::WebviewWindow,
-    x: f64,
-    y: f64,
-) -> Result<(), String> {
+fn sync_traffic_light_position(window: tauri::WebviewWindow, x: f64, y: f64) -> Result<(), String> {
     apply_traffic_light_layout(&window, x, y)
 }
 
@@ -2008,6 +2074,14 @@ fn dock_move_cluster(app: tauri::AppHandle, moves: Vec<DockMove>, physical: bool
     }
 }
 
+// ── Phase-2 C3: client route config + session state ──────────────────────────
+//
+// Reads ~/.luna/client.toml (bootstrap route config) and manages per-panel
+// route state in ~/.luna/moon-session.json.  Token resolution is deferred to
+// Phase-3.  The existing `load_connection` command is shimmed to delegate to
+// `load_route(default)` so the current single-connection boot keeps working.
+mod client_config;
+
 // ── voice pipeline commands (feature "voice") ───────────────────────────────
 //
 // Thin wrappers over luna_moon_ui_lib::voice::VoiceController (managed as
@@ -2053,7 +2127,8 @@ fn sync_ptt_shortcut(app: &tauri::AppHandle, want_registered: bool) {
             }
         });
         if let Err(e) = result {
-            let _ = tauri::Emitter::emit(app,
+            let _ = tauri::Emitter::emit(
+                app,
                 "voice-error",
                 serde_json::json!({
                     "message": format!("global PTT shortcut unavailable: {e}")
@@ -2116,9 +2191,7 @@ async fn speak_text(
 
 #[cfg(feature = "voice")]
 #[tauri::command]
-async fn voice_stop_speaking(
-    controller: tauri::State<'_, VoiceController>,
-) -> Result<(), String> {
+async fn voice_stop_speaking(controller: tauri::State<'_, VoiceController>) -> Result<(), String> {
     controller.stop_speaking();
     Ok(())
 }
@@ -2143,7 +2216,8 @@ async fn voice_set_voice(
         // Settings): the engine fell back to the system default. Surface it
         // — stderr-only logging left Settings showing the stale pick as the
         // active voice indefinitely while a different voice spoke.
-        let _ = tauri::Emitter::emit(&app,
+        let _ = tauri::Emitter::emit(
+            &app,
             "voice-error",
             serde_json::json!({
                 "message": format!(
@@ -2171,10 +2245,7 @@ async fn voice_set_config(
 #[tauri::command]
 async fn voice_ensure_model(app: tauri::AppHandle) -> Result<(), String> {
     voice::model::ensure_model(move |payload| {
-        let _ = tauri::Emitter::emit(&app,
-            "voice-model-progress",
-            payload,
-        );
+        let _ = tauri::Emitter::emit(&app, "voice-model-progress", payload);
     })
     .await
 }
@@ -2271,11 +2342,8 @@ fn main() {
                         if !any_widget_left && !moon.is_visible().unwrap_or(true) {
                             let _ = moon.show();
                             let _ = moon.set_focus();
-                            let _ = app.emit_to(
-                                tauri::EventTarget::labeled("main"),
-                                "moon-absorb",
-                                (),
-                            );
+                            let _ =
+                                app.emit_to(tauri::EventTarget::labeled("main"), "moon-absorb", ());
                         }
                     }
                 }
@@ -2304,6 +2372,12 @@ fn main() {
         load_connection,
         load_profiles,
         set_active_profile,
+        // Phase-2 C3: route config + panel session state.
+        client_config::load_route,
+        client_config::list_routes,
+        client_config::set_default_route,
+        client_config::get_panel_route,
+        client_config::set_panel_route,
         local_shell_exec,
         get_platform,
         check_for_update,
@@ -2345,6 +2419,12 @@ fn main() {
         load_connection,
         load_profiles,
         set_active_profile,
+        // Phase-2 C3: route config + panel session state.
+        client_config::load_route,
+        client_config::list_routes,
+        client_config::set_default_route,
+        client_config::get_panel_route,
+        client_config::set_panel_route,
         local_shell_exec,
         get_platform,
         check_for_update,
@@ -2388,7 +2468,10 @@ fn main() {
                     .map(|m| {
                         let sf = m.scale_factor();
                         (
-                            (f64::from(m.position().x) / sf, f64::from(m.position().y) / sf),
+                            (
+                                f64::from(m.position().x) / sf,
+                                f64::from(m.position().y) / sf,
+                            ),
                             (m.size().width as f64 / sf, m.size().height as f64 / sf),
                         )
                     })
@@ -2415,8 +2498,12 @@ fn main() {
                             // first boot geometry event, so there is no Rust-side
                             // re-link to perform here.
                             for p in doc["panels"].as_array().unwrap_or(&Vec::new()) {
-                                let Some(kind) = p["kind"].as_str() else { continue };
-                                let Some(desc) = registry_lookup(kind) else { continue };
+                                let Some(kind) = p["kind"].as_str() else {
+                                    continue;
+                                };
+                                let Some(desc) = registry_lookup(kind) else {
+                                    continue;
+                                };
                                 let (x, y) = clamp_to_monitors(
                                     p["x"].as_f64().unwrap_or(180.0),
                                     p["y"].as_f64().unwrap_or(160.0),
@@ -2444,32 +2531,34 @@ fn main() {
                 "CmdOrCtrl+Shift+K",
                 "CmdOrCtrl+Shift+U",
                 "CmdOrCtrl+Shift+Y",
-                "CmdOrCtrl+Alt+Shift+L"
+                "CmdOrCtrl+Alt+Shift+L",
             ];
-            
+
             let mut registered = false;
             for shortcut_str in shortcuts {
                 if let Ok(shortcut) = shortcut_str.parse::<Shortcut>() {
                     let shortcut_clone = shortcut.clone();
-                    let _ = app.global_shortcut().on_shortcut(shortcut, |app, _shortcut, event| {
-                        if event.state == ShortcutState::Pressed {
-                            // Collapse ⟷ expand toggle (same gesture as the moon
-                            // click / a widget's minimize): when the orb is
-                            // showing we're collapsed → expand; otherwise we're
-                            // expanded → collapse back into the moon.
-                            // No hub window → mid-teardown; never blind-act on
-                            // orphans (a missing hub would read as "collapsed").
-                            let Some(hub) = app.get_webview_window("main") else {
-                                return;
-                            };
-                            if hub.is_visible().unwrap_or(false) {
-                                expand_out_of_moon(app);
-                            } else {
-                                collapse_into_moon(app);
+                    let _ = app
+                        .global_shortcut()
+                        .on_shortcut(shortcut, |app, _shortcut, event| {
+                            if event.state == ShortcutState::Pressed {
+                                // Collapse ⟷ expand toggle (same gesture as the moon
+                                // click / a widget's minimize): when the orb is
+                                // showing we're collapsed → expand; otherwise we're
+                                // expanded → collapse back into the moon.
+                                // No hub window → mid-teardown; never blind-act on
+                                // orphans (a missing hub would read as "collapsed").
+                                let Some(hub) = app.get_webview_window("main") else {
+                                    return;
+                                };
+                                if hub.is_visible().unwrap_or(false) {
+                                    expand_out_of_moon(app);
+                                } else {
+                                    collapse_into_moon(app);
+                                }
                             }
-                        }
-                    });
-                    
+                        });
+
                     if app.global_shortcut().register(shortcut_clone).is_ok() {
                         println!("Successfully registered global hotkey: {}", shortcut_str);
                         registered = true;
@@ -2477,14 +2566,18 @@ fn main() {
                     }
                 }
             }
-            
+
             if !registered {
-                eprintln!("\n==========================================================================");
+                eprintln!(
+                    "\n=========================================================================="
+                );
                 eprintln!("Warning: Failed to register system-wide global shortcuts.");
                 eprintln!("On macOS, global hotkeys require Accessibility permissions.");
                 eprintln!("To enable during development, ensure your Terminal/Editor is added to:");
                 eprintln!("System Settings -> Privacy & Security -> Accessibility");
-                eprintln!("==========================================================================\n");
+                eprintln!(
+                    "==========================================================================\n"
+                );
             }
 
             // Seed the UI WebSocket token from ~/.luna/.env into the frontend via
@@ -2502,9 +2595,7 @@ fn main() {
             // launch and the user can paste the token into settings — subsequent
             // launches will use the cached value regardless.
             if let Ok(home) = std::env::var("HOME") {
-                let env_path = std::path::PathBuf::from(&home)
-                    .join(".luna")
-                    .join(".env");
+                let env_path = std::path::PathBuf::from(&home).join(".luna").join(".env");
                 if let Ok(contents) = std::fs::read_to_string(&env_path) {
                     // Determine the active profile from the (migrated) connection
                     // file so the seeded URL points at the channel the user last
@@ -2606,10 +2697,16 @@ mod panel_registry_tests {
     #[test]
     fn registry_parses_and_contains_settings_updates_as_system() {
         let reg = widget_registry();
-        assert!(!reg.is_empty(), "bundled registry must parse (a broken JSON would silently disable every panel)");
+        assert!(
+            !reg.is_empty(),
+            "bundled registry must parse (a broken JSON would silently disable every panel)"
+        );
         let upd = registry_lookup("settings.updates").expect("settings.updates registered");
         assert_eq!(upd.trust, "system");
-        assert!(upd.page.starts_with("panel.html?type="), "system kinds resolve only to shipped pages");
+        assert!(
+            upd.page.starts_with("panel.html?type="),
+            "system kinds resolve only to shipped pages"
+        );
         assert!(upd.singleton, "settings panels are singletons");
     }
 
@@ -2622,8 +2719,14 @@ mod panel_registry_tests {
                 d.kind
             );
             let label = panel_label(&d.kind);
-            assert!(label.starts_with("panel-"), "must match the panel-* capability glob");
-            assert_eq!(panel_kind_from_label(&label).as_deref(), Some(d.kind.as_str()));
+            assert!(
+                label.starts_with("panel-"),
+                "must match the panel-* capability glob"
+            );
+            assert_eq!(
+                panel_kind_from_label(&label).as_deref(),
+                Some(d.kind.as_str())
+            );
         }
     }
 
@@ -2700,8 +2803,14 @@ mod tests {
     fn widget_label_is_deterministic_prefixed_and_glob_matching() {
         let a = widget_label("msg-1:0");
         let b = widget_label("msg-1:0");
-        assert_eq!(a, b, "same id → same label (focus-if-open + restore rely on it)");
-        assert!(a.starts_with("widget-"), "must match the widget-* capability glob");
+        assert_eq!(
+            a, b,
+            "same id → same label (focus-if-open + restore rely on it)"
+        );
+        assert!(
+            a.starts_with("widget-"),
+            "must match the widget-* capability glob"
+        );
         // Valid Tauri label charset (alphanumeric + - _ : /): hash is hex.
         assert!(
             a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
@@ -2748,10 +2857,7 @@ mod tests {
         assert_eq!(active, "stable");
         let conn = profile_connection(&profiles, "stable").expect("stable creds present");
         assert_eq!(conn["wsUrl"], json!("ws://jax-box:4753/ui"));
-        assert_eq!(
-            conn["wsToken"],
-            json!("stok-legacy-fixture")
-        );
+        assert_eq!(conn["wsToken"], json!("stok-legacy-fixture"));
     }
 
     #[test]
@@ -2824,21 +2930,40 @@ mod tests {
 
         // Toggle stable -> dev (what the dropdown `change` handler invokes).
         let creds = set_active_profile("dev".to_string()).expect("switch to dev ok");
-        assert_eq!(creds["wsToken"], json!("dtok"), "returns the now-active dev creds");
+        assert_eq!(
+            creds["wsToken"],
+            json!("dtok"),
+            "returns the now-active dev creds"
+        );
 
         // The file on disk must now read activeProfile=dev with BOTH profiles intact.
         let after = read_connection_value().expect("file present after toggle");
         let (active, profiles) = normalize_profiles(&after);
-        assert_eq!(active, "dev", "activeProfile PERSISTED to disk after toggle");
-        assert!(profile_connection(&profiles, "stable").is_some(), "stable creds preserved");
-        assert!(profile_connection(&profiles, "dev").is_some(), "dev creds preserved");
+        assert_eq!(
+            active, "dev",
+            "activeProfile PERSISTED to disk after toggle"
+        );
+        assert!(
+            profile_connection(&profiles, "stable").is_some(),
+            "stable creds preserved"
+        );
+        assert!(
+            profile_connection(&profiles, "dev").is_some(),
+            "dev creds preserved"
+        );
 
         // Toggle back dev -> stable; must flip on disk again with no creds lost.
         set_active_profile("stable".to_string()).expect("switch back ok");
         let back = read_connection_value().unwrap();
         let (active2, profiles2) = normalize_profiles(&back);
-        assert_eq!(active2, "stable", "activeProfile flips back to stable on disk");
-        assert!(profile_connection(&profiles2, "dev").is_some(), "dev creds still preserved");
+        assert_eq!(
+            active2, "stable",
+            "activeProfile flips back to stable on disk"
+        );
+        assert!(
+            profile_connection(&profiles2, "dev").is_some(),
+            "dev creds still preserved"
+        );
 
         // Restore HOME so we don't disturb any other (parallel) test.
         match orig_home {
@@ -2937,7 +3062,9 @@ mod tests {
             Some(4_000),
         )
         .await;
-        assert!(r.stdout.starts_with(&"a".repeat(LOCAL_SHELL_MAX_OUTPUT_BYTES)));
+        assert!(r
+            .stdout
+            .starts_with(&"a".repeat(LOCAL_SHELL_MAX_OUTPUT_BYTES)));
         assert!(r.stdout.contains("[truncated "));
     }
 
@@ -3007,7 +3134,10 @@ mod tests {
             parse_loopback_request("GET /favicon.ico HTTP/1.1\r\n\r\n"),
             CallbackOutcome::NotRedirect
         ));
-        assert!(matches!(parse_loopback_request(""), CallbackOutcome::NotRedirect));
+        assert!(matches!(
+            parse_loopback_request(""),
+            CallbackOutcome::NotRedirect
+        ));
     }
 
     /// Spawn the REAL accept loop (not a mirror), play the provider with a
@@ -3064,4 +3194,3 @@ mod tests {
         assert!(err.contains("access_denied"));
     }
 }
-
