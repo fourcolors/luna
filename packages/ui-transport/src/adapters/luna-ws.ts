@@ -101,6 +101,10 @@ export class LunaWsAdapter implements ClientTransportAdapter {
   readonly #descriptorBroadcast = new Broadcast<AttachResult>()
   readonly #connectionBroadcast = new Broadcast<ConnectionState>()
 
+  // Synchronous callback sets for raw frame and connection state subscriptions.
+  readonly #frameCallbacks = new Set<(frame: ServerFrame) => void>()
+  readonly #stateCallbacks = new Set<(state: ConnectionState) => void>()
+
   // Set by #connectWs so dispose() can abort an in-flight connect.
   #helloReject: ((err: Error) => void) | null = null
 
@@ -140,6 +144,38 @@ export class LunaWsAdapter implements ClientTransportAdapter {
     this.#maxReconnectMs = reconnectOpts?.maxMs ?? LunaWsAdapter.#MAX_RECONNECT_MS
   }
 
+  /**
+   * Register a callback to receive ALL raw server frames (including hello).
+   * Returns an unsubscribe function. Safe to call before attach().
+   *
+   * MUTUALLY EXCLUSIVE with openSession: both paths receive every post-hello
+   * frame, so a consumer using both will process each frame twice. Use one
+   * or the other on a single adapter instance — not both.
+   */
+  subscribeFrames(cb: (frame: ServerFrame) => void): () => void {
+    this.#frameCallbacks.add(cb)
+    return () => this.#frameCallbacks.delete(cb)
+  }
+
+  /**
+   * Register a callback for connection state transitions.
+   * Returns an unsubscribe function.
+   */
+  subscribeConnection(cb: (state: ConnectionState) => void): () => void {
+    this.#stateCallbacks.add(cb)
+    return () => this.#stateCallbacks.delete(cb)
+  }
+
+  /**
+   * Send a raw client frame to the server as JSON.
+   * Drops silently if the socket is not currently open.
+   */
+  sendFrame(frame: unknown): void {
+    if (this.#ws && this.#ws.readyState === this.#ws.OPEN) {
+      this.#ws.send(JSON.stringify(frame))
+    }
+  }
+
   async attach(): Promise<AttachResult> {
     if (this.#disposed) throw new Error(`LunaWsAdapter(${this.routeKey}): disposed`)
 
@@ -151,14 +187,14 @@ export class LunaWsAdapter implements ClientTransportAdapter {
       return this.#lastAttach
     }
 
-    this.#connectionBroadcast.publish({ status: "connecting" })
+    this.#publishConnectionState({ status: "connecting" })
 
     const sep = url.includes("?") ? "&" : "?"
     const tokenizedUrl = `${url}${sep}token=${encodeURIComponent(this.#route.tokenRef)}`
 
     const result = await this.#connectWs(tokenizedUrl)
     this.#lastAttach = result
-    this.#connectionBroadcast.publish({ status: "ready" })
+    this.#publishConnectionState({ status: "ready" })
     this.#descriptorBroadcast.publish(result)
     return result
   }
@@ -290,6 +326,10 @@ export class LunaWsAdapter implements ClientTransportAdapter {
     this.#descriptorBroadcast.close()
     this.#connectionBroadcast.close()
 
+    // Clear synchronous callback sets.
+    this.#frameCallbacks.clear()
+    this.#stateCallbacks.clear()
+
     // Reject any in-flight hello promise.
     if (this.#helloReject) {
       this.#helloReject(new Error(`LunaWsAdapter(${this.routeKey}): disposed`))
@@ -317,6 +357,12 @@ export class LunaWsAdapter implements ClientTransportAdapter {
 
   // ── private helpers ──────────────────────────────────────────────────────
 
+  /** Publish a connection state to the broadcast AND all sync callbacks. */
+  #publishConnectionState(state: ConnectionState): void {
+    this.#connectionBroadcast.publish(state)
+    for (const cb of this.#stateCallbacks) cb(state)
+  }
+
   /**
    * Creates a WebSocket, wires up event handlers, and returns a Promise that
    * resolves with the AttachResult on hello or rejects on close-before-hello /
@@ -342,7 +388,7 @@ export class LunaWsAdapter implements ClientTransportAdapter {
           try { this.#ws.close() } catch { /* ignore */ }
           this.#ws = null
         }
-        this.#connectionBroadcast.publish({ status: "handshake-timeout" })
+        this.#publishConnectionState({ status: "handshake-timeout" })
         reject(new Error(`LunaWsAdapter(${this.routeKey}): handshake timeout after 10s`))
       }, this.#handshakeTimeoutMs)
 
@@ -372,6 +418,9 @@ export class LunaWsAdapter implements ClientTransportAdapter {
         try {
           frame = JSON.parse(String((ev as MessageEvent).data)) as ServerFrame
         } catch { return }
+
+        // Notify all raw-frame subscribers synchronously (ALL frames, incl. hello).
+        for (const cb of this.#frameCallbacks) cb(frame)
 
         if (!settled && isHelloFrame(frame)) {
           settled = true
@@ -407,9 +456,9 @@ export class LunaWsAdapter implements ClientTransportAdapter {
           clearTimeout(timeout)
 
           if (code === 1008) {
-            this.#connectionBroadcast.publish({ status: "auth-failed", reason })
+            this.#publishConnectionState({ status: "auth-failed", reason })
           } else {
-            this.#connectionBroadcast.publish({ status: "down", reason })
+            this.#publishConnectionState({ status: "down", reason })
           }
           reject(new Error(`LunaWsAdapter(${this.routeKey}): socket closed before hello (${reason})`))
           return
@@ -420,12 +469,12 @@ export class LunaWsAdapter implements ClientTransportAdapter {
 
         if (code === 1008) {
           // Auth failure is terminal — no reconnect.
-          this.#connectionBroadcast.publish({ status: "auth-failed", reason })
+          this.#publishConnectionState({ status: "auth-failed", reason })
           return
         }
 
         // Transient drop: start reconnect loop.
-        this.#connectionBroadcast.publish({ status: "recovering", reason })
+        this.#publishConnectionState({ status: "recovering", reason })
         this.#scheduleReconnect()
       })
 
@@ -441,7 +490,7 @@ export class LunaWsAdapter implements ClientTransportAdapter {
   #scheduleReconnect(): void {
     if (this.#disposed) return
     if (this.#reconnectAttempts >= this.#maxReconnectAttempts) {
-      this.#connectionBroadcast.publish({ status: "down", reason: "max reconnect attempts exceeded" })
+      this.#publishConnectionState({ status: "down", reason: "max reconnect attempts exceeded" })
       return
     }
     const delay =
@@ -472,11 +521,11 @@ export class LunaWsAdapter implements ClientTransportAdapter {
       if (this.#disposed) return
       this.#reconnectAttempts = 0
       this.#lastAttach = result
-      this.#connectionBroadcast.publish({ status: "ready" })
+      this.#publishConnectionState({ status: "ready" })
       this.#descriptorBroadcast.publish(result)
     } catch {
       if (!this.#disposed) {
-        this.#connectionBroadcast.publish({ status: "recovering" })
+        this.#publishConnectionState({ status: "recovering" })
         this.#scheduleReconnect()
       }
     }

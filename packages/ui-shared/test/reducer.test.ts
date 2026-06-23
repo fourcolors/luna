@@ -3,6 +3,7 @@ import { filterEvents, initialState, reduce } from "../src/reducer.js"
 import type {
   ChatMessage,
   ObsEvent,
+  ServerDescriptor,
   ServerFrame,
   SessionSummary,
 } from "../src/wire.js"
@@ -404,5 +405,40 @@ describe("reducer — pinned artifacts (PRD C/W1)", () => {
     // Unrelated state untouched.
     expect(s1.capabilities).toEqual(withThread.capabilities)
     expect(s1.advertisedKinds).toEqual(withThread.advertisedKinds)
+  })
+
+  it("hello with descriptor stores descriptor and uses boolean caps", () => {
+    const descriptor: ServerDescriptor = {
+      descriptorSchema: 1,
+      generation: 1,
+      issuedAt: "2026-01-01T00:00:00Z",
+      negotiation: { agreed: 2 },
+      identity: { name: "jax-stable", kind: "luna-chat-server", version: "0.1.0" },
+      runtimeSummary: { category: "container" },
+      capabilities: [{ operation: "interact", available: true, authz: { allowed: true } }],
+      health: { status: "normal" },
+    }
+    const s = reduce(initialState, {
+      type: "hello",
+      protocolVersion: 2,
+      kinds: [],
+      capabilities: { chat: true, streamingDeltas: true, setup: true, skills: true },
+      descriptor,
+    } as ServerFrame)
+    expect(s.serverDescriptor).toEqual(descriptor)
+    expect(s.capabilities.chat).toBe(true)
+    expect(s.capabilities.skills).toBe(true)
+  })
+
+  it("hello without descriptor sets serverDescriptor null and uses boolean caps", () => {
+    const s = reduce(initialState, {
+      type: "hello",
+      protocolVersion: 2,
+      kinds: [],
+      capabilities: { chat: true, streamingDeltas: false, setup: false },
+    } as ServerFrame)
+    expect(s.serverDescriptor).toBeNull()
+    expect(s.capabilities.chat).toBe(true)
+    expect(s.capabilities.streamingDeltas).toBe(false)
   })
 })

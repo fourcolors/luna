@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@luna/ui-shared": "workspace:*",
+    "@luna/ui-transport": "workspace:*",
     "solid-markdown": "^2.1.1",
     "remark-gfm": "^4.0.1",
     "shiki": "^4.0.2"
