@@ -33,6 +33,14 @@
        exists, letting the legacy load_connection path take over. -->
   <script src="vendor/moon-session.js"></script>
 
+  <!-- Phase 2 C6b/C8: PoolEngine helpers (DARK — luna_pool_engine flag).
+       pool-engine.js: frame-tag isolation scaffold + gen-counter + isDarkFlagSet.
+       moon-hub.js:    process-wide DeliveryBus + ConnectionPool + rebindAll
+                       (C8 hub home).  Both are additive no-ops when the flag
+                       is off; the default WebSocketEngine path is unaffected. -->
+  <script src="vendor/pool-engine.js"></script>
+  <script src="vendor/moon-hub.js"></script>
+
   <style>
     :root {
       /*
@@ -2001,6 +2009,68 @@
         'connection-changed': reloadAndReconnect,
         'open-wizard': () => SetupWizard.open(),
       };
+
+      // ── C8: DARK — pool home + addressed delivery ─────────────────────────
+      // When luna_pool_engine is set:
+      //   - The hub owns a MoonHubManager.DeliveryBus (process-wide).
+      //   - profile-changed / connection-changed dispatch a per-routeKey
+      //     panel-connection-changed event to ONLY the panels bound to that
+      //     route via addressed delivery — NOT a hub-wide broadcast.
+      //   - Inbound frames carry __routeKey; dispatchFrame drops them unless
+      //     the origin routeKey matches the panel's bound route (cross-route
+      //     isolation).
+      //   - The flag-off path (default) is BYTE-UNCHANGED below.
+      const _USE_HUB_POOL = window.PoolEngineHelper && window.PoolEngineHelper.isDarkFlagSet();
+      if (_USE_HUB_POOL && window.MoonHubManager) {
+        // Build the process-wide bus and pool.  Both are exposed on
+        // window.__HubState for agent-browser inspection and for F12 respawn.
+        const _hub = window.MoonHubManager;
+        const _bus = _hub.createDeliveryBus();
+        const _pool = _hub.createConnectionPool(function (routeKey) {
+          // Stub factory: returns a minimal adapter-shaped object.
+          // In a full multi-adapter deployment this would call
+          // LunaWsAdapter.create(routeKey, endpoints, token).
+          // For now the hub's existing WebSocketEngine is the sole adapter;
+          // the pool tracks it by its routeKey so isolation can be enforced.
+          return { routeKey: routeKey, disconnect: function () {} };
+        });
+        window.__HubState = { bus: _bus, pool: _pool };
+
+        // Override profile/connection change actions to use addressed delivery.
+        HUB_ACTIONS['profile-changed'] = async function () {
+          try {
+            const core = window.__TAURI__ && window.__TAURI__.core;
+            if (!core) return;
+            const creds = await core.invoke('load_connection');
+            State.wsUrl = creds && creds.wsUrl ? creds.wsUrl : '';
+            State.wsToken = creds && typeof creds.wsToken === 'string' ? creds.wsToken : '';
+            // Determine the routeKey from MoonSession (or fall back to legacy URL as key).
+            let routeKey = null;
+            if (window.MoonSession && typeof window.MoonSession.listRoutes === 'function') {
+              try {
+                const rl = await window.MoonSession.listRoutes();
+                if (rl && rl.default) routeKey = rl.default;
+              } catch (_) {}
+            }
+            if (!routeKey && State.wsUrl) routeKey = State.wsUrl;
+            if (routeKey) {
+              // Addressed delivery: only panels bound to this routeKey receive the event.
+              _bus.dispatchConnectionChanged(routeKey, { status: 'reconnecting', descriptor: { wsUrl: State.wsUrl } });
+            }
+            if (State.wsUrl) {
+              WebSocketEngine.connect();
+            } else {
+              WebSocketEngine.disconnect();
+              WebSocketEngine.updateStatus('disconnected', 'Disconnected');
+            }
+          } catch (e) {
+            Logger.warn('panel-driven reconnect (pool) failed:', e);
+          }
+        };
+        HUB_ACTIONS['connection-changed'] = HUB_ACTIONS['profile-changed'];
+      }
+      // ── END C8 DARK ───────────────────────────────────────────────────────
+
       try {
         const TW = window.__TAURI__ && window.__TAURI__.window;
         const me = TW && typeof TW.getCurrentWindow === 'function' ? TW.getCurrentWindow() : null;

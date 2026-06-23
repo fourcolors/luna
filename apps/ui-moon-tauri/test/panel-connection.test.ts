@@ -424,3 +424,142 @@ describe('settings.connection panel', () => {
   })
 
 })
+
+// ── C8: Channel select route enumeration ──────────────────────────────────────
+// These tests verify that when MoonSession.listRoutes() is available, the
+// channel-select is populated with N real routes from client.toml instead of
+// the hardcoded ['stable','dev'] fallback.
+
+describe('settings.connection — C8 channel select route enumeration', () => {
+  afterEach(() => {
+    delete (window as any).MoonSession
+  })
+
+  it('populates channel-select from MoonSession.listRoutes() when available', async () => {
+    // Inject MoonSession stub before the panel renders.
+    ;(window as any).MoonSession = {
+      listRoutes: vi.fn().mockResolvedValue({
+        default: 'prod',
+        routes: [
+          { key: 'prod',  label: 'Production' },
+          { key: 'local', label: 'Local Dev'  },
+          { key: 'beta',  label: 'Beta'       },
+        ],
+      }),
+      resolveBootRoute: vi.fn().mockResolvedValue(null),
+    }
+
+    bootPanel({ type: 'settings.connection', invoke: () => null })
+    // Two flushes: sync render + async listRoutes promise.
+    await flush()
+    await flush()
+
+    const sel = document.getElementById('channel-select') as HTMLSelectElement
+    const opts = Array.from(sel.options).map((o) => o.value)
+
+    // After async population the select should contain the 3 real routes.
+    expect(opts).toContain('prod')
+    expect(opts).toContain('local')
+    expect(opts).toContain('beta')
+  })
+
+  it('uses label text from listRoutes, not raw key', async () => {
+    ;(window as any).MoonSession = {
+      listRoutes: vi.fn().mockResolvedValue({
+        default: 'prod',
+        routes: [{ key: 'prod', label: 'Production Server' }],
+      }),
+      resolveBootRoute: vi.fn().mockResolvedValue(null),
+    }
+
+    bootPanel({ type: 'settings.connection', invoke: () => null })
+    await flush()
+    await flush()
+
+    const sel = document.getElementById('channel-select') as HTMLSelectElement
+    const prodOpt = Array.from(sel.options).find((o) => o.value === 'prod')
+    expect(prodOpt?.textContent).toBe('Production Server')
+  })
+
+  it('falls back to stable/dev hardcoded options when MoonSession is absent', async () => {
+    // No MoonSession on window.
+    delete (window as any).MoonSession
+
+    bootPanel({ type: 'settings.connection', invoke: () => null })
+    await flush()
+    await flush()
+
+    const sel = document.getElementById('channel-select') as HTMLSelectElement
+    const opts = Array.from(sel.options).map((o) => o.value)
+    expect(opts).toContain('stable')
+    expect(opts).toContain('dev')
+  })
+
+  it('falls back to hardcoded list when listRoutes() returns null', async () => {
+    ;(window as any).MoonSession = {
+      listRoutes: vi.fn().mockResolvedValue(null),
+      resolveBootRoute: vi.fn().mockResolvedValue(null),
+    }
+
+    bootPanel({ type: 'settings.connection', invoke: () => null })
+    await flush()
+    await flush()
+
+    const sel = document.getElementById('channel-select') as HTMLSelectElement
+    const opts = Array.from(sel.options).map((o) => o.value)
+    expect(opts).toContain('stable')
+    expect(opts).toContain('dev')
+  })
+
+  it('falls back when listRoutes() rejects', async () => {
+    ;(window as any).MoonSession = {
+      listRoutes: vi.fn().mockRejectedValue(new Error('Tauri down')),
+      resolveBootRoute: vi.fn().mockResolvedValue(null),
+    }
+
+    bootPanel({ type: 'settings.connection', invoke: () => null })
+    await flush()
+    await flush()
+
+    const sel = document.getElementById('channel-select') as HTMLSelectElement
+    const opts = Array.from(sel.options).map((o) => o.value)
+    expect(opts).toContain('stable')
+    expect(opts).toContain('dev')
+  })
+
+  it('active profile NOT in listRoutes keys is still present + selected after enumeration', async () => {
+    // C8 race: client.toml route keys can diverge from profile names.
+    // load_profiles resolves with activeProfile='my-custom' but listRoutes only
+    // returns ['prod', 'local'].  The repopulate clears all options then adds
+    // only prod/local — without the fix, value='my-custom' silently no-ops.
+    ;(window as any).MoonSession = {
+      listRoutes: vi.fn().mockResolvedValue({
+        default: 'prod',
+        routes: [
+          { key: 'prod',  label: 'Production' },
+          { key: 'local', label: 'Local Dev'  },
+        ],
+      }),
+      resolveBootRoute: vi.fn().mockResolvedValue(null),
+    }
+
+    bootPanel({
+      type: 'settings.connection',
+      invoke: (cmd) => {
+        if (cmd === 'load_profiles') return { activeProfile: 'my-custom' }
+        return null
+      },
+    })
+    // Three flushes: sync render, load_profiles microtask, listRoutes microtask.
+    await flush()
+    await flush()
+    await flush()
+
+    const sel = document.getElementById('channel-select') as HTMLSelectElement
+    const optValues = Array.from(sel.options).map((o) => o.value)
+    // The dynamic option must have been appended.
+    expect(optValues).toContain('my-custom')
+    // And the select must reflect it as the current selection.
+    expect(sel.value).toBe('my-custom')
+  })
+})
