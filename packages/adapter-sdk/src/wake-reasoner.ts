@@ -3,9 +3,13 @@
 // Model-backed WakeReasoner layer. Mirrors dream-reasoner.ts:
 //   1. Build a deterministic prompt from WakeInputs.
 //   2. Call sdk.query({ prompt, options: { maxTurns: 1 } }) — single-shot,
-//      no MCP access, no tool calls. Just JSON in / JSON out.
-//   3. Collect the type:"result" / subtype:"success" message's `.result` string.
-//   4. JSON.parse → validate shape → return WakeDigest.
+//      no MCP access, no tool calls. Just JSON in / JSON out. When
+//      LUNA_REASONER_STRUCTURED_OUTPUT is on (default OFF), the turn carries an
+//      `outputFormat` json_schema (WAKE_DIGEST_SCHEMA).
+//   3. Collect the type:"result" / subtype:"success" message — its
+//      schema-validated `structured_output` when present, else `.result` string.
+//   4. Structured path → validateDigest; text path → JSON.parse → parseDigest.
+//      Both share validateDigestRaw, returning a WakeDigest.
 //   5. Any parse / validation / SDK failure → WakeError (the cron loop
 //      handles this without crashing).
 //
@@ -29,7 +33,44 @@ import { DEFAULT_QUERY_TIMEOUT_MS } from "./bounded-query.js"
 import {
   resolveReasonerModel,
   runBrokeredReasonerTurn,
+  reasonerStructuredOutputEnabled,
 } from "./brokered-turn.js"
+
+// ---------------------------------------------------------------------------
+// JSON Schema for the wake digest — passed as the SDK `outputFormat` when
+// structured output is enabled. Mirrors exactly what validateDigest enforces,
+// so the schema-validated path and the text-parse fallback accept the same
+// shape. `additionalProperties:false` keeps the model from inventing fields.
+// ---------------------------------------------------------------------------
+export const WAKE_DIGEST_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "observations",
+    "picked_action_id",
+    "picked_reason",
+    "proposed_actions",
+  ],
+  properties: {
+    observations: { type: "array", items: { type: "string" } },
+    picked_action_id: { type: ["integer", "null"] },
+    picked_reason: { type: "string" },
+    proposed_actions: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["action", "priority", "rationale", "goal_slug"],
+        properties: {
+          action: { type: "string", minLength: 1 },
+          priority: { type: "integer", minimum: 1, maximum: 5 },
+          rationale: { type: "string" },
+          goal_slug: { type: ["string", "null"] },
+        },
+      },
+    },
+  },
+}
 
 // ---------------------------------------------------------------------------
 // Prompt builder (pure, exported for unit tests)
@@ -105,26 +146,16 @@ export function buildWakePrompt(inputs: WakeInputs): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Parse and shape-validate the model's JSON output into a WakeDigest.
- * Exported for unit tests that want to verify parse behavior without
- * running a real SDK call.
+ * Pure shape-validator: turn an already-parsed JSON value into a WakeDigest,
+ * THROWING on any shape violation. Shared by both consumption paths —
+ * `parseDigest` (text → JSON.parse → here) and `validateDigest` (the SDK's
+ * schema-validated `structured_output` → here). Keeping ONE validator means the
+ * structured and fallback paths can never drift in what they accept.
  */
-export function parseDigest(
-  workspaceSlug: string,
-  text: string,
-): Effect.Effect<WakeDigest, WakeError> {
-  return Effect.try({
-    try: (): WakeDigest => {
-      // Strip accidental markdown fences if the model wraps despite the
-      // prompt — same defensive trim as dream-reasoner.
-      const trimmed = text
-        .trim()
-        .replace(/^```(?:json)?\s*/i, "")
-        .replace(/\s*```$/, "")
-        .trim()
-      const raw = JSON.parse(trimmed) as Record<string, unknown>
+function validateDigestRaw(workspaceSlug: string, rawValue: unknown): WakeDigest {
+  const raw = rawValue as Record<string, unknown>
 
-      const observations = raw["observations"]
+  const observations = raw["observations"]
       if (!Array.isArray(observations)) {
         throw new Error("observations must be an array")
       }
@@ -193,13 +224,55 @@ export function parseDigest(
         }
       })
 
-      return {
-        workspaceSlug,
-        observations: observationsArr,
-        pickedActionId,
-        pickedReason,
-        proposedActions,
-      } satisfies WakeDigest
+  return {
+    workspaceSlug,
+    observations: observationsArr,
+    pickedActionId,
+    pickedReason,
+    proposedActions,
+  } satisfies WakeDigest
+}
+
+/**
+ * Validate an already-parsed value (the SDK's schema-validated
+ * `structured_output`) into a WakeDigest. No JSON.parse, no fence-stripping —
+ * the SDK already guaranteed valid JSON conforming to WAKE_DIGEST_SCHEMA; this
+ * is the defense-in-depth shape check.
+ */
+export function validateDigest(
+  workspaceSlug: string,
+  rawValue: unknown,
+): Effect.Effect<WakeDigest, WakeError> {
+  return Effect.try({
+    try: (): WakeDigest => validateDigestRaw(workspaceSlug, rawValue),
+    catch: (cause) =>
+      new WakeError({
+        op: "wake/parse",
+        message: `failed to validate structured output: ${String(cause)}`,
+        cause,
+      }),
+  })
+}
+
+/**
+ * Parse and shape-validate the model's JSON output into a WakeDigest. The
+ * text-parse fallback used when structured output is disabled or unavailable.
+ * Exported for unit tests that verify parse behavior without a real SDK call.
+ */
+export function parseDigest(
+  workspaceSlug: string,
+  text: string,
+): Effect.Effect<WakeDigest, WakeError> {
+  return Effect.try({
+    try: (): WakeDigest => {
+      // Strip accidental markdown fences if the model wraps despite the
+      // prompt — same defensive trim as dream-reasoner.
+      const trimmed = text
+        .trim()
+        .replace(/^```(?:json)?\s*/i, "")
+        .replace(/\s*```$/, "")
+        .trim()
+      return validateDigestRaw(workspaceSlug, JSON.parse(trimmed))
     },
     catch: (cause) =>
       new WakeError({
@@ -237,6 +310,11 @@ export const WakeReasonerDefault: Layer.Layer<
       // login-ref account → no env overlay, no options.model → today's behavior.
       const wakeModel = resolveReasonerModel("LUNA_WAKE_MODEL")
 
+      // Native structured output gate (default OFF). When on, the turn is issued
+      // with an outputFormat json_schema and we consume the SDK's validated
+      // structured_output; when off, behavior is byte-identical to before.
+      const structuredOutputEnabled = reasonerStructuredOutputEnabled()
+
       // Same Bun-on-linux musl-vs-glibc footgun as dream-reasoner: the SDK
       // ships a per-arch claude binary lookup that resolves to a musl variant
       // on a glibc container. The chat-server sets LUNA_CLAUDE_CODE_EXECUTABLE
@@ -272,13 +350,21 @@ export const WakeReasonerDefault: Layer.Layer<
           // the broker's inFlight finalizer fires at turn end, the model-gate +
           // provider env-overlay options fragment, and usage / rate-limit
           // reporting so chain budgets and 429 failover apply to this lane.
-          const resultText = yield* runBrokeredReasonerTurn({
+          const turn = yield* runBrokeredReasonerTurn({
             sdk,
             broker,
             model: wakeModel,
             prompt,
             baseOptions: {
               maxTurns: 1,
+              ...(structuredOutputEnabled
+                ? {
+                    outputFormat: {
+                      type: "json_schema",
+                      schema: WAKE_DIGEST_SCHEMA,
+                    },
+                  }
+                : {}),
               ...(pathToClaudeCodeExecutable
                 ? { pathToClaudeCodeExecutable }
                 : {}),
@@ -310,7 +396,17 @@ export const WakeReasonerDefault: Layer.Layer<
                 }),
             },
           })
-          const digest = yield* parseDigest(inputs.workspaceSlug, resultText)
+          // Prefer the SDK's schema-validated structured_output; fall back to
+          // parsing the text result. structuredOutput is only ever present when
+          // the gate is on AND the provider honored outputFormat — otherwise
+          // this is exactly the prior parseDigest(text) path.
+          const digest =
+            turn.structuredOutput !== undefined
+              ? yield* validateDigest(
+                  inputs.workspaceSlug,
+                  turn.structuredOutput,
+                )
+              : yield* parseDigest(inputs.workspaceSlug, turn.text)
           yield* Effect.logInfo("[luna/wake] reasoner.reason: digest ready", {
             workspace: inputs.workspaceSlug,
             picked: digest.pickedActionId,

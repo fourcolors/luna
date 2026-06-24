@@ -47,6 +47,63 @@ describe("runBoundedQuery — terminal outcomes", () => {
     if (out._tag === "result") expect(out.text).toBe("hello")
   })
 
+  it("structured: result frame with structured_output surfaces outcome.structuredOutput", async () => {
+    const structured = { observations: ["x"], picked_action_id: 7 }
+    const msg = {
+      type: "result",
+      subtype: "success",
+      session_id: "s",
+      uuid: "u",
+      is_error: false,
+      duration_ms: 5,
+      duration_api_ms: 3,
+      num_turns: 1,
+      result: JSON.stringify(structured),
+      structured_output: structured,
+    } as unknown as SDKMessage
+    const sdkLayer = SDKClient.fake(() => makeFakeQuery({ messages: [msg] }).query)
+    const out = await runWith(sdkLayer, (sdk) => runBoundedQuery(sdk, { prompt: "x" }))
+    expect(out._tag).toBe("result")
+    if (out._tag === "result") {
+      expect(out.structuredOutput).toEqual(structured)
+      expect(out.text).toBe(JSON.stringify(structured))
+    }
+  })
+
+  it("structured: a success frame with structured_output but NO text result still counts (text = JSON)", async () => {
+    const structured = [{ kind: "memory_dedup", targetId: "m1", rationale: "r" }]
+    const msg = {
+      type: "result",
+      subtype: "success",
+      session_id: "s",
+      uuid: "u",
+      is_error: false,
+      duration_ms: 5,
+      duration_api_ms: 3,
+      num_turns: 1,
+      structured_output: structured,
+    } as unknown as SDKMessage
+    const sdkLayer = SDKClient.fake(() => makeFakeQuery({ messages: [msg] }).query)
+    const out = await runWith(sdkLayer, (sdk) => runBoundedQuery(sdk, { prompt: "x" }))
+    expect(out._tag).toBe("result")
+    if (out._tag === "result") {
+      expect(out.structuredOutput).toEqual(structured)
+      expect(out.text).toBe(JSON.stringify(structured))
+    }
+  })
+
+  it("non-structured result frame leaves outcome.structuredOutput undefined (back-compat)", async () => {
+    const sdkLayer = SDKClient.fake(() =>
+      makeFakeQuery({ messages: [resultMsg("plain")] }).query,
+    )
+    const out = await runWith(sdkLayer, (sdk) => runBoundedQuery(sdk, { prompt: "x" }))
+    expect(out._tag).toBe("result")
+    if (out._tag === "result") {
+      expect(out.text).toBe("plain")
+      expect(out.structuredOutput).toBeUndefined()
+    }
+  })
+
   it("empty: stream ends with no success message → _tag='empty'", async () => {
     const sdkLayer = SDKClient.fake(() =>
       makeFakeQuery({ messages: [makeAssistantMessage("s", "thinking", "u1")] })

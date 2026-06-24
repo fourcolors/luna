@@ -123,6 +123,56 @@ const runTurn = (model: string) =>
     return { text, accounts }
   })
 
+describe("runBrokeredReasonerTurn — structured output passthrough", () => {
+  const resultWithStructured = (
+    structured: unknown,
+  ): SDKMessage =>
+    ({
+      ...(makeResultMessage("sid", "u1") as object),
+      result: JSON.stringify(structured),
+      structured_output: structured,
+    }) as unknown as SDKMessage
+
+  it("propagates the result frame's structured_output to BrokeredTurnResult", async () => {
+    process.env[GOOGLE_TOK_ENV] = "tok"
+    try {
+      const structured = { observations: ["a"], picked_action_id: null }
+      const out = await Effect.runPromise(
+        runTurn("gemini-2.5-flash").pipe(
+          Effect.provide(sdkWith([resultWithStructured(structured)])),
+          Effect.provide(brokerWith()),
+        ),
+      )
+      expect(out.text._tag).toBe("Right")
+      if (out.text._tag === "Right") {
+        expect(out.text.right.structuredOutput).toEqual(structured)
+        expect(out.text.right.text).toBe(JSON.stringify(structured))
+      }
+    } finally {
+      delete process.env[GOOGLE_TOK_ENV]
+    }
+  })
+
+  it("a plain result frame leaves structuredOutput undefined", async () => {
+    process.env[GOOGLE_TOK_ENV] = "tok"
+    try {
+      const out = await Effect.runPromise(
+        runTurn("gemini-2.5-flash").pipe(
+          Effect.provide(sdkWith([resultWithUsage("plain text")])),
+          Effect.provide(brokerWith()),
+        ),
+      )
+      expect(out.text._tag).toBe("Right")
+      if (out.text._tag === "Right") {
+        expect(out.text.right.text).toBe("plain text")
+        expect(out.text.right.structuredOutput).toBeUndefined()
+      }
+    } finally {
+      delete process.env[GOOGLE_TOK_ENV]
+    }
+  })
+})
+
 describe("runBrokeredReasonerTurn — spend metering (B4 parity)", () => {
   it("meters the result frame's usage into the broker (gemini pricing) and cools at a budget", async () => {
     process.env[GOOGLE_TOK_ENV] = "tok"

@@ -5,9 +5,11 @@ export { buildBrokerEnvOverlay } from "./broker-env-overlay.js"
 export { classifyThrottle, type ThrottleClassification } from "./throttle.js"
 export {
   resolveReasonerModel,
+  reasonerStructuredOutputEnabled,
   brokeredOptionsFragment,
   runBrokeredReasonerTurn,
   type BrokeredTurnErrors,
+  type BrokeredTurnResult,
 } from "./brokered-turn.js"
 export * from "./message-kind.js"
 export * from "./adapter.js"
