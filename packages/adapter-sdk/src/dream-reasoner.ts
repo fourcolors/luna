@@ -42,6 +42,8 @@ import { DEFAULT_QUERY_TIMEOUT_MS } from "./bounded-query.js"
 import {
   resolveReasonerModel,
   runBrokeredReasonerTurn,
+  reasonerStructuredOutputEnabled,
+  type BrokeredTurnResult,
 } from "./brokered-turn.js"
 
 // ---------------------------------------------------------------------------
@@ -53,6 +55,34 @@ const VALID_KINDS: ReadonlySet<string> = new Set<DreamOpKind>([
   "memory_contradiction",
   "belief_candidate",
 ])
+
+/**
+ * JSON Schema for the dream op array — passed as the SDK `outputFormat` when
+ * structured output is enabled. The model emits a TOP-LEVEL ARRAY of ops; the
+ * per-kind required fields differ, so the item schema is permissive (a union of
+ * the two shapes) and validateRawOpsArray remains the authoritative validator.
+ * The schema's job is to force valid JSON + the array envelope + the kind enum,
+ * eliminating the "model wrapped its JSON / emitted a prose preamble" failures;
+ * the fine-grained per-kind checks stay in validateRawOpsArray.
+ */
+const DREAM_OPS_SCHEMA: Record<string, unknown> = {
+  type: "array",
+  items: {
+    type: "object",
+    required: ["kind", "rationale"],
+    properties: {
+      kind: { type: "string", enum: [...VALID_KINDS] },
+      rationale: { type: "string", minLength: 1 },
+      domain: { type: "string" },
+      statement: { type: "string" },
+      confidence: { type: "number", minimum: 0, maximum: 1 },
+      evidence: { type: "array", items: { type: "string" } },
+      targetId: { type: "string" },
+      before: {},
+      after: {},
+    },
+  },
+}
 
 /**
  * Slice B (sampling-based confidence, MEASURE-ONLY): how many UNSEEDED
@@ -155,16 +185,17 @@ export function buildDreamPrompt(inputs: DreamInputs): string {
 // Parse + shape-validate the raw op array
 // ---------------------------------------------------------------------------
 
-function parseRawOps(text: string): Effect.Effect<ReadonlyArray<RawOp>, DreamError> {
-  return Effect.try({
-    try: (): ReadonlyArray<RawOp> => {
-      // Strip accidental markdown fences if the model wraps output despite the prompt.
-      const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim()
-      const raw = JSON.parse(trimmed) as unknown
-      if (!Array.isArray(raw)) {
-        throw new Error("model output is not a JSON array")
-      }
-      return raw.map((o: unknown, i: number): RawOp => {
+/**
+ * Pure shape-validator: turn an already-parsed JSON value into a RawOp array,
+ * THROWING on any shape violation. Shared by both consumption paths —
+ * `parseRawOps` (text → JSON.parse → here) and `validateRawOps` (the SDK's
+ * schema-validated `structured_output` → here) — so they can never drift.
+ */
+function validateRawOpsArray(raw: unknown): ReadonlyArray<RawOp> {
+  if (!Array.isArray(raw)) {
+    throw new Error("model output is not a JSON array")
+  }
+  return raw.map((o: unknown, i: number): RawOp => {
         const op = o as Record<string, unknown>
         const kind = op["kind"]
         if (typeof kind !== "string" || !VALID_KINDS.has(kind)) {
@@ -211,6 +242,38 @@ function parseRawOps(text: string): Effect.Effect<ReadonlyArray<RawOp>, DreamErr
           } satisfies RawOtherOp
         }
       })
+}
+
+/**
+ * Validate an already-parsed value (the SDK's schema-validated
+ * `structured_output`) into a RawOp array. No JSON.parse, no fence-stripping —
+ * the SDK already guaranteed valid JSON conforming to DREAM_OPS_SCHEMA; this is
+ * the defense-in-depth per-kind shape check.
+ */
+function validateRawOps(
+  raw: unknown,
+): Effect.Effect<ReadonlyArray<RawOp>, DreamError> {
+  return Effect.try({
+    try: (): ReadonlyArray<RawOp> => validateRawOpsArray(raw),
+    catch: (cause) =>
+      new DreamError({
+        op: "parse",
+        message: `failed to validate structured output: ${String(cause)}`,
+        cause,
+      }),
+  })
+}
+
+/**
+ * Parse and shape-validate the model's text JSON output into a RawOp array. The
+ * fallback used when structured output is disabled or unavailable.
+ */
+function parseRawOps(text: string): Effect.Effect<ReadonlyArray<RawOp>, DreamError> {
+  return Effect.try({
+    try: (): ReadonlyArray<RawOp> => {
+      // Strip accidental markdown fences if the model wraps output despite the prompt.
+      const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim()
+      return validateRawOpsArray(JSON.parse(trimmed))
     },
     catch: (cause) =>
       new DreamError({
@@ -317,6 +380,12 @@ export const DreamReasonerDefault: Layer.Layer<
     // account → no env overlay, no options.model → today's behavior exactly.
     const dreamModel = resolveReasonerModel("LUNA_DREAM_MODEL")
 
+    // Native structured output gate (default OFF). When on, each dream turn is
+    // issued with an outputFormat json_schema and we consume the SDK's validated
+    // structured_output; when off, behavior is byte-identical to before. Applies
+    // uniformly to pass 1 AND the sampling extras so agreement stays meaningful.
+    const structuredOutputEnabled = reasonerStructuredOutputEnabled()
+
     /**
      * The SDK package ships per-arch native binaries under
      * @anthropic-ai/claude-agent-sdk-linux-x64{-musl}/. In a Bun-installed
@@ -398,6 +467,14 @@ export const DreamReasonerDefault: Layer.Layer<
             prompt,
             baseOptions: {
               maxTurns: 1,
+              ...(structuredOutputEnabled
+                ? {
+                    outputFormat: {
+                      type: "json_schema",
+                      schema: DREAM_OPS_SCHEMA,
+                    },
+                  }
+                : {}),
               ...(pathToClaudeCodeExecutable
                 ? { pathToClaudeCodeExecutable }
                 : {}),
@@ -429,8 +506,20 @@ export const DreamReasonerDefault: Layer.Layer<
                 }),
             },
           })
-        const pass1Text = yield* runDreamTurn()
-        const pass1Raw = yield* parseRawOps(pass1Text)
+        // Prefer the SDK's schema-validated structured_output; fall back to
+        // parsing the text result. structuredOutput is only ever present when
+        // the gate is on AND the provider honored outputFormat — otherwise this
+        // is exactly the prior parseRawOps(text) path. Shared by pass 1 and the
+        // sampling extras so every pass is validated identically.
+        const opsFromTurn = (
+          turn: BrokeredTurnResult,
+        ): Effect.Effect<ReadonlyArray<RawOp>, DreamError> =>
+          turn.structuredOutput !== undefined
+            ? validateRawOps(turn.structuredOutput)
+            : parseRawOps(turn.text)
+
+        const pass1Turn = yield* runDreamTurn()
+        const pass1Raw = yield* opsFromTurn(pass1Turn)
         const ops: DreamOp[] = []
         for (const raw of pass1Raw) {
           const op = yield* materializeOp(raw, mem)
@@ -475,7 +564,7 @@ export const DreamReasonerDefault: Layer.Layer<
             : yield* Effect.all(
                 Array.from({ length: extraCount }, () =>
                   runDreamTurn().pipe(
-                    Effect.flatMap(parseRawOps),
+                    Effect.flatMap(opsFromTurn),
                     Effect.map(
                       (raw): ReadonlyArray<{ readonly beliefId: string }> | null =>
                         beliefIdsOf(raw),

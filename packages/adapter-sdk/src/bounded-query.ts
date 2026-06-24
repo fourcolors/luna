@@ -68,6 +68,14 @@ export type BoundedQueryOutcome =
   | {
       readonly _tag: "result"
       readonly text: string
+      /**
+       * Present when the result frame carried a `structured_output` payload —
+       * i.e. the caller passed `options.outputFormat: { type: "json_schema" }`
+       * and the SDK schema-validated the model's output. Callers that requested
+       * structured output should prefer this over re-parsing `text`. Absent for
+       * every plain (non-`outputFormat`) turn, so existing callers are unaffected.
+       */
+      readonly structuredOutput?: unknown
       /** Present when the result frame carried `.usage` token totals. */
       readonly usage?: BoundedQueryUsage
     }
@@ -139,7 +147,11 @@ export function runBoundedQuery(
     void runProducer()
 
     const foldQueue = Effect.gen(function* () {
-      let acc: { text: string; usage?: BoundedQueryUsage } | null = null
+      let acc: {
+        text: string
+        usage?: BoundedQueryUsage
+        structuredOutput?: unknown
+      } | null = null
       while (true) {
         const frame = yield* Queue.take(queue)
         if (frame._tag === "end") return acc
@@ -148,6 +160,12 @@ export function runBoundedQuery(
           type?: string
           subtype?: string
           result?: string
+          /**
+           * Schema-validated payload, present only when the turn was issued with
+           * `options.outputFormat: { type: "json_schema" }`. Lifted alongside
+           * (not instead of) `result` so non-structured turns are untouched.
+           */
+          structured_output?: unknown
           usage?: {
             input_tokens?: number
             output_tokens?: number
@@ -156,10 +174,16 @@ export function runBoundedQuery(
           }
           modelUsage?: Record<string, unknown>
         }
+        // A success result frame counts when it carries EITHER a text result
+        // (today's path) OR a structured_output payload (the SDK may omit the
+        // text `result` when an outputFormat schema is enforced). Requiring only
+        // a string result — as before — would drop a valid structured frame.
+        const resultText = typeof m.result === "string" ? m.result : undefined
+        const hasStructured = m.structured_output !== undefined
         if (
           m.type === "result" &&
           m.subtype === "success" &&
-          typeof m.result === "string"
+          (resultText !== undefined || hasStructured)
         ) {
           // Single-model turn → surface the REAL model id for exact pricing
           // (alias lanes like "default"/"opus" otherwise price at a tier
@@ -167,7 +191,15 @@ export function runBoundedQuery(
           const muKeys = m.modelUsage ? Object.keys(m.modelUsage) : []
           const realModel = muKeys.length === 1 ? muKeys[0] : undefined
           acc = {
-            text: m.result,
+            // `text` stays populated for every back-compat caller: the model's
+            // text when present, else a JSON serialization of the structured
+            // payload so `outcome.text` is never empty on a structured turn.
+            text:
+              resultText ??
+              (hasStructured ? JSON.stringify(m.structured_output) : ""),
+            ...(hasStructured
+              ? { structuredOutput: m.structured_output }
+              : {}),
             ...(m.usage
               ? {
                   usage: {
@@ -206,6 +238,9 @@ export function runBoundedQuery(
       return {
         _tag: "result",
         text: opt.value.text,
+        ...(opt.value.structuredOutput !== undefined
+          ? { structuredOutput: opt.value.structuredOutput }
+          : {}),
         ...(opt.value.usage ? { usage: opt.value.usage } : {}),
       } satisfies BoundedQueryOutcome
     }

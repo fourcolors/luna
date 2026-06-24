@@ -29,7 +29,9 @@ import {
   WakeReasonerDefault,
   buildWakePrompt,
   parseDigest,
+  validateDigest,
 } from "../src/wake-reasoner.js"
+import { reasonerStructuredOutputEnabled } from "../src/brokered-turn.js"
 import {
   makeFakeQuery,
   makeAssistantMessage,
@@ -400,5 +402,69 @@ describe("WakeReasonerDefault", () => {
         else process.env["LUNA_WAKE_MODEL"] = prevModel
       }
     })
+  })
+})
+
+// ── structured-output path ────────────────────────────────────────────────
+describe("validateDigest — schema-validated structured_output path", () => {
+  it("accepts a well-formed already-parsed object (no JSON.parse, no fences)", async () => {
+    const digest = await Effect.runPromise(
+      validateDigest("ws", {
+        observations: ["o1", "o2"],
+        picked_action_id: 42,
+        picked_reason: "because",
+        proposed_actions: [
+          { action: "do x", priority: 2, rationale: "r", goal_slug: null },
+        ],
+      }),
+    )
+    expect(digest.workspaceSlug).toBe("ws")
+    expect(digest.pickedActionId).toBe(42)
+    expect(digest.proposedActions).toHaveLength(1)
+    expect(digest.proposedActions[0]?.goalSlug).toBeNull()
+  })
+
+  it("accepts null picked_action_id", async () => {
+    const digest = await Effect.runPromise(
+      validateDigest("ws", {
+        observations: [],
+        picked_action_id: null,
+        picked_reason: "nothing actionable",
+        proposed_actions: [],
+      }),
+    )
+    expect(digest.pickedActionId).toBeNull()
+  })
+
+  it("rejects a malformed object with a WakeError (defense-in-depth)", async () => {
+    const exit = await Effect.runPromiseExit(
+      validateDigest("ws", {
+        observations: "not-an-array",
+        picked_action_id: 1,
+        picked_reason: "x",
+        proposed_actions: [],
+      }),
+    )
+    expect(exit._tag).toBe("Failure")
+  })
+})
+
+describe("reasonerStructuredOutputEnabled — env gate", () => {
+  it("defaults OFF when unset", () => {
+    expect(reasonerStructuredOutputEnabled({})).toBe(false)
+  })
+  it("is ON for 1/true/yes/on (case-insensitive)", () => {
+    for (const v of ["1", "true", "TRUE", "yes", "on", " On "]) {
+      expect(
+        reasonerStructuredOutputEnabled({ LUNA_REASONER_STRUCTURED_OUTPUT: v }),
+      ).toBe(true)
+    }
+  })
+  it("is OFF for other values", () => {
+    for (const v of ["0", "false", "no", "off", ""]) {
+      expect(
+        reasonerStructuredOutputEnabled({ LUNA_REASONER_STRUCTURED_OUTPUT: v }),
+      ).toBe(false)
+    }
   })
 })
