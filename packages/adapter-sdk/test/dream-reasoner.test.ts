@@ -481,3 +481,97 @@ describe("DreamReasonerDefault", () => {
     })
   })
 })
+
+// ── flag-ON layer-level end-to-end (the acknowledged follow-up) ─────────────
+// Symmetric to the wake test: proves the WHOLE DreamReasonerDefault layer with
+// LUNA_REASONER_STRUCTURED_OUTPUT=1 (a) injects outputFormat:{type:"json_schema",
+// schema:<top-level ARRAY>} into the options handed to sdk.query, and (b) routes
+// pass 1 through validateRawOps(structured_output) instead of parseRawOps(text).
+// The headline case serves a frame whose TEXT is unparseable garbage but whose
+// structured_output is a valid op array — the wrapped-output failure the OLD
+// text-parse path returned a DreamError on, now resolved cleanly.
+describe("DreamReasonerDefault — structured output flag ON (end-to-end)", () => {
+  const recordingClientWith = (
+    sink: { last: { options: Record<string, unknown> } | null },
+    frame: SDKMessage,
+  ): Layer.Layer<SDKClient> =>
+    SDKClient.fake((params) => {
+      sink.last = { options: (params.options ?? {}) as Record<string, unknown> }
+      return makeFakeQuery({ messages: [frame] }).query
+    })
+
+  const withFlag = async (value: string | undefined, fn: () => Promise<void>) => {
+    const prev = process.env["LUNA_REASONER_STRUCTURED_OUTPUT"]
+    if (value === undefined) delete process.env["LUNA_REASONER_STRUCTURED_OUTPUT"]
+    else process.env["LUNA_REASONER_STRUCTURED_OUTPUT"] = value
+    try {
+      await fn()
+    } finally {
+      if (prev === undefined) delete process.env["LUNA_REASONER_STRUCTURED_OUTPUT"]
+      else process.env["LUNA_REASONER_STRUCTURED_OUTPUT"] = prev
+    }
+  }
+
+  it("flag ON → injects outputFormat(json_schema, top-level ARRAY) into the SDK options", async () => {
+    const sink: { last: { options: Record<string, unknown> } | null } = { last: null }
+    const frame = {
+      ...makeResultMessage("sid", "uuid-dso"),
+      result: JSON.stringify([RAW_BELIEF_OP]),
+      structured_output: [RAW_BELIEF_OP],
+    } as unknown as SDKMessage
+    await withFlag("1", async () => {
+      await Effect.runPromise(
+        runReason(EMPTY_INPUTS, recordingClientWith(sink, frame), FakeMemory()),
+      )
+    })
+    const opts = sink.last!.options
+    const outputFormat = opts["outputFormat"] as
+      | { type?: string; schema?: { type?: string } }
+      | undefined
+    expect(outputFormat).toBeDefined()
+    expect(outputFormat!.type).toBe("json_schema")
+    // Dream's schema is intentionally a TOP-LEVEL ARRAY (vs wake's object).
+    expect(outputFormat!.schema?.type).toBe("array")
+  })
+
+  it("flag ON → consumes structured_output EVEN WHEN the text result is unparseable garbage (kills the wrapped-output failure class)", async () => {
+    const sink: { last: { options: Record<string, unknown> } | null } = { last: null }
+    const frame = {
+      ...makeResultMessage("sid", "uuid-dgarbage"),
+      result: "Here are the dream ops you requested! See below.",
+      structured_output: [RAW_BELIEF_OP],
+    } as unknown as SDKMessage
+
+    await withFlag("1", async () => {
+      const ops = await Effect.runPromise(
+        runReason(EMPTY_INPUTS, recordingClientWith(sink, frame), FakeMemory()),
+      )
+      // Resolved cleanly from the structured op array despite the garbage text.
+      expect(ops).toHaveLength(1)
+      const op = ops[0]!
+      expect(op.kind).toBe("belief_candidate")
+      expect(op.targetId).toBe(EXPECTED_ID)
+      const after = op.after as MemoryRecord
+      expect((after.content as { statement: string }).statement).toBe(
+        RAW_BELIEF_OP.statement,
+      )
+    })
+  })
+
+  it("flag OFF (default) → NO outputFormat in the SDK options (byte-identical back-compat)", async () => {
+    const sink: { last: { options: Record<string, unknown> } | null } = { last: null }
+    const frame = {
+      ...makeResultMessage("sid", "uuid-doff"),
+      result: JSON.stringify([RAW_BELIEF_OP]),
+    } as unknown as SDKMessage
+    await withFlag(undefined, async () => {
+      const ops = await Effect.runPromise(
+        runReason(EMPTY_INPUTS, recordingClientWith(sink, frame), FakeMemory()),
+      )
+      expect(ops).toHaveLength(1)
+    })
+    const opts = sink.last!.options
+    expect("outputFormat" in opts).toBe(false)
+    expect(opts["maxTurns"]).toBe(1)
+  })
+})

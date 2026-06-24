@@ -3,9 +3,13 @@
 // Model-backed WakeReasoner layer. Mirrors dream-reasoner.ts:
 //   1. Build a deterministic prompt from WakeInputs.
 //   2. Call sdk.query({ prompt, options: { maxTurns: 1 } }) — single-shot,
-//      no MCP access, no tool calls. Just JSON in / JSON out.
-//   3. Collect the type:"result" / subtype:"success" message's `.result` string.
-//   4. JSON.parse → validate shape → return WakeDigest.
+//      no MCP access, no tool calls. Just JSON in / JSON out. When
+//      LUNA_REASONER_STRUCTURED_OUTPUT is on (default OFF), the turn carries an
+//      `outputFormat` json_schema (WAKE_DIGEST_SCHEMA).
+//   3. Collect the type:"result" / subtype:"success" message — its
+//      schema-validated `structured_output` when present, else `.result` string.
+//   4. Structured path → validateDigest; text path → JSON.parse → parseDigest.
+//      Both share validateDigestRaw, returning a WakeDigest.
 //   5. Any parse / validation / SDK failure → WakeError (the cron loop
 //      handles this without crashing).
 //

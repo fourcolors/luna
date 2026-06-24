@@ -30,6 +30,7 @@ import {
   buildWakePrompt,
   parseDigest,
   validateDigest,
+  WAKE_DIGEST_SCHEMA,
 } from "../src/wake-reasoner.js"
 import { reasonerStructuredOutputEnabled } from "../src/brokered-turn.js"
 import {
@@ -466,5 +467,117 @@ describe("reasonerStructuredOutputEnabled — env gate", () => {
         reasonerStructuredOutputEnabled({ LUNA_REASONER_STRUCTURED_OUTPUT: v }),
       ).toBe(false)
     }
+  })
+})
+
+// ── flag-ON layer-level end-to-end (the acknowledged follow-up) ─────────────
+// Proves the WHOLE WakeReasonerDefault layer, not just the helpers in
+// isolation: with LUNA_REASONER_STRUCTURED_OUTPUT=1 the reasoner (a) injects
+// outputFormat:{type:"json_schema", schema:WAKE_DIGEST_SCHEMA} into the options
+// it hands sdk.query, and (b) takes the validateDigest(structured_output) branch
+// instead of parseDigest(text). The headline case deliberately serves a result
+// frame whose TEXT is unparseable garbage but whose structured_output is valid —
+// the exact "model wrapped its output despite the prompt" failure that the OLD
+// text-parse path returned a WakeError on, now resolved cleanly.
+describe("WakeReasonerDefault — structured output flag ON (end-to-end)", () => {
+  /**
+   * Recording fake: captures the options the reasoner builds AND lets the test
+   * choose the result frame (so we can serve garbage text + valid structured).
+   */
+  const recordingClientWith = (
+    sink: { last: { options: Record<string, unknown> } | null },
+    frame: SDKMessage,
+  ): Layer.Layer<SDKClient> =>
+    SDKClient.fake((params) => {
+      sink.last = { options: (params.options ?? {}) as Record<string, unknown> }
+      return makeFakeQuery({ messages: [frame] }).query
+    })
+
+  const validDigest = {
+    observations: ["one open action", "two goals"],
+    picked_action_id: 1,
+    picked_reason: "highest priority + actionable",
+    proposed_actions: [
+      { action: "file follow-up", priority: 2, rationale: "preventive", goal_slug: "g1" },
+    ],
+  }
+
+  const withFlag = async (value: string | undefined, fn: () => Promise<void>) => {
+    const prev = process.env["LUNA_REASONER_STRUCTURED_OUTPUT"]
+    if (value === undefined) delete process.env["LUNA_REASONER_STRUCTURED_OUTPUT"]
+    else process.env["LUNA_REASONER_STRUCTURED_OUTPUT"] = value
+    try {
+      await fn()
+    } finally {
+      if (prev === undefined) delete process.env["LUNA_REASONER_STRUCTURED_OUTPUT"]
+      else process.env["LUNA_REASONER_STRUCTURED_OUTPUT"] = prev
+    }
+  }
+
+  it("flag ON → injects outputFormat(json_schema, WAKE_DIGEST_SCHEMA) into the SDK options", async () => {
+    const sink: { last: { options: Record<string, unknown> } | null } = { last: null }
+    const frame = {
+      ...makeResultMessage("sid", "uuid-so"),
+      result: JSON.stringify(validDigest),
+      structured_output: validDigest,
+    } as unknown as SDKMessage
+    await withFlag("1", async () => {
+      await Effect.runPromise(runReason(baseInputs, recordingClientWith(sink, frame)))
+    })
+    const opts = sink.last!.options
+    const outputFormat = opts["outputFormat"] as
+      | { type?: string; schema?: unknown }
+      | undefined
+    expect(outputFormat).toBeDefined()
+    expect(outputFormat!.type).toBe("json_schema")
+    expect(outputFormat!.schema).toBe(WAKE_DIGEST_SCHEMA)
+  })
+
+  it("flag ON → consumes structured_output EVEN WHEN the text result is unparseable garbage (kills the wrapped-output failure class)", async () => {
+    const sink: { last: { options: Record<string, unknown> } | null } = { last: null }
+    // The model "wrapped" its output: the text result is prose, NOT JSON — the
+    // exact case parseDigest(text) fails on. But structured_output is valid.
+    const frame = {
+      ...makeResultMessage("sid", "uuid-garbage"),
+      result: "Sure! Here is the digest you asked for: (see attached)",
+      structured_output: validDigest,
+    } as unknown as SDKMessage
+
+    // Control: the OLD text-parse path on that same garbage text DOES fail —
+    // this is the failure class the structured path eliminates.
+    const control = await Effect.runPromise(
+      Effect.either(parseDigest("luna", "Sure! Here is the digest you asked for: (see attached)")),
+    )
+    expect(control._tag).toBe("Left")
+
+    await withFlag("1", async () => {
+      const digest = await Effect.runPromise(
+        runReason(baseInputs, recordingClientWith(sink, frame)),
+      )
+      // Resolved cleanly from structured_output despite the garbage text.
+      expect(digest.workspaceSlug).toBe("luna")
+      expect(digest.pickedActionId).toBe(1)
+      expect(digest.pickedReason).toBe("highest priority + actionable")
+      expect(digest.observations).toEqual(["one open action", "two goals"])
+      expect(digest.proposedActions).toHaveLength(1)
+      expect(digest.proposedActions[0]?.goalSlug).toBe("g1")
+    })
+  })
+
+  it("flag OFF (default) → NO outputFormat in the SDK options (byte-identical back-compat)", async () => {
+    const sink: { last: { options: Record<string, unknown> } | null } = { last: null }
+    const frame = {
+      ...makeResultMessage("sid", "uuid-off"),
+      result: JSON.stringify(validDigest),
+    } as unknown as SDKMessage
+    await withFlag(undefined, async () => {
+      const digest = await Effect.runPromise(
+        runReason(baseInputs, recordingClientWith(sink, frame)),
+      )
+      expect(digest.pickedActionId).toBe(1)
+    })
+    const opts = sink.last!.options
+    expect("outputFormat" in opts).toBe(false)
+    expect(opts["maxTurns"]).toBe(1)
   })
 })

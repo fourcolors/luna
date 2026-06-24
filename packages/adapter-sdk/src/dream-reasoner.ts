@@ -12,8 +12,12 @@
  *      memories = current state to reconcile). The category boundary (belief ops
  *      must derive from transcripts, never telemetry) is stated in the prompt.
  *   2. Call sdk.query({ prompt }) → collect the type:"result"/subtype:"success"
- *      message's `.result: string`.
- *   3. JSON.parse → validate op array shapes.
+ *      message. When LUNA_REASONER_STRUCTURED_OUTPUT is on (default OFF), the
+ *      turn is issued with an `outputFormat` json_schema (DREAM_OPS_SCHEMA) and
+ *      we consume the SDK's schema-validated `structured_output`; otherwise we
+ *      take the message's `.result: string`.
+ *   3. Structured path → validate op array shapes directly; text path →
+ *      JSON.parse → validate op array shapes (shared validateRawOpsArray).
  *   4. For belief_candidate ops: derive targetId, build a proposed MemoryRecord,
  *      snapshot `before` from memory (idempotency + revert contract).
  *   5. Any parse/validation/memory failure → DreamError (never crashes the cron).
