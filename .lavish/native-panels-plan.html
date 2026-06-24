@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dim">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Moon Panels — Native-Feel Plan</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/daisyui.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/themes.css">
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style type="text/tailwindcss">
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .anchor { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.78rem; }
+  .glow { text-shadow: 0 0 18px color-mix(in oklab, var(--color-primary) 55%, transparent); }
+  .card-demo { position: relative; border-radius: 10px; background: color-mix(in oklab, var(--color-base-100) 88%, var(--color-primary)); }
+  .inset-band { background: repeating-linear-gradient(45deg, color-mix(in oklab, var(--color-error) 22%, transparent) 0 6px, transparent 6px 12px); }
+  .mermaid { width: 100%; }
+  .mermaid svg { max-width: 100%; height: auto; }
+</style>
+</head>
+<body class="bg-base-200 text-base-content">
+<main class="mx-auto max-w-5xl p-5 md:p-9 min-w-0">
+
+  <!-- ======================= HEADER ======================= -->
+  <header class="mb-8">
+    <div class="flex items-center gap-2 mb-3 flex-wrap">
+      <span class="badge badge-soft badge-primary">Moon · Tauri · macOS</span>
+      <span class="badge badge-soft badge-info">Research → Plan</span>
+      <span class="badge badge-soft">verified against code</span>
+    </div>
+    <h1 class="text-3xl md:text-4xl font-bold glow leading-tight">Native-feel panels for Moon</h1>
+    <p class="mt-3 text-base-content/70 max-w-3xl">
+      You asked to move from "emulated" panels to native ones. The research turned up a
+      reframe that changes the whole plan — and a verified root cause for the bug that's
+      been biting you.
+    </p>
+  </header>
+
+  <!-- ======================= THE REFRAME ======================= -->
+  <section class="mb-8">
+    <div class="alert alert-info alert-soft items-start">
+      <div class="min-w-0">
+        <h2 class="font-bold text-lg">The reframe: Moon panels are <span class="underline decoration-primary">already native windows</span></h2>
+        <p class="mt-1 text-sm text-base-content/80">
+          Every panel — orb, chat, each settings panel, each artifact — is already a real,
+          separate Tauri <span class="anchor">WebviewWindow</span> (a genuine OS window). One OS window per card.
+          So this was never "fake windows vs real windows." Only <strong>two things</strong> are painted in software
+          on top of those real windows:
+        </p>
+        <div class="grid sm:grid-cols-2 gap-3 mt-3">
+          <div class="card card-border bg-base-100"><div class="card-body p-4">
+            <span class="badge badge-sm badge-soft badge-success mb-1">keep — this is Moon's identity</span>
+            <p class="text-sm"><strong>The card chrome.</strong> Watercolor shell, skins (studio / classic / aqua), the welded "two windows read as one card" look, the soft halo. No native frame can reproduce this.</p>
+          </div></div>
+          <div class="card card-border bg-base-100"><div class="card-body p-4">
+            <span class="badge badge-sm badge-soft badge-warning mb-1">this is what we change</span>
+            <p class="text-sm"><strong>The inter-window coordination.</strong> Live magnetic snapping + cluster-towing during drag. This is the only "emulation" worth removing.</p>
+          </div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= WHAT WE'RE SOLVING ======================= -->
+  <section class="mb-9">
+    <h2 class="text-xl font-bold mb-1">What we're actually solving</h2>
+    <p class="text-sm text-base-content/60 mb-4">Straight from what you told me.</p>
+    <div class="grid md:grid-cols-2 gap-4">
+      <div class="card card-border bg-base-100">
+        <div class="card-body">
+          <div class="flex items-center gap-2"><span class="text-2xl">🐞</span><h3 class="card-title text-base">The bug that must die</h3></div>
+          <p class="text-sm text-base-content/80">"The top of the window shifts up with a transparent border." You'd accept always showing the top bar to fix it.</p>
+          <div class="badge badge-soft badge-error mt-1">root cause verified ↓</div>
+        </div>
+      </div>
+      <div class="card card-border bg-base-100">
+        <div class="card-body">
+          <div class="flex items-center gap-2"><span class="text-2xl">🧲</span><h3 class="card-title text-base">The interaction to change</h3></div>
+          <p class="text-sm text-base-content/80">The live magnet during drag is the troublemaker. You're fine with <strong>snap-on-release</strong> — as long as windows still stick together.</p>
+          <div class="badge badge-soft badge-success mt-1">unlocks a big cleanup ↓</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= BUG ROOT CAUSE ======================= -->
+  <section class="mb-10">
+    <div class="flex items-baseline gap-3 mb-2 flex-wrap">
+      <h2 class="text-xl font-bold">Root cause #1 — the transparent strip</h2>
+      <span class="badge badge-soft badge-error">verified in code</span>
+    </div>
+    <p class="text-sm text-base-content/70 mb-5 max-w-3xl">
+      It's an <strong>inset asymmetry</strong>, not the title bar. The card has a 22px transparent buffer
+      on the sides &amp; bottom, but only <strong>4px on top</strong> (trimmed so the header rides up to the native
+      traffic lights). Every side absorbs sub-pixel rounding drift in its buffer — except the top, where a
+      1–2px drift is fully exposed as a see-through sliver.
+    </p>
+
+    <div class="grid md:grid-cols-2 gap-5 items-stretch">
+      <!-- visual: the inset asymmetry -->
+      <div class="card card-border bg-base-100"><div class="card-body p-5">
+        <h3 class="font-semibold text-sm mb-3 text-base-content/70">The asymmetry (one OS window)</h3>
+        <div class="relative rounded-lg p-1.5 inset-band">
+          <div class="text-[10px] text-error/90 absolute top-1 left-1/2 -translate-x-1/2 mono">top buffer = 4px ← exposed</div>
+          <div class="card-demo h-40 mt-4 flex items-center justify-center text-sm text-base-content/70">
+            <span>.widget-shell (the painted card)</span>
+          </div>
+          <div class="text-[10px] text-error/90 text-center mono mt-1">side + bottom buffer = 22px ← absorbs drift</div>
+        </div>
+        <p class="anchor mt-3 text-base-content/60">moon-theme.css:38–43 &nbsp;<span class="text-error">--card-inset:22px</span> vs <span class="text-error">--card-inset-top:4px</span></p>
+      </div>
+
+      <!-- cause chain -->
+      <div class="card card-border bg-base-100"><div class="card-body p-5">
+        <h3 class="font-semibold text-sm mb-3 text-base-content/70">Cause → effect chain</h3>
+        <ul class="steps steps-vertical text-sm">
+          <li class="step step-error" data-content="1"><span class="text-left">Snap math runs in card-face space, then subtracts each side's inset to get the OS-window position <span class="anchor block text-base-content/50">deck-snap.js:33–36, 107, 346</span></span></li>
+          <li class="step step-error" data-content="2"><span class="text-left">Rounding drifts 1–2px <span class="anchor block text-base-content/50">Math.round deck-snap.js:71 · logical↔physical main.rs:2139</span></span></li>
+          <li class="step step-error" data-content="3"><span class="text-left">22px side buffer hides it; 4px top buffer can't → transparent strip + apparent "shift up"</span></li>
+        </ul>
+      </div></div>
+    </div>
+
+    <!-- the trenchant correction -->
+    <div class="alert alert-warning alert-soft mt-5 items-start">
+      <span class="text-xl">⚠️</span>
+      <div class="min-w-0">
+        <h3 class="font-bold">"Always show the top bar" is a red herring for the strip</h3>
+        <p class="text-sm mt-1 text-base-content/80">
+          We ruled out the intuitive culprits in code: hover-reveal <em>never</em> changes layout height
+          (<span class="anchor">moon-native-titlebar.js:87–105</span>), and the old weld margin-collapse is
+          <em>already gone</em> (<span class="anchor">moon-dock.js:90–116</span> only squares corners now).
+          The real fix is one line: <strong>symmetrize the top inset</strong> — set
+          <span class="anchor text-success">--card-inset-top: 22px</span>. The native traffic lights follow the
+          header down automatically (their position-sync reads <span class="anchor">#title-bar</span>'s real rect).
+          Pinning the top bar always-on is still worth doing — but as a <em>stability bonus</em> (kills a secondary
+          AppKit re-layout flicker), not the cure.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= SNAP-ON-RELEASE FLOW ======================= -->
+  <section class="mb-10">
+    <div class="flex items-baseline gap-3 mb-2 flex-wrap">
+      <h2 class="text-xl font-bold">Change #2 — live magnet → snap-on-release</h2>
+      <span class="badge badge-soft badge-success">net ~245 lines deleted</span>
+    </div>
+    <p class="text-sm text-base-content/70 mb-5 max-w-3xl">
+      Lone-window drag is <strong>already</strong> native <span class="anchor">startDragging()</span> + snap-on-release.
+      The whole emulated per-frame IPC machine exists <em>only</em> to support the live magnet on cluster-towing.
+      Accept snap-on-release and it becomes dead code.
+    </p>
+    <div class="card card-border bg-base-100"><div class="card-body p-5 overflow-x-auto">
+      <div class="mermaid">
+flowchart LR
+  subgraph CUR["Today — emulated live magnet"]
+    direction TB
+    A1["pointer-down on title bar"] --> A2{"welded cluster?"}
+    A2 -- "no" --> A3["native startDragging()<br/>snap on release ✅"]
+    A2 -- "yes (towsCluster)" --> A4["per-frame loop:<br/>computeLiveDrag → dock_move_cluster IPC"]
+    A4 --> A5["N setPosition calls / frame<br/>= lag + drift bugs"]
+  end
+  subgraph NEW["Proposed — snap-on-release for all"]
+    direction TB
+    B1["pointer-down on title bar"] --> B2["native startDragging()<br/>(every window)"]
+    B2 --> B3["on release: computeSnap once"]
+    B3 --> B4["re-tow welded children<br/>by anchor's net delta"]
+    B4 --> B5["refreshWeld + broadcastGeometry<br/>= sticks, no per-frame IPC ✅"]
+  end
+  CUR -.->|"delete the yellow path"| NEW
+  style A4 fill:#7a5b00,stroke:#f5c542,color:#fff
+  style A5 fill:#7a2b2b,stroke:#f87171,color:#fff
+  style B4 fill:#1f5c3a,stroke:#4ade80,color:#fff
+  style B5 fill:#1f5c3a,stroke:#4ade80,color:#fff
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ======================= REMOVE / KEEP / ADD ======================= -->
+  <section class="mb-10">
+    <h2 class="text-xl font-bold mb-4">Blast radius — remove / keep / add</h2>
+    <div class="grid md:grid-cols-3 gap-4">
+      <div class="card card-border bg-base-100"><div class="card-body p-4">
+        <h3 class="card-title text-base text-error">🗑 Remove</h3>
+        <p class="text-xs text-base-content/50 -mt-1">the live-magnet machinery</p>
+        <ul class="text-sm space-y-1.5 mt-1">
+          <li><code class="anchor">sm</code> state machine + <code class="anchor">flushDrag</code> / <code class="anchor">onDragMove</code></li>
+          <li>pointerdown snapshot block <span class="anchor text-base-content/50">moon-dock.js (~180 lines)</span></li>
+          <li><code class="anchor">computeLiveDrag</code> <span class="anchor text-base-content/50">deck-snap.js</span></li>
+          <li><code class="anchor">dock_move_cluster</code> command <span class="anchor text-base-content/50">main.rs</span></li>
+          <li><code class="anchor">dock-live-drag.test.ts</code> (whole file)</li>
+        </ul>
+      </div></div>
+      <div class="card card-border bg-base-100"><div class="card-body p-4">
+        <h3 class="card-title text-base text-success">✅ Keep</h3>
+        <p class="text-xs text-base-content/50 -mt-1">welding survives untouched</p>
+        <ul class="text-sm space-y-1.5 mt-1">
+          <li><code class="anchor">startNativeDrag</code> / <code class="anchor">snapOnRelease</code></li>
+          <li><code class="anchor">computeSnap</code> (corner snap)</li>
+          <li>weld visuals: <code class="anchor">refreshWeld</code>, <code class="anchor">weldClusterOf</code></li>
+          <li><code class="anchor">broadcastGeometry</code> / <code class="anchor">dock-geometry-changed</code></li>
+          <li>all of <code class="anchor">moon-resize.js</code> (already independent)</li>
+        </ul>
+        <p class="text-xs text-base-content/60 mt-2">Welding is <em>emergent geometry</em> recomputed from real rects on release — flush-positioning <strong>is</strong> welding.</p>
+      </div></div>
+      <div class="card card-border bg-base-100"><div class="card-body p-4">
+        <h3 class="card-title text-base text-info">➕ Add</h3>
+        <p class="text-xs text-base-content/50 -mt-1">the only new code</p>
+        <ul class="text-sm space-y-1.5 mt-1">
+          <li><strong>Anchor re-tow</strong> (~15–25 lines): on release, move the welded children by the anchor's net frame delta, then <code class="anchor">refreshWeld</code>.</li>
+          <li>Port the peel-off cooldown into the native release path (optional).</li>
+        </ul>
+      </div></div>
+    </div>
+  </section>
+
+  <!-- ======================= THE ONE REGRESSION ======================= -->
+  <section class="mb-10">
+    <h2 class="text-xl font-bold mb-3">The one honest tradeoff</h2>
+    <div class="alert alert-soft items-start">
+      <span class="text-xl">🎚</span>
+      <div class="min-w-0">
+        <p class="text-sm text-base-content/85">
+          During a <strong>multi-window cluster drag</strong>, the welded children stay put and snap into formation
+          when you drop — instead of towing live under the cursor. That's exactly the "snap-on-release" feel you said
+          you're fine with, just applied to the whole cluster. Single-window drag already feels native today, so the
+          only <em>new</em> feel is cluster-on-release. Resize stays emulated regardless — native resize-drag is a
+          tao no-op on macOS, unavoidable.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= THE PLAN ======================= -->
+  <section class="mb-10">
+    <h2 class="text-xl font-bold mb-1">The plan — two independent, shippable steps</h2>
+    <p class="text-sm text-base-content/60 mb-5">macOS-scoped · incremental on the existing native stack · no rewrite · no loss of the watercolor look.</p>
+
+    <div class="space-y-4">
+      <div class="card card-border bg-base-100 border-l-4 border-l-primary"><div class="card-body p-5">
+        <div class="flex items-center gap-3 flex-wrap">
+          <div class="badge badge-primary badge-lg">Step 1</div>
+          <h3 class="card-title text-lg">Kill the strip</h3>
+          <span class="badge badge-soft badge-success">low risk · tiny</span>
+        </div>
+        <p class="text-sm text-base-content/80 mt-1">
+          Symmetrize <span class="anchor">--card-inset-top</span> → 22px (optionally pin the top bar always-on for
+          stability). Screenshot-verify in real Tauri WKWebView. Fixes the bug that's biting you <em>today</em>.
+        </p>
+      </div></div>
+
+      <div class="card card-border bg-base-100 border-l-4 border-l-info"><div class="card-body p-5">
+        <div class="flex items-center gap-3 flex-wrap">
+          <div class="badge badge-info badge-lg">Step 2</div>
+          <h3 class="card-title text-lg">Snap-on-release conversion</h3>
+          <span class="badge badge-soft">net deletion</span>
+        </div>
+        <p class="text-sm text-base-content/80 mt-1">
+          Route every title-bar grab through native <span class="anchor">startDragging()</span>, delete the
+          live-magnet path, add the release-time re-tow. Removes the lag and a whole class of geometry bugs; windows
+          still stick.
+        </p>
+      </div></div>
+    </div>
+
+    <ul class="steps steps-horizontal w-full mt-6 text-sm">
+      <li class="step step-primary">Worktree</li>
+      <li class="step step-primary">Step 1 · strip fix</li>
+      <li class="step">📸 real-Tauri screenshot</li>
+      <li class="step">Step 2 · snap-on-release</li>
+      <li class="step">📸 verify cluster feel</li>
+    </ul>
+  </section>
+
+  <!-- ======================= RISKS / OPEN QUESTIONS ======================= -->
+  <section class="mb-10">
+    <h2 class="text-xl font-bold mb-4">Risks &amp; open questions</h2>
+    <div class="overflow-x-auto rounded-box border border-base-content/10 bg-base-100">
+      <table class="table table-sm">
+        <thead><tr><th>Item</th><th>Read</th></tr></thead>
+        <tbody>
+          <tr><td class="font-medium">Lights sit lower after symmetrizing</td><td class="text-base-content/75">Header drops ~18px; native lights follow via position-sync. <strong>Must</strong> screenshot — jsdom/Chromium won't show it (the project's hard-won lesson: only the real app verifies).</td></tr>
+          <tr><td class="font-medium">Cluster-on-release feel</td><td class="text-base-content/75">Unproven vs. live tow. Mitigated by the re-tow + seam flash. Your call after you see it.</td></tr>
+          <tr><td class="font-medium">Peel-off cooldown</td><td class="text-base-content/75">Keep "don't instantly re-link after peeling off"? Port it, or drop it for simplicity?</td></tr>
+          <tr><td class="font-medium">Ship order</td><td class="text-base-content/75">Recommend Step 1 alone first (own PR) so the bug fix lands fast, then Step 2 separately.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ======================= NEXT ======================= -->
+  <section class="mb-4">
+    <div class="card bg-primary text-primary-content"><div class="card-body">
+      <h2 class="card-title">Recommended next step</h2>
+      <p class="text-sm opacity-90">Spin up a worktree, implement <strong>Step 1 (strip fix)</strong> first, and show you the before/after real-Tauri screenshot. Then move to Step 2 once you've blessed the visual.</p>
+      <p class="text-xs opacity-70 mt-2">Annotate anything above to redirect — e.g. "do both in one PR," "drop the cooldown," or "show me the cluster feel before committing."</p>
+    </div></div>
+  </section>
+
+  <footer class="text-center text-xs text-base-content/40 mt-8">
+    Design source: Lavish Tailwind + DaisyUI fallback (explanatory artifact, not a Moon UI mock) · all file:line anchors verified against the working tree
+  </footer>
+
+</main>
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: "dark", securityLevel: "loose", flowchart: { useMaxWidth: true } });
+</script>
+</body>
+</html>
