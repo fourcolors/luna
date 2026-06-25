@@ -4,6 +4,7 @@ dist/
 *.tsbuildinfo
 coverage/
 .vitest-temp/
+.lavish/
 tsconfig.tsbuildinfo
 pnpm-lock.yaml
 .env

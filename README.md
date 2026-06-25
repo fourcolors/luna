@@ -73,6 +73,7 @@ packages/
   tools/          — built-in + custom tool builder
   ui-shared/      — shared UI primitives
   ui-ws/          — WebSocket server for UI
+  capabilities/   - versioned capability layer (slash commands, skills) a backend advertises to UIs
 apps/
   agent-cli/      — the `luna` terminal client (chat, doctor, pair, account, memory)
   ui-web/         — Solid.js web chat interface (Vite dev server on :5174)

@@ -37,7 +37,7 @@
     },
     "apps/ui-moon-tauri": {
       "name": "@luna/ui-moon-tauri",
-      "version": "0.0.42",
+      "version": "0.0.45",
       "devDependencies": {
         "@tauri-apps/cli": "^2.1.0",
         "jsdom": "^29.1.1",
@@ -96,6 +96,14 @@
       },
       "peerDependencies": {
         "@anthropic-ai/claude-agent-sdk": ">=0.3.0 <1",
+      },
+    },
+    "packages/capabilities": {
+      "name": "@luna/capabilities",
+      "version": "0.0.1",
+      "devDependencies": {
+        "typescript": "^5.6.3",
+        "vitest": "^2.1.5",
       },
     },
     "packages/channels": {
@@ -636,6 +644,8 @@
     "@luna/adapter-sdk": ["@luna/adapter-sdk@workspace:packages/adapter-sdk"],
 
     "@luna/agent-cli": ["@luna/agent-cli@workspace:apps/agent-cli"],
+
+    "@luna/capabilities": ["@luna/capabilities@workspace:packages/capabilities"],
 
     "@luna/channels": ["@luna/channels@workspace:packages/channels"],
 
