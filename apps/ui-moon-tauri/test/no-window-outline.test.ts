@@ -16,7 +16,8 @@ import { describe, it, expect } from 'vitest'
  *   - an `outline: …` (anything but none/0).
  *
  * Transient affordances are exempt (they are not the persistent window edge):
- * .snapping / .dragging / .entering / .resize-* and the ::after snap ring.
+ * .dragging / .entering / .resize-* grips. (The drag-time .snapping ::after
+ * preview ring was removed; windows snap flush on release with no preview ring.)
  *
  * If this test fails: you brought the window outline back. Remove the offending
  * declaration — do NOT weaken this test.
