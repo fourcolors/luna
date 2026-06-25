@@ -2234,6 +2234,7 @@ fn begin_native_resize(window: tauri::WebviewWindow, direction: String) -> Resul
         // delivers on the main thread).
         let end = {
             let state = state.clone();
+            let win = win.clone();
             let app = win.app_handle().clone();
             let label = win.label().to_string();
             move || {
@@ -2255,6 +2256,10 @@ fn begin_native_resize(window: tauri::WebviewWindow, direction: String) -> Resul
                         NSEvent::removeMonitor(obj);
                     }
                 }
+                // Notify JS the resize ended so it always resets the cursor
+                // override and __LUNA_NATIVE_RESIZING__ — the webview never sees a
+                // pointerup when the button is released outside the window.
+                let _ = win.emit("luna-resize-ended", ());
                 broadcast_dock_geometry_settled(&app, &label);
                 write_panel_layout(&app);
             }
