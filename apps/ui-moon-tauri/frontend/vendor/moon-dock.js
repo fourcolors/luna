@@ -40,6 +40,12 @@
   // a corner before the perpendicular axis snaps flush (vs free); MIN_PERP_OVERLAP
   // = the minimum perpendicular overlap to count as "beside".
   var EDGE_SNAP_THRESHOLD = 30, CORNER_ALIGN_THRESHOLD = 26, MIN_PERP_OVERLAP = 8;
+  // macOS menu-bar allowance (logical px). Tauri v2's JS Monitor exposes only the
+  // FULL hardware rect, not the OS visible frame (work area), so we hand-inset the
+  // top of the primary monitor (global origin y==0) by this much. Without it a
+  // card pushed flush to bounds.y lands under the menu bar; macOS then clamps it
+  // back down, re-introducing the very overlap resolveOverlap exists to prevent.
+  var MENU_BAR_INSET = 25;
 
   function wire(opts) {
     var W = opts && opts.win;
@@ -539,6 +545,12 @@
       // watcher, NOT a motion-stopped timer — a mid-drag pause near a snap target
       // used to fire that timer prematurely).
       function onMovedTick(e) {
+        // Re-arm the safety backstop on every Moved so it measures INACTIVITY,
+        // not elapsed time: a slow but continuous drag (careful positioning is
+        // easily >5s) keeps pushing the deadline out, so finish() can never fire
+        // mid-gesture. It only trips after a genuinely quiet/stuck drag with no
+        // Moved for 5s. (`safety` is 0 once finish() has run, so don't re-arm.)
+        if (safety) { clearTimeout(safety); safety = setTimeout(finish, 5000); }
         // Live snap preview — toggle the .snapping glow ring. Cheap, IPC-free:
         // derive my LOGICAL card rect from the Moved payload + cached size, run
         // computeEdgeSnap against the cached candidates.
@@ -644,12 +656,14 @@
           .filter(function (c) { return c.label !== HUB; })
           .map(function (c) { return S.insetRect(c.rect, ins); });
         var tgt = best ? { x: best.x, y: best.y } : { x: lead.x, y: lead.y };
-        // Bound the no-overlap push to THIS monitor's work area (logical/card
+        // Bound the no-overlap push to THIS monitor's usable rect (logical/card
         // space) so it never shoves the window off-screen — macOS would clamp it
-        // back on and re-introduce the overlap. Use availableMonitors() (the
-        // proven path; currentMonitor() returns null under withGlobalTauri here)
-        // and pick the monitor containing the window centre, converting PHYSICAL
-        // px → logical by /scaleFactor. Degrade gracefully to no bounds.
+        // back on and re-introduce the overlap. Tauri v2 exposes no work area, so
+        // this is the FULL monitor rect inset by a menu-bar allowance (see
+        // MENU_BAR_INSET below). Use availableMonitors() (the proven path;
+        // currentMonitor() returns null under withGlobalTauri here) and pick the
+        // monitor containing the window centre, converting PHYSICAL px → logical
+        // by /scaleFactor. Degrade gracefully to no bounds.
         var bounds = null;
         try {
           if (TW && typeof TW.availableMonitors === 'function') {
@@ -664,6 +678,10 @@
               }
               var psf = pick.scaleFactor || 1;
               bounds = { x: pick.position.x / psf, y: pick.position.y / psf, w: pick.size.width / psf, h: pick.size.height / psf };
+              // Inset the menu bar on the primary monitor only: the macOS menu bar
+              // sits at the global top (origin y==0). Raise the top edge and shrink
+              // height so a card can't resolve under it; other edges stay full-rect.
+              if (bounds.y === 0) { bounds.y += MENU_BAR_INSET; bounds.h -= MENU_BAR_INSET; }
             }
           }
         } catch (_) { bounds = null; }
