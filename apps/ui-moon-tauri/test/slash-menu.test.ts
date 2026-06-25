@@ -78,6 +78,7 @@ describe('SlashMenu (chat.html)', () => {
     VoiceEngine: any
     WebSocketEngine: any
     State: any
+    Attachments: any
     handleFrame: (f: any) => void
   }
 
@@ -333,5 +334,16 @@ describe('SlashMenu (chat.html)', () => {
     expect(menu().classList.contains('open')).toBe(true)
     input().dispatchEvent(new FocusEvent('blur'))
     expect(menu().classList.contains('open')).toBe(false)
+  })
+
+  // ── attachments are never stranded by a dispatched command ──
+  it('dispatching "/clear" clears staged attachments (no stranded tray)', () => {
+    vi.spyOn(internals().ChatEngine, 'newConversation').mockImplementation(() => {})
+    const clear = vi.spyOn(internals().Attachments, 'clear')
+    internals().Attachments.items = [{ id: 'att_x', kind: 'text' }]
+    input().value = '/clear'
+    internals().ChatEngine.handleSubmit({ preventDefault() {} })
+    expect(clear).toHaveBeenCalled()
+    expect(internals().Attachments.items).toEqual([])
   })
 })

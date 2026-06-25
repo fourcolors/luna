@@ -8788,6 +8788,7 @@
       function dispatch(id, args) {
         DOM.messageInput.value = '';
         ChatEngine.autoGrowMessageInput();
+        Attachments.clear();
         switch (id) {
           case 'clear':
           case 'new':
