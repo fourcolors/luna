@@ -101,6 +101,41 @@
     e.preventDefault();
     e.stopPropagation();
 
+    // On macOS, hand the WHOLE gesture to Rust (begin_native_resize drives
+    // NSWindow.setFrame: from an NSEvent monitor — native speed, no per-frame
+    // IPC). tao's startResizeDragging is a no-op there, and the emulated loop
+    // below is laggy. Everywhere else we fall through to the emulated path.
+    var core = g.__TAURI__ && g.__TAURI__.core;
+    var isMac =
+      /Mac/i.test((g.navigator && g.navigator.platform) || '') ||
+      /Mac OS X/i.test((g.navigator && g.navigator.userAgent) || '');
+    if (core && core.invoke && isMac) {
+      active = { native: true }; // re-entry guard (onDown returns early if active)
+      g.document.documentElement.style.cursor = cursorFor(dir);
+      // Suppress per-frame traffic-light sync while the native resize drives
+      // setFrame: (moon-native-titlebar.js syncPosition checks this). Sync once
+      // on release so the lights settle to the final geometry.
+      g.__LUNA_NATIVE_RESIZING__ = true;
+      var reset = function () {
+        g.document.documentElement.style.cursor = '';
+        active = null;
+        g.__LUNA_NATIVE_RESIZING__ = false;
+        try {
+          if (g.LunaNativeTitlebar && g.LunaNativeTitlebar.syncPosition) {
+            g.LunaNativeTitlebar.syncPosition();
+          }
+        } catch (_) { /* best-effort */ }
+        g.removeEventListener('pointerup', reset, true);
+        g.removeEventListener('blur', reset, true);
+      };
+      g.addEventListener('pointerup', reset, true);
+      g.addEventListener('blur', reset, true);
+      core.invoke('begin_native_resize', { direction: dir }).catch(function () {
+        reset();
+      });
+      return;
+    }
+
     var TW = g.__TAURI__.window;
     var win = TW.getCurrentWindow();
     var snap;

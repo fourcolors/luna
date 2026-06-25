@@ -56,6 +56,8 @@
     "allow-collapse-to-moon",
     "allow-expand-from-moon",
     "allow-set-native-controls-visible",
+    "allow-begin-native-resize",
+    "allow-watch-drag-release",
     "allow-dock-self",
     "allow-dock-move-cluster"
   ]

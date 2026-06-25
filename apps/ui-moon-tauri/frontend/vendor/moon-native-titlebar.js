@@ -74,6 +74,11 @@
 
   function syncPosition() {
     if (!usesNativeHover()) return Promise.resolve();
+    // During a native window resize the shell fires the ResizeObserver every
+    // frame; syncing the (usually hidden) traffic lights per-frame floods the
+    // main thread with IPC + objc2 work that competes with the resize's own
+    // setFrame:. Skip while resizing — moon-resize.js fires one sync on release.
+    if (g.__LUNA_NATIVE_RESIZING__) return Promise.resolve();
     var pos = measurePosition();
     if (!pos) return Promise.resolve();
     try {

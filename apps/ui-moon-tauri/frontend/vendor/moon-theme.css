@@ -147,6 +147,11 @@ html[data-theme='dark'] .widget-shell.dragging {
     0 6px 12px rgba(0, 0, 0, 0.40),
     0 36px 64px -18px rgba(0, 0, 0, 0.60) !important;
 }
+/* While dragging, hide the weld-accent perimeter line (#outline.gl/.gr/.gt/.gb).
+   It is frozen from the last settled weld state (drag start never clears it), so
+   a previously-welded card otherwise paints a faint 2px accent hairline on its
+   edge throughout the drag — the "invisible line" in the gap. */
+.widget-shell.dragging #outline { opacity: 0; }
 .widget-shell.snapping::after {
   content: '';
   position: absolute;
