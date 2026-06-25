@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "chat",
-  "description": "ADDITIVE permission set for the chat widget window (label panel-chat, registry kind 'chat' — widget-system.md Phase 4). The panel-* glob in panels.json already grants the dock/snap surface; this capability adds what the conversation needs beyond a settings panel: attachments (file dialog), machine access (local shell), thread persistence, the voice surface (PTT + speech), launching other widgets (gear → settings launcher; artifact pop-outs).",
-  "windows": ["panel-chat"],
+  "description": "ADDITIVE permission set for the chat widget window (registry kind 'chat' — widget-system.md Phase 4). Two label shapes: the singleton `panel-chat`, and the parallel-thread instances `panel-chat-<hash>` that panel_instance_label mints when the title-bar '+' opens a chat panel with params (main.rs / chat.html). BOTH must be listed so the per-window ACL grants machine access (local shell) to every chat panel, not just the first — the broad `panel-*` glob in panels.json deliberately does NOT carry shell. The panel-* glob in panels.json already grants the dock/snap surface; this capability adds what the conversation needs beyond a settings panel: attachments (file dialog), machine access (local shell), thread persistence, the voice surface (PTT + speech), launching other widgets (gear → settings launcher; artifact pop-outs).",
+  "windows": ["panel-chat", "panel-chat-*"],
   "permissions": [
     "dialog:allow-open",
     "allow-local-shell-exec",
