@@ -757,10 +757,19 @@ moon click → `open_widget("chat")`; sub-engines move; snap anchor
 parameterized to chat; hub reattach signal redefined. Still the overhaul's
 riskiest slice — but now on a platform that's been carrying settings panels
 for two phases.
-_As-built decisions (2026-06-12):_ the chat window's label is `panel-chat`
-(rides the panel-* dock/layout/capability surface; an ADDITIVE chat.json
-capability grants attachments/local-shell/thread-persistence/voice-surface/
-open_widget on that exact label). Once chat leaves, the hub is permanently
+_As-built decisions (2026-06-12):_ the singleton chat window's label is
+`panel-chat` (rides the panel-* dock/layout/capability surface; an ADDITIVE
+chat.json capability grants attachments/local-shell/thread-persistence/voice-surface/
+open_widget). The title-bar "+" opens a **parallel-thread** chat panel
+(`open_widget chat?thread=new`), which `panel_instance_label` (`main.rs:1377`)
+mints as `panel-chat-<hash>` - so chat.json lists **both** `panel-chat` and the
+`panel-chat-*` glob, because Tauri's per-window-label ACL would otherwise deny
+`local_shell_exec` on every panel but the first (the broad `panel-*` glob in
+panels.json deliberately carries the dock/snap surface but **not** shell). The
+`panel-chat-*` glob is least-privilege: `panel_label` maps dots to dashes, so a
+future `chat.*` system kind would inherit chat's shell ACL - `chat` must stay the
+only kind in that namespace (`test/local-shell-acl.test.ts` pins this invariant).
+Once chat leaves, the hub is permanently
 moon-sized — so the Phase 3 launcher modal becomes a **`settings` launcher
 PANEL** and the gear lives in the chat header. `hub_event('fresh-thread')`
 routes to `panel-chat` when open (the chat window owns the thread), falling
