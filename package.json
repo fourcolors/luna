@@ -15,7 +15,8 @@
     "vault:migrate-keychain:dry-run": "bun apps/ui-web/scripts/vault-migrate-keychain.ts --dry-run",
     "vault:migrate-keychain:apply": "bun apps/ui-web/scripts/vault-migrate-keychain.ts --apply --keep-env",
     "install:safe": "BUN_INSTALL_CACHE_DIR=/tmp/bun-cache bun install",
-    "bundle:ui-transport": "bun apps/ui-moon-tauri/scripts/bundle-ui-transport.ts"
+    "bundle:ui-transport": "bun apps/ui-moon-tauri/scripts/bundle-ui-transport.ts",
+    "bundle:capabilities": "bun apps/ui-moon-tauri/scripts/bundle-capabilities.ts"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
