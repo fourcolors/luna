@@ -336,7 +336,7 @@ describe('SlashMenu (chat.html)', () => {
     expect(menu().classList.contains('open')).toBe(false)
   })
 
-  // ── attachments are never stranded by a dispatched command ──
+  // ── attachments: wiped only by clear/new, preserved by settings/help ──
   it('dispatching "/clear" clears staged attachments (no stranded tray)', () => {
     vi.spyOn(internals().ChatEngine, 'newConversation').mockImplementation(() => {})
     const clear = vi.spyOn(internals().Attachments, 'clear')
@@ -345,5 +345,31 @@ describe('SlashMenu (chat.html)', () => {
     internals().ChatEngine.handleSubmit({ preventDefault() {} })
     expect(clear).toHaveBeenCalled()
     expect(internals().Attachments.items).toEqual([])
+  })
+
+  it('dispatching "/help" preserves staged attachments', () => {
+    vi.spyOn(internals().ChatEngine, 'appendMessage').mockImplementation(() => {})
+    const clear = vi.spyOn(internals().Attachments, 'clear')
+    input().value = '/help'
+    internals().ChatEngine.handleSubmit({ preventDefault() {} })
+    expect(clear).not.toHaveBeenCalled()
+  })
+
+  it('dispatching "/model sonnet" preserves staged attachments', () => {
+    seedModels([{ id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', efforts: [] }])
+    vi.spyOn(internals().ComposerConfig, '_selectModel').mockImplementation(() => {})
+    const clear = vi.spyOn(internals().Attachments, 'clear')
+    input().value = '/model sonnet'
+    internals().ChatEngine.handleSubmit({ preventDefault() {} })
+    expect(clear).not.toHaveBeenCalled()
+  })
+
+  it('dispatching "/effort low" preserves staged attachments', () => {
+    seedModels([{ id: 'claude-fable-5', label: 'Fable 5', efforts: ['low', 'max'] }])
+    vi.spyOn(internals().ComposerConfig, '_selectEffort').mockImplementation(() => {})
+    const clear = vi.spyOn(internals().Attachments, 'clear')
+    input().value = '/effort low'
+    internals().ChatEngine.handleSubmit({ preventDefault() {} })
+    expect(clear).not.toHaveBeenCalled()
   })
 })
