@@ -218,8 +218,17 @@ completeCommand(input: string, commands: readonly CapabilityDescriptor[]): strin
 
 **Parity proof:** `test/command.test.ts` ports the cases from `apps/agent-cli/test/slash.test.ts` (filter/complete) + envelope-only cases from `chat/slash.test.ts` (parse), importing zero agent-cli code, plus new kind-exclusion cases that prove the generalization.
 
+**First consumer - Moon slash menu:** the Moon frontend (`apps/ui-moon-tauri`) drives its
+slash-command popover from `parseCommandLine` / `filterCommands` / `completeCommand`. The
+static frontend can't import the workspace package, so `bun run bundle:capabilities` compiles
+the zero-dep `src/index.ts` barrel into a committed browser IIFE
+(`apps/ui-moon-tauri/frontend/vendor/capabilities.js`) that exposes `window.LunaCapabilities`;
+the bundle build asserts the firebreak held (no `vitest`, no `node:` specifier reachable from
+the barrel). Loading a vendored IIFE rather than importing the workspace dep sidesteps the
+`bun install` quirk below.
+
 **Deferred integration (separate slice):** re-pointing agent-cli to re-export these from
 `@luna/capabilities` (add the `workspace:*` dep, convert `SLASH_COMMANDS` → bare-id
-descriptors, delete the `App.tsx` `/`-strip). Deferred because the package has no consumers
-yet and a fresh-worktree `bun install` has known quirks here; reuse is proven by the parity
-test, not the import.
+descriptors, delete the `App.tsx` `/`-strip). Deferred because agent-cli has no in-tree
+re-export consumer yet and a fresh-worktree `bun install` has known quirks here; reuse is
+proven by the parity test, not the import.
