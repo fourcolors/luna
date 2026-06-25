@@ -287,13 +287,35 @@
     // one IPC round of window reads; runs on a geometry-changed tick / resize /
     // boot, NOT per pointermove. Since the weld no longer mutates card shape,
     // there is nothing to gate mid-drag — it just re-squares corners.
-    var refreshing = false;
+    // Immediate, awaitable weld paint. COALESCE, never DROP: weldMembers() is async
+    // (one IPC read per sibling), so if a refresh lands mid-flight, mark it pending
+    // and re-run after — the latest geometry wins; a plain early-return would strand
+    // the card on a stale result. Callers that await this (boot, the tests) get the
+    // weld applied synchronously after the await.
+    var refreshing = false, refreshPending = false, weldTimer = null;
     async function refreshWeld() {
-      if (refreshing) return;
+      if (refreshing) { refreshPending = true; return; }
       refreshing = true;
-      try { paintWeldFrom(await weldMembers()); }
-      catch (_) { /* best-effort */ }
+      try {
+        do {
+          refreshPending = false;
+          paintWeldFrom(await weldMembers());
+        } while (refreshPending);
+      } catch (_) { /* best-effort */ }
       finally { refreshing = false; }
+    }
+    // TRAILING DEBOUNCE for event STORMS. Every window broadcasts
+    // `dock-geometry-changed` (and a native resize fires onResized per frame), so a
+    // single settle floods every sibling with weld refreshes, each reading async
+    // geometry that may still be mid-transit — landing the card on a stale
+    // `grouped=false` whose seam-side halo is never suppressed (the visible seam
+    // band). Being a race, it resolved differently in dev vs a release build.
+    // Coalescing the flood into ONE paint ~80ms after it goes quiet means the read
+    // always sees SETTLED (flush) positions, so the weld is deterministic. The weld
+    // is a settle-time visual (never per drag-frame), so the delay is imperceptible.
+    function scheduleWeld() {
+      if (weldTimer) clearTimeout(weldTimer);
+      weldTimer = setTimeout(function () { weldTimer = null; refreshWeld(); }, 80);
     }
 
     // Snap candidates: the hub first (it wins distance ties), then every sibling
@@ -855,7 +877,9 @@
         // square my welded corners against the new positions. No shape mutation,
         // so this is safe to run on any tick.
         e.listen('dock-geometry-changed', function () {
-          refreshWeld();
+          refreshWeld();  // immediate repaint (responsive; the event can read a
+          scheduleWeld(); // mid-settle position, so re-read once it goes quiet —
+                          // that trailing pass is what un-sticks the seam band)
         }).catch(function () {});
       }
       if (typeof W.listen === 'function') {
@@ -864,13 +888,14 @@
           if (!p || p['for'] !== label) return;
           flashSeam(p.edge); // anchor side: our touching side IS the edge
           // A freshly-spawned sibling just docked — re-square our welded corners
-          // immediately (don't wait for its boot broadcast).
+          // now, then again once its position settles (trailing pass).
           refreshWeld();
+          scheduleWeld();
         }).catch(function () {});
       }
       // My own native resize changes the weld for my neighbours too.
       if (typeof W.onResized === 'function') {
-        W.onResized(function () { refreshWeld(); broadcastGeometry(); }).catch(function () {});
+        W.onResized(function () { refreshWeld(); scheduleWeld(); broadcastGeometry(); }).catch(function () {});
       }
     } catch (_) { /* best-effort */ }
 
