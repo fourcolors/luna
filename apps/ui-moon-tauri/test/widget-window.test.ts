@@ -61,6 +61,7 @@ describe('widget.html — title bar + live magnetic drag', () => {
     outerPosition: ReturnType<typeof vi.fn>
     outerSize: ReturnType<typeof vi.fn>
     setPosition: ReturnType<typeof vi.fn>
+    onResized: ReturnType<typeof vi.fn>
   }
   let getByLabel: ReturnType<typeof vi.fn>
   let invoke: ReturnType<typeof vi.fn>
