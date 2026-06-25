@@ -8746,9 +8746,18 @@
       function helpText() {
         // Derive from the live merged command list so backend-advertised commands
         // (and their source) appear in /help too, not just a hardcoded UI list.
+        const models = ComposerConfig._models || [];
+        const entry = ComposerConfig._currentModelEntry ? ComposerConfig._currentModelEntry() : null;
+        const efforts = entry && Array.isArray(entry.efforts) ? entry.efforts : [];
+        const argFor = (c) => {
+          if (c.id === 'model' && models.length > 0) return '[' + models.map((m) => m.id).join('|') + ']';
+          if (c.id === 'effort' && efforts.length > 0) return '[' + ['default', ...efforts].join('|') + ']';
+          return c.arghint || '';
+        };
         const lines = ['Available commands:'];
         for (const c of buildCommands()) {
-          const arg = c.arghint ? ' ' + c.arghint : '';
+          const arghint = argFor(c);
+          const arg = arghint ? ' ' + arghint : '';
           const src = c.source && c.source !== 'ui' ? ` (${c.source})` : '';
           lines.push('  /' + c.id + arg + ' — ' + (c.desc || '') + src);
         }
