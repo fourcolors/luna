@@ -83,6 +83,7 @@ decodeCapabilityCatalog(input: unknown): DecodedCatalog
 - **decoders are total — they never throw.** Given any input at all (including an object with a throwing/exotic getter), `decodeCapabilityDescriptor`/`decodeCapabilityCatalog` return a `Decoded` result; pathological input fails loudly (`ok:false`) rather than throwing.
 - **prototype pollution never survives.** Decoding an object carrying a literal `__proto__` own key (e.g. from `JSON.parse`) neither pollutes `Object.prototype` nor copies the key into the output (only whitelisted fields are copied).
 - **type coercion is rejected, not silently accepted.** `enabled: 0`, `enabled: "true"`, `title: true`, etc. fail loudly.
+- **per-field size bounds (anti-DoS).** Untrusted strings are length-capped so a backend can't wedge the client with megabyte-scale fields (allocation + giant DOM text nodes): `kind`/`id` ≤ 256 chars, the display strings `title`/`description`/`argHint` ≤ 4096 chars, and serialized `detail` ≤ 16384 bytes (an un-stringifiable `detail` is treated as over-limit). Over-limit fields fail loudly. The bounds are generous relative to any legitimate command label.
 
 ---
 
@@ -244,9 +245,12 @@ The same menu also renders **backend-advertised commands**: when the server adve
 catalog, and `mergeCapabilities([ui, backend])` so UI-owned (`executor:"client"`) and
 server-executed (`executor:"server"`) commands share one popover — UI wins `(kind,id)`
 collisions, and each backend row shows a `source` chip. Selecting a server command routes a
-`capability-execute` frame back; selecting a client command runs the built-in handler. A
-server that omits the flag clears the backend catalog so a stale menu can't survive attaching
-to a different machine.
+`capability-execute` frame back; selecting a client command runs the built-in handler. Every
+hello clears the backend catalog first - a hello means a (re)connect or machine swap, so a
+command-capable server re-populates it from the `capability-catalog` frame that follows, while
+a server without the flag simply leaves it null. (Clearing only on the absent flag would let
+server A's commands keep rendering after a swap to a different command-capable server B until
+B's catalog arrives - or forever if it never does.)
 
 **Deferred integration (separate slice):** re-pointing agent-cli to re-export these from
 `@luna/capabilities` (add the `workspace:*` dep, convert `SLASH_COMMANDS` → bare-id
