@@ -372,4 +372,101 @@ describe('SlashMenu (chat.html)', () => {
     internals().ChatEngine.handleSubmit({ preventDefault() {} })
     expect(clear).not.toHaveBeenCalled()
   })
+
+  // ── Backend-advertised capabilities (capability-catalog -> merge -> dispatch) ──
+  const interruptCap = {
+    kind: 'command', id: 'interrupt', title: 'Stop',
+    description: 'Stop the current assistant turn', executor: 'server', schemaVersion: 1,
+  }
+  const sendCapCatalog = (caps: any[]) =>
+    internals().handleFrame({ type: 'capability-catalog', catalog: { generation: 1, agreedSchema: 1, capabilities: caps } })
+
+  it('a capability-catalog frame adds the backend command with a "luna" source chip', () => {
+    sendCapCatalog([interruptCap])
+    typeInComposer('/')
+    expect(items().map((el) => el.getAttribute('data-command'))).toContain('interrupt')
+    const row = menu().querySelector('[data-command="interrupt"]') as HTMLElement
+    expect(row.querySelector('.source-chip')?.textContent).toBe('luna')
+  })
+
+  it('UI commands carry no source chip', () => {
+    sendCapCatalog([interruptCap])
+    typeInComposer('/')
+    const clearRow = menu().querySelector('[data-command="clear"]') as HTMLElement
+    expect(clearRow.querySelector('.source-chip')).toBeNull()
+  })
+
+  it('a UI command wins a (kind,id) collision and routes to the CLIENT (no backend frame)', () => {
+    // A malicious/buggy backend advertising id:'clear', executor:'server' must NOT hijack /clear.
+    sendCapCatalog([{ ...interruptCap, id: 'clear', title: 'Backend Clear', executor: 'server' }])
+    const newConv = vi.spyOn(internals().ChatEngine, 'newConversation').mockImplementation(() => {})
+    const sent: any[] = []
+    vi.spyOn(internals().WebSocketEngine, 'send').mockImplementation((f: any) => { sent.push(f) })
+    typeInComposer('/clear')
+    keyInComposer('Enter')
+    expect(newConv).toHaveBeenCalledTimes(1) // the UI-owned client /clear ran
+    expect(sent.some((f) => f.type === 'capability-execute')).toBe(false) // backend never invoked
+    const row = menu().querySelector('[data-command="clear"]') as HTMLElement | null
+    if (row) expect(row.querySelector('.source-chip')).toBeNull()
+  })
+
+  it('surfaces a backend command failure (capability-execute-result ok:false)', async () => {
+    sendCapCatalog([interruptCap])
+    internals().State.activeThreadId = 'thread-abc'
+    const reqIds: string[] = []
+    vi.spyOn(internals().WebSocketEngine, 'send').mockImplementation((f: any) => {
+      if (f.type === 'capability-execute') reqIds.push(f.requestId)
+    })
+    const append = vi.spyOn(internals().ChatEngine, 'appendMessage').mockImplementation(() => {})
+    typeInComposer('/interrupt')
+    keyInComposer('Enter')
+    expect(reqIds.length).toBe(1)
+    internals().handleFrame({ type: 'capability-execute-result', requestId: reqIds[0], ok: false, message: 'no active turn' })
+    await Promise.resolve(); await Promise.resolve()
+    expect(append.mock.calls.some((c: any[]) => /no active turn/.test(String(c[1])))).toBe(true)
+  })
+
+  it('accepting /interrupt with an active thread sends a capability-execute frame', () => {
+    sendCapCatalog([interruptCap])
+    internals().State.activeThreadId = 'thread-abc'
+    const sent: any[] = []
+    vi.spyOn(internals().WebSocketEngine, 'send').mockImplementation((f: any) => { sent.push(f) })
+    typeInComposer('/interrupt')
+    keyInComposer('Enter')
+    const exec = sent.find((f) => f.type === 'capability-execute')
+    expect(exec).toBeDefined()
+    expect(exec.kind).toBe('command')
+    expect(exec.id).toBe('interrupt')
+    expect(exec.args).toMatchObject({ threadId: 'thread-abc' })
+    expect(typeof exec.requestId).toBe('string')
+  })
+
+  it('a server command with no active thread warns and sends nothing', () => {
+    sendCapCatalog([interruptCap])
+    internals().State.activeThreadId = null
+    const append = vi.spyOn(internals().ChatEngine, 'appendMessage').mockImplementation(() => {})
+    const sent: any[] = []
+    vi.spyOn(internals().WebSocketEngine, 'send').mockImplementation((f: any) => { sent.push(f) })
+    typeInComposer('/interrupt')
+    keyInComposer('Enter')
+    expect(sent.some((f) => f.type === 'capability-execute')).toBe(false)
+    expect(append.mock.calls.some((c: any[]) => /No active conversation/.test(String(c[1])))).toBe(true)
+  })
+
+  it('the handleSubmit intercept dispatches a typed "/interrupt" + Enter', () => {
+    sendCapCatalog([interruptCap])
+    internals().State.activeThreadId = 'thread-xyz'
+    const sent: any[] = []
+    vi.spyOn(internals().WebSocketEngine, 'send').mockImplementation((f: any) => { sent.push(f) })
+    input().value = '/interrupt'
+    internals().ChatEngine.handleSubmit({ preventDefault() {} })
+    expect(sent.some((f) => f.type === 'capability-execute' && f.id === 'interrupt')).toBe(true)
+  })
+
+  it('a malformed capability-catalog frame is ignored; the menu still works', () => {
+    internals().handleFrame({ type: 'capability-catalog', catalog: { capabilities: 'nope' } })
+    typeInComposer('/')
+    expect(menu().classList.contains('open')).toBe(true)
+    expect(items().map((el) => el.getAttribute('data-command'))).not.toContain('interrupt')
+  })
 })

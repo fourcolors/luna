@@ -3114,6 +3114,53 @@ const buildServerLayer = (
         },
       }
 
+      // Capability layer (backend-advertised commands): the ui-ws handle
+      // returns the plain WireCapabilityCatalog shape. The catalog is built
+      // LITERALLY (no internal-state spread), mirroring the skill-catalog
+      // body-strip discipline — nothing executable crosses the wire. v1 ships
+      // one server-executed command: `interrupt` (the Stop button), which maps
+      // to ChatService.interrupt(threadId).
+      const capabilityWsHandle = {
+        catalog: () =>
+          Effect.succeed({
+            generation: 1,
+            agreedSchema: 1,
+            capabilities: [
+              {
+                kind: "command",
+                id: "interrupt",
+                title: "Stop",
+                description: "Stop the current assistant turn",
+                executor: "server" as const,
+                schemaVersion: 1,
+              },
+            ],
+          }),
+        execute: ({
+          id,
+          args,
+        }: {
+          kind: string
+          id: string
+          args?: Record<string, unknown>
+        }) =>
+          // ok:true means ACCEPTED (the interrupt was dispatched), not necessarily
+          // "a turn was stopped" — ChatService.interrupt is a no-op on an idle/unknown
+          // thread; the actual Stop surfaces via the thread's assistant-error(interrupted)
+          // frame. Trust note: like the existing `interrupt` frame handler, this trusts
+          // the client-supplied threadId — sound under Luna's single-operator-per-server
+          // model; revisit (scope to subscribed threads) if a server ever serves multiple
+          // principals. interrupt is low-stakes (only stops an in-flight turn).
+          id === "interrupt"
+            ? chat
+                .interrupt(String(args?.threadId ?? ""))
+                .pipe(Effect.as({ ok: true }))
+            : Effect.succeed({
+                ok: false,
+                message: `unknown capability ${id}`,
+              }),
+      }
+
       // Phase 3 D3: build the SurveyWsHandle adapter. SurveyApi has
       // pendingSurvey + processVerdict; SurveyWsHandle needs pendingSurvey +
       // submitVerdicts. submitVerdicts pins every verdict's `at` to `issuedAt`
@@ -3277,6 +3324,7 @@ const buildServerLayer = (
         accountBroker: broker,
         survey: surveyHandle, // Phase 3 D3: resolved handle
         skillRegistry: skillsWsHandle, // PRD Part B: bodies pre-stripped
+        capabilityRegistry: capabilityWsHandle, // Capability layer: backend-advertised commands (static catalog)
         // 14-day auto-archive → broadcast `thread-archived` to live clients.
         threadArchiveNotifier: {
           changes: (notify) => {

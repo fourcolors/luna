@@ -12,7 +12,7 @@ describe("packaging firebreak", () => {
 
   it("no runtime module under src (excluding src/testing) imports vitest", () => {
     // descriptor/registry/merge/provider/reference-provider/index must be vitest-free.
-    for (const f of ["descriptor", "registry", "merge", "provider", "reference-provider", "command", "index"]) {
+    for (const f of ["descriptor", "registry", "merge", "provider", "reference-provider", "frame-provider", "command", "index"]) {
       const src = readFileSync(new URL(`../src/${f}.ts`, import.meta.url), "utf8")
       expect(src, `${f}.ts must not import vitest`).not.toMatch(/from ["']vitest["']/)
     }

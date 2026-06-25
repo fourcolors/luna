@@ -68,10 +68,11 @@ decodeCapabilityCatalog(input: unknown): DecodedCatalog
 - **keeps the valid, surfaces the invalid.** Given `capabilities:[valid, {missing id}]`, then `ok` is true, `value.capabilities` has length 1 (the valid one), and `rejected` has length 1 with `index:1` and an `error` naming `id`. (One bad command must NOT nuke the whole menu — but it is never silently dropped.)
 - **malformed envelope fails loudly.** Given `capabilities` is not an array, or `generation`/`agreedSchema` is missing/non-number, then `ok` is false with an `error`.
 - **non-object catalog fails loudly.** Given `null` or `"x"`, then `ok` is false.
+- **catalog size is bounded (DoS floor).** Given more than 256 capabilities, then `ok` is true, `value.capabilities` is capped at the first 256, and the overflow is surfaced as one `rejected` entry naming the cap — a compromised/buggy backend can't wedge the client with an unbounded decode + DOM rows, and the truncation is never silent.
 
 ### Invariants (the floors the validators enforce)
 
-- `kind`, `id`, `title`: non-empty strings (`kind`/`id` must be non-empty; `title` must be a string). `kind` and `id` must also be free of control characters — they key the merge `(kind,id)` collision map.
+- `kind`, `id`, `title`: non-empty strings (`kind`/`id` must be non-empty; `title` must be a string). **Every string field is free of control characters** (newline, tab, NUL, DEL): `kind`/`id` because they key the merge `(kind,id)` collision map, and the display strings `title`/`description`/`argHint` because a control char (e.g. a newline) in a rendered field lets an untrusted backend forge a second menu row or visually spoof a command.
 - `executor`: exactly `"client"` or `"server"`.
 - `schemaVersion`, `agreedSchema`: integers `>= 1`.
 - `generation`: integer `>= 0` (a monotonic counter that may legitimately start at 0). `NaN`/`Infinity` are rejected everywhere a number is required.
@@ -182,6 +183,16 @@ Contract:
 
 `createReferenceProvider({ initial?, onExecute? })` → `ReferenceProvider` with `setRawCatalog(unknown)` (decodes at the boundary, surfaces `rejected`), `setUnavailable(error)`, and `executions` (the routing oracle). Zero-dep, browser-safe; the conformance suite runs against it to prove suite ⇄ reference agreement.
 
+### Frame provider (`src/frame-provider.ts`, ships in the main barrel)
+
+`createFrameCapabilityProvider(transport, opts?)` → a `CapabilityProvider` backed by a request/response FRAME channel — the production port behind the reference one. It is generic over any `FrameTransport` that can `send(frame)` and `onFrame(handler)` (Moon WS, ui-web WS, …) so "add a backend" reuses this port instead of re-implementing it per frontend. It consumes server→client `capability-catalog` frames (decoded at the boundary into the snapshot, `rejected` surfaced) and `capability-execute-result` frames (keyed by `requestId`), and sends client→server `capability-execute` frames.
+
+- `opts.context?()` — session context merged into every execute frame's `args` (e.g. the active `threadId`); re-read per execute so it's always current. The user's typed `ExecuteRequest.args` rides alongside under `args.text`.
+- `opts.executeTimeoutMs?` — ms before a pending execute resolves `{ok:false, reason:"unavailable"}`; default `15000`, `0` disables.
+- `opts.newRequestId?` — request-id generator; default is an internal counter (deterministic, no crypto dep).
+
+Routing follows the port contract: no catalog yet ⇒ `{ok:false, reason:"unavailable"}` (don't route); a `(kind,id)` the current catalog doesn't advertise ⇒ `{ok:false, reason:"unknown"}` with **no frame sent**; a transport `send` throw ⇒ `reason:"unavailable"`; a failed result ⇒ `reason:"backend-error"` carrying the backend message. Zero-dep, browser-safe; the conformance suite runs against it too.
+
 ### Conformance suite (`@luna/capabilities/testing`, firebreaked)
 
 `describeProviderConformance(name, harness)` — the maintainability backbone ("add a backend = implement the port + pass this suite"). It imports vitest, so it is reachable **only** via the `./testing` subpath export, never from the main barrel (enforced by `test/no-vitest-in-barrel.test.ts`). The `ConformanceHarness` an adapter supplies: `makeProvider(seed)`, `executionsOf(provider)`, optional `refresh`, `makeUnavailable`, `dispose`. The suite asserts list validity + decode-at-boundary, subscribe async-emit / unsubscribe-stops / idempotency / multi-subscriber isolation, execute routing + unknown handling, totality (never rejects), and per-test instance isolation.
@@ -226,6 +237,16 @@ the zero-dep `src/index.ts` barrel into a committed browser IIFE
 the bundle build asserts the firebreak held (no `vitest`, no `node:` specifier reachable from
 the barrel). Loading a vendored IIFE rather than importing the workspace dep sidesteps the
 `bun install` quirk below.
+
+The same menu also renders **backend-advertised commands**: when the server advertises the
+`commands` capability (hello flag), the Moon frontend wraps its WS frame channel in
+`createFrameCapabilityProvider`, decodes the inbound `capability-catalog` into its backend
+catalog, and `mergeCapabilities([ui, backend])` so UI-owned (`executor:"client"`) and
+server-executed (`executor:"server"`) commands share one popover — UI wins `(kind,id)`
+collisions, and each backend row shows a `source` chip. Selecting a server command routes a
+`capability-execute` frame back; selecting a client command runs the built-in handler. A
+server that omits the flag clears the backend catalog so a stale menu can't survive attaching
+to a different machine.
 
 **Deferred integration (separate slice):** re-pointing agent-cli to re-export these from
 `@luna/capabilities` (add the `workspace:*` dep, convert `SLASH_COMMANDS` → bare-id

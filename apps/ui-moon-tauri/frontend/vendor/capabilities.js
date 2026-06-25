@@ -54,6 +54,7 @@ __export(exports_src, {
   decodeCapabilityDescriptor: () => decodeCapabilityDescriptor,
   decodeCapabilityCatalog: () => decodeCapabilityCatalog,
   createReferenceProvider: () => createReferenceProvider,
+  createFrameCapabilityProvider: () => createFrameCapabilityProvider,
   createCapabilityRegistry: () => createCapabilityRegistry,
   completeCommand: () => completeCommand
 });
@@ -95,6 +96,8 @@ function decodeDescriptorChecked(o) {
     return fail("id must not contain control characters");
   if (typeof o.title !== "string")
     return fail("title must be a string");
+  if (hasControlChar(o.title))
+    return fail("title must not contain control characters");
   if (o.executor !== "client" && o.executor !== "server")
     return fail('executor must be "client" or "server"');
   if (typeof o.schemaVersion !== "number" || !Number.isInteger(o.schemaVersion) || o.schemaVersion < 1) {
@@ -110,11 +113,15 @@ function decodeDescriptorChecked(o) {
   if (o.description !== undefined) {
     if (typeof o.description !== "string")
       return fail("description must be a string");
+    if (hasControlChar(o.description))
+      return fail("description must not contain control characters");
     out.description = o.description;
   }
   if (o.argHint !== undefined) {
     if (typeof o.argHint !== "string")
       return fail("argHint must be a string");
+    if (hasControlChar(o.argHint))
+      return fail("argHint must not contain control characters");
     out.argHint = o.argHint;
   }
   if (o.enabled !== undefined) {
@@ -149,7 +156,14 @@ function decodeCatalogChecked(o) {
     return fail("capabilities must be an array");
   const capabilities = [];
   const rejected = [];
+  const MAX_CAPABILITIES = 256;
   o.capabilities.forEach((c, index) => {
+    if (index >= MAX_CAPABILITIES) {
+      if (index === MAX_CAPABILITIES) {
+        rejected.push({ index, error: `catalog exceeds ${MAX_CAPABILITIES} capabilities; extras dropped` });
+      }
+      return;
+    }
     const d = decodeCapabilityDescriptor(c);
     if (d.ok)
       capabilities.push(d.value);
@@ -329,6 +343,105 @@ function createReferenceProvider(opts) {
     },
     get executions() {
       return [...executions];
+    }
+  };
+}
+// packages/capabilities/src/frame-provider.ts
+function createFrameCapabilityProvider(transport, opts) {
+  const timeoutMs = opts?.executeTimeoutMs ?? 15000;
+  let counter = 0;
+  const newRequestId = opts?.newRequestId ?? (() => `cap-${++counter}`);
+  let snapshot = { ok: false, error: "no capability-catalog received yet" };
+  const listeners = new Set;
+  const pending = new Map;
+  const emit = (s) => {
+    for (const fn of [...listeners]) {
+      try {
+        fn(s);
+      } catch {}
+    }
+  };
+  transport.onFrame((frame) => {
+    if (typeof frame !== "object" || frame === null)
+      return;
+    const f = frame;
+    if (f.type === "capability-catalog") {
+      const dec = decodeCapabilityCatalog(f.catalog);
+      snapshot = dec.ok ? { ok: true, catalog: dec.value, rejected: dec.rejected } : { ok: false, error: dec.error };
+      emit(snapshot);
+    } else if (f.type === "capability-execute-result") {
+      const id = typeof f.requestId === "string" ? f.requestId : "";
+      const resolve = pending.get(id);
+      if (resolve) {
+        pending.delete(id);
+        resolve(f.ok === true ? { ok: true, value: {} } : { ok: false, error: typeof f.message === "string" ? f.message : "command failed", reason: "backend-error" });
+      }
+    }
+  });
+  const isKnown = (kind, id) => snapshot.ok && snapshot.catalog.capabilities.some((c) => c.kind === kind && c.id === id);
+  return {
+    list() {
+      return Promise.resolve(snapshot);
+    },
+    subscribe(onChange) {
+      listeners.add(onChange);
+      let live = true;
+      queueMicrotask(() => {
+        if (live && listeners.has(onChange)) {
+          try {
+            onChange(snapshot);
+          } catch {}
+        }
+      });
+      let done = false;
+      return () => {
+        if (done)
+          return;
+        done = true;
+        live = false;
+        listeners.delete(onChange);
+      };
+    },
+    execute(request) {
+      if (request == null) {
+        const r = { ok: false, error: "execute requires a request", reason: "unknown" };
+        return Promise.resolve(r);
+      }
+      if (!snapshot.ok) {
+        const r = { ok: false, error: snapshot.error, reason: "unavailable" };
+        return Promise.resolve(r);
+      }
+      if (!isKnown(request.kind, request.id)) {
+        const r = { ok: false, error: `unknown capability ${request.kind}/${request.id}`, reason: "unknown" };
+        return Promise.resolve(r);
+      }
+      const requestId = newRequestId();
+      const args = { ...opts?.context?.() ?? {} };
+      if (request.args !== undefined && request.args !== "")
+        args.text = request.args;
+      return new Promise((resolve) => {
+        let settled = false;
+        let timer = null;
+        const finish = (r) => {
+          if (settled)
+            return;
+          settled = true;
+          if (timer !== null)
+            clearTimeout(timer);
+          pending.delete(requestId);
+          resolve(r);
+        };
+        pending.set(requestId, finish);
+        try {
+          transport.send({ type: "capability-execute", requestId, kind: request.kind, id: request.id, args });
+        } catch (e) {
+          finish({ ok: false, error: e instanceof Error ? e.message : String(e), reason: "unavailable" });
+          return;
+        }
+        if (timeoutMs > 0) {
+          timer = setTimeout(() => finish({ ok: false, error: "no response from backend", reason: "unavailable" }), timeoutMs);
+        }
+      });
     }
   };
 }

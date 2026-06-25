@@ -248,4 +248,19 @@ describe("decode hardening (post-audit)", () => {
     expect(decodeCapabilityDescriptor({ ...base(), id: `tab${String.fromCharCode(9)}x` }).ok).toBe(false)
     expect(decodeCapabilityDescriptor({ ...base(), id: `del${String.fromCharCode(127)}x` }).ok).toBe(false)
   })
+
+  it("rejects control characters in title/description/argHint (anti-spoof of menu rows)", () => {
+    expect(decodeCapabilityDescriptor({ ...base(), title: `Two${String.fromCharCode(10)}lines` }).ok).toBe(false)
+    expect(decodeCapabilityDescriptor({ ...base(), description: `a${String.fromCharCode(9)}b` }).ok).toBe(false)
+    expect(decodeCapabilityDescriptor({ ...base(), argHint: `x${String.fromCharCode(0)}y` }).ok).toBe(false)
+  })
+
+  it("caps a catalog at 256 capabilities, surfacing the overflow (DoS bound)", () => {
+    const many = Array.from({ length: 300 }, (_, i) => ({ ...base(), id: `c${i}` }))
+    const r = decodeCapabilityCatalog({ generation: 1, agreedSchema: 1, capabilities: many })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.value.capabilities).toHaveLength(256)
+    expect(r.rejected.some((x) => /exceeds 256/.test(x.error))).toBe(true)
+  })
 })
