@@ -49,10 +49,10 @@ describe("vendor/capabilities.js staleness guard", () => {
       const fresh = fs.readFileSync(tmpFile, "utf8")
       const committed = fs.readFileSync(committedPath, "utf8")
 
-      expect(fresh).toBe(
-        committed,
-        "vendor/capabilities.js is stale — run `bun run bundle:capabilities` to regenerate",
-      )
+      expect(
+        fresh,
+        "vendor/capabilities.js is stale - run `bun run bundle:capabilities` to regenerate",
+      ).toBe(committed)
     },
     30_000,
   )
