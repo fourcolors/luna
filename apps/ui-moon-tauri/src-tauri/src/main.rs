@@ -2057,6 +2057,418 @@ fn apply_traffic_light_layout(
     Ok(())
 }
 
+// ── Native-speed window resize (macOS) ──────────────────────────────────────
+//
+// Moon cards are borderless transparent NSWindows. tao's `startResizeDragging`
+// is a NO-OP on macOS (returns NotSupported), so resize was driven by a JS
+// pointermove loop that fired setPosition/setSize over IPC each frame — laggy.
+//
+// This drives the whole gesture in Rust, EVENT-DRIVEN (no polling pacer): on
+// `begin_native_resize` we capture the anchor and install two block-based
+// NSEvent monitors on the MAIN thread, then return. AppKit then delivers each
+// mouse move to the LOCAL monitor (LeftMouseDragged | LeftMouseUp) — on every
+// drag we read `NSEvent::mouseLocation()`, recompute the frame from the anchor,
+// and call `setFrame:display:`; on mouse-up we tear down. A GLOBAL monitor
+// (LeftMouseUp) catches the release when the cursor is over ANOTHER app's
+// window (the local monitor never sees those), so the monitors can't get stuck.
+// We deliberately do NOT run a modal `nextEventMatchingMask:` loop — that
+// starves the WKWebView run loop and freezes the page. All math is in Cocoa
+// screen coordinates (bottom-left origin), the native space of mouseLocation /
+// frame / setFrame — no logical/physical/flip conversion.
+
+#[cfg(target_os = "macos")]
+const RESIZE_MIN_W: f64 = 220.0;
+#[cfg(target_os = "macos")]
+const RESIZE_MIN_H: f64 = 120.0;
+
+/// The fixed reference captured on gesture start (main thread). Cocoa coords:
+/// `l`/`r`/`b`/`t` are the window's left/right/bottom/top edges; `off_x`/`off_y`
+/// are the grab offsets from the grabbed edge to the cursor (so there's no jump
+/// on the first frame). `n`/`s`/`e`/`w` are the active edges.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+struct Anchor {
+    l: f64,
+    r: f64,
+    b: f64,
+    t: f64,
+    off_x: f64,
+    off_y: f64,
+    n: bool,
+    s: bool,
+    e: bool,
+    w: bool,
+}
+
+/// Compute the new window frame from the fixed anchor and the current mouse
+/// location (both in Cocoa screen coords). Moves the grabbed edge(s) to follow
+/// the cursor, holding the opposite edge fixed, and clamps to the minimum size
+/// by pulling the grabbed edge back so the fixed edge stays put. Math unchanged
+/// from the old `resize_tick`.
+#[cfg(target_os = "macos")]
+fn resize_frame(a: Anchor, m: objc2_core_foundation::CGPoint) -> objc2_core_foundation::CGRect {
+    use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+
+    let mut left = if a.w { m.x - a.off_x } else { a.l };
+    let mut right = if a.e { m.x - a.off_x } else { a.r };
+    let mut bottom = if a.s { m.y - a.off_y } else { a.b };
+    let mut top = if a.n { m.y - a.off_y } else { a.t };
+
+    // Clamp to the minimum size by moving the GRABBED edge so the fixed
+    // (opposite) edge stays put.
+    if right - left < RESIZE_MIN_W {
+        if a.w {
+            left = right - RESIZE_MIN_W;
+        } else {
+            right = left + RESIZE_MIN_W;
+        }
+    }
+    if top - bottom < RESIZE_MIN_H {
+        if a.s {
+            bottom = top - RESIZE_MIN_H;
+        } else {
+            top = bottom + RESIZE_MIN_H;
+        }
+    }
+
+    CGRect {
+        origin: CGPoint { x: left, y: bottom },
+        size: CGSize {
+            width: right - left,
+            height: top - bottom,
+        },
+    }
+}
+
+/// Holds the two live monitor tokens for one resize gesture. Lives in an
+/// `Rc<RefCell<…>>` created and used ENTIRELY on the main thread (the monitors
+/// and their handler blocks only ever run there, so `Rc`/`RefCell` is correct —
+/// no `Send` needed, and these tokens are not Send anyway). `ended` guards the
+/// teardown so the local + global monitors firing don't double-remove.
+#[cfg(target_os = "macos")]
+struct ResizeMonitors {
+    local: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
+    global: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
+    ended: bool,
+}
+
+/// Begin a native-speed resize of the calling card window. The whole gesture
+/// runs in Rust (see the module comment above); the JS grip hands off here and
+/// does nothing else until the pointer is released. `direction` is the grip id
+/// ("n"/"s"/"e"/"w" and the diagonal combos like "ne"/"sw").
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn begin_native_resize(window: tauri::WebviewWindow, direction: String) -> Result<(), String> {
+    let has_n = direction.contains('n');
+    let has_s = direction.contains('s');
+    let has_e = direction.contains('e');
+    let has_w = direction.contains('w');
+
+    // Everything below is set up and lives ENTIRELY on the main thread: the
+    // anchor capture, the Rc/RefCell state, the handler blocks, and the monitor
+    // tokens. The closure captures only Send data (the `bool` edge flags, which
+    // are Copy, and the `WebviewWindow`); the non-Send pieces are created inside
+    // and never cross threads, so the closure stays `Send + 'static`.
+    with_appkit_main_thread(window.clone(), move |win| {
+        use objc2::rc::Retained;
+        use objc2::runtime::AnyObject;
+        use objc2_app_kit::{NSEvent, NSEventMask, NSEventType, NSWindow};
+        use objc2_core_foundation::CGPoint;
+        use std::cell::RefCell;
+        use std::ptr::NonNull;
+        use std::rc::Rc;
+
+        let ns_win_ptr = win.ns_window().map_err(|e| e.to_string())?;
+
+        // Capture the anchor: window frame + cursor, both in Cocoa screen
+        // coords, plus grab offsets so frame 0 doesn't jump.
+        let anchor = unsafe {
+            let ns_win: &NSWindow = &*ns_win_ptr.cast();
+            let f = ns_win.frame();
+            let l = f.origin.x;
+            let b = f.origin.y;
+            let r = l + f.size.width;
+            let t = b + f.size.height;
+            let m = NSEvent::mouseLocation();
+            let off_x = if has_w {
+                m.x - l
+            } else if has_e {
+                m.x - r
+            } else {
+                0.0
+            };
+            let off_y = if has_n {
+                m.y - t
+            } else if has_s {
+                m.y - b
+            } else {
+                0.0
+            };
+            Anchor {
+                l,
+                r,
+                b,
+                t,
+                off_x,
+                off_y,
+                n: has_n,
+                s: has_s,
+                e: has_e,
+                w: has_w,
+            }
+        };
+
+        // Shared monitor state. Cloned into each handler block BEFORE the
+        // monitors exist; the tokens are stored back in once `add*Monitor`
+        // returns (chicken-and-egg: the block must be able to remove the
+        // monitors, but they don't exist until after the block is built).
+        let state = Rc::new(RefCell::new(ResizeMonitors {
+            local: None,
+            global: None,
+            ended: false,
+        }));
+
+        // Tear down: remove BOTH monitors (once — guarded by `ended`), then run
+        // the settle (re-square welds + persist layout). Runs on the main
+        // thread (we're always called from a monitor handler, which AppKit
+        // delivers on the main thread).
+        let end = {
+            let state = state.clone();
+            let win = win.clone();
+            let app = win.app_handle().clone();
+            let label = win.label().to_string();
+            move || {
+                let (local, global) = {
+                    let mut s = state.borrow_mut();
+                    if s.ended {
+                        return;
+                    }
+                    s.ended = true;
+                    (s.local.take(), s.global.take())
+                };
+                unsafe {
+                    if let Some(tok) = local.as_ref() {
+                        let obj: &AnyObject = tok;
+                        NSEvent::removeMonitor(obj);
+                    }
+                    if let Some(tok) = global.as_ref() {
+                        let obj: &AnyObject = tok;
+                        NSEvent::removeMonitor(obj);
+                    }
+                }
+                // Notify JS the resize ended so it always resets the cursor
+                // override and __LUNA_NATIVE_RESIZING__ — the webview never sees a
+                // pointerup when the button is released outside the window.
+                let _ = win.emit("luna-resize-ended", ());
+                broadcast_dock_geometry_settled(&app, &label);
+                write_panel_layout(&app);
+            }
+        };
+
+        // Local monitor: every LeftMouseDragged / LeftMouseUp delivered to our
+        // app. On up (or no left button pressed) → end; else apply the frame.
+        // Returns the event unchanged (does NOT consume it).
+        let local_block = {
+            let end = end.clone();
+            let ns_win_ptr = ns_win_ptr;
+            block2::RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+                let ev = unsafe { event.as_ref() };
+                let up = ev.r#type() == NSEventType::LeftMouseUp
+                    || NSEvent::pressedMouseButtons() & 1 == 0;
+                if up {
+                    end();
+                } else {
+                    let m: CGPoint = NSEvent::mouseLocation();
+                    let frame = resize_frame(anchor, m);
+                    unsafe {
+                        let ns_win: &NSWindow = &*ns_win_ptr.cast();
+                        ns_win.setFrame_display(frame, true);
+                    }
+                }
+                event.as_ptr()
+            })
+        };
+
+        // Global monitor: LeftMouseUp delivered to ANOTHER app (the local
+        // monitor never sees these). Just end — keeps the monitors from getting
+        // stuck if the mouse is released over a different window.
+        let global_block = {
+            let end = end.clone();
+            block2::RcBlock::new(move |_event: NonNull<NSEvent>| {
+                end();
+            })
+        };
+
+        unsafe {
+            let local: Option<Retained<AnyObject>> =
+                NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                    NSEventMask::LeftMouseDragged | NSEventMask::LeftMouseUp,
+                    &local_block,
+                );
+            let global: Option<Retained<AnyObject>> =
+                NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
+                    NSEventMask::LeftMouseUp,
+                    &global_block,
+                );
+            let mut s = state.borrow_mut();
+            s.local = local;
+            s.global = global;
+        }
+
+        Ok(())
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn begin_native_resize(_window: tauri::WebviewWindow, _direction: String) -> Result<(), String> {
+    // No native path off macOS — the JS grip falls back to the emulated loop.
+    Ok(())
+}
+
+// ── Native drag-release watcher (macOS) ──────────────────────────────────────
+//
+// A native single-window drag hands the whole gesture to the OS window server
+// via `startDragging()`, which swallows the WKWebView's pointermove/up events.
+// The JS side used to detect "released" with a 140ms motion-stopped timer on the
+// window's own Moved events — but that fires PREMATURELY when the user pauses
+// mid-drag (button still held) near a snap target, so the snap-on-release ran
+// while the button was still down and the OS drag then overrode it.
+//
+// This installs the SAME dual NSEvent-monitor pattern as `begin_native_resize`
+// to get a RELIABLE real mouse-button-release signal: a LOCAL monitor
+// (LeftMouseUp, release over our own app) AND a GLOBAL monitor (LeftMouseUp,
+// release over another app), on the MAIN thread. The first LeftMouseUp (or a
+// left button already up) tears down BOTH monitors once and emits
+// `luna-drag-released` to the dragging window, which drives the JS `finish()`
+// (and thus snap-on-release) exactly once, on the true release.
+
+/// Holds the two live monitor tokens for one drag-release watch. Lives in an
+/// `Rc<RefCell<…>>` created and used ENTIRELY on the main thread (mirrors
+/// `ResizeMonitors`): the monitors and handler blocks only ever run there, so
+/// `Rc`/`RefCell` is correct (no `Send`). `ended` guards teardown so the local
+/// + global monitors firing don't double-remove.
+#[cfg(target_os = "macos")]
+struct DragReleaseMonitors {
+    local: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
+    global: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
+    ended: bool,
+}
+
+/// Watch for the real left-mouse-button release during a native window drag and
+/// emit `luna-drag-released` to the dragging window when it fires. The JS side
+/// (moon-dock.js startNativeDrag) calls this right after `startDragging()`.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn watch_drag_release(window: tauri::WebviewWindow) -> Result<(), String> {
+    // Everything below is set up and lives ENTIRELY on the main thread: the
+    // Rc/RefCell state, the handler blocks, and the monitor tokens. The closure
+    // captures only Send data (the `WebviewWindow`); the non-Send pieces are
+    // created inside and never cross threads, so it stays `Send + 'static`.
+    with_appkit_main_thread(window.clone(), move |win| {
+        use objc2::rc::Retained;
+        use objc2::runtime::AnyObject;
+        use objc2_app_kit::{NSEvent, NSEventMask};
+        use std::cell::RefCell;
+        use std::ptr::NonNull;
+        use std::rc::Rc;
+        use tauri::Emitter;
+
+        // Edge case: the button was already released before we set up (a very
+        // short drag where the up beat our IPC). Emit immediately, install
+        // nothing — there is no release left to watch for.
+        if NSEvent::pressedMouseButtons() & 1 == 0 {
+            let _ = win.emit("luna-drag-released", ());
+            return Ok(());
+        }
+
+        // Shared monitor state. Cloned into each handler block BEFORE the
+        // monitors exist; the tokens are stored back once `add*Monitor` returns
+        // (chicken-and-egg: the block must be able to remove the monitors, but
+        // they don't exist until after the block is built).
+        let state = Rc::new(RefCell::new(DragReleaseMonitors {
+            local: None,
+            global: None,
+            ended: false,
+        }));
+
+        // Tear down: remove BOTH monitors (once — guarded by `ended`), then emit
+        // the release event to the dragging window. Runs on the main thread (a
+        // monitor handler, which AppKit delivers on the main thread).
+        let end = {
+            let state = state.clone();
+            let win = win.clone();
+            move || {
+                let (local, global) = {
+                    let mut s = state.borrow_mut();
+                    if s.ended {
+                        return;
+                    }
+                    s.ended = true;
+                    (s.local.take(), s.global.take())
+                };
+                unsafe {
+                    if let Some(tok) = local.as_ref() {
+                        let obj: &AnyObject = tok;
+                        NSEvent::removeMonitor(obj);
+                    }
+                    if let Some(tok) = global.as_ref() {
+                        let obj: &AnyObject = tok;
+                        NSEvent::removeMonitor(obj);
+                    }
+                }
+                let _ = win.emit("luna-drag-released", ());
+            }
+        };
+
+        // Local monitor: a LeftMouseUp delivered to our app → end. Returns the
+        // event unchanged (does NOT consume it).
+        let local_block = {
+            let end = end.clone();
+            block2::RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+                end();
+                event.as_ptr()
+            })
+        };
+
+        // Global monitor: a LeftMouseUp delivered to ANOTHER app (the local
+        // monitor never sees those). Just end — keeps the monitors from getting
+        // stuck if the release lands over a different window.
+        let global_block = {
+            let end = end.clone();
+            block2::RcBlock::new(move |_event: NonNull<NSEvent>| {
+                end();
+            })
+        };
+
+        unsafe {
+            let local: Option<Retained<AnyObject>> =
+                NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                    NSEventMask::LeftMouseUp,
+                    &local_block,
+                );
+            let global: Option<Retained<AnyObject>> =
+                NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
+                    NSEventMask::LeftMouseUp,
+                    &global_block,
+                );
+            let mut s = state.borrow_mut();
+            s.local = local;
+            s.global = global;
+        }
+
+        Ok(())
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn watch_drag_release(_window: tauri::WebviewWindow) -> Result<(), String> {
+    // No native drag-release watch off macOS — the emulated drag path doesn't
+    // use this (it tracks pointermove/up directly).
+    Ok(())
+}
+
 /// Sync native traffic-light layout to the CSS title bar (see
 /// `apply_traffic_light_layout`). Called from moon-native-titlebar.js on hover,
 /// resize, and after dock weld geometry changes.
@@ -2473,6 +2885,8 @@ fn main() {
         expand_from_moon,
         set_native_controls_visible,
         sync_traffic_light_position,
+        begin_native_resize,
+        watch_drag_release,
         dock_self,
         dock_move_cluster,
         voice_status,
@@ -2525,6 +2939,8 @@ fn main() {
         expand_from_moon,
         set_native_controls_visible,
         sync_traffic_light_position,
+        begin_native_resize,
+        watch_drag_release,
         dock_self,
         dock_move_cluster
     ]);

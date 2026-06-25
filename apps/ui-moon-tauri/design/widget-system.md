@@ -171,7 +171,7 @@ they reimplement window management the OS already provides.
 
 | Constraint | Consequence |
 |---|---|
-| ~~`onMoved` fires at drag **end** on macOS~~ **DISPROVEN live**: macOS streams `Moved` continuously during native drags. The release is invisible to the webview, so snap-on-release needs an AppKit probe. | **Snap-on-release** enforced via the `pointer_button_down` command (`NSEvent.pressedMouseButtons`) gating the settle, re-checked every 90 ms while held. See Snap/Stick as-built note. |
+| ~~`onMoved` fires at drag **end** on macOS~~ **DISPROVEN live**: macOS streams `Moved` continuously during native drags. The release is invisible to the webview, so snap-on-release needs an AppKit probe. | **Snap-on-release**: every drag is now native (`W.startDragging()`), so the OS owns the position and snap runs ONCE on release. The release is detected by an AppKit `NSEvent` `LeftMouseUp` monitor (`watch_drag_release`, `main.rs`) that emits `luna-drag-released`. The old `pointer_button_down`-polled settle is superseded — see `docs/window-drag-snap.md`. |
 | No relative z-order among always-on-top windows (Tauri #5656 closed-not-planned); last-focused wins. | Accepted (already accepted in PRD §23). Hub gets a **gather** action (raise + regroup all widgets). Global shortcut must show/hide **all** windows, not just `main` (`main.rs:1252` today targets only main). |
 | `visibleOnAllWorkspaces` doesn't float over fullscreen apps (Tauri #11488). `tauri-nspanel` fixes Spaces behavior but its high panel level can block IME input (nspanel #104) — fatal for the chat composer. | v1 ships plain always-on-top windows. nspanel is a later, per-widget-type opt-in for **non-text** widgets only. |
 | Each window = one WKWebView = own WebContent process, ~50–100 MB; process pooling is no longer controllable (Apple WKProcessPool docs). Closed webviews linger ~30 min in WebKit's process cache. | Widget budget: lazy spawn, **hide instead of destroy** for prebuilt widgets, soft cap ~8–10 concurrently open. Profile with Instruments before raising. |
@@ -551,6 +551,17 @@ against the live layout.
 ---
 
 ## Snap / Stick
+
+> ✅ **As-built (current — supersedes the trigger + group-drag notes below):**
+> the drag/snap/resize overhaul replaced the emulated live-magnet path. Every
+> drag now goes native via `W.startDragging()` and snaps ONCE on release (release
+> detected by the `watch_drag_release` AppKit monitor → `luna-drag-released`), so
+> there is no `onMoved` debounce and no `pointer_button_down` re-arm in the real
+> app. The magnet is edge-proximity (`computeEdgeSnap`), the seam is pixel-exact
+> (`physicalSnapEdge`), and a separate `resolveOverlap` pass guarantees no
+> overlap. A welded cluster no longer tows as one DURING the drag (the native
+> `addChildWindow` group-drag is gone). The canonical reference is
+> `docs/window-drag-snap.md`; the bullets below are kept as design history.
 
 - **Math:** `vendor/deck-snap.js` `computeSnap` stays the *only* snap
   implementation (pure, unit-tested). Iterate it over candidate anchors,

@@ -345,6 +345,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Allows the begin_native_resize command",
+          "type": "string",
+          "const": "allow-begin-native-resize",
+          "markdownDescription": "Allows the begin_native_resize command"
+        },
+        {
           "description": "Allows the close_widget command",
           "type": "string",
           "const": "allow-close-widget",
@@ -601,6 +607,12 @@
           "type": "string",
           "const": "allow-voice-stop-speaking",
           "markdownDescription": "Allows stopping TTS playback and clearing the sentence queue"
+        },
+        {
+          "description": "Allows the watch_drag_release command",
+          "type": "string",
+          "const": "allow-watch-drag-release",
+          "markdownDescription": "Allows the watch_drag_release command"
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

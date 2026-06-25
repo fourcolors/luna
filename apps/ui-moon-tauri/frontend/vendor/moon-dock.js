@@ -31,6 +31,25 @@
 
   var HUB = 'main'; // the moon hub: a snap-alignment target, never a weld member
 
+  // Magnet tunables (card-face px). EDGE_SNAP_THRESHOLD = how far a window edge
+  // can be from a neighbour edge and still catch — this is the "magnet zone", so
+  // a large value reads as an invisible wall/layer that engages well before the
+  // edges meet. Kept TIGHT so the magnet engages near the actual edge. The
+  // no-overlap guarantee (resolveOverlap) is INDEPENDENT of this, so a small
+  // threshold does NOT reintroduce layering. CORNER_ALIGN_THRESHOLD = how close to
+  // a corner before the perpendicular axis snaps flush (vs free); MIN_PERP_OVERLAP
+  // = the minimum perpendicular overlap to count as "beside".
+  var EDGE_SNAP_THRESHOLD = 30, CORNER_ALIGN_THRESHOLD = 26, MIN_PERP_OVERLAP = 8;
+  // macOS menu-bar/notch allowance (logical px). Tauri v2's JS Monitor exposes
+  // only the FULL hardware rect, not the OS visible frame (work area), so we
+  // hand-inset the top of the primary monitor (global origin y==0) by this much.
+  // Without it a card pushed flush to bounds.y lands under the menu bar; macOS
+  // then clamps it back down, re-introducing the very overlap resolveOverlap
+  // exists to prevent. This is a conservative constant: it covers both the
+  // standard ~24pt menu bar AND the taller ~32-38pt menu-bar/notch region on
+  // notched MacBooks (2021+), since no visible-frame/work-area is available.
+  var MENU_BAR_INSET = 37;
+
   function wire(opts) {
     var W = opts && opts.win;
     var label = opts && opts.label;
@@ -280,27 +299,65 @@
     // Snap candidates: the hub first (it wins distance ties), then every sibling
     // widget — minus anything in `exclude` (the drag group never re-snaps to
     // itself) and minus a just-peeled cluster during its cooldown.
-    async function candidateRects(exclude) {
+    //   includeCooldown = true → IGNORE the peel cooldown (do NOT skip exMembers).
+    //   The hard no-overlap pass must resolve against EVERYTHING, even a window we
+    //   just peeled off, so it can't end up layered on a cooldown-excluded card.
+    async function candidateRects(exclude, includeCooldown) {
       var out = [];
       var TW = window.__TAURI__ && window.__TAURI__.window;
       var skip = (exclude || groupMembers).slice();
-      if (Date.now() < exUntil) skip = skip.concat(exMembers);
+      if (!includeCooldown && Date.now() < exUntil) skip = skip.concat(exMembers);
+      // Monitor union (logical) for the ON-SCREEN filter below. A panel that is
+      // mostly OFF-SCREEN must not be a snap target: snapping to its off-screen
+      // edge yields a target that the OS clamps back on-screen to a NON-FLUSH
+      // position — a large fixed gap that reads as the window "sticking in mid
+      // air". (Root cause confirmed by a multi-agent investigation.)
+      var union = null, ins = readInsets();
       try {
-        if (skip.indexOf(HUB) === -1) {
-          var mainWin = TW && TW.Window && typeof TW.Window.getByLabel === 'function'
-            ? await TW.Window.getByLabel(HUB) : null;
-          if (mainWin) out.push({ label: HUB, rect: await logicalRect(mainWin) });
+        if (TW && typeof TW.availableMonitors === 'function') {
+          var mons = await TW.availableMonitors();
+          if (Array.isArray(mons) && mons.length) {
+            union = { x: Infinity, y: Infinity, r: -Infinity, b: -Infinity };
+            for (var mi = 0; mi < mons.length; mi++) {
+              var m = mons[mi], msf = m.scaleFactor || 1;
+              union.x = Math.min(union.x, m.position.x / msf);
+              union.y = Math.min(union.y, m.position.y / msf);
+              union.r = Math.max(union.r, m.position.x / msf + m.size.width / msf);
+              union.b = Math.max(union.b, m.position.y / msf + m.size.height / msf);
+            }
+          }
         }
-      } catch (_) { /* hub unavailable — keep going */ }
+      } catch (_) { /* no monitors → skip the on-screen filter */ }
+      // The moon hub (orb) is NOT a snap target: it's small and always somewhere
+      // on screen, so magneting to it mid-drag reads as an "invisible wall" and a
+      // lone window jumps to it on release. Panels snap to other PANELS only.
       try {
         var labels = await window.__TAURI__.core.invoke('list_widget_windows');
         if (Array.isArray(labels)) {
           for (var i = 0; i < labels.length; i++) {
-            if (labels[i] === label || skip.indexOf(labels[i]) !== -1) continue;
+            if (labels[i] === label || labels[i] === HUB || skip.indexOf(labels[i]) !== -1) continue;
             try {
               var w = await TW.Window.getByLabel(labels[i]);
               if (!w) continue;
-              out.push({ label: labels[i], rect: await logicalRect(w) });
+              // Skip HIDDEN / MINIMIZED windows — a collapsed panel must not act as
+              // an unseen magnet target.
+              var vis = true, min = false;
+              try { vis = await w.isVisible(); } catch (_) { /* default visible */ }
+              try { min = await w.isMinimized(); } catch (_) { /* default not */ }
+              if (!vis || min) continue;
+              var r = await logicalRect(w);
+              // Skip only NEARLY-GONE panels (a sliver on screen). A SUBSTANTIALLY
+              // visible panel stays dockable — you snap to its VISIBLE edge. The
+              // off-screen-clamp gap is prevented at the TARGET level instead
+              // (snapOnRelease discards a snap that lands the card off-screen).
+              if (union) {
+                var cx = r.x + ins.l, cy = r.y + ins.t, cw = r.w - ins.l - ins.r, ch = r.h - ins.t - ins.b;
+                var ox = Math.min(cx + cw, union.r) - Math.max(cx, union.x);
+                var oy = Math.min(cy + ch, union.b) - Math.max(cy, union.y);
+                var onArea = (ox > 0 && oy > 0) ? ox * oy : 0;
+                if (cw > 0 && ch > 0 && onArea < 0.15 * cw * ch) continue;
+              }
+              out.push({ label: labels[i], rect: r });
             } catch (_) { /* sibling vanished mid-enumeration */ }
           }
         }
@@ -377,7 +434,7 @@
       var res = S.computeLiveDrag({
         ox: drag.ox, oy: drag.oy, ow: drag.ow, oh: drag.oh, dx: dx, dy: dy,
         members: drag.members.map(function (m) { return { label: m.label, ox: m.ox, oy: m.oy }; })
-      }, drag.cands, undefined, drag.insets);
+      }, drag.cands, EDGE_SNAP_THRESHOLD, drag.insets);
       drag.snapped = res.snapped; drag.anchor = res.anchor; drag.edge = res.edge;
       // Resolve every member's target. Targets are LOGICAL (CSS-point) top-lefts.
       // When we captured a monitor layout, resolve each to a PHYSICAL position
@@ -463,10 +520,22 @@
     function startNativeDrag() {
       try { W.startDragging(); } catch (_) { return; }
       var sh = dockShell(); if (sh) sh.classList.add('dragging');
-      var settle = 0, unlisten = null, done = false;
+      var unlisten = null, done = false;
+      // The OS swallows the webview's pointer events mid-drag, so the RELIABLE
+      // end signal is a Rust NSEvent mouse-up watcher that emits
+      // `luna-drag-released` on the real button release (see main.rs
+      // watch_drag_release). `relUnlisten` holds that subscription; `safety` is a
+      // long backstop so a missed event can never strand the drag.
+      var relUnlisten = null, safety = 0;
+      // Live-preview state: candidates + my own size/sf snapshotted ONCE at drag
+      // start (the OS owns position mid-drag, so per-move we only read the Moved
+      // payload + these cached rects — NO IPC per move).
+      var preview = { cands: null, selfW: 0, selfH: 0, sf: 1, ins: readInsets() };
+      var S = window.LunaDeckSnap;
       function finish() {
         if (done) return; done = true;
-        if (settle) { clearTimeout(settle); settle = 0; }
+        if (safety) { clearTimeout(safety); safety = 0; }
+        if (relUnlisten) { try { relUnlisten(); } catch (_) {} relUnlisten = null; }
         if (unlisten) { try { unlisten(); } catch (_) {} unlisten = null; }
         document.removeEventListener('pointerup', onUp, true);
         document.removeEventListener('pointercancel', onUp, true);
@@ -475,51 +544,207 @@
         snapOnRelease();
       }
       // The OS drag loop swallows pointermove/up, so the window's own Moved events
-      // are the reliable end signal: when motion stops for SETTLE_MS, it's released.
-      function onMovedTick() {
-        if (settle) clearTimeout(settle);
-        settle = setTimeout(finish, 140);
+      // drive ONLY the live-preview glow (end-detection is the Rust mouse-up
+      // watcher, NOT a motion-stopped timer — a mid-drag pause near a snap target
+      // used to fire that timer prematurely).
+      function onMovedTick(e) {
+        // Re-arm the safety backstop on every Moved so it measures INACTIVITY,
+        // not elapsed time: a slow but continuous drag (careful positioning is
+        // easily >5s) keeps pushing the deadline out, so finish() can never fire
+        // mid-gesture. It only trips after a genuinely quiet/stuck drag with no
+        // Moved for 5s. (`safety` is 0 once finish() has run, so don't re-arm.)
+        if (safety) { clearTimeout(safety); safety = setTimeout(finish, 5000); }
+        // Live snap preview — toggle the .snapping glow ring. Cheap, IPC-free:
+        // derive my LOGICAL card rect from the Moved payload + cached size, run
+        // computeEdgeSnap against the cached candidates.
+        if (!S || !preview.cands) return;
+        var pos = e && e.payload;
+        if (!pos) return;
+        var sf = preview.sf || 1;
+        var leadFrame = { x: pos.x / sf, y: pos.y / sf, w: preview.selfW, h: preview.selfH };
+        var leadCard = S.insetRect(leadFrame, preview.ins);
+        var res = S.computeEdgeSnap(leadCard, preview.cands, {
+          threshold: EDGE_SNAP_THRESHOLD,
+          cornerThreshold: CORNER_ALIGN_THRESHOLD,
+          minOverlap: MIN_PERP_OVERLAP,
+        });
+        var s2 = dockShell();
+        if (s2) s2.classList.toggle('snapping', !!res);
       }
-      // A grab that never moves (a click on the title bar) emits no Moved — but the
-      // webview DOES get that pointerup, so settle promptly off it too.
-      function onUp() {
-        if (settle) clearTimeout(settle);
-        settle = setTimeout(finish, 30);
-      }
+      // Secondary fallback: if the webview DOES happen to see a pointerup/cancel
+      // (e.g. a grab that never moved into the OS drag), finish directly.
+      function onUp() { finish(); }
       document.addEventListener('pointerup', onUp, true);
       document.addEventListener('pointercancel', onUp, true);
+      // Primary end signal: ask Rust to watch for the real mouse-button release
+      // and finish ONCE on the first `luna-drag-released` for THIS window.
+      try { window.__TAURI__.core.invoke('watch_drag_release'); } catch (_) { /* non-macOS / no watcher → pointer + safety fallbacks */ }
+      try {
+        var listen = (typeof W.listen === 'function')
+          ? W.listen.bind(W)
+          : (ev() && ev().listen);
+        if (listen) {
+          var rp = listen('luna-drag-released', function () { finish(); });
+          if (rp && rp.then) rp.then(function (u) { if (done) { try { u(); } catch (_) {} } else { relUnlisten = u; } });
+        }
+      } catch (_) { /* no listener → pointer + safety fallbacks */ }
+      // Long safety backstop: only fires if BOTH the release event and the
+      // pointerup were somehow missed (far longer than any real drag).
+      safety = setTimeout(finish, 5000);
       try {
         var p = W.onMoved(onMovedTick);
         if (p && p.then) p.then(function (u) { if (done) { try { u(); } catch (_) {} } else { unlisten = u; } });
-      } catch (_) { /* no onMoved → rely on pointerup */ }
+      } catch (_) { /* no onMoved → rely on release event / pointerup */ }
+      // Snapshot candidates + self size/sf ONCE (async) for the live preview.
+      (function () {
+        try {
+          if (!S) return;
+          logicalRect(W).then(function (self) {
+            preview.selfW = self.w; preview.selfH = self.h;
+          }).catch(function () {});
+          (W.scaleFactor ? W.scaleFactor() : Promise.resolve(1)).then(function (sf) {
+            preview.sf = sf || 1;
+          }).catch(function () {});
+          candidateRects([label]).then(function (raw) {
+            // Match snapOnRelease: preview against PANELS only, not the hub —
+            // so the glow never lights up just from nearing the orb.
+            preview.cands = (raw || [])
+              .filter(function (c) { return c.label !== HUB; })
+              .map(function (c) { return { label: c.label, rect: S.insetRect(c.rect, preview.ins) }; });
+          }).catch(function () {});
+        } catch (_) { /* best-effort: no preview, snap-on-release still fires */ }
+      })();
     }
 
     // Snap my card flush to the nearest neighbour ONCE, on release, then re-weld
-    // everyone. Reuses the SAME corner-aligned magnet as the live drag
-    // (LunaDeckSnap.computeSnap), in card-face space, just a single shot.
+    // everyone. Uses the forgiving edge magnet (LunaDeckSnap.computeEdgeSnap) in
+    // card-face space: docks flush to whichever neighbour edge is near,
+    // preserves the perpendicular offset (unless near a corner), and resolves an
+    // overlapping drop to flush-adjacent (anti-layer).
     async function snapOnRelease() {
       try {
         var S = window.LunaDeckSnap;
         var ins = readInsets();
         var self = await logicalRect(W);
-        var cands = await candidateRects([label]);
-        var leadCard = S.insetRect({ x: self.x, y: self.y, w: self.w, h: self.h }, ins);
-        var best = null;
-        for (var i = 0; i < cands.length; i++) {
-          var snap = S.computeSnap(S.insetRect(cands[i].rect, ins), leadCard);
-          if (!snap) continue;
-          var d = Math.hypot(snap.x - leadCard.x, snap.y - leadCard.y);
-          if (best === null || d < best.d) best = { x: snap.x, y: snap.y, edge: snap.edge, label: cands[i].label, d: d };
-        }
-        if (best) {
-          var TW = window.__TAURI__ && window.__TAURI__.window;
-          var LP = TW && TW.LogicalPosition;
-          // card target → frame target (subtract my own top/left inset).
-          if (LP) { try { await W.setPosition(new LP(best.x - ins.l, best.y - ins.t)); } catch (_) {} }
-          if (best.label !== HUB) {
-            flashSeam(oppositeEdge(best.edge));
-            try { var e2 = ev(); if (e2 && e2.emit) e2.emit('dock-link', { 'for': best.label, from: label, edge: best.edge }); } catch (_) {}
+        var lead = S.insetRect({ x: self.x, y: self.y, w: self.w, h: self.h }, ins);
+        var raw = await candidateRects([label]);
+        // Panels magnet to other PANELS, not to the moon hub. The orb is small
+        // and always somewhere on screen, so including it made a lone window
+        // (nothing else around) jump flush to the orb on release — surprising.
+        // Drop the hub from the snap candidates; with no sibling panels there's
+        // simply nothing to snap to and the window stays where you released it.
+        var cards = raw
+          .filter(function (c) { return c.label !== HUB; })
+          .map(function (c) { return { label: c.label, rect: S.insetRect(c.rect, ins) }; });
+        var best = S.computeEdgeSnap(lead, cards, {
+          threshold: EDGE_SNAP_THRESHOLD,
+          cornerThreshold: CORNER_ALIGN_THRESHOLD,
+          minOverlap: MIN_PERP_OVERLAP,
+        });
+        var TW = window.__TAURI__ && window.__TAURI__.window;
+        var LP = TW && TW.LogicalPosition;
+        var PP = TW && TW.PhysicalPosition;
+        // Hard no-overlap pass: the edge magnet only clears the ONE neighbour it
+        // docks against, so resolve against EVERY other card — INCLUDING the hub
+        // and IGNORING the peel cooldown (includeCooldown=true) — so a released
+        // window can NEVER end up layered on a second window, the hub, or a
+        // just-peeled card. tgt = where the magnet wanted me (or my own lead if
+        // no magnet); resolved = the nearest non-overlapping card top-left.
+        var rawAll = await candidateRects([label], true);
+        // Overlap resolution considers only DOCKABLE PANELS, not the moon hub:
+        // the orb is small and floats, so wedging a panel against it (or letting
+        // it block a clear push) just causes the resolver to oscillate. Panels
+        // must never overlap each OTHER; brushing the orb is acceptable.
+        var allCards = rawAll
+          .filter(function (c) { return c.label !== HUB; })
+          .map(function (c) { return S.insetRect(c.rect, ins); });
+        var tgt = best ? { x: best.x, y: best.y } : { x: lead.x, y: lead.y };
+        // Bound the no-overlap push to THIS monitor's usable rect (logical/card
+        // space) so it never shoves the window off-screen — macOS would clamp it
+        // back on and re-introduce the overlap. Tauri v2 exposes no work area, so
+        // this is the FULL monitor rect inset by a menu-bar allowance (see
+        // MENU_BAR_INSET below). Use availableMonitors() (the proven path;
+        // currentMonitor() returns null under withGlobalTauri here) and pick the
+        // monitor containing the window centre, converting PHYSICAL px → logical
+        // by /scaleFactor. Degrade gracefully to no bounds.
+        var bounds = null;
+        try {
+          if (TW && typeof TW.availableMonitors === 'function') {
+            var cx = self.x + self.w / 2, cy = self.y + self.h / 2;
+            var mons = await TW.availableMonitors();
+            if (Array.isArray(mons) && mons.length) {
+              var pick = mons[0];
+              for (var mi = 0; mi < mons.length; mi++) {
+                var mm = mons[mi], ms = mm.scaleFactor || 1;
+                var mx = mm.position.x / ms, my = mm.position.y / ms, mw = mm.size.width / ms, mh = mm.size.height / ms;
+                if (cx >= mx && cx < mx + mw && cy >= my && cy < my + mh) { pick = mm; break; }
+              }
+              var psf = pick.scaleFactor || 1;
+              bounds = { x: pick.position.x / psf, y: pick.position.y / psf, w: pick.size.width / psf, h: pick.size.height / psf };
+              // Inset the menu bar on the primary monitor only: the macOS menu bar
+              // sits at the global top (origin y==0). Raise the top edge and shrink
+              // height so a card can't resolve under it; other edges stay full-rect.
+              if (bounds.y === 0) { bounds.y += MENU_BAR_INSET; bounds.h -= MENU_BAR_INSET; }
+            }
           }
+        } catch (_) { bounds = null; }
+        // Discard a snap target that would land the CARD off-screen. Snapping to a
+        // partly-visible neighbour's VISIBLE edge stays on-screen and flush;
+        // snapping to its OFF-SCREEN edge would be clamped by the OS to a NON-flush
+        // position (the big gap the user saw). Reject it → no snap, the window
+        // rests where it was dropped instead of clamping to a gap.
+        if (best && bounds) {
+          var offX = best.x < bounds.x || best.x + lead.w > bounds.x + bounds.w;
+          var offY = best.y < bounds.y || best.y + lead.h > bounds.y + bounds.h;
+          if (offX || offY) { best = null; tgt = { x: lead.x, y: lead.y }; }
+        }
+        var resolved = bounds
+          ? S.resolveOverlap({ x: tgt.x, y: tgt.y, w: lead.w, h: lead.h }, allCards, { maxIter: 12, bounds: bounds })
+          : S.resolveOverlap({ x: tgt.x, y: tgt.y, w: lead.w, h: lead.h }, allCards, { maxIter: 12 });
+        var moved = !(resolved.x === tgt.x && resolved.y === tgt.y);
+
+        if (best && !moved) {
+          // Clean common case — deoverlap didn't move it: keep the pixel-exact
+          // physical weld seam unchanged. Anchor my physical frame to the
+          // neighbour's ACTUAL physical frame so the touching card edges coincide
+          // on the exact same physical pixel (no OS per-window rounding seam),
+          // preserving the snapped perpendicular offset. Falls back to
+          // LogicalPosition if Tauri types or neighbour reads are unavailable.
+          var placed = false;
+          if (PP && S.physicalSnapEdge) {
+            try {
+              var ss = await W.outerSize();
+              var nb = await TW.Window.getByLabel(best.label);
+              var np = await nb.outerPosition();
+              var ns2 = await nb.outerSize();
+              var sf = (await W.scaleFactor()) || 1;
+              var neighbourPhys = { x: np.x, y: np.y, w: ns2.width, h: ns2.height };
+              var neighbourCard = null;
+              for (var ci = 0; ci < cards.length; ci++) {
+                if (cards[ci].label === best.label) { neighbourCard = cards[ci].rect; break; }
+              }
+              if (neighbourCard) {
+                var o = S.physicalSnapEdge(neighbourPhys, neighbourCard, { x: best.x, y: best.y }, { w: ss.width, h: ss.height }, best.edge, ins, sf);
+                await W.setPosition(new PP(o.x, o.y));
+                placed = true;
+              }
+            } catch (_) { /* fall through to logical fallback */ }
+          }
+          if (!placed && LP) {
+            // card target → frame target (subtract my own top/left inset).
+            try { await W.setPosition(new LP(best.x - ins.l, best.y - ins.t)); } catch (_) {}
+          }
+        } else if (LP && (moved || !best)) {
+          // Safety path — deoverlap moved me, or there was no edge-snap at all:
+          // position at the resolved card top-left as a frame LogicalPosition.
+          // The no-overlap guarantee beats sub-pixel weld perfection here.
+          try { await W.setPosition(new LP(resolved.x - ins.l, resolved.y - ins.t)); } catch (_) {}
+        }
+
+        // Only emit dock-link / flashSeam for a REAL magnet dock (best exists).
+        if (best && best.label !== HUB) {
+          flashSeam(oppositeEdge(best.edge));
+          try { var e2 = ev(); if (e2 && e2.emit) e2.emit('dock-link', { 'for': best.label, from: label, edge: best.edge }); } catch (_) {}
         }
       } catch (_) { /* best-effort */ }
       refreshWeld();          // settle my own weld from the real (snapped) rect
@@ -542,16 +767,15 @@
       var handle = e.target.closest('.title-bar, .chat-header');
       if (!handle) return;
       e.preventDefault();
-      // A SINGLE-window drag — a lone card, or a plain module peeling off its
-      // cluster (anything that is NOT the anchor towing its welded cluster) — goes
-      // NATIVE: hand it to the OS via startDragging (zero per-frame IPC, the
-      // OS-smooth feel the emulated loop can't match) and snap to a neighbour on
-      // RELEASE. The anchor-tows-a-cluster case stays on the emulated 1:1 path
-      // below, because native startDragging moves only its own window (towing the
-      // welded cluster natively needs child windows — the follow-up). Environments
-      // without startDragging (tests / non-Tauri) fall through to emulated.
-      var towsCluster = (label === 'panel-chat') && groupMembers.length > 1;
-      if (!towsCluster && typeof W.startDragging === 'function') {
+      // EVERY drag goes NATIVE: hand it to the OS via startDragging (zero per-frame
+      // IPC) and snap to a neighbour ONCE on RELEASE. The OLD emulated live-magnet
+      // path (below) wrote a setPosition every frame and LOCKED the window at a
+      // distance from the edge — the "invisible wall" the user hits on a slow drag
+      // — and a stale `groupMembers` could route even a lone window onto it. Native
+      // has NO live position writes, so it cannot wall; the window tracks the
+      // cursor 1:1 and only snaps when you let go. The emulated path is kept solely
+      // as a non-Tauri / test fallback (no startDragging available).
+      if (typeof W.startDragging === 'function') {
         startNativeDrag();
         return;
       }

@@ -71,6 +71,88 @@
     return { x: Math.round(best.x), y: Math.round(best.y), edge: best.edge }
   }
 
+  // ── Forgiving edge-snapping (the new lone-window magnet) ───────────────────
+  // computeEdgeSnap — replaces the corner-only computeSnap for lone-window
+  // drags. Instead of 8 fully-pinned corner tiles caught only within a tiny
+  // zone, it docks the dragged window FLUSH against whichever NEIGHBOUR edge it
+  // is near (forgiving threshold), preserving the user's perpendicular offset
+  // unless they're near a corner (then it corner-aligns), and ALWAYS resolving a
+  // drop that overlaps a neighbour on both axes to a flush-adjacent position
+  // (anti-layer). All rects are CARD rects {x,y,w,h} in the SAME logical space.
+  //   lead       = the dragged window's CARD rect {x,y,w,h}
+  //   candidates = [{label, rect:{x,y,w,h}}] neighbour CARD rects
+  //   opts       = { threshold, cornerThreshold, minOverlap }
+  // Returns { x, y, edge, label } = the snapped lead CARD top-left (logical) +
+  // which side of the NEIGHBOUR the lead lands on (edge ∈ 'l'|'r'|'t'|'b'), or
+  // null when nothing is in range.
+  var EDGE_SNAP_DEFAULTS = { threshold: 80, cornerThreshold: 40, minOverlap: 8 }
+  function computeEdgeSnap(lead, candidates, opts) {
+    if (!lead) return null
+    var o = opts || {}
+    var threshold = typeof o.threshold === "number" ? o.threshold : EDGE_SNAP_DEFAULTS.threshold
+    var cornerThreshold = typeof o.cornerThreshold === "number" ? o.cornerThreshold : EDGE_SNAP_DEFAULTS.cornerThreshold
+    var minOverlap = typeof o.minOverlap === "number" ? o.minOverlap : EDGE_SNAP_DEFAULTS.minOverlap
+    var cands = candidates || []
+    var lL = lead.x, lR = lead.x + lead.w, lT = lead.y, lB = lead.y + lead.h
+    var best = null
+    // Consider a candidate direction; record it if it's the new global minimum
+    // movement (tie-break by smaller label for determinism).
+    function consider(snappedX, snappedY, edge, label) {
+      var dist = Math.hypot(snappedX - lead.x, snappedY - lead.y)
+      if (
+        best === null ||
+        dist < best.dist ||
+        (dist === best.dist && String(label) < String(best.label))
+      ) {
+        best = { x: snappedX, y: snappedY, edge: edge, label: label, dist: dist }
+      }
+    }
+    for (var i = 0; i < cands.length; i++) {
+      var n = cands[i].rect
+      var label = cands[i].label
+      var nL = n.x, nR = n.x + n.w, nT = n.y, nB = n.y + n.h
+      // Perpendicular overlap lengths (how much they sit beside each other).
+      var vOverlap = Math.min(lB, nB) - Math.max(lT, nT)
+      var hOverlap = Math.min(lR, nR) - Math.max(lL, nL)
+      var overlapBoth = vOverlap > 0 && hOverlap > 0 // currently layered → must resolve
+
+      // Perpendicular Y placement for a horizontal dock: corner-align tops/
+      // bottoms when near, else preserve the user's free offset.
+      var snappedYForH = lead.y
+      if (Math.abs(lead.y - n.y) <= cornerThreshold) snappedYForH = n.y
+      else if (Math.abs(lB - nB) <= cornerThreshold) snappedYForH = nB - lead.h
+      // Perpendicular X placement for a vertical dock.
+      var snappedXForV = lead.x
+      if (Math.abs(lead.x - n.x) <= cornerThreshold) snappedXForV = n.x
+      else if (Math.abs(lR - nR) <= cornerThreshold) snappedXForV = nR - lead.w
+
+      // Horizontal docking (they're genuinely beside each other vertically).
+      if (vOverlap > minOverlap || overlapBoth) {
+        // lead RIGHT-of-n: lead.left ↔ n.right
+        var rTouchX = nR
+        var rGap = lead.x - rTouchX
+        if (Math.abs(rGap) <= threshold || overlapBoth) consider(rTouchX, snappedYForH, "r", label)
+        // lead LEFT-of-n: lead.right ↔ n.left
+        var lTouchX = nL - lead.w
+        var lGap = lR - nL
+        if (Math.abs(lGap) <= threshold || overlapBoth) consider(lTouchX, snappedYForH, "l", label)
+      }
+      // Vertical docking (beside each other horizontally).
+      if (hOverlap > minOverlap || overlapBoth) {
+        // lead BELOW-n: lead.top ↔ n.bottom
+        var bTouchY = nB
+        var bGap = lead.y - bTouchY
+        if (Math.abs(bGap) <= threshold || overlapBoth) consider(snappedXForV, bTouchY, "b", label)
+        // lead ABOVE-n: lead.bottom ↔ n.top
+        var tTouchY = nT - lead.h
+        var tGap = lB - nT
+        if (Math.abs(tGap) <= threshold || overlapBoth) consider(snappedXForV, tTouchY, "t", label)
+      }
+    }
+    if (!best) return null
+    return { x: best.x, y: best.y, edge: best.edge, label: best.label }
+  }
+
   // computeLiveDrag — the LIVE drag step, ported 1:1 from the design's onMove
   // (luna-dock.jsx): apply the magnetic snap to the dragged window's LEAD
   // position, then translate the WHOLE drag group by that same delta so the
@@ -497,8 +579,159 @@
   }
 
 
+  // physicalSnapEdge — compute the PHYSICAL frame top-left for a window snapping
+  // flush against a neighbour. Supersedes physicalSnapOrigin: it does NOT assume
+  // a fully corner-aligned snap (start/end) — instead it carries the EXACT
+  // perpendicular offset chosen by computeEdgeSnap, anchored to the neighbour's
+  // PHYSICAL card frame so the rounding is consistent.
+  //
+  // The touching seam is PIXEL-EXACT (the drift fix that closed the transparent
+  // seam): self's touching card edge coincides with the neighbour's on the same
+  // physical pixel. The perpendicular axis preserves the snapped logical offset,
+  // anchored to the neighbour's physical card edge and rounded ONCE.
+  //
+  //   neighborPhys    = neighbour PHYSICAL frame { x, y, w, h }
+  //   neighborCard    = neighbour LOGICAL card rect { x, y, w, h }
+  //   snappedLeadCard = { x, y } — lead's snapped LOGICAL card top-left
+  //                     (the {x,y} computeEdgeSnap returned)
+  //   selfPhys        = this window's PHYSICAL size { w, h }
+  //   edge            = 'l'|'r'|'t'|'b' — which side of the neighbour self lands on
+  //   ins             = LOGICAL insets { l, r, t, b } (--card-inset values)
+  //   sf              = scale factor (e.g. 2 on a Retina display)
+  //
+  // Lp(v) = Math.round(v * sf). For a corner-aligned snap the perpendicular
+  // delta (snappedLeadCard.perp − neighborCard.perp) is 0 → both axes exact; for
+  // a free-offset snap the delta preserves the offset, rounded once.
+  function physicalSnapEdge(neighborPhys, neighborCard, snappedLeadCard, selfPhys, edge, ins, sf) {
+    function Lp(v) { return Math.round(v * sf); }
+    // Neighbour physical card edges.
+    var nCardL = neighborPhys.x + Lp(ins.l)
+    var nCardR = neighborPhys.x + neighborPhys.w - Lp(ins.r)
+    var nCardT = neighborPhys.y + Lp(ins.t)
+    var nCardB = neighborPhys.y + neighborPhys.h - Lp(ins.b)
+    // Self physical card dims.
+    var selfCardW = selfPhys.w - Lp(ins.l) - Lp(ins.r)
+    var selfCardH = selfPhys.h - Lp(ins.t) - Lp(ins.b)
+    var cardX, cardY
+    if (edge === "r") {
+      cardX = nCardR
+      cardY = nCardT + Lp(snappedLeadCard.y - neighborCard.y)
+    } else if (edge === "l") {
+      cardX = nCardL - selfCardW
+      cardY = nCardT + Lp(snappedLeadCard.y - neighborCard.y)
+    } else if (edge === "b") {
+      cardY = nCardB
+      cardX = nCardL + Lp(snappedLeadCard.x - neighborCard.x)
+    } else { // 't'
+      cardY = nCardT - selfCardH
+      cardX = nCardL + Lp(snappedLeadCard.x - neighborCard.x)
+    }
+    // Frame origin = self card top-left minus self's own top/left physical inset.
+    return { x: cardX - Lp(ins.l), y: cardY - Lp(ins.t) }
+  }
+
+  // resolveOverlap — the HARD "never overlap" guarantee, layered ON TOP of the
+  // forgiving edge magnet (computeEdgeSnap). computeEdgeSnap only clears the ONE
+  // neighbour it docks against, so a released window can still land overlapping a
+  // SECOND window (or the hub, or a window the peel-cooldown excluded). This is a
+  // pure, iterative minimal-push solver: while `rect` overlaps anything in
+  // `others`, find the WORST overlap and push `rect` flush-clear of it. Each push
+  // lands `rect` flush-adjacent to that neighbour, which can introduce a fresh
+  // (smaller) overlap with a different neighbour, so we loop until clear (or
+  // maxIter).
+  //
+  // BOUNDS-AWARENESS — why it matters: the naive "least-penetration axis" push
+  // can shove `rect` UP or LEFT off the monitor's work area. macOS then CLAMPS
+  // the window back on-screen at setPosition time, which UNDOES the push and
+  // re-introduces the very overlap we just resolved (observed live: 3/12 drops
+  // stayed overlapping because their minimal clearing move was off-screen). So
+  // when a `bounds` rect (the monitor work area, in the SAME card/logical space)
+  // is supplied, we prefer the SHORTEST clearing move that keeps `rect` fully
+  // inside `bounds`; only if no in-bounds move clears the neighbour do we fall
+  // back to the shortest move overall (best effort — can't beat the geometry).
+  //
+  //   rect   = the window's CARD rect {x,y,w,h}
+  //   others = array of other windows' CARD rects {x,y,w,h}
+  //   opts   = { maxIter, bounds } — bounds {x,y,w,h} = the allowed region
+  //            (monitor work area, card/logical space). Back-compat: `opts` may
+  //            also be a NUMBER, treated as maxIter (old callers/tests). Default
+  //            maxIter = 12; bounds optional (omit = pure least-movement, the old
+  //            behaviour).
+  // Returns a CARD top-left {x,y} where `rect` overlaps NONE of `others` (or the
+  // best achievable when no in-bounds escape exists), or the original {x,y} when
+  // it already overlaps nothing.
+  function resolveOverlap(rect, others, opts) {
+    var os = others || []
+    // Back-compat: a bare number is the old maxIter arg.
+    var o = typeof opts === "number" ? { maxIter: opts } : (opts || {})
+    var iter = typeof o.maxIter === "number" ? o.maxIter : 12
+    var bounds = o.bounds || null
+    var x = rect.x, y = rect.y, w = rect.w, h = rect.h
+    // STEP 0 — clamp the start position INTO bounds. The upstream edge-snap can
+    // pick an off-screen flush target (e.g. "above" a top-row neighbour at a
+    // negative y); that reads as zero-overlap in pure geometry, but the OS then
+    // CLAMPS the window back on-screen and re-introduces a real overlap the math
+    // never saw. Clamping here makes the resolver work on the position the OS
+    // will actually use, so it can then push it clear in-bounds.
+    if (bounds) {
+      var maxX = bounds.x + bounds.w - w, maxY = bounds.y + bounds.h - h
+      if (x < bounds.x) x = bounds.x; else if (x > maxX) x = maxX
+      if (y < bounds.y) y = bounds.y; else if (y > maxY) y = maxY
+    }
+    // A candidate rect is in-bounds when it sits fully inside `bounds`.
+    function inBounds(cx, cy) {
+      if (!bounds) return true
+      return (
+        cx >= bounds.x &&
+        cy >= bounds.y &&
+        cx + w <= bounds.x + bounds.w &&
+        cy + h <= bounds.y + bounds.h
+      )
+    }
+    for (var k = 0; k < iter; k++) {
+      // Find the WORST current overlap (largest overlap area) among others.
+      var worst = null
+      for (var i = 0; i < os.length; i++) {
+        var n = os[i]
+        var ox = Math.min(x + w, n.x + n.w) - Math.max(x, n.x)
+        var oy = Math.min(y + h, n.y + n.h) - Math.max(y, n.y)
+        if (ox > 0 && oy > 0) {
+          var area = ox * oy
+          // Tie-break: keep the FIRST found (strictly-greater test → stable).
+          if (!worst || area > worst.area) worst = { n: n, area: area }
+        }
+      }
+      if (!worst) break // no overlap left → done
+      var wn = worst.n
+      // The FOUR single-axis moves that each fully clear overlap with wn. Each
+      // candidate carries its post-move top-left + the distance travelled on the
+      // moved axis (the other coord is unchanged).
+      var cands = [
+        { x: wn.x + wn.w, y: y, dist: Math.abs(wn.x + wn.w - x) }, // right
+        { x: wn.x - w, y: y, dist: Math.abs(wn.x - w - x) },       // left
+        { x: x, y: wn.y + wn.h, dist: Math.abs(wn.y + wn.h - y) }, // down
+        { x: x, y: wn.y - h, dist: Math.abs(wn.y - h - y) },       // up
+      ]
+      // Prefer the shortest IN-BOUNDS move; fall back to the shortest move overall
+      // when none stays in bounds (best effort). Without bounds, inBounds() is
+      // always true → this is exactly the old least-movement choice.
+      var bestIn = null, bestAny = null
+      for (var c = 0; c < cands.length; c++) {
+        var cd = cands[c]
+        if (bestAny === null || cd.dist < bestAny.dist) bestAny = cd
+        if (inBounds(cd.x, cd.y) && (bestIn === null || cd.dist < bestIn.dist)) bestIn = cd
+      }
+      var pick = bestIn || bestAny
+      x = pick.x
+      y = pick.y
+    }
+    return { x: x, y: y }
+  }
+
   g.LunaDeckSnap = {
     computeSnap: computeSnap,
+    computeEdgeSnap: computeEdgeSnap,
+    resolveOverlap: resolveOverlap,
     computeLiveDrag: computeLiveDrag,
     logicalToPhysical: logicalToPhysical,
     DEFAULT_THRESHOLD: DEFAULT_THRESHOLD,
@@ -511,5 +744,6 @@
     weldCorners: weldCorners,
     weldStyle: weldStyle,
     dockOnOpenPosition: dockOnOpenPosition,
+    physicalSnapEdge: physicalSnapEdge,
   }
 })(typeof globalThis !== "undefined" ? globalThis : this)

@@ -64,12 +64,31 @@ optional = true
 version = "0.6.4"
 
 # AppKit bindings used by set_native_controls_visible: NSWindow +
-# standardWindowButton: + NSButton setHidden:. Minimal feature set — only
-# the four types that cross the call boundary.
+# standardWindowButton: + NSButton setHidden:. NSEvent is added for the
+# event-driven native resize (begin_native_resize), driven by NSEvent monitors
+# (no polling pacer): NSEvent::mouseLocation() (screen coords) +
+# NSEvent::pressedMouseButtons() (left-button bitmask) drive the gesture.
 [target.'cfg(target_os = "macos")'.dependencies.objc2-app-kit]
 version = "0.3.2"
 default-features = false
-features = ["NSWindow", "NSButton", "NSControl", "NSView"]
+# `block2` enables addLocal/GlobalMonitorForEventsMatchingMask:handler: — the
+# event-driven native resize installs NSEvent monitors instead of polling.
+features = ["NSWindow", "NSButton", "NSControl", "NSView", "NSEvent", "block2"]
+
+# Block (Obj-C closure) support for the NSEvent monitor handlers that drive the
+# event-driven native window resize (begin_native_resize). macOS-gated like the
+# other objc2 deps.
+[target.'cfg(target_os = "macos")'.dependencies.block2]
+version = "0.6"
+
+# Core geometry types (CGRect/CGPoint/CGSize) for the native resize frame math.
+# objc2-foundation re-exports these but is `optional = true` (voice-only), so
+# we depend on core-foundation directly — available in BOTH the voice and
+# non-voice builds, macOS-gated like the other objc2 deps.
+[target.'cfg(target_os = "macos")'.dependencies.objc2-core-foundation]
+version = "0.3.2"
+default-features = false
+features = ["CFCGTypes"]
 
 [target.'cfg(target_os = "macos")'.dependencies.objc2-foundation]
 version = "0.3.2"
