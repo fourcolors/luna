@@ -166,6 +166,14 @@ export interface HelloFrame {
      * hide the Models settings tab when absent/false.
      */
     readonly modelRouting?: boolean
+    /**
+     * Capability layer (backend-advertised commands): the server has a
+     * capabilityRegistry bound — it sends a `capability-catalog` frame after
+     * `hello` and routes `capability-execute`. OPTIONAL/additive (no protocol
+     * bump): older servers omit it, and clients fall back to their built-in
+     * command set when the flag is absent/false. Mirrors `skills`.
+     */
+    readonly commands?: boolean
   }
   /**
    * Additive server descriptor (no protocol bump). Built fresh per connection
@@ -376,6 +384,66 @@ export interface SkillStatusFrame {
   readonly type: "skill-status"
   readonly id: string
   readonly enabled: boolean
+  readonly ok: boolean
+  readonly message?: string
+}
+
+/* -------------------------------------------------------------------------- */
+/* Capability layer — backend-advertised commands (capability catalog)        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One backend-advertised capability — METADATA ONLY, by construction. The
+ * adapter builds this literally (no internal-state spread), mirroring the
+ * skill-catalog body-strip discipline: nothing executable crosses the wire.
+ * `executor` tells the client WHERE the capability runs ('server' = the
+ * server invokes it on `capability-execute`; 'client' = the client owns it).
+ * `kind` is a plain string (forward-compatible with new kinds, e.g.
+ * 'command'/'skill'). `schemaVersion` lets a client reject a descriptor whose
+ * `detail` shape it does not understand.
+ */
+export interface WireCapabilityDescriptor {
+  readonly kind: string
+  readonly id: string
+  readonly title: string
+  readonly description?: string
+  readonly argHint?: string
+  readonly enabled?: boolean
+  readonly executor: "client" | "server"
+  readonly schemaVersion: number
+  readonly detail?: Record<string, unknown>
+}
+
+/**
+ * The full capability catalog. `generation` bumps when the set changes;
+ * `agreedSchema` is the catalog-level schema the server and client agree on.
+ * v1 is a STATIC catalog (no live `changes` hook) — sent once after `hello`.
+ */
+export interface WireCapabilityCatalog {
+  readonly generation: number
+  readonly agreedSchema: number
+  readonly capabilities: ReadonlyArray<WireCapabilityDescriptor>
+}
+
+/**
+ * Server→client: the full capability catalog. Sent once after `hello` (same
+ * fire-and-forget pattern as `skill-catalog`) so the client can render
+ * backend-advertised commands on connect. Additive — no protocol bump.
+ */
+export interface CapabilityCatalogFrame {
+  readonly type: "capability-catalog"
+  readonly catalog: WireCapabilityCatalog
+}
+
+/**
+ * Server→client RESPONSE to a `capability-execute`. UNICAST to the requesting
+ * socket only — it echoes the client's `requestId` and is never broadcast
+ * (one client's execute result must not leak to others). `ok:false` carries a
+ * non-sensitive reason (malformed frame, unknown id, registry failure).
+ */
+export interface CapabilityExecuteResultFrame {
+  readonly type: "capability-execute-result"
+  readonly requestId: string
   readonly ok: boolean
   readonly message?: string
 }
@@ -1303,6 +1371,8 @@ export type ServerFrame =
   | AccountListFrame
   | SkillCatalogFrame
   | SkillStatusFrame
+  | CapabilityCatalogFrame
+  | CapabilityExecuteResultFrame
   | ConnectorCatalogFrame
   | ConnectorListFrame
   | ConnectorOauthRedirectFrame
@@ -1596,6 +1666,21 @@ export interface SkillToggleFrame {
 }
 
 /**
+ * Client→server: invoke a backend-advertised capability (capability layer).
+ * `requestId` correlates the unicast `capability-execute-result`; `kind`/`id`
+ * identify the capability from the `capability-catalog`. Additive — gated on
+ * the `commands` capability; older servers route this to the unknown-frame log
+ * and ignore it.
+ */
+export interface CapabilityExecuteFrame {
+  readonly type: "capability-execute"
+  readonly requestId: string
+  readonly kind: string
+  readonly id: string
+  readonly args?: Record<string, unknown>
+}
+
+/**
  * Client→server: update the model and/or effort for an existing thread.
  * Additive — gated on the `effortSelection` capability; older servers route
  * this to the unknown-frame log and ignore it. At most one of model/effort
@@ -1625,6 +1710,7 @@ export type ClientFrame =
   | JobInputResultFrame
   | SurveyResponseFrame
   | SkillToggleFrame
+  | CapabilityExecuteFrame
   | ConnectorOauthBeginFrame
   | ConnectorOauthCodeFrame
   | ConnectorConnectFrame

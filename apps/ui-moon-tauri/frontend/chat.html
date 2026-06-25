@@ -2091,6 +2091,14 @@
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       flex: 1 1 auto; min-width: 0;
     }
+    /* Source chip — small muted pill marking a backend-advertised command (e.g. "luna"). */
+    .slash-menu-item .source-chip {
+      flex: 0 0 auto; align-self: center;
+      font-size: 0.58rem; letter-spacing: 0.04em; text-transform: uppercase;
+      color: var(--ink-soft);
+      background: color-mix(in oklab, var(--ink) 8%, transparent);
+      border-radius: 999px; padding: 1px 6px;
+    }
     /* "applies to next" deferred hint — shows briefly then fades */
     .cfg-deferred-hint {
       font-size: 0.68rem;
@@ -5855,6 +5863,11 @@
       // Capability gates, normalized by vendor/moon-protocol.js (absent
       // flags coerce to false so older servers degrade instead of throwing).
       const caps = LunaProtocol.parseHelloCapabilities(frame);
+      // Backend-advertised commands gate: a server that does NOT advertise the
+      // capability layer (older server, or a different attached machine) must not
+      // leave a stale backend catalog rendering in the slash menu. A capable server
+      // re-populates _backendCatalog from its capability-catalog frame after hello.
+      if (!caps.commands) _backendCatalog = null;
       // version-skew: gate the grouped activity timeline on the server
       // advertising the `turn-complete` frame. An older server omits this
       // capability → fall back to per-turn timelines that collapse on
@@ -5885,6 +5898,29 @@
 
 
 
+
+    // ── Backend-advertised capabilities ──────────────────────────────────
+    // A CapabilityProvider (from @luna/capabilities) backed by the WS frame channel:
+    // it decodes inbound `capability-catalog` frames (untrusted -> validated) into
+    // _backendCatalog, and routes executor:'server' commands via `capability-execute`.
+    let _backendCatalog = null;
+    let _capProvider = null;
+    if (window.LunaCapabilities && window.LunaCapabilities.createFrameCapabilityProvider) {
+      _capProvider = window.LunaCapabilities.createFrameCapabilityProvider({
+        send: (f) => WebSocketEngine.send(f),
+        onFrame: (handler) => {
+          MoonFrames.register('capability-catalog', handler);
+          MoonFrames.register('capability-execute-result', handler);
+          return () => {};
+        },
+      }, { context: () => (State.activeThreadId ? { threadId: State.activeThreadId } : {}) });
+      _capProvider.subscribe((snap) => {
+        _backendCatalog = snap.ok ? snap.catalog : null;
+        if (snap.ok && snap.rejected && snap.rejected.length) {
+          console.warn('[capabilities] rejected backend descriptors', snap.rejected);
+        }
+      });
+    }
 
     MoonFrames.register('artifact-list', (frame) => {
       // Full replacement list of pinned artifacts from the server.
@@ -8122,9 +8158,12 @@
           // (clear/new/help) must be the bare line, so "/new feature idea" sends as
           // a normal message instead of wiping the thread and dropping the text.
           // Only /model and /effort accept trailing args.
-          const KNOWN = new Set(['clear', 'new', 'model', 'effort', 'help']);
-          const takesArgs = parsed && (parsed.name === 'model' || parsed.name === 'effort');
-          if (parsed && KNOWN.has(parsed.name) && (parsed.args === '' || takesArgs)) {
+          // Dispatch a typed "/cmd [args]" + Enter when unambiguous: argless commands
+          // (clear/new/help/interrupt) must be the bare line; only commands that declare
+          // an argHint (model/effort) take trailing args. Includes backend-advertised
+          // commands (buildCommands merges them in).
+          const cmd = parsed ? SlashMenu.buildCommands().find((c) => c.id === parsed.name) : null;
+          if (cmd && (parsed.args === '' || cmd.arghint)) {
             SlashMenu.dispatch(parsed.name, parsed.args);
             return;
           }
@@ -8668,36 +8707,52 @@
         const models = ComposerConfig._models || [];
         const entry = ComposerConfig._currentModelEntry ? ComposerConfig._currentModelEntry() : null;
         const efforts = entry && entry.efforts ? entry.efforts : [];
-        const cmds = [
-          { kind: 'command', id: 'clear', arghint: '', desc: 'Start a new conversation' },
-          { kind: 'command', id: 'new',   arghint: '', desc: 'Start a new conversation' },
+        // UI-owned commands as capability descriptors (executor:'client').
+        const ui = [
+          { kind: 'command', id: 'clear', title: 'Clear', description: 'Start a new conversation', executor: 'client', schemaVersion: 1 },
+          { kind: 'command', id: 'new',   title: 'New',   description: 'Start a new conversation', executor: 'client', schemaVersion: 1 },
         ];
         // Suppress /model & /effort until the hello frame populates _models, so
         // they can never dead-end on the no-match path.
         if (models.length > 0) {
-          cmds.push({ kind: 'command', id: 'model', arghint: '[name]', desc: 'Switch the model (no arg opens picker)' });
+          ui.push({ kind: 'command', id: 'model', title: 'Model', argHint: '[name]', description: 'Switch the model (no arg opens picker)', executor: 'client', schemaVersion: 1 });
           if (efforts.length > 0) {
-            cmds.push({ kind: 'command', id: 'effort', arghint: '[level]', desc: 'Set effort level (no arg opens picker)' });
+            ui.push({ kind: 'command', id: 'effort', title: 'Effort', argHint: '[level]', description: 'Set effort level (no arg opens picker)', executor: 'client', schemaVersion: 1 });
           }
         }
-        cmds.push({ kind: 'command', id: 'help', arghint: '', desc: 'Show available commands' });
-        return cmds;
+        ui.push({ kind: 'command', id: 'help', title: 'Help', description: 'Show available commands', executor: 'client', schemaVersion: 1 });
+
+        const toItem = (cap, source) => ({ kind: 'command', id: cap.id, arghint: cap.argHint || '', desc: cap.description || '', executor: cap.executor || 'client', source });
+        const LC = window.LunaCapabilities;
+        const backend = (_backendCatalog && _backendCatalog.capabilities) || [];
+        // Fast path / fallback: no backend catalog -> the UI list in curated order.
+        if (!LC || !LC.mergeCapabilities || backend.length === 0) {
+          return ui.map((c) => toItem(c, 'ui'));
+        }
+        // Merge UI-owned + backend-advertised (UI wins (kind,id) collisions; each item
+        // carries its source for the chip). mergeCapabilities sorts by (kind,id), so we
+        // re-impose the curated UI order then append backend commands.
+        const merged = LC.mergeCapabilities([
+          { source: 'ui', precedence: 100, capabilities: ui },
+          { source: 'luna', precedence: 10, capabilities: backend },
+        ]).merged.filter((m) => m.capability.kind === 'command');
+        const byId = new Map(merged.map((m) => [m.capability.id, m]));
+        const order = ui.map((c) => c.id);
+        const uiOrdered = order.map((id) => byId.get(id)).filter(Boolean).map((m) => toItem(m.capability, m.source));
+        const backendOrdered = merged.filter((m) => m.source !== 'ui' && !order.includes(m.capability.id)).map((m) => toItem(m.capability, m.source));
+        return [...uiOrdered, ...backendOrdered];
       }
 
       function helpText() {
-        const models = ComposerConfig._models || [];
-        const entry = ComposerConfig._currentModelEntry ? ComposerConfig._currentModelEntry() : null;
-        const efforts = entry && entry.efforts ? entry.efforts : [];
-        const mHint = models.length ? ` [${models.map((m) => m.id).join('|')}]` : '';
-        const eHint = efforts.length ? ` [${['default', ...efforts].join('|')}]` : '';
-        return [
-          'Available commands:',
-          '  /clear — clear the conversation and start a new thread',
-          '  /new — same as /clear',
-          `  /model${mHint} — switch model (no arg opens picker)`,
-          `  /effort${eHint} — set effort level (no arg opens picker)`,
-          '  /help — show this message',
-        ].join('\n');
+        // Derive from the live merged command list so backend-advertised commands
+        // (and their source) appear in /help too, not just a hardcoded UI list.
+        const lines = ['Available commands:'];
+        for (const c of buildCommands()) {
+          const arg = c.arghint ? ' ' + c.arghint : '';
+          const src = c.source && c.source !== 'ui' ? ` (${c.source})` : '';
+          lines.push('  /' + c.id + arg + ' — ' + (c.desc || '') + src);
+        }
+        return lines.join('\n');
       }
 
       let _open = false, _items = [], _active = 0, _el = null;
@@ -8717,6 +8772,9 @@
           const a = document.createElement('span'); a.className = 'arghint'; a.textContent = cmd.arghint || '';
           const d = document.createElement('span'); d.className = 'desc'; d.textContent = cmd.desc || '';
           row.append(c, a, d);
+          if (cmd.source && cmd.source !== 'ui') {
+            const chip = document.createElement('span'); chip.className = 'source-chip'; chip.textContent = cmd.source; row.append(chip);
+          }
           row.addEventListener('mousedown', (e) => { e.preventDefault(); _active = i; accept(); });
           menu.appendChild(row);
         });
@@ -8788,6 +8846,19 @@
       function dispatch(id, args) {
         DOM.messageInput.value = '';
         ChatEngine.autoGrowMessageInput();
+        // Backend-advertised (executor:'server') commands route to the backend via the
+        // capability provider; the switch below handles only UI-owned client commands.
+        const item = buildCommands().find((c) => c.id === id);
+        if (item && item.executor === 'server') {
+          if (!State.activeThreadId) { ChatEngine.appendMessage('assistant', 'No active conversation to act on.'); return; }
+          if (_capProvider) {
+            _capProvider.execute({ kind: item.kind, id, args: args || '' }).then((r) => {
+              // 'unknown' = not in the current catalog (silently ignore); surface real failures.
+              if (!r.ok && r.reason !== 'unknown') ChatEngine.appendMessage('assistant', '⚠️ ' + (r.error || 'command failed'));
+            });
+          }
+          return;
+        }
         switch (id) {
           case 'clear':
           case 'new':

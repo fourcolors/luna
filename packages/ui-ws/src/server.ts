@@ -271,6 +271,31 @@ export interface UIWebSocketServerConfig {
     readonly changes?: (notify: () => void) => void
   } | null
   /**
+   * Optional capability handle (capability layer — backend-advertised
+   * commands). When provided, the server:
+   *   - advertises `capabilities.commands: true`
+   *   - sends a `capability-catalog` frame after `hello` (fire-and-forget,
+   *     like skill-catalog) so clients render advertised commands on connect
+   *   - routes inbound `capability-execute` frames → execute, UNICASTing a
+   *     `capability-execute-result` back to the requesting socket ONLY
+   *
+   * v1 is a STATIC catalog (no `changes` hook). The handle's catalog() MUST
+   * already be wire-safe (metadata only — the chat-server adapter builds the
+   * descriptors literally). Structural type (not the core Tag) keeps this
+   * package's dependency surface narrow — mirrors skillRegistry exactly. Pass
+   * `null` explicitly in setup-mode (same as absent).
+   */
+  readonly capabilityRegistry?: {
+    readonly catalog: () => import("effect").Effect.Effect<
+      import("./protocol.js").WireCapabilityCatalog
+    >
+    readonly execute: (req: {
+      kind: string
+      id: string
+      args?: Record<string, unknown>
+    }) => import("effect").Effect.Effect<{ ok: boolean; message?: string }>
+  } | null
+  /**
    * Optional thread-archive notifier (14-day auto-archive policy). The server
    * passes a `notify` callback; the provider (chat-server's runAutoArchive
    * loop) calls it with the ids it archived OUTSIDE any client request. On
@@ -962,6 +987,7 @@ export const startUIWebSocketServer = (
     const jobInputBridge = config.jobInputBridge ?? null
     const mcpAppHost = config.mcpAppHost ?? null
     const skillRegistry = config.skillRegistry ?? null
+    const capabilityRegistry = config.capabilityRegistry ?? null
     const threadArchiveNotifier = config.threadArchiveNotifier ?? null
     const connectorService = config.connectorService ?? null
     const artifactStore = config.artifactStore ?? null
@@ -1348,6 +1374,11 @@ export const startUIWebSocketServer = (
             // Model-routing settings (PR 1): operator-configured provider/model
             // preferences. Clients gate the Models settings tab on this flag.
             modelRouting: modelRoutingService !== null,
+            // Capability layer: backend-advertised commands available — the
+            // server sends a capability-catalog after hello and routes
+            // capability-execute. Clients fall back to built-in commands when
+            // absent/false.
+            commands: capabilityRegistry !== null,
           },
         })
 
@@ -1375,6 +1406,21 @@ export const startUIWebSocketServer = (
             Effect.flatMap(reg.catalog(), (skills) =>
               Effect.sync(() => {
                 send(ws, { type: "skill-catalog", skills: skills.map(toWireSkill) })
+              }),
+            ),
+          )
+        }
+
+        // Send capability-catalog immediately after hello so the client can
+        // render backend-advertised commands on connect. Pushed to the NEW
+        // socket only — same fire-and-forget pattern as skill-catalog; a
+        // catalog failure must not block connection setup.
+        if (capabilityRegistry !== null) {
+          const capReg = capabilityRegistry
+          Effect.runFork(
+            Effect.flatMap(capReg.catalog(), (catalog) =>
+              Effect.sync(() => {
+                send(ws, { type: "capability-catalog", catalog })
               }),
             ),
           )
@@ -1931,7 +1977,7 @@ export const startUIWebSocketServer = (
         // malformed-client-frame type, and replying could DoS-amplify
         // a buggy client). Pong is an explicit no-op so the unknown-
         // frame branch doesn't spam future protocol bumps.
-        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || suggestedActions !== null || vaultService !== null || mcpAppHost !== null || subagentTree !== null || widgetSummoner !== null || modelRoutingService !== null) {
+        if (chat !== null || localShellBridge !== null || survey !== null || setupPty != null || registerOpToken !== null || secretBridge !== null || jobInputBridge !== null || skillRegistry !== null || capabilityRegistry !== null || connectorService !== null || artifactStore !== null || workflowGallery !== null || suggestedActions !== null || vaultService !== null || mcpAppHost !== null || subagentTree !== null || widgetSummoner !== null || modelRoutingService !== null) {
           ws.on("message", (raw) => {
             let frame: ClientFrame
             try {
@@ -2354,6 +2400,71 @@ export const startUIWebSocketServer = (
                         }),
                       ),
                     )
+                    return
+                  }
+                  case "capability-execute": {
+                    // Capability layer: invoke a backend-advertised capability
+                    // and UNICAST the result to the requesting socket ONLY.
+                    // This is a RESPONSE, not catalog state — unlike
+                    // skill-toggle (which broadcasts the refreshed catalog), it
+                    // must NEVER broadcast to activeSockets, or one client's
+                    // execute result would leak to every other connection.
+                    // Failures (unknown id, registry defect) ack ok:false with
+                    // a non-sensitive message and must never tear down the
+                    // connection.
+                    if (capabilityRegistry === null) return
+                    // Malformed-frame guard: requestId/kind/id are attacker-
+                    // controlled JSON — reject junk before touching state.
+                    if (
+                      typeof frame.requestId !== "string" ||
+                      frame.requestId.length === 0 ||
+                      typeof frame.kind !== "string" ||
+                      frame.kind.length === 0 ||
+                      typeof frame.id !== "string" ||
+                      frame.id.length === 0
+                    ) {
+                      send(ws, {
+                        type: "capability-execute-result",
+                        requestId: String(
+                          (frame as { requestId?: unknown }).requestId ?? "",
+                        ),
+                        ok: false,
+                        message: "malformed capability-execute frame",
+                      })
+                      return
+                    }
+                    const capReg = capabilityRegistry
+                    const requestId = frame.requestId
+                    yield* capReg
+                      .execute({
+                        kind: frame.kind,
+                        id: frame.id,
+                        ...(frame.args !== undefined ? { args: frame.args } : {}),
+                      })
+                      .pipe(
+                        Effect.flatMap((result) =>
+                          Effect.sync(() => {
+                            send(ws, {
+                              type: "capability-execute-result",
+                              requestId,
+                              ok: result.ok,
+                              ...(result.message !== undefined
+                                ? { message: result.message }
+                                : {}),
+                            })
+                          }),
+                        ),
+                        Effect.catchAllCause((cause) =>
+                          Effect.sync(() => {
+                            send(ws, {
+                              type: "capability-execute-result",
+                              requestId,
+                              ok: false,
+                              message: failureMessage(cause),
+                            })
+                          }),
+                        ),
+                      )
                     return
                   }
                   case "connector-oauth-begin": {

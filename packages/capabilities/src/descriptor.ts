@@ -106,6 +106,9 @@ function decodeDescriptorChecked(o: Record<string, unknown>): Decoded<Capability
   if (hasControlChar(o.kind)) return fail("kind must not contain control characters")
   if (hasControlChar(o.id)) return fail("id must not contain control characters")
   if (typeof o.title !== "string") return fail("title must be a string")
+  // Control chars (e.g. newlines) in display strings let an untrusted backend forge
+  // a second menu row / visually spoof a command — reject, matching kind/id discipline.
+  if (hasControlChar(o.title)) return fail("title must not contain control characters")
   if (o.executor !== "client" && o.executor !== "server") return fail('executor must be "client" or "server"')
   if (typeof o.schemaVersion !== "number" || !Number.isInteger(o.schemaVersion) || o.schemaVersion < 1) {
     return fail("schemaVersion must be an integer >= 1")
@@ -123,10 +126,12 @@ function decodeDescriptorChecked(o: Record<string, unknown>): Decoded<Capability
   // Optional fields: validated only when present; absent stays absent (no undefined/null coercion).
   if (o.description !== undefined) {
     if (typeof o.description !== "string") return fail("description must be a string")
+    if (hasControlChar(o.description)) return fail("description must not contain control characters")
     out.description = o.description
   }
   if (o.argHint !== undefined) {
     if (typeof o.argHint !== "string") return fail("argHint must be a string")
+    if (hasControlChar(o.argHint)) return fail("argHint must not contain control characters")
     out.argHint = o.argHint
   }
   if (o.enabled !== undefined) {
@@ -162,7 +167,16 @@ function decodeCatalogChecked(o: Record<string, unknown>): DecodedCatalog {
 
   const capabilities: CapabilityDescriptor[] = []
   const rejected: RejectedCapability[] = []
+  // Bound the catalog so a compromised/buggy backend can't wedge the client with a huge
+  // array (DoS via unbounded decode + DOM rows). Overflow is surfaced, never silent.
+  const MAX_CAPABILITIES = 256
   o.capabilities.forEach((c, index) => {
+    if (index >= MAX_CAPABILITIES) {
+      if (index === MAX_CAPABILITIES) {
+        rejected.push({ index, error: `catalog exceeds ${MAX_CAPABILITIES} capabilities; extras dropped` })
+      }
+      return
+    }
     const d = decodeCapabilityDescriptor(c)
     if (d.ok) capabilities.push(d.value)
     else rejected.push({ index, error: d.error })

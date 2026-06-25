@@ -40,6 +40,11 @@
       // model-routing settings (PR 1): server sends model-routing-list after
       // hello and routes model-routing-save. Absent on older servers → false.
       modelRouting: !!c.modelRouting,
+      // capability layer (backend-advertised commands): server sends a
+      // capability-catalog frame after hello and routes capability-execute.
+      // Absent on older/other servers → false, so the client clears any stale
+      // backend catalog (e.g. after attaching to a different machine).
+      commands: !!c.commands,
     };
   }
 

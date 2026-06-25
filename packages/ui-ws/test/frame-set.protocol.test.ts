@@ -84,6 +84,9 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "account-list",
   "skill-catalog",
   "skill-status",
+  // Capability layer — additive behind capabilities.commands.
+  "capability-catalog",
+  "capability-execute-result",
   "connector-catalog",
   "connector-list",
   "connector-oauth-redirect",
@@ -140,6 +143,8 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "job-input-result",
   "survey-response",
   "skill-toggle",
+  // Capability layer — additive behind capabilities.commands.
+  "capability-execute",
   "connector-oauth-begin",
   "connector-oauth-code",
   "connector-connect",
@@ -297,9 +302,12 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // (server) and model-routing-save (client) → 55 server / 41 client.
     // New-thread-failure signal adds thread-create-error (server only — sent
     // when a new-thread request dies before a thread row exists, so the client
-    // stops waiting forever) → 56 server / 41 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(56)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(41)
+    // stops waiting forever) → 56 server / 41 client. The capability layer
+    // (backend-advertised commands, gated on capabilities.commands) adds
+    // capability-catalog + capability-execute-result (server) and
+    // capability-execute (client) → 58 server / 42 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(58)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(42)
   })
 
   // VERSION-SKEW (client half): nothing else pins the ui-shared wire.ts mirror
