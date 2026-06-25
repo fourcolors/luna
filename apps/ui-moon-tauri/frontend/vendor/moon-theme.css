@@ -152,23 +152,16 @@ html[data-theme='dark'] .widget-shell.dragging {
    a previously-welded card otherwise paints a faint 2px accent hairline on its
    edge throughout the drag — the "invisible line" in the gap. */
 .widget-shell.dragging #outline { opacity: 0; }
-.widget-shell.snapping::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  /* Design's two-layer "this will stick" hint: accent ring + a deeper lift. */
-  box-shadow:
-    0 0 0 2px color-mix(in oklab, var(--accent) 40%, transparent),
-    0 16px 38px -12px rgba(60, 45, 35, 0.24);
-  pointer-events: none;
-  z-index: 6;
-}
-html[data-theme='dark'] .widget-shell.snapping::after {
-  box-shadow:
-    0 0 0 2px color-mix(in oklab, var(--accent) 40%, transparent),
-    0 16px 38px -12px rgba(0, 0, 0, 0.5);
-}
+/* Drag-time snap PREVIEW removed (user request). `.widget-shell.snapping::after`
+   used to paint a 2px accent RING + a lift the instant a dragged window came
+   within EDGE_SNAP_THRESHOLD (30px) of a neighbour — i.e. a crisp accent
+   tint/border around the window BEFORE the cards were flush ("it snaps before
+   they're flushed together" / "a border with a slight tint as I'm dragging").
+   It is the same crisp accent-ring look that is unwanted (see no-window-outline.md),
+   just transient. `.snapping` is a PURE VISUAL preview — the real magnet runs in
+   snapOnRelease — so dropping it changes nothing about docking: a window now glides
+   freely and snaps flush on release with no preview ring. The `.snapping` class is
+   still toggled by the drag code (harmless) but now paints nothing. */
 
 /* Snap-on-open settle (reference `.dock-win.entering` / dock-pop). */
 .widget-shell.entering {
