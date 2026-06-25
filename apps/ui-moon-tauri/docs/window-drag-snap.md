@@ -81,11 +81,23 @@ During a native resize, `moon-native-titlebar.js` suppresses the per-frame traff
 When cards land flush they "weld": `applyWeldVisuals` squares the seam corners, suppresses the halo on welded sides, and shows one perimeter outline on free sides.
 While dragging, `#outline` is hidden (`.widget-shell.dragging #outline { opacity: 0 }`) because its weld-accent class is frozen from the last settled state and otherwise paints a faint hairline on the card edge throughout the drag.
 
+### The weld must settle deterministically (the seam-band race)
+
+The weld is recomputed from the live rects of every sibling, read over IPC (`weldMembers` → `paintWeldFrom`).
+Those reads are async, and every window broadcasts `dock-geometry-changed` on settle, so a single dock fires a STORM of weld refreshes at each window — each reading geometry that may still be mid-transit (the OS applies `setPosition` slightly after the event fires).
+The old `refreshWeld` did `if (refreshing) return`, which DROPPED the trailing refresh — the one that would read the FINAL flush geometry — so a card could stay stuck on a stale `grouped=false`, never suppressing its seam-side halo.
+That left the full soft halo at the join: the visible **seam band**.
+Because it was a race, it resolved differently under the dev server's timing than under a bundled release (it read as "the seam looks welded in dev but bordered in the release build").
+
+The fix, in `moon-dock.js`:
+
+- `refreshWeld` is immediate + **coalescing** (never drops a trailing call: if one lands mid-flight it re-runs after, so the latest geometry always wins). It stays awaitable, which boot and the jsdom tests rely on.
+- `scheduleWeld` is a **trailing debounce** (~80ms) used by the event-storm sources (`dock-geometry-changed`, `dock-link`, `onResized`). After the immediate repaint it re-reads once the storm goes quiet, so the final weld is computed from SETTLED (flush) positions. The weld is a settle-time visual (never painted per drag-frame), so the delay is imperceptible.
+
 ### Known follow-up
 
-The welded seam is not yet perfectly seamless: one window's seam-side halo is not always suppressed, leaving a faint ~13px soft band at the join (measured; persists after a forced re-weld).
-This is a halo-suppression reliability gap in the weld system, not a snap bug (the cards are pixel-flush).
-Fixing it is delicate border-system work and must respect the `no-window-outline` invariant (`docs/no-window-outline.md`, enforced by `test/no-window-outline.test.ts`).
+A welded cluster is still N separate transparent `NSWindow`s abutting, so a ~1px hairline can remain at the exact join even when the weld is correct (corners squared, seam halos suppressed) — it is the two-window boundary, not the halo-suppression race above, and it is present identically in dev and release.
+Closing it fully is delicate border-system work (e.g. bridging the welded card's fill across the seam) and must respect the `no-window-outline` invariant (`docs/no-window-outline.md`, enforced by `test/no-window-outline.test.ts`).
 
 ## Tests
 
