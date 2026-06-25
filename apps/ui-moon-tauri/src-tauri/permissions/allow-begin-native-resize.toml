@@ -1,7 +1,7 @@
 # Native-speed window resize: the resize grips hand the whole gesture to Rust,
-# which drives NSWindow.setFrame: from a background pacer (no laggy per-frame
-# setPosition/setSize IPC). See main.rs (begin_native_resize) and
-# frontend/vendor/moon-resize.js.
+# which drives NSWindow.setFrame: event-driven via NSEvent monitors (no polling
+# pacer, no laggy per-frame setPosition/setSize IPC). See main.rs
+# (begin_native_resize) and frontend/vendor/moon-resize.js.
 [[permission]]
 identifier = "allow-begin-native-resize"
 description = "Allows the begin_native_resize command"

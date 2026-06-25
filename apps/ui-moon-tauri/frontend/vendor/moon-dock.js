@@ -40,12 +40,15 @@
   // a corner before the perpendicular axis snaps flush (vs free); MIN_PERP_OVERLAP
   // = the minimum perpendicular overlap to count as "beside".
   var EDGE_SNAP_THRESHOLD = 30, CORNER_ALIGN_THRESHOLD = 26, MIN_PERP_OVERLAP = 8;
-  // macOS menu-bar allowance (logical px). Tauri v2's JS Monitor exposes only the
-  // FULL hardware rect, not the OS visible frame (work area), so we hand-inset the
-  // top of the primary monitor (global origin y==0) by this much. Without it a
-  // card pushed flush to bounds.y lands under the menu bar; macOS then clamps it
-  // back down, re-introducing the very overlap resolveOverlap exists to prevent.
-  var MENU_BAR_INSET = 25;
+  // macOS menu-bar/notch allowance (logical px). Tauri v2's JS Monitor exposes
+  // only the FULL hardware rect, not the OS visible frame (work area), so we
+  // hand-inset the top of the primary monitor (global origin y==0) by this much.
+  // Without it a card pushed flush to bounds.y lands under the menu bar; macOS
+  // then clamps it back down, re-introducing the very overlap resolveOverlap
+  // exists to prevent. This is a conservative constant: it covers both the
+  // standard ~24pt menu bar AND the taller ~32-38pt menu-bar/notch region on
+  // notched MacBooks (2021+), since no visible-frame/work-area is available.
+  var MENU_BAR_INSET = 37;
 
   function wire(opts) {
     var W = opts && opts.win;

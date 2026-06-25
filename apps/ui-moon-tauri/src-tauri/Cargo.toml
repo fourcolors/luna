@@ -64,9 +64,10 @@ optional = true
 version = "0.6.4"
 
 # AppKit bindings used by set_native_controls_visible: NSWindow +
-# standardWindowButton: + NSButton setHidden:. NSEvent is added for the native
-# resize pacer (begin_native_resize): NSEvent::mouseLocation() (screen coords)
-# + NSEvent::pressedMouseButtons() (left-button bitmask) drive the gesture.
+# standardWindowButton: + NSButton setHidden:. NSEvent is added for the
+# event-driven native resize (begin_native_resize), driven by NSEvent monitors
+# (no polling pacer): NSEvent::mouseLocation() (screen coords) +
+# NSEvent::pressedMouseButtons() (left-button bitmask) drive the gesture.
 [target.'cfg(target_os = "macos")'.dependencies.objc2-app-kit]
 version = "0.3.2"
 default-features = false
