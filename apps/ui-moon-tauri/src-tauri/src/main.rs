@@ -2765,6 +2765,60 @@ fn broadcast_dock_geometry_settled(app: &tauri::AppHandle, from: &str) {
     );
 }
 
+/// Clear ONLY the WKWebView disk + memory cache, preserving localStorage /
+/// IndexedDB. WKWebView caches the `tauri://` asset responses (the embedded
+/// frontend) and keeps serving them ACROSS app updates — so a user on a fresh
+/// binary kept seeing a months-old frontend (none of the shipped frontend fixes
+/// ran). Purging the cache forces the webview to re-fetch the new embedded
+/// assets. Must run on the main thread.
+#[cfg(target_os = "macos")]
+fn clear_webview_disk_cache() {
+    use block2::RcBlock;
+    use objc2::MainThreadMarker;
+    use objc2_foundation::{NSDate, NSSet, NSString};
+    use objc2_web_kit::WKWebsiteDataStore;
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    // The WKWebsiteDataType* constants are NSStrings whose value equals their
+    // name, so constructing them directly avoids extra feature gates. Cache types
+    // only — NOT LocalStorage / IndexedDB / Cookies, so user settings survive.
+    let disk = NSString::from_str("WKWebsiteDataTypeDiskCache");
+    let mem = NSString::from_str("WKWebsiteDataTypeMemoryCache");
+    let types = NSSet::from_retained_slice(&[disk, mem]);
+    let epoch = NSDate::dateWithTimeIntervalSince1970(0.0); // clear all ages
+    let done = RcBlock::new(|| eprintln!("[moon] WKWebView cache purge completed"));
+    let store = unsafe { WKWebsiteDataStore::defaultDataStore(mtm) };
+    unsafe { store.removeDataOfTypes_modifiedSince_completionHandler(&types, &epoch, &done) };
+    eprintln!("[moon] clearing WKWebView disk/memory cache (frontend refresh)");
+}
+
+/// On the FIRST launch after an app update, purge the webview cache so the new
+/// embedded frontend loads instead of the version the webview cached under the
+/// old build. Tracks the last-seen version in `~/.luna/.moon-webview-version`.
+/// Best-effort: any error simply skips the purge (no worse than before). Runs at
+/// the very start of `setup`, before any panel webview opens on demand, so the
+/// panels load fresh.
+fn clear_webview_cache_if_updated() {
+    #[cfg(target_os = "macos")]
+    {
+        let Some(home) = std::env::var_os("HOME") else {
+            return;
+        };
+        let dir = std::path::PathBuf::from(home).join(".luna");
+        let stamp = dir.join(".moon-webview-version");
+        let current = env!("CARGO_PKG_VERSION");
+        let last = std::fs::read_to_string(&stamp).ok();
+        if last.as_deref().map(str::trim) == Some(current) {
+            return; // same build → the cache is for THIS frontend, keep it
+        }
+        clear_webview_disk_cache();
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(&stamp, current);
+    }
+}
+
 fn main() {
     let builder = tauri::Builder::default()
         // Hub-owns-exit lifecycle (widget-system.md Phase 0): the moon hub is
@@ -2947,6 +3001,12 @@ fn main() {
 
     builder
         .setup(|app| {
+            // FIRST: if this is the first launch after an app update, purge the
+            // WKWebView cache so the new embedded frontend loads (WKWebView
+            // otherwise serves the tauri:// assets it cached under the old build).
+            // Runs before any panel webview opens on demand, so panels load fresh.
+            clear_webview_cache_if_updated();
+
             // Restore open system panels from ~/.luna/layout.json (design doc
             // Persistence): positions clamped to the primary monitor so a
             // display change can't strand a panel off-screen. Unknown kinds

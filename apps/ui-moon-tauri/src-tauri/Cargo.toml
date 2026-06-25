@@ -90,11 +90,22 @@ version = "0.3.2"
 default-features = false
 features = ["CFCGTypes"]
 
+# Always-on (NOT voice-gated): the webview cache-bust (clear_webview_disk_cache,
+# main.rs) needs NSString/NSSet/NSDate to build the WKWebsiteDataStore clear call
+# on every build, voice or not.
 [target.'cfg(target_os = "macos")'.dependencies.objc2-foundation]
 version = "0.3.2"
-optional = true
 default-features = false
-features = ["std", "NSString", "NSArray", "NSEnumerator", "NSObject"]
+features = ["std", "NSString", "NSArray", "NSEnumerator", "NSObject", "NSSet", "NSDate"]
+
+# macOS WKWebView data store — WKWebsiteDataStore::removeDataOfTypes: clears the
+# webview DISK/MEMORY cache so an app update never serves stale embedded frontend
+# (WKWebView otherwise keeps caching tauri:// assets across versions). Used by
+# clear_webview_disk_cache in main.rs; preserves localStorage/IndexedDB.
+[target.'cfg(target_os = "macos")'.dependencies.objc2-web-kit]
+version = "0.3.2"
+default-features = false
+features = ["WKWebsiteDataStore", "WKWebsiteDataRecord"]
 
 [target.'cfg(target_os = "macos")'.dependencies.objc2-avf-audio]
 version = "0.3.2"
@@ -115,7 +126,6 @@ voice = [
   "dep:voice_activity_detector",
   "dep:whisper-rs",
   "dep:hound",
-  "dep:objc2-foundation",
   "dep:objc2-avf-audio",
 ]
 # Enables the voice_spike e2e harness (which reuses the lib's voice
