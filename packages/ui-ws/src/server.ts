@@ -1422,6 +1422,13 @@ export const startUIWebSocketServer = (
               Effect.sync(() => {
                 send(ws, { type: "capability-catalog", catalog })
               }),
+            ).pipe(
+              // A swallowed defect here leaves the client believing the server supports
+              // commands (hello said so) while no catalog ever arrives. Log it like the
+              // per-message handler backstop instead of failing silently.
+              Effect.tapErrorCause((c) =>
+                Effect.sync(() => console.error("[ui-ws] capability-catalog send defect:", Cause.pretty(c))),
+              ),
             ),
           )
         }
