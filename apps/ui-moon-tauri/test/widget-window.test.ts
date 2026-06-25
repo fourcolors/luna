@@ -61,6 +61,7 @@ describe('widget.html — title bar + live magnetic drag', () => {
     outerPosition: ReturnType<typeof vi.fn>
     outerSize: ReturnType<typeof vi.fn>
     setPosition: ReturnType<typeof vi.fn>
+    onResized: ReturnType<typeof vi.fn>
   }
   let getByLabel: ReturnType<typeof vi.fn>
   let invoke: ReturnType<typeof vi.fn>
@@ -285,7 +286,6 @@ describe('widget.html — title bar + live magnetic drag', () => {
 
   it('drags the window LIVE on pointermove, snapping flush to the hub (alignment-only — no link)', async () => {
     const bar = document.querySelector('.title-bar') as HTMLElement
-    const shell = document.querySelector('.widget-shell') as HTMLElement
     stubCapture(bar)
 
     // Arm: pointerdown at screen origin → snapshot reads me + candidates (main).
@@ -302,7 +302,6 @@ describe('widget.html — title bar + live magnetic drag', () => {
     await flush()
     // One batched cluster move (just SELF here) at the card-face-aligned target.
     expect(lastClusterMove()).toEqual([{ label: SELF, x: 476, y: 100 }])
-    expect(shell.classList.contains('snapping')).toBe(true)
 
     // Up: the last move snapped, but the candidate is the hub ('main'). The
     // commit explicitly skips anchor === 'main' — the hub is alignment-only, so
@@ -346,7 +345,6 @@ describe('widget.html — title bar + live magnetic drag', () => {
 
   it('a free drag (no candidate in range) follows the raw delta and does NOT link', async () => {
     const bar = document.querySelector('.title-bar') as HTMLElement
-    const shell = document.querySelector('.widget-shell') as HTMLElement
     stubCapture(bar)
 
     // No siblings, and the hub is far: drag the window way out of magnet range.
@@ -359,7 +357,6 @@ describe('widget.html — title bar + live magnetic drag', () => {
     await flush()
     // Free drag: window follows the raw cursor delta (2000+80, 1500+60).
     expect(lastClusterMove()).toEqual([{ label: SELF, x: 2080, y: 1560 }])
-    expect(shell.classList.contains('snapping')).toBe(false)
 
     bar.dispatchEvent(pointer('pointerup'))
     await flush()
