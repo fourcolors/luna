@@ -80,11 +80,6 @@ if (import.meta.main) {
 
   const output = await buildBundle()
 
-  await Bun.write(dest, output)
-
-  const sizeKb = (output.length / 1024).toFixed(1)
-  console.log(`[bundle-capabilities] ✓ Written ${sizeKb} KB → ${dest}`)
-
   // Sanity check: confirm key exports are present in the output
   const requiredExports = [
     "parseCommandLine",
@@ -114,4 +109,9 @@ if (import.meta.main) {
     process.exit(1)
   }
   console.log("[bundle-capabilities] ✓ No vitest / no node: specifier in bundle")
+
+  await Bun.write(dest, output)
+
+  const sizeKb = (output.length / 1024).toFixed(1)
+  console.log(`[bundle-capabilities] ✓ Written ${sizeKb} KB → ${dest}`)
 }
