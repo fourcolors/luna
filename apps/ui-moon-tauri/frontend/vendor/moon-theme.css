@@ -129,11 +129,9 @@ html, body {
   box-shadow: none;
 }
 
-/* Drag / snap affordance (ported from the design's .dock-win.dragging /
-   .snapping states). moon-dock.js toggles these during the native drag settle:
-   a deeper lift while a loose window is being dragged, and an accent preview
-   ring the moment it falls within magnet range of a neighbour — the predictive
-   "this will stick" hint the design shows before the drop.
+/* Drag affordance (ported from the design's .dock-win.dragging state).
+   moon-dock.js toggles .dragging during the native drag: a deeper lift while a
+   loose window is being dragged.
    !important so the lift overrides a GROUPED window's INLINE welded silhouette
    (applyWeldVisuals sets shellEl.style.boxShadow) while towing a cluster — without
    clearing the inline value, so the welded shadow snaps back instantly on drop. */
@@ -158,10 +156,10 @@ html[data-theme='dark'] .widget-shell.dragging {
    tint/border around the window BEFORE the cards were flush ("it snaps before
    they're flushed together" / "a border with a slight tint as I'm dragging").
    It is the same crisp accent-ring look that is unwanted (see no-window-outline.md),
-   just transient. `.snapping` is a PURE VISUAL preview — the real magnet runs in
+   just transient. `.snapping` was a PURE VISUAL preview — the real magnet runs in
    snapOnRelease — so dropping it changes nothing about docking: a window now glides
-   freely and snaps flush on release with no preview ring. The `.snapping` class is
-   still toggled by the drag code (harmless) but now paints nothing. */
+   freely and snaps flush on release with no preview ring. The class and the drag
+   code that toggled it have both been removed. */
 
 /* Snap-on-open settle (reference `.dock-win.entering` / dock-pop). */
 .widget-shell.entering {

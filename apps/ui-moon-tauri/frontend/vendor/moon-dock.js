@@ -419,10 +419,7 @@
       sm.phase = 'idle'; sm.handle = null; sm.pid = null; sm.ctx = null;
       sm.pendingXY = null; sm.rafPending = false;
       var sh = dockShell();
-      if (sh) {
-        sh.classList.remove('dragging');
-        setTimeout(function () { var s = dockShell(); if (s) s.classList.remove('snapping'); }, 200);
-      }
+      if (sh) sh.classList.remove('dragging');
     }
 
     // pointermove is hot (≤120 Hz). Do NO work here beyond stashing the latest
@@ -505,11 +502,9 @@
       // FROZEN during the drag and recomputed exactly once on drop
       // (onDragUp → refreshWeld). Repainting them per frame — on the dragged card
       // AND, via a mid-drag broadcast, on every stationary neighbour — is what
-      // made the borders flicker/square mid-drag. The only live affordance kept
-      // is the predictive snap ring (.snapping), a pure box-shadow that never
-      // touches geometry.
-      var sh = dockShell();
-      if (sh) sh.classList.toggle('snapping', !!res.snapped);
+      // made the borders flicker/square mid-drag. Nothing is repainted live now:
+      // the drag-time snap preview ring was removed (see moon-theme.css), so the
+      // window glides freely and only snaps flush on release.
     }
 
     function onDragUp() {
@@ -549,11 +544,6 @@
       // watch_drag_release). `relUnlisten` holds that subscription; `safety` is a
       // long backstop so a missed event can never strand the drag.
       var relUnlisten = null, safety = 0;
-      // Live-preview state: candidates + my own size/sf snapshotted ONCE at drag
-      // start (the OS owns position mid-drag, so per-move we only read the Moved
-      // payload + these cached rects — NO IPC per move).
-      var preview = { cands: null, selfW: 0, selfH: 0, sf: 1, ins: readInsets() };
-      var S = window.LunaDeckSnap;
       function finish() {
         if (done) return; done = true;
         if (safety) { clearTimeout(safety); safety = 0; }
@@ -562,36 +552,20 @@
         document.removeEventListener('pointerup', onUp, true);
         document.removeEventListener('pointercancel', onUp, true);
         var s = dockShell();
-        if (s) { s.classList.remove('dragging'); setTimeout(function () { var x = dockShell(); if (x) x.classList.remove('snapping'); }, 200); }
+        if (s) s.classList.remove('dragging');
         snapOnRelease();
       }
       // The OS drag loop swallows pointermove/up, so the window's own Moved events
-      // drive ONLY the live-preview glow (end-detection is the Rust mouse-up
-      // watcher, NOT a motion-stopped timer — a mid-drag pause near a snap target
-      // used to fire that timer prematurely).
-      function onMovedTick(e) {
+      // serve ONLY to re-arm the inactivity backstop (end-detection is the Rust
+      // mouse-up watcher, NOT a motion-stopped timer — a mid-drag pause near a
+      // snap target used to fire that timer prematurely).
+      function onMovedTick() {
         // Re-arm the safety backstop on every Moved so it measures INACTIVITY,
         // not elapsed time: a slow but continuous drag (careful positioning is
         // easily >5s) keeps pushing the deadline out, so finish() can never fire
         // mid-gesture. It only trips after a genuinely quiet/stuck drag with no
         // Moved for 5s. (`safety` is 0 once finish() has run, so don't re-arm.)
         if (safety) { clearTimeout(safety); safety = setTimeout(finish, 5000); }
-        // Live snap preview — toggle the .snapping glow ring. Cheap, IPC-free:
-        // derive my LOGICAL card rect from the Moved payload + cached size, run
-        // computeEdgeSnap against the cached candidates.
-        if (!S || !preview.cands) return;
-        var pos = e && e.payload;
-        if (!pos) return;
-        var sf = preview.sf || 1;
-        var leadFrame = { x: pos.x / sf, y: pos.y / sf, w: preview.selfW, h: preview.selfH };
-        var leadCard = S.insetRect(leadFrame, preview.ins);
-        var res = S.computeEdgeSnap(leadCard, preview.cands, {
-          threshold: EDGE_SNAP_THRESHOLD,
-          cornerThreshold: CORNER_ALIGN_THRESHOLD,
-          minOverlap: MIN_PERP_OVERLAP,
-        });
-        var s2 = dockShell();
-        if (s2) s2.classList.toggle('snapping', !!res);
       }
       // Secondary fallback: if the webview DOES happen to see a pointerup/cancel
       // (e.g. a grab that never moved into the OS drag), finish directly.
@@ -617,25 +591,6 @@
         var p = W.onMoved(onMovedTick);
         if (p && p.then) p.then(function (u) { if (done) { try { u(); } catch (_) {} } else { unlisten = u; } });
       } catch (_) { /* no onMoved → rely on release event / pointerup */ }
-      // Snapshot candidates + self size/sf ONCE (async) for the live preview.
-      (function () {
-        try {
-          if (!S) return;
-          logicalRect(W).then(function (self) {
-            preview.selfW = self.w; preview.selfH = self.h;
-          }).catch(function () {});
-          (W.scaleFactor ? W.scaleFactor() : Promise.resolve(1)).then(function (sf) {
-            preview.sf = sf || 1;
-          }).catch(function () {});
-          candidateRects([label]).then(function (raw) {
-            // Match snapOnRelease: preview against PANELS only, not the hub —
-            // so the glow never lights up just from nearing the orb.
-            preview.cands = (raw || [])
-              .filter(function (c) { return c.label !== HUB; })
-              .map(function (c) { return { label: c.label, rect: S.insetRect(c.rect, preview.ins) }; });
-          }).catch(function () {});
-        } catch (_) { /* best-effort: no preview, snap-on-release still fires */ }
-      })();
     }
 
     // Snap my card flush to the nearest neighbour ONCE, on release, then re-weld
