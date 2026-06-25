@@ -481,10 +481,16 @@ html[data-anchor='true'] .bar-title {
   border-radius: var(--dk-radius, var(--card-radius));
   border: 0 solid transparent;
 }
-#outline.gl { border-left: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
-#outline.gr { border-right: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
-#outline.gt { border-top: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
-#outline.gb { border-bottom: 2px solid color-mix(in oklab, var(--accent) 45%, transparent); }
+/* Weld-accent perimeter border REMOVED (user request). Docked panels used to get
+   a crisp 2px accent ring around the welded cluster's perimeter (border-left/right/
+   top/bottom on the free sides). It read as an unwanted hard "border" around
+   grouped panels — the thing that made a docked cluster look bordered/shifted
+   instead of clean — and it conflicts with the no-window-outline rule
+   (docs/no-window-outline.md). The weld itself is unchanged: it still squares the
+   seam corners and suppresses the seam-side halo, so cards dock pixel-flush and
+   read as one surface. The .gl/.gr/.gt/.gb classes are still toggled by
+   applyWeldVisuals (and asserted by the weld tests) but now paint nothing. */
+#outline.gl, #outline.gr, #outline.gt, #outline.gb { border-color: transparent; }
 
 /* ── Resize grips (moon-resize.js) ─────────────────────────────────────────
    Custom resize for transparent card windows: 8-direction hit targets on the
