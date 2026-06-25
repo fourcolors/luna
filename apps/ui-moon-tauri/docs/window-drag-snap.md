@@ -71,7 +71,10 @@ A window magnets to other PANELS only:
 All math is in Cocoa screen coordinates, so there is no logical/physical/flip conversion.
 This is event-driven, not a polling pacer and not a modal `nextEventMatchingMask` loop (which would freeze the WKWebView), so it tracks the cursor at native speed without starving the webview.
 
-During a native resize, `moon-native-titlebar.js` suppresses the per-frame traffic-light position sync (it re-syncs once on release) so that IPC does not contend with the resize on the main thread.
+On its `NSEvent`-monitor teardown `begin_native_resize` emits `luna-resize-ended` to the resizing window (mirroring `luna-drag-released` for drags).
+`moon-resize.js` resets its state on that event, so the resize always tears down even when the button is released OUTSIDE the window (where the webview sees no `pointerup`); a `pointerup`/`blur` listener is the in-window fallback.
+
+During a native resize, `moon-native-titlebar.js` suppresses the per-frame traffic-light position sync (it re-syncs once on release, gated on the `__LUNA_NATIVE_RESIZING__` flag) so that IPC does not contend with the resize on the main thread.
 
 ## Weld visuals
 
