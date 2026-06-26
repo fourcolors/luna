@@ -263,4 +263,25 @@ describe("decode hardening (post-audit)", () => {
     expect(r.value.capabilities).toHaveLength(256)
     expect(r.rejected.some((x) => /exceeds 256/.test(x.error))).toBe(true)
   })
+
+  it("rejects megabyte-scale display strings (per-field length bound, anti-DoS)", () => {
+    const big = "x".repeat(5000) // > MAX_DISPLAY_LEN (4096)
+    expect(decodeCapabilityDescriptor({ ...base(), title: big }).ok).toBe(false)
+    expect(decodeCapabilityDescriptor({ ...base(), description: big }).ok).toBe(false)
+    expect(decodeCapabilityDescriptor({ ...base(), argHint: big }).ok).toBe(false)
+    expect(decodeCapabilityDescriptor({ ...base(), id: "y".repeat(300) }).ok).toBe(false) // > MAX_KEY_LEN (256)
+  })
+
+  it("rejects an oversized detail object (serialized size bound)", () => {
+    const huge = { blob: "z".repeat(20000) } // serialized > MAX_DETAIL_BYTES (16384)
+    expect(decodeCapabilityDescriptor({ ...base(), detail: huge }).ok).toBe(false)
+    // a small detail still passes
+    expect(decodeCapabilityDescriptor({ ...base(), detail: { ok: true } }).ok).toBe(true)
+  })
+
+  it("only iterates up to the cap — a 5000-entry catalog yields exactly 256 (bounded loop)", () => {
+    const many = Array.from({ length: 5000 }, (_, i) => ({ ...base(), id: `c${i}` }))
+    const r = decodeCapabilityCatalog({ generation: 1, agreedSchema: 1, capabilities: many })
+    expect(r.ok && r.value.capabilities.length).toBe(256)
+  })
 })

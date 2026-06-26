@@ -100,15 +100,33 @@ export function decodeCapabilityDescriptor(input: unknown): Decoded<CapabilityDe
   }
 }
 
+// Length bounds on untrusted strings — a backend cannot wedge the client with megabyte-
+// scale ids/titles/descriptions (DoS via allocation + giant DOM text nodes). Generous
+// relative to any legitimate command label.
+const MAX_KEY_LEN = 256 // kind, id
+const MAX_DISPLAY_LEN = 4096 // title, description, argHint
+const MAX_DETAIL_BYTES = 16384 // serialized `detail`
+
+/** Serialized byte length of `detail`; Infinity if it cannot be stringified (so it is rejected). */
+const detailByteLength = (d: unknown): number => {
+  try {
+    return JSON.stringify(d)?.length ?? 0
+  } catch {
+    return Infinity
+  }
+}
+
 function decodeDescriptorChecked(o: Record<string, unknown>): Decoded<CapabilityDescriptor> {
   if (typeof o.kind !== "string" || o.kind.length === 0) return fail("kind must be a non-empty string")
   if (typeof o.id !== "string" || o.id.length === 0) return fail("id must be a non-empty string")
   if (hasControlChar(o.kind)) return fail("kind must not contain control characters")
   if (hasControlChar(o.id)) return fail("id must not contain control characters")
+  if (o.kind.length > MAX_KEY_LEN || o.id.length > MAX_KEY_LEN) return fail("kind/id exceeds length limit")
   if (typeof o.title !== "string") return fail("title must be a string")
   // Control chars (e.g. newlines) in display strings let an untrusted backend forge
   // a second menu row / visually spoof a command — reject, matching kind/id discipline.
   if (hasControlChar(o.title)) return fail("title must not contain control characters")
+  if (o.title.length > MAX_DISPLAY_LEN) return fail("title exceeds length limit")
   if (o.executor !== "client" && o.executor !== "server") return fail('executor must be "client" or "server"')
   if (typeof o.schemaVersion !== "number" || !Number.isInteger(o.schemaVersion) || o.schemaVersion < 1) {
     return fail("schemaVersion must be an integer >= 1")
@@ -127,11 +145,13 @@ function decodeDescriptorChecked(o: Record<string, unknown>): Decoded<Capability
   if (o.description !== undefined) {
     if (typeof o.description !== "string") return fail("description must be a string")
     if (hasControlChar(o.description)) return fail("description must not contain control characters")
+    if (o.description.length > MAX_DISPLAY_LEN) return fail("description exceeds length limit")
     out.description = o.description
   }
   if (o.argHint !== undefined) {
     if (typeof o.argHint !== "string") return fail("argHint must be a string")
     if (hasControlChar(o.argHint)) return fail("argHint must not contain control characters")
+    if (o.argHint.length > MAX_DISPLAY_LEN) return fail("argHint exceeds length limit")
     out.argHint = o.argHint
   }
   if (o.enabled !== undefined) {
@@ -140,6 +160,7 @@ function decodeDescriptorChecked(o: Record<string, unknown>): Decoded<Capability
   }
   if (o.detail !== undefined) {
     if (!isRecord(o.detail)) return fail("detail must be an object")
+    if (detailByteLength(o.detail) > MAX_DETAIL_BYTES) return fail("detail exceeds size limit")
     out.detail = cloneData(o.detail) // own the output: never alias untrusted input
   }
 
@@ -168,19 +189,20 @@ function decodeCatalogChecked(o: Record<string, unknown>): DecodedCatalog {
   const capabilities: CapabilityDescriptor[] = []
   const rejected: RejectedCapability[] = []
   // Bound the catalog so a compromised/buggy backend can't wedge the client with a huge
-  // array (DoS via unbounded decode + DOM rows). Overflow is surfaced, never silent.
+  // array (DoS via unbounded decode + DOM rows). A bounded for-loop, NOT forEach —
+  // forEach cannot break, so it would still walk the entire untrusted array. Overflow
+  // is surfaced, never silent.
   const MAX_CAPABILITIES = 256
-  o.capabilities.forEach((c, index) => {
-    if (index >= MAX_CAPABILITIES) {
-      if (index === MAX_CAPABILITIES) {
-        rejected.push({ index, error: `catalog exceeds ${MAX_CAPABILITIES} capabilities; extras dropped` })
-      }
-      return
-    }
-    const d = decodeCapabilityDescriptor(c)
+  const list = o.capabilities
+  if (list.length > MAX_CAPABILITIES) {
+    rejected.push({ index: MAX_CAPABILITIES, error: `catalog exceeds ${MAX_CAPABILITIES} capabilities; extras dropped` })
+  }
+  const limit = Math.min(list.length, MAX_CAPABILITIES)
+  for (let index = 0; index < limit; index++) {
+    const d = decodeCapabilityDescriptor(list[index])
     if (d.ok) capabilities.push(d.value)
     else rejected.push({ index, error: d.error })
-  })
+  }
 
   return {
     ok: true,

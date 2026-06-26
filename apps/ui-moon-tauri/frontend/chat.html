@@ -5863,11 +5863,13 @@
       // Capability gates, normalized by vendor/moon-protocol.js (absent
       // flags coerce to false so older servers degrade instead of throwing).
       const caps = LunaProtocol.parseHelloCapabilities(frame);
-      // Backend-advertised commands gate: a server that does NOT advertise the
-      // capability layer (older server, or a different attached machine) must not
-      // leave a stale backend catalog rendering in the slash menu. A capable server
-      // re-populates _backendCatalog from its capability-catalog frame after hello.
-      if (!caps.commands) _backendCatalog = null;
+      // Backend-advertised commands gate: clear any PREVIOUS server's catalog on EVERY
+      // hello (a hello means a (re)connect or machine swap). A command-capable server
+      // re-populates _backendCatalog from the capability-catalog frame that follows;
+      // a server without the layer simply leaves it null. (Clearing only on the absent
+      // flag would let server A's commands keep rendering after a swap to a different
+      // command-capable server B until B's catalog arrives — or forever if it never does.)
+      _backendCatalog = null;
       // version-skew: gate the grouped activity timeline on the server
       // advertising the `turn-complete` frame. An older server omits this
       // capability → fall back to per-turn timelines that collapse on

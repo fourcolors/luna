@@ -469,4 +469,16 @@ describe('SlashMenu (chat.html)', () => {
     expect(menu().classList.contains('open')).toBe(true)
     expect(items().map((el) => el.getAttribute('data-command'))).not.toContain('interrupt')
   })
+
+  it('every hello clears the previous backend catalog (server-swap safety)', () => {
+    sendCapCatalog([interruptCap])
+    typeInComposer('/')
+    expect(items().map((el) => el.getAttribute('data-command'))).toContain('interrupt')
+    // A fresh hello — even from another COMMAND-CAPABLE server (commands:true) — must drop
+    // the stale catalog until that server's own capability-catalog frame arrives. Clearing
+    // only on the absent flag would let server A's commands keep routing to server B.
+    internals().handleFrame({ type: 'hello', protocolVersion: 2, capabilities: { commands: true }, availableModels: [] })
+    typeInComposer('/')
+    expect(items().map((el) => el.getAttribute('data-command'))).not.toContain('interrupt')
+  })
 })
