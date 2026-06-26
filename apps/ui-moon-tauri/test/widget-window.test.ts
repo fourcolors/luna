@@ -284,28 +284,32 @@ describe('widget.html — title bar + live magnetic drag', () => {
     await flush()
   })
 
-  it('drags the window LIVE on pointermove, snapping flush to the hub (alignment-only — no link)', async () => {
+  it('drags the window LIVE on pointermove; the hub is NOT a magnet (glides freely, no link)', async () => {
     const bar = document.querySelector('.title-bar') as HTMLElement
     stubCapture(bar)
 
-    // Arm: pointerdown at screen origin → snapshot reads me + candidates (main).
+    // Arm: pointerdown at screen origin. The start snapshot enumerates snap
+    // candidates via list_widget_windows, but the moon hub ('main') is
+    // DELIBERATELY excluded (moon-dock.js: the hub is small + always on screen,
+    // so magneting to it mid-drag reads as an "invisible wall" — "Panels snap to
+    // other PANELS only"). So the hub is never read as a candidate.
     bar.dispatchEvent(pointer('pointerdown', { screenX: 0, screenY: 0 }))
     await flush()
     expect(invoke).toHaveBeenCalledWith('list_widget_windows')
-    expect(getByLabel).toHaveBeenCalledWith('main')
+    expect(getByLabel).not.toHaveBeenCalledWith('main')
 
-    // Move: nudge the lead so its CARD face lands on main's right·top card tile.
-    // main card-right·top = (122+376, 104) = (498,104); SELF card-left·top there →
-    // SELF frame = (498-22, 104-4) = (476,100). Delta from origin (528,108) =
-    // (-52,-8). computeLiveDrag (card space) snaps RIGHT·top to (476,100).
+    // Move: with no panel candidates (list_widget_windows is [] and the hub is
+    // excluded), there is no magnet — the window glides FREELY to the raw
+    // pointer delta: SELF frame (528,108) + delta (-52,-8) → (476,100). NB this
+    // raw position equals the LEGACY snapped-to-hub target by construction, so
+    // the coordinate alone cannot prove "no snap"; the assertion that actually
+    // proves it is `getByLabel` not-called-with-'main' above. This line just
+    // confirms the live drag moved the window (one batched cluster move).
     bar.dispatchEvent(pointer('pointermove', { screenX: -52, screenY: -8 }))
     await flush()
-    // One batched cluster move (just SELF here) at the card-face-aligned target.
     expect(lastClusterMove()).toEqual([{ label: SELF, x: 476, y: 100 }])
 
-    // Up: the last move snapped, but the candidate is the hub ('main'). The
-    // commit explicitly skips anchor === 'main' — the hub is alignment-only, so
-    // snapping flush to it glides the window into place but never links a group.
+    // Up: gliding past the hub links nothing — the hub is alignment-only.
     bar.dispatchEvent(pointer('pointerup'))
     await flush()
     expect(dockLinks()).toHaveLength(0)
