@@ -4,16 +4,10 @@
 // workspace-scoped `workspace.db` (NOT luna.db) because wake_log is a
 // workspace artifact, not a Luna-runtime artifact.
 //
-// Schema (created by scripts/bootstrap-workspace.ts):
-//   CREATE TABLE wake_log (
-//     id        INTEGER PRIMARY KEY AUTOINCREMENT,
-//     woke_at   INTEGER NOT NULL,
-//     goal_slug TEXT,
-//     summary   TEXT NOT NULL,
-//     outcome   TEXT NOT NULL,
-//     artifacts TEXT,
-//     FOREIGN KEY (goal_slug) REFERENCES goals(slug)
-//   )
+// Schema: the canonical DDL lives in workspace-schema.ts (WAKE_LOG_DDL),
+// shared with the enable-wake installer and the wake tests. wake_log carries no
+// FK to goals (matching what actually ships) and is self-healed below so wake
+// rows can always be written, even on a not-yet-wake-enabled workspace.
 //
 // bun:sqlite is loaded via dynamic-import-string indirection, mirroring the
 // pattern in jobs-store.ts and agent-notes.ts (the project deliberately
@@ -24,6 +18,7 @@ import { Effect, Layer, Ref } from "effect"
 import { ConfigError } from "../errors.js"
 import type { WakeLogRow, WakeLogRowInput, WakeOutcome } from "./types.js"
 import { WakeError } from "./types.js"
+import { WAKE_LOG_DDL } from "./workspace-schema.js"
 
 // ── bun:sqlite minimal shape ────────────────────────────────────────────────
 interface BunDb {
@@ -51,8 +46,9 @@ export interface WakeLogStoreApi {
    * 'todo'). Path-B step 1: this is how a wake reasoner's proposals become
    * actionable instead of evaporating into wake_log. Caller pre-validates rows
    * (dedup, FK-safe goalSlug, clamped priority) via `planNextActions`. Returns
-   * the number of rows inserted. The `next_actions` table is created by
-   * scripts/bootstrap-workspace.ts; a missing table surfaces as a WakeError.
+   * the number of rows inserted. The `next_actions` table is installed by the
+   * enable-wake installer; a missing table surfaces as a WakeError (but a
+   * not-wake-enabled workspace skips before reaching this point).
    */
   readonly appendNextActions: (
     actions: ReadonlyArray<{
@@ -127,21 +123,11 @@ export class WakeLogStore extends Effect.Tag("luna/WakeLogStore")<
         db.run("PRAGMA journal_mode = WAL")
         db.run("PRAGMA synchronous = NORMAL")
         db.run("PRAGMA foreign_keys = ON")
-        // Ensure wake_log exists. The workspace bootstrap script
-        // (scripts/bootstrap-workspace.ts) also creates this table; using
-        // `IF NOT EXISTS` here means either creation order works and an
-        // un-bootstrapped workspace still accepts writes after a wake fires.
-        // Schema must stay in sync with the bootstrap definition.
-        db.run(
-          "CREATE TABLE IF NOT EXISTS wake_log (\n" +
-            "  id        INTEGER PRIMARY KEY AUTOINCREMENT,\n" +
-            "  woke_at   INTEGER NOT NULL,\n" +
-            "  goal_slug TEXT,\n" +
-            "  summary   TEXT NOT NULL,\n" +
-            "  outcome   TEXT NOT NULL,\n" +
-            "  artifacts TEXT\n" +
-            ")",
-        )
+        // Ensure wake_log exists (self-heal). Canonical DDL lives in
+        // workspace-schema.ts and is shared with the enable-wake installer +
+        // tests, so all three stay in lockstep. `IF NOT EXISTS` makes creation
+        // order irrelevant: even a not-wake-enabled workspace records wake rows.
+        db.run(WAKE_LOG_DDL)
         yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
 
         const insertStmt = db.query(
@@ -152,10 +138,11 @@ export class WakeLogStore extends Effect.Tag("luna/WakeLogStore")<
           "SELECT id, woke_at, goal_slug, summary, outcome, artifacts " +
             "FROM wake_log ORDER BY woke_at DESC LIMIT ?",
         )
-        // next_actions is owned by scripts/bootstrap-workspace.ts (full schema
-        // incl. the goals FK). We do NOT create it here — that would risk schema
-        // drift — so an un-bootstrapped workspace surfaces a WakeError on first
-        // file (caught by runWake; non-poisoning).
+        // next_actions (+ goals) are installed by the enable-wake installer
+        // (apps/ui-web/scripts/enable-wake.ts) from the canonical DDL in
+        // workspace-schema.ts — NOT here. A workspace that was never wake-enabled
+        // reads as a "skip" (hasWakeSchema / runWake) instead of having an empty
+        // next_actions silently materialised under it.
         //
         // PREPARED LAZILY (on first appendNextActions), NOT here: `db.query()`
         // compiles the SQL immediately, and against a workspace.db whose

@@ -12,8 +12,14 @@ import { AgentNotesService } from "../agent-notes/agent-notes.js"
 import { WakeReasoner } from "./reasoner.js"
 import { WakeLogStore } from "./wake-log-store.js"
 import { planNextActions } from "./plan-actions.js"
+import { hasWakeSchema } from "./workspace-schema.js"
 import { WakeError } from "./types.js"
-import type { WakeDigest, WakeInputs, WakeOutcome } from "./types.js"
+import type {
+  WakeDigest,
+  WakeInputs,
+  WakeOutcome,
+  WakeReadResult,
+} from "./types.js"
 
 // ── bun:sqlite minimal shape (mirrors wake-log-store.ts) ────────────────────
 interface BunDb {
@@ -47,15 +53,17 @@ export interface WakeCronOptions {
  * Read inputs for one wake cycle from the workspace.db at the given path.
  * Read-only — opens the db in readonly mode and closes it on exit.
  *
- * Returns a WakeInputs value or a WakeError if the db can't be opened or
- * any required table is missing. Caller decides how to log the error.
+ * Returns a WakeReadResult: `{_tag:"inputs"}` with the state, or `{_tag:"skip"}`
+ * when the workspace has no `goals`/`next_actions` schema (not wake-enabled — a
+ * skip, not an error). A WakeError is returned only for genuine failures (db
+ * can't be opened, etc.). Caller decides how to log each.
  *
  * bun:sqlite is loaded via dynamic-import-string indirection so this module
  * typechecks under tsc without @types/bun (same pattern as jobs-store.ts).
  */
 export const readWakeInputs = (
   opts: WakeCronOptions,
-): Effect.Effect<WakeInputs, WakeError> =>
+): Effect.Effect<WakeReadResult, WakeError> =>
   Effect.gen(function* () {
     const bunSqliteSpec = "bun:sqlite"
     const mod = yield* Effect.tryPromise({
@@ -80,7 +88,7 @@ export const readWakeInputs = (
       )
     }
     return yield* Effect.try({
-      try: (): WakeInputs => {
+      try: (): WakeReadResult => {
         const dbPath = workspaceDbPathFor(opts.workspacePath)
         const mdPath = workspaceMdPathFor(opts.workspacePath)
         const workspaceMd = existsSync(mdPath)
@@ -88,6 +96,15 @@ export const readWakeInputs = (
           : ""
         const db = new Database(dbPath, { readonly: true })
         try {
+          // Un-bootstrapped workspace: no goals/next_actions schema → not
+          // wake-enabled. Skip cleanly instead of throwing `no such table`.
+          if (!hasWakeSchema(db)) {
+            return {
+              _tag: "skip",
+              reason:
+                "workspace not wake-enabled (no goals/next_actions schema; run enable-wake)",
+            }
+          }
           const openGoals = db
             .query(
               "SELECT slug, title, priority FROM goals " +
@@ -121,7 +138,7 @@ export const readWakeInputs = (
             summary: string
             outcome: string
           }>
-          return {
+          const inputs = {
             workspaceSlug: opts.workspaceSlug,
             workspaceMd,
             openGoals,
@@ -138,6 +155,7 @@ export const readWakeInputs = (
               outcome: w.outcome,
             })),
           } satisfies WakeInputs
+          return { _tag: "inputs", inputs }
         } finally {
           db.close()
         }
@@ -245,7 +263,41 @@ export const runWake = (
       })
       return
     }
-    const inputs = inputsResult.right
+    const read = inputsResult.right
+
+    // Step 1b: skip path — workspace not wake-enabled (no goals/next_actions).
+    // Record a `skipped` outcome, but ONLY on transition: once the most recent
+    // wake_log row is already `skipped`, stay silent so an un-enabled workspace
+    // doesn't write a row every tick. The reasoner is never invoked.
+    if (read._tag === "skip") {
+      const recentResult = yield* Effect.either(store.recent(1))
+      const lastOutcome =
+        recentResult._tag === "Right" && recentResult.right.length > 0
+          ? recentResult.right[0]!.outcome
+          : undefined
+      if (lastOutcome === "skipped") return
+      const skipSummary = `wake skipped: ${read.reason}`
+      const skipArtifacts = JSON.stringify({
+        stage: "read-inputs",
+        skipped: read.reason,
+      })
+      yield* Effect.ignore(
+        store.append({
+          wokeAt: now,
+          goalSlug: null,
+          summary: skipSummary,
+          outcome: "skipped",
+          artifacts: skipArtifacts,
+        }),
+      )
+      yield* mirrorToNotes({
+        summary: skipSummary,
+        outcome: "skipped",
+        artifacts: skipArtifacts,
+      })
+      return
+    }
+    const inputs = read.inputs
 
     // Step 2: reason. Reasoner failure logged + returned.
     const reasonResult = yield* Effect.either(reasoner.reason(inputs))

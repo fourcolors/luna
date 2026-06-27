@@ -8,8 +8,15 @@
 import type { Effect } from "effect"
 import { Data } from "effect"
 
-/** Outcome enum stored in wake_log.outcome. */
-export type WakeOutcome = "success" | "no-op" | "error" | "timeout"
+/** Outcome enum stored in wake_log.outcome.
+ *  `skipped` = the workspace is not wake-enabled (no goals/next_actions schema);
+ *  the cycle did no work and recorded a skip instead of a (misleading) error. */
+export type WakeOutcome =
+  | "success"
+  | "no-op"
+  | "error"
+  | "timeout"
+  | "skipped"
 
 /** A new action the reasoner proposes filing into next_actions. */
 export interface WakeProposedAction {
@@ -57,6 +64,15 @@ export interface WakeInputs {
     readonly outcome: string
   }>
 }
+
+/**
+ * Result of reading wake inputs: either the full inputs, or a skip signal when
+ * the workspace has no `goals`/`next_actions` schema (i.e. wake was never
+ * enabled there). A skip is NOT an error — runWake records a `skipped` outcome.
+ */
+export type WakeReadResult =
+  | { readonly _tag: "inputs"; readonly inputs: WakeInputs }
+  | { readonly _tag: "skip"; readonly reason: string }
 
 export interface WakeReasonerApi {
   readonly reason: (

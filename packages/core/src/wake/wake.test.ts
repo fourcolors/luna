@@ -12,12 +12,16 @@ import { tmpdir } from "node:os"
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { Database } from "bun:sqlite"
+import { installWakeSchema } from "./workspace-schema.js"
 
-/** Build a temp workspace dir with .workspace/{workspace.md,workspace.db} */
+/** Build a temp workspace dir with .workspace/{workspace.md,workspace.db}.
+ *  `withSchema` (default true) installs the canonical wake schema; pass false
+ *  to simulate a workspace that was never wake-enabled (skip path). */
 function makeTempWorkspace(opts: {
   withGoals?: boolean
   withActions?: boolean
   withWakes?: boolean
+  withSchema?: boolean
 }): { path: string; cleanup: () => void } {
   const root = mkdtempSync(join(tmpdir(), "wake-test-"))
   const wsDir = join(root, ".workspace")
@@ -27,19 +31,9 @@ function makeTempWorkspace(opts: {
     "# luna\nTest workspace for wake unit test.",
   )
   const db = new Database(join(wsDir, "workspace.db"))
-  db.run(`CREATE TABLE goals (
-    slug TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active', priority INTEGER NOT NULL DEFAULT 1,
-    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`)
-  db.run(`CREATE TABLE next_actions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, goal_slug TEXT NOT NULL,
-    action TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'todo',
-    priority INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL, completed_at INTEGER, notes TEXT)`)
-  db.run(`CREATE TABLE wake_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, woke_at INTEGER NOT NULL,
-    goal_slug TEXT, summary TEXT NOT NULL, outcome TEXT NOT NULL,
-    artifacts TEXT)`)
+  if (opts.withSchema !== false) {
+    installWakeSchema(db)
+  }
   if (opts.withGoals) {
     db.run(
       "INSERT INTO goals VALUES ('g1','First goal','desc','active',3,100,100)",
@@ -212,6 +206,44 @@ describe("runWake", () => {
       stage?: string
     }
     expect(artifacts.stage).toBe("read-inputs")
+  })
+
+  it("writes a 'skipped' row (only on transition) when the workspace has no wake schema", async () => {
+    const { path, cleanup } = makeTempWorkspace({ withSchema: false })
+    try {
+      // The reasoner must NEVER run for a not-wake-enabled workspace.
+      const reasonerMustNotRun = Layer.succeed(WakeReasoner, {
+        reason: () =>
+          Effect.die("reasoner must not be invoked on a skipped workspace"),
+      })
+      const layer = Layer.mergeAll(
+        reasonerMustNotRun,
+        WakeLogStore.Memory,
+        AgentNotesL,
+      )
+      const rows = await Effect.runPromise(
+        Effect.gen(function* () {
+          // Two consecutive ticks against the same in-memory store.
+          yield* runWake(1_000, { workspaceSlug: "luna", workspacePath: path })
+          yield* runWake(2_000, { workspaceSlug: "luna", workspacePath: path })
+          const store = yield* WakeLogStore
+          return yield* store.recent(10)
+        }).pipe(Effect.provide(layer)),
+      )
+      // Transition-only: the first tick records a skip; the second stays silent.
+      expect(rows).toHaveLength(1)
+      expect(rows[0]?.outcome).toBe("skipped")
+      expect(rows[0]?.wokeAt).toBe(1_000)
+      expect(rows[0]?.summary).toContain("not wake-enabled")
+      const artifacts = JSON.parse(rows[0]?.artifacts ?? "{}") as {
+        stage?: string
+        skipped?: string
+      }
+      expect(artifacts.stage).toBe("read-inputs")
+      expect(artifacts.skipped).toBeDefined()
+    } finally {
+      cleanup()
+    }
   })
 
   it("feeds workspace state into the reasoner", async () => {
