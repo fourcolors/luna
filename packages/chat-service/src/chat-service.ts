@@ -109,7 +109,48 @@ interface ThreadEntry {
   readonly inFlightTurnId: Ref.Ref<string | null>
   /** Cumulative assistant text within the in-flight turn (for delta snapshots). */
   readonly inFlightText: Ref.Ref<string>
+  /** Epoch ms of the last activity (user send or any SDK message). Drives the
+   *  idle reaper that releases the thread's `claude` subprocess after a quiet
+   *  period — see the reaper near the service tail. */
+  readonly lastActivity: Ref.Ref<number>
 }
+
+/* -------------------------------------------------------------------------- */
+/* Idle-thread reaper — pure decision helpers (unit-tested in isolation)       */
+/* -------------------------------------------------------------------------- */
+
+/** Default idle window before a thread's `claude` subprocess is reaped: 30 min. */
+export const DEFAULT_IDLE_REAP_MS = 1_800_000
+
+/**
+ * Parse the LUNA_CHAT_THREAD_IDLE_MS env override.
+ *  - absent / non-numeric / negative → DEFAULT_IDLE_REAP_MS
+ *  - `0` → 0 (explicitly disables the reaper)
+ *  - any positive number → that many ms
+ */
+export const parseIdleReapMs = (raw: string | undefined): number => {
+  // An absent OR empty/whitespace value means "unset" → default. (Number("")
+  // is 0, which would otherwise silently disable the reaper.)
+  if (raw === undefined || raw.trim() === "") return DEFAULT_IDLE_REAP_MS
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_IDLE_REAP_MS
+}
+
+/**
+ * Pure decision: should a thread be reaped right now? A thread is reapable iff
+ * the reaper is enabled (idleReapMs > 0), it has no in-flight turn, and it has
+ * been quiet for at least the idle window. Kept pure so the policy is tested
+ * without standing up the whole ChatService.
+ */
+export const isThreadIdleReapable = (args: {
+  readonly now: number
+  readonly lastActivity: number
+  readonly inFlightTurnId: string | null
+  readonly idleReapMs: number
+}): boolean =>
+  args.idleReapMs > 0 &&
+  args.inFlightTurnId === null &&
+  args.now - args.lastActivity >= args.idleReapMs
 
 /* -------------------------------------------------------------------------- */
 /* SDK message shape probes (kept narrow — adapter is SDK source-of-truth).   */
@@ -769,6 +810,7 @@ export class ChatService extends Effect.Service<ChatService>()(
           const pubsub = yield* PubSub.unbounded<ChatFrame>()
           const inFlightTurnId = yield* Ref.make<string | null>(null)
           const inFlightText = yield* Ref.make<string>("")
+          const lastActivity = yield* Ref.make<number>(yield* clock.nowMs())
 
           // Per-thread sub-scope. `Scope.fork` makes a child that we can
           // close independently of the service scope. The service scope
@@ -914,6 +956,7 @@ export class ChatService extends Effect.Service<ChatService>()(
                 pubsub,
                 inFlightTurnId,
                 inFlightText,
+                lastActivity,
               }),
             ),
             Effect.catchAllCause((cause) => {
@@ -958,6 +1001,7 @@ export class ChatService extends Effect.Service<ChatService>()(
             scope: threadScope,
             inFlightTurnId,
             inFlightText,
+            lastActivity,
           }
           yield* Ref.update(threads, (m) => {
             const next = new Map(m)
@@ -1000,8 +1044,12 @@ export class ChatService extends Effect.Service<ChatService>()(
         readonly pubsub: PubSub.PubSub<ChatFrame>
         readonly inFlightTurnId: Ref.Ref<string | null>
         readonly inFlightText: Ref.Ref<string>
+        readonly lastActivity: Ref.Ref<number>
       }): Effect.Effect<void, never> =>
         Effect.gen(function* () {
+          // Any SDK traffic counts as activity — keeps a thread "warm" during
+          // its turn and resets the idle-reaper clock the moment a turn ends.
+          yield* Ref.set(args.lastActivity, yield* clock.nowMs())
           const t = (args.msg as { type?: string }).type
           // Subagent linkage: the SDK forwards a subagent's tool_use /
           // tool_result blocks (and its seed prompt) onto the parent stream
@@ -1331,6 +1379,9 @@ export class ChatService extends Effect.Service<ChatService>()(
           }
 
           const ts = yield* clock.nowMs()
+          // Mark activity up front so the idle reaper never releases a thread
+          // that just received a user message but whose SDK reply is still pending.
+          yield* Ref.set(entry.lastActivity, ts)
           const messageId = `usr_${ts.toString(36)}_${Math.random().toString(36).slice(2, 6)}`
           const markedText = applyClientMarker(text, client)
           const userPayload = buildUserMessage(markedText, attachments)
@@ -2127,6 +2178,22 @@ export class ChatService extends Effect.Service<ChatService>()(
             .pipe(Effect.catchAll(() => Effect.void))
         })
 
+      /** Release a thread's RUNTIME only: close its scope (which interrupts the
+       *  SDK subprocess + drops it from the threads map) WITHOUT marking the
+       *  thread "closed" in the store. Unlike `closeThread`, the thread stays a
+       *  normal, resumable session — `subscribe`'s cache-miss path (Case A)
+       *  transparently re-creates it via `resumeFromSessionId` on the next open.
+       *  This is what the idle reaper uses to reclaim leaked subprocesses. */
+      const releaseThreadRuntime = (
+        threadId: string,
+      ): Effect.Effect<void, never> =>
+        Effect.gen(function* () {
+          const m = yield* Ref.get(threads)
+          const entry = m.get(threadId)
+          if (!entry) return
+          yield* Scope.close(entry.scope, Exit.void)
+        })
+
       /** Read-only memory search delegating to the wired MemoryRouter.
        *  Errors are tagged in the result rather than failing the Effect,
        *  so the WS handler can pattern-match cleanly. */
@@ -2197,6 +2264,62 @@ export class ChatService extends Effect.Service<ChatService>()(
             reg.unarchive(threadId).pipe(Effect.catchAllCause(() => Effect.succeed(false))),
         })
 
+      // ── Idle-thread reaper ────────────────────────────────────────────────
+      // Each live thread pins one `claude` subprocess to its threadScope. Until
+      // now the only thing that closed a threadScope was full server shutdown,
+      // so every thread leaked a subprocess that lived until `systemctl restart`
+      // (observed: 45 orphaned `claude` procs after 3 days). The reaper releases
+      // the runtime of any thread idle past LUNA_CHAT_THREAD_IDLE_MS (default
+      // 30min; 0 disables) with no in-flight turn. Non-destructive: subscribe()'s
+      // cache-miss path resumes the thread on next open.
+      const idleReapMs: number = parseIdleReapMs(
+        process.env["LUNA_CHAT_THREAD_IDLE_MS"],
+      )
+
+      /** Release every thread idle past the window (no in-flight turn). Returns
+       *  the count reaped. Exposed so tests can drive a sweep deterministically
+       *  instead of waiting on the background fiber's timer. */
+      const reapIdleThreadsOnce = (): Effect.Effect<number, never> =>
+        Effect.gen(function* () {
+          if (idleReapMs <= 0) return 0
+          const now = yield* clock.nowMs()
+          const snapshot = yield* Ref.get(threads)
+          let reaped = 0
+          for (const [tid, e] of snapshot) {
+            const inFlightTurnId = yield* Ref.get(e.inFlightTurnId)
+            const last = yield* Ref.get(e.lastActivity)
+            if (
+              !isThreadIdleReapable({ now, lastActivity: last, inFlightTurnId, idleReapMs })
+            )
+              continue
+            yield* Effect.logInfo("[chat] reaping idle thread", {
+              threadId: tid,
+              idleMs: now - last,
+            })
+            yield* inc("luna.chat.threads.reaped_idle")
+            yield* releaseThreadRuntime(tid)
+            reaped++
+          }
+          return reaped
+        })
+
+      // Arm the background sweep (skipped when disabled). Forked into the
+      // service scope so it lives for the server's lifetime and is interrupted
+      // cleanly on shutdown.
+      if (idleReapMs > 0) {
+        const sweepMs = Math.max(15_000, Math.min(idleReapMs, 60_000))
+        yield* Effect.logInfo("[chat] idle-thread reaper armed", {
+          idleReapMs,
+          sweepMs,
+        })
+        yield* Effect.sleep(sweepMs).pipe(
+          Effect.zipRight(reapIdleThreadsOnce()),
+          Effect.asVoid,
+          Effect.forever,
+          Effect.forkIn(serviceScope),
+        )
+      }
+
       return {
         createThread,
         send,
@@ -2207,6 +2330,7 @@ export class ChatService extends Effect.Service<ChatService>()(
         listThreads,
         searchMemory,
         closeThread,
+        reapIdleThreadsOnce,
         archiveThread,
         unarchiveThread,
         /** Cross-thread background-delivery notifications (#124). The WS layer
