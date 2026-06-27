@@ -49,16 +49,17 @@ annotated tag — but does **not** push. You push `master` first, then the tag. 
 the user-facing publish — it will prompt for approval.
 
 ### 4. Find & monitor the run
-- Give it a few seconds, then find the triggered run: `gh run list --workflow=release-moon.yml --limit 1 --json databaseId,status,url,createdAt`. Confirm `createdAt` is fresh; grab `databaseId`.
+- Give it a few seconds, then find the triggered run: `gh run list --workflow=release-moon.yml --limit 1 --json databaseId,status,url,createdAt,event`. Confirm it's fresh **and** `event` is `push` (the tag push — not a stale `workflow_dispatch`); grab `databaseId`.
 - The macOS build takes **~10–20 min** — watch it in the **background** so you're re-invoked on completion instead of blocking: `gh run watch <id> --exit-status --interval 30` via Bash `run_in_background: true`.
 
 ### 5. On success — report + write release notes
 1. Resolve assets: `gh release view moon-v<x.y.z> --json url,publishedAt,assets`. Download = the release page `url`.
 2. Verify the updater **"Latest" invariant** — only a `moon-v*` release may be GitHub-Latest, or the in-app updater breaks:
    ```
-   curl -sL -o /dev/null -w "%{http_code}\n" https://github.com/fourcolors/luna/releases/latest/download/latest.json
+   curl -sL -o /tmp/luna-latest.json -w "%{http_code}\n" https://github.com/fourcolors/luna/releases/latest/download/latest.json
+   grep '"version"' /tmp/luna-latest.json   # must equal <x.y.z>
    ```
-   Expect **200**. If not, flag it: `gh release edit moon-v<x.y.z> --latest`.
+   Expect **HTTP 200** and `"version": "<x.y.z>"` matching the release. If either is wrong, flag it: `gh release edit moon-v<x.y.z> --latest`.
 3. Changelog: `git log moon-v<prev>..moon-v<x.y.z> --pretty='- %s'`, grouped Features / Fixes / Chore. Write it: `gh release edit moon-v<x.y.z> --notes "<changelog>"`.
 4. Print the inline report:
    > ✅ **Luna Moon `<x.y.z>` released** — `moon-v<x.y.z>`, published `<time>` (build: `<run-url>`)
