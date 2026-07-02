@@ -25,7 +25,7 @@ const DOCK_DOM =
 type Layout = Record<string, [number, number, number, number]> // label → [x,y,w,h]
 
 // A fake Tauri window reporting a fixed logical rect (scaleFactor 1).
-function mkWin(label: string, rect: [number, number, number, number], opts?: { visible?: boolean }) {
+function mkWin(label: string, rect: [number, number, number, number], opts?: { visible?: boolean; minimized?: boolean }) {
   const [x, y, w, h] = rect
   let visible = opts?.visible !== false
   return {
@@ -34,6 +34,7 @@ function mkWin(label: string, rect: [number, number, number, number], opts?: { v
     outerSize: vi.fn(async () => ({ width: w, height: h })),
     scaleFactor: vi.fn(async () => 1),
     isVisible: vi.fn(async () => visible),
+    isMinimized: vi.fn(async () => opts?.minimized === true),
     listen: vi.fn(async () => () => {}),
     onResized: vi.fn(async () => () => {}),
     set visible(v: boolean) { visible = v },
@@ -200,20 +201,117 @@ describe('moon-dock — native single-window drag', () => {
     return ev
   }
 
-  it('a lone window with native support drags via startDragging, skipping the emulated loop', () => {
+  it('a lone window with native support drags via begin_cluster_drag with no towed members', () => {
     const self = wireWith('widget-a', { 'widget-a': [0, 0, 200, 300] })
     // Hand the window the native APIs; the grab handler reads them dynamically.
     const startDragging = vi.fn()
     ;(self as any).startDragging = startDragging
     ;(self as any).onMoved = vi.fn(async () => () => {})
     ;(self as any).setPosition = vi.fn()
+    const invoke = (window as any).__TAURI__.core.invoke
     const bar = document.getElementById('title-bar')!
     pointer('pointerdown', bar)
-    // Native path taken: the OS drives the drag and .dragging is applied…
-    expect(startDragging).toHaveBeenCalledTimes(1)
+    // Native path taken: ONE begin_cluster_drag hop (attach children + start
+    // the OS drag, ordered on the main thread) with an empty tow set for a
+    // lone window, and .dragging is applied…
+    expect(invoke).toHaveBeenCalledWith('begin_cluster_drag', { members: [] })
+    expect(startDragging).not.toHaveBeenCalled()
     expect(shell().classList.contains('dragging')).toBe(true)
     // …and the emulated per-pointermove loop is NOT armed (no setPosition on move).
     pointer('pointermove', bar)
     expect((self as any).setPosition).not.toHaveBeenCalled()
+  })
+
+  it('falls back to plain startDragging when invoke is unavailable (older runtime)', () => {
+    const self = wireWith('widget-a', { 'widget-a': [0, 0, 200, 300] })
+    delete (window as any).__TAURI__.core
+    const startDragging = vi.fn()
+    ;(self as any).startDragging = startDragging
+    pointer('pointerdown', document.getElementById('title-bar')!)
+    expect(startDragging).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('moon-dock — native cluster tow (anchor drags the whole weld)', () => {
+  function pointer(type: string, target: Element, opts: Record<string, unknown> = {}) {
+    const ev = new MouseEvent(type, { bubbles: true, button: 0, ...opts }) as MouseEvent & { pointerId?: number }
+    ev.pointerId = (opts.pointerId as number) ?? 1
+    target.dispatchEvent(ev)
+    return ev
+  }
+
+  it('an anchor grab tows its welded cluster as child windows (begin_cluster_drag) and detaches after the release settles (end_cluster_drag)', async () => {
+    // panel-b sits card-flush right of the chat anchor (frames overlap by the
+    // 22px side insets: 178 card edge == 156 frame offset + 22).
+    const self = wireWith('panel-chat', {
+      'panel-chat': [0, 0, 200, 300],
+      'panel-b': [156, 0, 200, 300],
+    })
+    ;(self as any).startDragging = vi.fn()
+    ;(self as any).onMoved = vi.fn(async () => () => {})
+    ;(self as any).setPosition = vi.fn()
+    // Let the boot weld settle so groupMembers holds the cluster.
+    await vi.waitFor(() => expect(shell().getAttribute('data-weld')).toBe('r'))
+    const invoke = (window as any).__TAURI__.core.invoke
+    invoke.mockClear()
+    const bar = document.getElementById('title-bar')!
+    pointer('pointerdown', bar)
+    // The anchor tows the whole cluster: the welded sibling rides as a native
+    // child window in the SAME window-server transaction.
+    expect(invoke).toHaveBeenCalledWith('begin_cluster_drag', { members: ['panel-b'] })
+    // Release: the pointerup fallback finishes the gesture → snap-on-release
+    // settles (children ride the final setPosition), THEN the tow detaches.
+    pointer('pointerup', document.body)
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('end_cluster_drag', { members: ['panel-b'] })
+    })
+  })
+
+  it('a non-anchor member peels off alone — no tow set', async () => {
+    const self = wireWith('panel-b', {
+      'panel-chat': [0, 0, 200, 300],
+      'panel-b': [156, 0, 200, 300],
+    })
+    ;(self as any).startDragging = vi.fn()
+    ;(self as any).onMoved = vi.fn(async () => () => {})
+    await vi.waitFor(() => expect(shell().getAttribute('data-weld')).toBe('l'))
+    const invoke = (window as any).__TAURI__.core.invoke
+    invoke.mockClear()
+    pointer('pointerdown', document.getElementById('title-bar')!)
+    expect(invoke).toHaveBeenCalledWith('begin_cluster_drag', { members: [] })
+  })
+})
+
+describe('moon-dock — ghost weld guards', () => {
+  it('a minimized flush sibling is NOT a weld member (no ghost weld toward a hole)', async () => {
+    document.body.innerHTML = DOCK_DOM
+    const wins: Record<string, ReturnType<typeof mkWin>> = {
+      'panel-chat': mkWin('panel-chat', [0, 0, 200, 300], { minimized: true }),
+      'panel-b': mkWin('panel-b', [156, 0, 200, 300]),
+    }
+    const self = wins['panel-b']
+    ;(window as any).__TAURI__ = {
+      window: {
+        getCurrentWindow: () => self,
+        LogicalPosition: class { constructor(public x: number, public y: number) {} },
+        Window: { getByLabel: vi.fn(async (l: string) => wins[l] || null) },
+      },
+      core: { invoke: vi.fn(async (cmd: string) => (cmd === 'list_widget_windows' ? Object.keys(wins) : null)) },
+      event: { emit: vi.fn(async () => {}), listen: vi.fn(async () => () => {}) },
+    }
+    loadVendorInto(window, 'deck-snap.js')
+    loadVendorInto(window, 'moon-dock.js')
+    ;(window as any).LunaDock.wire({ win: self, label: 'panel-b' })
+    // Give the boot weld a chance to (wrongly) engage; it must stay ungrouped.
+    await new Promise((r) => setTimeout(r, 50))
+    expect(shell().getAttribute('data-weld')).toBe(null)
+  })
+
+  it('broadcasts a geometry tick on visibilitychange (OS-miniaturize / restore self-heal)', () => {
+    wireWith('widget-a', { 'widget-a': [0, 0, 200, 300] })
+    const emit = (window as any).__TAURI__.event.emit as ReturnType<typeof vi.fn>
+    emit.mockClear()
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(emit).toHaveBeenCalledWith('dock-geometry-changed', { from: 'widget-a' })
   })
 })

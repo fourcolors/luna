@@ -1,0 +1,7 @@
+# Per-display work areas (NSScreen.visibleFrame) — the ground truth that
+# replaces the JS MENU_BAR_INSET heuristic for snap/de-overlap bounds. See
+# main.rs (monitor_work_areas) and frontend/vendor/moon-dock.js.
+[[permission]]
+identifier = "allow-monitor-work-areas"
+description = "Allows the monitor_work_areas command"
+commands.allow = ["monitor_work_areas"]

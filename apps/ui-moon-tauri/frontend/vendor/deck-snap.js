@@ -667,6 +667,21 @@
     var iter = typeof o.maxIter === "number" ? o.maxIter : 12
     var bounds = o.bounds || null
     var x = rect.x, y = rect.y, w = rect.w, h = rect.h
+    // Zero-overlap fast path, BEFORE the bounds clamp: a drop that overlaps
+    // nothing must not move AT ALL. The old unconditional STEP-0 clamp yanked
+    // every partially-offscreen or monitor-straddling card fully into bounds
+    // on release — a visible POP native macOS would never do (the OS happily
+    // leaves windows half off-screen). The clamp exists only so the push math
+    // below runs on a position the OS will actually honour; with no overlap
+    // there is no push, so nothing to protect.
+    var anyOverlap = false
+    for (var q = 0; q < os.length; q++) {
+      var n0 = os[q]
+      var qx = Math.min(x + w, n0.x + n0.w) - Math.max(x, n0.x)
+      var qy = Math.min(y + h, n0.y + n0.h) - Math.max(y, n0.y)
+      if (qx > 0 && qy > 0) { anyOverlap = true; break }
+    }
+    if (!anyOverlap) return { x: x, y: y }
     // STEP 0 — clamp the start position INTO bounds. The upstream edge-snap can
     // pick an off-screen flush target (e.g. "above" a top-row neighbour at a
     // negative y); that reads as zero-overlap in pure geometry, but the OS then

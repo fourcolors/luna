@@ -73,7 +73,10 @@ version = "0.3.2"
 default-features = false
 # `block2` enables addLocal/GlobalMonitorForEventsMatchingMask:handler: — the
 # event-driven native resize installs NSEvent monitors instead of polling.
-features = ["NSWindow", "NSButton", "NSControl", "NSView", "NSEvent", "block2"]
+# `NSGraphics` provides NSWindowOrderingMode for addChildWindow:ordered: (the
+# native cluster-drag towing); `NSScreen` provides visibleFrame (per-display
+# work areas replacing the JS MENU_BAR_INSET heuristic).
+features = ["NSWindow", "NSButton", "NSControl", "NSView", "NSEvent", "NSGraphics", "NSScreen", "block2"]
 
 # Block (Obj-C closure) support for the NSEvent monitor handlers that drive the
 # event-driven native window resize (begin_native_resize). macOS-gated like the
