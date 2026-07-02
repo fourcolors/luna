@@ -153,7 +153,10 @@ export class InboundDedupStore extends Effect.Tag(
 
         return {
           seenBefore: (transport, platformMessageId) =>
-            Effect.sync(() => seenStmt.get(transport, platformMessageId) !== undefined),
+            // bun:sqlite's `.get()` returns `null` (not `undefined`) on no match,
+            // so `!= null` is required — `!== undefined` would be true for every
+            // row and treat every inbound message as a duplicate (dropping it).
+            Effect.sync(() => seenStmt.get(transport, platformMessageId) != null),
           markSeen: (transport, platformMessageId, createdAt) =>
             Effect.sync(() => {
               insertStmt.run(transport, platformMessageId, createdAt)

@@ -26,6 +26,7 @@ const BUN_RUNTIME_TESTS = [
   "packages/core/src/wake/wake.test.ts",
   "packages/observability-tools/test/tools.test.ts",
   "packages/observability-tools/test/mcp-structure.test.ts",
+  "packages/channels/test/dedup-sqlite.test.ts",
 ]
 
 export default defineConfig({
