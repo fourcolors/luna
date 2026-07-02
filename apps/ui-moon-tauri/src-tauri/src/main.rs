@@ -2541,12 +2541,18 @@ fn begin_cluster_drag(window: tauri::WebviewWindow, _members: Vec<String>) -> Re
 #[tauri::command]
 fn end_cluster_drag(window: tauri::WebviewWindow, members: Vec<String>) -> Result<(), String> {
     let app = window.app_handle().clone();
+    let self_label = window.label().to_string();
     with_appkit_main_thread(window, move |win| {
         use objc2_app_kit::NSWindow;
         let parent_ptr = win.ns_window().map_err(|e| e.to_string())?;
         unsafe {
             let parent: &NSWindow = &*parent_ptr.cast();
             for label in &members {
+                // Same trust boundary as begin_cluster_drag: only
+                // dock-namespace siblings, never the hub, never self.
+                if !is_dock_label(label) || *label == self_label {
+                    continue;
+                }
                 let Some(child) = app.get_webview_window(label) else {
                     continue;
                 };
