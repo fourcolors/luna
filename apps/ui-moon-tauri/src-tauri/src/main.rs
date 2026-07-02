@@ -1534,6 +1534,11 @@ fn spawn_panel_at(
     .always_on_top(false)
     .skip_taskbar(true)
     .visible(visible)
+    // Zoom (green) stays DISABLED, the native treatment for auxiliary/utility
+    // windows: AppKit greys the button and ignores clicks. An enabled zoom
+    // would fullscreen the transparent borderless card (floating content on a
+    // black desktop) and persist that broken frame into layout.json.
+    .maximizable(false)
     .inner_size(width.unwrap_or(desc.width), height.unwrap_or(desc.height))
     .min_inner_size(220.0, 120.0);
     // macOS overlay title bar: hidden_title drops the window title text;
@@ -1729,6 +1734,8 @@ async fn open_artifact_widget(
             // when luna_always_on_top === "true".
             .always_on_top(false)
             .skip_taskbar(true)
+            // Zoom disabled — same auxiliary-window treatment as spawn_panel_at.
+            .maximizable(false)
             .inner_size(width.unwrap_or(360.0), height.unwrap_or(440.0))
             .min_inner_size(220.0, 160.0);
     // macOS overlay title bar — position synced from the page (spawn_panel_at).
@@ -2469,6 +2476,152 @@ fn watch_drag_release(_window: tauri::WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
+// ── Native cluster drag: AppKit child windows (macOS) ────────────────────────
+//
+// A native `startDragging()` hands the gesture to the OS window server, which
+// moves ONLY the grabbed window — so since the native-drag rewrite a welded
+// cluster stopped moving as one (the towing code lived solely in the now-dead
+// emulated path). The native mechanism for "windows that move together" is
+// `NSWindow addChildWindow:ordered:`: the window server moves child windows in
+// the SAME transaction as their parent — 1:1 with the cursor, zero per-frame
+// IPC, mixed-DPI handled by the OS. Division of labor: JS (the weld graph in
+// moon-dock.js) decides WHO tows; AppKit is only the muscle. The attachment is
+// TRANSIENT — attached right before start_dragging, detached after the
+// snap-on-release settle — so none of the long-lived child-window quirks
+// (miniaturize misbehavior, Spaces coupling) ever apply.
+
+/// Attach `members` as native child windows of the calling card, then start
+/// the OS drag. Only dock-namespace labels are honored (never the hub, never
+/// self), so a compromised page cannot kidnap arbitrary windows.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn begin_cluster_drag(window: tauri::WebviewWindow, members: Vec<String>) -> Result<(), String> {
+    let app = window.app_handle().clone();
+    let self_label = window.label().to_string();
+    with_appkit_main_thread(window.clone(), move |win| {
+        use objc2_app_kit::{NSWindow, NSWindowOrderingMode};
+        let parent_ptr = win.ns_window().map_err(|e| e.to_string())?;
+        unsafe {
+            let parent: &NSWindow = &*parent_ptr.cast();
+            for label in &members {
+                if !is_dock_label(label) || *label == self_label {
+                    continue;
+                }
+                let Some(child) = app.get_webview_window(label) else {
+                    continue;
+                };
+                let Ok(child_ptr) = child.ns_window() else {
+                    continue;
+                };
+                let child_ns: &NSWindow = &*child_ptr.cast();
+                parent.addChildWindow_ordered(child_ns, NSWindowOrderingMode::Above);
+            }
+        }
+        Ok(())
+    })?;
+    // Start the native drag AFTER the children are attached. Same
+    // main-thread-dispatch path the old JS `W.startDragging()` used, so the
+    // gesture pickup latency is unchanged.
+    window.start_dragging().map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn begin_cluster_drag(window: tauri::WebviewWindow, _members: Vec<String>) -> Result<(), String> {
+    // No child-window towing off macOS — degrade to the plain native drag.
+    window.start_dragging().map_err(|e| e.to_string())
+}
+
+/// Detach the members attached by `begin_cluster_drag`. Called from JS
+/// `finish()` AFTER snap-on-release has placed the lead — children ride that
+/// final `setPosition`, so the cluster stays rigid through the settle. Only
+/// children actually parented to the calling window are detached (a member
+/// closed mid-drag was already auto-detached by AppKit and is skipped).
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn end_cluster_drag(window: tauri::WebviewWindow, members: Vec<String>) -> Result<(), String> {
+    let app = window.app_handle().clone();
+    with_appkit_main_thread(window, move |win| {
+        use objc2_app_kit::NSWindow;
+        let parent_ptr = win.ns_window().map_err(|e| e.to_string())?;
+        unsafe {
+            let parent: &NSWindow = &*parent_ptr.cast();
+            for label in &members {
+                let Some(child) = app.get_webview_window(label) else {
+                    continue;
+                };
+                let Ok(child_ptr) = child.ns_window() else {
+                    continue;
+                };
+                let child_ns: &NSWindow = &*child_ptr.cast();
+                let attached = child_ns
+                    .parentWindow()
+                    .is_some_and(|p| std::ptr::eq::<NSWindow>(&*p, parent));
+                if attached {
+                    parent.removeChildWindow(child_ns);
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn end_cluster_drag(_window: tauri::WebviewWindow, _members: Vec<String>) -> Result<(), String> {
+    Ok(())
+}
+
+/// Per-display WORK AREA (screen minus menu bar and Dock) in LOGICAL top-left
+/// coordinates, straight from `NSScreen.visibleFrame` — AppKit's ground truth.
+/// Replaces the JS MENU_BAR_INSET=37 heuristic, which over-inset non-notched
+/// displays (a ~12px dead band where top-of-screen snaps were discarded — the
+/// "magnet line off") and never inset vertically-offset secondary displays at
+/// all. Cocoa frames are bottom-left-origin in the primary screen's space; we
+/// flip into the top-left-origin logical space Tauri/JS use.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn monitor_work_areas(window: tauri::WebviewWindow) -> Result<Vec<serde_json::Value>, String> {
+    with_appkit_main_thread(window, move |_win| {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::NSScreen;
+        let Some(mtm) = MainThreadMarker::new() else {
+            return Ok(Vec::new());
+        };
+        let screens = NSScreen::screens(mtm);
+        // The primary screen (index 0) anchors the global flip: its Cocoa frame
+        // origin is (0,0) and its height converts bottom-left y to top-left y.
+        let Some(primary) = screens.iter().next() else {
+            return Ok(Vec::new());
+        };
+        let primary_h = primary.frame().size.height;
+        let flip = |origin_y: f64, h: f64| primary_h - (origin_y + h);
+        let mut out = Vec::new();
+        for s in screens.iter() {
+            let f = s.frame();
+            let v = s.visibleFrame();
+            out.push(serde_json::json!({
+                "frame": {
+                    "x": f.origin.x, "y": flip(f.origin.y, f.size.height),
+                    "w": f.size.width, "h": f.size.height,
+                },
+                "work": {
+                    "x": v.origin.x, "y": flip(v.origin.y, v.size.height),
+                    "w": v.size.width, "h": v.size.height,
+                },
+            }));
+        }
+        Ok(out)
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn monitor_work_areas(_window: tauri::WebviewWindow) -> Result<Vec<serde_json::Value>, String> {
+    // No AppKit work areas off macOS — JS falls back to its full-monitor rects.
+    Ok(Vec::new())
+}
+
 /// Sync native traffic-light layout to the CSS title bar (see
 /// `apply_traffic_light_layout`). Called from moon-native-titlebar.js on hover,
 /// resize, and after dock weld geometry changes.
@@ -2747,11 +2900,15 @@ fn dock_logical_rect(w: &tauri::WebviewWindow) -> Option<(i32, i32, i32, i32)> {
     let p = w.outer_position().ok()?;
     let s = w.outer_size().ok()?;
     let sf = w.scale_factor().unwrap_or(1.0);
+    // .round(), NOT truncation: on a 2x display a pixel-exact seam frequently
+    // sits at n.5 logical (odd physical px). `as i32` floored that half point
+    // away, so the layout persist/restore cycle reopened flush seams as
+    // 1-logical-px hairline gaps after every relaunch.
     Some((
-        (f64::from(p.x) / sf) as i32,
-        (f64::from(p.y) / sf) as i32,
-        (f64::from(s.width) / sf) as i32,
-        (f64::from(s.height) / sf) as i32,
+        (f64::from(p.x) / sf).round() as i32,
+        (f64::from(p.y) / sf).round() as i32,
+        (f64::from(s.width) / sf).round() as i32,
+        (f64::from(s.height) / sf).round() as i32,
     ))
 }
 
@@ -2862,6 +3019,16 @@ fn main() {
                     // already gone) so quitting never wipes the layout.
                     write_panel_layout(&app);
                 }
+                // A destroyed dock window leaves a hole in the weld graph: tell
+                // the survivors to recompute NOW, or they keep squared corners
+                // and a seam halo pointing at nothing (the "ghost weld").
+                // Guarded on the hub like the layout write — during hub-owned
+                // shutdown everything is dying anyway.
+                if is_dock_label(window.label())
+                    && app.get_webview_window("main").is_some()
+                {
+                    broadcast_dock_geometry_settled(&app, window.label());
+                }
                 // Don't strand the user with nothing on screen: while the
                 // workspace is EXPANDED the moon is hidden, so closing (×) the
                 // LAST widget would leave an empty desktop. When a widget is
@@ -2941,6 +3108,9 @@ fn main() {
         sync_traffic_light_position,
         begin_native_resize,
         watch_drag_release,
+        begin_cluster_drag,
+        end_cluster_drag,
+        monitor_work_areas,
         dock_self,
         dock_move_cluster,
         voice_status,
@@ -2995,6 +3165,9 @@ fn main() {
         sync_traffic_light_position,
         begin_native_resize,
         watch_drag_release,
+        begin_cluster_drag,
+        end_cluster_drag,
+        monitor_work_areas,
         dock_self,
         dock_move_cluster
     ]);

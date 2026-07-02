@@ -1,0 +1,10 @@
+# Native cluster drag: attach the welded siblings as AppKit child windows and
+# start the OS drag, so the whole cluster moves in one window-server
+# transaction (1:1 with the cursor, zero per-frame IPC). JS decides WHO tows
+# (the emergent weld graph); Rust honors only dock-namespace labels. See
+# main.rs (begin_cluster_drag) and frontend/vendor/moon-dock.js
+# (startNativeDrag).
+[[permission]]
+identifier = "allow-begin-cluster-drag"
+description = "Allows the begin_cluster_drag command"
+commands.allow = ["begin_cluster_drag"]

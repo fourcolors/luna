@@ -14,11 +14,13 @@
  *   any window changes geometry (drag / resize / open) → it emits
  *   `dock-geometry-changed` → every window recomputes its own weld locally.
  *
- * Drag is the design's live model: title-bar pointerdown captures the drag
- * group (the anchor tows its whole cluster; a plain module peels off alone),
- * every pointermove runs LunaDeckSnap.computeLiveDrag and setPositions the
- * group 1:1 so it glides into place and welds the instant it falls within
- * magnet range, and pointerup just stops — whatever is flush is welded.
+ * Drag is NATIVE: title-bar pointerdown hands the gesture to the OS window
+ * server (begin_cluster_drag → startDragging), with the grab's welded
+ * siblings attached as AppKit CHILD WINDOWS so the anchor tows its whole
+ * cluster 1:1 (a plain module peels off alone). There is no live magnet —
+ * the card glides freely and snaps flush ONCE on release (snapOnRelease),
+ * after which the children detach and whatever is flush is welded. The old
+ * emulated pointermove loop survives only as a non-Tauri / test fallback.
  *
  * Requires in the page: #seam, #outline elements and a .title-bar (or
  * .chat-header) drag handle, plus vendor/deck-snap.js. Best-effort everywhere:
@@ -182,25 +184,17 @@
       return { x: p.x / sf, y: p.y / sf, w: s.width / sf, h: s.height / sf };
     }
 
-    // Every WIDGET dock window (incl. me) as [{label, rect}] — the hub is never
-    // a weld member, and list_widget_windows already excludes it.
+    // Every VISIBLE, non-minimized widget dock window (incl. me) as
+    // [{label, rect}] — the hub is never a weld member, and
+    // list_widget_windows already excludes it. Hidden / OS-minimized siblings
+    // are NOT weld members: their rects describe a card that is no longer on
+    // screen, so welding to one painted squared corners and a seam toward a
+    // hole (the "ghost weld" after a yellow-light minimize).
     async function weldMembers() {
-      var TW = window.__TAURI__ && window.__TAURI__.window;
       var out = [];
       try { out.push({ label: label, rect: await logicalRect(W) }); } catch (_) { return out; }
-      try {
-        var labels = await window.__TAURI__.core.invoke('list_widget_windows');
-        if (Array.isArray(labels)) {
-          for (var i = 0; i < labels.length; i++) {
-            if (labels[i] === label) continue;
-            try {
-              var w = await TW.Window.getByLabel(labels[i]);
-              if (!w) continue;
-              out.push({ label: labels[i], rect: await logicalRect(w) });
-            } catch (_) { /* sibling vanished mid-enumeration */ }
-          }
-        }
-      } catch (_) { /* listing unavailable */ }
+      var sibs = await visibleDockSiblings();
+      for (var i = 0; i < sibs.length; i++) out.push(sibs[i]);
       return out;
     }
 
@@ -529,13 +523,34 @@
       broadcastGeometry();    // neighbours re-square their corners around the new position too
     }
 
-    // ── Native single-window drag + snap-on-release ────────────────────────
-    // startDragging hands the whole gesture to the OS window server: it tracks the
-    // cursor with zero added latency (the emulated loop trailed by ~1 frame). The
-    // cost is that the OS owns the position mid-drag, so there is no LIVE magnet —
-    // we snap to the nearest neighbour ONCE, when the window settles.
-    function startNativeDrag() {
-      try { W.startDragging(); } catch (_) { return; }
+    // ── Native drag + snap-on-release ──────────────────────────────────────
+    // The OS window server owns the whole gesture: zero added latency (the
+    // emulated loop trailed by ~1 frame). The cost is that the OS owns the
+    // position mid-drag, so there is no LIVE magnet — we snap ONCE, on release.
+    //
+    // CLUSTER TOW: `towed` labels ride along as native CHILD WINDOWS
+    // (begin_cluster_drag attaches them via NSWindow addChildWindow:ordered:
+    // and then starts the drag). The window server moves children in the SAME
+    // transaction as the parent, so the welded cluster tracks the cursor 1:1
+    // with zero per-frame IPC — this is what restored "windows stick together"
+    // after the native-drag rewrite orphaned the old dock_move_cluster towing.
+    // They stay attached through snapOnRelease (the final snap setPosition
+    // moves the cluster rigidly) and detach on end_cluster_drag.
+    // `peel` = {wasGrouped, isAnchor, startCluster} snapshotted at grab time,
+    // for the peel cooldown (see snapOnRelease).
+    function startNativeDrag(towed, peel) {
+      var tow = (towed || []).slice();
+      var invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+      var started = false;
+      if (invoke) {
+        // Attach children + start the drag in ONE ordered main-thread hop.
+        try { invoke('begin_cluster_drag', { members: tow }).catch(function () {}); started = true; } catch (_) {}
+      }
+      if (!started) {
+        // Older runtime / tests: no invoke — plain solo native drag.
+        try { W.startDragging(); } catch (_) { return; }
+        tow = [];
+      }
       var sh = dockShell(); if (sh) sh.classList.add('dragging');
       var unlisten = null, done = false;
       // The OS swallows the webview's pointer events mid-drag, so the RELIABLE
@@ -553,7 +568,16 @@
         document.removeEventListener('pointercancel', onUp, true);
         var s = dockShell();
         if (s) s.classList.remove('dragging');
-        snapOnRelease();
+        // Detach the towed children only AFTER the snap settles — they must
+        // ride the final snap setPosition so the cluster stays rigid.
+        var detach = function () {
+          if (tow.length && invoke) {
+            try { invoke('end_cluster_drag', { members: tow }).catch(function () {}); } catch (_) {}
+          }
+        };
+        var settle = snapOnRelease(tow, peel);
+        if (settle && settle.then) settle.then(detach, detach);
+        else detach();
       }
       // The OS drag loop swallows pointermove/up, so the window's own Moved events
       // serve ONLY to re-arm the inactivity backstop (end-detection is the Rust
@@ -598,13 +622,20 @@
     // card-face space: docks flush to whichever neighbour edge is near,
     // preserves the perpendicular offset (unless near a corner), and resolves an
     // overlapping drop to flush-adjacent (anti-layer).
-    async function snapOnRelease() {
+    //   towedLabels — cluster members riding as native child windows: excluded
+    //   from snap targets AND obstacles (they move WITH me), and folded into
+    //   the de-overlap bbox so the whole cluster stays clear + on-screen.
+    //   peel — {wasGrouped, isAnchor, startCluster} from grab time; an
+    //   unsnapped module release arms the peel cooldown so the card doesn't
+    //   instantly re-link off a surviving flush seam on the next quick drag.
+    async function snapOnRelease(towedLabels, peel) {
+      var towed = (towedLabels || []).slice();
       try {
         var S = window.LunaDeckSnap;
         var ins = readInsets();
         var self = await logicalRect(W);
         var lead = S.insetRect({ x: self.x, y: self.y, w: self.w, h: self.h }, ins);
-        var raw = await candidateRects([label]);
+        var raw = await candidateRects([label].concat(towed));
         // Panels magnet to other PANELS, not to the moon hub. The orb is small
         // and always somewhere on screen, so including it made a lone window
         // (nothing else around) jump flush to the orb on release — surprising.
@@ -627,7 +658,7 @@
         // window can NEVER end up layered on a second window, the hub, or a
         // just-peeled card. tgt = where the magnet wanted me (or my own lead if
         // no magnet); resolved = the nearest non-overlapping card top-left.
-        var rawAll = await candidateRects([label], true);
+        var rawAll = await candidateRects([label].concat(towed), true);
         // Overlap resolution considers only DOCKABLE PANELS, not the moon hub:
         // the orb is small and floats, so wedging a panel against it (or letting
         // it block a clear push) just causes the resolver to oscillate. Panels
@@ -638,14 +669,36 @@
         var tgt = best ? { x: best.x, y: best.y } : { x: lead.x, y: lead.y };
         // Bound the no-overlap push to THIS monitor's usable rect (logical/card
         // space) so it never shoves the window off-screen — macOS would clamp it
-        // back on and re-introduce the overlap. Tauri v2 exposes no work area, so
-        // this is the FULL monitor rect inset by a menu-bar allowance (see
-        // MENU_BAR_INSET below). Use availableMonitors() (the proven path;
-        // currentMonitor() returns null under withGlobalTauri here) and pick the
-        // monitor containing the window centre, converting PHYSICAL px → logical
-        // by /scaleFactor. Degrade gracefully to no bounds.
+        // back on and re-introduce the overlap. GROUND TRUTH first: the
+        // monitor_work_areas command returns NSScreen.visibleFrame per display
+        // (screen minus menu bar AND Dock, correct on notched and non-notched
+        // Macs and on every secondary display). The old MENU_BAR_INSET=37
+        // heuristic over-inset non-notched primaries — a ~12px dead band where
+        // every top-of-screen snap was discarded ("magnet line off").
         var bounds = null;
         try {
+          var invokeWA = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+          if (invokeWA) {
+            var cxw = self.x + self.w / 2, cyw = self.y + self.h / 2;
+            var areas = await invokeWA('monitor_work_areas');
+            if (Array.isArray(areas) && areas.length) {
+              var pickWork = null;
+              for (var ai = 0; ai < areas.length; ai++) {
+                var fr = areas[ai] && areas[ai].frame, wk = areas[ai] && areas[ai].work;
+                if (!fr || !wk) continue;
+                if (!pickWork) pickWork = wk; // fallback: first display
+                if (cxw >= fr.x && cxw < fr.x + fr.w && cyw >= fr.y && cyw < fr.y + fr.h) { pickWork = wk; break; }
+              }
+              if (pickWork) bounds = { x: pickWork.x, y: pickWork.y, w: pickWork.w, h: pickWork.h };
+            }
+          }
+        } catch (_) { bounds = null; }
+        // Fallback (non-macOS / older runtime / tests): FULL monitor rect from
+        // availableMonitors() (the proven path; currentMonitor() returns null
+        // under withGlobalTauri here) inset by the conservative menu-bar
+        // allowance on the primary. PHYSICAL px → logical by /scaleFactor.
+        // Degrade gracefully to no bounds.
+        if (!bounds) try {
           if (TW && typeof TW.availableMonitors === 'function') {
             var cx = self.x + self.w / 2, cy = self.y + self.h / 2;
             var mons = await TW.availableMonitors();
@@ -675,10 +728,37 @@
           var offY = best.y < bounds.y || best.y + lead.h > bounds.y + bounds.h;
           if (offX || offY) { best = null; tgt = { x: lead.x, y: lead.y }; }
         }
-        var resolved = bounds
-          ? S.resolveOverlap({ x: tgt.x, y: tgt.y, w: lead.w, h: lead.h }, allCards, { maxIter: 12, bounds: bounds })
-          : S.resolveOverlap({ x: tgt.x, y: tgt.y, w: lead.w, h: lead.h }, allCards, { maxIter: 12 });
+        // De-overlap works on the whole RIGID unit: my card plus any towed
+        // children (they ride every position write). The union bbox at the
+        // target must clear every external card and stay in bounds; the lead
+        // then applies the bbox's clearing delta. With no towed members the
+        // bbox IS the lead card — byte-for-byte the old single-card maths.
+        var unit = { x: lead.x, y: lead.y, w: lead.w, h: lead.h };
+        if (towed.length) {
+          var live = await weldMembers();
+          for (var ti = 0; ti < live.length; ti++) {
+            if (towed.indexOf(live[ti].label) === -1) continue;
+            var tc = S.insetRect(live[ti].rect, ins);
+            var ur = Math.max(unit.x + unit.w, tc.x + tc.w);
+            var ub = Math.max(unit.y + unit.h, tc.y + tc.h);
+            unit.x = Math.min(unit.x, tc.x);
+            unit.y = Math.min(unit.y, tc.y);
+            unit.w = ur - unit.x;
+            unit.h = ub - unit.y;
+          }
+        }
+        var unitAtTgt = { x: unit.x + (tgt.x - lead.x), y: unit.y + (tgt.y - lead.y), w: unit.w, h: unit.h };
+        var resolvedUnit = S.resolveOverlap(unitAtTgt, allCards, bounds ? { maxIter: 12, bounds: bounds } : { maxIter: 12 });
+        var resolved = { x: tgt.x + (resolvedUnit.x - unitAtTgt.x), y: tgt.y + (resolvedUnit.y - unitAtTgt.y) };
         var moved = !(resolved.x === tgt.x && resolved.y === tgt.y);
+        // Peel cooldown (mirrors the emulated path's onDragUp): a module that
+        // left its cluster and released UNSNAPPED briefly ignores its old
+        // cluster as a snap target, so the next quick drag can't insta-relink
+        // off a surviving flush seam. Anchors never peel (they tow).
+        if (peel && peel.wasGrouped && !peel.isAnchor && !best) {
+          exMembers = peel.startCluster.filter(function (l) { return l !== label; });
+          exUntil = Date.now() + 1500;
+        }
 
         if (best && !moved) {
           // Clean common case — deoverlap didn't move it: keep the pixel-exact
@@ -744,16 +824,27 @@
       var handle = e.target.closest('.title-bar, .chat-header');
       if (!handle) return;
       e.preventDefault();
-      // EVERY drag goes NATIVE: hand it to the OS via startDragging (zero per-frame
-      // IPC) and snap to a neighbour ONCE on RELEASE. The OLD emulated live-magnet
-      // path (below) wrote a setPosition every frame and LOCKED the window at a
-      // distance from the edge — the "invisible wall" the user hits on a slow drag
-      // — and a stale `groupMembers` could route even a lone window onto it. Native
-      // has NO live position writes, so it cannot wall; the window tracks the
-      // cursor 1:1 and only snaps when you let go. The emulated path is kept solely
-      // as a non-Tauri / test fallback (no startDragging available).
+      // EVERY drag goes NATIVE: hand it to the OS (zero per-frame IPC) and snap
+      // to a neighbour ONCE on RELEASE. The OLD emulated live-magnet path
+      // (below) wrote a setPosition every frame and LOCKED the window at a
+      // distance from the edge — the "invisible wall" the user hits on a slow
+      // drag — and a stale `groupMembers` could route even a lone window onto
+      // it. Native has NO live position writes, so it cannot wall; the window
+      // tracks the cursor 1:1 and only snaps when you let go. The emulated path
+      // is kept solely as a non-Tauri / test fallback (no startDragging).
       if (typeof W.startDragging === 'function') {
-        startNativeDrag();
+        // Same manner as the emulated path: the ANCHOR tows its whole welded
+        // cluster (as native child windows — begin_cluster_drag), a plain
+        // module peels off alone. `peel` feeds the release-time cooldown.
+        var natStartCluster = groupMembers.slice();
+        var natGrouped = natStartCluster.length > 1;
+        var natIsAnchor = (label === 'panel-chat');
+        var natTowed = (natIsAnchor && natGrouped)
+          ? natStartCluster.filter(function (l) { return l !== label && l !== HUB; })
+          : [];
+        startNativeDrag(natTowed, {
+          wasGrouped: natGrouped, isAnchor: natIsAnchor, startCluster: natStartCluster,
+        });
         return;
       }
       // idle → arming: capture the handle now; the snapshot below promotes us to
@@ -852,6 +943,17 @@
       if (typeof W.onResized === 'function') {
         W.onResized(function () { refreshWeld(); scheduleWeld(); broadcastGeometry(); }).catch(function () {});
       }
+      // OS-miniaturize (the native yellow light) and its restore have no Tauri
+      // window event, but WKWebView flips this document's visibilityState both
+      // ways. Broadcast so the siblings recompute (weldMembers excludes a
+      // minimized member — no more ghost weld toward the hole) and settle my
+      // own weld again on restore. Occlusion-driven false positives are
+      // harmless: the recompute is idempotent.
+      document.addEventListener('visibilitychange', function () {
+        refreshWeld();
+        scheduleWeld();
+        broadcastGeometry();
+      });
     } catch (_) { /* best-effort */ }
 
     // Reference `.dock-win.entering` pop — play once when we land grouped after

@@ -31,22 +31,10 @@ afterEach(() => {
 })
 
 describe('moon-native-titlebar.js', () => {
-  it('hides native controls at boot for studio skin when Tauri is live', () => {
+  it('shows native controls at boot for studio skin, positioning AFTER the reveal (always-visible native model)', () => {
     const invoke = vi.fn().mockResolvedValue(undefined)
     ;(window as any).__TAURI__ = { core: { invoke } }
     loadVendorInto(window, 'moon-native-titlebar.js')
-    expect(invoke).toHaveBeenCalledWith('set_native_controls_visible', { visible: false })
-    expect(invoke).toHaveBeenCalledWith('sync_traffic_light_position', expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }))
-  })
-
-  it('reveals native controls then repositions them on title-bar mouseenter (studio)', async () => {
-    const invoke = vi.fn().mockResolvedValue(undefined)
-    ;(window as any).__TAURI__ = { core: { invoke } }
-    loadVendorInto(window, 'moon-native-titlebar.js')
-    invoke.mockClear()
-    document.getElementById('title-bar')!.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }))
-    const flush = async (n = 10) => { for (let i = 0; i < n; i++) await Promise.resolve() }
-    await flush()
     expect(invoke).toHaveBeenCalledWith('set_native_controls_visible', { visible: true })
     expect(invoke).toHaveBeenCalledWith('sync_traffic_light_position', expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }))
     // Reveal must come BEFORE the position sync: un-hiding makes AppKit relayout
@@ -57,7 +45,16 @@ describe('moon-native-titlebar.js', () => {
     expect(syncIdx).toBeGreaterThan(showIdx)
   })
 
-  it('keeps native controls up when the pointer leaves toward the cluster (no vanish-on-approach)', async () => {
+  it('hides native controls at boot for classic skin (CSS faux cluster owns the corner)', () => {
+    window.localStorage.setItem('luna_skin', 'classic')
+    const invoke = vi.fn().mockResolvedValue(undefined)
+    ;(window as any).__TAURI__ = { core: { invoke } }
+    loadVendorInto(window, 'moon-native-titlebar.js')
+    expect(invoke).toHaveBeenCalledWith('set_native_controls_visible', { visible: false })
+    expect(invoke).not.toHaveBeenCalledWith('set_native_controls_visible', { visible: true })
+  })
+
+  it('never tucks the lights away — no hover hide/reveal machinery (native windows keep their lights up)', async () => {
     vi.useFakeTimers()
     const invoke = vi.fn().mockResolvedValue(undefined)
     ;(window as any).__TAURI__ = { core: { invoke } }
@@ -65,34 +62,22 @@ describe('moon-native-titlebar.js', () => {
     const flush = async (n = 10) => { for (let i = 0; i < n; i++) await Promise.resolve() }
     const bar = document.getElementById('title-bar')!
     bar.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }))
-    await flush()
-    invoke.mockClear()
-    // jsdom lays out at the origin (title-bar rect is all-zero), so the light
-    // band is the very top-left: clientY ≲ bar.bottom, clientX ≲ left+cluster.
-    // Leaving toward it (the pointer is reaching for a light) must NOT hide.
-    bar.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true, clientX: 4, clientY: 0 }))
-    vi.advanceTimersByTime(500)
+    bar.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true, clientX: 600, clientY: 600 }))
+    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 600, clientY: 600 }))
+    window.dispatchEvent(new Event('blur'))
+    vi.advanceTimersByTime(1000)
     await flush()
     expect(invoke).not.toHaveBeenCalledWith('set_native_controls_visible', { visible: false })
     vi.useRealTimers()
   })
 
-  it('re-tucks native controls when the pointer leaves into the content area', async () => {
-    vi.useFakeTimers()
+  it('re-syncs the light position when the window gains focus (AppKit re-pins its container on focus; a stale layout goes click-dead)', () => {
     const invoke = vi.fn().mockResolvedValue(undefined)
     ;(window as any).__TAURI__ = { core: { invoke } }
     loadVendorInto(window, 'moon-native-titlebar.js')
-    const flush = async (n = 10) => { for (let i = 0; i < n; i++) await Promise.resolve() }
-    const bar = document.getElementById('title-bar')!
-    bar.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }))
-    await flush()
     invoke.mockClear()
-    // Leaving well away from the cluster → schedule the hide as before.
-    bar.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true, clientX: 600, clientY: 600 }))
-    vi.advanceTimersByTime(300)
-    await flush()
-    expect(invoke).toHaveBeenCalledWith('set_native_controls_visible', { visible: false })
-    vi.useRealTimers()
+    window.dispatchEvent(new Event('focus'))
+    expect(invoke).toHaveBeenCalledWith('sync_traffic_light_position', expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }))
   })
 
   it('exports a skin-gated overLights() for the dock drag guard', () => {
