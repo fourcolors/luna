@@ -907,6 +907,54 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(chat.children.length).toBe(0)
     })
 
+    it('a background-delivered assistant-done raises an OS notification via the notify command', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+
+      M().handleFrame({
+        type: 'assistant-done',
+        message: {
+          text: 'Daily brief: 2 bills due, CI green.',
+          delivery: { label: 'daily brief' },
+        },
+      })
+
+      // The delivered bubble still renders (existing #124 behavior preserved).
+      expect(chat.querySelector('.msg-delivery')).not.toBeNull()
+      // And a native notification fires, titled by the delivering task.
+      expect(invoke).toHaveBeenCalledWith('notify', {
+        title: 'Luna · daily brief',
+        body: 'Daily brief: 2 bills due, CI green.',
+      })
+    })
+
+    it('a LIVE assistant-done (no delivery marker) does NOT notify', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+
+      M().ChatState.beginPendingAssistant()
+      M().ChatLoop.flush()
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Here you go.' })
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'Here you go.' } })
+
+      expect(invoke).not.toHaveBeenCalledWith('notify', expect.anything())
+    })
+
+    it('the luna_notifications_enabled=false opt-out suppresses the notification', () => {
+      localStorage.setItem('luna_notifications_enabled', 'false')
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+
+      M().handleFrame({
+        type: 'assistant-done',
+        message: { text: 'anything', delivery: {} },
+      })
+
+      // Delivery still renders; only the OS notification is suppressed.
+      expect(chat.querySelector('.msg-delivery')).not.toBeNull()
+      expect(invoke).not.toHaveBeenCalledWith('notify', expect.anything())
+    })
+
     it('assistant-done after streaming finalizes the text (markdown rendered) and clears typing dots', () => {
       M().ChatState.beginPendingAssistant()
       M().ChatLoop.flush()

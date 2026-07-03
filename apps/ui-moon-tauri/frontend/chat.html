@@ -2740,6 +2740,56 @@
     };
 
     /**
+     * Notifier — raises a native OS notification via the Rust `notify` command.
+     *
+     * Today's single trigger is a background/scheduled JOB result delivered to
+     * the chat (an `assistant-done` frame carrying `message.delivery`): work the
+     * user didn't just ask for, arriving when they're likely not watching. Live
+     * replies are deliberately NOT notified — the user is already here.
+     *
+     * Fail-soft everywhere: no Tauri (jsdom / browser preview) → no-op; the
+     * command rejecting (e.g. the user disabled notifications in System
+     * Settings) → logged, never thrown. Opt out with
+     * localStorage 'luna_notifications_enabled' = 'false' (default on).
+     */
+    const Notifier = {
+      enabled() {
+        try {
+          return localStorage.getItem('luna_notifications_enabled') !== 'false';
+        } catch (_e) {
+          return true;
+        }
+      },
+      notify(title, body) {
+        if (!this.enabled()) return;
+        const core = window.__TAURI__ && window.__TAURI__.core;
+        if (!core) return;
+        try {
+          Promise.resolve(core.invoke('notify', { title: title || 'Luna', body: body || '' }))
+            .catch((e) => Logger.warn('notify command failed:', e));
+        } catch (e) {
+          Logger.warn('notify invoke threw:', e);
+        }
+      },
+      /**
+       * Notify for a background-delivered assistant message. Title names the
+       * delivering task when known ("Luna · <label>"); body is the reply text
+       * (the Rust side truncates to a banner-sized preview).
+       */
+      notifyDelivered(message) {
+        if (!message || typeof message !== 'object') return;
+        const label = message.delivery && message.delivery.label;
+        const title = label ? 'Luna · ' + label : 'Luna';
+        const body = typeof message.text === 'string' && message.text.trim()
+          ? message.text.trim()
+          : 'A background task finished.';
+        this.notify(title, body);
+      },
+    };
+    // Test/debug hook — lets the harness assert Notifier wiring without Tauri.
+    if (typeof window !== 'undefined') window.__LunaNotifier = Notifier;
+
+    /**
      * DOM references cache — the CHAT subset of the hub's registry. Handles
      * the hub kept (moon, settings modal, wizard, vault/skills/connectors
      * tabs, channel/model selects) do not exist on this page; code copied
@@ -6090,6 +6140,9 @@
         State.activeTurnId = null;
         ChatState.appendDelivered(frame.message);
         ChatLoop.flush();
+        // Raise an OS notification: this result arrived from a background/
+        // scheduled task, so the user is likely not watching the window.
+        Notifier.notifyDelivered(frame.message);
         return;
       }
       const doneTurnId = frame.turnId || State.activeTurnId;
