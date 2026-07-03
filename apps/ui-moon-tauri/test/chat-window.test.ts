@@ -910,6 +910,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('a background-delivered assistant-done raises an OS notification via the notify command', () => {
       const invoke = vi.fn().mockResolvedValue(undefined)
       ;(window as any).__TAURI__.core = { invoke }
+      // jsdom reports the document as focused by default; the notification
+      // path is the UNfocused one (a focused window stays quiet).
+      vi.spyOn(document, 'hasFocus').mockReturnValue(false)
 
       M().handleFrame({
         type: 'assistant-done',
@@ -928,9 +931,43 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       })
     })
 
+    it('a FOCUSED window does NOT raise an OS notification (in-app toast covers it)', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+
+      M().handleFrame({
+        type: 'assistant-done',
+        message: { text: 'result while watching', delivery: {} },
+      })
+
+      // Delivery still renders in the stream; only the OS banner is skipped.
+      expect(chat.querySelector('.msg-delivery')).not.toBeNull()
+      expect(invoke).not.toHaveBeenCalledWith('notify', expect.anything())
+    })
+
+    it('the same delivery is notified once across windows (localStorage dedupe)', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+
+      const frame = {
+        type: 'assistant-done',
+        message: { text: 'same delivery, two panels', ts: 1234, delivery: {} },
+      }
+      // Same frame handled twice — stands in for two chat panels on the same
+      // thread each receiving the broadcast (localStorage is shared).
+      M().handleFrame(frame)
+      M().handleFrame({ ...frame, message: { ...frame.message } })
+
+      const notifyCalls = invoke.mock.calls.filter((c) => c[0] === 'notify')
+      expect(notifyCalls).toHaveLength(1)
+    })
+
     it('a LIVE assistant-done (no delivery marker) does NOT notify', () => {
       const invoke = vi.fn().mockResolvedValue(undefined)
       ;(window as any).__TAURI__.core = { invoke }
+      vi.spyOn(document, 'hasFocus').mockReturnValue(false)
 
       M().ChatState.beginPendingAssistant()
       M().ChatLoop.flush()
@@ -944,6 +981,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       localStorage.setItem('luna_notifications_enabled', 'false')
       const invoke = vi.fn().mockResolvedValue(undefined)
       ;(window as any).__TAURI__.core = { invoke }
+      vi.spyOn(document, 'hasFocus').mockReturnValue(false)
 
       M().handleFrame({
         type: 'assistant-done',

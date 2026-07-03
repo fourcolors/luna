@@ -1002,21 +1002,27 @@ fn get_platform() -> String {
 /// can log.
 #[tauri::command]
 fn notify(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
-    // Cap the preview at ~140 chars on a char boundary (not a byte slice —
-    // job text can be multi-byte). Append an ellipsis when truncated.
-    const MAX: usize = 140;
-    let body = if body.chars().count() > MAX {
-        let head: String = body.chars().take(MAX).collect();
-        format!("{}…", head.trim_end())
-    } else {
-        body
-    };
     app.notification()
         .builder()
         .title(title)
-        .body(body)
+        .body(truncate_notification_body(body))
         .show()
         .map_err(|e| e.to_string())
+}
+
+/// Cap a notification body at ~140 chars on a char boundary (not a byte
+/// slice — job text can be multi-byte). Takes MAX chars and peeks one
+/// further to detect truncation, so a huge job output is never scanned
+/// end-to-end. Appends an ellipsis when truncated.
+fn truncate_notification_body(body: String) -> String {
+    const MAX: usize = 140;
+    let mut chars = body.chars();
+    let head: String = chars.by_ref().take(MAX).collect();
+    if chars.next().is_some() {
+        format!("{}…", head.trim_end())
+    } else {
+        body
+    }
 }
 
 // ── connector OAuth: client-brokered loopback (PRD A §09, RFC 8252) ─────────
@@ -3616,6 +3622,29 @@ mod tests {
         assert!(!is_closable_widget_label("main"));
         assert!(!is_closable_widget_label("setup"));
         assert!(!is_closable_widget_label(""));
+    }
+
+    #[test]
+    fn notification_body_short_text_passes_through_untouched() {
+        assert_eq!(
+            truncate_notification_body("done: 3 items".into()),
+            "done: 3 items"
+        );
+        assert_eq!(truncate_notification_body(String::new()), "");
+    }
+
+    #[test]
+    fn notification_body_long_text_truncates_on_char_boundary_with_ellipsis() {
+        // Multi-byte chars: a byte-slice truncation would panic or split a
+        // char; the char-based cap must keep exactly 140 chars + ellipsis.
+        let long = "é".repeat(200);
+        let out = truncate_notification_body(long);
+        assert_eq!(out.chars().count(), 141); // 140 kept + '…'
+        assert!(out.ends_with('…'));
+
+        // Exactly at the cap: no truncation, no ellipsis.
+        let exact = "x".repeat(140);
+        assert_eq!(truncate_notification_body(exact.clone()), exact);
     }
 
     // THE load-bearing test: a legacy flat file must read back as the SAME

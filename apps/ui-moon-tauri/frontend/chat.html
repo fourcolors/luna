@@ -2772,22 +2772,46 @@
         }
       },
       /**
+       * Cross-window dedupe. Parallel chat panels (panel-chat-*) on the same
+       * thread each receive the same delivery frame; localStorage is shared
+       * across the app's windows, so the first UNFOCUSED window to claim a
+       * delivery's signature notifies and the rest skip. Best-effort (a
+       * cross-process race can in theory double-claim) — acceptable for a
+       * notification banner. Fails open: a storage error never suppresses.
+       */
+      claimed(sig) {
+        try {
+          const KEY = 'luna_notify_last_delivery';
+          if (localStorage.getItem(KEY) === sig) return true;
+          localStorage.setItem(KEY, sig);
+          return false;
+        } catch (_e) {
+          return false;
+        }
+      },
+      /**
        * Notify for a background-delivered assistant message. Title names the
        * delivering task when known ("Luna · <label>"); body is the reply text
        * (the Rust side truncates to a banner-sized preview).
        */
       notifyDelivered(message) {
         if (!message || typeof message !== 'object') return;
-        const label = message.delivery && message.delivery.label;
-        const title = label ? 'Luna · ' + label : 'Luna';
+        // The user is watching THIS window: the chat bubble + #124 result
+        // toast already surface the delivery — an OS banner would be noise.
+        // Each window checks its OWN focus, so a focused panel stays quiet
+        // while an unfocused sibling (checked before any dedupe claim) can
+        // still raise the banner.
+        if (document.hasFocus()) return;
         const body = typeof message.text === 'string' && message.text.trim()
           ? message.text.trim()
           : 'A background task finished.';
+        const sig = (message.ts || 0) + ':' + body.length + ':' + body.slice(0, 40);
+        if (this.claimed(sig)) return;
+        const label = message.delivery && message.delivery.label;
+        const title = label ? 'Luna · ' + label : 'Luna';
         this.notify(title, body);
       },
     };
-    // Test/debug hook — lets the harness assert Notifier wiring without Tauri.
-    if (typeof window !== 'undefined') window.__LunaNotifier = Notifier;
 
     /**
      * DOM references cache — the CHAT subset of the hub's registry. Handles
@@ -9367,6 +9391,7 @@
       window.__MoonInternals.autoGrowMessageInput = () => ChatEngine.autoGrowMessageInput();
       window.__MoonInternals.handleFrame = (frame) => WebSocketEngine.handleFrame(frame);
       window.__MoonInternals.ResultToasts = ResultToasts;   // #124 toast harness
+      window.__MoonInternals.Notifier = Notifier;           // OS-notification harness
       window.__MoonInternals.UpdateBanner = UpdateBanner;   // staged-update nudge harness
       window.__MoonInternals.SurveyEngine = SurveyEngine;
       window.__MoonInternals.SuggestedActionsEngine = SuggestedActionsEngine;
