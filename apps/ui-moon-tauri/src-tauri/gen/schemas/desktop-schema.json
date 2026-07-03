@@ -471,6 +471,12 @@
           "markdownDescription": "Allows the monitor_work_areas command"
         },
         {
+          "description": "Allows raising a native OS notification (title + body) via the notify command",
+          "type": "string",
+          "const": "allow-notify",
+          "markdownDescription": "Allows raising a native OS notification (title + body) via the notify command"
+        },
+        {
           "description": "Allows the oauth_loopback_cancel command",
           "type": "string",
           "const": "allow-oauth-loopback-cancel",
