@@ -22,6 +22,7 @@
   "devDependencies": {
     "@luna/adapter-sdk": "workspace:*",
     "@luna/control-server": "workspace:*",
+    "@luna/channels": "workspace:*",
     "@luna/chat-service": "workspace:*",
     "@luna/connectors": "workspace:*",
     "@luna/core": "workspace:*",
