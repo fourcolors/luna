@@ -7,6 +7,9 @@ use tauri::Manager;
 // This one-line import is behavior-preserving and unblocks `cargo check`.
 use tauri::Emitter;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+// Native OS notifications: `app.notification().builder()...show()` lives on
+// the NotificationExt trait. Drives the `notify` command below.
+use tauri_plugin_notification::NotificationExt;
 // Self-update: `app.updater()` (check) + `update.download_and_install()` come
 // from UpdaterExt; `app.restart()` is built into the AppHandle (no process plugin).
 use tauri_plugin_updater::UpdaterExt;
@@ -982,6 +985,44 @@ async fn local_shell_exec(
 #[tauri::command]
 fn get_platform() -> String {
     std::env::consts::OS.to_string()
+}
+
+/// Raise a native OS notification (macOS Notification Center / Linux
+/// libnotify / Windows toast). Called from the chat webview when a
+/// background/scheduled job result is delivered while the user isn't watching
+/// (frontend `Notifier`, chat.html). Thin wrapper over the notification
+/// plugin's Rust API — same shape as `speak_text` wrapping the voice engine,
+/// so the webview only needs the `allow-notify` capability, not the plugin's
+/// own `notification:default` IPC surface.
+///
+/// `body` is truncated defensively to a notification-sized preview so a long
+/// job result can't produce a wall-of-text banner. Returns the plugin error
+/// as a string rather than panicking, so a failed `show()` (e.g. the user has
+/// notifications disabled in System Settings) degrades to a no-op the caller
+/// can log.
+#[tauri::command]
+fn notify(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
+    app.notification()
+        .builder()
+        .title(title)
+        .body(truncate_notification_body(body))
+        .show()
+        .map_err(|e| e.to_string())
+}
+
+/// Cap a notification body at ~140 chars on a char boundary (not a byte
+/// slice — job text can be multi-byte). Takes MAX chars and peeks one
+/// further to detect truncation, so a huge job output is never scanned
+/// end-to-end. Appends an ellipsis when truncated.
+fn truncate_notification_body(body: String) -> String {
+    const MAX: usize = 140;
+    let mut chars = body.chars();
+    let head: String = chars.by_ref().take(MAX).collect();
+    if chars.next().is_some() {
+        format!("{}…", head.trim_end())
+    } else {
+        body
+    }
 }
 
 // ── connector OAuth: client-brokered loopback (PRD A §09, RFC 8252) ─────────
@@ -3063,6 +3104,8 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         // PRD A §09: open the system browser for the connector OAuth hop.
         .plugin(tauri_plugin_opener::init())
+        // Native OS notifications (drives the `notify` command).
+        .plugin(tauri_plugin_notification::init())
         // PRD A §09: the client-brokered OAuth loopback state.
         .manage(OauthLoopback::default())
         // Staged-update flow: live phase + the verified, held archive bytes so
@@ -3094,6 +3137,7 @@ fn main() {
         client_config::migrate_legacy_connection,
         local_shell_exec,
         get_platform,
+        notify,
         check_for_update,
         start_update_download,
         apply_update,
@@ -3151,6 +3195,7 @@ fn main() {
         client_config::migrate_legacy_connection,
         local_shell_exec,
         get_platform,
+        notify,
         check_for_update,
         start_update_download,
         apply_update,
@@ -3577,6 +3622,29 @@ mod tests {
         assert!(!is_closable_widget_label("main"));
         assert!(!is_closable_widget_label("setup"));
         assert!(!is_closable_widget_label(""));
+    }
+
+    #[test]
+    fn notification_body_short_text_passes_through_untouched() {
+        assert_eq!(
+            truncate_notification_body("done: 3 items".into()),
+            "done: 3 items"
+        );
+        assert_eq!(truncate_notification_body(String::new()), "");
+    }
+
+    #[test]
+    fn notification_body_long_text_truncates_on_char_boundary_with_ellipsis() {
+        // Multi-byte chars: a byte-slice truncation would panic or split a
+        // char; the char-based cap must keep exactly 140 chars + ellipsis.
+        let long = "é".repeat(200);
+        let out = truncate_notification_body(long);
+        assert_eq!(out.chars().count(), 141); // 140 kept + '…'
+        assert!(out.ends_with('…'));
+
+        // Exactly at the cap: no truncation, no ellipsis.
+        let exact = "x".repeat(140);
+        assert_eq!(truncate_notification_body(exact.clone()), exact);
     }
 
     // THE load-bearing test: a legacy flat file must read back as the SAME

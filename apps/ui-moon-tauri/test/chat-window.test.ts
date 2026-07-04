@@ -907,6 +907,92 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(chat.children.length).toBe(0)
     })
 
+    it('a background-delivered assistant-done raises an OS notification via the notify command', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      // jsdom reports the document as focused by default; the notification
+      // path is the UNfocused one (a focused window stays quiet).
+      vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+
+      M().handleFrame({
+        type: 'assistant-done',
+        message: {
+          text: 'Daily brief: 2 bills due, CI green.',
+          delivery: { label: 'daily brief' },
+        },
+      })
+
+      // The delivered bubble still renders (existing #124 behavior preserved).
+      expect(chat.querySelector('.msg-delivery')).not.toBeNull()
+      // And a native notification fires, titled by the delivering task.
+      expect(invoke).toHaveBeenCalledWith('notify', {
+        title: 'Luna · daily brief',
+        body: 'Daily brief: 2 bills due, CI green.',
+      })
+    })
+
+    it('a FOCUSED window does NOT raise an OS notification (in-app toast covers it)', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+
+      M().handleFrame({
+        type: 'assistant-done',
+        message: { text: 'result while watching', delivery: {} },
+      })
+
+      // Delivery still renders in the stream; only the OS banner is skipped.
+      expect(chat.querySelector('.msg-delivery')).not.toBeNull()
+      expect(invoke).not.toHaveBeenCalledWith('notify', expect.anything())
+    })
+
+    it('the same delivery is notified once across windows (localStorage dedupe)', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+
+      const frame = {
+        type: 'assistant-done',
+        message: { text: 'same delivery, two panels', ts: 1234, delivery: {} },
+      }
+      // Same frame handled twice — stands in for two chat panels on the same
+      // thread each receiving the broadcast (localStorage is shared).
+      M().handleFrame(frame)
+      M().handleFrame({ ...frame, message: { ...frame.message } })
+
+      const notifyCalls = invoke.mock.calls.filter((c) => c[0] === 'notify')
+      expect(notifyCalls).toHaveLength(1)
+    })
+
+    it('a LIVE assistant-done (no delivery marker) does NOT notify', () => {
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+
+      M().ChatState.beginPendingAssistant()
+      M().ChatLoop.flush()
+      M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Here you go.' })
+      M().handleFrame({ type: 'assistant-done', turnId: 't1', message: { text: 'Here you go.' } })
+
+      expect(invoke).not.toHaveBeenCalledWith('notify', expect.anything())
+    })
+
+    it('the luna_notifications_enabled=false opt-out suppresses the notification', () => {
+      localStorage.setItem('luna_notifications_enabled', 'false')
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+
+      M().handleFrame({
+        type: 'assistant-done',
+        message: { text: 'anything', delivery: {} },
+      })
+
+      // Delivery still renders; only the OS notification is suppressed.
+      expect(chat.querySelector('.msg-delivery')).not.toBeNull()
+      expect(invoke).not.toHaveBeenCalledWith('notify', expect.anything())
+    })
+
     it('assistant-done after streaming finalizes the text (markdown rendered) and clears typing dots', () => {
       M().ChatState.beginPendingAssistant()
       M().ChatLoop.flush()

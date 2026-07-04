@@ -19,6 +19,11 @@ tauri-plugin-updater = "2"
 # Open the system browser for the connector OAuth consent hop (PRD A §09).
 # The Moon previously had NO programmatic browser-open path.
 tauri-plugin-opener = "2"
+# Native OS notifications (macOS Notification Center / Linux libnotify /
+# Windows toast). Drives the `notify` command in main.rs — the Moon raises a
+# desktop notification when a background/scheduled job result is delivered to
+# the chat while the user isn't watching.
+tauri-plugin-notification = "2"
 # Local-shell executor: async spawn with a bounded timeout + piped output.
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "process", "time", "io-util"] }
 # TOML parsing for ~/.luna/client.toml (Phase-2 C3 route config).

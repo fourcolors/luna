@@ -17,6 +17,7 @@
     "allow-voice-ptt-up",
     "allow-voice-cancel",
     "allow-speak-text",
-    "allow-voice-stop-speaking"
+    "allow-voice-stop-speaking",
+    "allow-notify"
   ]
 }
