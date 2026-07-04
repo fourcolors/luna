@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "widgets",
-  "description": "Permission set for artifact widget windows (the deck — PRD Part C / W2). Opaque, frameless, always-on-top panels that render ONE pinned artifact and magnetically dock to the chat. The `widget-*` glob means any other label gets NO IPC at all (fails closed — PRD §23 derisk). These windows deliberately get a NARROWER set than the main window: they may move/resize/drag/close themselves and read the anchor window's geometry for snapping, connect to the same WS server (load-connection), and close themselves — nothing else.",
+  "description": "Permission set for artifact widget windows (the deck — PRD Part C / W2). Opaque, frameless, always-on-top panels that render ONE pinned artifact and magnetically dock to the chat. The `widget-*` glob means any other label gets NO IPC at all (fails closed — PRD §23 derisk). These windows deliberately get a NARROWER set than the main window: they may move/resize/drag/close themselves and read the anchor window's geometry for snapping, connect to the same WS server (load-connection), close themselves, and hand off external http(s)/mailto links to the system browser (open-external-url — a markdown artifact's links must not navigate the widget's own webview away from its content) — nothing else.",
   "windows": [
     "widget-*"
   ],
@@ -33,6 +33,7 @@
     "allow-dock-move-cluster",
     "allow-begin-cluster-drag",
     "allow-end-cluster-drag",
-    "allow-monitor-work-areas"
+    "allow-monitor-work-areas",
+    "allow-open-external-url"
   ]
 }
