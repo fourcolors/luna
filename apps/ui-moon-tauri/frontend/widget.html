@@ -219,6 +219,30 @@
     }
   });
 
+  // ── External links: open in the system browser, never navigate this webview ─
+  // A kind='markdown' artifact can contain http(s)/mailto anchors (the shared
+  // LunaMarkdown pipeline emits real <a href> tags). In a Tauri webview a bare
+  // anchor click would navigate THIS window away from the artifact it exists to
+  // show — so we intercept and hand the URL to the native opener instead (parity
+  // with chat.html's chatMessages handler + the open_external_url command, now
+  // granted to widget-* in capabilities/widgets.json). Delegated on contentArea
+  // so it survives every renderMarkdownDoc() innerHTML swap. Outside Tauri
+  // (dev-in-a-browser / jsdom) window.open is the graceful fallback.
+  contentArea.addEventListener('click', function (e) {
+    var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+    if (!a) return;
+    // Never let an in-artifact anchor navigate this webview, whatever its scheme.
+    e.preventDefault();
+    var url = a.href || '';
+    if (!/^(https?:|mailto:)/i.test(url)) return; // only external schemes leave
+    if (window.__TAURI__ && window.__TAURI__.core) {
+      window.__TAURI__.core.invoke('open_external_url', { url: url })
+        .catch(function (err) { try { console.warn('widget open link failed:', err); } catch (_) {} });
+    } else {
+      try { window.open(url, '_blank', 'noopener,noreferrer'); } catch (_) { /* inert link; artifact preserved */ }
+    }
+  });
+
   // ── Utility: show a text notice in the content area ───────────────────────
   function showNotice(msg) {
     contentArea.innerHTML = '';
