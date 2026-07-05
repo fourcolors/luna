@@ -70,4 +70,63 @@ describe("runtime metadata", () => {
     expect(paths.analyticsDbPath).toBe("/var/lib/luna/analytics.duckdb")
     expect(paths.eventsJsonlPath).toBe("/var/log/luna/events.jsonl")
   })
+
+  it("renders Telegram interface and user lines when channelContext is provided", () => {
+    const metadata = buildSessionMetadata({
+      channelContext: {
+        interface: "Telegram",
+        chatId: "123",
+        userId: "456",
+        username: "alice",
+      },
+      env: {},
+      startedAt: new Date("2026-07-05T10:00:00.000Z"),
+    })
+
+    expect(metadata).toContain("- **Interface:** Telegram")
+    expect(metadata).toContain("- **User:** @alice (id: 456)")
+    expect(metadata).toContain("- **Telegram chat id:** 123")
+    expect(metadata).not.toContain("Luna WebSocket chat")
+    expect(metadata).not.toContain("local operator")
+  })
+
+  it("renders 'unknown' user when channelContext has no username or userId", () => {
+    const metadata = buildSessionMetadata({
+      channelContext: {
+        interface: "Telegram",
+      },
+      env: {},
+      startedAt: new Date("2026-07-05T10:00:00.000Z"),
+    })
+
+    expect(metadata).toContain("- **Interface:** Telegram")
+    expect(metadata).toContain("- **User:** unknown")
+    expect(metadata).not.toContain("chat id:")
+  })
+
+  it("renders username-only when userId is absent", () => {
+    const metadata = buildSessionMetadata({
+      channelContext: {
+        interface: "Telegram",
+        username: "bob",
+      },
+      env: {},
+    })
+
+    expect(metadata).toContain("- **User:** @bob")
+    expect(metadata).not.toContain("(id:")
+  })
+
+  it("renders userId-only when username is absent", () => {
+    const metadata = buildSessionMetadata({
+      channelContext: {
+        interface: "Telegram",
+        userId: "789",
+      },
+      env: {},
+    })
+
+    expect(metadata).toContain("- **User:** id: 789")
+    expect(metadata).not.toContain("@")
+  })
 })

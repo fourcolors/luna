@@ -103,6 +103,30 @@ export const splitToChunks = (text: string, maxLength: number): string[] => {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Step indicator helpers                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Build the step-indicator status line from active and completed tool calls.
+ *
+ * Active calls show as "⚙ tool_name…"; completed calls show as "✓ tool_name"
+ * or "✗ tool_name" depending on status. Completed entries appear before active
+ * ones so the user sees history at the top and current work at the bottom.
+ *
+ * Returns "" when there are no steps to report (no active, no completed).
+ */
+export const buildStatusLine = (
+  active: ReadonlyMap<string, string>,
+  completed: ReadonlyArray<{ readonly name: string; readonly ok: boolean }> = [],
+): string => {
+  const lines = [
+    ...completed.map((t) => `${t.ok ? "✓" : "✗"} ${t.name}`),
+    ...[...active.values()].map((name) => `⚙ ${name}…`),
+  ]
+  return lines.join("\n")
+}
+
+/* -------------------------------------------------------------------------- */
 /* Delivery helpers                                                            */
 /* -------------------------------------------------------------------------- */
 
@@ -137,20 +161,6 @@ const deliverChunks = (
 /* Public: subscribeAndDeliver                                                 */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Subscribe to chat.subscribe(threadId) and forward assistant output to the
- * adapter according to its capability.
- *
- * The delivery fiber is forked INTO `serviceScope` so it is supervised by
- * the long-lived service scope rather than the transient caller scope.
- * This is critical for production adapters that fire the inbound handler
- * via Effect.runFork (fire-and-forget): without forkIn(serviceScope) the
- * delivery fiber would be auto-interrupted when the transient runFork root
- * fiber completes — before any ChatFrame is consumed.
- *
- * Mirror of ui-ws's `subscribeChatThread` fiber — same subscription/teardown
- * discipline (Stream.unwrapScoped via chat.subscribe handles PubSub release).
- */
 export const subscribeAndDeliver = (
   threadId: string,
   adapter: ChannelAdapter,
@@ -171,18 +181,62 @@ export const subscribeAndDeliver = (
     const editStarted = yield* Ref.make<boolean>(false)
     // Throttle fiber for stream-edit (we cancel and restart it on each delta).
     const throttleFiber = yield* Ref.make<Fiber.RuntimeFiber<void, never> | null>(null)
+    // Active tool calls: toolCallId → tool name.
+    const activeTools = yield* Ref.make<Map<string, string>>(new Map())
+    // Completed tool calls this turn: { name, ok }.
+    const completedTools = yield* Ref.make<Array<{ name: string; ok: boolean }>>([])
 
     const capability = adapter.capability
     const maxLen = adapter.maxMessageLength
+
+    /**
+     * Deliver a status-only update (tool steps). For stream-edit adapters:
+     * edit the current placeholder message to show the status below accumulated
+     * text. For other adapters: no-op (status indicators require edit capability).
+     *
+     * Rate-limited by the same STREAM_EDIT_THROTTLE_MS as delta edits.
+     */
+    const deliverStatusLine = (statusLine: string): Effect.Effect<void> => {
+      if (capability !== "stream-edit") return Effect.void
+      if (statusLine.length === 0) return Effect.void
+      return Effect.gen(function* () {
+        const started = yield* Ref.get(editStarted)
+        if (!started) {
+          // Send a new placeholder message to hold the status.
+          yield* Ref.set(editStarted, true)
+          yield* adapter
+            .deliver(target, statusLine, {
+              isPartial: true,
+              isFinal: false,
+              chunkIndex: 0,
+              totalChunks: 1,
+            })
+            .pipe(Effect.catchAllCause(() => Effect.void))
+          yield* Ref.set(lastEditedText, statusLine)
+        } else {
+          // Edit the existing message.
+          const current = yield* Ref.get(currentDeltaText)
+          const combinedText =
+            current.length > 0
+              ? `${current.slice(0, maxLen - statusLine.length - 2)}\n\n${statusLine}`
+              : statusLine
+          yield* adapter
+            .deliver(target, combinedText.slice(0, maxLen), {
+              isPartial: true,
+              isFinal: false,
+              chunkIndex: 0,
+              totalChunks: 1,
+            })
+            .pipe(Effect.catchAllCause(() => Effect.void))
+        }
+      })
+    }
 
     const fiber = yield* chat
       .subscribe(threadId)
       .pipe(
         Stream.runForEach((frame) =>
           Effect.gen(function* () {
-            // Skip non-output frames (snapshot, user-accepted, tool-call,
-            // tool-result, artifacts-extracted). We only act on the frames
-            // that carry assistant text or signal turn completion.
             switch (frame.type) {
               case "assistant-delta": {
                 const text = frame.text // cumulative
@@ -234,21 +288,84 @@ export const subscribeAndDeliver = (
               }
 
               case "assistant-done": {
-                // ChatMessage.text is the pre-projected concatenated text string
-                // (see packages/core/src/session/projection.ts ChatMessage interface).
                 const text = frame.message.text
 
                 if (capability === "final-only") {
-                  // Accumulate — deliver on turn-complete
                   yield* Ref.update(turnBuffer, (prev) =>
                     prev.length > 0 ? prev + "\n\n" + text : text,
                   )
                 } else if (capability === "discrete-chunks") {
-                  // Deliver this message now, split if needed
                   const chunks = splitToChunks(text, maxLen)
                   yield* deliverChunks(adapter, target, chunks, false)
                 }
-                // stream-edit: the final edit happens on turn-complete
+                break
+              }
+
+              case "tool-call": {
+                // Record the active tool call and update the status display.
+                yield* Ref.update(activeTools, (m) => {
+                  const next = new Map(m)
+                  next.set(frame.toolCallId, frame.name)
+                  return next
+                })
+                const active = yield* Ref.get(activeTools)
+                const completed = yield* Ref.get(completedTools)
+                const statusLine = buildStatusLine(active, completed)
+                yield* deliverStatusLine(statusLine)
+                break
+              }
+
+              case "tool-result": {
+                // Move the tool from active → completed and update the display.
+                const active0 = yield* Ref.get(activeTools)
+                const name = active0.get(frame.toolCallId) ?? "tool"
+                yield* Ref.update(activeTools, (m) => {
+                  const next = new Map(m)
+                  next.delete(frame.toolCallId)
+                  return next
+                })
+                yield* Ref.update(completedTools, (arr) => [
+                  ...arr,
+                  { name, ok: frame.status === "ok" },
+                ])
+                const active = yield* Ref.get(activeTools)
+                const completed = yield* Ref.get(completedTools)
+                const statusLine = buildStatusLine(active, completed)
+                yield* deliverStatusLine(statusLine)
+                break
+              }
+
+              case "assistant-error": {
+                // Deliver an error notice. For stream-edit: edit the placeholder.
+                // For others: no-op (the UI handles errors separately).
+                if (capability === "stream-edit") {
+                  const errText = "⚠ Something went wrong. Please try again."
+                  const started = yield* Ref.get(editStarted)
+                  if (started) {
+                    yield* adapter
+                      .deliver(target, errText, {
+                        isPartial: false,
+                        isFinal: true,
+                        chunkIndex: 0,
+                        totalChunks: 1,
+                      })
+                      .pipe(Effect.catchAllCause(() => Effect.void))
+                  } else {
+                    yield* adapter
+                      .deliver(target, errText, {
+                        isPartial: true,
+                        isFinal: false,
+                        chunkIndex: 0,
+                        totalChunks: 1,
+                      })
+                      .pipe(Effect.catchAllCause(() => Effect.void))
+                  }
+                  yield* Ref.set(editStarted, false)
+                  yield* Ref.set(currentDeltaText, "")
+                  yield* Ref.set(lastEditedText, "")
+                  yield* Ref.set(activeTools, new Map())
+                  yield* Ref.set(completedTools, [])
+                }
                 break
               }
 
@@ -276,8 +393,10 @@ export const subscribeAndDeliver = (
                   yield* Ref.set(editStarted, false)
                   yield* Ref.set(currentDeltaText, "")
                   yield* Ref.set(lastEditedText, "")
+                  // Reset tool tracking state for the next turn.
+                  yield* Ref.set(activeTools, new Map())
+                  yield* Ref.set(completedTools, [])
                 } else if (capability === "final-only") {
-                  // Deliver the buffered full turn
                   const buffered = yield* Ref.get(turnBuffer)
                   if (buffered.length > 0) {
                     const chunks = splitToChunks(buffered, maxLen)
@@ -285,16 +404,13 @@ export const subscribeAndDeliver = (
                   }
                   yield* Ref.set(turnBuffer, "")
                 } else if (capability === "discrete-chunks") {
-                  // discrete-chunks delivers eagerly on assistant-done;
-                  // turn-complete is just a lifecycle signal — reset buffer.
                   yield* Ref.set(turnBuffer, "")
                 }
                 break
               }
 
               default:
-                // snapshot, user-accepted, tool-call, tool-result,
-                // assistant-error, artifacts-extracted — not forwarded
+                // snapshot, user-accepted, artifacts-extracted, suggested-action-* — not forwarded
                 break
             }
           }),
@@ -305,7 +421,6 @@ export const subscribeAndDeliver = (
 
     return fiber as Fiber.RuntimeFiber<void, never>
   })
-
 /* -------------------------------------------------------------------------- */
 /* Stream-edit throttle schedule (exported for tests)                         */
 /* -------------------------------------------------------------------------- */

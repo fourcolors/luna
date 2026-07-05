@@ -238,7 +238,7 @@ describe("inbound: getUpdates → ChannelMessage", () => {
     expect(msg!.threadingKey).toBe("12345")  // chat.id
     expect(msg!.text).toBe("hello luna")
     expect(msg!.platformMessageId).toBe("5001")  // update_id
-    expect(msg!.metadata).toMatchObject({ chatType: "private", messageId: 42 })
+    expect(msg!.metadata).toMatchObject({ chatType: "private", messageId: 42, userId: 67890, username: undefined, firstName: "Test" })
   })
 
   it("advances the offset past consumed updates", async () => {
@@ -824,5 +824,93 @@ describe("makeRealTransport", () => {
     // is never stored as a bare string. The transport itself is still a function.
     const transport = makeRealTransport(Redacted.make("fake_token_12345"))
     expect(typeof transport).toBe("function")
+  })
+})
+
+
+/* -------------------------------------------------------------------------- */
+/* 9. buildChannelMessage: userId / username / firstName in metadata          */
+/* -------------------------------------------------------------------------- */
+
+describe("buildChannelMessage: extended metadata", () => {
+  it("includes userId, username, firstName from msg.from in metadata", async () => {
+    const receivedMessages: ChannelMessage[] = []
+
+    const update = {
+      update_id: 6001,
+      message: {
+        message_id: 99,
+        chat: { id: 55555, type: "private" as const },
+        from: {
+          id: 12345,
+          first_name: "Alice",
+          username: "alice_tg",
+        },
+        text: "metadata test",
+        date: Math.floor(Date.now() / 1000),
+      },
+    }
+
+    const { transport } = makeFakeTransport([{ ok: true, result: [update] }])
+    const adapter = makeTelegramAdapter({ id: "tg-meta", httpTransport: transport })
+    adapter.setMessageHandler((msg) =>
+      Effect.sync(() => { receivedMessages.push(msg) }),
+    )
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep("50 millis")
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+
+    expect(receivedMessages).toHaveLength(1)
+    const msg = receivedMessages[0]
+    expect(msg!.metadata).toMatchObject({
+      chatType: "private",
+      messageId: 99,
+      userId: 12345,
+      username: "alice_tg",
+      firstName: "Alice",
+    })
+  })
+
+  it("handles missing username gracefully (username is undefined)", async () => {
+    const receivedMessages: ChannelMessage[] = []
+
+    const update = {
+      update_id: 6002,
+      message: {
+        message_id: 100,
+        chat: { id: 55556, type: "private" as const },
+        from: {
+          id: 99999,
+          first_name: "Bob",
+          // no username field
+        },
+        text: "no username",
+        date: Math.floor(Date.now() / 1000),
+      },
+    }
+
+    const { transport } = makeFakeTransport([{ ok: true, result: [update] }])
+    const adapter = makeTelegramAdapter({ id: "tg-meta-nousername", httpTransport: transport })
+    adapter.setMessageHandler((msg) =>
+      Effect.sync(() => { receivedMessages.push(msg) }),
+    )
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(Effect.scoped(adapter.start()))
+        yield* Effect.sleep("50 millis")
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+
+    expect(receivedMessages).toHaveLength(1)
+    expect(receivedMessages[0]!.metadata?.username).toBeUndefined()
+    expect(receivedMessages[0]!.metadata?.userId).toBe(99999)
+    expect(receivedMessages[0]!.metadata?.firstName).toBe("Bob")
   })
 })

@@ -259,6 +259,9 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
       metadata: {
         chatType: msg.chat.type,
         messageId: msg.message_id,
+        userId: msg.from?.id,
+        username: msg.from?.username,
+        firstName: msg.from?.first_name,
       },
     }
   }

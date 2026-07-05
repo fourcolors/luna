@@ -231,7 +231,17 @@ export const lookupOrCreate = (
     // Title is intentionally short and human-readable (sidebar label).
     const title = `[${msg.transport}] ${msg.channelId}`
     const summary = yield* chat
-      .createThread({ title, tags: ["channel", msg.transport] })
+      .createThread({
+        title,
+        tags: ["channel", msg.transport],
+        channelMeta: {
+          interface: msg.transport === "telegram" ? "Telegram" : msg.transport,
+          chatId: String(msg.channelId),
+          ...(msg.metadata?.userId != null ? { userId: String(msg.metadata.userId) } : {}),
+          ...(msg.metadata?.username != null ? { username: String(msg.metadata.username) } : {}),
+          ...(msg.metadata?.firstName != null ? { firstName: String(msg.metadata.firstName) } : {}),
+        },
+      })
       .pipe(Effect.orDie)
 
     const nowMs = yield* clock.nowMs()

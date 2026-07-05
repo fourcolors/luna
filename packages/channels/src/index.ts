@@ -37,7 +37,7 @@ export {
 export type { InboundDedupStoreApi } from "./dedup.js"
 export { InboundDedupStore } from "./dedup.js"
 
-export { splitToChunks, subscribeAndDeliver, streamEditThrottleMs } from "./delivery.js"
+export { splitToChunks, subscribeAndDeliver, streamEditThrottleMs, buildStatusLine } from "./delivery.js"
 
 export type { ChannelServiceApi } from "./service.js"
 export { ChannelService, ChannelServiceLayer } from "./service.js"

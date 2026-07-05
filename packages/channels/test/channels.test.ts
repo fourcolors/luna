@@ -40,6 +40,7 @@ import {
   ChannelService,
   ChannelServiceLayer,
   splitToChunks,
+  buildStatusLine,
 } from "../src/index.js"
 import type { ChatFrame, CreateThreadOptions } from "@luna/chat-service"
 import type { ChatMessage, SessionSummary } from "@luna/core"
@@ -809,5 +810,147 @@ describe("delivery via Effect.runFork (production adapter path)", () => {
     expect(fakeCtx.deliveries.length).toBeGreaterThanOrEqual(1)
     expect(fakeCtx.deliveries[0]?.content).toBe("Reply via runFork!")
     expect(fakeCtx.deliveries[0]?.opts.isFinal).toBe(true)
+  })
+})
+
+
+/* -------------------------------------------------------------------------- */
+/* buildStatusLine                                                             */
+/* -------------------------------------------------------------------------- */
+
+describe("buildStatusLine", () => {
+  it("returns empty string when no active and no completed tools", () => {
+    expect(buildStatusLine(new Map(), [])).toBe("")
+  })
+
+  it("shows active tools as spinning indicator", () => {
+    const active = new Map([["id1", "Read"], ["id2", "Grep"]])
+    const result = buildStatusLine(active, [])
+    expect(result).toContain("⚙ Read…")
+    expect(result).toContain("⚙ Grep…")
+  })
+
+  it("shows completed tools with check/cross marks", () => {
+    const completed = [
+      { name: "Read", ok: true },
+      { name: "Write", ok: false },
+    ]
+    const result = buildStatusLine(new Map(), completed)
+    expect(result).toContain("✓ Read")
+    expect(result).toContain("✗ Write")
+  })
+
+  it("completed tools appear before active tools", () => {
+    const active = new Map([["id1", "Grep"]])
+    const completed = [{ name: "Read", ok: true }]
+    const result = buildStatusLine(active, completed)
+    const readIdx = result.indexOf("✓ Read")
+    const grepIdx = result.indexOf("⚙ Grep…")
+    expect(readIdx).toBeLessThan(grepIdx)
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* subscribeAndDeliver: tool-call/tool-result step indicators                 */
+/* -------------------------------------------------------------------------- */
+
+describe("delivery — stream-edit tool step indicators", () => {
+  it("delivers status line on tool-call and tool-result frames", async () => {
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("se-tools-1", "stream-edit", 4096)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+
+          const msg = makeMessage({ platformMessageId: "se-tools-pm-1" })
+          yield* svc.handleMessage(msg)
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub")
+
+          // Emit a tool-call frame
+          yield* PubSub.publish(pub, {
+            type: "tool-call",
+            threadId,
+            turnId: "t1",
+            toolCallId: "tc-1",
+            name: "Read",
+            input: {},
+          } satisfies ChatFrame)
+          yield* Effect.sleep("30 millis")
+
+          // Emit a tool-result frame
+          yield* PubSub.publish(pub, {
+            type: "tool-result",
+            threadId,
+            toolCallId: "tc-1",
+            status: "ok",
+            output: "file content",
+            truncated: false,
+          } satisfies ChatFrame)
+          yield* Effect.sleep("30 millis")
+
+          // Emit turn-complete to finalize
+          yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
+          yield* Effect.sleep("100 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    // For stream-edit: at least one deliver call should have been made for tool status
+    // The first delivery after tool-call should contain the "⚙ Read…" indicator
+    expect(fakeCtx.deliveries.length).toBeGreaterThanOrEqual(1)
+    const toolCallDelivery = fakeCtx.deliveries.find((d) => d.content.includes("⚙ Read…"))
+    expect(toolCallDelivery).toBeDefined()
+  })
+
+  it("delivers error notice on assistant-error frame", async () => {
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("se-err-1", "stream-edit", 4096)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+
+          const msg = makeMessage({ platformMessageId: "se-err-pm-1" })
+          yield* svc.handleMessage(msg)
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub")
+
+          // Emit an assistant-delta first (to set editStarted=true)
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, "Starting..."))
+          yield* Effect.sleep("30 millis")
+
+          // Emit assistant-error
+          yield* PubSub.publish(pub, {
+            type: "assistant-error",
+            threadId,
+            turnId: "t1",
+            error: { kind: "sdk" as const, message: "model error" },
+          } satisfies ChatFrame)
+          yield* Effect.sleep("100 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    // Should have delivered an error message
+    const errorDelivery = fakeCtx.deliveries.find((d) =>
+      d.content.includes("Something went wrong"),
+    )
+    expect(errorDelivery).toBeDefined()
   })
 })
