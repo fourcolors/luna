@@ -9084,6 +9084,11 @@
       // route through the native opener (https + mailto only, enforced in Rust).
       // Outside Tauri (dev-in-a-browser) window.open is still the right fallback.
       const url = a.href;
+      // Match the Rust open_external_url allowlist (https + mailto only): any
+      // other scheme (http:, file:, javascript:, custom) is already prevented
+      // from navigating above and is dropped here, so we never waste an IPC
+      // round-trip or log a warn on a link Rust would refuse.
+      if (!/^(https:|mailto:)/i.test(url)) return;
       if (window.__TAURI__ && window.__TAURI__.core) {
         window.__TAURI__.core.invoke('open_external_url', { url })
           .catch((err) => Logger.warn('open link failed:', err));

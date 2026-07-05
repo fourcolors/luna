@@ -234,7 +234,7 @@
     // Never let an in-artifact anchor navigate this webview, whatever its scheme.
     e.preventDefault();
     var url = a.href || '';
-    if (!/^(https?:|mailto:)/i.test(url)) return; // only external schemes leave
+    if (!/^(https:|mailto:)/i.test(url)) return; // only https:/mailto: leave, matching Rust open_external_url
     if (window.__TAURI__ && window.__TAURI__.core) {
       window.__TAURI__.core.invoke('open_external_url', { url: url })
         .catch(function (err) { try { console.warn('widget open link failed:', err); } catch (_) {} });
