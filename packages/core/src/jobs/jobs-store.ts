@@ -539,20 +539,37 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
           steps_json: string | null
         }
 
-        const rowToJob = (row: RawRow): PersistedJob => ({
-          id: row.id,
-          kind: row.kind as JobKind,
-          spec: row.spec,
-          payload: JSON.parse(row.payload_json) as PersistedJob["payload"],
-          nextRun: row.next_run,
-          lastRun: row.last_run,
-          lastStatus: row.last_status,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-          schedule: row.schedule,
-          enabled: row.enabled !== 0,
-          nextRunAt: row.next_run_at,
-        })
+        // Returns null (never throws) when payload_json is unparseable. This
+        // is shared by listAll (the workflow gallery) AND listDue (the
+        // JobTicker's due read). A single malformed payload must NOT sink the
+        // whole read: throwing here would blank the gallery and — worse —
+        // stall dispatch of EVERY scheduled job through listDue. Skip the bad
+        // row instead, logging its id so it is locatable (see issue #232).
+        const rowToJob = (row: RawRow): PersistedJob | null => {
+          let payload: PersistedJob["payload"]
+          try {
+            payload = JSON.parse(row.payload_json) as PersistedJob["payload"]
+          } catch (cause) {
+            console.warn(
+              `[jobs-store] skipping job "${row.id}": unparseable payload_json: ${String(cause)}`,
+            )
+            return null
+          }
+          return {
+            id: row.id,
+            kind: row.kind as JobKind,
+            spec: row.spec,
+            payload,
+            nextRun: row.next_run,
+            lastRun: row.last_run,
+            lastStatus: row.last_status,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+            schedule: row.schedule,
+            enabled: row.enabled !== 0,
+            nextRunAt: row.next_run_at,
+          }
+        }
         const rowToRun = (row: RawRunRow): JobRun => ({
           id: row.id,
           jobId: row.job_id,
@@ -625,7 +642,10 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
 
         const listAll: JobsStoreApi["listAll"] = () =>
           Effect.try({
-            try: () => (listAllStmt.all() as RawRow[]).map(rowToJob),
+            try: () =>
+              (listAllStmt.all() as RawRow[])
+                .map(rowToJob)
+                .filter((j): j is PersistedJob => j !== null),
             catch: (cause) =>
               new JobsStoreError({ op: "list", message: String(cause), cause }),
           })
@@ -698,7 +718,10 @@ export class JobsStoreService extends Effect.Tag("luna/JobsStoreService")<
 
         const listDue: JobsStoreApi["listDue"] = (now) =>
           Effect.try({
-            try: () => (listDueStmt.all(now) as RawRow[]).map(rowToJob),
+            try: () =>
+              (listDueStmt.all(now) as RawRow[])
+                .map(rowToJob)
+                .filter((j): j is PersistedJob => j !== null),
             catch: (cause) =>
               new JobsStoreError({ op: "list", message: String(cause), cause }),
           })
