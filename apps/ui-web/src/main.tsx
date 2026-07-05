@@ -1,14 +1,17 @@
-/* @refresh reload */
-import { render } from "solid-js/web"
-// Side effect: stamps data-palette/theme/chrome/grain on <html> pre-render.
-import "./appearance.js"
-import { App } from "./App.jsx"
-import "./watercolor.css"
-import "./styles.css"
-// Board chrome LAST so its panel/toggle rules beat styles.css generics.
-import "./board/board.css"
+import { StrictMode } from "react"
+import { createRoot } from "react-dom/client"
+// Side effect: stamps data-palette/theme/chrome/grain/font on <html> pre-paint,
+// and keeps them live across tabs (shared convention with Moon's appearance).
+import "@luna/design-system/appearance"
+// The watercolor token + primitive cascade (tokens → studio → final).
+import "@luna/design-system/css"
+import { App } from "./App"
 
 const root = document.getElementById("root")
 if (!root) throw new Error("missing #root")
 
-render(() => <App />, root)
+createRoot(root).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+)

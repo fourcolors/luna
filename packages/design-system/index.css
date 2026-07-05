@@ -1,0 +1,14 @@
+/*
+ * @luna/design-system — the single watercolor token + primitive cascade.
+ *
+ * Load order mirrors the design source's "Luna Studio - Final.html":
+ *   tokens (luna-theme) → studio → final.
+ * The order is load-bearing: later files override earlier chrome/board rules.
+ *
+ * Tokens are scoped to `.luna-root[data-theme][data-palette]`; the app's top
+ * wrapper carries `class="luna-root"` plus the data-attributes (see
+ * appearance.ts), so `:root` base tokens on <html> cascade into it.
+ */
+@import "./css/tokens.css";
+@import "./css/studio.css";
+@import "./css/final.css";
