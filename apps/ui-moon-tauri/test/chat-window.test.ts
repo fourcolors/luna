@@ -3928,6 +3928,26 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(invoke).toHaveBeenCalledWith('open_external_url', { url: a.href })
     })
 
+    it('an http:// (non-https) link is prevented from navigating but NOT handed to the opener', () => {
+      // The JS scheme gate mirrors the Rust open_external_url allowlist (https +
+      // mailto only). http:// is refused by Rust, so it is dropped in JS after
+      // preventDefault rather than wasting an IPC round-trip + logging a warn.
+      const invoke = vi.fn().mockResolvedValue(undefined)
+      ;(window as any).__TAURI__.core = { invoke }
+      const chat = document.getElementById('chat-messages')!
+      const bubble = document.createElement('div')
+      bubble.innerHTML = M().renderMarkdown('[insecure](http://example.com/x)')
+      chat.appendChild(bubble)
+      const a = chat.querySelector('a[href]') as HTMLAnchorElement
+      expect(a).not.toBeNull()
+      expect(a.hasAttribute('data-luna-link')).toBe(false)
+      // Dispatch a cancelable click so we can assert the webview is not navigated.
+      const ev = new window.MouseEvent('click', { bubbles: true, cancelable: true })
+      a.dispatchEvent(ev)
+      expect(ev.defaultPrevented).toBe(true) // anti-navigation preserved
+      expect(invoke).not.toHaveBeenCalledWith('open_external_url', expect.anything()) // no wasted IPC / warn
+    })
+
     it('a luna://artifact/<id> link reopens the pinned artifact via open_artifact_widget (title from cache)', () => {
       const invoke = vi.fn().mockResolvedValue(undefined)
       ;(window as any).__TAURI__.core = { invoke }

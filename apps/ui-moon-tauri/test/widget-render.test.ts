@@ -201,4 +201,20 @@ describe('widget.html — kind-aware render', () => {
     expect(ev.defaultPrevented).toBe(true)
     expect(invoke).not.toHaveBeenCalledWith('open_external_url', expect.anything())
   })
+
+  it('http:// (non-https) link → prevented from navigating but NOT handed to the opener', () => {
+    // The JS scheme gate mirrors the Rust open_external_url allowlist (https +
+    // mailto only). http:// is deliberately refused by Rust, so routing it there
+    // would only waste an IPC round-trip and log a warn; instead it is dropped in
+    // JS after preventDefault — the webview never navigates, and no invoke fires.
+    render({ id: ART_ID, kind: 'markdown', title: 'H', version: 1, content: '[insecure](http://example.com/x)' })
+    const a = contentArea().querySelector('a[href]') as HTMLAnchorElement | null
+    expect(a).toBeTruthy()
+    expect(a!.getAttribute('href')).toBe('http://example.com/x')
+    const invoke = invokeMock()
+    invoke.mockClear()
+    const ev = clickAnchor(a!)
+    expect(ev.defaultPrevented).toBe(true) // anti-navigation preserved for every scheme
+    expect(invoke).not.toHaveBeenCalled() // http:// dropped in JS: zero wasted IPC, no warn
+  })
 })
