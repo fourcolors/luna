@@ -28,22 +28,54 @@ function fbSeed(list) {
     .sort((a, b) => (FB_PRIO_ORD[a.prio] ?? 2) - (FB_PRIO_ORD[b.prio] ?? 2));
 }
 
+// Inbox blocks can carry agent-projected HTML that quotes ATTACKER-CONTROLLED
+// third-party content (email bodies via connectors). Rendering it raw through
+// dangerouslySetInnerHTML is stored XSS (`<img onerror=…>` fires). Sanitize to
+// an inline-formatting allowlist, dropping every other tag + ALL attributes.
+// DOMParser never executes scripts, so parsing untrusted input here is safe.
+const SAFE_INLINE_TAGS = new Set(["B", "I", "EM", "STRONG", "U", "CODE", "SMALL", "BR", "SPAN"]);
+function safeHtml(input) {
+  if (typeof input !== "string" || input === "") return "";
+  try {
+    const doc = new DOMParser().parseFromString(input, "text/html");
+    const scrub = (node) => {
+      for (const child of Array.from(node.childNodes)) {
+        if (child.nodeType === 1) {
+          if (SAFE_INLINE_TAGS.has(child.tagName)) {
+            for (const attr of Array.from(child.attributes)) child.removeAttribute(attr.name);
+            scrub(child);
+          } else {
+            // Disallowed element (img/svg/script/a/…): flatten to its text.
+            child.replaceWith(doc.createTextNode(child.textContent || ""));
+          }
+        } else if (child.nodeType === 8) {
+          child.remove(); // comments
+        }
+      }
+    };
+    scrub(doc.body);
+    return doc.body.innerHTML;
+  } catch {
+    return "";
+  }
+}
+
 function FbRichBlock({ b }) {
   switch (b.t) {
     case "detail":
       return <div className="rc-detail">{b.rows.map((r, i) => <div className="rc-drow" key={i}><span className="dl">{r[0]}</span><span className="dv">{r[1]}</span></div>)}</div>;
     case "quote":
-      return <div className="rc-quote">{b.who && <span className="qwho">{b.who}</span>}<span dangerouslySetInnerHTML={{ __html: b.html }}></span></div>;
+      return <div className="rc-quote">{b.who && <span className="qwho">{b.who}</span>}<span dangerouslySetInnerHTML={{ __html: safeHtml(b.html) }}></span></div>;
     case "fig":
       return <div className="rc-fig">{b.rows.map((r, i) => <div className={"rc-fig-row" + (r[2] ? " total" : "")} key={i}><span>{r[0]}</span><span className="v">{r[1]}</span></div>)}</div>;
     case "callout":
-      return <div className="rc-callout"><span className="sp">✦</span><span dangerouslySetInnerHTML={{ __html: b.html }}></span></div>;
+      return <div className="rc-callout"><span className="sp">✦</span><span dangerouslySetInnerHTML={{ __html: safeHtml(b.html) }}></span></div>;
     case "list":
-      return <ul className="rc-list">{b.items.map((it, i) => <li key={i}><span className="bullet">✦</span><span dangerouslySetInnerHTML={{ __html: it }}></span></li>)}</ul>;
+      return <ul className="rc-list">{b.items.map((it, i) => <li key={i}><span className="bullet">✦</span><span dangerouslySetInnerHTML={{ __html: safeHtml(it) }}></span></li>)}</ul>;
     case "attach":
       return <div className="rc-attach">{FB_CLIP}<span className="an">{b.name}</span><span className="am">{b.meta}</span></div>;
     case "thread":
-      return <div className="rc-thread">{b.msgs.map((m, i) => <div className="rc-msg" key={i}><span className="rw">{m.who}</span><span dangerouslySetInnerHTML={{ __html: m.html }}></span></div>)}</div>;
+      return <div className="rc-thread">{b.msgs.map((m, i) => <div className="rc-msg" key={i}><span className="rw">{m.who}</span><span dangerouslySetInnerHTML={{ __html: safeHtml(m.html) }}></span></div>)}</div>;
     case "attendees":
       return <div className="rc-att"><div className="rc-att-faces">{b.names.map((nm, i) => <span className="face" key={i} style={{ background: b.colors[i % b.colors.length] }}>{nm[0]}</span>)}</div><span className="rc-att-label">{b.label}</span></div>;
     default:
@@ -246,7 +278,7 @@ export function FinalInbox({ items: itemsProp, onDelegate, onToast, onOpenThread
                   {cur.prio === "soon" && <span className="fc-tag soon">today</span>}
                 </span>
                 <div className="focus-q">{cur.title}</div>
-                <div className="focus-lead" dangerouslySetInnerHTML={{ __html: cur.lead || cur.sub || "" }}></div>
+                <div className="focus-lead" dangerouslySetInnerHTML={{ __html: safeHtml(cur.lead || cur.sub || "") }}></div>
                 {cur.rich && <FbRichBody blocks={cur.rich} />}
                 {cur.options && <FbChoiceCards options={cur.options} onPick={(name) => handle("choice", null, name)} />}
               </div>

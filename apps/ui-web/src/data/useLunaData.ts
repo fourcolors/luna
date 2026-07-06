@@ -383,6 +383,30 @@ export function useLunaData(): LunaData {
     }
   }, [state.selectedThreadId, status.kind, send])
 
+  // Selection guard: the reducer auto-selects ANY newly-created thread, incl.
+  // useLunaInbox's hidden "system" inbox-sync thread — which would hijack the
+  // user's active conversation (chat title reverts, respondToAction targets the
+  // wrong thread). Whenever selection lands on a system thread, restore the
+  // last real selection (or the first real thread). Records the last real
+  // selection so a hijack can be undone.
+  const lastUserThreadRef = useRef<string | null>(null)
+  useEffect(() => {
+    const id = state.selectedThreadId
+    if (!id) return
+    const summary = state.threadList.find((s) => s.id === id)
+    if (!summary) return
+    if (isSystemThread(summary)) {
+      const prev = lastUserThreadRef.current
+      const restore =
+        prev && state.threadList.some((s) => s.id === prev && !isSystemThread(s))
+          ? prev
+          : (state.threadList.find((s) => !isSystemThread(s))?.id ?? null)
+      if (restore && restore !== id) dispatch({ tag: "select-thread", threadId: restore })
+    } else {
+      lastUserThreadRef.current = id
+    }
+  }, [state.selectedThreadId, state.threadList, dispatch])
+
   const threads = useMemo<StudioThread[]>(
     () =>
       state.threadList

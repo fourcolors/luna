@@ -104,7 +104,7 @@ const DEFS = {
     if (!artifact) {
       return <div className="gw-wrap widget-frame-host"><div className="gw-stat-note">this widget isn't pinned anymore.</div></div>;
     }
-    return <WidgetFrame artifact={artifact} mcp={ctx.mcp} obsEvents={ctx.obsEvents} fresh={p.fresh} />;
+    return <WidgetFrame artifact={artifact} mcp={ctx.mcp} fresh={p.fresh} />;
   } },
   pip:     { title: "pip", render: () => <PipApp /> },
   timer:   { title: "focus timer", w: 240, h: 200, render: () => <TimerApp /> },
