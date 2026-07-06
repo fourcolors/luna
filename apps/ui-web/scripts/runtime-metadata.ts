@@ -7,6 +7,8 @@ export interface ChannelContext {
   readonly userId?: string
   /** Platform username (without leading @). */
   readonly username?: string
+  /** Platform display first name, when a username is absent. */
+  readonly firstName?: string
 }
 
 export interface RuntimeMetadataInput {
@@ -74,6 +76,12 @@ function buildChannelUserLine(ctx: ChannelContext): string {
   }
   if (ctx.username) {
     return `- **User:** @${ctx.username}`
+  }
+  if (ctx.firstName && ctx.userId) {
+    return `- **User:** ${ctx.firstName} (id: ${ctx.userId})`
+  }
+  if (ctx.firstName) {
+    return `- **User:** ${ctx.firstName}`
   }
   if (ctx.userId) {
     return `- **User:** id: ${ctx.userId}`

@@ -41,6 +41,7 @@ import {
   ChannelServiceLayer,
   splitToChunks,
   buildStatusLine,
+  streamEditThrottleMs,
 } from "../src/index.js"
 import type { ChatFrame, CreateThreadOptions } from "@luna/chat-service"
 import type { ChatMessage, SessionSummary } from "@luna/core"
@@ -379,6 +380,49 @@ describe("session map", () => {
 
     expect(createCount).toBe(2)
   })
+
+  it("does not freeze a Telegram group thread to the first sender in thread-level channel metadata", async () => {
+    const framesByThread = new Map<string, ChatFrame[]>()
+    const { service: chatService } = makeStubChatService(framesByThread)
+    const createCalls: CreateThreadOptions[] = []
+    const trackedService = {
+      ...chatService,
+      createThread: (opts: CreateThreadOptions) => {
+        createCalls.push(opts)
+        return chatService.createThread(opts)
+      },
+    }
+
+    await run(trackedService, Effect.gen(function* () {
+      const svc = yield* ChannelService
+      const fake = makeFakeAdapterClean("group-meta", "final-only")
+      yield* svc.registerAdapter(fake.adapter)
+
+      yield* svc.handleMessage(makeMessage({
+        transport: "telegram",
+        channelId: "-100123",
+        threadingKey: "-100123",
+        senderId: "42",
+        platformMessageId: "group-meta-pm-1",
+        metadata: {
+          chatType: "supergroup",
+          userId: 42,
+          username: "alice",
+          firstName: "Alice",
+        },
+      }))
+    }))
+
+    const createdWith = createCalls[0]
+    expect(createdWith).toBeDefined()
+    expect(createdWith?.channelMeta).toMatchObject({
+      interface: "Telegram",
+      chatId: "-100123",
+    })
+    expect(createdWith?.channelMeta?.userId).toBeUndefined()
+    expect(createdWith?.channelMeta?.username).toBeUndefined()
+    expect(createdWith?.channelMeta?.firstName).toBeUndefined()
+  })
 })
 
 /* -------------------------------------------------------------------------- */
@@ -412,6 +456,78 @@ describe("dedup", () => {
 
     // Only one turn should have been offered
     expect(sendCount).toBe(1)
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* Channel user text                                                           */
+/* -------------------------------------------------------------------------- */
+
+describe("channel user text", () => {
+  it("prefixes Telegram group messages with the current sender identity", async () => {
+    const { service: chatService } = makeStubChatService(new Map())
+    let sentText: string | null = null
+    const trackedService = {
+      ...chatService,
+      send: (threadId: string, text: string) => {
+        sentText = text
+        return chatService.send(threadId, text)
+      },
+    }
+
+    await run(trackedService, Effect.gen(function* () {
+      const svc = yield* ChannelService
+      yield* svc.registerAdapter(makeFakeAdapterClean("group-text", "final-only").adapter)
+      yield* svc.handleMessage(makeMessage({
+        transport: "telegram",
+        channelId: "-100123",
+        threadingKey: "-100123",
+        senderId: "42",
+        platformMessageId: "group-text-pm-1",
+        text: "can you summarize this?",
+        metadata: {
+          chatType: "group",
+          userId: 42,
+          username: "alice",
+          firstName: "Alice",
+        },
+      }))
+    }))
+
+    expect(sentText).toBe("[telegram user: @alice (id: 42)]\ncan you summarize this?")
+  })
+
+  it("leaves Telegram private messages unchanged because the thread metadata identifies the user", async () => {
+    const { service: chatService } = makeStubChatService(new Map())
+    let sentText: string | null = null
+    const trackedService = {
+      ...chatService,
+      send: (threadId: string, text: string) => {
+        sentText = text
+        return chatService.send(threadId, text)
+      },
+    }
+
+    await run(trackedService, Effect.gen(function* () {
+      const svc = yield* ChannelService
+      yield* svc.registerAdapter(makeFakeAdapterClean("private-text", "final-only").adapter)
+      yield* svc.handleMessage(makeMessage({
+        transport: "telegram",
+        channelId: "42",
+        threadingKey: "42",
+        senderId: "42",
+        platformMessageId: "private-text-pm-1",
+        text: "hello",
+        metadata: {
+          chatType: "private",
+          userId: 42,
+          username: "alice",
+          firstName: "Alice",
+        },
+      }))
+    }))
+
+    expect(sentText).toBe("hello")
   })
 })
 
@@ -911,6 +1027,134 @@ describe("delivery — stream-edit tool step indicators", () => {
     expect(toolCallDelivery).toBeDefined()
   })
 
+  it("throttles follow-up tool status edits after the first status placeholder", async () => {
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("se-tools-throttle", "stream-edit", 4096)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+
+          const msg = makeMessage({ platformMessageId: "se-tools-throttle-pm-1" })
+          yield* svc.handleMessage(msg)
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub")
+
+          yield* PubSub.publish(pub, {
+            type: "tool-call",
+            threadId,
+            turnId: "t1",
+            toolCallId: "tc-1",
+            name: "Read",
+            input: {},
+          } satisfies ChatFrame)
+          yield* PubSub.publish(pub, {
+            type: "tool-result",
+            threadId,
+            toolCallId: "tc-1",
+            status: "ok",
+            output: "file content",
+            truncated: false,
+          } satisfies ChatFrame)
+
+          yield* Effect.sleep("100 millis")
+          expect(fakeCtx.deliveries).toHaveLength(1)
+          expect(fakeCtx.deliveries[0]?.content).toContain("⚙ Read…")
+
+          yield* Effect.sleep(`${streamEditThrottleMs + 100} millis`)
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    expect(fakeCtx.deliveries.length).toBeGreaterThanOrEqual(2)
+    expect(fakeCtx.deliveries.at(-1)?.content).toContain("✓ Read")
+  })
+
+  it("keeps status edits within the adapter max length when the status line is longer than the limit", async () => {
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("se-tools-long", "stream-edit", 24)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+
+          const msg = makeMessage({ platformMessageId: "se-tools-long-pm-1" })
+          yield* svc.handleMessage(msg)
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub")
+
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, "current assistant text"))
+          yield* Effect.sleep("20 millis")
+          yield* PubSub.publish(pub, {
+            type: "tool-call",
+            threadId,
+            turnId: "t1",
+            toolCallId: "tc-long",
+            name: "ExtremelyLongToolNameThatWouldOverflow",
+            input: {},
+          } satisfies ChatFrame)
+          yield* Effect.sleep(`${streamEditThrottleMs + 100} millis`)
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    expect(fakeCtx.deliveries.every((d) => d.content.length <= 24)).toBe(true)
+    expect(fakeCtx.deliveries.at(-1)?.content.startsWith("\n\n")).toBe(false)
+    expect(fakeCtx.deliveries.at(-1)?.content.startsWith("xt")).toBe(false)
+  })
+
+  it("finalizes a status-only stream-edit turn on turn-complete", async () => {
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("se-tools-final", "stream-edit", 4096)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+
+          const msg = makeMessage({ platformMessageId: "se-tools-final-pm-1" })
+          yield* svc.handleMessage(msg)
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub")
+
+          yield* PubSub.publish(pub, {
+            type: "tool-call",
+            threadId,
+            turnId: "t1",
+            toolCallId: "tc-1",
+            name: "Read",
+            input: {},
+          } satisfies ChatFrame)
+          yield* Effect.sleep("30 millis")
+          yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
+          yield* Effect.sleep("100 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    expect(fakeCtx.deliveries.at(-1)?.opts.isFinal).toBe(true)
+  })
+
   it("delivers error notice on assistant-error frame", async () => {
     const { service: chatService, threads } = makeStubChatService(new Map())
     const fakeCtx = makeFakeAdapterClean("se-err-1", "stream-edit", 4096)
@@ -952,5 +1196,42 @@ describe("delivery — stream-edit tool step indicators", () => {
       d.content.includes("Something went wrong"),
     )
     expect(errorDelivery).toBeDefined()
+  })
+
+  it("delivers an assistant-error as final even when no placeholder exists yet", async () => {
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("se-err-no-placeholder", "stream-edit", 4096)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+
+          const msg = makeMessage({ platformMessageId: "se-err-no-placeholder-pm-1" })
+          yield* svc.handleMessage(msg)
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub")
+
+          yield* PubSub.publish(pub, {
+            type: "assistant-error",
+            threadId,
+            turnId: "t1",
+            error: { kind: "sdk" as const, message: "model error" },
+          } satisfies ChatFrame)
+          yield* Effect.sleep("100 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    expect(fakeCtx.deliveries).toHaveLength(1)
+    expect(fakeCtx.deliveries[0]?.content).toContain("Something went wrong")
+    expect(fakeCtx.deliveries[0]?.opts.isPartial).toBe(false)
+    expect(fakeCtx.deliveries[0]?.opts.isFinal).toBe(true)
   })
 })

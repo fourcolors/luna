@@ -205,6 +205,9 @@ export class ChannelSessionStore extends Effect.Tag(
 export const normalizeThreadingKey = (msg: ChannelMessage): string =>
   msg.threadingKey ?? msg.channelId
 
+const shouldStoreThreadUserIdentity = (msg: ChannelMessage): boolean =>
+  msg.transport !== "telegram" || msg.metadata?.chatType === "private"
+
 /**
  * Look up the Luna threadId for this message, or create a new thread and
  * record the mapping.
@@ -230,6 +233,7 @@ export const lookupOrCreate = (
     // Create a new Luna thread for this channel session.
     // Title is intentionally short and human-readable (sidebar label).
     const title = `[${msg.transport}] ${msg.channelId}`
+    const includeUserIdentity = shouldStoreThreadUserIdentity(msg)
     const summary = yield* chat
       .createThread({
         title,
@@ -237,9 +241,15 @@ export const lookupOrCreate = (
         channelMeta: {
           interface: msg.transport === "telegram" ? "Telegram" : msg.transport,
           chatId: String(msg.channelId),
-          ...(msg.metadata?.userId != null ? { userId: String(msg.metadata.userId) } : {}),
-          ...(msg.metadata?.username != null ? { username: String(msg.metadata.username) } : {}),
-          ...(msg.metadata?.firstName != null ? { firstName: String(msg.metadata.firstName) } : {}),
+          ...(includeUserIdentity && msg.metadata?.userId != null
+            ? { userId: String(msg.metadata.userId) }
+            : {}),
+          ...(includeUserIdentity && msg.metadata?.username != null
+            ? { username: String(msg.metadata.username) }
+            : {}),
+          ...(includeUserIdentity && msg.metadata?.firstName != null
+            ? { firstName: String(msg.metadata.firstName) }
+            : {}),
         },
       })
       .pipe(Effect.orDie)

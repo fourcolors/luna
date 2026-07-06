@@ -129,4 +129,17 @@ describe("runtime metadata", () => {
     expect(metadata).toContain("- **User:** id: 789")
     expect(metadata).not.toContain("@")
   })
+
+  it("uses firstName as the display name when Telegram username is absent", () => {
+    const metadata = buildSessionMetadata({
+      channelContext: {
+        interface: "Telegram",
+        userId: "789",
+        firstName: "Bob",
+      },
+      env: {},
+    })
+
+    expect(metadata).toContain("- **User:** Bob (id: 789)")
+  })
 })

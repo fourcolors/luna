@@ -126,6 +126,24 @@ export const buildStatusLine = (
   return lines.join("\n")
 }
 
+const buildStreamEditText = (
+  currentText: string,
+  statusLine: string,
+  maxLength: number,
+): string => {
+  if (maxLength <= 0) return ""
+
+  const clippedStatus = statusLine.slice(0, maxLength)
+  if (currentText.length === 0) return clippedStatus
+  if (clippedStatus.length === 0) return currentText.slice(0, maxLength)
+
+  const separator = "\n\n"
+  const availableText = maxLength - clippedStatus.length - separator.length
+  if (availableText <= 0) return clippedStatus
+
+  return `${currentText.slice(0, availableText)}${separator}${clippedStatus}`
+}
+
 /* -------------------------------------------------------------------------- */
 /* Delivery helpers                                                            */
 /* -------------------------------------------------------------------------- */
@@ -185,49 +203,73 @@ export const subscribeAndDeliver = (
     const activeTools = yield* Ref.make<Map<string, string>>(new Map())
     // Completed tool calls this turn: { name, ok }.
     const completedTools = yield* Ref.make<Array<{ name: string; ok: boolean }>>([])
+    // Current rendered tool-status block for stream-edit adapters.
+    const currentStatusLine = yield* Ref.make<string>("")
 
     const capability = adapter.capability
     const maxLen = adapter.maxMessageLength
+
+    const cancelPendingEdit = Effect.gen(function* () {
+      const prev = yield* Ref.get(throttleFiber)
+      if (prev !== null) {
+        yield* Fiber.interrupt(prev)
+        yield* Ref.set(throttleFiber, null)
+      }
+    })
+
+    const renderCurrentEdit = Effect.gen(function* () {
+      const current = yield* Ref.get(currentDeltaText)
+      const status = yield* Ref.get(currentStatusLine)
+      return buildStreamEditText(current, status, maxLen)
+    })
+
+    const deliverStreamEdit = (content: string, isFinal: boolean): Effect.Effect<void> =>
+      adapter
+        .deliver(target, content.slice(0, maxLen), {
+          isPartial: !isFinal,
+          isFinal,
+          chunkIndex: 0,
+          totalChunks: 1,
+        })
+        .pipe(Effect.catchAllCause(() => Effect.void))
+
+    const scheduleThrottledEdit = Effect.gen(function* () {
+      yield* cancelPendingEdit
+
+      const editFiber = yield* Effect.gen(function* () {
+        yield* Effect.sleep(`${STREAM_EDIT_THROTTLE_MS} millis`)
+        const current = yield* renderCurrentEdit
+        const last = yield* Ref.get(lastEditedText)
+        if (current !== last) {
+          yield* deliverStreamEdit(current, false)
+          yield* Ref.set(lastEditedText, current)
+        }
+      }).pipe(Effect.fork)
+
+      yield* Ref.set(throttleFiber, editFiber as Fiber.RuntimeFiber<void, never>)
+    })
 
     /**
      * Deliver a status-only update (tool steps). For stream-edit adapters:
      * edit the current placeholder message to show the status below accumulated
      * text. For other adapters: no-op (status indicators require edit capability).
      *
-     * Rate-limited by the same STREAM_EDIT_THROTTLE_MS as delta edits.
+     * The first status creates the placeholder immediately; follow-up status
+     * edits share the same throttle path as assistant deltas.
      */
     const deliverStatusLine = (statusLine: string): Effect.Effect<void> => {
       if (capability !== "stream-edit") return Effect.void
       if (statusLine.length === 0) return Effect.void
       return Effect.gen(function* () {
+        yield* Ref.set(currentStatusLine, statusLine)
         const started = yield* Ref.get(editStarted)
         if (!started) {
-          // Send a new placeholder message to hold the status.
+          const content = yield* renderCurrentEdit
           yield* Ref.set(editStarted, true)
-          yield* adapter
-            .deliver(target, statusLine, {
-              isPartial: true,
-              isFinal: false,
-              chunkIndex: 0,
-              totalChunks: 1,
-            })
-            .pipe(Effect.catchAllCause(() => Effect.void))
-          yield* Ref.set(lastEditedText, statusLine)
+          yield* deliverStreamEdit(content, false)
+          yield* Ref.set(lastEditedText, content)
         } else {
-          // Edit the existing message.
-          const current = yield* Ref.get(currentDeltaText)
-          const combinedText =
-            current.length > 0
-              ? `${current.slice(0, maxLen - statusLine.length - 2)}\n\n${statusLine}`
-              : statusLine
-          yield* adapter
-            .deliver(target, combinedText.slice(0, maxLen), {
-              isPartial: true,
-              isFinal: false,
-              chunkIndex: 0,
-              totalChunks: 1,
-            })
-            .pipe(Effect.catchAllCause(() => Effect.void))
+          yield* scheduleThrottledEdit
         }
       })
     }
@@ -259,29 +301,7 @@ export const subscribeAndDeliver = (
                     yield* Ref.set(lastEditedText, "…")
                   }
 
-                  // Cancel any pending throttle fiber and schedule a new edit
-                  const prev = yield* Ref.get(throttleFiber)
-                  if (prev !== null) yield* Fiber.interrupt(prev)
-
-                  const editFiber = yield* Effect.gen(function* () {
-                    yield* Effect.sleep(`${STREAM_EDIT_THROTTLE_MS} millis`)
-                    const current = yield* Ref.get(currentDeltaText)
-                    const last = yield* Ref.get(lastEditedText)
-                    if (current !== last) {
-                      const chunk = current.slice(0, maxLen)
-                      yield* adapter
-                        .deliver(target, chunk, {
-                          isPartial: true,
-                          isFinal: false,
-                          chunkIndex: 0,
-                          totalChunks: 1,
-                        })
-                        .pipe(Effect.catchAllCause(() => Effect.void))
-                      yield* Ref.set(lastEditedText, chunk)
-                    }
-                  }).pipe(Effect.fork)
-
-                  yield* Ref.set(throttleFiber, editFiber as Fiber.RuntimeFiber<void, never>)
+                  yield* scheduleThrottledEdit
                 }
                 // For final-only and discrete-chunks we wait for assistant-done
                 break
@@ -340,29 +360,12 @@ export const subscribeAndDeliver = (
                 // For others: no-op (the UI handles errors separately).
                 if (capability === "stream-edit") {
                   const errText = "⚠ Something went wrong. Please try again."
-                  const started = yield* Ref.get(editStarted)
-                  if (started) {
-                    yield* adapter
-                      .deliver(target, errText, {
-                        isPartial: false,
-                        isFinal: true,
-                        chunkIndex: 0,
-                        totalChunks: 1,
-                      })
-                      .pipe(Effect.catchAllCause(() => Effect.void))
-                  } else {
-                    yield* adapter
-                      .deliver(target, errText, {
-                        isPartial: true,
-                        isFinal: false,
-                        chunkIndex: 0,
-                        totalChunks: 1,
-                      })
-                      .pipe(Effect.catchAllCause(() => Effect.void))
-                  }
+                  yield* cancelPendingEdit
+                  yield* deliverStreamEdit(errText, true)
                   yield* Ref.set(editStarted, false)
                   yield* Ref.set(currentDeltaText, "")
                   yield* Ref.set(lastEditedText, "")
+                  yield* Ref.set(currentStatusLine, "")
                   yield* Ref.set(activeTools, new Map())
                   yield* Ref.set(completedTools, [])
                 }
@@ -372,27 +375,25 @@ export const subscribeAndDeliver = (
               case "turn-complete": {
                 // Cancel any pending throttle fiber
                 if (capability === "stream-edit") {
-                  const prev = yield* Ref.get(throttleFiber)
-                  if (prev !== null) {
-                    yield* Fiber.interrupt(prev)
-                    yield* Ref.set(throttleFiber, null)
-                  }
+                  yield* cancelPendingEdit
                   // Final edit with complete turn text
                   const finalText = yield* Ref.get(currentDeltaText)
                   if (finalText.length > 0) {
                     const chunk = finalText.slice(0, maxLen)
-                    yield* adapter
-                      .deliver(target, chunk, {
-                        isPartial: false,
-                        isFinal: true,
-                        chunkIndex: 0,
-                        totalChunks: 1,
-                      })
-                      .pipe(Effect.catchAllCause(() => Effect.void))
+                    yield* deliverStreamEdit(chunk, true)
+                  } else {
+                    const started = yield* Ref.get(editStarted)
+                    if (started) {
+                      const current = yield* renderCurrentEdit
+                      if (current.length > 0) {
+                        yield* deliverStreamEdit(current, true)
+                      }
+                    }
                   }
                   yield* Ref.set(editStarted, false)
                   yield* Ref.set(currentDeltaText, "")
                   yield* Ref.set(lastEditedText, "")
+                  yield* Ref.set(currentStatusLine, "")
                   // Reset tool tracking state for the next turn.
                   yield* Ref.set(activeTools, new Map())
                   yield* Ref.set(completedTools, [])
