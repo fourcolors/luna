@@ -10,9 +10,10 @@ import { TaskRunner } from "./studio-task.jsx";
 import { MapApp } from "./studio-map.jsx";
 import { makeTaskDef } from "./studio-chat.jsx";
 import { AmbientLuna, VoiceScene } from "./studio-voice.jsx";
-import { THREADS_SEED, ThreadsApp } from "./final-threads.jsx";
+import { ThreadsApp } from "./final-threads.jsx";
 import { ThreadChat } from "./final-chat.jsx";
 import { FinalInbox } from "./final-inbox.jsx";
+import { useLunaData } from "../data/useLunaData";
 
 const TWEAK_DEFAULTS = { theme: "light", palette: "tide", chrome: "wash", grain: false, motion: "lively", ambient: true, defaultBrain: "luna", snap: 28, guides: true };
 
@@ -115,8 +116,11 @@ export function StudioApp() {
   const [workspaces, setWorkspaces] = useState(WORKSPACES_SEED);
   const [ws, setWs] = useState("home");
   const [panels, setPanels] = useState(() => buildPanels(window.innerWidth, window.innerHeight));
-  const [threads, setThreads] = useState(THREADS_SEED);
-  const [activeThread, setActiveThread] = useState("morning");
+  // Real Luna data (threads + chat) via the transport/reducer hub. Shaped to
+  // match the design's mock so ThreadsApp/ThreadChat render unchanged.
+  const luna = useLunaData();
+  const threads = luna.threads;
+  const activeThread = luna.activeThread;
   const [guides, setGuides] = useState([]);
   const [snappedId, setSnappedId] = useState(null);
   const [dragId, setDragId] = useState(null);
@@ -231,18 +235,11 @@ export function StudioApp() {
     setPanels((ps) => ps.map((p) => (p.id === id ? { ...p, z: zTop.current } : p)));
   }, []);
 
-  /* ---------- threads ---------- */
-  function appendMsg(id, msg) {
-    setThreads((ts) => ts.map((th) => (th.id === id
-      ? { ...th, msgs: [...th.msgs, msg], status: th.status === "quiet" || th.status === "done" ? "active" : th.status }
-      : th)));
-  }
-  function threadNote(id, patch) {
-    setThreads((ts) => ts.map((th) => (th.id === id ? { ...th, ...patch } : th)));
-  }
+  /* ---------- threads (real, via useLunaData) ---------- */
+  const appendMsg = luna.appendMsg;
+  const threadNote = luna.threadNote;
   function openThread(id) {
-    setThreads((ts) => ts.map((th) => (th.id === id ? { ...th, unread: 0, status: th.status === "needs" ? "active" : th.status } : th)));
-    setActiveThread(id);
+    luna.openThread(id);
     const chat = panelsRef.current.find((p) => p.type === "chat" && p.ws === ws && !p.closed)
       || panelsRef.current.find((p) => p.type === "chat" && p.ws === "home");
     if (chat) {
@@ -251,13 +248,9 @@ export function StudioApp() {
     }
   }
   function newThread() {
-    const id = "th" + Date.now();
-    const tints = ["var(--wash-1)", "var(--wash-3)", "var(--wash-0)", "var(--wash-4)", "var(--wash-2)"];
-    const tint = tints[threads.length % tints.length];
-    setThreads((ts) => [{ id, name: "new thread", tint, brain: "luna", status: "active", note: "a fresh page", msgs: [
-      { who: "luna", text: "fresh page ✦ what's this one about?" },
-    ] }, ...ts]);
-    setActiveThread(id);
+    luna.newThread();
+    const chat = panelsRef.current.find((p) => p.type === "chat" && p.ws === ws && !p.closed);
+    if (chat) bringToFront(chat.id);
   }
 
   /* listen for thread-opens from other panels (inbox) */
@@ -383,15 +376,9 @@ export function StudioApp() {
       const id = "task-" + Date.now();
       return [...ps, { id, ws: "build", type: "task", brain, title: def.title, def, startedAt: Date.now(), x: LEFT_EDGE, y: TOP_MIN, w: 320, h: colH, z: zTop.current++, entering: true }];
     });
-    const tid = "th" + Date.now();
-    setThreads((ts) => [{
-      id: tid, name: shortName(item.title), tint: "var(--wash-1)", brain, status: "running",
-      note: "handed to " + (BRAINS[brain] ? BRAINS[brain].name : "Hermes") + " · live in Build",
-      msgs: [
-        { who: "user", text: item.title },
-        { who: "luna", brain, text: "picked it up — progress is streaming in Build. I'll nudge this thread the moment it's done." },
-      ],
-    }, ...ts]);
+    // Real delegation (server-driven task runs + a thread) lands in the P3
+    // tasks seam; for now spinning the Build panel + a toast is the feedback.
+    showToast("handed to " + (BRAINS[brain] ? BRAINS[brain].name : "a brain") + " ✦ live in Build", brain);
   }
 
   const ctx = {

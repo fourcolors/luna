@@ -4,7 +4,6 @@
 import React from "react";
 import { THREAD_SECTIONS, THREAD_STATUS_LABEL } from "./final-threads.jsx";
 import { BRAINS } from "./studio-data.jsx";
-import { studioBrain } from "./studio-chat.jsx";
 import { BrainPicker } from "./studio-brain.jsx";
 const TcReact = React;
 
@@ -12,9 +11,12 @@ export function ThreadChat({ threads, activeId, onSwitch, onNew, onAppend, onThr
   const { useState, useRef, useEffect } = TcReact;
   const [railOpen, setRailOpen] = useState(false);
   const [input, setInput] = useState("");
-  const [typing, setTyping] = useState(false);
   const streamRef = useRef(null);
   const thread = threads.find((t) => t.id === activeId) || threads[0];
+  // Typing dots show while an assistant turn is streaming but no text has
+  // landed yet; once tokens arrive they render as a growing luna bubble.
+  const lastIsLuna = thread && thread.msgs.length > 0 && thread.msgs[thread.msgs.length - 1].who === "luna";
+  const typing = !!(thread && thread.awaiting && !lastIsLuna);
 
   useEffect(() => {
     const el = streamRef.current;
@@ -23,26 +25,29 @@ export function ThreadChat({ threads, activeId, onSwitch, onNew, onAppend, onThr
 
   function send(textArg) {
     const text = (textArg ?? input).trim();
-    if (!text || typing) return;
+    if (!text || !thread || thread.awaiting) return;
     setInput("");
+    // Real send: the user turn goes to the server; the assistant reply streams
+    // back into `threads` via the reducer. No synthetic brain.
     onAppend(thread.id, { who: "user", text });
     window.dispatchEvent(new CustomEvent("luna:chirp"));
-    setTyping(true);
-    const res = studioBrain(text, brain);
-    setTimeout(() => {
-      setTyping(false);
-      onAppend(thread.id, { who: "luna", brain: res.who, text: res.reply });
-      if (res.spawn) {
-        window.dispatchEvent(new CustomEvent("luna:bloom"));
-        if (res.spawn.type === "task") onThreadNote(thread.id, { status: "running", note: (res.spawn.title || "task") + " · live in Build" });
-        setTimeout(() => onSpawn(res.spawn), 420);
-      }
-      if (res.action === "voice" && onVoice) setTimeout(onVoice, 520);
-      if (res.action === "focus" && onFocus) setTimeout(onFocus, 360);
-    }, 720 + Math.random() * 460);
   }
 
   const chips = ["what needs me today?", "find rooftop bars for tonight", "make me a water tracker", "build the landing page"];
+
+  if (!thread) {
+    return (
+      <div className="tc-stage">
+        <div className="tc-main">
+          <div className="chat-stream">
+            <div className="msg luna">
+              <div className="bubble"><span className="bubble-text">connecting to Luna…</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="tc-stage">
